@@ -76,29 +76,56 @@ export const AiSettingsContainer = () => {
   const [runtimeModelsLoading, setRuntimeModelsLoading] = useState(false);
   const [runtimeDiscoveryUnavailable, setRuntimeDiscoveryUnavailable] = useState(false);
   const [vllmApiKey, setVllmApiKey] = useState('');
+  const [vllmUrl, setVllmUrl] = useState('');
   const [ollamaStatus, setOllamaStatus] = useState<OllamaStatus | null>(null);
   const [vllmStatus, setVllmStatus] = useState<VllmStatus | null>(null);
   const [checkingOllama, setCheckingOllama] = useState(false);
   const [checkingVllm, setCheckingVllm] = useState(false);
-  const suppressBackendEffectRef = useRef(true);
+  // Backend the backend-switch effect has already refetched for (set by fetchProfile too, since it
+  // fetches profile + runtime models itself); prevents a duplicate fetch right after mount.
+  const lastHandledBackendRef = useRef<InferenceBackendType | null>(null);
+  // Mirrors for values the stable callbacks / effects below need without retriggering on change.
+  const vllmUrlRef = useRef('');
+  vllmUrlRef.current = vllmUrl;
+  const trackedModelsRef = useRef<TrackedModel[]>([]);
 
   const applyTrackedModels = useCallback((tracked: TrackedModel[]) => {
     const trackedById = Object.fromEntries(tracked.map((model) => [model.catalogId, model]));
     const pinned = new Set<string>();
-    const selectedIds: string[] = [];
 
     for (const model of tracked) {
-      if (['pulling', 'pulled', 'loading', 'loaded', 'pinned'].includes(model.state)) {
-        selectedIds.push(model.catalogId);
-      }
       if (model.state === 'pinned') {
         pinned.add(model.catalogId);
       }
     }
 
+    trackedModelsRef.current = tracked;
     setTrackedModels(trackedById);
     setPinnedModelIds(pinned);
-    setSelectedModelIds(selectedIds);
+  }, []);
+
+  /**
+   * Seed the model checkboxes from what is actually installed on the backend (the same
+   * `installedCatalogIds` source onboarding uses) unioned with models this process is actively
+   * tracking. Seeding only from the in-memory tracked registry — which empties on every Hub
+   * restart and never sees externally-loaded vLLM models — showed installed models as unselected
+   * and made Save clear preferences and unpin models (#1106).
+   */
+  const seedSelectedModelIds = useCallback((data: HardwareProfileResponse, backend: InferenceBackendType, tracked: TrackedModel[]) => {
+    const installed = new Set(data.installedCatalogIds ?? []);
+    const selected = new Set<string>();
+    for (const model of data.availableModels) {
+      if (!installed.has(model.id)) continue;
+      if (model.backend === backend || (model.backend === EMBEDDING_INFERENCE_BACKEND && isEmbeddingModel(model))) {
+        selected.add(model.id);
+      }
+    }
+    for (const model of tracked) {
+      if (['pulling', 'pulled', 'loading', 'loaded', 'pinned'].includes(model.state)) {
+        selected.add(model.catalogId);
+      }
+    }
+    setSelectedModelIds([...selected]);
   }, []);
 
   const fetchTrackedModels = useCallback(async () => {
@@ -135,12 +162,16 @@ export const AiSettingsContainer = () => {
         if (prefData.preferredVllmApiKey) {
           setVllmApiKey(prefData.preferredVllmApiKey);
         }
+        if (prefData.preferredVllmUrl) {
+          setVllmUrl(prefData.preferredVllmUrl);
+        }
       }
       // fetchProfile handles initial runtime model fetch to avoid duplicate effect calls.
-      suppressBackendEffectRef.current = true;
+      lastHandledBackendRef.current = preferredBackend;
       setSelectedBackend(preferredBackend);
 
-      await fetchTrackedModels();
+      const tracked = await fetchTrackedModels();
+      seedSelectedModelIds(data, preferredBackend, tracked);
       await fetchRuntimeModels(preferredBackend);
       void checkOllamaStatus();
       if (preferredBackend === 'vllm') {
@@ -162,24 +193,53 @@ export const AiSettingsContainer = () => {
   const checkOllamaStatus = async () => {
     setCheckingOllama(true);
     try {
-      setOllamaStatus((await fetchOllamaInstallStatus()) as OllamaStatus);
+      const data = (await fetchOllamaInstallStatus()) as OllamaStatus;
+      setOllamaStatus(data);
+      return data;
     } catch {
       setOllamaStatus({ ready: false, running: false, endpointUrl: '' });
+      return null;
     } finally {
       setCheckingOllama(false);
+    }
+  };
+
+  // Same stale-profile defect as the vLLM path (#1105): a model pulled outside the Hub only
+  // surfaces after the profile's installedCatalogIds are recomputed.
+  const handleRecheckOllama = async () => {
+    const status = await checkOllamaStatus();
+    if (status?.ready) {
+      const data = await fetchInferenceOnboardingProfile(selectedBackend, vllmUrlRef.current);
+      setProfile(data);
+      seedSelectedModelIds(data, selectedBackend, trackedModelsRef.current);
     }
   };
 
   const checkVllmStatus = useCallback(async () => {
     setCheckingVllm(true);
     try {
-      setVllmStatus((await fetchVllmInstallStatus()) as VllmStatus);
+      const data = (await fetchVllmInstallStatus(vllmUrlRef.current)) as VllmStatus;
+      setVllmStatus(data);
+      return data;
     } catch {
       setVllmStatus({ ready: false, running: false, endpointUrl: '' });
+      return null;
     } finally {
       setCheckingVllm(false);
     }
   }, []);
+
+  // Re-check must also refresh the profile: `installedCatalogIds` is only recomputed server-side
+  // in the onboarding-profile endpoint, so without this a model served after page load never
+  // shows as Installed (#1105).
+  const handleRecheckVllm = useCallback(async () => {
+    const status = await checkVllmStatus();
+    if (status?.ready) {
+      const data = await fetchInferenceOnboardingProfile('vllm', vllmUrlRef.current);
+      setProfile(data);
+      seedSelectedModelIds(data, 'vllm', trackedModelsRef.current);
+    }
+  }, [checkVllmStatus, seedSelectedModelIds]);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: only on mount
   useEffect(() => {
@@ -206,19 +266,28 @@ export const AiSettingsContainer = () => {
     setSelectedModelIds((prev) => (prev.includes(modelId) ? prev.filter((id) => id !== modelId) : [...prev, modelId]));
   };
 
+  // The effect below reads profile only as a "loaded yet" guard; carrying it through a ref keeps
+  // it out of the dependency array. Listing `profile` there while the effect writes it via
+  // setProfile (a fresh object every fetch) retriggered the effect it just ran — an unbounded
+  // onboarding-profile refetch loop, ~165 requests in 400ms per backend switch (#1109).
+  const hasProfileRef = useRef(false);
+  hasProfileRef.current = profile !== null;
+
   // Refresh profile + runtime models whenever user changes inference backend in settings.
   useEffect(() => {
-    if (!profile) return;
-    if (suppressBackendEffectRef.current) {
-      suppressBackendEffectRef.current = false;
-      return;
-    }
-    void fetchInferenceOnboardingProfile(selectedBackend).then(setProfile);
+    if (!hasProfileRef.current) return;
+    if (lastHandledBackendRef.current === selectedBackend) return;
+    lastHandledBackendRef.current = selectedBackend;
+    void fetchInferenceOnboardingProfile(selectedBackend, vllmUrlRef.current).then((data) => {
+      setProfile(data);
+      // Re-seed the checkboxes for the new backend from server truth (see seedSelectedModelIds).
+      seedSelectedModelIds(data, selectedBackend, trackedModelsRef.current);
+    });
     fetchRuntimeModels(selectedBackend);
     if (selectedBackend === 'vllm') {
       void checkVllmStatus();
     }
-  }, [selectedBackend, fetchRuntimeModels, profile, checkVllmStatus]);
+  }, [selectedBackend, fetchRuntimeModels, checkVllmStatus, seedSelectedModelIds]);
 
   const hasActiveTransfers = Object.values(trackedModels).some((model) => ['pulling', 'loading', 'unloading'].includes(model.state));
 
@@ -260,6 +329,7 @@ export const AiSettingsContainer = () => {
         embeddingModel: preferredEmbeddingModel,
         visionModel: preferredVisionModel,
         vllmApiKey: selectedBackend === 'vllm' ? vllmApiKey.trim() || null : null,
+        vllmUrl: selectedBackend === 'vllm' ? vllmUrl.trim() || null : null,
       });
 
       // Save cloud providers — for already-configured providers (masked key),
@@ -514,14 +584,16 @@ export const AiSettingsContainer = () => {
               <VllmSetupCard
                 status={vllmStatus}
                 checking={checkingVllm}
-                onRecheck={checkVllmStatus}
+                onRecheck={handleRecheckVllm}
                 apiKey={vllmApiKey}
                 onApiKeyChange={setVllmApiKey}
+                endpointUrl={vllmUrl}
+                onEndpointUrlChange={setVllmUrl}
               />
               <div>
                 <h3 className="text-sm font-semibold">{t('ONBOARDING_EMBEDDINGS_OLLAMA_SECTION_TITLE')}</h3>
                 <p className="text-xs text-muted-foreground mt-0.5 mb-3">{t('ONBOARDING_EMBEDDINGS_OLLAMA_SECTION_DESC')}</p>
-                <OllamaSetupCard status={ollamaStatus} checking={checkingOllama} onRecheck={checkOllamaStatus} />
+                <OllamaSetupCard status={ollamaStatus} checking={checkingOllama} onRecheck={handleRecheckOllama} />
               </div>
             </section>
           )}

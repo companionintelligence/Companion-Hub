@@ -5,20 +5,28 @@ import type { InferenceBackend } from './backend.interface';
 import type { BackendHealthStatus, BackendModelInfo, PullProgress } from '@ci-hub/common/types';
 import axios from 'axios';
 
+/** Accept `http://host:8000`, `http://host:8000/` or `http://host:8000/v1` and store the bare origin. */
+export function normalizeVllmBaseUrl(url: string): string {
+  return url.trim().replace(/\/+$/, '').replace(/\/v1$/, '');
+}
+
 @Injectable()
 export class VllmBackend implements InferenceBackend {
   readonly type = 'vllm' as const;
-  private baseUrl: string;
 
   constructor(
     private readonly logger: LoggerService,
     private readonly configuration: ConfigurationService,
-  ) {
-    this.baseUrl = process.env.VLLM_URL || 'http://ci-hub-vllm:8000';
-  }
+  ) {}
 
+  /**
+   * The vLLM server is host-run (or remote), not Hub-managed. The operator-configured URL from
+   * Settings wins over the compose-injected VLLM_URL env; read per-call rather than caching in the
+   * constructor so a Settings change takes effect without a Hub restart.
+   */
   getBaseUrl(): string {
-    return this.baseUrl;
+    const configured = this.configuration.getInferencePreferences().preferredVllmUrl?.trim();
+    return normalizeVllmBaseUrl(configured || process.env.VLLM_URL || 'http://ci-hub-vllm:8000');
   }
 
   private vllmAuthHeaders(): Record<string, string> | undefined {
@@ -26,9 +34,11 @@ export class VllmBackend implements InferenceBackend {
     return apiKey ? { Authorization: `Bearer ${apiKey}` } : undefined;
   }
 
-  async healthCheck(): Promise<BackendHealthStatus> {
+  /** `baseUrlOverride` lets the status endpoint probe a candidate URL the operator typed but hasn't saved yet. */
+  async healthCheck(baseUrlOverride?: string): Promise<BackendHealthStatus> {
+    const baseUrl = baseUrlOverride ? normalizeVllmBaseUrl(baseUrlOverride) : this.getBaseUrl();
     try {
-      const response = await axios.get(`${this.baseUrl}/v1/models`, {
+      const response = await axios.get(`${baseUrl}/v1/models`, {
         timeout: 5000,
         headers: this.vllmAuthHeaders(),
       });
@@ -50,7 +60,7 @@ export class VllmBackend implements InferenceBackend {
 
   async listModels(): Promise<BackendModelInfo[]> {
     try {
-      const response = await axios.get(`${this.baseUrl}/v1/models`, {
+      const response = await axios.get(`${this.getBaseUrl()}/v1/models`, {
         timeout: 10000,
         headers: this.vllmAuthHeaders(),
       });

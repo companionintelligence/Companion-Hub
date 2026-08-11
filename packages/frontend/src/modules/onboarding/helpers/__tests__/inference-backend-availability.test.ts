@@ -1,10 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { HardwareProfileResponse } from '@/modules/onboarding/helpers/ai-setup-types';
-import {
-  EMBEDDING_INFERENCE_BACKEND,
-  isVllmSelectable,
-  unavailableInferenceBackends,
-} from '@/modules/onboarding/helpers/inference-backend-availability';
+import { EMBEDDING_INFERENCE_BACKEND, unavailableInferenceBackends } from '@/modules/onboarding/helpers/inference-backend-availability';
 
 const nvidiaProfile = {
   hardware: {
@@ -21,14 +17,11 @@ const amdProfile = {
 } as HardwareProfileResponse;
 
 describe('inference-backend-availability', () => {
-  it('enables vLLM on NVIDIA with container GPU runtime', () => {
-    expect(isVllmSelectable(nvidiaProfile)).toBe(true);
+  // vLLM is a host-run/remote OpenAI-compatible endpoint; the endpoint probe is the gate,
+  // not the local GPU vendor. Only dark-launched Lemonade stays unavailable.
+  it('keeps vLLM selectable regardless of GPU vendor', () => {
     expect(unavailableInferenceBackends(nvidiaProfile)).toEqual(['lemonade']);
-  });
-
-  it('disables vLLM on AMD and NPU hardware', () => {
-    expect(isVllmSelectable(amdProfile)).toBe(false);
-    expect(unavailableInferenceBackends(amdProfile)).toEqual(['lemonade', 'vllm']);
+    expect(unavailableInferenceBackends(amdProfile)).toEqual(['lemonade']);
   });
 
   it('keeps embeddings on Ollama', () => {

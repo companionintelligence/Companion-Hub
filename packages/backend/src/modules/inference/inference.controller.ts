@@ -19,7 +19,13 @@ import { AuthGuard } from '@/modules/auth/auth.guard';
 import { InternalNetworkGuard } from '@/modules/auth/internal-network.guard';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import type { CloudProviderType, HardwareProfile, HardwareTier, InferenceBackendType } from '@ci-hub/common/types';
-import { RuntimeModelsQueryDto, UpdateInferencePreferencesBody, UpdateRocmInstallStateBody, OnboardingProfileQueryDto } from './inference.dto';
+import {
+  RuntimeModelsQueryDto,
+  UpdateInferencePreferencesBody,
+  UpdateRocmInstallStateBody,
+  OnboardingProfileQueryDto,
+  VllmStatusQueryDto,
+} from './inference.dto';
 import { OllamaBackend } from './backends/ollama.backend';
 import { VllmBackend } from './backends/vllm.backend';
 import { LemonadeBackend } from './backends/lemonade.backend';
@@ -112,6 +118,7 @@ export class InferenceController {
       body.embeddingModel,
       body.visionModel,
       body.vllmApiKey,
+      body.vllmUrl,
     );
 
     // Restart running apps that use AI models so they pick up the new inference
@@ -361,7 +368,7 @@ export class InferenceController {
 
     let installedCatalogIds: string[];
     if (installBackend === 'vllm') {
-      const vllmHealth = await this.vllmBackend.healthCheck().catch(() => ({
+      const vllmHealth = await this.vllmBackend.healthCheck(query?.vllmUrl).catch(() => ({
         running: false,
         healthy: false,
         modelsLoaded: [] as string[],
@@ -407,9 +414,9 @@ export class InferenceController {
 
   @UseGuards(AuthGuard)
   @Get('vllm/status')
-  async getVllmStatus() {
-    const endpointUrl = this.vllmBackend.getBaseUrl();
-    const health = await this.vllmBackend.healthCheck().catch((err) => ({
+  async getVllmStatus(@Query() query?: VllmStatusQueryDto) {
+    const endpointUrl = query?.url?.trim() || this.vllmBackend.getBaseUrl();
+    const health = await this.vllmBackend.healthCheck(endpointUrl).catch((err) => ({
       running: false,
       healthy: false,
       modelsLoaded: [] as string[],
@@ -422,9 +429,16 @@ export class InferenceController {
       running: health.running,
       endpointUrl,
       displayEndpoint,
+      // The suggested model must be a catalog `backendModelId` (so the served model is recognized
+      // as installed) and must fit common consumer VRAM — Qwen3-4B-Instruct-2507 with bitsandbytes
+      // quantization runs on an 8 GB card, unlike the old Qwen2.5-7B bf16 suggestion (#1103).
+      remediationCommand: ready
+        ? undefined
+        : 'vllm serve Qwen/Qwen3-4B-Instruct-2507 --host 0.0.0.0 --port 8000 --quantization bitsandbytes --max-model-len 8192 --gpu-memory-utilization 0.85',
       error: ready ? undefined : health.error,
-      remediationCommand: ready ? undefined : 'vllm serve Qwen/Qwen2.5-7B-Instruct --host 0.0.0.0 --port 8000 --api-key YOUR_KEY',
-      hint: ready ? undefined : 'Run vLLM on the host machine (not inside Docker). Hub reaches it via host.docker.internal:8000.',
+      hint: ready
+        ? undefined
+        : `Run vLLM on the host machine (not inside Docker), or point the endpoint URL at any reachable vLLM server. Hub currently probes ${endpointUrl}.`,
     };
   }
 

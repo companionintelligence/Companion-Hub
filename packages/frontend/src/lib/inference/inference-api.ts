@@ -28,10 +28,15 @@ async function unwrap<T>(promise: Promise<{ data?: T; error?: unknown }>): Promi
   return unwrapSdk(promise);
 }
 
-export async function fetchInferenceOnboardingProfile(backend?: InferenceBackendType): Promise<HardwareProfileResponse> {
+export async function fetchInferenceOnboardingProfile(backend?: InferenceBackendType, vllmUrl?: string): Promise<HardwareProfileResponse> {
+  const query: Record<string, string> = {};
+  if (backend) query.backend = backend;
+  // Candidate vLLM URL the operator typed but hasn't saved yet — keeps the profile's
+  // installed-model resolution probing the same server the status card reports on.
+  if (backend === 'vllm' && vllmUrl?.trim()) query.vllmUrl = vllmUrl.trim();
   return unwrap(
     getOnboardingProfile({
-      query: backend ? { backend } : undefined,
+      query: Object.keys(query).length > 0 ? query : undefined,
     } as Parameters<typeof getOnboardingProfile>[0]),
   ) as Promise<HardwareProfileResponse>;
 }
@@ -94,6 +99,7 @@ export async function saveInferencePreferences(body: {
   embeddingModel: string | null;
   visionModel: string | null;
   vllmApiKey?: string | null;
+  vllmUrl?: string | null;
 }): Promise<void> {
   await unwrap(
     updatePreferences({
@@ -103,13 +109,14 @@ export async function saveInferencePreferences(body: {
         embeddingModel: body.embeddingModel ?? undefined,
         visionModel: body.visionModel ?? undefined,
         vllmApiKey: body.vllmApiKey ?? undefined,
+        vllmUrl: body.vllmUrl ?? undefined,
       },
-    }),
+    } as Parameters<typeof updatePreferences>[0]),
   );
 }
 
-export async function fetchVllmInstallStatus() {
-  return unwrap(getVllmStatus());
+export async function fetchVllmInstallStatus(url?: string) {
+  return unwrap(getVllmStatus({ query: url?.trim() ? { url: url.trim() } : undefined } as Parameters<typeof getVllmStatus>[0]));
 }
 
 export async function saveCloudProviderConfig(body: { provider: CloudProviderType; apiKey?: string; enabled: boolean }): Promise<void> {
