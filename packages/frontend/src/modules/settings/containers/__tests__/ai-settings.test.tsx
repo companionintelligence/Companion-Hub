@@ -18,6 +18,7 @@ const {
   pinInferenceModel,
   saveCloudProviderConfig,
   ensurePullsStarted,
+  unpinInferenceModel,
 } = vi.hoisted(() => ({
   fetchInferenceOnboardingProfile: vi.fn(),
   fetchInferencePreferences: vi.fn(),
@@ -31,6 +32,7 @@ const {
   pinInferenceModel: vi.fn(),
   saveCloudProviderConfig: vi.fn(),
   ensurePullsStarted: vi.fn(),
+  unpinInferenceModel: vi.fn(),
 }));
 
 vi.mock('@/lib/inference/inference-api', () => ({
@@ -45,6 +47,9 @@ vi.mock('@/lib/inference/inference-api', () => ({
   rescanInferenceHardware,
   pinInferenceModel,
   saveCloudProviderConfig,
+  // ai-settings imports and calls this on the deselection path; without it here that path throws
+  // `unpinInferenceModel is not a function` into handleSave's catch and reports a failed save.
+  unpinInferenceModel,
 }));
 
 vi.mock('@/lib/inference/tracked-models', async (importOriginal) => {
@@ -171,13 +176,24 @@ const profile = {
 
 // `m1` as an LLM the agent can actually default to, plus a second installed model. `modality` is
 // what `isAgentModel` keys off, so without it every role resolves to null regardless of selection.
-const llm = (id: string) => ({
+const llm = (id: string, backend = 'vllm') => ({
   id,
-  backend: 'vllm',
+  backend,
   modality: 'llm',
   displayName: `Model ${id}`,
   runtime: { memoryFootprintMb: 1024 },
   requirements: { diskMb: 1000 },
+});
+
+/** A tracked entry the unpin loop would act on — Ollama-backed, since that is all the Hub pins. */
+const pinnedTracked = (catalogId: string, backend = 'ollama') => ({
+  catalogId,
+  backend,
+  backendModelId: catalogId,
+  state: 'pinned',
+  pinned: true,
+  memoryUsedMb: 1024,
+  requestCount: 0,
 });
 
 /** A profile where the backend reports models installed — what the Hub is actually serving. */
@@ -259,6 +275,43 @@ describe('AiSettingsContainer', () => {
         vllmApiKey: null,
       });
     });
+  });
+
+  it('refetches the profile once per backend switch', async () => {
+    // The real endpoint hands back a fresh object every call. The effect this replaced also depended
+    // on `profile` while its own body called `setProfile`, so each refresh re-armed it and the most
+    // expensive endpoint on the page was refetched without bound for as long as the panel was open.
+    fetchInferenceOnboardingProfile.mockImplementation(async () => ({ ...profile }));
+
+    const user = userEvent.setup();
+    renderAiSettings();
+    await waitFor(() => expect(screen.getByTestId('selected-backend')).toHaveTextContent('vllm'));
+    const before = fetchInferenceOnboardingProfile.mock.calls.length;
+
+    await user.click(screen.getByTestId('select-lemonade'));
+    await waitFor(() => expect(screen.getByTestId('selected-backend')).toHaveTextContent('lemonade'));
+    // Give a runaway loop room to show itself — it managed ~1000 requests per second.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(fetchInferenceOnboardingProfile.mock.calls.length - before).toBe(1);
+  });
+
+  it('re-seeds the selection for the backend it switches to', async () => {
+    // `installedCatalogIds` is scoped to the backend the profile was fetched for, so carrying the
+    // previous backend's ids across a switch leaves everything the new backend serves unticked —
+    // and a save from there acts on a selection describing a backend that is no longer on screen.
+    fetchInferenceOnboardingProfile.mockImplementation(async (backend?: string) =>
+      backend === 'lemonade' ? profileWithInstalled(['m2'], [llm('m2', 'lemonade')]) : profileWithInstalled(['m1']),
+    );
+
+    const user = userEvent.setup();
+    renderAiSettings();
+    await waitFor(() => expect(screen.getByTestId('recommended-model-checkbox-m1')).toBeChecked());
+
+    await user.click(screen.getByTestId('select-lemonade'));
+
+    await waitFor(() => expect(screen.getByTestId('recommended-model-checkbox-m2')).toBeChecked());
+    expect(screen.queryByTestId('recommended-model-checkbox-m1')).not.toBeInTheDocument();
   });
 
   it('keeps runtime models read-only', async () => {
@@ -408,65 +461,89 @@ describe('AiSettingsContainer', () => {
     renderAiSettings();
 
     await waitFor(() => expect(screen.getByTestId('recommended-model-checkbox-m1')).toBeChecked());
-    // The poller fires immediately once a transfer is detected, so no timers are needed here.
-    await waitFor(() => expect(fetchInferenceTrackedModels).toHaveBeenCalledTimes(2));
+    // The poller fires immediately once a transfer is detected, so no timers are needed here. Assert
+    // "polled again", not an exact count — the 2s interval keeps running and pinning the count to 2
+    // fails whenever the suite is slow enough for one more tick to land before the assertion.
+    await waitFor(() => expect(fetchInferenceTrackedModels.mock.calls.length).toBeGreaterThanOrEqual(2));
     expect(screen.getByTestId('recommended-model-checkbox-m2')).toBeChecked();
   });
 
-  it('warns that saving an empty selection clears preferences and unpins models', async () => {
-    fetchInferenceOnboardingProfile.mockResolvedValue(profileWithInstalled(['m1']));
-    fetchInferenceTrackedModels.mockResolvedValue([]);
-    fetchInferencePreferences.mockResolvedValue({ preferredBackend: 'vllm', preferredModel: 'm1' });
+  it('warns that an emptying save unpins every pinned model', async () => {
+    fetchInferenceOnboardingProfile.mockResolvedValue(profileWithInstalled(['o1'], [llm('o1', 'ollama')]));
+    fetchInferenceTrackedModels.mockResolvedValue([pinnedTracked('o1')] as never);
+    fetchInferencePreferences.mockResolvedValue({ preferredBackend: 'ollama' });
 
     const user = userEvent.setup();
     renderAiSettings();
 
-    await waitFor(() => expect(screen.getByTestId('recommended-model-checkbox-m1')).toBeChecked());
-    await user.click(screen.getByTestId('recommended-model-checkbox-m1'));
+    await waitFor(() => expect(screen.getByTestId('recommended-model-checkbox-o1')).toBeChecked());
+    await user.click(screen.getByTestId('recommended-model-checkbox-o1'));
 
     await user.click(screen.getByTestId('ai-settings-save-btn'));
 
     // Still allowed — deselecting everything is a legitimate way to unpin — but the generic
-    // "this restarts your apps" copy gave no hint that it also wipes the agent defaults.
-    expect(screen.getByTestId('ai-settings-confirm-description')).toHaveTextContent(/clears the default chat, embedding and vision models/);
+    // "this restarts your apps" copy gave no hint that the pins go with it.
+    expect(screen.getByTestId('ai-settings-confirm-description')).toHaveTextContent(/unpins every pinned model/);
   });
 
   it('keeps the ordinary confirmation copy when the selection is not being emptied', async () => {
-    fetchInferenceOnboardingProfile.mockResolvedValue(profileWithInstalled(['m1']));
-    fetchInferenceTrackedModels.mockResolvedValue([]);
-    fetchInferencePreferences.mockResolvedValue({ preferredBackend: 'vllm', preferredModel: 'm1' });
+    fetchInferenceOnboardingProfile.mockResolvedValue(profileWithInstalled(['o1'], [llm('o1', 'ollama')]));
+    fetchInferenceTrackedModels.mockResolvedValue([pinnedTracked('o1')] as never);
+    fetchInferencePreferences.mockResolvedValue({ preferredBackend: 'ollama' });
 
     const user = userEvent.setup();
     renderAiSettings();
 
-    await waitFor(() => expect(screen.getByTestId('recommended-model-checkbox-m1')).toBeChecked());
+    await waitFor(() => expect(screen.getByTestId('recommended-model-checkbox-o1')).toBeChecked());
     await user.click(screen.getByTestId('ai-settings-save-btn'));
 
     expect(screen.getByTestId('ai-settings-confirm-description')).toHaveTextContent(/restart your apps that use AI models/);
   });
 
-  it('warns about an emptying save even when the backend reports nothing installed', async () => {
-    // A backend that is down answers the profile endpoint with nothing served, so the selection
-    // empties for a reason that has nothing to do with intent — the case a guard keyed to the
-    // installed list would miss, and the one where saving does the most damage.
-    fetchInferenceOnboardingProfile.mockResolvedValue(profileWithInstalled([]));
-    fetchInferenceTrackedModels.mockResolvedValue([]);
-    fetchInferencePreferences.mockResolvedValue({ preferredBackend: 'vllm', preferredModel: 'm1' });
+  it('warns when the save would unpin models the panel is not even showing', async () => {
+    // The unpin loop is not scoped to the selected backend: on vLLM it still walks the Ollama pins,
+    // which are filtered out of the grid and so have no checkbox the operator could have cleared.
+    fetchInferenceOnboardingProfile.mockResolvedValue(profileWithInstalled([], [llm('v1'), llm('o1', 'ollama')]));
+    fetchInferenceTrackedModels.mockResolvedValue([pinnedTracked('o1')] as never);
+    fetchInferencePreferences.mockResolvedValue({ preferredBackend: 'vllm' });
 
     const user = userEvent.setup();
     renderAiSettings();
 
-    await waitFor(() => expect(screen.getByTestId('recommended-model-checkbox-m1')).not.toBeChecked());
+    await waitFor(() => expect(screen.getByTestId('recommended-model-checkbox-v1')).toBeInTheDocument());
+    expect(screen.queryByTestId('recommended-model-checkbox-o1')).not.toBeInTheDocument();
+
     await user.click(screen.getByTestId('ai-settings-save-btn'));
 
-    expect(screen.getByTestId('ai-settings-confirm-description')).toHaveTextContent(/clears the default chat, embedding and vision models/);
+    expect(screen.getByTestId('ai-settings-confirm-description')).toHaveTextContent(/unpins every pinned model/);
   });
 
-  it('does not warn when an empty selection has no preferences or pins to destroy', async () => {
-    // Nothing stored and nothing pinned: the save clears nothing, so the warning would be a lie.
+  it('does not promise to release a pin the save would leave alone', async () => {
+    // The unpin loop only walks Ollama-backed pins, so a vLLM pin counts toward `pinnedModelIds`
+    // but is never released. Warning about it would describe damage that does not happen.
+    fetchInferenceOnboardingProfile.mockResolvedValue(profileWithInstalled([], [llm('v1')]));
+    fetchInferenceTrackedModels.mockResolvedValue([pinnedTracked('v1', 'vllm')] as never);
+    fetchInferencePreferences.mockResolvedValue({ preferredBackend: 'vllm' });
+
+    const user = userEvent.setup();
+    renderAiSettings();
+
+    // Tracked pins seed as selected, so empty the selection to reach the destructive shape.
+    await waitFor(() => expect(screen.getByTestId('recommended-model-checkbox-v1')).toBeChecked());
+    await user.click(screen.getByTestId('recommended-model-checkbox-v1'));
+
+    await user.click(screen.getByTestId('ai-settings-save-btn'));
+
+    expect(screen.getByTestId('ai-settings-confirm-description')).toHaveTextContent(/restart your apps that use AI models/);
+  });
+
+  it('does not warn when an empty selection has no pins to release', async () => {
+    // Nothing pinned, so the save destroys nothing — and a save cannot clear a stored preference:
+    // `saveInferencePreferences` maps null to undefined and JSON.stringify drops the key. Warning
+    // here would be a lie.
     fetchInferenceOnboardingProfile.mockResolvedValue(profileWithInstalled([]));
     fetchInferenceTrackedModels.mockResolvedValue([]);
-    fetchInferencePreferences.mockResolvedValue({ preferredBackend: 'vllm' });
+    fetchInferencePreferences.mockResolvedValue({ preferredBackend: 'vllm', preferredModel: 'm1' });
 
     const user = userEvent.setup();
     renderAiSettings();
