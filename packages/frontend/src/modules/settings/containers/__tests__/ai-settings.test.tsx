@@ -169,6 +169,26 @@ const profile = {
   },
 };
 
+// `m1` as an LLM the agent can actually default to, plus a second installed model. `modality` is
+// what `isAgentModel` keys off, so without it every role resolves to null regardless of selection.
+const llm = (id: string) => ({
+  id,
+  backend: 'vllm',
+  modality: 'llm',
+  displayName: `Model ${id}`,
+  runtime: { memoryFootprintMb: 1024 },
+  requirements: { diskMb: 1000 },
+});
+
+/** A profile where the backend reports models installed — what the Hub is actually serving. */
+const profileWithInstalled = (installedCatalogIds: string[], models = [llm('m1')]) =>
+  ({
+    ...profile,
+    recommendedModels: models,
+    availableModels: models,
+    installedCatalogIds,
+  }) as never;
+
 function renderAiSettings(initialEntry = '/settings?tab=ai') {
   return render(
     <MemoryRouter initialEntries={[initialEntry]}>
@@ -206,6 +226,15 @@ describe('AiSettingsContainer', () => {
     await waitFor(() => {
       expect(fetchInferenceRuntimeModels).toHaveBeenCalledWith('vllm');
     });
+  });
+
+  it('asks the profile endpoint for the stored backend rather than the hardware recommendation', async () => {
+    // Asked about no backend, the endpoint answers for whatever it recommends — so
+    // `installedCatalogIds` would describe a backend this panel is not showing.
+    renderAiSettings();
+
+    await waitFor(() => expect(screen.getByTestId('selected-backend')).toHaveTextContent('vllm'));
+    expect(fetchInferenceOnboardingProfile).toHaveBeenCalledWith('vllm');
   });
 
   it('persists backend changes on save', async () => {
@@ -330,6 +359,88 @@ describe('AiSettingsContainer', () => {
     });
 
     expect(ensurePullsStarted).not.toHaveBeenCalledWith(['whisper-base'], expect.anything());
+  });
+
+  it('pre-selects models the backend reports installed even when the tracked registry is empty', async () => {
+    // The tracked registry lives in memory in the Hub and is never rebuilt, so it is empty after a
+    // restart and for any vLLM model (which the Hub never pulls). The backend still serves them.
+    fetchInferenceOnboardingProfile.mockResolvedValue(profileWithInstalled(['m1']));
+    fetchInferenceTrackedModels.mockResolvedValue([]);
+
+    renderAiSettings();
+
+    await waitFor(() => expect(screen.getByTestId('recommended-model-checkbox-m1')).toBeChecked());
+  });
+
+  it('saves an installed model as the agent default instead of clearing the stored preference', async () => {
+    fetchInferenceOnboardingProfile.mockResolvedValue(profileWithInstalled(['m1']));
+    fetchInferenceTrackedModels.mockResolvedValue([]);
+
+    const user = userEvent.setup();
+    renderAiSettings();
+
+    await waitFor(() => expect(screen.getByTestId('recommended-model-checkbox-m1')).toBeChecked());
+
+    await user.click(screen.getByTestId('ai-settings-save-btn'));
+    await user.click(screen.getByTestId('ai-settings-confirm-btn'));
+
+    // Seeding from the tracked registry alone left this null, which clears the stored default.
+    await waitFor(() => expect(saveInferencePreferences).toHaveBeenCalledWith(expect.objectContaining({ model: 'm1' })));
+  });
+
+  it('keeps installed models selected while a pull is in progress', async () => {
+    // A tracked transfer starts the poller, which refetches tracked models every few seconds. It
+    // must not rewrite the selection: `m2` is installed but was never pulled by this process.
+    fetchInferenceOnboardingProfile.mockResolvedValue(profileWithInstalled(['m1', 'm2'], [llm('m1'), llm('m2')]));
+    fetchInferenceTrackedModels.mockResolvedValue([
+      {
+        catalogId: 'm1',
+        backend: 'vllm',
+        backendModelId: 'model-1',
+        state: 'pulling',
+        pinned: false,
+        pullProgress: 42,
+        memoryUsedMb: 1024,
+        requestCount: 0,
+      },
+    ] as never);
+
+    renderAiSettings();
+
+    await waitFor(() => expect(screen.getByTestId('recommended-model-checkbox-m1')).toBeChecked());
+    // The poller fires immediately once a transfer is detected, so no timers are needed here.
+    await waitFor(() => expect(fetchInferenceTrackedModels).toHaveBeenCalledTimes(2));
+    expect(screen.getByTestId('recommended-model-checkbox-m2')).toBeChecked();
+  });
+
+  it('warns that saving an empty selection clears preferences and unpins models', async () => {
+    fetchInferenceOnboardingProfile.mockResolvedValue(profileWithInstalled(['m1']));
+    fetchInferenceTrackedModels.mockResolvedValue([]);
+
+    const user = userEvent.setup();
+    renderAiSettings();
+
+    await waitFor(() => expect(screen.getByTestId('recommended-model-checkbox-m1')).toBeChecked());
+    await user.click(screen.getByTestId('recommended-model-checkbox-m1'));
+
+    await user.click(screen.getByTestId('ai-settings-save-btn'));
+
+    // Still allowed — deselecting everything is a legitimate way to unpin — but the generic
+    // "this restarts your apps" copy gave no hint that it also wipes the agent defaults.
+    expect(screen.getByTestId('ai-settings-confirm-description')).toHaveTextContent(/clears the default chat, embedding and vision models/);
+  });
+
+  it('keeps the ordinary confirmation copy when the selection is not being emptied', async () => {
+    fetchInferenceOnboardingProfile.mockResolvedValue(profileWithInstalled(['m1']));
+    fetchInferenceTrackedModels.mockResolvedValue([]);
+
+    const user = userEvent.setup();
+    renderAiSettings();
+
+    await waitFor(() => expect(screen.getByTestId('recommended-model-checkbox-m1')).toBeChecked());
+    await user.click(screen.getByTestId('ai-settings-save-btn'));
+
+    expect(screen.getByTestId('ai-settings-confirm-description')).toHaveTextContent(/restart your apps that use AI models/);
   });
 
   it('shows rescan error toast and skips profile refresh when rescan returns non-OK', async () => {

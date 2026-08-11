@@ -43,6 +43,23 @@ const isAgentModel = (model: CuratedModel) => model.modality === 'llm';
 const isEmbeddingModel = (model: CuratedModel) => model.modality === 'embedding';
 const isVisionModel = (model: CuratedModel) => model.modality === 'llm' && model.metadata?.capabilities?.vision === true;
 
+// Tracked states that mean "this model is on its way in, or already here".
+const TRACKED_SELECTED_STATES = ['pulling', 'pulled', 'loading', 'loaded', 'pinned'];
+
+// The models a save for `backend` actually acts on: same-backend models, plus Ollama embeddings
+// (chat on vLLM still embeds through Ollama). Shared by the save itself and by the confirmation
+// copy, so the dialog can never describe a different outcome than the one that will happen.
+const isCompatibleWithBackend = (model: CuratedModel, backend: InferenceBackendType) =>
+  model.backend === backend || (model.backend === EMBEDDING_INFERENCE_BACKEND && isEmbeddingModel(model));
+
+const compatibleSelection = (profile: HardwareProfileResponse, backend: InferenceBackendType, selectedIds: string[]): string[] => {
+  const availableModelById = new Map(profile.availableModels.map((model) => [model.id, model]));
+  return selectedIds.filter((modelId) => {
+    const model = availableModelById.get(modelId);
+    return model ? isCompatibleWithBackend(model, backend) : false;
+  });
+};
+
 // Pick the preferred model for a role from the user's selection, preferring a recommended model.
 // Returns null (which clears the stored preference) when no selected model fits the role.
 const resolvePreferredModelId = (
@@ -82,23 +99,38 @@ export const AiSettingsContainer = () => {
   const [checkingVllm, setCheckingVllm] = useState(false);
   const suppressBackendEffectRef = useRef(true);
 
+  // Records the transfer/pin state the Hub is tracking. Deliberately does NOT touch the selection:
+  // the pull poller below lands here every few seconds, and rewriting the checkboxes from under the
+  // operator would revert anything they ticked while a transfer was running. Seeding is a separate,
+  // explicit step — see `seedSelectionFromInstalled`.
   const applyTrackedModels = useCallback((tracked: TrackedModel[]) => {
-    const trackedById = Object.fromEntries(tracked.map((model) => [model.catalogId, model]));
-    const pinned = new Set<string>();
-    const selectedIds: string[] = [];
+    setTrackedModels(Object.fromEntries(tracked.map((model) => [model.catalogId, model])));
+    setPinnedModelIds(new Set(tracked.filter((model) => model.state === 'pinned').map((model) => model.catalogId)));
+  }, []);
 
+  // Seed the checkboxes from what the backend actually serves — the same source onboarding uses —
+  // then add anything this process is mid-transfer on.
+  //
+  // The tracked registry can only ever ADD here, never define the set. It lives in a Map in the Hub
+  // process and nothing rebuilds it at startup, so seeding from it alone showed every installed
+  // model unticked after a restart (and for vLLM models, which the Hub never pulls at all). Saving
+  // from that state cleared the stored chat/embedding/vision defaults and unpinned every model.
+  const seedSelectionFromInstalled = useCallback((data: HardwareProfileResponse, backend: InferenceBackendType, tracked: TrackedModel[]) => {
+    const installed = new Set(data.installedCatalogIds ?? []);
+    const selected = new Set(
+      data.availableModels
+        .filter((model) => {
+          if (!installed.has(model.id)) return false;
+          if (model.backend === backend) return true;
+          // Chat on vLLM still embeds through Ollama, so its embedding models stay in scope.
+          return backend === 'vllm' && model.backend === EMBEDDING_INFERENCE_BACKEND && isEmbeddingModel(model);
+        })
+        .map((model) => model.id),
+    );
     for (const model of tracked) {
-      if (['pulling', 'pulled', 'loading', 'loaded', 'pinned'].includes(model.state)) {
-        selectedIds.push(model.catalogId);
-      }
-      if (model.state === 'pinned') {
-        pinned.add(model.catalogId);
-      }
+      if (TRACKED_SELECTED_STATES.includes(model.state)) selected.add(model.catalogId);
     }
-
-    setTrackedModels(trackedById);
-    setPinnedModelIds(pinned);
-    setSelectedModelIds(selectedIds);
+    setSelectedModelIds([...selected]);
   }, []);
 
   const fetchTrackedModels = useCallback(async () => {
@@ -125,22 +157,26 @@ export const AiSettingsContainer = () => {
     if (!isRescan) setLoading(true);
     setError(null);
     try {
-      const data = await fetchInferenceOnboardingProfile(backendOverride);
+      // Preferences first. The profile endpoint computes `installedCatalogIds` for whichever backend
+      // it is asked about and falls back to the *hardware recommendation* when asked about none —
+      // so fetching before the operator's stored backend is known returns the installed set for a
+      // backend this panel may not be showing. That is what left the model checkboxes describing one
+      // backend while the rest of the screen acted on another. Never throws; returns null instead.
+      const prefData = await fetchInferencePreferences();
+      if (prefData?.preferredVllmApiKey) {
+        setVllmApiKey(prefData.preferredVllmApiKey);
+      }
+      const requestedBackend = backendOverride ?? prefData?.preferredBackend ?? undefined;
+      const data = await fetchInferenceOnboardingProfile(requestedBackend);
       setProfile(data);
 
-      let preferredBackend = backendOverride ?? data.backends.recommended;
-      const prefData = await fetchInferencePreferences();
-      if (prefData) {
-        preferredBackend = backendOverride ?? prefData.preferredBackend ?? data.backends.recommended;
-        if (prefData.preferredVllmApiKey) {
-          setVllmApiKey(prefData.preferredVllmApiKey);
-        }
-      }
+      const preferredBackend = requestedBackend ?? data.backends.recommended;
       // fetchProfile handles initial runtime model fetch to avoid duplicate effect calls.
       suppressBackendEffectRef.current = true;
       setSelectedBackend(preferredBackend);
 
-      await fetchTrackedModels();
+      const tracked = await fetchTrackedModels();
+      seedSelectionFromInstalled(data, preferredBackend, tracked);
       await fetchRuntimeModels(preferredBackend);
       void checkOllamaStatus();
       if (preferredBackend === 'vllm') {
@@ -244,11 +280,7 @@ export const AiSettingsContainer = () => {
       }
 
       const availableModelById = new Map(profile.availableModels.map((model) => [model.id, model]));
-      const compatibleSelectedModelIds = selectedModelIds.filter((modelId) => {
-        const model = availableModelById.get(modelId);
-        if (!model) return false;
-        return model.backend === selectedBackend || (model.backend === EMBEDDING_INFERENCE_BACKEND && isEmbeddingModel(model));
-      });
+      const compatibleSelectedModelIds = compatibleSelection(profile, selectedBackend, selectedModelIds);
 
       const preferredModel = resolvePreferredModelId(profile, selectedBackend, isAgentModel, compatibleSelectedModelIds);
       const preferredEmbeddingModel = resolvePreferredModelId(profile, EMBEDDING_INFERENCE_BACKEND, isEmbeddingModel, compatibleSelectedModelIds);
@@ -372,6 +404,13 @@ export const AiSettingsContainer = () => {
   const availableStorageMb = profile.resourceEstimate.availableDiskMb ?? 0;
   const availableMemoryMb = profile.resourceEstimate.availableMemoryMb ?? 0;
   const installedCatalogIds = profile.installedCatalogIds ?? [];
+
+  // Saving with nothing selected for the active backend is the destructive shape: every role
+  // resolves to null, which clears the stored chat/embedding/vision defaults, and every pinned
+  // model is unpinned. Legitimate when meant — so it stays possible — but the generic "this will
+  // restart your apps" copy gives no hint of it, which is how it got triggered by accident.
+  const compatibleInstalledCount = backendAvailableModels.filter((model) => installedCatalogIds.includes(model.id)).length;
+  const saveClearsModelPreferences = compatibleSelection(profile, selectedBackend, selectedModelIds).length === 0 && compatibleInstalledCount > 0;
 
   return (
     <div className="space-y-5">
@@ -546,9 +585,13 @@ export const AiSettingsContainer = () => {
       <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>
         <DialogContent size="sm">
           <DialogHeader>
-            <DialogTitle>{t('AI_SETTINGS_CONFIRM_TITLE')}</DialogTitle>
+            <DialogTitle>{saveClearsModelPreferences ? t('AI_SETTINGS_CONFIRM_CLEAR_TITLE') : t('AI_SETTINGS_CONFIRM_TITLE')}</DialogTitle>
           </DialogHeader>
-          <DialogDescription>{t('AI_SETTINGS_CONFIRM_DESCRIPTION')}</DialogDescription>
+          <DialogDescription data-testid="ai-settings-confirm-description">
+            {saveClearsModelPreferences
+              ? t('AI_SETTINGS_CONFIRM_CLEAR_DESCRIPTION', { count: compatibleInstalledCount })
+              : t('AI_SETTINGS_CONFIRM_DESCRIPTION')}
+          </DialogDescription>
           <DialogFooter>
             <Button variant="outline" onClick={() => setConfirmOpen(false)} data-testid="ai-settings-cancel-btn">
               {t('COMMON_CANCEL')}
