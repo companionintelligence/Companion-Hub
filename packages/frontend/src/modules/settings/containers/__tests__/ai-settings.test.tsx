@@ -416,6 +416,7 @@ describe('AiSettingsContainer', () => {
   it('warns that saving an empty selection clears preferences and unpins models', async () => {
     fetchInferenceOnboardingProfile.mockResolvedValue(profileWithInstalled(['m1']));
     fetchInferenceTrackedModels.mockResolvedValue([]);
+    fetchInferencePreferences.mockResolvedValue({ preferredBackend: 'vllm', preferredModel: 'm1' });
 
     const user = userEvent.setup();
     renderAiSettings();
@@ -433,11 +434,44 @@ describe('AiSettingsContainer', () => {
   it('keeps the ordinary confirmation copy when the selection is not being emptied', async () => {
     fetchInferenceOnboardingProfile.mockResolvedValue(profileWithInstalled(['m1']));
     fetchInferenceTrackedModels.mockResolvedValue([]);
+    fetchInferencePreferences.mockResolvedValue({ preferredBackend: 'vllm', preferredModel: 'm1' });
 
     const user = userEvent.setup();
     renderAiSettings();
 
     await waitFor(() => expect(screen.getByTestId('recommended-model-checkbox-m1')).toBeChecked());
+    await user.click(screen.getByTestId('ai-settings-save-btn'));
+
+    expect(screen.getByTestId('ai-settings-confirm-description')).toHaveTextContent(/restart your apps that use AI models/);
+  });
+
+  it('warns about an emptying save even when the backend reports nothing installed', async () => {
+    // A backend that is down answers the profile endpoint with nothing served, so the selection
+    // empties for a reason that has nothing to do with intent — the case a guard keyed to the
+    // installed list would miss, and the one where saving does the most damage.
+    fetchInferenceOnboardingProfile.mockResolvedValue(profileWithInstalled([]));
+    fetchInferenceTrackedModels.mockResolvedValue([]);
+    fetchInferencePreferences.mockResolvedValue({ preferredBackend: 'vllm', preferredModel: 'm1' });
+
+    const user = userEvent.setup();
+    renderAiSettings();
+
+    await waitFor(() => expect(screen.getByTestId('recommended-model-checkbox-m1')).not.toBeChecked());
+    await user.click(screen.getByTestId('ai-settings-save-btn'));
+
+    expect(screen.getByTestId('ai-settings-confirm-description')).toHaveTextContent(/clears the default chat, embedding and vision models/);
+  });
+
+  it('does not warn when an empty selection has no preferences or pins to destroy', async () => {
+    // Nothing stored and nothing pinned: the save clears nothing, so the warning would be a lie.
+    fetchInferenceOnboardingProfile.mockResolvedValue(profileWithInstalled([]));
+    fetchInferenceTrackedModels.mockResolvedValue([]);
+    fetchInferencePreferences.mockResolvedValue({ preferredBackend: 'vllm' });
+
+    const user = userEvent.setup();
+    renderAiSettings();
+
+    await waitFor(() => expect(screen.getByTestId('recommended-model-checkbox-m1')).not.toBeChecked());
     await user.click(screen.getByTestId('ai-settings-save-btn'));
 
     expect(screen.getByTestId('ai-settings-confirm-description')).toHaveTextContent(/restart your apps that use AI models/);

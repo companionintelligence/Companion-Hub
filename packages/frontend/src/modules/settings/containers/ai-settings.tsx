@@ -97,6 +97,9 @@ export const AiSettingsContainer = () => {
   const [vllmStatus, setVllmStatus] = useState<VllmStatus | null>(null);
   const [checkingOllama, setCheckingOllama] = useState(false);
   const [checkingVllm, setCheckingVllm] = useState(false);
+  // Whether any agent default is currently stored — i.e. whether a save that resolves the roles to
+  // null would actually destroy something. Refreshed by `fetchProfile`, which a save re-runs.
+  const [hasStoredModelPreference, setHasStoredModelPreference] = useState(false);
   const suppressBackendEffectRef = useRef(true);
 
   // Records the transfer/pin state the Hub is tracking. Deliberately does NOT touch the selection:
@@ -117,15 +120,10 @@ export const AiSettingsContainer = () => {
   // from that state cleared the stored chat/embedding/vision defaults and unpinned every model.
   const seedSelectionFromInstalled = useCallback((data: HardwareProfileResponse, backend: InferenceBackendType, tracked: TrackedModel[]) => {
     const installed = new Set(data.installedCatalogIds ?? []);
+    // Same predicate the save uses. Seeding on a narrower rule would leave a model that the save
+    // still acts on permanently unselected, which is the destructive shape this fix exists to close.
     const selected = new Set(
-      data.availableModels
-        .filter((model) => {
-          if (!installed.has(model.id)) return false;
-          if (model.backend === backend) return true;
-          // Chat on vLLM still embeds through Ollama, so its embedding models stay in scope.
-          return backend === 'vllm' && model.backend === EMBEDDING_INFERENCE_BACKEND && isEmbeddingModel(model);
-        })
-        .map((model) => model.id),
+      data.availableModels.filter((model) => installed.has(model.id) && isCompatibleWithBackend(model, backend)).map((model) => model.id),
     );
     for (const model of tracked) {
       if (TRACKED_SELECTED_STATES.includes(model.state)) selected.add(model.catalogId);
@@ -166,6 +164,7 @@ export const AiSettingsContainer = () => {
       if (prefData?.preferredVllmApiKey) {
         setVllmApiKey(prefData.preferredVllmApiKey);
       }
+      setHasStoredModelPreference(Boolean(prefData?.preferredModel || prefData?.preferredEmbeddingModel || prefData?.preferredVisionModel));
       const requestedBackend = backendOverride ?? prefData?.preferredBackend ?? undefined;
       const data = await fetchInferenceOnboardingProfile(requestedBackend);
       setProfile(data);
@@ -394,12 +393,8 @@ export const AiSettingsContainer = () => {
   }
 
   const isInsufficient = profile.tier === 'insufficient';
-  const backendCompatibleRecommendedModels = profile.recommendedModels.filter(
-    (model) => model.backend === selectedBackend || (model.backend === EMBEDDING_INFERENCE_BACKEND && isEmbeddingModel(model)),
-  );
-  const backendAvailableModels = profile.availableModels.filter(
-    (model) => model.backend === selectedBackend || (model.backend === EMBEDDING_INFERENCE_BACKEND && isEmbeddingModel(model)),
-  );
+  const backendCompatibleRecommendedModels = profile.recommendedModels.filter((model) => isCompatibleWithBackend(model, selectedBackend));
+  const backendAvailableModels = profile.availableModels.filter((model) => isCompatibleWithBackend(model, selectedBackend));
   const selectedModels = backendAvailableModels.filter((model) => selectedModelIds.includes(model.id));
   const availableStorageMb = profile.resourceEstimate.availableDiskMb ?? 0;
   const availableMemoryMb = profile.resourceEstimate.availableMemoryMb ?? 0;
@@ -409,8 +404,15 @@ export const AiSettingsContainer = () => {
   // resolves to null, which clears the stored chat/embedding/vision defaults, and every pinned
   // model is unpinned. Legitimate when meant — so it stays possible — but the generic "this will
   // restart your apps" copy gives no hint of it, which is how it got triggered by accident.
-  const compatibleInstalledCount = backendAvailableModels.filter((model) => installedCatalogIds.includes(model.id)).length;
-  const saveClearsModelPreferences = compatibleSelection(profile, selectedBackend, selectedModelIds).length === 0 && compatibleInstalledCount > 0;
+  //
+  // Gated on there being something to actually lose, not on models being installed. Keying it to
+  // the installed list would go quiet in precisely the case that needs it most: a backend that is
+  // down answers the profile endpoint with nothing served, so the selection empties for a reason
+  // that has nothing to do with intent. Stored preferences and pins are the things a save destroys,
+  // and `pinnedModelIds` is the same set the unpin loop walks, so this cannot warn about a pin the
+  // save would not touch — nor stay silent about one it would.
+  const saveClearsModelPreferences =
+    compatibleSelection(profile, selectedBackend, selectedModelIds).length === 0 && (hasStoredModelPreference || pinnedModelIds.size > 0);
 
   return (
     <div className="space-y-5">
@@ -588,9 +590,7 @@ export const AiSettingsContainer = () => {
             <DialogTitle>{saveClearsModelPreferences ? t('AI_SETTINGS_CONFIRM_CLEAR_TITLE') : t('AI_SETTINGS_CONFIRM_TITLE')}</DialogTitle>
           </DialogHeader>
           <DialogDescription data-testid="ai-settings-confirm-description">
-            {saveClearsModelPreferences
-              ? t('AI_SETTINGS_CONFIRM_CLEAR_DESCRIPTION', { count: compatibleInstalledCount })
-              : t('AI_SETTINGS_CONFIRM_DESCRIPTION')}
+            {saveClearsModelPreferences ? t('AI_SETTINGS_CONFIRM_CLEAR_DESCRIPTION') : t('AI_SETTINGS_CONFIRM_DESCRIPTION')}
           </DialogDescription>
           <DialogFooter>
             <Button variant="outline" onClick={() => setConfirmOpen(false)} data-testid="ai-settings-cancel-btn">
