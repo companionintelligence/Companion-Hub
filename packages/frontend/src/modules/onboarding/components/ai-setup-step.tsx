@@ -164,10 +164,14 @@ export const AiSetupStep = ({
   const fetchProfile = async (isRescan = false, backendOverride?: InferenceBackendType) => {
     if (!isRescan) setLoading(true);
     setError(null);
-    profileRequestId.current += 1;
+    const requestId = ++profileRequestId.current;
     try {
       const backend = backendOverride ?? selectedBackend;
       const data = await fetchInferenceOnboardingProfile(backend);
+      // Superseded: a rescan that started before a backend switch but answers after it would push
+      // `backends.recommended` back over the backend the operator just picked, and reset their
+      // selection to that backend's defaults.
+      if (profileRequestId.current !== requestId) return;
       setProfile(data);
       const resolvedBackend = backendOverride ?? data.backends.recommended;
       setSelectedBackend(resolvedBackend);
@@ -175,8 +179,14 @@ export const AiSetupStep = ({
       setSelectedModelIds(defaultSelected);
       setPreferredModelId(getDefaultPreferredModelId(data, resolvedBackend, defaultSelected));
     } catch (e) {
+      // Same rule for the failure path: a newer request is already in flight and may well succeed,
+      // so raising the error screen on its behalf would discard a setup that is about to be fine.
+      if (profileRequestId.current !== requestId) return;
       setError((e as Error).message);
     } finally {
+      // Deliberately unguarded: `handleSelectBackend` bumps the request id without owning these
+      // flags, so skipping the clear when superseded would strand the spinner with nothing left to
+      // stop it. Clearing a beat early is cosmetic; a spinner that never stops is not.
       if (!isRescan) setLoading(false);
       setRescanning(false);
     }
@@ -311,15 +321,20 @@ export const AiSetupStep = ({
     }
 
     setSelectedBackend(backend);
-    profileRequestId.current += 1;
+    const requestId = ++profileRequestId.current;
     try {
       const data = await fetchInferenceOnboardingProfile(backend);
-      setProfile(data);
-      const defaultSelected = getDefaultSelectedModelIds(data, backend);
-      setSelectedModelIds(defaultSelected);
-      setPreferredModelId(getDefaultPreferredModelId(data, backend, defaultSelected));
+      // `setSelectedBackend` above is synchronous, so two quick switches already end on the right
+      // backend — but the slower fetch can still answer last and leave `profile` (and the selection
+      // derived from it) describing the backend the operator switched away from.
+      if (profileRequestId.current === requestId) {
+        setProfile(data);
+        const defaultSelected = getDefaultSelectedModelIds(data, backend);
+        setSelectedModelIds(defaultSelected);
+        setPreferredModelId(getDefaultPreferredModelId(data, backend, defaultSelected));
+      }
     } catch (e) {
-      setError((e as Error).message);
+      if (profileRequestId.current === requestId) setError((e as Error).message);
     }
     if (backend === 'vllm') {
       void checkVllmStatus();

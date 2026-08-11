@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { AiSetupStep } from '../ai-setup-step';
@@ -634,6 +634,100 @@ describe('AiSetupStep', () => {
 
     await waitFor(() => expect(fetchVllmInstallStatus).toHaveBeenCalledTimes(2));
     expect(screen.queryByTestId('ai-setup-error')).not.toBeInTheDocument();
+  });
+
+  it('does not let a slow rescan snap the backend away from the one just picked', async () => {
+    api.profile = { ...highTierProfile, backends: { ...highTierProfile.backends, recommended: 'ollama' } };
+    api.vllm = vllmReady;
+
+    const user = userEvent.setup();
+    renderStep();
+    await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
+
+    // Hold the rescan's profile fetch open so the backend switch below answers first.
+    let release: (() => void) | undefined;
+    fetchInferenceOnboardingProfile.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          release = () => resolve(api.profile);
+        }),
+    );
+    await user.click(screen.getByTestId('rescan-btn'));
+    await waitFor(() => expect(release).toBeDefined());
+
+    await user.click(screen.getByTestId('backend-option-vllm'));
+    await waitFor(() => expect(screen.getByText('vLLM detected')).toBeInTheDocument());
+
+    release?.();
+    // `rescanning` clears in the same `finally` that follows the discarded write, so an enabled
+    // Rescan button is proof the late answer has been fully processed.
+    await waitFor(() => expect(screen.getByTestId('rescan-btn')).not.toBeDisabled());
+
+    // That answer recommends Ollama. Applying it would drag the operator off the backend they
+    // picked while it was in flight, and reset their models to Ollama's defaults.
+    expect(screen.getByText('vLLM detected')).toBeInTheDocument();
+  });
+
+  it('does not let a superseded backend switch overwrite the profile with the abandoned backend', async () => {
+    api.profile = highTierProfile;
+
+    const user = userEvent.setup();
+    renderStep();
+    await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
+    const ollamaModel = () => screen.getByTestId('model-checkbox-phi-4-mini') as HTMLInputElement;
+    await waitFor(() => expect(ollamaModel().checked).toBe(true));
+
+    // Switching to vLLM hangs; the operator changes their mind before it answers.
+    let release: (() => void) | undefined;
+    fetchInferenceOnboardingProfile.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          release = () => resolve(vllmProfile(['qwen3-4b-instruct-vllm']));
+        }),
+    );
+    await user.click(screen.getByTestId('backend-option-vllm'));
+    await waitFor(() => expect(release).toBeDefined());
+
+    await user.click(screen.getByTestId('backend-option-ollama'));
+    await waitFor(() => expect(ollamaModel().checked).toBe(true));
+
+    await act(async () => {
+      release?.();
+    });
+
+    // The abandoned vLLM answer must not land: it would leave `profile` — and the selection
+    // derived from it — describing a backend the operator is no longer on.
+    expect(ollamaModel().checked).toBe(true);
+  });
+
+  it('does not raise the error screen for a superseded profile request that failed', async () => {
+    api.profile = { ...highTierProfile, backends: { ...highTierProfile.backends, recommended: 'ollama' } };
+    api.vllm = vllmReady;
+
+    const user = userEvent.setup();
+    renderStep();
+    await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
+
+    let fail: (() => void) | undefined;
+    fetchInferenceOnboardingProfile.mockImplementationOnce(
+      () =>
+        new Promise((_resolve, reject) => {
+          fail = () => reject(new Error('Network error'));
+        }),
+    );
+    await user.click(screen.getByTestId('rescan-btn'));
+    await waitFor(() => expect(fail).toBeDefined());
+
+    await user.click(screen.getByTestId('backend-option-vllm'));
+    await waitFor(() => expect(screen.getByText('vLLM detected')).toBeInTheDocument());
+
+    fail?.();
+    await waitFor(() => expect(screen.getByTestId('rescan-btn')).not.toBeDisabled());
+
+    // The switch that superseded it already succeeded, so the step is fine — tearing it down over
+    // the older request's failure would discard a working setup.
+    expect(screen.queryByTestId('ai-setup-error')).not.toBeInTheDocument();
+    expect(screen.getByText('vLLM detected')).toBeInTheDocument();
   });
 
   it('allows toggling model selection', async () => {
