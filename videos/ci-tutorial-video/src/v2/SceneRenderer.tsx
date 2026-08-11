@@ -4,6 +4,7 @@ import {ScreenCarousel, Screen} from '../components/ScreenCarousel';
 import {CaptionBar} from '../components/CaptionBar';
 import {IntroScene} from '../scenes/IntroScene';
 import {DiagramScene} from '../scenes/DiagramScene';
+import {Shot01Scene} from '../scenes/Shot01Scene';
 import {OutroScene} from '../scenes/OutroScene';
 import {TallyScene} from '../scenes/TallyScene';
 import {SupportTicketStub} from '../components/gags/SupportTicketStub';
@@ -41,8 +42,35 @@ const GagOverlay: React.FC<{scene: V2Scene}> = ({scene}) => {
   }
 };
 
+/**
+ * Scenes rendered in the "shot-01" treatment (illustrated device, text below
+ * it) instead of the default carousel + lower-third. Scoped deliberately: the
+ * rest of the film still uses `PhoneFrame`/`ScreenFrame`, so this list is the
+ * whole blast radius of the format change.
+ */
+const SHOT01_SCENES = new Set(['c2-portal-signup']);
+
 /** Maps one v2 scene to its on-screen visual + caption + gag. */
 export const SceneRenderer: React.FC<{scene: V2Scene}> = ({scene}) => {
+  // Unconditional — hooks cannot sit behind the shot-01 branch below.
+  const fmt = useFormat();
+
+  if (SHOT01_SCENES.has(scene.id) && scene.screens.length > 0) {
+    // Each scene lists a browser shot and a phone shot; take the one this
+    // format frames, falling back to the first if only one was captured.
+    const want = fmt.isPortrait ? 'phone' : 'browser';
+    const pick =
+      scene.screens.find((s) => (s.frame ?? 'browser') === want) ?? scene.screens[0];
+    return (
+      <Shot01Scene
+        src={`screens/${pick.shotId}.png`}
+        url={pick.url}
+        caption={scene.caption}
+        step={stepFor(scene)}
+      />
+    );
+  }
+
   switch (scene.kind) {
     case 'intro':
       return <IntroScene tagline={scene.caption} />;
