@@ -57,13 +57,21 @@ export class InferenceController {
   ) {}
 
   private getRecommendedBackend(profile: HardwareProfile): InferenceBackendType {
-    // AMD GPUs (including the Strix Halo APU) always recommend Ollama, whether or not ROCm is
-    // ready: its official image covers both cases — the `:rocm` tag when /dev/kfd passthrough
-    // works, and the default tag (which bundles a Vulkan/RADV ggml backend that auto-activates via
-    // /dev/dri) as the fallback — see OllamaBackend.getDockerImage()/.getComposeConfig(). vLLM has
-    // no reliably maintained ROCm image for this hardware — see VllmBackend.getComposeConfig(),
-    // which declines AMD outright rather than mount devices into an image that can't use them.
-    return profile.npu.available ? 'lemonade' : profile.gpu.vendor === 'nvidia' && profile.gpu.runtimeAvailable ? 'vllm' : 'ollama';
+    // NVIDIA with a working container GPU runtime → Hub-managed vLLM compose.
+    if (profile.gpu.vendor === 'nvidia' && profile.gpu.runtimeAvailable) return 'vllm';
+    // NPU boxes (e.g. Intel) → Lemonade.
+    if (profile.npu.available) return 'lemonade';
+    // AMD Strix Halo / unified-memory APUs: default to host-managed vLLM
+    // (kyuz0/vllm-therock-gfx1151 via ~/bin/start-vllm-strix-halo.sh). Hub compose
+    // still cannot ship a stable gfx1151 ROCm image — see VllmBackend.getComposeConfig()
+    // — but CI-OS's appliance path is host :8000 + apps on host.docker.internal.
+    // Operators can still force Ollama by setting preferredBackend='ollama'.
+    if (profile.gpu.vendor === 'amd' && profile.gpu.unifiedMemory) {
+      const prefs = this.configurationService.getInferencePreferences();
+      if (prefs.preferredBackend === 'ollama') return 'ollama';
+      return 'vllm';
+    }
+    return 'ollama';
   }
 
   private getOnboardingTier(profile: HardwareProfile, recommendedBackend: InferenceBackendType): HardwareTier {
@@ -423,8 +431,10 @@ export class InferenceController {
       endpointUrl,
       displayEndpoint,
       error: ready ? undefined : health.error,
-      remediationCommand: ready ? undefined : 'vllm serve Qwen/Qwen2.5-7B-Instruct --host 0.0.0.0 --port 8000 --api-key YOUR_KEY',
-      hint: ready ? undefined : 'Run vLLM on the host machine (not inside Docker). Hub reaches it via host.docker.internal:8000.',
+      remediationCommand: ready ? undefined : '~/bin/start-vllm-strix-halo.sh  # or: ~/bin/start-vllm-qwen36-moe.sh',
+      hint: ready
+        ? undefined
+        : 'On Strix Halo, start host vLLM (kyuz0/vllm-therock-gfx1151) — Hub compose cannot ship gfx1151 ROCm. Apps use host.docker.internal:8000.',
     };
   }
 

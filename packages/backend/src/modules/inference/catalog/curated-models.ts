@@ -204,6 +204,7 @@ const MOE_ACTIVE_PARAMS_B: Record<string, number> = {
   inkling: 41, // Inkling — 975B-A41B sparse MoE (Thinking Machines)
   'gemma4-26b': 3.8, // Gemma 4 26B — 25.2B-A3.8B MoE (confirmed 2026-07-27 re-audit; was missing before)
   'qwen3-6-35b': 3, // Qwen 3.6 35B — 36B-A3B MoE (confirmed 2026-07-27 re-audit; was missing before)
+  'qwen3-6-35b-a3b-awq-vllm': 3, // cyankiwi AWQ of Qwen3.6-35B-A3B — Strix Halo host-vLLM default
   'gemma4-26b-think': 3.8, // Gemma 4 26B Think — 25.2B-A3.8B MoE, community thinking-mode variant
   'qwen3-coder-30b-lemonade': 3, // Qwen3-Coder-30B-A3B (Lemonade) — same 30B-A3B MoE arch as qwen3-30b above
   'qwen3-coder-30b-vllm': 3, // Qwen3-Coder-30B-A3B (vLLM) — same 30B-A3B MoE arch
@@ -333,7 +334,8 @@ const lemonadeLlms: CuratedModel[] = decodeToonTable(LEMONADE_LLM_TOON, 'llms').
 // specific serving setups, and none of these bf16/MXFP4 checkpoints were re-verified under vLLM.
 // The extra trailing `quant` column names the served precision (see buildLlmModel).
 const VLLM_LLM_TOON = `
-llms[8|]{id,backendModelId,name,purpose,params,gb,tier,ctxK,creator,intel,agentic,reason,vision,tools,audio,tps,ttft,e2e,quant}:
+llms[9|]{id,backendModelId,name,purpose,params,gb,tier,ctxK,creator,intel,agentic,reason,vision,tools,audio,tps,ttft,e2e,quant}:
+  qwen3-6-35b-a3b-awq-vllm|cyankiwi/Qwen3.6-35B-A3B-AWQ-4bit|Qwen 3.6 35B-A3B AWQ (vLLM)|coding|35|25|medium|262|Alibaba|31.5|52.5|1|1|1|0||||awq
   qwen3-4b-instruct-vllm|Qwen/Qwen3-4B-Instruct-2507|Qwen 3 4B Instruct (vLLM)|general|4|8.1|low|262|Alibaba|||0|0|1|0||||bf16
   qwen3-8b-vllm|Qwen/Qwen3-8B|Qwen 3 8B (vLLM)|general|8|16.4|medium|32|Alibaba|||1|0|1|0||||bf16
   qwen3-14b-vllm|Qwen/Qwen3-14B|Qwen 3 14B (vLLM)|general|15|29.6|high|32|Alibaba|||1|0|1|0||||bf16
