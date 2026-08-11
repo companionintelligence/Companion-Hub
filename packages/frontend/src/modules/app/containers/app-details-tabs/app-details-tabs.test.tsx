@@ -23,6 +23,10 @@ vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
 
 vi.mock('@ci-hub/common/schemas', () => ({
   CURRENT_SCHEMA_VERSION: 5,
+  appPrivacyState: (privacy?: { collects: unknown[] } | null) => {
+    if (!privacy) return 'undeclared';
+    return privacy.collects.length === 0 ? 'no_collection' : 'collects';
+  },
 }));
 
 vi.mock('../../components/app-description-editor/app-description-editor', () => ({
