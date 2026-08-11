@@ -62,8 +62,8 @@ Make the **Re-check** button complete the flow the product documents. `ONBOARDIN
 
 | Check | Result |
 |-------|--------|
-| `ai-setup-step.test.tsx` | 55 passed |
-| `src/modules/onboarding` + `src/modules/settings` | 32 files, 240 passed |
+| `ai-setup-step.test.tsx` | 58 passed |
+| `src/modules/onboarding` + `src/modules/settings` | 32 files, 243 passed |
 | `bin/agent-validate-shift` | `lint:ci` ✓ `tsc` ✓ `test` ✓ |
 | App run | dev server + live backend; `/onboarding`, `/settings/ai` → 200, no SSR errors |
 
@@ -78,8 +78,22 @@ implementation and confirming the expected failure:
 | `keeps the step usable when the profile refresh fails…` | the same first attempt (error screen on failure) |
 | `keeps a model ticked while the re-check refresh is still in flight` | merging onto the render closure instead of a ref |
 | `does not wipe the installed model list when re-checking a backend that is down` | dropping the `status.ready` gate |
+| `does not let a slow rescan snap the backend away from the one just picked` | the unguarded `fetchProfile` write |
+| `does not let a superseded backend switch overwrite the profile with the abandoned backend` | the unguarded `handleSelectBackend` write |
+| `does not raise the error screen for a superseded profile request that failed` | the unguarded `catch` |
 
-Reverting the refresh entirely — the original bug — fails four of the six.
+Reverting the refresh entirely — the original bug — fails four of the first six.
+
+Two validation failures were investigated and traced to the environment, not the change:
+
+- `scripts/__tests__/cihub-cli.test.ts` fails whenever `.env.local` is sourced into the test
+  process — it exports `ROOT_FOLDER_HOST`, which sends `ensureLocalDevRuntimeEnv` to a
+  `.internal/` directory that does not exist in this checkout. Reproduced deterministically both
+  ways on the same commit; exporting only `NODE_AUTH_TOKEN` avoids it.
+- `settings/containers/general-actions.test.tsx` failed one loaded run (`getBy` on
+  `hub-shell-update-btn` with no `waitFor`) and passed on a re-run of the same tree; the clean
+  tree passed the same loaded run. Load-dependent flake in a module with no import path from
+  onboarding.
 
 ---
 
@@ -105,3 +119,4 @@ Reverting the refresh entirely — the original bug — fails four of the six.
 |-------|---------|-------|-------|
 | impl | self-review (dry run) | Opus | Caught the first attempt's two regressions — selection reset and error-screen takeover — before review; both pinned by tests |
 | wrap | multi-angle (correctness, React pitfalls, cross-file, reuse, simplification, efficiency, altitude, conventions) | Opus | 15 findings; fixed the down-backend wipe, stale-response clobber, lost update, dead preferred-model guard, missing prune, spinner gap, silent catch, Ollama testid, and four test-quality issues. Settings → AI and `handleSelectBackend` deferred — see Open items |
+| PR | Copilot | — | One finding, valid: `profileRequestId` was a write barrier only `refreshInstalledModels` honoured — `fetchProfile` and `handleSelectBackend` bumped it and applied their response unconditionally. Both guarded, failure paths included, three tests added |
