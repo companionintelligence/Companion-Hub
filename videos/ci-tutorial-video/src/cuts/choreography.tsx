@@ -390,3 +390,69 @@ const cut12 = ({t, k}: ChoreoArgs) => {
 };
 
 CHOREOGRAPHY['c4-store-install'] = cut12;
+
+/* --------------------------------------------------- cut-06, plate cleanup */
+/**
+ * Paints out the action bar that is BAKED INTO the onboarding plate.
+ *
+ * `hub-onboarding-form.png` is a full-page capture, and the page's action bar
+ * is `position: fixed`. A full-page screenshot cannot honour that: the bar is
+ * painted once, wherever it happened to sit when the capture ran — here at
+ * plate y 1978-2126, stranded mid-page over the model grid. It then scrolls
+ * past like any other content, while the real pinned bar sits at the bottom of
+ * the aperture, so the cut showed two of them.
+ *
+ * The correct fix is a recapture with the footer hidden, which needs an
+ * authenticated Hub session. Until then the strip is repainted with what it
+ * covers: the container ground, and the three model cards of that row, so the
+ * grid keeps its gutters instead of merging into one wide card.
+ *
+ * Colours and rects are sampled and measured from the plate, not invented.
+ */
+const STRANDED_BAR = {y: 1974, h: 158};
+/** The section container, and the three model cards in that row. Edges detected
+ *  off a clean row of the same grid (y=2500), not estimated. */
+const CONTAINER = {x: 596, w: 2648};
+const MODEL_COLS = [
+  {x: 642, w: 828},
+  {x: 1504, w: 830},
+  {x: 2366, w: 832},
+];
+/** Sampled from that clean row: the two fills are within ~2 levels of each
+ *  other, which is why the patch disappears instead of reading as a band. */
+const FILL = {ground: '#081F2B', card: '#09212C', border: 'rgba(44,103,109,0.30)'};
+
+const cut06 = () => (
+  <>
+    <div
+      style={{
+        position: 'absolute',
+        left: CONTAINER.x,
+        top: STRANDED_BAR.y,
+        width: CONTAINER.w,
+        height: STRANDED_BAR.h,
+        background: FILL.ground,
+      }}
+    />
+    {/* The cards' side borders are redrawn, or the grid would lose its edges
+        for the height of the patch and read as one merged block. */}
+    {MODEL_COLS.map((c) => (
+      <div
+        key={c.x}
+        style={{
+          position: 'absolute',
+          left: c.x,
+          top: STRANDED_BAR.y,
+          width: c.w,
+          height: STRANDED_BAR.h,
+          background: FILL.card,
+          borderLeft: `2px solid ${FILL.border}`,
+          borderRight: `2px solid ${FILL.border}`,
+          boxSizing: 'border-box',
+        }}
+      />
+    ))}
+  </>
+);
+
+CHOREOGRAPHY['c3-hub-onboarding'] = cut06;
