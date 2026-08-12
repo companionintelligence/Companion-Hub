@@ -1,73 +1,96 @@
 # Model Registry & Hardware Benchmarking
 
-The Model Registry in CI-Hub is a dynamic, scalable catalog of state-of-the-art frontier models and edge-optimized tools. It maps highly diverse LLMs—spanning from lightweight 4B parameters up to massive 3T data center arrays—to precise hardware profiles automatically.
+The Model Registry in CI-Hub is the catalog of curated open-weight models CI-Hub can pull and run
+locally via Ollama (plus a few Lemonade-backed voice models), mapped to hardware profiles so the
+onboarding flow (FTUE) and Settings can recommend a model that actually fits the user's machine.
 
-## 1. Overview of Expansion & Supported Models
+## 1. Where the catalog lives
 
-The `curated-models.ts` catalog has been vastly expanded. It dynamically calculates memory footprints, quantization mults, and hardware tiering for **13 major model families** representing the bleeding-edge of open-weight intelligence:
+`packages/backend/src/modules/inference/catalog/curated-models.ts` is the single source of truth.
+It's authored as a compact, pipe-delimited [TOON](https://toonformat.dev) table (`CATALOG_TOON` for
+LLMs, `EXTRAS_TOON` for voice/embedding models) — one row per model — and decoded at module load into
+`CuratedModel[]` (`CURATED_MODELS`). Every family + size in the table is verified to exist on
+[ollama.com/library](https://ollama.com/library); the catalog lists only the bare `model:size` default
+tag (the guaranteed-pullable `q4_K_M` build). `intel`/`agentic`/`tps`/`ttft`/`e2e` columns come from the
+[Artificial Analysis open-weights leaderboard](https://artificialanalysis.ai/leaderboards/models?weights=open)
+where the model is listed; they're left blank otherwise.
 
-- **Gemma Family**: 4B to 3T parameters (`gemma4-3t`)
-- **Qwen Family**: 8B to 1.5T parameters (`qwen3-6-1-5t`, `qwen3.5-397b-a17b` MoE)
-- **DeepSeek Reasoning**: `v4-pro` (500B), `v4-flash` (100B), `r10528` (200B)
-- **Mistral**: `mistral-medium-3.5`, `mistral-small-3.2`
-- **Nemotron / Hermes 4**: Extensive parameter scales spanning 4B up to 1T for broad assistant and logic capabilities.
-- **GLM / MiMo / Kimi / MiniMax / QwQ**: Targeted reasoning and specialist variants optimized for 32GB–128GB tiers.
+`curated-models.ts` derives everything else (VRAM/RAM requirements, disk size, memory footprint,
+per-tier recommendation flags) from the row's `params`/`gb`/`tier` columns — there is no separate
+hand-maintained sizing formula to keep in sync.
 
-These families automatically generate **234 unique model + quantization combinations** (39 base sizes × 6 quantization levels), spanning quantizations from `fp16` to `q3_K_M`.
+## 2. How recommendations are computed
 
-## 2. Hardware Benchmarking & Scaling Math
+`model-registry.service.ts` computes hardware-fit recommendations directly from `CURATED_MODELS` —
+there is no separate hand-maintained ID→hardware-bracket table to keep in sync with the catalog.
 
-Instead of hard-coding every model variation, the CI-Hub registry utilizes an algorithmic benchmarking system that scales minimum hardware prerequisites depending on the **total parameter count (`p`)** and the **quantization footprint (`mult`)**.
+1. `computeInferenceBudget()` turns a `HardwareProfile` into a usable memory budget (discrete VRAM,
+   Apple/AMD unified memory, or CPU/system RAM), applying the appropriate headroom fraction
+   (`VRAM_BUDGET_FRACTION` / `UNIFIED_MEMORY_BUDGET_FRACTION` / `SYSTEM_RAM_BUDGET_FRACTION`).
+2. `pickBestFittingLlms()` filters the catalog to models whose `runtime.memoryFootprintMb` fits that
+   budget (and, on bandwidth-constrained x86 APUs, whose *active* parameter count is small enough),
+   then ranks candidates with `compareLlmCandidates()` — highest Artificial Analysis Intelligence Index
+   first, then largest parameter count, then best quantization — and returns a size-spanning
+   small/medium/large short list (`MAX_RECOMMENDED_LLMS`, currently 5). Index 0 is what app bootstrap
+   auto-installs.
+3. The per-row `tiers` object (`high`/`medium`/`low`/`cpuOnly`, each `recommended`/`available`/
+   `not-recommended`) still gates which models are browsable at all for a given hardware tier
+   (`getModelsForTier`) and drives the *non-LLM* recommended defaults (voice/embedding), but for LLMs
+   the actual best-fit ranking above is what selects the recommended set — not this field alone.
 
-### Benchmarking Formulas
-When the catalog is initialized, it dynamically generates resource limits. Below is the simplified approximation used internally to evaluate if a user's machine can support a given model variation:
+The frontend (onboarding `RecommendedModels`/`OtherModels` in
+`packages/frontend/src/modules/onboarding/components/ai-setup/model-selection-card.tsx`, and the
+equivalent Settings AI page) reads the same `CuratedModel[]` the backend serves — there's no separate
+model list to update on the frontend side.
 
-1. **VRAM Benchmark**:
-   - Base Footprint: `p * 600` (e.g. 70B = ~42,000 MB Base VRAM)
-   - Final `minVramMb`: `Math.round(Base * quant_mult)`
-   - _Note_: 4-bit (`q4_K_M`) quantization has a multiplier of exactly `1.0`. `fp16` scales up by `3.2x`.
+## 3. How to add a new model
 
-2. **RAM Overhead Benchmark**:
-   - The registry enforces a very strict RAM boundary to ensure system stability when spilling. 
-   - Formula: `Math.round((p * 1800) * quant_mult)`
-   - A `gemma4-3t` (3000B) thus demands an immense ~5.4TB RAM overhead to handle contextual context processing safely.
+If a new frontier open-weight model is released:
 
-3. **Recommendation Breakdown**:
-   - The `LLM_RECOMMENDATION_TABLE` in `model-registry.service.ts` cross-references the user's effective VRAM (`gpu.vramMb`, or `ram.totalMb` on unified-memory systems) against 17 brackets ranging from **0 VRAM / 4GB RAM** at the low end up to **2048GB VRAM / 3072GB RAM** for datacenter nodes. The first row whose `minVramMb` and `minRamMb` both fit the profile wins; `canRunOnHardware()` then filters that row's IDs against the model's own `requirements`.
+### Step A: Verify it's on Ollama
 
-## 3. How to Add and Edit Models in the Installer
+Confirm the exact pull tag(s) at `ollama.com/library/<name>` (or `ollama.com/blog` for a launch
+announcement). **Only add rows for tags you've verified actually exist** — `curated-models.test.ts`
+has a regression test (`contains no fabricated families/sizes`) that blocklists known-fake IDs, and
+this list grows every time a fabricated entry almost slips in.
 
-If a new frontier model is released, integrating it into the CI-Hub onboarding recommendation engine takes only a few minutes.
+### Step B: Append a TOON row
 
-### Step A: Define the Family Configuration
-Open `/packages/backend/src/modules/inference/catalog/curated-models.ts` and append the model structure to the `FAMILIES` array. Ensure the parameter count `p` accurately reflects the model footprint.
+Open `curated-models.ts` and add one line to `CATALOG_TOON` (or `EXTRAS_TOON` for voice/embedding
+models), following the column header comment at the top of the file:
 
-```typescript
-{
-  prefix: 'newmodel',
-  idPrefix: 'newmodel',
-  name: 'NewModel 1',
-  purpose: 'reasoning',
-  sizes: [
-    { s: '14b', idSize: '14b', p: 14, tier: 'low' },
-    { s: '72b', idSize: '72b', p: 72, tier: 'high' }
-  ]
-}
 ```
-*Note for MoE Models:* Use the total uncompressed parameter size for `p` (not just active parameters) to assure sufficient baseline memory allocation, as our scaling calculates upper bounds.
-
-### Step B: Slot into the Recommendation Table
-Open `/packages/backend/src/modules/inference/model-registry.service.ts` and locate the `LLM_RECOMMENDATION_TABLE`. Find the appropriate memory bracket and inject the model's generated `id`:
-
-```typescript
-// Example: Slotting 72B into the 96GB VRAM bracket
-{ minVramMb: 98304, minRamMb: 131072, recommendedModelIds: ['newmodel-72b'] }
+newmodel-72b|newmodel:72b|NewModel 72B|reasoning|72|43|high|128|SomeLab|38.2|41.0|1|0|1|0|90|1.2|8.5
 ```
-_IDs are generated via: `idPrefix-idSize-quant` (e.g., `newmodel-72b-q8_0`). Unquantized / `q4_K_M` drop the suffix (`newmodel-72b`)._
 
-### Step C: Test the Hardware Configuration
-Open `/packages/backend/src/modules/inference/__tests__/model-registry.service.test.ts`. Find the `describe('Hardware Recommendation Tiers')` block and add the new model into the test assertions for its respective bracket to enforce that the math perfectly clears.
+- `id` — `${family}-${size}`, kebab-case, unique.
+- `backendModelId` — the exact `ollama pull` tag.
+- `params`/`gb` — parameter count (billions) and the *default* (`q4_K_M`) on-disk size in GB, exactly
+  as shown on the Ollama library page. These two columns drive every derived requirement
+  (`minVramMb`/`recommendedVramMb`/`minRamMb`/`diskMb`/`memoryFootprintMb`) — don't hand-compute them.
+- `tier` — the lowest hardware tier this size should be offered as a default recommendation for
+  (`cpu-only`/`low`/`medium`/`high`), based on the model's footprint relative to existing rows of
+  similar size.
+- `intel`/`agentic`/`tps`/`ttft`/`e2e` — from the Artificial Analysis leaderboard if the model is
+  listed there; leave blank (`|`) otherwise. Don't invent numbers.
+- If the model is a Mixture-of-Experts (MoE) model, also add its active-parameter count (billions) to
+  the `MOE_ACTIVE_PARAMS_B` map just below the LLM table — this governs shared-memory/APU selection,
+  which is bandwidth- (active-param-) bound rather than capacity-bound.
+
+### Step C: Update the catalog tests
+
+Open `packages/backend/src/modules/inference/__tests__/curated-models.test.ts`:
+
+- Bump the `llms.length` (and `embedding`/`tts`+`stt` counts if you touched `EXTRAS_TOON`) in the
+  `decodes the full catalog` test.
+- Optionally add a spot-check assertion for the new model (mirrors the existing `gemma4-31b` /
+  `llama3-3-70b` checks) to lock in its derived requirements and metadata.
 
 ```bash
-pnpm dlx vitest run src/modules/inference/__tests__/model-registry.service.test.ts
+pnpm --filter @ci-hub/backend exec vitest run src/modules/inference/__tests__/curated-models.test.ts
 ```
+
+No changes are needed in `model-registry.service.ts`, the frontend model-selection components, or
+`icons.tsx` for a model whose creator already has a brand mark in `packages/frontend/public/brands/`
+(check the `CREATOR_BRAND` map) — the new row is picked up automatically everywhere. A creator without
+a brand SVG just falls back to a generic icon; that's expected and fine.

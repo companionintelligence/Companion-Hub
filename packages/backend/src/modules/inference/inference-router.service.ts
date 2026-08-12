@@ -101,8 +101,12 @@ export class InferenceRouterService {
       });
     }
 
-    // Also include curated models not yet tracked (available state)
+    // Also include curated models not yet tracked (available state). Ollama cloud-proxied tags (e.g.
+    // `deepseek-v4-pro:cloud`) are skipped — they don't download or run on this machine, so listing one
+    // as `local: true` below would be a lie. The catalog is meant to carry none of these; this is a
+    // backstop, matching the same guard in ModelRegistryService#getModelsForTier.
     for (const curated of this.modelRegistry.getCatalog()) {
+      if (curated.backend === 'ollama' && curated.backendModelId?.endsWith(':cloud')) continue;
       if (!this.modelRegistry.getTrackedModel(curated.id)) {
         models.push({
           id: curated.id,

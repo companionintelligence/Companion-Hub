@@ -70,6 +70,19 @@ function activeParamsOf(model: CuratedModel): number {
 }
 
 /**
+ * True for Ollama's own cloud-hosted tags (e.g. `deepseek-v4-pro:cloud`) — frontier models too large to
+ * run locally that Ollama proxies to its cloud instead. This tool exists to find the best model a user's
+ * own hardware can actually run, so cloud-proxied entries must never be shown or recommended — not just
+ * excluded from the auto-install pick. The catalog is meant to carry none of these (see the header
+ * comment on CATALOG_TOON), but `getModelsForTier()` — the single gate every browsing/recommendation
+ * path filters through — still excludes them structurally, as a backstop against one being added by
+ * mistake in the future.
+ */
+function isCloudProxied(model: CuratedModel): boolean {
+  return model.backend === 'ollama' && model.backendModelId.endsWith(':cloud');
+}
+
+/**
  * Order LLM candidates best-first. The primary key is the Artificial Analysis Intelligence Index
  * (higher = smarter) so the best-fit default is the most capable model that fits the hardware — not
  * merely the largest. Models without a measured index score 0 (we can't claim intelligence we haven't
@@ -125,6 +138,7 @@ export class ModelRegistryService implements OnModuleInit {
     const tierKey = tier === 'cpu-only' ? 'cpuOnly' : tier;
     if (tier === 'insufficient') return [];
     return CURATED_MODELS.filter((m) => {
+      if (isCloudProxied(m)) return false;
       const rec = m.tiers[tierKey as keyof typeof m.tiers];
       return rec === 'recommended' || rec === 'available';
     });

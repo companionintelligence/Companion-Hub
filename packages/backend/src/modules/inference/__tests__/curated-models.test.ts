@@ -10,8 +10,8 @@ describe('curated-models (TOON catalog)', () => {
   const byId = new Map(CURATED_MODELS.map((m) => [m.id, m]));
   const llms = CURATED_MODELS.filter((m) => m.modality === 'llm');
 
-  it('decodes the full catalog (60 LLMs + voice + embeddings) with unique ids', () => {
-    expect(llms.length).toBe(60);
+  it('decodes the full catalog (79 LLMs + voice + embeddings) with unique ids', () => {
+    expect(llms.length).toBe(79);
     expect(CURATED_MODELS.filter((m) => m.modality === 'embedding').length).toBe(4);
     expect(CURATED_MODELS.filter((m) => m.modality === 'tts' || m.modality === 'stt').length).toBe(3);
     expect(new Set(CURATED_MODELS.map((m) => m.id)).size).toBe(CURATED_MODELS.length);
@@ -62,17 +62,50 @@ describe('curated-models (TOON catalog)', () => {
     }
   });
 
-  it('includes GLM 5.2 in the large-models browse group', () => {
-    const glm = byId.get('glm-5-2-cloud');
-    expect(glm).toBeDefined();
-    expect(glm?.backendModelId).toBe('glm-5.2:cloud');
-    expect(glm?.parameterScale).toBeGreaterThan(70);
-    expect(glm?.tiers.high).toBe('recommended');
+  it('never carries an Ollama cloud-proxied tag (this catalog is local-only)', () => {
+    // Cloud-hosted tags (e.g. `deepseek-v4-pro:cloud`) don't download or run on the user's own
+    // hardware, so they don't belong in a catalog whose job is finding the best *local* model.
+    for (const m of CURATED_MODELS) {
+      expect(m.backendModelId.endsWith(':cloud'), `${m.id} must not be a cloud-proxied tag`).toBe(false);
+    }
+  });
+
+  it('derives requirements + metadata for Muse Glimmer', () => {
+    const muse = byId.get('muse-glimmer-30b');
+    expect(muse).toBeDefined();
+    expect(muse?.backendModelId).toBe('muse-glimmer:30b');
+    expect(muse?.metadata?.creator).toBe('Meta');
+    expect(muse?.metadata?.capabilities?.vision).toBe(true);
+    expect(muse?.metadata?.capabilities?.tools).toBe(true);
+    expect(muse?.metadata?.capabilities?.reasoning).toBe(true);
+    expect(muse?.requirements.diskMb).toBe(18 * 1024);
+    expect(muse?.tiers.medium).toBe('recommended');
+  });
+
+  it('derives requirements + metadata for Nemotron 3.5 Lightning', () => {
+    const nemotron = byId.get('nemotron-3-5-lightning-30b');
+    expect(nemotron).toBeDefined();
+    expect(nemotron?.backendModelId).toBe('nemotron-3.5-lightning:30b');
+    expect(nemotron?.metadata?.creator).toBe('NVIDIA');
+    expect(nemotron?.activeParameterScale).toBe(3);
+    expect(nemotron?.requirements.diskMb).toBe(25 * 1024);
+    expect(nemotron?.tiers.medium).toBe('recommended');
   });
 
   it('contains no fabricated families/sizes (only ollama.com-verified entries)', () => {
     const ids = new Set(CURATED_MODELS.map((m) => m.id));
-    for (const fake of ['gemma4-300b', 'gemma4-800b', 'gemma4-3t', 'qwen3-6-200b', 'kimi-k2-6', 'deepseek-v4-pro', 'mistral-medium-3.5']) {
+    for (const fake of [
+      'gemma4-300b',
+      'gemma4-800b',
+      'gemma4-3t',
+      'qwen3-6-200b',
+      'kimi-k2-6',
+      'deepseek-v4-pro',
+      'mistral-medium-3.5',
+      'hermes-4',
+      'seed-oss',
+      'ernie-4.5',
+    ]) {
       expect(ids.has(fake), `fabricated model ${fake} must not exist`).toBe(false);
     }
   });
