@@ -466,6 +466,31 @@ describe('AiSetupStep', () => {
     expect(screen.getByTestId('ai-continue-btn')).toBeDisabled();
   });
 
+  // #1105: Re-check must refresh the onboarding profile too — installedCatalogIds is computed
+  // server-side, so without a refetch a model served after page load flips the status banner
+  // green but never shows as Installed and stays unselectable.
+  it('refetches the profile when vLLM Re-check finds the server ready', async () => {
+    api.profile = {
+      ...highTierProfile,
+      backends: { ...highTierProfile.backends, recommended: 'vllm' },
+    };
+    api.vllm = vllmMissing;
+    const user = userEvent.setup();
+    renderStep();
+    await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
+    await user.click(screen.getByTestId('backend-option-vllm'));
+    await waitFor(() => expect(screen.getByText('vLLM not detected')).toBeInTheDocument());
+
+    // Operator serves a model on the host, then clicks Re-check on the vLLM card (rendered
+    // before the embeddings Ollama card, which shares the same button label).
+    api.vllm = vllmReady;
+    const callsBefore = fetchInferenceOnboardingProfile.mock.calls.length;
+    await user.click(screen.getAllByRole('button', { name: 'Re-check' })[0] as HTMLElement);
+
+    await waitFor(() => expect(screen.getByText('vLLM detected')).toBeInTheDocument());
+    await waitFor(() => expect(fetchInferenceOnboardingProfile.mock.calls.length).toBeGreaterThan(callsBefore));
+  });
+
   it('allows toggling model selection', async () => {
     const user = userEvent.setup();
     renderStep();

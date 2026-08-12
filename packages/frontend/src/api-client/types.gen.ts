@@ -79,6 +79,7 @@ export type AppContextDto = {
         inferenceEmbeddingModel?: string;
         inferenceVisionModel?: string;
         inferenceVllmApiKey?: string;
+        inferenceVllmUrl?: string;
     };
     appDataRootHostPath?: string;
     architecture: 'amd64' | 'arm64';
@@ -151,6 +152,7 @@ export type UserSettingsBody = {
     inferenceEmbeddingModel?: string;
     inferenceVisionModel?: string;
     inferenceVllmApiKey?: string;
+    inferenceVllmUrl?: string;
 };
 
 export type AcknowledgeWelcomeBody = {
@@ -363,6 +365,17 @@ export type MyAppsDto = {
                         [key: string]: unknown | string;
                     }> | Array<unknown> | Array<unknown>;
                 } | undefined;
+            };
+            privacy?: {
+                declared_by: string;
+                declared_at: string;
+                policy_url?: string;
+                collects: Array<{
+                    category: 'contact_info' | 'health_fitness' | 'financial_info' | 'location' | 'sensitive_info' | 'contacts' | 'user_content' | 'browsing_history' | 'search_history' | 'identifiers' | 'usage_data' | 'diagnostics' | 'other_data';
+                    purposes: Array<'app_functionality' | 'analytics' | 'product_personalization' | 'developer_advertising' | 'third_party_advertising' | 'other_purposes'>;
+                    linked_to_identity: boolean;
+                    used_for_tracking: boolean;
+                }>;
             };
             hub_integration?: {
                 mcp_client: boolean;
@@ -624,6 +637,17 @@ export type GuestAppsDto = {
                         [key: string]: unknown | string;
                     }> | Array<unknown> | Array<unknown>;
                 } | undefined;
+            };
+            privacy?: {
+                declared_by: string;
+                declared_at: string;
+                policy_url?: string;
+                collects: Array<{
+                    category: 'contact_info' | 'health_fitness' | 'financial_info' | 'location' | 'sensitive_info' | 'contacts' | 'user_content' | 'browsing_history' | 'search_history' | 'identifiers' | 'usage_data' | 'diagnostics' | 'other_data';
+                    purposes: Array<'app_functionality' | 'analytics' | 'product_personalization' | 'developer_advertising' | 'third_party_advertising' | 'other_purposes'>;
+                    linked_to_identity: boolean;
+                    used_for_tracking: boolean;
+                }>;
             };
             hub_integration?: {
                 mcp_client: boolean;
@@ -920,6 +944,17 @@ export type GetAppDto = {
                 }> | Array<unknown> | Array<unknown>;
             } | undefined;
         };
+        privacy?: {
+            declared_by: string;
+            declared_at: string;
+            policy_url?: string;
+            collects: Array<{
+                category: 'contact_info' | 'health_fitness' | 'financial_info' | 'location' | 'sensitive_info' | 'contacts' | 'user_content' | 'browsing_history' | 'search_history' | 'identifiers' | 'usage_data' | 'diagnostics' | 'other_data';
+                purposes: Array<'app_functionality' | 'analytics' | 'product_personalization' | 'developer_advertising' | 'third_party_advertising' | 'other_purposes'>;
+                linked_to_identity: boolean;
+                used_for_tracking: boolean;
+            }>;
+        };
         hub_integration?: {
             mcp_client: boolean;
             wake_endpoint: string;
@@ -1036,6 +1071,7 @@ export type UpdateInferencePreferencesBody = {
     embeddingModel?: string;
     visionModel?: string;
     vllmApiKey?: string;
+    vllmUrl?: string;
 };
 
 export type UpdateRocmInstallStateBody = {
@@ -1947,6 +1983,7 @@ export type StreamHubLogsQueryDto = {
 
 export type OnboardingProfileQueryDto = {
     backend?: 'ollama' | 'vllm' | 'lemonade';
+    vllmUrl?: string;
 };
 
 export type RuntimeModelsQueryDto = {
@@ -2951,6 +2988,7 @@ export type GetOnboardingProfileData = {
     path?: never;
     query?: {
         backend?: 'ollama' | 'vllm' | 'lemonade';
+        vllmUrl?: string;
     };
     url: '/api/inference/onboarding-profile';
 };

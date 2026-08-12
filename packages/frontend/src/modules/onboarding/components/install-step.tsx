@@ -208,6 +208,7 @@ export const InstallStep = ({
               resolvedEmbeddingPreference && availablePreferenceModelIds.has(resolvedEmbeddingPreference) ? resolvedEmbeddingPreference : null,
             visionModel: resolvedVisionPreference && availablePreferenceModelIds.has(resolvedVisionPreference) ? resolvedVisionPreference : null,
             vllmApiKey: aiSetupConfig.vllmApiKey ?? null,
+            vllmUrl: aiSetupConfig.vllmUrl ?? null,
           });
         } catch {
           setAiPhase((prev) => ({ ...prev, error: t('ONBOARDING_INSTALL_FAILED_SAVE_PREFERRED_BACKEND', { status: 0 }) }));

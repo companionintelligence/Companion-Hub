@@ -41,31 +41,35 @@ const appConfig = customType<{ data: Record<string, unknown>; driverData: string
   },
 });
 
-export const app = pgTable('app', {
-  id: serial().primaryKey().notNull(),
-  status: appStatusEnum().default('stopped').notNull(),
-  config: appConfig('config').notNull(),
-  createdAt: timestamp({ mode: 'string' }).defaultNow().notNull(),
-  updatedAt: timestamp({ mode: 'string' }).defaultNow().notNull(),
-  version: integer().default(1).notNull(),
-  ignoredVersion: integer('ignored_version'),
-  exposed: boolean().default(false).notNull(),
-  domain: varchar(),
-  isVisibleOnGuestDashboard: boolean('is_visible_on_guest_dashboard').default(false).notNull(),
-  openPort: boolean('open_port').default(true).notNull(),
-  port: integer(),
-  exposedLocal: boolean('exposed_local').default(false).notNull(),
-  exposureMode: varchar('exposure_mode').default('local').notNull(), // 'local' | 'cloudflare' | 'tailscale'
-  appStoreSlug: varchar('app_store_slug').notNull(),
-  appName: varchar('app_name').notNull(),
-  enableAuth: boolean('enable_auth').default(false).notNull(),
-  subnet: varchar().unique(),
-  localSubdomain: varchar('local_subdomain'),
-  publicDomain: varchar('public_domain'),
-  pendingRestart: boolean('pending_restart').default(false).notNull(),
-  userConfigEnabled: boolean('user_config_enabled').default(true).notNull(),
-  maxBackups: integer('max_backups'),
-});
+export const app = pgTable(
+  'app',
+  {
+    id: serial().primaryKey().notNull(),
+    status: appStatusEnum().default('stopped').notNull(),
+    config: appConfig('config').notNull(),
+    createdAt: timestamp({ mode: 'string' }).defaultNow().notNull(),
+    updatedAt: timestamp({ mode: 'string' }).defaultNow().notNull(),
+    version: integer().default(1).notNull(),
+    ignoredVersion: integer('ignored_version'),
+    exposed: boolean().default(false).notNull(),
+    domain: varchar(),
+    isVisibleOnGuestDashboard: boolean('is_visible_on_guest_dashboard').default(false).notNull(),
+    openPort: boolean('open_port').default(true).notNull(),
+    port: integer(),
+    exposedLocal: boolean('exposed_local').default(false).notNull(),
+    exposureMode: varchar('exposure_mode').default('local').notNull(), // 'local' | 'cloudflare' | 'tailscale'
+    appStoreSlug: varchar('app_store_slug').notNull(),
+    appName: varchar('app_name').notNull(),
+    enableAuth: boolean('enable_auth').default(false).notNull(),
+    subnet: varchar().unique(),
+    localSubdomain: varchar('local_subdomain'),
+    publicDomain: varchar('public_domain'),
+    pendingRestart: boolean('pending_restart').default(false).notNull(),
+    userConfigEnabled: boolean('user_config_enabled').default(true).notNull(),
+    maxBackups: integer('max_backups'),
+  },
+  (table) => [uniqueIndex('app_name_store_slug_uidx').on(table.appName, table.appStoreSlug)],
+);
 
 export const appRelations = relations(app, ({ one }) => ({
   appStore: one(appStore, {

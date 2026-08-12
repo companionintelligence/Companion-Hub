@@ -87,4 +87,17 @@ describe('DockerService.pullImages — cancellation', () => {
     await expect(svc.pullImages(['img:1'], { forcePull: true })).resolves.toBeUndefined();
     expect(stream.destroy).not.toHaveBeenCalled();
   });
+
+  it('fails with a stall error (not AbortError) when no progress arrives within the inactivity window', async () => {
+    const stream = Object.assign(new EventEmitter(), { destroy: vi.fn() });
+    const followProgress = vi.fn();
+    const pull = vi.fn((_img: string, cb: (e: Error | null, s?: unknown) => void) => cb(null, stream));
+    const svc = makeService({ pull, modem: { followProgress } });
+
+    await expect(svc.pullImages(['img:1'], { forcePull: true, inactivityTimeoutMs: 30, timeoutMs: 60_000 })).rejects.toThrow(
+      /stalled with no progress/i,
+    );
+
+    expect(stream.destroy).toHaveBeenCalled();
+  });
 });

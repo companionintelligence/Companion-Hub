@@ -103,6 +103,7 @@ export const AiSetupStep = ({
   const [checkingOllama, setCheckingOllama] = useState(false);
   const [checkingVllm, setCheckingVllm] = useState(false);
   const [vllmApiKey, setVllmApiKey] = useState('');
+  const [vllmUrl, setVllmUrl] = useState('');
   const [selectedBackend, setSelectedBackend] = useState<InferenceBackendType>('ollama');
 
   // The default model Companion agents (Hermes, OpenClaw) use: the BEST-FIT agent LLM. recommendedModels
@@ -154,7 +155,7 @@ export const AiSetupStep = ({
     setError(null);
     try {
       const backend = backendOverride ?? selectedBackend;
-      const data = await fetchInferenceOnboardingProfile(backend);
+      const data = await fetchInferenceOnboardingProfile(backend, vllmUrl);
       setProfile(data);
       const resolvedBackend = backendOverride ?? data.backends.recommended;
       setSelectedBackend(resolvedBackend);
@@ -175,9 +176,11 @@ export const AiSetupStep = ({
     try {
       const data = (await fetchOllamaInstallStatus()) as OllamaStatus;
       setOllamaStatus(data);
+      return data;
     } catch (_e) {
       // Silently fail - Ollama status is optional
       setOllamaStatus({ ready: false, running: false, endpointUrl: '' });
+      return null;
     } finally {
       setCheckingOllama(false);
     }
@@ -186,12 +189,32 @@ export const AiSetupStep = ({
   const checkVllmStatus = async () => {
     setCheckingVllm(true);
     try {
-      const data = (await fetchVllmInstallStatus()) as VllmStatus;
+      const data = (await fetchVllmInstallStatus(vllmUrl)) as VllmStatus;
       setVllmStatus(data);
+      return data;
     } catch (_e) {
       setVllmStatus({ ready: false, running: false, endpointUrl: '' });
+      return null;
     } finally {
       setCheckingVllm(false);
+    }
+  };
+
+  // Re-check handlers for the setup cards. Unlike the mount-time probes above, an explicit
+  // Re-check must also refresh the profile: `installedCatalogIds` is only recomputed server-side
+  // inside the onboarding-profile endpoint, so without this a model served after page load never
+  // shows as Installed and stays unselectable (#1105).
+  const handleRecheckVllm = async () => {
+    const status = await checkVllmStatus();
+    if (status?.ready) {
+      await fetchProfile(true);
+    }
+  };
+
+  const handleRecheckOllama = async () => {
+    const status = await checkOllamaStatus();
+    if (status?.ready) {
+      await fetchProfile(true);
     }
   };
 
@@ -221,7 +244,7 @@ export const AiSetupStep = ({
 
     setSelectedBackend(backend);
     try {
-      const data = await fetchInferenceOnboardingProfile(backend);
+      const data = await fetchInferenceOnboardingProfile(backend, vllmUrl);
       setProfile(data);
       const defaultSelected = getDefaultSelectedModelIds(data, backend);
       setSelectedModelIds(defaultSelected);
@@ -322,6 +345,7 @@ export const AiSetupStep = ({
       installBlocked,
       installBlockReason,
       ...(selectedBackend === 'vllm' && vllmApiKey.trim() ? { vllmApiKey: vllmApiKey.trim() } : {}),
+      ...(selectedBackend === 'vllm' && vllmUrl.trim() ? { vllmUrl: vllmUrl.trim() } : {}),
     };
   };
 
@@ -351,6 +375,7 @@ export const AiSetupStep = ({
     remoteAccess,
     cloudProviders,
     vllmApiKey,
+    vllmUrl,
     onConfigChange,
   ]);
 
@@ -465,14 +490,16 @@ export const AiSetupStep = ({
               <VllmSetupCard
                 status={vllmStatus}
                 checking={checkingVllm}
-                onRecheck={checkVllmStatus}
+                onRecheck={handleRecheckVllm}
                 apiKey={vllmApiKey}
                 onApiKeyChange={setVllmApiKey}
+                endpointUrl={vllmUrl}
+                onEndpointUrlChange={setVllmUrl}
               />
             </StepSection>
           ) : (
             <StepSection number={3} badge="required" title={t('ONBOARDING_OLLAMA_SECTION_TITLE')} description={t('ONBOARDING_OLLAMA_SECTION_DESC')}>
-              <OllamaSetupCard status={ollamaStatus} checking={checkingOllama} onRecheck={checkOllamaStatus} />
+              <OllamaSetupCard status={ollamaStatus} checking={checkingOllama} onRecheck={handleRecheckOllama} />
             </StepSection>
           )}
 
@@ -491,7 +518,7 @@ export const AiSetupStep = ({
                   {t('ONBOARDING_EMBEDDINGS_OLLAMA_WARNING')}
                 </div>
               )}
-              <OllamaSetupCard status={ollamaStatus} checking={checkingOllama} onRecheck={checkOllamaStatus} />
+              <OllamaSetupCard status={ollamaStatus} checking={checkingOllama} onRecheck={handleRecheckOllama} />
             </StepSection>
           )}
 

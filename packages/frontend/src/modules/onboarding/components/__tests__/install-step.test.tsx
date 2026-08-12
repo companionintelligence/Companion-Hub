@@ -202,6 +202,7 @@ describe('InstallStep', () => {
         embeddingModel: null,
         visionModel: null,
         vllmApiKey: null,
+        vllmUrl: null,
       });
     });
   });
@@ -238,6 +239,7 @@ describe('InstallStep', () => {
           embeddingModel: null,
           visionModel: null,
           vllmApiKey: null,
+          vllmUrl: null,
         });
       },
       { timeout: 5000 },
@@ -285,6 +287,7 @@ describe('InstallStep', () => {
           embeddingModel: 'embedding-model',
           visionModel: null,
           vllmApiKey: null,
+          vllmUrl: null,
         });
       },
       { timeout: 5000 },

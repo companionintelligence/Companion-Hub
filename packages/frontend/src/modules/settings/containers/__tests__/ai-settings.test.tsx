@@ -273,27 +273,31 @@ describe('AiSettingsContainer', () => {
         embeddingModel: null,
         visionModel: null,
         vllmApiKey: null,
+        vllmUrl: null,
       });
     });
   });
 
-  it('refetches the profile once per backend switch', async () => {
-    // The real endpoint hands back a fresh object every call. The effect this replaced also depended
-    // on `profile` while its own body called `setProfile`, so each refresh re-armed it and the most
-    // expensive endpoint on the page was refetched without bound for as long as the panel was open.
-    fetchInferenceOnboardingProfile.mockImplementation(async () => ({ ...profile }));
+  // #1109: the backend-switch effect listed `profile` in its dependency array while writing it
+  // with a freshly-fetched object, so every switch started an unbounded refetch loop (165 requests
+  // in 400ms). The shared-fixture mock used elsewhere hides this — React bails out on identical
+  // references — so this probe must return a distinct object per call.
+  it('does not loop profile refetches after a backend switch', async () => {
+    fetchInferenceOnboardingProfile.mockImplementation(() => Promise.resolve({ ...profile }));
 
     const user = userEvent.setup();
     renderAiSettings();
-    await waitFor(() => expect(screen.getByTestId('selected-backend')).toHaveTextContent('vllm'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('selected-backend')).toHaveTextContent('vllm');
+    });
+
     const before = fetchInferenceOnboardingProfile.mock.calls.length;
-
     await user.click(screen.getByTestId('select-lemonade'));
-    await waitFor(() => expect(screen.getByTestId('selected-backend')).toHaveTextContent('lemonade'));
-    // Give a runaway loop room to show itself — it managed ~1000 requests per second.
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await new Promise((resolve) => setTimeout(resolve, 400));
 
-    expect(fetchInferenceOnboardingProfile.mock.calls.length - before).toBe(1);
+    // Exactly one profile refetch for the new backend — not one per render.
+    expect(fetchInferenceOnboardingProfile.mock.calls.length).toBe(before + 1);
   });
 
   it('re-seeds the selection for the backend it switches to', async () => {

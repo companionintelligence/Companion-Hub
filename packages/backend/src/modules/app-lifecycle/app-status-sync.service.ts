@@ -6,6 +6,7 @@ import type Dockerode from 'dockerode';
 import { DOCKERODE } from '../docker/constants';
 import { DockerService } from '../docker/docker.service';
 import { AppsRepository } from '../apps/apps.repository';
+import { InstallPipelineTracker } from '../apps/install-pipeline.tracker';
 import type { AppStatus } from '@/core/database/drizzle/types';
 import { SystemEventsQueue } from '../queue/entities/system-events';
 import { DEFAULT_APP_IMAGE_PULL_TIMEOUT_MINUTES } from '@/common/constants';
@@ -14,6 +15,7 @@ import { AgentNotifyService } from '../agent-notify/agent-notify.service';
 import { ErrorReportingService } from '@/core/error-reporting/error-reporting.service';
 import { NetworkDiagnosticsService } from '../network/network-diagnostics.service';
 import { isPortExposeApp } from '@ci-hub/common/schemas';
+import { AppOperationRegistry } from './app-operation-registry';
 
 const LONG_RUNNING_TRANSITIONAL_STATES: AppStatus[] = ['installing', 'updating'];
 
@@ -38,6 +40,8 @@ export class AppStatusSyncService {
     private readonly systemEventsQueue: SystemEventsQueue,
     private readonly configuration: ConfigurationService,
     @Inject(DOCKERODE) private readonly docker: Dockerode,
+    private readonly installPipelineTracker: InstallPipelineTracker,
+    private readonly operationRegistry: AppOperationRegistry,
     @Optional() private readonly agentNotifyService?: AgentNotifyService,
     @Optional() private readonly errorReportingService?: ErrorReportingService,
     @Optional() private readonly networkDiagnostics?: NetworkDiagnosticsService,
@@ -149,11 +153,43 @@ export class AppStatusSyncService {
         let newStatus: AppStatus;
 
         if (!dockerStatus || dockerStatus.total === 0) {
-          // Large image pulls can exceed the default queue grace; don't mark as missing mid-install.
-          if (app.status === 'installing' || app.status === 'install_failed') {
+          if (app.status === 'install_failed') {
             skippedCount++;
             continue;
           }
+
+          if (app.status === 'installing') {
+            const timeSinceUpdate = Date.now() - new Date(app.updatedAt).getTime();
+            const stillLive = this.installPipelineTracker.getActive() === appUrn || Boolean(this.operationRegistry.get(appUrn));
+            if (timeSinceUpdate < transitionalGraceMs || stillLive) {
+              skippedCount++;
+              continue;
+            }
+
+            const applied = await this.appRepository.updateAppByIdIfStatus(app.id, 'installing', { status: 'install_failed' });
+            if (!applied) {
+              skippedCount++;
+              continue;
+            }
+
+            const message = `Install stalled with no containers after ${Math.round(timeSinceUpdate / 60000)} minutes. Retry the install.`;
+            this.sseService.emit('app', {
+              event: 'install_error',
+              appUrn,
+              appStatus: 'install_failed',
+              error: message,
+            });
+            this.logger.warn(`Healed stranded install ${appUrn}: 'installing' -> 'install_failed'`);
+            this.agentNotifyService?.notify('install_error', { appUrn }, 'high');
+            this.errorReportingService?.reportAppFailure({
+              appUrn,
+              phase: 'install',
+              message,
+            });
+            syncedCount++;
+            continue;
+          }
+
           newStatus = 'missing';
         } else if (dockerStatus.running + dockerStatus.exitZero === dockerStatus.total) {
           newStatus = 'running';

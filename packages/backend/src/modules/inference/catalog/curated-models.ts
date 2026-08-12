@@ -263,7 +263,11 @@ function buildLlmModel(row: ToonRow, backend: InferenceBackendType): CuratedMode
       recommendedVramMb: Math.round(diskMb * 1.1 + 1024),
       minRamMb: Math.round(diskMb * 1.15),
       diskMb,
-      gpuVendors: ['nvidia', 'amd', 'apple', 'cpu'],
+      // vLLM has no CPU serving path in the Hub and no viable AMD/Apple image (see
+      // VllmBackend.getComposeConfig), so its rows must only match an NVIDIA VRAM budget.
+      // Listing 'cpu' here resurrects VRAM-rejected models through the system-RAM fallback
+      // in ModelRegistryService.selectLlmsForHardware, recommending models that OOM (#1103).
+      gpuVendors: backend === 'vllm' ? ['nvidia'] : ['nvidia', 'amd', 'apple', 'cpu'],
       npuRequired: false,
       minTier: tier,
     },
