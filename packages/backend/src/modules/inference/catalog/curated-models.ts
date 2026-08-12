@@ -44,7 +44,7 @@ import type { CuratedModel, HardwareTier, InferenceBackendType, ModelModality, M
 // (artificialanalysis.ai, snapshot 2026-05); perf numbers are AA's cloud-hosted measurements and are
 // indicative only — real local speed depends on the user's hardware and quantization.
 const CATALOG_TOON = `
-llms[79|]{id,backendModelId,name,purpose,params,gb,tier,ctxK,creator,intel,agentic,reason,vision,tools,audio,tps,ttft,e2e}:
+llms[78|]{id,backendModelId,name,purpose,params,gb,tier,ctxK,creator,intel,agentic,reason,vision,tools,audio,tps,ttft,e2e}:
   gemma4-e2b|gemma4:e2b|Gemma 4 E2B|general|2|7.2|cpu-only|128|Google|12.1|7.4|0|1|1|1|||
   gemma4-e4b|gemma4:e4b|Gemma 4 E4B|general|4|9.6|cpu-only|128|Google|14.8|8.7|0|1|1|1|||
   gemma4-26b|gemma4:26b|Gemma 4 26B|general|26|18|medium|256|Google|27.1|28.9|0|1|1|0|78|1.59|8
@@ -113,7 +113,6 @@ llms[79|]{id,backendModelId,name,purpose,params,gb,tier,ctxK,creator,intel,agent
   ministral-3-3b|ministral-3:3b|Ministral 3 3B|general|3|3|cpu-only|256|Mistral|||0|1|1|0|||
   ministral-3-8b|ministral-3:8b|Ministral 3 8B|general|8|6|low|256|Mistral|||0|1|1|0|||
   ministral-3-14b|ministral-3:14b|Ministral 3 14B|general|14|9.1|low|256|Mistral|||0|1|1|0|||
-  mistral-medium-3-5-128b|mistral-medium-3.5:128b|Mistral Medium 3.5|general|128|80|high|256|Mistral|||1|1|1|0|||
   command-r-35b|command-r:35b|Command R 35B|general|35|19|medium|128|Cohere|||0|0|1|0|||
   command-a-111b|command-a:111b|Command A 111B|general|111|67|high||Cohere|||0|0|1|0|||
   north-mini-code-30b|north-mini-code-1.0:latest|North Mini Code|coding|30|19|medium|256|Cohere|||0|0|1|0|||
@@ -123,7 +122,7 @@ llms[79|]{id,backendModelId,name,purpose,params,gb,tier,ctxK,creator,intel,agent
   ornith-35b|ornith:35b|Ornith 35B|coding|35|21|medium|256|DeepReinforce AI|||0|0|1|0|||
   laguna-xs-2-1-33b|laguna-xs-2.1:latest|Laguna XS 2.1|coding|33|20|medium|256|Poolside|||1|0|1|0|||
   laguna-s-2-1-118b|laguna-s-2.1:latest|Laguna S 2.1|coding|118|96|high|256|Poolside|||1|0|1|0|||
-  glm-4-7-flash-30b|glm-4.7-flash:latest|GLM-4.7 Flash|reasoning|30|19|medium|198|Z AI|||1|0|1|0|||
+  glm-4-7-flash-30b|glm-4.7-flash:latest|GLM-4.7 Flash|reasoning|30|19|medium|200|Z AI|||1|0|1|0|||
 `;
 
 /** A decoded TOON row: every column mapped to its raw string cell (empty string when blank). */

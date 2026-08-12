@@ -10,8 +10,8 @@ describe('curated-models (TOON catalog)', () => {
   const byId = new Map(CURATED_MODELS.map((m) => [m.id, m]));
   const llms = CURATED_MODELS.filter((m) => m.modality === 'llm');
 
-  it('decodes the full catalog (79 LLMs + voice + embeddings) with unique ids', () => {
-    expect(llms.length).toBe(79);
+  it('decodes the full catalog (78 LLMs + voice + embeddings) with unique ids', () => {
+    expect(llms.length).toBe(78);
     expect(CURATED_MODELS.filter((m) => m.modality === 'embedding').length).toBe(4);
     expect(CURATED_MODELS.filter((m) => m.modality === 'tts' || m.modality === 'stt').length).toBe(3);
     expect(new Set(CURATED_MODELS.map((m) => m.id)).size).toBe(CURATED_MODELS.length);
@@ -93,7 +93,12 @@ describe('curated-models (TOON catalog)', () => {
   });
 
   it('contains no fabricated families/sizes (only ollama.com-verified entries)', () => {
+    // Checked against BOTH the catalog `id` and the actual `backendModelId` pull tag — a fake family
+    // slipped back into the catalog once (2026-08) under a dashed `id` (`mistral-medium-3-5-128b`) that
+    // dodged an id-only check, while its `backendModelId` (`mistral-medium-3.5:128b`) was still exactly
+    // the banned string. Never check id alone again.
     const ids = new Set(CURATED_MODELS.map((m) => m.id));
+    const backendModelIds = CURATED_MODELS.map((m) => m.backendModelId);
     for (const fake of [
       'gemma4-300b',
       'gemma4-800b',
@@ -106,7 +111,9 @@ describe('curated-models (TOON catalog)', () => {
       'seed-oss',
       'ernie-4.5',
     ]) {
-      expect(ids.has(fake), `fabricated model ${fake} must not exist`).toBe(false);
+      expect(ids.has(fake), `fabricated model ${fake} must not exist as an id`).toBe(false);
+      const backendHit = backendModelIds.find((tag) => tag === fake || tag.startsWith(`${fake}:`));
+      expect(backendHit, `fabricated model ${fake} must not exist as a backendModelId (found: ${backendHit})`).toBeUndefined();
     }
   });
 });
