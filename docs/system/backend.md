@@ -5,7 +5,7 @@
 > **Key paths:** `packages/backend/src/modules/`, `packages/backend/src/database/`, `packages/backend/src/queue/`
 > **Commands:** `cd packages/backend && pnpm test`, `pnpm run test:integration` (root)
 > **Owner persona:** maintainability + security (see REVIEW_PERSONAS.md)
-> **Last updated:** 2026-08-04
+> **Last updated:** 2026-08-11
 > **Related:** docs/system/e2e.md, docs/ARCHITECTURE.md
 
 ---
@@ -63,6 +63,27 @@ bind mounts keep working and existing data stays exactly where it is.
 ## Queue workers
 
 RabbitMQ consumers handle long-running install/update operations. Frontend polls + SSE for progress.
+
+## Install lifecycle recovery
+
+The UI "install queue" is derived from DB rows with `status = 'installing'`, not a durable job table.
+A crash, RPC timeout, or hung image pull can leave those rows stranded with nothing holding the
+in-memory pipeline mutex — the home screen then shows perpetual "N installs waiting".
+
+Guards against that:
+
+- **Startup sweep** (`AppLifecycleService.recoverStuckInstallsOnStartup`) — on boot, every
+  `installing` row with no live registry/pipeline entry becomes `install_failed`.
+- **Status-sync heal** (`AppStatusSyncService`) — past the image-pull grace, `installing` + no
+  containers + not the active pipeline holder + no registry entry → `install_failed` (instead of
+  skip-forever). Live pulls keep the tracker/registry set, so slow-but-alive pulls are not killed.
+- **pullImages stall/overall timeouts** — inactivity (`DEFAULT_APP_IMAGE_PULL_INACTIVITY_TIMEOUT_MS`)
+  and overall (`DEFAULT_APP_IMAGE_PULL_TIMEOUT_MINUTES`) abort a wedged pull as a regular failure
+  (not `AbortError`, which would delete the row as a user cancel).
+- **Worker catch finalizes** — `invokeCommand`'s catch calls `handleFailedResult` for installs so a
+  throw after the publisher RPC timed out still reaches `install_failed`.
+- **Unique `(app_name, app_store_slug)`** — closes the concurrent-install race that used to insert
+  two rows for the same app (duplicate tiles / "Firefly III, Firefly III" in the queue).
 
 ## API client generation
 
