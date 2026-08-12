@@ -184,20 +184,23 @@ export const AiSettingsContainer = () => {
     if (!isRescan) setLoading(true);
     setError(null);
     try {
-      const data = await fetchInferenceOnboardingProfile(backendOverride);
+      // Preferences first. The profile endpoint computes `installedCatalogIds` for whichever backend
+      // it is asked about and falls back to the *hardware recommendation* when asked about none —
+      // so fetching before the operator's stored backend is known returns the installed set for a
+      // backend this panel may not be showing. That is what left the model checkboxes describing one
+      // backend while the rest of the screen acted on another. Never throws; returns null instead.
+      const prefData = await fetchInferencePreferences();
+      if (prefData?.preferredVllmApiKey) {
+        setVllmApiKey(prefData.preferredVllmApiKey);
+      }
+      if (prefData?.preferredVllmUrl) {
+        setVllmUrl(prefData.preferredVllmUrl);
+      }
+      const requestedBackend = backendOverride ?? prefData?.preferredBackend ?? undefined;
+      const data = await fetchInferenceOnboardingProfile(requestedBackend);
       setProfile(data);
 
-      let preferredBackend = backendOverride ?? data.backends.recommended;
-      const prefData = await fetchInferencePreferences();
-      if (prefData) {
-        preferredBackend = backendOverride ?? prefData.preferredBackend ?? data.backends.recommended;
-        if (prefData.preferredVllmApiKey) {
-          setVllmApiKey(prefData.preferredVllmApiKey);
-        }
-        if (prefData.preferredVllmUrl) {
-          setVllmUrl(prefData.preferredVllmUrl);
-        }
-      }
+      const preferredBackend = requestedBackend ?? data.backends.recommended;
       // fetchProfile handles initial runtime model fetch to avoid duplicate effect calls.
       lastHandledBackendRef.current = preferredBackend;
       setSelectedBackend(preferredBackend);
