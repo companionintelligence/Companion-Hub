@@ -18,11 +18,11 @@ import { Button } from '@/components/ui/Button';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/Dialog';
 import { Skeleton } from '@/components/ui/Skeleton/Skeleton';
 import { RefreshCw, Loader2 } from 'lucide-react';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router';
 import toast from 'react-hot-toast';
 import type { CloudProviderInput, HardwareProfileResponse, RuntimeModelInfo } from '@/modules/onboarding/helpers/ai-setup-types';
-import type { CuratedModel, InferenceBackendType, TrackedModel } from '@ci-hub/common/types';
+import type { CuratedModel, InferenceBackendType, ModelState, TrackedModel } from '@ci-hub/common/types';
 import { SystemOverview } from '@/modules/onboarding/components/ai-setup/system-overview';
 import { BackendSelectionCard } from '@/modules/onboarding/components/ai-setup/backend-selection-card';
 import { CloudProviderCard } from '@/modules/onboarding/components/ai-setup/cloud-provider-card';
@@ -43,8 +43,40 @@ const isAgentModel = (model: CuratedModel) => model.modality === 'llm';
 const isEmbeddingModel = (model: CuratedModel) => model.modality === 'embedding';
 const isVisionModel = (model: CuratedModel) => model.modality === 'llm' && model.metadata?.capabilities?.vision === true;
 
+// Tracked states that mean "this model is on its way in, or already here". Typed against the state
+// union so a state added to `ModelState` has to be considered here rather than silently excluded.
+const TRACKED_SELECTED_STATES: ModelState[] = ['pulling', 'pulled', 'loading', 'loaded', 'pinned'];
+
+// The models a save for `backend` actually acts on: same-backend models, plus Ollama embeddings
+// (chat on vLLM still embeds through Ollama). Shared by the save itself and by the confirmation
+// copy, so the dialog can never describe a different outcome than the one that will happen.
+const isCompatibleWithBackend = (model: CuratedModel, backend: InferenceBackendType) =>
+  model.backend === backend || (model.backend === EMBEDDING_INFERENCE_BACKEND && isEmbeddingModel(model));
+
+type ModelIndex = Map<string, CuratedModel>;
+
+const indexAvailableModels = (profile: HardwareProfileResponse): ModelIndex => new Map(profile.availableModels.map((model) => [model.id, model]));
+
+const compatibleSelection = (availableModelById: ModelIndex, backend: InferenceBackendType, selectedIds: string[]): string[] =>
+  selectedIds.filter((modelId) => {
+    const model = availableModelById.get(modelId);
+    return model ? isCompatibleWithBackend(model, backend) : false;
+  });
+
+// The pins a save actually acts on. The unpin loop walks exactly this set, so the confirmation copy
+// has to gate on it too — gating on every tracked pin would promise to unpin models the save leaves
+// alone (a pin outside the tier's model list, or on a backend the Hub does not pin through).
+const unpinnablePins = (availableModelById: ModelIndex, pinnedIds: Iterable<string>): string[] =>
+  [...pinnedIds].filter((modelId) => availableModelById.get(modelId)?.backend === 'ollama');
+
 // Pick the preferred model for a role from the user's selection, preferring a recommended model.
-// Returns null (which clears the stored preference) when no selected model fits the role.
+// Returns null when no selected model fits the role.
+//
+// That null does NOT clear the stored preference, despite reading like it should and despite the
+// backend documenting `null` as the clear signal: `saveInferencePreferences` maps it to `undefined`,
+// `JSON.stringify` drops undefined keys from the body, and the controller only writes a field it
+// received. So a role that resolves to nothing leaves the stored default in place. Tracked
+// separately — do not build UI that promises a clear until the wire actually carries one.
 const resolvePreferredModelId = (
   profile: HardwareProfileResponse,
   backend: InferenceBackendType,
@@ -88,6 +120,10 @@ export const AiSettingsContainer = () => {
   const vllmUrlRef = useRef('');
   vllmUrlRef.current = vllmUrl;
   const trackedModelsRef = useRef<TrackedModel[]>([]);
+  // One index of the tier catalog per profile, shared by the save and by the confirmation copy so
+  // they cannot disagree — and so neither rebuilds it, the save on every press and the copy on
+  // every render.
+  const availableModelById = useMemo<ModelIndex>(() => (profile ? indexAvailableModels(profile) : new Map()), [profile]);
 
   const applyTrackedModels = useCallback((tracked: TrackedModel[]) => {
     const trackedById = Object.fromEntries(tracked.map((model) => [model.catalogId, model]));
@@ -113,17 +149,13 @@ export const AiSettingsContainer = () => {
    */
   const seedSelectedModelIds = useCallback((data: HardwareProfileResponse, backend: InferenceBackendType, tracked: TrackedModel[]) => {
     const installed = new Set(data.installedCatalogIds ?? []);
-    const selected = new Set<string>();
-    for (const model of data.availableModels) {
-      if (!installed.has(model.id)) continue;
-      if (model.backend === backend || (model.backend === EMBEDDING_INFERENCE_BACKEND && isEmbeddingModel(model))) {
-        selected.add(model.id);
-      }
-    }
+    // Same predicate the save uses. Seeding on a narrower rule would leave a model that the save
+    // still acts on permanently unselected, which is the destructive shape this fix exists to close.
+    const selected = new Set(
+      data.availableModels.filter((model) => installed.has(model.id) && isCompatibleWithBackend(model, backend)).map((model) => model.id),
+    );
     for (const model of tracked) {
-      if (['pulling', 'pulled', 'loading', 'loaded', 'pinned'].includes(model.state)) {
-        selected.add(model.catalogId);
-      }
+      if (TRACKED_SELECTED_STATES.includes(model.state)) selected.add(model.catalogId);
     }
     setSelectedModelIds([...selected]);
   }, []);
@@ -152,20 +184,23 @@ export const AiSettingsContainer = () => {
     if (!isRescan) setLoading(true);
     setError(null);
     try {
-      const data = await fetchInferenceOnboardingProfile(backendOverride);
+      // Preferences first. The profile endpoint computes `installedCatalogIds` for whichever backend
+      // it is asked about and falls back to the *hardware recommendation* when asked about none —
+      // so fetching before the operator's stored backend is known returns the installed set for a
+      // backend this panel may not be showing. That is what left the model checkboxes describing one
+      // backend while the rest of the screen acted on another. Never throws; returns null instead.
+      const prefData = await fetchInferencePreferences();
+      if (prefData?.preferredVllmApiKey) {
+        setVllmApiKey(prefData.preferredVllmApiKey);
+      }
+      if (prefData?.preferredVllmUrl) {
+        setVllmUrl(prefData.preferredVllmUrl);
+      }
+      const requestedBackend = backendOverride ?? prefData?.preferredBackend ?? undefined;
+      const data = await fetchInferenceOnboardingProfile(requestedBackend);
       setProfile(data);
 
-      let preferredBackend = backendOverride ?? data.backends.recommended;
-      const prefData = await fetchInferencePreferences();
-      if (prefData) {
-        preferredBackend = backendOverride ?? prefData.preferredBackend ?? data.backends.recommended;
-        if (prefData.preferredVllmApiKey) {
-          setVllmApiKey(prefData.preferredVllmApiKey);
-        }
-        if (prefData.preferredVllmUrl) {
-          setVllmUrl(prefData.preferredVllmUrl);
-        }
-      }
+      const preferredBackend = requestedBackend ?? data.backends.recommended;
       // fetchProfile handles initial runtime model fetch to avoid duplicate effect calls.
       lastHandledBackendRef.current = preferredBackend;
       setSelectedBackend(preferredBackend);
@@ -312,12 +347,7 @@ export const AiSettingsContainer = () => {
         return;
       }
 
-      const availableModelById = new Map(profile.availableModels.map((model) => [model.id, model]));
-      const compatibleSelectedModelIds = selectedModelIds.filter((modelId) => {
-        const model = availableModelById.get(modelId);
-        if (!model) return false;
-        return model.backend === selectedBackend || (model.backend === EMBEDDING_INFERENCE_BACKEND && isEmbeddingModel(model));
-      });
+      const compatibleSelectedModelIds = compatibleSelection(availableModelById, selectedBackend, selectedModelIds);
 
       const preferredModel = resolvePreferredModelId(profile, selectedBackend, isAgentModel, compatibleSelectedModelIds);
       const preferredEmbeddingModel = resolvePreferredModelId(profile, EMBEDDING_INFERENCE_BACKEND, isEmbeddingModel, compatibleSelectedModelIds);
@@ -343,7 +373,7 @@ export const AiSettingsContainer = () => {
       }
 
       const ollamaSelectedModelIds = compatibleSelectedModelIds.filter((modelId) => availableModelById.get(modelId)?.backend === 'ollama');
-      const compatiblePinnedModelIds = [...pinnedModelIds].filter((modelId) => availableModelById.get(modelId)?.backend === 'ollama');
+      const compatiblePinnedModelIds = unpinnablePins(availableModelById, pinnedModelIds);
       const modelOperationErrors: string[] = [];
       const modelsToPull = ollamaSelectedModelIds.filter((modelId) => !compatiblePinnedModelIds.includes(modelId));
 
@@ -432,16 +462,35 @@ export const AiSettingsContainer = () => {
   }
 
   const isInsufficient = profile.tier === 'insufficient';
-  const backendCompatibleRecommendedModels = profile.recommendedModels.filter(
-    (model) => model.backend === selectedBackend || (model.backend === EMBEDDING_INFERENCE_BACKEND && isEmbeddingModel(model)),
-  );
-  const backendAvailableModels = profile.availableModels.filter(
-    (model) => model.backend === selectedBackend || (model.backend === EMBEDDING_INFERENCE_BACKEND && isEmbeddingModel(model)),
-  );
+  const backendCompatibleRecommendedModels = profile.recommendedModels.filter((model) => isCompatibleWithBackend(model, selectedBackend));
+  const backendAvailableModels = profile.availableModels.filter((model) => isCompatibleWithBackend(model, selectedBackend));
   const selectedModels = backendAvailableModels.filter((model) => selectedModelIds.includes(model.id));
   const availableStorageMb = profile.resourceEstimate.availableDiskMb ?? 0;
   const availableMemoryMb = profile.resourceEstimate.availableMemoryMb ?? 0;
   const installedCatalogIds = profile.installedCatalogIds ?? [];
+
+  // Saving with nothing selected for the active backend unpins every pinned model: the unpin loop
+  // walks each pin that is no longer in the selection. Legitimate when meant — it is how you unpin
+  // everything — but the generic "this will restart your apps" copy gives no hint of it.
+  //
+  // Scoped to unpinning, and nothing else. `resolvePreferredModelId` returning null for every role
+  // reads like it also clears the stored chat/embedding/vision defaults, and it does not:
+  // `saveInferencePreferences` maps each null to undefined, `JSON.stringify` drops undefined keys
+  // from the body, and the controller only writes a field it actually received. Warning about a
+  // clear that cannot happen would teach the operator to click through the one dialog that means
+  // something. The dead null-clear channel is tracked separately.
+  //
+  // Counts only the pins the unpin loop walks — `unpinnablePins`, the same call the save makes.
+  // Counting every tracked pin would promise to unpin models the save never touches: one outside
+  // the tier's model list, or on a backend the Hub does not pin through.
+  const saveUnpinsEveryModel =
+    compatibleSelection(availableModelById, selectedBackend, selectedModelIds).length === 0 &&
+    unpinnablePins(availableModelById, pinnedModelIds).length > 0;
+
+  // Picked as a pair so the heading can never describe a different save than the body.
+  const confirmCopy = saveUnpinsEveryModel
+    ? { title: 'AI_SETTINGS_CONFIRM_UNPIN_TITLE', description: 'AI_SETTINGS_CONFIRM_UNPIN_DESCRIPTION' }
+    : { title: 'AI_SETTINGS_CONFIRM_TITLE', description: 'AI_SETTINGS_CONFIRM_DESCRIPTION' };
 
   return (
     <div className="space-y-5">
@@ -618,9 +667,9 @@ export const AiSettingsContainer = () => {
       <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>
         <DialogContent size="sm">
           <DialogHeader>
-            <DialogTitle>{t('AI_SETTINGS_CONFIRM_TITLE')}</DialogTitle>
+            <DialogTitle>{t(confirmCopy.title)}</DialogTitle>
           </DialogHeader>
-          <DialogDescription>{t('AI_SETTINGS_CONFIRM_DESCRIPTION')}</DialogDescription>
+          <DialogDescription data-testid="ai-settings-confirm-description">{t(confirmCopy.description)}</DialogDescription>
           <DialogFooter>
             <Button variant="outline" onClick={() => setConfirmOpen(false)} data-testid="ai-settings-cancel-btn">
               {t('COMMON_CANCEL')}
