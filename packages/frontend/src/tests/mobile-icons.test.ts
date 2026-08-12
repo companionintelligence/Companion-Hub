@@ -40,7 +40,7 @@ function readPng(file: string): Buffer {
   expect(existsSync(file), `missing PNG: ${file}`).toBe(true);
   const buf = readFileSync(file);
   expect(buf.length, `empty PNG: ${file}`).toBeGreaterThan(0);
-  expect(buf.subarray(0, 8).equals(PNG_SIGNATURE), `not a valid PNG (bad signature): ${file}`).toBe(true);
+  expect(buf.subarray(0, 8).toString('hex'), `not a valid PNG (bad signature): ${file}`).toBe(PNG_SIGNATURE.toString('hex'));
   expect(buf.length, `PNG too small to contain an IHDR header: ${file}`).toBeGreaterThanOrEqual(24);
   return buf;
 }
@@ -138,14 +138,14 @@ describe('generated platform icons stay in sync with icons/ source', () => {
   it.each(iosSrcFiles)('iOS gen/%s is byte-identical to icons/ios source', (f) => {
     const src = readPng(path.join(iosSrcDir, f));
     const gen = readPng(path.join(iosGenDir, f));
-    expect(gen.equals(src), `gen AppIcon ${f} differs from source icons/ios/${f}`).toBe(true);
+    expect(gen.toString('hex'), `gen AppIcon ${f} differs from source icons/ios/${f}`).toBe(src.toString('hex'));
   });
 
   it.each(ANDROID_DENSITIES)('Android $dir gen mipmaps are byte-identical to icons/android source', ({ dir }) => {
     for (const name of ['ic_launcher.png', 'ic_launcher_round.png', 'ic_launcher_foreground.png']) {
       const src = readPng(path.join(androidSrcDir, dir, name));
       const gen = readPng(path.join(androidGenDir, dir, name));
-      expect(gen.equals(src), `gen ${dir}/${name} differs from source icons/android/${dir}/${name}`).toBe(true);
+      expect(gen.toString('hex'), `gen ${dir}/${name} differs from source icons/android/${dir}/${name}`).toBe(src.toString('hex'));
     }
   });
 });
