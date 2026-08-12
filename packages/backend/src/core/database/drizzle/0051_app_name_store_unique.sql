@@ -1,11 +1,13 @@
 -- Deduplicate before unique index; prefer running/stopped over stranded installing, then lowest id.
+-- Compare status as text so this migrates in the same run that added enum labels (Postgres
+-- rejects using a newly ADDed enum value until that transaction commits).
 WITH ranked AS (
   SELECT
     id,
     ROW_NUMBER() OVER (
       PARTITION BY app_name, app_store_slug
       ORDER BY
-        CASE status
+        CASE status::text
           WHEN 'running' THEN 0
           WHEN 'stopped' THEN 1
           WHEN 'missing' THEN 2
