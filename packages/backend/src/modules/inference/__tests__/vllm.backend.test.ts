@@ -79,6 +79,42 @@ describe('VllmBackend', () => {
     });
   });
 
+  describe('Base URL resolution', () => {
+    it('prefers the operator-configured URL from Settings over the env default', async () => {
+      configurationService.getInferencePreferences.mockReturnValue({
+        preferredBackend: 'vllm',
+        preferredModel: null,
+        preferredEmbeddingModel: null,
+        preferredVisionModel: null,
+        preferredVllmApiKey: null,
+        preferredVllmUrl: 'http://192.168.1.50:8000',
+      });
+
+      expect(backend.getBaseUrl()).toBe('http://192.168.1.50:8000');
+    });
+
+    it('normalizes a URL pasted with a trailing /v1 or slash', () => {
+      configurationService.getInferencePreferences.mockReturnValue({
+        preferredBackend: 'vllm',
+        preferredModel: null,
+        preferredEmbeddingModel: null,
+        preferredVisionModel: null,
+        preferredVllmApiKey: null,
+        preferredVllmUrl: 'http://192.168.1.50:8000/v1/',
+      });
+
+      expect(backend.getBaseUrl()).toBe('http://192.168.1.50:8000');
+    });
+
+    it('probes a candidate URL override without persisting it', async () => {
+      (axios.get as any) = vi.fn().mockResolvedValue({ data: { data: [] } });
+
+      await backend.healthCheck('http://10.0.0.9:8000');
+
+      expect(axios.get).toHaveBeenCalledWith('http://10.0.0.9:8000/v1/models', expect.any(Object));
+    });
+  });
+
   describe('Compose config', () => {
     it('should include GPU config for NVIDIA', () => {
       const config = backend.getComposeConfig('nvidia');

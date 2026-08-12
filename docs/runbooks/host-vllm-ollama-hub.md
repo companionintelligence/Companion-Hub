@@ -10,16 +10,17 @@ This guide covers running **vLLM** and **Ollama** on the host while **CI Hub** a
 | Ollama | 11434 | Semantic Fingerprint embeddings only when vLLM is the chat backend |
 | Hub (Docker) | — | Onboarding, settings, env injection into apps |
 
-Hub reaches host services via `host.docker.internal` (see `docker-compose.prod.yml`: `VLLM_URL=http://host.docker.internal:8000`).
+Hub reaches host services via `host.docker.internal` (see `docker-compose.prod.yml`: `VLLM_URL=http://host.docker.internal:8000`). A different vLLM server (custom port, or a remote machine) can be configured per-Hub via the **vLLM endpoint URL** field on the setup card — persisted as `inferenceVllmUrl`, which wins over the `VLLM_URL` env default.
 
 ## 1. Start vLLM on the host
 
-Example (NVIDIA GPU):
+Example (NVIDIA GPU — this model is in the Hub catalog and fits an 8 GB card with these flags):
 
 ```bash
-vllm serve Qwen/Qwen2.5-7B-Instruct \
+vllm serve Qwen/Qwen3-4B-Instruct-2507 \
   --host 0.0.0.0 \
   --port 8000 \
+  --quantization bitsandbytes --max-model-len 8192 --gpu-memory-utilization 0.85 \
   --api-key vllm-local
 ```
 
@@ -44,13 +45,13 @@ curl -s http://127.0.0.1:11434/api/tags
 
 ## 3. Hub onboarding / settings
 
-1. Choose **vLLM** as the inference backend (NVIDIA + container GPU runtime).
-2. Complete the **vLLM setup** card — Hub probes `host.docker.internal:8000/v1/models`.
+1. Choose **vLLM** as the inference backend. It is always selectable — the live endpoint probe on the setup card is the gate, not the local GPU. (Hardware still drives which backend is *recommended*: NVIDIA + container GPU runtime recommends vLLM.)
+2. Complete the **vLLM setup** card — Hub probes `host.docker.internal:8000/v1/models` by default, or the custom **endpoint URL** you enter.
 3. Optionally enter your **vLLM API key** (must match `--api-key` on the host).
 4. Complete the **Ollama embeddings** card — recommended but does not block Continue when vLLM is ready.
-5. Select vLLM chat models (opens Hugging Face if not yet served) and Ollama embedding models.
+5. Select vLLM chat models (opens Hugging Face if not yet served) and Ollama embedding models. After loading a model in vLLM, **Re-check** refreshes both the status banner and the installed-model list.
 
-Hub persists `inferenceBackend: "vllm"` and optional `inferenceVllmApiKey` to `state/settings.json`.
+Hub persists `inferenceBackend: "vllm"` and optional `inferenceVllmApiKey` / `inferenceVllmUrl` to `state/settings.json`.
 
 ## 4. Env injected into ci-memory
 
@@ -95,7 +96,8 @@ docker compose -f … recreate api summary-service
 | Chat 401 | API key in Hub settings matches vLLM `--api-key` |
 | Embeddings fail | Ollama running on host; `OLLAMA_EMBED_HOST` set in app.env |
 | Model not in picker | Load model in vLLM, click Re-check on setup card |
-| AMD GPU | vLLM unavailable in Hub — use Ollama backend |
+| AMD GPU | Hub cannot *run* vLLM locally on AMD (no maintained ROCm image) — use Ollama, or point the endpoint URL at a vLLM server elsewhere |
+| No recommended vLLM models | No curated vLLM model fits the GPU's VRAM (smallest is ~9 GB bf16); serve a quantized model manually and Re-check |
 
 ## Out of scope (this epic)
 

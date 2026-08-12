@@ -103,6 +103,7 @@ export const AiSetupStep = ({
   const [checkingOllama, setCheckingOllama] = useState(false);
   const [checkingVllm, setCheckingVllm] = useState(false);
   const [vllmApiKey, setVllmApiKey] = useState('');
+  const [vllmUrl, setVllmUrl] = useState('');
   const [selectedBackend, setSelectedBackend] = useState<InferenceBackendType>('ollama');
 
   // Three code paths fetch the same profile endpoint concurrently (mount/Rescan, backend switch,
@@ -167,7 +168,7 @@ export const AiSetupStep = ({
     const requestId = ++profileRequestId.current;
     try {
       const backend = backendOverride ?? selectedBackend;
-      const data = await fetchInferenceOnboardingProfile(backend);
+      const data = await fetchInferenceOnboardingProfile(backend, vllmUrl);
       // Superseded: a rescan that started before a backend switch but answers after it would push
       // `backends.recommended` back over the backend the operator just picked, and reset their
       // selection to that backend's defaults.
@@ -213,7 +214,7 @@ export const AiSetupStep = ({
   const checkVllmStatus = async (): Promise<VllmStatus> => {
     setCheckingVllm(true);
     try {
-      const data = (await fetchVllmInstallStatus()) as VllmStatus;
+      const data = (await fetchVllmInstallStatus(vllmUrl)) as VllmStatus;
       setVllmStatus(data);
       return data;
     } catch (_e) {
@@ -238,7 +239,7 @@ export const AiSetupStep = ({
     const requestId = ++profileRequestId.current;
     try {
       const previouslyInstalled = new Set(profile?.installedCatalogIds ?? []);
-      const data = await fetchInferenceOnboardingProfile(backend);
+      const data = await fetchInferenceOnboardingProfile(backend, vllmUrl);
       // Drop a superseded answer. Rescan and the backend selector write the same `profile`, so a
       // refresh that started first but landed last would reinstate pre-rescan hardware figures, or
       // leave `profile` scoped to a backend the operator has already switched away from.
@@ -323,7 +324,7 @@ export const AiSetupStep = ({
     setSelectedBackend(backend);
     const requestId = ++profileRequestId.current;
     try {
-      const data = await fetchInferenceOnboardingProfile(backend);
+      const data = await fetchInferenceOnboardingProfile(backend, vllmUrl);
       // `setSelectedBackend` above is synchronous, so two quick switches already end on the right
       // backend — but the slower fetch can still answer last and leave `profile` (and the selection
       // derived from it) describing the backend the operator switched away from.
@@ -429,6 +430,7 @@ export const AiSetupStep = ({
       installBlocked,
       installBlockReason,
       ...(selectedBackend === 'vllm' && vllmApiKey.trim() ? { vllmApiKey: vllmApiKey.trim() } : {}),
+      ...(selectedBackend === 'vllm' && vllmUrl.trim() ? { vllmUrl: vllmUrl.trim() } : {}),
     };
   };
 
@@ -458,6 +460,7 @@ export const AiSetupStep = ({
     remoteAccess,
     cloudProviders,
     vllmApiKey,
+    vllmUrl,
     onConfigChange,
   ]);
 
@@ -575,6 +578,8 @@ export const AiSetupStep = ({
                 onRecheck={handleVllmRecheck}
                 apiKey={vllmApiKey}
                 onApiKeyChange={setVllmApiKey}
+                endpointUrl={vllmUrl}
+                onEndpointUrlChange={setVllmUrl}
               />
             </StepSection>
           ) : (

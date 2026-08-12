@@ -3,10 +3,12 @@ import { mock, type MockProxy } from 'vitest-mock-extended';
 import { AppStatusSyncService } from '../app-status-sync.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { AppsRepository } from '@/modules/apps/apps.repository';
+import { InstallPipelineTracker } from '@/modules/apps/install-pipeline.tracker';
 import { SSEService } from '@/core/sse/sse.service';
 import { SystemEventsQueue } from '@/modules/queue/entities/system-events';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { ErrorReportingService } from '@/core/error-reporting/error-reporting.service';
+import { AppOperationRegistry } from '../app-operation-registry';
 import type Dockerode from 'dockerode';
 
 describe('AppStatusSyncService', () => {
@@ -14,6 +16,9 @@ describe('AppStatusSyncService', () => {
   let appRepository: MockProxy<AppsRepository>;
   let docker: MockProxy<Dockerode>;
   let errorReportingService: MockProxy<ErrorReportingService>;
+  let sseService: MockProxy<SSEService>;
+  let installPipelineTracker: InstallPipelineTracker;
+  let operationRegistry: AppOperationRegistry;
   let dockerService: { diagnoseAppContainers: ReturnType<typeof vi.fn> };
 
   beforeEach(() => {
@@ -22,6 +27,9 @@ describe('AppStatusSyncService', () => {
     docker = mock<Dockerode>();
     docker.listContainers.mockResolvedValue([]);
     errorReportingService = mock<ErrorReportingService>();
+    sseService = mock<SSEService>();
+    installPipelineTracker = new InstallPipelineTracker();
+    operationRegistry = new AppOperationRegistry(mock<LoggerService>());
     dockerService = {
       diagnoseAppContainers: vi.fn().mockResolvedValue({ unhealthy: [], healthy: [] }),
     };
@@ -42,10 +50,12 @@ describe('AppStatusSyncService', () => {
     service = new AppStatusSyncService(
       mock<LoggerService>(),
       appRepository,
-      mock<SSEService>(),
+      sseService,
       systemEventsQueue,
       config,
       docker,
+      installPipelineTracker,
+      operationRegistry,
       undefined,
       errorReportingService,
       undefined,
@@ -70,7 +80,7 @@ describe('AppStatusSyncService', () => {
     expect(result.skippedCount).toBe(1);
   });
 
-  it('does not mark installing apps as missing while no containers exist', async () => {
+  it('does not mark installing apps as missing while no containers exist within the pull grace', async () => {
     const updatedAt = new Date(Date.now() - 10 * 60 * 1000).toISOString();
     appRepository.getApps.mockResolvedValue([
       {
@@ -85,6 +95,49 @@ describe('AppStatusSyncService', () => {
     const result = await service.syncAllAppStatuses();
 
     expect(appRepository.updateAppById).not.toHaveBeenCalled();
+    expect(appRepository.updateAppByIdIfStatus).not.toHaveBeenCalled();
+    expect(result.skippedCount).toBe(1);
+    expect(result.syncedCount).toBe(0);
+  });
+
+  it('heals stranded installing apps past grace when nothing is actively installing them', async () => {
+    const updatedAt = new Date(Date.now() - 50 * 60 * 1000).toISOString();
+    appRepository.getApps.mockResolvedValue([
+      {
+        id: 1,
+        appName: 'flatnotes',
+        appStoreSlug: 'ci-marketplace',
+        status: 'installing',
+        updatedAt,
+      },
+    ] as never);
+
+    const result = await service.syncAllAppStatuses();
+
+    expect(appRepository.updateAppByIdIfStatus).toHaveBeenCalledWith(1, 'installing', expect.objectContaining({ status: 'install_failed' }));
+    expect(sseService.emit).toHaveBeenCalledWith(
+      'app',
+      expect.objectContaining({ event: 'install_error', appUrn: 'flatnotes:ci-marketplace', appStatus: 'install_failed' }),
+    );
+    expect(result.syncedCount).toBe(1);
+  });
+
+  it('does not heal an installing app that still holds the pipeline even past grace', async () => {
+    const updatedAt = new Date(Date.now() - 50 * 60 * 1000).toISOString();
+    appRepository.getApps.mockResolvedValue([
+      {
+        id: 1,
+        appName: 'openclaw',
+        appStoreSlug: 'ci-marketplace',
+        status: 'installing',
+        updatedAt,
+      },
+    ] as never);
+    installPipelineTracker.setActive('openclaw:ci-marketplace' as never);
+
+    const result = await service.syncAllAppStatuses();
+
+    expect(appRepository.updateAppByIdIfStatus).not.toHaveBeenCalled();
     expect(result.skippedCount).toBe(1);
     expect(result.syncedCount).toBe(0);
   });

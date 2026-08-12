@@ -2,20 +2,17 @@ import type { InferenceBackendType } from '@ci-hub/common/types';
 
 import type { HardwareProfileResponse } from './ai-setup-types';
 
-/** Host vLLM is supported on NVIDIA hardware with a working container GPU runtime probe. */
-export function isVllmSelectable(profile: HardwareProfileResponse): boolean {
-  const { gpu, npu } = profile.hardware;
-
-  if (npu.available) {
-    return false;
-  }
-
-  return gpu.vendor === 'nvidia' && gpu.runtimeAvailable;
-}
-
-/** Backends grayed out in the backend picker (Lemonade + vLLM when hardware cannot use it). */
-export function unavailableInferenceBackends(profile: HardwareProfileResponse): InferenceBackendType[] {
-  return ['lemonade', ...(isVllmSelectable(profile) ? [] : (['vllm'] as const))];
+/**
+ * Backends grayed out in the backend picker. Only Lemonade is held back (dark-launched pending
+ * NPU detection — see CI-Hub#1104).
+ *
+ * vLLM is always selectable: it is a host-run (or remote) OpenAI-compatible endpoint, so the
+ * real gate is the live endpoint probe in the vLLM setup card — not the local GPU. Hardware
+ * still drives which backend is *recommended* (server-side `getRecommendedBackend`), and the
+ * catalog only recommends vLLM models that fit an NVIDIA VRAM budget.
+ */
+export function unavailableInferenceBackends(_profile: HardwareProfileResponse): InferenceBackendType[] {
+  return ['lemonade'];
 }
 
 /** Embeddings always resolve against Ollama, even when chat runs on vLLM. */

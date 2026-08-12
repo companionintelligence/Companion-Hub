@@ -14,9 +14,67 @@ interface VllmSetupCardProps {
   onRecheck: () => Promise<void>;
   apiKey: string;
   onApiKeyChange: (value: string) => void;
+  /** Operator-configured vLLM base URL; empty string means "use the Hub default". */
+  endpointUrl?: string;
+  onEndpointUrlChange?: (value: string) => void;
 }
 
-export const VllmSetupCard = ({ status, checking, onRecheck, apiKey, onApiKeyChange }: VllmSetupCardProps) => {
+/** Endpoint URL + API key fields shared by the ready and not-ready branches. */
+const VllmConnectionFields = ({
+  apiKey,
+  onApiKeyChange,
+  endpointUrl,
+  onEndpointUrlChange,
+  labelClass,
+  hintClass,
+  defaultEndpointUrl,
+  idSuffix,
+}: Pick<VllmSetupCardProps, 'apiKey' | 'onApiKeyChange' | 'endpointUrl' | 'onEndpointUrlChange'> & {
+  labelClass: string;
+  hintClass: string;
+  defaultEndpointUrl?: string;
+  idSuffix: string;
+}) => {
+  const { t } = useTranslation();
+  return (
+    <div className="space-y-3">
+      {onEndpointUrlChange && (
+        <div>
+          <label htmlFor={`vllm-endpoint-url-${idSuffix}`} className={`mb-1 block text-xs font-medium ${labelClass}`}>
+            {t('ONBOARDING_VLLM_ENDPOINT_URL_LABEL')}
+          </label>
+          <Input
+            id={`vllm-endpoint-url-${idSuffix}`}
+            type="text"
+            autoComplete="off"
+            value={endpointUrl ?? ''}
+            onChange={(e) => onEndpointUrlChange(e.target.value)}
+            placeholder={defaultEndpointUrl || t('ONBOARDING_VLLM_ENDPOINT_URL_PLACEHOLDER')}
+            data-testid="vllm-endpoint-url-input"
+          />
+          <p className={`mt-1 text-xs ${hintClass}`}>{t('ONBOARDING_VLLM_ENDPOINT_URL_HINT')}</p>
+        </div>
+      )}
+      <div>
+        <label htmlFor={`vllm-api-key-${idSuffix}`} className={`mb-1 block text-xs font-medium ${labelClass}`}>
+          {t('ONBOARDING_VLLM_API_KEY_LABEL')}
+        </label>
+        <Input
+          id={`vllm-api-key-${idSuffix}`}
+          type="password"
+          autoComplete="off"
+          value={apiKey}
+          onChange={(e) => onApiKeyChange(e.target.value)}
+          placeholder={t('ONBOARDING_VLLM_API_KEY_PLACEHOLDER')}
+          data-testid="vllm-api-key-input"
+        />
+        <p className={`mt-1 text-xs ${hintClass}`}>{t('ONBOARDING_VLLM_API_KEY_HINT')}</p>
+      </div>
+    </div>
+  );
+};
+
+export const VllmSetupCard = ({ status, checking, onRecheck, apiKey, onApiKeyChange, endpointUrl, onEndpointUrlChange }: VllmSetupCardProps) => {
   const { t } = useTranslation();
 
   if (!status) {
@@ -61,21 +119,16 @@ export const VllmSetupCard = ({ status, checking, onRecheck, apiKey, onApiKeyCha
               {!checking && <RefreshCw className="h-3.5 w-3.5" />}
             </Button>
           </div>
-          <div>
-            <label htmlFor="vllm-api-key" className="mb-1 block text-xs font-medium text-green-900 dark:text-green-100">
-              {t('ONBOARDING_VLLM_API_KEY_LABEL')}
-            </label>
-            <Input
-              id="vllm-api-key"
-              type="password"
-              autoComplete="off"
-              value={apiKey}
-              onChange={(e) => onApiKeyChange(e.target.value)}
-              placeholder={t('ONBOARDING_VLLM_API_KEY_PLACEHOLDER')}
-              data-testid="vllm-api-key-input"
-            />
-            <p className="mt-1 text-xs text-green-700/90 dark:text-green-300/90">{t('ONBOARDING_VLLM_API_KEY_HINT')}</p>
-          </div>
+          <VllmConnectionFields
+            apiKey={apiKey}
+            onApiKeyChange={onApiKeyChange}
+            endpointUrl={endpointUrl}
+            onEndpointUrlChange={onEndpointUrlChange}
+            labelClass="text-green-900 dark:text-green-100"
+            hintClass="text-green-700/90 dark:text-green-300/90"
+            defaultEndpointUrl={status.endpointUrl}
+            idSuffix="ready"
+          />
         </CardContent>
       </Card>
     );
@@ -99,17 +152,15 @@ export const VllmSetupCard = ({ status, checking, onRecheck, apiKey, onApiKeyCha
               </div>
             )}
             <div className="mb-3">
-              <label htmlFor="vllm-api-key-unready" className="mb-1 block text-xs font-medium text-yellow-900 dark:text-yellow-100">
-                {t('ONBOARDING_VLLM_API_KEY_LABEL')}
-              </label>
-              <Input
-                id="vllm-api-key-unready"
-                type="password"
-                autoComplete="off"
-                value={apiKey}
-                onChange={(e) => onApiKeyChange(e.target.value)}
-                placeholder={t('ONBOARDING_VLLM_API_KEY_PLACEHOLDER')}
-                data-testid="vllm-api-key-input"
+              <VllmConnectionFields
+                apiKey={apiKey}
+                onApiKeyChange={onApiKeyChange}
+                endpointUrl={endpointUrl}
+                onEndpointUrlChange={onEndpointUrlChange}
+                labelClass="text-yellow-900 dark:text-yellow-100"
+                hintClass="text-yellow-700/90 dark:text-yellow-300/90"
+                defaultEndpointUrl={status.endpointUrl}
+                idSuffix="unready"
               />
             </div>
             <div className="flex gap-2 flex-wrap">

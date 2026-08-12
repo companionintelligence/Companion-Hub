@@ -228,7 +228,44 @@ describe('AiSettingsContainer', () => {
         embeddingModel: null,
         visionModel: null,
         vllmApiKey: null,
+        vllmUrl: null,
       });
+    });
+  });
+
+  // #1109: the backend-switch effect listed `profile` in its dependency array while writing it
+  // with a freshly-fetched object, so every switch started an unbounded refetch loop (165 requests
+  // in 400ms). The shared-fixture mock used elsewhere hides this — React bails out on identical
+  // references — so this probe must return a distinct object per call.
+  it('does not loop profile refetches after a backend switch', async () => {
+    fetchInferenceOnboardingProfile.mockImplementation(() => Promise.resolve({ ...profile }));
+
+    const user = userEvent.setup();
+    renderAiSettings();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('selected-backend')).toHaveTextContent('vllm');
+    });
+
+    const before = fetchInferenceOnboardingProfile.mock.calls.length;
+    await user.click(screen.getByTestId('select-lemonade'));
+    await new Promise((resolve) => setTimeout(resolve, 400));
+
+    // Exactly one profile refetch for the new backend — not one per render.
+    expect(fetchInferenceOnboardingProfile.mock.calls.length).toBe(before + 1);
+  });
+
+  // #1106: the selection must seed from what the backend actually serves (installedCatalogIds),
+  // not only the in-memory tracked registry — which is empty after a Hub restart and never sees
+  // externally-loaded vLLM models. Seeding it wrong made Save clear preferences and unpin models.
+  it('seeds model selection from installedCatalogIds when the tracked registry is empty', async () => {
+    fetchInferenceOnboardingProfile.mockResolvedValue({ ...profile, installedCatalogIds: ['m1'] } as never);
+    fetchInferenceTrackedModels.mockResolvedValue([]);
+
+    renderAiSettings();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('recommended-model-checkbox-m1')).toBeChecked();
     });
   });
 

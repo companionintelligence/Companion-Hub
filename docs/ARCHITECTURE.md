@@ -167,7 +167,7 @@ PostgreSQL 14 with **Drizzle ORM**. Five core tables:
                                 └───────────────────────────────┘
 ```
 
-**App Status States:** `running`, `stopped`, `installing`, `uninstalling`, `stopping`, `starting`, `missing`, `updating`, `resetting`, `restarting`, `backing_up`, `restoring`, `loading`, `updating_config`
+**App Status States:** `running`, `stopped`, `installing`, `install_failed`, `uninstalling`, `stopping`, `starting`, `missing`, `updating`, `resetting`, `restarting`, `backing_up`, `restoring`
 
 Migrations are managed by Drizzle Kit and run automatically on startup.
 
@@ -203,6 +203,8 @@ Frontend                    Backend API                    RabbitMQ             
 **Install pipeline:** Multiple install jobs may be queued in RabbitMQ, but `AppLifecycleService.invokeCommand` holds `INSTALL_PIPELINE_MUTEX_KEY` for the duration of each `install` worker run so Docker pulls do not run in parallel.
 
 **Install queue API (UI):** `GET /api/apps/install-queue` returns `{ active, queued }`. `active` is the app holding the Docker install pipeline mutex; `queued` is every other app in `installing` status (FIFO by app id). When the pipeline is idle but installs are accepted, all pending apps appear in `queued` and `active` is null. SSE event `install_queue` pushes the same snapshot. The frontend polls while work is pending and updates React Query from SSE.
+
+**Stuck-install recovery:** Because the queue is derived from `installing` rows, a crash or hung pull can leave the UI showing perpetual "N installs waiting" with `active: null`. Hub heals that on boot (`recoverStuckInstallsOnStartup`), via status-sync after the image-pull grace when nothing in-process still owns the install, via pull inactivity/overall timeouts that fail (not cancel) a wedged pull, and via `invokeCommand`'s catch finalizing `install_failed`. `(app_name, app_store_slug)` is unique so concurrent install races cannot create duplicate queue tiles.
 
 All messages are validated with Zod schemas before processing. The `QueueFactory` handles connection pooling with exponential backoff reconnection. Cron scheduling is available for repeatable tasks like periodic app status reconciliation.
 

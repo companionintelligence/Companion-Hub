@@ -47,6 +47,8 @@ export interface AiSetupConfig {
   ollamaSelectedModelIds?: string[];
   /** Optional custom API key for host vLLM (persisted to Hub settings as inferenceVllmApiKey). */
   vllmApiKey?: string;
+  /** Optional custom vLLM base URL (persisted to Hub settings as inferenceVllmUrl). */
+  vllmUrl?: string;
   /** When true, onboarding install must not proceed (budget or missing agent model). */
   installBlocked?: boolean;
   installBlockReason?: string;
@@ -98,6 +100,7 @@ export interface InferencePreferencesResponse {
   preferredEmbeddingModel: string | null;
   preferredVisionModel: string | null;
   preferredVllmApiKey?: string | null;
+  preferredVllmUrl?: string | null;
 }
 
 export interface RuntimeModelInfo {
