@@ -10,11 +10,11 @@ describe('curated-models (TOON catalog)', () => {
   const byId = new Map(CURATED_MODELS.map((m) => [m.id, m]));
   const llms = CURATED_MODELS.filter((m) => m.modality === 'llm');
 
-  it('decodes the full catalog (69 Ollama LLMs + 4 Lemonade LLMs + 8 vLLM LLMs + voice + embeddings) with unique ids', () => {
-    expect(llms.filter((m) => m.backend === 'ollama').length).toBe(69);
+  it('decodes the full catalog (83 Ollama LLMs + 4 Lemonade LLMs + 8 vLLM LLMs + voice + embeddings) with unique ids', () => {
+    expect(llms.filter((m) => m.backend === 'ollama').length).toBe(83);
     expect(llms.filter((m) => m.backend === 'lemonade').length).toBe(4);
     expect(llms.filter((m) => m.backend === 'vllm').length).toBe(8);
-    expect(llms.length).toBe(81);
+    expect(llms.length).toBe(95);
     // 4 Ollama embeddings + 1 Lemonade embedding (nomic-embed-text-v1-lemonade).
     expect(CURATED_MODELS.filter((m) => m.modality === 'embedding').length).toBe(5);
     expect(CURATED_MODELS.filter((m) => m.modality === 'tts' || m.modality === 'stt').length).toBe(3);
@@ -95,16 +95,57 @@ describe('curated-models (TOON catalog)', () => {
     expect(glm?.tiers.high).toBe('recommended');
   });
 
+  it('derives requirements + metadata for Muse Glimmer', () => {
+    const muse = byId.get('muse-glimmer-30b');
+    expect(muse).toBeDefined();
+    expect(muse?.backendModelId).toBe('muse-glimmer:30b');
+    expect(muse?.metadata?.creator).toBe('Meta');
+    expect(muse?.metadata?.capabilities?.vision).toBe(true);
+    expect(muse?.metadata?.capabilities?.tools).toBe(true);
+    expect(muse?.metadata?.capabilities?.reasoning).toBe(true);
+    expect(muse?.requirements.diskMb).toBe(18 * 1024);
+    expect(muse?.tiers.medium).toBe('recommended');
+  });
+
+  it('derives requirements + metadata for Nemotron 3.5 Lightning', () => {
+    const nemotron = byId.get('nemotron-3-5-lightning-30b');
+    expect(nemotron).toBeDefined();
+    expect(nemotron?.backendModelId).toBe('nemotron-3.5-lightning:30b');
+    expect(nemotron?.metadata?.creator).toBe('NVIDIA');
+    expect(nemotron?.activeParameterScale).toBe(3);
+    expect(nemotron?.requirements.diskMb).toBe(25 * 1024);
+    expect(nemotron?.tiers.medium).toBe('recommended');
+  });
+
   it('never surfaces a cloud-proxy (`:cloud`-tagged) model — this catalog is local-only', () => {
-    for (const m of llms) {
+    // Checked across every modality, not just LLMs — the rule is about the whole catalog.
+    for (const m of CURATED_MODELS) {
       expect(m.backendModelId.endsWith(':cloud'), `${m.id} must not be a :cloud proxy`).toBe(false);
     }
   });
 
   it('contains no fabricated families/sizes (only ollama.com-verified entries)', () => {
+    // Checked against BOTH the catalog `id` and the actual `backendModelId` pull tag — a fake family
+    // slipped back into the catalog once (2026-08) under a dashed `id` (`mistral-medium-3-5-128b`) that
+    // dodged an id-only check, while its `backendModelId` (`mistral-medium-3.5:128b`) was still exactly
+    // the banned string. Never check id alone again.
     const ids = new Set(CURATED_MODELS.map((m) => m.id));
-    for (const fake of ['gemma4-300b', 'gemma4-800b', 'gemma4-3t', 'qwen3-6-200b', 'kimi-k2-6', 'deepseek-v4-pro', 'mistral-medium-3.5']) {
-      expect(ids.has(fake), `fabricated model ${fake} must not exist`).toBe(false);
+    const backendModelIds = CURATED_MODELS.map((m) => m.backendModelId);
+    for (const fake of [
+      'gemma4-300b',
+      'gemma4-800b',
+      'gemma4-3t',
+      'qwen3-6-200b',
+      'kimi-k2-6',
+      'deepseek-v4-pro',
+      'mistral-medium-3.5',
+      'hermes-4',
+      'seed-oss',
+      'ernie-4.5',
+    ]) {
+      expect(ids.has(fake), `fabricated model ${fake} must not exist as an id`).toBe(false);
+      const backendHit = backendModelIds.find((tag) => tag === fake || tag.startsWith(`${fake}:`));
+      expect(backendHit, `fabricated model ${fake} must not exist as a backendModelId (found: ${backendHit})`).toBeUndefined();
     }
   });
 
@@ -128,6 +169,16 @@ describe('curated-models (TOON catalog)', () => {
       'qwen3-fable-4b',
       'qwen3-fable-8b',
     ]) {
+      expect(ids.has(unverified), `unverified model ${unverified} must not be re-added without independent confirmation`).toBe(false);
+    }
+  });
+
+  // 2026-08-12: mirrors the 2026-07-27 guard above for a second, independently-caught fabrication —
+  // kept as its own list (rather than folded into the generic fabrication guard) so a future audit that
+  // re-verifies one of these out-of-band has a single, obvious place to remove it from.
+  it('does not re-add the 2026-08-12 unverified/fabricated Mistral Medium 3.5 row', () => {
+    const ids = new Set(CURATED_MODELS.map((m) => m.id));
+    for (const unverified of ['mistral-medium-3-5-128b']) {
       expect(ids.has(unverified), `unverified model ${unverified} must not be re-added without independent confirmation`).toBe(false);
     }
   });

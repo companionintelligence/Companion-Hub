@@ -36,6 +36,18 @@ import type { CuratedModel, HardwareTier, InferenceBackendType, ModelModality, M
 // been confirmed via an independent channel (a real browser, or an actual `ollama pull`). Treat them as
 // provisional until someone does that out-of-band check.
 //
+// 2026-08-12: added Muse Glimmer (Meta), the Phi-4 family (Microsoft), Ministral 3 (Mistral), Command-R
+// / Command-A (Cohere), OLMo 3 (Allen Institute), GLM-4.7-Flash (Z AI), Nemotron 3.5 Lightning (NVIDIA),
+// and DeepSeek V4 Flash 0731 via a community re-host (`frob/deepseek-v4-flash-0731` — DeepSeek's own
+// Ollama tag is cloud-only). Learning the lesson from the 2026-07-27 incident above, every one of these
+// was adversarially re-verified through channels independent of this session's own ollama.com/
+// artificialanalysis.ai fetches (official vendor sites/blogs, HuggingFace org pages, arXiv papers,
+// independent press) before being kept. One entry did NOT survive that check and was removed: "Mistral
+// Medium 3.5" — the exact model this file's own fabrication guard had already flagged as fake — which
+// had slipped back in under a dashed catalog id (`mistral-medium-3-5-128b`) whose actual pull tag
+// (`mistral-medium-3.5:128b`) was still the literal banned string; the id-only guard didn't catch it, so
+// it now also checks `backendModelId`. See `curated-models.test.ts` for both.
+//
 // Columns:
 //   id              catalog id (`${family}-${size}`)
 //   backendModelId  the exact ollama pull tag (`family:size`)
@@ -64,7 +76,7 @@ import type { CuratedModel, HardwareTier, InferenceBackendType, ModelModality, M
 // passes (e.g. gpt-oss-120b 33.3→24, llama-3.3-70b 14.5→9) — consistent with AA having rebased/recalibrated
 // the index in between, not with the older numbers being wrong at the time they were entered.
 const CATALOG_TOON = `
-llms[69|]{id,backendModelId,name,purpose,params,gb,tier,ctxK,creator,intel,agentic,reason,vision,tools,audio,tps,ttft,e2e}:
+llms[83|]{id,backendModelId,name,purpose,params,gb,tier,ctxK,creator,intel,agentic,reason,vision,tools,audio,tps,ttft,e2e}:
   gemma4-e2b|gemma4:e2b|Gemma 4 E2B|general|2|7.2|cpu-only|128|Google|9|7.4|1|1|1|1|||
   gemma4-e4b|gemma4:e4b|Gemma 4 E4B|general|4|9.6|cpu-only|128|Google|12|8.7|1|1|1|1|||
   gemma4-26b|gemma4:26b|Gemma 4 26B|general|26|18|medium|256|Google|26|28.9|1|1|1|0|78|1.59|8
@@ -134,6 +146,20 @@ llms[69|]{id,backendModelId,name,purpose,params,gb,tier,ctxK,creator,intel,agent
   inkling|hf.co/unsloth/inkling-GGUF:UD-Q4_K_XL|Inkling|general|975|587|high|1000|Thinking Machines|41||1|1|1|1|||
   gemma4-26b-think|bjoernb/gemma4-26b-think:latest|Gemma 4 26B Think|reasoning|26|18|medium|256|Google (community)|||1|1|1|0|||
   medgemma1-5-thinking|jordimurgo/medgemma1.5-thinking:q4_K_M|MedGemma 1.5 Thinking|general|4.3|3.3|cpu-only|128|Google (community)|||1|1|0|0|||
+  muse-glimmer-30b|muse-glimmer:30b|Muse Glimmer|general|30|18|medium|128|Meta|35||1|1|1|0|101|0.83|25.63
+  phi4-14b|phi4:14b|Phi-4 14B|general|14|9.1|low|16|Microsoft|||0|0|1|0|||
+  phi4-mini-3-8b|phi4-mini:3.8b|Phi-4 Mini 3.8B|general|3.8|2.5|cpu-only|128|Microsoft|||0|0|1|0|||
+  phi4-reasoning-14b|phi4-reasoning:14b|Phi-4 Reasoning 14B|reasoning|14|11|low|32|Microsoft|||1|0|1|0|||
+  ministral-3-3b|ministral-3:3b|Ministral 3 3B|general|3|3|cpu-only|256|Mistral|||0|1|1|0|||
+  ministral-3-8b|ministral-3:8b|Ministral 3 8B|general|8|6|low|256|Mistral|||0|1|1|0|||
+  ministral-3-14b|ministral-3:14b|Ministral 3 14B|general|14|9.1|low|256|Mistral|||0|1|1|0|||
+  command-r-35b|command-r:35b|Command R 35B|general|35|19|medium|128|Cohere|||0|0|1|0|||
+  command-a-111b|command-a:111b|Command A 111B|general|111|67|high||Cohere|||0|0|1|0|||
+  olmo-3-7b|olmo-3:7b|OLMo 3 7B|general|7|4.5|low|64|Allen Institute|||0|0|1|0|||
+  olmo-3-32b|olmo-3:32b|OLMo 3 32B|general|32|19|medium|64|Allen Institute|||0|0|1|0|||
+  glm-4-7-flash-30b|glm-4.7-flash:latest|GLM-4.7 Flash|reasoning|30|19|medium|200|Z AI|||1|0|1|0|||
+  nemotron-3-5-lightning-30b|nemotron-3.5-lightning:30b|Nemotron 3.5 Lightning|general|30|25|medium|1000|NVIDIA|24||0|0|1|0|293|1.04|
+  deepseek-v4-flash-0731-284b|frob/deepseek-v4-flash-0731:284b-a13b-ud-q4_k_xl|DeepSeek V4 Flash 0731|reasoning|284|155|high|1000|DeepSeek|52||1|0|1|0|128|1.43|20.95
 `;
 
 /** A decoded TOON row: every column mapped to its raw string cell (empty string when blank). */
@@ -209,6 +235,9 @@ const MOE_ACTIVE_PARAMS_B: Record<string, number> = {
   'qwen3-coder-30b-vllm': 3, // Qwen3-Coder-30B-A3B (vLLM) — same 30B-A3B MoE arch
   'gpt-oss-20b-vllm': 3.6, // GPT-OSS 20B (vLLM) — same MoE as the Ollama row
   'gpt-oss-120b-vllm': 5.1, // GPT-OSS 120B (vLLM) — same MoE as the Ollama row
+  'glm-4-7-flash-30b': 3, // GLM-4.7 Flash — 30B-A3B MoE
+  'nemotron-3-5-lightning-30b': 3, // Nemotron 3.5 Lightning — 30B-A3B MoE
+  'deepseek-v4-flash-0731-284b': 13, // DeepSeek V4 Flash 0731 — 284B total / 13B active MoE
 };
 
 /**

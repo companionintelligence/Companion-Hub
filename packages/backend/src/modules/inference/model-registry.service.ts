@@ -73,7 +73,11 @@ function activeParamsOf(model: CuratedModel): number {
  * A `:cloud`-tagged catalog row (e.g. `glm-5.2:cloud`) proxies inference through Ollama Cloud rather
  * than running on the user's own hardware. Its catalog `gb`/footprint is a nominal placeholder, not a
  * real local memory cost, so it must never compete for "best local model that fits this hardware" —
- * that comparison is only meaningful between models that actually run on the box being sized.
+ * that comparison is only meaningful between models that actually run on the box being sized. Per
+ * product decision, this tool exists to find the best model a user's own hardware can run, so a
+ * cloud-proxied model must never even be *shown* — not just excluded from the recommendation — which is
+ * why `getModelsForTier()` (the single gate every browsing path filters through, not just the
+ * recommendation functions below) excludes it too.
  */
 function isCloudProxyModel(model: CuratedModel): boolean {
   return model.backendModelId.endsWith(':cloud');
@@ -135,6 +139,7 @@ export class ModelRegistryService implements OnModuleInit {
     const tierKey = tier === 'cpu-only' ? 'cpuOnly' : tier;
     if (tier === 'insufficient') return [];
     return CURATED_MODELS.filter((m) => {
+      if (isCloudProxyModel(m)) return false;
       const rec = m.tiers[tierKey as keyof typeof m.tiers];
       return rec === 'recommended' || rec === 'available';
     });
