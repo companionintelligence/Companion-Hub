@@ -326,7 +326,12 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       await reply(result);
     } catch (err) {
       this.logger.error('Error invoking command:', err);
-      await reply(toAppCommandFailureResult(err));
+      const failure = toAppCommandFailureResult(err);
+      if (isInstall) {
+        await this.handleFailedResult(data.command, data.appUrn, failure);
+        this.operationRegistry.clear(data.appUrn, data.requestId);
+      }
+      await reply(failure);
     } finally {
       // Do not clear the operation registry here. The publisher-side completion handler
       // claims the entry via settleCommandOutcome/claimCompletion once the RPC reply is
