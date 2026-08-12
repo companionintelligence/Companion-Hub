@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { AiSetupStep } from '../ai-setup-step';
@@ -163,6 +163,28 @@ const vllmReady = {
   displayEndpoint: 'http://host.docker.internal:8000/v1',
 };
 const vllmMissing = { ready: false, running: false, endpointUrl: 'http://host.docker.internal:8000' };
+
+// A model the Hub cannot pull — it only ever appears as installed while the host vLLM serves it.
+const vllmModel = {
+  id: 'qwen3-4b-instruct-vllm',
+  displayName: 'Qwen 3 4B Instruct (vLLM)',
+  description: 'Chat model served by host vLLM',
+  modality: 'llm',
+  purpose: 'general',
+  backend: 'vllm',
+  runtime: { backendModelId: 'Qwen/Qwen3-4B-Instruct-2507', input: ['text'], pinnedByDefault: false, memoryFootprintMb: 9123 },
+  tiers: { high: 'recommended', medium: 'available', low: 'not-recommended', cpuOnly: 'not-recommended' },
+};
+
+/** A vLLM-recommended profile whose catalog is the host-served model above. */
+const vllmProfile = (installedCatalogIds: string[] = []): HardwareProfileResponse =>
+  ({
+    ...highTierProfile,
+    backends: { ...highTierProfile.backends, recommended: 'vllm' },
+    recommendedModels: [vllmModel],
+    availableModels: [vllmModel],
+    installedCatalogIds,
+  }) as any;
 
 // Mutable API state read by the default mock; tests tweak it before rendering.
 let api: {
@@ -466,29 +488,246 @@ describe('AiSetupStep', () => {
     expect(screen.getByTestId('ai-continue-btn')).toBeDisabled();
   });
 
-  // #1105: Re-check must refresh the onboarding profile too — installedCatalogIds is computed
-  // server-side, so without a refetch a model served after page load flips the status banner
-  // green but never shows as Installed and stays unselectable.
-  it('refetches the profile when vLLM Re-check finds the server ready', async () => {
+  it('refreshes the model list on vLLM re-check so a newly served model reads as installed', async () => {
+    api.profile = vllmProfile();
+    api.vllm = vllmReady;
+
+    const user = userEvent.setup();
+    renderStep();
+    await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
+    // `backends.recommended` is vLLM, so the step already opens on that backend.
+    await waitFor(() => expect(screen.getByText('vLLM detected')).toBeInTheDocument());
+
+    // Nothing is served by the host vLLM server yet, so the card is not selectable.
+    expect((screen.getByTestId('model-checkbox-qwen3-4b-instruct-vllm') as HTMLInputElement).checked).toBe(false);
+
+    // The operator loads the model on the host — the next profile fetch reports it installed.
+    api.profile = vllmProfile(['qwen3-4b-instruct-vllm']);
+    await user.click(screen.getByTestId('vllm-recheck-btn'));
+
+    await waitFor(() => expect((screen.getByTestId('model-checkbox-qwen3-4b-instruct-vllm') as HTMLInputElement).checked).toBe(true));
+  });
+
+  it('keeps the selected backend when re-checking, rather than resetting to the recommended one', async () => {
     api.profile = {
       ...highTierProfile,
-      backends: { ...highTierProfile.backends, recommended: 'vllm' },
+      backends: { ...highTierProfile.backends, recommended: 'ollama' },
     };
-    api.vllm = vllmMissing;
+    api.vllm = vllmReady;
+
     const user = userEvent.setup();
     renderStep();
     await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
     await user.click(screen.getByTestId('backend-option-vllm'));
-    await waitFor(() => expect(screen.getByText('vLLM not detected')).toBeInTheDocument());
-
-    // Operator serves a model on the host, then clicks Re-check on the vLLM card (rendered
-    // before the embeddings Ollama card, which shares the same button label).
-    api.vllm = vllmReady;
-    const callsBefore = fetchInferenceOnboardingProfile.mock.calls.length;
-    await user.click(screen.getAllByRole('button', { name: 'Re-check' })[0] as HTMLElement);
-
     await waitFor(() => expect(screen.getByText('vLLM detected')).toBeInTheDocument());
-    await waitFor(() => expect(fetchInferenceOnboardingProfile.mock.calls.length).toBeGreaterThan(callsBefore));
+
+    // Scope the assertion to the re-check: picking the backend already fetched a vLLM profile, so
+    // without this the expectation below passes even when Re-check refetches nothing at all.
+    fetchInferenceOnboardingProfile.mockClear();
+    await user.click(screen.getByTestId('vllm-recheck-btn'));
+
+    // Still on vLLM — the refetch must happen, and must not snap back to the recommended backend.
+    await waitFor(() => expect(fetchInferenceOnboardingProfile).toHaveBeenCalledWith('vllm', ''));
+    expect(screen.getByText('vLLM detected')).toBeInTheDocument();
+  });
+
+  it('does not discard model choices the operator already made when re-checking', async () => {
+    api.profile = vllmProfile(['qwen3-4b-instruct-vllm']);
+    api.vllm = vllmReady;
+
+    const user = userEvent.setup();
+    renderStep();
+    await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('vLLM detected')).toBeInTheDocument());
+
+    // Installed models start selected; the operator deliberately opts out of this one.
+    const checkbox = () => screen.getByTestId('model-checkbox-qwen3-4b-instruct-vllm') as HTMLInputElement;
+    await waitFor(() => expect(checkbox().checked).toBe(true));
+    await user.click(checkbox());
+    expect(checkbox().checked).toBe(false);
+
+    await user.click(screen.getByTestId('vllm-recheck-btn'));
+
+    // Re-check refreshes what is installed — it must not re-tick a deliberate opt-out.
+    await waitFor(() => expect(fetchVllmInstallStatus).toHaveBeenCalledTimes(2));
+    expect(checkbox().checked).toBe(false);
+  });
+
+  it('keeps a model ticked while the re-check refresh is still in flight', async () => {
+    const secondModel = {
+      ...vllmModel,
+      id: 'qwen3-8b-vllm',
+      displayName: 'Qwen 3 8B (vLLM)',
+      runtime: { ...vllmModel.runtime, backendModelId: 'Qwen/Qwen3-8B' },
+    };
+    const bothServed = {
+      ...vllmProfile(['qwen3-4b-instruct-vllm', 'qwen3-8b-vllm']),
+      recommendedModels: [vllmModel, secondModel],
+      availableModels: [vllmModel, secondModel],
+    } as any;
+    api.profile = bothServed;
+    api.vllm = vllmReady;
+
+    const user = userEvent.setup();
+    renderStep();
+    await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
+    const first = () => screen.getByTestId('model-checkbox-qwen3-4b-instruct-vllm') as HTMLInputElement;
+    await waitFor(() => expect(first().checked).toBe(true));
+
+    // Hold the refresh open so the operator's click lands while the fetch is still running.
+    let release: (() => void) | undefined;
+    fetchInferenceOnboardingProfile.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          release = () => resolve(bothServed);
+        }),
+    );
+    await user.click(screen.getByTestId('vllm-recheck-btn'));
+    await waitFor(() => expect(release).toBeDefined());
+
+    await user.click(first());
+    expect(first().checked).toBe(false);
+
+    release?.();
+
+    // The refresh must merge onto the live selection, not the snapshot taken when it started.
+    await waitFor(() => expect(fetchInferenceOnboardingProfile).toHaveBeenCalledTimes(2));
+    expect(first().checked).toBe(false);
+  });
+
+  it('does not wipe the installed model list when re-checking a backend that is down', async () => {
+    api.profile = vllmProfile(['qwen3-4b-instruct-vllm']);
+    api.vllm = vllmReady;
+
+    const user = userEvent.setup();
+    renderStep();
+    await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
+    const checkbox = () => screen.getByTestId('model-checkbox-qwen3-4b-instruct-vllm') as HTMLInputElement;
+    await waitFor(() => expect(checkbox().checked).toBe(true));
+
+    // The operator restarts the host vLLM server and re-checks while it is still booting. The
+    // profile endpoint swallows its own health-check failure and answers 200 with nothing served.
+    api.vllm = vllmMissing;
+    api.profile = vllmProfile([]);
+    await user.click(screen.getByTestId('vllm-recheck-btn'));
+    await waitFor(() => expect(fetchVllmInstallStatus).toHaveBeenCalledTimes(2));
+
+    // Adopting that answer would drop the card back into the "open Hugging Face" branch this
+    // feature exists to leave, so an unreachable probe must not trigger the refresh at all.
+    expect(checkbox().checked).toBe(true);
+    expect(fetchInferenceOnboardingProfile).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the step usable when the profile refresh fails during a re-check', async () => {
+    api.profile = vllmProfile();
+    api.vllm = vllmReady;
+
+    const user = userEvent.setup();
+    renderStep();
+    await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('vLLM detected')).toBeInTheDocument());
+
+    // The refresh is a best-effort enhancement — a transient failure must not replace the
+    // whole step with the error screen and lose the operator's in-progress setup.
+    api.profileReject = true;
+    await user.click(screen.getByTestId('vllm-recheck-btn'));
+
+    await waitFor(() => expect(fetchVllmInstallStatus).toHaveBeenCalledTimes(2));
+    expect(screen.queryByTestId('ai-setup-error')).not.toBeInTheDocument();
+  });
+
+  it('does not let a slow rescan snap the backend away from the one just picked', async () => {
+    api.profile = { ...highTierProfile, backends: { ...highTierProfile.backends, recommended: 'ollama' } };
+    api.vllm = vllmReady;
+
+    const user = userEvent.setup();
+    renderStep();
+    await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
+
+    // Hold the rescan's profile fetch open so the backend switch below answers first.
+    let release: (() => void) | undefined;
+    fetchInferenceOnboardingProfile.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          release = () => resolve(api.profile);
+        }),
+    );
+    await user.click(screen.getByTestId('rescan-btn'));
+    await waitFor(() => expect(release).toBeDefined());
+
+    await user.click(screen.getByTestId('backend-option-vllm'));
+    await waitFor(() => expect(screen.getByText('vLLM detected')).toBeInTheDocument());
+
+    release?.();
+    // `rescanning` clears in the same `finally` that follows the discarded write, so an enabled
+    // Rescan button is proof the late answer has been fully processed.
+    await waitFor(() => expect(screen.getByTestId('rescan-btn')).not.toBeDisabled());
+
+    // That answer recommends Ollama. Applying it would drag the operator off the backend they
+    // picked while it was in flight, and reset their models to Ollama's defaults.
+    expect(screen.getByText('vLLM detected')).toBeInTheDocument();
+  });
+
+  it('does not let a superseded backend switch overwrite the profile with the abandoned backend', async () => {
+    api.profile = highTierProfile;
+
+    const user = userEvent.setup();
+    renderStep();
+    await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
+    const ollamaModel = () => screen.getByTestId('model-checkbox-phi-4-mini') as HTMLInputElement;
+    await waitFor(() => expect(ollamaModel().checked).toBe(true));
+
+    // Switching to vLLM hangs; the operator changes their mind before it answers.
+    let release: (() => void) | undefined;
+    fetchInferenceOnboardingProfile.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          release = () => resolve(vllmProfile(['qwen3-4b-instruct-vllm']));
+        }),
+    );
+    await user.click(screen.getByTestId('backend-option-vllm'));
+    await waitFor(() => expect(release).toBeDefined());
+
+    await user.click(screen.getByTestId('backend-option-ollama'));
+    await waitFor(() => expect(ollamaModel().checked).toBe(true));
+
+    await act(async () => {
+      release?.();
+    });
+
+    // The abandoned vLLM answer must not land: it would leave `profile` — and the selection
+    // derived from it — describing a backend the operator is no longer on.
+    expect(ollamaModel().checked).toBe(true);
+  });
+
+  it('does not raise the error screen for a superseded profile request that failed', async () => {
+    api.profile = { ...highTierProfile, backends: { ...highTierProfile.backends, recommended: 'ollama' } };
+    api.vllm = vllmReady;
+
+    const user = userEvent.setup();
+    renderStep();
+    await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
+
+    let fail: (() => void) | undefined;
+    fetchInferenceOnboardingProfile.mockImplementationOnce(
+      () =>
+        new Promise((_resolve, reject) => {
+          fail = () => reject(new Error('Network error'));
+        }),
+    );
+    await user.click(screen.getByTestId('rescan-btn'));
+    await waitFor(() => expect(fail).toBeDefined());
+
+    await user.click(screen.getByTestId('backend-option-vllm'));
+    await waitFor(() => expect(screen.getByText('vLLM detected')).toBeInTheDocument());
+
+    fail?.();
+    await waitFor(() => expect(screen.getByTestId('rescan-btn')).not.toBeDisabled());
+
+    // The switch that superseded it already succeeded, so the step is fine — tearing it down over
+    // the older request's failure would discard a working setup.
+    expect(screen.queryByTestId('ai-setup-error')).not.toBeInTheDocument();
+    expect(screen.getByText('vLLM detected')).toBeInTheDocument();
   });
 
   it('allows toggling model selection', async () => {

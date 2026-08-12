@@ -113,6 +113,7 @@ export const VllmSetupCard = ({ status, checking, onRecheck, apiKey, onApiKeyCha
               onClick={onRecheck}
               loading={checking}
               aria-label={t('ONBOARDING_VLLM_RECHECK')}
+              data-testid="vllm-recheck-btn"
               className="shrink-0"
             >
               {!checking && <RefreshCw className="h-3.5 w-3.5" />}
@@ -166,7 +167,7 @@ export const VllmSetupCard = ({ status, checking, onRecheck, apiKey, onApiKeyCha
               <Button size="sm" variant="ghost" onClick={() => openExternal(VLLM_DOCS_URL)}>
                 {t('ONBOARDING_VLLM_DOCS')}
               </Button>
-              <Button variant="ghost" size="sm" onClick={onRecheck} loading={checking}>
+              <Button variant="ghost" size="sm" onClick={onRecheck} loading={checking} data-testid="vllm-recheck-btn">
                 <RefreshCw className="h-3.5 w-3.5 mr-1.5" />
                 {t('ONBOARDING_VLLM_RECHECK')}
               </Button>

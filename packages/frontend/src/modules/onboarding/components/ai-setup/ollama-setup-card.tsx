@@ -112,6 +112,7 @@ export const OllamaSetupCard = ({ status, checking, onRecheck }: OllamaSetupCard
               onClick={onRecheck}
               loading={checking}
               aria-label={t('ONBOARDING_OLLAMA_RECHECK')}
+              data-testid="ollama-recheck-btn"
               className="shrink-0"
             >
               {!checking && <RefreshCw className="h-3.5 w-3.5" />}
@@ -196,7 +197,7 @@ export const OllamaSetupCard = ({ status, checking, onRecheck }: OllamaSetupCard
                     {t('ONBOARDING_OLLAMA_GET')}
                   </Button>
                 )}
-                <Button variant="ghost" size="sm" onClick={onRecheck} loading={checking}>
+                <Button variant="ghost" size="sm" onClick={onRecheck} loading={checking} data-testid="ollama-recheck-btn">
                   <RefreshCw className="h-3.5 w-3.5 mr-1.5" />
                   {t('ONBOARDING_OLLAMA_RECHECK')}
                 </Button>

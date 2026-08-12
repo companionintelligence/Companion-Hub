@@ -6,7 +6,7 @@ import {
 } from '@/lib/inference/inference-api';
 import { openExternal } from '@/lib/helpers/open-external';
 import { Button } from '@/components/ui/Button';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   validateCloudKey,
   type AgentFramework,
@@ -106,6 +106,18 @@ export const AiSetupStep = ({
   const [vllmUrl, setVllmUrl] = useState('');
   const [selectedBackend, setSelectedBackend] = useState<InferenceBackendType>('ollama');
 
+  // Three code paths fetch the same profile endpoint concurrently (mount/Rescan, backend switch,
+  // and the Re-check refresh below). Each stamps its request, so a slow answer can be recognised as
+  // superseded and dropped instead of reverting the state the operator is actually looking at.
+  const profileRequestId = useRef(0);
+  // Mirrors of the selection state, read by the refresh *after* its await: the render closure still
+  // holds the values from the moment of the click, so writing back from it would silently revert
+  // anything the operator changed while the fetch was in flight.
+  const selectedModelIdsRef = useRef(selectedModelIds);
+  selectedModelIdsRef.current = selectedModelIds;
+  const preferredModelIdRef = useRef(preferredModelId);
+  preferredModelIdRef.current = preferredModelId;
+
   // The default model Companion agents (Hermes, OpenClaw) use: the BEST-FIT agent LLM. recommendedModels
   // is ordered best-first (index 0 is the largest model that fits the hardware budget), so we walk it
   // in order and take the top installable agent LLM — not whatever happens to come first in the catalog.
@@ -153,9 +165,14 @@ export const AiSetupStep = ({
   const fetchProfile = async (isRescan = false, backendOverride?: InferenceBackendType) => {
     if (!isRescan) setLoading(true);
     setError(null);
+    const requestId = ++profileRequestId.current;
     try {
       const backend = backendOverride ?? selectedBackend;
       const data = await fetchInferenceOnboardingProfile(backend, vllmUrl);
+      // Superseded: a rescan that started before a backend switch but answers after it would push
+      // `backends.recommended` back over the backend the operator just picked, and reset their
+      // selection to that backend's defaults.
+      if (profileRequestId.current !== requestId) return;
       setProfile(data);
       const resolvedBackend = backendOverride ?? data.backends.recommended;
       setSelectedBackend(resolvedBackend);
@@ -163,15 +180,22 @@ export const AiSetupStep = ({
       setSelectedModelIds(defaultSelected);
       setPreferredModelId(getDefaultPreferredModelId(data, resolvedBackend, defaultSelected));
     } catch (e) {
+      // Same rule for the failure path: a newer request is already in flight and may well succeed,
+      // so raising the error screen on its behalf would discard a setup that is about to be fine.
+      if (profileRequestId.current !== requestId) return;
       setError((e as Error).message);
     } finally {
+      // Deliberately unguarded: `handleSelectBackend` bumps the request id without owning these
+      // flags, so skipping the clear when superseded would strand the spinner with nothing left to
+      // stop it. Clearing a beat early is cosmetic; a spinner that never stops is not.
       if (!isRescan) setLoading(false);
       setRescanning(false);
     }
   };
 
   // Ollama runs on the host (reached via host.docker.internal); this only checks reachability.
-  const checkOllamaStatus = async () => {
+  // Returns the status it stored so callers can act on it without waiting for the state to land.
+  const checkOllamaStatus = async (): Promise<OllamaStatus> => {
     setCheckingOllama(true);
     try {
       const data = (await fetchOllamaInstallStatus()) as OllamaStatus;
@@ -179,44 +203,99 @@ export const AiSetupStep = ({
       return data;
     } catch (_e) {
       // Silently fail - Ollama status is optional
-      setOllamaStatus({ ready: false, running: false, endpointUrl: '' });
-      return null;
+      const unreachable: OllamaStatus = { ready: false, running: false, endpointUrl: '' };
+      setOllamaStatus(unreachable);
+      return unreachable;
     } finally {
       setCheckingOllama(false);
     }
   };
 
-  const checkVllmStatus = async () => {
+  const checkVllmStatus = async (): Promise<VllmStatus> => {
     setCheckingVllm(true);
     try {
       const data = (await fetchVllmInstallStatus(vllmUrl)) as VllmStatus;
       setVllmStatus(data);
       return data;
     } catch (_e) {
-      setVllmStatus({ ready: false, running: false, endpointUrl: '' });
-      return null;
+      const unreachable: VllmStatus = { ready: false, running: false, endpointUrl: '' };
+      setVllmStatus(unreachable);
+      return unreachable;
     } finally {
       setCheckingVllm(false);
     }
   };
 
-  // Re-check handlers for the setup cards. Unlike the mount-time probes above, an explicit
-  // Re-check must also refresh the profile: `installedCatalogIds` is only recomputed server-side
-  // inside the onboarding-profile endpoint, so without this a model served after page load never
-  // shows as Installed and stays unselectable (#1105).
-  const handleRecheckVllm = async () => {
-    const status = await checkVllmStatus();
-    if (status?.ready) {
-      await fetchProfile(true);
+  // "Re-check" is the documented last step of both backend flows ("start it, then re-check" /
+  // "load a model in your host vLLM server, then Re-check"), so it must also refresh what the
+  // backend reports as installed: `installedCatalogIds` is what decides whether a model card reads
+  // as installed and selectable, and a status probe alone leaves it at the value fetched on mount.
+  //
+  // Deliberately narrower than `fetchProfile`, which exists to (re)establish defaults. Re-checking
+  // must not discard model choices already made, must not reset a hand-picked backend, and must not
+  // replace the whole step with the error screen when the refresh fails — the status probe is the
+  // signal the operator asked for, and their in-progress setup outweighs a stale model list.
+  const refreshInstalledModels = async (backend: InferenceBackendType) => {
+    const requestId = ++profileRequestId.current;
+    try {
+      const previouslyInstalled = new Set(profile?.installedCatalogIds ?? []);
+      const data = await fetchInferenceOnboardingProfile(backend, vllmUrl);
+      // Drop a superseded answer. Rescan and the backend selector write the same `profile`, so a
+      // refresh that started first but landed last would reinstate pre-rescan hardware figures, or
+      // leave `profile` scoped to a backend the operator has already switched away from.
+      if (profileRequestId.current !== requestId) return;
+      setProfile(data);
+
+      const nextInstalled = new Set(data.installedCatalogIds ?? []);
+      // Adopt only models that appeared since the last look, so an earlier opt-out survives.
+      const newlySelectable = getDefaultSelectedModelIds(data, backend).filter((id) => !previouslyInstalled.has(id));
+      // The Hub cannot pull a vLLM model, so `handleToggleModel` only lets one be ticked while the
+      // host is serving it. Drop the ones it stopped serving to keep that invariant: left ticked,
+      // `computeSelectionBudget` bills them as pending downloads and can block Continue on disk.
+      const isStillSelectable = (id: string) => data.availableModels.find((m) => m.id === id)?.backend !== 'vllm' || nextInstalled.has(id);
+      const nextSelected = [...new Set([...selectedModelIdsRef.current, ...newlySelectable])].filter(isStillSelectable);
+      setSelectedModelIds(nextSelected);
+
+      // `fetchProfile` seeds the agent default from the catalog before anything is installed, so
+      // that placeholder must give way once the backend reports what it is really serving —
+      // otherwise the "agent default" badge sits on a model the host does not have. A model the
+      // operator picked (installed, or ticked for download) is never overridden.
+      const preferred = preferredModelIdRef.current;
+      setPreferredModelId(
+        preferred && (nextInstalled.has(preferred) || nextSelected.includes(preferred))
+          ? preferred
+          : getDefaultPreferredModelId(data, backend, nextSelected),
+      );
+    } catch (e) {
+      // Best-effort refresh: the status probe already reported reachability, and taking the whole
+      // step down over a secondary fetch would discard an in-progress setup. Leave a trace though —
+      // a silent no-op here is indistinguishable from the bug this function exists to fix.
+      console.warn('Re-check could not refresh the installed model list', e);
     }
   };
 
-  const handleRecheckOllama = async () => {
-    const status = await checkOllamaStatus();
-    if (status?.ready) {
-      await fetchProfile(true);
+  // Kept separate from the probe helpers because those also run on mount, where `selectedBackend`
+  // is still the initial value and a refresh would read the wrong backend.
+  const handleRecheck = async (probe: () => Promise<{ ready: boolean }>, setChecking: (checking: boolean) => void) => {
+    const status = await probe();
+    // The profile endpoint swallows its own backend health-check failure and answers 200 with
+    // nothing served, so refreshing against a backend that is down does not reveal a new model —
+    // it erases the ones already there, dropping every card back into the "open Hugging Face"
+    // branch this fix exists to leave. The probe is the gate.
+    if (!status.ready) return;
+    // The probe clears its own `checking` flag the moment it returns, and `Button` is only disabled
+    // while `loading`. Hold the control busy for the slower half too, so the operator is not invited
+    // to click again — a second refresh racing the first is how the stale answer wins.
+    setChecking(true);
+    try {
+      await refreshInstalledModels(selectedBackend);
+    } finally {
+      setChecking(false);
     }
   };
+
+  const handleVllmRecheck = () => handleRecheck(checkVllmStatus, setCheckingVllm);
+  const handleOllamaRecheck = () => handleRecheck(checkOllamaStatus, setCheckingOllama);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: only on mount
   useEffect(() => {
@@ -243,14 +322,20 @@ export const AiSetupStep = ({
     }
 
     setSelectedBackend(backend);
+    const requestId = ++profileRequestId.current;
     try {
       const data = await fetchInferenceOnboardingProfile(backend, vllmUrl);
-      setProfile(data);
-      const defaultSelected = getDefaultSelectedModelIds(data, backend);
-      setSelectedModelIds(defaultSelected);
-      setPreferredModelId(getDefaultPreferredModelId(data, backend, defaultSelected));
+      // `setSelectedBackend` above is synchronous, so two quick switches already end on the right
+      // backend — but the slower fetch can still answer last and leave `profile` (and the selection
+      // derived from it) describing the backend the operator switched away from.
+      if (profileRequestId.current === requestId) {
+        setProfile(data);
+        const defaultSelected = getDefaultSelectedModelIds(data, backend);
+        setSelectedModelIds(defaultSelected);
+        setPreferredModelId(getDefaultPreferredModelId(data, backend, defaultSelected));
+      }
     } catch (e) {
-      setError((e as Error).message);
+      if (profileRequestId.current === requestId) setError((e as Error).message);
     }
     if (backend === 'vllm') {
       void checkVllmStatus();
@@ -490,7 +575,7 @@ export const AiSetupStep = ({
               <VllmSetupCard
                 status={vllmStatus}
                 checking={checkingVllm}
-                onRecheck={handleRecheckVllm}
+                onRecheck={handleVllmRecheck}
                 apiKey={vllmApiKey}
                 onApiKeyChange={setVllmApiKey}
                 endpointUrl={vllmUrl}
@@ -499,7 +584,7 @@ export const AiSetupStep = ({
             </StepSection>
           ) : (
             <StepSection number={3} badge="required" title={t('ONBOARDING_OLLAMA_SECTION_TITLE')} description={t('ONBOARDING_OLLAMA_SECTION_DESC')}>
-              <OllamaSetupCard status={ollamaStatus} checking={checkingOllama} onRecheck={handleRecheckOllama} />
+              <OllamaSetupCard status={ollamaStatus} checking={checkingOllama} onRecheck={handleOllamaRecheck} />
             </StepSection>
           )}
 
@@ -518,7 +603,7 @@ export const AiSetupStep = ({
                   {t('ONBOARDING_EMBEDDINGS_OLLAMA_WARNING')}
                 </div>
               )}
-              <OllamaSetupCard status={ollamaStatus} checking={checkingOllama} onRecheck={handleRecheckOllama} />
+              <OllamaSetupCard status={ollamaStatus} checking={checkingOllama} onRecheck={handleOllamaRecheck} />
             </StepSection>
           )}
 
