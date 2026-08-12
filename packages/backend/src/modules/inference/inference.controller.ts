@@ -19,11 +19,17 @@ import { AuthGuard } from '@/modules/auth/auth.guard';
 import { InternalNetworkGuard } from '@/modules/auth/internal-network.guard';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import type { CloudProviderType, HardwareProfile, HardwareTier, InferenceBackendType } from '@ci-hub/common/types';
-import { RuntimeModelsQueryDto, UpdateInferencePreferencesBody, UpdateRocmInstallStateBody } from './inference.dto';
+import {
+  RuntimeModelsQueryDto,
+  UpdateInferencePreferencesBody,
+  UpdateRocmInstallStateBody,
+  OnboardingProfileQueryDto,
+  VllmStatusQueryDto,
+} from './inference.dto';
 import { OllamaBackend } from './backends/ollama.backend';
 import { VllmBackend } from './backends/vllm.backend';
 import { LemonadeBackend } from './backends/lemonade.backend';
-import { resolveInstalledCatalogIds } from './model-availability.util';
+import { resolveInstalledCatalogIds, resolveInstalledCatalogIdsFromServedModels } from './model-availability.util';
 
 /**
  * Inference controller — exposes Ollama/backend provisioning + management.
@@ -57,13 +63,13 @@ export class InferenceController {
   ) {}
 
   private getRecommendedBackend(profile: HardwareProfile): InferenceBackendType {
-    return profile.npu.available
-      ? 'lemonade'
-      : profile.gpu.vendor === 'nvidia' && profile.gpu.runtimeAvailable
-        ? 'vllm'
-        : profile.gpu.vendor === 'amd' && profile.gpu.runtimeAvailable
-          ? 'vllm'
-          : 'ollama';
+    // AMD GPUs (including the Strix Halo APU) always recommend Ollama, whether or not ROCm is
+    // ready: its official image covers both cases — the `:rocm` tag when /dev/kfd passthrough
+    // works, and the default tag (which bundles a Vulkan/RADV ggml backend that auto-activates via
+    // /dev/dri) as the fallback — see OllamaBackend.getDockerImage()/.getComposeConfig(). vLLM has
+    // no reliably maintained ROCm image for this hardware — see VllmBackend.getComposeConfig(),
+    // which declines AMD outright rather than mount devices into an image that can't use them.
+    return profile.npu.available ? 'lemonade' : profile.gpu.vendor === 'nvidia' && profile.gpu.runtimeAvailable ? 'vllm' : 'ollama';
   }
 
   private getOnboardingTier(profile: HardwareProfile, recommendedBackend: InferenceBackendType): HardwareTier {
@@ -106,7 +112,14 @@ export class InferenceController {
   @UseGuards(AuthGuard)
   @Patch('preferences')
   async updatePreferences(@Body() body: UpdateInferencePreferencesBody) {
-    const result = await this.configurationService.setInferencePreferences(body.backend, body.model, body.embeddingModel, body.visionModel);
+    const result = await this.configurationService.setInferencePreferences(
+      body.backend,
+      body.model,
+      body.embeddingModel,
+      body.visionModel,
+      body.vllmApiKey,
+      body.vllmUrl,
+    );
 
     // Restart running apps that use AI models so they pick up the new inference
     // preferences. AppLifecycleService is resolved lazily via ModuleRef (rather
@@ -320,9 +333,10 @@ export class InferenceController {
 
   @UseGuards(AuthGuard)
   @Get('onboarding-profile')
-  async getOnboardingProfile() {
+  async getOnboardingProfile(@Query() query: OnboardingProfileQueryDto) {
     const profile = await this.hardwareInspector.getProfile();
     const recommendedBackend = this.getRecommendedBackend(profile);
+    const installBackend = query?.backend ?? recommendedBackend;
     const tier = this.getOnboardingTier(profile, recommendedBackend);
     const recommendedModels = this.modelRegistry.getRecommendedModelsForHardware(tier, profile);
     const availableModels = this.modelRegistry.getModelsForTier(tier);
@@ -342,16 +356,32 @@ export class InferenceController {
     const diskTotalMb = diskTotalGb * 1024;
     const availableDiskMb = Math.max(0, (diskTotalGb - diskUsedGb) * 1024);
 
+    const catalog = this.modelRegistry.getCatalog();
+    const getTrackedState = (id: string) => this.modelRegistry.getTrackedModel(id)?.state;
+
     const ollamaHealth = await this.ollamaBackend.healthCheck().catch(() => ({
       running: false,
       healthy: false,
       modelsLoaded: [] as string[],
     }));
-    const installedCatalogIds = resolveInstalledCatalogIds(
-      this.modelRegistry.getCatalog(),
-      ollamaHealth.modelsLoaded ?? [],
-      (id) => this.modelRegistry.getTrackedModel(id)?.state,
-    );
+    const ollamaInstalled = resolveInstalledCatalogIds(catalog, ollamaHealth.modelsLoaded ?? [], getTrackedState);
+
+    let installedCatalogIds: string[];
+    if (installBackend === 'vllm') {
+      const vllmHealth = await this.vllmBackend.healthCheck(query?.vllmUrl).catch(() => ({
+        running: false,
+        healthy: false,
+        modelsLoaded: [] as string[],
+      }));
+      const vllmInstalled = resolveInstalledCatalogIdsFromServedModels(catalog, vllmHealth.modelsLoaded ?? [], 'vllm', getTrackedState);
+      const ollamaEmbeddingIds = ollamaInstalled.filter((id) => {
+        const model = catalog.find((m) => m.id === id);
+        return model?.modality === 'embedding';
+      });
+      installedCatalogIds = [...new Set([...vllmInstalled, ...ollamaEmbeddingIds])];
+    } else {
+      installedCatalogIds = ollamaInstalled;
+    }
 
     return {
       hardware: profile,
@@ -380,6 +410,36 @@ export class InferenceController {
   @Get('ollama/status')
   async getOllamaStatus() {
     return this.ollamaInstaller.checkInstallation();
+  }
+
+  @UseGuards(AuthGuard)
+  @Get('vllm/status')
+  async getVllmStatus(@Query() query?: VllmStatusQueryDto) {
+    const endpointUrl = query?.url?.trim() || this.vllmBackend.getBaseUrl();
+    const health = await this.vllmBackend.healthCheck(endpointUrl).catch((err) => ({
+      running: false,
+      healthy: false,
+      modelsLoaded: [] as string[],
+      error: err instanceof Error ? err.message : String(err),
+    }));
+    const ready = !!(health.running && health.healthy);
+    const displayEndpoint = ready ? `${endpointUrl}/v1` : undefined;
+    return {
+      ready,
+      running: health.running,
+      endpointUrl,
+      displayEndpoint,
+      // The suggested model must be a catalog `backendModelId` (so the served model is recognized
+      // as installed) and must fit common consumer VRAM — Qwen3-4B-Instruct-2507 with bitsandbytes
+      // quantization runs on an 8 GB card, unlike the old Qwen2.5-7B bf16 suggestion (#1103).
+      remediationCommand: ready
+        ? undefined
+        : 'vllm serve Qwen/Qwen3-4B-Instruct-2507 --host 0.0.0.0 --port 8000 --quantization bitsandbytes --max-model-len 8192 --gpu-memory-utilization 0.85',
+      error: ready ? undefined : health.error,
+      hint: ready
+        ? undefined
+        : `Run vLLM on the host machine (not inside Docker), or point the endpoint URL at any reachable vLLM server. Hub currently probes ${endpointUrl}.`,
+    };
   }
 
   @UseGuards(AuthGuard)

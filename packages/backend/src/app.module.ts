@@ -41,7 +41,7 @@ import { RegistrationModule } from './modules/registration/registration.module';
 import { RegistryModule } from './utils/registry/registry.module';
 import { SystemUpdateModule } from './modules/system-update/system-update.module';
 import { McpModule } from './modules/mcp/mcp.module';
-import { McpApiKeyModule } from './modules/mcp/mcp-api-key.module';
+import { ApiKeyModule } from './modules/api-keys/api-key.module';
 import { MemoryConnectModule } from './modules/memory-connect/memory-connect.module';
 import { AgentNotifyModule } from './modules/agent-notify/agent-notify.module';
 import { InferenceModule } from './modules/inference/inference.module';
@@ -85,8 +85,9 @@ const imports: (DynamicModule | typeof I18nModule)[] = [
   AgentNotifyModule,
   InferenceModule,
   // SEC-MCP-8: always available (not gated on MCP_ENABLED) — AppsModule provisions companion-app
-  // managed keys and AppService seeds the legacy key regardless of whether the MCP endpoint is mounted.
-  McpApiKeyModule,
+  // managed keys, and the operator key surface lives here, regardless of whether the MCP endpoint
+  // is mounted. Keys are only ever created deliberately; nothing is seeded at boot.
+  ApiKeyModule,
   MemoryConnectModule,
 ];
 

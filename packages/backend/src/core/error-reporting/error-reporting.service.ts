@@ -3,6 +3,7 @@ import { Injectable } from '@nestjs/common';
 import * as Sentry from '@sentry/nestjs';
 import type { AppUrn } from '@ci-hub/common/types';
 import { scrubString } from './sentry-scrubber';
+import { type UserConsent, currentUserConsent, resolveTelemetryDecision } from './telemetry-consent';
 
 export type AppFailurePhase =
   | 'install'
@@ -24,6 +25,62 @@ export interface AppFailureContext {
   containers?: Array<{ name: string; state: string; logs?: string }>;
 }
 
+export type AppFailureCategory = 'user_environment' | 'app_config' | 'unknown';
+
+export interface AppFailureClassification {
+  category: AppFailureCategory;
+  errorClass: string;
+}
+
+/**
+ * Failures caused by the user's machine or network, not by a bug in the hub
+ * or an app manifest. These are reported as warnings and grouped by error
+ * class so one root cause (e.g. "Docker daemon not running") is one Sentry
+ * issue instead of one issue per app.
+ */
+const USER_ENVIRONMENT_PATTERNS: ReadonlyArray<{ pattern: RegExp; errorClass: string }> = [
+  {
+    pattern: /cannot connect to the docker daemon|is the docker daemon running|failed to connect to the docker api/i,
+    errorClass: 'docker-daemon-unreachable',
+  },
+  { pattern: /no matching manifest for \S+ in the manifest list/i, errorClass: 'image-arch-unsupported' },
+  { pattern: /ports are not available|address already in use|port is already allocated/i, errorClass: 'port-conflict' },
+  { pattern: /no space left on device/i, errorClass: 'disk-full' },
+  { pattern: /toomanyrequests|unauthenticated pull rate limit/i, errorClass: 'registry-rate-limit' },
+  { pattern: /could not select device driver/i, errorClass: 'device-driver-missing' },
+  { pattern: /\/dev\/kvm/i, errorClass: 'kvm-unavailable' },
+  { pattern: /mounts denied|invalid mount config/i, errorClass: 'mount-denied' },
+  { pattern: /failed to set up container networking|driver failed programming external connectivity/i, errorClass: 'docker-networking' },
+  { pattern: /failed to pull image|tls handshake timeout|i\/o timeout/i, errorClass: 'image-pull-failed' },
+];
+
+/** Failures caused by a broken app manifest in the marketplace. */
+const APP_CONFIG_PATTERNS: ReadonlyArray<{ pattern: RegExp; errorClass: string }> = [
+  { pattern: /invalid dynamic compose schema/i, errorClass: 'invalid-compose-schema' },
+];
+
+export function classifyAppFailure(message: string): AppFailureClassification {
+  for (const { pattern, errorClass } of USER_ENVIRONMENT_PATTERNS) {
+    if (pattern.test(message)) {
+      return { category: 'user_environment', errorClass };
+    }
+  }
+  for (const { pattern, errorClass } of APP_CONFIG_PATTERNS) {
+    if (pattern.test(message)) {
+      return { category: 'app_config', errorClass };
+    }
+  }
+  return { category: 'unknown', errorClass: 'unclassified' };
+}
+
+function appFailureTitle(phase: AppFailurePhase, appUrn: string, detail: string): string {
+  // "Marketplace app crash failed" read like the crash handler itself broke.
+  if (phase === 'crash') {
+    return `Marketplace app crashed: ${appUrn}${detail}`;
+  }
+  return `Marketplace app ${phase} failed: ${appUrn}${detail}`;
+}
+
 @Injectable()
 export class ErrorReportingService {
   private readonly debounce = new Map<string, number>();
@@ -33,21 +90,38 @@ export class ErrorReportingService {
   constructor(private readonly configuration: ConfigurationService) {}
 
   /**
-   * Consent plumbing is retained via `allowErrorMonitoring` in settings/UI.
-   * Product policy: treat consent as always granted; only require a configured DSN.
+   * Whether this service may report right now.
+   *
+   * Belt to `beforeSend`'s braces: capture sites short-circuit here so we do not
+   * build scopes and scrub payloads for events that would be dropped anyway,
+   * while `beforeSend` stays the backstop for anything the SDK's own
+   * integrations capture without going through this service.
    */
   isEnabled(): boolean {
-    if (!process.env.SENTRY_DSN?.trim()) {
-      return false;
-    }
+    return resolveTelemetryDecision({
+      env: process.env,
+      dsn: process.env.SENTRY_DSN,
+      consent: this.userConsent(),
+    }).enabled;
+  }
 
+  /**
+   * Prefer the live in-memory setting — `setUserSettings` updates it in the same
+   * tick as the write — and fall back to the disk-backed value when the
+   * configuration is not ready yet (early bootstrap) or holds no boolean.
+   */
+  private userConsent(): UserConsent {
     try {
-      void this.configuration.get('userSettings')?.allowErrorMonitoring;
+      const value = this.configuration.get('userSettings')?.allowErrorMonitoring;
+
+      if (typeof value === 'boolean') {
+        return value;
+      }
     } catch {
       // Configuration may not be ready during early bootstrap.
     }
 
-    return true;
+    return currentUserConsent();
   }
 
   addBreadcrumb(category: string, message: string, level: Sentry.SeverityLevel = 'info'): void {
@@ -119,14 +193,25 @@ export class ErrorReportingService {
     }
     this.debounce.set(debounceKey, now);
 
-    const level: Sentry.SeverityLevel = context.phase === 'post_start' ? 'warning' : 'error';
+    const classification = classifyAppFailure(context.message);
+    // User-environment failures (Docker down, disk full, unsupported arch, …)
+    // are not hub bugs; keep them visible but below the error threshold.
+    const level: Sentry.SeverityLevel = context.phase === 'post_start' || classification.category === 'user_environment' ? 'warning' : 'error';
 
     Sentry.withScope((scope) => {
       scope.setTag('component', 'backend');
       scope.setTag('app_urn', String(context.appUrn));
       scope.setTag('failure_phase', context.phase);
+      scope.setTag('failure_category', classification.category);
+      scope.setTag('error_class', classification.errorClass);
       scope.setLevel(level);
-      scope.setFingerprint(['app-failure', String(context.appUrn), context.phase]);
+      // Classified failures group by root cause across apps; unclassified ones
+      // keep the historical per-app grouping so new failure modes stay distinct.
+      scope.setFingerprint(
+        classification.category === 'unknown'
+          ? ['app-failure', String(context.appUrn), context.phase]
+          : ['app-failure', context.phase, classification.errorClass],
+      );
       scope.setExtra('message', scrubString(context.message));
 
       if (context.containers?.length) {
@@ -156,7 +241,7 @@ export class ErrorReportingService {
 
       const scrubbedMessage = scrubString(context.message).trim();
       const detail = scrubbedMessage ? `: ${scrubbedMessage}` : '';
-      Sentry.captureMessage(`Marketplace app ${context.phase} failed: ${context.appUrn}${detail}`, level);
+      Sentry.captureMessage(appFailureTitle(context.phase, String(context.appUrn), detail), level);
     });
   }
 

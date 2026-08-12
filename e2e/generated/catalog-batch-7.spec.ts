@@ -1,182 +1,705 @@
+
 /**
  * Auto-generated app catalog tests for server batch 7
- * Generated: 2026-06-06T04:28:32.811Z
- * Apps: 17
+ * Generated: 2026-08-03T06:03:25.009Z
+ * Apps: 50
  */
 
 import { expect, loginUser, test } from '../fixtures/fixtures';
 
 const APPS = [
   {
-    id: 'notion-mcp',
-    storeSlug: 'ci-apps',
-    name: 'Notion MCP',
-    expectedPort: 80,
-    healthEndpoint: '/',
-    hasGui: false,
-    categories: ['mcp', 'utilities', 'data'],
-    priority: 'low',
+    "id": "netdata",
+    "storeSlug": "ci-apps",
+    "name": "Netdata",
+    "expectedPort": 19999,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
   },
   {
-    id: 'novel',
-    storeSlug: 'ci-apps',
-    name: 'Novel',
-    expectedPort: 3579,
-    healthEndpoint: '/',
-    hasGui: true,
-    categories: ['utilities', 'ai'],
-    priority: 'low',
+    "id": "nocobase",
+    "storeSlug": "ci-apps",
+    "name": "NocoBase",
+    "expectedPort": 18912,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "data",
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
   },
   {
-    id: 'obsidian-mcp',
-    storeSlug: 'ci-apps',
-    name: 'Obsidian MCP',
-    expectedPort: 80,
-    healthEndpoint: '/',
-    hasGui: false,
-    categories: ['mcp', 'utilities', 'data'],
-    priority: 'low',
+    "id": "nocodb",
+    "storeSlug": "ci-apps",
+    "name": "NocoDB",
+    "expectedPort": 9020,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "data"
+    ],
+    "priority": "low",
+    "mcp": false
   },
   {
-    id: 'odoo',
-    storeSlug: 'ci-apps',
-    name: 'Odoo',
-    expectedPort: 8069,
-    healthEndpoint: '/',
-    hasGui: true,
-    categories: ['utilities'],
-    priority: 'low',
+    "id": "nofx",
+    "storeSlug": "ci-apps",
+    "name": "NOFX",
+    "expectedPort": 18885,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "finance",
+      "ai"
+    ],
+    "priority": "low",
+    "mcp": false
   },
   {
-    id: 'onlyoffice',
-    storeSlug: 'ci-apps',
-    name: 'ONLYOFFICE Docs',
-    expectedPort: 6829,
-    healthEndpoint: '/',
-    hasGui: true,
-    categories: ['utilities'],
-    priority: 'low',
+    "id": "nostr-relay",
+    "storeSlug": "ci-apps",
+    "name": "Nostr Relay",
+    "expectedPort": 4848,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "social"
+    ],
+    "priority": "low",
+    "mcp": false
   },
   {
-    id: 'onlyoffice-docspace-mcp',
-    storeSlug: 'ci-apps',
-    name: 'ONLYOFFICE DocSpace MCP',
-    expectedPort: 80,
-    healthEndpoint: '/',
-    hasGui: false,
-    categories: ['mcp', 'utilities', 'data'],
-    priority: 'low',
+    "id": "nostream",
+    "storeSlug": "ci-apps",
+    "name": "Nostream",
+    "expectedPort": 8008,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "social",
+      "network"
+    ],
+    "priority": "low",
+    "mcp": false
   },
   {
-    id: 'openclaw',
-    storeSlug: 'ci-apps',
-    name: 'OpenClaw',
-    expectedPort: 30189,
-    healthEndpoint: '/',
-    hasGui: true,
-    categories: ['ai', 'utilities', 'featured'],
-    priority: 'low',
+    "id": "nostrudel",
+    "storeSlug": "ci-apps",
+    "name": "noStrudel",
+    "expectedPort": 8775,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "social"
+    ],
+    "priority": "low",
+    "mcp": false
   },
   {
-    id: 'openproject',
-    storeSlug: 'ci-apps',
-    name: 'OpenProject',
-    expectedPort: 8080,
-    healthEndpoint: '/',
-    hasGui: true,
-    categories: ['data', 'utilities'],
-    priority: 'low',
+    "id": "notediscovery",
+    "storeSlug": "ci-apps",
+    "name": "NoteDiscovery",
+    "expectedPort": 9037,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
   },
   {
-    id: 'paddle-ocr',
-    storeSlug: 'ci-apps',
-    name: 'PaddleOCR',
-    expectedPort: 8888,
-    healthEndpoint: '/',
-    hasGui: true,
-    categories: ['ai'],
-    priority: 'low',
+    "id": "notesnook",
+    "storeSlug": "ci-apps",
+    "name": "Notesnook",
+    "expectedPort": 8126,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities",
+      "security",
+      "data"
+    ],
+    "priority": "low",
+    "mcp": false
   },
   {
-    id: 'pairdrop',
-    storeSlug: 'ci-apps',
-    name: 'PairDrop',
-    expectedPort: 8321,
-    healthEndpoint: '/',
-    hasGui: true,
-    categories: ['utilities', 'network'],
-    priority: 'low',
+    "id": "notion-mcp",
+    "storeSlug": "ci-apps",
+    "name": "Notion MCP",
+    "expectedPort": 80,
+    "healthEndpoint": "/",
+    "hasGui": false,
+    "categories": [
+      "mcp",
+      "utilities",
+      "data"
+    ],
+    "priority": "low",
+    "mcp": true,
+    "mcpTransport": "stdio"
   },
   {
-    id: 'papercups',
-    storeSlug: 'ci-apps',
-    name: 'Papercups',
-    expectedPort: 4000,
-    healthEndpoint: '/',
-    hasGui: true,
-    categories: ['social'],
-    priority: 'low',
+    "id": "novel",
+    "storeSlug": "ci-apps",
+    "name": "Novel",
+    "expectedPort": 3579,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities",
+      "ai"
+    ],
+    "priority": "low",
+    "mcp": false
   },
   {
-    id: 'passbolt',
-    storeSlug: 'ci-apps',
-    name: 'Passbolt',
-    expectedPort: 8085,
-    healthEndpoint: '/',
-    hasGui: true,
-    categories: ['security'],
-    priority: 'low',
+    "id": "ntfy",
+    "storeSlug": "ci-apps",
+    "name": "ntfy",
+    "expectedPort": 18975,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "automation",
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
   },
   {
-    id: 'photoprism',
-    storeSlug: 'ci-apps',
-    name: 'PhotoPrism',
-    expectedPort: 8087,
-    healthEndpoint: '/',
-    hasGui: true,
-    categories: ['data'],
-    priority: 'low',
+    "id": "nzbget",
+    "storeSlug": "ci-apps",
+    "name": "Nzbget",
+    "expectedPort": 6789,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "network",
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
   },
   {
-    id: 'pi-hole',
-    storeSlug: 'ci-apps',
-    name: 'Pi-hole',
-    expectedPort: 8082,
-    healthEndpoint: '/admin',
-    hasGui: true,
-    categories: ['network', 'featured'],
-    priority: 'low',
+    "id": "obsidian",
+    "storeSlug": "ci-apps",
+    "name": "Obsidian",
+    "expectedPort": 8777,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities",
+      "data"
+    ],
+    "priority": "low",
+    "mcp": false
   },
   {
-    id: 'plane',
-    storeSlug: 'ci-apps',
-    name: 'Plane',
-    expectedPort: 18822,
-    healthEndpoint: '/',
-    hasGui: true,
-    categories: ['utilities'],
-    priority: 'low',
+    "id": "obsidian-livesync",
+    "storeSlug": "ci-apps",
+    "name": "Obsidian LiveSync",
+    "expectedPort": 5984,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities",
+      "data"
+    ],
+    "priority": "low",
+    "mcp": false
   },
   {
-    id: 'plugnmeet',
-    storeSlug: 'ci-apps',
-    name: 'plugNmeet',
-    expectedPort: 18827,
-    healthEndpoint: '/',
-    hasGui: true,
-    categories: ['social'],
-    priority: 'low',
+    "id": "obsidian-mcp",
+    "storeSlug": "ci-apps",
+    "name": "Obsidian MCP",
+    "expectedPort": 80,
+    "healthEndpoint": "/",
+    "hasGui": false,
+    "categories": [
+      "mcp",
+      "utilities",
+      "data"
+    ],
+    "priority": "low",
+    "mcp": true,
+    "mcpTransport": "stdio"
   },
   {
-    id: 'postgres-mcp',
-    storeSlug: 'ci-apps',
-    name: 'Postgres MCP',
-    expectedPort: 80,
-    healthEndpoint: '/',
-    hasGui: false,
-    categories: ['mcp', 'data'],
-    priority: 'low',
+    "id": "odoo",
+    "storeSlug": "ci-apps",
+    "name": "Odoo",
+    "expectedPort": 8069,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
   },
+  {
+    "id": "odysseus",
+    "storeSlug": "ci-apps",
+    "name": "Odysseus",
+    "expectedPort": 7000,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "ai",
+      "utilities",
+      "data"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "olmocr",
+    "storeSlug": "ci-apps",
+    "name": "olmOCR",
+    "expectedPort": 80,
+    "healthEndpoint": "/",
+    "hasGui": false,
+    "categories": [
+      "ai"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "omegaclaw",
+    "storeSlug": "ci-apps",
+    "name": "OmegaClaw",
+    "expectedPort": 80,
+    "healthEndpoint": "/",
+    "hasGui": false,
+    "categories": [
+      "ai"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "omnitools",
+    "storeSlug": "ci-apps",
+    "name": "OmniTools",
+    "expectedPort": 8779,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "onlyoffice",
+    "storeSlug": "ci-apps",
+    "name": "ONLYOFFICE Desktop Editors",
+    "expectedPort": 6829,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "data",
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "onlyoffice-docspace-mcp",
+    "storeSlug": "ci-apps",
+    "name": "ONLYOFFICE DocSpace MCP",
+    "expectedPort": 80,
+    "healthEndpoint": "/",
+    "hasGui": false,
+    "categories": [
+      "mcp",
+      "utilities",
+      "data"
+    ],
+    "priority": "low",
+    "mcp": true,
+    "mcpTransport": "stdio"
+  },
+  {
+    "id": "onlyoffice-documentserver",
+    "storeSlug": "ci-apps",
+    "name": "ONLYOFFICE Document Server",
+    "expectedPort": 18913,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities",
+      "data"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "open-notebook",
+    "storeSlug": "ci-apps",
+    "name": "Open Notebook",
+    "expectedPort": 8250,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "ai",
+      "data",
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "openclaw",
+    "storeSlug": "ci-apps",
+    "name": "OpenClaw",
+    "expectedPort": 30189,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "agents",
+      "ai",
+      "utilities",
+      "featured"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "openproject",
+    "storeSlug": "ci-apps",
+    "name": "OpenProject",
+    "expectedPort": 18955,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "data",
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "outline",
+    "storeSlug": "ci-apps",
+    "name": "Outline",
+    "expectedPort": 18862,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "data"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "owncloud",
+    "storeSlug": "ci-apps",
+    "name": "ownCloud",
+    "expectedPort": 8780,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "data"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "paddle-ocr",
+    "storeSlug": "ci-apps",
+    "name": "PaddleOCR",
+    "expectedPort": 18965,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "ai"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "pairdrop",
+    "storeSlug": "ci-apps",
+    "name": "PairDrop",
+    "expectedPort": 8321,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities",
+      "network"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "paperclip",
+    "storeSlug": "ci-apps",
+    "name": "Paperclip",
+    "expectedPort": 3100,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "agents",
+      "ai",
+      "automation",
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "papercups",
+    "storeSlug": "ci-apps",
+    "name": "Papercups",
+    "expectedPort": 18928,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "social"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "paperless",
+    "storeSlug": "ci-apps",
+    "name": "Paperless-ngx",
+    "expectedPort": 18972,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "data",
+      "utilities",
+      "featured"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "papra",
+    "storeSlug": "ci-apps",
+    "name": "Papra",
+    "expectedPort": 8782,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "data"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "passbolt",
+    "storeSlug": "ci-apps",
+    "name": "Passbolt",
+    "expectedPort": 8085,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "security"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "passky-client",
+    "storeSlug": "ci-apps",
+    "name": "Passky Client",
+    "expectedPort": 8783,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "security"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "passky-server",
+    "storeSlug": "ci-apps",
+    "name": "Passky Server",
+    "expectedPort": 8784,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "security"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "pdfmathtranslate",
+    "storeSlug": "ci-apps",
+    "name": "PDFMathTranslate",
+    "expectedPort": 18936,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities",
+      "ai"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "pds",
+    "storeSlug": "ci-apps",
+    "name": "Bluesky PDS",
+    "expectedPort": 18923,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "social",
+      "network"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "photoprism",
+    "storeSlug": "ci-apps",
+    "name": "PhotoPrism",
+    "expectedPort": 8087,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "data"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "pi-hole",
+    "storeSlug": "ci-apps",
+    "name": "Pi-hole",
+    "expectedPort": 8082,
+    "healthEndpoint": "/admin",
+    "hasGui": true,
+    "categories": [
+      "network",
+      "featured"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "picoclaw",
+    "storeSlug": "ci-apps",
+    "name": "PicoClaw",
+    "expectedPort": 8786,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "ai",
+      "mcp"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "picsur",
+    "storeSlug": "ci-apps",
+    "name": "Picsur",
+    "expectedPort": 8788,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "photography",
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "piefed",
+    "storeSlug": "ci-apps",
+    "name": "PieFed",
+    "expectedPort": 18977,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "social"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "pingvin-share",
+    "storeSlug": "ci-apps",
+    "name": "Pingvin Share",
+    "expectedPort": 8790,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities",
+      "network"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "plane",
+    "storeSlug": "ci-apps",
+    "name": "Plane",
+    "expectedPort": 18822,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "planka",
+    "storeSlug": "ci-apps",
+    "name": "Planka",
+    "expectedPort": 8791,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "plugnmeet",
+    "storeSlug": "ci-apps",
+    "name": "plugNmeet",
+    "expectedPort": 18827,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "social"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "pogolo",
+    "storeSlug": "ci-apps",
+    "name": "Pogolo",
+    "expectedPort": 5661,
+    "healthEndpoint": "/",
+    "hasGui": false,
+    "categories": [
+      "finance",
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  }
 ];
 
 test.describe('App Catalog Batch 7', () => {

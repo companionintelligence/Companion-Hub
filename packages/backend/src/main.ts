@@ -81,7 +81,7 @@ async function bootstrap() {
 
   const app = await NestFactory.create(AppModule, {
     abortOnError: true,
-    logger: ['log', 'error', 'warn', 'fatal'],
+    logger: process.env.NEST_VERBOSE === '1' ? ['log', 'error', 'warn', 'fatal'] : ['error', 'warn', 'fatal'],
   });
 
   const appService = app.get(AppService);
@@ -132,5 +132,11 @@ async function bootstrap() {
 
 bootstrap().catch((err) => {
   console.error(err);
-  process.exit(1);
+  // A hub that fails to boot used to exit with only a console.error — nothing
+  // reached Sentry, so production appliances that never came up were invisible.
+  Sentry.captureException(err);
+  void Sentry.close(2000).then(
+    () => process.exit(1),
+    () => process.exit(1),
+  );
 });

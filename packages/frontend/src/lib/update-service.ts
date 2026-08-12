@@ -164,6 +164,17 @@ export function requiresManualDesktopUpdate(platform: DesktopPlatform | null): b
   return platform === 'linux';
 }
 
+export type ManualUpdateArtifactKind = 'deb' | 'rpm' | 'appimage';
+
+/** Installer format of a manual-download update, for tailored on-screen instructions. */
+export function manualUpdateArtifactKind(downloadUrl: string): ManualUpdateArtifactKind | null {
+  const path = (downloadUrl.split(/[?#]/)[0] ?? '').toLowerCase();
+  if (path.endsWith('.deb')) return 'deb';
+  if (path.endsWith('.rpm')) return 'rpm';
+  if (path.endsWith('.appimage')) return 'appimage';
+  return null;
+}
+
 export async function checkForUpdates(fallbackCurrentVersion?: string): Promise<UpdateInfo | null> {
   const currentVersion = fallbackCurrentVersion ?? (await getCurrentVersion()) ?? null;
   if (!currentVersion || !semver.valid(currentVersion)) return null;

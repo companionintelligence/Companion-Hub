@@ -16,6 +16,11 @@
         "src-tauri/target/release/ci-os-hub-desktop.exe"
       ]
     },
+    "mobile#build": {
+      "dependsOn": ["frontend#build", "^build"],
+      "inputs": ["$TURBO_DEFAULT$", ".env*"],
+      "outputs": []
+    },
     "bundle": {
       "dependsOn": ["^bundle"],
       "inputs": ["$TURBO_DEFAULT$", ".env*"],
@@ -65,7 +70,6 @@
         "RABBITMQ_USERNAME",
         "RABBITMQ_PASSWORD",
         "JWT_SECRET",
-        "MCP_API_KEY",
         "INTERNAL_IP",
         "CI_HUB_VERSION",
         "LOG_LEVEL",
@@ -101,7 +105,6 @@
         "RABBITMQ_USERNAME",
         "RABBITMQ_PASSWORD",
         "JWT_SECRET",
-        "MCP_API_KEY",
         "INTERNAL_IP",
         "CI_HUB_VERSION",
         "LOG_LEVEL",

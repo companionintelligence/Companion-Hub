@@ -261,5 +261,47 @@ describe('ServiceBuilder', () => {
         expect(built.volumes).toEqual(['/host:/container:ro']);
       });
     });
+
+    describe('Named volumes', () => {
+      it('mounts a named volume as the source', () => {
+        const built = service.setVolume({ volumeName: 'pgdata', containerPath: '/var/lib/postgresql' }).build();
+
+        expect(built.volumes).toEqual(['pgdata:/var/lib/postgresql']);
+      });
+
+      it('honours readOnly on a named volume', () => {
+        const built = service.setVolume({ volumeName: 'config', containerPath: '/config', readOnly: true }).build();
+
+        expect(built.volumes).toEqual(['config:/config:ro']);
+      });
+
+      it('ignores bind propagation on a named volume, which has no host mount to propagate', () => {
+        const built = service.setVolume({ volumeName: 'pgdata', containerPath: '/data', bind: { propagation: 'rshared' } }).build();
+
+        expect(built.volumes).toEqual(['pgdata:/data']);
+      });
+
+      // Rendering the service without the mount would be the dangerous outcome: it starts, writes
+      // to the container layer, and loses the data on the next recreate. Failing the build keeps
+      // the bad manifest visible.
+      it('refuses a volume that names neither a host path nor a volume', () => {
+        expect(() => service.setVolume({ containerPath: '/container' })).toThrow(/neither hostPath nor volumeName/);
+      });
+
+      // Picking one silently (the `??` would take volumeName) mounts something the manifest never
+      // unambiguously asked for, and hides the mistake behind a working-looking app.
+      it('refuses a volume that names both a host path and a volume', () => {
+        expect(() => service.setVolume({ containerPath: '/container', hostPath: '/host', volumeName: 'pgdata' })).toThrow(
+          /both hostPath and volumeName/,
+        );
+      });
+
+      // The redirect path clears hostPath rather than deleting the key; the guard must read that
+      // as "no host path" or every redirected database volume would fail to build.
+      it('accepts a redirected volume whose hostPath key is present but undefined', () => {
+        service.setVolume({ containerPath: '/data', hostPath: undefined, volumeName: 'pgdata' });
+        expect(service.build().volumes).toEqual(['pgdata:/data']);
+      });
+    });
   });
 });

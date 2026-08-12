@@ -12,7 +12,10 @@ use std::os::unix::fs::PermissionsExt;
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
 
-use crate::hub_env::{default_ci_cloud_url, default_hub_image, default_public_domain};
+use crate::hub_env::{
+    default_ci_cloud_url, default_hub_image, default_public_domain, resolve_runtime_hub_image,
+    runtime_hub_version_for_image,
+};
 
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
@@ -83,7 +86,8 @@ const MAX_LOG_SIZE_BYTES: u64 = 5 * 1024 * 1024;
 const MAX_LOG_ROTATIONS: usize = 3;
 const MANAGED_APP_CONTAINER_LABEL_FILTER: &str = "label=ci-os-hub.managed=true";
 const MANAGED_APP_CONTAINER_URN_FILTER: &str = "label=ci-os-hub.appurn";
-const DEFAULT_TRAEFIK_ACME_EMAIL: &str = "admin@example.com";
+/// Local/dev ACME placeholder — never use example.com (LetsEncrypt rejects it).
+const DEFAULT_TRAEFIK_ACME_EMAIL: &str = "admin@localhost";
 const TRAEFIK_ACME_DEFAULT_CONTENT: &str = "{}";
 const TRAEFIK_CONFIG_SEED: &str = include_str!("../../../backend/assets/traefik/traefik.yml");
 /// Compile-time copy of the bundled compose file. Used as a last-resort fallback
@@ -2069,6 +2073,8 @@ pub fn get_hub_status() -> HubStatus {
         return HubStatus::DockerNotAvailable;
     }
 
+    let data_dir = get_hub_data_dir();
+
     // Check ci-os-hub container specifically
     let status = docker_command()
         .args([
@@ -2082,6 +2088,9 @@ pub fn get_hub_status() -> HubStatus {
         .unwrap_or_default();
 
     if status.is_empty() || status.contains("No such object") || status.contains("Error") {
+        if let Some(message) = read_start_failed(&data_dir) {
+            return HubStatus::Error { message };
+        }
         return HubStatus::Stopped;
     }
 
@@ -2090,7 +2099,11 @@ pub fn get_hub_status() -> HubStatus {
     let health = parts.get(1).copied().unwrap_or("");
 
     match (state, health) {
-        ("running", "healthy") => HubStatus::Running,
+        ("running", "healthy") => {
+            // Recovered after a prior failed start — drop the sticky failure marker.
+            clear_start_failed(&data_dir);
+            HubStatus::Running
+        }
         ("running", _) => HubStatus::Starting,
         ("restarting", _) => {
             // Check if database is still starting — if so, Hub restart is expected
@@ -2132,7 +2145,13 @@ pub fn get_hub_status() -> HubStatus {
                 }
             }
         }
-        ("created", _) | ("exited", _) => HubStatus::Stopped,
+        ("created", _) | ("exited", _) => {
+            if let Some(message) = read_start_failed(&data_dir) {
+                HubStatus::Error { message }
+            } else {
+                HubStatus::Stopped
+            }
+        }
         _ => HubStatus::Starting,
     }
 }
@@ -2403,6 +2422,70 @@ fn host_cli_install_dir() -> Option<PathBuf> {
     None
 }
 
+/// Install `source` at `installed_path` by staging a copy in `install_dir` and
+/// renaming it into place. A plain `fs::copy` onto the destination writes
+/// *through* an existing symlink (clobbering the link target) and fails with
+/// ENOENT on a broken one; the rename replaces the link itself and never leaves
+/// a half-copied binary on PATH.
+fn replace_installed_cli(
+    source: &Path,
+    install_dir: &Path,
+    installed_path: &Path,
+) -> std::io::Result<()> {
+    let staged = install_dir.join(format!("{}.staging-{}", HOST_CLI_FILENAME, std::process::id()));
+    let result = (|| {
+        std::fs::copy(source, &staged)?;
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        {
+            std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o755))?;
+        }
+        move_staged_cli_into_place(install_dir, &staged, installed_path)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&staged);
+    }
+    result
+}
+
+#[cfg(not(target_os = "windows"))]
+fn move_staged_cli_into_place(
+    _install_dir: &Path,
+    staged: &Path,
+    installed_path: &Path,
+) -> std::io::Result<()> {
+    std::fs::rename(staged, installed_path)
+}
+
+#[cfg(target_os = "windows")]
+fn move_staged_cli_into_place(
+    install_dir: &Path,
+    staged: &Path,
+    installed_path: &Path,
+) -> std::io::Result<()> {
+    // Windows `rename` refuses to replace an existing destination, so move it
+    // aside instead of deleting it — if the final rename fails, the previous
+    // binary is restored rather than leaving no CLI at the install path.
+    let backup = install_dir.join(format!("{}.backup-{}", HOST_CLI_FILENAME, std::process::id()));
+    let had_existing = installed_path.symlink_metadata().is_ok();
+    if had_existing {
+        std::fs::rename(installed_path, &backup)?;
+    }
+    match std::fs::rename(staged, installed_path) {
+        Ok(()) => {
+            if had_existing {
+                let _ = std::fs::remove_file(&backup);
+            }
+            Ok(())
+        }
+        Err(error) => {
+            if had_existing {
+                let _ = std::fs::rename(&backup, installed_path);
+            }
+            Err(error)
+        }
+    }
+}
+
 fn ensure_bundled_cli_available(resource_dir: &Path, data_dir: &Path) {
     let candidates = bundled_cli_resource_candidates(resource_dir);
     let Some(source) = candidates.into_iter().find(|path| path.exists()) else {
@@ -2444,9 +2527,18 @@ fn ensure_bundled_cli_available(resource_dir: &Path, data_dir: &Path) {
     }
 
     let installed_path = install_dir.join(HOST_CLI_FILENAME);
-    let already_current = files_match(&source, &installed_path).unwrap_or(false);
+    // A symlink at the install path (e.g. left behind by a dev-checkout setup)
+    // is never "current" even if it resolves to identical bytes: the CLI on
+    // PATH would silently track whatever the link points at instead of this
+    // bundle's binary.
+    let installed_is_symlink = installed_path
+        .symlink_metadata()
+        .map(|meta| meta.file_type().is_symlink())
+        .unwrap_or(false);
+    let already_current =
+        !installed_is_symlink && files_match(&source, &installed_path).unwrap_or(false);
     if !already_current {
-        if let Err(error) = std::fs::copy(&source, &installed_path) {
+        if let Err(error) = replace_installed_cli(&source, &install_dir, &installed_path) {
             let _ = append_desktop_log_for(
                 data_dir,
                 "cli",
@@ -2575,6 +2667,8 @@ pub fn logs_open_target() -> PathBuf {
 // The marker is removed when the user explicitly starts the Hub again.
 
 const USER_STOPPED_MARKER_FILENAME: &str = ".user-stopped";
+const START_FAILED_MARKER_FILENAME: &str = ".start-failed";
+const START_FAILED_MARKER_MAX_BYTES: usize = 4 * 1024;
 const LAUNCH_MODE_FILENAME: &str = ".launch-mode";
 
 /// How the Hub was last launched — used to relaunch in the same mode after an update.
@@ -2618,6 +2712,98 @@ fn user_stopped_marker_path(data_dir: &Path) -> PathBuf {
     data_dir.join(USER_STOPPED_MARKER_FILENAME)
 }
 
+fn start_failed_marker_path(data_dir: &Path) -> PathBuf {
+    data_dir.join(START_FAILED_MARKER_FILENAME)
+}
+
+/// Truncate a failure string for the sticky UI / marker file.
+fn truncate_start_failure_message(message: &str, max_chars: usize) -> String {
+    let trimmed = message.trim();
+    if trimmed.chars().count() <= max_chars {
+        return trimmed.to_string();
+    }
+    let mut out: String = trimmed.chars().take(max_chars.saturating_sub(1)).collect();
+    out.push('…');
+    out
+}
+
+fn is_compose_missing_race_error(raw: &str) -> bool {
+    let trimmed = raw.trim();
+    trimmed.contains("no such file or directory")
+        && (trimmed.contains("docker-compose") || trimmed.contains("compose"))
+}
+
+/// Whether a start failure should stick until the user confirms Retry.
+/// Transient setup races (compose not copied yet) must not block the real auto-start.
+fn is_docker_not_running_error(raw: &str) -> bool {
+    raw.contains("Docker is not running")
+}
+
+pub fn should_persist_start_failure(raw: &str) -> bool {
+    !is_compose_missing_race_error(raw) && !is_docker_not_running_error(raw)
+}
+
+/// Turn raw docker/compose failures into a sticky, user-facing message.
+pub fn format_start_failure_message(raw: &str) -> String {
+    let trimmed = raw.trim();
+    // Already normalized (e.g. retry path wrote the sticky message back through).
+    if trimmed.starts_with("Docker Hub rate-limited")
+        || trimmed.starts_with("Hub start ran before desktop setup finished")
+        || trimmed.starts_with("Docker is not running")
+    {
+        return truncate_start_failure_message(trimmed, START_FAILED_MARKER_MAX_BYTES);
+    }
+
+    let detail = truncate_start_failure_message(trimmed, 900);
+
+    if trimmed.contains("429 Too Many Requests") || trimmed.contains("Too Many Requests") {
+        return format!(
+            "Docker Hub rate-limited image pulls from this machine's IP (HTTP 429). Wait several minutes, optionally run `docker login` for higher pull limits, then confirm Retry.\n\n{}",
+            detail
+        );
+    }
+
+    if is_compose_missing_race_error(trimmed) {
+        return format!(
+            "Hub start ran before desktop setup finished copying the compose file. Setup will continue momentarily.\n\n{}",
+            detail
+        );
+    }
+
+    detail
+}
+
+/// Persist the last start failure so the UI stays on Error and auto-start/watchdog stop retrying.
+/// Returns the normalized message written to disk.
+pub fn mark_start_failed(data_dir: &Path, message: &str) -> String {
+    let formatted = format_start_failure_message(message);
+    let bytes = truncate_start_failure_message(&formatted, START_FAILED_MARKER_MAX_BYTES);
+    let _ = std::fs::write(start_failed_marker_path(data_dir), &bytes);
+    bytes
+}
+
+/// Clear sticky start-failure state (user confirmed retry, or Hub reached healthy).
+pub fn clear_start_failed(data_dir: &Path) {
+    let _ = std::fs::remove_file(start_failed_marker_path(data_dir));
+}
+
+/// Returns the sticky start-failure message, if any.
+pub fn read_start_failed(data_dir: &Path) -> Option<String> {
+    let path = start_failed_marker_path(data_dir);
+    let content = std::fs::read_to_string(path).ok()?;
+    let trimmed = content.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+/// True when a prior start failed and the user has not confirmed a retry yet.
+pub fn is_start_failed(data_dir: &Path) -> bool {
+    start_failed_marker_path(data_dir).exists()
+}
+
 fn stack_dev_mode_enabled() -> bool {
     std::env::var("CI_HUB_STACK_DEV")
         .ok()
@@ -2650,29 +2836,80 @@ pub fn is_user_stopped(data_dir: &Path) -> bool {
     user_stopped_marker_path(data_dir).exists()
 }
 
-/// Consecutive failed tray health probes before auto-restart is attempted.
+/// Consecutive failed tray health probes before a full `start_hub` is attempted
+/// when the Hub container is missing or hard-stopped.
 pub const HUB_WATCHDOG_FAILURE_THRESHOLD: u32 = 3;
-/// Minimum time between watchdog-triggered `start_hub` attempts.
+/// Longer threshold before bouncing a wedged-but-running `ci-os-hub` container.
+pub const HUB_WATCHDOG_WEDGE_FAILURE_THRESHOLD: u32 = 6;
+/// Minimum time between watchdog-triggered recovery attempts.
 pub const HUB_WATCHDOG_COOLDOWN_SECS: u64 = 300;
 
+/// Action selected by the tray health watchdog.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HubWatchdogAction {
+    None,
+    /// Containers missing / stopped — full compose `start_hub`.
+    StartHub,
+    /// Docker reports Running/Starting but the API is unreachable — restart `ci-os-hub` only.
+    RestartWedgedContainer,
+}
+
 /// Pure decision helper for the tray watchdog (unit-tested).
+///
+/// `api_container_up` is true when [`get_hub_status`] reports `Running` or `Starting`
+/// (container present and not hard-stopped). In that case we never call full
+/// `start_hub` — only an optional single-container bounce after a longer threshold.
+pub fn decide_hub_watchdog_action(
+    consecutive_health_failures: u32,
+    cooldown_elapsed_secs: Option<u64>,
+    user_stopped: bool,
+    start_failed: bool,
+    api_container_up: bool,
+    docker_available: bool,
+) -> HubWatchdogAction {
+    // If Docker is not running there is nothing we can do — skip silently.
+    if !docker_available {
+        return HubWatchdogAction::None;
+    }
+    // Respect intentional stop and sticky start failures — both require explicit user action.
+    if user_stopped || start_failed {
+        return HubWatchdogAction::None;
+    }
+    if let Some(elapsed) = cooldown_elapsed_secs {
+        if elapsed < HUB_WATCHDOG_COOLDOWN_SECS {
+            return HubWatchdogAction::None;
+        }
+    }
+    if api_container_up {
+        if consecutive_health_failures >= HUB_WATCHDOG_WEDGE_FAILURE_THRESHOLD {
+            return HubWatchdogAction::RestartWedgedContainer;
+        }
+        return HubWatchdogAction::None;
+    }
+    if consecutive_health_failures >= HUB_WATCHDOG_FAILURE_THRESHOLD {
+        return HubWatchdogAction::StartHub;
+    }
+    HubWatchdogAction::None
+}
+
+/// Backward-compatible wrapper: true only when a full `start_hub` should run.
 pub fn should_trigger_hub_watchdog(
     consecutive_health_failures: u32,
     cooldown_elapsed_secs: Option<u64>,
     user_stopped: bool,
+    start_failed: bool,
 ) -> bool {
-    if user_stopped {
-        return false;
-    }
-    if consecutive_health_failures < HUB_WATCHDOG_FAILURE_THRESHOLD {
-        return false;
-    }
-    if let Some(elapsed) = cooldown_elapsed_secs {
-        if elapsed < HUB_WATCHDOG_COOLDOWN_SECS {
-            return false;
-        }
-    }
-    true
+    matches!(
+        decide_hub_watchdog_action(
+            consecutive_health_failures,
+            cooldown_elapsed_secs,
+            user_stopped,
+            start_failed,
+            false,
+            is_docker_available(),
+        ),
+        HubWatchdogAction::StartHub
+    )
 }
 
 /// Containers exist but the hub API is not running/starting — needs `start_hub`.
@@ -2687,6 +2924,23 @@ pub fn hub_needs_runtime_recovery() -> bool {
         return false;
     }
     !matches!(get_hub_status(), HubStatus::Running | HubStatus::Starting)
+}
+
+/// Restart only the Hub API container after a wedged-API detection.
+pub fn restart_wedged_hub_container() -> Result<String, String> {
+    let _ = append_desktop_log(
+        "tray.watchdog",
+        "Restarting wedged ci-os-hub container (API unreachable while Docker reports up).",
+    );
+    let output = docker_command()
+        .args(["restart", "ci-os-hub"])
+        .output()
+        .map_err(|e| format!("Failed to restart ci-os-hub: {e}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("docker restart ci-os-hub failed: {stderr}"));
+    }
+    Ok("Restarted ci-os-hub".to_string())
 }
 
 // ─── Desktop log reader ───────────────────────────────────────────────────────
@@ -4581,6 +4835,58 @@ fn wait_for_hub_healthy() -> Result<(), String> {
     wait_for_container_healthy("ci-os-hub", "Hub", HUB_START_HEALTHY_TIMEOUT_SECS)
 }
 
+/// Log loudly when the Hub container's Node arch does not match this desktop binary.
+/// An amd64 Node image on Apple Silicon runs under Rosetta and has been observed to
+/// wedge the HTTP accept loop shortly after boot.
+fn warn_if_hub_node_arch_mismatches_host(data_dir: &Path) {
+    let expected = if cfg!(target_arch = "aarch64") {
+        "arm64"
+    } else {
+        "x64"
+    };
+    let output = match docker_command()
+        .args(["exec", "ci-os-hub", "node", "-p", "process.arch"])
+        .output()
+    {
+        Ok(output) => output,
+        Err(err) => {
+            let _ = append_desktop_log_for(
+                data_dir,
+                "hub.start",
+                &format!("Could not probe Hub Node arch: {err}"),
+            );
+            return;
+        }
+    };
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let _ = append_desktop_log_for(
+            data_dir,
+            "hub.start",
+            &format!("Could not probe Hub Node arch: {stderr}"),
+        );
+        return;
+    }
+    let actual = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if actual == expected {
+        let _ = append_desktop_log_for(
+            data_dir,
+            "hub.start",
+            &format!("Hub Node arch ok: process.arch={actual}"),
+        );
+        return;
+    }
+    let _ = append_desktop_log_for(
+        data_dir,
+        "hub.start",
+        &format!(
+            "WARNING: Hub Node arch mismatch — container process.arch={actual}, desktop expects {expected}. \
+             On Apple Silicon this usually means the arm64 image slot contains amd64 content (Rosetta). \
+             Pull/rebuild a native arm64 Hub image before relying on this stack."
+        ),
+    );
+}
+
 const POSTGRES_DB_CONTAINER: &str = "ci-hub-db";
 const POSTGRES_DOCKER_NETWORK: &str = "ci-os-hub_network";
 
@@ -4678,6 +4984,137 @@ fn ensure_postgres_password_matches_env(env_path: &Path, data_dir: &Path) -> Res
         );
     }
 
+    Ok(())
+}
+
+fn rabbitmq_auth_works(password: &str) -> bool {
+    docker_command()
+        .args([
+            "exec",
+            "ci-os-hub-queue",
+            "rabbitmqctl",
+            "authenticate_user",
+            "companion",
+            password,
+        ])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
+fn sync_rabbitmq_password(password: &str, data_dir: &Path) -> Result<(), String> {
+    let output = docker_command()
+        .args([
+            "exec",
+            "ci-os-hub-queue",
+            "rabbitmqctl",
+            "change_password",
+            "companion",
+            password,
+        ])
+        .output()
+        .map_err(|error| format!("Failed to change RabbitMQ password: {error}"))?;
+    if output.status.success() {
+        let _ = append_desktop_log_for(
+            data_dir,
+            "hub.start",
+            "RabbitMQ password synced via rabbitmqctl change_password.",
+        );
+        return Ok(());
+    }
+    Err(format!(
+        "rabbitmqctl change_password failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    ))
+}
+
+fn recreate_rabbitmq_queue(
+    compose_path: &Path,
+    env_path: &Path,
+    data_dir: &Path,
+) -> Result<(), String> {
+    let _ = append_desktop_log_for(
+        data_dir,
+        "hub.start",
+        "Recreating ci-os-hub-queue so RABBITMQ_DEFAULT_PASS matches .env (no durable queue volume).",
+    );
+    let output = docker_command()
+        .env("ENV_FILE", compose_env_file_var(env_path))
+        .args([
+            "compose",
+            "--env-file",
+            &env_path.to_string_lossy(),
+            "--project-name",
+            "ci-hub",
+            "-f",
+            &compose_path.to_string_lossy(),
+            "up",
+            "-d",
+            "--force-recreate",
+            "ci-os-hub-queue",
+        ])
+        .output()
+        .map_err(|error| format!("Failed to recreate RabbitMQ queue: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "Failed to recreate ci-os-hub-queue: {}",
+            format_command_output(
+                &String::from_utf8_lossy(&output.stdout),
+                &String::from_utf8_lossy(&output.stderr),
+            )
+        ));
+    }
+    wait_for_container_healthy(
+        "ci-os-hub-queue",
+        "Message queue",
+        DB_START_HEALTHY_TIMEOUT_SECS,
+    )
+}
+
+fn ensure_rabbitmq_password_matches_env(
+    compose_path: &Path,
+    env_path: &Path,
+    data_dir: &Path,
+) -> Result<(), String> {
+    let values = load_runtime_env_values(data_dir, env_path);
+    let Some(password) = get_non_empty_env_value(&values, "RABBITMQ_PASSWORD") else {
+        return Ok(());
+    };
+
+    let running = docker_command()
+        .args(["inspect", "-f", "{{.State.Running}}", "ci-os-hub-queue"])
+        .output()
+        .map(|output| {
+            output.status.success() && String::from_utf8_lossy(&output.stdout).trim() == "true"
+        })
+        .unwrap_or(false);
+    if !running {
+        return Ok(());
+    }
+
+    if rabbitmq_auth_works(&password) {
+        return Ok(());
+    }
+
+    let _ = append_desktop_log_for(
+        data_dir,
+        "hub.start",
+        "RabbitMQ auth failed for configured password; syncing broker password.",
+    );
+
+    if sync_rabbitmq_password(&password, data_dir).is_ok() && rabbitmq_auth_works(&password) {
+        return Ok(());
+    }
+
+    recreate_rabbitmq_queue(compose_path, env_path, data_dir)?;
+    if !rabbitmq_auth_works(&password) {
+        return Err(
+            "RabbitMQ password sync/recreate did not restore authentication for user companion."
+                .to_string(),
+        );
+    }
     Ok(())
 }
 
@@ -4792,7 +5229,30 @@ pub fn start_hub(compose_path: &Path, env_path: &Path, data_dir: &Path) -> Resul
     }
     let _guard = StartGuard;
 
-    start_hub_inner(compose_path, env_path, data_dir)
+    // Clear sticky failure only once this call owns the start lock — UI can show Starting.
+    clear_start_failed(data_dir);
+
+    match start_hub_inner(compose_path, env_path, data_dir) {
+        Ok(summary) => Ok(summary),
+        Err(error) => {
+            let formatted = format_start_failure_message(&error);
+            if should_persist_start_failure(&error) {
+                let _ = mark_start_failed(data_dir, &error);
+                let _ = append_desktop_log_for(
+                    data_dir,
+                    "hub.start",
+                    &format!("Start failed (sticky failure state set): {}", formatted),
+                );
+            } else {
+                let _ = append_desktop_log_for(
+                    data_dir,
+                    "hub.start",
+                    &format!("Start failed (transient, not sticky): {}", formatted),
+                );
+            }
+            Err(formatted)
+        }
+    }
 }
 
 /// Inner start logic, called under the `START_IN_PROGRESS` guard.
@@ -4810,6 +5270,12 @@ fn start_hub_inner(
             env_path.display()
         ),
     );
+
+    if !is_docker_available() {
+        let message = "Docker is not running — please start Docker Desktop and try again.";
+        let _ = append_desktop_log_for(data_dir, "hub.start", message);
+        return Err(message.to_string());
+    }
 
     let traefik_preflight = prepare_traefik_runtime_state(data_dir).map_err(|error| {
         let message = format!("Traefik runtime preflight failed before startup: {}", error);
@@ -4861,39 +5327,10 @@ fn start_hub_inner(
         }
     }
 
-    if !compose_path.exists() {
-        let recover_candidates = compose_resource_candidates(
-            std::env::current_exe()
-                .ok()
-                .and_then(|exe| exe.parent().map(Path::to_path_buf))
-                .as_deref()
-                .unwrap_or(Path::new(".")),
-        );
-
-        if let Some(src) = recover_candidates
-            .iter()
-            .find(|candidate| candidate.exists())
-        {
-            std::fs::copy(src, compose_path).map_err(|error| {
-                let message = format!(
-                    "Compose file was missing and recovery copy from {} failed: {}",
-                    src.display(),
-                    error
-                );
-                let _ = append_desktop_log_for(data_dir, "hub.start", &message);
-                with_view_logs_hint(message)
-            })?;
-            let _ = append_desktop_log_for(
-                data_dir,
-                "hub.start",
-                &format!(
-                    "Recovered missing compose file at {} from {}",
-                    compose_path.display(),
-                    src.display()
-                ),
-            );
-        }
-    }
+    ensure_hub_compose_file(compose_path, data_dir).map_err(|message| {
+        let _ = append_desktop_log_for(data_dir, "hub.start", &message);
+        with_view_logs_hint(message)
+    })?;
 
     // Ensure the file-mounted Docker config path is a file, not a directory.
     // If Docker ever created this path with the wrong type, compose startup fails
@@ -5009,6 +5446,28 @@ fn start_hub_inner(
     // completes before the rest of the stack starts.
     start_database_first(compose_path, env_path, data_dir)?;
     ensure_postgres_password_matches_env(env_path, data_dir)?;
+    // Queue may already be running from a prior start; sync password before Hub comes up.
+    let _ = docker_command()
+        .env("ENV_FILE", compose_env_file_var(env_path))
+        .args([
+            "compose",
+            "--env-file",
+            &env_path.to_string_lossy(),
+            "--project-name",
+            "ci-hub",
+            "-f",
+            &compose_path.to_string_lossy(),
+            "up",
+            "-d",
+            "ci-os-hub-queue",
+        ])
+        .output();
+    let _ = wait_for_container_healthy(
+        "ci-os-hub-queue",
+        "Message queue",
+        DB_START_HEALTHY_TIMEOUT_SECS,
+    );
+    ensure_rabbitmq_password_matches_env(compose_path, env_path, data_dir)?;
 
     ensure_traefik_container_released(data_dir).map_err(|error| {
         let message = format!("Traefik port cleanup failed before startup: {}", error);
@@ -5102,6 +5561,7 @@ fn start_hub_inner(
                         "hub.start",
                         "Hub reached running:healthy state.",
                     );
+                    warn_if_hub_node_arch_mismatches_host(data_dir);
                     return Ok("Hub started successfully".to_string());
                 }
                 Err(error) => {
@@ -5294,6 +5754,21 @@ pub fn pull_stack_images(
 /// Stop Hub containers without marking user-stopped (for updates).
 pub fn stop_hub_for_update(compose_path: &Path, env_path: &Path) -> Result<String, String> {
     let data_dir = get_hub_data_dir();
+
+    // If Docker is not available there are no containers to tear down.
+    let docker_check = check_docker_access();
+    if !matches!(docker_check.state, DockerAccessState::Available) {
+        let reason = docker_check
+            .detail
+            .unwrap_or_else(|| "Docker daemon is not running.".to_string());
+        let message = format!(
+            "Docker is not available ({}); Hub is effectively stopped for update.",
+            reason
+        );
+        let _ = append_desktop_log_for(&data_dir, "hub.update", &message);
+        return Ok(message);
+    }
+
     let _ = append_desktop_log_for(
         &data_dir,
         "hub.update",
@@ -5338,6 +5813,23 @@ pub fn stop_hub(compose_path: &Path, env_path: &Path) -> Result<String, String> 
     if !stack_dev_mode_enabled() {
         mark_user_stopped(&data_dir);
     }
+
+    // If Docker is not available there are no containers to tear down.
+    // Return success immediately rather than letting `docker compose down`
+    // fail with a confusing plugin-flag error (e.g. "unknown flag: --env-file").
+    let docker_check = check_docker_access();
+    if !matches!(docker_check.state, DockerAccessState::Available) {
+        let reason = docker_check
+            .detail
+            .unwrap_or_else(|| "Docker daemon is not running.".to_string());
+        let message = format!(
+            "Docker is not available ({}); Hub is effectively stopped.",
+            reason
+        );
+        let _ = append_desktop_log_for(&data_dir, "hub.stop", &message);
+        return Ok(message);
+    }
+
     let _ = append_desktop_log_for(
         &data_dir,
         "hub.stop",
@@ -5400,6 +5892,10 @@ pub fn stop_hub(compose_path: &Path, env_path: &Path) -> Result<String, String> 
 }
 
 pub fn stop_managed_app_containers() -> Result<Option<String>, String> {
+    if !is_docker_available() {
+        return Ok(None);
+    }
+
     let output = docker_command()
         .args(managed_app_container_ps_args())
         .output()
@@ -5483,17 +5979,56 @@ fn parse_env_file(path: &Path) -> std::collections::HashMap<String, String> {
     map
 }
 
+fn has_tailscale_auth_key(env: &std::collections::HashMap<String, String>) -> bool {
+    ["TAILSCALE_AUTHKEY", "HEADSCALE_PREAUTH_KEY"]
+        .iter()
+        .any(|key| {
+            env.get(*key)
+                .map(|value| !value.trim().is_empty())
+                .unwrap_or(false)
+        })
+}
+
+/// True when the Tailscale state volume already has a login (browser/auth-key connect).
+fn has_tailscale_persisted_state() -> bool {
+    docker_command()
+        .args([
+            "run",
+            "--rm",
+            "-v",
+            "hub_tailscale_state:/state:ro",
+            "alpine:3.21",
+            "sh",
+            "-c",
+            "test -s /state/tailscaled.state",
+        ])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
+/// Pure decision for whether the Private VPN compose profile should be enabled.
+fn private_vpn_should_run(user_disabled: bool, has_auth_key: bool, has_state: bool) -> bool {
+    !user_disabled && (has_auth_key || has_state)
+}
+
 /// Returns `true` when the Tailscale sidecar (`hub-tailscale`) should run.
 ///
-/// The sidecar is **on by default** for every stack (dev, prod, Tauri desktop, docker-only).
-/// Disable only when the hub `.env` contains an explicit opt-out:
-/// `PRIVATE_VPN_USER_DISABLED=true` (written by [`render_runtime_env_content`] when the user turns
-/// VPN off). Compose actually starts the container when `COMPOSE_PROFILES` includes `private-vpn`
-/// (merged in the same render path). Legacy `PRIVATE_VPN_ENABLED` in old `.env` files is ignored.
+/// Enabled when the user has not opted out **and** there is either a non-empty
+/// auth key or persisted Tailscale state. Starting without credentials causes
+/// `containerboot` to NeedsLogin → kill → restart loop. Legacy `PRIVATE_VPN_ENABLED`
+/// in old `.env` files is ignored.
 fn private_vpn_enabled_from_map(env: &std::collections::HashMap<String, String>) -> bool {
-    !matches!(
+    let user_disabled = matches!(
         env.get("PRIVATE_VPN_USER_DISABLED").map(|v| v.as_str()),
         Some("true")
+    );
+    private_vpn_should_run(
+        user_disabled,
+        has_tailscale_auth_key(env),
+        has_tailscale_persisted_state(),
     )
 }
 
@@ -5591,6 +6126,167 @@ pub fn host_data_dir_from_env_path(env_path: &Path) -> Option<PathBuf> {
         .map(|value| host_path_from_docker_path(&value))
 }
 
+const INVALID_HOST_DEVICE_IDS: &[&str] = &[
+    "not specified",
+    "to be filled by o.e.m.",
+    "default string",
+    "system serial number",
+    "chassis serial number",
+    "none",
+    "na",
+    "n/a",
+    "0",
+];
+
+fn is_usable_host_device_id(id: &str) -> bool {
+    let trimmed = id.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    if INVALID_HOST_DEVICE_IDS.contains(&lower.as_str()) {
+        return false;
+    }
+    lower != "00000000-0000-0000-0000-000000000000"
+}
+
+fn extract_ioreg_platform_uuid(output: &str) -> Option<String> {
+    for line in output.lines() {
+        if !line.contains("IOPlatformUUID") {
+            continue;
+        }
+        let Some(idx) = line.find("IOPlatformUUID") else {
+            continue;
+        };
+        let rest = &line[idx + "IOPlatformUUID".len()..];
+        let Some(eq_idx) = rest.find('=') else {
+            continue;
+        };
+        let after_eq = rest[eq_idx + 1..].trim();
+        let Some(after_quote) = after_eq.strip_prefix('"') else {
+            continue;
+        };
+        let Some(end) = after_quote.find('"') else {
+            continue;
+        };
+        let uuid = after_quote[..end].trim();
+        if is_usable_host_device_id(uuid) {
+            return Some(uuid.to_string());
+        }
+    }
+    None
+}
+
+fn extract_system_profiler_serial(output: &str) -> Option<String> {
+    for line in output.lines() {
+        let rest = line
+            .split("Serial Number (system):")
+            .nth(1)
+            .or_else(|| line.split("Serial Number:").nth(1));
+        if let Some(rest) = rest {
+            let serial = rest.trim();
+            if is_usable_host_device_id(serial) {
+                return Some(serial.to_string());
+            }
+        }
+    }
+    None
+}
+
+#[cfg(target_os = "macos")]
+fn read_host_device_id_impl() -> Option<String> {
+    if let Ok(output) = Command::new("ioreg")
+        .args(["-rd1", "-c", "IOPlatformExpertDevice"])
+        .output()
+    {
+        if output.status.success() {
+            if let Some(uuid) =
+                extract_ioreg_platform_uuid(&String::from_utf8_lossy(&output.stdout))
+            {
+                return Some(uuid);
+            }
+        }
+    }
+
+    if let Ok(output) = Command::new("system_profiler")
+        .args(["SPHardwareDataType"])
+        .output()
+    {
+        if output.status.success() {
+            return extract_system_profiler_serial(&String::from_utf8_lossy(&output.stdout));
+        }
+    }
+
+    None
+}
+
+#[cfg(target_os = "linux")]
+fn read_host_device_id_impl() -> Option<String> {
+    std::fs::read_to_string("/etc/machine-id")
+        .ok()
+        .and_then(|id| {
+            let id = id.trim().to_string();
+            if is_usable_host_device_id(&id) {
+                Some(id)
+            } else {
+                None
+            }
+        })
+}
+
+#[cfg(target_os = "windows")]
+fn read_host_device_id_impl() -> Option<String> {
+    if let Ok(output) = Command::new("wmic")
+        .args(["csproduct", "get", "uuid", "/value"])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+    {
+        if output.status.success() {
+            for line in String::from_utf8_lossy(&output.stdout).lines() {
+                if let Some(uuid) = line.strip_prefix("UUID=") {
+                    let uuid = uuid.trim();
+                    if is_usable_host_device_id(uuid) {
+                        return Some(uuid.to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    if let Ok(output) = Command::new("reg")
+        .args([
+            "query",
+            r"HKLM\SOFTWARE\Microsoft\Cryptography",
+            "/v",
+            "MachineGuid",
+        ])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+    {
+        if output.status.success() {
+            for line in String::from_utf8_lossy(&output.stdout).lines() {
+                if line.contains("MachineGuid") {
+                    let guid = line.split_whitespace().last()?.trim();
+                    if is_usable_host_device_id(guid) {
+                        return Some(guid.to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    None
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+fn read_host_device_id_impl() -> Option<String> {
+    None
+}
+
+fn read_host_device_id() -> Option<String> {
+    read_host_device_id_impl()
+}
+
 fn render_runtime_env_content(
     data_dir: &Path,
     existing: &std::collections::HashMap<String, String>,
@@ -5602,8 +6298,10 @@ fn render_runtime_env_content(
         get_non_empty_env_value(existing, "JWT_SECRET").unwrap_or_else(|| generate_hex(64));
     let postgres_password =
         get_non_empty_env_value(existing, "POSTGRES_PASSWORD").unwrap_or_else(|| generate_hex(32));
-    // Tailscale sidecar: on by default (dev/prod/Tauri/docker-only). Opt-out only via
-    // PRIVATE_VPN_USER_DISABLED=true. Compose gates hub-tailscale with COMPOSE_PROFILES=private-vpn.
+    let rabbitmq_password = get_non_empty_env_value(existing, "RABBITMQ_PASSWORD")
+        .filter(|value| value != "admin")
+        .unwrap_or_else(|| generate_hex(32));
+    // Tailscale sidecar: enable only with auth key or persisted state (see private_vpn_should_run).
     let vpn_on = private_vpn_enabled_from_map(existing);
     // When opted out, persist the sentinel; when enabled, omit it so the default applies.
     let private_vpn_user_disabled_line = if vpn_on {
@@ -5620,31 +6318,47 @@ fn render_runtime_env_content(
         format!("COMPOSE_PROFILES={compose_profiles}\n")
     };
 
-    // Inject a stable device ID from the host's /etc/machine-id so the backend
-    // container always uses the same host-level identity regardless of container
-    // restarts or recreation (container machine-id differs from host machine-id).
-    let device_id_line = match std::fs::read_to_string("/etc/machine-id") {
-        Ok(id) => {
-            let id = id.trim();
-            if id.is_empty() {
-                String::new()
-            } else {
-                format!("DEVICE_ID={id}\n")
-            }
-        }
-        Err(_) => String::new(),
-    };
+    // Inject a stable device ID from the host so the backend container always uses
+    // the same host-level identity regardless of container restarts or recreation.
+    let device_id_line = read_host_device_id()
+        .map(|id| format!("DEVICE_ID={id}\n"))
+        .unwrap_or_default();
 
     let domain = option_env!("CI_HUB_DOMAIN").unwrap_or(default_public_domain());
     let cloud_url = option_env!("CI_HUB_CLOUD_URL").unwrap_or(default_ci_cloud_url());
-    let hub_version = option_env!("CI_HUB_BUILD_VERSION").unwrap_or("4.7.0");
-    // Always recompute from the current binary so upgrades pick up the new stack image tag.
-    let hub_image = default_hub_image().to_string();
+    let hub_image = resolve_runtime_hub_image(existing);
+    // Make pin supersession observable in desktop.log. Most starts resolve to the same
+    // reference already on disk and log nothing; a line here means a pin was dropped —
+    // notably the stale, unpullable `ci-os-hub` references left by pre-#920 builds, which
+    // are migrated to the public `ci-hub` repo on the next start.
+    if let Some(previous_image) = existing.get("CI_HUB_IMAGE") {
+        if previous_image != &hub_image {
+            // Name which of the two outcomes happened, because they mean opposite things
+            // when reading back a failed start: falling back to the build default means
+            // the pin was rejected as unusable (foreign repo, stale ci-os-hub, or a tag
+            // that is not a full version), whereas a normalized pin means the update was
+            // honoured and only its spelling changed. Labelling both as the default sends
+            // whoever is debugging looking for a discarded pin that never existed.
+            let reason = if hub_image == default_hub_image() {
+                "desktop build default"
+            } else {
+                "normalized pin"
+            };
+            let _ = append_desktop_log_for(
+                data_dir,
+                "hub.start",
+                &format!(
+                    "Superseding pinned stack image {previous_image} with {hub_image} ({reason})."
+                ),
+            );
+        }
+    }
+    let hub_version = runtime_hub_version_for_image(&hub_image);
     let compose_file_host = docker_bind_mount_path(&data_dir.join(HUB_COMPOSE_FILENAME));
-    let docker_platform = if cfg!(target_arch = "aarch64") {
-        "linux/arm64"
+    let (docker_platform, target_arch) = if cfg!(target_arch = "aarch64") {
+        ("linux/arm64", "arm64")
     } else {
-        "linux/amd64"
+        ("linux/amd64", "amd64")
     };
     let (container_uid, container_gid, docker_gid) = resolve_hub_container_identity();
     let docker_gid_line = format!("DOCKER_GID={docker_gid}\n");
@@ -5667,6 +6381,7 @@ fn render_runtime_env_content(
          ROOT_FOLDER_HOST={root_folder_host}\n\
          JWT_SECRET={jwt_secret}\n\
          POSTGRES_PASSWORD={postgres_password}\n\
+         RABBITMQ_PASSWORD={rabbitmq_password}\n\
          \n\
          # Derived (recomputed every launch from the current binary)\n\
          INTERNAL_IP=0.0.0.0\n\
@@ -5676,6 +6391,7 @@ fn render_runtime_env_content(
          CI_HUB_IMAGE={hub_image}\n\
          COMPOSE_FILE_HOST={compose_file_host}\n\
          DOCKER_PLATFORM={docker_platform}\n\
+         TARGETARCH={target_arch}\n\
          {docker_socket_path_line}\
          {docker_gid_line}\
          CI_HUB_CONTAINER_UID={container_uid}\n\
@@ -6291,6 +7007,69 @@ fn compose_resource_candidates(resource_dir: &Path) -> Vec<PathBuf> {
         PathBuf::from("/usr/lib/Companion Hub/resources").join(HUB_COMPOSE_FILENAME),
         PathBuf::from("/usr/share/companion-hub").join(HUB_COMPOSE_FILENAME),
     ]
+}
+
+/// Ensure `docker-compose.prod.yml` exists at `compose_path` before hub start.
+///
+/// Recovery order matches `initialize_hub`: copy from bundled resource candidates,
+/// then write the compile-time embedded seed. Without the seed fallback, machines
+/// that lost the data-dir compose file (or never finished initialize) looped the
+/// watchdog forever on "Database bootstrap failed. open …/docker-compose.prod.yml:
+/// no such file or directory" (RUST-HUB-DESKTOP-SHELL-3N/3Q/3P).
+fn ensure_hub_compose_file(compose_path: &Path, data_dir: &Path) -> Result<(), String> {
+    if compose_path.exists() {
+        return Ok(());
+    }
+
+    let recover_candidates = compose_resource_candidates(
+        std::env::current_exe()
+            .ok()
+            .and_then(|exe| exe.parent().map(Path::to_path_buf))
+            .as_deref()
+            .unwrap_or(Path::new(".")),
+    );
+
+    if let Some(src) = recover_candidates
+        .iter()
+        .find(|candidate| candidate.exists())
+    {
+        std::fs::copy(src, compose_path).map_err(|error| {
+            format!(
+                "Compose file was missing and recovery copy from {} failed: {}",
+                src.display(),
+                error
+            )
+        })?;
+        let _ = append_desktop_log_for(
+            data_dir,
+            "hub.start",
+            &format!(
+                "Recovered missing compose file at {} from {}",
+                compose_path.display(),
+                src.display()
+            ),
+        );
+        return Ok(());
+    }
+
+    std::fs::write(compose_path, HUB_COMPOSE_SEED).map_err(|error| {
+        // Intentionally not phrased like a compose open race — this must stick
+        // until the user retries after fixing disk permissions / free space.
+        format!(
+            "Failed to materialize {} from the embedded seed (no bundled resource found): {}",
+            compose_path.display(),
+            error
+        )
+    })?;
+    let _ = append_desktop_log_for(
+        data_dir,
+        "hub.start",
+        &format!(
+            "Recovered missing compose file at {} from embedded seed",
+            compose_path.display()
+        ),
+    );
+    Ok(())
 }
 
 /// Initialize Hub data directory and generate .env file.
@@ -8620,11 +9399,105 @@ mod tests {
 
     #[test]
     fn hub_watchdog_decision() {
-        assert!(!super::should_trigger_hub_watchdog(2, None, false));
-        assert!(super::should_trigger_hub_watchdog(3, None, false));
-        assert!(!super::should_trigger_hub_watchdog(3, None, true));
-        assert!(!super::should_trigger_hub_watchdog(3, Some(60), false));
-        assert!(super::should_trigger_hub_watchdog(3, Some(301), false));
+        assert!(!super::should_trigger_hub_watchdog(2, None, false, false));
+        assert!(super::should_trigger_hub_watchdog(3, None, false, false));
+        assert!(!super::should_trigger_hub_watchdog(3, None, true, false));
+        assert!(!super::should_trigger_hub_watchdog(3, None, false, true));
+        assert!(!super::should_trigger_hub_watchdog(3, Some(60), false, false));
+        assert!(super::should_trigger_hub_watchdog(3, Some(301), false, false));
+    }
+
+    #[test]
+    fn hub_watchdog_skips_compose_up_when_container_is_up() {
+        use super::{decide_hub_watchdog_action, HubWatchdogAction};
+        // Three failures used to trigger start_hub — must not when the container is already up.
+        assert_eq!(
+            decide_hub_watchdog_action(3, None, false, false, true, true),
+            HubWatchdogAction::None
+        );
+        assert_eq!(
+            decide_hub_watchdog_action(5, None, false, false, true, true),
+            HubWatchdogAction::None
+        );
+        assert_eq!(
+            decide_hub_watchdog_action(6, None, false, false, true, true),
+            HubWatchdogAction::RestartWedgedContainer
+        );
+        assert_eq!(
+            decide_hub_watchdog_action(6, Some(60), false, false, true, true),
+            HubWatchdogAction::None
+        );
+        assert_eq!(
+            decide_hub_watchdog_action(3, None, false, false, false, true),
+            HubWatchdogAction::StartHub
+        );
+        assert_eq!(
+            decide_hub_watchdog_action(6, None, true, false, true, true),
+            HubWatchdogAction::None
+        );
+        assert_eq!(
+            decide_hub_watchdog_action(3, None, false, false, false, false),
+            HubWatchdogAction::None
+        );
+    }
+
+    #[test]
+    fn format_start_failure_message_rate_limit() {
+        let msg = super::format_start_failure_message(
+            "Database bootstrap failed. Error response from daemon: unexpected status from HEAD request: 429 Too Many Requests",
+        );
+        assert!(msg.contains("Docker Hub rate-limited"));
+        assert!(msg.contains("429"));
+    }
+
+    #[test]
+    fn compose_missing_race_is_not_sticky() {
+        let err = "docker compose pull failed. open /home/ci/.local/share/companion-hub/docker-compose.prod.yml: no such file or directory";
+        assert!(!super::should_persist_start_failure(err));
+        assert!(super::should_persist_start_failure(
+            "Database bootstrap failed. 429 Too Many Requests"
+        ));
+        // Seed materialization failures must stick — they are not a setup race.
+        assert!(super::should_persist_start_failure(
+            "Failed to materialize /home/ci/.local/share/companion-hub/docker-compose.prod.yml from the embedded seed (no bundled resource found): Permission denied"
+        ));
+    }
+
+    #[test]
+    fn ensure_hub_compose_file_writes_embedded_seed_when_missing() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let compose_path = dir.path().join(super::HUB_COMPOSE_FILENAME);
+        assert!(!compose_path.exists());
+
+        super::ensure_hub_compose_file(&compose_path, dir.path()).expect("write seed");
+
+        let written = std::fs::read_to_string(&compose_path).expect("read compose");
+        assert!(written.contains("services:"), "seed should be a compose file");
+        assert!(written.len() > 100);
+    }
+
+    #[test]
+    fn ensure_hub_compose_file_is_noop_when_present() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let compose_path = dir.path().join(super::HUB_COMPOSE_FILENAME);
+        std::fs::write(&compose_path, "services: {}\n").expect("seed existing");
+
+        super::ensure_hub_compose_file(&compose_path, dir.path()).expect("noop");
+
+        let written = std::fs::read_to_string(&compose_path).expect("read compose");
+        assert_eq!(written, "services: {}\n");
+    }
+
+    #[test]
+    fn start_failed_marker_roundtrip() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        assert!(!super::is_start_failed(dir.path()));
+        super::mark_start_failed(dir.path(), "429 Too Many Requests on postgres:14");
+        assert!(super::is_start_failed(dir.path()));
+        let stored = super::read_start_failed(dir.path()).expect("message");
+        assert!(stored.contains("Docker Hub rate-limited"));
+        super::clear_start_failed(dir.path());
+        assert!(!super::is_start_failed(dir.path()));
     }
 
     #[cfg(any(test, target_os = "macos"))]
@@ -8947,17 +9820,33 @@ mod tests {
     }
 
     #[test]
-    fn private_vpn_enabled_by_default_ignores_legacy_enabled_false() {
-        let mut env = std::collections::HashMap::new();
-        env.insert("PRIVATE_VPN_ENABLED".into(), "false".into());
-        assert!(private_vpn_enabled_from_map(&env));
+    fn private_vpn_requires_auth_key_or_state_and_ignores_legacy_enabled_false() {
+        use super::private_vpn_should_run;
+        // Legacy PRIVATE_VPN_ENABLED=false must not force the sidecar on without credentials.
+        assert!(!private_vpn_should_run(false, false, false));
+        assert!(private_vpn_should_run(false, true, false));
+        assert!(private_vpn_should_run(false, false, true));
+        assert!(!private_vpn_should_run(true, true, true));
     }
 
     #[test]
     fn private_vpn_disabled_only_when_user_disabled_sentinel_set() {
         let mut env = std::collections::HashMap::new();
         env.insert("PRIVATE_VPN_USER_DISABLED".into(), "true".into());
+        env.insert("TAILSCALE_AUTHKEY".into(), "tskey-auth-test".into());
         assert!(!private_vpn_enabled_from_map(&env));
+    }
+
+    #[test]
+    fn private_vpn_enabled_when_auth_key_present() {
+        let mut env = std::collections::HashMap::new();
+        env.insert("TAILSCALE_AUTHKEY".into(), "tskey-auth-test".into());
+        assert!(super::has_tailscale_auth_key(&env));
+        assert!(super::private_vpn_should_run(
+            false,
+            super::has_tailscale_auth_key(&env),
+            false
+        ));
     }
 
     #[test]
@@ -9605,6 +10494,64 @@ Error response from daemon: CONFLICT. The container name "/ci-hub-app" IS ALREAD
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
+    fn replaces_broken_symlink_at_cli_install_path() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let install_dir = tempdir.path().join("bin");
+        std::fs::create_dir_all(&install_dir).expect("create install dir");
+        let source = tempdir.path().join("bundled-cihub");
+        std::fs::write(&source, b"cli-bytes").expect("write source");
+
+        // Symlink into a checkout that no longer exists — fs::copy onto this
+        // path fails with ENOENT.
+        let installed = install_dir.join("cihub");
+        std::os::unix::fs::symlink(tempdir.path().join("gone/checkout/cihub"), &installed)
+            .expect("create broken symlink");
+
+        super::replace_installed_cli(&source, &install_dir, &installed).expect("install CLI");
+
+        let metadata = installed.symlink_metadata().expect("installed metadata");
+        assert!(metadata.file_type().is_file());
+        assert_eq!(std::fs::read(&installed).expect("read installed"), b"cli-bytes");
+        let leftovers: Vec<_> = std::fs::read_dir(&install_dir)
+            .expect("list install dir")
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| entry.file_name().to_string_lossy().contains("staging"))
+            .collect();
+        assert!(leftovers.is_empty(), "staging file left behind");
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn replaces_symlink_without_writing_through_to_its_target() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let install_dir = tempdir.path().join("bin");
+        std::fs::create_dir_all(&install_dir).expect("create install dir");
+        let source = tempdir.path().join("bundled-cihub");
+        std::fs::write(&source, b"cli-bytes").expect("write source");
+
+        // Symlink to a live file elsewhere (e.g. a dev checkout binary) — the
+        // install must replace the link, not overwrite what it points at.
+        let checkout_binary = tempdir.path().join("checkout-cihub");
+        std::fs::write(&checkout_binary, b"checkout-bytes").expect("write checkout binary");
+        let installed = install_dir.join("cihub");
+        std::os::unix::fs::symlink(&checkout_binary, &installed).expect("create symlink");
+
+        super::replace_installed_cli(&source, &install_dir, &installed).expect("install CLI");
+
+        assert!(installed
+            .symlink_metadata()
+            .expect("installed metadata")
+            .file_type()
+            .is_file());
+        assert_eq!(std::fs::read(&installed).expect("read installed"), b"cli-bytes");
+        assert_eq!(
+            std::fs::read(&checkout_binary).expect("read checkout binary"),
+            b"checkout-bytes"
+        );
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
     fn prefers_user_bin_dir_even_when_system_bin_is_on_path() {
         let tempdir = tempfile::tempdir().expect("tempdir");
         let home = tempdir.path();
@@ -9812,6 +10759,31 @@ Error response from daemon: CONFLICT. The container name "/ci-hub-app" IS ALREAD
                 "//./pipe/docker_engine"
             );
         }
+    }
+
+    #[test]
+    fn extract_ioreg_platform_uuid_parses_macos_output() {
+        let sample = r#""IOPlatformUUID" = "06151E8B-A400-470C-B48C-67AE51D297A9""#;
+        assert_eq!(
+            super::extract_ioreg_platform_uuid(sample),
+            Some("06151E8B-A400-470C-B48C-67AE51D297A9".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_system_profiler_serial_parses_hardware_output() {
+        let sample = "      Serial Number (system): C02XYZ123456";
+        assert_eq!(
+            super::extract_system_profiler_serial(sample),
+            Some("C02XYZ123456".to_string())
+        );
+    }
+
+    #[test]
+    fn rejects_placeholder_host_device_ids() {
+        assert!(!super::is_usable_host_device_id("Not Specified"));
+        assert!(!super::is_usable_host_device_id("00000000-0000-0000-0000-000000000000"));
+        assert!(super::is_usable_host_device_id("06151E8B-A400-470C-B48C-67AE51D297A9"));
     }
 
     #[cfg(windows)]

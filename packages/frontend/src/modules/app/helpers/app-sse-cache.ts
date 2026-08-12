@@ -3,7 +3,15 @@ import { getAppQueryKey, getInstalledAppsQueryKey, appContextQueryKey } from '@/
 import type { AppUrn } from '@ci-hub/common/types';
 import type { QueryClient } from '@tanstack/react-query';
 import { installQueueQueryKey, type InstallQueueState } from './install-queue';
+import { CI_MEMORY_APP_NAME } from './memory-provider';
+import { MEMORY_STATUS_QUERY_PREFIX } from './use-memory-connection';
 import { updateInstallationProgress } from './use-installation-progress';
+
+// Reserved app-directory name of Companion Memory (shared with the provider gate).
+// When ci-memory itself changes lifecycle state, every consumer app's
+// memory-connection status can flip (installing→ready, running→offline, …) — but
+// those queries are keyed by the CONSUMER's urn, so ci-memory's own SSE event
+// never touches them on its own.
 
 export type AppInstallErrorCache = {
   message: string;
@@ -21,6 +29,10 @@ export type AppSsePayload = {
   errorCode?: string;
   errorDetail?: string;
   settingsPath?: string;
+  /** Identifier for a non-fatal caveat on an otherwise-successful op; the client maps it to a warning toast. */
+  warningCode?: string;
+  /** Optional detail for the caveat (e.g. the host path of an uninstall remnant) used to render an actionable message. */
+  warningDetail?: string;
   progress?: number;
   active?: InstallQueueState['active'];
   queued?: InstallQueueState['queued'];
@@ -51,6 +63,31 @@ const LIFECYCLE_INVALIDATE_EVENTS = new Set([
 
 const TERMINAL_PROGRESS_STATUSES = new Set(['running', 'missing', 'install_failed']);
 
+/** Lifecycle states where a transient Docker `stopped` snapshot must not clobber UI. */
+const TRANSITIONAL_APP_STATUSES = new Set([
+  'installing',
+  'uninstalling',
+  'stopping',
+  'starting',
+  'updating',
+  'resetting',
+  'restarting',
+  'backing_up',
+  'restoring',
+]);
+
+function shouldApplyGenericStatusChange(currentStatus: string | undefined, nextStatus: string): boolean {
+  if (!currentStatus || currentStatus === nextStatus) {
+    return true;
+  }
+
+  if (TRANSITIONAL_APP_STATUSES.has(currentStatus) && (nextStatus === 'stopped' || nextStatus === 'missing')) {
+    return false;
+  }
+
+  return true;
+}
+
 function runtimeHealthQueryKey(appUrn: string) {
   return ['app-runtime-health', appUrn];
 }
@@ -67,16 +104,30 @@ export function invalidateAppQueries(queryClient: QueryClient, appUrn: string) {
   void queryClient.invalidateQueries({ queryKey: appContextQueryKey() });
 }
 
-function setCachedAppStatus(queryClient: QueryClient, appUrn: string, appStatus?: string) {
+function setCachedAppStatus(
+  queryClient: QueryClient,
+  appUrn: string,
+  appStatus?: string,
+  options?: { allowDowngradeFromTransitional?: boolean },
+): 'applied' | 'rejected' | 'no-cache' {
   if (!appStatus) {
-    return;
+    return 'no-cache';
   }
+
+  let outcome: 'applied' | 'rejected' | 'no-cache' = 'no-cache';
 
   queryClient.setQueryData(getAppQueryKey({ path: { urn: appUrn } }), (current: GetAppDto | undefined) => {
     if (!current?.app) {
       return current;
     }
 
+    const allowDowngrade = options?.allowDowngradeFromTransitional ?? false;
+    if (!allowDowngrade && !shouldApplyGenericStatusChange(current.app.status, appStatus)) {
+      outcome = 'rejected';
+      return current;
+    }
+
+    outcome = 'applied';
     return {
       ...current,
       app: {
@@ -85,6 +136,8 @@ function setCachedAppStatus(queryClient: QueryClient, appUrn: string, appStatus?
       },
     };
   });
+
+  return outcome;
 }
 
 function clearUninstalledAppCaches(queryClient: QueryClient, appUrn: string) {
@@ -146,6 +199,17 @@ export function handleAppSseEvent(queryClient: QueryClient, data: AppSsePayload)
 
   const urn = appUrn as AppUrn;
 
+  // If Companion Memory itself changed lifecycle, nudge every consumer's memory
+  // status (keyed by the consumer's urn, so the provider's own event misses them).
+  // Skip pure install-progress ticks — the status is stably "starting" throughout,
+  // so refetching on each tick would be wasted work.
+  if (appUrn.split(':')[0] === CI_MEMORY_APP_NAME) {
+    const isInstallProgressTick = event === 'status_change' && appStatus === 'installing' && typeof progress === 'number';
+    if (!isInstallProgressTick) {
+      void queryClient.invalidateQueries({ queryKey: [MEMORY_STATUS_QUERY_PREFIX] });
+    }
+  }
+
   if (event === 'install_error' && error) {
     setCachedAppStatus(queryClient, appUrn, appStatus);
     queryClient.setQueryData<AppInstallErrorCache>(['app-install-error', urn], {
@@ -187,7 +251,7 @@ export function handleAppSseEvent(queryClient: QueryClient, data: AppSsePayload)
   }
 
   if (LIFECYCLE_INVALIDATE_EVENTS.has(event)) {
-    setCachedAppStatus(queryClient, appUrn, appStatus);
+    setCachedAppStatus(queryClient, appUrn, appStatus, { allowDowngradeFromTransitional: true });
     invalidateAppQueries(queryClient, appUrn);
     return;
   }
@@ -227,7 +291,9 @@ export function handleAppSseEvent(queryClient: QueryClient, data: AppSsePayload)
   }
 
   if (appStatus) {
-    setCachedAppStatus(queryClient, appUrn, appStatus);
-    invalidateAppQueries(queryClient, appUrn);
+    const outcome = setCachedAppStatus(queryClient, appUrn, appStatus);
+    if (outcome !== 'rejected') {
+      invalidateAppQueries(queryClient, appUrn);
+    }
   }
 }

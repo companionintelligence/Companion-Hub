@@ -1,6 +1,4 @@
-import type { Architecture } from '@/common/constants';
 import { extractAppUrn } from '@/common/helpers/app-helpers';
-import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { Injectable } from '@nestjs/common';
 import type { AppUrn } from '@ci-hub/common/types';
@@ -32,12 +30,17 @@ type PortalCatalogApp = {
   available?: boolean;
   cihub_app_version?: number;
   tipi_version?: number;
+  min_hub_version?: number | null;
   exposable?: boolean;
+  no_gui?: boolean;
   dynamic_config?: boolean;
   form_fields?: unknown[];
   force_pull?: boolean;
   url_suffix?: string;
   hub_integration?: unknown;
+  mcp?: unknown;
+  screenshots?: string[];
+  demo_video?: string;
 };
 
 export type PortalCatalogEntry = {
@@ -50,6 +53,15 @@ export type PortalCatalogEntry = {
   deprecated: boolean;
   supported_architectures?: string[];
   available: boolean;
+  cihub_app_version: number;
+  version: string;
+  min_hub_version?: number | null;
+};
+
+export type PortalCatalogUpdateInfo = {
+  latestVersion: number;
+  latestDockerVersion: string;
+  minHubVersion: number | null;
 };
 
 @Injectable()
@@ -57,10 +69,10 @@ export class PortalCatalogService {
   private cache: PortalCatalogEntry[] | null = null;
   private cacheUpdatedAt = 0;
   private readonly cacheTtlMs = 1000 * 60 * 15;
+  private inflightFetch: Promise<PortalCatalogEntry[]> | null = null;
 
   constructor(
     private readonly portalClient: PortalClientService,
-    private readonly configuration: ConfigurationService,
     private readonly logger: LoggerService,
   ) {}
 
@@ -91,16 +103,16 @@ export class PortalCatalogService {
       deprecated: Boolean(app.deprecated),
       supported_architectures: app.supported_architectures,
       available: app.available !== false,
+      cihub_app_version:
+        typeof app.cihub_app_version === 'number' ? app.cihub_app_version : typeof app.tipi_version === 'number' ? app.tipi_version : 1,
+      version: typeof app.version === 'string' ? app.version : '0.0.1',
+      min_hub_version: typeof app.min_hub_version === 'number' ? app.min_hub_version : null,
     };
   }
 
-  private filterForArchitecture(apps: PortalCatalogEntry[]): PortalCatalogEntry[] {
-    const { architecture } = this.configuration.getConfig();
-    return apps.filter((app) => {
-      if (app.deprecated || !app.available) return false;
-      if (!app.supported_architectures?.length) return true;
-      return app.supported_architectures.includes(architecture as Architecture);
-    });
+  /** Drop deprecated/unavailable apps only — wrong-arch apps stay browseable. */
+  private filterCatalogEntries(apps: PortalCatalogEntry[]): PortalCatalogEntry[] {
+    return apps.filter((app) => !app.deprecated && app.available);
   }
 
   async getCatalogEntries(force = false): Promise<PortalCatalogEntry[]> {
@@ -108,18 +120,30 @@ export class PortalCatalogService {
       return this.cache;
     }
 
-    try {
-      const raw = await this.portalClient.fetchStoreCatalog();
-      const list = Array.isArray(raw) ? raw : [];
-      const mapped = list.map((item) => this.mapPortalApp(item as PortalCatalogApp)).filter((entry): entry is PortalCatalogEntry => entry !== null);
-      this.cache = this.filterForArchitecture(mapped);
-      this.cacheUpdatedAt = Date.now();
-      return this.cache;
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      this.logger.warn(`Portal catalog fetch failed: ${message}`);
-      return this.cache ?? [];
+    // Dedupe concurrent callers into a single Portal round-trip so hot paths
+    // (e.g. per-app fan-outs) never trigger a thundering herd of fetches.
+    if (this.inflightFetch) {
+      return this.inflightFetch;
     }
+
+    this.inflightFetch = (async () => {
+      try {
+        const raw = await this.portalClient.fetchStoreCatalog();
+        const list = Array.isArray(raw) ? raw : [];
+        const mapped = list.map((item) => this.mapPortalApp(item as PortalCatalogApp)).filter((entry): entry is PortalCatalogEntry => entry !== null);
+        this.cache = this.filterCatalogEntries(mapped);
+        this.cacheUpdatedAt = Date.now();
+        return this.cache;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        this.logger.warn(`Portal catalog fetch failed: ${message}`);
+        return this.cache ?? [];
+      } finally {
+        this.inflightFetch = null;
+      }
+    })();
+
+    return this.inflightFetch;
   }
 
   async searchCatalog(params: { search?: string | null; category?: string | null; pageSize?: number; cursor?: string | null; storeId?: string }) {
@@ -172,6 +196,32 @@ export class PortalCatalogService {
     return appStoreId === CI_MARKETPLACE_STORE_SLUG;
   }
 
+  /**
+   * Resolve latest published version metadata from the Portal catalog cache.
+   *
+   * Non-blocking by design: this runs on hot paths (installed-apps list and
+   * dashboard fan out to it per app), so it only reads already-cached catalog
+   * data and triggers a background refresh when the cache is stale. Callers
+   * fall back to local store metadata when the cache is cold.
+   */
+  getUpdateInfoForUrn(appUrn: AppUrn): PortalCatalogUpdateInfo | null {
+    if (!this.isCiMarketplaceUrn(appUrn)) return null;
+
+    if (!this.cache || Date.now() - this.cacheUpdatedAt >= this.cacheTtlMs) {
+      void this.warmCacheInBackground();
+    }
+
+    const { appName } = extractAppUrn(appUrn);
+    const app = this.cache?.find((entry) => entry.id === appName);
+    if (!app) return null;
+
+    return {
+      latestVersion: app.cihub_app_version,
+      latestDockerVersion: app.version,
+      minHubVersion: app.min_hub_version ?? null,
+    };
+  }
+
   private mapPortalCategories(app: PortalCatalogApp): string[] {
     const categories = new Set<string>();
     for (const c of app.categories ?? []) {
@@ -196,6 +246,7 @@ export class PortalCatalogService {
     const categories = this.mapPortalCategories(app).filter((category): category is (typeof APP_CATEGORIES)[number] =>
       (APP_CATEGORIES as readonly string[]).includes(category),
     );
+    const isMcpListing = Boolean(app.mcp) || app.no_gui === true;
     const parsed = appInfoSchema.safeParse({
       id: slug,
       urn: appUrn,
@@ -206,7 +257,8 @@ export class PortalCatalogService {
       short_desc,
       description: markdownDescription?.trim() || '',
       categories: categories.length > 0 ? categories : ['utilities'],
-      port: typeof app.port === 'number' ? app.port : 8080,
+      // MCP / no_gui listings are not HTTP apps — omit the fake default port.
+      port: typeof app.port === 'number' ? app.port : isMcpListing ? undefined : 8080,
       version: typeof app.version === 'string' ? app.version : 'latest',
       cihub_app_version:
         typeof app.cihub_app_version === 'number' ? app.cihub_app_version : typeof app.tipi_version === 'number' ? app.tipi_version : 1,
@@ -214,12 +266,19 @@ export class PortalCatalogService {
       website: typeof app.website === 'string' ? app.website : undefined,
       supported_architectures: app.supported_architectures?.length ? app.supported_architectures : ['amd64', 'arm64'],
       runtime_platform: typeof app.runtime_platform === 'string' ? app.runtime_platform : undefined,
-      exposable: app.exposable !== false,
+      // Prefer explicit catalog flags; default MCP listings to non-exposable.
+      exposable: typeof app.exposable === 'boolean' ? app.exposable : !isMcpListing,
+      no_gui: app.no_gui === true || isMcpListing ? true : undefined,
+      mcp: app.mcp,
       dynamic_config: app.dynamic_config !== false,
       form_fields: Array.isArray(app.form_fields) ? app.form_fields : undefined,
       force_pull: app.force_pull === true ? true : undefined,
       url_suffix: typeof app.url_suffix === 'string' ? app.url_suffix : undefined,
       hub_integration: app.hub_integration,
+      screenshots: Array.isArray(app.screenshots)
+        ? app.screenshots.filter((item): item is string => typeof item === 'string' && item.length > 0)
+        : undefined,
+      demo_video: typeof app.demo_video === 'string' && app.demo_video.length > 0 ? app.demo_video : undefined,
     });
 
     if (!parsed.success) {
@@ -283,6 +342,42 @@ export class PortalCatalogService {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.logger.warn(`Portal icon fetch failed for ${appUrn}: ${message}`);
+      return null;
+    }
+  }
+
+  async fetchStoreAppDetails(appSlug: string): Promise<{ screenshots?: string[]; demo_video?: string } | null> {
+    if (!this.isCiMarketplaceUrn(`${appSlug}:ci-marketplace` as AppUrn)) {
+      return null;
+    }
+
+    return this.portalClient.fetchStoreAppDetails(appSlug);
+  }
+
+  async fetchScreenshotImage(appUrn: AppUrn, filename: string): Promise<{ image: Buffer; etag: string; contentType: string } | null> {
+    if (!this.isCiMarketplaceUrn(appUrn)) return null;
+
+    const { appName } = extractAppUrn(appUrn);
+    const publicPortalUrl = this.portalClient.getPublicPortalUrl();
+    if (!publicPortalUrl) return null;
+
+    const screenshotUrl = `${publicPortalUrl.replace(/\/+$/, '')}/api/store/${encodeURIComponent(appName)}/screenshots/${encodeURIComponent(filename)}`;
+
+    try {
+      const response = await axios.get<ArrayBuffer>(screenshotUrl, {
+        responseType: 'arraybuffer',
+        timeout: 15_000,
+        validateStatus: (status) => status >= 200 && status < 300,
+      });
+      const image = Buffer.from(response.data);
+      if (image.length === 0) return null;
+
+      const contentType = typeof response.headers['content-type'] === 'string' ? response.headers['content-type'] : 'image/png';
+      const etag = `"portal-screenshot-${createHash('sha1').update(screenshotUrl).digest('hex')}"`;
+      return { image, etag, contentType };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.warn(`Portal screenshot fetch failed for ${appUrn}/${filename}: ${message}`);
       return null;
     }
   }

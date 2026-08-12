@@ -8,7 +8,7 @@
     "beforeDevCommand": "",
     "devUrl": "http://localhost:5005",
     "beforeBuildCommand": "",
-    "frontendDist": "../../../packages/frontend/dist/client"
+    "frontendDist": "../bootstrap"
   },
   "bundle": {
     "active": true,

@@ -10,7 +10,7 @@ import { AppsRepository } from '../apps/apps.repository';
 import { AppFilesManager } from '../apps/app-files-manager';
 import { publishesCloudflarePublicRoute, type AppPublicRoutingSnapshot } from '../apps/app-public-routing.helpers';
 import { isPortExposeApp } from '@ci-hub/common/schemas';
-import { CloudflareClientService, AppInfo } from '../cloudflare/cloudflare-client.service';
+import { CloudflareClientService, AppInfo, type PublicDnsFailure, type PublicDnsFailureReason } from '../cloudflare/cloudflare-client.service';
 import { DockerService } from '../docker/docker.service';
 import { RegistrationService } from '../registration/registration.service';
 import { TailscaleService } from '../tailscale/tailscale.service';
@@ -25,6 +25,53 @@ function buildPublicHostname(params: { appSubdomain: string; hubSubdomain?: stri
   }).hostname;
 }
 
+/** An app that failed public-DNS sync, plus why, so the toast can say which. */
+type PublicDnsToastTarget = { appUrn: AppUrn; hostname: string; reason?: PublicDnsFailureReason };
+
+/**
+ * Index entries by a string key, first occurrence winning — the same entry a
+ * linear `find` would have returned, but O(1) per lookup instead of O(n).
+ */
+function indexByFirst<T>(entries: readonly T[], key: (entry: T) => string): Map<string, T> {
+  const index = new Map<string, T>();
+  for (const entry of entries) {
+    const entryKey = key(entry);
+    if (!index.has(entryKey)) {
+      index.set(entryKey, entry);
+    }
+  }
+  return index;
+}
+
+/**
+ * Turn CI-Cloud's per-app failure detail into an operator-facing explanation.
+ *
+ * Without it every failure read as a domain/zone problem, which is what sent the
+ * investigation in CI-Portal#403 down the wrong path: the real cause was a DNS
+ * record CI-Cloud refused to overwrite. Falls back to the old wording when the
+ * Portal is older and sends no detail.
+ */
+function describePublicDnsFailures(failures: PublicDnsFailure[]): string {
+  if (failures.length === 0) {
+    return "verify the selected domain's zone is provisioned in CI-Cloud for this device.";
+  }
+
+  return failures
+    .map((failure) => {
+      switch (failure.reason) {
+        case 'conflict':
+          return `${failure.app}: the address is already claimed by another device or tunnel and CI-Cloud will not overwrite it (${failure.message ?? 'no detail'})`;
+        case 'zone_unreachable':
+          return `${failure.app}: the selected domain is not provisioned for this device in CI-Cloud (${failure.message ?? 'no detail'})`;
+        case 'invalid_subdomain':
+          return `${failure.app}: the requested subdomain is not a valid DNS label (${failure.message ?? 'no detail'})`;
+        default:
+          return `${failure.app}: Cloudflare rejected the DNS write, usually transient (${failure.message ?? 'no detail'})`;
+      }
+    })
+    .join('; ');
+}
+
 @Injectable()
 export class ExposureSyncService {
   private lastPublicDnsFailureReportAt = 0;
@@ -33,6 +80,18 @@ export class ExposureSyncService {
 
   private readonly lastTailscaleServeToastAt = new Map<string, number>();
   private static readonly TAILSCALE_SERVE_FAILURE_COOLDOWN_MS = 5 * 60_000;
+
+  /**
+   * HTTPS port the Hub itself is served on over the tailnet — 443, so the
+   * resulting origin is a bare `https://<nodeFqdn>` (what
+   * `buildHubTailnetOrigin` advertises). App serve ports are the apps' own
+   * high ports, so a clash is a misconfiguration — resolved in the Hub's
+   * favour: the tailnet origin is load-bearing for the whole connect
+   * ceremony and is advertised without knowledge of serve state, so leaving
+   * it unserved would hand every VPN caller a dead launcher, while the
+   * evicted app just needs its port changed.
+   */
+  private static readonly HUB_VPN_PORT = 443;
 
   constructor(
     private readonly logger: LoggerService,
@@ -102,7 +161,8 @@ export class ExposureSyncService {
         number,
         {
           appName: string;
-          appUrn: AppUrn;
+          /** Absent for the Hub's own entry — failures then log instead of raising a per-app toast. */
+          appUrn?: AppUrn;
           port: number;
           upstreamUrl: string;
         }
@@ -138,6 +198,27 @@ export class ExposureSyncService {
         });
       }
 
+      // The Hub itself is published at `https://<nodeFqdn>/` (port 443) whenever
+      // the VPN is up — without this, the Private VPN exposes apps but not the
+      // Hub, and the memory-connect/login ceremony has no tailnet origin to land
+      // on (CI-Engineering#78). Registered like any other desired port so the
+      // reconcile loop below keeps it alive and never garbage-collects it. An
+      // app configured on 443 is evicted (see HUB_VPN_PORT for why the Hub
+      // wins) — loudly, with the remedy, since its Private VPN URL stays dead
+      // until its port changes.
+      const clashingApp = desiredPorts.get(ExposureSyncService.HUB_VPN_PORT);
+      if (clashingApp) {
+        this.logger.error(
+          `[Tailscale] ${clashingApp.appUrn}: port ${ExposureSyncService.HUB_VPN_PORT} is reserved for the Hub's own Private VPN entry; ` +
+            'skipping this app — assign it a different port to publish it on the Private VPN',
+        );
+      }
+      desiredPorts.set(ExposureSyncService.HUB_VPN_PORT, {
+        appName: 'hub',
+        port: ExposureSyncService.HUB_VPN_PORT,
+        upstreamUrl: await tailscaleService.getHubServeUpstream(),
+      });
+
       const currentlyServedByPort = new Map(
         serveStatus.entries.filter((entry) => entry.listenPort).map((entry) => [entry.listenPort as number, entry]),
       );
@@ -151,7 +232,11 @@ export class ExposureSyncService {
               httpsPort: desired.port,
               upstreamUrl: desired.upstreamUrl,
             })
-            .catch((e) => this.surfaceTailscaleServeFailure(desired.appUrn, e));
+            .catch((e) =>
+              desired.appUrn
+                ? this.surfaceTailscaleServeFailure(desired.appUrn, e)
+                : this.logger.error(`[Tailscale] Failed to publish the Hub on the Private VPN: ${e instanceof Error ? e.message : String(e)}`),
+            );
         }
       }
 
@@ -183,7 +268,7 @@ export class ExposureSyncService {
    * into a toast. Sentry and toasts are cooldown-guarded to avoid flooding when
    * availability remediation re-triggers the sync for a still-broken app.
    */
-  private surfacePublicDnsFailure(message: string, failedAppNames: string[], toastTargets: Array<{ appUrn: AppUrn; hostname: string }> = []): void {
+  private surfacePublicDnsFailure(message: string, failedAppNames: string[], toastTargets: PublicDnsToastTarget[] = []): void {
     this.logger.error(message);
 
     const now = Date.now();
@@ -198,7 +283,13 @@ export class ExposureSyncService {
         continue;
       }
       this.lastPublicDnsToastAt.set(target.appUrn, now);
-      this.sseService.emit('app', { event: 'public_dns_error', appUrn: target.appUrn, error: target.hostname }, target.appUrn);
+      // `errorCode` carries the failure class so the frontend can say what is
+      // actually wrong rather than always blaming the domain (CI-Portal#403).
+      this.sseService.emit(
+        'app',
+        { event: 'public_dns_error', appUrn: target.appUrn, error: target.hostname, errorCode: target.reason },
+        target.appUrn,
+      );
     }
   }
 
@@ -302,6 +393,7 @@ export class ExposureSyncService {
         const deviceName = hubSub.endsWith(orgSuffix) ? hubSub.slice(0, -orgSuffix.length) : hubSub;
         const hubHostname = `${hubSub}.${defaultPublicDomain}`;
 
+        const hubListenPort = Number.parseInt(process.env.API_PORT || '5002', 10) || 5002;
         exposedApps.unshift({
           name: 'OS Hub',
           subdomain: deviceName,
@@ -311,12 +403,35 @@ export class ExposureSyncService {
           hostname: 'traefik',
           originServerName: hubHostname,
           privilegedKind: 'hub',
+          hubListenPort,
         });
       }
 
       const result = await this.cloudflareClientService.syncState(orgInfo.id, exposedApps, orgInfo.tunnelId || undefined);
 
       const appEntries = exposedApps.filter((entry) => entry.privilegedKind !== 'hub');
+
+      // Both failure branches below map app names back to their DB row (and, in the
+      // partial-failure branch, to their exposed entry and failure reason). Doing
+      // that with `find` is a full scan per failed app; a Hub can run dozens of
+      // apps, so index once and look up in O(1).
+      const dbAppByName = indexByFirst(apps, (candidate: AppFromDb) => candidate.appName);
+
+      // The DB row is all that is needed to name an app's public record. Both failure
+      // branches and the failure log derive the hostname from here, so none of them
+      // can drift on how a public record is named.
+      const toPublicHostname = (dbApp: AppFromDb): string =>
+        buildPublicHostname({
+          appSubdomain: dbApp.localSubdomain || `${dbApp.appName}-${dbApp.appStoreSlug}`,
+          hubSubdomain: orgInfo.hubSubdomain,
+          orgSlug: orgInfo.slug,
+          publicDomainRoot: dbApp.publicDomain || defaultPublicDomain,
+        });
+
+      const toToastTarget = (dbApp: AppFromDb): PublicDnsToastTarget => ({
+        appUrn: `${dbApp.appName}:${dbApp.appStoreSlug}` as AppUrn,
+        hostname: toPublicHostname(dbApp),
+      });
 
       if (!result.ok) {
         // A full sync failure means none of the exposed apps were updated, so
@@ -327,51 +442,59 @@ export class ExposureSyncService {
         // syncs.
         const toastTargets = appEntries
           .map((entry) => {
-            const dbApp = apps.find((candidate: AppFromDb) => candidate.appName === entry.name);
+            const dbApp = dbAppByName.get(entry.name);
             if (!dbApp) {
               return null;
             }
-            return {
-              appUrn: `${dbApp.appName}:${dbApp.appStoreSlug}` as AppUrn,
-              hostname: buildPublicHostname({
-                appSubdomain: dbApp.localSubdomain || `${dbApp.appName}-${dbApp.appStoreSlug}`,
-                hubSubdomain: orgInfo.hubSubdomain,
-                orgSlug: orgInfo.slug,
-                publicDomainRoot: dbApp.publicDomain || defaultPublicDomain,
-              }),
-            };
+            return toToastTarget(dbApp);
           })
-          .filter((target): target is { appUrn: AppUrn; hostname: string } => target !== null);
+          .filter((target): target is PublicDnsToastTarget => target !== null);
+        const cause = [result.errorStatus && `HTTP ${result.errorStatus}`, result.errorMessage].filter(Boolean).join(': ');
         this.surfacePublicDnsFailure(
-          `[Cloudflare] State sync did not complete — public DNS was not updated for ${appEntries.length} exposed app(s).`,
+          `[Cloudflare] State sync did not complete — public DNS was not updated for ${appEntries.length} exposed app(s).${
+            cause ? ` Cause: ${cause}.` : ''
+          }`,
           appEntries.map((entry) => entry.name),
           toastTargets,
         );
       } else if (result.failed.length > 0) {
         // Map CI-Cloud's failed app names back to their URN + hostname so the
-        // frontend can raise a per-app toast (privileged Hub entry excluded).
+        // frontend can raise a per-app toast (privileged Hub entry excluded — it is
+        // absent from appEntries, so an unmatched name is skipped).
+        const exposedByName = indexByFirst(appEntries, (entry) => entry.name);
+        const failureByApp = indexByFirst(result.failures, (failure) => failure.app);
+
         const toastTargets = result.failed
-          .map((name) => {
-            const dbApp = apps.find((candidate: AppFromDb) => candidate.appName === name);
-            const entry = exposedApps.find((candidate) => candidate.name === name && candidate.privilegedKind !== 'hub');
-            if (!dbApp || !entry) {
+          .map((name): PublicDnsToastTarget | null => {
+            const dbApp = dbAppByName.get(name);
+            if (!dbApp || !exposedByName.has(name)) {
               return null;
             }
             return {
-              appUrn: `${dbApp.appName}:${dbApp.appStoreSlug}` as AppUrn,
-              hostname: buildPublicHostname({
-                appSubdomain: dbApp.localSubdomain || `${dbApp.appName}-${dbApp.appStoreSlug}`,
-                hubSubdomain: orgInfo.hubSubdomain,
-                orgSlug: orgInfo.slug,
-                publicDomainRoot: dbApp.publicDomain || defaultPublicDomain,
-              }),
+              ...toToastTarget(dbApp),
+              // Absent when CI-Cloud predates structured failures; the frontend
+              // then falls back to the generic message.
+              reason: failureByApp.get(name)?.reason,
             };
           })
-          .filter((target): target is { appUrn: AppUrn; hostname: string } => target !== null);
-        const failedHostnames = toastTargets.map((target) => target.hostname);
+          .filter((target): target is PublicDnsToastTarget => target !== null);
+
+        // Name EVERY failed app: its hostname where we could rebuild one, else the
+        // raw name CI-Cloud sent. Listing only the mapped hostnames dropped any app
+        // that has no toast target — one with no DB row, or the privileged Hub entry,
+        // which is deliberately absent from appEntries — so the log claimed N apps and
+        // then named fewer, and the missing ones were exactly the ones an operator had
+        // no other way to find. A message that hides which app broke is the failure
+        // this PR exists to fix.
+        const failedLabels = result.failed.map((name) => {
+          const dbApp = dbAppByName.get(name);
+
+          return dbApp ? toPublicHostname(dbApp) : name;
+        });
+
         this.surfacePublicDnsFailure(
-          `[Cloudflare] Public DNS records were NOT created for ${result.failed.length} app(s): ${(failedHostnames.length > 0 ? failedHostnames : result.failed).join(', ')}. ` +
-            `These apps will not resolve at their public domain — verify the selected domain's zone is provisioned in CI-Cloud for this device.`,
+          `[Cloudflare] Public DNS records were NOT created for ${result.failed.length} app(s): ${failedLabels.join(', ')}. ` +
+            `These apps will not resolve at their public domain — ${describePublicDnsFailures(result.failures)}`,
           result.failed,
           toastTargets,
         );

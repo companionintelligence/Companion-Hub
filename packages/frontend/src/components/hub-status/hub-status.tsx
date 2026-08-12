@@ -1,11 +1,25 @@
-import { useState, useEffect, useCallback, useRef, type ReactNode } from 'react';
+import { colorizeLogLine } from '@/lib/log-ansi';
+import { useResolvedTheme } from '@/lib/use-resolved-theme';
+import DOMPurify from 'dompurify';
+import '@/components/logs-terminal/logs-terminal.css';
+import { useMemo, useState, useEffect, useCallback, useRef, type ReactNode } from 'react';
 import { useRevalidator } from 'react-router';
+import { useAppIntentDeepLinks } from '@/hooks/use-app-intent-deep-links';
 import { useDeepLinkPairCapture } from '@/hooks/use-deep-link-pair-capture';
+import { isTauriMobileSync } from '@/lib/mobile-connection';
 import { SetupCard } from '@/components/setup/setup-card';
 import { SetupPageShell } from '@/components/setup/setup-page-shell';
 import { HintText } from '@/components/ui/field-hint/field-hint';
 import { DockerAccessStatusPanel } from './docker-access-status-panel';
-import { configureHubApiPort, getTauriInvoke, probeHealthyHubApiPort } from '@/lib/tauri-hub-probe';
+import { configureHubApiPort, probeHealthyHubApiPort } from '@/lib/tauri-hub-probe';
+import { getTauriInvoke } from '@/lib/helpers/tauri-invoke';
+import {
+  clearHubSteadySession,
+  clearStackUpdatePending,
+  isStackUpdatePending,
+  markHubSteadySession,
+  readHubSteadySession,
+} from '@/lib/desktop-stack-session';
 import { openLogsFolder } from '@/lib/helpers/open-folder';
 import {
   DOCKER_MAC_ARCH_HINT,
@@ -51,32 +65,6 @@ export function reloadCurrentWindow() {
   window.location.reload();
 }
 
-const HUB_STEADY_SESSION_KEY = 'ci-hub-steady-running';
-
-function readHubSteadySession(): boolean {
-  try {
-    return sessionStorage.getItem(HUB_STEADY_SESSION_KEY) === '1';
-  } catch {
-    return false;
-  }
-}
-
-function markHubSteadySession(): void {
-  try {
-    sessionStorage.setItem(HUB_STEADY_SESSION_KEY, '1');
-  } catch {
-    // sessionStorage unavailable — steady-state hints are best-effort only.
-  }
-}
-
-function clearHubSteadySession(): void {
-  try {
-    sessionStorage.removeItem(HUB_STEADY_SESSION_KEY);
-  } catch {
-    // ignore
-  }
-}
-
 /** True when the user explicitly reloaded the WebView (context menu → Reload). */
 export function isUserInitiatedPageReload(): boolean {
   if (typeof performance === 'undefined') {
@@ -95,6 +83,8 @@ export function isUserInitiatedPageReload(): boolean {
 }
 
 const HUB_STATUS_POLL_INTERVAL_MS = 3000;
+/** Probe misses required before leaving the Running UI after the hub has been steady. */
+const HUB_STEADY_PROBE_FAILURE_THRESHOLD = 3;
 
 function detectPlatform(): 'windows' | 'macos' | 'linux' {
   const ua = navigator.userAgent.toLowerCase();
@@ -214,10 +204,10 @@ function DockerDesktopGuide({
             <div className="space-y-1">
               <div className="flex items-start gap-1 flex-wrap">
                 <HintText id="docker-required" hint={t(DOCKER_REQUIRED_HINT)} as="h2" className="text-xl font-semibold text-foreground">
-                  {t('HUB_STATUS_DOCKER_DESKTOP_REQUIRED')}
+                  {t('HUB_STATUS_DOCKER_REQUIRED')}
                 </HintText>
               </div>
-              <p className="text-sm text-muted-foreground max-w-lg">{t('HUB_STATUS_DOCKER_DESKTOP_REQUIRED_DESC')}</p>
+              <p className="text-sm text-muted-foreground max-w-lg">{t('HUB_STATUS_DOCKER_REQUIRED_DESC')}</p>
             </div>
             <Container className="h-10 w-10 shrink-0 text-primary" aria-hidden />
           </div>
@@ -475,7 +465,7 @@ function DockerInstallGuide() {
     return (
       <DockerDesktopGuide
         {...guide}
-        footer={guide.hint ? <p className="text-xs text-muted-foreground/70">{guide.hint}</p> : undefined}
+        footer={guide.hint ? <p className="text-xs text-muted-foreground">{guide.hint}</p> : undefined}
         alternative={<EngineAlternativePanel platform="windows" />}
       />
     );
@@ -486,7 +476,7 @@ function DockerInstallGuide() {
     return (
       <DockerDesktopGuide
         {...guide}
-        footer={guide.hint ? <p className="text-xs text-muted-foreground/70">{guide.hint}</p> : undefined}
+        footer={guide.hint ? <p className="text-xs text-muted-foreground">{guide.hint}</p> : undefined}
         alternative={<EngineAlternativePanel platform="macos" />}
       />
     );
@@ -506,11 +496,11 @@ const SERVICE_ICON: Record<ServiceState, string> = {
 };
 
 const SERVICE_COLOR: Record<ServiceState, string> = {
-  pending: 'text-muted-foreground/40',
-  starting: 'text-yellow-500',
-  ready: 'text-green-500',
+  pending: 'text-muted-foreground',
+  starting: 'text-warning',
+  ready: 'text-success',
   failed: 'text-destructive',
-  unavailable: 'text-muted-foreground/50',
+  unavailable: 'text-muted-foreground',
 };
 
 function ServiceRow({ service }: { service: ServiceStatus }) {
@@ -603,14 +593,14 @@ function StartupScreen({ elapsedSeconds }: { elapsedSeconds: number }) {
                 ? t('HUB_STATUS_STARTING_ALMOST_THERE')
                 : t('HUB_STATUS_STARTING_SERVICES_ONLINE')}
           </p>
-          <p className="text-xs text-muted-foreground/80">{t('HUB_STATUS_STARTING_FIRST_STARTUP_NOTE')}</p>
+          <p className="text-xs text-muted-foreground">{t('HUB_STATUS_STARTING_FIRST_STARTUP_NOTE')}</p>
         </div>
 
         <div className="w-full space-y-1.5">
           <div className="h-1.5 w-full rounded-full bg-muted overflow-hidden">
             <div className="h-full rounded-full bg-primary transition-all duration-700 ease-out" style={{ width: `${Math.max(pct, 4)}%` }} />
           </div>
-          <div className="flex justify-between text-xs text-muted-foreground/60 tabular-nums">
+          <div className="flex justify-between text-xs text-muted-foreground tabular-nums">
             <span className="inline-flex items-center">
               <HintText id="startup-progress" hint={t(STARTUP_PROGRESS_HINT)}>
                 {pct}%
@@ -622,12 +612,12 @@ function StartupScreen({ elapsedSeconds }: { elapsedSeconds: number }) {
           </div>
           {progress && (
             <div className="space-y-0.5">
-              <div className="text-xs text-muted-foreground/70">
+              <div className="text-xs text-muted-foreground">
                 {serviceCounts.ready} {t('HUB_STATUS_SERVICE_READY')}, {serviceCounts.starting} {t('HUB_STATUS_SERVICE_STARTING')},{' '}
                 {serviceCounts.pending} {t('HUB_STATUS_SERVICE_PENDING')}
                 {serviceCounts.failed > 0 ? `, ${serviceCounts.failed} ${t('COMMON_FAILED')}` : ''}
               </div>
-              <div className="text-xs text-muted-foreground/70">
+              <div className="text-xs text-muted-foreground">
                 <HintText id="startup-image-pull" hint={t(STARTUP_IMAGE_PULL_HINT)}>
                   {t('HUB_STATUS_IMAGE_PULLS')}: {progress.image_pulled}/{progress.image_total} ({progress.image_pull_pct}%)
                 </HintText>
@@ -669,10 +659,23 @@ export function HubStatus({ children }: HubStatusProps) {
   const { t } = useTranslation();
   const { revalidate } = useRevalidator();
   useDeepLinkPairCapture();
+  useAppIntentDeepLinks();
   const [status, setStatus] = useState<HubStatusResponse | null>(null);
   const [startupElapsed, setStartupElapsed] = useState(0);
   const [logs, setLogs] = useState<string | null>(null);
   const [showLogs, setShowLogs] = useState(false);
+  const resolvedTheme = useResolvedTheme();
+  const renderedLogs = useMemo(() => {
+    if (!logs) {
+      return DOMPurify.sanitize(t('HUB_STATUS_NO_LOGS_AVAILABLE'));
+    }
+
+    return logs
+      .split('\n')
+      .map((line) => DOMPurify.sanitize(colorizeLogLine(line, resolvedTheme)))
+      .join('<br />');
+  }, [logs, resolvedTheme, t]);
+  const [confirmRetry, setConfirmRetry] = useState(false);
   const startupStartRef = useRef<number | null>(null);
   const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
   const isWindows = isTauri && detectPlatform() === 'windows';
@@ -687,12 +690,21 @@ export function HubStatus({ children }: HubStatusProps) {
   const hasReloadedRef = useRef(false);
   /** Once the hub has reached Running, ignore transient Starting (e.g. Tailscale sidecar or health blips). */
   const hubSteadyRunningRef = useRef(readHubSteadySession());
+  const consecutiveProbeFailuresRef = useRef(0);
 
   const checkHealthFallback = useCallback(async () => {
     const port = await probeHealthyHubApiPort(true);
     if (port !== null) {
+      consecutiveProbeFailuresRef.current = 0;
       setStatus('Running');
       return;
+    }
+    if (hubSteadyRunningRef.current) {
+      consecutiveProbeFailuresRef.current += 1;
+      if (consecutiveProbeFailuresRef.current < HUB_STEADY_PROBE_FAILURE_THRESHOLD) {
+        setStatus('Running');
+        return;
+      }
     }
     sawNonRunningRef.current = true;
     setStatus('Stopped');
@@ -758,6 +770,7 @@ export function HubStatus({ children }: HubStatusProps) {
             result === 'Stopped' || result === 'DockerNotAvailable' || (typeof result === 'object' && result !== null && 'Error' in result);
 
           if (isHardNonRunning) {
+            consecutiveProbeFailuresRef.current = 0;
             hubSteadyRunningRef.current = false;
             clearHubSteadySession();
             sawNonRunningRef.current = true;
@@ -771,12 +784,23 @@ export function HubStatus({ children }: HubStatusProps) {
           if (result === 'Running' || result === 'Starting') {
             const alivePort = await probeHealthyHubApiPort();
             if (alivePort !== null) {
+              consecutiveProbeFailuresRef.current = 0;
               configureHubApiPort(alivePort);
               setStatus('Running');
               return;
             }
 
-            // API probe failed — treat as non-running even if we were steady before.
+            // After steady, tolerate brief probe misses so Tailscale/Docker blips do not
+            // flash the loading gate or force a full window reload on recovery.
+            if (hubSteadyRunningRef.current) {
+              consecutiveProbeFailuresRef.current += 1;
+              if (consecutiveProbeFailuresRef.current < HUB_STEADY_PROBE_FAILURE_THRESHOLD) {
+                setStatus('Running');
+                return;
+              }
+            }
+
+            consecutiveProbeFailuresRef.current = 0;
             hubSteadyRunningRef.current = false;
             clearHubSteadySession();
             sawNonRunningRef.current = true;
@@ -828,34 +852,35 @@ export function HubStatus({ children }: HubStatusProps) {
     return () => clearInterval(interval);
   }, [checkStatus]);
 
+  useEffect(() => {
+    const hasError = typeof status === 'object' && status !== null && 'Error' in status;
+    if (!hasError && confirmRetry) {
+      setConfirmRetry(false);
+    }
+  }, [status, confirmRetry]);
+
   const handleStartHub = useCallback(async () => {
     shouldAutoStartWindowsHubRef.current = false;
+    setConfirmRetry(false);
     await startHub(t('HUB_STATUS_FAILED_START'));
   }, [startHub, t]);
 
   const handleRestartHub = useCallback(async () => {
     shouldAutoStartWindowsHubRef.current = false;
+    setConfirmRetry(false);
     await startHub(t('HUB_STATUS_FAILED_RESTART'));
   }, [startHub, t]);
 
   // When the Hub transitions from a non-running state to Running, route loaders
   // that failed during startup (backend wasn't ready) would stay stale in React
-  // Router's cache. Reload once so clientLoader runs against the healthy backend.
+  // Router's cache. Prefer revalidate over a full window reload so a brief API
+  // blip after steady does not flash the loading gate.
   useEffect(() => {
     if (!isTauri || status !== 'Running' || !sawNonRunningRef.current || hasReloadedRef.current) {
       return;
     }
     hasReloadedRef.current = true;
-    // User reload already re-ran clientLoader — revalidate routes instead of reloading again.
-    if (isUserInitiatedPageReload()) {
-      void revalidate();
-      return;
-    }
-    try {
-      reloadCurrentWindow();
-    } catch {
-      // JSDOM in tests doesn't support navigation; ignore safely.
-    }
+    void revalidate();
   }, [status, isTauri, revalidate]);
 
   const handleViewLogs = useCallback(async () => {
@@ -875,8 +900,12 @@ export function HubStatus({ children }: HubStatusProps) {
     await openLogsFolder();
   }, []);
 
-  // If not in Tauri, don't block the UI — web users have the backend proxied
-  if (!isTauri) return <>{children}</>;
+  // If not in Tauri, don't block the UI — web users have the backend proxied.
+  // On mobile there is no *local* Hub to manage (no Docker on a phone): the app
+  // is a thin client pointed at a remote Hub, so this local-Hub gate (and its
+  // desktop-only commands / localhost probes) doesn't apply. The remote Hub's
+  // reachability is handled by the connect flow and the normal app loaders.
+  if (!isTauri || isTauriMobileSync()) return <>{children}</>;
 
   // Dark placeholder while the first hub status poll runs (avoids blank flash)
   if (status === null) {
@@ -899,9 +928,24 @@ export function HubStatus({ children }: HubStatusProps) {
     );
   }
 
-  // Hub is running — stay on the app if we've already reached Running (don't regress to the
-  // loading gate when Private VPN / health checks flap during steady operation).
-  if (status === 'Running' || (hubSteadyRunningRef.current && status === 'Starting')) {
+  // Hub is running — render the app. After a stack update, reload once so the WebView
+  // picks up the new container UI bundle (same origin, new hashed assets).
+  if (status === 'Running') {
+    if (isStackUpdatePending()) {
+      clearStackUpdatePending();
+      if (!hasReloadedRef.current) {
+        hasReloadedRef.current = true;
+        reloadCurrentWindow();
+        return null;
+      }
+    }
+    return <>{children}</>;
+  }
+
+  // During stack recreate, show the startup gate — not stale app UI with a dead API.
+  if (isStackUpdatePending()) {
+    // fall through to Starting / Stopped gate screens below
+  } else if (hubSteadyRunningRef.current && status === 'Starting') {
     return <>{children}</>;
   }
 
@@ -912,7 +956,7 @@ export function HubStatus({ children }: HubStatusProps) {
 
   return (
     <SetupPageShell title={gateTitle} contentClassName="items-center">
-      <div className="flex flex-col items-center gap-6 w-full">
+      <div className="flex flex-col items-center gap-6 w-full max-w-3xl px-4">
         {status === 'DockerNotAvailable' && <DockerInstallGuide />}
 
         {status === 'Stopped' && (
@@ -940,17 +984,45 @@ export function HubStatus({ children }: HubStatusProps) {
         {status === 'Starting' && <StartupScreen elapsedSeconds={startupElapsed} />}
 
         {errorMessage && (
-          <SetupCard className="max-w-md w-full text-center">
-            <h2 className="text-xl font-semibold text-foreground mb-2">{t('HUB_STATUS_ERROR')}</h2>
-            <p className="text-muted-foreground mb-6">{errorMessage}</p>
-            <button
-              type="button"
-              onClick={handleRestartHub}
-              className="inline-flex items-center gap-2 rounded-md bg-primary px-6 py-3 text-sm font-medium text-primary-foreground hover:bg-primary/90"
-            >
-              {t('HUB_STATUS_RESTART_HUB')}
-            </button>
-            <div className="flex gap-4 justify-center mt-6">
+          <SetupCard className="max-w-3xl w-full text-left">
+            <div className="flex items-start gap-3 mb-3">
+              <AlertCircle className="h-5 w-5 text-destructive shrink-0 mt-0.5" aria-hidden />
+              <h2 className="text-xl font-semibold text-foreground">{t('HUB_STATUS_START_FAILED_TITLE')}</h2>
+            </div>
+            <p className="text-sm text-muted-foreground mb-3">{t('HUB_STATUS_START_FAILED_HINT')}</p>
+            <pre className="bg-muted rounded-md p-4 text-xs sm:text-sm font-mono text-foreground/90 mb-6 max-h-72 overflow-auto whitespace-pre-wrap break-words">
+              {errorMessage}
+            </pre>
+            {confirmRetry ? (
+              <div className="rounded-md border border-border bg-muted/40 p-4 space-y-4">
+                <p className="text-sm text-foreground">{t('HUB_STATUS_RETRY_CONFIRM_PROMPT')}</p>
+                <div className="flex flex-wrap gap-3">
+                  <button
+                    type="button"
+                    onClick={handleRestartHub}
+                    className="inline-flex items-center gap-2 rounded-md bg-primary px-6 py-3 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+                  >
+                    {t('HUB_STATUS_RETRY_CONFIRM')}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setConfirmRetry(false)}
+                    className="inline-flex items-center gap-2 rounded-md border border-border px-6 py-3 text-sm font-medium text-foreground hover:bg-muted"
+                  >
+                    {t('HUB_STATUS_RETRY_CANCEL')}
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setConfirmRetry(true)}
+                className="inline-flex items-center gap-2 rounded-md bg-primary px-6 py-3 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+              >
+                {t('HUB_STATUS_RETRY_HUB')}
+              </button>
+            )}
+            <div className="flex gap-4 mt-6">
               <button type="button" onClick={handleViewLogs} className="text-sm text-muted-foreground underline hover:text-foreground">
                 {t('HUB_STATUS_VIEW_LOGS')}
               </button>
@@ -975,9 +1047,11 @@ export function HubStatus({ children }: HubStatusProps) {
                 {t('HUB_STATUS_HIDE')}
               </button>
             </div>
-            <pre className="bg-muted rounded-md p-3 text-xs font-mono text-muted-foreground max-h-64 overflow-auto whitespace-pre-wrap">
-              {logs || t('HUB_STATUS_NO_LOGS_AVAILABLE')}
-            </pre>
+            <pre
+              className="log-terminal log-terminal--panel wrap-lines"
+              // biome-ignore lint/security/noDangerouslySetInnerHtml: sanitized ANSI output from local log files
+              dangerouslySetInnerHTML={{ __html: renderedLogs }}
+            />
           </div>
         )}
       </div>

@@ -42,8 +42,7 @@ export class AppStoreService implements OnApplicationBootstrap, OnApplicationShu
       switch (data.command) {
         case 'update_all': {
           const stores = await this.appStoreRepository.getEnabledAppStores();
-          const gitStores = stores.filter((store) => store.type !== 'ci_cloud_api');
-          const results = await Promise.allSettled(gitStores.map((store) => this.repoHelpers.pullRepo(store.url, store.slug, store.type ?? 'git')));
+          const results = await Promise.allSettled(stores.map((store) => this.repoHelpers.pullRepo(store.url, store.slug, store.type ?? 'git')));
           // Log failures but don't fail the entire operation
           results.forEach((result, index) => {
             if (result.status === 'rejected') {
@@ -88,7 +87,7 @@ export class AppStoreService implements OnApplicationBootstrap, OnApplicationShu
   }
 
   onApplicationBootstrap() {
-    this.logger.info('Scheduling legacy git app store updates every 1 hour (deprecated — catalog is Portal-first via ci_cloud_api)');
+    this.logger.info('Scheduling app store catalog sync every 1 hour (CI Marketplace + legacy git stores)');
     this.pullInterval = setInterval(
       () => {
         this.pullRepositories().catch((e) => this.logger.error('Failed to scheduled pull repositories', e));
@@ -104,15 +103,12 @@ export class AppStoreService implements OnApplicationBootstrap, OnApplicationShu
     }
   }
 
-  /** @deprecated Git-backed stores are legacy; product catalog is Portal-first (`ci_cloud_api`). Only git stores are pulled. */
+  /** Sync enabled app stores — CI Marketplace (`ci_cloud_api`) and legacy git stores. */
   public async pullRepositories() {
     const repositories = await this.appStoreRepository.getEnabledAppStores();
 
     for (const repo of repositories) {
-      if (repo.type === 'ci_cloud_api') {
-        continue;
-      }
-      this.logger.debug(`Pulling legacy git repo ${repo.url}`);
+      this.logger.debug(`Syncing app store ${repo.slug} (${repo.type ?? 'git'})`);
       await this.repoHelpers.pullRepo(repo.url, repo.slug, repo.type ?? 'git');
     }
 

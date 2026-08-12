@@ -4,6 +4,8 @@ import {
   fetchInferencePreferences,
   fetchInferenceRuntimeModels,
   fetchInferenceTrackedModels,
+  fetchOllamaInstallStatus,
+  fetchVllmInstallStatus,
   pinInferenceModel,
   rescanInferenceHardware,
   saveCloudProviderConfig,
@@ -16,11 +18,11 @@ import { Button } from '@/components/ui/Button';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/Dialog';
 import { Skeleton } from '@/components/ui/Skeleton/Skeleton';
 import { RefreshCw, Loader2 } from 'lucide-react';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router';
 import toast from 'react-hot-toast';
 import type { CloudProviderInput, HardwareProfileResponse, RuntimeModelInfo } from '@/modules/onboarding/helpers/ai-setup-types';
-import type { CuratedModel, InferenceBackendType, TrackedModel } from '@ci-hub/common/types';
+import type { CuratedModel, InferenceBackendType, ModelState, TrackedModel } from '@ci-hub/common/types';
 import { SystemOverview } from '@/modules/onboarding/components/ai-setup/system-overview';
 import { BackendSelectionCard } from '@/modules/onboarding/components/ai-setup/backend-selection-card';
 import { CloudProviderCard } from '@/modules/onboarding/components/ai-setup/cloud-provider-card';
@@ -29,6 +31,10 @@ import { ModelCard } from '@/modules/onboarding/components/ai-setup/primitives';
 import { ModelIcon } from '@/modules/onboarding/components/ai-setup/icons';
 import { modelTags, modelMeta, modelScores } from '@/modules/onboarding/components/ai-setup/model-selection-card';
 import { OtherModelsSection } from '@/modules/onboarding/components/ai-setup/model-selection-card';
+import { VllmSetupCard } from '@/modules/onboarding/components/ai-setup/vllm-setup-card';
+import { OllamaSetupCard } from '@/modules/onboarding/components/ai-setup/ollama-setup-card';
+import type { OllamaStatus, VllmStatus } from '@/modules/onboarding/helpers/ai-setup-types';
+import { EMBEDDING_INFERENCE_BACKEND, unavailableInferenceBackends } from '@/modules/onboarding/helpers/inference-backend-availability';
 import { useTranslation } from 'react-i18next';
 
 // Role classifiers — mirror the onboarding AI-setup step so settings resolves the same defaults.
@@ -37,8 +43,40 @@ const isAgentModel = (model: CuratedModel) => model.modality === 'llm';
 const isEmbeddingModel = (model: CuratedModel) => model.modality === 'embedding';
 const isVisionModel = (model: CuratedModel) => model.modality === 'llm' && model.metadata?.capabilities?.vision === true;
 
+// Tracked states that mean "this model is on its way in, or already here". Typed against the state
+// union so a state added to `ModelState` has to be considered here rather than silently excluded.
+const TRACKED_SELECTED_STATES: ModelState[] = ['pulling', 'pulled', 'loading', 'loaded', 'pinned'];
+
+// The models a save for `backend` actually acts on: same-backend models, plus Ollama embeddings
+// (chat on vLLM still embeds through Ollama). Shared by the save itself and by the confirmation
+// copy, so the dialog can never describe a different outcome than the one that will happen.
+const isCompatibleWithBackend = (model: CuratedModel, backend: InferenceBackendType) =>
+  model.backend === backend || (model.backend === EMBEDDING_INFERENCE_BACKEND && isEmbeddingModel(model));
+
+type ModelIndex = Map<string, CuratedModel>;
+
+const indexAvailableModels = (profile: HardwareProfileResponse): ModelIndex => new Map(profile.availableModels.map((model) => [model.id, model]));
+
+const compatibleSelection = (availableModelById: ModelIndex, backend: InferenceBackendType, selectedIds: string[]): string[] =>
+  selectedIds.filter((modelId) => {
+    const model = availableModelById.get(modelId);
+    return model ? isCompatibleWithBackend(model, backend) : false;
+  });
+
+// The pins a save actually acts on. The unpin loop walks exactly this set, so the confirmation copy
+// has to gate on it too — gating on every tracked pin would promise to unpin models the save leaves
+// alone (a pin outside the tier's model list, or on a backend the Hub does not pin through).
+const unpinnablePins = (availableModelById: ModelIndex, pinnedIds: Iterable<string>): string[] =>
+  [...pinnedIds].filter((modelId) => availableModelById.get(modelId)?.backend === 'ollama');
+
 // Pick the preferred model for a role from the user's selection, preferring a recommended model.
-// Returns null (which clears the stored preference) when no selected model fits the role.
+// Returns null when no selected model fits the role.
+//
+// That null does NOT clear the stored preference, despite reading like it should and despite the
+// backend documenting `null` as the clear signal: `saveInferencePreferences` maps it to `undefined`,
+// `JSON.stringify` drops undefined keys from the body, and the controller only writes a field it
+// received. So a role that resolves to nothing leaves the stored default in place. Tracked
+// separately — do not build UI that promises a clear until the wire actually carries one.
 const resolvePreferredModelId = (
   profile: HardwareProfileResponse,
   backend: InferenceBackendType,
@@ -69,25 +107,57 @@ export const AiSettingsContainer = () => {
   const [runtimeModels, setRuntimeModels] = useState<RuntimeModelInfo[]>([]);
   const [runtimeModelsLoading, setRuntimeModelsLoading] = useState(false);
   const [runtimeDiscoveryUnavailable, setRuntimeDiscoveryUnavailable] = useState(false);
-  const suppressBackendEffectRef = useRef(true);
+  const [vllmApiKey, setVllmApiKey] = useState('');
+  const [vllmUrl, setVllmUrl] = useState('');
+  const [ollamaStatus, setOllamaStatus] = useState<OllamaStatus | null>(null);
+  const [vllmStatus, setVllmStatus] = useState<VllmStatus | null>(null);
+  const [checkingOllama, setCheckingOllama] = useState(false);
+  const [checkingVllm, setCheckingVllm] = useState(false);
+  // Backend the backend-switch effect has already refetched for (set by fetchProfile too, since it
+  // fetches profile + runtime models itself); prevents a duplicate fetch right after mount.
+  const lastHandledBackendRef = useRef<InferenceBackendType | null>(null);
+  // Mirrors for values the stable callbacks / effects below need without retriggering on change.
+  const vllmUrlRef = useRef('');
+  vllmUrlRef.current = vllmUrl;
+  const trackedModelsRef = useRef<TrackedModel[]>([]);
+  // One index of the tier catalog per profile, shared by the save and by the confirmation copy so
+  // they cannot disagree — and so neither rebuilds it, the save on every press and the copy on
+  // every render.
+  const availableModelById = useMemo<ModelIndex>(() => (profile ? indexAvailableModels(profile) : new Map()), [profile]);
 
   const applyTrackedModels = useCallback((tracked: TrackedModel[]) => {
     const trackedById = Object.fromEntries(tracked.map((model) => [model.catalogId, model]));
     const pinned = new Set<string>();
-    const selectedIds: string[] = [];
 
     for (const model of tracked) {
-      if (['pulling', 'pulled', 'loading', 'loaded', 'pinned'].includes(model.state)) {
-        selectedIds.push(model.catalogId);
-      }
       if (model.state === 'pinned') {
         pinned.add(model.catalogId);
       }
     }
 
+    trackedModelsRef.current = tracked;
     setTrackedModels(trackedById);
     setPinnedModelIds(pinned);
-    setSelectedModelIds(selectedIds);
+  }, []);
+
+  /**
+   * Seed the model checkboxes from what is actually installed on the backend (the same
+   * `installedCatalogIds` source onboarding uses) unioned with models this process is actively
+   * tracking. Seeding only from the in-memory tracked registry — which empties on every Hub
+   * restart and never sees externally-loaded vLLM models — showed installed models as unselected
+   * and made Save clear preferences and unpin models (#1106).
+   */
+  const seedSelectedModelIds = useCallback((data: HardwareProfileResponse, backend: InferenceBackendType, tracked: TrackedModel[]) => {
+    const installed = new Set(data.installedCatalogIds ?? []);
+    // Same predicate the save uses. Seeding on a narrower rule would leave a model that the save
+    // still acts on permanently unselected, which is the destructive shape this fix exists to close.
+    const selected = new Set(
+      data.availableModels.filter((model) => installed.has(model.id) && isCompatibleWithBackend(model, backend)).map((model) => model.id),
+    );
+    for (const model of tracked) {
+      if (TRACKED_SELECTED_STATES.includes(model.state)) selected.add(model.catalogId);
+    }
+    setSelectedModelIds([...selected]);
   }, []);
 
   const fetchTrackedModels = useCallback(async () => {
@@ -110,24 +180,38 @@ export const AiSettingsContainer = () => {
     }
   }, []);
 
-  const fetchProfile = async (isRescan = false) => {
+  const fetchProfile = async (isRescan = false, backendOverride?: InferenceBackendType) => {
     if (!isRescan) setLoading(true);
     setError(null);
     try {
-      const data = await fetchInferenceOnboardingProfile();
+      // Preferences first. The profile endpoint computes `installedCatalogIds` for whichever backend
+      // it is asked about and falls back to the *hardware recommendation* when asked about none —
+      // so fetching before the operator's stored backend is known returns the installed set for a
+      // backend this panel may not be showing. That is what left the model checkboxes describing one
+      // backend while the rest of the screen acted on another. Never throws; returns null instead.
+      const prefData = await fetchInferencePreferences();
+      if (prefData?.preferredVllmApiKey) {
+        setVllmApiKey(prefData.preferredVllmApiKey);
+      }
+      if (prefData?.preferredVllmUrl) {
+        setVllmUrl(prefData.preferredVllmUrl);
+      }
+      const requestedBackend = backendOverride ?? prefData?.preferredBackend ?? undefined;
+      const data = await fetchInferenceOnboardingProfile(requestedBackend);
       setProfile(data);
 
-      let preferredBackend = data.backends.recommended;
-      const prefData = await fetchInferencePreferences();
-      if (prefData) {
-        preferredBackend = prefData.preferredBackend ?? data.backends.recommended;
-      }
+      const preferredBackend = requestedBackend ?? data.backends.recommended;
       // fetchProfile handles initial runtime model fetch to avoid duplicate effect calls.
-      suppressBackendEffectRef.current = true;
+      lastHandledBackendRef.current = preferredBackend;
       setSelectedBackend(preferredBackend);
 
-      await fetchTrackedModels();
+      const tracked = await fetchTrackedModels();
+      seedSelectedModelIds(data, preferredBackend, tracked);
       await fetchRuntimeModels(preferredBackend);
+      void checkOllamaStatus();
+      if (preferredBackend === 'vllm') {
+        void checkVllmStatus();
+      }
 
       const configured = await fetchConfiguredCloudProviders();
       if (configured.length > 0) {
@@ -140,6 +224,57 @@ export const AiSettingsContainer = () => {
       setRescanning(false);
     }
   };
+
+  const checkOllamaStatus = async () => {
+    setCheckingOllama(true);
+    try {
+      const data = (await fetchOllamaInstallStatus()) as OllamaStatus;
+      setOllamaStatus(data);
+      return data;
+    } catch {
+      setOllamaStatus({ ready: false, running: false, endpointUrl: '' });
+      return null;
+    } finally {
+      setCheckingOllama(false);
+    }
+  };
+
+  // Same stale-profile defect as the vLLM path (#1105): a model pulled outside the Hub only
+  // surfaces after the profile's installedCatalogIds are recomputed.
+  const handleRecheckOllama = async () => {
+    const status = await checkOllamaStatus();
+    if (status?.ready) {
+      const data = await fetchInferenceOnboardingProfile(selectedBackend, vllmUrlRef.current);
+      setProfile(data);
+      seedSelectedModelIds(data, selectedBackend, trackedModelsRef.current);
+    }
+  };
+
+  const checkVllmStatus = useCallback(async () => {
+    setCheckingVllm(true);
+    try {
+      const data = (await fetchVllmInstallStatus(vllmUrlRef.current)) as VllmStatus;
+      setVllmStatus(data);
+      return data;
+    } catch {
+      setVllmStatus({ ready: false, running: false, endpointUrl: '' });
+      return null;
+    } finally {
+      setCheckingVllm(false);
+    }
+  }, []);
+
+  // Re-check must also refresh the profile: `installedCatalogIds` is only recomputed server-side
+  // in the onboarding-profile endpoint, so without this a model served after page load never
+  // shows as Installed (#1105).
+  const handleRecheckVllm = useCallback(async () => {
+    const status = await checkVllmStatus();
+    if (status?.ready) {
+      const data = await fetchInferenceOnboardingProfile('vllm', vllmUrlRef.current);
+      setProfile(data);
+      seedSelectedModelIds(data, 'vllm', trackedModelsRef.current);
+    }
+  }, [checkVllmStatus, seedSelectedModelIds]);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: only on mount
   useEffect(() => {
@@ -166,15 +301,28 @@ export const AiSettingsContainer = () => {
     setSelectedModelIds((prev) => (prev.includes(modelId) ? prev.filter((id) => id !== modelId) : [...prev, modelId]));
   };
 
-  // Refresh runtime model list whenever user changes inference backend in settings.
+  // The effect below reads profile only as a "loaded yet" guard; carrying it through a ref keeps
+  // it out of the dependency array. Listing `profile` there while the effect writes it via
+  // setProfile (a fresh object every fetch) retriggered the effect it just ran — an unbounded
+  // onboarding-profile refetch loop, ~165 requests in 400ms per backend switch (#1109).
+  const hasProfileRef = useRef(false);
+  hasProfileRef.current = profile !== null;
+
+  // Refresh profile + runtime models whenever user changes inference backend in settings.
   useEffect(() => {
-    if (!profile) return;
-    if (suppressBackendEffectRef.current) {
-      suppressBackendEffectRef.current = false;
-      return;
-    }
+    if (!hasProfileRef.current) return;
+    if (lastHandledBackendRef.current === selectedBackend) return;
+    lastHandledBackendRef.current = selectedBackend;
+    void fetchInferenceOnboardingProfile(selectedBackend, vllmUrlRef.current).then((data) => {
+      setProfile(data);
+      // Re-seed the checkboxes for the new backend from server truth (see seedSelectedModelIds).
+      seedSelectedModelIds(data, selectedBackend, trackedModelsRef.current);
+    });
     fetchRuntimeModels(selectedBackend);
-  }, [selectedBackend, fetchRuntimeModels, profile]);
+    if (selectedBackend === 'vllm') {
+      void checkVllmStatus();
+    }
+  }, [selectedBackend, fetchRuntimeModels, checkVllmStatus, seedSelectedModelIds]);
 
   const hasActiveTransfers = Object.values(trackedModels).some((model) => ['pulling', 'loading', 'unloading'].includes(model.state));
 
@@ -199,13 +347,10 @@ export const AiSettingsContainer = () => {
         return;
       }
 
-      const availableModelById = new Map(profile.availableModels.map((model) => [model.id, model]));
-      const compatibleSelectedModelIds = selectedModelIds.filter((modelId) => availableModelById.get(modelId)?.backend === selectedBackend);
+      const compatibleSelectedModelIds = compatibleSelection(availableModelById, selectedBackend, selectedModelIds);
 
-      // Resolve the default model for each role from the user's selection so agents/RAG/vision
-      // tasks have a usable default. null clears any previously stored preference for that role.
       const preferredModel = resolvePreferredModelId(profile, selectedBackend, isAgentModel, compatibleSelectedModelIds);
-      const preferredEmbeddingModel = resolvePreferredModelId(profile, selectedBackend, isEmbeddingModel, compatibleSelectedModelIds);
+      const preferredEmbeddingModel = resolvePreferredModelId(profile, EMBEDDING_INFERENCE_BACKEND, isEmbeddingModel, compatibleSelectedModelIds);
       const preferredVisionModel = resolvePreferredModelId(profile, selectedBackend, isVisionModel, compatibleSelectedModelIds);
 
       await saveInferencePreferences({
@@ -213,6 +358,8 @@ export const AiSettingsContainer = () => {
         model: preferredModel,
         embeddingModel: preferredEmbeddingModel,
         visionModel: preferredVisionModel,
+        vllmApiKey: selectedBackend === 'vllm' ? vllmApiKey.trim() || null : null,
+        vllmUrl: selectedBackend === 'vllm' ? vllmUrl.trim() || null : null,
       });
 
       // Save cloud providers — for already-configured providers (masked key),
@@ -225,9 +372,10 @@ export const AiSettingsContainer = () => {
         }
       }
 
-      const compatiblePinnedModelIds = [...pinnedModelIds].filter((modelId) => availableModelById.get(modelId)?.backend === selectedBackend);
+      const ollamaSelectedModelIds = compatibleSelectedModelIds.filter((modelId) => availableModelById.get(modelId)?.backend === 'ollama');
+      const compatiblePinnedModelIds = unpinnablePins(availableModelById, pinnedModelIds);
       const modelOperationErrors: string[] = [];
-      const modelsToPull = compatibleSelectedModelIds.filter((modelId) => !compatiblePinnedModelIds.includes(modelId));
+      const modelsToPull = ollamaSelectedModelIds.filter((modelId) => !compatiblePinnedModelIds.includes(modelId));
 
       if (modelsToPull.length > 0) {
         await ensurePullsStarted(modelsToPull, false);
@@ -314,12 +462,35 @@ export const AiSettingsContainer = () => {
   }
 
   const isInsufficient = profile.tier === 'insufficient';
-  const backendCompatibleRecommendedModels = profile.recommendedModels.filter((model) => model.backend === selectedBackend);
-  const backendAvailableModels = profile.availableModels.filter((model) => model.backend === selectedBackend);
+  const backendCompatibleRecommendedModels = profile.recommendedModels.filter((model) => isCompatibleWithBackend(model, selectedBackend));
+  const backendAvailableModels = profile.availableModels.filter((model) => isCompatibleWithBackend(model, selectedBackend));
   const selectedModels = backendAvailableModels.filter((model) => selectedModelIds.includes(model.id));
   const availableStorageMb = profile.resourceEstimate.availableDiskMb ?? 0;
   const availableMemoryMb = profile.resourceEstimate.availableMemoryMb ?? 0;
   const installedCatalogIds = profile.installedCatalogIds ?? [];
+
+  // Saving with nothing selected for the active backend unpins every pinned model: the unpin loop
+  // walks each pin that is no longer in the selection. Legitimate when meant — it is how you unpin
+  // everything — but the generic "this will restart your apps" copy gives no hint of it.
+  //
+  // Scoped to unpinning, and nothing else. `resolvePreferredModelId` returning null for every role
+  // reads like it also clears the stored chat/embedding/vision defaults, and it does not:
+  // `saveInferencePreferences` maps each null to undefined, `JSON.stringify` drops undefined keys
+  // from the body, and the controller only writes a field it actually received. Warning about a
+  // clear that cannot happen would teach the operator to click through the one dialog that means
+  // something. The dead null-clear channel is tracked separately.
+  //
+  // Counts only the pins the unpin loop walks — `unpinnablePins`, the same call the save makes.
+  // Counting every tracked pin would promise to unpin models the save never touches: one outside
+  // the tier's model list, or on a backend the Hub does not pin through.
+  const saveUnpinsEveryModel =
+    compatibleSelection(availableModelById, selectedBackend, selectedModelIds).length === 0 &&
+    unpinnablePins(availableModelById, pinnedModelIds).length > 0;
+
+  // Picked as a pair so the heading can never describe a different save than the body.
+  const confirmCopy = saveUnpinsEveryModel
+    ? { title: 'AI_SETTINGS_CONFIRM_UNPIN_TITLE', description: 'AI_SETTINGS_CONFIRM_UNPIN_DESCRIPTION' }
+    : { title: 'AI_SETTINGS_CONFIRM_TITLE', description: 'AI_SETTINGS_CONFIRM_DESCRIPTION' };
 
   return (
     <div className="space-y-5">
@@ -450,8 +621,31 @@ export const AiSettingsContainer = () => {
             available={profile.backends.available}
             selected={selectedBackend}
             onSelect={setSelectedBackend}
-            unavailableTypes={['vllm', 'lemonade']}
+            unavailableTypes={profile ? unavailableInferenceBackends(profile) : ['vllm', 'lemonade']}
           />
+
+          {selectedBackend === 'vllm' && (
+            <section className="rounded-lg border border-border bg-gradient-to-b from-card to-card/60 p-5 shadow-sm sm:p-6 space-y-4">
+              <div>
+                <h2 className="text-base font-bold uppercase tracking-wide">{t('ONBOARDING_VLLM_SECTION_TITLE')}</h2>
+                <p className="text-xs sm:text-sm text-muted-foreground mt-0.5">{t('ONBOARDING_VLLM_SECTION_DESC')}</p>
+              </div>
+              <VllmSetupCard
+                status={vllmStatus}
+                checking={checkingVllm}
+                onRecheck={handleRecheckVllm}
+                apiKey={vllmApiKey}
+                onApiKeyChange={setVllmApiKey}
+                endpointUrl={vllmUrl}
+                onEndpointUrlChange={setVllmUrl}
+              />
+              <div>
+                <h3 className="text-sm font-semibold">{t('ONBOARDING_EMBEDDINGS_OLLAMA_SECTION_TITLE')}</h3>
+                <p className="text-xs text-muted-foreground mt-0.5 mb-3">{t('ONBOARDING_EMBEDDINGS_OLLAMA_SECTION_DESC')}</p>
+                <OllamaSetupCard status={ollamaStatus} checking={checkingOllama} onRecheck={handleRecheckOllama} />
+              </div>
+            </section>
+          )}
 
           <ResourceSummaryBar
             selectedModels={selectedModels}
@@ -473,9 +667,9 @@ export const AiSettingsContainer = () => {
       <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>
         <DialogContent size="sm">
           <DialogHeader>
-            <DialogTitle>{t('AI_SETTINGS_CONFIRM_TITLE')}</DialogTitle>
+            <DialogTitle>{t(confirmCopy.title)}</DialogTitle>
           </DialogHeader>
-          <DialogDescription>{t('AI_SETTINGS_CONFIRM_DESCRIPTION')}</DialogDescription>
+          <DialogDescription data-testid="ai-settings-confirm-description">{t(confirmCopy.description)}</DialogDescription>
           <DialogFooter>
             <Button variant="outline" onClick={() => setConfirmOpen(false)} data-testid="ai-settings-cancel-btn">
               {t('COMMON_CANCEL')}

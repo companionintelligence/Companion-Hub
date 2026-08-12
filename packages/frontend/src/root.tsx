@@ -17,24 +17,63 @@ import { TranslatableError } from './types/error.types';
 import { clearStaleServerSession, getTauriSessionId } from '@/lib/api-fetch';
 import { refreshHubSessionIfDue } from '@/lib/hub-session-refresh';
 import { handleSessionExpired } from '@/lib/session-expired';
+import { isSessionExpiryExempt } from '@/lib/session-expiry-policy';
+import { clearHubConnection, getHubBaseUrlSync, initMobileConnection, isTauriMobileSync } from '@/lib/mobile-connection';
 import type { RegistrationStatus } from './lib/registration-status';
 import { isRegistrationOperational, requiresDeviceRegistration, requiresPortalRePairing } from './lib/registration-status';
 import { resolveRegistrationStatus } from './lib/registration-cache';
 import { captureHubException, loadHubSentryDeviceId } from './lib/sentry';
-import { configureHubApiPort, isTauriReleaseBuild, probeHealthyHubApiPort } from './lib/tauri-hub-probe';
+import { configureHubApiPort, probeHealthyHubApiPort } from './lib/tauri-hub-probe';
+import { usesCrossOriginDesktopApi } from './lib/hub-runtime-mode';
 import i18next from 'i18next';
 
 const safeI18nText = (key: string, fallback: string) => (i18next.isInitialized ? i18next.t(key) : fallback);
 
-function DesktopStartupFallback() {
+/** How long the mobile bootstrap spinner runs before offering a way out. */
+const MOBILE_SWITCH_HUB_ESCAPE_MS = 8000;
+
+export function DesktopStartupFallback() {
+  // Mobile is a thin client connecting to a *remote* Hub — there's no local API,
+  // so the desktop copy would be misleading.
+  const isMobile = isTauriMobileSync();
+  const message = isMobile
+    ? safeI18nText('ROOT_CONNECTING', 'Connecting…')
+    : safeI18nText('ROOT_CONNECTING_TO_LOCAL_API', 'Connecting to local API...');
+
+  // Escape hatch: a returning mobile user whose stored Hub is unreachable would
+  // otherwise spin here forever (the '/' loader returns null while the Hub's
+  // registration status is unavailable, and the only Switch Hub UI lives behind
+  // a working Hub session). After a few seconds, offer the Hub picker.
+  const [showSwitchHub, setShowSwitchHub] = useState(false);
+  useEffect(() => {
+    if (!isMobile || !getHubBaseUrlSync()) return;
+    const id = window.setTimeout(() => setShowSwitchHub(true), MOBILE_SWITCH_HUB_ESCAPE_MS);
+    return () => window.clearTimeout(id);
+  }, [isMobile]);
+
   return (
     <main
       id="root"
-      className="flex min-h-screen items-center justify-center bg-background px-6 text-sm text-muted-foreground"
+      className="safe-area-inset flex min-h-dvh flex-col items-center justify-center gap-4 bg-background text-sm text-muted-foreground"
       role="status"
       aria-busy="true"
     >
-      {safeI18nText('ROOT_CONNECTING_TO_LOCAL_API', 'Connecting to local API...')}
+      {message}
+      {showSwitchHub && (
+        <div className="flex flex-col items-center gap-3">
+          <span>{safeI18nText('MOBILE_CONNECT_HUB_UNREACHABLE_HINT', "Can't reach your Hub.")}</span>
+          <button
+            type="button"
+            data-testid="startup-switch-hub-btn"
+            className="min-h-[44px] rounded-md border border-input px-4 text-foreground transition-colors hover:bg-accent"
+            onClick={() => {
+              void clearHubConnection().finally(() => window.location.assign('/connect'));
+            }}
+          >
+            {safeI18nText('MOBILE_CONNECT_SWITCH_HUB', 'Switch Hub')}
+          </button>
+        </div>
+      )}
     </main>
   );
 }
@@ -60,13 +99,23 @@ client.interceptors.request.use((request) => {
   return request;
 });
 
+function truncateForSentry(text: string, max = 300): string {
+  const cleaned = text.replace(/\s+/g, ' ').trim();
+  if (!cleaned) {
+    return '';
+  }
+  return cleaned.length > max ? `${cleaned.slice(0, max)}…` : cleaned;
+}
+
 client.interceptors.response.use(async (res) => {
   if (res.status >= 400) {
     let data: { message?: string; intlParams?: Record<string, string> } = {};
+    let rawBody = '';
 
     // Try to parse JSON, but handle empty or invalid responses gracefully
     try {
       const text = await res.text();
+      rawBody = text;
       if (text) {
         data = JSON.parse(text);
       }
@@ -76,14 +125,19 @@ client.interceptors.response.use(async (res) => {
       data = { message: res.statusText || fallbackMessage };
     }
 
-    const error = new TranslatableError(normalizeApiErrorMessage(data.message, res.status));
-    error.intlParams = data.intlParams ?? {};
+    const messageKey = normalizeApiErrorMessage(data.message, res.status);
+    // Keep `message` as the i18n key for toast/UI (`t(e.message)`). Attach HTTP
+    // details separately so Sentry can show the real failing request instead of
+    // only "COMMON_AN_ERROR_OCCURRED".
+    const bodyForSentry = truncateForSentry(typeof data.message === 'string' && data.message ? data.message : rawBody);
+    const error = new TranslatableError(messageKey, data.intlParams ?? {}, {
+      status: res.status,
+      url: res.url ?? '',
+      body: bodyForSentry || undefined,
+    });
 
-    if (res.status === 401) {
-      const url = res.url ?? '';
-      if (!url.includes('/api/auth/login') && !url.includes('/api/auth/logout') && !url.includes('/api/auth/session/refresh')) {
-        await handleSessionExpired();
-      }
+    if (res.status === 401 && !isSessionExpiryExempt(res.url ?? '')) {
+      await handleSessionExpired();
     }
 
     throw error;
@@ -92,27 +146,31 @@ client.interceptors.response.use(async (res) => {
   return res;
 });
 
-// In Tauri release mode, the frontend is served from tauri://localhost
-// but the API is on a local HTTP port. Detect Tauri and set the baseUrl.
-// Cross-origin credentials ('include') are blocked by browsers when the server
-// responds with Access-Control-Allow-Origin: * — so we use 'omit' in Tauri mode.
-const isTauriRelease = isTauriReleaseBuild();
-const credentialMode: RequestCredentials = isTauriRelease ? 'omit' : 'include';
+// Cross-origin desktop (legacy embedded SPA or mobile) uses header auth and API port probing.
+// Release desktop loads stack UI at http://127.0.0.1:PORT — same-origin cookies, like browser.
+const crossOriginDesktopApi = usesCrossOriginDesktopApi();
+const credentialMode: RequestCredentials = crossOriginDesktopApi ? 'omit' : 'include';
 
 client.setConfig({
   credentials: credentialMode,
 });
 
-const tauriBaseUrlReady: Promise<void> = isTauriRelease
-  ? probeHealthyHubApiPort().then((port) => {
+const tauriBaseUrlReady: Promise<void> = crossOriginDesktopApi
+  ? (async () => {
+      // On mobile there is no local backend — the app is a thin client pointed at
+      // a remote Hub the user chose. initMobileConnection() applies any stored Hub
+      // baseUrl; when none is set, clientLoader routes the user to /connect.
+      const { isMobile } = await initMobileConnection();
+      if (isMobile) return;
+      const port = await probeHealthyHubApiPort();
       configureHubApiPort(port ?? 5002);
-    })
+    })()
   : Promise.resolve();
 
 export const links: Route.LinksFunction = () => [
   { rel: 'preconnect', href: 'https://fonts.googleapis.com' },
   { rel: 'preconnect', href: 'https://fonts.gstatic.com', crossOrigin: 'anonymous' },
-  { rel: 'stylesheet', href: 'https://fonts.googleapis.com/css2?family=Montserrat:wght@200;400;500;600;700&display=swap' },
+  { rel: 'stylesheet', href: 'https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&display=swap' },
   { rel: 'stylesheet', href: stylesheet },
   { rel: 'stylesheet', href: globalsStylesheet },
   { rel: 'icon', type: 'image/x-icon', href: '/icons/favicon.ico' },
@@ -136,6 +194,16 @@ export async function clientLoader({ request }: Route.ActionArgs) {
   await tauriBaseUrlReady;
 
   const url = new URL(request.url);
+
+  // On mobile, nothing works until a remote Hub is chosen. Send the user to the
+  // connect screen; the connect route itself is exempt so it can render.
+  if (isTauriMobileSync() && !getHubBaseUrlSync()) {
+    if (url.pathname !== '/connect') {
+      return redirect('/connect');
+    }
+    return null;
+  }
+
   const registration = await loadRegistrationLookup();
 
   if (registration.kind === 'unavailable') {
@@ -205,17 +273,26 @@ export async function clientLoader({ request }: Route.ActionArgs) {
     return redirect('/login');
   }
 
+  // Carry a memory-connect result marker (set by the Hub's memory-connect start/
+  // callback redirects at `/?memoryConnect=…`) across this root→/home hop so the
+  // dashboard can surface it as a toast; without this the query is dropped here.
+  // Whitelisted values only, so arbitrary query junk is never reflected onward.
+  const memoryConnect = url.searchParams.get('memoryConnect');
+  if (memoryConnect === 'error' || memoryConnect === 'unavailable') {
+    return redirect(`/home?memoryConnect=${memoryConnect}`);
+  }
+
   return redirect('/home');
 }
 
 export function Layout({ children }: { children: React.ReactNode }) {
   useUpdateChecker();
-  const [apiReady, setApiReady] = useState(() => !isTauriRelease);
-  const [documentTitle, setDocumentTitle] = useState(() => (i18next.isInitialized ? i18next.t('APP_NAME') : 'Companion Hub'));
+  const [apiReady, setApiReady] = useState(() => !crossOriginDesktopApi);
+  const [documentTitle, setDocumentTitle] = useState(() => (i18next.isInitialized ? i18next.t('APP_NAME') : 'CI Hub'));
   const [documentLang, setDocumentLang] = useState(() => i18next.resolvedLanguage || i18next.language || 'en');
 
   useEffect(() => {
-    if (!isTauriRelease) return;
+    if (!crossOriginDesktopApi) return;
 
     let cancelled = false;
     void tauriBaseUrlReady.then(() => {
@@ -239,7 +316,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     const syncDocumentTitle = () => {
-      setDocumentTitle(i18next.isInitialized ? i18next.t('APP_NAME') : 'Companion Hub');
+      setDocumentTitle(i18next.isInitialized ? i18next.t('APP_NAME') : 'CI Hub');
       setDocumentLang(i18next.resolvedLanguage || i18next.language || 'en');
     };
 
@@ -356,7 +433,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
       <head>
         <title>{documentTitle}</title>
         <meta charSet="UTF-8" />
-        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
         <Meta />
         <Links />
       </head>

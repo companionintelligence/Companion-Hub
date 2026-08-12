@@ -5,6 +5,7 @@ import { LoggerService } from '@/core/logger/logger.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { AppEventsQueue } from '@/modules/queue/entities/app-events';
 import { AppLifecycleService } from '@/modules/app-lifecycle/app-lifecycle.service';
+import { AppOperationRegistry } from '@/modules/app-lifecycle/app-operation-registry';
 import { AppFilesManager } from '@/modules/apps/app-files-manager';
 import { BackupManager } from '../backup.manager';
 import { SSEService } from '@/core/sse/sse.service';
@@ -21,6 +22,7 @@ describe('BackupsService', () => {
   let appFilesManager: MockProxy<AppFilesManager>;
   let backupManager: MockProxy<BackupManager>;
   let sseService: MockProxy<SSEService>;
+  let operationRegistry: MockProxy<AppOperationRegistry>;
 
   beforeEach(async () => {
     appsRepository = mock<AppsRepository>();
@@ -31,6 +33,8 @@ describe('BackupsService', () => {
     appFilesManager = mock<AppFilesManager>();
     backupManager = mock<BackupManager>();
     sseService = mock<SSEService>();
+    operationRegistry = mock<AppOperationRegistry>();
+    operationRegistry.claimCompletion.mockReturnValue(true);
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -43,6 +47,7 @@ describe('BackupsService', () => {
         { provide: AppFilesManager, useValue: appFilesManager },
         { provide: BackupManager, useValue: backupManager },
         { provide: SSEService, useValue: sseService },
+        { provide: AppOperationRegistry, useValue: operationRegistry },
       ],
     }).compile();
 

@@ -1,6 +1,8 @@
 import { Button } from '@/components/ui/Button';
 import { AppStoreSearchInput } from '@/modules/app/components/app-store-search-input/app-store-search-input';
+import { getCategoryLabel } from '@/modules/app/helpers/category-label';
 import { iconForCategory } from '@/modules/app/helpers/table-helpers';
+import { buildStoreIndexPath } from '@/lib/store-browse-params';
 import { useAppStoreState } from '@/stores/app-store';
 import clsx from 'clsx';
 import { ArrowLeftRight, LayoutGrid } from 'lucide-react';
@@ -9,7 +11,7 @@ import { useTranslation } from 'react-i18next';
 import { useLocation, useNavigate } from 'react-router';
 
 const ALTERNATIVES_VIEW = '__alternatives__' as const;
-const STORE_INDEX_PATTERN = /^\/app-store\/?$/;
+const STORE_INDEX_PATTERN = /^\/store\/?$/;
 
 export const AppStoreSidebar = () => {
   const { t } = useTranslation();
@@ -24,28 +26,32 @@ export const AppStoreSidebar = () => {
     setLocalSearch(search);
   }, [search]);
 
-  const navigatePreservingStore = useCallback(() => {
+  const navigatePreservingBrowseContext = useCallback(() => {
     if (!STORE_INDEX_PATTERN.test(location.pathname)) {
-      const target = storeId ? `/store?store=${storeId}` : '/store';
-      navigate(target);
+      navigate(buildStoreIndexPath({ q: search.trim() ? search : undefined, category, store: storeId }));
     }
-  }, [navigate, location.pathname, storeId]);
+  }, [navigate, location.pathname, search, category, storeId]);
 
   const onSearch = useCallback(
     (value: string) => {
       setLocalSearch(value);
+      // Featured is a curated feed, not an exhaustive searchable catalog.
+      // When a user starts searching there, switch to "All" to show full results.
+      if (category === 'featured' && value.trim().length > 0) {
+        setCategory(undefined);
+      }
       setSearch(value);
-      navigatePreservingStore();
+      navigatePreservingBrowseContext();
     },
-    [setSearch, navigatePreservingStore],
+    [category, setCategory, setSearch, navigatePreservingBrowseContext],
   );
 
   const handleCategoryClick = useCallback(
     (cat?: typeof category) => {
       setCategory(cat);
-      navigatePreservingStore();
+      navigatePreservingBrowseContext();
     },
-    [setCategory, navigatePreservingStore],
+    [setCategory, navigatePreservingBrowseContext],
   );
 
   return (
@@ -108,7 +114,7 @@ export const AppStoreSidebar = () => {
                 onClick={() => handleCategoryClick(cat.id)}
               >
                 {Icon && <Icon className="h-4 w-4" />}
-                <span className="truncate">{cat.id.charAt(0).toUpperCase() + cat.id.slice(1)}</span>
+                <span className="truncate">{getCategoryLabel(t, cat.id)}</span>
               </Button>
             );
           })}

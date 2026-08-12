@@ -1,11 +1,15 @@
 name: E2E Extended
 
+# >>> ci-local:gated original triggers below, restore with `ci-local restore`
+# on:
+#   schedule:
+#     - cron: '0 3 * * *'
+#   workflow_dispatch:
+#   pull_request:
+#     types: [labeled, synchronize, opened, reopened]
+# <<< ci-local:gated
 on:
-  schedule:
-    - cron: '0 3 * * *'
   workflow_dispatch:
-  pull_request:
-    types: [labeled, synchronize, opened, reopened]
 
 concurrency:
   group: e2e-extended-${{ github.event.pull_request.number || github.ref }}
@@ -141,12 +145,10 @@ jobs:
 
       - run: pnpm exec playwright install --with-deps chromium
 
-      - name: Start mock portal
-        run: |
-          pnpm exec tsx e2e/mock-portal/server.ts &
-          echo "MOCK_PID=$!" >> "$GITHUB_ENV"
-          sleep 2
-          curl -sf "http://localhost:${MOCK_PORTAL_PORT}/v2/" || echo "Warning: mock portal not responding"
+      # The mock portal is owned by Playwright's webServer — this config spreads
+      # the base playwright.config.ts webServer array. Do NOT pre-start it here:
+      # with reuseExistingServer:false under CI a second instance collides on
+      # MOCK_PORTAL_PORT and Playwright aborts the whole run. See CI-Hub#890.
 
       - name: Run future onboarding E2E
         run: pnpm e2e:future:onboarding

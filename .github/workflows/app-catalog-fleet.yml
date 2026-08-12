@@ -33,6 +33,10 @@ on:
           - beta-1
           - beta-red
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   # Fleet server Tailscale IPs — stored as GitHub Actions secrets (not hardcoded).
   # Add FLEET_<NAME>_IP under Settings → Secrets and variables → Actions.
@@ -195,7 +199,7 @@ jobs:
             
             # Run Playwright tests with extended timeout
             export PLAYWRIGHT_JSON_OUTPUT_NAME=e2e/results/catalog-batch-${BATCH}.json
-            pnpm exec playwright test \$TEST_FILE \
+            E2E_RUN_CATALOG_TESTS=true pnpm exec playwright test \$TEST_FILE \
               --timeout=300000 \
               --reporter=json,html \
               --output=test-results-batch-${BATCH} \
@@ -242,7 +246,7 @@ jobs:
         with:
           name: results-${{ matrix.server }}-batch-${{ matrix.batch }}
           path: results-${{ matrix.server }}/
-          retention-days: 30
+          retention-days: 7
 
   aggregate:
     name: Aggregate Results
@@ -331,7 +335,7 @@ jobs:
         with:
           name: fleet-unified-report
           path: fleet-report.md
-          retention-days: 90
+          retention-days: 7
 
   notify:
     name: Notify

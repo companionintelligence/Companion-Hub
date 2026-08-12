@@ -1,15 +1,21 @@
+import { createHash } from 'node:crypto';
 import { BadRequestException, Injectable, type OnApplicationBootstrap, type OnModuleDestroy, ServiceUnavailableException } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
 import type { AppUrn } from '@ci-hub/common/types';
+import { extractAppUrn } from '@/common/helpers/app-helpers';
+import { buildHubLocalOrigin, buildHubPublicOrigin, buildHubTailnetOrigin, isPrivateHostname, isTailnetHostname } from '@/common/helpers/hub-origin';
 import { ConfigurationService } from '@/core/config/configuration.service';
+import type { AppStatus } from '@/core/database/drizzle/types';
 import { LoggerService } from '@/core/logger/logger.service';
 import { AppLifecycleService } from '@/modules/app-lifecycle/app-lifecycle.service';
+import { AppsRepository } from '@/modules/apps/apps.repository';
+import { TunnelHealthService } from '@/modules/cloudflare/tunnel-health.service';
 import { DeviceRegistrationRepository } from '@/modules/registration/device-registration.repository';
 import { type MemoryConnectionState } from './memory-connection.repository';
 import { MemoryConnectionService } from './memory-connection.service';
 import { MemoryExchangeClient } from './memory-exchange.client';
 import { isMemoryProviderApp } from './memory-provider.predicate';
-import { MemoryProviderResolver } from './memory-provider.resolver';
+import { MemoryProviderResolver, type MemoryProviderRuntimeStatus } from './memory-provider.resolver';
 import { PendingConnectStore } from './pending-connect.store';
 
 /**
@@ -24,6 +30,46 @@ const ROTATE_SWEEP_INTERVAL_MS = 12 * 60 * 60 * 1000;
 const ROTATE_INITIAL_DELAY_MS = 60 * 1000;
 
 /**
+ * Statuses in which an app is down, or not there at all — the only ones for which
+ * applying new creds must NOT restart the container.
+ *
+ * Includes the stop-first maintenance states (`backing_up`, `restoring`, `updating`,
+ * `resetting`): each one runs `compose stop` before it works, and each one's own
+ * completion handler restores the previous run-state through the env-regenerating
+ * `startApp`. Restarting an app mid-backup would therefore not just churn its status —
+ * it would leave an app the user had STOPPED running once the backup finished.
+ *
+ * `starting` / `restarting` are deliberately absent: those really are on their way up,
+ * and a restart queued behind the in-flight command is how a live app avoids being
+ * stranded on a key CI-Server has already retired.
+ *
+ * Typed against `AppStatus` so a status added to the enum has to be classified here,
+ * rather than silently defaulting to "live, restart it".
+ */
+const DOWN_APP_STATUSES: readonly AppStatus[] = [
+  'stopped',
+  'stopping',
+  'missing',
+  'installing',
+  'install_failed',
+  'uninstalling',
+  'backing_up',
+  'restoring',
+  'updating',
+  'resetting',
+];
+
+/**
+ * `restarted` — the restart completed and the container is running the new env
+ * (await mode only). `restarting` — the restart was dispatched and the status has
+ * flipped; its completion handler does the rest (schedule mode only). `deferred` —
+ * the app is down, so its env was rewritten in place and applies on its next start
+ * (nothing more to do). `failed` — the creds could not be applied, and the app may
+ * be stranded on a key CI-Server has already retired.
+ */
+type ApplyOutcome = 'restarted' | 'restarting' | 'deferred' | 'failed';
+
+/**
  * Parse a Postgres timestamp as UTC milliseconds. `updated_at` is a zoneless
  * `timestamp` that Postgres returns space-separated (e.g. `2026-07-09 12:00:00`),
  * which `new Date()` would read as LOCAL time. It is written as UTC (via
@@ -36,19 +82,70 @@ function parseUtcMs(value: string): number {
   return new Date(hasZone ? trimmed : `${trimmed.replace(' ', 'T')}Z`).getTime();
 }
 
-/** State + the browser-reachable launcher URL a wrapper needs to render its gate. */
-export interface MemoryConnectStatus {
-  state: MemoryConnectionState;
-  /** Hub launcher URL to start the connect flow, or null if it can't be built. */
+/**
+ * Why a connect cannot be started right now. Machine-readable so the Hub UI can
+ * localise it and the wrappers can log something actionable — the previous
+ * contract expressed every one of these as a bare `connectUrl: null`, which is
+ * why a dead Connect button could never explain itself.
+ */
+export type ConnectBlockedReason =
+  /** ci-memory is not installed; there is nothing to connect to. */
+  | 'memory_absent'
+  /** ci-memory is installing / booting; a connect would 400 until it is up. */
+  | 'memory_starting'
+  /** ci-memory is installed but down (stopped, install_failed, …). */
+  | 'memory_offline'
+  /** This appliance has no public origin at all (unregistered / placeholder domain). */
+  | 'hub_not_provisioned'
+  /** The Hub's public origin is down and this caller cannot reach the LAN route either. */
+  | 'hub_unreachable'
+  /** ci-memory only has a LAN address and this caller is off-network. */
+  | 'provider_local_only';
+
+/**
+ * The launcher URLs available to one specific caller, plus why there are none.
+ *
+ * Deliberately caller-scoped rather than global: whether the LAN launcher is
+ * usable depends on where the browser is, so the same appliance answers this
+ * differently for a request that arrived on `http://192.168.1.5` than for one
+ * that arrived on `https://hub-….companionintelligence.com`.
+ */
+export interface ConnectLaunchers {
+  /** Public launcher, or null when there is no working public route. */
   connectUrl: string | null;
+  /** LAN launcher, or null when there is no LAN origin or this caller can't use it. */
+  connectUrlLocal: string | null;
+  /** Whether either launcher above is usable by this caller. */
+  connectable: boolean;
+  /** Why not, when `connectable` is false; null otherwise. */
+  reason: ConnectBlockedReason | null;
+}
+
+/** State + the browser-reachable launcher URLs a wrapper needs to render its gate. */
+export interface MemoryConnectStatus extends ConnectLaunchers {
+  state: MemoryConnectionState;
+}
+
+/**
+ * Where a request reached the Hub, so the service can answer "can THIS caller
+ * connect?" — and, when the flow starts, keep the whole ceremony on the origin it
+ * began on instead of relocating the user mid-flow.
+ */
+export interface RequestOriginContext {
+  /** Host header of the incoming request (`192.168.1.5:80`, `hub-x.example.com`). */
+  host?: string;
 }
 
 /** Richer status for the Hub app-detail UI. */
 export interface MemoryConnectUiStatus extends MemoryConnectStatus {
   /** Whether this app is a memory consumer at all (else the UI shows nothing). */
   applicable: boolean;
-  /** Whether Companion Memory is installed to connect to. */
+  /** Whether CI Memory is installed (a row exists) — installing/stopped included. */
   memoryInstalled: boolean;
+  /** Whether CI Memory is actually running, i.e. a connect can succeed right now. */
+  memoryReady: boolean;
+  /** Coarse provider lifecycle, so the UI can say WHY it isn't ready (starting vs offline). */
+  providerStatus: MemoryProviderRuntimeStatus;
   /**
    * ISO instant the current key expires, when connected — else null. The key
    * auto-rotates before this, so the UI frames it as "renews automatically" and
@@ -83,6 +180,8 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
     private readonly deviceRegistration: DeviceRegistrationRepository,
     private readonly config: ConfigurationService,
     private readonly logger: LoggerService,
+    private readonly apps: AppsRepository,
+    private readonly tunnelHealth: TunnelHealthService,
     private readonly moduleRef: ModuleRef,
   ) {}
 
@@ -137,7 +236,7 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
       const provider = await this.resolver.findProvider();
 
       if (!provider) {
-        this.logger.warn('[MemoryConnect] rotation sweep skipped: Companion Memory not resolvable');
+        this.logger.warn('[MemoryConnect] rotation sweep skipped: CI Memory not resolvable');
 
         return;
       }
@@ -153,24 +252,50 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
         const appUrn = row.appUrn as AppUrn;
 
         try {
+          // Check liveness BEFORE rotating. Rotation retires the old key on CI-Server,
+          // so a rotation we then cannot apply leaves the app 401ing — and because
+          // storeConnected bumps `updatedAt`, the age gate above would skip this app for
+          // another ROTATE_KEY_AFTER_MS, turning a transient miss into a 60-day outage.
+          // Skipping a down app instead leaves its key (and `updatedAt`) untouched, so it
+          // is simply picked up by the first sweep after it comes back up.
+          if (await this.isAppDown(appUrn)) {
+            this.logger.debug(`[MemoryConnect] skipping key rotation for ${appUrn}: app is not running`);
+
+            continue;
+          }
+
           const rotated = await this.exchange.rotate(provider.internalUrl, appUrn);
           await this.connections.storeConnected(appUrn, provider.internalUrl, rotated.key, rotated.expiresAt);
 
           // The new key is stored + valid, but CI-Server has already retired the
-          // old one, so the running container 401s until its env is regenerated.
-          // Retry the restart once for a transient failure; if it still fails, log
-          // LOUDLY — the age gate now skips this app for ROTATE_KEY_AFTER_MS (its
-          // updatedAt is fresh), so a silent failure would strand it on the retired
-          // key until an unrelated restart (env generation re-reads the new key).
-          let applied = await this.applyAndRestart(appUrn);
-          if (!applied) {
-            applied = await this.applyAndRestart(appUrn);
+          // old one, so a running container 401s until its env is regenerated.
+          // Retry once for a transient failure; if it still fails, log LOUDLY — the
+          // age gate now skips this app for ROTATE_KEY_AFTER_MS (its updatedAt is
+          // fresh), so a silent failure would strand it on the retired key until an
+          // unrelated restart (env generation re-reads the new key).
+          let outcome = await this.applyConnection(appUrn, 'await');
+
+          if (outcome === 'failed') {
+            const retry = await this.applyConnection(appUrn, 'await');
+
+            // A retry that comes back 'deferred' does NOT mean the app was down on
+            // purpose: a failed restart marks the app `stopped`, so the retry sees a
+            // down app and defers. This app was running when we rotated — the sweep
+            // itself knocked it over. Keep it a failure so it gets the loud warning
+            // rather than the benign "applies on next start" note.
+            outcome = retry === 'deferred' ? 'failed' : retry;
           }
 
-          if (applied) {
+          if (outcome === 'restarted') {
             this.logger.info(`[MemoryConnect] rotated memory key for ${appUrn}`);
+          } else if (outcome === 'deferred') {
+            // It went down between the liveness check and the apply; its env now holds
+            // the new key, so the next start picks it up.
+            this.logger.info(`[MemoryConnect] rotated memory key for ${appUrn} (app went down; applies on next start)`);
           } else {
-            this.logger.error(`[MemoryConnect] rotated ${appUrn} but could not restart it to apply the new key; it will recover on its next restart`);
+            this.logger.error(
+              `[MemoryConnect] rotated ${appUrn} but could not restart it to apply the new key; it is DOWN or running on the retired key until it is started again`,
+            );
           }
         } catch (err) {
           this.logger.warn(`[MemoryConnect] key rotation failed for ${appUrn}: ${err instanceof Error ? err.message : String(err)}`);
@@ -189,29 +314,34 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
    * browser should be redirected to. `next` is where the user lands after the
    * connection is applied.
    */
-  async startConnect(appUrn: AppUrn, next: string | undefined, userId: string): Promise<string> {
+  async startConnect(appUrn: AppUrn, next: string | undefined, userId: string, origin?: RequestOriginContext): Promise<string> {
     // The browser leg needs the public consent URL, so this is the one caller
     // that pays for the availability probe.
     const provider = await this.resolver.findProvider({ withPublicUrl: true });
 
     if (!provider) {
-      throw new BadRequestException('Companion Memory is not installed');
+      throw new BadRequestException('CI Memory is not installed');
     }
 
     if (!provider.publicUrl) {
-      throw new BadRequestException('Companion Memory is not reachable yet; try again once it is running');
+      throw new BadRequestException('CI Memory is not reachable yet; try again once it is running');
     }
 
-    const hubOrigin = await this.hubOrigin();
+    // Run the whole ceremony on the origin the user actually arrived on. The
+    // callback, the finishing interstitial and the Hub session cookie all live on
+    // one origin, so deriving this from config instead of the request is what used
+    // to throw a LAN user onto the public origin mid-flow — where their session
+    // cookie does not exist and they are bounced to a second login.
+    const hubOrigin = await this.resolveFlowOrigin(origin);
 
     if (!hubOrigin) {
-      throw new BadRequestException('This Hub has no public origin to return to');
+      throw new BadRequestException('This Hub has no origin to return to');
     }
 
     // Open-redirect guard: only ever land the browser back on the Hub or on the
     // connecting app's own public URL. An attacker-supplied `next` (e.g. a
     // phishing hand-off right after the consent ceremony) falls back to the app.
-    const safeNext = await this.resolveSafeNext(next, appUrn, hubOrigin);
+    const safeNext = await this.resolveSafeNext(next, appUrn, hubOrigin, origin);
 
     const state = this.pending.create(appUrn, safeNext, userId);
     const callbackUrl = `${hubOrigin}/api/memory-connect/callback`;
@@ -235,145 +365,275 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
 
   /**
    * Handle the browser returning from ci-memory: validate `state`, exchange the
-   * one-time code for the key (server-to-server), persist it, apply it to the
-   * app (regenerate env + restart), and return where to send the browser next.
+   * one-time code for the key (server-to-server), persist it, kick off the
+   * apply (regenerate env + restart), and return where to send the browser next.
+   *
+   * The restart is NOT awaited here — a compose restart takes tens of seconds,
+   * and holding the browser's top-level navigation open that long is how a
+   * routine client-side network blip turns into an aborted callback (and a
+   * Cloudflare 524 past ~100s). Instead the browser is sent to the SPA's
+   * `/memory-connect/finishing` interstitial, which watches the app's status
+   * and forwards to `next` once it is running again.
+   *
+   * The store resolves the `state` bound to the current user and the presented
+   * code (hashed): a replay of the SAME code repeats the redirect the first
+   * attempt actually resolved to, WITHOUT re-exchanging — never fabricating a
+   * success (or failure) the first attempt didn't have. A DIFFERENT code on a
+   * consumed state is a fresh consent grant (deny → back → allow, or a retry
+   * after a failed exchange) and runs the full flow again. A request from
+   * another Hub user is `foreign`: it neither consumes the attempt nor learns
+   * anything about it (login-CSRF / authorization-code-injection guard — on a
+   * multi-user Hub this stops a low-priv user from binding the owner's app to
+   * the attacker's memory account, or from burning the owner's in-flight
+   * state).
    *
    * Only an unknown/expired `state` throws (there is no app to return to). Once
-   * the state is resolved, ANY downstream failure (provider gone, app mismatch,
-   * user mismatch, exchange error) still returns the originating app's URL with
+   * the state is resolved for its owner, ANY downstream failure (provider gone,
+   * app mismatch, exchange error) still returns the originating app's URL with
    * `error: true`, so the user lands back on their app (where the interstitial
    * re-appears) rather than dead-ending on the Hub dashboard.
    */
   async handleCallback(code: string, state: string, currentUserId: string): Promise<{ next: string; error?: boolean }> {
-    const attempt = this.pending.consume(state);
+    const attempt = this.pending.consume(state, currentUserId, this.hashCode(code));
 
-    if (!attempt) {
+    if (attempt.outcome === 'unknown') {
       throw new BadRequestException('Invalid or expired connect state');
     }
 
-    // Login-CSRF / authorization-code-injection guard: the browser completing the
-    // callback must be the SAME Hub user who started the flow. On the single-owner
-    // appliance this always holds; on a multi-user Hub it stops a low-priv user
-    // from binding the owner's app to the attacker's memory account (or vice
-    // versa). No key is exchanged when it fails.
-    if (attempt.userId !== currentUserId) {
-      this.logger.error(`[MemoryConnect] callback user mismatch for ${attempt.appUrn}: started by ${attempt.userId}, completed by ${currentUserId}`);
+    if (attempt.outcome === 'foreign') {
+      this.logger.error(`[MemoryConnect] callback user mismatch: state not owned by user ${currentUserId}`);
 
-      return { next: attempt.next, error: true };
+      // Land on the dashboard with the generic error marker — same landing as an
+      // unknown/expired state (the controller's catch also uses this), so the
+      // outcome is indistinguishable to a probing non-initiator (no foreign-vs-
+      // unknown oracle) while still surfacing a failure toast to the real user
+      // whose session drifted. A non-initiator still learns nothing (not the app).
+      return { next: '/?memoryConnect=error', error: true };
     }
 
+    if (attempt.outcome === 'replayed') {
+      this.logger.info(`[MemoryConnect] callback replayed for ${attempt.appUrn}; skipping exchange`);
+
+      // Repeat the first attempt's recorded redirect: the finishing interstitial
+      // if a restart was scheduled, else the app URL (failed / deferred / still
+      // in flight). Never assume the replayed attempt succeeded.
+      return { next: attempt.redirect };
+    }
+
+    const result = await this.completeConnect(attempt.appUrn, attempt.next, code);
+
+    // Record where this attempt actually resolved, unconditionally, so a replay
+    // repeats the exact redirect — success, failure, or deferral alike.
+    this.pending.recordOutcome(state, result.next);
+
+    return result;
+  }
+
+  /**
+   * The exchange-and-apply half of a consumed callback: swap the one-time code
+   * for a key, persist it, schedule the restart, and return where to send the
+   * browser (the finishing interstitial while a restart is in flight, else the
+   * app URL).
+   */
+  private async completeConnect(appUrn: AppUrn, next: string, code: string): Promise<{ next: string; error?: boolean }> {
     const provider = await this.resolver.findProvider();
 
     if (!provider) {
-      this.logger.error(`[MemoryConnect] callback with no resolvable provider for ${attempt.appUrn}`);
+      this.logger.error(`[MemoryConnect] callback with no resolvable provider for ${appUrn}`);
 
-      return { next: attempt.next, error: true };
+      return { next, error: true };
     }
 
     try {
       const exchanged = await this.exchange.exchange(provider.internalUrl, code);
 
       // Defense in depth: the code must be for the same app the flow started for.
-      if (exchanged.appUrn !== attempt.appUrn) {
-        this.logger.error(`[MemoryConnect] app mismatch on exchange: expected ${attempt.appUrn}, got ${exchanged.appUrn}`);
+      if (exchanged.appUrn !== appUrn) {
+        this.logger.error(`[MemoryConnect] app mismatch on exchange: expected ${appUrn}, got ${exchanged.appUrn}`);
 
         // The exchange minted a key under `exchanged.appUrn` (CI-Server rotates by
         // app name), but the Hub will not store it — revoke it so it does not
         // linger unmanaged on CI-Server. revoke() never throws (logs on failure).
         await this.exchange.revoke(provider.internalUrl, exchanged.appUrn);
 
-        return { next: attempt.next, error: true };
+        return { next, error: true };
       }
 
       // Store the internal URL as CI_SERVER_URL — the agent container reaches
       // ci-memory over the same shared docker network the Hub used for exchange.
-      await this.connections.storeConnected(attempt.appUrn, provider.internalUrl, exchanged.key, exchanged.expiresAt);
-      await this.applyAndRestart(attempt.appUrn);
+      await this.connections.storeConnected(appUrn, provider.internalUrl, exchanged.key, exchanged.expiresAt);
+      const applied = await this.applyConnection(appUrn, 'schedule');
 
-      return { next: attempt.next };
+      if (applied === 'restarting') {
+        return { next: this.buildFinishingPath(appUrn, next) };
+      }
+
+      // 'deferred' (app is down; env rewritten in place) or 'failed' — nothing is
+      // restarting for the interstitial to watch, so land on the app directly.
+      return { next };
     } catch (err) {
-      this.logger.error(`[MemoryConnect] exchange failed for ${attempt.appUrn}`, err);
+      this.logger.error(`[MemoryConnect] exchange failed for ${appUrn}`, err);
 
-      return { next: attempt.next, error: true };
+      return { next, error: true };
     }
   }
 
   /**
    * Abandon a pending connect (the user denied consent on ci-memory, or an
    * upstream error): free the pending `state` and return where to send the
-   * browser — the originating app if the state is still known, else the Hub.
+   * browser — the originating app if the state is still known (including a
+   * refresh of the deny redirect, via the tombstone), else the Hub. A foreign
+   * user's deny replay learns nothing (not even the app URL).
    */
-  abandonConnect(state: string | undefined): string {
-    const attempt = state ? this.pending.consume(state) : null;
+  abandonConnect(state: string | undefined, currentUserId: string, error?: string): string {
+    const attempt = this.pending.consume(state, currentUserId);
 
-    return attempt?.next ?? '/';
+    if (attempt.outcome === 'unknown' || attempt.outcome === 'foreign') {
+      // No app to return to. Carry the provider's own error code onto the
+      // dashboard so the toast can distinguish "you declined" from "the consent
+      // page could not authenticate you" (CI-Server's `csrf_failed` /
+      // `login_required`), instead of the single generic marker this used to use.
+      return error ? `/?memoryConnect=${encodeURIComponent(error)}` : '/';
+    }
+
+    if (error) {
+      this.logger.warn(`[MemoryConnect] connect abandoned for ${attempt.appUrn}: provider reported '${error}'`);
+    } else {
+      this.logger.info(`[MemoryConnect] connect declined by the user for ${attempt.appUrn}`);
+    }
+
+    return attempt.redirect;
   }
 
   /**
-   * Wrapper-facing status: current state + the launcher URL to start connecting.
-   * `connectUrl` is null unless Companion Memory is actually installed — otherwise
-   * a wrapper would render a connect gate that dead-ends on startConnect's
-   * "Companion Memory is not installed" 400. `findProvider` here is the
-   * lightweight, probe-free variant, run in parallel with the other lookups.
+   * Hash a one-time code for the tombstone comparison. The raw code is never
+   * retained — the hash only answers "is this the same code as last time?" so
+   * a fresh consent grant is distinguishable from a browser replay.
    */
-  async getStatus(appUrn: AppUrn): Promise<MemoryConnectStatus> {
-    const [state, launcherUrl, memoryInstalled] = await Promise.all([
+  private hashCode(code: string): string {
+    return createHash('sha256').update(code).digest('hex');
+  }
+
+  /**
+   * Wrapper-facing status: current state + the launcher URLs to start connecting.
+   * The launchers are null unless CI Memory is actually running — otherwise a
+   * wrapper would render a connect gate that dead-ends on startConnect's "not
+   * installed" / "not reachable yet" 400. `getProviderRuntimeInfo` here is the
+   * lightweight DB-only check (status + local-only), run in parallel with the
+   * state lookup.
+   */
+  async getStatus(appUrn: AppUrn, origin?: RequestOriginContext): Promise<MemoryConnectStatus> {
+    const [state, providerInfo] = await Promise.all([
       this.connections.getState(appUrn),
-      this.buildLauncherUrl(appUrn),
-      // Cheap DB-only existence check, and fault-tolerant: a transient failure
+      // Cheap DB-only status check, and fault-tolerant: a transient failure
       // degrades to "no connect URL" rather than 500ing the whole status poll
-      // (the state + launcher URL are independent of the provider lookup).
-      this.resolver.isProviderInstalled().catch(() => false),
+      // (the state is independent of the provider lookup).
+      this.resolver.getProviderRuntimeInfo().catch(() => ({ status: 'absent' as const, localOnly: false })),
     ]);
 
-    return { state, connectUrl: memoryInstalled ? launcherUrl : null };
+    const launchers = await this.resolveLaunchers({
+      appUrn,
+      providerStatus: providerInfo.status,
+      providerLocalOnly: providerInfo.localOnly,
+      origin,
+    });
+
+    // This endpoint drives a gate that BLOCKS the app, so it fails toward not
+    // gating: when nothing is connectable the wrapper receives null URLs, stands
+    // down, and lets the user into the app. `reason` still rides along so the
+    // wrapper can log why it suppressed itself — the previous contract made an
+    // unreachable Hub indistinguishable from a healthy one that had nothing to do.
+    return { state, ...launchers };
   }
 
   /**
    * Richer status for the Hub's app-detail UI: whether the app is even a memory
-   * consumer, whether Companion Memory is installed to connect to, the current
+   * consumer, whether CI Memory is installed to connect to, the current
    * state, and the launcher URL.
    */
-  async getUiStatus(appUrn: AppUrn): Promise<MemoryConnectUiStatus> {
+  async getUiStatus(appUrn: AppUrn, origin?: RequestOriginContext): Promise<MemoryConnectUiStatus> {
     // Non-consumer apps render no card, so short-circuit before the provider
-    // availability probe + state/launcher lookups (the common case — most
-    // installed apps are not memory consumers).
+    // status + state/launcher lookups (the common case — most installed apps
+    // are not memory consumers).
     if (!(await this.resolver.isConsumerApp(appUrn))) {
-      return { applicable: false, memoryInstalled: false, state: 'unconfigured', connectUrl: null, keyExpiresAt: null };
+      return {
+        applicable: false,
+        memoryInstalled: false,
+        memoryReady: false,
+        providerStatus: 'absent',
+        state: 'unconfigured',
+        connectUrl: null,
+        connectUrlLocal: null,
+        connectable: false,
+        reason: null,
+        keyExpiresAt: null,
+      };
     }
 
-    // getRow (not getState) so we get the key's expiry in the same query.
-    const [provider, row, connectUrl] = await Promise.all([
-      this.resolver.findProvider(),
+    // getRow (not getState) so we get the key's expiry in the same query. The
+    // coarse provider status (DB-only lite check) drives installed/ready — a mere
+    // install-in-progress row must not read as "ready".
+    const [providerInfo, row] = await Promise.all([
+      this.resolver.getProviderRuntimeInfo().catch(() => ({ status: 'absent' as const, localOnly: false })),
       this.connections.getRow(appUrn),
-      this.buildLauncherUrl(appUrn),
     ]);
 
-    // Lazy staleness detection: if we think we're connected but ci-memory no
-    // longer accepts the stored key (e.g. it was reset), clear it so the app
-    // re-prompts instead of silently running with a dead credential.
+    const providerStatus = providerInfo.status;
+
+    const memoryInstalled = providerStatus !== 'absent';
+    const memoryReady = providerStatus === 'ready';
+
     let effectiveState = row?.state ?? 'unconfigured';
     // Normalize to a canonical UTC ISO string: Postgres hands back a
     // space-separated form that Safari's `new Date()` rejects, so the UI must
     // never see the raw column value.
     let keyExpiresAt = this.toIsoInstant(row?.keyExpiresAt);
-    if (effectiveState === 'connected' && provider) {
+
+    // Lazy staleness detection: if we think we're connected but ci-memory no
+    // longer accepts the stored key (e.g. it was reset), clear it so the app
+    // re-prompts instead of silently running with a dead credential. Only worth
+    // doing when ci-memory is actually running — otherwise isKeyValid can't reach
+    // it (and fails safe), so we'd only be paying a network timeout on every poll
+    // while it's down. findProvider is resolved lazily here (for the internal S2S
+    // URL) rather than on every call.
+    if (effectiveState === 'connected' && memoryReady) {
+      const provider = await this.resolver.findProvider();
       // Decrypt from the row already loaded above — avoids a second findByAppUrn.
       const creds = this.connections.credsFromRow(row);
-      if (creds && !(await this.exchange.isKeyValid(provider.internalUrl, creds.token))) {
+      if (provider && creds && !(await this.exchange.isKeyValid(provider.internalUrl, creds.token))) {
         // Clear the dead key AND restart the app: clearing alone leaves the
         // container running with the injected dead credential (401ing every
         // memory call) until some unrelated restart. Restarting regenerates the
         // env without creds, so the wrapper re-shows the connect interstitial.
         await this.connections.clear(appUrn);
-        await this.applyAndRestart(appUrn);
+        await this.applyConnection(appUrn, 'await');
         effectiveState = 'unconfigured';
         keyExpiresAt = null;
         this.logger.info(`[MemoryConnect] cleared stale key for ${appUrn} (ci-memory rejected it)`);
       }
     }
 
-    return { applicable: true, memoryInstalled: !!provider, state: effectiveState, connectUrl, keyExpiresAt };
+    // Unlike `/state`, this endpoint drives a NON-blocking surface (the Connect
+    // button), so it fails toward *showing* — hiding the action here would make
+    // the feature look absent. `connectable: false` + `reason` is what lets the
+    // button render disabled with copy that says why, rather than the generic
+    // description it used to show over a dead click target.
+    const launchers = await this.resolveLaunchers({
+      appUrn,
+      providerStatus,
+      providerLocalOnly: providerInfo.localOnly,
+      origin,
+    });
+
+    return {
+      applicable: true,
+      memoryInstalled,
+      memoryReady,
+      providerStatus,
+      state: effectiveState,
+      ...launchers,
+      keyExpiresAt,
+    };
   }
 
   /** Record that the user chose not to connect (do not re-prompt). */
@@ -398,12 +658,57 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
     if (provider) {
       const revoked = await this.exchange.revoke(provider.internalUrl, appUrn);
       if (!revoked) {
-        throw new ServiceUnavailableException('Could not revoke the memory key on Companion Memory; the app is still connected. Please try again.');
+        throw new ServiceUnavailableException('Could not revoke the memory key on CI Memory; the app is still connected. Please try again.');
       }
     }
 
     await this.connections.clear(appUrn);
-    await this.applyAndRestart(appUrn);
+    await this.applyConnection(appUrn, 'await');
+  }
+
+  /**
+   * The installed apps that currently hold a live CI Memory connection —
+   * used to guard against removing the shared provider out from under them.
+   * Excludes (a) the provider's own connection row (ci-memory holds one too) and
+   * (b) stale rows whose app is no longer installed. Names are the app's display
+   * name, falling back to the URN's app-name half.
+   *
+   * A row whose URN can't even be PARSED is skipped (it can't map to a real
+   * consumer). That is the ONLY thing swallowed here: a DB/resolver error while
+   * resolving a genuinely-connected row is allowed to propagate, so the caller
+   * (the uninstall/reset guard) fails CLOSED rather than silently dropping a
+   * still-connected consumer and letting the shared store be destroyed.
+   */
+  async listConnectedConsumers(): Promise<Array<{ appUrn: string; name: string }>> {
+    const rows = await this.connections.listConnected();
+    const consumers: Array<{ appUrn: string; name: string }> = [];
+
+    for (const row of rows) {
+      const urn = row.appUrn as AppUrn;
+
+      // Validate the URN up front and skip only on a PARSE failure — everything
+      // below (the DB existence check, the name resolution) must be free to throw.
+      let fallbackName: string;
+      try {
+        fallbackName = extractAppUrn(urn).appName;
+      } catch (err) {
+        this.logger.warn(`[MemoryConnect] skipping unparseable connection row ${row.appUrn}: ${err instanceof Error ? err.message : String(err)}`);
+        continue;
+      }
+
+      if (isMemoryProviderApp({ urn })) {
+        continue;
+      }
+
+      if (!(await this.apps.getAppByUrn(urn))) {
+        continue;
+      }
+
+      const name = (await this.resolver.getAppName(urn)) ?? fallbackName;
+      consumers.push({ appUrn: row.appUrn, name });
+    }
+
+    return consumers;
   }
 
   /**
@@ -424,7 +729,7 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
 
     await this.connections.remove(appUrn);
 
-    // If Companion Memory ITSELF is being uninstalled, every consumer's stored key
+    // If CI Memory ITSELF is being uninstalled, every consumer's stored key
     // is now dead and no provider remains to lazily detect the staleness — so
     // clear each connected consumer and regenerate its env, making them re-prompt
     // instead of silently running with a 401ing credential.
@@ -434,28 +739,33 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
   }
 
   /**
-   * Companion Memory was uninstalled: nothing remains to revoke against, so just
+   * CI Memory was uninstalled: nothing remains to revoke against, so just
    * drop every consumer's now-dead connection and regenerate its env so the
    * connect interstitial reappears. Best-effort per consumer.
    */
   private async clearConsumersAfterProviderUninstall(providerUrn: AppUrn): Promise<void> {
     const connected = await this.connections.listConnected();
+    const consumers = connected.filter((row) => row.appUrn !== providerUrn);
 
-    for (const row of connected) {
-      if (row.appUrn === providerUrn) {
-        continue;
-      }
+    // Re-arm every consumer CONCURRENTLY. Serially this took the sum of all consumer
+    // restarts (~28s for two in a production incident); the app-events queue runs
+    // multiple workers, so parallel dispatch bounds the wait to the slowest single
+    // restart instead. Each consumer is isolated in its own try/catch and the batch
+    // is awaited with allSettled, so one wedged app is logged but never strands the
+    // others or rejects the sweep (#906).
+    await Promise.allSettled(
+      consumers.map(async (row) => {
+        const consumerUrn = row.appUrn as AppUrn;
 
-      const consumerUrn = row.appUrn as AppUrn;
-
-      try {
-        await this.connections.clear(consumerUrn);
-        await this.applyAndRestart(consumerUrn);
-        this.logger.info(`[MemoryConnect] cleared ${consumerUrn}: Companion Memory was uninstalled`);
-      } catch (err) {
-        this.logger.error(`[MemoryConnect] failed to clear ${consumerUrn} after Companion Memory uninstall`, err);
-      }
-    }
+        try {
+          await this.connections.clear(consumerUrn);
+          await this.applyConnection(consumerUrn, 'await');
+          this.logger.info(`[MemoryConnect] cleared ${consumerUrn}: CI Memory was uninstalled`);
+        } catch (err) {
+          this.logger.error(`[MemoryConnect] failed to clear ${consumerUrn} after CI Memory uninstall`, err);
+        }
+      }),
+    );
   }
 
   /**
@@ -468,11 +778,315 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
     const org = await this.deviceRegistration.getFirstDeviceRegistration();
     const domain = this.config.getConfig().domain;
 
-    if (!org?.hubSubdomain || !domain || domain === 'example.com') {
+    return buildHubPublicOrigin({ hubSubdomain: org?.hubSubdomain, domain });
+  }
+
+  /**
+   * The Hub's LAN origin (`http://<internalIp>:<port>`), served by the same
+   * gateway as the public route but unaffected by tunnel health. This is the
+   * fallback the connect surfaces offer when the public origin is down — and the
+   * origin that must also appear in ci-memory's `CI_HUB_ORIGINS` allowlist (see
+   * `AppHelpers`) for the callback leg to be accepted.
+   */
+  private hubLocalOrigin(): string | null {
+    const { userSettings } = this.config.getConfig();
+
+    return buildHubLocalOrigin({ internalIp: userSettings.internalIp, port: userSettings.port });
+  }
+
+  /**
+   * The Hub's tailnet origin (`https://<nodeFqdn>`), or null when the Private
+   * VPN is not connected / cannot be served. Served by Tailscale Serve on the
+   * sidecar (see `ExposureSyncService`), so — like the LAN origin — it is
+   * unaffected by tunnel health. Must also appear in ci-memory's
+   * `CI_HUB_ORIGINS` allowlist (see `AppHelpers`) for the callback leg.
+   *
+   * `TailscaleService` is resolved lazily via ModuleRef (same reason as
+   * AppLifecycleService — a static import would cycle through AppsModule), and
+   * the status read is the cached one: this sits on the same hot status-poll
+   * path as the tunnel-health read, where an exec per call is not acceptable.
+   */
+  private async hubTailnetOrigin(): Promise<string | null> {
+    try {
+      const { TailscaleService } = await import('../tailscale/tailscale.service');
+      const tailscale = this.moduleRef.get(TailscaleService, { strict: false });
+
+      if (!tailscale) {
+        return null;
+      }
+
+      const status = await tailscale.getStatusCached();
+
+      return buildHubTailnetOrigin({ connected: status.connected, httpsAvailable: status.httpsAvailable, nodeFqdn: status.nodeFqdn });
+    } catch (err) {
+      // No VPN answer is "no tailnet origin", never a failed status poll — but
+      // leave a trace, or a broken `tailscale status` would silently withhold
+      // the tailnet launcher from every VPN caller.
+      this.logger.debug(`[MemoryConnect] tailnet origin unavailable: ${err instanceof Error ? err.message : String(err)}`);
+
+      return null;
+    }
+  }
+
+  /**
+   * Decide which connect launchers this caller can actually use.
+   *
+   * The rules, in the order they are applied:
+   *
+   *  1. **ci-memory must be running.** Anything else short-circuits with the
+   *     matching reason — a launcher offered while it is absent/starting/offline
+   *     would dead-end on `startConnect`'s 400.
+   *  2. **A tailnet caller stays on the tailnet.** A caller that reached us over
+   *     the Private VPN gets the tailnet launcher — its own origin family,
+   *     reachable by construction and, like the LAN route, independent of tunnel
+   *     health. Handing it the public launcher is what pinned VPN-only installs
+   *     to a Cloudflare origin they had deliberately stopped using
+   *     (CI-Engineering#78). Falls through when the VPN reports no usable
+   *     origin — a spoofed/stale tailnet Host must degrade to the ordinary
+   *     rules, not block.
+   *  3. **The public launcher is preferred whenever the public route works.**
+   *     Tunnel health `up`, `unknown` (no opinion — never suppress on a cold or
+   *     inconclusive reading) and a missing-but-configured origin all keep
+   *     today's behaviour. Only a confirmed `down` withdraws it.
+   *  4. **The LAN launcher is a fallback, never a preference.** It is offered only
+   *     when the public route is unusable AND the caller reached us on a private
+   *     host — a remote browser cannot route to `192.168.x.x`, so handing it that
+   *     URL would swap one dead button for another.
+   *  5. **The provider must be reachable by the same caller.** A locally-exposed
+   *     ci-memory publishes a private consent origin, so a caller known to be
+   *     off-network cannot complete the ceremony whichever Hub launcher they
+   *     start from. Only a *confirmed* remote caller is blocked — see
+   *     {@link callerLocality} for why "cannot tell" has to mean "allow". A
+   *     tailnet caller is never `remote`: it is inside the private network by
+   *     definition, so a LAN-only or VPN-only provider stays connectable for it.
+   *
+   * `providerLocalOnly` comes from the provider's `exposureMode` (a DB read), not
+   * from an availability probe — so a status poll stays cheap.
+   */
+  private async resolveLaunchers(input: {
+    appUrn: AppUrn;
+    providerStatus: MemoryProviderRuntimeStatus;
+    origin?: RequestOriginContext;
+    providerLocalOnly?: boolean;
+  }): Promise<ConnectLaunchers> {
+    const blocked = (reason: ConnectBlockedReason): ConnectLaunchers => ({
+      connectUrl: null,
+      connectUrlLocal: null,
+      connectable: false,
+      reason,
+    });
+
+    // 1. Nothing to connect to.
+    if (input.providerStatus !== 'ready') {
+      return blocked(
+        input.providerStatus === 'absent' ? 'memory_absent' : input.providerStatus === 'starting' ? 'memory_starting' : 'memory_offline',
+      );
+    }
+
+    // 5. A LAN-only provider is unusable from off-network, so this is checked
+    //    before we bother resolving launchers: no Hub launcher can rescue such a
+    //    caller, because the consent hop itself lands on a private address.
+    //
+    //    Blocks only on a CONFIRMED remote caller. `unknown` must not block — it
+    //    is what a `.<localDomain>` host reports (see `callerLocality`), and that
+    //    is the ordinary way a LAN visitor reaches a locally-exposed app.
+    //    Refusing them here would break the one deployment where a LAN-only
+    //    provider is the normal configuration, in order to protect a remote
+    //    caller whose connect was already impossible either way.
+    const locality = this.callerLocality(input.origin?.host);
+    const callerIsLocal = locality === 'local';
+
+    if (input.providerLocalOnly && locality === 'remote') {
+      this.logger.warn(
+        `[MemoryConnect] ${input.appUrn}: CI Memory is exposed on the local network only; an off-network caller cannot reach its consent page`,
+      );
+
+      return blocked('provider_local_only');
+    }
+
+    // 2. A tailnet caller keeps its own origin family. Resolved only for tailnet
+    //    callers so every other status poll skips the VPN status read entirely.
+    if (locality === 'tailnet') {
+      const tailnetOrigin = await this.hubTailnetOrigin();
+
+      if (tailnetOrigin) {
+        return {
+          connectUrl: this.launcherFor(tailnetOrigin, input.appUrn),
+          connectUrlLocal: null,
+          connectable: true,
+          reason: null,
+        };
+      }
+
+      this.logger.warn(
+        `[MemoryConnect] ${input.appUrn}: caller arrived on a tailnet host but the Private VPN reports no usable origin; falling back to the public route`,
+      );
+    }
+
+    const publicOrigin = await this.hubOrigin();
+    const localOrigin = this.hubLocalOrigin();
+    const health = this.tunnelHealth.getHealth();
+
+    // 3. Public route first, unless it is confirmed down. `unknown` deliberately
+    //    counts as usable — a cold Hub must behave exactly as it did before.
+    const publicUsable = Boolean(publicOrigin) && health !== 'down';
+
+    if (publicUsable && publicOrigin) {
+      return {
+        connectUrl: this.launcherFor(publicOrigin, input.appUrn),
+        // Still advertise the LAN launcher to a local caller so a client can pin
+        // itself to one origin if it wants to; `connectUrl` remains the default.
+        connectUrlLocal:
+          callerIsLocal && localOrigin && this.localOriginReachableBy(localOrigin, input.origin?.host)
+            ? this.launcherFor(localOrigin, input.appUrn)
+            : null,
+        connectable: true,
+        reason: null,
+      };
+    }
+
+    // 4. Fallback: LAN only, and only for a caller who can route to it.
+    if (callerIsLocal && localOrigin && this.localOriginReachableBy(localOrigin, input.origin?.host)) {
+      this.logger.info(
+        `[MemoryConnect] ${input.appUrn}: public origin unusable (tunnel ${health}); offering the LAN launcher ${localOrigin} to a local caller`,
+      );
+
+      return { connectUrl: null, connectUrlLocal: this.launcherFor(localOrigin, input.appUrn), connectable: true, reason: null };
+    }
+
+    return blocked(publicOrigin ? 'hub_unreachable' : 'hub_not_provisioned');
+  }
+
+  /** The Hub launcher URL for an app on a given origin. */
+  private launcherFor(origin: string, appUrn: AppUrn): string {
+    return `${origin}/api/memory-connect/start?app=${encodeURIComponent(appUrn)}`;
+  }
+
+  /**
+   * Where the caller that reached us on `callerHost` sits relative to the
+   * appliance's own network.
+   *
+   * Four answers, because the decisions that depend on this fail in opposite
+   * directions and a coarser type would force one of them to be wrong:
+   *
+   *  - `tailnet` — the caller is on the Private VPN: offer the tailnet launcher
+   *                (their own origin family), never the LAN one — a VPN caller
+   *                may be nowhere near the appliance's LAN.
+   *  - `local`   — offer the LAN launcher.
+   *  - `remote`  — a LAN-only ci-memory is genuinely unusable; block.
+   *  - `unknown` — withhold the LAN launcher (it may not route) but do NOT block
+   *                (it may well work).
+   *
+   * `unknown` is not a hedge; it is the honest answer for one specific host. The
+   * Cloudflare tunnel rewrites the `Host` header to `<app-fqdn>.<localDomain>`
+   * (`…​.ci.lan`) before handing the request to Traefik — see
+   * `buildOriginServerName` — so a REMOTE visitor arrives carrying a `.ci.lan`
+   * host. But so does a LAN visitor who browsed to the app's local subdomain
+   * directly. The header genuinely cannot distinguish them, and guessing either
+   * way strands somebody: called `local`, a remote browser gets a
+   * `http://192.168.x.x` launcher it cannot route to; called `remote`, a LAN user
+   * of a LAN-only ci-memory is refused a connect that would have worked.
+   *
+   * Private IP literals and loopback remain trustworthy: nothing rewrites a Host
+   * into those, so they only appear when the browser really did address the
+   * appliance directly.
+   */
+  private callerLocality(callerHost: string | undefined): 'tailnet' | 'local' | 'remote' | 'unknown' {
+    const hostname = this.hostnameOf(callerHost);
+
+    if (!hostname) {
+      return 'unknown';
+    }
+
+    // Checked before the private-host test on purpose: Tailscale's CGNAT range
+    // (100.64/10) is inside the private set, but a caller arriving from it is on
+    // the VPN — classifying it `local` used to hand it a `192.168.x.x` launcher
+    // it may not be able to route to (CI-Engineering#78).
+    if (isTailnetHostname(hostname)) {
+      return 'tailnet';
+    }
+
+    // Read the override first, then the base value — the same precedence
+    // `AppHelpers` uses when it writes LOCAL_DOMAIN into an app's env, so the two
+    // cannot disagree about which suffix the tunnel rewrites to.
+    const config = this.config.getConfig();
+    const localDomain = (config.userSettings?.localDomain || config.localDomain)?.trim().toLowerCase();
+    const candidate = hostname.toLowerCase();
+
+    if (localDomain && (candidate === localDomain || candidate.endsWith(`.${localDomain}`))) {
+      return 'unknown';
+    }
+
+    return isPrivateHostname(hostname) ? 'local' : 'remote';
+  }
+
+  /**
+   * Whether `localOrigin` is actually routable by a caller that reached us on
+   * `callerHost`.
+   *
+   * Guards one specific trap: with a listen-all `INTERNAL_IP` (`0.0.0.0` / `::`),
+   * {@link buildHubLocalOrigin} collapses to `http://127.0.0.1`. Handing that to a
+   * visitor who reached the appliance at `192.168.1.9` points them at their OWN
+   * machine — swapping one dead link for another, which is precisely the failure
+   * this change set exists to remove. A loopback origin is therefore only offered
+   * to a caller that is itself on loopback.
+   */
+  private localOriginReachableBy(localOrigin: string, callerHost: string | undefined): boolean {
+    const localHostname = this.hostnameOf(localOrigin);
+
+    if (localHostname !== '127.0.0.1' && localHostname !== '::1') {
+      return true;
+    }
+
+    const callerHostname = this.hostnameOf(callerHost);
+
+    return callerHostname === 'localhost' || callerHostname === '127.0.0.1' || callerHostname === '::1';
+  }
+
+  /**
+   * Hostname of a `Host` header or an absolute URL, without the port. Returns
+   * null for anything unparseable, which every caller treats as "not private" —
+   * failing toward withholding the LAN launcher rather than offering it blindly.
+   *
+   * IPv6 literals come back bare (`::1`), not in the bracketed form `URL.hostname`
+   * reports (`[::1]`). Without that normalisation an IPv6 loopback origin — which
+   * {@link buildHubLocalOrigin} does produce, via `resolveBrowserHost`'s bracketing
+   * — never matches the loopback comparisons in {@link localOriginReachableBy},
+   * silently defeating the very guard that method exists to provide.
+   */
+  private hostnameOf(hostOrUrl: string | null | undefined): string | null {
+    // Untrusted and not always a string: Express hands us `string[]` for a
+    // repeated query key (`?clientHost=a&clientHost=b`). Reject anything but a
+    // single string rather than crashing on `.trim` — an array would otherwise
+    // throw a TypeError here, OUTSIDE the try below, and 500 the whole poll.
+    if (typeof hostOrUrl !== 'string') {
       return null;
     }
 
-    return `https://${org.hubSubdomain}.${domain}`;
+    const value = hostOrUrl.trim();
+
+    if (!value) {
+      return null;
+    }
+
+    try {
+      // A bare `Host` header has no scheme; give it one so URL can parse it.
+      const url = new URL(value.includes('://') ? value : `http://${value}`);
+
+      // Reject embedded userinfo. `evil.com@192.168.1.9` parses to hostname
+      // 192.168.1.9, so trusting it would let a remote caller forge a private
+      // host — being classified `local`, bypassing the provider_local_only block
+      // and getting handed (or told) the appliance's LAN launcher.
+      if (url.username || url.password) {
+        return null;
+      }
+
+      const hostname = url.hostname;
+
+      return hostname.startsWith('[') && hostname.endsWith(']') ? hostname.slice(1, -1) : hostname;
+    } catch {
+      return null;
+    }
   }
 
   /**
@@ -481,15 +1095,45 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
    * (or an unparseable value) falls back to the app's public URL, then the Hub.
    * This closes the open-redirect the raw `next` param would otherwise allow.
    */
-  private async resolveSafeNext(next: string | undefined, appUrn: AppUrn, hubOrigin: string): Promise<string> {
-    const appPublicUrl = await this.resolver.getAppPublicUrl(appUrn);
-    // Only the Hub or the connecting app's own origin — NOT the memory
+  private async resolveSafeNext(next: string | undefined, appUrn: AppUrn, hubOrigin: string, origin?: RequestOriginContext): Promise<string> {
+    const appAccessUrls = await this.resolver.getAppAccessUrls(appUrn);
+    const appPublicUrl = appAccessUrls.publicUrl;
+    // Only the Hub or the connecting app's own origins — NOT the memory
     // provider's — as documented above. The provider is never a designed
     // landing page, so it stays out of the allowlist.
+    //
+    // "The app's origins" is plural on purpose: an app reached over the LAN has a
+    // perfectly legitimate `http://<ip>:<port>` origin that the previous
+    // single-URL allowlist rejected, silently relocating the user to the public
+    // origin they had deliberately not been using. Both Hub origins are allowed
+    // for the same reason — the flow may legitimately be running on either.
     const allowedOrigins = new Set<string>([hubOrigin]);
-    if (appPublicUrl) {
+    const localHubOrigin = this.hubLocalOrigin();
+    // Only allowlist the LAN Hub origin when THIS caller could actually route to
+    // it. With a listen-all INTERNAL_IP it collapses to loopback (127.0.0.1 /
+    // [::1]); allowlisting that unconditionally would let an attacker-supplied
+    // `next` bounce any visitor to their own loopback — an open-redirect the same
+    // guard already prevents for the launcher path.
+    if (localHubOrigin && this.localOriginReachableBy(localHubOrigin, origin?.host)) {
+      allowedOrigins.add(localHubOrigin);
+    }
+
+    // The tailnet Hub origin needs no reachability gate: it is only ever
+    // non-null while the Private VPN is connected, and — unlike the listen-all
+    // LAN case — it can never collapse to a loopback an attacker could bounce
+    // a visitor to.
+    const tailnetHubOrigin = await this.hubTailnetOrigin();
+    if (tailnetHubOrigin) {
+      allowedOrigins.add(tailnetHubOrigin);
+    }
+
+    for (const candidate of [appAccessUrls.publicUrl, appAccessUrls.localUrl]) {
+      if (!candidate) {
+        continue;
+      }
+
       try {
-        allowedOrigins.add(new URL(appPublicUrl).origin);
+        allowedOrigins.add(new URL(candidate).origin);
       } catch {
         /* ignore unparseable */
       }
@@ -505,7 +1149,23 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
       }
     }
 
-    return appPublicUrl ?? hubOrigin;
+    // No usable `next` (the desktop flow never sends one). Prefer the app's
+    // primary route, but fall back to its LAN address when that route is not
+    // actually serving — landing the user on a known-dead public URL is the same
+    // mistake as offering a dead launcher.
+    //
+    // The LAN fallback is only useful to a caller who can reach the LAN. A
+    // confirmed-remote caller is landed on the public URL even when it is
+    // currently down (it may recover; a `http://192.168.x.x` address never will
+    // for them) — otherwise this would strand the very off-network user the
+    // primary-down branch is meant to help.
+    const callerIsRemote = this.callerLocality(origin?.host) === 'remote';
+
+    if (appPublicUrl && (appAccessUrls.primaryAvailable !== false || callerIsRemote)) {
+      return appPublicUrl;
+    }
+
+    return appAccessUrls.localUrl ?? appPublicUrl ?? hubOrigin;
   }
 
   /**
@@ -526,28 +1186,125 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
     return Number.isNaN(date.getTime()) ? null : date.toISOString();
   }
 
-  /** The browser-reachable Hub launcher URL for an app, or null if no Hub origin. */
-  private async buildLauncherUrl(appUrn: AppUrn): Promise<string | null> {
-    const hubOrigin = await this.hubOrigin();
+  /**
+   * The Hub origin the connect ceremony should run on for this request.
+   *
+   * Prefers the origin the browser actually used, so the flow stays on one origin
+   * end to end — but only after checking it against the two origins this Hub
+   * legitimately answers on. An unrecognised `Host` (a spoofed header, or a proxy
+   * we do not know about) falls back to the configured public origin rather than
+   * being echoed into a redirect target, which would be an open redirect.
+   *
+   * Falls back to the LAN origin when there is no public one, so a never-registered
+   * appliance can still run the flow entirely on its own network.
+   */
+  private async resolveFlowOrigin(origin?: RequestOriginContext): Promise<string | null> {
+    const publicOrigin = await this.hubOrigin();
+    const localOrigin = this.hubLocalOrigin();
+    const requestHostname = this.hostnameOf(origin?.host);
+    // Resolved only when the request host says tailnet — every other start keeps
+    // its existing single-read cost.
+    const tailnetOrigin = requestHostname && isTailnetHostname(requestHostname) ? await this.hubTailnetOrigin() : null;
 
-    return hubOrigin ? `${hubOrigin}/api/memory-connect/start?app=${encodeURIComponent(appUrn)}` : null;
+    for (const candidate of [publicOrigin, localOrigin, tailnetOrigin]) {
+      if (candidate && requestHostname && this.hostnameOf(candidate) === requestHostname) {
+        return candidate;
+      }
+    }
+
+    return publicOrigin ?? localOrigin;
   }
 
   /**
-   * Regenerate the app's env (picks up the stored creds) and restart it.
-   * Best-effort: returns true on success, false when the restart failed (logged),
-   * so callers that need the new env actually applied (rotation) can react.
+   * The SPA interstitial that watches the app come back up after a connect,
+   * then forwards to `next`. Relative — the callback redirect and the SPA share
+   * the Hub origin. `next` was already validated by resolveSafeNext at
+   * startConnect; the page re-checks it client-side before navigating.
    */
-  private async applyAndRestart(appUrn: AppUrn): Promise<boolean> {
+  private buildFinishingPath(appUrn: AppUrn, next: string): string {
+    return `/memory-connect/finishing?${new URLSearchParams({ app: appUrn, next }).toString()}`;
+  }
+
+  /**
+   * Apply the app's current connection state to its env, restarting it if it is live.
+   *
+   * A DOWN app is NOT restarted — a restart runs `compose down` + `compose up`, so
+   * restarting one would start a container the user chose to stop, whether from a
+   * background rotation sweep or merely from opening the app's detail page (the status
+   * poll self-heals a stale key through here). But its env IS rewritten, in place:
+   * deferring that too would leave a REVOKED credential sitting in `app.env` after a
+   * disconnect, and would lose a connect completed mid-install (the installer generates
+   * the env early, then composes up from it — with no creds in it — long before the
+   * install finishes). Rewriting now is what makes "applies on its next start" true.
+   *
+   * Anything NOT in {@link DOWN_APP_STATUSES} is live or coming up, and its restart is
+   * queued behind any in-flight command. Skipping those would strand a LIVE app on a key
+   * rotation has already retired on CI-Server, which the age gate then ignores for 60 days.
+   *
+   * A LIVE app's restart runs in one of two modes:
+   *
+   *  - `'await'` — wait out the compose cycle via `restartAppAndWait` and report the
+   *    real outcome. For background callers (rotation sweep, disconnect, stale-key
+   *    self-heal) whose retry/strand-warning logic needs to know whether the restart
+   *    actually took. `restartApp` would return as soon as the restart is PUBLISHED,
+   *    reporting success for a compose failure.
+   *  - `'schedule'` — dispatch via `restartApp` and return `'restarting'` as soon as
+   *    the app's status has flipped. For the browser callback, which must answer the
+   *    navigation immediately; `restartApp`'s detached completion handler does the
+   *    success/error bookkeeping + SSE. The status flip happening BEFORE this resolves
+   *    is what keeps the finishing interstitial's status poll from ever reading a
+   *    stale `running`.
+   *
+   * Both modes pass `skipPull`: every apply here exists to pick up an env change, so
+   * pulling a newer image only widens the wait — and worse, a rotation sweep hitting a
+   * `force_pull` app while the registry is unreachable would fail a restart that the
+   * local image could have served, knocking over a healthy app.
+   */
+  private async applyConnection(appUrn: AppUrn, restart: 'await'): Promise<'restarted' | 'deferred' | 'failed'>;
+  private async applyConnection(appUrn: AppUrn, restart: 'schedule'): Promise<'restarting' | 'deferred' | 'failed'>;
+  private async applyConnection(appUrn: AppUrn, restart: 'await' | 'schedule'): Promise<ApplyOutcome> {
     try {
       const lifecycle = this.moduleRef.get(AppLifecycleService, { strict: false });
-      await lifecycle.restartApp({ appUrn });
 
-      return true;
+      if (await this.isAppDown(appUrn)) {
+        const applied = await lifecycle.regenerateAppEnv(appUrn);
+
+        if (!applied) {
+          this.logger.error(`[MemoryConnect] could not rewrite ${appUrn}'s env while it is down; its creds are stale on disk`);
+
+          return 'failed';
+        }
+
+        this.logger.debug(`[MemoryConnect] ${appUrn} is not running — env rewritten in place; it applies on next start`);
+
+        return 'deferred';
+      }
+
+      if (restart === 'schedule') {
+        await lifecycle.restartApp({ appUrn, skipPull: true });
+
+        return 'restarting';
+      }
+
+      const restarted = await lifecycle.restartAppAndWait({ appUrn, skipPull: true });
+
+      return restarted ? 'restarted' : 'failed';
     } catch (err) {
-      this.logger.error(`[MemoryConnect] failed to restart ${appUrn} after connection change`, err);
+      this.logger.error(`[MemoryConnect] failed to apply the connection change to ${appUrn}`, err);
 
-      return false;
+      return 'failed';
     }
+  }
+
+  /** Whether the app is down (deliberately or mid-maintenance) or simply not there. */
+  private async isAppDown(appUrn: AppUrn): Promise<boolean> {
+    const app = await this.apps.getAppByUrn(appUrn);
+
+    // No row at all — nothing to restart.
+    if (!app) {
+      return true;
+    }
+
+    return DOWN_APP_STATUSES.includes(app.status);
   }
 }

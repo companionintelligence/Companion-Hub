@@ -38,22 +38,21 @@ const mockStoreApps = [
 ];
 
 describe('resolveOnboardingRecommendations', () => {
-  it('returns at most one alternative per curated category present in the catalog', () => {
+  it('returns one pick per preferred slug present in the catalog', () => {
     const result = resolveOnboardingRecommendations([], mockAlts, mockStoreApps);
 
-    const categories = result.map((r) => r.category);
-    expect(new Set(categories).size).toBe(categories.length);
     expect(result.every((r) => r.alternatives.length === 1)).toBe(true);
+    expect(result.map((r) => r.alternatives[0]?.appSlug)).toEqual(expect.arrayContaining(['mattermost', 'immich', 'nextcloud']));
   });
 
-  it('uses preferred slug order when multiple slugs are listed', () => {
+  it('includes every preferred slug present in the catalog, in preferred order', () => {
     const result = resolveOnboardingRecommendations([], mockAlts, [
       ...mockStoreApps,
       { id: 'rocketchat', urn: 'rocketchat:ci-marketplace', name: 'Rocket.Chat' },
     ]);
 
-    const social = result.find((r) => r.category === 'social');
-    expect(social?.alternatives[0]?.appSlug).toBe('mattermost');
+    const socialSlugs = result.filter((r) => r.category === 'social').map((r) => r.alternatives[0]?.appSlug);
+    expect(socialSlugs).toEqual(['mattermost', 'rocketchat']);
   });
 
   it('falls back to second preferred slug when first is missing from catalog', () => {

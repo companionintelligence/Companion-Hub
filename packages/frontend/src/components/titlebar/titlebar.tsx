@@ -1,9 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
 import type { Window } from '@tauri-apps/api/window';
 import { useTranslation } from 'react-i18next';
+import { isTauriMobileSync } from '@/lib/mobile-connection';
 
 export function Titlebar() {
   const { t } = useTranslation(undefined, { useSuspense: false });
+  // Mobile has no OS window chrome — the desktop titlebar (and its window-control
+  // IPC like window.is_maximized) doesn't apply and isn't permitted there.
   const [isTauri, setIsTauri] = useState(false);
   const [isMaximized, setIsMaximized] = useState(false);
   const [appWindow, setAppWindow] = useState<Window | null>(null);
@@ -11,7 +14,7 @@ export function Titlebar() {
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
-    if (!('__TAURI_INTERNALS__' in window)) return;
+    if (!('__TAURI_INTERNALS__' in window) || isTauriMobileSync()) return;
     setIsTauri(true);
 
     import('@tauri-apps/plugin-os')
@@ -30,19 +33,33 @@ export function Titlebar() {
       .catch(console.warn);
 
     import('@tauri-apps/api/window')
-      .then((mod) => {
+      .then(async (mod) => {
         const win = mod.getCurrentWindow();
         setAppWindow(win);
-        win.isMaximized().then(setIsMaximized);
+        // Remote hub URLs loaded inside the desktop webview used to reject these
+        // IPC calls ("not allowed by ACL") as unhandled promise rejections when
+        // capabilities lacked a remote URL allowlist — swallow ACL denials here.
+        try {
+          setIsMaximized(await win.isMaximized());
+        } catch {
+          /* ACL / older shell — titlebar still renders without maximize state */
+        }
         // Debounce isMaximized checks on Windows/Linux — calling isMaximized()
         // with decorations:false can be expensive. On macOS this is handled
         // natively via titleBarStyle: overlay so no onResized listener needed.
-        win.onResized(() => {
-          if (debounceRef.current) clearTimeout(debounceRef.current);
-          debounceRef.current = setTimeout(() => {
-            win.isMaximized().then(setIsMaximized);
-          }, 150);
-        });
+        try {
+          await win.onResized(() => {
+            if (debounceRef.current) clearTimeout(debounceRef.current);
+            debounceRef.current = setTimeout(() => {
+              void win
+                .isMaximized()
+                .then(setIsMaximized)
+                .catch(() => undefined);
+            }, 150);
+          });
+        } catch {
+          /* ACL / older shell */
+        }
       })
       .catch(console.warn);
 

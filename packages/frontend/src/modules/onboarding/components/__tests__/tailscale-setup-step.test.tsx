@@ -6,7 +6,6 @@ const mockUseQuery = vi.fn();
 const translations = {
   COMMON_BACK: 'Back',
   COMMON_CONTINUE: 'Continue',
-  ONBOARDING_TAILSCALE_SKIP: 'Skip',
   ONBOARDING_TAILSCALE_SKIP_TO_DISCOVER: 'Skip to Discover',
   ONBOARDING_TAILSCALE_CONTINUE_TO_DISCOVER: 'Continue to Discover',
 } as const;
@@ -23,8 +22,8 @@ vi.mock('@tanstack/react-query', () => ({
 }));
 
 vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
-  getStatus4Options: () => ({ queryKey: ['tailscale-status'], queryFn: vi.fn() }),
-  getStatus4QueryKey: () => ['tailscale-status'],
+  getStatus5Options: () => ({ queryKey: ['tailscale-status'], queryFn: vi.fn() }),
+  getStatus5QueryKey: () => ['tailscale-status'],
 }));
 
 vi.mock('@/lib/hooks/use-tailscale-readiness-sync', () => ({

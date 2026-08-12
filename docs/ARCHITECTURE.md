@@ -1,5 +1,15 @@
 # Architecture
 
+> **Purpose:** Deep dive into every major CI-Hub subsystem and how they connect.
+> **Scope:** Full platform — backend, frontend, desktop, Docker runtime, Portal integration.
+> **Key paths:** `packages/backend/`, `packages/frontend/`, `packages/desktop/`, `docs/system/`
+> **Commands:** `pnpm run local`, `pnpm run local:desktop`, see docs/system/*.md per area
+> **Owner persona:** maintainability (see docs/agent/REVIEW_PERSONAS.md)
+> **Last updated:** 2026-07-12
+> **Related:** docs/system/README.md, PLATFORM_ARCHITECTURE.md, AUTO_HEALING.md
+
+> **Agents:** Prefer [docs/system/](system/) for greppable per-subsystem docs. Update those when you change code; update this file only for cross-cutting architecture changes.
+
 Companion Hub is a self-hosted Docker app platform that lets users install, manage, and expose containerized applications through a web dashboard or native desktop app. This document describes every major subsystem, how they connect, and the design decisions behind them.
 
 ---
@@ -157,7 +167,7 @@ PostgreSQL 14 with **Drizzle ORM**. Five core tables:
                                 └───────────────────────────────┘
 ```
 
-**App Status States:** `running`, `stopped`, `installing`, `uninstalling`, `stopping`, `starting`, `missing`, `updating`, `resetting`, `restarting`, `backing_up`, `restoring`, `loading`, `updating_config`
+**App Status States:** `running`, `stopped`, `installing`, `install_failed`, `uninstalling`, `stopping`, `starting`, `missing`, `updating`, `resetting`, `restarting`, `backing_up`, `restoring`
 
 Migrations are managed by Drizzle Kit and run automatically on startup.
 
@@ -193,6 +203,8 @@ Frontend                    Backend API                    RabbitMQ             
 **Install pipeline:** Multiple install jobs may be queued in RabbitMQ, but `AppLifecycleService.invokeCommand` holds `INSTALL_PIPELINE_MUTEX_KEY` for the duration of each `install` worker run so Docker pulls do not run in parallel.
 
 **Install queue API (UI):** `GET /api/apps/install-queue` returns `{ active, queued }`. `active` is the app holding the Docker install pipeline mutex; `queued` is every other app in `installing` status (FIFO by app id). When the pipeline is idle but installs are accepted, all pending apps appear in `queued` and `active` is null. SSE event `install_queue` pushes the same snapshot. The frontend polls while work is pending and updates React Query from SSE.
+
+**Stuck-install recovery:** Because the queue is derived from `installing` rows, a crash or hung pull can leave the UI showing perpetual "N installs waiting" with `active: null`. Hub heals that on boot (`recoverStuckInstallsOnStartup`), via status-sync after the image-pull grace when nothing in-process still owns the install, via pull inactivity/overall timeouts that fail (not cancel) a wedged pull, and via `invokeCommand`'s catch finalizing `install_failed`. `(app_name, app_store_slug)` is unique so concurrent install races cannot create duplicate queue tiles.
 
 All messages are validated with Zod schemas before processing. The `QueueFactory` handles connection pooling with exponential backoff reconnection. Cron scheduling is available for repeatable tasks like periodic app status reconciliation.
 
@@ -481,8 +493,8 @@ Tauri's WebView2 blocks cross-origin cookie access. The desktop app detects it's
 - **Deep link scheme:** `cihub://`
 - **macOS minimum:** 11.0
 - **Release builds:** LTO enabled, symbols stripped, panic=abort, size-optimized (`opt-level=s`)
-- **Frontend source:** Points to `packages/frontend/dist/client` (shared build)
-- **Dev URL:** `http://localhost:9091` (Vite dev server)
+- **Release builds:** Bootstrap splash only (`packages/desktop/bootstrap/`); product UI served from the stack container at `http://127.0.0.1:${API_PORT}/`. See `docs/DESKTOP-UI-ARCHITECTURE.md`.
+- **Dev URL:** `http://localhost:5005` (Vite) or stack-dev via `scripts/launch-tauri-desktop.ts`
 
 ---
 
@@ -528,7 +540,7 @@ Internet → Cloudflare → cloudflared → Traefik (443/80)
 2. **Dynamic file config** (`$DATA_DIR/state/traefik/dynamic/`) — YAML files written by the backend for the Hub and per-app routes.
 3. **Docker labels** — Apps can declare Traefik labels in their compose files for automatic discovery.
 
-**Forward auth:** Traefik's `forwardauth` middleware sends every request to `/api/auth/traefik` before proxying. The backend validates the session and returns an `X-CI-Hub-User` header. This lets installed apps be protected behind Hub authentication without implementing auth themselves.
+**Forward auth:** Traefik's `forwardauth` middleware sends every request to `/api/auth/traefik` before proxying. The backend validates the session and returns an `X-CI-Hub-User` header. This lets installed apps be protected behind Hub authentication without implementing auth themselves. On **public sibling** hostnames (Hub vs app under the same zone root), the browser will not send the Hub session cookie to the app host — `/api/auth/edge-sso` mints a short-lived ticket that `/traefik` consumes to plant a cookie on the app host (ADR 002). Local open via `127.0.0.1:{port}` does not use this path (ADR 001).
 
 **TLS:** Let's Encrypt via ACME (stored in `$DATA_DIR/state/traefik/acme_storage.json`). Local development uses self-signed certificates generated by `scripts/generate-tunnel-certs.sh`.
 
@@ -684,11 +696,27 @@ GitHub Actions workflow per branch:
 
 | Branch | Environment | Image Tag | Protection |
 |--------|-------------|-----------|------------|
-| `dev` | dev | `ghcr.io/companionintelligence/ci-os-hub:dev` | None (auto) |
-| `staging` | staging | `ghcr.io/companionintelligence/ci-os-hub:staging` | Optional approval |
-| `main` | production | `ghcr.io/companionintelligence/ci-os-hub:latest` | Required approval |
+| `dev` | dev | `ghcr.io/companionintelligence/ci-hub:dev` | None (auto) |
+| `staging` | staging | `ghcr.io/companionintelligence/ci-hub:staging` | Optional approval |
+| `main` | production | `ghcr.io/companionintelligence/ci-hub:latest` | Required approval |
 
-Images are pushed to **GitHub Container Registry** (ghcr.io). Each environment has its own Cloudflare API token and account ID as GitHub secrets.
+A **Desktop Release** run additionally publishes an unprefixed version tag
+(`ghcr.io/companionintelligence/ci-hub:0.2.45`) for `production` only — that is the exact
+reference a shipped desktop bundle pins via `CI_HUB_BUILD_VERSION`. Non-production runs
+publish their channel tag alone, because they compile a different `CI_CLOUD_URL` and must
+never claim a production version tag.
+
+The repo name is `ci-hub`. Note that `ci-os-hub` appearing throughout the compose files and
+backend is the **service/container name** (`container_name: ci-os-hub`, `ci-os-hub_network`,
+`ci-os-hub.managed` labels) and the Portal mirror path — not the image repo. Pointing the
+image at the private `ci-os-hub` package is what broke Hub 0.2.44 (#920).
+
+Images are pushed to **GitHub Container Registry** (ghcr.io). The package must remain
+**public**: the desktop shells out to `docker compose` with no registry credentials, so any
+image it pins has to be anonymously pullable. `build-container.yml`'s
+`verify-anonymous-pull` job enforces this on every run, unauthenticated, before any desktop
+bundle is built. Each environment has its own Cloudflare API token and account ID as GitHub
+secrets.
 
 A **Cloudflare Workers** deployment (`wrangler.toml`) defines a Durable Object (`AppContainer`) for future container orchestration at the edge, with separate Workers environments for dev, staging, and production.
 

@@ -37,7 +37,7 @@ describe('PortExposeService', () => {
     logger = mock<LoggerService>();
 
     configService.get.mockImplementation((key) => {
-      if (key === 'directories') return { dataDir: '/data' } as any;
+      if (key === 'directories') return { dataDir: '/data', appDataDir: '/app-data' } as any;
       if (key === 'demoMode') return false;
       return null;
     });
@@ -89,6 +89,7 @@ describe('PortExposeService', () => {
       });
 
       expect(result.appUrn).toBe('my-workload:_user');
+      expect(filesystem.createDirectories).toHaveBeenCalledWith(['/data/apps/_user/my-workload', '/app-data/_user/my-workload']);
       expect(appsRepository.createApp).toHaveBeenCalledWith(
         expect.objectContaining({
           config: expect.objectContaining({

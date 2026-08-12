@@ -2,7 +2,7 @@ import { useTranslation } from 'react-i18next';
 import { redirect, useNavigate, useParams } from 'react-router';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import toast from 'react-hot-toast';
-import { dynamicComposeSchema } from '@ci-hub/common/schemas';
+import { dynamicComposeFormSchema, type dynamicComposeSchema } from '@ci-hub/common/schemas';
 import type { z } from 'zod';
 import { MultiServiceForm } from '@/components/multi-service-form/multi-service-form';
 import { Input } from '@/components/ui/Input/Input';
@@ -47,7 +47,7 @@ export default function EditPageContent({ loaderData }: Route.ComponentProps) {
 
   useEffect(() => {
     if (currentConfig?.current) {
-      const parsed = dynamicComposeSchema.omit({ schemaVersion: true }).safeParse(JSON.parse(currentConfig.current));
+      const parsed = dynamicComposeFormSchema.safeParse(JSON.parse(currentConfig.current));
 
       if (!parsed.success) {
         console.error('Failed to parse current config:', parsed.error.message);
@@ -93,7 +93,7 @@ export default function EditPageContent({ loaderData }: Route.ComponentProps) {
               <Input
                 label={
                   <>
-                    {t('CUSTOM_APP_NAME_LABEL')} <span className="text-danger">*</span>
+                    {t('CUSTOM_APP_NAME_LABEL')} <span className="text-destructive">*</span>
                   </>
                 }
                 value={appName}
@@ -101,7 +101,7 @@ export default function EditPageContent({ loaderData }: Route.ComponentProps) {
                 placeholder={t('CUSTOM_APP_NAME_PLACEHOLDER')}
                 title={t('CUSTOM_APP_NAME_VALIDATION_HELP')}
               />
-              <div className="form-text">{t('CUSTOM_APP_NAME_EDIT_HELP')}</div>
+              <p className="mt-1 text-xs text-muted-foreground">{t('CUSTOM_APP_NAME_EDIT_HELP')}</p>
             </div>
           </div>
         </CardContent>

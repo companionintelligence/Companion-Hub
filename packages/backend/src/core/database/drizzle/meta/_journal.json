@@ -337,6 +337,34 @@
       "when": 1780520000000,
       "tag": "0047_add_memory_connection",
       "breakpoints": true
+    },
+    {
+      "idx": 48,
+      "version": "7",
+      "when": 1780530000000,
+      "tag": "0048_api_key_scopes",
+      "breakpoints": true
+    },
+    {
+      "idx": 49,
+      "version": "7",
+      "when": 1780540000000,
+      "tag": "0049_api_key_capability",
+      "breakpoints": true
+    },
+    {
+      "idx": 50,
+      "version": "7",
+      "when": 1780550000000,
+      "tag": "0050_api_key_capability_check",
+      "breakpoints": true
+    },
+    {
+      "idx": 51,
+      "version": "7",
+      "when": 1780560000000,
+      "tag": "0051_app_name_store_unique",
+      "breakpoints": true
     }
   ]
 }

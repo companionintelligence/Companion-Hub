@@ -5,8 +5,27 @@ import type { ConfigurationService } from '@/core/config/configuration.service';
 import type { AppStore } from '@/core/database/drizzle/types';
 import type { FilesystemService } from '@/core/filesystem/filesystem.service';
 import type { LoggerService } from '@/core/logger/logger.service';
-import { appInfoSchema } from '@ci-hub/common/schemas';
+import { APP_CATEGORIES, appInfoSchema } from '@ci-hub/common/schemas';
 import type { AppUrn } from '@ci-hub/common/types';
+
+const KNOWN_APP_CATEGORIES = new Set<string>(APP_CATEGORIES);
+
+/** An on-disk demo video, described but not read. Bytes are streamed by the HTTP layer. */
+export type DemoVideoFile = {
+  path: string;
+  size: number;
+  etag: string;
+  contentType: string;
+};
+
+/** Drop unknown marketplace categories so newer catalog tags do not fail Zod parse. */
+function normalizeAppConfigCategories(config: Record<string, unknown>): Record<string, unknown> {
+  if (!Array.isArray(config.categories)) {
+    return config;
+  }
+  const filtered = config.categories.filter((category): category is string => typeof category === 'string' && KNOWN_APP_CATEGORIES.has(category));
+  return { ...config, categories: filtered.length > 0 ? filtered : ['utilities'] };
+}
 
 export class AppStoreFilesManager {
   constructor(
@@ -70,7 +89,7 @@ export class AppStoreFilesManager {
       if (await this.filesystem.pathExists(path.join(appRepoDir, 'config.json'))) {
         const configFile = await this.filesystem.readTextFile(path.join(appRepoDir, 'config.json'));
 
-        const config = JSON.parse(configFile ?? '{}');
+        const config = normalizeAppConfigCategories(JSON.parse(configFile ?? '{}') as Record<string, unknown>);
         const parsedConfig = appInfoSchema.safeParse({ ...config, urn: appUrn });
 
         if (!parsedConfig.success) {
@@ -101,7 +120,7 @@ export class AppStoreFilesManager {
       if (await this.filesystem.pathExists(path.join(appRepoDir, 'config.json'))) {
         const configFile = await this.filesystem.readTextFile(path.join(appRepoDir, 'config.json'));
 
-        const config = JSON.parse(configFile ?? '{}');
+        const config = normalizeAppConfigCategories(JSON.parse(configFile ?? '{}') as Record<string, unknown>);
         const parsedConfig = appInfoSchema.safeParse({ ...config, urn: appUrn });
 
         if (!parsedConfig.success) {
@@ -138,7 +157,7 @@ export class AppStoreFilesManager {
     if (await this.filesystem.pathExists(path.join(appInstalledDir, 'config.json'))) {
       const configFile = await this.filesystem.readTextFile(path.join(appInstalledDir, 'config.json'));
 
-      const config = JSON.parse(configFile ?? '{}');
+      const config = normalizeAppConfigCategories(JSON.parse(configFile ?? '{}') as Record<string, unknown>);
       const parsedConfig = appInfoSchema.safeParse({ ...config, urn: appUrn });
 
       if (!parsedConfig.success) {
@@ -392,6 +411,127 @@ export class AppStoreFilesManager {
     else if (ext === 'webp') contentType = 'image/webp';
 
     return { image: file, etag, contentType };
+  }
+
+  public async listLocalScreenshotFilenames(appUrn: AppUrn): Promise<string[]> {
+    const { appInstalledDir, appRepoDir } = this.getAppPaths(appUrn);
+    const seen = new Set<string>();
+    const filenames: string[] = [];
+
+    for (const dir of [appInstalledDir, appRepoDir]) {
+      const screenshotsDir = path.join(dir, 'metadata', 'screenshots');
+      try {
+        if (!(await this.filesystem.pathExists(screenshotsDir))) {
+          continue;
+        }
+
+        const entries = await this.filesystem.listFiles(screenshotsDir);
+        for (const entry of entries) {
+          if (seen.has(entry)) {
+            continue;
+          }
+
+          seen.add(entry);
+          filenames.push(entry);
+        }
+      } catch {
+        // Try the next location.
+      }
+    }
+
+    return filenames;
+  }
+
+  public async getScreenshot(appUrn: AppUrn, filename: string) {
+    const { appInstalledDir, appRepoDir } = this.getAppPaths(appUrn);
+
+    for (const dir of [appInstalledDir, appRepoDir]) {
+      const filePath = path.join(dir, 'metadata', 'screenshots', filename);
+      try {
+        if (await this.filesystem.pathExists(filePath)) {
+          const image = await this.filesystem.readBinaryFile(filePath);
+          const etag = await this.filesystem.getFileEtag(filePath);
+          const ext = path.extname(filePath).toLowerCase().substring(1);
+
+          let contentType = 'image/jpeg';
+          if (ext === 'png') contentType = 'image/png';
+          else if (ext === 'svg') contentType = 'image/svg+xml';
+          else if (ext === 'webp') contentType = 'image/webp';
+          else if (ext === 'gif') contentType = 'image/gif';
+
+          return { image, etag, contentType };
+        }
+      } catch {
+        // Try the next location.
+      }
+    }
+
+    return { image: null, etag: '', contentType: 'image/jpeg' };
+  }
+
+  public async findDemoVideoPath(appUrn: AppUrn, demoVideoRef: string): Promise<string | null> {
+    const normalized = demoVideoRef.trim().replace(/^\.\//, '');
+    if (!normalized || /^https?:\/\//i.test(normalized) || normalized.includes('..')) {
+      return null;
+    }
+
+    const { appInstalledDir, appRepoDir } = this.getAppPaths(appUrn);
+
+    for (const dir of [appInstalledDir, appRepoDir]) {
+      const candidate = path.join(dir, normalized);
+      try {
+        if (await this.filesystem.pathExists(candidate)) {
+          return candidate;
+        }
+      } catch {
+        // Try the next location.
+      }
+
+      const metadataCandidate = path.join(dir, 'metadata', path.basename(normalized));
+      try {
+        if (await this.filesystem.pathExists(metadataCandidate)) {
+          return metadataCandidate;
+        }
+      } catch {
+        // Try the next location.
+      }
+    }
+
+    return null;
+  }
+
+  /**
+   * Resolve a demo-video ref to an on-disk file descriptor.
+   *
+   * Deliberately returns metadata rather than bytes: demo videos run to tens of megabytes, so the
+   * HTTP layer streams them (with Range support) instead of buffering the whole file.
+   */
+  public async getDemoVideoFile(appUrn: AppUrn, demoVideoRef: string): Promise<DemoVideoFile | null> {
+    const filePath = await this.findDemoVideoPath(appUrn, demoVideoRef);
+    if (!filePath) {
+      return null;
+    }
+
+    let size: number;
+    try {
+      const stats = await this.filesystem.getStats(filePath);
+      if (!stats.isFile()) {
+        return null;
+      }
+      size = stats.size;
+    } catch (error) {
+      this.logger.warn(`Error stating demo video for app ${appUrn} from repo ${this.storeConfig.slug}:`, error);
+      return null;
+    }
+
+    const etag = await this.filesystem.getFileEtag(filePath);
+    const ext = path.extname(filePath).toLowerCase().substring(1);
+
+    let contentType = 'video/mp4';
+    if (ext === 'webm') contentType = 'video/webm';
+    else if (ext === 'mov') contentType = 'video/quicktime';
+
+    return { path: filePath, size, etag: etag ?? '', contentType };
   }
 
   public async getConfigJson(appUrn: AppUrn) {

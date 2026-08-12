@@ -91,12 +91,7 @@ export const OtpForm = (props: { totpEnabled: boolean }) => {
         <div className="mb-4">
           <p className="text-muted-foreground">{t('SETTINGS_SECURITY_ENTER_2FA_CODE')}</p>
           <OtpInput value={totpCode} valueLength={6} onChange={(e) => setTotpCode(e)} />
-          <Button
-            disabled={totpCode.trim().length < 6}
-            onClick={() => setupTotp.mutate({ body: { code: totpCode } })}
-            intent="success"
-            className="mt-3"
-          >
+          <Button disabled={totpCode.trim().length < 6} onClick={() => setupTotp.mutate({ body: { code: totpCode } })} className="mt-3">
             {t('SETTINGS_SECURITY_ENABLE_2FA')}
           </Button>
         </div>
@@ -117,7 +112,7 @@ export const OtpForm = (props: { totpEnabled: boolean }) => {
       {!key && <Switch onCheckedChange={handleTotp} checked={totpEnabled} label={t('SETTINGS_SECURITY_ENABLE_2FA')} />}
       {getTotpUri.isPending && (
         <div className="w-1/2 h-1.5 rounded-full bg-muted overflow-hidden">
-          <div className="h-full bg-green-500 rounded-full animate-pulse" />
+          <div className="h-full bg-primary rounded-full animate-pulse" />
         </div>
       )}
       {renderSetupQr()}
@@ -144,7 +139,7 @@ export const OtpForm = (props: { totpEnabled: boolean }) => {
             </form>
           </DialogDescription>
           <DialogFooter>
-            <Button loading={getTotpUri.isPending} type="submit" intent="success" form={passwordFormId}>
+            <Button loading={getTotpUri.isPending} type="submit" form={passwordFormId}>
               {t('SETTINGS_SECURITY_ENABLE_2FA')}
             </Button>
           </DialogFooter>

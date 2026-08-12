@@ -23,6 +23,7 @@ export class AppAgentTools implements OnModuleInit {
     this.registry.register({
       category: 'App Agents & Skills',
       name: 'hub_get_app_skill',
+      access: 'read',
       description: 'Get the resolved SKILL.md agent skill description for an app. Returns the content with template variables resolved.',
       inputSchema: {
         type: 'object',
@@ -37,6 +38,7 @@ export class AppAgentTools implements OnModuleInit {
     this.registry.register({
       category: 'App Agents & Skills',
       name: 'hub_list_agent_apps',
+      access: 'read',
       description:
         'List all installed apps that have agent integration (skill, openapi, or mcp). Only includes apps with at least one integration layer.',
       inputSchema: { type: 'object', properties: {}, required: [] },
@@ -46,6 +48,7 @@ export class AppAgentTools implements OnModuleInit {
     this.registry.register({
       category: 'App Agents & Skills',
       name: 'hub_list_app_tools',
+      access: 'read',
       description: 'List all agent tools provided by a specific app, including OpenAPI-generated tools and MCP-bridged tools.',
       inputSchema: {
         type: 'object',
@@ -59,7 +62,33 @@ export class AppAgentTools implements OnModuleInit {
 
     this.registry.register({
       category: 'App Agents & Skills',
+      name: 'hub_call_app_tool',
+      access: 'write',
+      // A bridged tool's effect is opaque to the Hub — github-mcp can delete branches, filesystem-mcp
+      // can overwrite files. Same posture as mutating hub_call_app_api verbs: gated as destructive.
+      // Stated as the static flag rather than an always-true predicate: a predicate would advertise
+      // this as argument-dependent, so tools/list would keep offering it to read-only and write keys
+      // that can never actually run it.
+      destructive: true,
+      description:
+        "Call a tool on an app's bridged MCP server. Use hub_list_app_tools to discover tool names. " +
+        'The Hub forwards the call to the app container over its declared MCP transport and returns the result.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          appUrn: { type: 'string', description: 'App identifier in appName:storeSlug format' },
+          tool: { type: 'string', description: 'Tool name (bare or prefixed form from hub_list_app_tools)' },
+          arguments: { type: 'object', description: 'Tool arguments', additionalProperties: true },
+        },
+        required: ['appUrn', 'tool'],
+      },
+      handler: (p) => this.callAppTool(p as { appUrn: string; tool: string; arguments?: Record<string, unknown> }),
+    });
+
+    this.registry.register({
+      category: 'App Agents & Skills',
       name: 'hub_get_app_openapi',
+      access: 'read',
       description: 'Get the raw OpenAPI spec for an app as a JSON string.',
       inputSchema: {
         type: 'object',
@@ -125,11 +154,26 @@ export class AppAgentTools implements OnModuleInit {
     }
 
     const openapiTools = await this.openapiBridge.listToolInfo(appUrn, agentConfig);
-    const mcpTools = this.mcpBridge.listToolInfo(appUrn);
+    // Connect-and-discover on demand (#936): the bridge is lazy, so without this a
+    // fresh Hub always answered with an empty MCP tool list.
+    const mcpTools = await this.mcpBridge.discoverTools(appUrn, agentConfig).catch(() => this.mcpBridge.listToolInfo(appUrn));
 
     return {
       tools: [...openapiTools, ...mcpTools],
     };
+  }
+
+  /** Forward a tool call to an app's bridged MCP server (#936). */
+  async callAppTool(params: { appUrn: string; tool: string; arguments?: Record<string, unknown> }): Promise<unknown> {
+    const appUrn = castAppUrn(params.appUrn);
+    const { info } = await this.appsService.getApp(appUrn);
+    const agentConfig = await this.agentConfigService.getAgentConfig(appUrn, info);
+
+    if (!agentConfig?.mcp.enabled) {
+      return { error: `App ${params.appUrn} has no MCP server configured`, isError: true };
+    }
+
+    return this.mcpBridge.callTool(appUrn, agentConfig, params.tool, params.arguments ?? {});
   }
 
   /**

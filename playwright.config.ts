@@ -1,8 +1,16 @@
 import { defineConfig, devices } from '@playwright/test';
 
+// Single source of truth for the backend port. The backend process reads API_PORT while
+// Playwright's health check and the direct-call specs use BACKEND_PORT, so both the backend's
+// API_PORT and the vite /api proxy target are wired to this one value (below). They can't
+// diverge, so the backend never listens on a port nothing is waiting on.
 const BACKEND_PORT = process.env.BACKEND_PORT || '3000';
 const FRONTEND_PORT = process.env.FRONTEND_PORT || '9091';
 const USE_REAL_PORTAL = process.env.E2E_USE_REAL_PORTAL === 'true';
+// Opt in to the generated app-catalog batch specs. Set by the fleet QA harness
+// (scripts/run-fleet-tests.ts) and the app-catalog-fleet workflow; unset everywhere
+// else so the default E2E lane stays fast and infra-light.
+const RUN_CATALOG_TESTS = process.env.E2E_RUN_CATALOG_TESTS === 'true';
 const PORTAL_PORT = process.env.PORTAL_PORT || '8012';
 const MOCK_PORTAL_PORT = process.env.MOCK_PORTAL_PORT || '4444';
 const SERVER_IP = process.env.SERVER_IP || 'localhost';
@@ -11,6 +19,7 @@ const SERVER_IP = process.env.SERVER_IP || 'localhost';
 const backendEnv: Record<string, string> = {
   NODE_ENV: 'development',
   E2E_TEST: 'true',
+  API_PORT: BACKEND_PORT,
   POSTGRES_HOST: process.env.POSTGRES_HOST || 'localhost',
   POSTGRES_PORT: process.env.POSTGRES_PORT || '6543',
   POSTGRES_USERNAME: process.env.POSTGRES_USERNAME || 'companion',
@@ -46,16 +55,22 @@ const backendEnv: Record<string, string> = {
   CI_HUB_APP_DATA_DIR: process.env.CI_HUB_APP_DATA_DIR || '/tmp/ci-hub-e2e/app-data',
   CI_HUB_APP_DIR: process.env.CI_HUB_APP_DIR || process.cwd(),
   CI_HUB_TUNNEL_DIR: process.env.CI_HUB_TUNNEL_DIR || '/tmp/ci-hub-e2e/tunnel',
-  MCP_API_KEY: process.env.MCP_API_KEY || 'test-mcp-api-key-e2e',
 };
 
 export default defineConfig({
   testDir: './e2e',
   // Extended suites (future/, cross-domain/, platform/) are excluded from the default
   // CI lane for cost and infra reasons. See e2e/README.md and .github/workflows/e2e-extended.yml.
+  //
+  // `generated/` holds the app-catalog batch specs that the fleet QA harness runs
+  // (scripts/run-fleet-tests.ts, .github/workflows/app-catalog-fleet.yml). Ignoring
+  // it unconditionally meant those runs matched zero tests — testIgnore applies even
+  // when a spec is named explicitly on the command line, so both the harness and the
+  // workflow reported "No tests found" while exiting 0. Gate it instead, so the
+  // default lane still skips the catalog while the fleet can opt in.
   testIgnore: [
     '**/future/**',
-    '**/generated/**',
+    ...(RUN_CATALOG_TESTS ? [] : ['**/generated/**']),
     '**/cross-domain/**',
     '**/platform/**',
     '**/mcp-openclaw-integration.spec.ts',
@@ -126,6 +141,13 @@ export default defineConfig({
       timeout: process.env.CI ? 120000 : 60000,
       stdout: 'pipe',
       stderr: 'pipe',
+      // Pin the port contract so vite serves on FRONTEND_PORT (not its default 5005) and
+      // proxies /api to the backend on API_PORT. Single source of truth for every entrypoint
+      // (CI, extended, fleet, local) so callers don't each have to re-export these.
+      env: {
+        FRONTEND_PORT,
+        API_PORT: BACKEND_PORT,
+      },
     },
   ],
 });

@@ -231,7 +231,7 @@ export class AppController {
   @UseGuards(AuthGuard)
   @ApiResponse({ type: AppContextDto })
   async appContext(@Req() req: Request) {
-    const { userSettings, isProduction, rootFolderHost } = this.configuration.getConfig();
+    const { userSettings, isProduction, rootFolderHost, architecture } = this.configuration.getConfig();
 
     // Resolve the host path of the root app-data folder so the desktop app can
     // open it in the OS file explorer. Best-effort: never fail the context over it.
@@ -289,6 +289,7 @@ export class AppController {
           ciHubHubSubdomain: org?.hubSubdomain ?? undefined,
         },
         appDataRootHostPath,
+        architecture,
         user: req.user as UserDto,
         apps: [],
         updatesAvailable: updatesAvailableCount,

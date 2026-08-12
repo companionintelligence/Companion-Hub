@@ -1,7 +1,14 @@
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { abortError, isAbortError, throwIfAborted } from '@/common/abort';
-import { DEFAULT_HUB_CONTAINER_NAME, DEFAULT_NETWORK_NAME } from '@/common/constants';
+import { getAppDataHostPath, resolveAppDataHostRoot } from '@/common/helpers/app-data-path.helper';
+import { extractAppUrn } from '@/common/helpers/app-helpers';
+import {
+  DEFAULT_APP_IMAGE_PULL_INACTIVITY_TIMEOUT_MS,
+  DEFAULT_APP_IMAGE_PULL_TIMEOUT_MINUTES,
+  DEFAULT_HUB_CONTAINER_NAME,
+  DEFAULT_NETWORK_NAME,
+} from '@/common/constants';
 import { pLimit } from '@/common/helpers/file-helpers';
 import { withTimeout } from '@/common/helpers/with-timeout';
 import { ConfigurationService } from '@/core/config/configuration.service';
@@ -34,6 +41,8 @@ const MANAGED_APP_STARTUP_DELAY_MS = 2_000;
 /** Grace period after SIGTERM before a cancelled `docker compose` child is force-killed with SIGKILL. */
 const COMPOSE_CANCEL_SIGKILL_GRACE_MS = 5_000;
 const DOCKER_INSPECT_TIMEOUT_MS = 5_000;
+// Upper bound for the privileged uninstall-remnant cleanup helper (image pull + delete).
+const PRIVILEGED_CLEANUP_TIMEOUT_MS = 120_000;
 const DOCKER_STATS_TIMEOUT_MS = 5_000;
 /** Container list states where docker stats() is skipped (crash-loops can hang indefinitely). */
 const SKIP_DOCKER_STATS_STATES = new Set(['restarting', 'created', 'dead']);
@@ -447,6 +456,118 @@ export class DockerService {
   }
 
   /**
+   * Empty an app's data directory using a short-lived ROOT helper container, for the
+   * one case the non-root Hub process cannot handle itself: files a container created
+   * as root (e.g. MinIO's `.minio.sys`). The Docker daemon runs as root, so a throwaway
+   * container can delete them; the Hub then removes the now-empty dir normally.
+   *
+   * Security (this is a root-privileged delete, so it is deliberately paranoid):
+   *  - The target is recomputed from `appUrn` via {@link getAppDataHostPath} — NEVER a
+   *    caller-supplied path — and validated to be exactly `{app-data-root}/{store}/{app}`
+   *    with safe path segments; anything else is refused.
+   *  - The container bind-mounts ONLY that one app's data dir (never a parent that holds
+   *    sibling apps) and only empties it (`find -mindepth 1 -delete`).
+   *  - `--rm` (no residue), `--network none` (no egress), `--user 0:0`, array args (no
+   *    shell → no injection), and a hard timeout.
+   *
+   * Returns whether the helper reported success. Best-effort: any failure returns false
+   * so the caller falls back to warning the user with a manual command.
+   */
+  public async removeAppDataDirAsRoot(appUrn: AppUrn): Promise<boolean> {
+    const config = this.config.getConfig();
+    const inputs = {
+      ciHubAppDataPath: process.env.CI_HUB_APP_DATA_PATH,
+      appDataPath: config.userSettings.appDataPath,
+      rootFolderHost: config.rootFolderHost,
+    };
+
+    let hostAppDataDir: string;
+    let appDataRoot: string;
+    try {
+      hostAppDataDir = getAppDataHostPath(appUrn, inputs);
+      appDataRoot = resolveAppDataHostRoot(inputs);
+    } catch (err) {
+      this.logger.error(`[uninstall-cleanup] cannot resolve host app-data path for ${appUrn}: ${err instanceof Error ? err.message : String(err)}`);
+      return false;
+    }
+
+    const { appName, appStoreId } = extractAppUrn(appUrn);
+    const p = path.posix;
+    const isSafeSegment = (segment: string) => /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(segment);
+    const expected = p.join(appDataRoot, appStoreId, appName);
+
+    // Refuse anything that is not EXACTLY {app-data-root}/{store}/{app}. This is what
+    // bounds the root-privileged delete to a single app's own data directory.
+    if (
+      !isSafeSegment(appStoreId) ||
+      !isSafeSegment(appName) ||
+      p.normalize(appDataRoot) === '/' ||
+      p.normalize(hostAppDataDir) !== p.normalize(expected) ||
+      p.basename(hostAppDataDir) !== appName ||
+      p.basename(p.dirname(hostAppDataDir)) !== appStoreId ||
+      hostAppDataDir.split('/').filter(Boolean).length < 3
+    ) {
+      this.logger.error(`[uninstall-cleanup] refusing privileged delete for ${appUrn}: resolved path ${hostAppDataDir} failed validation`);
+      return false;
+    }
+
+    const image = process.env.CI_HUB_CLEANUP_IMAGE || 'alpine:3.20';
+    // Mount ONLY this app's data dir and empty it (never delete the mountpoint itself).
+    const args = [
+      'run',
+      '--rm',
+      '--network',
+      'none',
+      '--user',
+      '0:0',
+      '-v',
+      `${hostAppDataDir}:/target:rw`,
+      image,
+      'find',
+      '/target',
+      '-mindepth',
+      '1',
+      '-delete',
+    ];
+
+    this.logger.warn(`[uninstall-cleanup] emptying root-owned remnant in ${hostAppDataDir} via a privileged ${image} helper`);
+    try {
+      await this.runDockerCliCommand(args, PRIVILEGED_CLEANUP_TIMEOUT_MS);
+      return true;
+    } catch (err) {
+      this.logger.error(`[uninstall-cleanup] privileged cleanup failed for ${appUrn}: ${err instanceof Error ? err.message : String(err)}`);
+      return false;
+    }
+  }
+
+  /**
+   * Run a one-off `docker <args>` CLI command (no shell), rejecting on non-zero exit or
+   * timeout. Args MUST be a pre-split array so no value is shell-interpreted.
+   */
+  private runDockerCliCommand(args: string[], timeoutMs: number): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const child = spawn('docker', args, { stdio: 'pipe' });
+      const stderr: string[] = [];
+      let settled = false;
+      const finish = (fn: () => void) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        fn();
+      };
+      const timer = setTimeout(() => {
+        child.kill('SIGKILL');
+        finish(() => reject(new Error(`docker ${args[0]} timed out after ${timeoutMs}ms`)));
+      }, timeoutMs);
+      child.stderr?.on('data', (chunk) => stderr.push(String(chunk)));
+      child.on('error', (err) => finish(() => reject(err)));
+      child.on('close', (code) =>
+        finish(() => (code === 0 ? resolve() : reject(new Error(`docker ${args[0]} exited ${code}: ${stderr.join('').trim()}`)))),
+      );
+    });
+  }
+
+  /**
    * Get the base compose args for an app
 
    * @param {string} appUrn - App name
@@ -599,6 +720,8 @@ export class DockerService {
       forcePull?: boolean;
       onProgress?: (event: DockerPullProgressEvent) => void;
       signal?: AbortSignal;
+      inactivityTimeoutMs?: number;
+      timeoutMs?: number;
     } = {},
   ): Promise<void> {
     const { signal } = options;
@@ -608,13 +731,60 @@ export class DockerService {
       return;
     }
 
-    // Bail out before starting any pull if the operation was already cancelled.
     throwIfAborted(signal);
+
+    // Timeouts must throw a normal Error (not AbortError) so install treats them as failure, not cancel.
+    const controller = new AbortController();
+    type PullTimeoutReason = 'inactivity' | 'overall';
+    let timeoutReason: PullTimeoutReason | null = null;
+
+    const inactivityTimeoutMs = options.inactivityTimeoutMs ?? DEFAULT_APP_IMAGE_PULL_INACTIVITY_TIMEOUT_MS;
+    const overallTimeoutMs = options.timeoutMs ?? DEFAULT_APP_IMAGE_PULL_TIMEOUT_MINUTES * 60 * 1000;
+
+    let inactivityTimer: ReturnType<typeof globalThis.setTimeout> | undefined;
+    const armInactivityTimer = () => {
+      if (inactivityTimer) {
+        globalThis.clearTimeout(inactivityTimer);
+      }
+      inactivityTimer = globalThis.setTimeout(() => {
+        if (!controller.signal.aborted) {
+          timeoutReason = 'inactivity';
+          this.logger.warn(`[pull-timeout] no progress for ${Math.round(inactivityTimeoutMs / 60000)}m — aborting pull`);
+          controller.abort();
+        }
+      }, inactivityTimeoutMs);
+      inactivityTimer.unref?.();
+    };
+
+    const overallTimer = globalThis.setTimeout(() => {
+      if (!controller.signal.aborted) {
+        timeoutReason = 'overall';
+        this.logger.warn(`[pull-timeout] exceeded ${Math.round(overallTimeoutMs / 60000)}m overall budget — aborting pull`);
+        controller.abort();
+      }
+    }, overallTimeoutMs);
+    overallTimer.unref?.();
+
+    const onCallerAbort = () => {
+      if (!controller.signal.aborted) {
+        controller.abort();
+      }
+    };
+    if (signal?.aborted) {
+      onCallerAbort();
+    } else {
+      signal?.addEventListener('abort', onCallerAbort, { once: true });
+    }
+
+    const pullSignal = controller.signal;
+    armInactivityTimer();
 
     const completedImages = new Set<string>();
     const layerSnapshots = new Map<string, DockerPullLayerSnapshot>();
 
     const emitProgress = (activeImage: string, stageOverride?: DockerPullProgressEvent['stage']) => {
+      armInactivityTimer();
+
       if (!options.onProgress) {
         return;
       }
@@ -630,99 +800,115 @@ export class DockerService {
       });
     };
 
-    await Promise.all(
-      uniqueImages.map(async (image) => {
-        // Skip remaining images once the operation is cancelled.
-        throwIfAborted(signal);
+    try {
+      await Promise.all(
+        uniqueImages.map(async (image) => {
+          throwIfAborted(pullSignal);
 
-        if (!options.forcePull && (await this.imageExistsLocally(image))) {
-          completedImages.add(image);
-          emitProgress(image, 'complete');
-          return;
-        }
-
-        await new Promise<void>((resolve, reject) => {
-          this.docker.pull(image, (pullError: Error | null, stream?: NodeJS.ReadableStream) => {
-            if (pullError) {
-              reject(pullError);
-              return;
-            }
-
-            if (!stream) {
-              reject(new Error(`Docker did not provide a pull stream for ${image}`));
-              return;
-            }
-
-            // Destroying the pull stream drops the HTTP connection to the daemon, which cancels the
-            // server-side pull. Reject with an AbortError so the caller treats it as a cancellation.
-            const onAbort = () => {
-              this.logger.warn(`[pull-cancel] destroying pull stream for ${image}`);
-              (stream as NodeJS.ReadableStream & { destroy?: (err?: Error) => void }).destroy?.(abortError());
-              reject(abortError());
-            };
-            if (signal?.aborted) {
-              onAbort();
-              return;
-            }
-            signal?.addEventListener('abort', onAbort, { once: true });
-            const cleanupAbort = () => signal?.removeEventListener('abort', onAbort);
-
-            const modem = (
-              this.docker as Dockerode & {
-                modem?: {
-                  followProgress?: (
-                    stream: NodeJS.ReadableStream,
-                    onFinished: (error: Error | null, output: unknown[]) => void,
-                    onProgress?: (event: DockerPullProgressEventMessage) => void,
-                  ) => void;
-                };
-              }
-            ).modem;
-
-            if (!modem?.followProgress) {
-              cleanupAbort();
-              reject(new Error('Docker pull progress tracking is unavailable'));
-              return;
-            }
-
-            modem.followProgress(
-              stream,
-              (followError) => {
-                cleanupAbort();
-                if (followError) {
-                  reject(followError);
-                  return;
-                }
-
-                completedImages.add(image);
-                emitProgress(image, 'complete');
-                resolve();
-              },
-              (event) => {
-                if (event?.id) {
-                  const snapshot = layerSnapshots.get(event.id) ?? { current: 0, total: 0, status: '' };
-                  const current = Math.max(snapshot.current, event.progressDetail?.current ?? snapshot.current);
-                  const total = Math.max(snapshot.total, event.progressDetail?.total ?? snapshot.total, current);
-                  layerSnapshots.set(event.id, {
-                    current,
-                    total,
-                    status: event.status ?? snapshot.status,
-                  });
-                }
-
-                emitProgress(image);
-              },
-            );
-          });
-        }).catch((error) => {
-          // Preserve cancellations so callers can run compensation instead of reporting a failure.
-          if (isAbortError(error)) {
-            throw error;
+          if (!options.forcePull && (await this.imageExistsLocally(image))) {
+            completedImages.add(image);
+            emitProgress(image, 'complete');
+            return;
           }
-          throw new Error(`Failed to pull image ${image}: ${error instanceof Error ? error.message : String(error)}`);
-        });
-      }),
-    );
+
+          await new Promise<void>((resolve, reject) => {
+            this.docker.pull(image, (pullError: Error | null, stream?: NodeJS.ReadableStream) => {
+              if (pullError) {
+                reject(pullError);
+                return;
+              }
+
+              if (!stream) {
+                reject(new Error(`Docker did not provide a pull stream for ${image}`));
+                return;
+              }
+
+              const onAbort = () => {
+                this.logger.warn(`[pull-cancel] destroying pull stream for ${image}`);
+                (stream as NodeJS.ReadableStream & { destroy?: (err?: Error) => void }).destroy?.(abortError());
+                reject(abortError());
+              };
+              if (pullSignal.aborted) {
+                onAbort();
+                return;
+              }
+              pullSignal.addEventListener('abort', onAbort, { once: true });
+              const cleanupAbort = () => pullSignal.removeEventListener('abort', onAbort);
+
+              const modem = (
+                this.docker as Dockerode & {
+                  modem?: {
+                    followProgress?: (
+                      stream: NodeJS.ReadableStream,
+                      onFinished: (error: Error | null, output: unknown[]) => void,
+                      onProgress?: (event: DockerPullProgressEventMessage) => void,
+                    ) => void;
+                  };
+                }
+              ).modem;
+
+              if (!modem?.followProgress) {
+                cleanupAbort();
+                reject(new Error('Docker pull progress tracking is unavailable'));
+                return;
+              }
+
+              modem.followProgress(
+                stream,
+                (followError) => {
+                  cleanupAbort();
+                  if (followError) {
+                    reject(followError);
+                    return;
+                  }
+
+                  completedImages.add(image);
+                  emitProgress(image, 'complete');
+                  resolve();
+                },
+                (event) => {
+                  if (event?.id) {
+                    const snapshot = layerSnapshots.get(event.id) ?? { current: 0, total: 0, status: '' };
+                    const current = Math.max(snapshot.current, event.progressDetail?.current ?? snapshot.current);
+                    const total = Math.max(snapshot.total, event.progressDetail?.total ?? snapshot.total, current);
+                    layerSnapshots.set(event.id, {
+                      current,
+                      total,
+                      status: event.status ?? snapshot.status,
+                    });
+                  }
+
+                  emitProgress(image);
+                },
+              );
+            });
+          }).catch((error) => {
+            if (isAbortError(error)) {
+              throw error;
+            }
+            throw new Error(`Failed to pull image ${image}: ${error instanceof Error ? error.message : String(error)}`);
+          });
+        }),
+      );
+    } catch (error) {
+      if (timeoutReason === 'inactivity') {
+        throw new Error(
+          `Image pull stalled with no progress for ${Math.round(inactivityTimeoutMs / 60000)} minutes. Check Docker/registry connectivity and retry.`,
+        );
+      }
+      if (timeoutReason === 'overall') {
+        throw new Error(
+          `Image pull exceeded the ${Math.round(overallTimeoutMs / 60000)}-minute budget. Check Docker/registry connectivity and retry.`,
+        );
+      }
+      throw error;
+    } finally {
+      if (inactivityTimer) {
+        globalThis.clearTimeout(inactivityTimer);
+      }
+      globalThis.clearTimeout(overallTimer);
+      signal?.removeEventListener('abort', onCallerAbort);
+    }
   }
 
   // Plugin availability doesn't change at runtime; probe once and reuse so

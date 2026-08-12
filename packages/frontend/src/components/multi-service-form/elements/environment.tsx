@@ -7,7 +7,7 @@ import type { z } from 'zod';
 import { X } from 'lucide-react';
 import clsx from 'clsx';
 import { useFieldArray, type Control, type FieldErrors, type UseFormRegister } from 'react-hook-form';
-import { Tooltip } from 'react-tooltip';
+import { HintMarker } from '@/components/ui/field-hint/field-hint';
 import { useTranslation } from 'react-i18next';
 
 type Props = {
@@ -25,20 +25,17 @@ export const EnvironmentConfig = ({ errors, serviceIndex, control, register }: P
   });
 
   return (
-    <div className="row g-4">
-      <div className="col-12">
-        <div className="d-flex justify-content-between align-items-center mb-3">
+    <div className="grid grid-cols-1 gap-4">
+      <div>
+        <div className="flex items-center justify-between mb-3">
           <div>
-            <Tooltip className="tooltip" anchorSelect=".my-env-vars">
-              {t('MULTI_SERVICE_ENVIRONMENT_TITLE_TOOLTIP')}
-            </Tooltip>
-            {t('MULTI_SERVICE_ENVIRONMENT_TITLE')} <span className="ms-1 form-help my-env-vars">?</span>
+            {t('MULTI_SERVICE_ENVIRONMENT_TITLE')} <HintMarker anchorClass="my-env-vars" hint={t('MULTI_SERVICE_ENVIRONMENT_TITLE_TOOLTIP')} />
           </div>
           <Button type="button" onClick={() => append({ key: '', value: '' })} size="sm">
             {t('MULTI_SERVICE_ENVIRONMENT_ADD_VARIABLE')}
           </Button>
         </div>
-        <Table className={clsx('border p-1', { 'd-none': fields.length === 0 })}>
+        <Table className={clsx('border p-1', { hidden: fields.length === 0 })}>
           <TableHeader>
             <TableRow>
               <TableHead>{t('MULTI_SERVICE_ENVIRONMENT_KEY')}</TableHead>
@@ -74,7 +71,7 @@ export const EnvironmentConfig = ({ errors, serviceIndex, control, register }: P
             ))}
           </TableBody>
         </Table>
-        {fields.length === 0 && <div className="text-muted small">{t('MULTI_SERVICE_ENVIRONMENT_NO_VARIABLES')}</div>}
+        {fields.length === 0 && <div className="text-sm text-muted-foreground">{t('MULTI_SERVICE_ENVIRONMENT_NO_VARIABLES')}</div>}
       </div>
     </div>
   );

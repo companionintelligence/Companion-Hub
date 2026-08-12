@@ -1,4 +1,3 @@
-import { execSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { Injectable, type OnApplicationBootstrap, type OnApplicationShutdown, Inject, forwardRef, Optional } from '@nestjs/common';
@@ -32,7 +31,7 @@ import {
   type RegistrationStateDrift,
 } from './registration-state-drift';
 import { clearRegistrationRecoveryArtifacts, clearRehydrationState, writeRestoreIntent } from '../app-lifecycle/registration-recovery-state';
-import si from 'systeminformation';
+import { resolveDeviceId } from './device-id.resolver';
 
 const PERIODIC_VALIDATION_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
 const CLOUD_VALIDATION_THROTTLE_MS = 30 * 1000;
@@ -873,11 +872,10 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     }
   }
 
-  // Memoized device-id resolution. The detection chain (dmidecode →
-  // systeminformation → /sys → /etc/machine-id) is invoked on every app
-  // lifecycle command, bootstrap restart, and hourly validation; resolving it
-  // once per process avoids re-running (and re-logging) the same probes.
-  // Failures are not cached so a later call can retry.
+  // Memoized device-id resolution. The detection chain (env → dmidecode →
+  // systeminformation → sysfs → machine-id → generated UUID) is invoked on every
+  // app lifecycle command, bootstrap restart, and hourly validation; resolving
+  // it once per process avoids re-running (and re-logging) the same probes.
   private deviceIdPromise?: Promise<string>;
 
   public async getDeviceId(): Promise<string> {
@@ -892,65 +890,10 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
   }
 
   private async resolveDeviceId(): Promise<string> {
-    const envDeviceId = process.env.DEVICE_ID?.trim();
-    if (envDeviceId) {
-      this.logger.debug(`Device ID from DEVICE_ID env var: ${envDeviceId}`);
-      return envDeviceId;
-    }
-
-    try {
-      const serial = execSync('dmidecode -s system-serial-number', {
-        timeout: 5000,
-        encoding: 'utf-8',
-      }).trim();
-
-      const invalidSerials = [
-        'not specified',
-        'to be filled by o.e.m.',
-        'default string',
-        'system serial number',
-        'chassis serial number',
-        'none',
-        'na',
-        'n/a',
-        '0',
-        '',
-      ];
-      if (serial && !invalidSerials.includes(serial.toLowerCase())) {
-        this.logger.debug(`Device ID from dmidecode: ${serial}`);
-        return serial;
-      }
-
-      this.logger.debug(`dmidecode returned unusable value: "${serial}", falling back to systeminformation`);
-    } catch (e) {
-      // Expected on platforms without dmidecode (e.g. macOS) — not a real error.
-      this.logger.debug('dmidecode unavailable, falling back to systeminformation', e);
-    }
-
-    const uuid = await si.uuid().catch(() => ({ hardware: '' }));
-
-    const id = uuid.hardware;
-    if (id && id !== '00000000-0000-0000-0000-000000000000') {
-      this.logger.debug(`Device ID from systeminformation: ${id}`);
-      return id;
-    }
-
-    // Fallback: read hardware UUID directly (same as systeminformation's si.uuid().hardware)
-    try {
-      return fs.readFileSync('/sys/class/dmi/id/product_uuid', 'utf-8').trim();
-    } catch (e) {
-      // Linux-only path; absent on macOS — expected, keep at debug.
-      this.logger.debug('Could not read /sys/class/dmi/id/product_uuid', e);
-    }
-
-    // Last resort: /etc/machine-id
-    try {
-      return fs.readFileSync('/etc/machine-id', 'utf-8').trim();
-    } catch (e) {
-      this.logger.debug('Could not read /etc/machine-id', e);
-    }
-
-    throw new Error('Unable to determine device ID from any source');
+    return resolveDeviceId({
+      dataDir: DATA_DIR,
+      logger: this.logger,
+    });
   }
 
   private hasTunnelToken(): boolean {

@@ -1,4 +1,3 @@
-import type { Architecture } from '@/common/constants';
 import { extractAppUrn } from '@/common/helpers/app-helpers';
 import { notEmpty, pLimit } from '@/common/helpers/file-helpers';
 import { ConfigurationService } from '@/core/config/configuration.service';
@@ -10,25 +9,22 @@ import type { AppInfo } from '@ci-hub/common/schemas';
 import MiniSearch from 'minisearch';
 import { PortalCatalogService } from '@/core/portal/portal-catalog.service';
 import { CI_MARKETPLACE_STORE_SLUG } from '@/core/portal/portal.constants';
-import { AppStoreFilesManager } from '../app-stores/app-store-files-manager';
+import { AppStoreFilesManager, type DemoVideoFile } from '../app-stores/app-store-files-manager';
 import { AppStoreService, RESERVED_APP_STORE_SLUGS } from '../app-stores/app-store.service';
+import {
+  extractScreenshotFilename,
+  isAbsoluteMediaUrl,
+  isSafeMediaFilename,
+  marketplaceDemoVideoPath,
+  marketplaceScreenshotPath,
+  portalScreenshotPath,
+} from './app-media.helpers';
 
 type AppList = Awaited<ReturnType<InstanceType<typeof MarketplaceService>['getAllAppFromStores']>>;
 
 const sortApps = (a: AppList[number], b: AppList[number]) => a.urn.localeCompare(b.urn);
-const filterApp =
-  (architecture: Architecture) =>
-  (app: AppList[number]): boolean => {
-    if (app.deprecated) {
-      return false;
-    }
-
-    if (!app.supported_architectures?.length) {
-      return true;
-    }
-
-    return app.supported_architectures.includes(architecture);
-  };
+/** Keep incompatible-arch apps visible in the store; install UI/backend gates them. */
+const filterApp = (app: AppList[number]): boolean => !app.deprecated;
 
 @Injectable()
 export class MarketplaceService {
@@ -163,13 +159,11 @@ export class MarketplaceService {
   }
 
   /**
-   * Filter the apps based on the architecture
-   * @param apps - The apps to filter
-   * @returns The filtered apps
+   * Filter deprecated apps out of the catalog. Architecture mismatches stay listed
+   * so users can browse them; install is blocked separately.
    */
   private filterApps(apps: AppList): AppList {
-    const { architecture } = this.configuration.getConfig();
-    return apps.sort(sortApps).filter(filterApp(architecture));
+    return apps.sort(sortApps).filter(filterApp);
   }
 
   /**
@@ -293,7 +287,31 @@ export class MarketplaceService {
   public async getAppUpdateInfo(appUrn: AppUrn) {
     const { store } = this.getStoreFromUrn(appUrn);
     if (!store) throw new Error(`Store not found for ${appUrn}`);
-    return store.getAppUpdateInfo(appUrn);
+
+    const localInfo = await store.getAppUpdateInfo(appUrn);
+
+    if (!this.portalCatalog.isCiMarketplaceUrn(appUrn)) {
+      return localInfo;
+    }
+
+    // Cache-only read (never a blocking network call) — see PortalCatalogService.getUpdateInfoForUrn.
+    const portalInfo = this.portalCatalog.getUpdateInfoForUrn(appUrn);
+    if (!portalInfo) {
+      return localInfo;
+    }
+
+    const localVersion = Number(localInfo.latestVersion ?? 0);
+    const portalVersion = Number(portalInfo.latestVersion ?? 0);
+    if (portalVersion <= localVersion) {
+      return localInfo;
+    }
+
+    return {
+      ...localInfo,
+      latestVersion: portalInfo.latestVersion,
+      latestDockerVersion: portalInfo.latestDockerVersion,
+      minHubVersion: portalInfo.minHubVersion ?? localInfo.minHubVersion,
+    };
   }
 
   public async copyAppFromRepoToInstalled(appUrn: AppUrn) {
@@ -318,5 +336,184 @@ export class MarketplaceService {
     const { store } = this.getStoreFromUrn(appUrn);
     if (!store) throw new Error(`Store not found for ${appUrn}`);
     return store.getConfigJson(appUrn);
+  }
+
+  public async getAppMedia(appUrn: AppUrn): Promise<{ screenshots: string[]; demoVideoUrl: string | null }> {
+    const info = await this.getAppInfoFromAppStore(appUrn).catch(() => null);
+    const { store } = this.getStoreFromUrn(appUrn);
+    const { appName } = extractAppUrn(appUrn);
+    const publicPortalUrl = this.portalCatalog.isCiMarketplaceUrn(appUrn) ? (this.configuration.getConfig().ciCloudUrl?.trim() ?? '') : '';
+    const screenshots: string[] = [];
+    const seen = new Set<string>();
+
+    const pushScreenshot = (url: string) => {
+      if (!seen.has(url)) {
+        seen.add(url);
+        screenshots.push(url);
+      }
+    };
+
+    const resolveScreenshotRef = (ref: string) => {
+      const trimmed = ref.trim();
+      if (!trimmed) {
+        return;
+      }
+
+      if (/^https?:\/\//i.test(trimmed)) {
+        pushScreenshot(trimmed);
+        return;
+      }
+
+      const filename = extractScreenshotFilename(trimmed);
+      if (filename) {
+        pushScreenshot(marketplaceScreenshotPath(appUrn, filename));
+        return;
+      }
+
+      if (publicPortalUrl && this.portalCatalog.isCiMarketplaceUrn(appUrn)) {
+        const portalFilename = trimmed.split('/').pop();
+        if (portalFilename && isSafeMediaFilename(portalFilename)) {
+          pushScreenshot(portalScreenshotPath(publicPortalUrl, appName, portalFilename));
+        }
+      }
+    };
+
+    for (const ref of info?.screenshots ?? []) {
+      resolveScreenshotRef(ref);
+    }
+
+    if (store) {
+      for (const filename of await store.listLocalScreenshotFilenames(appUrn)) {
+        if (isSafeMediaFilename(filename)) {
+          pushScreenshot(marketplaceScreenshotPath(appUrn, filename));
+        }
+      }
+    }
+
+    let demoVideoUrl: string | null = null;
+    let portalDetails: { screenshots?: string[]; demo_video?: string } | null = null;
+    if (this.portalCatalog.isCiMarketplaceUrn(appUrn)) {
+      portalDetails = await this.portalCatalog.fetchStoreAppDetails(appName);
+    }
+
+    if (screenshots.length === 0 && portalDetails) {
+      for (const ref of portalDetails.screenshots ?? []) {
+        if (typeof ref === 'string') {
+          if (/^https?:\/\//i.test(ref)) {
+            pushScreenshot(ref);
+          } else {
+            const filename = extractScreenshotFilename(ref) ?? ref.split('/').pop();
+            if (filename && isSafeMediaFilename(filename) && publicPortalUrl) {
+              pushScreenshot(portalScreenshotPath(publicPortalUrl, appName, filename));
+            }
+          }
+        }
+      }
+    }
+
+    // Precedence: an absolute manifest ref, then a manifest ref that actually resolves on disk,
+    // then the Portal's absolute URL. A relative manifest ref must NOT veto the Portal fallback —
+    // every CI-Marketplace app declares `./metadata/media/<slug>-landscape.mp4`, but the bytes are
+    // gitignored and are not part of the install bundle, so on most appliances they are not local.
+    const localRef = typeof info?.demo_video === 'string' ? info.demo_video.trim() : '';
+    const portalRef = typeof portalDetails?.demo_video === 'string' ? portalDetails.demo_video.trim() : '';
+    let localResolutionFailed = false;
+
+    if (localRef && isAbsoluteMediaUrl(localRef)) {
+      demoVideoUrl = localRef;
+    } else {
+      if (localRef && store) {
+        try {
+          if (await store.findDemoVideoPath(appUrn, localRef)) {
+            demoVideoUrl = marketplaceDemoVideoPath(appUrn);
+          } else {
+            localResolutionFailed = true;
+          }
+        } catch (e) {
+          localResolutionFailed = true;
+          const message = e instanceof Error ? e.message : String(e);
+          this.logger.warn(`Failed to resolve local demo video for ${appUrn} (ref "${localRef}"): ${message}`);
+        }
+      } else if (localRef) {
+        localResolutionFailed = true;
+      }
+
+      if (!demoVideoUrl && portalRef && isAbsoluteMediaUrl(portalRef)) {
+        demoVideoUrl = portalRef;
+      }
+    }
+
+    if (!demoVideoUrl && (localRef || portalRef)) {
+      this.logger.warn(
+        `No demo video resolved for ${appUrn}: manifest ref ${localRef ? `"${localRef}"${localResolutionFailed ? ' (not found on disk)' : ''}` : '(none)'}, portal ref ${portalRef ? `"${portalRef}" (not an absolute URL)` : '(none)'}`,
+      );
+    }
+
+    return { screenshots, demoVideoUrl };
+  }
+
+  public async getAppScreenshot(appUrn: AppUrn, filename: string) {
+    if (!isSafeMediaFilename(filename)) {
+      return { image: null, etag: '', contentType: 'image/jpeg' };
+    }
+
+    try {
+      const { store } = this.getStoreFromUrn(appUrn);
+      if (store) {
+        const local = await store.getScreenshot(appUrn, filename);
+        if (local.image) {
+          return local;
+        }
+      }
+
+      if (this.portalCatalog.isCiMarketplaceUrn(appUrn)) {
+        const portalImage = await this.portalCatalog.fetchScreenshotImage(appUrn, filename);
+        if (portalImage?.image) {
+          return portalImage;
+        }
+      }
+
+      return { image: null, etag: '', contentType: 'image/jpeg' };
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      this.logger.warn(`Failed to get screenshot for ${appUrn}/${filename}: ${message}`);
+      return { image: null, etag: '', contentType: 'image/jpeg' };
+    }
+  }
+
+  /**
+   * Locate the on-disk demo video for an app, if one is present locally.
+   * Returns a descriptor only — the controller streams the bytes so a ~50MB file never lands in
+   * the heap of an appliance that may only have a couple of gigabytes to spare.
+   */
+  public async getAppDemoVideo(appUrn: AppUrn): Promise<DemoVideoFile | null> {
+    try {
+      const info = await this.getAppInfoFromAppStore(appUrn).catch(() => null);
+      const demoVideoRef = typeof info?.demo_video === 'string' ? info.demo_video.trim() : '';
+      if (!demoVideoRef || isAbsoluteMediaUrl(demoVideoRef)) {
+        // Absolute refs are served by whoever hosts them (Portal/R2), not by the Hub.
+        return null;
+      }
+
+      const { store } = this.getStoreFromUrn(appUrn);
+      if (!store) {
+        return null;
+      }
+
+      const file = await store.getDemoVideoFile(appUrn, demoVideoRef);
+      if (!file) {
+        this.logger.warn(`Demo video for ${appUrn} declared as "${demoVideoRef}" but no such file exists on disk`);
+      }
+      return file;
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      this.logger.warn(`Failed to get demo video for ${appUrn}: ${message}`);
+      return null;
+    }
+  }
+
+  /** Open a byte-range read stream over a resolved demo-video file. */
+  public createDemoVideoStream(file: DemoVideoFile, start: number, end: number) {
+    return this.filesystem.createReadStream(file.path, { start, end });
   }
 }

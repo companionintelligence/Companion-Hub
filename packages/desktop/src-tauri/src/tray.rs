@@ -427,49 +427,106 @@ pub fn create_tray(app: &App) -> Result<(), Box<dyn std::error::Error>> {
             } else {
                 consecutive_failures = consecutive_failures.saturating_add(1);
                 let cooldown_secs = last_watchdog_start.map(|t| t.elapsed().as_secs());
-                if crate::hub_manager::should_trigger_hub_watchdog(
-                    consecutive_failures,
-                    cooldown_secs,
-                    stack_dev_mode || crate::hub_manager::is_user_stopped(&data_dir_for_watchdog),
-                ) {
-                    let _ = crate::hub_manager::append_desktop_log(
-                        "tray.watchdog",
-                        &format!(
-                            "Hub API unreachable for {} consecutive checks — auto-starting hub.",
-                            consecutive_failures
-                        ),
-                    );
-                    last_watchdog_start = Some(std::time::Instant::now());
-                    consecutive_failures = 0;
-                    let compose = compose_path_for_watchdog.clone();
-                    let env = env_path_for_health.clone();
-                    let data = data_dir_for_watchdog.clone();
-                    tauri::async_runtime::spawn(async move {
-                        match tokio::task::spawn_blocking(move || {
-                            crate::hub_manager::start_hub(&compose, &env, &data)
-                        })
-                        .await
-                        {
-                            Ok(Ok(summary)) => {
-                                let _ = crate::hub_manager::append_desktop_log(
-                                    "tray.watchdog",
-                                    &format!("Watchdog start_hub succeeded: {summary}"),
-                                );
+                let compose_ready = compose_path_for_watchdog.is_file();
+                let hub_status = crate::hub_manager::get_hub_status();
+                let api_container_up = matches!(
+                    hub_status,
+                    crate::hub_manager::HubStatus::Running | crate::hub_manager::HubStatus::Starting
+                );
+                let action = if !compose_ready {
+                    // Desktop initialize copies compose into the data dir; don't race it.
+                    crate::hub_manager::HubWatchdogAction::None
+                } else {
+                    crate::hub_manager::decide_hub_watchdog_action(
+                        consecutive_failures,
+                        cooldown_secs,
+                        stack_dev_mode || crate::hub_manager::is_user_stopped(&data_dir_for_watchdog),
+                        crate::hub_manager::is_start_failed(&data_dir_for_watchdog),
+                        api_container_up,
+                        crate::hub_manager::is_docker_available(),
+                    )
+                };
+                match action {
+                    crate::hub_manager::HubWatchdogAction::None => {}
+                    crate::hub_manager::HubWatchdogAction::StartHub => {
+                        let _ = crate::hub_manager::append_desktop_log(
+                            "tray.watchdog",
+                            &format!(
+                                "Hub API unreachable for {} consecutive checks — auto-starting hub.",
+                                consecutive_failures
+                            ),
+                        );
+                        last_watchdog_start = Some(std::time::Instant::now());
+                        consecutive_failures = 0;
+                        let compose = compose_path_for_watchdog.clone();
+                        let env = env_path_for_health.clone();
+                        let data = data_dir_for_watchdog.clone();
+                        tauri::async_runtime::spawn(async move {
+                            match tokio::task::spawn_blocking(move || {
+                                crate::hub_manager::start_hub(&compose, &env, &data)
+                            })
+                            .await
+                            {
+                                Ok(Ok(summary)) => {
+                                    let _ = crate::hub_manager::append_desktop_log(
+                                        "tray.watchdog",
+                                        &format!("Watchdog start_hub succeeded: {summary}"),
+                                    );
+                                }
+                                Ok(Err(err)) => {
+                                    let _ = crate::hub_manager::append_desktop_log(
+                                        "tray.watchdog",
+                                        &format!("Watchdog start_hub failed: {err}"),
+                                    );
+                                }
+                                Err(join_err) => {
+                                    let _ = crate::hub_manager::append_desktop_log(
+                                        "tray.watchdog",
+                                        &format!("Watchdog start_hub task panicked: {join_err}"),
+                                    );
+                                }
                             }
-                            Ok(Err(err)) => {
-                                let _ = crate::hub_manager::append_desktop_log(
-                                    "tray.watchdog",
-                                    &format!("Watchdog start_hub failed: {err}"),
-                                );
+                        });
+                    }
+                    crate::hub_manager::HubWatchdogAction::RestartWedgedContainer => {
+                        let _ = crate::hub_manager::append_desktop_log(
+                            "tray.watchdog",
+                            &format!(
+                                "Hub API unreachable for {} consecutive checks while container is up — restarting ci-os-hub only.",
+                                consecutive_failures
+                            ),
+                        );
+                        last_watchdog_start = Some(std::time::Instant::now());
+                        consecutive_failures = 0;
+                        tauri::async_runtime::spawn(async move {
+                            match tokio::task::spawn_blocking(
+                                crate::hub_manager::restart_wedged_hub_container,
+                            )
+                            .await
+                            {
+                                Ok(Ok(summary)) => {
+                                    let _ = crate::hub_manager::append_desktop_log(
+                                        "tray.watchdog",
+                                        &format!("Watchdog container restart succeeded: {summary}"),
+                                    );
+                                }
+                                Ok(Err(err)) => {
+                                    let _ = crate::hub_manager::append_desktop_log(
+                                        "tray.watchdog",
+                                        &format!("Watchdog container restart failed: {err}"),
+                                    );
+                                }
+                                Err(join_err) => {
+                                    let _ = crate::hub_manager::append_desktop_log(
+                                        "tray.watchdog",
+                                        &format!(
+                                            "Watchdog container restart task panicked: {join_err}"
+                                        ),
+                                    );
+                                }
                             }
-                            Err(join_err) => {
-                                let _ = crate::hub_manager::append_desktop_log(
-                                    "tray.watchdog",
-                                    &format!("Watchdog start_hub task panicked: {join_err}"),
-                                );
-                            }
-                        }
-                    });
+                        });
+                    }
                 }
                 let _ = status_ref.set_text("Status: Disconnected ✗");
                 let _ = start_ref.set_enabled(true);

@@ -18,14 +18,15 @@
  *      `__`-containing name must match that shape.
  *
  * Auth: the Hub's McpAuthGuard validates the `Authorization: Bearer <key>` header against the Hub's
- * key store (SEC-MCP-8; managed in Settings → MCP). Provide any key from that store — the server's
- * env MCP_API_KEY works only because first boot auto-seeds it into the store as the "Default" key.
+ * hashed key store (SEC-MCP-8), which is the sole authority — nothing is seeded at boot and the guard
+ * has no env fallback, so the appliance's own MCP_API_KEY value authenticates nothing. Pass an
+ * `mcp`-scoped key from the store: `cihub api-key create --name "qa"`, or Settings → Security.
  *
  * Scores with the harness vocabulary so it can ride the same NDJSON/dashboard/triage path:
  *   pass  initialize + session id + non-empty tools/list + valid namespacing
  *   warn  connected but tools/list empty, or a `__` tool name is malformed
  *   fail  initialize returned a JSON-RPC error / unexpected shape / no session id
- *   skip  no Hub reachable, or MCP_API_KEY not provided (can't auth) — never breaks a fleet run
+ *   skip  no Hub reachable, or no key provided (can't auth) — never breaks a fleet run
  *   error transport/network fault talking to the Hub
  *
  * NOTE (the marketplace↔bridge gap — see docs/MCP_TESTING_STRATEGY.md): today NO catalog MCP app is
@@ -72,9 +73,9 @@ async function fetchT(url: string, init: RequestInit, timeoutMs = TIMEOUT_MS): P
 }
 
 /** Extract the JSON-RPC payload from a Streamable HTTP response — either a plain JSON body or the
- *  last `data:` line of an SSE stream. Convention (gate on `application/json`, else SSE) is mirrored
- *  by the openclaw plugin's McpClient.parseRpcBody; kept as a standalone copy here on purpose so this
- *  QA script stays dependency-free and ships to fleet nodes unchanged. */
+ *  last `data:` line of an SSE stream. The content-type convention (gate on `application/json`, else
+ *  SSE) is kept self-contained here on purpose so this QA script stays dependency-free and ships to
+ *  fleet nodes unchanged. */
 async function readRpcBody(res: Response): Promise<Record<string, unknown>> {
   const contentType = res.headers.get('content-type') ?? '';
   const text = await res.text();
@@ -95,7 +96,7 @@ async function readRpcBody(res: Response): Promise<Record<string, unknown>> {
     }
   }
   // Last resort: an intermediary may strip/rewrite the content-type on a plain JSON body — try the
-  // raw text before giving up. Mirrored in the openclaw plugin's McpClient.parseRpcBody.
+  // raw text before giving up.
   try {
     return JSON.parse(text) as Record<string, unknown>;
   } catch {
@@ -123,7 +124,7 @@ async function run(): Promise<Record<string, unknown>> {
   }
   if (!API_KEY) {
     result.score = 'skip';
-    result.notes = 'MCP_API_KEY not set — the Hub endpoint is auth-gated (Bearer); provide the server key to run Layer 2';
+    result.notes = 'MCP_API_KEY not set — the Hub endpoint is auth-gated (Bearer); mint a key with `cihub api-key create` to run Layer 2';
     return result;
   }
 
@@ -142,7 +143,7 @@ async function run(): Promise<Record<string, unknown>> {
     if (initRes.status === 401) {
       result.score = 'skip';
       result.notes =
-        'Hub returned 401 — key not in the Hub key store (keys are managed in Settings → MCP; the env MCP_API_KEY is only auto-seeded into the store on first boot)';
+        'Hub returned 401 — this key is not in the Hub key store, or lacks the `mcp` scope. Nothing is seeded at boot: mint one with `cihub api-key create` (or Settings → Security)';
       return result;
     }
     const sessionId = initRes.headers.get('mcp-session-id') ?? undefined;
@@ -176,7 +177,7 @@ async function run(): Promise<Record<string, unknown>> {
     // mis-score as an EMPTY tool list (warn). A 401 here is an auth mismatch (skip), like initialize.
     if (listRes.status === 401) {
       result.score = 'skip';
-      result.notes = 'Hub returned 401 on tools/list — MCP_API_KEY does not match the server key';
+      result.notes = 'Hub returned 401 on tools/list — the key is not in the Hub key store, or lacks the `mcp` scope';
       return result;
     }
     if (!listRes.ok) {

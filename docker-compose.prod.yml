@@ -41,7 +41,7 @@ services:
       - "${RABBITMQ_PORT:-5001}:5672"
     environment:
       RABBITMQ_DEFAULT_USER: companion
-      RABBITMQ_DEFAULT_PASS: admin
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-admin}
       # Disable khepri_db to speed up startup (uses classic Mnesia instead)
       RABBITMQ_FEATURE_FLAGS: ""
     healthcheck:
@@ -93,8 +93,14 @@ services:
         SENTRY_RELEASE: ${SENTRY_RELEASE:-}
         VITE_SENTRY_DSN: ${VITE_SENTRY_DSN:-}
         VITE_SENTRY_RELEASE: ${VITE_SENTRY_RELEASE:-}
+        # Must match DOCKER_PLATFORM (linux/arm64 → arm64). Desktop/CLI write both.
         TARGETARCH: ${TARGETARCH:-amd64}
         DOCKER_PLATFORM: ${DOCKER_PLATFORM:-linux/amd64}
+      # pnpm install in the Dockerfile fetches @companionintelligence/tokens from
+      # npm.pkg.github.com, which needs a read:packages token. GitHub Actions passes
+      # this via docker/build-push-action; self-hosted builds get it from here.
+      secrets:
+        - npm_auth_token
     depends_on:
       ci-hub-db:
         condition: service_healthy
@@ -163,6 +169,13 @@ services:
       - /etc/machine-id:/etc/machine-id:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    # Resolver patience (#933): the Hub resolves sibling containers (ci-hub-db, ci-os-hub-queue,
+    # per-app services) through Docker's embedded DNS, which drops queries under network churn —
+    # every app install/uninstall recreates networks. Default musl/glibc behavior gives up after
+    # 2 attempts and surfaces getaddrinfo EAI_AGAIN. Retry harder before failing.
+    dns_opt:
+      - attempts:5
+      - timeout:2
     networks:
       ci_os_hub_network:
         aliases:
@@ -170,6 +183,7 @@ services:
     environment:
       OLLAMA_URL: http://host.docker.internal:11434
       VLLM_URL: ${VLLM_URL:-http://host.docker.internal:8000}
+      VLLM_API_KEY: ${VLLM_API_KEY:-}
       LEMONADE_URL: ${LEMONADE_URL:-http://host.docker.internal:13305}
       API_PORT: 5002
       CI_HUB_ENVIRONMENT: ${CI_HUB_ENVIRONMENT:-production}
@@ -190,7 +204,7 @@ services:
       POSTGRES_DBNAME: companiondb
       POSTGRES_PORT: 6543
       RABBITMQ_USERNAME: companion
-      RABBITMQ_PASSWORD: admin
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-admin}
       RABBITMQ_HOST: ci-os-hub-queue
       RABBITMQ_PORT: 5672
       INTERNAL_IP: ${INTERNAL_IP:-127.0.0.1}
@@ -206,7 +220,10 @@ services:
       ci-os-hub.managed: true
       traefik.http.middlewares.ci-hub.forwardauth.address: "http://ci-os-hub:5002/api/auth/traefik"
       traefik.http.middlewares.ci-hub.forwardauth.trustForwardHeader: "true"
-      traefik.http.middlewares.ci-hub.forwardauth.authResponseHeaders: "X-CI-Hub-User"
+      # All three signed identity headers must ride through — Traefik copies ONLY the headers
+      # listed here onto the forwarded request, and consumers verifying the signature fail
+      # closed on a missing timestamp/signature (CI-Engineering#74).
+      traefik.http.middlewares.ci-hub.forwardauth.authResponseHeaders: "X-CI-Hub-User,X-CI-Hub-User-Timestamp,X-CI-Hub-User-Signature"
       # Prevent Traefik from creating a default router on websecure (which triggers ACME)
       traefik.http.routers.ci-os-hub.entrypoints: "web"
       traefik.http.routers.ci-os-hub.rule: "Host(`ci-os-hub.local`)"
@@ -332,3 +349,9 @@ volumes:
     name: ci_hub_pgdata
   hub_tailscale_state:
     name: hub_tailscale_state
+
+secrets:
+  # Build-time only: read from the operator's environment (or .env.prod) so the
+  # token is never baked into image history. Needs the read:packages scope.
+  npm_auth_token:
+    environment: NODE_AUTH_TOKEN

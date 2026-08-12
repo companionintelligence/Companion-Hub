@@ -20,6 +20,9 @@ import { useUserContext } from '@/context/user-context';
 import { useMutation } from '@tanstack/react-query';
 import { clearClientHubState } from '@/lib/clear-client-hub-state';
 import { logoutMutation } from '@/api-client/@tanstack/react-query.gen';
+import { useAppStoreState } from '@/stores/app-store';
+import { useCallback, useMemo } from 'react';
+import { useAppContext } from '@/context/app-context';
 
 type HeaderProps = {
   isLoggedIn?: boolean;
@@ -28,7 +31,9 @@ type HeaderProps = {
 
 export const Header = (props: HeaderProps) => {
   const userContext = useUserContext();
+  const { userSettings } = useAppContext();
   const { setTheme } = useTheme();
+  const { resetBrowseToFeatured } = useAppStoreState();
   // Prefer context for authentication state
   const isLoggedIn = props.isLoggedIn ?? userContext.isLoggedIn;
 
@@ -47,9 +52,19 @@ export const Header = (props: HeaderProps) => {
     logout.mutate({});
   };
 
-  const navButtonBase =
-    'cursor-pointer text-foreground/80 hover:bg-primary/12 hover:text-primary dark:text-foreground dark:hover:bg-accent dark:hover:text-accent-foreground';
-  const navButtonActive = 'bg-primary/12 text-primary shadow-sm dark:bg-accent dark:text-accent-foreground dark:shadow-none';
+  const openStoreWithFeaturedDefaults = useCallback(() => {
+    resetBrowseToFeatured();
+    navigate('/store?category=featured');
+  }, [resetBrowseToFeatured, navigate]);
+
+  const deviceName = useMemo(() => {
+    const source = userSettings?.ciHubDeviceSlug?.trim();
+    if (!source) return 'CI HUB';
+    return source.replace(/[-_]+/g, ' ').toUpperCase();
+  }, [userSettings?.ciHubDeviceSlug]);
+
+  const navButtonBase = 'cursor-pointer text-foreground/80 hover:bg-accent hover:text-accent-foreground';
+  const navButtonActive = 'bg-accent text-accent-foreground shadow-sm';
 
   // Common NavLink classes logic
   const getNavLinkClass = ({ isActive }: { isActive: boolean }) =>
@@ -62,17 +77,9 @@ export const Header = (props: HeaderProps) => {
     >
       {/* Logo (Left) */}
       <div className="flex items-center justify-start">
-        <Link to="/home" className="flex items-center">
-          <img
-            src="/2024_CI__Logo_Banner_Color_small.svg"
-            alt="Companion Intelligence Logo"
-            className="h-9 w-auto object-contain hidden dark:block"
-          />
-          <img
-            src="/2024_CI__Logo_Banner_Color_small-lightmode2.svg"
-            alt="Companion Intelligence Logo"
-            className="h-9 w-auto object-contain block dark:hidden"
-          />
+        <Link to="/home" className="flex items-center gap-2" aria-label={t('COMMON_HOME')}>
+          <img src="/logo.svg" alt="CI Logo Icon" className="h-8 w-8 object-contain" />
+          <span className="max-w-48 truncate text-sm font-semibold tracking-wide text-chart-3 dark:text-aqua-light">{deviceName}</span>
         </Link>
       </div>
 
@@ -83,7 +90,7 @@ export const Header = (props: HeaderProps) => {
             <Home className="mr-2 size-4" />
             {t('COMMON_HOME')}
           </NavLink>
-          <NavLink to="/store" className={getNavLinkClass}>
+          <NavLink to="/store" className={getNavLinkClass} onClick={openStoreWithFeaturedDefaults}>
             <Store className="mr-2 size-4" />
             {t('COMMON_APP_STORE')}
           </NavLink>
@@ -124,7 +131,7 @@ export const Header = (props: HeaderProps) => {
               size="icon"
               title={t('HEADER_LOGOUT', 'Logout')}
               onClick={handleLogout}
-              className="text-foreground/80 hover:bg-primary/12 hover:text-primary dark:text-foreground dark:hover:bg-accent dark:hover:text-accent-foreground"
+              className="text-foreground/80 hover:bg-accent hover:text-accent-foreground"
             >
               <LogOut className="size-4" />
               <span className="sr-only">{t('HEADER_LOGOUT', 'Logout')}</span>
@@ -152,7 +159,7 @@ export const Header = (props: HeaderProps) => {
                   </Link>
                 </DropdownMenuItem>
                 <DropdownMenuItem asChild>
-                  <Link to="/store" className="w-full cursor-pointer flex items-center">
+                  <Link to="/store" className="w-full cursor-pointer flex items-center" onClick={openStoreWithFeaturedDefaults}>
                     <Store className="mr-2 size-4" />
                     {t('COMMON_APP_STORE')}
                   </Link>

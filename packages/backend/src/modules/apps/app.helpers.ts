@@ -2,10 +2,14 @@ import { randomBytes } from 'node:crypto';
 import { getAppDataHostPath } from '@/common/helpers/app-data-path.helper';
 import { extractAppUrn } from '@/common/helpers/app-helpers';
 import { resolveBrowserHost } from '@/common/helpers/browser-host';
+import { buildHubLocalOrigin, buildHubPublicOrigin, buildHubTailnetOrigin } from '@/common/helpers/hub-origin';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { LoggerService } from '@/core/logger/logger.service';
+import { PortalClientService } from '@/core/portal/portal-client.service';
 import { Injectable } from '@nestjs/common';
+import { ModuleRef } from '@nestjs/core';
+import type { AppInfo, MemoryUrlStyle, HubIntegration } from '@ci-hub/common/schemas';
 import type { AppUrn } from '@ci-hub/common/types';
 import { buildFqdnSubdomain, buildPublicWebIdentity, resolvePublicDomainRoot, sanitizeAppSubdomain } from '@ci-hub/common/types';
 import { EnvUtils } from '../env/env.utils';
@@ -14,10 +18,141 @@ import { AppFilesManager } from './app-files-manager';
 import { DeviceRegistrationRepository } from '../registration/device-registration.repository';
 import { RegistrationService } from '../registration/registration.service';
 import { appMinContextLength } from '../inference/context-length.util';
-import { InferenceEnvResolver } from '../inference/inference-env-resolver';
-import { McpApiKeyService } from '../mcp/mcp-api-key.service';
+import { InferenceEnvResolver, type StandardizedAiEnv } from '../inference/inference-env-resolver';
+import { CloudFallbackService } from '../inference/cloud-fallback.service';
+import { ApiKeyService } from '../api-keys/api-key.service';
+import type { ApiKeyScope } from '../api-keys/api-key.scopes';
+import { isOfficialStoreApp } from './official-store.predicate';
 import { MemoryConnectionService } from '../memory-connect/memory-connection.service';
+import { GATEWAY_API_PREFIX } from '../memory-connect/memory-exchange.client';
 import { isMemoryProviderApp } from '../memory-connect/memory-provider.predicate';
+import { mergeFormFieldDefaults } from '@ci-hub/common/validation';
+
+/**
+ * Hub master secrets that must never reach an app container.
+ *
+ * `generateEnvFile` seeds each app's env from the Hub's own .env, so any of these
+ * would otherwise be written into every app.env and passed to the container via
+ * env_file — third-party store apps included.
+ *
+ * - `CI_HUB_FORWARD_AUTH_SECRET` signs the connect exchange/rotate/revoke calls and
+ *   the forward-auth identity header. The Hub-global value is re-injected below for
+ *   the memory provider ONLY; first-party consumers receive a PER-APP secret minted
+ *   further down, never this one — which is the whole point of the provider gate.
+ * - `JWT_SECRET` — the Hub's own signing key. `MCP_API_KEY` stays on this list even though the Hub
+ *   no longer derives one (SEC-MCP-8): an appliance upgraded from an older build can still have the
+ *   dead value in its env file, and an app has no business receiving it either way.
+ * - `POSTGRES_PASSWORD` — the Hub's database password. Note the stock `postgres`
+ *   image reads this from its environment, so leaking it does not merely disclose
+ *   the secret, it seeds other databases with it.
+ *
+ * Stripping is safe for apps that legitimately use these NAMES: an app declares its
+ * own via `form_fields`, and the form-field loop below runs AFTER this and re-sets
+ * them (reusing the app's existing value, else generating a fresh one). What is
+ * removed here is only the Hub's value bleeding through.
+ *
+ * NOTE (follow-up): a denylist means the next Hub secret added to .env leaks by
+ * default. The right shape is an allowlist of what an app may receive — CI-Marketplace
+ * already enumerates one (`HUB_PROVIDED_VARS` in its app tests) that this could be
+ * driven from.
+ */
+const HUB_ONLY_SECRET_ENV_VARS = ['CI_HUB_FORWARD_AUTH_SECRET', 'JWT_SECRET', 'MCP_API_KEY', 'POSTGRES_PASSWORD'] as const;
+
+/**
+ * Shape the brokered Companion Memory address the way the consuming app declared.
+ *
+ * The provider is reachable at `http://<service>:<port>`, but its gateway proxies
+ * the API only under `/api/` (stripping the prefix before the API). Apps that build
+ * `/api/...` paths themselves need the bare origin; apps that treat the value as an
+ * API base and append server-local paths need `<origin>/api`. Getting this wrong is
+ * silent — the gateway serves its SPA rather than 404ing — so the app declares which
+ * it wants and the Hub, the only party that knows the value is the brokered provider
+ * address at all, obliges.
+ */
+function memoryUrlForStyle(brokeredUrl: string, style: MemoryUrlStyle | undefined): string {
+  if (style !== 'api_base') {
+    return brokeredUrl;
+  }
+
+  return `${brokeredUrl.replace(/\/+$/, '')}${GATEWAY_API_PREFIX}`;
+}
+
+const HUB_INFERENCE_RESOLVED: Record<string, keyof StandardizedAiEnv> = {
+  llm_base_url: 'CI_LLM_BASE_URL',
+  llm_api_key: 'CI_LLM_API_KEY',
+  chat_model: 'CI_CHAT_MODEL',
+  embedding_model: 'CI_EMBEDDING_MODEL',
+  vision_model: 'CI_VISION_MODEL',
+  ollama_host: 'OLLAMA_HOST',
+  ollama_embed_host: 'CI_OLLAMA_EMBED_HOST',
+  num_ctx: 'CI_LLM_NUM_CTX',
+};
+
+/** Maps resolved Hub inference env into an app's env file (tested directly). */
+export function applyHubInferenceEnv(options: {
+  hubIntegration: HubIntegration | undefined;
+  aiEnv: StandardizedAiEnv;
+  envMap: Map<string, string>;
+}): void {
+  const inferenceMapping = options.hubIntegration?.inference;
+  if (!inferenceMapping) {
+    return;
+  }
+
+  const stripV1 = options.hubIntegration?.llm_base_url_strip_v1 === true;
+
+  for (const [hubKey, appEnvVar] of Object.entries(inferenceMapping)) {
+    const resolvedKey = HUB_INFERENCE_RESOLVED[hubKey as keyof typeof HUB_INFERENCE_RESOLVED];
+    if (!resolvedKey || !appEnvVar) {
+      continue;
+    }
+
+    let resolved = options.aiEnv[resolvedKey];
+    if (resolved === undefined) {
+      continue;
+    }
+
+    if (hubKey === 'llm_base_url' && stripV1) {
+      resolved = resolved.replace(/\/v1\/?$/, '');
+    }
+
+    options.envMap.set(appEnvVar, resolved);
+  }
+}
+
+/**
+ * Whether an app's manifest declares a first-party consumer integration that needs
+ * the Hub's app-facing callback credential (HUB_APP_KEY): a memory consumer
+ * (url_env + token_env — its wrapper drives the connect flow through
+ * /api/memory-connect/apps/:urn/state|skip) or a Portal-OIDC consumer. Provenance
+ * (official-store install) is checked separately at the call site — this reads only
+ * the manifest's declared needs, which are forgeable on their own.
+ */
+export function needsHubAppKey(config: Pick<AppInfo, 'hub_integration'>): boolean {
+  const memory = config.hub_integration?.memory;
+  return Boolean((memory?.url_env && memory?.token_env) || config.hub_integration?.oidc);
+}
+
+/**
+ * Whether this app is provisioned a Hub-managed key at all, and on which grounds:
+ * `mcp` for an MCP-tools consumer, `app` for a provenance-gated first-party consumer, both when
+ * both apply. The empty array means "no trust material".
+ *
+ * This is the single definition of the gate — generateEnvFile decides what to inject from it, and
+ * HubAccessService reports what an app holds from it. Restating the condition in either place
+ * would let a security-facing operator surface drift out of step with what is actually granted.
+ */
+export function hubTrustMaterialScopes(config: Pick<AppInfo, 'urn' | 'hub_integration'>): ApiKeyScope[] {
+  const scopes: ApiKeyScope[] = [];
+  if (config.hub_integration?.mcp_client) {
+    scopes.push('mcp');
+  }
+  // Provenance-gated: manifest fields are forgeable, the install URN's store slug is not.
+  if (isOfficialStoreApp(config) && needsHubAppKey(config)) {
+    scopes.push('app');
+  }
+  return scopes;
+}
 
 function parseAppBaseUrl(url: string): URL {
   const withScheme = /^https?:\/\//i.test(url) ? url : `http://${url}`;
@@ -40,9 +175,41 @@ export class AppHelpers {
     private readonly deviceRegistrationRepository: DeviceRegistrationRepository,
     private readonly registrationService: RegistrationService,
     private readonly inferenceEnv: InferenceEnvResolver,
-    private readonly mcpApiKeys: McpApiKeyService,
+    private readonly cloudFallback: CloudFallbackService,
+    private readonly apiKeys: ApiKeyService,
     private readonly memoryConnection: MemoryConnectionService,
+    private readonly portalClient: PortalClientService,
+    private readonly moduleRef: ModuleRef,
   ) {}
+
+  /**
+   * The Hub's tailnet origin for the `CI_HUB_ORIGINS` allowlist, or null when
+   * the Private VPN is not connected / cannot be served. Lazy ModuleRef lookup
+   * for the same reason as elsewhere in this module — a static TailscaleService
+   * import would cycle. Env generation is rare, so the uncached status read is
+   * fine here (and wanted: a connect that just happened must be visible).
+   */
+  private async hubTailnetOrigin(): Promise<string | null> {
+    try {
+      const { TailscaleService } = await import('../tailscale/tailscale.service');
+      const tailscale = this.moduleRef?.get(TailscaleService, { strict: false });
+
+      if (!tailscale) {
+        return null;
+      }
+
+      const status = await tailscale.getStatus();
+
+      return buildHubTailnetOrigin({ connected: status.connected, httpsAvailable: status.httpsAvailable, nodeFqdn: status.nodeFqdn });
+    } catch (err) {
+      // Degrade to "no tailnet entry" but leave a trace — a silently missing
+      // origin here means ci-memory rejects every VPN callback with nothing in
+      // the logs to say why.
+      this.logger.debug(`[AppHelpers] tailnet origin unavailable for CI_HUB_ORIGINS: ${err instanceof Error ? err.message : String(err)}`);
+
+      return null;
+    }
+  }
 
   /**
    * This function generates an env file for the provided app.
@@ -65,8 +232,25 @@ export class AppHelpers {
       throw new Error(`App ${appUrn} not found`);
     }
 
+    const mergedForm = mergeFormFieldDefaults(form as Record<string, unknown>, config.form_fields ?? []) as AppEventFormInput;
+
     const baseEnvFile = await this.filesytem.readTextFile(envFilePath);
     const envMap = this.envUtils.envStringToMap(baseEnvFile?.toString() ?? '');
+
+    // The app env is seeded from the Hub's OWN .env, and every key in it is handed
+    // to the container via env_file — including apps from third-party stores. Drop
+    // the Hub's master secrets before anything else can leak them.
+    //
+    // These are normally provisioned into `.env.resolved` (never written back to the
+    // source .env), so the default install is clean. But .env.example documents
+    // pinning CI_HUB_FORWARD_AUTH_SECRET in .env to keep it stable across a rebuild,
+    // and an operator who does that would otherwise hand every installed app the
+    // secret that signs the connect exchange/rotate/revoke calls and the forward-auth
+    // identity header — defeating the provider-only gate below, which is precisely
+    // what stops a hostile app from minting or stealing another app's memory key.
+    for (const secret of HUB_ONLY_SECRET_ENV_VARS) {
+      envMap.delete(secret);
+    }
 
     // App containers must always run in production mode regardless of Hub's NODE_ENV.
     // Hub's .env may have NODE_ENV=development which propagates via env_file and breaks
@@ -168,7 +352,7 @@ export class AppHelpers {
         continue;
       }
 
-      const formValue = form[field.env_variable];
+      const formValue = mergedForm[field.env_variable];
       const envVar = field.env_variable;
 
       if (field.type === 'random') {
@@ -384,36 +568,61 @@ export class AppHelpers {
       }
     }
 
-    // --- MCP Integration for Agent Harness Apps (R-ENV) ---
-    if (config.hub_integration?.mcp_client) {
+    // --- Hub trust material: managed key + internal URL (R-ENV / CI-Engineering#74) ---
+    // Two independent reasons an app talks to the Hub:
+    //  - hub_integration.mcp_client: it consumes Hub MCP tools ('mcp' scope).
+    //  - first-party consumer (official-store install declaring hub_integration.memory
+    //    or .oidc): it calls app-facing callback endpoints such as memory-connect
+    //    state/skip ('app' scope, injected as the neutral HUB_APP_KEY).
+    // The callback grant is provenance-gated on the install URN (isOfficialStoreApp):
+    // manifest fields are forgeable, store slugs are not — a third-party-store app
+    // receives no callback credential no matter what its manifest declares.
+    const scopes = hubTrustMaterialScopes(config);
+    const isMcpClient = scopes.includes('mcp');
+    const isFirstPartyConsumer = scopes.includes('app');
+    if (scopes.length > 0) {
       const hubContainerName = process.env.HUB_CONTAINER_NAME || 'ci-os-hub';
       const hubPort = process.env.API_PORT || '3000';
       const hubInternalUrl = `http://${hubContainerName}:${hubPort}`;
 
       envMap.set('HUB_URL', hubInternalUrl);
-      // BUG-MCP-1: the Hub now speaks the MCP Streamable HTTP transport on a single endpoint
-      // (POST/GET/DELETE at /api/mcp), replacing the old /sse + /messages pair. Agents connect an
-      // MCP Streamable HTTP client here with the injected HUB_MCP_API_KEY as the Bearer token.
-      envMap.set('HUB_MCP_URL', `${hubInternalUrl}/api/mcp`);
 
-      // SEC-MCP-8: provision a DEDICATED managed key for this companion app rather than sharing the
-      // single Hub key. The app's existing key is preserved if it still validates (no churn, like
-      // HUB_WAKE_SECRET below); otherwise a fresh one is minted. The key is auto-revoked on uninstall,
-      // and the Hub stores only its hash — the raw is injected here into the app's env.
-      const existingMcpKey = existingAppEnvMap.get('HUB_MCP_API_KEY');
-      const mcpKey = await this.mcpApiKeys.provisionManagedKey({
+      // SEC-MCP-8: provision ONE dedicated managed key per companion app; its scopes
+      // express which Hub surfaces it opens. The app's existing key is preserved when
+      // it still validates (no churn, like HUB_WAKE_SECRET below) and only its scopes
+      // are reconciled — an app gaining a surface keeps the credential it already
+      // holds. The key is auto-revoked on uninstall, and the Hub stores only its
+      // hash — the raw is injected here into the app's env.
+      const existingManagedKey = existingAppEnvMap.get('HUB_APP_KEY') || existingAppEnvMap.get('HUB_MCP_API_KEY');
+      const managedKey = await this.apiKeys.provisionManagedKey({
         appUrn,
         appName: config.name ?? appUrn,
-        existingRawKey: existingMcpKey,
+        existingRawKey: existingManagedKey,
+        scopes,
       });
-      envMap.set('HUB_MCP_API_KEY', mcpKey);
 
-      // Generate or preserve wake secret
-      const existingSecret = existingAppEnvMap.get('HUB_WAKE_SECRET');
-      if (existingSecret) {
-        envMap.set('HUB_WAKE_SECRET', existingSecret);
-      } else {
-        envMap.set('HUB_WAKE_SECRET', randomBytes(32).toString('hex'));
+      if (isMcpClient) {
+        // BUG-MCP-1: the Hub now speaks the MCP Streamable HTTP transport on a single endpoint
+        // (POST/GET/DELETE at /api/mcp), replacing the old /sse + /messages pair. Agents connect an
+        // MCP Streamable HTTP client here with the injected HUB_MCP_API_KEY as the Bearer token.
+        envMap.set('HUB_MCP_URL', `${hubInternalUrl}/api/mcp`);
+        envMap.set('HUB_MCP_API_KEY', managedKey);
+
+        // Generate or preserve wake secret
+        const existingSecret = existingAppEnvMap.get('HUB_WAKE_SECRET');
+        if (existingSecret) {
+          envMap.set('HUB_WAKE_SECRET', existingSecret);
+        } else {
+          envMap.set('HUB_WAKE_SECRET', randomBytes(32).toString('hex'));
+        }
+      }
+
+      if (isFirstPartyConsumer) {
+        // The neutral callback credential (same raw value as HUB_MCP_API_KEY when both
+        // apply) plus the app's own URN, so consumers that are not MCP clients (e.g.
+        // oidc-only) can still address the per-app memory-connect endpoints.
+        envMap.set('HUB_APP_KEY', managedKey);
+        envMap.set('CI_APP_URN', appUrn);
       }
     }
 
@@ -429,20 +638,17 @@ export class AppHelpers {
         // matches the credentials.env endpoint and never emits a sub-minimum
         // num_ctx that would make the app abort at startup.
         const aiEnv = await this.inferenceEnv.resolve({ minContextLength: appMinContextLength(appName) });
-        const HUB_TO_RESOLVED: Record<string, string | undefined> = {
-          llm_base_url: aiEnv.CI_LLM_BASE_URL,
-          llm_api_key: aiEnv.CI_LLM_API_KEY,
-          chat_model: aiEnv.CI_CHAT_MODEL,
-          embedding_model: aiEnv.CI_EMBEDDING_MODEL,
-          vision_model: aiEnv.CI_VISION_MODEL,
-          ollama_host: aiEnv.OLLAMA_HOST,
-          num_ctx: aiEnv.CI_LLM_NUM_CTX,
-        };
-        for (const [hubKey, appEnvVar] of Object.entries(inferenceMapping)) {
-          const resolved = HUB_TO_RESOLVED[hubKey];
-          if (resolved !== undefined && appEnvVar) {
-            envMap.set(appEnvVar, resolved);
-          }
+        applyHubInferenceEnv({
+          hubIntegration: config.hub_integration,
+          aiEnv,
+          envMap,
+        });
+
+        const providerSwitch = config.hub_integration?.inference_provider;
+        if (providerSwitch) {
+          const usesOpenAiCompatible =
+            this.cloudFallback.getEnabledProviders().length > 0 || (this.config.getInferencePreferences().preferredBackend ?? 'ollama') !== 'ollama';
+          envMap.set(providerSwitch.env, usesOpenAiCompatible ? providerSwitch.openai_compatible : providerSwitch.ollama);
         }
       } catch (err) {
         this.logger.warn(`[AppHelpers] Failed to resolve inference env for ${appUrn}: ${err instanceof Error ? err.message : String(err)}`);
@@ -479,16 +685,84 @@ export class AppHelpers {
       }
     }
 
+    // First-party CI-Server deployments (ci-memory, plus rebuilds from the CI-Server
+    // source). Derived once and shared by the OIDC blocks below and the maps-key block
+    // further down, which each used to recompute the same predicate.
+    const isFirstPartyCiServerApp =
+      config.id === 'ci-memory' || (typeof config.source === 'string' && config.source.includes('companionintelligence/CI-Server'));
+
+    // Never overwrite a value the operator pinned in the Hub's own .env (envMap is
+    // seeded from it). Mirrors the GOOGLE_MAPS_KEY handling below: Hub-derived
+    // defaults fill gaps, they don't win arguments.
+    const setUnlessOperatorSet = (key: string, value: string) => {
+      if ((envMap.get(key) ?? '').trim().length > 0) {
+        return false;
+      }
+
+      envMap.set(key, value);
+
+      return true;
+    };
+
     // Backward-compat: first-party CI apps (ci-memory / CI-Server source) that predate
     // the manifest flag still receive the bare-origin OIDC_ISSUER_URL. Skipped when the
     // manifest already declared an OIDC mapping above, to avoid a redundant/conflicting write.
-    // The first-party check is computed lazily so opted-in apps (the common path going
-    // forward) don't pay for the id/source scan on every env generation.
-    if (!oidcIntegration && normalizedCloudUrl) {
-      const isFirstPartyPortalOidcApp =
-        config.id === 'ci-memory' || (typeof config.source === 'string' && config.source.includes('companionintelligence/CI-Server'));
-      if (isFirstPartyPortalOidcApp) {
-        envMap.set('OIDC_ISSUER_URL', normalizedCloudUrl);
+    if (!oidcIntegration && normalizedCloudUrl && isFirstPartyCiServerApp) {
+      envMap.set('OIDC_ISSUER_URL', normalizedCloudUrl);
+    }
+
+    // --- Portal Bearer-token verification (CI-Server `auth.portal.*`) ---
+    // Distinct from the issuer injection above, and NOT gated on it: OIDC_ISSUER_URL
+    // feeds CI-Server's `auth.oidc` (the interactive "Sign in with CI-Portal" browser
+    // flow), while these three feed `auth.portal` — the Bearer path in
+    // JwtOrApiKeyAuthGuard that verifies portal-issued JWTs against the portal JWKS.
+    // Two independent config blocks, so an app that later declares
+    // hub_integration.oidc must not silently lose its Bearer config.
+    //
+    // CI-Server ships `auth.portal.enabled: false` with issuer/jwksUri pointing at the
+    // *prod* portal. Paired against any other portal, every Bearer call — the browser
+    // extension's GET /api/devices and POST /api/v1/events — 401s, and
+    // PortalTokenService swallows the verification error, so the cause is invisible.
+    //
+    // The issuer is the BARE origin, not `<origin>/api/auth`: that path is only the
+    // OIDC *discovery* base; the `iss` claim the portal actually stamps is the origin
+    // (confirmed against its published discovery document). The JWKS, however, does
+    // live under the /api/auth mount.
+    if (isFirstPartyCiServerApp && normalizedCloudUrl) {
+      const injected = [
+        setUnlessOperatorSet('PORTAL_OIDC_ENABLED', 'true'),
+        setUnlessOperatorSet('PORTAL_OIDC_ISSUER', normalizedCloudUrl),
+        setUnlessOperatorSet('PORTAL_OIDC_JWKS_URI', `${normalizedCloudUrl}/api/auth/jwks`),
+      ].filter(Boolean).length;
+
+      if (injected > 0) {
+        this.logger.debug(`[AppHelpers] Injected paired Portal Bearer-auth config for ${appUrn} (${injected}/3 keys; issuer=${normalizedCloudUrl})`);
+      }
+    } else if (isFirstPartyCiServerApp) {
+      this.logger.warn(
+        `[AppHelpers] ${appUrn} is a first-party CI-Server app but CI_CLOUD_URL is empty; portal Bearer auth will stay disabled and token-authenticated calls will 401.`,
+      );
+    }
+
+    // --- Companion Memory Google Maps / geocoding key (from Portal) ---
+    // Portal holds GOOGLE_MAPS_API_KEY as a wrangler secret and serves it at
+    // GET /api/config/maps. Inject into ci-memory so server geocode + the
+    // Memory frontend runtime maps config both work without baking Vite keys
+    // into images. Best-effort: never fail env generation if Portal is down.
+    if (isFirstPartyCiServerApp) {
+      const operatorSetMapsKey = (envMap.get('GOOGLE_MAPS_KEY') ?? '').trim().length > 0 || (envMap.get('GEOCODING_API_KEY') ?? '').trim().length > 0;
+      if (!operatorSetMapsKey) {
+        try {
+          const maps = await this.portalClient.fetchMapsConfig();
+          const apiKey = maps?.configured ? maps.apiKey?.trim() : '';
+          if (apiKey) {
+            envMap.set('GOOGLE_MAPS_KEY', apiKey);
+            envMap.set('GEOCODING_API_KEY', apiKey);
+            this.logger.debug(`[AppHelpers] Injected Portal Google Maps key for ${appUrn}`);
+          }
+        } catch (err) {
+          this.logger.warn(`[AppHelpers] Portal maps-key fetch failed for ${appUrn}: ${err instanceof Error ? err.message : String(err)}`);
+        }
       }
     }
 
@@ -522,7 +796,10 @@ export class AppHelpers {
         // the real creds). getInjectableCreds is non-null only when connected.
         const creds = await this.memoryConnection.getInjectableCreds(appUrn);
         if (creds) {
-          envMap.set(memoryIntegration.url_env, creds.url);
+          // Hand the app the URL SHAPE its manifest asks for. Only the brokered
+          // address is reshaped — an operator-supplied external CI-Server URL falls
+          // through to the `else` below and is passed through exactly as entered.
+          envMap.set(memoryIntegration.url_env, memoryUrlForStyle(creds.url, memoryIntegration.url_style));
           envMap.set(memoryIntegration.token_env, creds.token);
           this.logger.debug(`[AppHelpers] Injected Companion Memory creds for ${appUrn}`);
         } else if (operatorSetToken) {
@@ -535,6 +812,23 @@ export class AppHelpers {
       } catch (err) {
         this.logger.warn(`[AppHelpers] memory-connect env resolution failed for ${appUrn}: ${err instanceof Error ? err.message : String(err)}`);
       }
+    }
+
+    // --- First-party consumer forward-auth identity (CI-Engineering#74) ---
+    // Consumer apps verify the Hub-signed X-CI-Hub-User identity headers with a
+    // PER-APP secret: a leaked secret can only forge identities the leaking app
+    // itself accepts, never a sibling's. Preserve-or-mint, like HUB_WAKE_SECRET —
+    // GET /api/auth/traefik signs with whatever this app.env holds (the
+    // ForwardAuthSecretResolver reads it back), so the pair can never drift and
+    // rotation is simply "clear the var, regenerate env, restart the app".
+    // The provider block below intentionally overrides this for ci-memory with the
+    // Hub-global secret: its verifier also authenticates the connect S2S exchange,
+    // which is keyed on the global value (memory-exchange.client).
+    if (isFirstPartyConsumer) {
+      const existingForwardAuthSecret = (existingAppEnvMap.get('CI_HUB_FORWARD_AUTH_SECRET') ?? '').trim();
+      envMap.set('CI_HUB_FORWARD_AUTH_ENABLED', 'true');
+      envMap.set('CI_HUB_FORWARD_AUTH_SECRET', existingForwardAuthSecret || randomBytes(32).toString('hex'));
+      this.logger.debug(`[AppHelpers] Injected per-app forward-auth secret for ${appUrn}`);
     }
 
     // --- Companion Memory provider (ci-memory) forward-auth provisioning ---
@@ -552,11 +846,35 @@ export class AppHelpers {
         envMap.set('CI_HUB_FORWARD_AUTH_ENABLED', 'true');
         envMap.set('CI_HUB_FORWARD_AUTH_SECRET', forwardAuthSecret);
       }
-      // The Hub's browser-reachable origin (its Traefik/tunnel route,
-      // `<hubSubdomain>.<domain>` — see traefik-config.service.writeHubRoute).
-      // This is the origin ci-memory allowlists as a valid connect return target.
-      if (org?.hubSubdomain && domain && domain !== 'example.com') {
-        envMap.set('CI_HUB_ORIGINS', `https://${org.hubSubdomain}.${domain}`);
+      // The Hub origins ci-memory allowlists as valid connect return targets.
+      //
+      // BOTH of the Hub's browser-reachable origins are listed, comma-separated
+      // (CI-Server splits and normalises the list — see ConnectService
+      // `allowedHubOrigins`). The public tunnel route is the usual one; the LAN
+      // origin is what lets the whole ceremony run on the local network when the
+      // tunnel is down, or on an appliance that was never registered. Without the
+      // LAN entry here, ci-memory rejects the callback and the local fallback
+      // cannot work at all (CI-Engineering#75, Problem 4a).
+      // A loopback local origin is dropped: on a listen-all INTERNAL_IP,
+      // buildHubLocalOrigin collapses to `http://127.0.0.1`, and 127.0.0.1 inside
+      // the ci-memory container resolves to ci-memory itself, not the Hub — so it
+      // can never match a real callback and only bloats the allowlist. The LAN
+      // callback leg genuinely cannot work for a listen-all appliance (its real
+      // LAN IP is unknown), so there is nothing to preserve.
+      // The tailnet origin joins the list whenever the Private VPN is up: it is
+      // the origin the whole ceremony runs on for a VPN caller, and without it
+      // here ci-memory rejects that caller's callback outright
+      // (CI-Engineering#78). Like the LAN entry, its absence (VPN down at env
+      // generation time) simply means that leg is not offered — reconnecting the
+      // VPN requires regenerating ci-memory's env (a restart) to pick it up.
+      const hubOrigins = [
+        buildHubPublicOrigin({ hubSubdomain: org?.hubSubdomain, domain }),
+        buildHubLocalOrigin({ internalIp: userSettings.internalIp, port: userSettings.port }),
+        await this.hubTailnetOrigin(),
+      ].filter((origin): origin is string => origin != null && origin !== '' && !/^https?:\/\/(127\.0\.0\.1|\[::1\])(:|$)/.test(origin));
+
+      if (hubOrigins.length > 0) {
+        envMap.set('CI_HUB_ORIGINS', hubOrigins.join(','));
       }
     }
 

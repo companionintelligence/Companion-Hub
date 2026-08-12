@@ -27,7 +27,7 @@ export function SetupPageShell({ children, steps, title, showLogo = true, classN
           <div className="text-center">
             {showLogo && (
               <img
-                alt="Companion Hub logo"
+                alt="CI Hub logo"
                 src={getLogo(true)}
                 height={64}
                 width={64}

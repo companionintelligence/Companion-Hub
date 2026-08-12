@@ -10,6 +10,12 @@ export default defineConfig({
     setupFiles: ['./src/tests/vite.setup.ts'],
     include: ['src/**/integration/**/*.test.ts'],
     reporters: ['default'],
+    env: {
+      // Same pin as vitest.config.mts: the integration snapshots record the memfs tree keyed by
+      // container paths (`/data/repos/...`). Without this, resolveDataDir() falls through to the
+      // host branch (ROOT_FOLDER_HOST, else ~/.ci-hub) and every path in the snapshot shifts.
+      CI_HUB_DATA_DIR: '/data',
+    },
   },
   resolve: {
     alias: {

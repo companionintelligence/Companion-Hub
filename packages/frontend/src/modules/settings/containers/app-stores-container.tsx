@@ -8,6 +8,7 @@ import { Button } from '@/components/ui/Button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
 import toast from 'react-hot-toast';
 import { LoadingSpinner } from '@/components/ui/LoadingSpinner/loading-spinner';
+import { invalidateStoreCatalogQueries } from '@/lib/invalidate-store-catalog-queries';
 
 export const AppStoresContainer = () => {
   const { t } = useTranslation();
@@ -22,7 +23,7 @@ export const AppStoresContainer = () => {
     ...pullAppStoresMutation(),
     onSuccess: () => {
       toast.success(t('APP_STORES_UPDATE_SUCCESS'));
-      queryClient.invalidateQueries({ queryKey: getAllAppStoresOptions().queryKey });
+      invalidateStoreCatalogQueries(queryClient);
     },
     onError: () => {
       toast.error(t('APP_STORES_UPDATE_ERROR'));
@@ -39,7 +40,7 @@ export const AppStoresContainer = () => {
         <CardHeader>
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
-              <LayoutGrid className="h-5 w-5 text-muted-foreground" />
+              <LayoutGrid className="h-5 w-5 shrink-0 text-muted-foreground" />
               <CardTitle className="text-xl">{t('COMMON_APP_STORES')}</CardTitle>
             </div>
             <Button onClick={() => pullMutation.mutate({})} loading={pullMutation.isPending} variant="outline" size="sm">

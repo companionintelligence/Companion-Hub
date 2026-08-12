@@ -1,5 +1,6 @@
 import { Test, type TestingModule } from '@nestjs/testing';
 import { VllmBackend } from '../backends/vllm.backend';
+import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { mock, type MockProxy } from 'vitest-mock-extended';
 import { vi, describe, it, expect, beforeEach } from 'vitest';
@@ -10,12 +11,25 @@ vi.mock('axios');
 describe('VllmBackend', () => {
   let backend: VllmBackend;
   let loggerService: MockProxy<LoggerService>;
+  let configurationService: MockProxy<ConfigurationService>;
 
   beforeEach(async () => {
     loggerService = mock<LoggerService>();
+    configurationService = mock<ConfigurationService>();
+    configurationService.getInferencePreferences.mockReturnValue({
+      preferredBackend: null,
+      preferredModel: null,
+      preferredEmbeddingModel: null,
+      preferredVisionModel: null,
+      preferredVllmApiKey: null,
+    });
 
     const module: TestingModule = await Test.createTestingModule({
-      providers: [VllmBackend, { provide: LoggerService, useValue: loggerService }],
+      providers: [
+        VllmBackend,
+        { provide: LoggerService, useValue: loggerService },
+        { provide: ConfigurationService, useValue: configurationService },
+      ],
     }).compile();
 
     backend = module.get<VllmBackend>(VllmBackend);
@@ -45,6 +59,60 @@ describe('VllmBackend', () => {
       expect(health.running).toBe(false);
       expect(health.error).toBeDefined();
     });
+
+    it('should send the configured vLLM API key when probing /v1/models', async () => {
+      configurationService.getInferencePreferences.mockReturnValue({
+        preferredBackend: 'vllm',
+        preferredModel: null,
+        preferredEmbeddingModel: null,
+        preferredVisionModel: null,
+        preferredVllmApiKey: 'vllm-local',
+      });
+      (axios.get as any) = vi.fn().mockResolvedValue({ data: { data: [] } });
+
+      await backend.healthCheck();
+
+      expect(axios.get).toHaveBeenCalledWith(
+        expect.stringContaining('/v1/models'),
+        expect.objectContaining({ headers: { Authorization: 'Bearer vllm-local' } }),
+      );
+    });
+  });
+
+  describe('Base URL resolution', () => {
+    it('prefers the operator-configured URL from Settings over the env default', async () => {
+      configurationService.getInferencePreferences.mockReturnValue({
+        preferredBackend: 'vllm',
+        preferredModel: null,
+        preferredEmbeddingModel: null,
+        preferredVisionModel: null,
+        preferredVllmApiKey: null,
+        preferredVllmUrl: 'http://192.168.1.50:8000',
+      });
+
+      expect(backend.getBaseUrl()).toBe('http://192.168.1.50:8000');
+    });
+
+    it('normalizes a URL pasted with a trailing /v1 or slash', () => {
+      configurationService.getInferencePreferences.mockReturnValue({
+        preferredBackend: 'vllm',
+        preferredModel: null,
+        preferredEmbeddingModel: null,
+        preferredVisionModel: null,
+        preferredVllmApiKey: null,
+        preferredVllmUrl: 'http://192.168.1.50:8000/v1/',
+      });
+
+      expect(backend.getBaseUrl()).toBe('http://192.168.1.50:8000');
+    });
+
+    it('probes a candidate URL override without persisting it', async () => {
+      (axios.get as any) = vi.fn().mockResolvedValue({ data: { data: [] } });
+
+      await backend.healthCheck('http://10.0.0.9:8000');
+
+      expect(axios.get).toHaveBeenCalledWith('http://10.0.0.9:8000/v1/models', expect.any(Object));
+    });
   });
 
   describe('Compose config', () => {
@@ -53,9 +121,8 @@ describe('VllmBackend', () => {
       expect(config.runtime).toBe('nvidia');
     });
 
-    it('should include AMD devices', () => {
-      const config = backend.getComposeConfig('amd');
-      expect(config.devices).toContain('/dev/kfd');
+    it('should decline AMD vendor rather than mount devices into the CUDA-only image', () => {
+      expect(() => backend.getComposeConfig('amd')).toThrow(/no reliably maintained ROCm image/);
     });
   });
 });

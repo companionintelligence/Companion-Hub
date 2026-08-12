@@ -1,5 +1,7 @@
 # E2E Tests
 
+> **Agent docs:** [docs/agent/TESTING.md](../docs/agent/TESTING.md) · [docs/agent/TEST_INVENTORY.md](../docs/agent/TEST_INVENTORY.md) (run `pnpm run agent:test-inventory` to regenerate)
+
 CI-Hub has multiple Playwright lanes. The default config ([`playwright.config.ts`](../playwright.config.ts)) ignores `future/`, `cross-domain/`, and `platform/` to keep PR/release CI fast.
 
 ## CI lanes

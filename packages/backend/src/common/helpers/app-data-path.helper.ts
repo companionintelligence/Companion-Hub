@@ -46,7 +46,7 @@ function resolveAgainstHostRoot(root: string, base: string): string {
  * `path.win32.join` in that case so the rebuilt host path stays valid for bind
  * mounts and the desktop "open folder" action.
  */
-function joinHostPath(base: string, ...segments: string[]): string {
+export function joinHostPath(base: string, ...segments: string[]): string {
   if (path.win32.isAbsolute(base) && !path.posix.isAbsolute(base)) {
     return path.win32.join(base, ...segments);
   }

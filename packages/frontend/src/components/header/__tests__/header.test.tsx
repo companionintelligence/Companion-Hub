@@ -13,6 +13,10 @@ vi.mock('@/context/user-context', () => ({
   useUserContext: () => ({ isLoggedIn: true }),
 }));
 
+vi.mock('@/context/app-context', () => ({
+  useAppContext: () => ({ userSettings: { ciHubDeviceSlug: 'core-2' } }),
+}));
+
 vi.mock('@/components/providers/theme/theme-provider', () => ({
   useTheme: () => ({ setTheme: vi.fn() }),
 }));
@@ -69,6 +73,6 @@ describe('Header', () => {
   it('uses the stronger active styling for the selected settings button', () => {
     renderHeader(true, '/settings');
 
-    expect(screen.getByRole('link', { name: /COMMON_SETTINGS|Settings/i })).toHaveClass('bg-primary/12', 'text-primary', 'btn-active');
+    expect(screen.getByRole('link', { name: /COMMON_SETTINGS|Settings/i })).toHaveClass('bg-accent', 'text-accent-foreground', 'btn-active');
   });
 });

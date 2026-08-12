@@ -66,6 +66,13 @@ const appScopedEventSchema = z.object({
   errorDetail: z.string().optional(),
   settingsPath: z.string().optional(),
   progress: z.number().min(0).max(99).optional(),
+  // Identifier for a non-fatal caveat on an otherwise-successful op (e.g. uninstall
+  // completed but a root-owned path could not be fully removed). The client maps it
+  // to a warning toast — a discriminator like errorCode, not rendered as a raw key.
+  warningCode: z.string().optional(),
+  // Optional detail for the caveat (e.g. the host path of an uninstall remnant), so the
+  // client can render an actionable message such as a manual cleanup command.
+  warningDetail: z.string().optional(),
 });
 
 export const sseSchema = z.union([

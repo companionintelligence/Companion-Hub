@@ -63,11 +63,13 @@ describe('AppService', () => {
     appsRepository = moduleRef.get(AppsRepository);
     portManagerService = moduleRef.get(PortManagerService);
 
+    databaseService.waitUntilReady.mockResolvedValue(undefined);
     databaseService.migrate.mockResolvedValue(undefined);
     cacheService.get.mockReturnValue(undefined);
     cacheService.clear.mockReturnValue(undefined);
     cacheService.set.mockReturnValue(undefined);
     appStoreService.registerCloudAppStore.mockResolvedValue(undefined);
+    appStoreService.pullRepositories.mockResolvedValue({ success: true });
     marketplaceService.initialize.mockResolvedValue(undefined);
     appsRepository.getApps.mockResolvedValue([]);
     portManagerService.migrateExistingApp.mockResolvedValue(undefined as never);
@@ -147,7 +149,7 @@ describe('AppService', () => {
       cwdSpy.mockRestore();
 
       expect((await fs.promises.stat(traefikConfigPath)).isFile()).toBe(true);
-      expect((await fs.promises.readFile(traefikConfigPath, 'utf8')).trim()).toContain('admin@example.com');
+      expect((await fs.promises.readFile(traefikConfigPath, 'utf8')).trim()).toContain('admin@localhost');
       expect((await fs.promises.stat(dynamicConfigPath)).isFile()).toBe(true);
       expect((await fs.promises.readFile(dynamicConfigPath, 'utf8')).trim()).toBe('http:\n  middlewares: {}');
     });
@@ -160,6 +162,16 @@ describe('AppService', () => {
 
       await expect(appService.bootstrap()).resolves.toBeUndefined();
       expect(loggerService.warn).toHaveBeenCalledWith(expect.stringContaining('Skipping Docker network prune during bootstrap'));
+    });
+
+    it('schedules a background app store catalog sync after marketplace init', async () => {
+      marketplaceService.initialize.mockClear();
+
+      await appService.bootstrap();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(appStoreService.pullRepositories).toHaveBeenCalled();
+      expect(marketplaceService.initialize).toHaveBeenCalledTimes(2);
     });
   });
 });

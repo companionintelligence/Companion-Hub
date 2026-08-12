@@ -1,6 +1,7 @@
 import { updateUserSettingsMutation, updateAdvancedModeMutation } from '@/api-client/@tanstack/react-query.gen';
 import { useAppContext } from '@/context/app-context';
 import type { Locale } from '@/lib/i18n/locales';
+import { refreshTelemetryConsent } from '@/lib/telemetry-consent';
 import type { TranslatableError } from '@/types/error.types';
 import { useMutation } from '@tanstack/react-query';
 import i18next from 'i18next';
@@ -34,6 +35,10 @@ export const UserSettingsContainer = ({ initialValues, publicHubHostname }: Prop
     onSuccess: () => {
       toast.success(requireRestart ? t('SETTINGS_GENERAL_SETTINGS_UPDATED_RESTART') : t('SETTINGS_GENERAL_SETTINGS_UPDATED'));
       refreshAppContext();
+      // "Allow error monitoring" lives in this form. Re-ask the Hub straight
+      // away so a flip takes effect on the next captured error rather than at
+      // the next staleness refresh.
+      void refreshTelemetryConsent();
     },
   });
 
@@ -66,7 +71,7 @@ export const UserSettingsContainer = ({ initialValues, publicHubHostname }: Prop
       <Card>
         <CardHeader>
           <div className="flex items-center gap-2">
-            <Sparkles className="h-5 w-5 text-muted-foreground" />
+            <Sparkles className="h-5 w-5 shrink-0 text-muted-foreground" />
             <CardTitle className="text-xl">{t('SETTINGS_GENERAL_ADVANCED_MODE_TITLE')}</CardTitle>
           </div>
           <p className="text-sm text-muted-foreground">{t('SETTINGS_GENERAL_ADVANCED_MODE_SUBTITLE')}</p>

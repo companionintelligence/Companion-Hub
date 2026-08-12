@@ -24,10 +24,12 @@ import { fromError } from 'zod-validation-error';
 import {
   AppLifecycleError,
   type AppCommandFailureResult,
+  translateKvmInstallMessage,
   translateRocmKfdInstallMessage,
   translateDockerNetworkOverlapError,
 } from './app-lifecycle-errors';
 import { cidrOverlaps } from '@/modules/network/cidr-overlap';
+import { supportsPosixPermissions } from '@/common/helpers/bind-mount-helpers';
 import { isAbortError, throwIfAborted } from '@/common/abort';
 import type { OperationPhase } from '../app-operation-registry';
 
@@ -93,6 +95,14 @@ export class AppLifecycleCommand {
         mergedServices = mergedServices.map((service) => (service.platform ? service : { ...service, platform: appInfo.runtime_platform }));
       }
 
+      // #936: a stdio MCP server reads MCP JSON-RPC from stdin. Docker closes stdin unless
+      // stdin_open is set, so the main process EOFs at boot and restart-loops. Force it for
+      // apps whose listing declares a stdio MCP transport, even when the store compose
+      // forgot "stdinOpen": true.
+      if (appInfo?.mcp?.transport === 'stdio') {
+        mergedServices = mergedServices.map((service) => (service.isMain ? { ...service, stdinOpen: true } : service));
+      }
+
       // Read app env file to get DOMAIN and LOCAL_DOMAIN for Traefik label interpolation
       const appEnv = await appFilesManager.getAppEnv(appUrn);
       const envUtils = new EnvUtils();
@@ -130,7 +140,16 @@ export class AppLifecycleCommand {
         });
       }
 
-      const dockerComposeBuilder = new DockerComposeBuilder(domain, localDomain);
+      // Windows-backed app data (drvfs/9p) silently drops chown/chmod, so database services that
+      // must own their data directory cannot use a bind mount there. Probe once per build and let
+      // the compose builder redirect those volumes; every other platform keeps its bind mounts.
+      const appDataDir = configService.get('directories')?.appDataDir;
+      const posixPermissionsSupported = appDataDir ? await supportsPosixPermissions(appDataDir) : true;
+      if (!posixPermissionsSupported) {
+        logger.info(`[compose] ${appDataDir} cannot carry POSIX permissions; ownership-sensitive volumes will use named volumes`);
+      }
+
+      const dockerComposeBuilder = new DockerComposeBuilder(domain, localDomain, posixPermissionsSupported);
       const subnet = await subnetManager.allocateSubnet(appUrn, 0, options?.excludeSubnets ?? []);
 
       const composeFile = await dockerComposeBuilder.getDockerCompose(
@@ -274,7 +293,7 @@ export class AppLifecycleCommand {
         };
       }
 
-      const translated = translateRocmKfdInstallMessage(err.message);
+      const translated = translateRocmKfdInstallMessage(err.message) ?? translateKvmInstallMessage(err.message);
       if (translated) {
         this.reportCommandFailure(appId, event, translated.errorDetail ?? translated.message);
         return {

@@ -7,7 +7,24 @@ import type { Request, Response } from 'express';
 import { McpController } from '../mcp.controller';
 import { McpAuthGuard } from '../mcp-auth.guard';
 import { McpSessionRegistry } from '../mcp-session.registry';
+import { McpModernHandlerService } from '../mcp-modern-handler.service';
+import { mcpCallContext } from '../mcp-call-context';
+import type { ApiKeyContext } from '@/modules/api-keys/api-key.service';
 import { LoggerService } from '@/core/logger/logger.service';
+
+vi.mock('@modelcontextprotocol/server', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@modelcontextprotocol/server')>();
+  return { ...actual, isLegacyRequest: vi.fn().mockResolvedValue(true) };
+});
+
+vi.mock('@modelcontextprotocol/node', () => ({
+  toWebRequest: vi.fn(
+    async (req: Request, body?: unknown) =>
+      new Request('http://test/api/mcp', { method: req.method ?? 'POST', body: JSON.stringify(body ?? req.body) }),
+  ),
+}));
+
+import { isLegacyRequest } from '@modelcontextprotocol/server';
 
 // A minimal, schema-valid MCP initialize request body (what a fresh client POSTs first).
 const INITIALIZE_BODY = {
@@ -28,12 +45,14 @@ function fakeRes(): Response & { status: ReturnType<typeof vi.fn>; json: ReturnT
 describe('McpController (Streamable HTTP)', () => {
   let controller: McpController;
   let sessions: MockProxy<McpSessionRegistry>;
+  let modernHandler: MockProxy<McpModernHandlerService>;
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
       controllers: [McpController],
       providers: [
         { provide: McpSessionRegistry, useValue: mock<McpSessionRegistry>() },
+        { provide: McpModernHandlerService, useValue: mock<McpModernHandlerService>() },
         { provide: LoggerService, useValue: mock<LoggerService>() },
       ],
     })
@@ -46,6 +65,8 @@ describe('McpController (Streamable HTTP)', () => {
 
     controller = module.get<McpController>(McpController);
     sessions = module.get(McpSessionRegistry);
+    modernHandler = module.get(McpModernHandlerService);
+    vi.mocked(isLegacyRequest).mockResolvedValue(true);
   });
 
   it('should be defined', () => {
@@ -140,6 +161,17 @@ describe('McpController (Streamable HTTP)', () => {
 
       expect(res.status).toHaveBeenCalledWith(400);
     });
+
+    it('routes modern (2026) POSTs to the stateless handler', async () => {
+      vi.mocked(isLegacyRequest).mockResolvedValueOnce(false);
+      const req = { headers: {}, body: { jsonrpc: '2.0', id: 1, method: 'tools/list' } } as unknown as Request;
+      const res = fakeRes();
+
+      await controller.handlePost(req, res);
+
+      expect(modernHandler.handleRequest).toHaveBeenCalledWith(req, res, req.body);
+      expect(sessions.createConnectedTransport).not.toHaveBeenCalled();
+    });
   });
 
   describe('GET /api/mcp', () => {
@@ -188,6 +220,67 @@ describe('McpController (Streamable HTTP)', () => {
       sessions.remove.mockRejectedValue(new Error('close failed'));
       // remove() always deregisters the session, so DELETE must not surface a 500.
       await expect(controller.handleDelete('sid-1')).resolves.toBeUndefined();
+    });
+  });
+
+  /**
+   * The seam the whole per-key capability feature rests on.
+   *
+   * McpServerFactory reads the caller from {@link mcpCallContext}, and its own tests establish that
+   * context themselves — so they keep passing even if this controller stops providing it. Nothing
+   * else covers the join, and losing it fails CLOSED: every key, including a 'full' one, silently
+   * degrades to read-only. That is a total outage of MCP writes that no test would have reported.
+   *
+   * Asserted from INSIDE handleRequest, because the store is only readable within the `run` callback
+   * — checking after the call would pass against a controller that never wrapped anything.
+   */
+  describe('caller context', () => {
+    const KEY: ApiKeyContext = { id: 7, name: 'agent-key', capability: 'full' };
+
+    it('runs the POST handler inside the authenticated key context', async () => {
+      const transport = mock<StreamableHTTPServerTransport>();
+      (transport as { sessionId?: string }).sessionId = 'new-sid';
+      let seen: ApiKeyContext | undefined;
+      transport.handleRequest.mockImplementation(async () => {
+        seen = mcpCallContext.getStore();
+      });
+      sessions.createConnectedTransport.mockResolvedValue(transport);
+
+      const req = { headers: {}, body: INITIALIZE_BODY, mcpApiKey: KEY } as unknown as Request;
+      await controller.handlePost(req, fakeRes());
+
+      expect(seen).toEqual(KEY);
+    });
+
+    it('runs the GET stream inside the authenticated key context', async () => {
+      const transport = mock<StreamableHTTPServerTransport>();
+      let seen: ApiKeyContext | undefined;
+      transport.handleRequest.mockImplementation(async () => {
+        seen = mcpCallContext.getStore();
+      });
+      sessions.get.mockReturnValue(transport);
+
+      const req = { headers: { 'mcp-session-id': 'sid-1' }, mcpApiKey: KEY } as unknown as Request;
+      await controller.handleGet(req, fakeRes());
+
+      expect(seen).toEqual(KEY);
+    });
+
+    it('leaves the context empty rather than fabricating one when no key was authenticated', async () => {
+      // The guard makes this unreachable in production; asserted because the fail-closed default
+      // belongs to the registry, and a fabricated 'read' context here would be indistinguishable
+      // from a real one.
+      const transport = mock<StreamableHTTPServerTransport>();
+      (transport as { sessionId?: string }).sessionId = 'new-sid';
+      let seen: ApiKeyContext | undefined = KEY;
+      transport.handleRequest.mockImplementation(async () => {
+        seen = mcpCallContext.getStore();
+      });
+      sessions.createConnectedTransport.mockResolvedValue(transport);
+
+      await controller.handlePost({ headers: {}, body: INITIALIZE_BODY } as unknown as Request, fakeRes());
+
+      expect(seen).toBeUndefined();
     });
   });
 });

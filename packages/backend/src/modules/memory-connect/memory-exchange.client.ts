@@ -15,8 +15,13 @@ const REQUEST_TIMEOUT_MS = 10_000;
  * the path its ConnectRequestAuthGuard verifies the signature against — is
  * WITHOUT `/api`. We must sign the server-relative path (`/connect/...`), not
  * the gateway URL path, or every signature mismatches and the guard 401s.
+ *
+ * Exported because the same fact governs the URL handed to consumer apps that treat
+ * the brokered address as an API base (see `memoryUrlForStyle`): if the gateway's mount
+ * point ever moves, one constant must move with it — otherwise the Hub's own calls get
+ * fixed while every consumer keeps posting into the SPA.
  */
-const GATEWAY_API_PREFIX = '/api';
+export const GATEWAY_API_PREFIX = '/api';
 
 /** The raw key + owning app returned by a successful code exchange or rotation. */
 export interface MemoryExchangeResult {

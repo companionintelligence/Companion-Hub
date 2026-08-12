@@ -198,10 +198,9 @@ Several clients reconnect on their own with exponential backoff, so transient
 network/service blips heal without surfacing to the user:
 
 - **Queue (RabbitMQ).** `QueueFactory` reconnects with exponential backoff.
-- **MCP bridge / OpenClaw plugin.** Lazy reconnect to app MCP servers with
-  exponential backoff capped at 30s
-  (`packages/backend/src/modules/mcp/agents/mcp-bridge.service.ts`,
-  `packages/openclaw-plugin/src/mcp-client.ts`).
+- **MCP bridge.** Lazy reconnect to app MCP servers with exponential backoff
+  capped at 30s
+  (`packages/backend/src/modules/mcp/agents/mcp-bridge.service.ts`).
 - **Frontend SSE.** The generated SSE client retries with backoff from 3s up to
   30s (`packages/frontend/src/api-client/core/serverSentEvents.gen.ts`).
 - **Port / subnet allocation.** Concurrent installs retry allocation on

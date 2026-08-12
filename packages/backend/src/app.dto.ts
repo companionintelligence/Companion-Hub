@@ -48,13 +48,12 @@ export const settingsSchema = z.object({
   inferenceModel: z.string().trim().optional(),
   inferenceEmbeddingModel: z.string().trim().optional(),
   inferenceVisionModel: z.string().trim().optional(),
-  // ISSUE-MCP-2 / ENH-MCP-4: MCP admin-managed settings, persisted so they survive restarts.
-  // mcpAllowDestructive gates destructive MCP tools. mcpApiKey overrides the derived MCP_API_KEY
-  // (see env-helpers) that seeds the key store's "Default" key on FIRST boot only — after that,
-  // keys are managed in Settings → MCP (SEC-MCP-8) and the env value is not a live credential.
-  // Resolved into MCP_ALLOW_DESTRUCTIVE / MCP_API_KEY.
-  mcpAllowDestructive: z.boolean().optional(),
-  mcpApiKey: z.string().trim().optional(),
+  inferenceVllmApiKey: z.string().trim().optional(),
+  inferenceVllmUrl: z.string().trim().optional(),
+  // No MCP settings live here. SEC-MCP-8 moved MCP credentials into the hashed key store (Settings →
+  // Security / `cihub api-key create`), and ISSUE-MCP-2's destructive gate became each key's
+  // `capability` column — so neither an unrevocable second credential nor an appliance-wide authority
+  // switch can be introduced through settings.json.
 });
 
 const simpleAppInfoSchema = appInfoObjectSchema.pick({
@@ -82,6 +81,8 @@ const appContextSchema = z.object({
   // Absolute host path of the root app-data folder (parent of every app's data).
   // Used by the Settings "Open app data folder" button; null when unresolved.
   appDataRootHostPath: z.string().nullable().optional(),
+  // Host CPU architecture apps are installed against (from ARCHITECTURE / host probe).
+  architecture: z.enum(['amd64', 'arm64']),
   user: userSchema,
   apps: z.array(simpleAppInfoSchema),
   updatesAvailable: z.number(),

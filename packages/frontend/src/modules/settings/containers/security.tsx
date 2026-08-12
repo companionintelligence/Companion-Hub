@@ -4,6 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/com
 import { ChangePasswordForm } from '../components/change-password-form/change-password-form';
 import { ChangeUsernameForm } from '../components/change-username-form/change-username-form';
 import { OtpForm } from '../components/otp-form/otp-form';
+import { ApiKeysContainer } from './api-keys';
 
 export const SecurityContainer = (props: { totpEnabled: boolean; username?: string }) => {
   const { totpEnabled, username } = props;
@@ -14,7 +15,7 @@ export const SecurityContainer = (props: { totpEnabled: boolean; username?: stri
       <Card>
         <CardHeader>
           <div className="flex items-center gap-2">
-            <User className="h-5 w-5 text-muted-foreground" />
+            <User className="h-5 w-5 shrink-0 text-muted-foreground" />
             <CardTitle className="text-xl">{t('COMMON_CHANGE_USERNAME')}</CardTitle>
           </div>
           <CardDescription>{t('SETTINGS_SECURITY_CHANGE_USERNAME_SUBTITLE')}</CardDescription>
@@ -27,7 +28,7 @@ export const SecurityContainer = (props: { totpEnabled: boolean; username?: stri
       <Card>
         <CardHeader>
           <div className="flex items-center gap-2">
-            <Key className="h-5 w-5 text-muted-foreground" />
+            <Key className="h-5 w-5 shrink-0 text-muted-foreground" />
             <CardTitle className="text-xl">{t('COMMON_CHANGE_PASSWORD')}</CardTitle>
           </div>
           <CardDescription>{t('SETTINGS_SECURITY_CHANGE_PASSWORD_SUBTITLE')}</CardDescription>
@@ -40,7 +41,7 @@ export const SecurityContainer = (props: { totpEnabled: boolean; username?: stri
       <Card>
         <CardHeader>
           <div className="flex items-center gap-2">
-            <Lock className="h-5 w-5 text-muted-foreground" />
+            <Lock className="h-5 w-5 shrink-0 text-muted-foreground" />
             <CardTitle className="text-xl">{t('COMMON_TWO_FACTOR_AUTHENTICATION')}</CardTitle>
           </div>
           <CardDescription>
@@ -53,6 +54,9 @@ export const SecurityContainer = (props: { totpEnabled: boolean; username?: stri
           <OtpForm totpEnabled={totpEnabled} />
         </CardContent>
       </Card>
+
+      {/* Hub-wide API keys (agents + apps). Renders its own Card; moved here from the MCP tab. */}
+      <ApiKeysContainer />
     </div>
   );
 };

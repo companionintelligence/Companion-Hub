@@ -1,5 +1,5 @@
 import { cn } from '@/lib/utils';
-import type { CuratedModel, HardwareTier } from '@ci-hub/common/types';
+import type { CuratedModel, HardwareTier, InferenceBackendType } from '@ci-hub/common/types';
 import { ChevronRight, HardDrive, MemoryStick } from 'lucide-react';
 import { type ReactNode, useState } from 'react';
 import { CubeModelsIcon, ModelIcon } from './icons';
@@ -15,6 +15,8 @@ interface RecommendedModelsProps {
   selectedModelIds: string[];
   onToggleModel: (modelId: string) => void;
   preferredModelId?: string;
+  /** Chat backend — vLLM models open Hugging Face when not yet served. */
+  chatBackend?: InferenceBackendType;
   /** Rendered at the bottom of the section (e.g. the collapsible Other Models drawer). */
   children?: ReactNode;
 }
@@ -95,6 +97,7 @@ export const RecommendedModels = ({
   selectedModelIds,
   onToggleModel,
   preferredModelId,
+  chatBackend = 'ollama',
   children,
 }: RecommendedModelsProps) => {
   const { t } = useTranslation();
@@ -106,8 +109,12 @@ export const RecommendedModels = ({
     .filter((m) => recommendedIds.has(m.id))
     .sort((a, b) => Number(b.id === preferredModelId) - Number(a.id === preferredModelId));
 
+  const installHint = chatBackend === 'vllm' ? t('ONBOARDING_MODELS_VLLM_INSTALL_HINT') : t('ONBOARDING_MODELS_INSTALL_AFTER_DOWNLOAD');
+
   return (
-    <StepSection number={2} title={t('COMMON_RECOMMENDED_MODELS')} description={t('ONBOARDING_RECOMMENDED_MODELS_DESC')}>
+    <StepSection number={4} badge="recommended" title={t('ONBOARDING_MODELS_TITLE')} description={t('ONBOARDING_RECOMMENDED_MODELS_DESC')}>
+      <p className="mb-3 text-sm text-muted-foreground">{t('ONBOARDING_MODELS_CALLOUT')}</p>
+      <p className="mb-4 text-xs text-muted-foreground">{installHint}</p>
       {models.length > 0 ? (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3" data-testid="model-card-title">
           {models.map((model) => (

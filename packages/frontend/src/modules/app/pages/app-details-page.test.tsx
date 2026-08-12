@@ -29,6 +29,17 @@ vi.mock('@tanstack/react-query', () => ({
 // (useMemoryConnection → useQuery/useMutation/useQueryClient); this page test
 // focuses on page layout, so stub it out rather than widening the narrow
 // react-query mock above.
+vi.mock('../hooks/use-app-media', () => ({
+  useAppMedia: () => ({
+    data: { screenshots: [], demoVideoUrl: null },
+    isLoading: false,
+  }),
+}));
+
+vi.mock('../components/app-media-gallery/app-media-gallery', () => ({
+  AppMediaGallery: () => <div data-testid="app-media-gallery" />,
+}));
+
 vi.mock('../components/memory-status-badge/memory-status-badge', () => ({
   MemoryStatusBadge: () => null,
 }));
@@ -65,6 +76,13 @@ vi.mock('@/components/ui/LoadingSpinner/loading-spinner', () => ({
 
 vi.mock('../components/app-status/app-status', () => ({
   AppStatus: () => <div data-testid="app-status" />,
+}));
+
+// The availability probe is a self-contained hook (useQuery + useMutation +
+// useQueryClient); this page test only cares about layout, so stub it rather
+// than widen the narrow react-query mock above.
+vi.mock('../helpers/use-app-url-availability', () => ({
+  useAppUrlAvailability: () => ({ state: 'idle', statusMessage: null }),
 }));
 
 vi.mock('../containers/app-actions/app-actions', () => ({
@@ -159,6 +177,7 @@ describe('AppDetailsPage', () => {
     expect(screen.getByText('A clean desktop summary for installs.')).toBeInTheDocument();
     expect(screen.getByTestId('app-actions')).toBeInTheDocument();
     expect(screen.getByTestId('app-status')).toBeInTheDocument();
+    expect(screen.getByTestId('app-media-gallery')).toBeInTheDocument();
     expect(screen.getByTestId('app-details-tabs')).toBeInTheDocument();
   });
 

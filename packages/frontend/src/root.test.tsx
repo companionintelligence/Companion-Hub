@@ -46,6 +46,10 @@ vi.mock('./lib/hub-session-refresh', () => ({
   refreshHubSessionIfDue,
 }));
 
+const { handleSessionExpired } = vi.hoisted(() => ({ handleSessionExpired: vi.fn() }));
+
+vi.mock('./lib/session-expired', () => ({ handleSessionExpired }));
+
 vi.mock('./api-client', () => ({
   userContext,
 }));
@@ -62,6 +66,13 @@ vi.mock('./api-client/client.gen', () => ({
 
 const { clientLoader, ErrorBoundary } = await import('./root');
 import { cacheRegistrationStatus } from './lib/registration-cache';
+
+// Captured at import time: `beforeEach(vi.clearAllMocks)` would otherwise wipe the
+// registration call this interceptor arrived on.
+const responseInterceptor = responseUse.mock.calls[0]?.[0] as (res: Response) => Promise<Response>;
+
+/** The interceptor only reads these, and `Response.url` cannot be set via the constructor. */
+const errorResponse = (url: string, status = 401) => ({ status, url, statusText: 'Unauthorized', text: async () => '' }) as unknown as Response;
 
 function makeStatus(phase: RegistrationStatus['phase'], registered = false): RegistrationStatus {
   return {
@@ -301,5 +312,56 @@ describe('root ErrorBoundary Sentry capture', () => {
     ErrorBoundary({ error: new Error('dev only') } as never);
 
     expect(captureHubException).not.toHaveBeenCalled();
+  });
+});
+
+describe('root response interceptor 401 handling', () => {
+  beforeEach(() => {
+    handleSessionExpired.mockClear();
+  });
+
+  it('signs the client out when a normal request 401s', async () => {
+    await expect(responseInterceptor(errorResponse('http://127.0.0.1:5002/api/apps'))).rejects.toThrow();
+
+    expect(handleSessionExpired).toHaveBeenCalled();
+  });
+
+  it('attaches HTTP status and URL to thrown TranslatableError for Sentry', async () => {
+    const { TranslatableError } = await import('./types/error.types');
+    const res = {
+      status: 500,
+      url: 'http://127.0.0.1:5002/api/store/listings',
+      statusText: 'Internal Server Error',
+      text: async () => JSON.stringify({ message: 'COMMON_AN_ERROR_OCCURRED' }),
+    } as unknown as Response;
+
+    let thrown: unknown;
+    try {
+      await responseInterceptor(res);
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(TranslatableError);
+    const typed = thrown as InstanceType<typeof TranslatableError>;
+    expect(typed.message).toBe('COMMON_AN_ERROR_OCCURRED');
+    expect(typed.http).toEqual({
+      status: 500,
+      url: 'http://127.0.0.1:5002/api/store/listings',
+      body: 'COMMON_AN_ERROR_OCCURRED',
+    });
+  });
+
+  it.each([
+    'http://127.0.0.1:5002/api/auth/login',
+    'http://127.0.0.1:5002/api/auth/logout',
+    'http://127.0.0.1:5002/api/auth/session/refresh',
+    // The generated SDK client — not `apiFetch` — is what `openExternalWithHubSession`
+    // calls, so the fail-open exemption has to hold on THIS path (#944).
+    'http://127.0.0.1:5002/api/auth/browser-handoff/mint',
+  ])('leaves the session alone when %s 401s', async (url) => {
+    await expect(responseInterceptor(errorResponse(url))).rejects.toThrow();
+
+    expect(handleSessionExpired).not.toHaveBeenCalled();
   });
 });

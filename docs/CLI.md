@@ -23,6 +23,43 @@ Homebrew and other package managers expose the same `cihub` executable on `PATH`
 
 ---
 
+## Headless — no graphical session required
+
+Everything the Hub does runs in Docker; only the desktop *UI* needs a display.
+On an SSH-only machine, a server, or in CI (including coding agents driving the
+box), use one of these instead of launching the GUI:
+
+```bash
+companion-hub --detached   # one-shot headless start of the Hub stack, then exits
+cihub up                   # same, via the CLI
+cihub status               # containers, tunnel, VPN, models
+cihub register --code <c>  # pair with CI Cloud without the desktop pairing UI
+```
+
+Discoverability guarantees:
+
+- The Linux packages (.deb/.rpm) install the bundled CLI at **`/usr/bin/cihub`**,
+  executable immediately after `apt install` — no first GUI launch required.
+- `companion-hub --help` and `--version` work without a display (they never
+  touch GTK).
+- Launching `companion-hub` in desktop mode with no `DISPLAY`/`WAYLAND_DISPLAY`
+  prints guidance pointing to `--detached` and `cihub` and exits with status 2,
+  instead of panicking inside the GTK backend.
+- `apt show companion-hub` mentions the headless entry points in the package
+  description.
+
+Developer stack override (attach to an externally managed compose stack instead
+of the bundled one — skips reconciliation):
+
+```bash
+CI_HUB_STACK_DEV=1 \
+CI_HUB_STACK_DEV_COMPOSE_PATH=/path/to/docker-compose.yml \
+CI_HUB_STACK_DEV_ENV_PATH=/path/to/.env \
+companion-hub --detached
+```
+
+---
+
 ## On-device testing loop
 
 Use this loop when iterating on CLI/TUI or developer workflow changes:
@@ -163,12 +200,112 @@ demo-webui     Exited (1) 2 minutes ago
 ## MCP
 
 ```bash
-cihub mcp setup [env]     # set MCP_ENABLED=true, generate MCP_API_KEY if absent
+cihub mcp setup [env]     # set MCP_ENABLED=true
 cihub mcp shutdown [env]  # set MCP_ENABLED=false
 cihub mcp config [env]    # show current MCP settings
 ```
 
 ![Screenshots of cihub mcp setup, config, and shutdown](./images/cli/mcp.svg)
+
+### API keys
+
+The MCP endpoint (`POST /api/mcp`) authenticates with `Authorization: Bearer <key>`, and the key must
+carry the `mcp` scope. The hashed key store is the sole authority — `MCP_API_KEY` in the env file is
+**not** a credential and nothing is seeded at boot (SEC-MCP-8), so a key must be created explicitly.
+
+```bash
+cihub api-key create --name "laptop"   # operator keys carry the 'mcp' scope
+cihub api-key list                     # id, name, scopes, capability, prefix
+```
+
+The raw key is printed **once** at creation; store it immediately. Revoke keys in
+**Settings → Security**.
+
+`create` also accepts `--capability read|write|full`, which decides what the key may do on the
+surfaces its scopes opened — `write` is the default. Raise or lower an existing key's capability in
+**Settings → Security**; the CLI has `create` and `list` only.
+
+Operator keys carry `mcp` only. The `app` scope belongs to **managed** keys the Hub provisions to
+installed apps and revokes on uninstall — the callback guard resolves the key's owning app, so an
+operator key carrying `app` would authenticate nothing. Names beginning `app:` are reserved for the
+same reason.
+
+Connect an external MCP client with:
+
+```json
+{ "mcpServers": { "ci-hub": { "url": "http://<hub-host>:5002/api/mcp", "headers": { "Authorization": "Bearer <key>" } } } }
+```
+
+---
+
+## Connect an agent
+
+Wire an agent installed **on this host** to Companion Memory, so it gets passive capture and injected
+context rather than memory tools it has to call. This is the memory-provider path, not MCP — the two
+are independent.
+
+```bash
+cihub connect openclaw --memory-url <url> --memory-key <key>
+cihub connect hermes   --memory-url <url> --memory-key <key>
+```
+
+| Flag                           | Effect                                                               |
+| ------------------------------ | -------------------------------------------------------------------- |
+| `--memory-url`, `--memory-key` | Companion Memory base URL and API key. Required; prompted on a TTY   |
+| `--hub-url`, `--hub-key`       | Also register the Hub MCP server. Both or neither                    |
+| `--force`                      | Claim the memory slot even if another provider holds it (`openclaw`) |
+| `--dry-run`                    | Print the plan and write nothing                                     |
+
+**The memory key is not the MCP key above.** The provider talks REST, so the key needs the `Memory`
+scope (plus `Intents` for the intent tools) at **Read & write**. A key minted for MCP alone
+authenticates and is refused on every capture call, and the plugin swallows failed writes rather than
+break a session — which is why the probe checks the key and not just the address.
+
+### What it does
+
+Everything is probed before anything is written, so a failed probe leaves the machine exactly as it
+was. Memory is checked twice — `/api/health` for reachability, then `/api/memory/context`, which is
+scope-guarded and therefore actually exercises the key. Hub, when its flags are given, is checked
+with a real `initialize` + `tools/list` handshake and the tool count is reported.
+
+Both memory legs go out under the User-Agent the agent's own plugin sends, because a probe that
+identifies as a different client can only prove something about itself: the hermes plugin talks
+urllib, whose default `Python-urllib/x.y` an edge in front of an exposed hub rejects outright. And
+because Companion Memory answers in JSON, an HTML error body is reported as a CDN or proxy refusing
+the request — not as a bad key, which is the one piece of advice that cannot help there.
+
+For **openclaw** it guards the memory slot first (the guard cannot be delegated: installing by hand
+can switch a foreign slot without asking), backs up `openclaw.json`, installs the pinned plugin from
+npm, merges the settings the installer does not write — `plugins.slots.memory`, the plugin's `config`
+and `hooks.allowConversationAccess`, an additive `tools.alsoAllow`, and disabling the bundled
+`session-memory` hook — then validates with `openclaw doctor --lint --json`, restoring the backup if
+the lint faults any of the keys it wrote. (It ignores findings about anything else, so a config that
+was already untidy is not blamed on this command.) Restart the gateway afterwards with
+`openclaw daemon restart` — that manages a service install; a gateway you started by hand has to
+be stopped and started yourself. `openclaw daemon status` says which you have.
+
+For **hermes** it stages the pinned plugin tarball into `~/.hermes/plugins/companionintelligence`,
+swapping it in only once the download succeeded, and writes the `mcp_servers.hub` block into
+`config.yaml` when the Hub flags are given — atomically, `0600`, after a backup, and skipped entirely
+if the block is already correct. Memory credentials stay with `hermes memory setup`, which owns them
+and runs its own connection test, so you still finish with that command. If a Hub server was
+written, start a new Hermes session — `mcp_servers` is read at startup. Not
+`hermes gateway restart`: that subcommand manages the messaging gateway and does not reload
+`config.yaml`.
+
+It configures **the machine it runs on**. For an agent on another machine, follow the per-agent
+instructions in the [connect docs](https://docs.ci.computer/docs/connect) — they need no Hub CLI.
+
+| Exit | Meaning                                                |
+| ---- | ------------------------------------------------------ |
+| `0`  | connected                                              |
+| `1`  | a probe failed — nothing was written                   |
+| `2`  | a write failed — the backup was restored, path printed |
+
+One exception to `2`: if the hermes plugin installed but its Hub MCP block could not be written, that
+is reported in the summary and the run still succeeds — the plugin is in place and useful without it.
+
+Plugin versions are **pinned in the CLI** and bumped deliberately; `connect` never installs `latest`.
 
 ---
 

@@ -1,5 +1,7 @@
 import { client } from '@/api-client/client.gen';
-import { isTauriReleaseBuild } from '@/lib/tauri-hub-probe';
+import { isSessionExpiryExempt } from '@/lib/session-expiry-policy';
+import { usesCrossOriginDesktopApi } from '@/lib/hub-runtime-mode';
+import { runtimeFetch } from './runtime-fetch';
 
 export const TAURI_SESSION_STORAGE_KEY = 'ci-hub-session';
 export const HUB_SESSION_ISSUED_AT_KEY = 'ci-hub-session-issued-at';
@@ -12,7 +14,7 @@ let tauriSessionId: string | null = null;
 
 /** Desktop release builds must survive full app quit/relaunch — sessionStorage does not. */
 function usesPersistentSessionStorage(): boolean {
-  return isTauriReleaseBuild();
+  return usesCrossOriginDesktopApi();
 }
 
 function readStoredSessionId(): string | null {
@@ -152,13 +154,10 @@ export function apiFetch(path: string, init?: RequestInit): Promise<Response> {
   // Origin), which browsers reject for any credentialed request — surfacing as a
   // bare "Load failed". The generated API client already uses this config value.
   const credentials: RequestCredentials = init?.credentials ?? config.credentials ?? 'include';
-  return fetch(`${baseUrl}${path}`, { credentials, ...init, headers }).then((response) => {
-    if (
-      response.status === 401 &&
-      !path.startsWith('/api/auth/login') &&
-      !path.startsWith('/api/auth/logout') &&
-      !path.startsWith('/api/auth/session/refresh')
-    ) {
+  // runtimeFetch is window.fetch on web/desktop, and the native Tauri HTTP client
+  // on mobile (so a tauri://localhost webview can reach a remote https Hub).
+  return runtimeFetch(`${baseUrl}${path}`, { credentials, ...init, headers }).then((response) => {
+    if (response.status === 401 && !isSessionExpiryExempt(path)) {
       void import('@/lib/session-expired')
         .then(({ handleSessionExpired }) => handleSessionExpired())
         .catch(() => {
@@ -176,7 +175,8 @@ export async function clearStaleServerSession(): Promise<void> {
   const baseUrl = config.baseUrl ?? '';
   const credentials: RequestCredentials = config.credentials ?? 'include';
   try {
-    await fetch(`${baseUrl}/api/auth/logout`, { method: 'POST', credentials });
+    // runtimeFetch so the logout reaches a remote Hub on mobile too.
+    await runtimeFetch(`${baseUrl}/api/auth/logout`, { method: 'POST', credentials });
   } catch {
     // Non-fatal when the API is down or the session is already gone.
   }

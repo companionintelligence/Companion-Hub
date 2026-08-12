@@ -1,12 +1,14 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
 import { AppStatusSyncService } from '../app-status-sync.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { AppsRepository } from '@/modules/apps/apps.repository';
+import { InstallPipelineTracker } from '@/modules/apps/install-pipeline.tracker';
 import { SSEService } from '@/core/sse/sse.service';
 import { SystemEventsQueue } from '@/modules/queue/entities/system-events';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { ErrorReportingService } from '@/core/error-reporting/error-reporting.service';
+import { AppOperationRegistry } from '../app-operation-registry';
 import type Dockerode from 'dockerode';
 
 describe('AppStatusSyncService', () => {
@@ -14,12 +16,23 @@ describe('AppStatusSyncService', () => {
   let appRepository: MockProxy<AppsRepository>;
   let docker: MockProxy<Dockerode>;
   let errorReportingService: MockProxy<ErrorReportingService>;
+  let sseService: MockProxy<SSEService>;
+  let installPipelineTracker: InstallPipelineTracker;
+  let operationRegistry: AppOperationRegistry;
+  let dockerService: { diagnoseAppContainers: ReturnType<typeof vi.fn> };
 
   beforeEach(() => {
     appRepository = mock<AppsRepository>();
+    appRepository.updateAppByIdIfStatus.mockResolvedValue(true);
     docker = mock<Dockerode>();
     docker.listContainers.mockResolvedValue([]);
     errorReportingService = mock<ErrorReportingService>();
+    sseService = mock<SSEService>();
+    installPipelineTracker = new InstallPipelineTracker();
+    operationRegistry = new AppOperationRegistry(mock<LoggerService>());
+    dockerService = {
+      diagnoseAppContainers: vi.fn().mockResolvedValue({ unhealthy: [], healthy: [] }),
+    };
 
     const config = mock<ConfigurationService>();
     config.get.mockImplementation((key: string) => {
@@ -37,12 +50,16 @@ describe('AppStatusSyncService', () => {
     service = new AppStatusSyncService(
       mock<LoggerService>(),
       appRepository,
-      mock<SSEService>(),
+      sseService,
       systemEventsQueue,
       config,
       docker,
+      installPipelineTracker,
+      operationRegistry,
       undefined,
       errorReportingService,
+      undefined,
+      dockerService as never,
     );
   });
 
@@ -63,7 +80,7 @@ describe('AppStatusSyncService', () => {
     expect(result.skippedCount).toBe(1);
   });
 
-  it('does not mark installing apps as missing while no containers exist', async () => {
+  it('does not mark installing apps as missing while no containers exist within the pull grace', async () => {
     const updatedAt = new Date(Date.now() - 10 * 60 * 1000).toISOString();
     appRepository.getApps.mockResolvedValue([
       {
@@ -78,6 +95,49 @@ describe('AppStatusSyncService', () => {
     const result = await service.syncAllAppStatuses();
 
     expect(appRepository.updateAppById).not.toHaveBeenCalled();
+    expect(appRepository.updateAppByIdIfStatus).not.toHaveBeenCalled();
+    expect(result.skippedCount).toBe(1);
+    expect(result.syncedCount).toBe(0);
+  });
+
+  it('heals stranded installing apps past grace when nothing is actively installing them', async () => {
+    const updatedAt = new Date(Date.now() - 50 * 60 * 1000).toISOString();
+    appRepository.getApps.mockResolvedValue([
+      {
+        id: 1,
+        appName: 'flatnotes',
+        appStoreSlug: 'ci-marketplace',
+        status: 'installing',
+        updatedAt,
+      },
+    ] as never);
+
+    const result = await service.syncAllAppStatuses();
+
+    expect(appRepository.updateAppByIdIfStatus).toHaveBeenCalledWith(1, 'installing', expect.objectContaining({ status: 'install_failed' }));
+    expect(sseService.emit).toHaveBeenCalledWith(
+      'app',
+      expect.objectContaining({ event: 'install_error', appUrn: 'flatnotes:ci-marketplace', appStatus: 'install_failed' }),
+    );
+    expect(result.syncedCount).toBe(1);
+  });
+
+  it('does not heal an installing app that still holds the pipeline even past grace', async () => {
+    const updatedAt = new Date(Date.now() - 50 * 60 * 1000).toISOString();
+    appRepository.getApps.mockResolvedValue([
+      {
+        id: 1,
+        appName: 'openclaw',
+        appStoreSlug: 'ci-marketplace',
+        status: 'installing',
+        updatedAt,
+      },
+    ] as never);
+    installPipelineTracker.setActive('openclaw:ci-marketplace' as never);
+
+    const result = await service.syncAllAppStatuses();
+
+    expect(appRepository.updateAppByIdIfStatus).not.toHaveBeenCalled();
     expect(result.skippedCount).toBe(1);
     expect(result.syncedCount).toBe(0);
   });
@@ -95,7 +155,7 @@ describe('AppStatusSyncService', () => {
 
     await service.syncAllAppStatuses();
 
-    expect(appRepository.updateAppById).toHaveBeenCalledWith(2, expect.objectContaining({ status: 'missing' }));
+    expect(appRepository.updateAppByIdIfStatus).toHaveBeenCalledWith(2, 'stopped', expect.objectContaining({ status: 'missing' }));
   });
 
   it('keeps port-expose workloads running without Docker containers', async () => {
@@ -153,6 +213,25 @@ describe('AppStatusSyncService', () => {
     );
   });
 
+  it('does not overwrite status when the app moved into a lifecycle transition since the snapshot', async () => {
+    appRepository.getApps.mockResolvedValue([
+      {
+        id: 8,
+        appName: 'demo',
+        appStoreSlug: 'ci-marketplace',
+        status: 'running',
+        updatedAt: new Date().toISOString(),
+      },
+    ] as never);
+    appRepository.updateAppByIdIfStatus.mockResolvedValue(false);
+
+    const result = await service.syncAllAppStatuses();
+
+    expect(appRepository.updateAppByIdIfStatus).toHaveBeenCalledWith(8, 'running', expect.objectContaining({ status: 'missing' }));
+    expect(result.skippedCount).toBe(1);
+    expect(result.syncedCount).toBe(0);
+  });
+
   it('reports warning coverage for mixed container states', async () => {
     appRepository.getApps.mockResolvedValue([
       {
@@ -183,5 +262,48 @@ describe('AppStatusSyncService', () => {
       expect.objectContaining({ appUrn: 'demo:ci-marketplace', runningContainers: 1, totalContainers: 2 }),
       expect.objectContaining({ debounceKey: 'app-status-sync:mixed:demo:ci-marketplace' }),
     );
+  });
+
+  it('reports top-level sync failures to Sentry so crash detection outages are visible', async () => {
+    const boom = new Error('docker list failed');
+    appRepository.getApps.mockRejectedValue(boom);
+
+    const result = await service.syncAllAppStatuses();
+
+    expect(result.success).toBe(false);
+    expect(errorReportingService.captureException).toHaveBeenCalledWith(boom, { surface: 'app-status-sync' });
+  });
+
+  it('attaches container logs when reporting a running → stopped crash', async () => {
+    appRepository.getApps.mockResolvedValue([
+      {
+        id: 9,
+        appName: 'remotion-studio',
+        appStoreSlug: 'ci-marketplace',
+        status: 'running',
+        updatedAt: new Date().toISOString(),
+      },
+    ] as never);
+    docker.listContainers.mockResolvedValue([
+      {
+        State: 'exited',
+        Status: 'Exited (1) 2 seconds ago',
+        Labels: { 'ci-os-hub.appurn': 'remotion-studio:ci-marketplace' },
+      },
+    ] as never);
+    dockerService.diagnoseAppContainers.mockResolvedValue({
+      unhealthy: [{ name: 'remotion-studio_ci-marketplace-1', state: 'Exited (1)', logs: 'Error: out of memory' }],
+      healthy: [],
+    });
+
+    await service.syncAllAppStatuses();
+
+    expect(dockerService.diagnoseAppContainers).toHaveBeenCalledWith('remotion-studio:ci-marketplace');
+    expect(errorReportingService.reportAppFailure).toHaveBeenCalledWith({
+      appUrn: 'remotion-studio:ci-marketplace',
+      phase: 'crash',
+      message: expect.stringContaining('Error: out of memory'),
+      containers: [{ name: 'remotion-studio_ci-marketplace-1', state: 'Exited (1)', logs: 'Error: out of memory' }],
+    });
   });
 });

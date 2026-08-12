@@ -1,156 +1,37 @@
 import type { FormField } from '@/types/app.types';
-import validator from 'validator';
+import {
+  HIDDEN_FIELD_TYPES,
+  isAppFormValid,
+  mergeFormFieldDefaults,
+  resolveFieldValue,
+  validateAppFormFields,
+  validateField as sharedValidateField,
+  type ValidateAppFormOptions,
+} from '@ci-hub/common/validation';
 
 type ValidationError = {
   messageKey: string;
   params?: Record<string, string>;
 };
 
-/** Generic public URLs — keeps Validator.js default TLD requirement. */
-const isGenericUrl = (value: string) => validator.isURL(value);
+export const hiddenTypes = [...HIDDEN_FIELD_TYPES];
 
-/**
- * App base URLs may use localhost or other non-TLD hosts in local/dev installs.
- * Require an explicit http(s) scheme; allow hosts without a public suffix.
- */
-const isAppBaseUrl = (value: string) =>
-  validator.isURL(value, {
-    require_protocol: true,
-    require_tld: false,
-  });
+export { mergeFormFieldDefaults, resolveFieldValue };
 
 export const validateField = (field: FormField, value: unknown): ValidationError | undefined => {
-  if (field.required && !value && typeof value !== 'boolean') {
-    return { messageKey: 'APP_INSTALL_FORM_ERROR_REQUIRED', params: { label: field.label } };
-  }
-
-  if (!value || typeof value !== 'string') {
-    return undefined;
-  }
-
-  if (field.regex && !validator.matches(value, field.regex)) {
-    return { messageKey: field.pattern_error ?? 'APP_INSTALL_FORM_ERROR_REGEX', params: { label: field.label, pattern: field.regex } };
-  }
-
-  switch (field.type) {
-    case 'text':
-      if (field.max && value.length > field.max) {
-        return { messageKey: 'APP_INSTALL_FORM_ERROR_MAX_LENGTH', params: { label: field.label, max: String(field.max) } };
-      }
-      if (field.min && value.length < field.min) {
-        return { messageKey: 'APP_INSTALL_FORM_ERROR_MIN_LENGTH', params: { label: field.label, min: String(field.min) } };
-      }
-      break;
-    case 'password':
-      if (!validator.isLength(value, { min: field.min || 0, max: field.max || 100 })) {
-        return {
-          messageKey: 'APP_INSTALL_FORM_ERROR_BETWEEN_LENGTH',
-          params: { label: field.label, min: String(field.min), max: String(field.max) },
-        };
-      }
-      break;
-    case 'email':
-      if (!validator.isEmail(value)) {
-        return { messageKey: 'APP_INSTALL_FORM_ERROR_INVALID_EMAIL', params: { label: field.label } };
-      }
-      break;
-    case 'number':
-      if (!validator.isNumeric(value)) {
-        return { messageKey: 'APP_INSTALL_FORM_ERROR_NUMBER', params: { label: field.label } };
-      }
-      break;
-    case 'fqdn':
-      if (!validator.isFQDN(value)) {
-        return { messageKey: 'APP_INSTALL_FORM_ERROR_FQDN', params: { label: field.label } };
-      }
-      break;
-    case 'ip':
-      if (!validator.isIP(value)) {
-        return { messageKey: 'APP_INSTALL_FORM_ERROR_IP', params: { label: field.label } };
-      }
-      break;
-    case 'fqdnip':
-      if (!validator.isFQDN(value || '') && !validator.isIP(value)) {
-        return { messageKey: 'APP_INSTALL_FORM_ERROR_FQDNIP', params: { label: field.label } };
-      }
-      break;
-    case 'url':
-      if (!isGenericUrl(value)) {
-        return { messageKey: 'APP_INSTALL_FORM_ERROR_URL', params: { label: field.label } };
-      }
-      break;
-    case 'app_base_url':
-      if (!isAppBaseUrl(value)) {
-        return { messageKey: 'APP_INSTALL_FORM_ERROR_URL', params: { label: field.label } };
-      }
-      break;
-    default:
-      break;
-  }
-
-  return undefined;
+  const error = sharedValidateField(field, value);
+  if (!error) return undefined;
+  return { messageKey: error.messageKey, params: error.params };
 };
 
-const validateDomain = (domain?: unknown): ValidationError | undefined => {
-  if (typeof domain !== 'string' || !validator.isFQDN(domain || '')) {
-    return { messageKey: 'APP_INSTALL_FORM_ERROR_FQDN', params: { label: String(domain) } };
-  }
-
-  return undefined;
-};
-
-const validateLocalSubdomain = (subdomain?: unknown): ValidationError | undefined => {
-  if (!subdomain) return { messageKey: 'APP_INSTALL_FORM_ERROR_REQUIRED', params: { label: 'localSubdomain' } };
-
-  if (typeof subdomain !== 'string') {
-    return { messageKey: 'APP_INSTALL_FORM_ERROR_LOCAL_SUBDOMAIN_INVALID' };
-  }
-
-  if (!validator.matches(subdomain, /^[a-zA-Z0-9-]{1,63}$/)) {
-    return { messageKey: 'APP_INSTALL_FORM_ERROR_LOCAL_SUBDOMAIN_FORMAT' };
-  }
-
-  return undefined;
-};
-
-export const hiddenTypes = ['random'];
-
-export const validateAppConfig = (values: Record<string, unknown>, fields: FormField[]) => {
-  const { exposed, exposedLocal, openPort, domain, localSubdomain, port, ...config } = values;
-
+export const validateAppConfig = (values: Record<string, unknown>, fields: FormField[], options?: ValidateAppFormOptions) => {
   const errors: Record<string, ValidationError | undefined> = {};
-
-  for (const field of fields.filter((f) => !hiddenTypes.includes(f.type))) {
-    const error = validateField(field, config[field.env_variable]);
-
-    if (error) {
-      errors[field.env_variable] = validateField(field, config[field.env_variable]);
-    }
+  for (const error of validateAppFormFields(values, fields, options)) {
+    errors[error.env_variable] = { messageKey: error.messageKey, params: error.params };
   }
-
-  if (exposed) {
-    const error = validateDomain(domain);
-
-    if (error) {
-      errors.domain = error;
-    }
-  }
-
-  if (exposedLocal) {
-    const error = validateLocalSubdomain(localSubdomain);
-
-    if (error) {
-      errors.localSubdomain = error;
-    }
-
-    // In production, port is required when publishing to internet
-    // Check if we're in production by checking if port is required but missing
-    // We'll validate this in the form component itself since we have access to isProduction there
-  }
-
-  if (openPort && port && !validator.isPort(String(port))) {
-    errors.port = { messageKey: 'APP_INSTALL_FORM_ERROR_PORT', params: { port: String(port) } };
-  }
-
   return errors;
 };
+
+/** Same checks as submit validation — use for the install button validity gate. */
+export const isInstallFormValid = (values: Record<string, unknown>, fields: FormField[], options?: ValidateAppFormOptions): boolean =>
+  isAppFormValid(values, fields, options);

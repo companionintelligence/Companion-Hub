@@ -12,7 +12,7 @@ on:
         default: true
         type: boolean
       environment:
-        description: 'Target environment'
+        description: 'Cloud target'
         required: false
         default: 'dev'
         type: choice
@@ -36,6 +36,11 @@ jobs:
     uses: ./.github/workflows/build-container.yml
     with:
       environment: ${{ inputs.environment }}
+      # Thread the release tag so a production release publishes a versioned image at the
+      # exact reference these desktop bundles compile in via CI_HUB_BUILD_VERSION. Without
+      # this the bundles pinned a tag no workflow ever pushed and could not start (#920).
+      # build-container publishes a versioned tag for production only.
+      tag: ${{ inputs.tag }}
     secrets: inherit
 
   build:
@@ -43,6 +48,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
+      packages: read
     strategy:
       fail-fast: false
       matrix:
@@ -67,13 +73,19 @@ jobs:
             label: Windows (ARM64)
     name: Build — ${{ matrix.label }}
     runs-on: ${{ matrix.platform }}
-    environment: ${{ inputs.environment }}
+    # Signing secrets + Azure OIDC federated credentials live on the `production`
+    # GitHub Environment only. Cloud targeting (Portal URL, image channel, CDN) still
+    # comes from `inputs.environment` below — do not conflate the two. Selecting
+    # environment=dev previously pulled the incomplete/stale `dev` Environment
+    # secrets (no Azure Artifact Signing; bad APPLE_PASSWORD) and failed notarization
+    # / Windows signing while production releases succeeded with the same workflow.
+    environment: production
     timeout-minutes: 45
     env:
       APPLE_SIGNING_CONFIGURED: ${{ secrets.APPLE_CERTIFICATE != '' && 'true' || '' }}
       # Notarization is a separate post-build step (notarytool on the DMG). Do not pass
       # APPLE_ID/PASSWORD/TEAM_ID to `tauri build` — Tauri would notarize inline and
-      # fail the whole bundle when credentials are wrong or for dev prereleases.
+      # fail the whole bundle when credentials are wrong.
       APPLE_NOTARIZATION_CONFIGURED: ${{ secrets.APPLE_ID != '' && secrets.APPLE_PASSWORD != '' && secrets.APPLE_TEAM_ID != '' && 'true' || '' }}
       # Sentry symbol/sourcemap upload runs only when SENTRY_AUTH_TOKEN is set, and
       # also needs repo/org variables SENTRY_ORG, SENTRY_FRONTEND_PROJECT and
@@ -81,8 +93,9 @@ jobs:
       # never fail a release.
       SENTRY_SYMBOLS_ENABLED: ${{ secrets.SENTRY_AUTH_TOKEN != '' && 'true' || '' }}
       # Windows signing uses GitHub OIDC + Azure login + Azure Artifact Signing.
-      # Required environment secrets: AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_SUBSCRIPTION_ID,
-      # AZURE_SIGNING_ENDPOINT, AZURE_SIGNING_ACCOUNT, AZURE_CERTIFICATE_PROFILE.
+      # Required secrets on the production Environment: AZURE_TENANT_ID, AZURE_CLIENT_ID,
+      # AZURE_SUBSCRIPTION_ID, AZURE_SIGNING_ENDPOINT, AZURE_SIGNING_ACCOUNT,
+      # AZURE_CERTIFICATE_PROFILE. OIDC subject: environment:production.
       WINDOWS_SIGNING_CONFIGURED: ${{ secrets.AZURE_TENANT_ID != '' && secrets.AZURE_CLIENT_ID != '' && secrets.AZURE_SUBSCRIPTION_ID != '' && secrets.AZURE_SIGNING_ENDPOINT != '' && secrets.AZURE_SIGNING_ACCOUNT != '' && secrets.AZURE_CERTIFICATE_PROFILE != '' && 'true' || '' }}
       BUILD_ENABLED: ${{ (inputs.platforms == 'all' || startsWith(matrix.label, 'macOS')) && 'true' || '' }}
     steps:
@@ -130,16 +143,22 @@ jobs:
         uses: actions/setup-node@v6
         with:
           node-version: '22'
+          registry-url: 'https://npm.pkg.github.com'
+          scope: '@companionintelligence'
       - name: Install Bun
         if: env.BUILD_ENABLED
         uses: oven-sh/setup-bun@v2
       - name: Install dependencies
         if: env.BUILD_ENABLED
         run: pnpm install --frozen-lockfile
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: Set environment config
         if: env.BUILD_ENABLED
         shell: bash
         run: |
+          # Bake Portal/cloud URLs into the desktop binary (hub_env.rs). Product UI is
+          # served from the Hub stack container — see packages/desktop/bootstrap/.
           if [ "${{ inputs.environment }}" = "production" ]; then
             {
               echo "CI_CLOUD_URL=https://hub.ci.computer"
@@ -157,18 +176,7 @@ jobs:
             echo "CI_HUB_ENVIRONMENT=${{ inputs.environment }}"
             echo "CI_HUB_BUILD_VERSION=${{ inputs.tag }}"
           } >> "$GITHUB_ENV"
-      - name: Build frontend
-        if: env.BUILD_ENABLED
-        env:
-          NODE_ENV: production
-          CI_CLOUD_URL: ${{ env.CI_CLOUD_URL }}
-          VITE_SENTRY_DSN: ${{ secrets.SENTRY_FRONTEND_DSN }}
-          VITE_SENTRY_RELEASE: ci-hub-frontend@${{ inputs.tag }}
-          # Emit production source maps only when we will upload them to Sentry.
-          VITE_BUILD_SOURCEMAPS: ${{ secrets.SENTRY_AUTH_TOKEN != '' && '1' || '' }}
-        run: |
-          pnpm run --filter=@ci-hub/common build
-          pnpm run --filter=frontend build
+          echo "Cloud target: ${{ inputs.environment }} (CI_CLOUD_URL will be baked from GITHUB_ENV)"
       - name: Build standalone Companion Hub CLI
         if: env.BUILD_ENABLED
         shell: bash
@@ -179,24 +187,6 @@ jobs:
           fi
           node scripts/build-standalone-cli.cjs --target "${{ matrix.target }}" --outfile "$CLI_OUT" --bundle-resource
           ls -lh "$CLI_OUT"
-      - name: Upload frontend source maps to Sentry
-        if: env.BUILD_ENABLED && env.SENTRY_SYMBOLS_ENABLED
-        continue-on-error: true
-        shell: bash
-        env:
-          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
-          SENTRY_ORG: ${{ vars.SENTRY_ORG }}
-          SENTRY_PROJECT: ${{ vars.SENTRY_FRONTEND_PROJECT }}
-        run: |
-          # Best-effort per command: under `bash -eo pipefail` a sentry-cli
-          # failure would otherwise abort the step before the deletion below,
-          # leaving raw .map files to be embedded in the shipped desktop bundle.
-          # Always strip the maps regardless of the upload result.
-          DIST="packages/frontend/dist/client"
-          npx --yes @sentry/cli@2 sourcemaps inject "$DIST" || echo "::warning::sentry sourcemaps inject failed"
-          npx --yes @sentry/cli@2 sourcemaps upload \
-            --release "ci-hub-frontend@${{ inputs.tag }}" "$DIST" || echo "::warning::sentry sourcemaps upload failed"
-          find "$DIST" -name '*.map' -delete
       - name: Bump Tauri version to match release tag
         if: env.BUILD_ENABLED
         shell: bash
@@ -230,11 +220,26 @@ jobs:
           [ -n "${APPLE_SIGNING_CONFIGURED:-}" ] || missing+=("APPLE_CERTIFICATE + APPLE_CERTIFICATE_PASSWORD")
           [ -n "${APPLE_NOTARIZATION_CONFIGURED:-}" ] || missing+=("APPLE_ID + APPLE_PASSWORD + APPLE_TEAM_ID")
           if [ "${#missing[@]}" -gt 0 ]; then
-            echo "::error::macOS release requires Developer ID signing and notarization secrets on the '${{ inputs.environment }}' environment. Missing: ${missing[*]}"
+            echo "::error::macOS release requires Developer ID signing and notarization secrets on the 'production' GitHub Environment (signing is not tied to the cloud target). Missing: ${missing[*]}"
             echo "::error::A green macOS release guarantees a signed + notarized DMG, so this build is failing instead of shipping an unsigned/unnotarized artifact."
             exit 1
           fi
-          echo "macOS signing + notarization secrets are present."
+          echo "macOS signing + notarization secrets are present (production Environment)."
+      # ── Windows Code Signing preflight ───────────────────────────────
+      # Fail before the long Tauri compile if Azure Artifact Signing secrets are
+      # missing from the production Environment. Actual signing still runs after
+      # the bundle exists (Prepare / Azure login / Sign steps below).
+      - name: Require Windows signing secrets
+        if: env.BUILD_ENABLED && runner.os == 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${WINDOWS_SIGNING_CONFIGURED:-}" ]; then
+            echo "::error::Windows release requires all six Azure Artifact Signing secrets on the 'production' GitHub Environment (OIDC subject environment:production): AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_SUBSCRIPTION_ID, AZURE_SIGNING_ENDPOINT, AZURE_SIGNING_ACCOUNT, AZURE_CERTIFICATE_PROFILE."
+            echo "::error::A green Windows release guarantees Authenticode-signed installers, so this build is failing instead of shipping unsigned artifacts."
+            exit 1
+          fi
+          echo "Windows signing secrets are present (production Environment)."
       - name: Import Apple certificate
         if: env.BUILD_ENABLED && runner.os == 'macOS' && env.APPLE_SIGNING_CONFIGURED
         env:
@@ -424,7 +429,7 @@ jobs:
             --password "$APPLE_PASSWORD" \
             --team-id "$APPLE_TEAM_ID" \
             --wait --timeout 600; then
-            echo "::error::Apple notarization failed (check APPLE_ID, app-specific APPLE_PASSWORD, and APPLE_TEAM_ID for this environment)"
+            echo "::error::Apple notarization failed (check APPLE_ID, app-specific APPLE_PASSWORD, and APPLE_TEAM_ID on the production GitHub Environment)"
             exit 1
           fi
           xcrun stapler staple "$DMG_PATH"
@@ -455,22 +460,8 @@ jobs:
           xcrun stapler validate "$DMG_PATH"
           echo "✅ DMG is Developer ID signed, notarized, and stapled"
       # ── Windows Code Signing (Azure Artifact Signing via GitHub OIDC) ──
-      # See docs/DESKTOP-RELEASE-SIGNING.md for the exact Azure IDs, secrets, and
-      # federated credential subjects this workflow expects.
-      # A green Windows release must mean Authenticode-signed installers. Fail fast
-      # (before building) if any of the six Azure signing secrets are missing, instead
-      # of silently shipping unsigned .msi / -setup.exe that trip SmartScreen.
-      - name: Require Windows signing secrets
-        if: env.BUILD_ENABLED && runner.os == 'Windows'
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ -z "${WINDOWS_SIGNING_CONFIGURED:-}" ]; then
-            echo "::error::Windows release requires all six Azure Artifact Signing secrets on the '${{ inputs.environment }}' environment: AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_SUBSCRIPTION_ID, AZURE_SIGNING_ENDPOINT, AZURE_SIGNING_ACCOUNT, AZURE_CERTIFICATE_PROFILE."
-            echo "::error::A green Windows release guarantees Authenticode-signed installers, so this build is failing instead of shipping unsigned artifacts."
-            exit 1
-          fi
-          echo "Windows signing secrets are present."
+      # See docs/DESKTOP-RELEASE-SIGNING.md. Secrets were already gated by
+      # "Require Windows signing secrets" before the Tauri build.
       - name: Prepare Windows signing paths
         if: env.BUILD_ENABLED && runner.os == 'Windows' && env.WINDOWS_SIGNING_CONFIGURED == 'true'
         shell: pwsh
@@ -584,6 +575,7 @@ jobs:
         if: env.BUILD_ENABLED
         uses: actions/upload-artifact@v7
         with:
+          retention-days: 7
           name: release-${{ matrix.target }}
           path: release-artifacts/*
           if-no-files-found: error

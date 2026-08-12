@@ -3,6 +3,8 @@ import { describe, it, expect } from 'vitest';
 import {
   serviceSchema as serviceSchemaZod,
   dynamicComposeSchema as dynamicComposeSchemaZod,
+  dynamicComposeObject,
+  dynamicComposeFormSchema,
   collectServiceSecurityViolations,
   TRUSTED_APP_SECURITY_ALLOWLIST,
 } from '../dynamic-compose.js';
@@ -180,6 +182,71 @@ schemas.forEach(({ name, serviceSchema, dynamicComposeSchema, safeParse }) => {
 
           const result = safeParse(serviceSchema, service);
           expect(result.success).toBe(false);
+        });
+
+        const withVolume = (volume: Record<string, unknown>) => ({
+          image: 'postgres:18',
+          name: 'database',
+          volumes: [volume],
+        });
+
+        it('should accept a named volume in place of a host path', () => {
+          const result = safeParse(serviceSchema, withVolume({ volumeName: 'pgdata', containerPath: '/var/lib/postgresql' }));
+          expect(result.success).toBe(true);
+        });
+
+        it('should reject a volume that declares both a host path and a named volume', () => {
+          const result = safeParse(serviceSchema, withVolume({ hostPath: '/host/path', volumeName: 'pgdata', containerPath: '/var/lib/postgresql' }));
+          expect(result.success).toBe(false);
+        });
+
+        // The message is asserted, not just the failure: naming only the bind mount would point an
+        // author who meant to declare a named volume at a field that is no longer the only option.
+        it('should reject a volume that declares no source, naming both sources in the error', () => {
+          // Parsed directly rather than through `safeParse`, which drops the issue list.
+          const result = serviceSchema.safeParse(withVolume({ containerPath: '/var/lib/postgresql' }));
+          expect(result.success).toBe(false);
+          expect(result.error?.issues.map((issue) => issue.message)).toContain('CUSTOM_APP_ERROR_VOLUME_SOURCE_REQUIRED');
+        });
+
+        // An empty string is "present" as far as the source check is concerned, so without the
+        // length rule it reaches the builder and throws an error naming the opposite problem.
+        it('should reject an empty host path rather than reporting it as no source at build time', () => {
+          const result = serviceSchema.safeParse(withVolume({ hostPath: '', containerPath: '/var/lib/postgresql' }));
+          expect(result.success).toBe(false);
+          expect(result.error?.issues.map((issue) => issue.message)).toContain('CUSTOM_APP_ERROR_HOST_PATH_REQUIRED');
+        });
+
+        it('should reject an empty container path, which would render as a bare `source:` mount', () => {
+          const result = serviceSchema.safeParse(withVolume({ hostPath: '${APP_DATA_DIR}/data', containerPath: '' }));
+          expect(result.success).toBe(false);
+          expect(result.error?.issues.map((issue) => issue.message)).toContain('CUSTOM_APP_ERROR_CONTAINER_PATH_REQUIRED');
+        });
+
+        it('should reject a volume name docker itself would not accept', () => {
+          const result = safeParse(serviceSchema, withVolume({ volumeName: '/pg data', containerPath: '/var/lib/postgresql' }));
+          expect(result.success).toBe(false);
+        });
+
+        it('should accept requiresPosixPermissions on a bind mount', () => {
+          const result = safeParse(
+            serviceSchema,
+            withVolume({ hostPath: '${APP_DATA_DIR}/data/db', containerPath: '/var/lib/postgresql', requiresPosixPermissions: true }),
+          );
+          expect(result.success).toBe(true);
+        });
+
+        it('should reject requiresPosixPermissions on a named volume, which always has them', () => {
+          const result = safeParse(
+            serviceSchema,
+            withVolume({ volumeName: 'pgdata', containerPath: '/var/lib/postgresql', requiresPosixPermissions: true }),
+          );
+          expect(result.success).toBe(false);
+        });
+
+        it('should not treat a named volume as a denied host path', () => {
+          const result = safeParse(serviceSchema, withVolume({ volumeName: 'etc', containerPath: '/etc/postgresql' }));
+          expect(result.success).toBe(true);
         });
       });
 
@@ -1040,10 +1107,42 @@ describe('collectServiceSecurityViolations (install-sink app sandbox)', () => {
     expect(collectServiceSecurityViolations({ volumes: [{ hostPath: '/etc/localtime' }, { hostPath: '/etc/timezone' }] })).toHaveLength(0);
   });
 
+  it('does not flag a genuine named volume, which exposes no host path', () => {
+    expect(collectServiceSecurityViolations({ volumes: [{ volumeName: 'pgdata' }] })).toHaveLength(0);
+  });
+
+  // Compose reads `/var/run/docker.sock` in the source slot as a BIND, whatever field it arrived in,
+  // so volumeName must not become an unchecked route to a host path.
+  it('flags a volumeName that is really a host path', () => {
+    for (const volumeName of ['/var/run/docker.sock', './host-dir', '../escape', '/', '~/secrets']) {
+      expect(collectServiceSecurityViolations({ volumes: [{ volumeName }] }).map((v) => v.message)).toContain('CUSTOM_APP_ERROR_VOLUME_NAME_INVALID');
+    }
+  });
+
+  it('flags a path-shaped volumeName even for an app granted that exact host path', () => {
+    // The grant covers binds the app declares honestly via hostPath; it must not turn the
+    // volumeName field into a second, unvalidated way to ask for the same access.
+    const violations = collectServiceSecurityViolations(
+      { volumes: [{ volumeName: '/var/run/docker.sock' }] },
+      { hostPaths: ['/var/run/docker.sock'] },
+    );
+    expect(violations.map((v) => v.message)).toContain('CUSTOM_APP_ERROR_VOLUME_NAME_INVALID');
+  });
+
   it('keeps the trusted allowlist tight and self-consistent', () => {
     // Guard against accidental broadening: every allowlisted app must resolve to zero
     // violations for exactly the access it is granted, and nothing else.
-    expect(Object.keys(TRUSTED_APP_SECURITY_ALLOWLIST).sort()).toEqual(['coolify', 'home-assistant', 'netdata', 'steam-headless']);
+    expect(Object.keys(TRUSTED_APP_SECURITY_ALLOWLIST).sort()).toEqual([
+      'coder',
+      'coolify',
+      'duix-avatar',
+      'falco',
+      'home-assistant',
+      'netdata',
+      'refly',
+      'steam-headless',
+      'torollo',
+    ]);
     expect(
       collectServiceSecurityViolations({ privileged: true, networkMode: 'host' }, TRUSTED_APP_SECURITY_ALLOWLIST['home-assistant']),
     ).toHaveLength(0);
@@ -1053,5 +1152,43 @@ describe('collectServiceSecurityViolations (install-sink app sandbox)', () => {
         TRUSTED_APP_SECURITY_ALLOWLIST.netdata,
       ),
     ).toHaveLength(0);
+    expect(
+      collectServiceSecurityViolations({ volumes: [{ hostPath: '/var/run/docker.sock' }] }, TRUSTED_APP_SECURITY_ALLOWLIST.torollo),
+    ).toHaveLength(0);
+    // torollo's grant is per-path: privileged and other denied paths stay rejected
+    expect(
+      collectServiceSecurityViolations({ privileged: true, volumes: [{ hostPath: '/proc' }] }, TRUSTED_APP_SECURITY_ALLOWLIST.torollo),
+    ).toHaveLength(2);
+  });
+});
+
+describe('dynamicComposeFormSchema', () => {
+  // Regression: the custom-app builder form derived its resolver with
+  // `dynamicComposeSchema.omit({ schemaVersion: true })`. Zod 4 throws
+  // "`.omit()` cannot be used on object schemas containing refinements" at
+  // module-evaluation time, which took the whole /apps/create route down.
+  it('is derivable without throwing, and omits schemaVersion', () => {
+    expect(() => dynamicComposeObject.omit({ schemaVersion: true })).not.toThrow();
+    expect(Object.keys(dynamicComposeFormSchema.shape)).not.toContain('schemaVersion');
+    expect(Object.keys(dynamicComposeFormSchema.shape)).toContain('services');
+  });
+
+  it('rejects .omit() on the refined schema, so callers must use the form schema', () => {
+    expect(() => (dynamicComposeSchemaZod as unknown as { omit: (m: object) => unknown }).omit({ schemaVersion: true })).toThrow(/refinements/);
+  });
+
+  it('accepts a service list with no schemaVersion supplied', () => {
+    const result = dynamicComposeFormSchema.safeParse({
+      services: [{ image: 'nginx:latest', name: 'web', internalPort: 80 }],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('still enforces the override security refinement', () => {
+    const result = dynamicComposeFormSchema.safeParse({
+      services: [{ image: 'nginx:latest', name: 'web', internalPort: 80 }],
+      overrides: [{ architecture: 'arm64', services: [{ privileged: true }] }],
+    });
+    expect(result.success).toBe(false);
   });
 });

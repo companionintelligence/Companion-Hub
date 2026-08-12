@@ -7,8 +7,10 @@ import {
   BOX_CHARS,
   box,
   buildEnvOverrides,
+  ensureLocalDevRuntimeEnv,
   getComposeFiles,
   isApplianceMode,
+  isValidApiKeyName,
   isFirstRun,
   isHubRepoRoot,
   mergeComposeProfilesFromEnvFile,
@@ -16,6 +18,7 @@ import {
   normalizeCliArgs,
   normalizeRegisterFlags,
   parseAppRuntimeArgs,
+  parseApiKeyScopes,
   parseEnvFile,
   renderBanner,
   renderHelp,
@@ -26,13 +29,17 @@ import {
   renderWizardWelcome,
   shouldRetryApkMirrorWithHostNetwork,
   firstPathFromLookupOutput,
+  buildApiKeyInsertSql,
+  formatApiKeyRows,
   resolveEnvFromArgs,
   resolveUpStartMode,
   resolveWizardActionInput,
   resolveWizardEnvInput,
+  sqlQuote,
   stripAnsi,
   upsertEnvVar,
 } from '../cihub-cli';
+import { setTailscalePersistedStateProbeForTests } from '../lib/cli-compose-env';
 
 // --- banner ---
 
@@ -102,6 +109,11 @@ describe('renderHelp', () => {
     expect(plain).toContain('models list');
     expect(plain).toContain('models install');
     expect(plain).toContain('models rm');
+  });
+
+  it('documents the device-id command', () => {
+    const plain = stripAnsi(renderHelp());
+    expect(plain).toContain('cihub device-id [--from-hub]');
   });
 
   it('shows the cihub status command', () => {
@@ -450,31 +462,43 @@ describe('mergeComposeProfilesFromEnvFile', () => {
   const TMP = '.env.__vitest_vpn__';
   const abs = join(process.cwd(), TMP);
 
+  beforeEach(() => {
+    setTailscalePersistedStateProbeForTests(() => false);
+  });
+
   afterEach(() => {
+    setTailscalePersistedStateProbeForTests(null);
     if (existsSync(abs)) rmSync(abs);
     delete process.env.COMPOSE_PROFILES;
   });
 
-  it('adds private-vpn by default when the env file has values but no opt-out', () => {
+  it('does not add private-vpn without Tailscale auth key or persisted state', () => {
     upsertEnvVar(TMP, 'ROOT_FOLDER_HOST', '/tmp/x');
+    expect(mergeComposeProfilesFromEnvFile(TMP).split(',')).not.toContain('private-vpn');
+  });
+
+  it('adds private-vpn when TAILSCALE_AUTHKEY is set', () => {
+    upsertEnvVar(TMP, 'ROOT_FOLDER_HOST', '/tmp/x');
+    upsertEnvVar(TMP, 'TAILSCALE_AUTHKEY', 'tskey-auth-test');
     expect(mergeComposeProfilesFromEnvFile(TMP).split(',')).toContain('private-vpn');
   });
 
-  it('removes private-vpn when PRIVATE_VPN_USER_DISABLED=true', () => {
+  it('removes private-vpn when PRIVATE_VPN_USER_DISABLED=true even with an auth key', () => {
+    upsertEnvVar(TMP, 'TAILSCALE_AUTHKEY', 'tskey-auth-test');
     upsertEnvVar(TMP, 'PRIVATE_VPN_USER_DISABLED', 'true');
     expect(mergeComposeProfilesFromEnvFile(TMP).split(',')).not.toContain('private-vpn');
   });
 
-  it('keeps private-vpn when legacy PRIVATE_VPN_ENABLED=false is present', () => {
+  it('does not treat legacy PRIVATE_VPN_ENABLED=false as an enable signal', () => {
     upsertEnvVar(TMP, 'PRIVATE_VPN_ENABLED', 'false');
-    expect(mergeComposeProfilesFromEnvFile(TMP).split(',')).toContain('private-vpn');
+    expect(mergeComposeProfilesFromEnvFile(TMP).split(',')).not.toContain('private-vpn');
   });
 
-  it('preserves existing COMPOSE_PROFILES from the file', () => {
+  it('preserves existing COMPOSE_PROFILES from the file without forcing private-vpn', () => {
     upsertEnvVar(TMP, 'COMPOSE_PROFILES', 'gpu');
     const profiles = mergeComposeProfilesFromEnvFile(TMP).split(',');
     expect(profiles).toContain('gpu');
-    expect(profiles).toContain('private-vpn');
+    expect(profiles).not.toContain('private-vpn');
   });
 
   it('adds cloudflare profile when tunnel/token exists under ROOT_FOLDER_HOST', () => {
@@ -518,6 +542,39 @@ describe('buildEnvOverrides', () => {
     expect(overrides.ENV_FILE).toBe(TMP);
     expect(overrides).not.toHaveProperty('CI_HUB_CONTAINER_UID');
     expect(overrides).not.toHaveProperty('CI_HUB_CONTAINER_GID');
+  });
+});
+
+describe('ensureLocalDevRuntimeEnv', () => {
+  const TMP = '.env.__vitest_local_dev__';
+  const abs = join(process.cwd(), TMP);
+  let rootFolderHost: string;
+
+  beforeEach(() => {
+    rootFolderHost = mkdtempSync(join(tmpdir(), 'cihub-local-dev-root-'));
+    upsertEnvVar(TMP, 'ROOT_FOLDER_HOST', rootFolderHost);
+  });
+
+  afterEach(() => {
+    if (existsSync(abs)) rmSync(abs);
+    rmSync(rootFolderHost, { recursive: true, force: true });
+  });
+
+  it('defaults CI_HUB_APP_DIR to the repo checkout root when unset', () => {
+    const runtimeVars = ensureLocalDevRuntimeEnv(TMP);
+    expect(runtimeVars.CI_HUB_APP_DIR).toBe(process.cwd());
+
+    const written = readFileSync(join(rootFolderHost, '.env'), 'utf-8');
+    expect(written).toContain(`CI_HUB_APP_DIR=${process.cwd()}`);
+  });
+
+  it('honors an explicit CI_HUB_APP_DIR from the source env file', () => {
+    upsertEnvVar(TMP, 'CI_HUB_APP_DIR', '/custom/app/dir');
+    const runtimeVars = ensureLocalDevRuntimeEnv(TMP);
+    expect(runtimeVars.CI_HUB_APP_DIR).toBe('/custom/app/dir');
+
+    const written = readFileSync(join(rootFolderHost, '.env'), 'utf-8');
+    expect(written).toContain('CI_HUB_APP_DIR=/custom/app/dir');
   });
 });
 
@@ -681,5 +738,192 @@ describe('resolveHubContext (inside the CI-Hub checkout)', () => {
     expect(ctx.envFile).toBe('.env.prod');
     expect(ctx.composeFiles).toEqual(['docker-compose.prod.yml']);
     expect(ctx.cwd).toBe(process.cwd());
+  });
+});
+
+// --- api-key ---
+
+describe('api-key name validation', () => {
+  it('accepts ordinary operator labels', () => {
+    expect(isValidApiKeyName('laptop')).toBe(true);
+    expect(isValidApiKeyName('Hanzla MacBook')).toBe(true);
+    expect(isValidApiKeyName('ci-runner.01')).toBe(true);
+    expect(isValidApiKeyName('user@host')).toBe(true);
+  });
+
+  it("rejects the 'app:' prefix reserved for Hub-managed app keys", () => {
+    // An operator key named app:* would be indistinguishable from a provisioned managed key in the UI.
+    expect(isValidApiKeyName('app:ci-openclaw')).toBe(false);
+  });
+
+  it('rejects names that could break out of the SQL string literal', () => {
+    expect(isValidApiKeyName("bad'; DROP TABLE api_key; --")).toBe(false);
+    expect(isValidApiKeyName("o'brien")).toBe(false);
+    expect(isValidApiKeyName('multi\nline')).toBe(false);
+  });
+
+  it('rejects empty and over-long names', () => {
+    expect(isValidApiKeyName('')).toBe(false);
+    expect(isValidApiKeyName('x'.repeat(65))).toBe(false);
+    expect(isValidApiKeyName('x'.repeat(64))).toBe(true);
+  });
+
+  it('rejects a flag-shaped name, which is what a forgotten --name value looks like', () => {
+    // `api-key create --name --scopes mcp` would otherwise mint a key literally named '--scopes'.
+    expect(isValidApiKeyName('--scopes')).toBe(false);
+    expect(isValidApiKeyName('-laptop')).toBe(false);
+    expect(isValidApiKeyName('ci-runner')).toBe(true); // an interior dash is still fine
+  });
+});
+
+describe('api-key scope parsing', () => {
+  it('parses a comma list and tolerates whitespace', () => {
+    expect(parseApiKeyScopes(' mcp ')).toEqual({ scopes: ['mcp'], invalid: [], managedOnly: [] });
+  });
+
+  it("refuses 'app' separately from an unknown scope — it exists, but only on managed keys", () => {
+    // ApiKeyAdminService pins operator keys to ['mcp'] for the same reason: the callback guard
+    // resolves a key's owning app, which only app provisioning sets, so an operator 'app' key is dead.
+    const { scopes, invalid, managedOnly } = parseApiKeyScopes('mcp,app');
+    expect(scopes).toEqual(['mcp', 'app']);
+    expect(managedOnly).toEqual(['app']);
+    expect(invalid).toEqual([]);
+  });
+
+  it('reports unknown scopes rather than silently dropping them', () => {
+    const { scopes, invalid, managedOnly } = parseApiKeyScopes('mcp,admin');
+    expect(scopes).toEqual(['mcp', 'admin']);
+    expect(invalid).toEqual(['admin']);
+    expect(managedOnly).toEqual([]);
+  });
+
+  it('dedupes and orders like ApiKeyService.normalizeScopes', () => {
+    expect(parseApiKeyScopes('mcp,mcp').scopes).toEqual(['mcp']);
+  });
+
+  it('returns no scopes for an empty value so the caller can reject it', () => {
+    expect(parseApiKeyScopes('').scopes).toEqual([]);
+  });
+});
+
+describe('buildApiKeyInsertSql', () => {
+  const row = { name: 'laptop', scopes: ['mcp'], capability: 'write', prefix: 'abc12345', hashedKey: 'f'.repeat(64) };
+
+  it('writes the columns ApiKeyService writes, leaving managed/created_at to their defaults', () => {
+    expect(buildApiKeyInsertSql(row)).toBe(
+      "INSERT INTO api_key (name, scopes, capability, prefix, hashed_key) VALUES ('laptop', ARRAY['mcp']::text[], " +
+        `'write', 'abc12345', '${'f'.repeat(64)}') RETURNING id;`,
+    );
+  });
+
+  it('writes the capability it was given, so a read-only key is minted read-only', () => {
+    expect(buildApiKeyInsertSql({ ...row, capability: 'read' })).toContain("::text[], 'read',");
+  });
+
+  it('quotes a name the validator would have refused, so the SQL survives one layer failing', () => {
+    expect(buildApiKeyInsertSql({ ...row, name: "o'brien" })).toContain("VALUES ('o''brien'");
+  });
+
+  it('renders a multi-scope grant as a text[] literal', () => {
+    expect(buildApiKeyInsertSql({ ...row, scopes: ['mcp', 'app'] })).toContain("ARRAY['mcp','app']::text[]");
+  });
+
+  // Verified against a live 0.2.47 appliance: the column arrived after several published
+  // releases, and inserting it there fails with `column "capability" ... does not exist`,
+  // taking out the headless minting route on exactly the Hubs that most need it.
+  it('omits capability on a Hub whose api_key table predates the column', () => {
+    const sql = buildApiKeyInsertSql({ ...row, withCapability: false });
+    expect(sql).toBe(
+      "INSERT INTO api_key (name, scopes, prefix, hashed_key) VALUES ('laptop', ARRAY['mcp']::text[], " +
+        `'abc12345', '${'f'.repeat(64)}') RETURNING id;`,
+    );
+    expect(sql).not.toContain('capability');
+  });
+
+  it('still writes capability when the column is present', () => {
+    expect(buildApiKeyInsertSql({ ...row, withCapability: true })).toContain('capability');
+  });
+});
+
+describe('sqlQuote', () => {
+  it('doubles single quotes so a quoted value cannot terminate early', () => {
+    expect(sqlQuote("o'brien")).toBe("'o''brien'");
+  });
+
+  it('wraps plain values', () => {
+    expect(sqlQuote('laptop')).toBe("'laptop'");
+  });
+});
+
+describe('formatApiKeyRows', () => {
+  it('renders id, name, scopes, capability and prefix', () => {
+    const json = JSON.stringify([{ id: 1, name: 'laptop', scopes: ['mcp'], capability: 'read', prefix: 'abc12345' }]);
+
+    expect(formatApiKeyRows(json)).toEqual(['1  laptop  [mcp]  read  abc12345…']);
+  });
+
+  it("falls back to 'write' for a row predating the column, rather than showing a blank", () => {
+    // A listing that omitted the level would make an unrestricted key look restricted, or the
+    // reverse — both worse than naming the column default the database would have applied.
+    const json = JSON.stringify([{ id: 9, name: 'legacy', scopes: ['mcp'], prefix: 'abc12345' }]);
+
+    expect(formatApiKeyRows(json)).toEqual(['9  legacy  [mcp]  write  abc12345…']);
+  });
+
+  it('shows a dash for a full-access key with no scopes', () => {
+    const json = JSON.stringify([{ id: 2, name: 'legacy', scopes: [], prefix: 'def67890' }]);
+
+    expect(formatApiKeyRows(json)[0]).toContain('[-]');
+  });
+
+  it('collapses whitespace in a name so one key cannot span rows', () => {
+    // Names created before this command's validation may contain anything the UI allowed.
+    const json = JSON.stringify([{ id: 3, name: 'multi\nline\tname', scopes: ['app'], capability: 'write', prefix: 'aaa' }]);
+
+    expect(formatApiKeyRows(json)).toEqual(['3  multi line name  [app]  write  aaa…']);
+  });
+
+  it('strips terminal escapes from a name rather than writing them to the terminal', () => {
+    // The UI's create body is `z.string().trim().min(1).max(100)` — no character restriction — so a
+    // stored name can carry ANSI/control characters. Rendering them would let a key name clear the
+    // screen, recolour output, or forge box rows.
+    const esc = String.fromCharCode(27);
+    const json = JSON.stringify([
+      { id: 4, name: `${esc}[31mred${esc}[0m`, scopes: ['mcp'], capability: 'write', prefix: 'bbb' },
+      { id: 5, name: `wipe${esc}[2J${esc}`, scopes: ['mcp'], capability: 'write', prefix: 'ccc' },
+    ]);
+
+    const rows = formatApiKeyRows(json);
+
+    expect(rows).toEqual(['4  red  [mcp]  write  bbb…', '5  wipe[2J  [mcp]  write  ccc…']);
+    expect(rows.join('')).not.toContain(esc);
+  });
+
+  it('returns no rows for an empty result', () => {
+    expect(formatApiKeyRows('[]')).toEqual([]);
+  });
+
+  it('returns no rows rather than throwing on malformed output', () => {
+    expect(formatApiKeyRows('not json')).toEqual([]);
+    expect(formatApiKeyRows('')).toEqual([]);
+    expect(formatApiKeyRows('{"not":"an array"}')).toEqual([]);
+  });
+});
+
+describe('formatApiKeyRows on a Hub without per-key capability', () => {
+  const row = JSON.stringify([{ id: 1, name: 'laptop', scopes: ['mcp'], prefix: 'abc12345' }]);
+
+  // Defaulting to 'write' there would state a restriction the server does not enforce —
+  // no published Hub has the column, so every key is bounded by its scopes alone.
+  it('omits capability rather than inventing the column default', () => {
+    const [line] = formatApiKeyRows(row, false);
+    expect(line).not.toMatch(/write|read|full/);
+    expect(line).toContain('laptop');
+    expect(line).toContain('[mcp]');
+  });
+
+  it('still reports capability when the Hub has it', () => {
+    const withCap = JSON.stringify([{ id: 1, name: 'laptop', scopes: ['mcp'], capability: 'read', prefix: 'abc12345' }]);
+    expect(formatApiKeyRows(withCap, true)[0]).toContain('read');
   });
 });

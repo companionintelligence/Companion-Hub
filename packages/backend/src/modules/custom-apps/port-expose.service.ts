@@ -323,10 +323,12 @@ export class PortExposeService {
 
   private async createAppDirectories(appUrn: AppUrn): Promise<void> {
     const { appName, appStoreId } = extractAppUrn(appUrn);
-    const { dataDir } = this.configService.get('directories');
+    const { dataDir, appDataDir } = this.configService.get('directories');
 
+    // App definitions live under dataDir/apps; runtime data uses the dedicated appDataDir mount
+    // (/app-data), not dataDir/app-data (which is not writable / does not exist in the container).
     const appPath = path.join(dataDir, 'apps', appStoreId, appName);
-    const dataPath = path.join(dataDir, 'app-data', appStoreId, appName);
+    const dataPath = path.join(appDataDir, appStoreId, appName);
 
     const ok = await this.filesystem.createDirectories([appPath, dataPath]);
     if (!ok) {
@@ -420,9 +422,9 @@ export class PortExposeService {
 
   private async cleanupAppDirectories(appUrn: AppUrn): Promise<void> {
     const { appName, appStoreId } = extractAppUrn(appUrn);
-    const { dataDir } = this.configService.get('directories');
+    const { dataDir, appDataDir } = this.configService.get('directories');
     const appPath = path.join(dataDir, 'apps', appStoreId, appName);
-    const dataPath = path.join(dataDir, 'app-data', appStoreId, appName);
+    const dataPath = path.join(appDataDir, appStoreId, appName);
     await Promise.all([this.filesystem.removeDirectory(appPath), this.filesystem.removeDirectory(dataPath)]);
   }
 }

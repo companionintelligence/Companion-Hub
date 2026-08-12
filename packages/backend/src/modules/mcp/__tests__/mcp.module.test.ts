@@ -4,11 +4,13 @@ import { describe, expect, it } from 'vitest';
 import { mock } from 'vitest-mock-extended';
 import { McpService } from '../mcp.service';
 import { McpServerFactory } from '../mcp-server.factory';
+import { McpV2ServerFactory } from '../mcp-v2-server.factory';
+import { McpModernHandlerService } from '../mcp-modern-handler.service';
 import { McpSessionRegistry } from '../mcp-session.registry';
 import { McpToolRegistry } from '../mcp-tool-registry.service';
 import { McpController } from '../mcp.controller';
 import { McpAuthGuard } from '../mcp-auth.guard';
-import { McpApiKeyService } from '../mcp-api-key.service';
+import { ApiKeyService } from '@/modules/api-keys/api-key.service';
 import { AppDiscoveryTools } from '../tools/app-discovery.tools';
 import { AppLifecycleTools } from '../tools/app-lifecycle.tools';
 import { AppConfigTools } from '../tools/app-config.tools';
@@ -41,6 +43,8 @@ describe('McpModule', () => {
       providers: [
         McpService,
         McpServerFactory,
+        McpV2ServerFactory,
+        McpModernHandlerService,
         McpSessionRegistry,
         McpToolRegistry,
         McpAuthGuard,
@@ -67,7 +71,7 @@ describe('McpModule', () => {
         { provide: CloudflareClientService, useValue: mock<CloudflareClientService>() },
         { provide: LinksService, useValue: mock<LinksService>() },
         { provide: LoggerService, useValue: mock<LoggerService>() },
-        { provide: McpApiKeyService, useValue: mock<McpApiKeyService>() },
+        { provide: ApiKeyService, useValue: mock<ApiKeyService>() },
       ],
     }).compile();
 

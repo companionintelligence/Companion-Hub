@@ -11,6 +11,10 @@ on:
         required: false
         type: string
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: write
 
@@ -160,5 +164,5 @@ jobs:
             echo "Bump type: **${{ steps.bump.outputs.type }}**"
             echo "Version: **${{ steps.tag.outputs.version }}**"
             echo ""
-            echo "This tag will trigger the [Release Workflow](https://github.com/${{ github.repository }}/actions/workflows/release.yml)."
+            echo "This tag does not cut a release on its own. To ship it, dispatch the [Desktop Release](https://github.com/${{ github.repository }}/actions/workflows/desktop-release.yml) workflow with this tag."
           } >> "$GITHUB_STEP_SUMMARY"

@@ -133,7 +133,8 @@ export const InstallStep = ({
 
         const installedSet = new Set(aiSetupConfig.installedCatalogIds ?? []);
         const availablePreferenceModelIds = new Set(aiSetupConfig.installedCatalogIds ?? []);
-        const modelsToPull = aiSetupConfig.selectedModels.filter((id) => !installedSet.has(id));
+        const ollamaSelected = aiSetupConfig.ollamaSelectedModelIds ?? aiSetupConfig.selectedModels;
+        const modelsToPull = ollamaSelected.filter((id) => !installedSet.has(id));
 
         if (aiSetupConfig.selectedModels.length > 0) {
           const modelErrors: Record<string, string> = {};
@@ -185,7 +186,7 @@ export const InstallStep = ({
             pinTracked.filter((m) => m.state === 'pulled' || m.state === 'loaded' || m.state === 'pinned').map((m) => m.catalogId),
           );
 
-          for (const modelId of aiSetupConfig.selectedModels) {
+          for (const modelId of ollamaSelected) {
             if (!pinableIds.has(modelId)) continue;
             try {
               await pinInferenceModel(modelId);
@@ -206,6 +207,8 @@ export const InstallStep = ({
             embeddingModel:
               resolvedEmbeddingPreference && availablePreferenceModelIds.has(resolvedEmbeddingPreference) ? resolvedEmbeddingPreference : null,
             visionModel: resolvedVisionPreference && availablePreferenceModelIds.has(resolvedVisionPreference) ? resolvedVisionPreference : null,
+            vllmApiKey: aiSetupConfig.vllmApiKey ?? null,
+            vllmUrl: aiSetupConfig.vllmUrl ?? null,
           });
         } catch {
           setAiPhase((prev) => ({ ...prev, error: t('ONBOARDING_INSTALL_FAILED_SAVE_PREFERRED_BACKEND', { status: 0 }) }));

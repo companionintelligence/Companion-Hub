@@ -13,17 +13,20 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { useAppContext } from '@/context/app-context';
 import { useDemoMode } from '@/lib/hooks/use-demo-mode';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/Card';
-import { ArrowUpCircle, Loader2, Star, TriangleAlert, Wand2 } from 'lucide-react';
+import { ArrowUpCircle, Loader2, Smartphone, Star, TriangleAlert, Wand2 } from 'lucide-react';
+import { clearHubConnection, getHubBaseUrlSync, isTauriMobileSync } from '@/lib/mobile-connection';
 import { useTranslation } from 'react-i18next';
 import { UpdateRepoModal } from '../components/update-repo-modal/update-repo-modal';
 import { useState, useEffect, useCallback } from 'react';
 import { clearClientHubState } from '@/lib/clear-client-hub-state';
+import { clearHubSteadySession, markStackUpdatePending } from '@/lib/desktop-stack-session';
 import toast from 'react-hot-toast';
 import {
   checkForUpdates,
   getInstalledDesktopVersion,
-  isHubUpdateAvailable,
+  isStackUpdateAvailable,
   isTauri,
+  manualUpdateArtifactKind,
   performStackUpdate,
   performUpdate,
   type UpdateActionResult,
@@ -46,8 +49,10 @@ export const GeneralActionsContainer = () => {
   const [factoryResetOpen, setFactoryResetOpen] = useState(false);
   const [factoryResetPhrase, setFactoryResetPhrase] = useState('');
   const [factoryResetting, setFactoryResetting] = useState(false);
-  const [desktopUpdate, setDesktopUpdate] = useState<UpdateInfo | null>(null);
-  const [desktopVersion, setDesktopVersion] = useState<string | null>(null);
+  const [shellUpdate, setShellUpdate] = useState<UpdateInfo | null>(null);
+  const [shellVersion, setShellVersion] = useState<string | null>(null);
+  const [updatingShell, setUpdatingShell] = useState(false);
+  const [switchHubOpen, setSwitchHubOpen] = useState(false);
 
   const desktop = isTauri();
 
@@ -96,29 +101,29 @@ export const GeneralActionsContainer = () => {
     }
   }, [demoMode, factoryResetPhrase, t]);
 
-  const refreshUpdateState = useCallback(async () => {
+  const refreshShellUpdateState = useCallback(async () => {
     if (!desktop) {
-      setDesktopUpdate(null);
-      setDesktopVersion(null);
+      setShellUpdate(null);
+      setShellVersion(null);
       return null;
     }
 
     const installedVersion = await getInstalledDesktopVersion();
-    setDesktopVersion(installedVersion);
+    setShellVersion(installedVersion);
     if (!installedVersion) {
-      setDesktopUpdate(null);
+      setShellUpdate(null);
       return null;
     }
 
     const info = await checkForUpdates(installedVersion);
-    setDesktopUpdate(info);
+    setShellUpdate(info);
     return info;
   }, [desktop]);
 
   useEffect(() => {
     if (!desktop) return;
-    void refreshUpdateState();
-  }, [desktop, refreshUpdateState]);
+    void refreshShellUpdateState();
+  }, [desktop, refreshShellUpdateState]);
 
   useEffect(() => {
     void unwrapSdkOrNull(getAutoUpdates()).then((data) => {
@@ -131,22 +136,13 @@ export const GeneralActionsContainer = () => {
     setChecking(true);
     setUpdateMessage(null);
     try {
-      if (desktop) {
-        const info = await refreshUpdateState();
-        if (!info) {
-          toast.error(t('SETTINGS_ACTIONS_CHECK_UPDATE_FAILED'));
-        } else if (info.updateAvailable) {
-          toast.success(t('SETTINGS_ACTIONS_UPDATE_AVAILABLE', { version: info.latestVersion }));
-        } else {
-          toast.success(t('SETTINGS_ACTIONS_ON_LATEST_VERSION'));
-        }
-        return;
-      }
-
       const result = await sdkResult(checkHubForUpdates());
       if (!result.ok) throw new Error(`HTTP ${result.status}`);
       const data = (result.data ?? {}) as { updateAvailable?: boolean; latest?: string };
       await refreshAppContext();
+      if (desktop) {
+        await refreshShellUpdateState();
+      }
       if (data.updateAvailable) {
         toast.success(t('SETTINGS_ACTIONS_UPDATE_AVAILABLE', { version: data.latest ?? version.latest }));
       } else {
@@ -157,34 +153,17 @@ export const GeneralActionsContainer = () => {
     } finally {
       setChecking(false);
     }
-  }, [desktop, refreshAppContext, refreshUpdateState, t, version.latest]);
+  }, [desktop, refreshAppContext, refreshShellUpdateState, t, version.latest]);
 
   const handleUpdate = useCallback(async () => {
     setUpdating(true);
     setUpdateMessage(null);
     try {
-      if (desktop) {
-        const info = desktopUpdate ?? (await refreshUpdateState());
-        if (info?.updateAvailable) {
-          const result = await performUpdate(info);
-          const message = getUpdateMessage(result);
-          if (result.ok) {
-            setUpdateMessage(message);
-            toast.success(message);
-          } else {
-            setUpdateMessage(message);
-            toast.error(message);
-            setUpdating(false);
-          }
-          return;
-        }
-      }
-
       const stackResult = await performStackUpdate(version.latest);
       if (stackResult.ok) {
-        const message = getUpdateMessage(stackResult);
-        setUpdateMessage(message);
-        setTimeout(() => window.location.reload(), 15000);
+        markStackUpdatePending();
+        clearHubSteadySession();
+        setUpdateMessage(getUpdateMessage(stackResult));
       } else {
         setUpdateMessage(getUpdateMessage(stackResult));
         setUpdating(false);
@@ -193,7 +172,34 @@ export const GeneralActionsContainer = () => {
       setUpdateMessage(t('SETTINGS_ACTIONS_UPDATE_REQUEST_FAILED'));
       setUpdating(false);
     }
-  }, [desktop, desktopUpdate, getUpdateMessage, refreshUpdateState, t, version.latest]);
+  }, [getUpdateMessage, t, version.latest]);
+
+  const handleShellUpdate = useCallback(async () => {
+    setUpdatingShell(true);
+    setUpdateMessage(null);
+    try {
+      const info = shellUpdate ?? (await refreshShellUpdateState());
+      if (!info?.updateAvailable) {
+        toast.success(t('SETTINGS_ACTIONS_ON_LATEST_VERSION'));
+        setUpdatingShell(false);
+        return;
+      }
+
+      const result = await performUpdate(info);
+      const message = getUpdateMessage(result);
+      if (result.ok) {
+        setUpdateMessage(message);
+        toast.success(message);
+      } else {
+        setUpdateMessage(message);
+        toast.error(message);
+        setUpdatingShell(false);
+      }
+    } catch {
+      setUpdateMessage(t('SETTINGS_ACTIONS_UPDATE_REQUEST_FAILED'));
+      setUpdatingShell(false);
+    }
+  }, [getUpdateMessage, refreshShellUpdateState, shellUpdate, t]);
 
   const handleAutoUpdatesToggle = useCallback(async () => {
     setAutoUpdatesLoading(true);
@@ -208,9 +214,66 @@ export const GeneralActionsContainer = () => {
     setAutoUpdatesLoading(false);
   }, [autoUpdates]);
 
-  const updateAvailable = isHubUpdateAvailable(desktop, desktopUpdate, version.current, version.latest);
-  const displayVersion = desktop ? (desktopVersion ?? t('COMMON_UNKNOWN')) : version.current;
-  const latestVersion = desktop ? (desktopUpdate?.latestVersion ?? displayVersion) : version.latest;
+  const stackUpdateAvailable = isStackUpdateAvailable(version.current, version.latest);
+  const displayVersion = version.current || t('COMMON_UNKNOWN');
+  const latestVersion = version.latest;
+
+  /**
+   * Linux has no in-place desktop update: the button only downloads the
+   * installer, so spell out the remaining steps (tailored to the package
+   * format) right where the user is looking. Rendered alongside both the
+   * button and the post-download message.
+   */
+  const renderManualUpdateInstructions = () => {
+    if (!desktop || !shellUpdate?.updateAvailable || !shellUpdate.manualDownload || !shellUpdate.downloadUrl) {
+      return null;
+    }
+
+    const kind = manualUpdateArtifactKind(shellUpdate.downloadUrl);
+    if (!kind) return null;
+
+    const steps: { text: string; command?: string }[] =
+      kind === 'appimage'
+        ? [
+            { text: t('SETTINGS_ACTIONS_MANUAL_UPDATE_STEP_DOWNLOAD') },
+            {
+              text: t('SETTINGS_ACTIONS_MANUAL_UPDATE_APPIMAGE_STEP_REPLACE'),
+              command: 'chmod +x ~/Downloads/Companion.Hub_*.AppImage',
+            },
+            { text: t('SETTINGS_ACTIONS_MANUAL_UPDATE_STEP_RELAUNCH') },
+          ]
+        : [
+            { text: t('SETTINGS_ACTIONS_MANUAL_UPDATE_STEP_DOWNLOAD') },
+            {
+              text: t('SETTINGS_ACTIONS_MANUAL_UPDATE_STEP_REMOVE'),
+              command: kind === 'deb' ? 'sudo apt purge companion-hub -y' : 'sudo rpm -e companion-hub',
+            },
+            {
+              text: t('SETTINGS_ACTIONS_MANUAL_UPDATE_STEP_INSTALL'),
+              command: kind === 'deb' ? 'sudo apt install ./companion-hub_*.deb' : 'sudo rpm -U ./companion-hub-*.rpm',
+            },
+            { text: t('SETTINGS_ACTIONS_MANUAL_UPDATE_STEP_RELAUNCH') },
+          ];
+
+    return (
+      <Card className="mt-4 w-full max-w-md" data-testid="manual-update-instructions">
+        <CardHeader className="p-3 pb-1">
+          <CardTitle className="text-base">{t('SETTINGS_ACTIONS_MANUAL_UPDATE_TITLE')}</CardTitle>
+          <CardDescription>{t('SETTINGS_ACTIONS_MANUAL_UPDATE_INTRO')}</CardDescription>
+        </CardHeader>
+        <CardContent className="p-3 pt-1">
+          <ol className="list-decimal list-inside space-y-2 text-sm">
+            {steps.map((step) => (
+              <li key={step.text}>
+                {step.text}
+                {step.command ? <code className="mt-1 block select-all rounded bg-muted px-2 py-1 font-mono text-xs">{step.command}</code> : null}
+              </li>
+            ))}
+          </ol>
+        </CardContent>
+      </Card>
+    );
+  };
 
   const renderUpdateButton = () => {
     if (updateMessage) {
@@ -222,7 +285,12 @@ export const GeneralActionsContainer = () => {
       );
     }
 
-    if (updateAvailable) {
+    if (stackUpdateAvailable) {
+      const release = version.releases?.find((r) => r.version === latestVersion) ?? version.releases?.[0];
+      const releaseBody = release?.body?.trim() ?? '';
+      // Backend currently stubs body as "Release <version>"; skip that redundancy.
+      const showBody = Boolean(releaseBody) && releaseBody !== `Release ${release?.version}`;
+
       return (
         <div>
           <Button onClick={handleUpdate} disabled={updating} className="mb-4" data-testid="hub-update-btn">
@@ -231,25 +299,25 @@ export const GeneralActionsContainer = () => {
                 <Loader2 className="h-4 w-4 animate-spin mr-2" />
                 {t('SETTINGS_ACTIONS_UPDATING')}
               </>
-            ) : desktopUpdate?.manualDownload ? (
-              t('SETTINGS_ACTIONS_DOWNLOAD_INSTALLER', 'Download installer')
             ) : (
               t('SETTINGS_ACTIONS_UPDATE_TO_VERSION', { version: latestVersion })
             )}
           </Button>
-          {version.releases?.map((release) => (
-            <Card key={release.version} className="mt-3 relative overflow-hidden w-full md:w-2/3">
-              <div className="absolute -right-6 -top-6 text-yellow-500 opacity-20 rotate-12 pointer-events-none">
-                <Star size={80} fill="currentColor" />
+          {release ? (
+            <Card className="mt-3 relative overflow-hidden w-full max-w-md" data-testid="hub-latest-release-card">
+              <div className="absolute -right-3 -top-3 text-yellow-500 opacity-20 rotate-12 pointer-events-none">
+                <Star size={40} fill="currentColor" />
               </div>
-              <CardHeader>
-                <CardTitle>{t('SETTINGS_ACTIONS_VERSION_LABEL', { version: release.version })}</CardTitle>
+              <CardHeader className={showBody ? 'p-3 pb-2' : 'p-3'}>
+                <CardTitle className="text-base">{t('SETTINGS_ACTIONS_VERSION_LABEL', { version: release.version })}</CardTitle>
               </CardHeader>
-              <CardContent>
-                <Markdown className="" content={release.body} />
-              </CardContent>
+              {showBody ? (
+                <CardContent className="p-3 pt-0">
+                  <Markdown className="text-sm prose-sm" content={release.body} />
+                </CardContent>
+              ) : null}
             </Card>
-          ))}
+          ) : null}
         </div>
       );
     }
@@ -273,17 +341,14 @@ export const GeneralActionsContainer = () => {
       <Card>
         <CardHeader>
           <div className="flex items-center gap-2">
-            <ArrowUpCircle className="h-5 w-5 text-muted-foreground" />
+            <ArrowUpCircle className="h-5 w-5 shrink-0 text-muted-foreground" />
             <CardTitle className="text-xl">{t('COMMON_ACTIONS')}</CardTitle>
           </div>
-          <CardDescription>
-            {t('SETTINGS_ACTIONS_CURRENT_VERSION', { version: displayVersion })}
-            {desktop ? '' : t('SETTINGS_ACTIONS_STACK_SUFFIX')}
-          </CardDescription>
+          <CardDescription>{t('SETTINGS_ACTIONS_CURRENT_VERSION', { version: displayVersion })}</CardDescription>
         </CardHeader>
         <CardContent>
           <p className="text-sm text-muted-foreground mb-4">
-            {updateAvailable ? t('SETTINGS_ACTIONS_NEW_VERSION', { version: latestVersion }) : t('SETTINGS_ACTIONS_STAY_UP_TO_DATE')}
+            {stackUpdateAvailable ? t('SETTINGS_ACTIONS_NEW_VERSION', { version: latestVersion }) : t('SETTINGS_ACTIONS_STAY_UP_TO_DATE')}
           </p>
           {renderUpdateButton()}
 
@@ -316,10 +381,44 @@ export const GeneralActionsContainer = () => {
         </CardContent>
       </Card>
 
+      {desktop && shellVersion ? (
+        <Card data-testid="desktop-shell-update-card">
+          <CardHeader>
+            <CardTitle className="text-xl">{t('SETTINGS_ACTIONS_SHELL_UPDATE_TITLE')}</CardTitle>
+            <CardDescription>
+              {t('SETTINGS_ACTIONS_SHELL_UPDATE_SUBTITLE', {
+                version: shellVersion,
+              })}
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            {shellUpdate?.updateAvailable ? (
+              <>
+                <Button onClick={handleShellUpdate} disabled={updatingShell} data-testid="hub-shell-update-btn">
+                  {updatingShell ? (
+                    <>
+                      <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                      {t('SETTINGS_ACTIONS_UPDATING')}
+                    </>
+                  ) : shellUpdate.manualDownload ? (
+                    t('SETTINGS_ACTIONS_DOWNLOAD_INSTALLER')
+                  ) : (
+                    t('SETTINGS_ACTIONS_UPDATE_TO_VERSION', { version: shellUpdate.latestVersion })
+                  )}
+                </Button>
+                {renderManualUpdateInstructions()}
+              </>
+            ) : (
+              <p className="text-sm text-muted-foreground">{t('SETTINGS_ACTIONS_SHELL_UP_TO_DATE')}</p>
+            )}
+          </CardContent>
+        </Card>
+      ) : null}
+
       <Card>
         <CardHeader>
           <div className="flex items-center gap-2">
-            <Wand2 className="h-5 w-5 text-muted-foreground" />
+            <Wand2 className="h-5 w-5 shrink-0 text-muted-foreground" />
             <CardTitle className="text-xl">{t('SETTINGS_WIZARD_TITLE')}</CardTitle>
           </div>
           <CardDescription>{t('SETTINGS_WIZARD_SUBTITLE')}</CardDescription>
@@ -341,7 +440,7 @@ export const GeneralActionsContainer = () => {
       <Card>
         <CardHeader>
           <div className="flex items-center gap-2">
-            <TriangleAlert className="h-5 w-5 text-destructive" />
+            <TriangleAlert className="h-5 w-5 shrink-0 text-destructive" />
             <CardTitle className="text-xl">{t('SETTINGS_FACTORY_RESET_TITLE')}</CardTitle>
           </div>
           <CardDescription>{t('SETTINGS_FACTORY_RESET_SUBTITLE')}</CardDescription>
@@ -386,6 +485,46 @@ export const GeneralActionsContainer = () => {
               data-testid="factory-reset-confirm-btn"
             >
               {t('SETTINGS_FACTORY_RESET_BUTTON')}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {isTauriMobileSync() && (
+        <Card>
+          <CardHeader>
+            <div className="flex items-center gap-2">
+              <Smartphone className="h-5 w-5 shrink-0 text-muted-foreground" />
+              <CardTitle className="text-xl">{t('MOBILE_CONNECT_CONNECTED_HUB')}</CardTitle>
+            </div>
+            <CardDescription className="break-all">{getHubBaseUrlSync() ?? t('MOBILE_CONNECT_NO_HUB_SELECTED')}</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <Button variant="outline" data-testid="switch-hub-btn" onClick={() => setSwitchHubOpen(true)}>
+              {t('MOBILE_CONNECT_SWITCH_HUB')}
+            </Button>
+          </CardContent>
+        </Card>
+      )}
+
+      <Dialog open={switchHubOpen} onOpenChange={setSwitchHubOpen}>
+        <DialogContent size="sm">
+          <DialogHeader>
+            <DialogTitle>{t('MOBILE_CONNECT_SWITCH_HUB_CONFIRM_TITLE')}</DialogTitle>
+          </DialogHeader>
+          <DialogDescription className="py-2">{t('MOBILE_CONNECT_SWITCH_HUB_CONFIRM_DESC')}</DialogDescription>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setSwitchHubOpen(false)}>
+              {t('COMMON_CANCEL')}
+            </Button>
+            <Button
+              data-testid="switch-hub-confirm-btn"
+              onClick={async () => {
+                await clearHubConnection();
+                window.location.href = '/connect';
+              }}
+            >
+              {t('MOBILE_CONNECT_SWITCH_HUB')}
             </Button>
           </DialogFooter>
         </DialogContent>

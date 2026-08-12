@@ -12,7 +12,7 @@ const RESOURCE_MONITOR_POLL_MS = 60_000;
 const HISTORY_LIMIT = 12;
 const CHART_WIDTH = 960;
 const CHART_HEIGHT = 320;
-const CHART_COLORS = ['#0f717a', '#8b5cf6', '#f59e0b', '#ef4444', '#22c55e', '#3b82f6', '#ec4899', '#14b8a6'];
+const CHART_COLORS = ['#0a6358', '#8b5cf6', '#f59e0b', '#ef4444', '#22c55e', '#3b82f6', '#ec4899', '#14b8a6'];
 
 function formatBytes(bytes: number): string {
   if (bytes <= 0) {
@@ -231,7 +231,7 @@ export default function ResourceMonitorPage() {
       <Card>
         <CardHeader>
           <div className="flex items-center gap-2">
-            <Activity className="h-5 w-5 text-muted-foreground" />
+            <Activity className="h-5 w-5 shrink-0 text-muted-foreground" />
             <CardTitle>{t('RESOURCE_MONITOR_CHART_TITLE')}</CardTitle>
           </div>
           <p className="text-sm text-muted-foreground">{t('RESOURCE_MONITOR_CHART_SUBTITLE')}</p>
@@ -244,7 +244,7 @@ export default function ResourceMonitorPage() {
       <Card>
         <CardHeader>
           <div className="flex items-center gap-2">
-            <Activity className="h-5 w-5 text-muted-foreground" />
+            <Activity className="h-5 w-5 shrink-0 text-muted-foreground" />
             <CardTitle>{t('RESOURCE_MONITOR_TABLE_TITLE')}</CardTitle>
           </div>
         </CardHeader>

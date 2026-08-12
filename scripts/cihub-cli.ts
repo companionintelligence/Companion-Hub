@@ -1,6 +1,6 @@
-import { randomBytes } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { existsSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { createHash, randomBytes } from 'node:crypto';
+import { existsSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path, { join } from 'node:path';
 import { stdin as input, stdout as output } from 'node:process';
@@ -24,8 +24,10 @@ import {
   submitPairingCode,
   waitForHubApi,
 } from './lib/register-hub';
+import { connectAgent, normalizeMemoryUrl, parseConnectArgs } from './lib/connect-agent';
 import { healHubPortBindConflict, healHubPortsBeforeStartup } from './heal-hub-ports';
 import { dockerBindMountPath } from './heal-hub-bind-mounts';
+import { getDeviceId as resolveLocalDeviceId } from './get-device-id';
 import { isRelatedVolume, parseNames, runHubCleanup } from './hub-cleanup-lib';
 import { initDockerConfig } from './init-docker-config';
 import { initGpuRuntime } from './init-gpu-runtime';
@@ -34,46 +36,49 @@ import { initHubDataDirs } from './init-hub-data-dirs';
 import { initTraefik } from './init-traefik';
 import { runPublicWebRepair, runPublicWebStatus, resolveHubApiBase, publicWebRepairHasFailures } from './public-web-cli';
 import { syncPostgresPasswordFromEnv } from './sync-postgres-password';
+import { syncRabbitmqPasswordFromEnv } from './sync-rabbitmq-password';
+import { runBridgeDoctorSection } from './bridge-diagnostics-cli';
 import { runNetworkDoctorSection } from './network-diagnostics-cli';
+import { allowedEnvs, BASE_COMMAND, CI_CLOUD_DEFAULT, type HubEnv } from './lib/cli-types';
+import {
+  BOX_CHARS,
+  STEP_ICONS,
+  bold,
+  box,
+  cliFail,
+  cliOk,
+  cliWarn,
+  colorize,
+  dim,
+  hr,
+  printMessageBox,
+  renderBanner,
+  renderHelp,
+  renderManPage,
+  renderStep,
+  renderWizardWelcome,
+  stripAnsi,
+  type StepStatus,
+} from './lib/cli-ui';
+import { ensureLocalDevPortsAvailable, run, runBestEffort, runCapture, runScript } from './lib/cli-proc';
+import {
+  buildEnvOverrides,
+  ensureLocalDevRuntimeEnv,
+  getComposeFiles,
+  getEnvFileOrExit,
+  mergeComposeProfilesFromEnvFile,
+  packageVersion,
+  renderConfigLines,
+} from './lib/cli-compose-env';
 
-declare const CIHUB_BUILD_VERSION: string | undefined;
+export { allowedEnvs, BASE_COMMAND, type HubEnv };
+export type { StepStatus };
+export { STEP_ICONS, BOX_CHARS };
+export { stripAnsi, box, printMessageBox, renderStep, renderBanner, renderWizardWelcome, renderHelp, renderManPage };
+export { getComposeFiles, mergeComposeProfilesFromEnvFile, buildEnvOverrides, ensureLocalDevRuntimeEnv };
+export { parseEnvFile, upsertEnvVar };
 
-export const allowedEnvs = ['local', 'dev', 'staging', 'prod'] as const;
-
-export type HubEnv = (typeof allowedEnvs)[number];
 type StartMode = 'local-dev' | 'attached' | 'detached';
-
-type Tone = 'green' | 'cyan' | 'yellow' | 'red' | 'dim' | 'magenta';
-export type StepStatus = 'pending' | 'active' | 'done' | 'fail';
-
-/** Step icons (Unicode). Exported for tests so assertions stay encoding-safe in CI. */
-export const STEP_ICONS: Record<StepStatus, string> = {
-  pending: '\u25CB',
-  active: '\u25CF',
-  done: '\u2713',
-  fail: '\u2717',
-};
-
-/** Box-drawing characters used by `box()`. Exported for tests. */
-export const BOX_CHARS = {
-  topLeft: '\u250C',
-  horizontal: '\u2500',
-  topRight: '\u2510',
-  bottomLeft: '\u2514',
-  bottomRight: '\u2518',
-} as const;
-
-type CommandEntry = {
-  command: string;
-  description: string;
-};
-
-export const BASE_COMMAND = 'cihub';
-const CI_CLOUD_DEFAULT = 'https://hub.companionintelligence.com';
-const LOCAL_DEV_BACKEND_PORT = '5004';
-const LOCAL_DEV_FRONTEND_PORT = '5005';
-
-const COMPANY_ART = 'COMPANION HUB\nci.computer';
 
 const envFileMap: Record<HubEnv, string> = {
   local: '.env.local',
@@ -81,272 +86,6 @@ const envFileMap: Record<HubEnv, string> = {
   staging: '.env.staging',
   prod: '.env.prod',
 };
-
-const PACKAGE_JSON_URL = new URL('../package.json', import.meta.url);
-export { parseEnvFile, upsertEnvVar };
-
-function packageVersion(): string {
-  const buildVersion = typeof CIHUB_BUILD_VERSION === 'string' ? CIHUB_BUILD_VERSION.trim() : '';
-  const runtimeOverride = process.env.CIHUB_BUILD_VERSION?.trim() || '';
-  if (buildVersion) return buildVersion;
-  if (runtimeOverride) return runtimeOverride;
-  try {
-    const pkg = JSON.parse(readFileSync(PACKAGE_JSON_URL, 'utf-8')) as {
-      version?: string;
-    };
-    return pkg.version ?? '0.0.0';
-  } catch {
-    return '0.0.0';
-  }
-}
-
-const commandSections: { title: string; entries: CommandEntry[] }[] = [
-  {
-    title: 'Setup & Registration',
-    entries: [
-      { command: `${BASE_COMMAND} wizard [env]`, description: 'Guided first-time or re-setup wizard' },
-      { command: `${BASE_COMMAND} setup [env]`, description: 'Initialize host state, Traefik, and Docker auth config' },
-      {
-        command: `${BASE_COMMAND} register [env] [--fresh] [--code <code>]`,
-        description: 'Pair this Hub with CI Cloud using a portal pairing code (hub must be running)',
-      },
-    ],
-  },
-  {
-    title: 'Hub lifecycle',
-    entries: [
-      { command: `${BASE_COMMAND} up [env] [--detached]`, description: 'Start the hub stack' },
-      { command: `${BASE_COMMAND} down [env]`, description: 'Stop the hub stack' },
-      { command: `${BASE_COMMAND} restart [env]`, description: 'Restart the hub stack' },
-      { command: `${BASE_COMMAND} recreate [env] [--detached] [--yes]`, description: 'Reset the target environment and start it again' },
-      { command: `${BASE_COMMAND} status [env]`, description: 'Containers, Cloudflare tunnel, Tailscale VPN, and models' },
-      { command: `${BASE_COMMAND} logs [env] [service]`, description: 'Stream compose logs for the target environment' },
-      { command: `${BASE_COMMAND} config [env]`, description: 'Show resolved configuration values' },
-      { command: `${BASE_COMMAND} update [--check]`, description: 'Check for or install desktop + stack update (requires Companion Hub)' },
-    ],
-  },
-  {
-    title: 'Models',
-    entries: [
-      { command: `${BASE_COMMAND} models list`, description: 'List installed Ollama models' },
-      { command: `${BASE_COMMAND} models install <name>`, description: 'Pull an Ollama model (e.g. llama3, mistral)' },
-      { command: `${BASE_COMMAND} models rm <name>`, description: 'Remove an installed Ollama model' },
-    ],
-  },
-  {
-    title: 'App lifecycle',
-    entries: [
-      { command: `${BASE_COMMAND} app list`, description: 'List managed Docker containers' },
-      { command: `${BASE_COMMAND} app status [name]`, description: 'Show container status with ports (color-coded)' },
-      { command: `${BASE_COMMAND} app logs <name> [--tail N]`, description: 'Stream container logs' },
-      { command: `${BASE_COMMAND} app stop-managed`, description: 'Stop all Hub-managed app containers' },
-      { command: `${BASE_COMMAND} app remove-managed`, description: 'Remove all Hub-managed app containers' },
-      { command: `${BASE_COMMAND} app add <name> <image>`, description: 'Launch a new Docker container app' },
-      { command: `${BASE_COMMAND} app edit <name> <image>`, description: 'Recreate a Docker container app' },
-      { command: `${BASE_COMMAND} app start|stop|restart|delete <name>`, description: 'Container lifecycle controls' },
-      { command: `${BASE_COMMAND} app inspect <name>`, description: 'Show container ports, env, and mounts' },
-    ],
-  },
-  {
-    title: 'Public Web',
-    entries: [
-      { command: `${BASE_COMMAND} public-web status [env]`, description: 'Public Web hostname diagnostics for cloudflare apps' },
-      { command: `${BASE_COMMAND} public-web repair [env] [--app <name>]`, description: 'Repair env, Traefik labels, and tunnel sync' },
-    ],
-  },
-  {
-    title: 'MCP',
-    entries: [
-      { command: `${BASE_COMMAND} mcp setup [env]`, description: 'Enable MCP and provision MCP_API_KEY' },
-      { command: `${BASE_COMMAND} mcp shutdown [env]`, description: 'Disable MCP in the target env file' },
-      { command: `${BASE_COMMAND} mcp config [env]`, description: 'Show current MCP settings' },
-    ],
-  },
-  {
-    title: 'Maintenance',
-    entries: [
-      {
-        command: `${BASE_COMMAND} doctor [env] [--repair-networks]`,
-        description: 'Validate Docker, env files, bind mounts, compose inputs, and app network ranges',
-      },
-      {
-        command: `${BASE_COMMAND} clean [env] [--yes]`,
-        description: 'Remove generated host-state files (outside a checkout: full wipe of the prod data dir)',
-      },
-      { command: `${BASE_COMMAND} reset [env] [--yes]`, description: 'Remove runtime state (outside a checkout: full wipe of the prod install)' },
-      { command: `${BASE_COMMAND} uninstall [--yes]`, description: 'Full machine cleanup of CI-Hub runtime state' },
-    ],
-  },
-];
-
-// --- colour & text ---
-
-function supportsColor() {
-  if (process.env.FORCE_COLOR && process.env.FORCE_COLOR !== '0') return true;
-  return Boolean(process.stdout.isTTY && process.env.NO_COLOR !== '1');
-}
-
-function colorize(text: string, tone: Tone) {
-  if (!supportsColor()) return text;
-  const map: Record<Tone, string> = {
-    green: '[32m',
-    cyan: '[36m',
-    yellow: '[33m',
-    red: '[31m',
-    dim: '[2m',
-    magenta: '[35m',
-  };
-  return `${map[tone]}${text}[0m`;
-}
-
-function bold(text: string) {
-  return supportsColor() ? `[1m${text}[0m` : text;
-}
-
-function dim(text: string) {
-  return colorize(text, 'dim');
-}
-
-function cliOk(text: string) {
-  return colorize(`${STEP_ICONS.done} ${text}`, 'green');
-}
-
-function cliFail(text: string) {
-  return colorize(`${STEP_ICONS.fail} ${text}`, 'red');
-}
-
-function cliWarn(text: string) {
-  return colorize(`${STEP_ICONS.pending} ${text}`, 'yellow');
-}
-
-export function stripAnsi(text: string) {
-  const esc = String.fromCharCode(27);
-  return text.replace(new RegExp(`${esc}\\[[0-9;]*m`, 'g'), '');
-}
-
-function pad(value: string, width: number) {
-  return `${value}${' '.repeat(Math.max(width - stripAnsi(value).length, 0))}`;
-}
-
-function termWidth() {
-  return process.stdout.columns || 80;
-}
-
-function hr(tone: Tone = 'dim') {
-  return colorize(BOX_CHARS.horizontal.repeat(termWidth()), tone);
-}
-
-// --- boxes ---
-
-export function box(title: string, lines: string[], tone: Tone = 'cyan') {
-  const w = termWidth();
-  const titleLen = stripAnsi(title).length;
-  const fill = Math.max(w - titleLen - 5, 1);
-  const top = `${BOX_CHARS.topLeft}${BOX_CHARS.horizontal} ${title} ${BOX_CHARS.horizontal.repeat(fill)}${BOX_CHARS.topRight}`;
-  const bottom = `${BOX_CHARS.bottomLeft}${BOX_CHARS.horizontal.repeat(w - 2)}${BOX_CHARS.bottomRight}`;
-  const body = (lines.length > 0 ? lines : ['']).map((l) => `  ${l}`);
-  return [colorize(top, tone), ...body, colorize(bottom, tone)].join('\n');
-}
-
-function renderSection(title: string, entries: CommandEntry[]) {
-  const width = Math.max(...entries.map((e) => e.command.length));
-  const lines = entries.map((e) => `${pad(colorize(e.command, 'green'), width)}  ${e.description}`);
-  return box(title, lines, 'cyan');
-}
-
-export function printMessageBox(title: string, lines: string[], tone: Tone = 'cyan') {
-  console.log(box(title, lines, tone));
-}
-
-// --- step indicator ---
-
-export function renderStep(n: number, total: number, label: string, status: StepStatus = 'active') {
-  const icons = STEP_ICONS;
-  const tones: Record<StepStatus, Tone> = { pending: 'dim', active: 'cyan', done: 'green', fail: 'red' };
-  const icon = colorize(icons[status], tones[status]);
-  const counter = dim(`[${n}/${total}]`);
-  return `${icon} ${counter} ${label}`;
-}
-
-// --- banner ---
-
-export function renderBanner() {
-  return colorize(COMPANY_ART, 'green');
-}
-
-export function renderWizardWelcome() {
-  return [
-    renderBanner(),
-    '',
-    box(
-      'Setup Wizard',
-      [
-        `${bold('Goal')}  Launch, configure, and register your Hub in one guided flow.`,
-        `${bold('Tip')}   Press Enter to accept the shown default for each prompt.`,
-        `${bold('Docs')}  cihub man \u2014 cihub --help`,
-      ],
-      'green',
-    ),
-  ].join('\n');
-}
-
-export function renderHelp() {
-  return [
-    renderBanner(),
-    '',
-    box(
-      'Quick start',
-      [
-        `${bold('First run')}  ${BASE_COMMAND} wizard`,
-        `${bold('Local dev')}  ${BASE_COMMAND} up local`,
-        `${bold('Install')}   npm install -g ci-hub`,
-        `${bold('NPX')}       npx --package ci-hub ${BASE_COMMAND} --help`,
-      ],
-      'green',
-    ),
-    ...commandSections.map((s) => renderSection(s.title, s.entries)),
-    box('Help & docs', [
-      `${pad(colorize(`${BASE_COMMAND} man`, 'green'), 20)}  Manual-style command reference`,
-      `${pad(colorize(`${BASE_COMMAND} --help`, 'green'), 20)}  This help output`,
-      `${pad(colorize(`${BASE_COMMAND} version`, 'green'), 20)}  Show version`,
-    ]),
-    box('Environments', [allowedEnvs.join('  |  ')], 'yellow'),
-  ].join('\n\n');
-}
-
-export function renderManPage() {
-  return [
-    colorize('CIHUB(1)', 'cyan'),
-    '',
-    box('Synopsis', [`${BASE_COMMAND} <command> [args]`]),
-    box('Description', [
-      'Companion Intelligence Hub CLI \u2014 setup, registration, Docker lifecycle,',
-      'MCP toggles, environment resets, and app management.',
-      '',
-      'All commands accept an optional [env] argument: local (default), dev, staging, prod.',
-      'Use local for source-based development and dev/staging/prod for appliance-style compose environments.',
-      '',
-      'Run outside a CI-Hub checkout (e.g. a packaged install), up/down/reset/clean infer prod and',
-      'target the canonical desktop data dir (dirs::data_dir()/companion-hub); any [env] arg is ignored.',
-    ]),
-    ...commandSections.map((s) => renderSection(s.title, s.entries)),
-    box(
-      'Packaging',
-      [
-        `npm/pnpm/bun global installs expose ${BASE_COMMAND} on PATH via the package bin entry.`,
-        `Homebrew and other package managers should install the same ${BASE_COMMAND} executable.`,
-      ],
-      'yellow',
-    ),
-    box(
-      'On-device testing loop',
-      [`${BASE_COMMAND} reset local --yes`, `${BASE_COMMAND} up local`, `${BASE_COMMAND} wizard`, 'pnpm run test:cli'],
-      'dim',
-    ),
-  ].join('\n\n');
-}
-
-// --- arg helpers ---
 
 export function normalizeCliArgs(rawArgs: string[]) {
   return rawArgs[0] === '--' ? rawArgs.slice(1) : rawArgs;
@@ -359,249 +98,11 @@ export function resolveEnvFromArgs(args: string[], defaultEnv: HubEnv = 'local')
   return (found || defaultEnv) as HubEnv;
 }
 
-function run(cmd: string, args: string[], extraEnv: Record<string, string | undefined> = {}, cwd: string = process.cwd()) {
-  console.log(colorize(`\u2192 ${cmd} ${args.map((a) => (a.includes(' ') ? JSON.stringify(a) : a)).join(' ')}`, 'dim'));
-  const result = spawnSync(cmd, args, {
-    stdio: 'inherit',
-    env: { ...process.env, ...extraEnv },
-    cwd,
-  });
-  if (result.error) {
-    console.error(colorize(`Failed to run ${cmd}: ${String(result.error)}`, 'red'));
-    process.exit(1);
-  }
-  if (result.status !== 0) process.exit(result.status ?? 1);
-}
-
-/** Best-effort variant of {@link run}: streams output but never aborts the CLI on failure. */
-function runBestEffort(cmd: string, args: string[], extraEnv: Record<string, string | undefined> = {}, cwd: string = process.cwd()): boolean {
-  console.log(colorize(`\u2192 ${cmd} ${args.map((a) => (a.includes(' ') ? JSON.stringify(a) : a)).join(' ')}`, 'dim'));
-  const result = spawnSync(cmd, args, { stdio: 'inherit', env: { ...process.env, ...extraEnv }, cwd });
-  return result.status === 0;
-}
-
-async function runScript<T>(label: string, fn: () => T | Promise<T>, extraEnv: Record<string, string | undefined> = {}, cwd?: string): Promise<T> {
-  console.log(colorize(`\u2192 ${label}`, 'dim'));
-  const previousValues = new Map<string, string | undefined>();
-  for (const [key, value] of Object.entries(extraEnv)) {
-    previousValues.set(key, process.env[key]);
-    if (value === undefined) {
-      delete process.env[key];
-    } else {
-      process.env[key] = value;
-    }
-  }
-
-  const previousCwd = cwd ? process.cwd() : undefined;
-  if (cwd) process.chdir(cwd);
-
-  try {
-    return await fn();
-  } catch (error) {
-    console.error(colorize(`Failed to run ${label}: ${String(error)}`, 'red'));
-    process.exit(1);
-  } finally {
-    if (cwd && previousCwd) process.chdir(previousCwd);
-    for (const [key, value] of previousValues) {
-      if (value === undefined) {
-        delete process.env[key];
-      } else {
-        process.env[key] = value;
-      }
-    }
-  }
-}
-
-function runCapture(cmd: string, args: string[]): { stdout: string; ok: boolean } {
-  const result = spawnSync(cmd, args, { encoding: 'utf-8', stdio: 'pipe' });
-  return { stdout: (result.stdout || '').trim(), ok: result.status === 0 };
-}
-
-function commandExists(cmd: string): boolean {
-  return runCapture(process.platform === 'win32' ? 'where' : 'which', [cmd]).ok;
-}
-
-function listeningPidsForPort(port: number): number[] {
-  if (process.platform === 'win32' || !commandExists('lsof')) return [];
-  const { stdout, ok } = runCapture('lsof', ['-t', '-n', `-iTCP:${port}`, '-sTCP:LISTEN']);
-  if (!ok || !stdout) return [];
-  return stdout
-    .split('\n')
-    .map((value) => Number.parseInt(value.trim(), 10))
-    .filter((value) => Number.isInteger(value) && value > 0);
-}
-
-function commandLineForPid(pid: number): string {
-  if (process.platform === 'win32') return '';
-  const { stdout, ok } = runCapture('ps', ['-p', String(pid), '-o', 'command=']);
-  return ok ? stdout.trim() : '';
-}
-
-function sleepMs(ms: number): void {
-  const end = Date.now() + ms;
-  while (Date.now() < end) {
-    // Intentional short synchronous wait for local-dev port cleanup.
-  }
-}
-
-function killPid(pid: number): void {
-  try {
-    process.kill(pid, 'SIGTERM');
-  } catch {
-    // Best effort: if the process already exited we do not need to fail startup.
-  }
-}
-
-function ensureLocalDevPortsAvailable(): void {
-  const frontendPort = Number.parseInt(LOCAL_DEV_FRONTEND_PORT, 10);
-  const backendPort = Number.parseInt(LOCAL_DEV_BACKEND_PORT, 10);
-  const frontendPids = listeningPidsForPort(frontendPort);
-  const backendPids = listeningPidsForPort(backendPort);
-  const repoRoot = process.cwd();
-
-  const staleFrontend = frontendPids.filter((pid) => {
-    const command = commandLineForPid(pid);
-    return command.includes(repoRoot) && command.includes('@react-router/dev/bin.js dev');
-  });
-  const staleBackend = backendPids.filter((pid) => {
-    const command = commandLineForPid(pid);
-    return (
-      command.includes(repoRoot) &&
-      (command.includes('nest start --watch --preserveWatchOutput') ||
-        command.includes('/packages/backend/') ||
-        command.includes('packages/backend/dist/src/main.js'))
-    );
-  });
-
-  for (const pid of [...staleFrontend, ...staleBackend]) {
-    killPid(pid);
-  }
-
-  if (staleFrontend.length > 0 || staleBackend.length > 0) {
-    sleepMs(1500);
-  }
-
-  const remainingFrontend = listeningPidsForPort(frontendPort).filter((pid) => !staleFrontend.includes(pid));
-  if (remainingFrontend.length > 0) {
-    printMessageBox(
-      'Local development port conflict',
-      [`Port ${LOCAL_DEV_FRONTEND_PORT} is already in use by another process. Stop it before running ${BASE_COMMAND} up local.`],
-      'red',
-    );
-    process.exit(2);
-  }
-
-  const remainingBackend = listeningPidsForPort(backendPort).filter((pid) => !staleBackend.includes(pid));
-  if (remainingBackend.length > 0) {
-    printMessageBox(
-      'Local development port conflict',
-      [`Port ${LOCAL_DEV_BACKEND_PORT} is already in use by another process. Stop it before running ${BASE_COMMAND} up local.`],
-      'red',
-    );
-    process.exit(2);
-  }
-}
-
 export function printRemovedCommand(oldUsage: string, replacement: string, detail?: string): never {
   const lines = [`${oldUsage} was removed in this release.`, `Use ${bold(replacement)} instead.`];
   if (detail) lines.push(detail);
   printMessageBox('Command removed', lines, 'red');
   process.exit(2);
-}
-
-// --- env / compose helpers ---
-
-function getEnvFileOrExit(env: string): string {
-  const f = envFileMap[env as HubEnv];
-  if (!f) usageAndExit(`Unknown environment: ${env}`);
-  return f;
-}
-
-export function getComposeFiles(env: HubEnv): string[] {
-  if (env === 'local') return ['docker-compose.local.yml'];
-  if (env === 'staging') return ['docker-compose.prod.yml', 'docker-compose.staging.yml'];
-  return ['docker-compose.prod.yml'];
-}
-
-function tunnelTokenPath(envFileName: string): string {
-  const rootFolderHost = resolveRootFolderHost(envFileName);
-  return path.resolve(rootFolderHost, '..', 'tunnel', 'token');
-}
-
-function hasCloudflareTunnelToken(envFileName: string): boolean {
-  try {
-    const tokenPath = tunnelTokenPath(envFileName);
-    return existsSync(tokenPath) && statSync(tokenPath).isFile() && statSync(tokenPath).size > 0;
-  } catch {
-    return false;
-  }
-}
-
-export function mergeComposeProfilesFromEnvFile(envFileName: string): string {
-  const vars = parseEnvFile(envFileName);
-  const hasEnvFile = Object.keys(vars).length > 0;
-  if (!hasEnvFile) {
-    const set = new Set(
-      (process.env.COMPOSE_PROFILES || '')
-        .split(',')
-        .map((s) => s.trim())
-        .filter(Boolean),
-    );
-    set.add('private-vpn');
-    if (hasCloudflareTunnelToken(envFileName)) set.add('cloudflare');
-    return [...set].join(',');
-  }
-  const vpnOn = vars.PRIVATE_VPN_USER_DISABLED !== 'true';
-  const set = new Set<string>([
-    ...(vars.COMPOSE_PROFILES || '')
-      .split(',')
-      .map((s) => s.trim())
-      .filter(Boolean),
-    ...(process.env.COMPOSE_PROFILES || '')
-      .split(',')
-      .map((s) => s.trim())
-      .filter(Boolean),
-  ]);
-  if (vpnOn) set.add('private-vpn');
-  else set.delete('private-vpn');
-  if (hasCloudflareTunnelToken(envFileName)) set.add('cloudflare');
-  return [...set].join(',');
-}
-
-export function buildEnvOverrides(envFileName: string) {
-  const composeProfiles = mergeComposeProfilesFromEnvFile(envFileName);
-  const fileVars = parseEnvFile(envFileName);
-  const resolvedHubVersion = (process.env.CI_HUB_VERSION || fileVars.CI_HUB_VERSION || packageVersion()).trim();
-  const overrides: Record<string, string | undefined> = {
-    ENV_FILE: envFileName,
-  };
-  if (composeProfiles) overrides.COMPOSE_PROFILES = composeProfiles;
-  if (resolvedHubVersion) overrides.CI_HUB_VERSION = resolvedHubVersion;
-
-  // Identity comes from init:host / the env file (e.g. UID 0 on Docker Desktop). Never
-  // replace with getuid() here \u2014 shell env wins over --env-file for compose interpolation.
-  if (fileVars.CI_HUB_CONTAINER_UID) overrides.CI_HUB_CONTAINER_UID = fileVars.CI_HUB_CONTAINER_UID;
-  if (fileVars.CI_HUB_CONTAINER_GID) overrides.CI_HUB_CONTAINER_GID = fileVars.CI_HUB_CONTAINER_GID;
-
-  return overrides;
-}
-
-function renderConfigLines(env: HubEnv) {
-  const envFileName = getEnvFileOrExit(env);
-  const fileVars = parseEnvFile(envFileName);
-  const rootFolder = resolveRootFolderHost(envFileName);
-  const composeProfiles = mergeComposeProfilesFromEnvFile(envFileName);
-  const mcpEnabled = (process.env.MCP_ENABLED || fileVars.MCP_ENABLED || 'true') !== 'false';
-  const mcpApiKey = process.env.MCP_API_KEY || fileVars.MCP_API_KEY;
-  return [
-    `${bold('environment')}      ${env}`,
-    `${bold('env file')}         ${envFileName}`,
-    `${bold('root folder')}      ${rootFolder}`,
-    `${bold('cloud url')}        ${process.env.CI_CLOUD_URL || fileVars.CI_CLOUD_URL || CI_CLOUD_DEFAULT}`,
-    `${bold('compose profiles')} ${composeProfiles || '(none)'}`,
-    `${bold('mcp enabled')}      ${mcpEnabled}`,
-    `${bold('mcp api key')}      ${mcpApiKey ? '<set>' : '<not set>'}`,
-  ];
 }
 
 export function normalizeDetachedFlag(args: string[]): { detached: boolean; attached: boolean; remaining: string[] } {
@@ -808,9 +309,9 @@ function requireRepoOrApplianceContext(action: string, gate: 'require-seed' | 'a
   printMessageBox(
     'No prod Hub install found',
     [
-      `${action} needs either a CI-Hub checkout or an installed Companion Hub.`,
+      `${action} needs either a CI-Hub checkout or an installed CI Hub.`,
       `Expected prod data at: ${ctx.dataDir}`,
-      'Launch the Companion Hub desktop app once to provision it, then retry.',
+      'Launch the CI Hub desktop app once to provision it, then retry.',
     ],
     'red',
   );
@@ -819,30 +320,6 @@ function requireRepoOrApplianceContext(action: string, gate: 'require-seed' | 'a
 
 export function isFirstRun(envFile = '.env.local'): boolean {
   return !existsSync(join(process.cwd(), envFile));
-}
-
-function ensureLocalDevRuntimeEnv(envFileName: string): Record<string, string> {
-  const rootFolderHost = resolveRootFolderHost(envFileName);
-  const runtimeEnvPath = join(rootFolderHost, '.env');
-  const appDataDir = join(rootFolderHost, 'app-data');
-  const sourceVars = parseEnvFile(envFileName);
-  const runtimeVars = {
-    ...sourceVars,
-    ENV_FILE: envFileName,
-    ROOT_FOLDER_HOST: rootFolderHost,
-    API_PORT: sourceVars.API_PORT || LOCAL_DEV_BACKEND_PORT,
-    FRONTEND_PORT: sourceVars.FRONTEND_PORT || LOCAL_DEV_FRONTEND_PORT,
-    CI_HUB_DATA_DIR: sourceVars.CI_HUB_DATA_DIR || rootFolderHost,
-    CI_HUB_APP_DATA_DIR: sourceVars.CI_HUB_APP_DATA_DIR || appDataDir,
-    CI_HUB_APP_DATA_PATH: sourceVars.CI_HUB_APP_DATA_PATH || rootFolderHost,
-    CI_HUB_VERSION: sourceVars.CI_HUB_VERSION || process.env.CI_HUB_VERSION || packageVersion(),
-  };
-  const content = Object.entries(runtimeVars)
-    .filter(([, value]) => value !== undefined && value !== '')
-    .map(([key, value]) => `${key}=${value}`)
-    .join('\n');
-  writeFileSync(runtimeEnvPath, `${content}\n`, 'utf-8');
-  return runtimeVars;
 }
 
 // --- hub lifecycle ---
@@ -855,7 +332,7 @@ function buildComposeBaseArgs(envFileName: string, files: string[]): string[] {
   return args;
 }
 
-/** Start Postgres (and queue), then align the DB role password with POSTGRES_PASSWORD in the env file. */
+/** Start Postgres (and queue), then align DB/broker passwords with the env file. */
 async function ensurePostgresInfraAndSyncPassword(
   envFileName: string,
   composeFiles: string[],
@@ -864,6 +341,7 @@ async function ensurePostgresInfraAndSyncPassword(
 ) {
   run('docker', [...buildComposeBaseArgs(envFileName, composeFiles), 'up', '-d', ...POSTGRES_INFRA_SERVICES], envOverrides, cwd);
   await runScript('scripts/sync-postgres-password.ts', () => syncPostgresPasswordFromEnv(envFileName), envOverrides);
+  await runScript('scripts/sync-rabbitmq-password.ts', () => syncRabbitmqPasswordFromEnv(envFileName), envOverrides);
 }
 
 export function shouldRetryApkMirrorWithHostNetwork(
@@ -1020,8 +498,8 @@ export async function setupHub(env: HubEnv) {
     requireRepoOrApplianceContext('cihub setup', 'require-seed');
     const ctx = resolveHubContext(env);
     printMessageBox(
-      'Setup managed by Companion Hub',
-      ['The Companion Hub desktop app provisions host assets for prod installs.', `Data dir: ${ctx.dataDir}`, `Next: ${BASE_COMMAND} up`],
+      'Setup managed by CI Hub',
+      ['The CI Hub desktop app provisions host assets for prod installs.', `Data dir: ${ctx.dataDir}`, `Next: ${BASE_COMMAND} up`],
       'cyan',
     );
     return;
@@ -1041,6 +519,40 @@ export async function setupHub(env: HubEnv) {
 
 export function printConfig(env: HubEnv) {
   printMessageBox('CI-Hub configuration', renderConfigLines(env), 'cyan');
+}
+
+export async function showDeviceId(options: { fromHub?: boolean; env?: HubEnv } = {}) {
+  if (options.fromHub) {
+    const env = options.env ?? 'local';
+    const ctx = resolveHubContext(env);
+    const apiBase = resolveRegisterApiBase(ctx.envFile);
+    try {
+      const deviceInfo = await fetchDeviceId(apiBase);
+      if (!deviceInfo.device_id) {
+        printMessageBox(
+          'Device ID unavailable',
+          ['The running Hub could not resolve a device ID.', 'Check backend logs and ensure the appliance initialized correctly.'],
+          'red',
+        );
+        return;
+      }
+      console.log(deviceInfo.device_id);
+      return;
+    } catch (error) {
+      printMessageBox(
+        'Device ID lookup failed',
+        [error instanceof Error ? error.message : String(error), `Ensure the Hub is running: ${BASE_COMMAND} up ${env}`],
+        'red',
+      );
+      return;
+    }
+  }
+
+  try {
+    console.log(await resolveLocalDeviceId());
+  } catch (error) {
+    printMessageBox('Device ID lookup failed', [error instanceof Error ? error.message : String(error)], 'red');
+  }
 }
 
 export async function registerHub(env: HubEnv, options: RegisterHubOptions = {}) {
@@ -1405,7 +917,7 @@ export async function resetHub(env: HubEnv, force: boolean): Promise<boolean> {
   cleanRootOwnedHubData(env);
   printMessageBox(
     'Reset complete',
-    ['Hub runtime state, volumes, and host data were removed.', 'Re-launch Companion Hub or run `cihub up dev` (or `cihub up prod`) to start fresh.'],
+    ['Hub runtime state, volumes, and host data were removed.', 'Re-launch CI Hub or run `cihub up dev` (or `cihub up prod`) to start fresh.'],
     'green',
   );
   return true;
@@ -1490,6 +1002,10 @@ export async function doctorHub(env: HubEnv, options?: { repairNetworks?: boolea
   const rootFolderHost = ctx.appliance ? (ctx.dataDir as string) : resolveRootFolderHost(envFileName);
   const composeFiles = ctx.composeFiles;
   const networkSection = await runNetworkDoctorSection(envFileName, { repairNetworks: options?.repairNetworks });
+  // Host services the Hub dials over the Docker bridge. A default-deny host
+  // firewall drops these silently and the failure is invisible from the host,
+  // so it is checked from inside the container.
+  const bridgeSection = await runBridgeDoctorSection(envFileName);
   const lines = [
     `Docker               ${checkDockerAvailable() ? cliOk('available') : cliFail('unavailable')}`,
     `Docker Compose       ${runCapture('docker', ['compose', 'version']).ok ? cliOk('available') : cliFail('unavailable')}`,
@@ -1498,8 +1014,9 @@ export async function doctorHub(env: HubEnv, options?: { repairNetworks?: boolea
     `Compose files        ${composeFiles.every((file) => existsSync(resolvePath(file))) ? cliOk('found') : cliFail('missing')}  ${composeFiles.join(', ')}`,
     `Tunnel token         ${doctorHasTunnelToken(ctx) ? cliOk('present') : colorize(`${STEP_ICONS.pending} absent`, 'dim')}`,
     ...networkSection.lines,
+    ...bridgeSection.lines,
   ];
-  const tone = networkSection.issueCount > 0 ? 'yellow' : 'cyan';
+  const tone = networkSection.issueCount + bridgeSection.issueCount > 0 ? 'yellow' : 'cyan';
   printMessageBox(`Hub doctor  [${ctx.env}]`, lines, tone);
 }
 
@@ -1668,11 +1185,342 @@ export function runModelsCommand(args: string[]) {
 export function setMcpState(env: HubEnv, enabled: boolean) {
   const envFileName = getEnvFileOrExit(env);
   upsertEnvVar(envFileName, 'MCP_ENABLED', enabled ? 'true' : 'false');
+  const lines = renderConfigLines(env);
   if (enabled) {
-    const vars = parseEnvFile(envFileName);
-    if (!vars.MCP_API_KEY) upsertEnvVar(envFileName, 'MCP_API_KEY', randomBytes(24).toString('hex'));
+    lines.push('', `Create a key with ${bold(`${BASE_COMMAND} api-key create`)} — MCP requires an 'mcp'-scoped key.`);
   }
-  printMessageBox(enabled ? 'MCP enabled' : 'MCP disabled', renderConfigLines(env), enabled ? 'green' : 'yellow');
+  printMessageBox(enabled ? 'MCP enabled' : 'MCP disabled', lines, enabled ? 'green' : 'yellow');
+}
+
+// --- API keys ---
+
+const API_KEY_DB_CONTAINER = 'ci-hub-db';
+const API_KEY_DB_PORT = '6543';
+const API_KEY_DB_USER = 'companion';
+const API_KEY_DB_NAME = 'companiondb';
+const API_KEY_BYTES = 32; // 64 hex chars — mirrors KEY_BYTES in ApiKeyService
+const API_KEY_PREFIX_LEN = 8; // mirrors PREFIX_LEN in ApiKeyService
+
+/**
+ * Scopes an *operator* key may carry — deliberately narrower than API_KEY_SCOPES in
+ * packages/backend/src/modules/api-keys/api-key.scopes.ts, and the same line ApiKeyAdminService
+ * takes for the UI (it pins operator keys to ['mcp']).
+ *
+ * 'app' is honoured only on a *managed* row: resolveManagedAppUrn requires `managed` and an owning
+ * app URN, both of which only app provisioning sets. An operator key carrying 'app' would list as
+ * correctly provisioned and authenticate nothing — the same "credential that isn't one" this
+ * command exists to retire.
+ */
+const OPERATOR_API_KEY_SCOPES: readonly string[] = ['mcp'];
+
+/** Scopes that exist but are only ever minted for an app, so the error can say why, not just "unknown". */
+const MANAGED_ONLY_API_KEY_SCOPES: readonly string[] = ['app'];
+
+/**
+ * What a key may DO on the surfaces its scopes reach — mirrors API_KEY_CAPABILITIES in
+ * packages/backend/src/modules/api-keys/api-key.capabilities.ts.
+ *
+ * 'read' is offered here, not just in the UI, because the headless case is where it matters most: a
+ * key minted over ssh for a third-party MCP client should be mintable read-only in the same breath,
+ * not created wide and tightened later in a browser.
+ */
+const API_KEY_CAPABILITIES: readonly string[] = ['read', 'write', 'full'];
+
+/** Mirrors DEFAULT_API_KEY_CAPABILITY: what a key can do when nobody said. */
+const DEFAULT_API_KEY_CAPABILITY = 'write';
+
+/** Escape a value for single-quoted SQL. Names are also validated before they reach here. */
+export function sqlQuote(value: string): string {
+  return `'${value.replace(/'/g, "''")}'`;
+}
+
+/**
+ * Key names are interpolated into SQL, so the character set is deliberately narrow — quoting alone
+ * is not the only line of defence. `app:` is reserved for keys the Hub provisions to marketplace
+ * apps; an operator key must not be able to impersonate one. A leading `-` is refused too: it is
+ * never a sensible label, and it is what `--name --scopes mcp` (a flag whose value was forgotten)
+ * looks like by the time it reaches here.
+ */
+export function isValidApiKeyName(name: string): boolean {
+  return /^[\w .:@][\w .:@-]{0,63}$/.test(name) && !name.startsWith('app:');
+}
+
+/**
+ * Split a `--scopes` value into the scopes an operator key may hold, the app-only ones, and the
+ * unrecognised ones — the caller refuses the last two with different explanations.
+ *
+ * Deduped and ordered by OPERATOR_API_KEY_SCOPES, mirroring ApiKeyService.normalizeScopes: a row
+ * this command writes should be indistinguishable from one the service wrote for the same grant.
+ */
+export function parseApiKeyScopes(input: string): { scopes: string[]; invalid: string[]; managedOnly: string[] } {
+  const requested = [
+    ...new Set(
+      input
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean),
+    ),
+  ];
+  const allowed = OPERATOR_API_KEY_SCOPES.filter((scope) => requested.includes(scope));
+  const rejected = requested.filter((scope) => !allowed.includes(scope));
+
+  return {
+    scopes: [...allowed, ...rejected],
+    managedOnly: rejected.filter((scope) => MANAGED_ONLY_API_KEY_SCOPES.includes(scope)),
+    invalid: rejected.filter((scope) => !MANAGED_ONLY_API_KEY_SCOPES.includes(scope)),
+  };
+}
+
+/**
+ * Build the INSERT for a new key. Split out from the command so the one string that actually reaches
+ * the database is unit-testable — the validation above narrows what can get here, but the quoting is
+ * the last line of defence and deserves its own assertions.
+ */
+export function buildApiKeyInsertSql(row: {
+  name: string;
+  scopes: string[];
+  capability: string;
+  prefix: string;
+  hashedKey: string;
+  /** False on a Hub released before per-key capability existed. */
+  withCapability?: boolean;
+}): string {
+  const scopeArray = `ARRAY[${row.scopes.map(sqlQuote).join(',')}]::text[]`;
+
+  if (row.withCapability === false) {
+    return (
+      `INSERT INTO api_key (name, scopes, prefix, hashed_key) VALUES (${sqlQuote(row.name)}, ${scopeArray}, ` +
+      `${sqlQuote(row.prefix)}, ${sqlQuote(row.hashedKey)}) RETURNING id;`
+    );
+  }
+
+  return (
+    `INSERT INTO api_key (name, scopes, capability, prefix, hashed_key) VALUES (${sqlQuote(row.name)}, ${scopeArray}, ` +
+    `${sqlQuote(row.capability)}, ${sqlQuote(row.prefix)}, ${sqlQuote(row.hashedKey)}) RETURNING id;`
+  );
+}
+
+/**
+ * Does this Hub's `api_key` table carry the `capability` column?
+ *
+ * Per-key capability arrived after several published Hub releases, and the CLI is run
+ * against whatever appliance is in front of it — an older one than the checkout is the
+ * normal case, not an edge case. Verified against a live 0.2.47: without this the insert
+ * dies on `column "capability" of relation "api_key" does not exist`, so the documented
+ * headless key-minting route fails outright on exactly the appliances that most need a
+ * CLI, since minting in the browser is what it exists to avoid.
+ *
+ * Unknown answers are treated as "present": that keeps the modern path first, and a
+ * genuinely missing column still surfaces as the same insert error as before.
+ */
+export function apiKeyTableHasCapability(): boolean {
+  const result = psql("SELECT 1 FROM information_schema.columns WHERE table_name='api_key' AND column_name='capability';");
+  if (!result.ok) return true;
+  return result.stdout.split('\n')[0]?.trim() === '1';
+}
+
+/**
+ * Make an untrusted string safe to print inside a message box: whitespace runs collapse to a single
+ * space (so a value cannot span rows) and every control character is dropped.
+ *
+ * `stripAnsi` is not enough on its own — it only removes SGR colour sequences, so `ESC[2J`, a bare
+ * ESC, or any other C0 character would survive and be handed to the terminal verbatim.
+ */
+export function sanitizeForBox(value: string): string {
+  return [...stripAnsi(value).replace(/\s+/g, ' ')]
+    .filter((char) => char >= ' ' && char !== '\u007f') // >= space keeps printables; \u007f is DEL
+    .join('')
+    .trim();
+}
+
+/**
+ * Render the `api-key list` JSON document as display rows.
+ *
+ * Tolerates a malformed/empty document by returning no rows rather than throwing: the caller has
+ * already handled the psql failure case, and a parse error here should not crash the CLI.
+ */
+export function formatApiKeyRows(json: string, withCapability = true): string[] {
+  let parsed: Array<{ id?: number; name?: string; scopes?: string[]; capability?: string; prefix?: string }>;
+
+  try {
+    parsed = JSON.parse(json || '[]');
+  } catch {
+    return [];
+  }
+
+  if (!Array.isArray(parsed)) {
+    return [];
+  }
+
+  return parsed.map((row) => {
+    const scopes = Array.isArray(row.scopes) && row.scopes.length > 0 ? row.scopes.join(',') : '-';
+    // Shown for every key, including ones minted before the column existed (which read as 'write',
+    // the column default) — a listing that omitted it would make a read-only key look unrestricted.
+    //
+    // But on a Hub with no capability column there is no per-key capability to report, and
+    // defaulting to 'write' there would state a restriction the server does not enforce. Omit the
+    // field entirely rather than invent one.
+    const capability = withCapability
+      ? ` ${typeof row.capability === 'string' && row.capability ? row.capability : DEFAULT_API_KEY_CAPABILITY} `
+      : ' ';
+
+    // Names reach this box unfiltered from the key store, and the store does not constrain them:
+    // the UI's create body is `z.string().trim().min(1).max(100)`, so a name may hold ANSI escapes
+    // or other control characters. Collapse whitespace first (so one key still cannot span rows),
+    // then drop every remaining control character — unstripped they would be written straight to
+    // the terminal, and they count toward string length, which also skews the box width.
+    const name = sanitizeForBox(String(row.name ?? ''));
+
+    return `${row.id}  ${name}  [${scopes}] ${capability} ${row.prefix ?? ''}…`;
+  });
+}
+
+/**
+ * Run one statement against the Hub database.
+ *
+ * Captures stderr as well as stdout — psql reports *every* failure there (container down, missing
+ * relation, unique violation), so a stdout-only capture like {@link runCapture} would render a
+ * duplicate-key error and a stopped Hub as the same blank "non-zero exit code".
+ */
+function psql(sql: string): { stdout: string; stderr: string; ok: boolean } {
+  const result = spawnSync(
+    'docker',
+    ['exec', API_KEY_DB_CONTAINER, 'psql', '-U', API_KEY_DB_USER, '-d', API_KEY_DB_NAME, '-p', API_KEY_DB_PORT, '-At', '-c', sql],
+    { encoding: 'utf-8', stdio: 'pipe' },
+  );
+
+  return {
+    stdout: (result.stdout || '').trim(),
+    // result.error covers docker itself being absent, where there is no stderr to read.
+    stderr: (result.stderr || '').trim() || (result.error ? String(result.error) : ''),
+    ok: result.status === 0,
+  };
+}
+
+/** psql's own diagnosis, as box lines. Capped so a stack of NOTICEs can't swamp the message. */
+function psqlErrorLines(result: { stdout: string; stderr: string }): string[] {
+  const detail = (result.stderr || result.stdout).split('\n').filter(Boolean).slice(0, 6);
+
+  return detail.length > 0 ? detail : ['psql returned a non-zero exit code'];
+}
+
+/**
+ * Operator API keys from the terminal.
+ *
+ * SEC-MCP-8 made the hashed store the sole auth authority and deliberately removed the guard's env
+ * fallback, so `MCP_API_KEY` authenticates nothing. Until now the only way to obtain a real key was
+ * the browser UI (Settings → Security), which blocks headless and remote setup. The CLI already
+ * holds appliance-level privilege (it owns the env file and drives docker), so it writes the row.
+ *
+ * Columns mirror `api_key` in packages/backend/src/core/database/drizzle/schema.ts; the hash mirrors
+ * ApiKeyService.hash() (sha256 hex). Keep all three in step if the schema moves.
+ */
+export function runApiKeyCommand(args: string[]) {
+  const subcommand = args[0] || 'list';
+
+  if (subcommand === 'create') {
+    const nameFlag = args.indexOf('--name');
+    const name = nameFlag >= 0 ? args[nameFlag + 1] : undefined;
+    if (!name)
+      usageAndExit(
+        `Usage: ${BASE_COMMAND} api-key create --name <label> [--scopes ${OPERATOR_API_KEY_SCOPES.join(',')}] ` +
+          `[--capability ${API_KEY_CAPABILITIES.join('|')}]`,
+      );
+    if (!isValidApiKeyName(name)) {
+      usageAndExit(
+        `Invalid key name. Use 1-64 chars of letters, digits, space, or . : @ _ - starting with anything but '-', and do not start with 'app:' (reserved for managed app keys).`,
+      );
+    }
+
+    const scopesFlag = args.indexOf('--scopes');
+    const { scopes, invalid, managedOnly } = parseApiKeyScopes(scopesFlag >= 0 ? (args[scopesFlag + 1] ?? '') : 'mcp');
+    if (scopes.length === 0) usageAndExit(`At least one scope is required. Valid: ${OPERATOR_API_KEY_SCOPES.join(', ')}`);
+    if (managedOnly.length > 0) {
+      usageAndExit(
+        `The '${managedOnly.join("', '")}' scope is carried only by managed keys the Hub provisions to installed apps — the callback guard checks the key's owning app, so an operator key holding it would authenticate nothing. Use --scopes ${OPERATOR_API_KEY_SCOPES.join(',')}.`,
+      );
+    }
+    if (invalid.length > 0) usageAndExit(`Unknown scope(s): ${invalid.join(', ')}. Valid: ${OPERATOR_API_KEY_SCOPES.join(', ')}`);
+
+    const capabilityFlag = args.indexOf('--capability');
+    const capability = capabilityFlag >= 0 ? (args[capabilityFlag + 1] ?? '') : DEFAULT_API_KEY_CAPABILITY;
+    if (!API_KEY_CAPABILITIES.includes(capability)) {
+      usageAndExit(
+        `Unknown capability: ${capability || '(empty)'}. Valid: ${API_KEY_CAPABILITIES.join(', ')} — ` +
+          "'read' calls read-only tools, 'write' also mutates (install/start/stop/reconfigure), 'full' also runs destructive tools (uninstall/reset/delete).",
+      );
+    }
+
+    const rawKey = randomBytes(API_KEY_BYTES).toString('hex');
+    const withCapability = apiKeyTableHasCapability();
+    const sql = buildApiKeyInsertSql({
+      name,
+      scopes,
+      capability,
+      prefix: rawKey.slice(0, API_KEY_PREFIX_LEN),
+      hashedKey: createHash('sha256').update(rawKey).digest('hex'),
+      withCapability,
+    });
+
+    const result = psql(sql);
+    const { stdout, ok } = result;
+    if (!ok) {
+      printMessageBox('API key creation failed', [...psqlErrorLines(result), '', `Is the Hub running? Try ${bold(`${BASE_COMMAND} up`)}.`], 'red');
+      process.exit(1);
+    }
+
+    // Even with -At, psql appends its command tag ("INSERT 0 1") after the RETURNING row.
+    const newId = stdout.split('\n')[0]?.trim() ?? '';
+
+    printMessageBox(
+      'API key created',
+      [
+        `${bold('id')}      ${newId}`,
+        `${bold('name')}    ${name}`,
+        `${bold('scopes')}  ${scopes.join(', ')}`,
+        // Reporting the requested capability on a Hub that cannot store it would be a
+        // plain untruth about how much authority the key just gained.
+        ...(withCapability
+          ? [`${bold('can')}     ${capability}`]
+          : [
+              `${bold('can')}     everything its scopes allow`,
+              '',
+              'This Hub predates per-key capability, so there is no read/write/full',
+              `distinction to apply and ${bold(`--capability ${capability}`)} was not stored.`,
+              'Update the Hub if you need capability-limited keys.',
+            ]),
+        '',
+        `${bold('key')}     ${rawKey}`,
+        '',
+        'This is the only time the key is shown. Store it now.',
+        'Change what it can do, or revoke it, in Settings → Security.',
+      ],
+      'green',
+    );
+    return;
+  }
+
+  if (subcommand === 'list') {
+    // Aggregate to a single JSON document rather than concatenating columns: key names predate this
+    // command's validation (the UI accepts any string), so a name containing a newline or the
+    // separator would otherwise split into bogus rows.
+    // Same schema split as `create`: selecting a column an older Hub does not have fails the whole
+    // query, so `api-key list` was unusable on every published release rather than degrading.
+    const withCapability = apiKeyTableHasCapability();
+    const fields = ["'id', id", "'name', name", "'scopes', scopes", ...(withCapability ? ["'capability', capability"] : []), "'prefix', prefix"].join(
+      ', ',
+    );
+    const result = psql(`SELECT COALESCE(json_agg(json_build_object(${fields}) ORDER BY id)::text, '[]') FROM api_key;`);
+    if (!result.ok) {
+      printMessageBox('Could not read API keys', [...psqlErrorLines(result), '', `Is the Hub running? Try ${bold(`${BASE_COMMAND} up`)}.`], 'red');
+      process.exit(1);
+    }
+    const rows = formatApiKeyRows(result.stdout, withCapability);
+    printMessageBox('API keys', rows.length > 0 ? rows : ['(none — create one with `api-key create --name <label>`)'], 'cyan');
+    return;
+  }
+
+  usageAndExit(`Unknown api-key subcommand: ${subcommand}. Use: create, list`);
 }
 
 // --- public web ---
@@ -2074,7 +1922,7 @@ export async function runWizard(defaultEnv: HubEnv = 'local') {
       const cfDomain = process.env.CF_DOMAIN || fileVars.CF_DOMAIN || fileVars.DOMAIN;
       console.log();
       console.log(hr('dim'));
-      console.log(colorize(`  ${STEP_ICONS.done} Setup complete! Your Companion Intelligence Hub is running.`, 'green'));
+      console.log(colorize(`  ${STEP_ICONS.done} Setup complete! Your CI Hub is running.`, 'green'));
       console.log(dim(`  Local     http://localhost:${fileVars.FRONTEND_PORT || fileVars.BACKEND_PORT || '5002'}`));
       if (cfDomain) console.log(dim(`  Cloud     https://${cfDomain}`));
       if (tsIp.trim()) console.log(dim(`  Tailscale ${tsIp.trim()}`));
@@ -2172,8 +2020,63 @@ export function runHostUpdate(args: string[]) {
   const cliArgs = checkOnly ? ['update', '--check'] : ['update'];
   const result = spawnSync(binary, cliArgs, { stdio: 'inherit' });
   if (result.error) {
-    console.error(`${colorize('Error', 'red')}: Could not run ${binary}. Install Companion Hub desktop or run from the app Settings.`);
+    console.error(`${colorize('Error', 'red')}: Could not run ${binary}. Install CI Hub desktop or run from the app Settings.`);
     process.exit(1);
   }
   process.exit(result.status ?? 1);
+}
+
+// --- connect an existing agent (BYO) ---
+
+/**
+ * `cihub connect openclaw|hermes` — see scripts/lib/connect-agent.ts for the design
+ * notes, in particular why the memory-slot guard has to run before the installer.
+ */
+export async function runConnectCommand(args: string[]) {
+  const usage =
+    `Usage: ${BASE_COMMAND} connect openclaw|hermes --memory-url <url> --memory-key <key>\n` +
+    '                     [--hub-url <url> --hub-key <key>]  also wire Hub MCP\n' +
+    '                     [--force]                          claim a foreign memory slot\n' +
+    '                     [--dry-run]                        print the plan, write nothing';
+
+  // Parsing lives in connect-agent.ts so its rules can be tested without a terminal.
+  const parsed = parseConnectArgs(args);
+  if (parsed.error || !parsed.agent) usageAndExit(parsed.error ? `${parsed.error}\n${usage}` : usage);
+
+  const agent = parsed.agent;
+  const { hubUrl, hubKey, force, dryRun } = parsed;
+  let memoryUrl = parsed.memoryUrl;
+  let memoryKey = parsed.memoryKey;
+
+  // Prompted only on a TTY. In CI or a pipe, a missing flag is a usage error rather
+  // than a hang waiting on stdin nobody is attached to.
+  if ((!memoryUrl || !memoryKey) && input.isTTY) {
+    const rl = createInterface({ input, output });
+    try {
+      if (!memoryUrl) {
+        printMessageBox(
+          'Companion Memory URL',
+          [
+            'This Hub can answer on more than one address, and the value is written once.',
+            'Use the address this machine can reach — local network, Private VPN, or your',
+            'exposed domain. See the connect docs if you are unsure which applies.',
+          ],
+          'cyan',
+        );
+        memoryUrl = (await rl.question('  Companion Memory URL: ')).trim();
+      }
+      if (!memoryKey) {
+        memoryKey = (await rl.question('  Companion Memory API key (Settings → API Keys): ')).trim();
+      }
+    } finally {
+      rl.close();
+    }
+  }
+
+  // Still missing after the prompt, or never prompted because this is not a TTY.
+  if (!memoryUrl || !memoryKey) {
+    usageAndExit(`${BASE_COMMAND} connect ${agent} needs --memory-url and --memory-key (or a TTY to prompt on).`);
+  }
+
+  await connectAgent({ agent, memoryUrl: normalizeMemoryUrl(memoryUrl), memoryKey, hubUrl, hubKey, force, dryRun });
 }

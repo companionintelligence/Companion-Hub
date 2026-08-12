@@ -1,7 +1,41 @@
 name: Fleet E2E Tests
+# >>> ci-local:gated original triggers below, restore with `ci-local restore`
+# on:
+#   schedule:
+#     - cron: '0 2 * * 0'  # Sunday 2am UTC (noon AEDT)
+#   workflow_dispatch:
+#     inputs:
+#       server:
+#         description: 'Target server'
+#         required: true
+#         default: 'core-6'
+#         type: choice
+#         options:
+#           - core-1
+#           - core-2
+#           - core-5
+#           - core-6
+#           - core-8
+#           - core-9
+#           - core-10
+#           - core-13
+#           - beta-1
+#           - beta-red
+#       test_suite:
+#         description: 'Test suite to run'
+#         required: true
+#         default: 'all'
+#         type: choice
+#         options:
+#           - all
+#           - ftue
+#           - platform
+#           - cloudflare
+#           - tailscale
+#           - cloud-account
+#           - app-lifecycle
+# <<< ci-local:gated
 on:
-  schedule:
-    - cron: '0 2 * * 0'  # Sunday 2am UTC (noon AEDT)
   workflow_dispatch:
     inputs:
       server:
@@ -34,6 +68,10 @@ on:
           - cloud-account
           - app-lifecycle
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   # Fleet server Tailscale IPs — stored as GitHub Actions secrets.
   # Add FLEET_<NAME>_IP under Settings → Secrets and variables → Actions.
@@ -48,6 +86,10 @@ env:
   CORE_13_IP: ${{ secrets.FLEET_CORE_13_IP }}
   BETA_1_IP: ${{ secrets.FLEET_BETA_1_IP }}
   BETA_RED_IP: ${{ secrets.FLEET_BETA_RED_IP }}
+
+permissions:
+  contents: read
+  packages: read
 
 jobs:
   e2e-fleet:
@@ -91,6 +133,8 @@ jobs:
 
       - name: Install dependencies
         uses: "./.github/actions/install-dependencies"
+        with:
+          node-auth-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Get installed playwright version
         id: playwright-version
@@ -149,7 +193,7 @@ jobs:
         with:
           name: playwright-report-${{ steps.server-ip.outputs.server }}
           path: playwright-report/
-          retention-days: 14
+          retention-days: 7
 
       - name: Upload screenshots
         uses: actions/upload-artifact@v7
@@ -157,7 +201,7 @@ jobs:
         with:
           name: e2e-screenshots-${{ steps.server-ip.outputs.server }}
           path: e2e/screenshots/
-          retention-days: 14
+          retention-days: 7
 
   notify:
     name: Notify Results

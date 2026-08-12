@@ -10,7 +10,10 @@ interface ServicePort {
 }
 
 interface ServiceVolume {
-  hostPath: string;
+  /** Host bind source. Mutually exclusive with `volumeName`. */
+  hostPath?: string;
+  /** Docker-managed named volume source. Mutually exclusive with `hostPath`. */
+  volumeName?: string;
   containerPath: string;
   readOnly?: boolean;
   bind?: {
@@ -258,10 +261,31 @@ export class ServiceBuilder {
       this.service.volumes = [];
     }
 
-    if (volume.bind?.propagation) {
+    // A volume mounts either a named volume or a host path. The schema rejects manifests declaring
+    // both or neither, but the compose builder only warns on a schema failure, so this has to fail
+    // loudly on its own. Skipping the entry instead would render a database service with no mount
+    // at all: it would start, write to the container's writable layer, and lose everything on the
+    // next `--force-recreate`. Aborting the build surfaces the bad manifest while the data is still
+    // safe — the same reason the sandbox check throws rather than dropping the offending volume.
+    if (volume.hostPath !== undefined && volume.volumeName !== undefined) {
+      throw new Error(
+        `Volume for "${volume.containerPath}" declares both hostPath and volumeName. ` + 'Refusing to guess which one the manifest meant to mount.',
+      );
+    }
+
+    const source = volume.volumeName ?? volume.hostPath;
+    if (!source) {
+      throw new Error(
+        `Volume for "${volume.containerPath}" declares neither hostPath nor volumeName. ` +
+          'Refusing to render a service whose data would live only in the container layer.',
+      );
+    }
+
+    // Propagation is a bind-only concept; named volumes have no host mount to propagate.
+    if (volume.bind?.propagation && volume.volumeName === undefined) {
       const longFormVolume: VolumeLongForm = {
         type: 'bind',
-        source: volume.hostPath,
+        source,
         target: volume.containerPath,
         read_only: volume.readOnly,
         bind: {
@@ -271,7 +295,7 @@ export class ServiceBuilder {
       this.service.volumes.push(longFormVolume);
     } else {
       const readOnly = volume.readOnly ? ':ro' : '';
-      this.service.volumes.push(`${volume.hostPath}:${volume.containerPath}${readOnly}`);
+      this.service.volumes.push(`${source}:${volume.containerPath}${readOnly}`);
     }
 
     return this;

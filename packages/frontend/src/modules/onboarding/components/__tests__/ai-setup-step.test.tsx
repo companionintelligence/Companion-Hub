@@ -1,18 +1,20 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { AiSetupStep } from '../ai-setup-step';
 import type { HardwareProfileResponse } from '../../helpers/ai-setup-types';
 
-const { fetchInferenceOnboardingProfile, fetchOllamaInstallStatus, rescanInferenceHardware } = vi.hoisted(() => ({
+const { fetchInferenceOnboardingProfile, fetchOllamaInstallStatus, fetchVllmInstallStatus, rescanInferenceHardware } = vi.hoisted(() => ({
   fetchInferenceOnboardingProfile: vi.fn(),
   fetchOllamaInstallStatus: vi.fn(),
+  fetchVllmInstallStatus: vi.fn(),
   rescanInferenceHardware: vi.fn(),
 }));
 
 vi.mock('@/lib/inference/inference-api', () => ({
   fetchInferenceOnboardingProfile,
   fetchOllamaInstallStatus,
+  fetchVllmInstallStatus,
   rescanInferenceHardware,
 }));
 
@@ -23,6 +25,41 @@ vi.mock('@/components/ui/Skeleton/Skeleton', () => ({
 const mockOpenExternal = vi.fn();
 vi.mock('@/lib/helpers/open-external', () => ({
   openExternal: (...args: unknown[]) => mockOpenExternal(...args),
+}));
+
+vi.mock('../../helpers/use-marketplace-catalog-apps', () => ({
+  useMarketplaceCatalogApps: () => ({
+    apps: [],
+    isLoading: false,
+    isRetryingEmptyCatalog: false,
+    isCatalogSettled: true,
+    isError: false,
+    refetch: vi.fn(),
+  }),
+}));
+
+const mockUseQuery = vi.fn();
+vi.mock('@tanstack/react-query', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@tanstack/react-query')>();
+  return {
+    ...actual,
+    useQuery: (...args: unknown[]) => mockUseQuery(...args),
+    useMutation: () => ({ mutate: vi.fn(), isPending: false }),
+    useQueryClient: () => ({ invalidateQueries: vi.fn(), getQueryData: vi.fn() }),
+  };
+});
+
+vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
+  getStatus5Options: () => ({ queryKey: ['tailscale-status'], queryFn: vi.fn() }),
+  getStatus5QueryKey: () => ['tailscale-status'],
+}));
+
+vi.mock('@/lib/hooks/use-tailscale-readiness-sync', () => ({
+  useTailscaleReadinessSync: vi.fn(),
+}));
+
+vi.mock('react-hot-toast', () => ({
+  default: { error: vi.fn(), success: vi.fn() },
 }));
 
 // Onboarding pins inference to Ollama, so catalog fixtures use the Ollama backend.
@@ -119,6 +156,35 @@ const insufficientProfile: HardwareProfileResponse = {
 
 const ollamaReady = { ready: true, running: true, endpointUrl: 'http://ci-hub-ollama:11434' };
 const ollamaMissing = { ready: false, running: false, endpointUrl: 'http://ci-hub-ollama:11434' };
+const vllmReady = {
+  ready: true,
+  running: true,
+  endpointUrl: 'http://host.docker.internal:8000',
+  displayEndpoint: 'http://host.docker.internal:8000/v1',
+};
+const vllmMissing = { ready: false, running: false, endpointUrl: 'http://host.docker.internal:8000' };
+
+// A model the Hub cannot pull — it only ever appears as installed while the host vLLM serves it.
+const vllmModel = {
+  id: 'qwen3-4b-instruct-vllm',
+  displayName: 'Qwen 3 4B Instruct (vLLM)',
+  description: 'Chat model served by host vLLM',
+  modality: 'llm',
+  purpose: 'general',
+  backend: 'vllm',
+  runtime: { backendModelId: 'Qwen/Qwen3-4B-Instruct-2507', input: ['text'], pinnedByDefault: false, memoryFootprintMb: 9123 },
+  tiers: { high: 'recommended', medium: 'available', low: 'not-recommended', cpuOnly: 'not-recommended' },
+};
+
+/** A vLLM-recommended profile whose catalog is the host-served model above. */
+const vllmProfile = (installedCatalogIds: string[] = []): HardwareProfileResponse =>
+  ({
+    ...highTierProfile,
+    backends: { ...highTierProfile.backends, recommended: 'vllm' },
+    recommendedModels: [vllmModel],
+    availableModels: [vllmModel],
+    installedCatalogIds,
+  }) as any;
 
 // Mutable API state read by the default mock; tests tweak it before rendering.
 let api: {
@@ -130,9 +196,17 @@ let api: {
     running: boolean;
     endpointUrl: string;
     bridgeUnreachable?: boolean;
+    failureMode?: 'filtered' | 'refused' | 'dns' | 'none';
+    remediationCommand?: string;
     displayEndpoint?: string;
     hint?: string;
     error?: string;
+  };
+  vllm: {
+    ready: boolean;
+    running: boolean;
+    endpointUrl: string;
+    displayEndpoint?: string;
   };
   rescanOk: boolean;
 };
@@ -154,17 +228,25 @@ describe('AiSetupStep', () => {
       profileOk: true,
       profileReject: false,
       ollama: ollamaReady,
+      vllm: vllmMissing,
       rescanOk: true,
     };
 
-    fetchInferenceOnboardingProfile.mockImplementation(() => {
+    fetchInferenceOnboardingProfile.mockImplementation((_backend?: string) => {
       if (api.profileReject) return Promise.reject(new Error('Network error'));
       if (!api.profileOk) return Promise.reject(new Error('Failed'));
       return Promise.resolve(api.profile);
     });
     fetchOllamaInstallStatus.mockImplementation(() => Promise.resolve(api.ollama));
+    fetchVllmInstallStatus.mockImplementation(() => Promise.resolve(api.vllm));
     rescanInferenceHardware.mockImplementation(async () => {
       if (!api.rescanOk) throw new Error('HTTP 503');
+    });
+
+    mockUseQuery.mockReturnValue({
+      data: { installed: true, connected: false, ip: null, hostname: null, backendState: 'Stopped' },
+      isLoading: false,
+      isError: false,
     });
   });
 
@@ -178,7 +260,7 @@ describe('AiSetupStep', () => {
     api.profileReject = true;
     renderStep();
     await waitFor(() => expect(screen.getByTestId('ai-setup-error')).toBeInTheDocument());
-    expect(screen.getByText(/Failed to detect hardware/)).toBeInTheDocument();
+    expect(screen.getByText(/Couldn.t complete AI setup/)).toBeInTheDocument();
   });
 
   it('renders the system overview with tier badge and GPU for high-tier hardware', async () => {
@@ -270,7 +352,7 @@ describe('AiSetupStep', () => {
     expect(screen.getByText(/NVIDIA GPU detected, but the container GPU runtime is not ready yet/i)).toBeInTheDocument();
   });
 
-  it('shows host ROCm ready notice when AMD GPU has host ROCm', async () => {
+  it('hides host ROCm notice when AMD GPU already has host ROCm', async () => {
     api.profile = {
       ...highTierProfile,
       hardware: {
@@ -288,8 +370,9 @@ describe('AiSetupStep', () => {
     };
     renderStep();
     await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
-    expect(screen.getByTestId('amd-host-rocm-ready')).toBeInTheDocument();
-    expect(screen.getByText(/Host ROCm detected/i)).toBeInTheDocument();
+    expect(screen.queryByTestId('amd-host-rocm-ready')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('amd-host-rocm-hint')).not.toBeInTheDocument();
+    expect(screen.queryByText(/Host ROCm detected/i)).not.toBeInTheDocument();
     expect(screen.queryByText('Container GPU runtime not available.')).not.toBeInTheDocument();
   });
 
@@ -356,11 +439,12 @@ describe('AiSetupStep', () => {
     expect(onComplete).toHaveBeenCalledWith({
       agentFrameworks: ['openclaw'],
       selectedModels: ['phi-4-mini'],
+      ollamaSelectedModelIds: ['phi-4-mini'],
       backend: 'ollama',
       cloudProviders: [],
       preferredModelId: 'phi-4-mini',
-      remoteAccess: [],
-      exposureMode: 'local',
+      remoteAccess: ['cloudflare'],
+      exposureMode: 'cloudflare',
       skipped: false,
       installedCatalogIds: ['phi-4-mini'],
       installBlocked: false,
@@ -368,11 +452,282 @@ describe('AiSetupStep', () => {
     });
   });
 
-  it('hides the inference backend selection (Ollama is the only option)', async () => {
+  it('shows the inference backend selection card', async () => {
+    renderStep();
+    await waitFor(() => expect(screen.getByTestId('backend-card-title')).toBeInTheDocument());
+    expect(screen.getByTestId('backend-option-ollama')).toBeInTheDocument();
+    expect(screen.getByTestId('backend-option-vllm')).toBeInTheDocument();
+  });
+
+  it('does not block Continue on vLLM path when Ollama is down', async () => {
+    api.profile = {
+      ...highTierProfile,
+      backends: { ...highTierProfile.backends, recommended: 'vllm' },
+    };
+    api.ollama = ollamaMissing;
+    api.vllm = vllmReady;
+    const user = userEvent.setup();
     renderStep();
     await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
-    // The backend picker is hidden — Ollama is implied. The config still defaults to it (see Continue test).
-    expect(screen.queryByTestId('backend-option-ollama')).not.toBeInTheDocument();
+    await user.click(screen.getByTestId('backend-option-vllm'));
+    await waitFor(() => expect(screen.getByText('vLLM detected')).toBeInTheDocument());
+    expect(screen.getByTestId('ai-continue-btn')).not.toBeDisabled();
+  });
+
+  it('disables Continue when vLLM is selected but not reachable', async () => {
+    api.profile = {
+      ...highTierProfile,
+      backends: { ...highTierProfile.backends, recommended: 'vllm' },
+    };
+    api.vllm = vllmMissing;
+    const user = userEvent.setup();
+    renderStep();
+    await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
+    await user.click(screen.getByTestId('backend-option-vllm'));
+    await waitFor(() => expect(screen.getByText('vLLM not detected')).toBeInTheDocument());
+    expect(screen.getByTestId('ai-continue-btn')).toBeDisabled();
+  });
+
+  it('refreshes the model list on vLLM re-check so a newly served model reads as installed', async () => {
+    api.profile = vllmProfile();
+    api.vllm = vllmReady;
+
+    const user = userEvent.setup();
+    renderStep();
+    await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
+    // `backends.recommended` is vLLM, so the step already opens on that backend.
+    await waitFor(() => expect(screen.getByText('vLLM detected')).toBeInTheDocument());
+
+    // Nothing is served by the host vLLM server yet, so the card is not selectable.
+    expect((screen.getByTestId('model-checkbox-qwen3-4b-instruct-vllm') as HTMLInputElement).checked).toBe(false);
+
+    // The operator loads the model on the host — the next profile fetch reports it installed.
+    api.profile = vllmProfile(['qwen3-4b-instruct-vllm']);
+    await user.click(screen.getByTestId('vllm-recheck-btn'));
+
+    await waitFor(() => expect((screen.getByTestId('model-checkbox-qwen3-4b-instruct-vllm') as HTMLInputElement).checked).toBe(true));
+  });
+
+  it('keeps the selected backend when re-checking, rather than resetting to the recommended one', async () => {
+    api.profile = {
+      ...highTierProfile,
+      backends: { ...highTierProfile.backends, recommended: 'ollama' },
+    };
+    api.vllm = vllmReady;
+
+    const user = userEvent.setup();
+    renderStep();
+    await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
+    await user.click(screen.getByTestId('backend-option-vllm'));
+    await waitFor(() => expect(screen.getByText('vLLM detected')).toBeInTheDocument());
+
+    // Scope the assertion to the re-check: picking the backend already fetched a vLLM profile, so
+    // without this the expectation below passes even when Re-check refetches nothing at all.
+    fetchInferenceOnboardingProfile.mockClear();
+    await user.click(screen.getByTestId('vllm-recheck-btn'));
+
+    // Still on vLLM — the refetch must happen, and must not snap back to the recommended backend.
+    await waitFor(() => expect(fetchInferenceOnboardingProfile).toHaveBeenCalledWith('vllm', ''));
+    expect(screen.getByText('vLLM detected')).toBeInTheDocument();
+  });
+
+  it('does not discard model choices the operator already made when re-checking', async () => {
+    api.profile = vllmProfile(['qwen3-4b-instruct-vllm']);
+    api.vllm = vllmReady;
+
+    const user = userEvent.setup();
+    renderStep();
+    await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('vLLM detected')).toBeInTheDocument());
+
+    // Installed models start selected; the operator deliberately opts out of this one.
+    const checkbox = () => screen.getByTestId('model-checkbox-qwen3-4b-instruct-vllm') as HTMLInputElement;
+    await waitFor(() => expect(checkbox().checked).toBe(true));
+    await user.click(checkbox());
+    expect(checkbox().checked).toBe(false);
+
+    await user.click(screen.getByTestId('vllm-recheck-btn'));
+
+    // Re-check refreshes what is installed — it must not re-tick a deliberate opt-out.
+    await waitFor(() => expect(fetchVllmInstallStatus).toHaveBeenCalledTimes(2));
+    expect(checkbox().checked).toBe(false);
+  });
+
+  it('keeps a model ticked while the re-check refresh is still in flight', async () => {
+    const secondModel = {
+      ...vllmModel,
+      id: 'qwen3-8b-vllm',
+      displayName: 'Qwen 3 8B (vLLM)',
+      runtime: { ...vllmModel.runtime, backendModelId: 'Qwen/Qwen3-8B' },
+    };
+    const bothServed = {
+      ...vllmProfile(['qwen3-4b-instruct-vllm', 'qwen3-8b-vllm']),
+      recommendedModels: [vllmModel, secondModel],
+      availableModels: [vllmModel, secondModel],
+    } as any;
+    api.profile = bothServed;
+    api.vllm = vllmReady;
+
+    const user = userEvent.setup();
+    renderStep();
+    await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
+    const first = () => screen.getByTestId('model-checkbox-qwen3-4b-instruct-vllm') as HTMLInputElement;
+    await waitFor(() => expect(first().checked).toBe(true));
+
+    // Hold the refresh open so the operator's click lands while the fetch is still running.
+    let release: (() => void) | undefined;
+    fetchInferenceOnboardingProfile.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          release = () => resolve(bothServed);
+        }),
+    );
+    await user.click(screen.getByTestId('vllm-recheck-btn'));
+    await waitFor(() => expect(release).toBeDefined());
+
+    await user.click(first());
+    expect(first().checked).toBe(false);
+
+    release?.();
+
+    // The refresh must merge onto the live selection, not the snapshot taken when it started.
+    await waitFor(() => expect(fetchInferenceOnboardingProfile).toHaveBeenCalledTimes(2));
+    expect(first().checked).toBe(false);
+  });
+
+  it('does not wipe the installed model list when re-checking a backend that is down', async () => {
+    api.profile = vllmProfile(['qwen3-4b-instruct-vllm']);
+    api.vllm = vllmReady;
+
+    const user = userEvent.setup();
+    renderStep();
+    await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
+    const checkbox = () => screen.getByTestId('model-checkbox-qwen3-4b-instruct-vllm') as HTMLInputElement;
+    await waitFor(() => expect(checkbox().checked).toBe(true));
+
+    // The operator restarts the host vLLM server and re-checks while it is still booting. The
+    // profile endpoint swallows its own health-check failure and answers 200 with nothing served.
+    api.vllm = vllmMissing;
+    api.profile = vllmProfile([]);
+    await user.click(screen.getByTestId('vllm-recheck-btn'));
+    await waitFor(() => expect(fetchVllmInstallStatus).toHaveBeenCalledTimes(2));
+
+    // Adopting that answer would drop the card back into the "open Hugging Face" branch this
+    // feature exists to leave, so an unreachable probe must not trigger the refresh at all.
+    expect(checkbox().checked).toBe(true);
+    expect(fetchInferenceOnboardingProfile).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the step usable when the profile refresh fails during a re-check', async () => {
+    api.profile = vllmProfile();
+    api.vllm = vllmReady;
+
+    const user = userEvent.setup();
+    renderStep();
+    await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('vLLM detected')).toBeInTheDocument());
+
+    // The refresh is a best-effort enhancement — a transient failure must not replace the
+    // whole step with the error screen and lose the operator's in-progress setup.
+    api.profileReject = true;
+    await user.click(screen.getByTestId('vllm-recheck-btn'));
+
+    await waitFor(() => expect(fetchVllmInstallStatus).toHaveBeenCalledTimes(2));
+    expect(screen.queryByTestId('ai-setup-error')).not.toBeInTheDocument();
+  });
+
+  it('does not let a slow rescan snap the backend away from the one just picked', async () => {
+    api.profile = { ...highTierProfile, backends: { ...highTierProfile.backends, recommended: 'ollama' } };
+    api.vllm = vllmReady;
+
+    const user = userEvent.setup();
+    renderStep();
+    await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
+
+    // Hold the rescan's profile fetch open so the backend switch below answers first.
+    let release: (() => void) | undefined;
+    fetchInferenceOnboardingProfile.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          release = () => resolve(api.profile);
+        }),
+    );
+    await user.click(screen.getByTestId('rescan-btn'));
+    await waitFor(() => expect(release).toBeDefined());
+
+    await user.click(screen.getByTestId('backend-option-vllm'));
+    await waitFor(() => expect(screen.getByText('vLLM detected')).toBeInTheDocument());
+
+    release?.();
+    // `rescanning` clears in the same `finally` that follows the discarded write, so an enabled
+    // Rescan button is proof the late answer has been fully processed.
+    await waitFor(() => expect(screen.getByTestId('rescan-btn')).not.toBeDisabled());
+
+    // That answer recommends Ollama. Applying it would drag the operator off the backend they
+    // picked while it was in flight, and reset their models to Ollama's defaults.
+    expect(screen.getByText('vLLM detected')).toBeInTheDocument();
+  });
+
+  it('does not let a superseded backend switch overwrite the profile with the abandoned backend', async () => {
+    api.profile = highTierProfile;
+
+    const user = userEvent.setup();
+    renderStep();
+    await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
+    const ollamaModel = () => screen.getByTestId('model-checkbox-phi-4-mini') as HTMLInputElement;
+    await waitFor(() => expect(ollamaModel().checked).toBe(true));
+
+    // Switching to vLLM hangs; the operator changes their mind before it answers.
+    let release: (() => void) | undefined;
+    fetchInferenceOnboardingProfile.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          release = () => resolve(vllmProfile(['qwen3-4b-instruct-vllm']));
+        }),
+    );
+    await user.click(screen.getByTestId('backend-option-vllm'));
+    await waitFor(() => expect(release).toBeDefined());
+
+    await user.click(screen.getByTestId('backend-option-ollama'));
+    await waitFor(() => expect(ollamaModel().checked).toBe(true));
+
+    await act(async () => {
+      release?.();
+    });
+
+    // The abandoned vLLM answer must not land: it would leave `profile` — and the selection
+    // derived from it — describing a backend the operator is no longer on.
+    expect(ollamaModel().checked).toBe(true);
+  });
+
+  it('does not raise the error screen for a superseded profile request that failed', async () => {
+    api.profile = { ...highTierProfile, backends: { ...highTierProfile.backends, recommended: 'ollama' } };
+    api.vllm = vllmReady;
+
+    const user = userEvent.setup();
+    renderStep();
+    await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
+
+    let fail: (() => void) | undefined;
+    fetchInferenceOnboardingProfile.mockImplementationOnce(
+      () =>
+        new Promise((_resolve, reject) => {
+          fail = () => reject(new Error('Network error'));
+        }),
+    );
+    await user.click(screen.getByTestId('rescan-btn'));
+    await waitFor(() => expect(fail).toBeDefined());
+
+    await user.click(screen.getByTestId('backend-option-vllm'));
+    await waitFor(() => expect(screen.getByText('vLLM detected')).toBeInTheDocument());
+
+    fail?.();
+    await waitFor(() => expect(screen.getByTestId('rescan-btn')).not.toBeDisabled());
+
+    // The switch that superseded it already succeeded, so the step is fine — tearing it down over
+    // the older request's failure would discard a working setup.
+    expect(screen.queryByTestId('ai-setup-error')).not.toBeInTheDocument();
+    expect(screen.getByText('vLLM detected')).toBeInTheDocument();
   });
 
   it('allows toggling model selection', async () => {
@@ -418,11 +773,12 @@ describe('AiSetupStep', () => {
     expect(onComplete).toHaveBeenCalledWith({
       agentFrameworks: ['openclaw'],
       selectedModels: ['phi-4-mini'],
+      ollamaSelectedModelIds: ['phi-4-mini'],
       backend: 'ollama',
       cloudProviders: [],
       preferredModelId: 'phi-4-mini',
-      remoteAccess: [],
-      exposureMode: 'local',
+      remoteAccess: ['cloudflare'],
+      exposureMode: 'cloudflare',
       skipped: false,
       installedCatalogIds: ['phi-4-mini'],
       installBlocked: false,
@@ -558,6 +914,23 @@ describe('AiSetupStep', () => {
     expect(onComplete).toHaveBeenCalledWith(expect.objectContaining({ preferredModelId: 'phi-4-mini' }));
   });
 
+  it('links each agent to its available companion apps without changing the selection', async () => {
+    const user = userEvent.setup();
+    renderStep();
+    await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
+
+    expect(screen.getByTestId('openclaw-client-ios')).toHaveAttribute(
+      'href',
+      'https://apps.apple.com/us/app/openclaw-ai-that-does-things/id6780396132',
+    );
+    expect(screen.getByTestId('openclaw-client-android')).toHaveAttribute('href', 'https://play.google.com/store/apps/details?id=ai.openclaw.app');
+    expect(screen.getByTestId('openclaw-client-desktop')).toHaveAttribute('href', 'https://github.com/openclaw/openclaw/releases');
+    expect(screen.getByTestId('hermes-client-hermex-for-ios')).toHaveAttribute('href', 'https://apps.apple.com/us/app/hermex/id6767006319');
+
+    await user.click(screen.getByTestId('openclaw-client-ios'));
+    expect(screen.getByTestId('agent-openclaw')).toHaveAttribute('aria-pressed', 'true');
+  });
+
   it('lets the user add Hermes as a second agent framework (multi-select)', async () => {
     const user = userEvent.setup();
     const { onComplete } = renderStep();
@@ -587,55 +960,61 @@ describe('AiSetupStep', () => {
     expect(onComplete).toHaveBeenCalledWith(expect.objectContaining({ agentFrameworks: [] }));
   });
 
-  it('lets the user choose Tailscale or Web remote access for their agent', async () => {
+  it('defaults to Web access and lets the user add Private VPN', async () => {
     const user = userEvent.setup();
     const { onComplete } = renderStep();
     await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
 
-    expect((screen.getByTestId('agent-access-tailscale') as HTMLInputElement).checked).toBe(false);
-    expect((screen.getByTestId('agent-access-cloudflare') as HTMLInputElement).checked).toBe(false);
-    expect(screen.getByTestId('agent-access-hint')).toBeInTheDocument();
-
-    await user.click(screen.getByTestId('agent-access-cloudflare'));
-    expect((screen.getByTestId('agent-access-cloudflare') as HTMLInputElement).checked).toBe(true);
+    expect((screen.getByTestId('access-cloudflare') as HTMLInputElement).checked).toBe(true);
+    expect((screen.getByTestId('access-tailscale') as HTMLInputElement).checked).toBe(false);
+    // Local-only note is reserved for when every remote option is off.
+    expect(screen.queryByTestId('access-local-baseline')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('access-this-computer')).not.toBeInTheDocument();
 
     await user.click(screen.getByTestId('ai-continue-btn'));
     expect(onComplete).toHaveBeenCalledWith(expect.objectContaining({ exposureMode: 'cloudflare' }));
   });
 
-  it('defaults agent remote access to Web when a Cloudflare tunnel is available', async () => {
+  it('keeps Web selected by default even when a Cloudflare tunnel is already available', async () => {
     renderStep({ cloudflareAvailable: true });
     await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
-    expect((screen.getByTestId('agent-access-cloudflare') as HTMLInputElement).checked).toBe(true);
-    expect(screen.queryByTestId('agent-access-hint')).not.toBeInTheDocument();
+    expect((screen.getByTestId('access-cloudflare') as HTMLInputElement).checked).toBe(true);
   });
 
-  it('clears remote access when all agent harnesses are deselected', async () => {
+  it('shows Tailscale setup inline when Private VPN is selected', async () => {
+    const user = userEvent.setup();
+    renderStep();
+    await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
+
+    expect(screen.queryByTestId('tailscale-setup-inline')).not.toBeInTheDocument();
+    await user.click(screen.getByTestId('access-tailscale'));
+    expect(screen.getByTestId('tailscale-setup-inline')).toBeInTheDocument();
+  });
+
+  it('does not clear remote access when all agent harnesses are deselected', async () => {
     const user = userEvent.setup();
     const { onComplete } = renderStep({ cloudflareAvailable: true });
     await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
 
-    expect((screen.getByTestId('agent-access-cloudflare') as HTMLInputElement).checked).toBe(true);
+    expect((screen.getByTestId('access-cloudflare') as HTMLInputElement).checked).toBe(true);
     await user.click(screen.getByTestId('agent-openclaw'));
-    expect((screen.getByTestId('agent-access-cloudflare') as HTMLInputElement).checked).toBe(false);
+    expect((screen.getByTestId('access-cloudflare') as HTMLInputElement).checked).toBe(true);
 
     await user.click(screen.getByTestId('ai-continue-btn'));
-    expect(onComplete).toHaveBeenCalledWith(expect.objectContaining({ agentFrameworks: [], exposureMode: 'local' }));
+    expect(onComplete).toHaveBeenCalledWith(expect.objectContaining({ agentFrameworks: [], exposureMode: 'cloudflare' }));
   });
 
-  it('restores default remote access when re-selecting a harness from zero', async () => {
+  it('allows local-only access when remote options are deselected', async () => {
     const user = userEvent.setup();
     const { onComplete } = renderStep({ cloudflareAvailable: true });
     await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
 
-    await user.click(screen.getByTestId('agent-openclaw'));
-    expect((screen.getByTestId('agent-access-cloudflare') as HTMLInputElement).checked).toBe(false);
-
-    await user.click(screen.getByTestId('agent-openclaw'));
-    expect((screen.getByTestId('agent-access-cloudflare') as HTMLInputElement).checked).toBe(true);
+    await user.click(screen.getByTestId('access-cloudflare'));
+    expect((screen.getByTestId('access-cloudflare') as HTMLInputElement).checked).toBe(false);
+    expect(screen.getByTestId('access-local-baseline')).toBeInTheDocument();
 
     await user.click(screen.getByTestId('ai-continue-btn'));
-    expect(onComplete).toHaveBeenCalledWith(expect.objectContaining({ agentFrameworks: ['openclaw'], exposureMode: 'cloudflare' }));
+    expect(onComplete).toHaveBeenCalledWith(expect.objectContaining({ agentFrameworks: ['openclaw'], exposureMode: 'local' }));
   });
 
   it('does not restore remote access when re-selecting a harness while another remains selected', async () => {
@@ -644,12 +1023,12 @@ describe('AiSetupStep', () => {
     await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
 
     await user.click(screen.getByTestId('agent-hermes'));
-    await user.click(screen.getByTestId('agent-access-cloudflare'));
-    expect((screen.getByTestId('agent-access-cloudflare') as HTMLInputElement).checked).toBe(false);
+    await user.click(screen.getByTestId('access-cloudflare'));
+    expect((screen.getByTestId('access-cloudflare') as HTMLInputElement).checked).toBe(false);
 
     await user.click(screen.getByTestId('agent-openclaw'));
     await user.click(screen.getByTestId('agent-openclaw'));
-    expect((screen.getByTestId('agent-access-cloudflare') as HTMLInputElement).checked).toBe(false);
+    expect((screen.getByTestId('access-cloudflare') as HTMLInputElement).checked).toBe(false);
     expect(screen.getByTestId('agent-hermes')).toHaveAttribute('aria-pressed', 'true');
   });
 
@@ -784,7 +1163,7 @@ describe('AiSetupStep', () => {
     api.rescanOk = false;
     await user.click(screen.getByTestId('rescan-btn'));
     await waitFor(() => expect(screen.getByTestId('ai-setup-error')).toBeInTheDocument());
-    expect(screen.getByText(/Failed to detect hardware/)).toBeInTheDocument();
+    expect(screen.getByText(/Couldn.t complete AI setup/)).toBeInTheDocument();
   });
 
   it('shows the Ollama setup card when Ollama is not detected on the host', async () => {
@@ -812,6 +1191,44 @@ describe('AiSetupStep', () => {
     await waitFor(() => expect(screen.getByText('Ollama not reachable from Hub')).toBeInTheDocument());
     expect(screen.getByText(/may already be installed on this machine/i)).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /Get Ollama/i })).not.toBeInTheDocument();
+  });
+
+  it('shows the firewall command and hides auto-install when the bridge is filtered', async () => {
+    api.ollama = {
+      ...ollamaMissing,
+      bridgeUnreachable: true,
+      failureMode: 'filtered',
+      error: 'timeout of 5000ms exceeded',
+      hint: "The Hub container's packets to 172.17.0.1:11434 are being dropped by ufw — this is a host firewall problem, not a problem with Ollama.",
+      remediationCommand: 'sudo ufw allow from 172.18.0.0/16 to 172.17.0.1 port 11434 proto tcp',
+    };
+    renderStep();
+    await waitFor(() => expect(screen.getByText('Ollama not reachable from Hub')).toBeInTheDocument());
+
+    expect(screen.getByTestId('ollama-remediation-command')).toHaveTextContent(
+      'sudo ufw allow from 172.18.0.0/16 to 172.17.0.1 port 11434 proto tcp',
+    );
+    expect(screen.getByText(/not inside the container/i)).toBeInTheDocument();
+    // The auto-install button is deliberately NOT asserted here: this suite never
+    // stubs window.__TAURI_INTERNALS__, so it is absent regardless of failureMode
+    // and the assertion would pass with the guard deleted. That behaviour is
+    // covered in ollama-setup-card.test.tsx, which does install a Tauri mock.
+  });
+
+  it('surfaces the bridge diagnosis on the profile-failure screen instead of blaming hardware detection', async () => {
+    api.profileReject = true;
+    api.ollama = {
+      ...ollamaMissing,
+      bridgeUnreachable: true,
+      failureMode: 'filtered',
+      hint: 'The Hub container’s packets are being dropped by ufw — this is a host firewall problem.',
+      remediationCommand: 'sudo ufw allow from 172.18.0.0/16 to 172.17.0.1 port 11434 proto tcp',
+    };
+    renderStep();
+    await waitFor(() => expect(screen.getByTestId('ai-setup-error')).toBeInTheDocument());
+
+    expect(screen.getByText(/host firewall problem/i)).toBeInTheDocument();
+    expect(screen.getByText(/sudo ufw allow from 172\.18\.0\.0\/16/)).toBeInTheDocument();
   });
 
   it('disables Continue while Ollama is not reachable', async () => {

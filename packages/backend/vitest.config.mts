@@ -13,6 +13,9 @@ export default defineConfig({
     reporters: ['default'],
     env: {
       NODE_OPTIONS: '--experimental-sqlite',
+      // Unit tests assert container paths (`/data/...`) against the memfs mock. Pin it so the
+      // suite does not follow resolveDataDir() onto whatever the host machine actually has.
+      CI_HUB_DATA_DIR: '/data',
     },
   },
   resolve: {

@@ -102,7 +102,7 @@ describe('InferenceController — preferences', () => {
 
     const result = await controller.updatePreferences({ backend: 'lemonade' });
 
-    expect(configService.setInferencePreferences).toHaveBeenCalledWith('lemonade', undefined, undefined, undefined);
+    expect(configService.setInferencePreferences).toHaveBeenCalledWith('lemonade', undefined, undefined, undefined, undefined, undefined);
     expect(result).toEqual({
       preferredBackend: 'lemonade',
       preferredModel: null,
@@ -126,13 +126,46 @@ describe('InferenceController — preferences', () => {
       visionModel: 'gemma4-27b',
     });
 
-    expect(configService.setInferencePreferences).toHaveBeenCalledWith('ollama', 'hermes4-8b', 'nomic-embed-text', 'gemma4-27b');
+    expect(configService.setInferencePreferences).toHaveBeenCalledWith(
+      'ollama',
+      'hermes4-8b',
+      'nomic-embed-text',
+      'gemma4-27b',
+      undefined,
+      undefined,
+    );
     expect(result).toEqual({
       preferredBackend: 'ollama',
       preferredModel: 'hermes4-8b',
       preferredEmbeddingModel: 'nomic-embed-text',
       preferredVisionModel: 'gemma4-27b',
     });
+  }, 30_000);
+
+  it('passes the vLLM endpoint URL and API key through when provided', async () => {
+    configService.setInferencePreferences.mockResolvedValue({
+      preferredBackend: 'vllm',
+      preferredModel: null,
+      preferredEmbeddingModel: null,
+      preferredVisionModel: null,
+      preferredVllmApiKey: 'vllm-local',
+      preferredVllmUrl: 'http://192.168.1.50:8000',
+    } as never);
+
+    await controller.updatePreferences({
+      backend: 'vllm',
+      vllmApiKey: 'vllm-local',
+      vllmUrl: 'http://192.168.1.50:8000',
+    });
+
+    expect(configService.setInferencePreferences).toHaveBeenCalledWith(
+      'vllm',
+      undefined,
+      undefined,
+      undefined,
+      'vllm-local',
+      'http://192.168.1.50:8000',
+    );
   }, 30_000);
 
   it('returns runtime models for a healthy selected backend', async () => {

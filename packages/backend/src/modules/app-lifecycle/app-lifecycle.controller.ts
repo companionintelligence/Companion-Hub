@@ -3,16 +3,19 @@ import { Body, Controller, Delete, Get, Param, Patch, Post, Req, UseGuards } fro
 import type { Request } from 'express';
 import { AuthGuard } from '../auth/auth.guard';
 import { AppLifecycleService } from './app-lifecycle.service';
+import { HubAccessService } from './hub-access.service';
 import { AppRehydrationService } from './app-rehydration.service';
 import {
   AppFormBody,
   CancelOperationBody,
   CancelOperationResponseDto,
   LifecycleRequestDto,
+  ResetAppBody,
   UninstallAppBody,
   UpdateAppBody,
+  ValidateConfigResultDto,
 } from './dto/app-lifecycle.dto';
-import { ApiResponse } from '@nestjs/swagger';
+import { ApiBody, ApiResponse } from '@nestjs/swagger';
 
 interface RehydrateBody {
   force?: boolean;
@@ -25,6 +28,7 @@ export class AppLifecycleController {
   constructor(
     private readonly appLifecycleService: AppLifecycleService,
     private readonly appRehydrationService: AppRehydrationService,
+    private readonly hubAccessService: HubAccessService,
   ) {}
 
   @Get('rehydrate/plan')
@@ -50,11 +54,30 @@ export class AppLifecycleController {
     });
   }
 
+  /** Hub-provisioned trust material held by this app (managed key prefix, forward-auth state). */
+  @Get(':urn/hub-access')
+  async getHubAccess(@Param('urn') urn: string) {
+    return this.hubAccessService.getStatus(castAppUrn(urn));
+  }
+
+  /** Rotate the app's Hub trust material: revoke + clear, then restart to re-provision fresh values. */
+  @Post(':urn/hub-access/rotate')
+  async rotateHubAccess(@Param('urn') urn: string) {
+    return this.hubAccessService.rotate(castAppUrn(urn));
+  }
+
   @Post(':urn/install')
   @ApiResponse({ type: LifecycleRequestDto })
   async installApp(@Param('urn') urn: string, @Body() body: AppFormBody) {
     const res = await this.appLifecycleService.installApp({ appUrn: castAppUrn(urn), form: body });
     return LifecycleRequestDto.parse(res, { reportOnly: true });
+  }
+
+  @Post(':urn/validate-config')
+  @ApiResponse({ type: ValidateConfigResultDto })
+  async validateConfig(@Param('urn') urn: string, @Body() body: AppFormBody) {
+    const res = await this.appLifecycleService.validateAppConfig(castAppUrn(urn), body);
+    return ValidateConfigResultDto.parse(res, { reportOnly: true });
   }
 
   @Post(':urn/start')
@@ -88,14 +111,16 @@ export class AppLifecycleController {
   @Delete(':urn/uninstall')
   @ApiResponse({ type: LifecycleRequestDto })
   async uninstallApp(@Param('urn') urn: string, @Body() body: UninstallAppBody) {
-    const res = await this.appLifecycleService.uninstallApp({ appUrn: castAppUrn(urn), deleteAllData: body.deleteAllData });
+    const res = await this.appLifecycleService.uninstallApp({ appUrn: castAppUrn(urn), deleteAllData: body.deleteAllData, force: body.force });
     return LifecycleRequestDto.parse(res, { reportOnly: true });
   }
 
   @Post(':urn/reset')
   @ApiResponse({ type: LifecycleRequestDto })
-  async resetApp(@Param('urn') urn: string) {
-    const res = await this.appLifecycleService.resetApp({ appUrn: castAppUrn(urn) });
+  // The route historically took no body and the schema defaults `force`, so the body is optional.
+  @ApiBody({ type: ResetAppBody, required: false })
+  async resetApp(@Param('urn') urn: string, @Body() body: ResetAppBody) {
+    const res = await this.appLifecycleService.resetApp({ appUrn: castAppUrn(urn), force: body.force });
     return LifecycleRequestDto.parse(res, { reportOnly: true });
   }
 

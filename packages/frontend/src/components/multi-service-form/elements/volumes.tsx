@@ -8,7 +8,7 @@ import type { z } from 'zod';
 import { X } from 'lucide-react';
 import clsx from 'clsx';
 import { Controller, useFieldArray, type Control, type FieldErrors, type UseFormRegister } from 'react-hook-form';
-import { Tooltip } from 'react-tooltip';
+import { HintMarker } from '@/components/ui/field-hint/field-hint';
 import { useTranslation } from 'react-i18next';
 
 type Props = {
@@ -26,20 +26,17 @@ export const VolumesConfig = ({ errors, serviceIndex, control, register }: Props
   });
 
   return (
-    <div className="row g-4">
-      <div className="col-12">
-        <div className="d-flex justify-content-between align-items-center mb-3">
+    <div className="grid grid-cols-1 gap-4">
+      <div>
+        <div className="flex items-center justify-between mb-3">
           <div>
-            <Tooltip className="tooltip" anchorSelect=".my-volumes">
-              {t('MULTI_SERVICE_VOLUMES_TITLE_TOOLTIP')}
-            </Tooltip>
-            {t('MULTI_SERVICE_VOLUMES_TITLE')} <span className="ms-1 form-help my-volumes">?</span>
+            {t('MULTI_SERVICE_VOLUMES_TITLE')} <HintMarker anchorClass="my-volumes" hint={t('MULTI_SERVICE_VOLUMES_TITLE_TOOLTIP')} />
           </div>
           <Button type="button" onClick={() => append({ containerPath: '/', hostPath: '/' })} size="sm">
             {t('MULTI_SERVICE_VOLUMES_ADD_VOLUME')}
           </Button>
         </div>
-        <Table className={clsx('border p-1', { 'd-none': fields.length === 0 })}>
+        <Table className={clsx('border p-1', { hidden: fields.length === 0 })}>
           <TableHeader>
             <TableRow>
               <TableHead>{t('MULTI_SERVICE_VOLUMES_HOST_PATH')}</TableHead>
@@ -102,7 +99,7 @@ export const VolumesConfig = ({ errors, serviceIndex, control, register }: Props
             ))}
           </TableBody>
         </Table>
-        {fields.length === 0 && <div className="text-muted small">{t('MULTI_SERVICE_VOLUMES_NO_VOLUMES')}</div>}
+        {fields.length === 0 && <div className="text-sm text-muted-foreground">{t('MULTI_SERVICE_VOLUMES_NO_VOLUMES')}</div>}
       </div>
     </div>
   );

@@ -1,0 +1,46 @@
+name: Agent Gates
+on:
+  pull_request:
+    paths:
+      - 'packages/frontend/**'
+      - 'e2e/visual/**'
+      - 'e2e/helpers/screenshot.ts'
+      - 'scripts/agent/**'
+      - 'e2e/results/benchmarks/**'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  agent-gates:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+
+      - name: Install dependencies
+        uses: "./.github/actions/install-dependencies"
+        with:
+          node-auth-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Benchmark gate
+        run: pnpm run benchmark:gate
+
+      - name: Visual regression
+        run: |
+          if [ -n "$(ls -A e2e/screenshots/baselines/*.png 2>/dev/null)" ]; then
+            pnpm run test:visual
+          else
+            echo "No visual baselines committed — skipping test:visual"
+          fi

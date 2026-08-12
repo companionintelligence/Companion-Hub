@@ -46,6 +46,9 @@ jobs:
     name: Build — ${{ matrix.label }}
     runs-on: ${{ matrix.platform }}
     timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: read
 
     steps:
       - name: Checkout
@@ -92,18 +95,16 @@ jobs:
         uses: actions/setup-node@v6
         with:
           node-version: '22'
+          registry-url: 'https://npm.pkg.github.com'
+          scope: '@companionintelligence'
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
-
-      - name: Build frontend
         env:
-          NODE_ENV: production
-          VITE_SENTRY_DSN: ${{ secrets.SENTRY_FRONTEND_DSN }}
-          VITE_SENTRY_RELEASE: ci-hub-frontend@${{ github.sha }}
-        run: |
-          pnpm run --filter=@ci-hub/common build
-          pnpm run --filter=frontend build
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Release desktop embeds bootstrap only — product UI is served by the stack container.
+      # See docs/DESKTOP-UI-ARCHITECTURE.md and packages/desktop/bootstrap/.
 
       - name: Install create-dmg
         if: runner.os == 'macOS'
@@ -170,6 +171,7 @@ jobs:
         if: runner.os == 'macOS'
         uses: actions/upload-artifact@v7
         with:
+          retention-days: 7
           name: companion-hub-${{ matrix.target }}-dmg
           path: packages/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg
           if-no-files-found: error
@@ -178,6 +180,7 @@ jobs:
         if: runner.os == 'macOS'
         uses: actions/upload-artifact@v7
         with:
+          retention-days: 7
           name: companion-hub-${{ matrix.target }}-app
           path: packages/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/macos/*.app
           if-no-files-found: error
@@ -186,6 +189,7 @@ jobs:
         if: runner.os == 'Linux'
         uses: actions/upload-artifact@v7
         with:
+          retention-days: 7
           name: companion-hub-${{ matrix.target }}-deb
           path: packages/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/deb/*.deb
           if-no-files-found: error
@@ -194,6 +198,7 @@ jobs:
         if: runner.os == 'Linux'
         uses: actions/upload-artifact@v7
         with:
+          retention-days: 7
           name: companion-hub-${{ matrix.target }}-rpm
           path: packages/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/rpm/*.rpm
           if-no-files-found: error
@@ -202,6 +207,7 @@ jobs:
         if: runner.os == 'Linux'
         uses: actions/upload-artifact@v7
         with:
+          retention-days: 7
           name: companion-hub-${{ matrix.target }}-appimage
           path: packages/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/appimage/*.AppImage
           if-no-files-found: error
@@ -211,6 +217,7 @@ jobs:
         if: runner.os == 'Windows'
         uses: actions/upload-artifact@v7
         with:
+          retention-days: 7
           name: companion-hub-${{ matrix.target }}-msi
           path: packages/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/msi/*.msi
           if-no-files-found: error
@@ -219,6 +226,7 @@ jobs:
         if: runner.os == 'Windows'
         uses: actions/upload-artifact@v7
         with:
+          retention-days: 7
           name: companion-hub-${{ matrix.target }}-setup
           path: packages/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/nsis/*-setup.exe
           if-no-files-found: error

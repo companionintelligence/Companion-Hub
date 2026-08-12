@@ -1,5 +1,5 @@
 import { castAppUrn } from '@/common/helpers/app-helpers';
-import { Controller, Get, Param, Patch, Post, UseGuards } from '@nestjs/common';
+import { Controller, Get, Inject, Param, Patch, Post, UseGuards, forwardRef } from '@nestjs/common';
 import { AuthGuard } from '../auth/auth.guard';
 import { AppRuntimeMonitorService } from './app-runtime-monitor.service';
 import { AppsService } from './apps.service';
@@ -7,12 +7,16 @@ import { GetAppDto, GetComposeDiffDto, GetConfigDiffDto, GetRandomPortDto, Guest
 import { InstallQueueDto } from './dto/install-queue.dto';
 import { AppRuntimeHealthDto, AppRuntimeMonitorDto } from './dto/runtime-health.dto';
 import { ApiResponse } from '@nestjs/swagger';
+import { buildMcpInstallSchema } from '@ci-hub/common/validation';
+import { McpProbeService } from '../mcp/mcp-probe.service';
+import type { AppUrn } from '@ci-hub/common/types';
 
 @Controller('apps')
 export class AppsController {
   constructor(
     private readonly appsService: AppsService,
     private readonly runtimeMonitor: AppRuntimeMonitorService,
+    @Inject(forwardRef(() => McpProbeService)) private readonly mcpProbeService: McpProbeService,
   ) {}
 
   @Get('installed')
@@ -58,8 +62,20 @@ export class AppsController {
   @UseGuards(AuthGuard)
   @ApiResponse({ type: GetAppDto })
   async getApp(@Param('urn') urn: string) {
-    const res = await this.appsService.getApp(castAppUrn(urn));
-    return GetAppDto.parse(res, { reportOnly: true });
+    const appUrn = castAppUrn(urn);
+    const res = await this.appsService.getApp(appUrn);
+    const mcpExtras = this.buildMcpExtras(appUrn, res.info);
+    return GetAppDto.parse({ ...res, ...mcpExtras }, { reportOnly: true });
+  }
+
+  private buildMcpExtras(appUrn: AppUrn, info: { mcp?: unknown }) {
+    if (!info.mcp) {
+      return { mcpInstallSchema: null, mcpRuntime: null };
+    }
+    return {
+      mcpInstallSchema: buildMcpInstallSchema(info as Parameters<typeof buildMcpInstallSchema>[0]),
+      mcpRuntime: this.mcpProbeService.getCached(appUrn),
+    };
   }
 
   @Get(':urn/compose-diff')

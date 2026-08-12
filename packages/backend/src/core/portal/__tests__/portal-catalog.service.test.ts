@@ -1,4 +1,3 @@
-import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { mock, MockProxy } from 'vitest-mock-extended';
@@ -8,17 +7,14 @@ import { PortalClientService } from '../portal-client.service';
 describe('PortalCatalogService', () => {
   let service: PortalCatalogService;
   let portalClient: MockProxy<PortalClientService>;
-  let configuration: MockProxy<ConfigurationService>;
   let logger: MockProxy<LoggerService>;
 
   beforeEach(() => {
     portalClient = mock<PortalClientService>();
-    configuration = mock<ConfigurationService>();
     logger = mock<LoggerService>();
-    configuration.getConfig.mockReturnValue({ architecture: 'amd64' } as any);
     portalClient.getPublicPortalUrl.mockReturnValue('https://portal.example.com');
     portalClient.fetchStoreMetadataText.mockResolvedValue(null);
-    service = new PortalCatalogService(portalClient, configuration, logger);
+    service = new PortalCatalogService(portalClient, logger);
   });
 
   it('maps portal store apps with id matching slug for onboarding lookups', async () => {
@@ -120,5 +116,90 @@ describe('PortalCatalogService', () => {
         { type: 'text', label: 'Username', env_variable: 'APP_USER', required: true },
       ],
     });
+  });
+
+  it('preserves screenshots and demo_video from portal catalog metadata', async () => {
+    portalClient.fetchStoreCatalog.mockResolvedValue([
+      {
+        slug: 'ci-memory',
+        name: 'Companion Memory',
+        short_desc: 'Memory appliance',
+        categories: ['ai'],
+        screenshots: ['https://github.com/user-attachments/assets/abc123'],
+        demo_video: './metadata/media/demo.mp4',
+      },
+    ] as any);
+
+    await expect(service.getAppInfoForUrn('ci-memory:ci-marketplace' as any)).resolves.toMatchObject({
+      screenshots: ['https://github.com/user-attachments/assets/abc123'],
+      demo_video: './metadata/media/demo.mp4',
+    });
+  });
+
+  it('preserves MCP listing metadata and keeps MCP apps non-exposable without a fake port', async () => {
+    portalClient.fetchStoreCatalog.mockResolvedValue([
+      {
+        slug: 'filesystem-mcp',
+        name: 'Filesystem MCP',
+        short_desc: 'Filesystem tools',
+        categories: ['mcp'],
+        no_gui: true,
+        exposable: false,
+        form_fields: [{ type: 'text', label: 'Root', env_variable: 'ALLOWED_PATH', required: true, default: '/data' }],
+        mcp: { transport: 'stdio', command: 'npx', args: ['-y', '@modelcontextprotocol/server-filesystem'] },
+      },
+    ] as any);
+
+    await expect(service.getAppInfoForUrn('filesystem-mcp:ci-marketplace' as any)).resolves.toMatchObject({
+      no_gui: true,
+      exposable: false,
+      mcp: { transport: 'stdio', command: 'npx' },
+      form_fields: [{ env_variable: 'ALLOWED_PATH', default: '/data' }],
+    });
+  });
+
+  it('returns update info from the warmed portal catalog cache', async () => {
+    portalClient.fetchStoreCatalog.mockResolvedValue([
+      {
+        slug: 'ci-memory',
+        name: 'CI Memory',
+        short_desc: 'Private memory server',
+        categories: ['ai'],
+        version: '2026.7.17.1',
+        cihub_app_version: 42,
+      },
+    ] as any);
+
+    await service.getCatalogEntries(true);
+
+    expect(service.getUpdateInfoForUrn('ci-memory:ci-marketplace' as any)).toEqual({
+      latestVersion: 42,
+      latestDockerVersion: '2026.7.17.1',
+      minHubVersion: null,
+    });
+  });
+
+  it('returns null update info on a cold cache without blocking on the network', () => {
+    let resolveFetch: (value: unknown) => void = () => {};
+    portalClient.fetchStoreCatalog.mockReturnValue(new Promise((resolve) => (resolveFetch = resolve)));
+
+    // Must return synchronously (null) while the background warm is still pending.
+    expect(service.getUpdateInfoForUrn('ci-memory:ci-marketplace' as any)).toBeNull();
+    expect(portalClient.fetchStoreCatalog).toHaveBeenCalledTimes(1);
+
+    resolveFetch([]);
+  });
+
+  it('dedupes concurrent catalog fetches into a single portal request', async () => {
+    let resolveFetch: (value: unknown) => void = () => {};
+    portalClient.fetchStoreCatalog.mockReturnValue(new Promise((resolve) => (resolveFetch = resolve)));
+
+    const first = service.getCatalogEntries(true);
+    const second = service.getCatalogEntries(true);
+    resolveFetch([{ slug: 'ghost', name: 'Ghost', short_desc: 'Blog', categories: ['social'] }]);
+
+    const [a, b] = await Promise.all([first, second]);
+    expect(a).toEqual(b);
+    expect(portalClient.fetchStoreCatalog).toHaveBeenCalledTimes(1);
   });
 });

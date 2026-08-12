@@ -1,5 +1,6 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { LoggerModule } from '@/core/logger/logger.module';
+import { EnvModule } from '@/modules/env/env.module';
 import { AgentNotifyModule } from '@/modules/agent-notify/agent-notify.module';
 import { AppsModule } from '@/modules/apps/apps.module';
 import { DockerModule } from '@/modules/docker/docker.module';
@@ -14,11 +15,14 @@ import { SystemUpdateModule } from '@/modules/system-update/system-update.module
 import { RegistrationModule } from '@/modules/registration/registration.module';
 import { CloudflareModule } from '@/modules/cloudflare/cloudflare.module';
 import { LinksModule } from '@/modules/links/links.module';
-import { McpApiKeyModule } from './mcp-api-key.module';
+import { ApiKeyModule } from '../api-keys/api-key.module';
 import { McpController } from './mcp.controller';
 import { McpAdminController } from './mcp-admin.controller';
+import { McpAppsController } from './mcp-apps.controller';
 import { McpService } from './mcp.service';
 import { McpServerFactory } from './mcp-server.factory';
+import { McpV2ServerFactory } from './mcp-v2-server.factory';
+import { McpModernHandlerService } from './mcp-modern-handler.service';
 import { McpSessionRegistry } from './mcp-session.registry';
 import { McpAdminService } from './mcp-admin.service';
 import { McpToolRegistry } from './mcp-tool-registry.service';
@@ -40,6 +44,7 @@ import { SkillResolverService } from './agents/skill-resolver.service';
 import { OpenApiBridgeService } from './agents/openapi-bridge.service';
 import { McpBridgeService } from './agents/mcp-bridge.service';
 import { ApiProxyService } from './agents/api-proxy.service';
+import { McpProbeService } from './mcp-probe.service';
 import { ThrottlerModule } from '@nestjs/throttler';
 import { InferenceModule } from '@/modules/inference/inference.module';
 import { InferenceTools } from './tools/inference.tools';
@@ -54,27 +59,30 @@ const MCP_RATE_LIMIT = Number(process.env.MCP_RATE_LIMIT) || 300;
   imports: [
     ThrottlerModule.forRoot([{ ttl: MCP_RATE_TTL_MS, limit: MCP_RATE_LIMIT }]),
     LoggerModule,
+    EnvModule,
     AgentNotifyModule,
-    AppsModule,
-    DockerModule,
-    AppLifecycleModule,
-    UserConfigModule,
+    forwardRef(() => AppsModule),
+    forwardRef(() => DockerModule),
+    forwardRef(() => AppLifecycleModule),
+    forwardRef(() => UserConfigModule),
     MarketplaceModule,
     AppStoreModule,
-    CustomAppsModule,
-    BackupsModule,
+    forwardRef(() => CustomAppsModule),
+    forwardRef(() => BackupsModule),
     SystemModule,
     SystemUpdateModule,
-    RegistrationModule,
-    CloudflareModule,
+    forwardRef(() => RegistrationModule),
+    forwardRef(() => CloudflareModule),
     LinksModule,
     InferenceModule,
-    McpApiKeyModule,
+    ApiKeyModule,
   ],
-  controllers: [McpController, McpAdminController],
+  controllers: [McpController, McpAdminController, McpAppsController],
   providers: [
     McpService,
     McpServerFactory,
+    McpV2ServerFactory,
+    McpModernHandlerService,
     McpSessionRegistry,
     McpAdminService,
     McpToolRegistry,
@@ -97,7 +105,8 @@ const MCP_RATE_LIMIT = Number(process.env.MCP_RATE_LIMIT) || 300;
     OpenApiBridgeService,
     McpBridgeService,
     ApiProxyService,
+    McpProbeService,
   ],
-  exports: [McpService, McpToolRegistry],
+  exports: [McpService, McpToolRegistry, McpProbeService, McpBridgeService, AgentConfigService],
 })
 export class McpModule {}

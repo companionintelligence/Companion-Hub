@@ -20,9 +20,16 @@ main     →  production environment (ci-os-hub-production)
 
 ## Docker Image Tags
 
-- `dev` branch → `ghcr.io/companionintelligence/ci-os-hub:dev`
-- `staging` branch → `ghcr.io/companionintelligence/ci-os-hub:staging`
-- `main` branch → `ghcr.io/companionintelligence/ci-os-hub:latest`
+- `dev` branch → `ghcr.io/companionintelligence/ci-hub:dev`
+- `staging` branch → `ghcr.io/companionintelligence/ci-hub:staging`
+- `main` branch → `ghcr.io/companionintelligence/ci-hub:latest`
+- Desktop Release (production only) → `ghcr.io/companionintelligence/ci-hub:<version>`, unprefixed
+  (e.g. `0.2.45`) — the exact reference a shipped desktop bundle pins
+
+The package must stay **public**: the desktop shells out to `docker compose` with no registry
+credentials. `build-container.yml`'s `verify-anonymous-pull` job proves this unauthenticated on
+every run, before any desktop bundle is built. If that job goes red, the package visibility flipped
+or the versioned tag was never pushed — fix the release rather than shipping the bundles.
 
 ## GitHub Environments Setup
 

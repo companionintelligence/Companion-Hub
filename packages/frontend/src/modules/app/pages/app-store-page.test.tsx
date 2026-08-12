@@ -10,6 +10,8 @@ const { mockStoreState, mockSearchAppsInfiniteOptions } = vi.hoisted(() => ({
     setStoreId: vi.fn(),
     search: '',
     setSearch: vi.fn(),
+    setSearchImmediate: vi.fn(),
+    resetBrowseToFeatured: vi.fn(),
   },
   mockSearchAppsInfiniteOptions: vi.fn(() => ({ queryKey: ['searchApps'] })),
 }));
@@ -80,14 +82,18 @@ vi.mock('@/lib/hooks/use-infinite-scroll', () => ({
   useInfiniteScroll: () => ({ lastElementRef: vi.fn() }),
 }));
 
-vi.mock('@/lib/hooks/use-portal-catalog', () => ({
-  usePortalCatalog: () => ({
+const mockUsePortalCatalog = vi.hoisted(() =>
+  vi.fn(() => ({
     alternatives: {},
     isLoading: false,
     isError: false,
     alternativesError: undefined,
     refetchAlternatives: vi.fn(),
-  }),
+  })),
+);
+
+vi.mock('@/lib/hooks/use-portal-catalog', () => ({
+  usePortalCatalog: mockUsePortalCatalog,
 }));
 
 vi.mock('@/lib/portal-alternatives', () => ({
@@ -147,6 +153,13 @@ describe('AppStorePage — multi-store UX', () => {
     mockStoreState.category = undefined;
     mockStoreState.storeId = 'ci-apps';
     mockStoreState.search = '';
+    mockUsePortalCatalog.mockReturnValue({
+      alternatives: {},
+      isLoading: false,
+      isError: false,
+      alternativesError: undefined,
+      refetchAlternatives: vi.fn(),
+    });
   });
 
   it('renders store switcher buttons when multiple stores are enabled', () => {
@@ -177,7 +190,7 @@ describe('AppStorePage — multi-store UX', () => {
     expect(screen.getByTestId('store-label')).toBeInTheDocument();
   });
 
-  it('redirects /app-store/:storeId to /app-store?store=<storeId>', () => {
+  it('redirects /store/:storeId to /store?store=<storeId>', () => {
     setupQueries();
     mockUseParams.mockReturnValue({ storeId: 'community' });
 
@@ -187,7 +200,38 @@ describe('AppStorePage — multi-store UX', () => {
       </MemoryRouter>,
     );
 
-    expect(screen.getByTestId('navigate-to')).toHaveTextContent('/app-store?store=community');
+    expect(screen.getByTestId('navigate-to')).toHaveTextContent('/store?store=community');
+  });
+
+  it('links curated alternatives (including OnlyOffice) to /store/<slug>/<appSlug>', () => {
+    mockUsePortalCatalog.mockReturnValue({
+      alternatives: {
+        utilities: [
+          {
+            proprietary: [{ name: 'Microsoft Office', icon: null, url: null }],
+            alternatives: [{ name: 'OnlyOffice', icon: null, url: 'https://www.onlyoffice.com/', appSlug: 'onlyoffice' }],
+          },
+        ],
+      },
+      isLoading: false,
+      isError: false,
+      alternativesError: undefined,
+      refetchAlternatives: vi.fn(),
+    });
+
+    setupQueries([{ slug: 'ci-marketplace', name: 'CI Marketplace', enabled: true, url: '', hash: '', branch: 'main' }]);
+    mockStoreState.category = '__alternatives__';
+    mockStoreState.storeId = 'ci-marketplace';
+
+    render(
+      <MemoryRouter>
+        <AppStorePage />
+      </MemoryRouter>,
+    );
+
+    const link = screen.getByRole('link', { name: /OnlyOffice/i });
+    expect(link).toHaveAttribute('href', '/store/ci-marketplace/onlyoffice');
+    expect(screen.queryByText('ONBOARDING_SOON')).not.toBeInTheDocument();
   });
 
   it('syncs URL ?store= param to Zustand on mount', () => {
@@ -270,5 +314,61 @@ describe('AppStorePage — multi-store UX', () => {
     expect(mockSearchAppsInfiniteOptions).toHaveBeenCalledWith({
       query: { search: '', category: undefined, pageSize: 24, storeId: 'ci-apps' },
     });
+  });
+
+  it('switches to all when searching from featured view', () => {
+    setupQueries();
+    mockStoreState.category = 'featured';
+
+    render(
+      <MemoryRouter>
+        <AppStorePage />
+      </MemoryRouter>,
+    );
+
+    fireEvent.change(screen.getByPlaceholderText('APP_STORE_SEARCH_APPS'), { target: { value: 'companion' } });
+
+    expect(mockStoreState.setCategory).toHaveBeenCalledWith(undefined);
+    expect(mockStoreState.setSearch).toHaveBeenCalledWith('companion');
+  });
+
+  it('hydrates search and category from URL query params', () => {
+    capturedSearchParams = new URLSearchParams('q=ollama&category=ai&store=ci-apps');
+    setupQueries();
+
+    render(
+      <MemoryRouter>
+        <AppStorePage />
+      </MemoryRouter>,
+    );
+
+    expect(mockStoreState.setSearchImmediate).toHaveBeenCalledWith('ollama');
+    expect(mockStoreState.setCategory).toHaveBeenCalledWith('ai');
+  });
+
+  it('writes browse params to the URL when search and category are set', () => {
+    setupQueries();
+    mockStoreState.search = 'docs';
+    mockStoreState.category = 'development';
+    mockStoreState.storeId = 'ci-apps';
+
+    render(
+      <MemoryRouter>
+        <AppStorePage />
+      </MemoryRouter>,
+    );
+
+    const updater = mockSetSearchParams.mock.calls.find((call) => typeof call[0] === 'function')?.[0] as
+      | ((prev: URLSearchParams) => URLSearchParams)
+      | undefined;
+
+    expect(updater).toBeTypeOf('function');
+    if (typeof updater !== 'function') {
+      throw new Error('expected setSearchParams updater');
+    }
+    const next = updater(new URLSearchParams('store=ci-apps'));
+    expect(next.get('q')).toBe('docs');
+    expect(next.get('category')).toBe('development');
+    expect(next.get('store')).toBe('ci-apps');
   });
 });

@@ -239,7 +239,7 @@ describe('AppRuntimeMonitorService', () => {
       expect.arrayContaining([
         expect.objectContaining({
           appUrn: 'ci-hub:system',
-          appName: 'Companion Hub',
+          appName: 'CI Hub',
           cpuPercent: 10,
           memoryUsageBytes: 2048 * 1024 + 4096,
           memoryLimitBytes: 8192,
@@ -250,7 +250,7 @@ describe('AppRuntimeMonitorService', () => {
       expect.arrayContaining([
         expect.objectContaining({
           appUrn: 'ci-hub:system',
-          appName: 'Companion Hub',
+          appName: 'CI Hub',
           cpuPercent: 10,
           memoryUsageBytes: 2048 * 1024 + 4096,
         }),
@@ -282,7 +282,7 @@ describe('AppRuntimeMonitorService', () => {
       expect.arrayContaining([
         expect.objectContaining({
           appUrn: 'ci-hub:system',
-          appName: 'Companion Hub',
+          appName: 'CI Hub',
           cpuPercent: 4.25,
           memoryUsageBytes: 8192,
           memoryLimitBytes: 16384,

@@ -17,6 +17,7 @@ Part of the [CI OS](https://github.com/companionintelligence) ecosystem. License
 - **Cloudflare Tunnel** — Optionally expose your hub and apps to the internet through CI Cloud
 - **Private VPN** — Built-in Headscale/Tailscale support for encrypted peer-to-peer remote access
 - **Desktop app** — Native Tauri app for macOS, Windows, and Linux with system tray, mDNS discovery, and deep linking
+- **Headless / CLI** — No display needed: `companion-hub --detached` starts the stack over SSH, and the bundled [`cihub` CLI](docs/CLI.md#headless--no-graphical-session-required) manages everything from the terminal
 - **Real-time status** — Server-Sent Events stream app logs and status changes live to the dashboard
 - **Backup & restore** — Per-app backup/restore via compressed archives with configurable retention
 - **Custom apps** — Define your own Docker Compose apps directly in the Hub UI
@@ -121,6 +122,8 @@ cihub status              # show running containers + resolved config
 cihub up                  # start the Hub stack
 cihub app status          # color-coded container health
 cihub app logs <name>     # stream container logs
+cihub api-key create      # mint an API key for an MCP client
+cihub connect openclaw    # give a local agent passive memory (also: hermes)
 cihub --help              # full command reference
 ```
 
@@ -134,6 +137,18 @@ npx --package ci-hub cihub --help
 Homebrew and other package managers expose the same `cihub` executable on `PATH`.
 
 See **[docs/CLI.md](docs/CLI.md)** for the full reference.
+
+---
+
+## AI agents
+
+Coding agents (Cursor, Claude Code, Copilot) should start at **[AGENTS.md](AGENTS.md)** — the router to workflow docs, system docs, skills, and validation scripts.
+
+- **Workflow:** [docs/agent/AGENT_WORKFLOW.md](docs/agent/AGENT_WORKFLOW.md) — tag this in most sessions
+- **Run the app:** `pnpm run local` or `pnpm run local:desktop` before finishing UI or API work
+- **Task queue:** [TODO.md](TODO.md)
+
+For marketplace app QA automation (separate from general development), see [docs/FLYWHEEL.md](docs/FLYWHEEL.md).
 
 ---
 

@@ -274,5 +274,30 @@ describe('OllamaBackend', () => {
       expect(config.runtime).toBeUndefined();
       expect(config.deploy).toBeUndefined();
     });
+
+    it('should use the default (Vulkan-bundled) tag for AMD when ROCm is not ready', () => {
+      expect(backend.getDockerImage()).toBe('ollama/ollama:latest');
+      expect(backend.getComposeConfig('amd').image).toBe('ollama/ollama:latest');
+    });
+
+    it('should use the :rocm tag for AMD when ROCm passthrough is ready', () => {
+      expect(backend.getDockerImage({ rocmReady: true })).toBe('ollama/ollama:rocm');
+      expect(backend.getComposeConfig('amd', { rocmReady: true }).image).toBe('ollama/ollama:rocm');
+    });
+
+    it('should force Vulkan weights into unified/GTT memory on a ROCm-not-ready APU', () => {
+      const config = backend.getComposeConfig('amd', { rocmReady: false, unifiedMemory: true });
+      expect(config.environment).toEqual({ GGML_VK_PREFER_HOST_MEMORY: '1' });
+    });
+
+    it('should NOT force host memory for a discrete AMD GPU (has real VRAM)', () => {
+      const config = backend.getComposeConfig('amd', { rocmReady: false, unifiedMemory: false });
+      expect(config.environment).toBeUndefined();
+    });
+
+    it('should NOT set the Vulkan host-memory env var once ROCm is ready', () => {
+      const config = backend.getComposeConfig('amd', { rocmReady: true, unifiedMemory: true });
+      expect(config.environment).toBeUndefined();
+    });
   });
 });

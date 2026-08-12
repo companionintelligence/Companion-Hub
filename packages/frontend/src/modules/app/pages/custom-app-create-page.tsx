@@ -67,7 +67,7 @@ export default () => {
               <Input
                 label={
                   <>
-                    {t('CUSTOM_APP_NAME_LABEL')} <span className="text-danger">*</span>
+                    {t('CUSTOM_APP_NAME_LABEL')} <span className="text-destructive">*</span>
                   </>
                 }
                 onChange={(e) => setAppName(e.target.value)}
@@ -76,10 +76,10 @@ export default () => {
                 title={t('CUSTOM_APP_NAME_HELP')}
                 disabled={createCustomApp.isPending}
               />
-              <div className="form-text">
+              <p className="mt-1 text-xs text-muted-foreground">
                 {t('CUSTOM_APP_NAME_HELP')}
                 {appName && derivedSlug ? ` ${t('CUSTOM_APP_NAME_DERIVED', { slug: derivedSlug })}` : ''}
-              </div>
+              </p>
             </div>
           </div>
         </CardContent>

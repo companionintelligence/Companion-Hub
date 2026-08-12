@@ -1,39 +1,35 @@
 import { apiFetch } from '@/lib/api-fetch';
+import { copyToClipboard } from '@/lib/copy-to-clipboard';
 import { Button } from '@/components/ui/Button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/Card';
 import { Checkbox } from '@/components/ui/Checkbox/Checkbox';
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/Dialog';
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/Dialog';
 import { Input } from '@/components/ui/Input';
 import { Skeleton } from '@/components/ui/Skeleton/Skeleton';
-import { Switch } from '@/components/ui/Switch';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import toast from 'react-hot-toast';
+import { Link } from 'react-router';
 
 // ENH-MCP-4: operator screen for the Hub's MCP server. Talks to the session-authed /api/mcp-admin
 // surface (never the Bearer /api/mcp endpoint), so the browser never holds the agent key and the
 // tool runner executes server-side. Mirrors the existing settings-container pattern (ai-settings).
+// API-key management moved to the hub-wide Settings → Security card (ApiKeysContainer); this tab
+// only links there.
+//
+// The appliance-wide "Destructive tools" switch that used to live here is gone: destructive access is
+// now each key's `capability`, granted one key at a time in Settings → Security. A single switch could
+// only be on or off for every key at once, so enabling it for one agent enabled it for all of them.
 
 interface McpStatus {
   enabled: boolean;
   server: { name: string; version: string };
   protocolVersion: string;
+  protocolVersions?: string[];
   toolCount: number;
   activeSessions: number;
-  destructiveAllowed: boolean;
   activeKeyCount: number;
   endpoint: string;
-}
-
-interface McpApiKeyInfo {
-  id: number;
-  name: string;
-  prefix: string;
-  managed: boolean;
-  ownerAppUrn: string | null;
-  expiresAt: string | null;
-  lastUsedAt: string | null;
-  createdAt: string;
 }
 
 interface McpToolInfo {
@@ -41,7 +37,26 @@ interface McpToolInfo {
   description: string;
   inputSchema: Record<string, unknown>;
   destructive: boolean;
+  /** Which capability level reaches this tool — 'read' tools are callable by every key, 'write' ones
+   *  only by a 'write' or 'full' key (and destructive ones only by 'full'). */
+  access: 'read' | 'write';
   category?: string;
+}
+
+interface McpInstalledApp {
+  urn: string;
+  name: string;
+  status: string;
+  bridge?: {
+    connected: boolean;
+    toolCount: number;
+    containerStatus: string;
+    lastError?: string;
+  };
+}
+
+interface InstalledAppsResponse {
+  installed: Array<{ app: { status: string }; info: { urn: string; name: string; mcp?: unknown } }>;
 }
 
 type ToolCallResponse = { ok: true; result: unknown } | { ok: false; error: string };
@@ -54,17 +69,6 @@ export const McpSettingsContainer = () => {
   const [tools, setTools] = useState<McpToolInfo[]>([]);
   const [search, setSearch] = useState('');
 
-  // Destructive-gate toggle state.
-  const [savingDestructive, setSavingDestructive] = useState(false);
-
-  // API-key management state (SEC-MCP-8: multi-key store).
-  const [keys, setKeys] = useState<McpApiKeyInfo[]>([]);
-  const [createKeyOpen, setCreateKeyOpen] = useState(false);
-  const [newKeyName, setNewKeyName] = useState('');
-  const [creatingKey, setCreatingKey] = useState(false);
-  // The raw key is returned only once, at creation — held here so the operator can copy it before it's gone.
-  const [createdKey, setCreatedKey] = useState<string | null>(null);
-
   // Tool runner state.
   const [runTool, setRunTool] = useState<McpToolInfo | null>(null);
   const [runArgs, setRunArgs] = useState('{}');
@@ -72,28 +76,67 @@ export const McpSettingsContainer = () => {
   const [runResult, setRunResult] = useState<string | null>(null);
   // Explicit operator confirmation for running a destructive tool (never auto-confirmed).
   const [runConfirmed, setRunConfirmed] = useState(false);
+  const [installedMcpApps, setInstalledMcpApps] = useState<McpInstalledApp[]>([]);
+
+  const loadInstalledMcpApps = useCallback(async () => {
+    try {
+      const res = await apiFetch('/api/apps/installed');
+      if (!res.ok) return;
+      const body = (await res.json()) as InstalledAppsResponse;
+      const mcpApps = body.installed.filter((entry) => entry.info.mcp);
+      const withStatus = await Promise.all(
+        mcpApps.map(async (entry) => {
+          let bridge: McpInstalledApp['bridge'];
+          try {
+            const statusRes = await apiFetch(`/api/apps/${encodeURIComponent(entry.info.urn)}/mcp/status`);
+            if (statusRes.ok) {
+              const status = (await statusRes.json()) as McpInstalledApp['bridge'] & {
+                connected: boolean;
+                toolCount: number;
+                containerStatus: string;
+                lastError?: string;
+              };
+              bridge = {
+                connected: status.connected,
+                toolCount: status.toolCount,
+                containerStatus: status.containerStatus,
+                lastError: status.lastError,
+              };
+            }
+          } catch {
+            /* best effort */
+          }
+          return {
+            urn: entry.info.urn,
+            name: entry.info.name,
+            status: entry.app.status,
+            bridge,
+          };
+        }),
+      );
+      setInstalledMcpApps(withStatus);
+    } catch {
+      /* optional section */
+    }
+  }, []);
 
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const [statusRes, toolsRes, keysRes] = await Promise.all([
-        apiFetch('/api/mcp-admin/status'),
-        apiFetch('/api/mcp-admin/tools'),
-        apiFetch('/api/mcp-admin/keys'),
-      ]);
-      if (!statusRes.ok || !toolsRes.ok || !keysRes.ok) {
+      const [statusRes, toolsRes] = await Promise.all([apiFetch('/api/mcp-admin/status'), apiFetch('/api/mcp-admin/tools')]);
+      if (!statusRes.ok || !toolsRes.ok) {
         throw new Error('status');
       }
       setStatus((await statusRes.json()) as McpStatus);
       setTools(((await toolsRes.json()) as { tools: McpToolInfo[] }).tools);
-      setKeys(((await keysRes.json()) as { keys: McpApiKeyInfo[] }).keys);
+      await loadInstalledMcpApps();
     } catch {
       setError(t('MCP_SETTINGS_LOAD_ERROR'));
     } finally {
       setLoading(false);
     }
-  }, [t]);
+  }, [t, loadInstalledMcpApps]);
 
   useEffect(() => {
     void load();
@@ -122,106 +165,11 @@ export const McpSettingsContainer = () => {
     });
   }, [filteredTools]);
 
-  const toggleDestructive = useCallback(
-    async (allow: boolean) => {
-      setSavingDestructive(true);
-      try {
-        const res = await apiFetch('/api/mcp-admin/settings', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ allowDestructive: allow }),
-        });
-        if (!res.ok) throw new Error('save');
-        setStatus((prev) => (prev ? { ...prev, destructiveAllowed: allow } : prev));
-        toast.success(t('MCP_SETTINGS_DESTRUCTIVE_SAVED'));
-      } catch {
-        toast.error(t('MCP_SETTINGS_DESTRUCTIVE_SAVE_ERROR'));
-      } finally {
-        setSavingDestructive(false);
-      }
-    },
-    [t],
-  );
-
-  // Never throws: callers toast their own action's outcome, and a failed list refresh must not be
-  // misreported as that action failing — the list just stays stale until the next successful load.
-  const refreshKeys = useCallback(async () => {
-    try {
-      const res = await apiFetch('/api/mcp-admin/keys');
-      if (!res.ok) return;
-      const body = (await res.json()) as { keys: McpApiKeyInfo[] };
-      setKeys(body.keys);
-      setStatus((prev) => (prev ? { ...prev, activeKeyCount: body.keys.length } : prev));
-    } catch {
-      // stale list until the next refresh
-    }
-  }, []);
-
-  const createKey = useCallback(async () => {
-    const name = newKeyName.trim();
-    if (!name) return;
-    setCreatingKey(true);
-    try {
-      const res = await apiFetch('/api/mcp-admin/keys', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name }),
-      });
-      if (!res.ok) throw new Error('create');
-      const body = (await res.json()) as { key: string };
-      setCreatedKey(body.key); // shown once
-      setCreateKeyOpen(false);
-      setNewKeyName('');
-      toast.success(t('MCP_SETTINGS_KEY_CREATED'));
-      await refreshKeys();
-    } catch {
-      toast.error(t('MCP_SETTINGS_KEY_CREATE_ERROR'));
-    } finally {
-      setCreatingKey(false);
-    }
-  }, [newKeyName, refreshKeys, t]);
-
-  const revokeKey = useCallback(
-    async (id: number) => {
-      try {
-        const res = await apiFetch(`/api/mcp-admin/keys/${id}`, { method: 'DELETE' });
-        if (res.status === 409) {
-          // The backend refuses to revoke the last key (an empty store would re-seed the same
-          // derived Default key at next boot, resurrecting the credential).
-          toast.error(t('MCP_SETTINGS_KEY_REVOKE_LAST'));
-          return;
-        }
-        if (!res.ok) throw new Error('revoke');
-        const body = (await res.json()) as { revoked: boolean };
-        // revoked:false = the id no longer exists (e.g. revoked from another tab). No success toast
-        // for a no-op — the refresh below reconciles the stale list.
-        if (body.revoked) toast.success(t('MCP_SETTINGS_KEY_REVOKED'));
-        await refreshKeys();
-      } catch {
-        toast.error(t('MCP_SETTINGS_KEY_REVOKE_ERROR'));
-      }
-    },
-    [refreshKeys, t],
-  );
-
   const openRunner = useCallback((tool: McpToolInfo) => {
     setRunTool(tool);
     setRunArgs('{}');
     setRunResult(null);
     setRunConfirmed(false);
-  }, []);
-
-  // Copy to clipboard, toasting ONLY on a successful write — the Clipboard API can be unavailable
-  // (insecure context) or blocked, in which case we stay silent rather than falsely claim success.
-  const copyToClipboard = useCallback((text: string, successMsg: string) => {
-    const clip = navigator.clipboard;
-    if (!clip) return;
-    clip.writeText(text).then(
-      () => toast.success(successMsg),
-      () => {
-        /* clipboard write blocked — no false-positive toast */
-      },
-    );
   }, []);
 
   const runToolCall = useCallback(async () => {
@@ -307,7 +255,7 @@ export const McpSettingsContainer = () => {
             value={status.enabled ? t('MCP_SETTINGS_STATUS_ENABLED') : t('MCP_SETTINGS_STATUS_DISABLED')}
           />
           <StatItem label={t('MCP_SETTINGS_SERVER')} value={`${status.server.name} ${status.server.version}`} />
-          <StatItem label={t('MCP_SETTINGS_PROTOCOL')} value={status.protocolVersion} />
+          <StatItem label={t('MCP_SETTINGS_PROTOCOL')} value={(status.protocolVersions ?? [status.protocolVersion]).join(', ')} />
           <StatItem label={t('MCP_SETTINGS_TOOL_COUNT')} value={String(status.toolCount)} />
           <StatItem label={t('MCP_SETTINGS_ACTIVE_SESSIONS')} value={String(status.activeSessions)} />
           <StatItem
@@ -318,81 +266,67 @@ export const McpSettingsContainer = () => {
         </CardContent>
       </Card>
 
-      {/* API keys (SEC-MCP-8: multi-key store) */}
       <Card>
         <CardHeader>
-          <CardTitle>{t('MCP_SETTINGS_KEYS_TITLE')}</CardTitle>
-          <CardDescription>{t('MCP_SETTINGS_KEYS_DESC')}</CardDescription>
+          <CardTitle>{t('MCP_SETTINGS_INSTALLED_TITLE')}</CardTitle>
+          <CardDescription>{t('MCP_SETTINGS_INSTALLED_DESC')}</CardDescription>
         </CardHeader>
-        <CardContent className="space-y-3">
-          <Button variant="outline" onClick={() => setCreateKeyOpen(true)} data-testid="mcp-create-key">
-            {t('MCP_SETTINGS_KEY_CREATE')}
-          </Button>
-
-          {/* A freshly created key is shown once, right here — it can never be retrieved again. */}
-          {createdKey && (
-            <div className="space-y-1 rounded-md border border-primary/40 bg-primary/5 p-2">
-              <p className="text-xs font-medium text-primary">{t('MCP_SETTINGS_KEY_CREATED_ONCE')}</p>
-              <div className="flex items-center gap-2">
-                <code className="min-w-0 flex-1 overflow-x-auto rounded bg-muted px-2 py-1 text-xs" data-testid="mcp-created-key">
-                  {createdKey}
-                </code>
-                <Button variant="ghost" size="sm" onClick={() => copyToClipboard(createdKey, t('MCP_SETTINGS_KEY_COPIED'))}>
-                  {t('MCP_SETTINGS_KEY_COPY')}
-                </Button>
-                <Button variant="ghost" size="sm" onClick={() => setCreatedKey(null)}>
-                  {t('MCP_SETTINGS_KEY_DISMISS')}
-                </Button>
-              </div>
-            </div>
-          )}
-
-          {keys.length === 0 ? (
-            <p className="text-sm text-muted-foreground">{t('MCP_SETTINGS_KEYS_EMPTY')}</p>
+        <CardContent>
+          {installedMcpApps.length === 0 ? (
+            <p className="text-sm text-muted-foreground">{t('MCP_SETTINGS_INSTALLED_EMPTY')}</p>
           ) : (
-            <ul className="divide-y divide-border" data-testid="mcp-key-list">
-              {keys.map((key) => (
-                <li key={key.id} className="flex items-center justify-between gap-3 py-2">
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-2">
-                      <span className="truncate text-sm font-medium">{key.name}</span>
-                      <code className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">{key.prefix}…</code>
-                      {key.managed && (
-                        <span className="rounded bg-primary/10 px-1.5 py-0.5 text-xs text-primary" title={key.ownerAppUrn ?? undefined}>
-                          {t('MCP_SETTINGS_KEY_MANAGED_BADGE')}
-                        </span>
-                      )}
-                    </div>
-                    <p className="text-xs text-muted-foreground">
-                      {key.lastUsedAt
-                        ? t('MCP_SETTINGS_KEY_LAST_USED', { when: new Date(key.lastUsedAt).toLocaleString() })
-                        : t('MCP_SETTINGS_KEY_NEVER_USED')}
-                    </p>
-                  </div>
-                  <Button variant="ghost" size="sm" className="text-destructive" onClick={() => void revokeKey(key.id)}>
-                    {t('MCP_SETTINGS_KEY_REVOKE')}
-                  </Button>
-                </li>
-              ))}
-            </ul>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b text-left text-muted-foreground">
+                    <th className="pb-2 pr-4 font-medium">App</th>
+                    <th className="pb-2 pr-4 font-medium">Status</th>
+                    <th className="pb-2 pr-4 font-medium">Bridge</th>
+                    <th className="pb-2 font-medium">Tools</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {installedMcpApps.map((entry) => (
+                    <tr key={entry.urn} className="border-b border-border/40 last:border-0">
+                      <td className="py-2 pr-4">
+                        <Link to={`/app-store/${entry.urn.replace(':', '/')}`} className="text-primary underline-offset-2 hover:underline">
+                          {entry.name}
+                        </Link>
+                      </td>
+                      <td className="py-2 pr-4 capitalize">{entry.status}</td>
+                      <td className="py-2 pr-4">
+                        {entry.bridge?.connected ? 'Connected' : entry.bridge?.lastError ? 'Needs attention' : (entry.bridge?.containerStatus ?? '—')}
+                      </td>
+                      <td className="py-2">{entry.bridge?.toolCount ?? '—'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           )}
         </CardContent>
       </Card>
 
-      {/* Destructive tools gate */}
+      {/* API keys moved to the hub-wide Settings → Security card. Point operators there and keep
+          the tab's key-count visibility via the status endpoint's activeKeyCount. */}
       <Card>
         <CardHeader>
-          <CardTitle>{t('MCP_SETTINGS_DESTRUCTIVE_TITLE')}</CardTitle>
-          <CardDescription>{t('MCP_SETTINGS_DESTRUCTIVE_DESC')}</CardDescription>
+          <CardTitle>{t('MCP_SETTINGS_KEYS_TITLE')}</CardTitle>
+          <CardDescription>{t('API_KEYS_DESC')}</CardDescription>
         </CardHeader>
-        <CardContent>
-          <Switch
-            name="mcp-allow-destructive"
-            label={t('MCP_SETTINGS_DESTRUCTIVE_TOGGLE')}
-            checked={status.destructiveAllowed}
-            disabled={savingDestructive}
-            onCheckedChange={(checked) => void toggleDestructive(checked)}
-          />
+        <CardContent className="flex flex-wrap items-center justify-between gap-3">
+          <div className="min-w-0">
+            <p className="text-sm text-muted-foreground" data-testid="mcp-active-key-count">
+              {t('MCP_SETTINGS_ACTIVE_KEYS', { count: status.activeKeyCount })}
+            </p>
+            {/* Where the destructive gate went, said explicitly — an operator who remembers the
+                switch on this tab needs to be told where the decision moved to, not just find it
+                missing. */}
+            <p className="text-xs text-muted-foreground">{t('MCP_SETTINGS_CAPABILITY_HINT')}</p>
+          </div>
+          <Button asChild variant="outline" data-testid="mcp-manage-keys">
+            <Link to="/settings?tab=security">{t('MCP_SETTINGS_MANAGE_KEYS_LINK')}</Link>
+          </Button>
         </CardContent>
       </Card>
 
@@ -424,10 +358,16 @@ export const McpSettingsContainer = () => {
                         <div className="min-w-0">
                           <div className="flex items-center gap-2">
                             <code className="text-sm font-medium">{tool.name}</code>
-                            {tool.destructive && (
+                            {/* A tool is badged by the least capability that reaches it: 'destructive'
+                                implies write, so the two badges are alternatives, not a stack. */}
+                            {tool.destructive ? (
                               <span className="rounded bg-destructive/10 px-1.5 py-0.5 text-xs text-destructive">
                                 {t('MCP_SETTINGS_TOOL_DESTRUCTIVE_BADGE')}
                               </span>
+                            ) : (
+                              tool.access === 'write' && (
+                                <span className="rounded bg-primary/10 px-1.5 py-0.5 text-xs text-primary">{t('MCP_SETTINGS_TOOL_WRITE_BADGE')}</span>
+                              )
                             )}
                           </div>
                           <p className="text-xs text-muted-foreground">{tool.description}</p>
@@ -444,41 +384,6 @@ export const McpSettingsContainer = () => {
           )}
         </CardContent>
       </Card>
-
-      {/* Create-key dialog */}
-      <Dialog open={createKeyOpen} onOpenChange={(open) => !open && setCreateKeyOpen(false)}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>{t('MCP_SETTINGS_KEY_CREATE_TITLE')}</DialogTitle>
-            <DialogDescription>{t('MCP_SETTINGS_KEY_CREATE_DESC')}</DialogDescription>
-          </DialogHeader>
-          <div className="min-w-0 space-y-2">
-            <label className="text-sm font-medium" htmlFor="mcp-new-key-name">
-              {t('MCP_SETTINGS_KEY_NAME_LABEL')}
-            </label>
-            <Input
-              id="mcp-new-key-name"
-              value={newKeyName}
-              onChange={(e) => setNewKeyName(e.target.value)}
-              placeholder={t('MCP_SETTINGS_KEY_NAME_PLACEHOLDER')}
-              data-testid="mcp-new-key-name"
-            />
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setCreateKeyOpen(false)}>
-              {t('COMMON_CANCEL')}
-            </Button>
-            <Button
-              loading={creatingKey}
-              disabled={creatingKey || !newKeyName.trim()}
-              onClick={() => void createKey()}
-              data-testid="mcp-create-key-submit"
-            >
-              {t('MCP_SETTINGS_KEY_CREATE')}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
 
       {/* Tool runner */}
       <Dialog open={Boolean(runTool)} onOpenChange={(open) => !open && setRunTool(null)}>

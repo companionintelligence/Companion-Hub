@@ -26,6 +26,8 @@ import {
   resetHub,
   resolveEnvFromArgs,
   restartHub,
+  runApiKeyCommand,
+  runConnectCommand,
   runAppCommand,
   runHostUpdate,
   runModelsCommand,
@@ -33,6 +35,7 @@ import {
   runWizard,
   setMcpState,
   setupHub,
+  showDeviceId,
   showStatus,
   startHub,
   uninstallHub,
@@ -81,6 +84,13 @@ export async function runCli(rawArgs: string[]) {
   if (first === 'register') {
     const registerArgs = normalizeRegisterFlags(args.slice(1));
     await registerHub(registerArgs.env, { fresh: registerArgs.fresh, code: registerArgs.code });
+    return;
+  }
+
+  if (first === 'device-id') {
+    const fromHub = args.includes('--from-hub');
+    const env = resolveEnvFromArgs(args.slice(1).filter((arg) => arg !== '--from-hub'));
+    await showDeviceId({ fromHub, env });
     return;
   }
 
@@ -168,6 +178,16 @@ export async function runCli(rawArgs: string[]) {
     if (sub === 'shutdown') return setMcpState(env, false);
     if (sub === 'config') return printConfig(env);
     usageAndExit(`Usage: ${BASE_COMMAND} mcp <setup|shutdown|config> [env]`);
+  }
+
+  if (first === 'connect') {
+    await runConnectCommand(args.slice(1));
+    return;
+  }
+
+  if (first === 'api-key') {
+    runApiKeyCommand(args.slice(1));
+    return;
   }
 
   if (first === 'app') {

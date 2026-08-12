@@ -16,14 +16,20 @@ import toast from 'react-hot-toast';
 import { Trans, useTranslation } from 'react-i18next';
 import { Link } from 'react-router';
 import { Tooltip } from 'react-tooltip';
+import { HintMarker } from '@/components/ui/field-hint/field-hint';
 import type { AvailableDomain } from '@ci-hub/common/types';
 import { buildPublicWebIdentity, sanitizeAppSubdomain } from '@ci-hub/common/types';
 import { resolveExposureMode } from '@/modules/onboarding/helpers/agent-onboarding';
-import { hiddenTypes, validateAppConfig } from './form-validators';
+import { isMcpOptionalOnlyInstall } from '@ci-hub/common/validation';
+import { isInstallFormValid, mergeFormFieldDefaults, validateAppConfig } from './form-validators';
+import { HIDDEN_FIELD_TYPES } from '@ci-hub/common/validation';
 import { CloudflareSubdomainField } from './cloudflare-subdomain-field';
 import { HostnamePreviewCard } from './hostname-preview-card';
 import { InstallFormField } from './install-form-field';
 import { useDnsAvailability } from './use-dns-availability';
+
+const isHiddenFieldType = (type: FormField['type']) => HIDDEN_FIELD_TYPES.includes(type as (typeof HIDDEN_FIELD_TYPES)[number]);
+const typeFilter = (field: FormField) => !isHiddenFieldType(field.type);
 
 interface IProps {
   formFields?: FormField[];
@@ -55,7 +61,6 @@ export type FormValues = {
   [key: string]: unknown;
 };
 
-const typeFilter = (field: FormField) => !hiddenTypes.includes(field.type);
 const EMPTY_AVAILABLE_DOMAINS: AvailableDomain[] = [];
 
 function buildTailscalePortHost(nodeFqdn?: string | null, port?: number | null): string | null {
@@ -169,15 +174,18 @@ export const InstallForm: React.FC<IProps> = ({
   const { data: availableDomainsData } = useQuery(getDomainsOptions());
   const availableDomains = useMemo(() => availableDomainsData?.domains ?? EMPTY_AVAILABLE_DOMAINS, [availableDomainsData?.domains]);
 
-  const requiredFieldNames = formFields.filter((f) => f.required && !hiddenTypes.includes(f.type)).map((f) => f.env_variable);
-  const watchedRequiredValues = watch(requiredFieldNames);
+  const requiredFieldNames = formFields.filter((f) => f.required && !isHiddenFieldType(f.type)).map((f) => f.env_variable);
+  const _watchedRequiredValues = watch(requiredFieldNames);
 
   // Track the previously-rendered app URN so the init effect can detect when
   // the form is reused for a different app and force-reset stale field values.
   const prevUrnRef = useRef<string | undefined>(undefined);
   const lastAutoPrefilledAppBaseUrl = useRef<Partial<Record<string, string>>>({});
   const [publicWebExpectedUrl, setPublicWebExpectedUrl] = useState<string | null>(null);
-  const [showAdvancedSettings, setShowAdvancedSettings] = useState(false);
+  const [showAdvancedSettings, setShowAdvancedSettings] = useState(() => isMcpOptionalOnlyInstall(info));
+
+  const mcpOptionalOnly = useMemo(() => isMcpOptionalOnlyInstall(info), [info]);
+  const watchedFormValues = watch();
 
   const checkDnsAvailability = useCallback(
     async (subdomain: string, selectedDomain?: string) => {
@@ -200,27 +208,30 @@ export const InstallForm: React.FC<IProps> = ({
     }
   };
 
-  // Track form validity for parent components
+  // Track form validity for parent components — mirrors submit validation (defaults + field rules).
   useEffect(() => {
     if (!onValidityChange) return;
 
-    // For exposable apps, require an exposure mode to be selected
     if (info.exposable && info.dynamic_config && !watchExposureMode) {
       onValidityChange(false);
       return;
     }
 
-    // Check required form fields have values
-    const requiredFields = formFields.filter((f) => f.required && !hiddenTypes.includes(f.type));
-    const allRequiredFilled = requiredFields.every((f, i) => {
-      const val = watchedRequiredValues[i];
-      // Fields with defaults count as filled
-      if (f.default !== undefined && f.default !== '') return true;
-      return val !== undefined && val !== '' && val !== null;
-    });
+    const withDefaults = mergeFormFieldDefaults(watchedFormValues as Record<string, unknown>, formFields);
+    const formValues = {
+      ...withDefaults,
+      exposureMode: watchExposureMode,
+      exposedLocal: info.exposable && watchExposureMode === 'cloudflare',
+      port: watchPort || (info.port ? info.port.toString() : undefined),
+    };
 
-    onValidityChange(allRequiredFilled);
-  }, [onValidityChange, info.exposable, info.dynamic_config, watchExposureMode, formFields, watchedRequiredValues]);
+    if (isProduction && info.exposable && formValues.exposedLocal && info.dynamic_config && !formValues.port) {
+      onValidityChange(false);
+      return;
+    }
+
+    onValidityChange(isInstallFormValid(formValues, formFields, { requirePortWhenExposedLocal: isProduction }));
+  }, [onValidityChange, info.exposable, info.dynamic_config, info.port, watchExposureMode, watchPort, formFields, watchedFormValues, isProduction]);
 
   useEffect(() => {
     onDirtyChange?.(isDirty);
@@ -232,9 +243,30 @@ export const InstallForm: React.FC<IProps> = ({
     const appChanged = prevUrnRef.current !== undefined && prevUrnRef.current !== info.urn;
     prevUrnRef.current = info.urn;
 
-    if (initialValues && !isDirty) {
+    // Whether this pass may (re)seed the form. Untouched forms seed normally. A DIRTY form does
+    // not — this effect depends on isDirty, so re-seeding would re-assert defaults over what the
+    // operator just typed and make their input bounce back. The exception is `appChanged`: the
+    // dialog reuses one form instance across apps, and edits made against the PREVIOUS app are
+    // stale by definition, so a switch reseeds as if freshly rendered. Every field in this effect
+    // shares the one condition — seeding some (the exposure mode) while skipping others (port,
+    // openPort, enableAuth) would leave a switched-to app wearing half of its predecessor's config.
+    const shouldSeed = !isDirty || appChanged;
+
+    if (initialValues && shouldSeed) {
       for (const [key, value] of Object.entries(initialValues)) {
         setValue(key, value as string);
+      }
+    }
+    // Seed catalog form_field defaults into RHF so empty installs submit working env values
+    // (uncontrolled defaultValue alone is easy to miss on validate/submit).
+    if (shouldSeed) {
+      for (const field of formFields) {
+        if (isHiddenFieldType(field.type)) continue;
+        if (field.default === undefined || field.default === null || String(field.default) === '') continue;
+        const current = getValues(field.env_variable);
+        if (current !== undefined && current !== null && current !== '') continue;
+        if (initialValues?.[field.env_variable] !== undefined) continue;
+        setValue(field.env_variable, field.default as string | boolean | number);
       }
     }
     if (info.force_expose) {
@@ -248,11 +280,22 @@ export const InstallForm: React.FC<IProps> = ({
         cloudflareAvailable,
         tailscaleAvailable,
       });
-      setValue('exposureMode', defaultMode);
-      setValue('exposedLocal', true); // backward compat
-      setValue('openPort', defaultMode === 'local');
-      setValue('enableAuth', true); // Enable authentication by default
-      if (info.port) {
+      if (shouldSeed) {
+        setValue('exposureMode', defaultMode);
+        setValue('exposedLocal', true); // backward compat
+      }
+      // Defaults, not overrides. These run AFTER initialValues have been applied above, so writing
+      // unconditionally discarded the operator's choice — on an EDIT it reverted the stored value,
+      // which is what `initialValues?.X === undefined` still guards. `shouldSeed` covers the other
+      // half: without it this effect re-asserted the default the moment the form went dirty, so a
+      // first attempt to turn auth off, or to set a custom port, appeared to bounce back.
+      if (shouldSeed && initialValues?.openPort === undefined) {
+        setValue('openPort', defaultMode === 'local');
+      }
+      if (shouldSeed && initialValues?.enableAuth === undefined) {
+        setValue('enableAuth', true);
+      }
+      if (shouldSeed && info.port && initialValues?.port === undefined) {
         setValue('port', info.port.toString());
       }
       // Reset publicDomain when switching apps (appChanged) so stale values
@@ -268,6 +311,7 @@ export const InstallForm: React.FC<IProps> = ({
     isDirty,
     getValues,
     setValue,
+    formFields,
     info.urn,
     info.force_expose,
     info.exposable,
@@ -546,10 +590,10 @@ export const InstallForm: React.FC<IProps> = ({
             label={
               <>
                 {t('APP_INSTALL_FORM_ENABLE_AUTH')}
-                <Tooltip className="tooltip" anchorSelect=".enable-auth-hint">
-                  {t('APP_INSTALL_FORM_ENABLE_AUTH_HINT')}
-                </Tooltip>
-                <span className={clsx('ms-1 form-help enable-auth-hint')}>?</span>
+                <HintMarker anchorClass="enable-auth-hint" hint={t('APP_INSTALL_FORM_ENABLE_AUTH_HINT')} />
+                {info.hub_integration?.edge_auth?.default ? (
+                  <span className="ms-2 text-sm text-muted-foreground">{t('APP_INSTALL_FORM_ENABLE_AUTH_RECOMMENDED')}</span>
+                ) : null}
               </>
             }
           />
@@ -560,12 +604,21 @@ export const InstallForm: React.FC<IProps> = ({
 
   const validate = async (values: FormValues) => {
     const exposureMode = resolveExposureMode(values.exposureMode, { cloudflareAvailable, tailscaleAvailable });
+    const withFieldDefaults: FormValues = { ...values };
+    for (const field of formFields) {
+      if (isHiddenFieldType(field.type)) continue;
+      if (field.default === undefined || field.default === null || String(field.default) === '') continue;
+      const current = withFieldDefaults[field.env_variable];
+      if (current === undefined || current === null || current === '') {
+        withFieldDefaults[field.env_variable] = field.default;
+      }
+    }
     const formValues = {
-      ...values,
+      ...withFieldDefaults,
       exposureMode,
-      exposedLocal: exposureMode === 'cloudflare', // backward compat
-      enableAuth: values.enableAuth ?? true,
-      port: values.port || (info.port ? info.port.toString() : undefined),
+      exposedLocal: info.exposable && exposureMode === 'cloudflare', // backward compat
+      enableAuth: withFieldDefaults.enableAuth ?? true,
+      port: withFieldDefaults.port || (info.port ? info.port.toString() : undefined),
     };
 
     // Set default subdomain if not provided and app is exposable
@@ -573,10 +626,10 @@ export const InstallForm: React.FC<IProps> = ({
       formValues.localSubdomain = info.urn.split(':')[0];
     }
 
-    const validationErrors = validateAppConfig(formValues, formFields);
+    const validationErrors = validateAppConfig(formValues, formFields, { requirePortWhenExposedLocal: isProduction });
 
-    // In production, require port when publishing to internet
-    if (isProduction && formValues.exposedLocal && info.dynamic_config && !formValues.port) {
+    // In production, require port when publishing to internet (legacy path when exposedLocal set without port)
+    if (isProduction && info.exposable && formValues.exposedLocal && info.dynamic_config && !formValues.port) {
       validationErrors.port = { messageKey: 'APP_INSTALL_FORM_ERROR_REQUIRED', params: { label: t('COMMON_PORT') } };
     }
 
@@ -628,7 +681,15 @@ export const InstallForm: React.FC<IProps> = ({
     if (Object.keys(validationErrors).length === 0) {
       onSubmit(formValues);
     } else {
-      toast.error(t('APP_INSTALL_FORM_ERROR_INVALID'));
+      const failingLabels = formFields
+        .filter((f) => validationErrors[f.env_variable])
+        .map((f) => f.label)
+        .join(', ');
+      toast.error(
+        failingLabels
+          ? t('APP_INSTALL_FORM_ERROR_INVALID_FIELDS', { fields: failingLabels, defaultValue: `Fix these fields: ${failingLabels}` })
+          : t('APP_INSTALL_FORM_ERROR_INVALID'),
+      );
     }
   };
 
@@ -638,9 +699,11 @@ export const InstallForm: React.FC<IProps> = ({
 
   const hasOptionalFields = formFields.some((field) => !field.required && typeFilter(field));
   const hasAdvancedSimpleModeOptions = hasOptionalFields || (info.exposable && info.dynamic_config);
-  const shouldShowAdvancedSettingsToggle = !isAdvancedMode && hasAdvancedSimpleModeOptions;
+  const shouldShowAdvancedSettingsToggle = !isAdvancedMode && hasAdvancedSimpleModeOptions && !mcpOptionalOnly;
   const visibleFields =
-    isAdvancedMode || showAdvancedSettings ? formFields.filter(typeFilter) : formFields.filter((field) => field.required && typeFilter(field));
+    isAdvancedMode || showAdvancedSettings || mcpOptionalOnly
+      ? formFields.filter(typeFilter)
+      : formFields.filter((field) => field.required && typeFilter(field));
   const hasConfigSection = visibleFields.length > 0 || shouldShowAdvancedSettingsToggle || (guestDashboard && isAdvancedMode) || isAdvancedMode;
 
   return (

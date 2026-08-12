@@ -25,11 +25,14 @@ vi.mock('@/lib/tauri-hub-probe', async (importOriginal) => {
   };
 });
 
+// HubStatus uses useRevalidator, and (via useAppIntentDeepLinks) useNavigate.
+// These tests render it without a Router, so stub both here.
 vi.mock('react-router', async (importOriginal) => {
   const actual = await importOriginal<typeof import('react-router')>();
   return {
     ...actual,
     useRevalidator: () => ({ revalidate: revalidateMock, state: 'idle' as const }),
+    useNavigate: () => vi.fn(),
   };
 });
 
@@ -175,7 +178,7 @@ describe('getDockerDesktopGuideContent', () => {
         'Start Docker Desktop',
         'Come back here. The Hub will start automatically',
       ],
-      hint: 'Docker Desktop requires Windows 10/11 with WSL2 enabled. If WSL is installed during setup, restart Windows before reopening Companion Hub.',
+      hint: 'Docker Desktop requires Windows 10/11 with WSL2 enabled. If WSL is installed during setup, restart Windows before reopening CI Hub.',
     });
   });
 
@@ -208,12 +211,12 @@ describe('HubStatus Docker guidance', () => {
   it('shows Windows manual guidance with a direct download link and no install button', async () => {
     const { invoke } = renderWithTauriStatus('DockerNotAvailable', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)');
 
-    expect(await screen.findByRole('heading', { name: 'Docker Desktop Required' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Docker Required' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Download Docker Desktop for Windows' })).toHaveAttribute(
       'href',
       'https://desktop.docker.com/win/main/amd64/Docker%20Desktop%20Installer.exe',
     );
-    expect(screen.getByText(/Companion Hub needs Docker Desktop/)).toBeInTheDocument();
+    expect(screen.getByText(/CI Hub needs a Docker engine/)).toBeInTheDocument();
     expect(screen.getByText('If Docker Desktop is already installed:')).toBeInTheDocument();
     expect(screen.getByText('Open Docker Desktop from your Start Menu')).toBeInTheDocument();
     expect(screen.getByText('If Docker Desktop is NOT installed:')).toBeInTheDocument();
@@ -226,7 +229,7 @@ describe('HubStatus Docker guidance', () => {
   it('shows the Apple Silicon macOS download link and no install button', async () => {
     renderWithTauriStatus('DockerNotAvailable', 'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5)', { architecture: 'arm' });
 
-    expect(await screen.findByRole('heading', { name: 'Docker Desktop Required' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Docker Required' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Download Docker Desktop for Mac' })).toHaveAttribute(
       'href',
       'https://desktop.docker.com/mac/main/arm64/Docker.dmg',
@@ -258,7 +261,7 @@ describe('HubStatus Docker guidance', () => {
     await flushAsyncWork();
 
     expect(invoke).toHaveBeenCalledWith('install_docker_engine_alternative_command');
-    expect(screen.getByText(/Restart Windows, then reopen Companion Hub/)).toBeInTheDocument();
+    expect(screen.getByText(/Restart Windows, then reopen CI Hub/)).toBeInTheDocument();
   });
 
   it('offers the Colima alternative on macOS and reports success', async () => {
@@ -343,7 +346,7 @@ describe('HubStatus Docker guidance', () => {
     await flushAsyncWork();
 
     expect(invoke).toHaveBeenCalledWith('start_hub_command');
-    expect(screen.getByText('Starting Companion Hub')).toBeInTheDocument();
+    expect(screen.getByText('Starting CI Hub')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Start Hub' })).not.toBeInTheDocument();
 
     await act(async () => {
@@ -387,7 +390,7 @@ describe('HubStatus Docker guidance', () => {
     await flushAsyncWork();
 
     expect(invoke).toHaveBeenCalledWith('start_hub_command');
-    expect(screen.getByText('Starting Companion Hub')).toBeInTheDocument();
+    expect(screen.getByText('Starting CI Hub')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Start Hub' })).not.toBeInTheDocument();
 
     await act(async () => {
@@ -438,7 +441,7 @@ describe('HubStatus Docker guidance', () => {
     renderWithTauriStatus('Running', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)');
 
     expect(await screen.findByText('Hub child')).toBeInTheDocument();
-    expect(screen.queryByRole('heading', { name: 'Docker Desktop Required' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Docker Required' })).not.toBeInTheDocument();
   });
 });
 
@@ -485,6 +488,56 @@ describe('HubStatus diagnostics (View Logs / Open Logs Folder)', () => {
     expect(screen.getByRole('button', { name: 'Open Logs Folder' })).toBeInTheDocument();
   });
 
+  it('keeps a sticky start-failure screen and requires confirm before retry', async () => {
+    const rateLimitError = "Docker Hub rate-limited image pulls from this machine's IP (HTTP 429). Wait several minutes.";
+    let callCount = 0;
+    const invoke = vi.fn<(cmd: string) => Promise<unknown>>(async (cmd: string) => {
+      if (cmd === 'get_hub_status_command') {
+        callCount += 1;
+        // Polling must keep returning Error — not flash back to Stopped.
+        return { Error: { message: rateLimitError } };
+      }
+      if (cmd === 'start_hub_command') {
+        return 'Hub started successfully';
+      }
+      if (cmd === 'check_docker_access_command') {
+        return { state: 'available', detail: null };
+      }
+      if (cmd === 'get_startup_progress_command') {
+        return { services: [], progress_pct: 0, image_pulled: 0, image_total: 0, image_pull_pct: 0, all_ready: false };
+      }
+      throw new Error(`Unexpected invoke command: ${cmd}`);
+    });
+
+    setUserAgent('Mozilla/5.0 (X11; Linux x86_64)');
+    Object.defineProperty(tauriWindow, '__TAURI_INTERNALS__', {
+      value: { invoke },
+      configurable: true,
+    });
+
+    render(
+      <HubStatus>
+        <div>Hub child</div>
+      </HubStatus>,
+    );
+
+    expect(await screen.findByRole('heading', { name: 'Hub failed to start' })).toBeInTheDocument();
+    expect(screen.getByText(/Docker Hub rate-limited/)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Start Hub' })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Retry Start' }));
+    expect(screen.getByText(/Retry starting the Hub now/)).toBeInTheDocument();
+    expect(invoke).not.toHaveBeenCalledWith('start_hub_command');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Not yet' }));
+    expect(screen.queryByText(/Retry starting the Hub now/)).not.toBeInTheDocument();
+    expect(invoke).not.toHaveBeenCalledWith('start_hub_command');
+
+    // Still sticky after more polls would have run
+    expect(callCount).toBeGreaterThanOrEqual(1);
+    expect(screen.getByRole('heading', { name: 'Hub failed to start' })).toBeInTheDocument();
+  });
+
   it('View Logs button fetches log content and shows it inline', async () => {
     const fakeLog = 'line1\nline2\nline3';
     const { invoke } = mockMacTauriWithStatus(['Stopped'], {
@@ -528,7 +581,7 @@ describe('HubStatus diagnostics (View Logs / Open Logs Folder)', () => {
     expect(await screen.findByText('Hub child')).toBeInTheDocument();
     // No blocking screens should be shown
     expect(screen.queryByRole('button', { name: 'Start Hub' })).not.toBeInTheDocument();
-    expect(screen.queryByText('Starting Companion Hub')).not.toBeInTheDocument();
+    expect(screen.queryByText('Starting CI Hub')).not.toBeInTheDocument();
   });
 
   it('does not reload after a transient Starting blip once the hub is already running', async () => {
@@ -546,7 +599,7 @@ describe('HubStatus diagnostics (View Logs / Open Logs Folder)', () => {
     await flushAsyncWork();
 
     expect(screen.getByText('Hub child')).toBeInTheDocument();
-    expect(screen.queryByText('Starting Companion Hub')).not.toBeInTheDocument();
+    expect(screen.queryByText('Starting CI Hub')).not.toBeInTheDocument();
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(3000);
@@ -561,21 +614,43 @@ describe('HubStatus diagnostics (View Logs / Open Logs Folder)', () => {
     mockMacTauriWithStatus(['Starting']);
 
     expect(await screen.findByText('Hub child')).toBeInTheDocument();
-    expect(screen.queryByText('Starting Companion Hub')).not.toBeInTheDocument();
+    expect(screen.queryByText('Starting CI Hub')).not.toBeInTheDocument();
   });
 
-  it('revalidates routes instead of reloading when the user refreshed while the hub was waking up', async () => {
+  it('keeps the app mounted across a brief API probe miss after the hub is steady', async () => {
     vi.useFakeTimers();
     sessionStorage.setItem('ci-hub-steady-running', '1');
     const reloadSpy = vi.spyOn(hubStatusModule, 'reloadCurrentWindow').mockImplementation(() => {});
-    const navEntry = { type: 'reload' } as PerformanceNavigationTiming;
-    vi.spyOn(performance, 'getEntriesByType').mockReturnValue([navEntry]);
     probeMocks.probeHealthyHubApiPort.mockResolvedValueOnce(null).mockResolvedValue(5002);
 
-    mockMacTauriWithStatus(['Starting', 'Starting']);
+    mockMacTauriWithStatus(['Running', 'Running']);
 
     await flushAsyncWork();
-    expect(screen.getByText('Starting Companion Hub')).toBeInTheDocument();
+    expect(screen.getByText('Hub child')).toBeInTheDocument();
+    expect(screen.queryByText('Starting CI Hub')).not.toBeInTheDocument();
+    expect(reloadSpy).not.toHaveBeenCalled();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3000);
+    });
+    await flushAsyncWork();
+
+    expect(screen.getByText('Hub child')).toBeInTheDocument();
+    expect(screen.queryByText('Starting CI Hub')).not.toBeInTheDocument();
+    expect(reloadSpy).not.toHaveBeenCalled();
+  });
+
+  it('revalidates routes after the hub becomes healthy without a full window reload', async () => {
+    vi.useFakeTimers();
+    const reloadSpy = vi.spyOn(hubStatusModule, 'reloadCurrentWindow').mockImplementation(() => {});
+    probeMocks.probeHealthyHubApiPort.mockResolvedValue(null);
+
+    mockMacTauriWithStatus(['Stopped', 'Running']);
+
+    await flushAsyncWork();
+    expect(screen.getByRole('heading', { name: /not running/i })).toBeInTheDocument();
+
+    probeMocks.probeHealthyHubApiPort.mockResolvedValue(5002);
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(3000);

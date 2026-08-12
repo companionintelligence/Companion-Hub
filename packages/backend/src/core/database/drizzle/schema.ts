@@ -41,31 +41,35 @@ const appConfig = customType<{ data: Record<string, unknown>; driverData: string
   },
 });
 
-export const app = pgTable('app', {
-  id: serial().primaryKey().notNull(),
-  status: appStatusEnum().default('stopped').notNull(),
-  config: appConfig('config').notNull(),
-  createdAt: timestamp({ mode: 'string' }).defaultNow().notNull(),
-  updatedAt: timestamp({ mode: 'string' }).defaultNow().notNull(),
-  version: integer().default(1).notNull(),
-  ignoredVersion: integer('ignored_version'),
-  exposed: boolean().default(false).notNull(),
-  domain: varchar(),
-  isVisibleOnGuestDashboard: boolean('is_visible_on_guest_dashboard').default(false).notNull(),
-  openPort: boolean('open_port').default(true).notNull(),
-  port: integer(),
-  exposedLocal: boolean('exposed_local').default(false).notNull(),
-  exposureMode: varchar('exposure_mode').default('local').notNull(), // 'local' | 'cloudflare' | 'tailscale'
-  appStoreSlug: varchar('app_store_slug').notNull(),
-  appName: varchar('app_name').notNull(),
-  enableAuth: boolean('enable_auth').default(false).notNull(),
-  subnet: varchar().unique(),
-  localSubdomain: varchar('local_subdomain'),
-  publicDomain: varchar('public_domain'),
-  pendingRestart: boolean('pending_restart').default(false).notNull(),
-  userConfigEnabled: boolean('user_config_enabled').default(true).notNull(),
-  maxBackups: integer('max_backups'),
-});
+export const app = pgTable(
+  'app',
+  {
+    id: serial().primaryKey().notNull(),
+    status: appStatusEnum().default('stopped').notNull(),
+    config: appConfig('config').notNull(),
+    createdAt: timestamp({ mode: 'string' }).defaultNow().notNull(),
+    updatedAt: timestamp({ mode: 'string' }).defaultNow().notNull(),
+    version: integer().default(1).notNull(),
+    ignoredVersion: integer('ignored_version'),
+    exposed: boolean().default(false).notNull(),
+    domain: varchar(),
+    isVisibleOnGuestDashboard: boolean('is_visible_on_guest_dashboard').default(false).notNull(),
+    openPort: boolean('open_port').default(true).notNull(),
+    port: integer(),
+    exposedLocal: boolean('exposed_local').default(false).notNull(),
+    exposureMode: varchar('exposure_mode').default('local').notNull(), // 'local' | 'cloudflare' | 'tailscale'
+    appStoreSlug: varchar('app_store_slug').notNull(),
+    appName: varchar('app_name').notNull(),
+    enableAuth: boolean('enable_auth').default(false).notNull(),
+    subnet: varchar().unique(),
+    localSubdomain: varchar('local_subdomain'),
+    publicDomain: varchar('public_domain'),
+    pendingRestart: boolean('pending_restart').default(false).notNull(),
+    userConfigEnabled: boolean('user_config_enabled').default(true).notNull(),
+    maxBackups: integer('max_backups'),
+  },
+  (table) => [uniqueIndex('app_name_store_slug_uidx').on(table.appName, table.appStoreSlug)],
+);
 
 export const appRelations = relations(app, ({ one }) => ({
   appStore: one(appStore, {
@@ -153,7 +157,8 @@ export const portAllocation = pgTable(
 );
 
 // SEC-MCP-8: locally-minted, hashed API keys. One table for ALL inbound key surfaces, discriminated
-// by `audience` ('mcp' today; 'rest' etc. later) so a new surface doesn't need a new table. Only the
+// by `scopes` ('mcp' tools, 'app' callbacks; 'rest' etc. later) so a new surface doesn't need a new
+// table — and so one key can open several at once without holding several secrets. Only the
 // SHA-256 hash is stored (never the raw key); the raw is shown once at creation. `managed` keys are
 // auto-provisioned by the Hub for companion apps (Hermes, OpenClaw, any hub_integration.mcp_client
 // app) and carry the owning app's URN — operators see them but never create/edit them by hand.
@@ -163,7 +168,13 @@ export const apiKey = pgTable(
   'api_key',
   {
     id: serial().primaryKey().notNull(),
-    audience: varchar({ length: 16 }).default('mcp').notNull(), // which surface accepts this key
+    // Which surfaces accept this key ('mcp' tools, 'app' callbacks). One key can open several, so
+    // a companion app holds a single credential and scope grants never rotate its secret.
+    scopes: text().array().default([]).notNull(),
+    // What the key may DO on those surfaces: 'read' | 'write' | 'full' (see api-key.capabilities.ts).
+    // A second, orthogonal axis to `scopes` — surface vs verb — replacing the appliance-wide
+    // MCP_ALLOW_DESTRUCTIVE gate, which could only be on or off for every key at once.
+    capability: varchar().default('write').notNull(),
     name: varchar().notNull(),
     prefix: varchar({ length: 12 }).notNull(), // leading chars of the raw key, for UI identification
     hashedKey: varchar('hashed_key').notNull(),
@@ -173,10 +184,10 @@ export const apiKey = pgTable(
     lastUsedAt: timestamp('last_used_at', { mode: 'string' }),
     createdAt: timestamp({ mode: 'string' }).defaultNow().notNull(),
   },
-  // Unique per (audience, hash), not globally: the same secret may legitimately exist under two
-  // surfaces (every lookup is audience-scoped), and a cross-surface collision must never abort an
-  // insert/seed for an unrelated surface.
-  (table) => [uniqueIndex('api_key_audience_hashed_key_idx').on(table.audience, table.hashedKey)],
+  // Uniqueness follows the lookup: a key resolves by hash alone (scope membership is then checked on
+  // the resolved row), so the hash must be globally unique — a second row sharing it would make
+  // resolution ambiguous.
+  (table) => [uniqueIndex('api_key_hashed_key_idx').on(table.hashedKey)],
 );
 
 export const deviceRegistration = pgTable('device_registration', {

@@ -9,11 +9,13 @@ import type { AppUrn } from '@ci-hub/common/types';
 import { fromPartial } from '@total-typescript/shoehorn';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { type MockProxy, mock } from 'vitest-mock-extended';
+import { PortalClientService } from '@/core/portal/portal-client.service';
 import { AppFilesManager } from '../app-files-manager';
 import { AppHelpers } from '../app.helpers';
 import { DeviceRegistrationRepository } from '@/modules/registration/device-registration.repository';
 import { InferenceEnvResolver } from '../../inference/inference-env-resolver';
-import { McpApiKeyService } from '@/modules/mcp/mcp-api-key.service';
+import { CloudFallbackService } from '../../inference/cloud-fallback.service';
+import { ApiKeyService } from '@/modules/api-keys/api-key.service';
 import { MemoryConnectionService } from '@/modules/memory-connect/memory-connection.service';
 
 // APP_DATA_DIR is a host path built with Node's platform-aware path.join, so it uses
@@ -30,8 +32,10 @@ describe('AppHelpers', () => {
   let deviceRegistrationRepository = mock<DeviceRegistrationRepository>();
   let registrationService = mock<RegistrationService>();
   let inferenceEnv = mock<InferenceEnvResolver>();
-  let mcpApiKeys: MockProxy<McpApiKeyService>;
+  let cloudFallback = mock<CloudFallbackService>();
+  let apiKeys: MockProxy<ApiKeyService>;
   let memoryConnection: MockProxy<MemoryConnectionService>;
+  let portalClient: MockProxy<PortalClientService>;
   const testAppUrn: AppUrn = createAppUrn('test-app', 'test-store');
 
   beforeEach(async () => {
@@ -53,8 +57,19 @@ describe('AppHelpers', () => {
     deviceRegistrationRepository = moduleRef.get(DeviceRegistrationRepository);
     registrationService = moduleRef.get(RegistrationService);
     inferenceEnv = moduleRef.get(InferenceEnvResolver);
-    mcpApiKeys = moduleRef.get(McpApiKeyService);
+    cloudFallback = moduleRef.get(CloudFallbackService);
+    apiKeys = moduleRef.get(ApiKeyService);
+    cloudFallback.getEnabledProviders.mockReturnValue([]);
+    config.getInferencePreferences.mockReturnValue({
+      preferredBackend: 'ollama',
+      preferredModel: null,
+      preferredEmbeddingModel: null,
+      preferredVisionModel: null,
+      preferredVllmApiKey: null,
+    });
     memoryConnection = moduleRef.get(MemoryConnectionService);
+    portalClient = moduleRef.get(PortalClientService);
+    portalClient.fetchMapsConfig.mockResolvedValue(null);
   });
 
   describe('generateEnvFile', () => {
@@ -117,12 +132,59 @@ describe('AppHelpers', () => {
       await expect(appHelpers.generateEnvFile(testAppUrn, {})).rejects.toThrow(`App ${testAppUrn} not found`);
     });
 
+    it("never passes the Hub's own master secrets through to an app container", async () => {
+      // The app env is seeded from the Hub's .env and handed to the container via
+      // env_file. An operator who pins CI_HUB_FORWARD_AUTH_SECRET there (as
+      // .env.example invites) would otherwise hand every installed app — third-party
+      // store apps included — the secret that signs the connect exchange/rotate/revoke
+      // calls, letting a hostile app mint or steal another app's memory key.
+      envUtils.envStringToMap.mockReturnValue(
+        new Map([
+          ['CI_HUB_FORWARD_AUTH_SECRET', 'hub-forward-auth-secret'],
+          ['JWT_SECRET', 'hub-jwt-secret'],
+          ['MCP_API_KEY', 'hub-mcp-api-key'],
+          ['DOMAIN', 'example.com'],
+        ]),
+      );
+
+      await appHelpers.generateEnvFile(testAppUrn, {});
+
+      const written = envUtils.envMapToString.mock.calls.at(-1)?.[0] as Map<string, string>;
+
+      expect(written.has('CI_HUB_FORWARD_AUTH_SECRET')).toBe(false);
+      expect(written.has('JWT_SECRET')).toBe(false);
+      expect(written.has('MCP_API_KEY')).toBe(false);
+      // Non-secret base config still reaches the app.
+      expect(written.get('DOMAIN')).toBe('example.com');
+    });
+
     describe('Companion Memory credential injection', () => {
       // A consumer app declaring the env vars it reads its memory URL + key from.
       const memoryConsumerApp: AppInfo = {
         ...mockAppInfo,
         hub_integration: { memory: { url_env: 'CI_SERVER_URL', token_env: 'CI_SERVER_TOKEN' } },
       };
+
+      it('hands an app the URL shape its manifest declares (url_style: api_base)', async () => {
+        // CI-Import-Tools treats CI_SERVER_URL as the API BASE and appends
+        // server-local paths (`<base>/graphql`, `<base>/v1/...`). The provider's
+        // gateway proxies the API only under `/api/`, so a bare origin would send
+        // every push to the SPA — silently, with a 200 and HTML.
+        const envMap = new Map<string, string>();
+        envUtils.envStringToMap.mockReturnValue(envMap);
+        appFilesManager.getInstalledAppInfo.mockResolvedValue({
+          ...mockAppInfo,
+          hub_integration: {
+            memory: { url_env: 'CI_SERVER_URL', token_env: 'CI_SERVER_TOKEN', url_style: 'api_base' },
+          },
+        } as AppInfo);
+        memoryConnection.getInjectableCreds.mockResolvedValue({ url: 'http://gateway:8642', token: 'brokered-key' });
+
+        await appHelpers.generateEnvFile(testAppUrn, {});
+
+        expect(envMap.get('CI_SERVER_URL')).toBe('http://gateway:8642/api');
+        expect(envMap.get('CI_SERVER_TOKEN')).toBe('brokered-key');
+      });
 
       it('injects brokered creds for a connected app and does not mark it manual', async () => {
         const envMap = new Map<string, string>();
@@ -611,6 +673,81 @@ describe('AppHelpers', () => {
       expect(inferenceEnv.resolve).toHaveBeenCalledWith({ minContextLength: undefined });
     });
 
+    it('injects llm_base_url and sets dual-provider env to ollama when Hub backend is Ollama', async () => {
+      const envMap = new Map<string, string>();
+      envUtils.envStringToMap.mockReturnValue(envMap);
+      config.getInferencePreferences.mockReturnValue({
+        preferredBackend: 'ollama',
+        preferredModel: null,
+        preferredEmbeddingModel: null,
+        preferredVisionModel: null,
+        preferredVllmApiKey: null,
+      });
+      cloudFallback.getEnabledProviders.mockReturnValue([]);
+      inferenceEnv.resolve.mockResolvedValue({
+        CI_LLM_BASE_URL: 'http://host.docker.internal:11434/v1',
+        CI_LLM_API_KEY: 'ollama',
+        OLLAMA_HOST: 'http://host.docker.internal:11434',
+      });
+      appFilesManager.getInstalledAppInfo.mockResolvedValue({
+        ...mockAppInfo,
+        hub_integration: {
+          inference: {
+            llm_base_url: 'APP_OPENAI_COMPATIBLE_URL',
+            llm_api_key: 'APP_OPENAI_API_KEY',
+            ollama_host: 'APP_OLLAMA_BASE_PATH',
+          },
+          inference_provider: {
+            env: 'APP_LLM_PROVIDER',
+            ollama: 'ollama',
+            openai_compatible: 'generic-openai',
+          },
+          llm_base_url_strip_v1: true,
+        },
+      } as unknown as AppInfo);
+
+      await appHelpers.generateEnvFile(testAppUrn, {});
+
+      expect(envMap.get('APP_OPENAI_COMPATIBLE_URL')).toBe('http://host.docker.internal:11434');
+      expect(envMap.get('APP_OPENAI_API_KEY')).toBe('ollama');
+      expect(envMap.get('APP_OLLAMA_BASE_PATH')).toBe('http://host.docker.internal:11434');
+      expect(envMap.get('APP_LLM_PROVIDER')).toBe('ollama');
+    });
+
+    it('sets dual-provider env to generic-openai when Hub backend is vLLM', async () => {
+      const envMap = new Map<string, string>();
+      envUtils.envStringToMap.mockReturnValue(envMap);
+      config.getInferencePreferences.mockReturnValue({
+        preferredBackend: 'vllm',
+        preferredModel: null,
+        preferredEmbeddingModel: null,
+        preferredVisionModel: null,
+        preferredVllmApiKey: null,
+      });
+      cloudFallback.getEnabledProviders.mockReturnValue([]);
+      inferenceEnv.resolve.mockResolvedValue({
+        CI_LLM_BASE_URL: 'http://host.docker.internal:8000/v1',
+        CI_LLM_API_KEY: 'vllm',
+      });
+      appFilesManager.getInstalledAppInfo.mockResolvedValue({
+        ...mockAppInfo,
+        hub_integration: {
+          inference: { llm_base_url: 'APP_OPENAI_COMPATIBLE_URL', llm_api_key: 'APP_OPENAI_API_KEY' },
+          inference_provider: {
+            env: 'APP_LLM_PROVIDER',
+            ollama: 'ollama',
+            openai_compatible: 'generic-openai',
+          },
+          llm_base_url_strip_v1: true,
+        },
+      } as unknown as AppInfo);
+
+      await appHelpers.generateEnvFile(testAppUrn, {});
+
+      expect(envMap.get('APP_OPENAI_COMPATIBLE_URL')).toBe('http://host.docker.internal:8000');
+      expect(envMap.get('APP_LLM_PROVIDER')).toBe('generic-openai');
+    });
+
     it('should use default value when form field is not provided', async () => {
       // Arrange
       const envMap = new Map<string, string>();
@@ -1047,14 +1184,14 @@ describe('AppHelpers', () => {
         envUtils.envStringToMap.mockReturnValue(envMap);
         const agentApp = { ...mockAppInfo, hub_integration: { mcp_client: true, wake_endpoint: '/hooks/hub-wake', sse_events: false } };
         appFilesManager.getInstalledAppInfo.mockResolvedValue(agentApp);
-        mcpApiKeys.provisionManagedKey.mockResolvedValue('managed-key-xyz');
+        apiKeys.provisionManagedKey.mockResolvedValue('managed-key-xyz');
 
         // Independent of process.env.MCP_API_KEY now — the app gets its OWN managed key.
         delete process.env.MCP_API_KEY;
         await appHelpers.generateEnvFile(testAppUrn, {});
 
         expect(envMap.get('HUB_MCP_API_KEY')).toBe('managed-key-xyz');
-        expect(mcpApiKeys.provisionManagedKey).toHaveBeenCalledWith(expect.objectContaining({ appUrn: testAppUrn, appName: agentApp.name }));
+        expect(apiKeys.provisionManagedKey).toHaveBeenCalledWith(expect.objectContaining({ appUrn: testAppUrn, appName: agentApp.name }));
       });
 
       it("R-ENV/SEC-MCP-8: passes the app's existing HUB_MCP_API_KEY to provisionManagedKey (preserve path)", async () => {
@@ -1063,11 +1200,11 @@ describe('AppHelpers', () => {
         envUtils.envStringToMap.mockReturnValue(envMap);
         const agentApp = { ...mockAppInfo, hub_integration: { mcp_client: true, wake_endpoint: '/hooks/hub-wake', sse_events: false } };
         appFilesManager.getInstalledAppInfo.mockResolvedValue(agentApp);
-        mcpApiKeys.provisionManagedKey.mockResolvedValue('old-key');
+        apiKeys.provisionManagedKey.mockResolvedValue('old-key');
 
         await appHelpers.generateEnvFile(testAppUrn, {});
 
-        expect(mcpApiKeys.provisionManagedKey).toHaveBeenCalledWith(expect.objectContaining({ existingRawKey: 'old-key' }));
+        expect(apiKeys.provisionManagedKey).toHaveBeenCalledWith(expect.objectContaining({ existingRawKey: 'old-key' }));
       });
 
       it('R-ENV-4: should generate a HUB_WAKE_SECRET', async () => {
@@ -1267,6 +1404,182 @@ describe('AppHelpers', () => {
         await appHelpers.generateEnvFile(testAppUrn, {});
 
         expect(envMap.has('CI_OIDC_ISSUER')).toBe(false);
+      });
+    });
+
+    // CI-Server's Bearer path (`auth.portal.*`) is a separate config block from the
+    // interactive-login issuer above, ships disabled, and defaults to the prod portal.
+    // Unset, every token-authenticated call from a portal client 401s.
+    describe('Portal Bearer-auth config injection (first-party CI-Server apps)', () => {
+      const CI_CLOUD_URL = 'https://hub.companionintelligence.com';
+
+      beforeEach(() => {
+        config.getConfig.mockReturnValue(
+          fromPartial({
+            internalIp: '127.0.0.1',
+            envFilePath: '/data/.env',
+            rootFolderHost: '/opt/ci-hub',
+            domain: 'example.com',
+            ciHubApiKey: 'hub-api-key',
+            ciCloudUrl: CI_CLOUD_URL,
+            userSettings: { appDataPath: '/opt/ci-hub', domain: 'example.com' },
+          }),
+        );
+      });
+
+      it('injects the enabled flag, bare-origin issuer and JWKS URI for ci-memory', async () => {
+        const envMap = new Map<string, string>();
+        envUtils.envStringToMap.mockReturnValue(envMap);
+        appFilesManager.getInstalledAppInfo.mockResolvedValue({ ...mockAppInfo, id: 'ci-memory' });
+
+        await appHelpers.generateEnvFile(testAppUrn, {});
+
+        expect(envMap.get('PORTAL_OIDC_ENABLED')).toBe('true');
+        // Bare origin: the `iss` claim is the origin, NOT the /api/auth discovery base.
+        expect(envMap.get('PORTAL_OIDC_ISSUER')).toBe('https://hub.companionintelligence.com');
+        // The JWKS, unlike the issuer, does live under the /api/auth mount.
+        expect(envMap.get('PORTAL_OIDC_JWKS_URI')).toBe('https://hub.companionintelligence.com/api/auth/jwks');
+      });
+
+      it('injects for a first-party app identified by CI-Server source', async () => {
+        const envMap = new Map<string, string>();
+        envUtils.envStringToMap.mockReturnValue(envMap);
+        appFilesManager.getInstalledAppInfo.mockResolvedValue({
+          ...mockAppInfo,
+          source: 'https://github.com/companionintelligence/CI-Server',
+        });
+
+        await appHelpers.generateEnvFile(testAppUrn, {});
+
+        expect(envMap.get('PORTAL_OIDC_ENABLED')).toBe('true');
+        expect(envMap.get('PORTAL_OIDC_ISSUER')).toBe('https://hub.companionintelligence.com');
+      });
+
+      it('normalizes a trailing slash on the paired Portal origin', async () => {
+        const envMap = new Map<string, string>();
+        envUtils.envStringToMap.mockReturnValue(envMap);
+        config.getConfig.mockReturnValue(
+          fromPartial({
+            internalIp: '127.0.0.1',
+            envFilePath: '/data/.env',
+            rootFolderHost: '/opt/ci-hub',
+            domain: 'example.com',
+            ciHubApiKey: 'hub-api-key',
+            ciCloudUrl: 'https://hub.companionintelligence.com///',
+            userSettings: { appDataPath: '/opt/ci-hub', domain: 'example.com' },
+          }),
+        );
+        appFilesManager.getInstalledAppInfo.mockResolvedValue({ ...mockAppInfo, id: 'ci-memory' });
+
+        await appHelpers.generateEnvFile(testAppUrn, {});
+
+        expect(envMap.get('PORTAL_OIDC_ISSUER')).toBe('https://hub.companionintelligence.com');
+        expect(envMap.get('PORTAL_OIDC_JWKS_URI')).toBe('https://hub.companionintelligence.com/api/auth/jwks');
+      });
+
+      it('still injects when the app also declares hub_integration.oidc (independent config blocks)', async () => {
+        const envMap = new Map<string, string>();
+        envUtils.envStringToMap.mockReturnValue(envMap);
+        appFilesManager.getInstalledAppInfo.mockResolvedValue({
+          ...mockAppInfo,
+          id: 'ci-memory',
+          hub_integration: { oidc: { issuer_env: 'CUSTOM_ISSUER', issuer_path: '/api/auth' } },
+        });
+
+        await appHelpers.generateEnvFile(testAppUrn, {});
+
+        // Opting into the interactive-login mapping must not cost the app its Bearer config.
+        expect(envMap.get('CUSTOM_ISSUER')).toBe('https://hub.companionintelligence.com/api/auth');
+        expect(envMap.get('PORTAL_OIDC_ENABLED')).toBe('true');
+      });
+
+      it('does not inject for a third-party app', async () => {
+        const envMap = new Map<string, string>();
+        envUtils.envStringToMap.mockReturnValue(envMap);
+        appFilesManager.getInstalledAppInfo.mockResolvedValue(mockAppInfo);
+
+        await appHelpers.generateEnvFile(testAppUrn, {});
+
+        expect(envMap.has('PORTAL_OIDC_ENABLED')).toBe(false);
+        expect(envMap.has('PORTAL_OIDC_ISSUER')).toBe(false);
+        expect(envMap.has('PORTAL_OIDC_JWKS_URI')).toBe(false);
+      });
+
+      it('never overwrites values the operator pinned in the Hub .env', async () => {
+        const envMap = new Map<string, string>([
+          ['PORTAL_OIDC_ENABLED', 'false'],
+          ['PORTAL_OIDC_ISSUER', 'https://portal.internal'],
+        ]);
+        envUtils.envStringToMap.mockReturnValue(envMap);
+        appFilesManager.getInstalledAppInfo.mockResolvedValue({ ...mockAppInfo, id: 'ci-memory' });
+
+        await appHelpers.generateEnvFile(testAppUrn, {});
+
+        // An operator who deliberately disabled the path, or pinned another portal, keeps it.
+        expect(envMap.get('PORTAL_OIDC_ENABLED')).toBe('false');
+        expect(envMap.get('PORTAL_OIDC_ISSUER')).toBe('https://portal.internal');
+        // The unset key is still filled in.
+        expect(envMap.get('PORTAL_OIDC_JWKS_URI')).toBe('https://hub.companionintelligence.com/api/auth/jwks');
+      });
+
+      it('writes nothing when CI_CLOUD_URL is empty', async () => {
+        const envMap = new Map<string, string>();
+        envUtils.envStringToMap.mockReturnValue(envMap);
+        config.getConfig.mockReturnValue(
+          fromPartial({
+            internalIp: '127.0.0.1',
+            envFilePath: '/data/.env',
+            rootFolderHost: '/opt/ci-hub',
+            domain: 'example.com',
+            ciHubApiKey: 'hub-api-key',
+            ciCloudUrl: '',
+            userSettings: { appDataPath: '/opt/ci-hub', domain: 'example.com' },
+          }),
+        );
+        appFilesManager.getInstalledAppInfo.mockResolvedValue({ ...mockAppInfo, id: 'ci-memory' });
+
+        await appHelpers.generateEnvFile(testAppUrn, {});
+
+        expect(envMap.has('PORTAL_OIDC_ENABLED')).toBe(false);
+        expect(envMap.has('PORTAL_OIDC_JWKS_URI')).toBe(false);
+      });
+    });
+
+    describe('Portal Google Maps key injection (ci-memory)', () => {
+      it('injects GOOGLE_MAPS_KEY and GEOCODING_API_KEY from Portal for ci-memory', async () => {
+        const envMap = new Map<string, string>();
+        envUtils.envStringToMap.mockReturnValue(envMap);
+        appFilesManager.getInstalledAppInfo.mockResolvedValue({ ...mockAppInfo, id: 'ci-memory' });
+        portalClient.fetchMapsConfig.mockResolvedValue({ configured: true, apiKey: 'AIzaSyPortalMapsKey' });
+
+        await appHelpers.generateEnvFile(testAppUrn, {});
+
+        expect(envMap.get('GOOGLE_MAPS_KEY')).toBe('AIzaSyPortalMapsKey');
+        expect(envMap.get('GEOCODING_API_KEY')).toBe('AIzaSyPortalMapsKey');
+      });
+
+      it('does not overwrite an operator-set GOOGLE_MAPS_KEY', async () => {
+        const envMap = new Map<string, string>([['GOOGLE_MAPS_KEY', 'operator-key']]);
+        envUtils.envStringToMap.mockReturnValue(envMap);
+        appFilesManager.getInstalledAppInfo.mockResolvedValue({ ...mockAppInfo, id: 'ci-memory' });
+        portalClient.fetchMapsConfig.mockResolvedValue({ configured: true, apiKey: 'AIzaSyPortalMapsKey' });
+
+        await appHelpers.generateEnvFile(testAppUrn, {});
+
+        expect(envMap.get('GOOGLE_MAPS_KEY')).toBe('operator-key');
+        expect(portalClient.fetchMapsConfig).not.toHaveBeenCalled();
+      });
+
+      it('skips third-party apps', async () => {
+        const envMap = new Map<string, string>();
+        envUtils.envStringToMap.mockReturnValue(envMap);
+        appFilesManager.getInstalledAppInfo.mockResolvedValue(mockAppInfo);
+        portalClient.fetchMapsConfig.mockResolvedValue({ configured: true, apiKey: 'AIzaSyPortalMapsKey' });
+
+        await appHelpers.generateEnvFile(testAppUrn, {});
+
+        expect(envMap.has('GOOGLE_MAPS_KEY')).toBe(false);
+        expect(portalClient.fetchMapsConfig).not.toHaveBeenCalled();
       });
     });
   });

@@ -293,6 +293,34 @@ describe('ModelRegistryService', () => {
         expect(top?.runtime.memoryFootprintMb).toBeLessThanOrEqual(32 * GB * 0.7);
       });
 
+      // #1103: vLLM has no CPU serving path, so the system-RAM fallback must never resurrect
+      // vLLM models the VRAM fit check correctly rejected. On an 8GB card with plenty of RAM the
+      // old behavior recommended (and onboarding preselected) Qwen3-8B — an 18GB bf16 footprint
+      // that OOMs immediately.
+      it('never recommends a vLLM model that exceeds the VRAM budget (no CPU-RAM fallback for vLLM)', () => {
+        const vramMb = 8 * GB;
+        const hw = profile({ vramMb, ramMb: 62 * GB, tier: 'medium' });
+        const vllmPicks = service.getRecommendedModelsForHardware('medium', hw).filter((m) => m.backend === 'vllm');
+        for (const m of vllmPicks) {
+          expect(m.runtime.memoryFootprintMb, `${m.id} must fit the VRAM budget`).toBeLessThanOrEqual(vramMb * 0.9);
+        }
+        // No curated vLLM model fits an 8GB card today, so the honest recommendation is none —
+        // while the Ollama picks for the same box remain available.
+        expect(vllmPicks).toEqual([]);
+        expect(service.getRecommendedModelsForHardware('medium', hw).some((m) => m.backend === 'ollama' && m.modality === 'llm')).toBe(true);
+      });
+
+      it('still recommends fitting vLLM models on a large NVIDIA card', () => {
+        const vramMb = 48 * GB;
+        const vllmPicks = service
+          .getRecommendedModelsForHardware('high', profile({ vramMb, ramMb: 128 * GB, tier: 'high' }))
+          .filter((m) => m.backend === 'vllm');
+        expect(vllmPicks.length).toBeGreaterThan(0);
+        for (const m of vllmPicks) {
+          expect(m.runtime.memoryFootprintMb).toBeLessThanOrEqual(vramMb * 0.9);
+        }
+      });
+
       it('recommends the real default (q4_K_M) build and never overflows the VRAM budget', () => {
         // The catalog lists only the bare `model:size` tag each model actually ships, which is the
         // q4_K_M default pull — so every pick is real/installable and must fit the budget.

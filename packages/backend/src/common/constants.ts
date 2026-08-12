@@ -1,16 +1,36 @@
+import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 
 export const APP_DIR = process.env.CI_HUB_APP_DIR || '/app';
 
-/** Hub state root: `.env`, `state/`, logs. In Docker this is `/data`; locally use CI_HUB_DATA_DIR or the same tree as ROOT_FOLDER_HOST. */
-function resolveDataDir(): string {
-  const explicit = process.env.CI_HUB_DATA_DIR || process.env.TIPI_DATA_DIR;
-  if (explicit) return explicit;
-  // Local `pnpm dev`: dotenv provides ROOT_FOLDER_HOST but not CI_HUB_DATA_DIR — avoid mkdir `/data` (EACCES).
-  if (process.env.NODE_ENV === 'development' && process.env.ROOT_FOLDER_HOST) {
-    return process.env.ROOT_FOLDER_HOST;
+/** True inside the Hub container, where `/data` is the bind-mounted state root. */
+export function detectContainerDataRoot(): boolean {
+  if (fs.existsSync('/.dockerenv') || fs.existsSync('/run/.containerenv')) return true;
+  try {
+    fs.accessSync('/data', fs.constants.W_OK);
+    return true;
+  } catch {
+    return false;
   }
-  return '/data';
+}
+
+/**
+ * Hub state root: `.env`, `state/`, logs. In Docker this is `/data`; locally use CI_HUB_DATA_DIR
+ * or the same tree as ROOT_FOLDER_HOST.
+ *
+ * The `/data` default is only correct inside the container. On a host it is unwritable, and the
+ * first `mkdir` during bootstrap dies with EACCES — which is what any host-side run of the backend
+ * without the dotenv wrapper (bare `turbo run dev`, one-off scripts) used to hit. Probing for the
+ * mount instead of trusting NODE_ENV keeps the container path exact while giving host runs a real
+ * directory. ROOT_FOLDER_HOST is set inside the container too (it is the host side of the bind
+ * mounts), so the container probe has to win before we consider it.
+ */
+export function resolveDataDir(env: NodeJS.ProcessEnv = process.env, hasContainerDataRoot: () => boolean = detectContainerDataRoot): string {
+  const explicit = env.CI_HUB_DATA_DIR || env.TIPI_DATA_DIR;
+  if (explicit) return explicit;
+  if (hasContainerDataRoot()) return '/data';
+  return env.ROOT_FOLDER_HOST || path.join(os.homedir(), '.ci-hub');
 }
 
 export const DATA_DIR = resolveDataDir();
@@ -96,6 +116,8 @@ export const DEFAULT_PERSIST_TRAEFIK_CONFIG = 'false';
 export const DEFAULT_QUEUE_TIMEOUT_IN_MINUTES = '5';
 /** Minimum RPC/status grace for app install while large images pull (e.g. OpenClaw ~1GB). */
 export const DEFAULT_APP_IMAGE_PULL_TIMEOUT_MINUTES = 45;
+/** Stall timeout for a hung image pull with no progress events. */
+export const DEFAULT_APP_IMAGE_PULL_INACTIVITY_TIMEOUT_MS = 10 * 60 * 1000;
 /** Global mutex key: only one app install (image pull / compose up) at a time. */
 export const INSTALL_PIPELINE_MUTEX_KEY = '__install-pipeline__';
 export const DEFAULT_MAX_BACKUPS = '0';
@@ -103,9 +125,25 @@ export const DEFAULT_ADVANCED_SETTINGS = 'false';
 export const DEFAULT_LOG_LEVEL = 'info';
 export const DEFAULT_EXPERIMENTAL_INSECURE_COOKIE = 'false';
 
-// Hub stack container — CI Cloud OCI repo for tag listing and GHCR image pulls (keep aligned).
+// Hub stack container. These name the SAME artifact in two different registries, so the
+// repo names deliberately differ — do not "align" them:
+//
+// - HUB_STACK_REGISTRY_REPO is a path on the CI Cloud/Portal registry, used only to LIST
+//   available versions (`{ciCloudUrl}/v2/<repo>/tags/list`). Portal receives a crane copy
+//   of every production build under this name.
+// - HUB_STACK_IMAGE_REPO is the GHCR repo Docker actually PULLS from. It is the package
+//   `build-container.yml` publishes to, and it is public. It must match
+//   HUB_STACK_IMAGE_REPO in the desktop's `hub_env.rs`; when the two disagree, the desktop
+//   and this updater overwrite each other's CI_HUB_IMAGE on every start (see #920).
+//
+// Versions correspond across the two because both come from the same build.
+// Tags are UNPREFIXED (`0.2.45`, not `v0.2.45`): pinHubStackVersionInEnv interpolates the
+// raw listed tag into `<repo>:<tag>`, so a `v` would produce an unpullable reference. Note
+// GHCR still carries legacy `v`-prefixed tags from a retired workflow; they are inert only
+// because listing reads Portal, not GHCR. Repointing listing at GHCR would surface both
+// spellings in one list and reintroduce that hazard.
 export const HUB_STACK_REGISTRY_REPO = 'ci-os-hub';
-export const HUB_STACK_IMAGE_REPO = 'ghcr.io/companionintelligence/ci-os-hub';
+export const HUB_STACK_IMAGE_REPO = 'ghcr.io/companionintelligence/ci-hub';
 
 // Theming
 export const DEFAULT_THEME_BASE = 'gray';

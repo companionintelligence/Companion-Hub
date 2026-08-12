@@ -17,7 +17,6 @@ import { buildAgentApp, resolveExposureMode } from '../helpers/agent-onboarding'
 import { identifyServices, type DetectedService } from '../helpers/service-detection';
 import { useMarketplaceCatalogApps } from '../helpers/use-marketplace-catalog-apps';
 import type { AiSetupConfig, OnboardingApp } from '../helpers/types';
-import { CompanionAppsCard } from '../components/ai-setup/companion-apps-card';
 import { ModelDownloadFooterSummary, ModelDownloadStatus } from '../components/model-download-status';
 import { useModelPullOrchestrator } from '@/lib/hooks/use-model-pull-orchestrator';
 import { prefetchOnboardingMarketplace } from '../helpers/prefetch-onboarding-marketplace';
@@ -64,19 +63,18 @@ function Shell({ children }: { children: React.ReactNode }) {
   return (
     <div className="flex flex-col items-center overflow-y-auto px-4 py-8" style={{ height: 'calc(100vh - var(--titlebar-height, 0px))' }}>
       <div className="w-full max-w-[82.94rem]">
-        <div className="mb-6 flex items-center gap-3">
+        <div className="mb-10 flex items-start gap-4">
           <img
             alt={t('APP_NAME_LOGO_ALT')}
             src={getLogo(true)}
             height={48}
             width={48}
-            className="flex-shrink-0"
+            className="mt-0.5 flex-shrink-0"
             style={{ maxWidth: '100%', height: 'auto' }}
           />
-          <div className="min-w-0">
-            <h1 className="text-2xl font-bold tracking-tight text-foreground sm:text-3xl">{t('COMMON_SET_UP_YOUR_HUB')}</h1>
-            <p className="text-sm text-muted-foreground">{t('ONBOARDING_CONFIGURE_PRIVATE_COMPANION')}</p>
-            <p className="text-xs text-muted-foreground/80">{t('ONBOARDING_CONFIGURE_PRIVATE_COMPANION_HINT')}</p>
+          <div className="min-w-0 space-y-2">
+            <h1 className="text-3xl font-bold tracking-tight text-foreground">{t('COMMON_SET_UP_YOUR_HUB')}</h1>
+            <p className="max-w-2xl text-base leading-relaxed text-muted-foreground">{t('ONBOARDING_CONFIGURE_PRIVATE_COMPANION')}</p>
           </div>
         </div>
         {children}
@@ -219,9 +217,10 @@ function OnboardingWizard() {
           onSkip={() => setAiSetupConfig(SKIPPED_AI_CONFIG)}
           cloudflareAvailable={cloudflareAvailable}
           tailscaleAvailable={tailscaleAvailable}
-          afterHarness={<CompanionAppsCard publicExposureMode={publicExposureMode} onChange={setCompanionApps} />}
+          publicExposureMode={publicExposureMode}
+          onCompanionAppsChange={setCompanionApps}
         >
-          <StepSection number={4} title={t('ONBOARDING_RECOMMENDED_APPS')} description={t('ONBOARDING_RECOMMENDED_APPS_DESC')}>
+          <StepSection number={6} badge="optional" title={t('ONBOARDING_RECOMMENDED_APPS')} description={t('ONBOARDING_RECOMMENDED_APPS_DESC')}>
             <RecommendationsStep embedded detectedServices={detectedServices} agentSlugs={agentSlugs} onChange={setSelectedApps} />
           </StepSection>
         </AiSetupStep>
@@ -234,9 +233,14 @@ function OnboardingWizard() {
           />
         )}
 
-        <div aria-hidden className="h-2" />
+        {/*
+          Spacer must clear the sticky footer, otherwise the last card can never be
+          scrolled out from under it. `h-2` left the System Overview rows (RAM/GPU)
+          permanently covered on a 375px viewport.
+        */}
+        <div aria-hidden className="h-24 sm:h-20" />
 
-        <div className="sticky bottom-4 z-10 flex flex-col gap-3 rounded-lg border border-border bg-card/90 p-4 shadow-lg backdrop-blur sm:flex-row sm:items-center sm:justify-between">
+        <div className="sticky bottom-4 z-10 flex flex-col gap-3 rounded-lg border border-border bg-card p-4 shadow-lg sm:flex-row sm:items-center sm:justify-between">
           <div className="flex flex-col gap-0.5 min-w-0">
             <ModelDownloadFooterSummary pullState={modelPullState} />
             <p className="text-sm text-muted-foreground">

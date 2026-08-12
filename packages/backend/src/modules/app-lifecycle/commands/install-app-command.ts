@@ -15,15 +15,25 @@ import { extractAppUrn } from '@/common/helpers/app-helpers';
 import { resolveBrowserHost } from '@/common/helpers/browser-host';
 import { mergeArchitectureOverrides } from '@/common/helpers/compose-helpers';
 import { AppLifecycleCommand, type CommandExecutionContext } from './command';
-import { createRocmKfdMissingError, AppLifecycleError, type AppCommandResult } from './app-lifecycle-errors';
+import { createKvmMissingError, createRocmKfdMissingError, AppLifecycleError, type AppCommandResult } from './app-lifecycle-errors';
 import { isAbortError, throwIfAborted } from '@/common/abort';
 import { parseComposeJson } from '@ci-hub/common/schemas';
 import { AgentNotifyService } from '@/modules/agent-notify/agent-notify.service';
 import { ErrorReportingService } from '@/core/error-reporting/error-reporting.service';
+import { McpProbeService } from '@/modules/mcp/mcp-probe.service';
 import { isRocmKfdPassthroughAvailable } from '@/modules/inference/host-rocm-availability';
 import fs from 'node:fs';
 import path from 'node:path';
 import * as yaml from 'yaml';
+
+async function isKvmDeviceAvailable(): Promise<boolean> {
+  try {
+    await fs.promises.access('/dev/kvm', fs.constants.R_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 const DOWNLOAD_PROGRESS_START = 60;
 const DOWNLOAD_PROGRESS_END = 99;
@@ -62,23 +72,40 @@ async function getOpenclawFallbackEntrypoint(): Promise<string> {
 }
 
 export class InstallAppCommand extends AppLifecycleCommand {
-  private isKfdHostDevice(device: string): boolean {
+  private hostDevicePath(device: string): string | null {
     const hostDevice = device.split(':')[0]?.trim();
-    return hostDevice === '/dev/kfd';
+    return hostDevice || null;
+  }
+
+  private isKfdHostDevice(device: string): boolean {
+    return this.hostDevicePath(device) === '/dev/kfd';
+  }
+
+  private isKvmHostDevice(device: string): boolean {
+    return this.hostDevicePath(device) === '/dev/kvm';
   }
 
   /**
-   * Returns true if any service in the raw user docker-compose.yml override
-   * declares /dev/kfd as a device. Failures to parse are silently ignored so
-   * a malformed override never blocks an otherwise-valid install.
+   * Returns which special host devices a raw user docker-compose.yml override
+   * declares. Failures to parse are silently ignored so a malformed override
+   * never blocks an otherwise-valid install.
    */
-  private userComposeRequiresKfd(composeYaml: string): boolean {
+  private userComposeRequiredDevices(composeYaml: string): { requiresKfd: boolean; requiresKvm: boolean } {
     try {
       const parsed = yaml.parse(composeYaml) as { services?: Record<string, { devices?: unknown[] } | null> } | null;
-      if (!parsed?.services) return false;
-      return Object.values(parsed.services).some((svc) => svc?.devices?.some((device) => typeof device === 'string' && this.isKfdHostDevice(device)));
+      if (!parsed?.services) return { requiresKfd: false, requiresKvm: false };
+      let requiresKfd = false;
+      let requiresKvm = false;
+      for (const svc of Object.values(parsed.services)) {
+        for (const device of svc?.devices ?? []) {
+          if (typeof device !== 'string') continue;
+          if (this.isKfdHostDevice(device)) requiresKfd = true;
+          if (this.isKvmHostDevice(device)) requiresKvm = true;
+        }
+      }
+      return { requiresKfd, requiresKvm };
     } catch {
-      return false;
+      return { requiresKfd: false, requiresKvm: false };
     }
   }
 
@@ -88,38 +115,40 @@ export class InstallAppCommand extends AppLifecycleCommand {
 
     // Check the base installed compose (docker-compose.json) with architecture overrides applied.
     let requiresKfd = false;
+    let requiresKvm = false;
     const composeJson = await appFilesManager.getDockerComposeJson(appUrn);
     if (composeJson.content) {
       const { services, overrides } = parseComposeJson(composeJson.content);
       const architecture = config.get('architecture');
       const mergedServices = mergeArchitectureOverrides(services, overrides, architecture);
-      requiresKfd = mergedServices.some((service) =>
-        service.devices?.some((device) => {
-          if (typeof device !== 'string') {
-            return false;
-          }
-          return this.isKfdHostDevice(device);
-        }),
-      );
+      for (const service of mergedServices) {
+        for (const device of service.devices ?? []) {
+          if (typeof device !== 'string') continue;
+          if (this.isKfdHostDevice(device)) requiresKfd = true;
+          if (this.isKvmHostDevice(device)) requiresKvm = true;
+        }
+      }
     }
 
     // Also check the user compose override (user-config/{store}/{app}/docker-compose.yml).
     // composeApp layers this file on top of the generated docker-compose.yml via an additional
     // -f flag. Docker Compose appends list fields across -f files, so an override that adds
-    // /dev/kfd will be present in the effective compose even when the base does not require it.
-    if (!requiresKfd) {
+    // /dev/kfd or /dev/kvm will be present in the effective compose even when the base does not.
+    if (!requiresKfd || !requiresKvm) {
       const userCompose = await appFilesManager.getUserComposeFile(appUrn);
       if (userCompose.content) {
-        requiresKfd = this.userComposeRequiresKfd(userCompose.content);
+        const fromUser = this.userComposeRequiredDevices(userCompose.content);
+        requiresKfd = requiresKfd || fromUser.requiresKfd;
+        requiresKvm = requiresKvm || fromUser.requiresKvm;
       }
     }
 
-    if (!requiresKfd) {
-      return;
+    if (requiresKfd && !(await isRocmKfdPassthroughAvailable())) {
+      throw createRocmKfdMissingError();
     }
 
-    if (!(await isRocmKfdPassthroughAvailable())) {
-      throw createRocmKfdMissingError();
+    if (requiresKvm && !(await isKvmDeviceAvailable())) {
+      throw createKvmMissingError();
     }
   }
 
@@ -390,7 +419,8 @@ export class InstallAppCommand extends AppLifecycleCommand {
             for (const svc of preServices) {
               if (svc.volumes) {
                 for (const vol of svc.volumes) {
-                  if (typeof vol === 'object' && 'hostPath' in vol) {
+                  // Named volumes carry no host path to pre-create.
+                  if (typeof vol === 'object' && typeof vol.hostPath === 'string') {
                     // Replace ${APP_DATA_DIR} with container path
                     const hostPath = (vol.hostPath as string).replace(/\$\{APP_DATA_DIR\}/g, preContainerAppDataPath);
                     if (hostPath.startsWith(preContainerAppDataPath)) {
@@ -539,49 +569,30 @@ export class InstallAppCommand extends AppLifecycleCommand {
         }
       }
 
-      // Register agent webhook if this is an MCP client app (R-HOOK-1)
-      if (appInfo.hub_integration?.mcp_client) {
-        try {
-          const agentNotifyService = this.moduleRef.get(AgentNotifyService, { strict: false });
-          if (agentNotifyService) {
-            const wakeEndpoint = appInfo.hub_integration.wake_endpoint || '/hooks/hub-wake';
-            const wakePort = appInfo.hub_integration.wake_port || appInfo.port || 3000;
-
-            // Resolve the Docker DNS name for the agent container.
-            // On the shared ci-os-hub_network, containers are reachable by their
-            // Docker Compose service name (from docker-compose.json), NOT by
-            // {appName}-{storeId}. Read the main service name from the compose config.
-            let serviceName = appName;
-            try {
-              const composeJson = await appFilesManager.getDockerComposeJson(appUrn);
-              if (composeJson.content) {
-                const parsed = parseComposeJson(composeJson.content);
-                const mainService = parsed.services.find((s) => s.isMain) || parsed.services[0];
-                if (mainService?.name) {
-                  serviceName = mainService.name;
-                }
-              }
-            } catch (_parseErr) {
-              logger.debug(`Could not parse compose for service name, using appName: ${appName}`);
-            }
-
-            const webhookUrl = `http://${serviceName}:${wakePort}${wakeEndpoint}`;
-
-            // Read the generated wake secret from the app env
-            const agentEnvData = await appFilesManager.getAppEnv(appUrn);
-            const agentEnvMap = envUtils.envStringToMap(agentEnvData.content);
-            const wakeSecret = agentEnvMap.get('HUB_WAKE_SECRET');
-
-            agentNotifyService.registerWebhook(appUrn, webhookUrl, wakeSecret);
-            logger.info(`Registered agent webhook for ${appUrn}: ${webhookUrl}`);
-          }
-        } catch (hookErr) {
-          logger.warn(`Failed to register agent webhook for ${appUrn}: ${hookErr}`);
+      // Register the agent wake webhook for MCP-client apps (R-HOOK-1).
+      //
+      // The target is resolved by AgentNotifyService from what is on disk, so install and
+      // the startup rehydration cannot drift apart — they call the same code.
+      try {
+        const agentNotifyService = this.moduleRef.get(AgentNotifyService, { strict: false });
+        const target = await agentNotifyService?.resolveWebhookTarget(appUrn);
+        if (target) {
+          agentNotifyService.registerWebhook(appUrn, target.url, target.token);
         }
+      } catch (hookErr) {
+        logger.warn(`Failed to register agent webhook for ${appUrn}: ${hookErr}`);
       }
 
       await emitProgress(99);
       await this.markInstallSucceeded(appUrn, sseService, appsRepository, logger);
+
+      try {
+        const mcpProbe = this.moduleRef.get(McpProbeService, { strict: false });
+        mcpProbe?.scheduleProbe(appUrn);
+      } catch (probeErr) {
+        logger.debug(`MCP post-install probe not scheduled for ${appUrn}: ${probeErr}`);
+      }
+
       return { success: true, message: `App ${appUrn} installed successfully` };
     } catch (err) {
       // A user-requested cancel: tear down whatever was partially created and report a cancellation

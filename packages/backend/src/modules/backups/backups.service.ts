@@ -5,6 +5,7 @@ import { SSEService } from '@/core/sse/sse.service';
 import { Injectable, Optional } from '@nestjs/common';
 import type { AppUrn } from '@ci-hub/common/types';
 import { AppLifecycleService } from '../app-lifecycle/app-lifecycle.service';
+import { AppOperationRegistry } from '../app-lifecycle/app-operation-registry';
 import { AppFilesManager } from '../apps/app-files-manager';
 import { AppsRepository } from '../apps/apps.repository';
 import { AppEventsQueue } from '../queue/entities/app-events';
@@ -23,6 +24,7 @@ export class BackupsService {
     private appFilesManager: AppFilesManager,
     private backupManager: BackupManager,
     private readonly sseService: SSEService,
+    private readonly operationRegistry: AppOperationRegistry,
     @Optional() private readonly agentNotifyService?: AgentNotifyService,
   ) {}
 
@@ -45,19 +47,26 @@ export class BackupsService {
     this.sseService.emit('app', { event: 'status_change', appUrn, appStatus: 'backing_up' });
 
     const requestId = crypto.randomUUID();
+    this.operationRegistry.register(appUrn, { requestId, command: 'backup', tier: 'non_cancellable' });
 
     this.appEventsQueue.publish({ appUrn, command: 'backup', requestId, form: app.config }).then(async ({ success, message }) => {
       if (success) {
+        if (!this.operationRegistry.claimCompletion(appUrn, requestId)) {
+          return;
+        }
+
         if (appStatusBeforeUpdate === 'running') {
           await this.appLifecycle.startApp({ appUrn });
         } else {
           await this.appsRepository.updateAppById(app.id, { status: appStatusBeforeUpdate });
-          this.sseService.emit('app', { event: 'backup_success', appUrn, appStatus: 'stopped' });
+          this.sseService.emit('app', { event: 'backup_success', appUrn, appStatus: appStatusBeforeUpdate });
         }
       } else {
         this.logger.error(`Failed to backup app ${appUrn}: ${message}`);
-        await this.appsRepository.updateAppById(app.id, { status: 'stopped' });
-        this.agentNotifyService?.notify('backup_error', { appUrn }, 'high');
+        if (this.operationRegistry.claimCompletion(appUrn, requestId)) {
+          await this.appsRepository.updateAppById(app.id, { status: 'stopped' });
+          this.agentNotifyService?.notify('backup_error', { appUrn }, 'high');
+        }
       }
     });
 
@@ -79,9 +88,14 @@ export class BackupsService {
     this.sseService.emit('app', { event: 'status_change', appUrn, appStatus: 'restoring' });
 
     const requestId = crypto.randomUUID();
+    this.operationRegistry.register(appUrn, { requestId, command: 'restore', tier: 'non_cancellable' });
 
     this.appEventsQueue.publish({ appUrn, command: 'restore', requestId, filename, form: app.config }).then(async ({ success, message }) => {
       if (success) {
+        if (!this.operationRegistry.claimCompletion(appUrn, requestId)) {
+          return;
+        }
+
         const restoredAppConfig = await this.appFilesManager.getInstalledAppInfo(appUrn);
 
         if (typeof restoredAppConfig?.cihub_app_version === 'number') {
@@ -92,12 +106,14 @@ export class BackupsService {
           await this.appLifecycle.startApp({ appUrn });
         } else {
           await this.appsRepository.updateAppById(app.id, { status: appStatusBeforeUpdate });
-          this.sseService.emit('app', { event: 'restore_success', appUrn, appStatus: 'stopped' });
+          this.sseService.emit('app', { event: 'restore_success', appUrn, appStatus: appStatusBeforeUpdate });
         }
       } else {
         this.logger.error(`Failed to restore app ${appUrn}: ${message}`);
-        await this.appsRepository.updateAppById(app.id, { status: 'stopped' });
-        this.agentNotifyService?.notify('restore_error', { appUrn }, 'high');
+        if (this.operationRegistry.claimCompletion(appUrn, requestId)) {
+          await this.appsRepository.updateAppById(app.id, { status: 'stopped' });
+          this.agentNotifyService?.notify('restore_error', { appUrn }, 'high');
+        }
       }
     });
 

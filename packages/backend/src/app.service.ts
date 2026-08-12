@@ -17,7 +17,7 @@ import Dockerode from 'dockerode';
 import { RegistryService } from './utils/registry/registry.service';
 import { PortManagerService } from './modules/network/port-manager.service';
 import { AppsRepository } from './modules/apps/apps.repository';
-import { McpApiKeyService } from './modules/mcp/mcp-api-key.service';
+import { SESSION_KEY_PREFIX } from './modules/auth/session.manager';
 
 @Injectable()
 export class AppService implements OnApplicationShutdown {
@@ -49,7 +49,6 @@ export class AppService implements OnApplicationShutdown {
     private readonly registryService: RegistryService,
     private readonly portManager: PortManagerService,
     private readonly appsRepository: AppsRepository,
-    private readonly mcpApiKeyService: McpApiKeyService,
     @Inject(DOCKERODE) private docker: Dockerode,
   ) {}
 
@@ -60,29 +59,41 @@ export class AppService implements OnApplicationShutdown {
   public async bootstrap() {
     try {
       this.logger.info('Starting bootstrap...');
+      // #933: wait for Postgres before touching it. `depends_on: service_healthy` only gates the
+      // FIRST stack start — a Hub container restarting alone (update, crash, OOM) races a DB that
+      // may itself be restarting or waiting on Docker DNS. Bounded wait, then fail loudly.
+      await this.databaseService.waitUntilReady();
       await this.databaseService.migrate();
       this.logger.info('Database migration completed');
 
-      // SEC-MCP-8: seed the default MCP key when the store is empty (full rationale on the method).
-      // Must run after migrate() (api_key table) and before listen so agents can auth immediately.
-      await this.mcpApiKeyService.seedDefaultKeyIfEmpty();
+      // No key is seeded at boot. Every MCP key is created deliberately by an operator (Settings →
+      // Security) or provisioned to an app; the appliance ships with none. The previous "Default"
+      // key was derived from the appliance seed, which made it the one credential here that could
+      // not be rotated and that anyone with read access to the state directory already held.
 
       // Validate data directory integrity
       await this.validateDataDirectories();
 
-      try {
-        await this.docker.pruneNetworks();
-        this.logger.info('Docker networks pruned');
-      } catch (error) {
-        if (!this.isDockerBootstrapPermissionIssue(error)) {
-          throw error;
-        }
-        this.logger.warn(
-          `Skipping Docker network prune during bootstrap because the Docker socket is not accessible yet: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
-        );
-      }
+      // Do not block listen on Docker prune — a hung dockerode call on Desktop can
+      // starve the event loop before /api/health/live is reachable.
+      void Promise.race([
+        this.docker.pruneNetworks(),
+        new Promise<never>((_, reject) => {
+          setTimeout(() => reject(new Error('Docker network prune timed out after 15s')), 15_000);
+        }),
+      ])
+        .then(() => this.logger.info('Docker networks pruned'))
+        .catch((error) => {
+          if (this.isDockerBootstrapPermissionIssue(error)) {
+            this.logger.warn(
+              `Skipping Docker network prune during bootstrap because the Docker socket is not accessible yet: ${
+                error instanceof Error ? error.message : String(error)
+              }`,
+            );
+            return;
+          }
+          this.logger.warn(`Docker network prune skipped: ${error instanceof Error ? error.message : String(error)}`);
+        });
 
       const { version, __prod__ } = this.configuration.getConfig();
       const config = this.configuration.getConfig();
@@ -98,7 +109,11 @@ export class AppService implements OnApplicationShutdown {
       const buster = this.cache.get('buster');
       if (buster !== version) {
         this.logger.info('Clearing cache...');
-        this.cache.clear();
+        // Sessions live in the same store but are not cache: wiping them here signed
+        // every user out of every device on each upgrade (#944). The prefix comes from
+        // the session store itself so a change to its key shape cannot silently
+        // re-introduce that.
+        this.cache.clear([SESSION_KEY_PREFIX]);
         this.cache.set('buster', version, ONE_DAY_IN_SECONDS * 365);
         this.logger.info('Cache cleared');
       }
@@ -108,6 +123,15 @@ export class AppService implements OnApplicationShutdown {
       this.logger.info('Initializing marketplace...');
       await this.marketplaceService.initialize();
       this.logger.info('Marketplace initialized');
+
+      // Refresh app store catalogs in the background so CI Marketplace and legacy
+      // git stores pick up newly published versions without waiting for the cron job.
+      void this.appStoreService
+        .pullRepositories()
+        .then(() => this.marketplaceService.initialize())
+        .catch((error) => {
+          this.logger.warn(`Background app store catalog sync failed: ${error instanceof Error ? error.message : String(error)}`);
+        });
 
       // Every 15 minutes, check for updates to the apps repo
       if (__prod__) {
@@ -190,7 +214,8 @@ export class AppService implements OnApplicationShutdown {
       await this.filesystem.createDirectory(traefikConfigDest);
 
       await this.copyTraefikConfigFile(path.join(assetsTraefikDir, 'traefik.yml'), path.join(traefikConfigDest, 'traefik.yml'), (content) => {
-        let next = content.replace('{{ACME_EMAIL}}', process.env.ACME_EMAIL ?? 'admin@example.com');
+        // Prefer operator email; avoid example.com (LetsEncrypt rejects it). localhost is for local ACME only.
+        let next = content.replace('{{ACME_EMAIL}}', process.env.ACME_EMAIL ?? 'admin@localhost');
         // SECURITY: the Traefik dashboard/API is shipped fail-closed (`insecure: false`
         // in assets/traefik/traefik.yml). Only opt back into the unauthenticated
         // dashboard for explicit local development — never in production/staging/test,

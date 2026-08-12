@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import type { AppInfo } from '@ci-hub/common/schemas';
 import type { AppUrn } from '@ci-hub/common/types';
+import type { AppStatus } from '@/core/database/drizzle/types';
 import { LoggerService } from '@/core/logger/logger.service';
 import { AppsService } from '@/modules/apps/apps.service';
 import { isMemoryProviderApp } from './memory-provider.predicate';
@@ -24,6 +25,36 @@ export interface MemoryConsumerEnv {
   urlEnv: string;
   tokenEnv: string;
 }
+
+/**
+ * Coarse readiness of the installed Companion Memory provider, derived from the
+ * ci-memory app's lifecycle status — what the Hub UI and the wrapper connect gates
+ * key on to decide whether a connect can actually succeed:
+ *   `ready`    — running; a connect will work now.
+ *   `starting` — installing / booting / mid-maintenance; it's on its way up, so hold off.
+ *   `offline`  — installed but down (stopped, install_failed, …); a connect can't work.
+ *   `absent`   — not installed at all.
+ *
+ * The distinction matters because a mere DB row exists from the moment an install
+ * BEGINS — long before ci-memory is reachable — so "installed" must not read as "ready".
+ */
+export type MemoryProviderRuntimeStatus = 'ready' | 'starting' | 'offline' | 'absent';
+
+/**
+ * App statuses in which ci-memory is booting / coming up (not reachable yet, but on
+ * its way). Typed against `AppStatus` — like the sibling `DOWN_APP_STATUSES` — so a
+ * typo or a value newly added to the enum is a compile error here rather than a
+ * silent fall-through to "offline".
+ */
+const PROVIDER_STARTING_STATUSES: ReadonlySet<AppStatus> = new Set<AppStatus>([
+  'installing',
+  'starting',
+  'restarting',
+  'updating',
+  'restoring',
+  'backing_up',
+  'resetting',
+]);
 
 /**
  * Resolves the installed Companion Memory provider and classifies memory
@@ -52,12 +83,32 @@ export class MemoryProviderResolver {
    * post-connect redirect destination.
    */
   async getAppPublicUrl(appUrn: AppUrn): Promise<string | undefined> {
-    try {
-      return (await this.appsService.checkAppAvailability(appUrn)).appUrl;
-    } catch (err) {
-      this.logger.warn(`[MemoryConnect] could not resolve public URL for ${appUrn}: ${err instanceof Error ? err.message : String(err)}`);
+    return (await this.getAppAccessUrls(appUrn)).publicUrl;
+  }
 
-      return undefined;
+  /**
+   * Every browser-reachable URL for an installed app: its primary route
+   * (`publicUrl` — the public tunnel address, or the LAN address for a
+   * locally-exposed app) and its direct LAN address (`localUrl`) when one exists.
+   *
+   * Both are needed because the post-connect landing allowlist has to accept the
+   * origin the user actually started on. Allowlisting only the primary route is
+   * what silently relocated a LAN user of a Cloudflare-exposed app onto the public
+   * origin at the end of the flow (CI-Engineering#75, Problem 5).
+   *
+   * Fails soft: an unresolvable app yields empty fields rather than throwing, so a
+   * transient availability failure degrades the allowlist instead of breaking the
+   * connect flow outright.
+   */
+  async getAppAccessUrls(appUrn: AppUrn): Promise<{ publicUrl?: string; localUrl?: string; primaryAvailable?: boolean }> {
+    try {
+      const availability = await this.appsService.checkAppAvailability(appUrn);
+
+      return { publicUrl: availability.appUrl, localUrl: availability.localUrl, primaryAvailable: availability.available };
+    } catch (err) {
+      this.logger.warn(`[MemoryConnect] could not resolve access URLs for ${appUrn}: ${err instanceof Error ? err.message : String(err)}`);
+
+      return {};
     }
   }
 
@@ -101,18 +152,54 @@ export class MemoryProviderResolver {
   }
 
   /**
-   * Cheap existence check: is Companion Memory installed? Uses the DB-only lite
-   * listing (no per-app manifest/compose fan-out that {@link findProvider} pays via
-   * `getInstalledApps`), so callers that only need "is there a provider" — e.g. the
-   * wrapper status poll — don't do filesystem work per installed app. Reconstructs
-   * each app's urn from its DB row (`<appName>:<appStoreSlug>`).
+   * Coarse runtime status of Companion Memory. Uses the DB-only lite listing (no
+   * per-app manifest/compose fan-out that {@link findProvider} pays via
+   * `getInstalledApps`), so the frequently-polled callers — the wrapper connect
+   * gate and the app-detail badge — don't do filesystem work per installed app.
+   *
+   * Keyed on the ci-memory row's lifecycle `status`, because connecting only works
+   * once it is actually `running`: a row in `installing` / `stopped` must resolve to
+   * a not-`ready` value so those surfaces don't offer a connect that dead-ends on
+   * startConnect's "not reachable yet" 400. Reconstructs the urn from the DB row
+   * (`<appName>:<appStoreSlug>`).
    */
-  async isProviderInstalled(): Promise<boolean> {
+  async getProviderRuntimeStatus(): Promise<MemoryProviderRuntimeStatus> {
+    return (await this.getProviderRuntimeInfo()).status;
+  }
+
+  /**
+   * {@link getProviderRuntimeStatus} plus whether ci-memory is reachable ONLY on
+   * the local network.
+   *
+   * A provider that is not publicly tunnelled publishes its consent page at an
+   * address a public browser cannot reach — `http://<ip>:<port>` for a
+   * LAN-exposed provider, a tailnet-only MagicDNS name for a Tailscale one — so an
+   * off-network caller cannot complete the ceremony no matter which Hub launcher
+   * it starts from. Read from the app row's `exposureMode` — the same DB-only
+   * listing the status check already loads, so this costs nothing extra and never
+   * triggers the heavy availability probe.
+   *
+   * "Local-only" is therefore anything that is NOT `cloudflare`: `local`,
+   * `tailscale`, and a missing/empty value (pre-`exposureMode` installs, treated
+   * as local to match the conservative fallback used everywhere else). Only a
+   * Cloudflare-tunnelled provider is reachable by an arbitrary public browser.
+   */
+  async getProviderRuntimeInfo(): Promise<{ status: MemoryProviderRuntimeStatus; localOnly: boolean }> {
     const installed = await this.appsService.getInstalledAppsLite();
 
-    return installed.some((row: { appName: string; appStoreSlug: string }) =>
-      isMemoryProviderApp({ urn: `${row.appName}:${row.appStoreSlug}` as AppUrn }),
-    );
+    const row = installed.find((r) => isMemoryProviderApp({ urn: `${r.appName}:${r.appStoreSlug}` as AppUrn }));
+
+    if (!row) {
+      return { status: 'absent', localOnly: false };
+    }
+
+    const localOnly = (row.exposureMode || 'local') !== 'cloudflare';
+
+    if (row.status === 'running') {
+      return { status: 'ready', localOnly };
+    }
+
+    return { status: PROVIDER_STARTING_STATUSES.has(row.status) ? 'starting' : 'offline', localOnly };
   }
 
   /**

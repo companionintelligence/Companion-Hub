@@ -14,6 +14,7 @@ export class LinkTools implements OnModuleInit {
     this.registry.register({
       category: 'Links',
       name: 'hub_list_links',
+      access: 'read',
       description: 'List all dashboard links.',
       inputSchema: { type: 'object', properties: {}, required: [] },
       handler: () => this.listLinks(),
@@ -21,6 +22,7 @@ export class LinkTools implements OnModuleInit {
     this.registry.register({
       category: 'Links',
       name: 'hub_create_link',
+      access: 'write',
       description: 'Create a new dashboard link. Returns the created link.',
       inputSchema: {
         type: 'object',
@@ -39,6 +41,7 @@ export class LinkTools implements OnModuleInit {
     this.registry.register({
       category: 'Links',
       name: 'hub_edit_link',
+      access: 'write',
       description: 'Update an existing dashboard link.',
       inputSchema: {
         type: 'object',
@@ -60,6 +63,7 @@ export class LinkTools implements OnModuleInit {
     this.registry.register({
       category: 'Links',
       name: 'hub_delete_link',
+      access: 'write',
       destructive: true, // ISSUE-MCP-2: permanently deletes a dashboard link.
       description: 'Delete a dashboard link by ID.',
       inputSchema: { type: 'object', properties: { linkId: { type: 'number', description: 'Link ID to delete' } }, required: ['linkId'] },

@@ -70,16 +70,17 @@ function activeParamsOf(model: CuratedModel): number {
 }
 
 /**
- * True for Ollama's own cloud-hosted tags (e.g. `deepseek-v4-pro:cloud`) — frontier models too large to
- * run locally that Ollama proxies to its cloud instead. This tool exists to find the best model a user's
- * own hardware can actually run, so cloud-proxied entries must never be shown or recommended — not just
- * excluded from the auto-install pick. The catalog is meant to carry none of these (see the header
- * comment on CATALOG_TOON), but `getModelsForTier()` — the single gate every browsing/recommendation
- * path filters through — still excludes them structurally, as a backstop against one being added by
- * mistake in the future.
+ * A `:cloud`-tagged catalog row (e.g. `glm-5.2:cloud`) proxies inference through Ollama Cloud rather
+ * than running on the user's own hardware. Its catalog `gb`/footprint is a nominal placeholder, not a
+ * real local memory cost, so it must never compete for "best local model that fits this hardware" —
+ * that comparison is only meaningful between models that actually run on the box being sized. Per
+ * product decision, this tool exists to find the best model a user's own hardware can run, so a
+ * cloud-proxied model must never even be *shown* — not just excluded from the recommendation — which is
+ * why `getModelsForTier()` (the single gate every browsing path filters through, not just the
+ * recommendation functions below) excludes it too.
  */
-function isCloudProxied(model: CuratedModel): boolean {
-  return model.backend === 'ollama' && model.backendModelId.endsWith(':cloud');
+function isCloudProxyModel(model: CuratedModel): boolean {
+  return model.backendModelId.endsWith(':cloud');
 }
 
 /**
@@ -138,7 +139,7 @@ export class ModelRegistryService implements OnModuleInit {
     const tierKey = tier === 'cpu-only' ? 'cpuOnly' : tier;
     if (tier === 'insufficient') return [];
     return CURATED_MODELS.filter((m) => {
-      if (isCloudProxied(m)) return false;
+      if (isCloudProxyModel(m)) return false;
       const rec = m.tiers[tierKey as keyof typeof m.tiers];
       return rec === 'recommended' || rec === 'available';
     });
@@ -164,25 +165,32 @@ export class ModelRegistryService implements OnModuleInit {
   }
 
   /**
-   * The default embedding model recommended for the tier. Picked independently of
+   * The default embedding model recommended for the tier, on a given backend (default
+   * 'ollama' — the only backend with embedding models in the catalog until a given
+   * backend gets its own, e.g. `nomic-embed-text-v1-lemonade`). Picked independently of
    * the chat LLM so memory/RAG consumers (e.g. the companion-memory app's pgvector
-   * store) always receive a usable embeddings model. Returns null for an
-   * insufficient tier or when no embedding model is recommended.
+   * store) always receive a usable embeddings model. Returns null for an insufficient
+   * tier, or when no embedding model is recommended for that backend — callers must
+   * handle that gracefully (e.g. a Lemonade-only host with no Ollama installed) rather
+   * than falling back to a different backend's model ID, which would be unreachable.
    */
-  getRecommendedEmbeddingModel(tier: HardwareTier): CuratedModel | null {
+  getRecommendedEmbeddingModel(tier: HardwareTier, backend: InferenceBackendType = 'ollama'): CuratedModel | null {
     if (tier === 'insufficient') return null;
-    return this.getRecommendedModels(tier).find((m) => m.modality === 'embedding') ?? null;
+    return this.getRecommendedModels(tier).find((m) => m.modality === 'embedding' && m.backend === backend) ?? null;
   }
 
   /**
-   * The default vision-capable LLM recommended for the tier. Vision models are
-   * standard LLMs with image input support — they're picked from the LLM catalog
-   * entries that have `metadata.capabilities.vision === true`. Returns null when no
-   * vision model is available for the tier.
+   * The default vision-capable LLM recommended for the tier, on a given backend (default
+   * 'ollama'). Vision models are standard LLMs with image input support — they're picked
+   * from the LLM catalog entries that have `metadata.capabilities.vision === true` and
+   * match the requested backend. Returns null when no vision model is available for the
+   * tier on that backend.
    */
-  getRecommendedVisionModel(tier: HardwareTier): CuratedModel | null {
+  getRecommendedVisionModel(tier: HardwareTier, backend: InferenceBackendType = 'ollama'): CuratedModel | null {
     if (tier === 'insufficient') return null;
-    const candidates = this.getModelsForTier(tier).filter((m) => m.modality === 'llm' && m.metadata?.capabilities?.vision === true);
+    const candidates = this.getModelsForTier(tier).filter(
+      (m) => m.modality === 'llm' && m.backend === backend && m.metadata?.capabilities?.vision === true && !isCloudProxyModel(m),
+    );
     if (candidates.length === 0) return null;
     candidates.sort(compareLlmCandidates);
     return candidates[0] ?? null;
@@ -223,41 +231,52 @@ export class ModelRegistryService implements OnModuleInit {
   }
 
   /**
-   * Compute the best-fit Ollama LLMs for the hardware, best first. Single source of truth: a model's
-   * own footprint vs. the hardware budget. Prefers the largest model that fits at q4 or better, only
-   * falling back to sub-q4 quants when nothing else fits, and caps CPU-only picks to small/fast models.
+   * Compute the best-fit LLMs for the hardware, best first, across every backend represented in the
+   * LLM catalog (currently 'ollama' and 'lemonade') — not just Ollama. Each backend's picks are
+   * computed independently (its own best-fit ranking, size-spanning selection) and concatenated, so
+   * `getRecommendedModelsForHardware`'s result naturally contains a per-backend recommendation without
+   * callers needing to ask for one explicitly; a caller resolving a specific active backend (see
+   * InferenceEnvResolver / AppCredentialsService) filters this list down to `m.backend === active`.
+   * Adding a backend with no catalog rows yet is a no-op here — it simply contributes nothing.
    */
   private selectLlmsForHardware(profile: HardwareProfile): CuratedModel[] {
     const tierAllowedIds = new Set(this.getModelsForTier(profile.tier).map((m) => m.id));
     const budget = this.computeInferenceBudget(profile);
-    const picks = this.pickBestFittingLlms(budget, tierAllowedIds);
-    if (picks.length > 0 || budget.cpuOnly) {
-      return picks;
-    }
-    // A discrete GPU too small to hold any model (e.g. 2GB VRAM): fall back to CPU inference out of
-    // system RAM — Ollama offloads to CPU — so a tiny-GPU box still gets a usable, size-capped pick.
-    return this.pickBestFittingLlms(
-      {
-        budgetMb: Math.floor(profile.ram.totalMb * SYSTEM_RAM_BUDGET_FRACTION),
-        cpuOnly: true,
-        vendor: 'cpu',
-        bandwidthConstrained: false,
-      },
-      tierAllowedIds,
-    );
+    const backends = new Set(CURATED_MODELS.filter((m) => m.modality === 'llm').map((m) => m.backend));
+
+    return Array.from(backends).flatMap((backend) => {
+      const picks = this.pickBestFittingLlms(budget, tierAllowedIds, backend);
+      if (picks.length > 0 || budget.cpuOnly) {
+        return picks;
+      }
+      // A discrete GPU too small to hold any model (e.g. 2GB VRAM): fall back to CPU inference out of
+      // system RAM so a tiny-GPU box still gets a usable, size-capped pick.
+      return this.pickBestFittingLlms(
+        {
+          budgetMb: Math.floor(profile.ram.totalMb * SYSTEM_RAM_BUDGET_FRACTION),
+          cpuOnly: true,
+          vendor: 'cpu',
+          bandwidthConstrained: false,
+        },
+        tierAllowedIds,
+        backend,
+      );
+    });
   }
 
   /**
-   * Rank the catalog's Ollama LLMs that fit a given budget and return a short, best-first list that
-   * spans small/medium/large size classes. Index 0 is always the single best model (biggest at q4+),
-   * which app bootstrap auto-installs; the remaining slots cover a useful range of smaller options.
+   * Rank a given backend's catalog LLMs that fit a budget and return a short, best-first list that
+   * spans small/medium/large size classes. Index 0 is always that backend's single best model (biggest
+   * at q4+), which app bootstrap auto-installs; the remaining slots cover a useful range of smaller
+   * options.
    */
-  private pickBestFittingLlms(budget: InferenceBudget, tierAllowedIds: Set<string>): CuratedModel[] {
+  private pickBestFittingLlms(budget: InferenceBudget, tierAllowedIds: Set<string>, backend: InferenceBackendType): CuratedModel[] {
     const fitting = CURATED_MODELS.filter(
       (m) =>
         tierAllowedIds.has(m.id) &&
-        m.backend === 'ollama' &&
+        m.backend === backend &&
         m.modality === 'llm' &&
+        !isCloudProxyModel(m) &&
         m.requirements.gpuVendors.includes(budget.vendor) &&
         m.runtime.memoryFootprintMb <= budget.budgetMb &&
         (!budget.cpuOnly || (m.parameterScale ?? Number.POSITIVE_INFINITY) <= CPU_ONLY_MAX_PARAMETER_SCALE) &&
