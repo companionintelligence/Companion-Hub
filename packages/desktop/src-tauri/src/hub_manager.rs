@@ -3274,13 +3274,6 @@ pub fn check_docker_access() -> DockerAccessCheck {
         }
     };
 
-    if output.status.success() {
-        return DockerAccessCheck {
-            state: DockerAccessState::Available,
-            detail: None,
-        };
-    }
-
     let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
     let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
     let combined = if !stderr.is_empty() && !stdout.is_empty() {
@@ -3290,6 +3283,24 @@ pub fn check_docker_access() -> DockerAccessCheck {
     } else {
         stdout.clone()
     };
+
+    if output.status.success() {
+        // `docker info` can exit 0 while printing daemon-unreachable errors to
+        // stderr (e.g. when Docker Desktop is paused or still starting).  Run
+        // the same classifier used for non-zero exits so those cases are caught.
+        let check = classify_docker_access_result(&combined, output.status.code());
+        if matches!(
+            check.state,
+            DockerAccessState::DaemonUnavailable | DockerAccessState::PermissionDenied
+        ) {
+            return check;
+        }
+        return DockerAccessCheck {
+            state: DockerAccessState::Available,
+            detail: None,
+        };
+    }
+
     classify_docker_access_result(&combined, output.status.code())
 }
 
