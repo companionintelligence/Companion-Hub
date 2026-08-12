@@ -1998,6 +1998,36 @@ describe('AppLifecycleService', () => {
     });
   });
 
+  describe('recoverStuckInstallsOnStartup', () => {
+    it('marks orphaned installing rows as install_failed and emits the queue update once', async () => {
+      appsRepository.getAppsByStatus.mockResolvedValue([
+        { id: 11, appName: 'flatnotes', appStoreSlug: 'ci-marketplace', status: 'installing' },
+        { id: 12, appName: 'fizzy', appStoreSlug: 'ci-marketplace', status: 'installing' },
+      ] as any);
+      appsService.getInstallQueueState.mockResolvedValue({ active: null, queued: [] });
+      const queueSpy = vi.spyOn(service as any, 'emitInstallQueueUpdate');
+
+      const recovered = await service.recoverStuckInstallsOnStartup();
+
+      expect(recovered).toBe(2);
+      expect(appsRepository.updateAppById).toHaveBeenCalledWith(11, expect.objectContaining({ status: 'install_failed' }));
+      expect(appsRepository.updateAppById).toHaveBeenCalledWith(12, expect.objectContaining({ status: 'install_failed' }));
+      expect(sseService.emit).toHaveBeenCalledWith('app', expect.objectContaining({ event: 'install_error', appUrn: 'flatnotes:ci-marketplace' }));
+      expect(queueSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it('skips an installing row that already has a live registry entry', async () => {
+      const appUrn = 'live:ci-marketplace' as AppUrn;
+      appsRepository.getAppsByStatus.mockResolvedValue([{ id: 13, appName: 'live', appStoreSlug: 'ci-marketplace', status: 'installing' }] as any);
+      operationRegistry.register(appUrn, { requestId: 'r1', command: 'install', tier: 'safe' });
+
+      const recovered = await service.recoverStuckInstallsOnStartup();
+
+      expect(recovered).toBe(0);
+      expect(appsRepository.updateAppById).not.toHaveBeenCalled();
+    });
+  });
+
   describe('command-identity completion claims (#903)', () => {
     const appUrn = 'myapp:ci-marketplace' as AppUrn;
     const fakeApp = {

@@ -116,6 +116,8 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
   }
 
   async onApplicationBootstrap() {
+    void this.recoverStuckInstallsOnStartup();
+
     this.logger.info('Triggering initial Cloudflare sync in 5s...');
     setTimeout(() => {
       this.syncExposure().catch((e) => this.logger.error(`Startup sync failed: ${e.message}`));
@@ -390,6 +392,45 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     // Worker path: invokeCommand's finally emits the install-queue update AFTER clearing the pipeline
     // tracker, so suppress it here to avoid a duplicate (and stale, pre-clear) install_queue event.
     await this.finalizeFailedInstall(app, appUrn, result, { emitQueueUpdate: false });
+  }
+
+  /** Mark orphaned `installing` rows as `install_failed` after a process restart. */
+  async recoverStuckInstallsOnStartup(): Promise<number> {
+    const installing = await this.appRepository.getAppsByStatus('installing').catch((err) => {
+      this.logger.error(`Failed to load installing apps for startup recovery: ${err instanceof Error ? err.message : String(err)}`);
+      return [];
+    });
+
+    if (installing.length === 0) {
+      return 0;
+    }
+
+    this.logger.warn(`Recovering ${installing.length} stranded install(s) left in 'installing' after restart`);
+
+    let recovered = 0;
+    for (const app of installing) {
+      const appUrn = createAppUrn(app.appName, app.appStoreSlug);
+      if (this.operationRegistry.get(appUrn) || this.installPipelineTracker.getActive() === appUrn) {
+        continue;
+      }
+
+      await this.finalizeFailedInstall(
+        app,
+        appUrn,
+        {
+          success: false,
+          message: 'Install did not finish before Hub restarted. Retry the install.',
+        },
+        { emitQueueUpdate: false },
+      );
+      recovered += 1;
+    }
+
+    if (recovered > 0) {
+      void this.emitInstallQueueUpdate();
+    }
+
+    return recovered;
   }
 
   /**
