@@ -116,6 +116,8 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
   }
 
   async onApplicationBootstrap() {
+    void this.recoverStuckInstallsOnStartup();
+
     this.logger.info('Triggering initial Cloudflare sync in 5s...');
     setTimeout(() => {
       this.syncExposure().catch((e) => this.logger.error(`Startup sync failed: ${e.message}`));
@@ -326,7 +328,12 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       await reply(result);
     } catch (err) {
       this.logger.error('Error invoking command:', err);
-      await reply(toAppCommandFailureResult(err));
+      const failure = toAppCommandFailureResult(err);
+      if (isInstall) {
+        await this.handleFailedResult(data.command, data.appUrn, failure);
+        this.operationRegistry.clear(data.appUrn, data.requestId);
+      }
+      await reply(failure);
     } finally {
       // Do not clear the operation registry here. The publisher-side completion handler
       // claims the entry via settleCommandOutcome/claimCompletion once the RPC reply is
@@ -385,6 +392,45 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     // Worker path: invokeCommand's finally emits the install-queue update AFTER clearing the pipeline
     // tracker, so suppress it here to avoid a duplicate (and stale, pre-clear) install_queue event.
     await this.finalizeFailedInstall(app, appUrn, result, { emitQueueUpdate: false });
+  }
+
+  /** Mark orphaned `installing` rows as `install_failed` after a process restart. */
+  async recoverStuckInstallsOnStartup(): Promise<number> {
+    const installing = await this.appRepository.getAppsByStatus('installing').catch((err) => {
+      this.logger.error(`Failed to load installing apps for startup recovery: ${err instanceof Error ? err.message : String(err)}`);
+      return [];
+    });
+
+    if (installing.length === 0) {
+      return 0;
+    }
+
+    this.logger.warn(`Recovering ${installing.length} stranded install(s) left in 'installing' after restart`);
+
+    let recovered = 0;
+    for (const app of installing) {
+      const appUrn = createAppUrn(app.appName, app.appStoreSlug);
+      if (this.operationRegistry.get(appUrn) || this.installPipelineTracker.getActive() === appUrn) {
+        continue;
+      }
+
+      await this.finalizeFailedInstall(
+        app,
+        appUrn,
+        {
+          success: false,
+          message: 'Install did not finish before Hub restarted. Retry the install.',
+        },
+        { emitQueueUpdate: false },
+      );
+      recovered += 1;
+    }
+
+    if (recovered > 0) {
+      void this.emitInstallQueueUpdate();
+    }
+
+    return recovered;
   }
 
   /**
@@ -754,35 +800,68 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     }
 
     // min_hub_version enforcement intentionally disabled until Hub semver stabilizes (post-Runtipi migration).
-    const installRecord =
-      existingApp ??
-      (await this.appRepository.createApp({
-        appName,
-        status: 'installing' as const,
-        config: parsedForm,
-        // Port semantics:
-        // - Local exposure always publishes the host port (normalized to openPort=true when needed).
-        // - Cloudflare/Tailscale with exposedLocal also publish the host port for LAN access during DNS propagation.
-        // - Traefik routing uses params.internalPort from the service definition, not this database field.
-        port: parsedForm.port ?? appInfo.port,
-        version: appInfo.cihub_app_version,
-        exposed: exposed ?? false,
-        domain: domain ?? null,
-        localSubdomain: parsedForm.localSubdomain ?? null,
-        publicDomain: parsedForm.publicDomain ?? null,
-        openPort: openPort ?? false,
-        exposedLocal: exposedLocal ?? !!appInfo.exposable,
-        exposureMode: parsedForm.exposureMode ?? 'local',
-        appStoreSlug: appStoreId,
-        isVisibleOnGuestDashboard,
-        enableAuth: parsedForm.enableAuth ?? false,
-      }));
+    type InstallRow = { id: number; status: string; port: number | null; exposedLocal: boolean };
+    let installRecord: InstallRow | undefined = existingApp
+      ? { id: existingApp.id, status: existingApp.status, port: existingApp.port, exposedLocal: existingApp.exposedLocal }
+      : undefined;
+    if (!installRecord) {
+      try {
+        const created = await this.appRepository.createApp({
+          appName,
+          status: 'installing' as const,
+          config: parsedForm,
+          // Port semantics:
+          // - Local exposure always publishes the host port (normalized to openPort=true when needed).
+          // - Cloudflare/Tailscale with exposedLocal also publish the host port for LAN access during DNS propagation.
+          // - Traefik routing uses params.internalPort from the service definition, not this database field.
+          port: parsedForm.port ?? appInfo.port,
+          version: appInfo.cihub_app_version,
+          exposed: exposed ?? false,
+          domain: domain ?? null,
+          localSubdomain: parsedForm.localSubdomain ?? null,
+          publicDomain: parsedForm.publicDomain ?? null,
+          openPort: openPort ?? false,
+          exposedLocal: exposedLocal ?? !!appInfo.exposable,
+          exposureMode: parsedForm.exposureMode ?? 'local',
+          appStoreSlug: appStoreId,
+          isVisibleOnGuestDashboard,
+          enableAuth: parsedForm.enableAuth ?? false,
+        });
+        installRecord = { id: created.id, status: created.status, port: created.port, exposedLocal: created.exposedLocal };
+      } catch (createError) {
+        const isUniqueViolation =
+          createError instanceof Error &&
+          (createError.message.includes('23505') ||
+            createError.message.includes('unique') ||
+            createError.message.includes('duplicate') ||
+            (createError as { code?: string }).code === '23505');
+        if (!isUniqueViolation) {
+          throw createError;
+        }
 
-    if (existingApp) {
-      await this.appRepository.updateAppById(existingApp.id, {
+        const raced = await this.appRepository.getAppByUrn(appUrn);
+        if (!raced) {
+          throw createError;
+        }
+
+        if (raced.status !== 'install_failed') {
+          await this.appRepository.updateAppById(raced.id, { config: parsedForm, ...parsedForm });
+          return this.startApp({ appUrn });
+        }
+
+        installRecord = { id: raced.id, status: raced.status, port: raced.port, exposedLocal: raced.exposedLocal };
+      }
+    }
+
+    if (!installRecord) {
+      throw new Error(`Failed to create or load install record for ${appUrn}`);
+    }
+
+    if (existingApp || installRecord.status === 'install_failed') {
+      await this.appRepository.updateAppById(installRecord.id, {
         status: 'installing',
         config: parsedForm,
-        port: parsedForm.port ?? existingApp.port ?? appInfo.port,
+        port: parsedForm.port ?? installRecord.port ?? appInfo.port,
         version: appInfo.cihub_app_version,
         exposed: exposed ?? false,
         domain: domain ?? null,
@@ -801,7 +880,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
 
     const requestId = crypto.randomUUID();
     const appId = installRecord.id;
-    const recordExposedLocal = exposedLocal ?? existingApp?.exposedLocal ?? !!appInfo.exposable;
+    const recordExposedLocal = exposedLocal ?? installRecord.exposedLocal ?? !!appInfo.exposable;
 
     // Register the operation BEFORE publishing so a cancel arriving during the publish->dequeue
     // window (tier-A) can be honoured. Cleared in invokeCommand's finally.

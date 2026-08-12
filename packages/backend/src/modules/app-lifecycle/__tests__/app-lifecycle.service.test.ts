@@ -533,14 +533,16 @@ describe('AppLifecycleService', () => {
     });
 
     it('should handle errors during execution', async () => {
-      const data = { appUrn: 'test-app', command: 'install', requestId: '00000000-0000-4000-8000-000000000003', form: {} } as any;
+      const data = { appUrn: 'test-app:ci-marketplace', command: 'install', requestId: '00000000-0000-4000-8000-000000000003', form: {} } as any;
       const reply = vi.fn();
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 99, status: 'installing' } as any);
       commandFactory.createCommand.mockImplementation(() => {
         throw new Error('Exec failed');
       });
 
       await service.invokeCommand(data, reply);
       expect(reply).toHaveBeenCalledWith({ success: false, message: 'Exec failed' });
+      expect(appsRepository.updateAppById).toHaveBeenCalledWith(99, expect.objectContaining({ status: 'install_failed' }));
     });
   });
 
@@ -1976,6 +1978,53 @@ describe('AppLifecycleService', () => {
       // Status guard: already install_failed → no second status write / SSE.
       expect(appsRepository.updateAppById).not.toHaveBeenCalledWith(7, expect.objectContaining({ status: 'install_failed' }));
       expect(sseService.emit).not.toHaveBeenCalledWith('app', expect.objectContaining({ event: 'install_error' }));
+    });
+
+    it('finalizes a thrown install error worker-side (catch path, not just result.success=false)', async () => {
+      operationRegistry.register(appUrn, { requestId, command: 'install', tier: 'safe' });
+      const execute = vi.fn().mockRejectedValue(new Error('daemon wedged'));
+      commandFactory.createCommand.mockReturnValue({ execute } as any);
+      const reply = vi.fn();
+
+      await service.invokeCommand(data, reply);
+
+      expect(appsRepository.updateAppById).toHaveBeenCalledWith(7, expect.objectContaining({ status: 'install_failed' }));
+      expect(sseService.emit).toHaveBeenCalledWith(
+        'app',
+        expect.objectContaining({ event: 'install_error', appStatus: 'install_failed', error: 'daemon wedged' }),
+      );
+      expect(reply).toHaveBeenCalledWith(expect.objectContaining({ success: false, message: 'daemon wedged' }));
+      expect(operationRegistry.get(appUrn)).toBeUndefined();
+    });
+  });
+
+  describe('recoverStuckInstallsOnStartup', () => {
+    it('marks orphaned installing rows as install_failed and emits the queue update once', async () => {
+      appsRepository.getAppsByStatus.mockResolvedValue([
+        { id: 11, appName: 'flatnotes', appStoreSlug: 'ci-marketplace', status: 'installing' },
+        { id: 12, appName: 'fizzy', appStoreSlug: 'ci-marketplace', status: 'installing' },
+      ] as any);
+      appsService.getInstallQueueState.mockResolvedValue({ active: null, queued: [] });
+      const queueSpy = vi.spyOn(service as any, 'emitInstallQueueUpdate');
+
+      const recovered = await service.recoverStuckInstallsOnStartup();
+
+      expect(recovered).toBe(2);
+      expect(appsRepository.updateAppById).toHaveBeenCalledWith(11, expect.objectContaining({ status: 'install_failed' }));
+      expect(appsRepository.updateAppById).toHaveBeenCalledWith(12, expect.objectContaining({ status: 'install_failed' }));
+      expect(sseService.emit).toHaveBeenCalledWith('app', expect.objectContaining({ event: 'install_error', appUrn: 'flatnotes:ci-marketplace' }));
+      expect(queueSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it('skips an installing row that already has a live registry entry', async () => {
+      const appUrn = 'live:ci-marketplace' as AppUrn;
+      appsRepository.getAppsByStatus.mockResolvedValue([{ id: 13, appName: 'live', appStoreSlug: 'ci-marketplace', status: 'installing' }] as any);
+      operationRegistry.register(appUrn, { requestId: 'r1', command: 'install', tier: 'safe' });
+
+      const recovered = await service.recoverStuckInstallsOnStartup();
+
+      expect(recovered).toBe(0);
+      expect(appsRepository.updateAppById).not.toHaveBeenCalled();
     });
   });
 
