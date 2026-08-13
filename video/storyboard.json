@@ -20,44 +20,70 @@
     "run": "Day to day"
   },
   "media": {
-    "music": "assets/media/ci-campaign-bed.mp3",
+    "music": "assets/media/ci-campaign-bed-110.mp3",
     "musicLufs": -22
   },
   "master": [
     {
+      "ref": "the-tenant",
+      "caption": "The storage, the models, the apps, the backups.",
+      "narration": "Right now you rent. The storage, the models, the apps, the backups — all billed monthly, on somebody else's computer."
+    },
+    {
+      "ref": "the-bill",
+      "caption": "For services you are not allowed to look inside.",
+      "narration": "A full subscription stack runs about seven thousand dollars a year, for services you are not allowed to look inside."
+    },
+    {
+      "ref": "the-hard-way",
+      "caption": "Most people quit right about here.",
+      "narration": "Owning it instead meant drivers, containers, quantised models and certificates. Most people quit right about here."
+    },
+    {
+      "ref": "title",
+      "caption": "Until now.",
+      "narration": "Until now. Companion Hub turns a computer you already own into a private AI server."
+    },
+    {
       "ref": "the-list",
-      "caption": "The computer you already own can become your AI home.",
-      "narration": "The desktop, mini PC, or laptop you already own can become your AI home."
+      "chapter": "boot",
+      "caption": "Start with the machine already in the room.",
+      "narration": "Start with the desktop, mini PC or laptop already in the room."
     },
     {
       "ref": "reads-the-machine",
-      "caption": "Hub checks the hardware before you choose a model.",
-      "narration": "Companion Hub checks the processor, memory, graphics, and storage so you can see what will run."
+      "caption": "It reads the machine before you choose anything.",
+      "narration": "Hub reads it first — processor, memory, graphics and storage — and works out what this machine can run."
     },
     {
       "ref": "picks-the-models",
-      "caption": "Models are recommended for the machine in front of you.",
-      "narration": "Then it recommends models that fit the machine in front of you."
+      "caption": "Then it picks the models that machine can run.",
+      "narration": "Then it picks the models that fit, each one priced in the memory it needs."
     },
     {
-      "ref": "apps-arrive",
-      "caption": "A guided install shows exposure and settings first.",
-      "narration": "A guided install shows the network exposure and requested settings before the app starts."
+      "ref": "the-frameworks",
+      "caption": "OpenClaw, Hermes, and the rest of the shelf.",
+      "narration": "Then bring the agents you already like. OpenClaw, Hermes, Claude Code, OpenCode — one click each, on your own machine."
     },
     {
       "ref": "install-and-run",
       "caption": "Installed. Running. Yours.",
-      "narration": "When the badge turns green, the app is running on your Hub."
-    },
-    {
-      "ref": "hermes-openclaw",
-      "caption": "Add Hermes and OpenClaw through their own app backends.",
-      "narration": "Add agents like Hermes and OpenClaw through their separate app backends, on the hardware you choose."
+      "narration": "When the badge turns green it is running on hardware you own, not rented from anyone."
     },
     {
       "ref": "from-a-phone",
-      "caption": "Choose this machine, your private network, or the web.",
-      "narration": "You choose whether a service stays on this machine, reaches your private network, or connects to the web."
+      "caption": "This machine, your private network, or the web.",
+      "narration": "You decide what each service can reach — this machine only, your private network, or the open web."
+    },
+    {
+      "ref": "alternatives",
+      "caption": "Open-source replacements for the things you rent.",
+      "narration": "And the rest of the shelf is open-source replacements for the subscriptions you are tired of paying."
+    },
+    {
+      "ref": "the-uncloud",
+      "caption": "No datacenter. No subscription. No landlord.",
+      "narration": "No datacenter. No subscription. You are not renting any of it."
     },
     {
       "ref": "close",
@@ -65,10 +91,91 @@
       "cta": "Get Companion Hub",
       "tagline": "UnCloud your life.",
       "url": "ci.computer/download",
-      "narration": "Your models. Your apps. Your machine. Get Companion Hub at ci dot computer slash download. UnCloud your life."
+      "narration": "Your machine. Your models. Your agents. At ci dot computer slash download. UnCloud your life."
     }
   ],
   "scenes": [
+    {
+      "id": "the-tenant",
+      "kind": "feature",
+      "chapter": "job",
+      "reveal": "paced",
+      "seconds": 8,
+      "minSeconds": 6,
+      "title": "You are a renting tenant.",
+      "caption": "The storage, the models, the apps, the backups.",
+      "narration": "Right now you rent. The storage, the models, the apps, the backups — all billed monthly, on somebody else's computer.",
+      "items": [
+        {
+          "label": "Storage",
+          "value": "monthly"
+        },
+        {
+          "label": "Models",
+          "value": "monthly"
+        },
+        {
+          "label": "Apps",
+          "value": "monthly"
+        },
+        {
+          "label": "Backups",
+          "value": "monthly"
+        }
+      ]
+    },
+    {
+      "id": "the-bill",
+      "kind": "feature",
+      "chapter": "job",
+      "transition": "cut",
+      "reveal": "paced",
+      "seconds": 8,
+      "minSeconds": 6,
+      "title": "About seven thousand a year.",
+      "caption": "For services you are not allowed to look inside.",
+      "narration": "A full subscription stack runs about seven thousand dollars a year, for services you are not allowed to look inside.",
+      "items": [
+        {
+          "label": "Your data",
+          "value": "on their hardware"
+        },
+        {
+          "label": "The terms",
+          "value": "theirs to change"
+        },
+        {
+          "label": "The off switch",
+          "value": "theirs"
+        }
+      ]
+    },
+    {
+      "id": "the-hard-way",
+      "kind": "feature",
+      "chapter": "job",
+      "transition": "cut",
+      "reveal": "paced",
+      "seconds": 8,
+      "minSeconds": 6,
+      "title": "Owning it was the harder option.",
+      "caption": "Most people quit right about here.",
+      "narration": "Owning it instead meant drivers, containers, quantised models and certificates. Most people quit right about here.",
+      "items": [
+        {
+          "label": "GPU drivers"
+        },
+        {
+          "label": "Containers"
+        },
+        {
+          "label": "Quantised models"
+        },
+        {
+          "label": "Reverse proxy, TLS"
+        }
+      ]
+    },
     {
       "id": "second-job",
       "kind": "feature",
@@ -167,11 +274,11 @@
     {
       "id": "title",
       "kind": "intro",
-      "seconds": 3,
-      "minSeconds": 2.9,
+      "seconds": 6,
+      "minSeconds": 5,
       "title": "Companion Hub",
-      "caption": "Your own private AI server.",
-      "narration": "Then it recommends models that fit your machine.",
+      "caption": "Until now.",
+      "narration": "Until now. Companion Hub turns a computer you already own into a private AI server.",
       "mark": "brand:logo.mark",
       "reveal": "paced",
       "transition": "hold"
@@ -215,10 +322,16 @@
             "waitFor": "input[placeholder='you@example.com']",
             "before": [
               {
-                "fill": ["input[placeholder='you@example.com']", "owner@acme.com"]
+                "fill": [
+                  "input[placeholder='you@example.com']",
+                  "owner@acme.com"
+                ]
               },
               {
-                "fill": ["input[placeholder='Enter your password']", "password"]
+                "fill": [
+                  "input[placeholder='Enter your password']",
+                  "password"
+                ]
               },
               {
                 "click": "button[type='submit']"
@@ -416,6 +529,56 @@
               "y": 0.793
             }
           }
+        }
+      ]
+    },
+    {
+      "id": "the-frameworks",
+      "kind": "feature",
+      "chapter": "run",
+      "transition": "cut",
+      "reveal": "paced",
+      "seconds": 8,
+      "minSeconds": 6,
+      "title": "Bring the agents you already like.",
+      "caption": "OpenClaw, Hermes, and the rest of the shelf.",
+      "narration": "Then bring the agents you already like. OpenClaw, Hermes, Claude Code, OpenCode — one click each, on your own machine.",
+      "columns": {
+        "landscape": 4,
+        "portrait": 3
+      },
+      "items": [
+        {
+          "image": "./assets/agents/01-openclaw.png",
+          "alt": "The OpenClaw app icon."
+        },
+        {
+          "image": "./assets/agents/02-hermes.png",
+          "alt": "The Hermes Agent app icon."
+        },
+        {
+          "image": "./assets/agents/03-claude-code.png",
+          "alt": "The Claude Code app icon."
+        },
+        {
+          "image": "./assets/agents/04-opencode.png",
+          "alt": "The OpenCode app icon."
+        },
+        {
+          "image": "./assets/agents/05-agent-zero.png",
+          "alt": "The Agent Zero app icon."
+        },
+        {
+          "image": "./assets/agents/06-deerflow.png",
+          "alt": "The DeerFlow app icon."
+        },
+        {
+          "image": "./assets/agents/07-n8n.png",
+          "alt": "The n8n app icon."
+        },
+        {
+          "image": "./assets/agents/08-dify.png",
+          "alt": "The Dify app icon."
         }
       ]
     },
@@ -704,10 +867,10 @@
     {
       "id": "the-uncloud",
       "kind": "feature",
-      "seconds": 3,
-      "title": "Your own private cloud.",
-      "caption": "No datacenter. No subscription.",
-      "narration": "Your own private cloud, running on hardware you own.",
+      "seconds": 5,
+      "title": "You are in control.",
+      "caption": "No datacenter. No subscription. No landlord.",
+      "narration": "No datacenter. No subscription. You are not renting any of it.",
       "transition": "cut"
     },
     {
@@ -730,41 +893,39 @@
       "meta": {
         "pacingTail": 0.16
       },
+      "media": {
+        "music": "assets/media/ci-campaign-bed-110.mp3",
+        "musicLufs": -22
+      },
       "scenes": [
         {
-          "ref": "the-list",
-          "narration": "Start with the desktop, mini PC, or laptop you already own. Hub checks what it can run.",
-          "caption": "Start with the machine you already own.",
+          "ref": "the-tenant",
+          "caption": "You rent the storage, the models, the apps.",
+          "narration": "You rent the storage, the models and the apps. All of it on somebody else's computer.",
           "seconds": 6
         },
         {
           "ref": "reads-the-machine",
-          "narration": "Then it recommends local models that fit the hardware.",
-          "caption": "Checks the machine.",
-          "seconds": 5
+          "caption": "Hub reads the machine you already own.",
+          "narration": "Companion Hub reads the machine you already own.",
+          "seconds": 4.5
         },
         {
           "ref": "picks-the-models",
-          "narration": "See each model's requirements before you install it.",
-          "caption": "Models that fit.",
+          "caption": "Then picks models that fit it.",
+          "narration": "Then picks the local models that fit it.",
           "seconds": 4.5
         },
         {
-          "ref": "apps-arrive",
-          "narration": "A guided install shows network exposure and settings before anything starts.",
-          "caption": "Install with the choices visible.",
-          "seconds": 4.5
+          "ref": "the-frameworks",
+          "caption": "OpenClaw, Hermes, and the rest.",
+          "narration": "Add OpenClaw, Hermes and the rest of the shelf in one click each.",
+          "seconds": 5.5
         },
         {
           "ref": "install-and-run",
-          "narration": "Then the app is running on your Hub, ready to open.",
           "caption": "Installed. Running. Yours.",
-          "seconds": 5
-        },
-        {
-          "ref": "hermes-openclaw",
-          "narration": "Add Hermes and OpenClaw through their separate app backends.",
-          "caption": "Hermes and OpenClaw connect through separate app backends.",
+          "narration": "Running on your hardware, rented from nobody.",
           "seconds": 4.5
         },
         {
@@ -779,6 +940,28 @@
       ]
     },
     {
+      "id": "ci-hub-bumper-tenant",
+      "kind": "bumper",
+      "name": "Companion Hub: Renting tenant",
+      "meta": {
+        "pacing": "fit",
+        "pacingTail": 0.12
+      },
+      "media": {
+        "music": "assets/media/ci-campaign-bed-110.mp3",
+        "musicLufs": -22
+      },
+      "scenes": [
+        {
+          "ref": "the-tenant",
+          "title": "Stop renting your stack.",
+          "caption": "ci.computer/download",
+          "narration": "You are a renting tenant. You do not have to be.",
+          "minSeconds": 3
+        }
+      ]
+    },
+    {
       "id": "ci-hub-bumper-laptop",
       "kind": "bumper",
       "name": "Companion Hub: Old computer, new AI home",
@@ -786,44 +969,60 @@
         "pacing": "fit",
         "pacingTail": 0.12
       },
+      "media": {
+        "music": "assets/media/ci-campaign-bed-110.mp3",
+        "musicLufs": -22
+      },
       "scenes": [
         {
           "ref": "the-list",
           "title": "Old computer. New AI home.",
           "caption": "Get Hub · ci.computer/download",
-          "narration": "Old computer. New AI home. Get Companion Hub."
+          "narration": "Old computer. New AI home. Get Companion Hub.",
+          "minSeconds": 3
         }
       ]
     },
     {
-      "id": "ci-hub-bumper-renting",
+      "id": "ci-hub-bumper-models",
       "kind": "bumper",
-      "name": "Companion Hub: Stop renting the stack",
+      "name": "Companion Hub: Models that fit",
       "meta": {
         "pacing": "fit",
         "pacingTail": 0.12
       },
+      "media": {
+        "music": "assets/media/ci-campaign-bed-110.mp3",
+        "musicLufs": -22
+      },
       "scenes": [
         {
-          "ref": "install-and-run",
-          "caption": "Stop renting your stack · ci.computer/download",
-          "narration": "Your apps. Your machine. Stop renting the stack."
+          "ref": "picks-the-models",
+          "caption": "Models chosen for your hardware · ci.computer/download",
+          "narration": "It reads your hardware, then picks the models that fit it.",
+          "minSeconds": 3
         }
       ]
     },
     {
-      "id": "ci-hub-bumper-landlord",
+      "id": "ci-hub-bumper-agents",
       "kind": "bumper",
-      "name": "Companion Hub: Your machine",
+      "name": "Companion Hub: Bring your agents",
       "meta": {
         "pacing": "fit",
         "pacingTail": 0.12
       },
+      "media": {
+        "music": "assets/media/ci-campaign-bed-110.mp3",
+        "musicLufs": -22
+      },
       "scenes": [
         {
-          "ref": "from-a-phone",
-          "caption": "You choose what connects out · ci.computer/download",
-          "narration": "Your apps. Your AI. Your machine."
+          "ref": "the-frameworks",
+          "title": "Bring your own agents.",
+          "caption": "OpenClaw · Hermes · Claude Code · OpenCode · ci.computer/download",
+          "narration": "Bring your own agents. One click each, on hardware you own.",
+          "minSeconds": 3
         }
       ]
     }

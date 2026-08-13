@@ -2,6 +2,7 @@ import { changeUsernameMutation } from '@/api-client/@tanstack/react-query.gen';
 import { Button } from '@/components/ui/Button';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/Dialog';
 import { Input } from '@/components/ui/Input';
+import { PasswordInput } from '@/components/ui/PasswordInput/PasswordInput';
 import { clearClientHubState } from '@/lib/clear-client-hub-state';
 import { useDisclosure } from '@/lib/hooks/use-disclosure';
 import { SIGNED_OUT_PARAM } from '@/lib/signed-out-reasons';
@@ -74,11 +75,11 @@ export const ChangeUsernameForm = ({ username }: Props) => {
                 placeholder={t('SETTINGS_SECURITY_CHANGE_USERNAME_FORM_NEW_USERNAME')}
                 {...register('newUsername')}
               />
-              <Input
+              <PasswordInput
                 className="mt-2"
                 error={formState.errors.password?.message}
                 disabled={changeUsername.isPending}
-                type="password"
+                autoComplete="current-password"
                 placeholder={t('COMMON_PASSWORD')}
                 {...register('password')}
               />
