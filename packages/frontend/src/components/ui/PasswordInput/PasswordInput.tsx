@@ -6,7 +6,9 @@ import { Eye, EyeOff } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/utils';
 
-type Props = Omit<ComponentProps<typeof InputGroup>, 'type'>;
+// `groupSuffix` joins `type` in the Omit: the toggle occupies that slot, so a caller
+// passing one would have it silently dropped.
+type Props = Omit<ComponentProps<typeof InputGroup>, 'type' | 'groupSuffix'>;
 
 export const PasswordInput = ({ className, size = 'default', disabled, ...props }: Props) => {
   const [passwordVisible, setPasswordVisible] = useState(false);
@@ -21,6 +23,12 @@ export const PasswordInput = ({ className, size = 'default', disabled, ...props 
       size={size}
       disabled={disabled}
       type={passwordVisible ? 'text' : 'password'}
+      // Revealing makes this a text input, and browsers exempt only `type="password"`
+      // from spellcheck — enhanced spellcheck would ship the revealed value to a
+      // third-party service. Keyboard assistance is wrong for a password either way.
+      spellCheck={false}
+      autoCapitalize="off"
+      autoCorrect="off"
       // `::-ms-reveal` is Edge's own reveal control, which this toggle replaces.
       className={cn('[&_input::-ms-reveal]:hidden', className)}
       groupSuffix={
@@ -37,7 +45,10 @@ export const PasswordInput = ({ className, size = 'default', disabled, ...props 
             type="button"
             aria-label={toggleLabel}
             disabled={disabled}
-            className={cn(tooltipAnchorClass, 'rounded-l-none border-l-0', size === 'sm' ? 'h-8 w-8' : 'h-11 w-11')}
+            // `size-*` rather than `h-* w-*` so tailwind-merge actually replaces the
+            // `size-8` that Button's icon variant sets, instead of leaving both and
+            // letting CSS source order decide the height.
+            className={cn(tooltipAnchorClass, 'rounded-l-none border-l-0', size === 'sm' ? 'size-8' : 'size-11')}
           >
             {passwordVisible ? <EyeOff size={16} /> : <Eye size={16} />}
           </Button>
