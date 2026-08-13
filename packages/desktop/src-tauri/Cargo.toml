@@ -1,6 +1,6 @@
 [package]
 name = "ci-os-hub-desktop"
-version = "0.2.36"
+version = "0.2.56"
 description = "Desktop app for managing and accessing the Companion Intelligence Hub"
 authors = ["Companion Intelligence"]
 edition = "2021"

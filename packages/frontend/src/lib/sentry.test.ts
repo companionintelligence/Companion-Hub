@@ -6,19 +6,31 @@ type MutableImportMetaEnv = {
 
 const testEnv = import.meta.env as MutableImportMetaEnv;
 
-const { fetchDeviceRegistrationInfoResult, captureException, captureMessage, init, setLevel, setTag, setExtra, setUser, withScope } = vi.hoisted(
-  () => ({
-    fetchDeviceRegistrationInfoResult: vi.fn(),
-    captureException: vi.fn(),
-    captureMessage: vi.fn(),
-    init: vi.fn(),
-    setLevel: vi.fn(),
-    setTag: vi.fn(),
-    setExtra: vi.fn(),
-    setUser: vi.fn(),
-    withScope: vi.fn(),
-  }),
-);
+const {
+  fetchDeviceRegistrationInfoResult,
+  captureException,
+  captureMessage,
+  init,
+  setLevel,
+  setTag,
+  setExtra,
+  setUser,
+  withScope,
+  browserTracingIntegration,
+  replayIntegration,
+} = vi.hoisted(() => ({
+  fetchDeviceRegistrationInfoResult: vi.fn(),
+  captureException: vi.fn(),
+  captureMessage: vi.fn(),
+  init: vi.fn(),
+  setLevel: vi.fn(),
+  setTag: vi.fn(),
+  setExtra: vi.fn(),
+  setUser: vi.fn(),
+  withScope: vi.fn(),
+  browserTracingIntegration: vi.fn(() => ({ name: 'BrowserTracing' })),
+  replayIntegration: vi.fn(() => ({ name: 'Replay' })),
+}));
 
 vi.mock('@sentry/react', () => ({
   captureMessage,
@@ -27,6 +39,8 @@ vi.mock('@sentry/react', () => ({
   setTag,
   setUser,
   withScope,
+  browserTracingIntegration,
+  replayIntegration,
 }));
 
 vi.mock('./registration-api', () => ({
@@ -108,6 +122,8 @@ describe('frontend sentry', () => {
         release: 'ci-hub-frontend@test',
       }),
     );
+    expect(browserTracingIntegration).toHaveBeenCalledOnce();
+    expect(replayIntegration).toHaveBeenCalledWith({ maskAllText: true, blockAllMedia: true });
     expect(setTag).toHaveBeenCalledWith('component', 'browser-web');
     expect(setTag).toHaveBeenCalledWith('ci_portal_url', 'https://hub.ci.computer');
     expect(setTag).toHaveBeenCalledWith('ci_portal_environment', 'prod');
