@@ -6,24 +6,44 @@ type MutableImportMetaEnv = {
 
 const testEnv = import.meta.env as MutableImportMetaEnv;
 
-const { fetchDeviceRegistrationInfoResult, captureException, captureMessage, init, setLevel, setTag, setExtra, setUser, withScope } = vi.hoisted(
-  () => ({
-    fetchDeviceRegistrationInfoResult: vi.fn(),
-    captureException: vi.fn(),
-    captureMessage: vi.fn(),
-    init: vi.fn(),
-    setLevel: vi.fn(),
-    setTag: vi.fn(),
-    setExtra: vi.fn(),
-    setUser: vi.fn(),
-    withScope: vi.fn(),
-  }),
-);
+const {
+  fetchDeviceRegistrationInfoResult,
+  browserTracingIntegration,
+  captureException,
+  captureMessage,
+  init,
+  replayIntegration,
+  setLevel,
+  setTag,
+  setExtra,
+  setUser,
+  withScope,
+} = vi.hoisted(() => ({
+  fetchDeviceRegistrationInfoResult: vi.fn(),
+  // `init` spreads the RESULT of these into `integrations: [...]`, so they must be
+  // callable and return an identifiable object — a bare vi.fn() returning undefined
+  // would put `undefined` in the integrations array.
+  browserTracingIntegration: vi.fn(() => ({ name: 'BrowserTracing' })),
+  captureException: vi.fn(),
+  captureMessage: vi.fn(),
+  init: vi.fn(),
+  replayIntegration: vi.fn(() => ({ name: 'Replay' })),
+  setLevel: vi.fn(),
+  setTag: vi.fn(),
+  setExtra: vi.fn(),
+  setUser: vi.fn(),
+  withScope: vi.fn(),
+}));
 
+// Must stay in sync with every `Sentry.*` symbol `sentry.ts` reaches for — vitest throws
+// "No <name> export is defined on the mock" the moment production code calls one that is
+// missing here, which is how adding the tracing/replay integrations turned this suite red.
 vi.mock('@sentry/react', () => ({
+  browserTracingIntegration,
   captureMessage,
   captureException,
   init,
+  replayIntegration,
   setTag,
   setUser,
   withScope,
@@ -106,6 +126,16 @@ describe('frontend sentry', () => {
         dsn: 'https://frontend@example.ingest.sentry.io/123456',
         environment: 'development',
         release: 'ci-hub-frontend@test',
+      }),
+    );
+    // Assert the integrations are actually wired in, so a future integration added to
+    // sentry.ts but not to the mock fails here with a readable diff rather than an
+    // opaque "No <name> export is defined on the mock" from every test in the file.
+    expect(browserTracingIntegration).toHaveBeenCalled();
+    expect(replayIntegration).toHaveBeenCalledWith({ maskAllText: true, blockAllMedia: true });
+    expect(init).toHaveBeenCalledWith(
+      expect.objectContaining({
+        integrations: [{ name: 'BrowserTracing' }, { name: 'Replay' }],
       }),
     );
     expect(setTag).toHaveBeenCalledWith('component', 'browser-web');
