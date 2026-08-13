@@ -45,6 +45,33 @@ describe('TraefikLabelsBuilder — forward-auth middleware', () => {
     expect(labels['traefik.http.routers.ci-import-tools-ci-marketplace-insecure.middlewares']).toBeUndefined();
   });
 
+  it('forwards public host headers to the app after edge auth', () => {
+    const labels = build({ enableAuth: true, cloudflarePublicHostname: 'ci-import-tools-core-2.example.com' });
+
+    expect(labels['traefik.http.middlewares.ci-import-tools-ci-marketplace-public-host.headers.customrequestheaders.X-Forwarded-Host']).toBe(
+      'ci-import-tools-core-2.example.com',
+    );
+    expect(labels['traefik.http.middlewares.ci-import-tools-ci-marketplace-public-host.headers.customrequestheaders.X-Forwarded-Proto']).toBe(
+      'https',
+    );
+    expect(labels['traefik.http.middlewares.ci-import-tools-ci-marketplace-public-host.headers.customrequestheaders.X-Forwarded-Port']).toBe('443');
+    expect(labels['traefik.http.routers.ci-import-tools-ci-marketplace.middlewares']).toBe(
+      'ci-hub@file,ci-import-tools-ci-marketplace-public-host@docker',
+    );
+    expect(labels['traefik.http.routers.ci-import-tools-ci-marketplace-insecure.middlewares']).toBe(
+      'ci-hub@file,ci-import-tools-ci-marketplace-public-host@docker',
+    );
+  });
+
+  it('still forwards public host headers when app-level auth is disabled', () => {
+    const labels = build({ enableAuth: false, cloudflarePublicHostname: 'ci-import-tools-core-2.example.com' });
+
+    expect(labels['traefik.http.routers.ci-import-tools-ci-marketplace.middlewares']).toBe('ci-import-tools-ci-marketplace-public-host@docker');
+    expect(labels['traefik.http.routers.ci-import-tools-ci-marketplace-insecure.middlewares']).toBe(
+      'ci-import-tools-ci-marketplace-public-host@docker',
+    );
+  });
+
   it('creates no routers at all outside cloudflare exposure', () => {
     const labels = new TraefikLabelsBuilder({ ...base, exposureMode: 'local', enableAuth: true }).addCloudflareLabels().build();
 
