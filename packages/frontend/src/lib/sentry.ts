@@ -293,7 +293,12 @@ export function initHubSentry(): void {
     environment: import.meta.env.CI_HUB_ENVIRONMENT || import.meta.env.MODE,
     release: getSentryRelease(),
     enabled: true,
-    tracesSampleRate: 0,
+    integrations: [Sentry.browserTracingIntegration(), Sentry.replayIntegration({ maskAllText: true, blockAllMedia: true })],
+    tracesSampleRate: Number(import.meta.env.VITE_SENTRY_TRACES_SAMPLE_RATE ?? 0.1),
+    replaysSessionSampleRate: Number(import.meta.env.VITE_SENTRY_REPLAYS_SESSION_SAMPLE_RATE ?? 0.1),
+    replaysOnErrorSampleRate: Number(import.meta.env.VITE_SENTRY_REPLAYS_ON_ERROR_SAMPLE_RATE ?? 1),
+    enableMetrics: import.meta.env.VITE_SENTRY_ENABLE_METRICS !== 'false',
+    enableLogs: import.meta.env.VITE_SENTRY_ENABLE_LOGS !== 'false',
     // No PII, matching the rest of the fleet. The Sentry org has
     // `scrubIPAddresses` disabled, so leaving this on meant the Hub was the one
     // component storing users' real IP addresses. Device attribution comes from

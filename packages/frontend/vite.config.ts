@@ -84,6 +84,7 @@ export default defineConfig(({ mode }) => {
    * `import.meta.env.DEV` (which is always false in any `vite build`).
    */
   const ciHubEnvironment = (process.env.CI_HUB_ENVIRONMENT ?? fileEnv.CI_HUB_ENVIRONMENT ?? hubFileEnv.CI_HUB_ENVIRONMENT ?? '').trim();
+  const sentryEnv = { ...hubFileEnv, ...fileEnv, ...process.env } as Record<string, string | undefined>;
 
   const alias: Record<string, string> = {
     '@': path.resolve(__dirname, './src'),
@@ -104,6 +105,11 @@ export default defineConfig(({ mode }) => {
       'import.meta.env.CI_HUB_VERSION': JSON.stringify(ciHubVersion),
       'import.meta.env.CI_HUB_IMAGE': JSON.stringify(ciHubImage),
       'import.meta.env.CI_HUB_ENVIRONMENT': JSON.stringify(ciHubEnvironment),
+      'import.meta.env.VITE_SENTRY_TRACES_SAMPLE_RATE': JSON.stringify(sentryEnv.VITE_SENTRY_TRACES_SAMPLE_RATE ?? '0.1'),
+      'import.meta.env.VITE_SENTRY_REPLAYS_SESSION_SAMPLE_RATE': JSON.stringify(sentryEnv.VITE_SENTRY_REPLAYS_SESSION_SAMPLE_RATE ?? '0.1'),
+      'import.meta.env.VITE_SENTRY_REPLAYS_ON_ERROR_SAMPLE_RATE': JSON.stringify(sentryEnv.VITE_SENTRY_REPLAYS_ON_ERROR_SAMPLE_RATE ?? '1'),
+      'import.meta.env.VITE_SENTRY_ENABLE_METRICS': JSON.stringify(sentryEnv.VITE_SENTRY_ENABLE_METRICS ?? 'true'),
+      'import.meta.env.VITE_SENTRY_ENABLE_LOGS': JSON.stringify(sentryEnv.VITE_SENTRY_ENABLE_LOGS ?? 'true'),
     },
     resolve: {
       alias,
