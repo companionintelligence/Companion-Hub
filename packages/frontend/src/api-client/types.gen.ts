@@ -159,12 +159,172 @@ export type AcknowledgeWelcomeBody = {
     allowErrorMonitoring: boolean;
 };
 
-export type InstalledAppUrnsDto = {
-    urns: Array<string>;
+export type LoadDto = {
+    diskUsed: number;
+    diskSize: number;
+    percentUsed: number;
+    cpuLoad: number;
+    cpuCores: number;
+    memoryTotal: number;
+    memoryUsed: number;
+    percentUsedMemory: number;
+    hasVmWedge: boolean;
+    runtimeKind: 'container-only' | 'docker-desktop-vm' | 'wsl2-vm' | 'linux-native' | 'host-native';
+    containerMemoryTotal?: number;
+    containerMemoryUsed?: number;
+    containerDiskTotal?: number;
+    containerDiskUsed?: number;
+    recommendedDockerRamMb?: number;
+    platformGuidance?: string;
 };
 
-export type UpdatesAvailableDto = {
-    updatesAvailable: number;
+export type SystemResourcesDto = {
+    docker: {
+        cpuCores: number;
+        memTotalMb: number;
+        serverVersion?: string;
+    };
+    host: {
+        cpuCores: number;
+        totalRamMb: number;
+        availableRamMb: number;
+        diskTotalGb: number;
+        diskUsedGb: number;
+    };
+    runtimeKind: 'container-only' | 'docker-desktop-vm' | 'wsl2-vm' | 'linux-native' | 'host-native';
+    hasVmWedge: boolean;
+    recommended: {
+        dockerRamMb: number;
+        dockerCpus: number;
+        dockerDiskGb: number;
+    };
+    appDefaults: {
+        cpuLimit?: string;
+        memoryLimit?: string;
+        autoAllocated: boolean;
+    };
+    tuning: {
+        [key: string]: unknown;
+    };
+};
+
+export type FactoryResetDto = {
+    confirmation: 'factory-reset';
+};
+
+export type LoginBody = {
+    username: string;
+    password: string;
+};
+
+export type LoginDto = {
+    success: boolean;
+    totpSessionId?: string;
+    sessionId?: string;
+};
+
+export type VerifyTotpBody = {
+    totpCode: string;
+    totpSessionId: string;
+};
+
+export type RegisterBody = {
+    username: string;
+    password: string;
+};
+
+export type RegisterDto = {
+    success: boolean;
+    requiresEmailVerification?: boolean;
+};
+
+export type SessionRefreshDto = {
+    sessionId: string;
+    issuedAt: number;
+};
+
+export type BrowserHandoffMintBody = {
+    next: string;
+};
+
+export type BrowserHandoffMintDto = {
+    url: string;
+};
+
+export type PortalSessionHintDto = {
+    email: string;
+    portalBaseUrl: string;
+    source: 'hub_operator' | 'portal_session';
+};
+
+export type PortalDesktopExchangeDto = {
+    sessionId: string;
+    redirectPath: string;
+};
+
+export type ChangeUsernameBody = {
+    newUsername: string;
+    password: string;
+};
+
+export type ChangePasswordBody = {
+    currentPassword: string;
+    newPassword: string;
+};
+
+export type GetTotpUriBody = {
+    password: string;
+};
+
+export type GetTotpUriDto = {
+    key: string;
+    uri: string;
+};
+
+export type SetupTotpBody = {
+    code: string;
+};
+
+export type DisableTotpBody = {
+    password: string;
+};
+
+export type ResetPasswordBody = {
+    newPassword: string;
+};
+
+export type ResetPasswordDto = {
+    success: boolean;
+    email: string;
+};
+
+export type CheckResetPasswordRequestDto = {
+    isRequestPending: boolean;
+};
+
+export type PasswordResetRequestBody = {
+    email: string;
+    deviceId?: string;
+};
+
+export type PasswordResetRequestDto = {
+    success: boolean;
+    message: string;
+};
+
+export type PasswordResetVerifyResponseDto = {
+    valid: boolean;
+    email?: string;
+};
+
+export type PasswordResetCompleteBody = {
+    token: string;
+    newPassword: string;
+};
+
+export type PasswordResetCompleteDto = {
+    success: boolean;
+    message: string;
 };
 
 export type MyAppsDto = {
@@ -426,6 +586,14 @@ export type MyAppsDto = {
             iconUrl?: string;
         };
     }>;
+};
+
+export type InstalledAppUrnsDto = {
+    urns: Array<string>;
+};
+
+export type UpdatesAvailableDto = {
+    updatesAvailable: number;
 };
 
 export type InstallQueueDto = {
@@ -1073,73 +1241,6 @@ export type AppRuntimeHealthDto = {
     }>;
 };
 
-export type UpdateInferencePreferencesBody = {
-    backend: 'ollama' | 'vllm' | 'lemonade';
-    model?: string;
-    embeddingModel?: string;
-    visionModel?: string;
-    vllmApiKey?: string;
-    vllmUrl?: string;
-};
-
-export type UpdateRocmInstallStateBody = {
-    phase: 'idle' | 'downloading' | 'installing' | 'reboot_required' | 'failed' | 'completed';
-    message?: string;
-};
-
-export type LoadDto = {
-    diskUsed: number;
-    diskSize: number;
-    percentUsed: number;
-    cpuLoad: number;
-    cpuCores: number;
-    memoryTotal: number;
-    memoryUsed: number;
-    percentUsedMemory: number;
-    hasVmWedge: boolean;
-    runtimeKind: 'container-only' | 'docker-desktop-vm' | 'wsl2-vm' | 'linux-native' | 'host-native';
-    containerMemoryTotal?: number;
-    containerMemoryUsed?: number;
-    containerDiskTotal?: number;
-    containerDiskUsed?: number;
-    recommendedDockerRamMb?: number;
-    platformGuidance?: string;
-};
-
-export type SystemResourcesDto = {
-    docker: {
-        cpuCores: number;
-        memTotalMb: number;
-        serverVersion?: string;
-    };
-    host: {
-        cpuCores: number;
-        totalRamMb: number;
-        availableRamMb: number;
-        diskTotalGb: number;
-        diskUsedGb: number;
-    };
-    runtimeKind: 'container-only' | 'docker-desktop-vm' | 'wsl2-vm' | 'linux-native' | 'host-native';
-    hasVmWedge: boolean;
-    recommended: {
-        dockerRamMb: number;
-        dockerCpus: number;
-        dockerDiskGb: number;
-    };
-    appDefaults: {
-        cpuLimit?: string;
-        memoryLimit?: string;
-        autoAllocated: boolean;
-    };
-    tuning: {
-        [key: string]: unknown;
-    };
-};
-
-export type FactoryResetDto = {
-    confirmation: 'factory-reset';
-};
-
 export type SearchAppsDto = {
     data: Array<{
         id: string;
@@ -1196,6 +1297,20 @@ export type UpdateAppStoreDto = {
     success: boolean;
 };
 
+export type UpdateInferencePreferencesBody = {
+    backend: 'ollama' | 'vllm' | 'lemonade';
+    model?: string;
+    embeddingModel?: string;
+    visionModel?: string;
+    vllmApiKey?: string;
+    vllmUrl?: string;
+};
+
+export type UpdateRocmInstallStateBody = {
+    phase: 'idle' | 'downloading' | 'installing' | 'reboot_required' | 'failed' | 'completed';
+    message?: string;
+};
+
 export type CreateApiKeyBody = {
     name: string;
     capability: 'read' | 'write' | 'full';
@@ -1203,44 +1318,6 @@ export type CreateApiKeyBody = {
 
 export type UpdateApiKeyBody = {
     capability: 'read' | 'write' | 'full';
-};
-
-export type McpToolCallBody = {
-    arguments?: {
-        [key: string]: unknown;
-    };
-    confirmDestructive?: boolean;
-};
-
-export type McpProbeResultDto = {
-    bridgeable: boolean;
-    transport?: string;
-    containerStatus: 'running' | 'stopped' | 'missing' | 'unknown';
-    toolCount: number;
-    lastError?: string;
-    lastProbeAt?: string;
-    bridgeWarning?: string;
-    connected: boolean;
-};
-
-export type McpInstallSchemaDto = {
-    transport?: 'stdio' | 'http';
-    requires?: {
-        [key: string]: unknown;
-    };
-    tags: Array<string>;
-    fields: Array<{
-        key: string;
-        label: string;
-        hint?: string;
-        required: boolean;
-        secret: boolean;
-        default?: string | number | boolean;
-        source: 'form_field' | 'mcp_env';
-    }>;
-    toolCount: number;
-    bridgeable: boolean;
-    bridgeWarning?: string;
 };
 
 export type AppFormBody = {
@@ -1320,6 +1397,34 @@ export type GetAppBackupsDto = {
 
 export type DeleteAppBackupBodyDto = {
     filename: string;
+};
+
+export type LinksDto = {
+    links: Array<{
+        id: number;
+        title: string;
+        description: string;
+        url: string;
+        iconUrl: string | '';
+        userId: number;
+        isVisibleOnGuestDashboard: boolean;
+    }>;
+};
+
+export type LinkBodyDto = {
+    title: string;
+    url: string;
+    description?: string;
+    iconUrl?: string | '';
+    isVisibleOnGuestDashboard: boolean;
+};
+
+export type EditLinkBodyDto = {
+    title: string;
+    url: string;
+    description?: string;
+    iconUrl?: string | '';
+    isVisibleOnGuestDashboard?: boolean;
 };
 
 export type GetUserConfigDto = {
@@ -1837,147 +1942,42 @@ export type UpdateAppMetadataDto = {
     data: string;
 };
 
-export type LinksDto = {
-    links: Array<{
-        id: number;
-        title: string;
-        description: string;
-        url: string;
-        iconUrl: string | '';
-        userId: number;
-        isVisibleOnGuestDashboard: boolean;
+export type McpToolCallBody = {
+    arguments?: {
+        [key: string]: unknown;
+    };
+    confirmDestructive?: boolean;
+};
+
+export type McpProbeResultDto = {
+    bridgeable: boolean;
+    transport?: string;
+    containerStatus: 'running' | 'stopped' | 'missing' | 'unknown';
+    toolCount: number;
+    lastError?: string;
+    lastProbeAt?: string;
+    bridgeWarning?: string;
+    connected: boolean;
+};
+
+export type McpInstallSchemaDto = {
+    transport?: 'stdio' | 'http';
+    requires?: {
+        [key: string]: unknown;
+    };
+    tags: Array<string>;
+    fields: Array<{
+        key: string;
+        label: string;
+        hint?: string;
+        required: boolean;
+        secret: boolean;
+        default?: string | number | boolean;
+        source: 'form_field' | 'mcp_env';
     }>;
-};
-
-export type LinkBodyDto = {
-    title: string;
-    url: string;
-    description?: string;
-    iconUrl?: string | '';
-    isVisibleOnGuestDashboard: boolean;
-};
-
-export type EditLinkBodyDto = {
-    title: string;
-    url: string;
-    description?: string;
-    iconUrl?: string | '';
-    isVisibleOnGuestDashboard?: boolean;
-};
-
-export type LoginBody = {
-    username: string;
-    password: string;
-};
-
-export type LoginDto = {
-    success: boolean;
-    totpSessionId?: string;
-    sessionId?: string;
-};
-
-export type VerifyTotpBody = {
-    totpCode: string;
-    totpSessionId: string;
-};
-
-export type RegisterBody = {
-    username: string;
-    password: string;
-};
-
-export type RegisterDto = {
-    success: boolean;
-    requiresEmailVerification?: boolean;
-};
-
-export type SessionRefreshDto = {
-    sessionId: string;
-    issuedAt: number;
-};
-
-export type BrowserHandoffMintBody = {
-    next: string;
-};
-
-export type BrowserHandoffMintDto = {
-    url: string;
-};
-
-export type PortalSessionHintDto = {
-    email: string;
-    portalBaseUrl: string;
-    source: 'hub_operator' | 'portal_session';
-};
-
-export type PortalDesktopExchangeDto = {
-    sessionId: string;
-    redirectPath: string;
-};
-
-export type ChangeUsernameBody = {
-    newUsername: string;
-    password: string;
-};
-
-export type ChangePasswordBody = {
-    currentPassword: string;
-    newPassword: string;
-};
-
-export type GetTotpUriBody = {
-    password: string;
-};
-
-export type GetTotpUriDto = {
-    key: string;
-    uri: string;
-};
-
-export type SetupTotpBody = {
-    code: string;
-};
-
-export type DisableTotpBody = {
-    password: string;
-};
-
-export type ResetPasswordBody = {
-    newPassword: string;
-};
-
-export type ResetPasswordDto = {
-    success: boolean;
-    email: string;
-};
-
-export type CheckResetPasswordRequestDto = {
-    isRequestPending: boolean;
-};
-
-export type PasswordResetRequestBody = {
-    email: string;
-    deviceId?: string;
-};
-
-export type PasswordResetRequestDto = {
-    success: boolean;
-    message: string;
-};
-
-export type PasswordResetVerifyResponseDto = {
-    valid: boolean;
-    email?: string;
-};
-
-export type PasswordResetCompleteBody = {
-    token: string;
-    newPassword: string;
-};
-
-export type PasswordResetCompleteDto = {
-    success: boolean;
-    message: string;
+    toolCount: number;
+    bridgeable: boolean;
+    bridgeWarning?: string;
 };
 
 export type StreamAppLogsQueryDto = {
@@ -2066,6 +2066,13 @@ export type AvailableDomainsResponseDto = {
     }>;
 };
 
+export type FeaturedStoreBundleDto = {
+    firstParty: Array<unknown>;
+    featured: Array<unknown>;
+    trending: Array<unknown>;
+    newest: Array<unknown>;
+};
+
 export type UserContextData = {
     body?: never;
     path?: never;
@@ -2144,12 +2151,7 @@ export type GetStoreFeaturedBundleResponses = {
     /**
      * Bundled store listing sections
      */
-    200: {
-        firstParty: Array<unknown>;
-        featured: Array<unknown>;
-        trending: Array<unknown>;
-        newest: Array<unknown>;
-    };
+    200: FeaturedStoreBundleDto;
 };
 
 export type GetStoreFeaturedBundleResponse = GetStoreFeaturedBundleResponses[keyof GetStoreFeaturedBundleResponses];
@@ -2620,6 +2622,523 @@ export type RemoveCatchAllRoutesResponses = {
 
 export type RemoveCatchAllRoutesResponse = RemoveCatchAllRoutesResponses[keyof RemoveCatchAllRoutesResponses];
 
+export type SystemLoadData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/system/load';
+};
+
+export type SystemLoadResponses = {
+    default: LoadDto;
+};
+
+export type SystemLoadResponse = SystemLoadResponses[keyof SystemLoadResponses];
+
+export type SystemResourcesData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/system/resources';
+};
+
+export type SystemResourcesResponses = {
+    default: SystemResourcesDto;
+};
+
+export type SystemResourcesResponse = SystemResourcesResponses[keyof SystemResourcesResponses];
+
+export type DownloadHubLogsData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/system/logs/download';
+};
+
+export type DownloadHubLogsResponses = {
+    /**
+     * Hub logs download
+     */
+    200: unknown;
+};
+
+export type DownloadLocalCertificateData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/system/certificate';
+};
+
+export type DownloadLocalCertificateResponses = {
+    200: unknown;
+};
+
+export type DetectServicesData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/system/detect-services';
+};
+
+export type DetectServicesResponses = {
+    200: unknown;
+};
+
+export type GetFullInspectionData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/system-inspector';
+};
+
+export type GetFullInspectionResponses = {
+    200: unknown;
+};
+
+export type GetContainersData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/system-inspector/containers';
+};
+
+export type GetContainersResponses = {
+    200: unknown;
+};
+
+export type GetPortsData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/system-inspector/ports';
+};
+
+export type GetPortsResponses = {
+    200: unknown;
+};
+
+export type GetHealthData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/system-inspector/health';
+};
+
+export type GetHealthResponses = {
+    200: unknown;
+};
+
+export type FactoryResetData = {
+    body: FactoryResetDto;
+    path?: never;
+    query?: never;
+    url: '/api/system/factory-reset';
+};
+
+export type FactoryResetErrors = {
+    /**
+     * Operator authentication required
+     */
+    403: unknown;
+};
+
+export type FactoryResetResponses = {
+    /**
+     * Factory reset completed
+     */
+    200: unknown;
+};
+
+export type GetAllAllocationsData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/ports';
+};
+
+export type GetAllAllocationsResponses = {
+    /**
+     * Returns all port allocations across all apps
+     */
+    200: unknown;
+};
+
+export type GetAppPortsData = {
+    body?: never;
+    path: {
+        appUrn: string;
+    };
+    query?: never;
+    url: '/api/ports/{appUrn}';
+};
+
+export type GetAppPortsResponses = {
+    /**
+     * Returns port allocations for the specified app
+     */
+    200: unknown;
+};
+
+export type CheckAppPortsData = {
+    body?: never;
+    path: {
+        appUrn: string;
+    };
+    query?: never;
+    url: '/api/ports/{appUrn}/check';
+};
+
+export type CheckAppPortsResponses = {
+    /**
+     * Returns current port status and availability
+     */
+    200: unknown;
+};
+
+export type GetDiagnosticsData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/network/diagnostics';
+};
+
+export type GetDiagnosticsResponses = {
+    default: {
+        [key: string]: unknown;
+    };
+};
+
+export type GetDiagnosticsResponse = GetDiagnosticsResponses[keyof GetDiagnosticsResponses];
+
+export type RepairOrphansData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/network/repair-orphans';
+};
+
+export type RepairOrphansResponses = {
+    default: {
+        [key: string]: unknown;
+    };
+};
+
+export type RepairOrphansResponse = RepairOrphansResponses[keyof RepairOrphansResponses];
+
+export type GetTranslationData = {
+    body?: never;
+    path: {
+        ns: string;
+        lng: string;
+    };
+    query?: never;
+    url: '/api/i18n/locales/{ns}/{lng}.json';
+};
+
+export type GetTranslationResponses = {
+    200: unknown;
+};
+
+export type LoginData = {
+    body: LoginBody;
+    path?: never;
+    query?: never;
+    url: '/api/auth/login';
+};
+
+export type LoginResponses = {
+    default: LoginDto;
+};
+
+export type LoginResponse = LoginResponses[keyof LoginResponses];
+
+export type VerifyTotpData = {
+    body: VerifyTotpBody;
+    path?: never;
+    query?: never;
+    url: '/api/auth/verify-totp';
+};
+
+export type VerifyTotpResponses = {
+    default: LoginDto;
+};
+
+export type VerifyTotpResponse = VerifyTotpResponses[keyof VerifyTotpResponses];
+
+export type RegisterData = {
+    body: RegisterBody;
+    path?: never;
+    query?: never;
+    url: '/api/auth/register';
+};
+
+export type RegisterResponses = {
+    default: RegisterDto;
+};
+
+export type RegisterResponse = RegisterResponses[keyof RegisterResponses];
+
+export type LogoutData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/auth/logout';
+};
+
+export type LogoutResponses = {
+    201: unknown;
+};
+
+export type RefreshSessionData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/auth/session/refresh';
+};
+
+export type RefreshSessionResponses = {
+    default: SessionRefreshDto;
+};
+
+export type RefreshSessionResponse = RefreshSessionResponses[keyof RefreshSessionResponses];
+
+export type MintBrowserHandoffData = {
+    body: BrowserHandoffMintBody;
+    path?: never;
+    query?: never;
+    url: '/api/auth/browser-handoff/mint';
+};
+
+export type MintBrowserHandoffResponses = {
+    default: BrowserHandoffMintDto;
+};
+
+export type MintBrowserHandoffResponse = MintBrowserHandoffResponses[keyof MintBrowserHandoffResponses];
+
+export type ConsumeBrowserHandoffData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/auth/browser-handoff';
+};
+
+export type ConsumeBrowserHandoffResponses = {
+    200: unknown;
+};
+
+export type StartPortalLoginData = {
+    body?: never;
+    path?: never;
+    query: {
+        redirect_url: string;
+        desktop: string;
+    };
+    url: '/api/auth/portal/start';
+};
+
+export type StartPortalLoginResponses = {
+    200: unknown;
+};
+
+export type PortalCallbackData = {
+    body?: never;
+    path?: never;
+    query: {
+        code: string;
+        state: string;
+    };
+    url: '/api/auth/portal/callback';
+};
+
+export type PortalCallbackResponses = {
+    200: unknown;
+};
+
+export type PortalSessionHintData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/auth/portal/session-hint';
+};
+
+export type PortalSessionHintResponses = {
+    default: PortalSessionHintDto;
+};
+
+export type PortalSessionHintResponse = PortalSessionHintResponses[keyof PortalSessionHintResponses];
+
+export type ExchangePortalDesktopLoginData = {
+    body?: never;
+    path?: never;
+    query: {
+        token: string;
+    };
+    url: '/api/auth/portal/desktop-exchange';
+};
+
+export type ExchangePortalDesktopLoginResponses = {
+    default: PortalDesktopExchangeDto;
+};
+
+export type ExchangePortalDesktopLoginResponse = ExchangePortalDesktopLoginResponses[keyof ExchangePortalDesktopLoginResponses];
+
+export type ChangeUsernameData = {
+    body: ChangeUsernameBody;
+    path?: never;
+    query?: never;
+    url: '/api/auth/username';
+};
+
+export type ChangeUsernameResponses = {
+    200: unknown;
+};
+
+export type ChangePasswordData = {
+    body: ChangePasswordBody;
+    path?: never;
+    query?: never;
+    url: '/api/auth/password';
+};
+
+export type ChangePasswordResponses = {
+    200: unknown;
+};
+
+export type GetTotpUriData = {
+    body: GetTotpUriBody;
+    path?: never;
+    query?: never;
+    url: '/api/auth/totp/get-uri';
+};
+
+export type GetTotpUriResponses = {
+    default: GetTotpUriDto;
+};
+
+export type GetTotpUriResponse = GetTotpUriResponses[keyof GetTotpUriResponses];
+
+export type SetupTotpData = {
+    body: SetupTotpBody;
+    path?: never;
+    query?: never;
+    url: '/api/auth/totp/setup';
+};
+
+export type SetupTotpResponses = {
+    200: unknown;
+};
+
+export type DisableTotpData = {
+    body: DisableTotpBody;
+    path?: never;
+    query?: never;
+    url: '/api/auth/totp/disable';
+};
+
+export type DisableTotpResponses = {
+    200: unknown;
+};
+
+export type CancelResetPasswordData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/auth/reset-password';
+};
+
+export type CancelResetPasswordResponses = {
+    200: unknown;
+};
+
+export type CheckResetPasswordRequestData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/auth/reset-password';
+};
+
+export type CheckResetPasswordRequestResponses = {
+    default: CheckResetPasswordRequestDto;
+};
+
+export type CheckResetPasswordRequestResponse = CheckResetPasswordRequestResponses[keyof CheckResetPasswordRequestResponses];
+
+export type ResetPasswordData = {
+    body: ResetPasswordBody;
+    path?: never;
+    query?: never;
+    url: '/api/auth/reset-password';
+};
+
+export type ResetPasswordResponses = {
+    default: ResetPasswordDto;
+};
+
+export type ResetPasswordResponse = ResetPasswordResponses[keyof ResetPasswordResponses];
+
+export type RequestPasswordResetData = {
+    body: PasswordResetRequestBody;
+    path?: never;
+    query?: never;
+    url: '/api/auth/password-reset/request';
+};
+
+export type RequestPasswordResetResponses = {
+    default: PasswordResetRequestDto;
+};
+
+export type RequestPasswordResetResponse = RequestPasswordResetResponses[keyof RequestPasswordResetResponses];
+
+export type VerifyPasswordResetTokenData = {
+    body?: never;
+    path: {
+        token: string;
+    };
+    query?: never;
+    url: '/api/auth/password-reset/verify/{token}';
+};
+
+export type VerifyPasswordResetTokenResponses = {
+    default: PasswordResetVerifyResponseDto;
+};
+
+export type VerifyPasswordResetTokenResponse = VerifyPasswordResetTokenResponses[keyof VerifyPasswordResetTokenResponses];
+
+export type CompletePasswordResetData = {
+    body: PasswordResetCompleteBody;
+    path?: never;
+    query?: never;
+    url: '/api/auth/password-reset/complete';
+};
+
+export type CompletePasswordResetResponses = {
+    default: PasswordResetCompleteDto;
+};
+
+export type CompletePasswordResetResponse = CompletePasswordResetResponses[keyof CompletePasswordResetResponses];
+
+export type TraefikData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/auth/traefik';
+};
+
+export type TraefikResponses = {
+    200: unknown;
+};
+
+export type EdgeSsoData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/auth/edge-sso';
+};
+
+export type EdgeSsoResponses = {
+    200: unknown;
+};
+
 export type GetInstalledAppsData = {
     body?: never;
     path?: never;
@@ -2822,6 +3341,173 @@ export type ResolveAvailabilityData = {
 export type ResolveAvailabilityResponses = {
     201: unknown;
 };
+
+export type SearchAppsData = {
+    body?: never;
+    path?: never;
+    query?: {
+        search?: string;
+        pageSize?: number | unknown;
+        cursor?: string;
+        category?: 'network' | 'media' | 'development' | 'automation' | 'social' | 'utilities' | 'photography' | 'security' | 'featured' | 'books' | 'data' | 'music' | 'finance' | 'gaming' | 'ai' | 'agents' | 'mcp' | 'companion-intelligence';
+        storeId?: string;
+    };
+    url: '/api/marketplace/apps/search';
+};
+
+export type SearchAppsResponses = {
+    default: SearchAppsDto;
+};
+
+export type SearchAppsResponse = SearchAppsResponses[keyof SearchAppsResponses];
+
+export type GetImageData = {
+    body?: never;
+    path: {
+        urn: string;
+    };
+    query?: never;
+    url: '/api/marketplace/apps/{urn}/image';
+};
+
+export type GetImageResponses = {
+    200: unknown;
+};
+
+export type GetAppImageSizeData = {
+    body?: never;
+    path: {
+        urn: string;
+    };
+    query?: never;
+    url: '/api/marketplace/apps/{urn}/image-size';
+};
+
+export type GetAppImageSizeResponses = {
+    200: unknown;
+};
+
+export type GetAppMediaData = {
+    body?: never;
+    path: {
+        urn: string;
+    };
+    query?: never;
+    url: '/api/marketplace/apps/{urn}/media';
+};
+
+export type GetAppMediaResponses = {
+    default: AppMediaDto;
+};
+
+export type GetAppMediaResponse = GetAppMediaResponses[keyof GetAppMediaResponses];
+
+export type GetAppScreenshotData = {
+    body?: never;
+    path: {
+        urn: string;
+        filename: string;
+    };
+    query?: never;
+    url: '/api/marketplace/apps/{urn}/screenshots/{filename}';
+};
+
+export type GetAppScreenshotResponses = {
+    200: unknown;
+};
+
+export type GetAppDemoVideoData = {
+    body?: never;
+    path: {
+        urn: string;
+    };
+    query?: never;
+    url: '/api/marketplace/apps/{urn}/demo-video';
+};
+
+export type GetAppDemoVideoResponses = {
+    200: unknown;
+};
+
+export type PullAppStoresData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/marketplace/pull';
+};
+
+export type PullAppStoresResponses = {
+    default: PullDto;
+};
+
+export type PullAppStoresResponse = PullAppStoresResponses[keyof PullAppStoresResponses];
+
+export type CreateAppStoreData = {
+    body: CreateAppStoreBodyDto;
+    path?: never;
+    query?: never;
+    url: '/api/marketplace/create';
+};
+
+export type CreateAppStoreResponses = {
+    default: AppStoreDto;
+};
+
+export type CreateAppStoreResponse = CreateAppStoreResponses[keyof CreateAppStoreResponses];
+
+export type GetAllAppStoresData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/marketplace/all';
+};
+
+export type GetAllAppStoresResponses = {
+    default: AllAppStoresDto;
+};
+
+export type GetAllAppStoresResponse = GetAllAppStoresResponses[keyof GetAllAppStoresResponses];
+
+export type GetEnabledAppStoresData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/marketplace/enabled';
+};
+
+export type GetEnabledAppStoresResponses = {
+    default: AllAppStoresDto;
+};
+
+export type GetEnabledAppStoresResponse = GetEnabledAppStoresResponses[keyof GetEnabledAppStoresResponses];
+
+export type DeleteAppStoreData = {
+    body?: never;
+    path: {
+        id: string;
+    };
+    query?: never;
+    url: '/api/marketplace/{id}';
+};
+
+export type DeleteAppStoreResponses = {
+    200: unknown;
+};
+
+export type UpdateAppStoreData = {
+    body: UpdateAppStoreBodyDto;
+    path: {
+        id: string;
+    };
+    query?: never;
+    url: '/api/marketplace/{id}';
+};
+
+export type UpdateAppStoreResponses = {
+    default: UpdateAppStoreDto;
+};
+
+export type UpdateAppStoreResponse = UpdateAppStoreResponses[keyof UpdateAppStoreResponses];
 
 export type HealthData = {
     body?: never;
@@ -3131,376 +3817,6 @@ export type GetAppCredentialsEnv1Responses = {
     200: unknown;
 };
 
-export type SystemLoadData = {
-    body?: never;
-    path?: never;
-    query?: never;
-    url: '/api/system/load';
-};
-
-export type SystemLoadResponses = {
-    default: LoadDto;
-};
-
-export type SystemLoadResponse = SystemLoadResponses[keyof SystemLoadResponses];
-
-export type SystemResourcesData = {
-    body?: never;
-    path?: never;
-    query?: never;
-    url: '/api/system/resources';
-};
-
-export type SystemResourcesResponses = {
-    default: SystemResourcesDto;
-};
-
-export type SystemResourcesResponse = SystemResourcesResponses[keyof SystemResourcesResponses];
-
-export type DownloadHubLogsData = {
-    body?: never;
-    path?: never;
-    query?: never;
-    url: '/api/system/logs/download';
-};
-
-export type DownloadHubLogsResponses = {
-    /**
-     * Hub logs download
-     */
-    200: unknown;
-};
-
-export type DownloadLocalCertificateData = {
-    body?: never;
-    path?: never;
-    query?: never;
-    url: '/api/system/certificate';
-};
-
-export type DownloadLocalCertificateResponses = {
-    200: unknown;
-};
-
-export type DetectServicesData = {
-    body?: never;
-    path?: never;
-    query?: never;
-    url: '/api/system/detect-services';
-};
-
-export type DetectServicesResponses = {
-    200: unknown;
-};
-
-export type GetFullInspectionData = {
-    body?: never;
-    path?: never;
-    query?: never;
-    url: '/api/system-inspector';
-};
-
-export type GetFullInspectionResponses = {
-    200: unknown;
-};
-
-export type GetContainersData = {
-    body?: never;
-    path?: never;
-    query?: never;
-    url: '/api/system-inspector/containers';
-};
-
-export type GetContainersResponses = {
-    200: unknown;
-};
-
-export type GetPortsData = {
-    body?: never;
-    path?: never;
-    query?: never;
-    url: '/api/system-inspector/ports';
-};
-
-export type GetPortsResponses = {
-    200: unknown;
-};
-
-export type GetHealthData = {
-    body?: never;
-    path?: never;
-    query?: never;
-    url: '/api/system-inspector/health';
-};
-
-export type GetHealthResponses = {
-    200: unknown;
-};
-
-export type FactoryResetData = {
-    body: FactoryResetDto;
-    path?: never;
-    query?: never;
-    url: '/api/system/factory-reset';
-};
-
-export type FactoryResetErrors = {
-    /**
-     * Operator authentication required
-     */
-    403: unknown;
-};
-
-export type FactoryResetResponses = {
-    /**
-     * Factory reset completed
-     */
-    200: unknown;
-};
-
-export type GetAllAllocationsData = {
-    body?: never;
-    path?: never;
-    query?: never;
-    url: '/api/ports';
-};
-
-export type GetAllAllocationsResponses = {
-    /**
-     * Returns all port allocations across all apps
-     */
-    200: unknown;
-};
-
-export type GetAppPortsData = {
-    body?: never;
-    path: {
-        appUrn: string;
-    };
-    query?: never;
-    url: '/api/ports/{appUrn}';
-};
-
-export type GetAppPortsResponses = {
-    /**
-     * Returns port allocations for the specified app
-     */
-    200: unknown;
-};
-
-export type CheckAppPortsData = {
-    body?: never;
-    path: {
-        appUrn: string;
-    };
-    query?: never;
-    url: '/api/ports/{appUrn}/check';
-};
-
-export type CheckAppPortsResponses = {
-    /**
-     * Returns current port status and availability
-     */
-    200: unknown;
-};
-
-export type GetDiagnosticsData = {
-    body?: never;
-    path?: never;
-    query?: never;
-    url: '/api/network/diagnostics';
-};
-
-export type GetDiagnosticsResponses = {
-    default: {
-        [key: string]: unknown;
-    };
-};
-
-export type GetDiagnosticsResponse = GetDiagnosticsResponses[keyof GetDiagnosticsResponses];
-
-export type RepairOrphansData = {
-    body?: never;
-    path?: never;
-    query?: never;
-    url: '/api/network/repair-orphans';
-};
-
-export type RepairOrphansResponses = {
-    default: {
-        [key: string]: unknown;
-    };
-};
-
-export type RepairOrphansResponse = RepairOrphansResponses[keyof RepairOrphansResponses];
-
-export type SearchAppsData = {
-    body?: never;
-    path?: never;
-    query?: {
-        search?: string;
-        pageSize?: number | unknown;
-        cursor?: string;
-        category?: 'network' | 'media' | 'development' | 'automation' | 'social' | 'utilities' | 'photography' | 'security' | 'featured' | 'books' | 'data' | 'music' | 'finance' | 'gaming' | 'ai' | 'agents' | 'mcp' | 'companion-intelligence';
-        storeId?: string;
-    };
-    url: '/api/marketplace/apps/search';
-};
-
-export type SearchAppsResponses = {
-    default: SearchAppsDto;
-};
-
-export type SearchAppsResponse = SearchAppsResponses[keyof SearchAppsResponses];
-
-export type GetImageData = {
-    body?: never;
-    path: {
-        urn: string;
-    };
-    query?: never;
-    url: '/api/marketplace/apps/{urn}/image';
-};
-
-export type GetImageResponses = {
-    200: unknown;
-};
-
-export type GetAppImageSizeData = {
-    body?: never;
-    path: {
-        urn: string;
-    };
-    query?: never;
-    url: '/api/marketplace/apps/{urn}/image-size';
-};
-
-export type GetAppImageSizeResponses = {
-    200: unknown;
-};
-
-export type GetAppMediaData = {
-    body?: never;
-    path: {
-        urn: string;
-    };
-    query?: never;
-    url: '/api/marketplace/apps/{urn}/media';
-};
-
-export type GetAppMediaResponses = {
-    default: AppMediaDto;
-};
-
-export type GetAppMediaResponse = GetAppMediaResponses[keyof GetAppMediaResponses];
-
-export type GetAppScreenshotData = {
-    body?: never;
-    path: {
-        urn: string;
-        filename: string;
-    };
-    query?: never;
-    url: '/api/marketplace/apps/{urn}/screenshots/{filename}';
-};
-
-export type GetAppScreenshotResponses = {
-    200: unknown;
-};
-
-export type GetAppDemoVideoData = {
-    body?: never;
-    path: {
-        urn: string;
-    };
-    query?: never;
-    url: '/api/marketplace/apps/{urn}/demo-video';
-};
-
-export type GetAppDemoVideoResponses = {
-    200: unknown;
-};
-
-export type PullAppStoresData = {
-    body?: never;
-    path?: never;
-    query?: never;
-    url: '/api/marketplace/pull';
-};
-
-export type PullAppStoresResponses = {
-    default: PullDto;
-};
-
-export type PullAppStoresResponse = PullAppStoresResponses[keyof PullAppStoresResponses];
-
-export type CreateAppStoreData = {
-    body: CreateAppStoreBodyDto;
-    path?: never;
-    query?: never;
-    url: '/api/marketplace/create';
-};
-
-export type CreateAppStoreResponses = {
-    default: AppStoreDto;
-};
-
-export type CreateAppStoreResponse = CreateAppStoreResponses[keyof CreateAppStoreResponses];
-
-export type GetAllAppStoresData = {
-    body?: never;
-    path?: never;
-    query?: never;
-    url: '/api/marketplace/all';
-};
-
-export type GetAllAppStoresResponses = {
-    default: AllAppStoresDto;
-};
-
-export type GetAllAppStoresResponse = GetAllAppStoresResponses[keyof GetAllAppStoresResponses];
-
-export type GetEnabledAppStoresData = {
-    body?: never;
-    path?: never;
-    query?: never;
-    url: '/api/marketplace/enabled';
-};
-
-export type GetEnabledAppStoresResponses = {
-    default: AllAppStoresDto;
-};
-
-export type GetEnabledAppStoresResponse = GetEnabledAppStoresResponses[keyof GetEnabledAppStoresResponses];
-
-export type DeleteAppStoreData = {
-    body?: never;
-    path: {
-        id: string;
-    };
-    query?: never;
-    url: '/api/marketplace/{id}';
-};
-
-export type DeleteAppStoreResponses = {
-    200: unknown;
-};
-
-export type UpdateAppStoreData = {
-    body: UpdateAppStoreBodyDto;
-    path: {
-        id: string;
-    };
-    query?: never;
-    url: '/api/marketplace/{id}';
-};
-
-export type UpdateAppStoreResponses = {
-    default: UpdateAppStoreDto;
-};
-
-export type UpdateAppStoreResponse = UpdateAppStoreResponses[keyof UpdateAppStoreResponses];
-
 export type ListKeysData = {
     body?: never;
     path?: never;
@@ -3548,121 +3864,6 @@ export type UpdateKeyData = {
 export type UpdateKeyResponses = {
     200: unknown;
 };
-
-export type HandleDeleteData = {
-    body?: never;
-    path?: never;
-    query?: never;
-    url: '/api/mcp';
-};
-
-export type HandleDeleteResponses = {
-    204: void;
-};
-
-export type HandleDeleteResponse = HandleDeleteResponses[keyof HandleDeleteResponses];
-
-export type HandleGetData = {
-    body?: never;
-    path?: never;
-    query?: never;
-    url: '/api/mcp';
-};
-
-export type HandleGetResponses = {
-    200: unknown;
-};
-
-export type HandlePostData = {
-    body?: never;
-    path?: never;
-    query?: never;
-    url: '/api/mcp';
-};
-
-export type HandlePostResponses = {
-    200: unknown;
-};
-
-export type GetStatus4Data = {
-    body?: never;
-    path?: never;
-    query?: never;
-    url: '/api/mcp-admin/status';
-};
-
-export type GetStatus4Responses = {
-    200: unknown;
-};
-
-export type ListToolsData = {
-    body?: never;
-    path?: never;
-    query?: never;
-    url: '/api/mcp-admin/tools';
-};
-
-export type ListToolsResponses = {
-    200: unknown;
-};
-
-export type CallToolData = {
-    body: McpToolCallBody;
-    path: {
-        name: string;
-    };
-    query?: never;
-    url: '/api/mcp-admin/tools/{name}/call';
-};
-
-export type CallToolResponses = {
-    201: unknown;
-};
-
-export type GetMcpStatusData = {
-    body?: never;
-    path: {
-        urn: string;
-    };
-    query?: never;
-    url: '/api/apps/{urn}/mcp/status';
-};
-
-export type GetMcpStatusResponses = {
-    default: McpProbeResultDto;
-};
-
-export type GetMcpStatusResponse = GetMcpStatusResponses[keyof GetMcpStatusResponses];
-
-export type ProbeMcpData = {
-    body?: never;
-    path: {
-        urn: string;
-    };
-    query?: never;
-    url: '/api/apps/{urn}/mcp/probe';
-};
-
-export type ProbeMcpResponses = {
-    default: McpProbeResultDto;
-};
-
-export type ProbeMcpResponse = ProbeMcpResponses[keyof ProbeMcpResponses];
-
-export type GetMcpInstallSchemaData = {
-    body?: never;
-    path: {
-        urn: string;
-    };
-    query?: never;
-    url: '/api/apps/{urn}/mcp/install-schema';
-};
-
-export type GetMcpInstallSchemaResponses = {
-    default: McpInstallSchemaDto;
-};
-
-export type GetMcpInstallSchemaResponse = GetMcpInstallSchemaResponses[keyof GetMcpInstallSchemaResponses];
 
 export type GetRehydratePlanData = {
     body?: never;
@@ -4064,20 +4265,20 @@ export type HubLogsEventsResponses = {
     200: unknown;
 };
 
-export type GetStatus5Data = {
+export type GetStatus4Data = {
     body?: never;
     path?: never;
     query?: never;
     url: '/api/tailscale/status';
 };
 
-export type GetStatus5Responses = {
+export type GetStatus4Responses = {
     default: {
         [key: string]: unknown;
     };
 };
 
-export type GetStatus5Response = GetStatus5Responses[keyof GetStatus5Responses];
+export type GetStatus4Response = GetStatus4Responses[keyof GetStatus4Responses];
 
 export type SyncExposureData = {
     body?: never;
@@ -4167,6 +4368,186 @@ export type GetServeStatusResponses = {
 };
 
 export type GetServeStatusResponse = GetServeStatusResponses[keyof GetServeStatusResponses];
+
+export type GetGuestLinksData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/links/guest';
+};
+
+export type GetGuestLinksResponses = {
+    default: LinksDto;
+};
+
+export type GetGuestLinksResponse = GetGuestLinksResponses[keyof GetGuestLinksResponses];
+
+export type GetLinksData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/links';
+};
+
+export type GetLinksResponses = {
+    default: LinksDto;
+};
+
+export type GetLinksResponse = GetLinksResponses[keyof GetLinksResponses];
+
+export type CreateLinkData = {
+    body: LinkBodyDto;
+    path?: never;
+    query?: never;
+    url: '/api/links';
+};
+
+export type CreateLinkResponses = {
+    201: unknown;
+};
+
+export type DeleteLinkData = {
+    body?: never;
+    path: {
+        id: number;
+    };
+    query?: never;
+    url: '/api/links/{id}';
+};
+
+export type DeleteLinkResponses = {
+    200: unknown;
+};
+
+export type EditLinkData = {
+    body: EditLinkBodyDto;
+    path: {
+        id: number;
+    };
+    query?: never;
+    url: '/api/links/{id}';
+};
+
+export type EditLinkResponses = {
+    200: unknown;
+};
+
+export type LiveData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/health/live';
+};
+
+export type LiveResponses = {
+    200: unknown;
+};
+
+export type CheckData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/health';
+};
+
+export type CheckErrors = {
+    /**
+     * The Health Check is not successful
+     */
+    503: {
+        status?: string;
+        info?: {
+            [key: string]: {
+                status: string;
+                [key: string]: unknown | string;
+            };
+        };
+        error?: {
+            [key: string]: {
+                status: string;
+                [key: string]: unknown | string;
+            };
+        };
+        details?: {
+            [key: string]: {
+                status: string;
+                [key: string]: unknown | string;
+            };
+        };
+    };
+};
+
+export type CheckError = CheckErrors[keyof CheckErrors];
+
+export type CheckResponses = {
+    /**
+     * The Health Check is successful
+     */
+    200: {
+        status?: string;
+        info?: {
+            [key: string]: {
+                status: string;
+                [key: string]: unknown | string;
+            };
+        };
+        error?: {
+            [key: string]: {
+                status: string;
+                [key: string]: unknown | string;
+            };
+        };
+        details?: {
+            [key: string]: {
+                status: string;
+                [key: string]: unknown | string;
+            };
+        };
+    };
+};
+
+export type CheckResponse = CheckResponses[keyof CheckResponses];
+
+export type CheckDataIntegrityData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/health/data';
+};
+
+export type CheckDataIntegrityResponses = {
+    200: unknown;
+};
+
+export type GetDiagnostics2Data = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/public-web/diagnostics';
+};
+
+export type GetDiagnostics2Responses = {
+    default: {
+        [key: string]: unknown;
+    };
+};
+
+export type GetDiagnostics2Response = GetDiagnostics2Responses[keyof GetDiagnostics2Responses];
+
+export type RepairData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/public-web/repair';
+};
+
+export type RepairResponses = {
+    default: {
+        [key: string]: unknown;
+    };
+};
+
+export type RepairResponse = RepairResponses[keyof RepairResponses];
 
 export type GetUserConfigData = {
     body?: never;
@@ -4360,500 +4741,6 @@ export type GetHostListenerTokenResponses = {
     200: unknown;
 };
 
-export type GetGuestLinksData = {
-    body?: never;
-    path?: never;
-    query?: never;
-    url: '/api/links/guest';
-};
-
-export type GetGuestLinksResponses = {
-    default: LinksDto;
-};
-
-export type GetGuestLinksResponse = GetGuestLinksResponses[keyof GetGuestLinksResponses];
-
-export type GetLinksData = {
-    body?: never;
-    path?: never;
-    query?: never;
-    url: '/api/links';
-};
-
-export type GetLinksResponses = {
-    default: LinksDto;
-};
-
-export type GetLinksResponse = GetLinksResponses[keyof GetLinksResponses];
-
-export type CreateLinkData = {
-    body: LinkBodyDto;
-    path?: never;
-    query?: never;
-    url: '/api/links';
-};
-
-export type CreateLinkResponses = {
-    201: unknown;
-};
-
-export type DeleteLinkData = {
-    body?: never;
-    path: {
-        id: number;
-    };
-    query?: never;
-    url: '/api/links/{id}';
-};
-
-export type DeleteLinkResponses = {
-    200: unknown;
-};
-
-export type EditLinkData = {
-    body: EditLinkBodyDto;
-    path: {
-        id: number;
-    };
-    query?: never;
-    url: '/api/links/{id}';
-};
-
-export type EditLinkResponses = {
-    200: unknown;
-};
-
-export type GetTranslationData = {
-    body?: never;
-    path: {
-        ns: string;
-        lng: string;
-    };
-    query?: never;
-    url: '/api/i18n/locales/{ns}/{lng}.json';
-};
-
-export type GetTranslationResponses = {
-    200: unknown;
-};
-
-export type LoginData = {
-    body: LoginBody;
-    path?: never;
-    query?: never;
-    url: '/api/auth/login';
-};
-
-export type LoginResponses = {
-    default: LoginDto;
-};
-
-export type LoginResponse = LoginResponses[keyof LoginResponses];
-
-export type VerifyTotpData = {
-    body: VerifyTotpBody;
-    path?: never;
-    query?: never;
-    url: '/api/auth/verify-totp';
-};
-
-export type VerifyTotpResponses = {
-    default: LoginDto;
-};
-
-export type VerifyTotpResponse = VerifyTotpResponses[keyof VerifyTotpResponses];
-
-export type RegisterData = {
-    body: RegisterBody;
-    path?: never;
-    query?: never;
-    url: '/api/auth/register';
-};
-
-export type RegisterResponses = {
-    default: RegisterDto;
-};
-
-export type RegisterResponse = RegisterResponses[keyof RegisterResponses];
-
-export type LogoutData = {
-    body?: never;
-    path?: never;
-    query?: never;
-    url: '/api/auth/logout';
-};
-
-export type LogoutResponses = {
-    201: unknown;
-};
-
-export type RefreshSessionData = {
-    body?: never;
-    path?: never;
-    query?: never;
-    url: '/api/auth/session/refresh';
-};
-
-export type RefreshSessionResponses = {
-    default: SessionRefreshDto;
-};
-
-export type RefreshSessionResponse = RefreshSessionResponses[keyof RefreshSessionResponses];
-
-export type MintBrowserHandoffData = {
-    body: BrowserHandoffMintBody;
-    path?: never;
-    query?: never;
-    url: '/api/auth/browser-handoff/mint';
-};
-
-export type MintBrowserHandoffResponses = {
-    default: BrowserHandoffMintDto;
-};
-
-export type MintBrowserHandoffResponse = MintBrowserHandoffResponses[keyof MintBrowserHandoffResponses];
-
-export type ConsumeBrowserHandoffData = {
-    body?: never;
-    path?: never;
-    query?: never;
-    url: '/api/auth/browser-handoff';
-};
-
-export type ConsumeBrowserHandoffResponses = {
-    200: unknown;
-};
-
-export type StartPortalLoginData = {
-    body?: never;
-    path?: never;
-    query: {
-        redirect_url: string;
-        desktop: string;
-    };
-    url: '/api/auth/portal/start';
-};
-
-export type StartPortalLoginResponses = {
-    200: unknown;
-};
-
-export type PortalCallbackData = {
-    body?: never;
-    path?: never;
-    query: {
-        code: string;
-        state: string;
-    };
-    url: '/api/auth/portal/callback';
-};
-
-export type PortalCallbackResponses = {
-    200: unknown;
-};
-
-export type PortalSessionHintData = {
-    body?: never;
-    path?: never;
-    query?: never;
-    url: '/api/auth/portal/session-hint';
-};
-
-export type PortalSessionHintResponses = {
-    default: PortalSessionHintDto;
-};
-
-export type PortalSessionHintResponse = PortalSessionHintResponses[keyof PortalSessionHintResponses];
-
-export type ExchangePortalDesktopLoginData = {
-    body?: never;
-    path?: never;
-    query: {
-        token: string;
-    };
-    url: '/api/auth/portal/desktop-exchange';
-};
-
-export type ExchangePortalDesktopLoginResponses = {
-    default: PortalDesktopExchangeDto;
-};
-
-export type ExchangePortalDesktopLoginResponse = ExchangePortalDesktopLoginResponses[keyof ExchangePortalDesktopLoginResponses];
-
-export type ChangeUsernameData = {
-    body: ChangeUsernameBody;
-    path?: never;
-    query?: never;
-    url: '/api/auth/username';
-};
-
-export type ChangeUsernameResponses = {
-    200: unknown;
-};
-
-export type ChangePasswordData = {
-    body: ChangePasswordBody;
-    path?: never;
-    query?: never;
-    url: '/api/auth/password';
-};
-
-export type ChangePasswordResponses = {
-    200: unknown;
-};
-
-export type GetTotpUriData = {
-    body: GetTotpUriBody;
-    path?: never;
-    query?: never;
-    url: '/api/auth/totp/get-uri';
-};
-
-export type GetTotpUriResponses = {
-    default: GetTotpUriDto;
-};
-
-export type GetTotpUriResponse = GetTotpUriResponses[keyof GetTotpUriResponses];
-
-export type SetupTotpData = {
-    body: SetupTotpBody;
-    path?: never;
-    query?: never;
-    url: '/api/auth/totp/setup';
-};
-
-export type SetupTotpResponses = {
-    200: unknown;
-};
-
-export type DisableTotpData = {
-    body: DisableTotpBody;
-    path?: never;
-    query?: never;
-    url: '/api/auth/totp/disable';
-};
-
-export type DisableTotpResponses = {
-    200: unknown;
-};
-
-export type CancelResetPasswordData = {
-    body?: never;
-    path?: never;
-    query?: never;
-    url: '/api/auth/reset-password';
-};
-
-export type CancelResetPasswordResponses = {
-    200: unknown;
-};
-
-export type CheckResetPasswordRequestData = {
-    body?: never;
-    path?: never;
-    query?: never;
-    url: '/api/auth/reset-password';
-};
-
-export type CheckResetPasswordRequestResponses = {
-    default: CheckResetPasswordRequestDto;
-};
-
-export type CheckResetPasswordRequestResponse = CheckResetPasswordRequestResponses[keyof CheckResetPasswordRequestResponses];
-
-export type ResetPasswordData = {
-    body: ResetPasswordBody;
-    path?: never;
-    query?: never;
-    url: '/api/auth/reset-password';
-};
-
-export type ResetPasswordResponses = {
-    default: ResetPasswordDto;
-};
-
-export type ResetPasswordResponse = ResetPasswordResponses[keyof ResetPasswordResponses];
-
-export type RequestPasswordResetData = {
-    body: PasswordResetRequestBody;
-    path?: never;
-    query?: never;
-    url: '/api/auth/password-reset/request';
-};
-
-export type RequestPasswordResetResponses = {
-    default: PasswordResetRequestDto;
-};
-
-export type RequestPasswordResetResponse = RequestPasswordResetResponses[keyof RequestPasswordResetResponses];
-
-export type VerifyPasswordResetTokenData = {
-    body?: never;
-    path: {
-        token: string;
-    };
-    query?: never;
-    url: '/api/auth/password-reset/verify/{token}';
-};
-
-export type VerifyPasswordResetTokenResponses = {
-    default: PasswordResetVerifyResponseDto;
-};
-
-export type VerifyPasswordResetTokenResponse = VerifyPasswordResetTokenResponses[keyof VerifyPasswordResetTokenResponses];
-
-export type CompletePasswordResetData = {
-    body: PasswordResetCompleteBody;
-    path?: never;
-    query?: never;
-    url: '/api/auth/password-reset/complete';
-};
-
-export type CompletePasswordResetResponses = {
-    default: PasswordResetCompleteDto;
-};
-
-export type CompletePasswordResetResponse = CompletePasswordResetResponses[keyof CompletePasswordResetResponses];
-
-export type TraefikData = {
-    body?: never;
-    path?: never;
-    query?: never;
-    url: '/api/auth/traefik';
-};
-
-export type TraefikResponses = {
-    200: unknown;
-};
-
-export type EdgeSsoData = {
-    body?: never;
-    path?: never;
-    query?: never;
-    url: '/api/auth/edge-sso';
-};
-
-export type EdgeSsoResponses = {
-    200: unknown;
-};
-
-export type LiveData = {
-    body?: never;
-    path?: never;
-    query?: never;
-    url: '/api/health/live';
-};
-
-export type LiveResponses = {
-    200: unknown;
-};
-
-export type CheckData = {
-    body?: never;
-    path?: never;
-    query?: never;
-    url: '/api/health';
-};
-
-export type CheckErrors = {
-    /**
-     * The Health Check is not successful
-     */
-    503: {
-        status?: string;
-        info?: {
-            [key: string]: {
-                status: string;
-                [key: string]: unknown | string;
-            };
-        };
-        error?: {
-            [key: string]: {
-                status: string;
-                [key: string]: unknown | string;
-            };
-        };
-        details?: {
-            [key: string]: {
-                status: string;
-                [key: string]: unknown | string;
-            };
-        };
-    };
-};
-
-export type CheckError = CheckErrors[keyof CheckErrors];
-
-export type CheckResponses = {
-    /**
-     * The Health Check is successful
-     */
-    200: {
-        status?: string;
-        info?: {
-            [key: string]: {
-                status: string;
-                [key: string]: unknown | string;
-            };
-        };
-        error?: {
-            [key: string]: {
-                status: string;
-                [key: string]: unknown | string;
-            };
-        };
-        details?: {
-            [key: string]: {
-                status: string;
-                [key: string]: unknown | string;
-            };
-        };
-    };
-};
-
-export type CheckResponse = CheckResponses[keyof CheckResponses];
-
-export type CheckDataIntegrityData = {
-    body?: never;
-    path?: never;
-    query?: never;
-    url: '/api/health/data';
-};
-
-export type CheckDataIntegrityResponses = {
-    200: unknown;
-};
-
-export type GetDiagnostics2Data = {
-    body?: never;
-    path?: never;
-    query?: never;
-    url: '/api/public-web/diagnostics';
-};
-
-export type GetDiagnostics2Responses = {
-    default: {
-        [key: string]: unknown;
-    };
-};
-
-export type GetDiagnostics2Response = GetDiagnostics2Responses[keyof GetDiagnostics2Responses];
-
-export type RepairData = {
-    body?: never;
-    path?: never;
-    query?: never;
-    url: '/api/public-web/repair';
-};
-
-export type RepairResponses = {
-    default: {
-        [key: string]: unknown;
-    };
-};
-
-export type RepairResponse = RepairResponses[keyof RepairResponses];
-
 export type StartData = {
     body?: never;
     path?: never;
@@ -5015,3 +4902,118 @@ export type UninstallAllAppsData = {
 export type UninstallAllAppsResponses = {
     201: unknown;
 };
+
+export type HandleDeleteData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/mcp';
+};
+
+export type HandleDeleteResponses = {
+    204: void;
+};
+
+export type HandleDeleteResponse = HandleDeleteResponses[keyof HandleDeleteResponses];
+
+export type HandleGetData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/mcp';
+};
+
+export type HandleGetResponses = {
+    200: unknown;
+};
+
+export type HandlePostData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/mcp';
+};
+
+export type HandlePostResponses = {
+    200: unknown;
+};
+
+export type GetStatus5Data = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/mcp-admin/status';
+};
+
+export type GetStatus5Responses = {
+    200: unknown;
+};
+
+export type ListToolsData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/mcp-admin/tools';
+};
+
+export type ListToolsResponses = {
+    200: unknown;
+};
+
+export type CallToolData = {
+    body: McpToolCallBody;
+    path: {
+        name: string;
+    };
+    query?: never;
+    url: '/api/mcp-admin/tools/{name}/call';
+};
+
+export type CallToolResponses = {
+    201: unknown;
+};
+
+export type GetMcpStatusData = {
+    body?: never;
+    path: {
+        urn: string;
+    };
+    query?: never;
+    url: '/api/apps/{urn}/mcp/status';
+};
+
+export type GetMcpStatusResponses = {
+    default: McpProbeResultDto;
+};
+
+export type GetMcpStatusResponse = GetMcpStatusResponses[keyof GetMcpStatusResponses];
+
+export type ProbeMcpData = {
+    body?: never;
+    path: {
+        urn: string;
+    };
+    query?: never;
+    url: '/api/apps/{urn}/mcp/probe';
+};
+
+export type ProbeMcpResponses = {
+    default: McpProbeResultDto;
+};
+
+export type ProbeMcpResponse = ProbeMcpResponses[keyof ProbeMcpResponses];
+
+export type GetMcpInstallSchemaData = {
+    body?: never;
+    path: {
+        urn: string;
+    };
+    query?: never;
+    url: '/api/apps/{urn}/mcp/install-schema';
+};
+
+export type GetMcpInstallSchemaResponses = {
+    default: McpInstallSchemaDto;
+};
+
+export type GetMcpInstallSchemaResponse = GetMcpInstallSchemaResponses[keyof GetMcpInstallSchemaResponses];

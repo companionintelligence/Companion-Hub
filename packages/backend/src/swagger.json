@@ -101,31 +101,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object",
-                  "properties": {
-                    "firstParty": {
-                      "type": "array",
-                      "items": {}
-                    },
-                    "featured": {
-                      "type": "array",
-                      "items": {}
-                    },
-                    "trending": {
-                      "type": "array",
-                      "items": {}
-                    },
-                    "newest": {
-                      "type": "array",
-                      "items": {}
-                    }
-                  },
-                  "required": [
-                    "firstParty",
-                    "featured",
-                    "trending",
-                    "newest"
-                  ]
+                  "$ref": "#/components/schemas/FeaturedStoreBundleDto"
                 }
               }
             }
@@ -820,6 +796,909 @@
         ]
       }
     },
+    "/api/system/load": {
+      "get": {
+        "operationId": "systemLoad",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LoadDto"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "System"
+        ]
+      }
+    },
+    "/api/system/resources": {
+      "get": {
+        "operationId": "systemResources",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SystemResourcesDto"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "System"
+        ]
+      }
+    },
+    "/api/system/logs/download": {
+      "get": {
+        "operationId": "downloadHubLogs",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Hub logs download"
+          }
+        },
+        "tags": [
+          "System"
+        ]
+      }
+    },
+    "/api/system/certificate": {
+      "get": {
+        "operationId": "downloadLocalCertificate",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "System"
+        ]
+      }
+    },
+    "/api/system/detect-services": {
+      "get": {
+        "operationId": "detectServices",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "System"
+        ]
+      }
+    },
+    "/api/system-inspector": {
+      "get": {
+        "operationId": "getFullInspection",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Full system inspection: ports, containers, health",
+        "tags": [
+          "System Inspector"
+        ]
+      }
+    },
+    "/api/system-inspector/containers": {
+      "get": {
+        "operationId": "getContainers",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Running Docker containers and their status",
+        "tags": [
+          "System Inspector"
+        ]
+      }
+    },
+    "/api/system-inspector/ports": {
+      "get": {
+        "operationId": "getPorts",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "Port allocations with live bind checks",
+        "tags": [
+          "System Inspector"
+        ]
+      }
+    },
+    "/api/system-inspector/health": {
+      "get": {
+        "operationId": "getHealth",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "System health: CPU, memory, disk, uptime",
+        "tags": [
+          "System Inspector"
+        ]
+      }
+    },
+    "/api/system/factory-reset": {
+      "post": {
+        "operationId": "factoryReset",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FactoryResetDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Factory reset completed"
+          },
+          "403": {
+            "description": "Operator authentication required"
+          }
+        },
+        "summary": "Wipe all Hub state and return to first-operator setup",
+        "tags": [
+          "System"
+        ]
+      }
+    },
+    "/api/ports": {
+      "get": {
+        "operationId": "getAllAllocations",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Returns all port allocations across all apps"
+          }
+        },
+        "summary": "Get all port allocations",
+        "tags": [
+          "Ports"
+        ]
+      }
+    },
+    "/api/ports/{appUrn}": {
+      "get": {
+        "operationId": "getAppPorts",
+        "parameters": [
+          {
+            "name": "appUrn",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Returns port allocations for the specified app"
+          }
+        },
+        "summary": "Get port allocations for a specific app",
+        "tags": [
+          "Ports"
+        ]
+      }
+    },
+    "/api/ports/{appUrn}/check": {
+      "get": {
+        "operationId": "checkAppPorts",
+        "parameters": [
+          {
+            "name": "appUrn",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Returns current port status and availability"
+          }
+        },
+        "summary": "Check port availability for an app",
+        "tags": [
+          "Ports"
+        ]
+      }
+    },
+    "/api/network/diagnostics": {
+      "get": {
+        "operationId": "getDiagnostics",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Network"
+        ]
+      }
+    },
+    "/api/network/repair-orphans": {
+      "post": {
+        "operationId": "repairOrphans",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Network"
+        ]
+      }
+    },
+    "/api/i18n/locales/{ns}/{lng}.json": {
+      "get": {
+        "operationId": "getTranslation",
+        "parameters": [
+          {
+            "name": "ns",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "lng",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "I18n"
+        ]
+      }
+    },
+    "/api/auth/login": {
+      "post": {
+        "operationId": "login",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LoginBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LoginDto"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Auth"
+        ]
+      }
+    },
+    "/api/auth/verify-totp": {
+      "post": {
+        "operationId": "verifyTotp",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VerifyTotpBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LoginDto"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Auth"
+        ]
+      }
+    },
+    "/api/auth/register": {
+      "post": {
+        "operationId": "register",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RegisterBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RegisterDto"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Auth"
+        ]
+      }
+    },
+    "/api/auth/logout": {
+      "post": {
+        "operationId": "logout",
+        "parameters": [],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Auth"
+        ]
+      }
+    },
+    "/api/auth/session/refresh": {
+      "post": {
+        "operationId": "refreshSession",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionRefreshDto"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Auth"
+        ]
+      }
+    },
+    "/api/auth/browser-handoff/mint": {
+      "post": {
+        "operationId": "mintBrowserHandoff",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BrowserHandoffMintBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BrowserHandoffMintDto"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Auth"
+        ]
+      }
+    },
+    "/api/auth/browser-handoff": {
+      "get": {
+        "operationId": "consumeBrowserHandoff",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Auth"
+        ]
+      }
+    },
+    "/api/auth/portal/start": {
+      "get": {
+        "operationId": "startPortalLogin",
+        "parameters": [
+          {
+            "name": "redirect_url",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "desktop",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Auth"
+        ]
+      }
+    },
+    "/api/auth/portal/callback": {
+      "get": {
+        "operationId": "portalCallback",
+        "parameters": [
+          {
+            "name": "code",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "state",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Auth"
+        ]
+      }
+    },
+    "/api/auth/portal/session-hint": {
+      "get": {
+        "operationId": "portalSessionHint",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PortalSessionHintDto"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Auth"
+        ]
+      }
+    },
+    "/api/auth/portal/desktop-exchange": {
+      "get": {
+        "operationId": "exchangePortalDesktopLogin",
+        "parameters": [
+          {
+            "name": "token",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PortalDesktopExchangeDto"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Auth"
+        ]
+      }
+    },
+    "/api/auth/username": {
+      "patch": {
+        "operationId": "changeUsername",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChangeUsernameBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Auth"
+        ]
+      }
+    },
+    "/api/auth/password": {
+      "patch": {
+        "operationId": "changePassword",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChangePasswordBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Auth"
+        ]
+      }
+    },
+    "/api/auth/totp/get-uri": {
+      "patch": {
+        "operationId": "getTotpUri",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GetTotpUriBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GetTotpUriDto"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Auth"
+        ]
+      }
+    },
+    "/api/auth/totp/setup": {
+      "patch": {
+        "operationId": "setupTotp",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetupTotpBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Auth"
+        ]
+      }
+    },
+    "/api/auth/totp/disable": {
+      "patch": {
+        "operationId": "disableTotp",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DisableTotpBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Auth"
+        ]
+      }
+    },
+    "/api/auth/reset-password": {
+      "post": {
+        "operationId": "resetPassword",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResetPasswordBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResetPasswordDto"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Auth"
+        ]
+      },
+      "delete": {
+        "operationId": "cancelResetPassword",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Auth"
+        ]
+      },
+      "get": {
+        "operationId": "checkResetPasswordRequest",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CheckResetPasswordRequestDto"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Auth"
+        ]
+      }
+    },
+    "/api/auth/password-reset/request": {
+      "post": {
+        "operationId": "requestPasswordReset",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PasswordResetRequestBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PasswordResetRequestDto"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Auth"
+        ]
+      }
+    },
+    "/api/auth/password-reset/verify/{token}": {
+      "get": {
+        "operationId": "verifyPasswordResetToken",
+        "parameters": [
+          {
+            "name": "token",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PasswordResetVerifyResponseDto"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Auth"
+        ]
+      }
+    },
+    "/api/auth/password-reset/complete": {
+      "post": {
+        "operationId": "completePasswordReset",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PasswordResetCompleteBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PasswordResetCompleteDto"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Auth"
+        ]
+      }
+    },
+    "/api/auth/traefik": {
+      "get": {
+        "operationId": "traefik",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Auth"
+        ]
+      }
+    },
+    "/api/auth/edge-sso": {
+      "get": {
+        "operationId": "edgeSso",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Auth"
+        ]
+      }
+    },
     "/api/apps/installed": {
       "get": {
         "operationId": "getInstalledApps",
@@ -1176,6 +2055,380 @@
         },
         "tags": [
           "Apps"
+        ]
+      }
+    },
+    "/api/marketplace/apps/search": {
+      "get": {
+        "operationId": "searchApps",
+        "parameters": [
+          {
+            "name": "search",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "pageSize",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": -9007199254740991,
+                  "maximum": 9007199254740991
+                },
+                {}
+              ]
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "category",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "network",
+                "media",
+                "development",
+                "automation",
+                "social",
+                "utilities",
+                "photography",
+                "security",
+                "featured",
+                "books",
+                "data",
+                "music",
+                "finance",
+                "gaming",
+                "ai",
+                "agents",
+                "mcp",
+                "companion-intelligence"
+              ]
+            }
+          },
+          {
+            "name": "storeId",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SearchAppsDto"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Marketplace"
+        ]
+      }
+    },
+    "/api/marketplace/apps/{urn}/image": {
+      "get": {
+        "operationId": "getImage",
+        "parameters": [
+          {
+            "name": "urn",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Marketplace"
+        ]
+      }
+    },
+    "/api/marketplace/apps/{urn}/image-size": {
+      "get": {
+        "operationId": "getAppImageSize",
+        "parameters": [
+          {
+            "name": "urn",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Marketplace"
+        ]
+      }
+    },
+    "/api/marketplace/apps/{urn}/media": {
+      "get": {
+        "operationId": "getAppMedia",
+        "parameters": [
+          {
+            "name": "urn",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppMediaDto"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Marketplace"
+        ]
+      }
+    },
+    "/api/marketplace/apps/{urn}/screenshots/{filename}": {
+      "get": {
+        "operationId": "getAppScreenshot",
+        "parameters": [
+          {
+            "name": "urn",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "filename",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Marketplace"
+        ]
+      }
+    },
+    "/api/marketplace/apps/{urn}/demo-video": {
+      "get": {
+        "operationId": "getAppDemoVideo",
+        "parameters": [
+          {
+            "name": "urn",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Marketplace"
+        ]
+      }
+    },
+    "/api/marketplace/pull": {
+      "post": {
+        "operationId": "pullAppStores",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PullDto"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Marketplace"
+        ]
+      }
+    },
+    "/api/marketplace/create": {
+      "post": {
+        "operationId": "createAppStore",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateAppStoreBodyDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppStoreDto"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Marketplace"
+        ]
+      }
+    },
+    "/api/marketplace/all": {
+      "get": {
+        "operationId": "getAllAppStores",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AllAppStoresDto"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Marketplace"
+        ]
+      }
+    },
+    "/api/marketplace/enabled": {
+      "get": {
+        "operationId": "getEnabledAppStores",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AllAppStoresDto"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Marketplace"
+        ]
+      }
+    },
+    "/api/marketplace/{id}": {
+      "patch": {
+        "operationId": "updateAppStore",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateAppStoreBodyDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UpdateAppStoreDto"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Marketplace"
+        ]
+      },
+      "delete": {
+        "operationId": "deleteAppStore",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Marketplace"
         ]
       }
     },
@@ -1677,657 +2930,6 @@
         ]
       }
     },
-    "/api/system/load": {
-      "get": {
-        "operationId": "systemLoad",
-        "parameters": [],
-        "responses": {
-          "default": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/LoadDto"
-                }
-              }
-            }
-          }
-        },
-        "tags": [
-          "System"
-        ]
-      }
-    },
-    "/api/system/resources": {
-      "get": {
-        "operationId": "systemResources",
-        "parameters": [],
-        "responses": {
-          "default": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SystemResourcesDto"
-                }
-              }
-            }
-          }
-        },
-        "tags": [
-          "System"
-        ]
-      }
-    },
-    "/api/system/logs/download": {
-      "get": {
-        "operationId": "downloadHubLogs",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "description": "Hub logs download"
-          }
-        },
-        "tags": [
-          "System"
-        ]
-      }
-    },
-    "/api/system/certificate": {
-      "get": {
-        "operationId": "downloadLocalCertificate",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "description": ""
-          }
-        },
-        "tags": [
-          "System"
-        ]
-      }
-    },
-    "/api/system/detect-services": {
-      "get": {
-        "operationId": "detectServices",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "description": ""
-          }
-        },
-        "tags": [
-          "System"
-        ]
-      }
-    },
-    "/api/system-inspector": {
-      "get": {
-        "operationId": "getFullInspection",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "description": ""
-          }
-        },
-        "summary": "Full system inspection: ports, containers, health",
-        "tags": [
-          "System Inspector"
-        ]
-      }
-    },
-    "/api/system-inspector/containers": {
-      "get": {
-        "operationId": "getContainers",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "description": ""
-          }
-        },
-        "summary": "Running Docker containers and their status",
-        "tags": [
-          "System Inspector"
-        ]
-      }
-    },
-    "/api/system-inspector/ports": {
-      "get": {
-        "operationId": "getPorts",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "description": ""
-          }
-        },
-        "summary": "Port allocations with live bind checks",
-        "tags": [
-          "System Inspector"
-        ]
-      }
-    },
-    "/api/system-inspector/health": {
-      "get": {
-        "operationId": "getHealth",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "description": ""
-          }
-        },
-        "summary": "System health: CPU, memory, disk, uptime",
-        "tags": [
-          "System Inspector"
-        ]
-      }
-    },
-    "/api/system/factory-reset": {
-      "post": {
-        "operationId": "factoryReset",
-        "parameters": [],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/FactoryResetDto"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Factory reset completed"
-          },
-          "403": {
-            "description": "Operator authentication required"
-          }
-        },
-        "summary": "Wipe all Hub state and return to first-operator setup",
-        "tags": [
-          "System"
-        ]
-      }
-    },
-    "/api/ports": {
-      "get": {
-        "operationId": "getAllAllocations",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "description": "Returns all port allocations across all apps"
-          }
-        },
-        "summary": "Get all port allocations",
-        "tags": [
-          "Ports"
-        ]
-      }
-    },
-    "/api/ports/{appUrn}": {
-      "get": {
-        "operationId": "getAppPorts",
-        "parameters": [
-          {
-            "name": "appUrn",
-            "required": true,
-            "in": "path",
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Returns port allocations for the specified app"
-          }
-        },
-        "summary": "Get port allocations for a specific app",
-        "tags": [
-          "Ports"
-        ]
-      }
-    },
-    "/api/ports/{appUrn}/check": {
-      "get": {
-        "operationId": "checkAppPorts",
-        "parameters": [
-          {
-            "name": "appUrn",
-            "required": true,
-            "in": "path",
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Returns current port status and availability"
-          }
-        },
-        "summary": "Check port availability for an app",
-        "tags": [
-          "Ports"
-        ]
-      }
-    },
-    "/api/network/diagnostics": {
-      "get": {
-        "operationId": "getDiagnostics",
-        "parameters": [],
-        "responses": {
-          "default": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object"
-                }
-              }
-            }
-          }
-        },
-        "tags": [
-          "Network"
-        ]
-      }
-    },
-    "/api/network/repair-orphans": {
-      "post": {
-        "operationId": "repairOrphans",
-        "parameters": [],
-        "responses": {
-          "default": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object"
-                }
-              }
-            }
-          }
-        },
-        "tags": [
-          "Network"
-        ]
-      }
-    },
-    "/api/marketplace/apps/search": {
-      "get": {
-        "operationId": "searchApps",
-        "parameters": [
-          {
-            "name": "search",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "pageSize",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "integer",
-                  "minimum": -9007199254740991,
-                  "maximum": 9007199254740991
-                },
-                {}
-              ]
-            }
-          },
-          {
-            "name": "cursor",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "category",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "string",
-              "enum": [
-                "network",
-                "media",
-                "development",
-                "automation",
-                "social",
-                "utilities",
-                "photography",
-                "security",
-                "featured",
-                "books",
-                "data",
-                "music",
-                "finance",
-                "gaming",
-                "ai",
-                "agents",
-                "mcp",
-                "companion-intelligence"
-              ]
-            }
-          },
-          {
-            "name": "storeId",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "default": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SearchAppsDto"
-                }
-              }
-            }
-          }
-        },
-        "tags": [
-          "Marketplace"
-        ]
-      }
-    },
-    "/api/marketplace/apps/{urn}/image": {
-      "get": {
-        "operationId": "getImage",
-        "parameters": [
-          {
-            "name": "urn",
-            "required": true,
-            "in": "path",
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": ""
-          }
-        },
-        "tags": [
-          "Marketplace"
-        ]
-      }
-    },
-    "/api/marketplace/apps/{urn}/image-size": {
-      "get": {
-        "operationId": "getAppImageSize",
-        "parameters": [
-          {
-            "name": "urn",
-            "required": true,
-            "in": "path",
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": ""
-          }
-        },
-        "tags": [
-          "Marketplace"
-        ]
-      }
-    },
-    "/api/marketplace/apps/{urn}/media": {
-      "get": {
-        "operationId": "getAppMedia",
-        "parameters": [
-          {
-            "name": "urn",
-            "required": true,
-            "in": "path",
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "default": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AppMediaDto"
-                }
-              }
-            }
-          }
-        },
-        "tags": [
-          "Marketplace"
-        ]
-      }
-    },
-    "/api/marketplace/apps/{urn}/screenshots/{filename}": {
-      "get": {
-        "operationId": "getAppScreenshot",
-        "parameters": [
-          {
-            "name": "urn",
-            "required": true,
-            "in": "path",
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "filename",
-            "required": true,
-            "in": "path",
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": ""
-          }
-        },
-        "tags": [
-          "Marketplace"
-        ]
-      }
-    },
-    "/api/marketplace/apps/{urn}/demo-video": {
-      "get": {
-        "operationId": "getAppDemoVideo",
-        "parameters": [
-          {
-            "name": "urn",
-            "required": true,
-            "in": "path",
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": ""
-          }
-        },
-        "tags": [
-          "Marketplace"
-        ]
-      }
-    },
-    "/api/marketplace/pull": {
-      "post": {
-        "operationId": "pullAppStores",
-        "parameters": [],
-        "responses": {
-          "default": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/PullDto"
-                }
-              }
-            }
-          }
-        },
-        "tags": [
-          "Marketplace"
-        ]
-      }
-    },
-    "/api/marketplace/create": {
-      "post": {
-        "operationId": "createAppStore",
-        "parameters": [],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/CreateAppStoreBodyDto"
-              }
-            }
-          }
-        },
-        "responses": {
-          "default": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AppStoreDto"
-                }
-              }
-            }
-          }
-        },
-        "tags": [
-          "Marketplace"
-        ]
-      }
-    },
-    "/api/marketplace/all": {
-      "get": {
-        "operationId": "getAllAppStores",
-        "parameters": [],
-        "responses": {
-          "default": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AllAppStoresDto"
-                }
-              }
-            }
-          }
-        },
-        "tags": [
-          "Marketplace"
-        ]
-      }
-    },
-    "/api/marketplace/enabled": {
-      "get": {
-        "operationId": "getEnabledAppStores",
-        "parameters": [],
-        "responses": {
-          "default": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AllAppStoresDto"
-                }
-              }
-            }
-          }
-        },
-        "tags": [
-          "Marketplace"
-        ]
-      }
-    },
-    "/api/marketplace/{id}": {
-      "patch": {
-        "operationId": "updateAppStore",
-        "parameters": [
-          {
-            "name": "id",
-            "required": true,
-            "in": "path",
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/UpdateAppStoreBodyDto"
-              }
-            }
-          }
-        },
-        "responses": {
-          "default": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/UpdateAppStoreDto"
-                }
-              }
-            }
-          }
-        },
-        "tags": [
-          "Marketplace"
-        ]
-      },
-      "delete": {
-        "operationId": "deleteAppStore",
-        "parameters": [
-          {
-            "name": "id",
-            "required": true,
-            "in": "path",
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": ""
-          }
-        },
-        "tags": [
-          "Marketplace"
-        ]
-      }
-    },
     "/api/api-keys": {
       "get": {
         "operationId": "listKeys",
@@ -2415,195 +3017,6 @@
         },
         "tags": [
           "ApiKeyAdmin"
-        ]
-      }
-    },
-    "/api/mcp": {
-      "post": {
-        "operationId": "handlePost",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "description": ""
-          }
-        },
-        "tags": [
-          "Mcp"
-        ]
-      },
-      "get": {
-        "operationId": "handleGet",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "description": ""
-          }
-        },
-        "tags": [
-          "Mcp"
-        ]
-      },
-      "delete": {
-        "operationId": "handleDelete",
-        "parameters": [],
-        "responses": {
-          "204": {
-            "description": ""
-          }
-        },
-        "tags": [
-          "Mcp"
-        ]
-      }
-    },
-    "/api/mcp-admin/status": {
-      "get": {
-        "operationId": "getStatus",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "description": ""
-          }
-        },
-        "tags": [
-          "McpAdmin"
-        ]
-      }
-    },
-    "/api/mcp-admin/tools": {
-      "get": {
-        "operationId": "listTools",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "description": ""
-          }
-        },
-        "tags": [
-          "McpAdmin"
-        ]
-      }
-    },
-    "/api/mcp-admin/tools/{name}/call": {
-      "post": {
-        "operationId": "callTool",
-        "parameters": [
-          {
-            "name": "name",
-            "required": true,
-            "in": "path",
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/McpToolCallBody"
-              }
-            }
-          }
-        },
-        "responses": {
-          "201": {
-            "description": ""
-          }
-        },
-        "tags": [
-          "McpAdmin"
-        ]
-      }
-    },
-    "/api/apps/{urn}/mcp/status": {
-      "get": {
-        "operationId": "getMcpStatus",
-        "parameters": [
-          {
-            "name": "urn",
-            "required": true,
-            "in": "path",
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "default": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/McpProbeResultDto"
-                }
-              }
-            }
-          }
-        },
-        "tags": [
-          "McpApps"
-        ]
-      }
-    },
-    "/api/apps/{urn}/mcp/probe": {
-      "post": {
-        "operationId": "probeMcp",
-        "parameters": [
-          {
-            "name": "urn",
-            "required": true,
-            "in": "path",
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "default": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/McpProbeResultDto"
-                }
-              }
-            }
-          }
-        },
-        "tags": [
-          "McpApps"
-        ]
-      }
-    },
-    "/api/apps/{urn}/mcp/install-schema": {
-      "get": {
-        "operationId": "getMcpInstallSchema",
-        "parameters": [
-          {
-            "name": "urn",
-            "required": true,
-            "in": "path",
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "default": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/McpInstallSchemaDto"
-                }
-              }
-            }
-          }
-        },
-        "tags": [
-          "McpApps"
         ]
       }
     },
@@ -3607,6 +4020,362 @@
         ]
       }
     },
+    "/api/links/guest": {
+      "get": {
+        "operationId": "getGuestLinks",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LinksDto"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Links"
+        ]
+      }
+    },
+    "/api/links": {
+      "get": {
+        "operationId": "getLinks",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LinksDto"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Links"
+        ]
+      },
+      "post": {
+        "operationId": "createLink",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LinkBodyDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Links"
+        ]
+      }
+    },
+    "/api/links/{id}": {
+      "patch": {
+        "operationId": "editLink",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "number"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EditLinkBodyDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Links"
+        ]
+      },
+      "delete": {
+        "operationId": "deleteLink",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "number"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Links"
+        ]
+      }
+    },
+    "/api/health/live": {
+      "get": {
+        "operationId": "live",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Health"
+        ]
+      }
+    },
+    "/api/health": {
+      "get": {
+        "operationId": "check",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "The Health Check is successful",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "example": "ok"
+                    },
+                    "info": {
+                      "type": "object",
+                      "example": {
+                        "database": {
+                          "status": "up"
+                        }
+                      },
+                      "additionalProperties": {
+                        "type": "object",
+                        "required": [
+                          "status"
+                        ],
+                        "properties": {
+                          "status": {
+                            "type": "string"
+                          }
+                        },
+                        "additionalProperties": true
+                      },
+                      "nullable": true
+                    },
+                    "error": {
+                      "type": "object",
+                      "example": {},
+                      "additionalProperties": {
+                        "type": "object",
+                        "required": [
+                          "status"
+                        ],
+                        "properties": {
+                          "status": {
+                            "type": "string"
+                          }
+                        },
+                        "additionalProperties": true
+                      },
+                      "nullable": true
+                    },
+                    "details": {
+                      "type": "object",
+                      "example": {
+                        "database": {
+                          "status": "up"
+                        }
+                      },
+                      "additionalProperties": {
+                        "type": "object",
+                        "required": [
+                          "status"
+                        ],
+                        "properties": {
+                          "status": {
+                            "type": "string"
+                          }
+                        },
+                        "additionalProperties": true
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The Health Check is not successful",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "example": "error"
+                    },
+                    "info": {
+                      "type": "object",
+                      "example": {
+                        "database": {
+                          "status": "up"
+                        }
+                      },
+                      "additionalProperties": {
+                        "type": "object",
+                        "required": [
+                          "status"
+                        ],
+                        "properties": {
+                          "status": {
+                            "type": "string"
+                          }
+                        },
+                        "additionalProperties": true
+                      },
+                      "nullable": true
+                    },
+                    "error": {
+                      "type": "object",
+                      "example": {
+                        "redis": {
+                          "status": "down",
+                          "message": "Could not connect"
+                        }
+                      },
+                      "additionalProperties": {
+                        "type": "object",
+                        "required": [
+                          "status"
+                        ],
+                        "properties": {
+                          "status": {
+                            "type": "string"
+                          }
+                        },
+                        "additionalProperties": true
+                      },
+                      "nullable": true
+                    },
+                    "details": {
+                      "type": "object",
+                      "example": {
+                        "database": {
+                          "status": "up"
+                        },
+                        "redis": {
+                          "status": "down",
+                          "message": "Could not connect"
+                        }
+                      },
+                      "additionalProperties": {
+                        "type": "object",
+                        "required": [
+                          "status"
+                        ],
+                        "properties": {
+                          "status": {
+                            "type": "string"
+                          }
+                        },
+                        "additionalProperties": true
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Health"
+        ]
+      }
+    },
+    "/api/health/data": {
+      "get": {
+        "operationId": "checkDataIntegrity",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Health"
+        ]
+      }
+    },
+    "/api/public-web/diagnostics": {
+      "get": {
+        "operationId": "getDiagnostics",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "PublicWeb"
+        ]
+      }
+    },
+    "/api/public-web/repair": {
+      "post": {
+        "operationId": "repair",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "PublicWeb"
+        ]
+      }
+    },
     "/api/user-config/{urn}": {
       "get": {
         "operationId": "getUserConfig",
@@ -4006,988 +4775,6 @@
         ]
       }
     },
-    "/api/links/guest": {
-      "get": {
-        "operationId": "getGuestLinks",
-        "parameters": [],
-        "responses": {
-          "default": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/LinksDto"
-                }
-              }
-            }
-          }
-        },
-        "tags": [
-          "Links"
-        ]
-      }
-    },
-    "/api/links": {
-      "get": {
-        "operationId": "getLinks",
-        "parameters": [],
-        "responses": {
-          "default": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/LinksDto"
-                }
-              }
-            }
-          }
-        },
-        "tags": [
-          "Links"
-        ]
-      },
-      "post": {
-        "operationId": "createLink",
-        "parameters": [],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/LinkBodyDto"
-              }
-            }
-          }
-        },
-        "responses": {
-          "201": {
-            "description": ""
-          }
-        },
-        "tags": [
-          "Links"
-        ]
-      }
-    },
-    "/api/links/{id}": {
-      "patch": {
-        "operationId": "editLink",
-        "parameters": [
-          {
-            "name": "id",
-            "required": true,
-            "in": "path",
-            "schema": {
-              "type": "number"
-            }
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/EditLinkBodyDto"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": ""
-          }
-        },
-        "tags": [
-          "Links"
-        ]
-      },
-      "delete": {
-        "operationId": "deleteLink",
-        "parameters": [
-          {
-            "name": "id",
-            "required": true,
-            "in": "path",
-            "schema": {
-              "type": "number"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": ""
-          }
-        },
-        "tags": [
-          "Links"
-        ]
-      }
-    },
-    "/api/i18n/locales/{ns}/{lng}.json": {
-      "get": {
-        "operationId": "getTranslation",
-        "parameters": [
-          {
-            "name": "ns",
-            "required": true,
-            "in": "path",
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "lng",
-            "required": true,
-            "in": "path",
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": ""
-          }
-        },
-        "tags": [
-          "I18n"
-        ]
-      }
-    },
-    "/api/auth/login": {
-      "post": {
-        "operationId": "login",
-        "parameters": [],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/LoginBody"
-              }
-            }
-          }
-        },
-        "responses": {
-          "default": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/LoginDto"
-                }
-              }
-            }
-          }
-        },
-        "tags": [
-          "Auth"
-        ]
-      }
-    },
-    "/api/auth/verify-totp": {
-      "post": {
-        "operationId": "verifyTotp",
-        "parameters": [],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/VerifyTotpBody"
-              }
-            }
-          }
-        },
-        "responses": {
-          "default": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/LoginDto"
-                }
-              }
-            }
-          }
-        },
-        "tags": [
-          "Auth"
-        ]
-      }
-    },
-    "/api/auth/register": {
-      "post": {
-        "operationId": "register",
-        "parameters": [],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/RegisterBody"
-              }
-            }
-          }
-        },
-        "responses": {
-          "default": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/RegisterDto"
-                }
-              }
-            }
-          }
-        },
-        "tags": [
-          "Auth"
-        ]
-      }
-    },
-    "/api/auth/logout": {
-      "post": {
-        "operationId": "logout",
-        "parameters": [],
-        "responses": {
-          "201": {
-            "description": ""
-          }
-        },
-        "tags": [
-          "Auth"
-        ]
-      }
-    },
-    "/api/auth/session/refresh": {
-      "post": {
-        "operationId": "refreshSession",
-        "parameters": [],
-        "responses": {
-          "default": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SessionRefreshDto"
-                }
-              }
-            }
-          }
-        },
-        "tags": [
-          "Auth"
-        ]
-      }
-    },
-    "/api/auth/browser-handoff/mint": {
-      "post": {
-        "operationId": "mintBrowserHandoff",
-        "parameters": [],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/BrowserHandoffMintBody"
-              }
-            }
-          }
-        },
-        "responses": {
-          "default": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/BrowserHandoffMintDto"
-                }
-              }
-            }
-          }
-        },
-        "tags": [
-          "Auth"
-        ]
-      }
-    },
-    "/api/auth/browser-handoff": {
-      "get": {
-        "operationId": "consumeBrowserHandoff",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "description": ""
-          }
-        },
-        "tags": [
-          "Auth"
-        ]
-      }
-    },
-    "/api/auth/portal/start": {
-      "get": {
-        "operationId": "startPortalLogin",
-        "parameters": [
-          {
-            "name": "redirect_url",
-            "required": true,
-            "in": "query",
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "desktop",
-            "required": true,
-            "in": "query",
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": ""
-          }
-        },
-        "tags": [
-          "Auth"
-        ]
-      }
-    },
-    "/api/auth/portal/callback": {
-      "get": {
-        "operationId": "portalCallback",
-        "parameters": [
-          {
-            "name": "code",
-            "required": true,
-            "in": "query",
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "state",
-            "required": true,
-            "in": "query",
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": ""
-          }
-        },
-        "tags": [
-          "Auth"
-        ]
-      }
-    },
-    "/api/auth/portal/session-hint": {
-      "get": {
-        "operationId": "portalSessionHint",
-        "parameters": [],
-        "responses": {
-          "default": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/PortalSessionHintDto"
-                }
-              }
-            }
-          }
-        },
-        "tags": [
-          "Auth"
-        ]
-      }
-    },
-    "/api/auth/portal/desktop-exchange": {
-      "get": {
-        "operationId": "exchangePortalDesktopLogin",
-        "parameters": [
-          {
-            "name": "token",
-            "required": true,
-            "in": "query",
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "default": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/PortalDesktopExchangeDto"
-                }
-              }
-            }
-          }
-        },
-        "tags": [
-          "Auth"
-        ]
-      }
-    },
-    "/api/auth/username": {
-      "patch": {
-        "operationId": "changeUsername",
-        "parameters": [],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ChangeUsernameBody"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": ""
-          }
-        },
-        "tags": [
-          "Auth"
-        ]
-      }
-    },
-    "/api/auth/password": {
-      "patch": {
-        "operationId": "changePassword",
-        "parameters": [],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ChangePasswordBody"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": ""
-          }
-        },
-        "tags": [
-          "Auth"
-        ]
-      }
-    },
-    "/api/auth/totp/get-uri": {
-      "patch": {
-        "operationId": "getTotpUri",
-        "parameters": [],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/GetTotpUriBody"
-              }
-            }
-          }
-        },
-        "responses": {
-          "default": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/GetTotpUriDto"
-                }
-              }
-            }
-          }
-        },
-        "tags": [
-          "Auth"
-        ]
-      }
-    },
-    "/api/auth/totp/setup": {
-      "patch": {
-        "operationId": "setupTotp",
-        "parameters": [],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/SetupTotpBody"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": ""
-          }
-        },
-        "tags": [
-          "Auth"
-        ]
-      }
-    },
-    "/api/auth/totp/disable": {
-      "patch": {
-        "operationId": "disableTotp",
-        "parameters": [],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/DisableTotpBody"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": ""
-          }
-        },
-        "tags": [
-          "Auth"
-        ]
-      }
-    },
-    "/api/auth/reset-password": {
-      "post": {
-        "operationId": "resetPassword",
-        "parameters": [],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ResetPasswordBody"
-              }
-            }
-          }
-        },
-        "responses": {
-          "default": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ResetPasswordDto"
-                }
-              }
-            }
-          }
-        },
-        "tags": [
-          "Auth"
-        ]
-      },
-      "delete": {
-        "operationId": "cancelResetPassword",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "description": ""
-          }
-        },
-        "tags": [
-          "Auth"
-        ]
-      },
-      "get": {
-        "operationId": "checkResetPasswordRequest",
-        "parameters": [],
-        "responses": {
-          "default": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/CheckResetPasswordRequestDto"
-                }
-              }
-            }
-          }
-        },
-        "tags": [
-          "Auth"
-        ]
-      }
-    },
-    "/api/auth/password-reset/request": {
-      "post": {
-        "operationId": "requestPasswordReset",
-        "parameters": [],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/PasswordResetRequestBody"
-              }
-            }
-          }
-        },
-        "responses": {
-          "default": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/PasswordResetRequestDto"
-                }
-              }
-            }
-          }
-        },
-        "tags": [
-          "Auth"
-        ]
-      }
-    },
-    "/api/auth/password-reset/verify/{token}": {
-      "get": {
-        "operationId": "verifyPasswordResetToken",
-        "parameters": [
-          {
-            "name": "token",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "default": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/PasswordResetVerifyResponseDto"
-                }
-              }
-            }
-          }
-        },
-        "tags": [
-          "Auth"
-        ]
-      }
-    },
-    "/api/auth/password-reset/complete": {
-      "post": {
-        "operationId": "completePasswordReset",
-        "parameters": [],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/PasswordResetCompleteBody"
-              }
-            }
-          }
-        },
-        "responses": {
-          "default": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/PasswordResetCompleteDto"
-                }
-              }
-            }
-          }
-        },
-        "tags": [
-          "Auth"
-        ]
-      }
-    },
-    "/api/auth/traefik": {
-      "get": {
-        "operationId": "traefik",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "description": ""
-          }
-        },
-        "tags": [
-          "Auth"
-        ]
-      }
-    },
-    "/api/auth/edge-sso": {
-      "get": {
-        "operationId": "edgeSso",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "description": ""
-          }
-        },
-        "tags": [
-          "Auth"
-        ]
-      }
-    },
-    "/api/health/live": {
-      "get": {
-        "operationId": "live",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "description": ""
-          }
-        },
-        "tags": [
-          "Health"
-        ]
-      }
-    },
-    "/api/health": {
-      "get": {
-        "operationId": "check",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "description": "The Health Check is successful",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "status": {
-                      "type": "string",
-                      "example": "ok"
-                    },
-                    "info": {
-                      "type": "object",
-                      "example": {
-                        "database": {
-                          "status": "up"
-                        }
-                      },
-                      "additionalProperties": {
-                        "type": "object",
-                        "required": [
-                          "status"
-                        ],
-                        "properties": {
-                          "status": {
-                            "type": "string"
-                          }
-                        },
-                        "additionalProperties": true
-                      },
-                      "nullable": true
-                    },
-                    "error": {
-                      "type": "object",
-                      "example": {},
-                      "additionalProperties": {
-                        "type": "object",
-                        "required": [
-                          "status"
-                        ],
-                        "properties": {
-                          "status": {
-                            "type": "string"
-                          }
-                        },
-                        "additionalProperties": true
-                      },
-                      "nullable": true
-                    },
-                    "details": {
-                      "type": "object",
-                      "example": {
-                        "database": {
-                          "status": "up"
-                        }
-                      },
-                      "additionalProperties": {
-                        "type": "object",
-                        "required": [
-                          "status"
-                        ],
-                        "properties": {
-                          "status": {
-                            "type": "string"
-                          }
-                        },
-                        "additionalProperties": true
-                      }
-                    }
-                  }
-                }
-              }
-            }
-          },
-          "503": {
-            "description": "The Health Check is not successful",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "status": {
-                      "type": "string",
-                      "example": "error"
-                    },
-                    "info": {
-                      "type": "object",
-                      "example": {
-                        "database": {
-                          "status": "up"
-                        }
-                      },
-                      "additionalProperties": {
-                        "type": "object",
-                        "required": [
-                          "status"
-                        ],
-                        "properties": {
-                          "status": {
-                            "type": "string"
-                          }
-                        },
-                        "additionalProperties": true
-                      },
-                      "nullable": true
-                    },
-                    "error": {
-                      "type": "object",
-                      "example": {
-                        "redis": {
-                          "status": "down",
-                          "message": "Could not connect"
-                        }
-                      },
-                      "additionalProperties": {
-                        "type": "object",
-                        "required": [
-                          "status"
-                        ],
-                        "properties": {
-                          "status": {
-                            "type": "string"
-                          }
-                        },
-                        "additionalProperties": true
-                      },
-                      "nullable": true
-                    },
-                    "details": {
-                      "type": "object",
-                      "example": {
-                        "database": {
-                          "status": "up"
-                        },
-                        "redis": {
-                          "status": "down",
-                          "message": "Could not connect"
-                        }
-                      },
-                      "additionalProperties": {
-                        "type": "object",
-                        "required": [
-                          "status"
-                        ],
-                        "properties": {
-                          "status": {
-                            "type": "string"
-                          }
-                        },
-                        "additionalProperties": true
-                      }
-                    }
-                  }
-                }
-              }
-            }
-          }
-        },
-        "tags": [
-          "Health"
-        ]
-      }
-    },
-    "/api/health/data": {
-      "get": {
-        "operationId": "checkDataIntegrity",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "description": ""
-          }
-        },
-        "tags": [
-          "Health"
-        ]
-      }
-    },
-    "/api/public-web/diagnostics": {
-      "get": {
-        "operationId": "getDiagnostics",
-        "parameters": [],
-        "responses": {
-          "default": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object"
-                }
-              }
-            }
-          }
-        },
-        "tags": [
-          "PublicWeb"
-        ]
-      }
-    },
-    "/api/public-web/repair": {
-      "post": {
-        "operationId": "repair",
-        "parameters": [],
-        "responses": {
-          "default": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object"
-                }
-              }
-            }
-          }
-        },
-        "tags": [
-          "PublicWeb"
-        ]
-      }
-    },
     "/api/memory-connect/start": {
       "get": {
         "operationId": "start",
@@ -5217,6 +5004,195 @@
         },
         "tags": [
           "Debug"
+        ]
+      }
+    },
+    "/api/mcp": {
+      "post": {
+        "operationId": "handlePost",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Mcp"
+        ]
+      },
+      "get": {
+        "operationId": "handleGet",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Mcp"
+        ]
+      },
+      "delete": {
+        "operationId": "handleDelete",
+        "parameters": [],
+        "responses": {
+          "204": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Mcp"
+        ]
+      }
+    },
+    "/api/mcp-admin/status": {
+      "get": {
+        "operationId": "getStatus",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "McpAdmin"
+        ]
+      }
+    },
+    "/api/mcp-admin/tools": {
+      "get": {
+        "operationId": "listTools",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "McpAdmin"
+        ]
+      }
+    },
+    "/api/mcp-admin/tools/{name}/call": {
+      "post": {
+        "operationId": "callTool",
+        "parameters": [
+          {
+            "name": "name",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/McpToolCallBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "McpAdmin"
+        ]
+      }
+    },
+    "/api/apps/{urn}/mcp/status": {
+      "get": {
+        "operationId": "getMcpStatus",
+        "parameters": [
+          {
+            "name": "urn",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/McpProbeResultDto"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "McpApps"
+        ]
+      }
+    },
+    "/api/apps/{urn}/mcp/probe": {
+      "post": {
+        "operationId": "probeMcp",
+        "parameters": [
+          {
+            "name": "urn",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/McpProbeResultDto"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "McpApps"
+        ]
+      }
+    },
+    "/api/apps/{urn}/mcp/install-schema": {
+      "get": {
+        "operationId": "getMcpInstallSchema",
+        "parameters": [
+          {
+            "name": "urn",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/McpInstallSchemaDto"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "McpApps"
         ]
       }
     }
@@ -5893,30 +5869,594 @@
         ],
         "additionalProperties": false
       },
-      "InstalledAppUrnsDto": {
+      "LoadDto": {
         "type": "object",
         "properties": {
-          "urns": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
+          "diskUsed": {
+            "default": 0,
+            "type": "number"
+          },
+          "diskSize": {
+            "default": 0,
+            "type": "number"
+          },
+          "percentUsed": {
+            "default": 0,
+            "type": "number"
+          },
+          "cpuLoad": {
+            "default": 0,
+            "type": "number"
+          },
+          "cpuCores": {
+            "default": 0,
+            "type": "number"
+          },
+          "memoryTotal": {
+            "default": 0,
+            "type": "number"
+          },
+          "memoryUsed": {
+            "default": 0,
+            "type": "number"
+          },
+          "percentUsedMemory": {
+            "default": 0,
+            "type": "number"
+          },
+          "hasVmWedge": {
+            "default": false,
+            "type": "boolean"
+          },
+          "runtimeKind": {
+            "default": "container-only",
+            "type": "string",
+            "enum": [
+              "container-only",
+              "docker-desktop-vm",
+              "wsl2-vm",
+              "linux-native",
+              "host-native"
+            ]
+          },
+          "containerMemoryTotal": {
+            "type": "number"
+          },
+          "containerMemoryUsed": {
+            "type": "number"
+          },
+          "containerDiskTotal": {
+            "type": "number"
+          },
+          "containerDiskUsed": {
+            "type": "number"
+          },
+          "recommendedDockerRamMb": {
+            "type": "number"
+          },
+          "platformGuidance": {
+            "type": "string"
           }
         },
         "required": [
-          "urns"
+          "diskUsed",
+          "diskSize",
+          "percentUsed",
+          "cpuLoad",
+          "cpuCores",
+          "memoryTotal",
+          "memoryUsed",
+          "percentUsedMemory",
+          "hasVmWedge",
+          "runtimeKind"
         ],
         "additionalProperties": false
       },
-      "UpdatesAvailableDto": {
+      "SystemResourcesDto": {
         "type": "object",
         "properties": {
-          "updatesAvailable": {
+          "docker": {
+            "nullable": true,
+            "type": "object",
+            "properties": {
+              "cpuCores": {
+                "type": "number"
+              },
+              "memTotalMb": {
+                "type": "number"
+              },
+              "serverVersion": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "cpuCores",
+              "memTotalMb"
+            ],
+            "additionalProperties": false
+          },
+          "host": {
+            "nullable": true,
+            "type": "object",
+            "properties": {
+              "cpuCores": {
+                "type": "number"
+              },
+              "totalRamMb": {
+                "type": "number"
+              },
+              "availableRamMb": {
+                "type": "number"
+              },
+              "diskTotalGb": {
+                "type": "number"
+              },
+              "diskUsedGb": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "cpuCores",
+              "totalRamMb",
+              "availableRamMb",
+              "diskTotalGb",
+              "diskUsedGb"
+            ],
+            "additionalProperties": false
+          },
+          "runtimeKind": {
+            "type": "string",
+            "enum": [
+              "container-only",
+              "docker-desktop-vm",
+              "wsl2-vm",
+              "linux-native",
+              "host-native"
+            ]
+          },
+          "hasVmWedge": {
+            "type": "boolean"
+          },
+          "recommended": {
+            "nullable": true,
+            "type": "object",
+            "properties": {
+              "dockerRamMb": {
+                "type": "number"
+              },
+              "dockerCpus": {
+                "type": "number"
+              },
+              "dockerDiskGb": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "dockerRamMb",
+              "dockerCpus",
+              "dockerDiskGb"
+            ],
+            "additionalProperties": false
+          },
+          "appDefaults": {
+            "type": "object",
+            "properties": {
+              "cpuLimit": {
+                "type": "string"
+              },
+              "memoryLimit": {
+                "type": "string"
+              },
+              "autoAllocated": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "autoAllocated"
+            ],
+            "additionalProperties": false
+          },
+          "tuning": {
+            "nullable": true,
+            "type": "object",
+            "additionalProperties": {}
+          }
+        },
+        "required": [
+          "docker",
+          "host",
+          "runtimeKind",
+          "hasVmWedge",
+          "recommended",
+          "appDefaults",
+          "tuning"
+        ],
+        "additionalProperties": false
+      },
+      "FactoryResetDto": {
+        "type": "object",
+        "properties": {
+          "confirmation": {
+            "type": "string",
+            "enum": [
+              "factory-reset"
+            ]
+          }
+        },
+        "required": [
+          "confirmation"
+        ],
+        "additionalProperties": false
+      },
+      "LoginBody": {
+        "type": "object",
+        "properties": {
+          "username": {
+            "type": "string"
+          },
+          "password": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "username",
+          "password"
+        ],
+        "additionalProperties": false
+      },
+      "LoginDto": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "totpSessionId": {
+            "type": "string"
+          },
+          "sessionId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "success"
+        ],
+        "additionalProperties": false
+      },
+      "VerifyTotpBody": {
+        "type": "object",
+        "properties": {
+          "totpCode": {
+            "type": "string"
+          },
+          "totpSessionId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "totpCode",
+          "totpSessionId"
+        ],
+        "additionalProperties": false
+      },
+      "RegisterBody": {
+        "type": "object",
+        "properties": {
+          "username": {
+            "type": "string"
+          },
+          "password": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "username",
+          "password"
+        ],
+        "additionalProperties": false
+      },
+      "RegisterDto": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "requiresEmailVerification": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "success"
+        ],
+        "additionalProperties": false
+      },
+      "SessionRefreshDto": {
+        "type": "object",
+        "properties": {
+          "sessionId": {
+            "type": "string"
+          },
+          "issuedAt": {
             "type": "number"
           }
         },
         "required": [
-          "updatesAvailable"
+          "sessionId",
+          "issuedAt"
+        ],
+        "additionalProperties": false
+      },
+      "BrowserHandoffMintBody": {
+        "type": "object",
+        "properties": {
+          "next": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048
+          }
+        },
+        "required": [
+          "next"
+        ],
+        "additionalProperties": false
+      },
+      "BrowserHandoffMintDto": {
+        "type": "object",
+        "properties": {
+          "url": {
+            "nullable": true,
+            "type": "string"
+          }
+        },
+        "required": [
+          "url"
+        ],
+        "additionalProperties": false
+      },
+      "PortalSessionHintDto": {
+        "type": "object",
+        "properties": {
+          "email": {
+            "nullable": true,
+            "type": "string"
+          },
+          "portalBaseUrl": {
+            "nullable": true,
+            "type": "string"
+          },
+          "source": {
+            "nullable": true,
+            "type": "string",
+            "enum": [
+              "hub_operator",
+              "portal_session"
+            ]
+          }
+        },
+        "required": [
+          "email",
+          "portalBaseUrl",
+          "source"
+        ],
+        "additionalProperties": false
+      },
+      "PortalDesktopExchangeDto": {
+        "type": "object",
+        "properties": {
+          "sessionId": {
+            "type": "string"
+          },
+          "redirectPath": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "sessionId",
+          "redirectPath"
+        ],
+        "additionalProperties": false
+      },
+      "ChangeUsernameBody": {
+        "type": "object",
+        "properties": {
+          "newUsername": {
+            "type": "string"
+          },
+          "password": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "newUsername",
+          "password"
+        ],
+        "additionalProperties": false
+      },
+      "ChangePasswordBody": {
+        "type": "object",
+        "properties": {
+          "currentPassword": {
+            "type": "string"
+          },
+          "newPassword": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "currentPassword",
+          "newPassword"
+        ],
+        "additionalProperties": false
+      },
+      "GetTotpUriBody": {
+        "type": "object",
+        "properties": {
+          "password": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "password"
+        ],
+        "additionalProperties": false
+      },
+      "GetTotpUriDto": {
+        "type": "object",
+        "properties": {
+          "key": {
+            "type": "string"
+          },
+          "uri": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "uri"
+        ],
+        "additionalProperties": false
+      },
+      "SetupTotpBody": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code"
+        ],
+        "additionalProperties": false
+      },
+      "DisableTotpBody": {
+        "type": "object",
+        "properties": {
+          "password": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "password"
+        ],
+        "additionalProperties": false
+      },
+      "ResetPasswordBody": {
+        "type": "object",
+        "properties": {
+          "newPassword": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "newPassword"
+        ],
+        "additionalProperties": false
+      },
+      "ResetPasswordDto": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "email": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "success",
+          "email"
+        ],
+        "additionalProperties": false
+      },
+      "CheckResetPasswordRequestDto": {
+        "type": "object",
+        "properties": {
+          "isRequestPending": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "isRequestPending"
+        ],
+        "additionalProperties": false
+      },
+      "PasswordResetRequestBody": {
+        "type": "object",
+        "properties": {
+          "email": {
+            "type": "string",
+            "format": "email",
+            "pattern": "^(?!\\.)(?!.*\\.\\.)([A-Za-z0-9_'+\\-\\.]*)[A-Za-z0-9_+-]@([A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$"
+          },
+          "deviceId": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "email"
+        ],
+        "additionalProperties": false
+      },
+      "PasswordResetRequestDto": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "success",
+          "message"
+        ],
+        "additionalProperties": false
+      },
+      "PasswordResetVerifyResponseDto": {
+        "type": "object",
+        "properties": {
+          "valid": {
+            "type": "boolean"
+          },
+          "email": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "valid"
+        ],
+        "additionalProperties": false
+      },
+      "PasswordResetCompleteBody": {
+        "type": "object",
+        "properties": {
+          "token": {
+            "type": "string"
+          },
+          "newPassword": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "token",
+          "newPassword"
+        ],
+        "additionalProperties": false
+      },
+      "PasswordResetCompleteDto": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "success",
+          "message"
         ],
         "additionalProperties": false
       },
@@ -7024,6 +7564,33 @@
         },
         "required": [
           "installed"
+        ],
+        "additionalProperties": false
+      },
+      "InstalledAppUrnsDto": {
+        "type": "object",
+        "properties": {
+          "urns": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "urns"
+        ],
+        "additionalProperties": false
+      },
+      "UpdatesAvailableDto": {
+        "type": "object",
+        "properties": {
+          "updatesAvailable": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "updatesAvailable"
         ],
         "additionalProperties": false
       },
@@ -9758,289 +10325,6 @@
         ],
         "additionalProperties": false
       },
-      "UpdateInferencePreferencesBody": {
-        "type": "object",
-        "properties": {
-          "backend": {
-            "type": "string",
-            "enum": [
-              "ollama",
-              "vllm",
-              "lemonade"
-            ]
-          },
-          "model": {
-            "nullable": true,
-            "type": "string",
-            "minLength": 1
-          },
-          "embeddingModel": {
-            "nullable": true,
-            "type": "string",
-            "minLength": 1
-          },
-          "visionModel": {
-            "nullable": true,
-            "type": "string",
-            "minLength": 1
-          },
-          "vllmApiKey": {
-            "nullable": true,
-            "type": "string"
-          },
-          "vllmUrl": {
-            "nullable": true,
-            "type": "string",
-            "format": "uri"
-          }
-        },
-        "required": [
-          "backend"
-        ],
-        "additionalProperties": false
-      },
-      "UpdateRocmInstallStateBody": {
-        "type": "object",
-        "properties": {
-          "phase": {
-            "type": "string",
-            "enum": [
-              "idle",
-              "downloading",
-              "installing",
-              "reboot_required",
-              "failed",
-              "completed"
-            ]
-          },
-          "message": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "phase"
-        ],
-        "additionalProperties": false
-      },
-      "LoadDto": {
-        "type": "object",
-        "properties": {
-          "diskUsed": {
-            "default": 0,
-            "type": "number"
-          },
-          "diskSize": {
-            "default": 0,
-            "type": "number"
-          },
-          "percentUsed": {
-            "default": 0,
-            "type": "number"
-          },
-          "cpuLoad": {
-            "default": 0,
-            "type": "number"
-          },
-          "cpuCores": {
-            "default": 0,
-            "type": "number"
-          },
-          "memoryTotal": {
-            "default": 0,
-            "type": "number"
-          },
-          "memoryUsed": {
-            "default": 0,
-            "type": "number"
-          },
-          "percentUsedMemory": {
-            "default": 0,
-            "type": "number"
-          },
-          "hasVmWedge": {
-            "default": false,
-            "type": "boolean"
-          },
-          "runtimeKind": {
-            "default": "container-only",
-            "type": "string",
-            "enum": [
-              "container-only",
-              "docker-desktop-vm",
-              "wsl2-vm",
-              "linux-native",
-              "host-native"
-            ]
-          },
-          "containerMemoryTotal": {
-            "type": "number"
-          },
-          "containerMemoryUsed": {
-            "type": "number"
-          },
-          "containerDiskTotal": {
-            "type": "number"
-          },
-          "containerDiskUsed": {
-            "type": "number"
-          },
-          "recommendedDockerRamMb": {
-            "type": "number"
-          },
-          "platformGuidance": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "diskUsed",
-          "diskSize",
-          "percentUsed",
-          "cpuLoad",
-          "cpuCores",
-          "memoryTotal",
-          "memoryUsed",
-          "percentUsedMemory",
-          "hasVmWedge",
-          "runtimeKind"
-        ],
-        "additionalProperties": false
-      },
-      "SystemResourcesDto": {
-        "type": "object",
-        "properties": {
-          "docker": {
-            "nullable": true,
-            "type": "object",
-            "properties": {
-              "cpuCores": {
-                "type": "number"
-              },
-              "memTotalMb": {
-                "type": "number"
-              },
-              "serverVersion": {
-                "type": "string"
-              }
-            },
-            "required": [
-              "cpuCores",
-              "memTotalMb"
-            ],
-            "additionalProperties": false
-          },
-          "host": {
-            "nullable": true,
-            "type": "object",
-            "properties": {
-              "cpuCores": {
-                "type": "number"
-              },
-              "totalRamMb": {
-                "type": "number"
-              },
-              "availableRamMb": {
-                "type": "number"
-              },
-              "diskTotalGb": {
-                "type": "number"
-              },
-              "diskUsedGb": {
-                "type": "number"
-              }
-            },
-            "required": [
-              "cpuCores",
-              "totalRamMb",
-              "availableRamMb",
-              "diskTotalGb",
-              "diskUsedGb"
-            ],
-            "additionalProperties": false
-          },
-          "runtimeKind": {
-            "type": "string",
-            "enum": [
-              "container-only",
-              "docker-desktop-vm",
-              "wsl2-vm",
-              "linux-native",
-              "host-native"
-            ]
-          },
-          "hasVmWedge": {
-            "type": "boolean"
-          },
-          "recommended": {
-            "nullable": true,
-            "type": "object",
-            "properties": {
-              "dockerRamMb": {
-                "type": "number"
-              },
-              "dockerCpus": {
-                "type": "number"
-              },
-              "dockerDiskGb": {
-                "type": "number"
-              }
-            },
-            "required": [
-              "dockerRamMb",
-              "dockerCpus",
-              "dockerDiskGb"
-            ],
-            "additionalProperties": false
-          },
-          "appDefaults": {
-            "type": "object",
-            "properties": {
-              "cpuLimit": {
-                "type": "string"
-              },
-              "memoryLimit": {
-                "type": "string"
-              },
-              "autoAllocated": {
-                "type": "boolean"
-              }
-            },
-            "required": [
-              "autoAllocated"
-            ],
-            "additionalProperties": false
-          },
-          "tuning": {
-            "nullable": true,
-            "type": "object",
-            "additionalProperties": {}
-          }
-        },
-        "required": [
-          "docker",
-          "host",
-          "runtimeKind",
-          "hasVmWedge",
-          "recommended",
-          "appDefaults",
-          "tuning"
-        ],
-        "additionalProperties": false
-      },
-      "FactoryResetDto": {
-        "type": "object",
-        "properties": {
-          "confirmation": {
-            "type": "string",
-            "enum": [
-              "factory-reset"
-            ]
-          }
-        },
-        "required": [
-          "confirmation"
-        ],
-        "additionalProperties": false
-      },
       "SearchAppsDto": {
         "type": "object",
         "properties": {
@@ -10289,6 +10573,70 @@
         ],
         "additionalProperties": false
       },
+      "UpdateInferencePreferencesBody": {
+        "type": "object",
+        "properties": {
+          "backend": {
+            "type": "string",
+            "enum": [
+              "ollama",
+              "vllm",
+              "lemonade"
+            ]
+          },
+          "model": {
+            "nullable": true,
+            "type": "string",
+            "minLength": 1
+          },
+          "embeddingModel": {
+            "nullable": true,
+            "type": "string",
+            "minLength": 1
+          },
+          "visionModel": {
+            "nullable": true,
+            "type": "string",
+            "minLength": 1
+          },
+          "vllmApiKey": {
+            "nullable": true,
+            "type": "string"
+          },
+          "vllmUrl": {
+            "nullable": true,
+            "type": "string",
+            "format": "uri"
+          }
+        },
+        "required": [
+          "backend"
+        ],
+        "additionalProperties": false
+      },
+      "UpdateRocmInstallStateBody": {
+        "type": "object",
+        "properties": {
+          "phase": {
+            "type": "string",
+            "enum": [
+              "idle",
+              "downloading",
+              "installing",
+              "reboot_required",
+              "failed",
+              "completed"
+            ]
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "phase"
+        ],
+        "additionalProperties": false
+      },
       "CreateApiKeyBody": {
         "type": "object",
         "properties": {
@@ -10327,150 +10675,6 @@
         },
         "required": [
           "capability"
-        ],
-        "additionalProperties": false
-      },
-      "McpToolCallBody": {
-        "type": "object",
-        "properties": {
-          "arguments": {
-            "type": "object",
-            "additionalProperties": {}
-          },
-          "confirmDestructive": {
-            "type": "boolean"
-          }
-        },
-        "additionalProperties": false
-      },
-      "McpProbeResultDto": {
-        "type": "object",
-        "properties": {
-          "bridgeable": {
-            "type": "boolean"
-          },
-          "transport": {
-            "type": "string"
-          },
-          "containerStatus": {
-            "type": "string",
-            "enum": [
-              "running",
-              "stopped",
-              "missing",
-              "unknown"
-            ]
-          },
-          "toolCount": {
-            "type": "number"
-          },
-          "lastError": {
-            "type": "string"
-          },
-          "lastProbeAt": {
-            "type": "string"
-          },
-          "bridgeWarning": {
-            "type": "string"
-          },
-          "connected": {
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "bridgeable",
-          "containerStatus",
-          "toolCount",
-          "connected"
-        ],
-        "additionalProperties": false
-      },
-      "McpInstallSchemaDto": {
-        "type": "object",
-        "properties": {
-          "transport": {
-            "type": "string",
-            "enum": [
-              "stdio",
-              "http"
-            ]
-          },
-          "requires": {
-            "type": "object",
-            "additionalProperties": {}
-          },
-          "tags": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
-          },
-          "fields": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "properties": {
-                "key": {
-                  "type": "string"
-                },
-                "label": {
-                  "type": "string"
-                },
-                "hint": {
-                  "type": "string"
-                },
-                "required": {
-                  "type": "boolean"
-                },
-                "secret": {
-                  "type": "boolean"
-                },
-                "default": {
-                  "anyOf": [
-                    {
-                      "type": "string"
-                    },
-                    {
-                      "type": "number"
-                    },
-                    {
-                      "type": "boolean"
-                    }
-                  ]
-                },
-                "source": {
-                  "type": "string",
-                  "enum": [
-                    "form_field",
-                    "mcp_env"
-                  ]
-                }
-              },
-              "required": [
-                "key",
-                "label",
-                "required",
-                "secret",
-                "source"
-              ],
-              "additionalProperties": false
-            }
-          },
-          "toolCount": {
-            "type": "number"
-          },
-          "bridgeable": {
-            "type": "boolean"
-          },
-          "bridgeWarning": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "tags",
-          "fields",
-          "toolCount",
-          "bridgeable"
         ],
         "additionalProperties": false
       },
@@ -10752,6 +10956,154 @@
         },
         "required": [
           "filename"
+        ],
+        "additionalProperties": false
+      },
+      "LinksDto": {
+        "type": "object",
+        "properties": {
+          "links": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "number"
+                },
+                "title": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 20
+                },
+                "description": {
+                  "nullable": true,
+                  "type": "string",
+                  "maxLength": 50
+                },
+                "url": {
+                  "type": "string",
+                  "format": "uri"
+                },
+                "iconUrl": {
+                  "nullable": true,
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "format": "uri"
+                    },
+                    {
+                      "type": "string",
+                      "enum": [
+                        ""
+                      ]
+                    }
+                  ]
+                },
+                "userId": {
+                  "type": "number"
+                },
+                "isVisibleOnGuestDashboard": {
+                  "default": false,
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "id",
+                "title",
+                "description",
+                "url",
+                "iconUrl",
+                "userId",
+                "isVisibleOnGuestDashboard"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "links"
+        ],
+        "additionalProperties": false
+      },
+      "LinkBodyDto": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 20
+          },
+          "url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 50
+          },
+          "iconUrl": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uri"
+              },
+              {
+                "type": "string",
+                "enum": [
+                  ""
+                ]
+              }
+            ]
+          },
+          "isVisibleOnGuestDashboard": {
+            "default": false,
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "title",
+          "url",
+          "isVisibleOnGuestDashboard"
+        ],
+        "additionalProperties": false
+      },
+      "EditLinkBodyDto": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 20
+          },
+          "url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 50
+          },
+          "iconUrl": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uri"
+              },
+              {
+                "type": "string",
+                "enum": [
+                  ""
+                ]
+              }
+            ]
+          },
+          "isVisibleOnGuestDashboard": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "title",
+          "url"
         ],
         "additionalProperties": false
       },
@@ -13267,523 +13619,147 @@
         ],
         "additionalProperties": false
       },
-      "LinksDto": {
+      "McpToolCallBody": {
         "type": "object",
         "properties": {
-          "links": {
+          "arguments": {
+            "type": "object",
+            "additionalProperties": {}
+          },
+          "confirmDestructive": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false
+      },
+      "McpProbeResultDto": {
+        "type": "object",
+        "properties": {
+          "bridgeable": {
+            "type": "boolean"
+          },
+          "transport": {
+            "type": "string"
+          },
+          "containerStatus": {
+            "type": "string",
+            "enum": [
+              "running",
+              "stopped",
+              "missing",
+              "unknown"
+            ]
+          },
+          "toolCount": {
+            "type": "number"
+          },
+          "lastError": {
+            "type": "string"
+          },
+          "lastProbeAt": {
+            "type": "string"
+          },
+          "bridgeWarning": {
+            "type": "string"
+          },
+          "connected": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "bridgeable",
+          "containerStatus",
+          "toolCount",
+          "connected"
+        ],
+        "additionalProperties": false
+      },
+      "McpInstallSchemaDto": {
+        "type": "object",
+        "properties": {
+          "transport": {
+            "type": "string",
+            "enum": [
+              "stdio",
+              "http"
+            ]
+          },
+          "requires": {
+            "type": "object",
+            "additionalProperties": {}
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "fields": {
             "type": "array",
             "items": {
               "type": "object",
               "properties": {
-                "id": {
-                  "type": "number"
+                "key": {
+                  "type": "string"
                 },
-                "title": {
-                  "type": "string",
-                  "minLength": 1,
-                  "maxLength": 20
+                "label": {
+                  "type": "string"
                 },
-                "description": {
-                  "nullable": true,
-                  "type": "string",
-                  "maxLength": 50
+                "hint": {
+                  "type": "string"
                 },
-                "url": {
-                  "type": "string",
-                  "format": "uri"
+                "required": {
+                  "type": "boolean"
                 },
-                "iconUrl": {
-                  "nullable": true,
+                "secret": {
+                  "type": "boolean"
+                },
+                "default": {
                   "anyOf": [
                     {
-                      "type": "string",
-                      "format": "uri"
+                      "type": "string"
                     },
                     {
-                      "type": "string",
-                      "enum": [
-                        ""
-                      ]
+                      "type": "number"
+                    },
+                    {
+                      "type": "boolean"
                     }
                   ]
                 },
-                "userId": {
-                  "type": "number"
-                },
-                "isVisibleOnGuestDashboard": {
-                  "default": false,
-                  "type": "boolean"
+                "source": {
+                  "type": "string",
+                  "enum": [
+                    "form_field",
+                    "mcp_env"
+                  ]
                 }
               },
               "required": [
-                "id",
-                "title",
-                "description",
-                "url",
-                "iconUrl",
-                "userId",
-                "isVisibleOnGuestDashboard"
+                "key",
+                "label",
+                "required",
+                "secret",
+                "source"
               ],
               "additionalProperties": false
             }
-          }
-        },
-        "required": [
-          "links"
-        ],
-        "additionalProperties": false
-      },
-      "LinkBodyDto": {
-        "type": "object",
-        "properties": {
-          "title": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 20
           },
-          "url": {
-            "type": "string",
-            "format": "uri"
-          },
-          "description": {
-            "type": "string",
-            "maxLength": 50
-          },
-          "iconUrl": {
-            "anyOf": [
-              {
-                "type": "string",
-                "format": "uri"
-              },
-              {
-                "type": "string",
-                "enum": [
-                  ""
-                ]
-              }
-            ]
-          },
-          "isVisibleOnGuestDashboard": {
-            "default": false,
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "title",
-          "url",
-          "isVisibleOnGuestDashboard"
-        ],
-        "additionalProperties": false
-      },
-      "EditLinkBodyDto": {
-        "type": "object",
-        "properties": {
-          "title": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 20
-          },
-          "url": {
-            "type": "string",
-            "format": "uri"
-          },
-          "description": {
-            "type": "string",
-            "maxLength": 50
-          },
-          "iconUrl": {
-            "anyOf": [
-              {
-                "type": "string",
-                "format": "uri"
-              },
-              {
-                "type": "string",
-                "enum": [
-                  ""
-                ]
-              }
-            ]
-          },
-          "isVisibleOnGuestDashboard": {
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "title",
-          "url"
-        ],
-        "additionalProperties": false
-      },
-      "LoginBody": {
-        "type": "object",
-        "properties": {
-          "username": {
-            "type": "string"
-          },
-          "password": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "username",
-          "password"
-        ],
-        "additionalProperties": false
-      },
-      "LoginDto": {
-        "type": "object",
-        "properties": {
-          "success": {
-            "type": "boolean"
-          },
-          "totpSessionId": {
-            "type": "string"
-          },
-          "sessionId": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "success"
-        ],
-        "additionalProperties": false
-      },
-      "VerifyTotpBody": {
-        "type": "object",
-        "properties": {
-          "totpCode": {
-            "type": "string"
-          },
-          "totpSessionId": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "totpCode",
-          "totpSessionId"
-        ],
-        "additionalProperties": false
-      },
-      "RegisterBody": {
-        "type": "object",
-        "properties": {
-          "username": {
-            "type": "string"
-          },
-          "password": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "username",
-          "password"
-        ],
-        "additionalProperties": false
-      },
-      "RegisterDto": {
-        "type": "object",
-        "properties": {
-          "success": {
-            "type": "boolean"
-          },
-          "requiresEmailVerification": {
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "success"
-        ],
-        "additionalProperties": false
-      },
-      "SessionRefreshDto": {
-        "type": "object",
-        "properties": {
-          "sessionId": {
-            "type": "string"
-          },
-          "issuedAt": {
+          "toolCount": {
             "type": "number"
-          }
-        },
-        "required": [
-          "sessionId",
-          "issuedAt"
-        ],
-        "additionalProperties": false
-      },
-      "BrowserHandoffMintBody": {
-        "type": "object",
-        "properties": {
-          "next": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 2048
-          }
-        },
-        "required": [
-          "next"
-        ],
-        "additionalProperties": false
-      },
-      "BrowserHandoffMintDto": {
-        "type": "object",
-        "properties": {
-          "url": {
-            "nullable": true,
-            "type": "string"
-          }
-        },
-        "required": [
-          "url"
-        ],
-        "additionalProperties": false
-      },
-      "PortalSessionHintDto": {
-        "type": "object",
-        "properties": {
-          "email": {
-            "nullable": true,
-            "type": "string"
           },
-          "portalBaseUrl": {
-            "nullable": true,
-            "type": "string"
-          },
-          "source": {
-            "nullable": true,
-            "type": "string",
-            "enum": [
-              "hub_operator",
-              "portal_session"
-            ]
-          }
-        },
-        "required": [
-          "email",
-          "portalBaseUrl",
-          "source"
-        ],
-        "additionalProperties": false
-      },
-      "PortalDesktopExchangeDto": {
-        "type": "object",
-        "properties": {
-          "sessionId": {
-            "type": "string"
-          },
-          "redirectPath": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "sessionId",
-          "redirectPath"
-        ],
-        "additionalProperties": false
-      },
-      "ChangeUsernameBody": {
-        "type": "object",
-        "properties": {
-          "newUsername": {
-            "type": "string"
-          },
-          "password": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "newUsername",
-          "password"
-        ],
-        "additionalProperties": false
-      },
-      "ChangePasswordBody": {
-        "type": "object",
-        "properties": {
-          "currentPassword": {
-            "type": "string"
-          },
-          "newPassword": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "currentPassword",
-          "newPassword"
-        ],
-        "additionalProperties": false
-      },
-      "GetTotpUriBody": {
-        "type": "object",
-        "properties": {
-          "password": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "password"
-        ],
-        "additionalProperties": false
-      },
-      "GetTotpUriDto": {
-        "type": "object",
-        "properties": {
-          "key": {
-            "type": "string"
-          },
-          "uri": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "key",
-          "uri"
-        ],
-        "additionalProperties": false
-      },
-      "SetupTotpBody": {
-        "type": "object",
-        "properties": {
-          "code": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "code"
-        ],
-        "additionalProperties": false
-      },
-      "DisableTotpBody": {
-        "type": "object",
-        "properties": {
-          "password": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "password"
-        ],
-        "additionalProperties": false
-      },
-      "ResetPasswordBody": {
-        "type": "object",
-        "properties": {
-          "newPassword": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "newPassword"
-        ],
-        "additionalProperties": false
-      },
-      "ResetPasswordDto": {
-        "type": "object",
-        "properties": {
-          "success": {
+          "bridgeable": {
             "type": "boolean"
           },
-          "email": {
+          "bridgeWarning": {
             "type": "string"
           }
         },
         "required": [
-          "success",
-          "email"
-        ],
-        "additionalProperties": false
-      },
-      "CheckResetPasswordRequestDto": {
-        "type": "object",
-        "properties": {
-          "isRequestPending": {
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "isRequestPending"
-        ],
-        "additionalProperties": false
-      },
-      "PasswordResetRequestBody": {
-        "type": "object",
-        "properties": {
-          "email": {
-            "type": "string",
-            "format": "email",
-            "pattern": "^(?!\\.)(?!.*\\.\\.)([A-Za-z0-9_'+\\-\\.]*)[A-Za-z0-9_+-]@([A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$"
-          },
-          "deviceId": {
-            "type": "string",
-            "minLength": 1
-          }
-        },
-        "required": [
-          "email"
-        ],
-        "additionalProperties": false
-      },
-      "PasswordResetRequestDto": {
-        "type": "object",
-        "properties": {
-          "success": {
-            "type": "boolean"
-          },
-          "message": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "success",
-          "message"
-        ],
-        "additionalProperties": false
-      },
-      "PasswordResetVerifyResponseDto": {
-        "type": "object",
-        "properties": {
-          "valid": {
-            "type": "boolean"
-          },
-          "email": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "valid"
-        ],
-        "additionalProperties": false
-      },
-      "PasswordResetCompleteBody": {
-        "type": "object",
-        "properties": {
-          "token": {
-            "type": "string"
-          },
-          "newPassword": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "token",
-          "newPassword"
-        ],
-        "additionalProperties": false
-      },
-      "PasswordResetCompleteDto": {
-        "type": "object",
-        "properties": {
-          "success": {
-            "type": "boolean"
-          },
-          "message": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "success",
-          "message"
+          "tags",
+          "fields",
+          "toolCount",
+          "bridgeable"
         ],
         "additionalProperties": false
       },
@@ -14100,6 +14076,34 @@
         },
         "required": [
           "domains"
+        ],
+        "additionalProperties": false
+      },
+      "FeaturedStoreBundleDto": {
+        "type": "object",
+        "properties": {
+          "firstParty": {
+            "type": "array",
+            "items": {}
+          },
+          "featured": {
+            "type": "array",
+            "items": {}
+          },
+          "trending": {
+            "type": "array",
+            "items": {}
+          },
+          "newest": {
+            "type": "array",
+            "items": {}
+          }
+        },
+        "required": [
+          "firstParty",
+          "featured",
+          "trending",
+          "newest"
         ],
         "additionalProperties": false
       }
