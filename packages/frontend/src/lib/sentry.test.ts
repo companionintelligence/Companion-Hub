@@ -6,24 +6,40 @@ type MutableImportMetaEnv = {
 
 const testEnv = import.meta.env as MutableImportMetaEnv;
 
-const { fetchDeviceRegistrationInfoResult, captureException, captureMessage, init, setLevel, setTag, setExtra, setUser, withScope } = vi.hoisted(
-  () => ({
-    fetchDeviceRegistrationInfoResult: vi.fn(),
-    captureException: vi.fn(),
-    captureMessage: vi.fn(),
-    init: vi.fn(),
-    setLevel: vi.fn(),
-    setTag: vi.fn(),
-    setExtra: vi.fn(),
-    setUser: vi.fn(),
-    withScope: vi.fn(),
-  }),
-);
+const {
+  fetchDeviceRegistrationInfoResult,
+  browserTracingIntegration,
+  captureException,
+  captureMessage,
+  init,
+  replayIntegration,
+  setLevel,
+  setTag,
+  setExtra,
+  setUser,
+  withScope,
+} = vi.hoisted(() => ({
+  fetchDeviceRegistrationInfoResult: vi.fn(),
+  // `init` receives the RESULTS of these, so they have to be callable and
+  // return something recognisable — see the wiring assertion below.
+  browserTracingIntegration: vi.fn(() => ({ name: 'BrowserTracing' })),
+  captureException: vi.fn(),
+  captureMessage: vi.fn(),
+  init: vi.fn(),
+  replayIntegration: vi.fn(() => ({ name: 'Replay' })),
+  setLevel: vi.fn(),
+  setTag: vi.fn(),
+  setExtra: vi.fn(),
+  setUser: vi.fn(),
+  withScope: vi.fn(),
+}));
 
 vi.mock('@sentry/react', () => ({
+  browserTracingIntegration,
   captureMessage,
   captureException,
   init,
+  replayIntegration,
   setTag,
   setUser,
   withScope,
@@ -118,6 +134,22 @@ describe('frontend sentry', () => {
     expect(setUser).toHaveBeenCalledWith({ id: 'device-123' });
     expect(fetchDeviceRegistrationInfoResult).toHaveBeenCalled();
   }, 30_000);
+
+  it('wires tracing and masked session replay into the init call', async () => {
+    await import('./sentry');
+
+    // Pins the two integrations to the `init` call so dropping one — which
+    // silently disables production tracing or replay — fails here instead of
+    // going unnoticed. `maskAllText`/`blockAllMedia` are asserted because an
+    // unmasked replay would ship user content to Sentry.
+    expect(browserTracingIntegration).toHaveBeenCalled();
+    expect(replayIntegration).toHaveBeenCalledWith({ maskAllText: true, blockAllMedia: true });
+    expect(init).toHaveBeenCalledWith(
+      expect.objectContaining({
+        integrations: [{ name: 'BrowserTracing' }, { name: 'Replay' }],
+      }),
+    );
+  });
 
   it('tags Tauri errors as desktop-web', async () => {
     (window as Window & { __TAURI_INTERNALS__?: object }).__TAURI_INTERNALS__ = {};
