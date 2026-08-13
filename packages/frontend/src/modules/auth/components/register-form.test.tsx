@@ -18,9 +18,12 @@ describe('RegisterForm', () => {
 
     const passwordInput = screen.getByLabelText('COMMON_PASSWORD') as HTMLInputElement;
     const confirmationInput = screen.getByLabelText('AUTH_FORM_PASSWORD_CONFIRMATION') as HTMLInputElement;
-    const toggles = screen.getAllByRole('button', { name: 'APP_INSTALL_FORM_SHOW_PASSWORD' });
-    const passwordToggle = toggles[0] as HTMLElement;
-    const confirmationToggle = toggles[1] as HTMLElement;
+    // Each toggle is named after its own field, so they are picked by name rather than by
+    // position — the pair used to be distinguishable only by DOM order.
+    const passwordToggle = screen.getByRole('button', { name: 'APP_INSTALL_FORM_SHOW_PASSWORD: COMMON_PASSWORD' });
+    const confirmationToggle = screen.getByRole('button', {
+      name: 'APP_INSTALL_FORM_SHOW_PASSWORD: AUTH_FORM_PASSWORD_CONFIRMATION',
+    });
 
     expect(passwordInput.type).toBe('password');
     expect(confirmationInput.type).toBe('password');

@@ -3,6 +3,7 @@ import { Button } from '@/components/ui/Button';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/Dialog';
 import { Input } from '@/components/ui/Input';
 import { OtpInput } from '@/components/ui/OtpInput';
+import { PasswordInput } from '@/components/ui/PasswordInput/PasswordInput';
 import { Switch } from '@/components/ui/Switch';
 import { useAppContext } from '@/context/app-context';
 import { useDisclosure } from '@/lib/hooks/use-disclosure';
@@ -39,6 +40,7 @@ export const OtpForm = (props: { totpEnabled: boolean }) => {
       toast.error(t(e.message, e.intlParams));
     },
     onSuccess: (data) => {
+      setPassword('');
       if (!data) return;
       setKey(data.key);
       setUri(data.uri);
@@ -70,6 +72,7 @@ export const OtpForm = (props: { totpEnabled: boolean }) => {
       toast.error(t(e.message, e.intlParams));
     },
     onSuccess: () => {
+      setPassword('');
       toast.success(t('SETTINGS_SECURITY_2FA_DISABLE_SUCCESS'));
       refreshAppContext();
     },
@@ -100,6 +103,10 @@ export const OtpForm = (props: { totpEnabled: boolean }) => {
   };
 
   const handleTotp = (enabled: boolean) => {
+    // Both dialogs submit from this one piece of state, so a password left over from an
+    // earlier prompt would carry into the next one.
+    setPassword('');
+
     if (enabled) {
       setupOtpDisclosure.open();
     } else {
@@ -130,9 +137,10 @@ export const OtpForm = (props: { totpEnabled: boolean }) => {
               id={passwordFormId}
             >
               <p className="text-muted-foreground">{t('SETTINGS_SECURITY_PASSWORD_NEEDED_HINT')}</p>
-              <Input
+              <PasswordInput
                 name="password"
-                type="password"
+                autoComplete="current-password"
+                value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 placeholder={t('SETTINGS_SECURITY_PASSWORD_NEEDED')}
               />
@@ -159,9 +167,10 @@ export const OtpForm = (props: { totpEnabled: boolean }) => {
               id={totpFormId}
             >
               <p className="text-muted-foreground">{t('SETTINGS_SECURITY_PASSWORD_NEEDED_HINT')}</p>
-              <Input
+              <PasswordInput
                 name="password"
-                type="password"
+                autoComplete="current-password"
+                value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 placeholder={t('SETTINGS_SECURITY_PASSWORD_NEEDED')}
               />

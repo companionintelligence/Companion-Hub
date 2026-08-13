@@ -24,10 +24,12 @@ describe('LoginForm', () => {
     const passwordInput = screen.getByLabelText('COMMON_PASSWORD') as HTMLInputElement;
     expect(passwordInput.type).toBe('password');
 
-    await userEvent.click(screen.getByRole('button', { name: 'APP_INSTALL_FORM_SHOW_PASSWORD' }));
+    // The toggle carries the name of the field it controls, so forms with more than one
+    // password field do not end up with several identically-named buttons.
+    await userEvent.click(screen.getByRole('button', { name: 'APP_INSTALL_FORM_SHOW_PASSWORD: COMMON_PASSWORD' }));
     expect(passwordInput.type).toBe('text');
 
-    await userEvent.click(screen.getByRole('button', { name: 'APP_INSTALL_FORM_HIDE_PASSWORD' }));
+    await userEvent.click(screen.getByRole('button', { name: 'APP_INSTALL_FORM_HIDE_PASSWORD: COMMON_PASSWORD' }));
     expect(passwordInput.type).toBe('password');
   });
 
