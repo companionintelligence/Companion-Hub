@@ -11,6 +11,7 @@ import type { AppUrn } from '@ci-hub/common/types';
 import type Dockerode from 'dockerode';
 import { AppLifecycleCommand } from './command';
 import { parseComposeJson } from '@ci-hub/common/schemas';
+import { extractAppUrn } from '@/common/helpers/app-helpers';
 
 export class UpdateAppCommand extends AppLifecycleCommand {
   constructor(
@@ -31,7 +32,8 @@ export class UpdateAppCommand extends AppLifecycleCommand {
 
     try {
       const composeToInstall = await marketplaceService.getDockerComposeJson(appUrn);
-      parseComposeJson(composeToInstall.content);
+      const { appName } = extractAppUrn(appUrn);
+      parseComposeJson(composeToInstall.content, { appName });
     } catch (err) {
       logger.error(`Error parsing docker-compose.yml for app ${appUrn} from marketplace repository. Are you running the latest version of CI Hub?`);
       return this.handleAppError(err, appUrn, 'update_error');

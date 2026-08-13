@@ -170,7 +170,7 @@ export class AgentNotifyService implements OnApplicationBootstrap, OnModuleDestr
     try {
       const composeJson = await appFilesManager.getDockerComposeJson(appUrn as AppUrn);
       if (composeJson.content) {
-        const parsed = parseComposeJson(composeJson.content);
+        const parsed = parseComposeJson(composeJson.content, { appName: serviceName });
         const mainService = parsed.services.find((s) => s.isMain) || parsed.services[0];
         if (mainService?.name) {
           serviceName = mainService.name;

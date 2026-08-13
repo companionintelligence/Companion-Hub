@@ -84,7 +84,8 @@ export class AppLifecycleCommand {
     }
 
     try {
-      const { services, overrides } = parseComposeJson(composeJson.content);
+      const { appName } = extractAppUrn(appUrn);
+      const { services, overrides } = parseComposeJson(composeJson.content, { appName });
       const architecture = configService.get('architecture');
 
       // Merge architecture-specific overrides with base services

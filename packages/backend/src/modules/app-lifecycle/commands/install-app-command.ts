@@ -40,8 +40,8 @@ const DOWNLOAD_PROGRESS_END = 99;
 const DOWNLOAD_PROGRESS_MAX_DURING_PULL = 98;
 const DOWNLOAD_PROGRESS_EMIT_INTERVAL_MS = 250;
 
-export function extractComposeImages(composeContent: unknown): string[] {
-  const { services } = parseComposeJson(composeContent);
+export function extractComposeImages(composeContent: unknown, appName?: string): string[] {
+  const { services } = parseComposeJson(composeContent, { appName });
   return [...new Set(services.map((service) => service.image?.trim()).filter((image): image is string => Boolean(image)))];
 }
 
@@ -112,13 +112,14 @@ export class InstallAppCommand extends AppLifecycleCommand {
   private async assertRequiredHostDevices(appUrn: AppUrn): Promise<void> {
     const config = this.moduleRef.get(ConfigurationService, { strict: false });
     const appFilesManager = this.moduleRef.get(AppFilesManager, { strict: false });
+    const { appName } = extractAppUrn(appUrn);
 
     // Check the base installed compose (docker-compose.json) with architecture overrides applied.
     let requiresKfd = false;
     let requiresKvm = false;
     const composeJson = await appFilesManager.getDockerComposeJson(appUrn);
     if (composeJson.content) {
-      const { services, overrides } = parseComposeJson(composeJson.content);
+      const { services, overrides } = parseComposeJson(composeJson.content, { appName });
       const architecture = config.get('architecture');
       const mergedServices = mergeArchitectureOverrides(services, overrides, architecture);
       for (const service of mergedServices) {
@@ -162,6 +163,7 @@ export class InstallAppCommand extends AppLifecycleCommand {
     const envUtils = this.moduleRef.get(EnvUtils, { strict: false });
     const sseService = this.moduleRef.get(SSEService, { strict: false });
     const appsRepository = this.moduleRef.get(AppsRepository, { strict: false });
+    const { appStoreId, appName } = extractAppUrn(appUrn);
 
     const emitProgress = async (progress: number) => {
       if (sseService) {
@@ -182,7 +184,7 @@ export class InstallAppCommand extends AppLifecycleCommand {
         throw new Error(`Invalid marketplace compose payload for ${appUrn}`);
       }
       composeToInstallContent = composeToInstall.content;
-      parseComposeJson(composeToInstallContent);
+      parseComposeJson(composeToInstallContent, { appName });
     } catch (err) {
       logger.error(`Error parsing docker-compose.yml for app ${appUrn} from marketplace repository. Are you running the latest version of CI Hub?`);
       return this.handleAppError(err, appUrn, 'update_error');
@@ -190,7 +192,7 @@ export class InstallAppCommand extends AppLifecycleCommand {
 
     try {
       ctx?.setPhase('preparing');
-      const appImages = extractComposeImages(composeToInstallContent);
+      const appImages = extractComposeImages(composeToInstallContent, appName);
       await emitProgress(5);
       if (process.getuid && process.getgid) {
         logger.info(`Installing app ${appUrn} as User ID: ${process.getuid()}, Group ID: ${process.getgid()}`);
@@ -236,7 +238,7 @@ export class InstallAppCommand extends AppLifecycleCommand {
           const composeJson = await appFilesManager.getDockerComposeJson(appUrn);
           if (composeJson.content) {
             try {
-              const { services } = parseComposeJson(composeJson.content);
+              const { services } = parseComposeJson(composeJson.content, { appName });
               for (const service of services) {
                 if (service.addPorts) {
                   for (const addPort of service.addPorts) {
@@ -306,7 +308,6 @@ export class InstallAppCommand extends AppLifecycleCommand {
       // Ensure APP_DATA_DIR exists on the host before docker-compose tries to mount it
       // We need to create it using the container path since we're inside the container
       // The container path /app-data maps to the host path via the volume mount
-      const { appStoreId, appName } = extractAppUrn(appUrn);
       const { directories } = _config.getConfig();
       const containerAppDataPath = path.join(directories.appDataDir, appStoreId, appName);
       const hostAppDataDir = envMap.get('APP_DATA_DIR');
@@ -413,7 +414,7 @@ export class InstallAppCommand extends AppLifecycleCommand {
         const preComposeJson = await appFilesManager.getDockerComposeJson(appUrn);
         if (preComposeJson.content) {
           try {
-            const { services: preServices } = parseComposeJson(preComposeJson.content);
+            const { services: preServices } = parseComposeJson(preComposeJson.content, { appName });
             const { appStoreId: preStoreId, appName: preName } = extractAppUrn(appUrn);
             const preContainerAppDataPath = path.join(_config.getConfig().directories.appDataDir, preStoreId, preName);
             for (const svc of preServices) {

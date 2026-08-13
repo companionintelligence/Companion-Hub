@@ -8,6 +8,7 @@ import {
   collectServiceSecurityViolations,
   TRUSTED_APP_SECURITY_ALLOWLIST,
 } from '../dynamic-compose.js';
+import { parseComposeJson } from '../utils/convert-legacy-schema.js';
 import type { ZodAny } from 'zod';
 
 type ValidationResult<T> = { success: true; data: T } | { success: false };
@@ -1159,6 +1160,50 @@ describe('collectServiceSecurityViolations (install-sink app sandbox)', () => {
     expect(
       collectServiceSecurityViolations({ privileged: true, volumes: [{ hostPath: '/proc' }] }, TRUSTED_APP_SECURITY_ALLOWLIST.torollo),
     ).toHaveLength(2);
+  });
+});
+
+describe('parseComposeJson trusted app security grants', () => {
+  const falcoVolumes = [
+    { hostPath: '/var/run/docker.sock', containerPath: '/host/var/run/docker.sock' },
+    { hostPath: '/proc', containerPath: '/host/proc', readOnly: true },
+    { hostPath: '/etc', containerPath: '/host/etc', readOnly: true },
+    { hostPath: '/sys/kernel/tracing', containerPath: '/sys/kernel/tracing', readOnly: true },
+  ];
+
+  const falcoCompose = {
+    schemaVersion: 2,
+    services: [
+      {
+        image: 'falcosecurity/falco:0.44.1',
+        name: 'falco',
+        volumes: falcoVolumes,
+      },
+    ],
+  };
+
+  it('keeps the generic custom-app schema locked down while accepting audited Falco mounts', () => {
+    expect(dynamicComposeSchemaZod.safeParse(falcoCompose).success).toBe(false);
+
+    const parsed = parseComposeJson(falcoCompose, { appName: 'falco' });
+    expect(parsed.services[0]?.volumes?.map((volume) => volume.hostPath)).toEqual(['/var/run/docker.sock', '/proc', '/etc', '/sys/kernel/tracing']);
+  });
+
+  it('does not let a Falco grant permit unrelated denied host paths', () => {
+    expect(() =>
+      parseComposeJson(
+        {
+          ...falcoCompose,
+          services: [
+            {
+              ...falcoCompose.services[0],
+              volumes: [...falcoVolumes, { hostPath: '/root', containerPath: '/host/root', readOnly: true }],
+            },
+          ],
+        },
+        { appName: 'falco' },
+      ),
+    ).toThrow('CUSTOM_APP_ERROR_HOST_PATH_DENIED');
   });
 });
 

@@ -1,6 +1,6 @@
 import { TranslatableError } from '@/common/error/translatable-error';
 import { getAppDataHostPath } from '@/common/helpers/app-data-path.helper';
-import { createAppUrn } from '@/common/helpers/app-helpers';
+import { createAppUrn, extractAppUrn } from '@/common/helpers/app-helpers';
 import { InstallPipelineTracker } from './install-pipeline.tracker';
 import { resolveBrowserHost } from '@/common/helpers/browser-host';
 import { pLimit } from '@/common/helpers/file-helpers';
@@ -101,7 +101,7 @@ export class AppsService {
           try {
             const compose = await this.appFilesManager.getDockerComposeJson(appUrn);
             if (compose.content) {
-              const parsed = parseComposeJson(compose.content) as unknown as { _schemaVersion: number };
+              const parsed = parseComposeJson(compose.content, { appName: app.appName }) as unknown as { _schemaVersion: number };
               composeSchemaVersion = parsed._schemaVersion;
             }
           } catch (error) {
@@ -216,7 +216,8 @@ export class AppsService {
     try {
       const compose = await this.appFilesManager.getDockerComposeJson(appUrn);
       if (compose.content) {
-        const parsed = parseComposeJson(compose.content) as unknown as { _schemaVersion: number };
+        const { appName } = extractAppUrn(appUrn);
+        const parsed = parseComposeJson(compose.content, { appName }) as unknown as { _schemaVersion: number };
         composeSchemaVersion = parsed._schemaVersion;
       }
     } catch (error) {

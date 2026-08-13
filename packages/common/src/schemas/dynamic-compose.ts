@@ -54,26 +54,6 @@ function isDeniedCustomAppHostPath(hostPath: string): boolean {
   return DENIED_CUSTOM_APP_HOST_PATHS.some((denied) => normalized === denied || normalized.startsWith(`${denied}/`));
 }
 
-function assertCustomAppServiceSecurity(service: { privileged?: boolean; volumes?: { hostPath?: string }[] }, ctx: z.RefinementCtx) {
-  if (service.privileged === true) {
-    ctx.addIssue({
-      code: 'custom',
-      message: 'CUSTOM_APP_ERROR_PRIVILEGED_NOT_ALLOWED',
-      path: ['privileged'],
-    });
-  }
-  for (const [index, volume] of (service.volumes ?? []).entries()) {
-    // Named volumes are docker-managed and expose no host path, so they cannot escape the sandbox.
-    if (volume.hostPath !== undefined && isDeniedCustomAppHostPath(volume.hostPath)) {
-      ctx.addIssue({
-        code: 'custom',
-        message: 'CUSTOM_APP_ERROR_HOST_PATH_DENIED',
-        path: ['volumes', index, 'hostPath'],
-      });
-    }
-  }
-}
-
 /**
  * Host paths that are safe to bind even though they sit under a denied root: single,
  * well-known timezone files. Binding these grants no meaningful host access and many
@@ -178,6 +158,26 @@ export function collectServiceSecurityViolations(service: SecurityCheckedService
   }
 
   return violations;
+}
+
+function addServiceSecurityIssues(
+  service: SecurityCheckedService,
+  ctx: z.RefinementCtx,
+  grants?: AppSecurityGrants,
+  pathPrefix: (string | number)[] = [],
+) {
+  for (const violation of collectServiceSecurityViolations(service, grants)) {
+    // Preserve the existing author-time schema surface; network/pid checks stay
+    // enforced at the compose-build sink where the full app context is known.
+    if (violation.message !== 'CUSTOM_APP_ERROR_PRIVILEGED_NOT_ALLOWED' && violation.message !== 'CUSTOM_APP_ERROR_HOST_PATH_DENIED') {
+      continue;
+    }
+    ctx.addIssue({
+      code: 'custom',
+      message: violation.message,
+      path: [...pathPrefix, ...violation.path],
+    });
+  }
 }
 
 /**
@@ -385,9 +385,12 @@ const serviceSchemaV2Object = z.object({
   platform: z.string().optional(),
 });
 
-export const serviceSchema = serviceSchemaV2Object.superRefine((service, ctx) => {
-  assertCustomAppServiceSecurity(service, ctx);
-});
+export const serviceSchemaWithSecurityGrants = (grants?: AppSecurityGrants) =>
+  serviceSchemaV2Object.superRefine((service, ctx) => {
+    addServiceSecurityIssues(service, ctx, grants);
+  });
+
+export const serviceSchema = serviceSchemaWithSecurityGrants();
 
 /**
  * Unrefined object form of the dynamic compose schema.
@@ -398,34 +401,40 @@ export const serviceSchema = serviceSchemaV2Object.superRefine((service, ctx) =>
  * of the shape must derive it from this object and re-apply
  * `assertComposeOverrideSecurity` themselves — see `dynamicComposeFormSchema`.
  */
-export const dynamicComposeObject = z.object({
-  schemaVersion: z.literal(2),
-  services: serviceSchema.array().min(1, 'CUSTOM_APP_ERROR_SERVICES_MIN_LENGTH'),
-  overrides: z
-    .array(
-      z.object({
-        architecture: z.enum(['arm64', 'amd64'], 'CUSTOM_APP_ERROR_ARCHITECTURE_INVALID').optional(),
-        services: serviceSchemaV2Object.partial().array(),
-      }),
-    )
-    .optional(),
-});
+const dynamicComposeObjectWithSecurityGrants = (grants?: AppSecurityGrants) =>
+  z.object({
+    schemaVersion: z.literal(2),
+    services: serviceSchemaWithSecurityGrants(grants).array().min(1, 'CUSTOM_APP_ERROR_SERVICES_MIN_LENGTH'),
+    overrides: z
+      .array(
+        z.object({
+          architecture: z.enum(['arm64', 'amd64'], 'CUSTOM_APP_ERROR_ARCHITECTURE_INVALID').optional(),
+          services: serviceSchemaV2Object.partial().array(),
+        }),
+      )
+      .optional(),
+  });
 
-const assertComposeOverrideSecurity = (compose: { overrides?: { services: unknown[] }[] }, ctx: z.RefinementCtx) => {
-  for (const override of compose.overrides ?? []) {
-    for (const service of override.services) {
-      assertCustomAppServiceSecurity(service as Parameters<typeof assertCustomAppServiceSecurity>[0], ctx);
+export const dynamicComposeObject = dynamicComposeObjectWithSecurityGrants();
+
+const assertComposeOverrideSecurity = (grants?: AppSecurityGrants) => (compose: { overrides?: { services: unknown[] }[] }, ctx: z.RefinementCtx) => {
+  for (const [overrideIndex, override] of (compose.overrides ?? []).entries()) {
+    for (const [serviceIndex, service] of override.services.entries()) {
+      addServiceSecurityIssues(service as SecurityCheckedService, ctx, grants, ['overrides', overrideIndex, 'services', serviceIndex]);
     }
   }
 };
 
-export const dynamicComposeSchema = dynamicComposeObject.superRefine(assertComposeOverrideSecurity);
+export const dynamicComposeSchemaWithSecurityGrants = (grants?: AppSecurityGrants) =>
+  dynamicComposeObjectWithSecurityGrants(grants).superRefine(assertComposeOverrideSecurity(grants));
+
+export const dynamicComposeSchema = dynamicComposeSchemaWithSecurityGrants();
 
 /**
  * Shape used by the custom-app builder form, which supplies `schemaVersion`
  * itself on submit and therefore must not require it as user input.
  */
-export const dynamicComposeFormSchema = dynamicComposeObject.omit({ schemaVersion: true }).superRefine(assertComposeOverrideSecurity);
+export const dynamicComposeFormSchema = dynamicComposeObject.omit({ schemaVersion: true }).superRefine(assertComposeOverrideSecurity());
 
 export const dynamicComposeUnion = z.discriminatedUnion('schemaVersion', [dynamicComposeSchemaV1, dynamicComposeSchema]);
 

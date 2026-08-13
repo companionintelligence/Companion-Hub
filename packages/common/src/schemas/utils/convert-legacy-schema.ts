@@ -1,11 +1,34 @@
-import { type dynamicComposeSchema, dynamicComposeUnion, MIN_SCHEMA_VERSION } from '../dynamic-compose.js';
-import type { z } from 'zod';
-import { composeV1ToLatest } from './converters/v1.js';
+import {
+  type AppSecurityGrants,
+  type dynamicComposeSchema,
+  dynamicComposeSchemaWithSecurityGrants,
+  dynamicComposeUnion,
+  MIN_SCHEMA_VERSION,
+  TRUSTED_APP_SECURITY_ALLOWLIST,
+} from '../dynamic-compose.js';
+import { z } from 'zod';
+import { composeV1ToLatest, dynamicComposeSchemaV1 } from './converters/v1.js';
 
 type ParsedCompose = z.infer<typeof dynamicComposeSchema> & { _schemaVersion: number };
 
-export const parseComposeJson = (data: unknown): ParsedCompose => {
-  const parsed = dynamicComposeUnion.safeParse(data);
+export interface ParseComposeJsonOptions {
+  /**
+   * Marketplace / first-party app name. When supplied, the parser applies only
+   * the audited security grants listed for that app.
+   */
+  appName?: string;
+  securityGrants?: AppSecurityGrants;
+}
+
+const grantsForOptions = (options?: ParseComposeJsonOptions) =>
+  options?.securityGrants ?? (options?.appName ? TRUSTED_APP_SECURITY_ALLOWLIST[options.appName] : undefined);
+
+export const parseComposeJson = (data: unknown, options?: ParseComposeJsonOptions): ParsedCompose => {
+  const securityGrants = grantsForOptions(options);
+  const schema = securityGrants
+    ? z.discriminatedUnion('schemaVersion', [dynamicComposeSchemaV1, dynamicComposeSchemaWithSecurityGrants(securityGrants)])
+    : dynamicComposeUnion;
+  const parsed = schema.safeParse(data);
 
   if (!parsed.success) {
     throw new Error(`Invalid dynamic compose schema: ${parsed.error.message}`);
@@ -27,7 +50,11 @@ export const parseComposeJson = (data: unknown): ParsedCompose => {
 
     // @ts-expect-error - Type narrowing for V1 schema conversion
     const converted = composeV1ToLatest(parsed.data);
-    return { ...converted, _schemaVersion: 1 } as ParsedCompose;
+    const latestParsed = dynamicComposeSchemaWithSecurityGrants(securityGrants).safeParse(converted);
+    if (!latestParsed.success) {
+      throw new Error(`Invalid dynamic compose schema: ${latestParsed.error.message}`);
+    }
+    return { ...latestParsed.data, _schemaVersion: 1 } as ParsedCompose;
   }
 
   return { ...parsed.data, _schemaVersion: schemaVersion } as ParsedCompose;

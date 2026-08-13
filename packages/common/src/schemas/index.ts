@@ -1,7 +1,9 @@
 import {
   dynamicComposeSchema,
   dynamicComposeFormSchema,
+  dynamicComposeSchemaWithSecurityGrants,
   serviceSchema,
+  serviceSchemaWithSecurityGrants,
   MIN_SCHEMA_VERSION,
   CURRENT_SCHEMA_VERSION,
   collectServiceSecurityViolations,
@@ -79,8 +81,10 @@ import { toJsonSchema } from './utils/to-json-schema.js';
 export {
   dynamicComposeSchema,
   dynamicComposeFormSchema,
+  dynamicComposeSchemaWithSecurityGrants,
   parseComposeJson,
   serviceSchema,
+  serviceSchemaWithSecurityGrants,
   toJsonSchema,
   collectServiceSecurityViolations,
   TRUSTED_APP_SECURITY_ALLOWLIST,
