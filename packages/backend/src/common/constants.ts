@@ -118,6 +118,15 @@ export const DEFAULT_QUEUE_TIMEOUT_IN_MINUTES = '5';
 export const DEFAULT_APP_IMAGE_PULL_TIMEOUT_MINUTES = 45;
 /** Stall timeout for a hung image pull with no progress events. */
 export const DEFAULT_APP_IMAGE_PULL_INACTIVITY_TIMEOUT_MS = 10 * 60 * 1000;
+/**
+ * Ceiling for a per-app `docker compose` subcommand (up/down/pull/stop/...). As generous as the image
+ * pull budget because `up`/`pull` can themselves pull images. Without this bound a wedged daemon/volume
+ * holds the app forever in a transitional status (installing/uninstalling/updating/...) and — for
+ * install — never releases INSTALL_PIPELINE_MUTEX_KEY, stranding every subsequently queued install too.
+ */
+export const DEFAULT_APP_COMPOSE_TIMEOUT_MINUTES = 45;
+/** Stall timeout for a hung compose command producing no stdout/stderr output. */
+export const DEFAULT_APP_COMPOSE_INACTIVITY_TIMEOUT_MS = 10 * 60 * 1000;
 /** Global mutex key: only one app install (image pull / compose up) at a time. */
 export const INSTALL_PIPELINE_MUTEX_KEY = '__install-pipeline__';
 export const DEFAULT_MAX_BACKUPS = '0';

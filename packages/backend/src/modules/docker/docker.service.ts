@@ -4,6 +4,8 @@ import { abortError, isAbortError, throwIfAborted } from '@/common/abort';
 import { getAppDataHostPath, resolveAppDataHostRoot } from '@/common/helpers/app-data-path.helper';
 import { extractAppUrn } from '@/common/helpers/app-helpers';
 import {
+  DEFAULT_APP_COMPOSE_INACTIVITY_TIMEOUT_MS,
+  DEFAULT_APP_COMPOSE_TIMEOUT_MINUTES,
   DEFAULT_APP_IMAGE_PULL_INACTIVITY_TIMEOUT_MS,
   DEFAULT_APP_IMAGE_PULL_TIMEOUT_MINUTES,
   DEFAULT_HUB_CONTAINER_NAME,
@@ -947,12 +949,62 @@ export class DockerService {
     // Bail out before spawning if the operation was already cancelled.
     throwIfAborted(signal);
 
+    // The process is spawned against an internal signal (not the caller's directly) so a hung compose
+    // command (unresponsive daemon, stuck volume/network) can be aborted on its own timeout without
+    // that abort being misread as a user cancel — see the timeoutReason check below. Without this a
+    // wedged `up`/`down` never resolves, holding the app in a transitional status (and, for install,
+    // INSTALL_PIPELINE_MUTEX_KEY) forever — see DEFAULT_APP_COMPOSE_TIMEOUT_MINUTES.
+    const controller = new AbortController();
+    type ComposeTimeoutReason = 'inactivity' | 'overall';
+    let timeoutReason: ComposeTimeoutReason | null = null;
+
+    const inactivityTimeoutMs = DEFAULT_APP_COMPOSE_INACTIVITY_TIMEOUT_MS;
+    const overallTimeoutMs = DEFAULT_APP_COMPOSE_TIMEOUT_MINUTES * 60 * 1000;
+
+    let inactivityTimer: ReturnType<typeof globalThis.setTimeout> | undefined;
+    const armInactivityTimer = () => {
+      if (inactivityTimer) {
+        globalThis.clearTimeout(inactivityTimer);
+      }
+      inactivityTimer = globalThis.setTimeout(() => {
+        if (!controller.signal.aborted) {
+          timeoutReason = 'inactivity';
+          this.logger.warn(`[compose-timeout] '${command.join(' ')}' produced no output for ${Math.round(inactivityTimeoutMs / 60000)}m — aborting`);
+          controller.abort();
+        }
+      }, inactivityTimeoutMs);
+      inactivityTimer.unref?.();
+    };
+
+    const overallTimer = globalThis.setTimeout(() => {
+      if (!controller.signal.aborted) {
+        timeoutReason = 'overall';
+        this.logger.warn(`[compose-timeout] '${command.join(' ')}' exceeded ${Math.round(overallTimeoutMs / 60000)}m — aborting`);
+        controller.abort();
+      }
+    }, overallTimeoutMs);
+    overallTimer.unref?.();
+
+    const onCallerAbort = () => {
+      if (!controller.signal.aborted) {
+        controller.abort();
+      }
+    };
+    if (signal?.aborted) {
+      onCallerAbort();
+    } else {
+      signal?.addEventListener('abort', onCallerAbort, { once: true });
+    }
+    armInactivityTimer();
+
+    const composeSignal = controller.signal;
+
     // Passing `signal` makes Node send SIGTERM to the child on abort. `docker compose` can spawn its
     // own child (the compose plugin) that survives a SIGTERM to the wrapper, so we layer an explicit
-    // SIGTERM->SIGKILL escalation on top to guarantee the process tree is torn down on cancel.
+    // SIGTERM->SIGKILL escalation on top to guarantee the process tree is torn down on cancel/timeout.
     const cmd = spawn(command[0], command.slice(1), {
       cwd, // Set working directory to compose file's directory
-      signal,
+      signal: composeSignal,
     });
     const stdout: string[] = [];
     const stderr: string[] = [];
@@ -980,10 +1032,10 @@ export class DockerService {
         }
       }, COMPOSE_CANCEL_SIGKILL_GRACE_MS);
     };
-    signal?.addEventListener('abort', onAbort, { once: true });
+    composeSignal.addEventListener('abort', onAbort, { once: true });
     // Cover the race where the signal aborts between spawn() and listener registration: the 'abort'
     // event has already fired, so schedule the escalation now instead of missing it.
-    if (signal?.aborted) {
+    if (composeSignal.aborted) {
       onAbort();
     }
 
@@ -1007,10 +1059,12 @@ export class DockerService {
           reject(error);
         });
         cmd.stdout.on('data', (data: Buffer | string) => {
+          armInactivityTimer();
           this.logger.debug(`${command[0]}: ${String(data).trim()}`);
           stdout.push(String(data).trim());
         });
         cmd.stderr.on('data', (data: Buffer | string) => {
+          armInactivityTimer();
           this.logger.debug(`${command[0]}: ${String(data).trim()}`);
           stderr.push(String(data).trim());
         });
@@ -1020,8 +1074,21 @@ export class DockerService {
         });
       });
 
-      // A non-zero exit caused by our own SIGTERM/SIGKILL is a cancellation, not a config failure.
-      if (signal?.aborted) {
+      if (composeSignal.aborted) {
+        // Our own stall/budget timeout fired: surface a plain failure, not a cancellation, so install
+        // treats it as `install_failed` (and releases the pipeline mutex) rather than as a user cancel.
+        if (timeoutReason === 'inactivity') {
+          throw new Error(
+            `'${command.join(' ')}' produced no output for ${Math.round(inactivityTimeoutMs / 60000)} minutes and was aborted. Check Docker daemon/network connectivity and retry.`,
+          );
+        }
+        if (timeoutReason === 'overall') {
+          throw new Error(
+            `'${command.join(' ')}' exceeded the ${Math.round(overallTimeoutMs / 60000)}-minute budget and was aborted. Check Docker daemon/network connectivity and retry.`,
+          );
+        }
+        // A non-zero exit caused by our own SIGTERM/SIGKILL (relayed from the caller's signal) is a
+        // cancellation, not a config failure.
         throw abortError();
       }
 
@@ -1041,7 +1108,12 @@ export class DockerService {
       if (sigkillTimer) {
         clearTimeout(sigkillTimer);
       }
-      signal?.removeEventListener('abort', onAbort);
+      composeSignal.removeEventListener('abort', onAbort);
+      if (inactivityTimer) {
+        globalThis.clearTimeout(inactivityTimer);
+      }
+      globalThis.clearTimeout(overallTimer);
+      signal?.removeEventListener('abort', onCallerAbort);
     }
   }
 

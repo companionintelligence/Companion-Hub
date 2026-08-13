@@ -299,6 +299,73 @@ describe('DockerService', () => {
         expect.objectContaining({ cwd: '/apps/test-app' }),
       );
     });
+
+    const mockComposeArgResolution = () => {
+      appFilesManager.getAppEnv.mockResolvedValue({ path: '/apps/test-app/.env', content: 'FOO=BAR' });
+      appFilesManager.getUserEnv.mockResolvedValue({ path: '/apps/test-app/user.env', content: null });
+      appFilesManager.getDockerComposeYaml.mockResolvedValue({ path: '/apps/test-app/docker-compose.yml', content: 'services:' });
+      appFilesManager.getUserComposeFile.mockResolvedValue({ path: '/apps/test-app/user-compose.yml', content: null });
+      appsService.getApp.mockResolvedValue({ app: { id: 'test-app', userConfigEnabled: true } } as any);
+    };
+
+    // A child that never emits 'close' or output on its own, but exits (killed-by-signal → null
+    // code) once our own SIGKILL escalation calls kill('SIGKILL') — simulates a wedged daemon/volume.
+    const createHungProcess = () => {
+      const proc = createMockSpawnProcess();
+      proc.kill = vi.fn().mockImplementation((signal?: string) => {
+        if (signal === 'SIGKILL') {
+          queueMicrotask(() => proc.emit('close', null));
+        }
+      });
+      return proc;
+    };
+
+    it('aborts and fails (not cancels) a hung process with no output within the inactivity window', async () => {
+      vi.useFakeTimers();
+      try {
+        mockComposeArgResolution();
+        const probeProcess = createComposeProbeProcess(0);
+        const hungProcess = createHungProcess();
+        (child_process.spawn as any).mockImplementationOnce(() => probeProcess).mockImplementationOnce(() => hungProcess);
+
+        const resultPromise = service.composeApp('test-app' as any, 'up -d');
+        const assertion = expect(resultPromise).rejects.toThrow(/produced no output for 10 minutes/);
+
+        await vi.advanceTimersByTimeAsync(10 * 60 * 1000); // inactivity timeout → abort
+        await vi.advanceTimersByTimeAsync(5_000); // COMPOSE_CANCEL_SIGKILL_GRACE_MS → SIGKILL → close(null)
+
+        await assertion;
+        expect(hungProcess.kill).toHaveBeenCalledWith('SIGKILL');
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('aborts and fails a process that exceeds the overall budget despite periodic output', async () => {
+      vi.useFakeTimers();
+      try {
+        mockComposeArgResolution();
+        const probeProcess = createComposeProbeProcess(0);
+        const hungProcess = createHungProcess();
+        (child_process.spawn as any).mockImplementationOnce(() => probeProcess).mockImplementationOnce(() => hungProcess);
+
+        const resultPromise = service.composeApp('test-app' as any, 'up -d');
+        const assertion = expect(resultPromise).rejects.toThrow(/exceeded the 45-minute budget/);
+
+        // Emit output every 9 minutes (under the 10-minute inactivity window) so only the 45-minute
+        // overall budget can fire — 5 steps = 45 minutes total.
+        for (let i = 0; i < 5; i++) {
+          await vi.advanceTimersByTimeAsync(9 * 60 * 1000);
+          hungProcess.stdout.emit('data', Buffer.from('still working\n'));
+        }
+        await vi.advanceTimersByTimeAsync(5_000); // COMPOSE_CANCEL_SIGKILL_GRACE_MS → SIGKILL → close(null)
+
+        await assertion;
+        expect(hungProcess.kill).toHaveBeenCalledWith('SIGKILL');
+      } finally {
+        vi.useRealTimers();
+      }
+    });
   });
 
   describe('ensureContainerRunning', () => {
