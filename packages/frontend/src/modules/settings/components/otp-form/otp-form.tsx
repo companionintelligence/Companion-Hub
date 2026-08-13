@@ -3,6 +3,7 @@ import { Button } from '@/components/ui/Button';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/Dialog';
 import { Input } from '@/components/ui/Input';
 import { OtpInput } from '@/components/ui/OtpInput';
+import { PasswordInput } from '@/components/ui/PasswordInput/PasswordInput';
 import { Switch } from '@/components/ui/Switch';
 import { useAppContext } from '@/context/app-context';
 import { useDisclosure } from '@/lib/hooks/use-disclosure';
@@ -130,9 +131,9 @@ export const OtpForm = (props: { totpEnabled: boolean }) => {
               id={passwordFormId}
             >
               <p className="text-muted-foreground">{t('SETTINGS_SECURITY_PASSWORD_NEEDED_HINT')}</p>
-              <Input
+              <PasswordInput
                 name="password"
-                type="password"
+                autoComplete="current-password"
                 onChange={(e) => setPassword(e.target.value)}
                 placeholder={t('SETTINGS_SECURITY_PASSWORD_NEEDED')}
               />
@@ -159,9 +160,9 @@ export const OtpForm = (props: { totpEnabled: boolean }) => {
               id={totpFormId}
             >
               <p className="text-muted-foreground">{t('SETTINGS_SECURITY_PASSWORD_NEEDED_HINT')}</p>
-              <Input
+              <PasswordInput
                 name="password"
-                type="password"
+                autoComplete="current-password"
                 onChange={(e) => setPassword(e.target.value)}
                 placeholder={t('SETTINGS_SECURITY_PASSWORD_NEEDED')}
               />

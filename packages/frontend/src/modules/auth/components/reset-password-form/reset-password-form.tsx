@@ -1,5 +1,5 @@
 import { Button } from '@/components/ui/Button';
-import { Input } from '@/components/ui/Input';
+import { PasswordInput } from '@/components/ui/PasswordInput/PasswordInput';
 import { zodResolver } from '@hookform/resolvers/zod';
 import type React from 'react';
 import { useForm } from 'react-hook-form';
@@ -43,21 +43,21 @@ export const ResetPasswordForm: React.FC<IProps> = ({ onSubmit, loading, onCance
     <>
       <h2 className="text-xl font-semibold text-center mb-4">{t('AUTH_RESET_PASSWORD_TITLE')}</h2>
       <form onSubmit={handleSubmit(onSubmit)}>
-        <Input
+        <PasswordInput
           {...register('password')}
           label={t('COMMON_PASSWORD')}
           error={errors.password?.message}
           disabled={loading}
-          type="password"
+          autoComplete="new-password"
           className="mb-3"
           placeholder={t('AUTH_FORM_NEW_PASSWORD_PLACEHOLDER')}
         />
-        <Input
+        <PasswordInput
           {...register('passwordConfirm')}
           label={t('AUTH_FORM_PASSWORD_CONFIRMATION')}
           error={errors.passwordConfirm?.message}
           disabled={loading}
-          type="password"
+          autoComplete="new-password"
           className="mb-3"
           placeholder={t('AUTH_FORM_NEW_PASSWORD_CONFIRMATION_PLACEHOLDER')}
         />

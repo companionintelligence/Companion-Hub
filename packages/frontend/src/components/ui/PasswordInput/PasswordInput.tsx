@@ -4,10 +4,11 @@ import { Tooltip } from 'react-tooltip';
 import { Button } from '../Button';
 import { Eye, EyeOff } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import { cn } from '@/lib/utils';
 
-type Props = ComponentProps<typeof InputGroup> & {};
+type Props = Omit<ComponentProps<typeof InputGroup>, 'type'>;
 
-export const PasswordInput = (props: Props) => {
+export const PasswordInput = ({ className, size = 'default', disabled, ...props }: Props) => {
   const [passwordVisible, setPasswordVisible] = useState(false);
   const tooltipAnchorClass = `toggle-password-visibility-${useId().replaceAll(':', '')}`;
 
@@ -16,8 +17,12 @@ export const PasswordInput = (props: Props) => {
 
   return (
     <InputGroup
-      type={passwordVisible ? 'text' : 'password'}
       {...props}
+      size={size}
+      disabled={disabled}
+      type={passwordVisible ? 'text' : 'password'}
+      // `::-ms-reveal` is Edge's own reveal control, which this toggle replaces.
+      className={cn('[&_input::-ms-reveal]:hidden', className)}
       groupSuffix={
         <>
           <Tooltip className="tooltip" anchorSelect={`.${tooltipAnchorClass}`}>
@@ -27,9 +32,12 @@ export const PasswordInput = (props: Props) => {
             size="icon"
             variant="outline"
             onClick={() => setPasswordVisible(!passwordVisible)}
+            // Keep focus and caret in the input instead of moving them to the button.
+            onMouseDown={(e) => e.preventDefault()}
             type="button"
             aria-label={toggleLabel}
-            className={`${tooltipAnchorClass} rounded-l-none border-l-0 h-11 w-11`}
+            disabled={disabled}
+            className={cn(tooltipAnchorClass, 'rounded-l-none border-l-0', size === 'sm' ? 'h-8 w-8' : 'h-11 w-11')}
           >
             {passwordVisible ? <EyeOff size={16} /> : <Eye size={16} />}
           </Button>
