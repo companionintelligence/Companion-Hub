@@ -527,12 +527,7 @@ const baseEntry = (id, name) => ({
 
   const discoveredIds = new Set(models.map((model) => model.id));
   const defaultModelAvailable = defaultModel && discoveredIds.has(defaultModel) ? defaultModel : null;
-  const firstModelId = models.find((model) => model.id !== 'auto')?.id ?? null;
-  const autoTargetId = defaultModelAvailable || firstModelId;
-
-  if (autoTargetId) {
-    models.unshift(baseEntry('auto', 'Hub Auto (' + autoTargetId + ')'));
-  }
+  const firstModelId = models[0]?.id ?? null;
 
   const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
   config.models = config.models || { mode: 'merge', providers: {} };

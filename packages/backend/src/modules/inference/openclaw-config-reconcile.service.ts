@@ -130,11 +130,7 @@ export class OpenClawConfigReconcileService {
 
     const models: OpenClawModelEntry[] = servedIds.filter((id) => !/embed/i.test(id)).map((id) => this.vllmModelEntry(id, contextWindow));
 
-    const defaultModelAvailable = defaultModel && servedIds.includes(defaultModel) ? defaultModel : (models.find((m) => m.id !== 'auto')?.id ?? null);
-    const autoTarget = defaultModelAvailable ?? models[0]?.id ?? null;
-    if (autoTarget) {
-      models.unshift(this.vllmModelEntry('auto', contextWindow, `Hub Auto (${autoTarget})`));
-    }
+    const defaultModelAvailable = defaultModel && servedIds.includes(defaultModel) ? defaultModel : (models[0]?.id ?? null);
 
     config.models = config.models ?? { mode: 'merge', providers: {} };
     config.models.mode = 'merge';
@@ -151,7 +147,7 @@ export class OpenClawConfigReconcileService {
     const existingModels = config.agents.defaults.models ?? {};
     const map = Object.fromEntries(Object.entries(existingModels).filter(([key]) => !key.startsWith('ci-hub/')));
     for (const model of models) {
-      map[`ci-hub/${model.id}`] = existingModels[`ci-hub/${model.id}`] ?? {};
+      map[`ci-hub/${model.id}`] = {};
     }
     config.agents.defaults.models = map;
 
@@ -165,7 +161,7 @@ export class OpenClawConfigReconcileService {
       }
     }
     if (!primaryId) {
-      primaryId = defaultModelAvailable ?? models.find((m) => m.id !== 'auto')?.id ?? null;
+      primaryId = defaultModelAvailable ?? models[0]?.id ?? null;
     }
     config.agents.defaults.model = { primary: primaryId ? `ci-hub/${primaryId}` : null };
 
