@@ -28,12 +28,17 @@ async function unwrap<T>(promise: Promise<{ data?: T; error?: unknown }>): Promi
   return unwrapSdk(promise);
 }
 
-export async function fetchInferenceOnboardingProfile(backend?: InferenceBackendType, vllmUrl?: string): Promise<HardwareProfileResponse> {
+export async function fetchInferenceOnboardingProfile(
+  backend?: InferenceBackendType,
+  vllmUrl?: string,
+  vllmApiKey?: string,
+): Promise<HardwareProfileResponse> {
   const query: Record<string, string> = {};
   if (backend) query.backend = backend;
   // Candidate vLLM URL the operator typed but hasn't saved yet — keeps the profile's
   // installed-model resolution probing the same server the status card reports on.
   if (backend === 'vllm' && vllmUrl?.trim()) query.vllmUrl = vllmUrl.trim();
+  if (backend === 'vllm' && vllmApiKey?.trim()) query.vllmApiKey = vllmApiKey.trim();
   return unwrap(
     getOnboardingProfile({
       query: Object.keys(query).length > 0 ? query : undefined,
@@ -115,8 +120,15 @@ export async function saveInferencePreferences(body: {
   );
 }
 
-export async function fetchVllmInstallStatus(url?: string) {
-  return unwrap(getVllmStatus({ query: url?.trim() ? { url: url.trim() } : undefined } as Parameters<typeof getVllmStatus>[0]));
+export async function fetchVllmInstallStatus(url?: string, apiKey?: string) {
+  const query: Record<string, string> = {};
+  if (url?.trim()) query.url = url.trim();
+  if (apiKey?.trim()) query.apiKey = apiKey.trim();
+  return unwrap(
+    getVllmStatus({
+      query: Object.keys(query).length > 0 ? query : undefined,
+    } as Parameters<typeof getVllmStatus>[0]),
+  );
 }
 
 export async function saveCloudProviderConfig(body: { provider: CloudProviderType; apiKey?: string; enabled: boolean }): Promise<void> {

@@ -119,6 +119,8 @@ export const AiSettingsContainer = () => {
   // Mirrors for values the stable callbacks / effects below need without retriggering on change.
   const vllmUrlRef = useRef('');
   vllmUrlRef.current = vllmUrl;
+  const vllmApiKeyRef = useRef('');
+  vllmApiKeyRef.current = vllmApiKey;
   const trackedModelsRef = useRef<TrackedModel[]>([]);
   // One index of the tier catalog per profile, shared by the save and by the confirmation copy so
   // they cannot disagree — and so neither rebuilds it, the save on every press and the copy on
@@ -253,7 +255,7 @@ export const AiSettingsContainer = () => {
   const checkVllmStatus = useCallback(async () => {
     setCheckingVllm(true);
     try {
-      const data = (await fetchVllmInstallStatus(vllmUrlRef.current)) as VllmStatus;
+      const data = (await fetchVllmInstallStatus(vllmUrlRef.current, vllmApiKeyRef.current)) as VllmStatus;
       setVllmStatus(data);
       return data;
     } catch {
@@ -270,7 +272,7 @@ export const AiSettingsContainer = () => {
   const handleRecheckVllm = useCallback(async () => {
     const status = await checkVllmStatus();
     if (status?.ready) {
-      const data = await fetchInferenceOnboardingProfile('vllm', vllmUrlRef.current);
+      const data = await fetchInferenceOnboardingProfile('vllm', vllmUrlRef.current, vllmApiKeyRef.current);
       setProfile(data);
       seedSelectedModelIds(data, 'vllm', trackedModelsRef.current);
     }
@@ -313,7 +315,11 @@ export const AiSettingsContainer = () => {
     if (!hasProfileRef.current) return;
     if (lastHandledBackendRef.current === selectedBackend) return;
     lastHandledBackendRef.current = selectedBackend;
-    void fetchInferenceOnboardingProfile(selectedBackend, vllmUrlRef.current).then((data) => {
+    void fetchInferenceOnboardingProfile(
+      selectedBackend,
+      selectedBackend === 'vllm' ? vllmUrlRef.current : undefined,
+      selectedBackend === 'vllm' ? vllmApiKeyRef.current : undefined,
+    ).then((data) => {
       setProfile(data);
       // Re-seed the checkboxes for the new backend from server truth (see seedSelectedModelIds).
       seedSelectedModelIds(data, selectedBackend, trackedModelsRef.current);

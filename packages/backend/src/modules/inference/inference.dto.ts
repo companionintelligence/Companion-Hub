@@ -31,6 +31,8 @@ const onboardingProfileQuerySchema = z.object({
   // Candidate vLLM base URL the operator typed but has not saved yet — lets the profile's
   // installed-model resolution probe the same server the status card shows as detected.
   vllmUrl: z.string().trim().url().optional(),
+  // Candidate API key (same semantics as vllmUrl — used before Save).
+  vllmApiKey: z.string().trim().optional(),
 });
 
 export class OnboardingProfileQueryDto extends createZodDto(onboardingProfileQuerySchema) {}
@@ -38,6 +40,8 @@ export class OnboardingProfileQueryDto extends createZodDto(onboardingProfileQue
 const vllmStatusQuerySchema = z.object({
   // Same candidate-URL semantics as onboardingProfileQuerySchema.vllmUrl.
   url: z.string().trim().url().optional(),
+  // Candidate API key for the probe (Settings / onboarding Re-check before Save).
+  apiKey: z.string().trim().optional(),
 });
 
 export class VllmStatusQueryDto extends createZodDto(vllmStatusQuerySchema) {}

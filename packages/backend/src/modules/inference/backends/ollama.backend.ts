@@ -78,7 +78,7 @@ export class OllamaBackend implements InferenceBackend {
     return this.resolvedUrl;
   }
 
-  async healthCheck(): Promise<BackendHealthStatus> {
+  async healthCheck(_baseUrlOverride?: string, _apiKeyOverride?: string): Promise<BackendHealthStatus> {
     try {
       const url = await this.resolveUrl();
       const response = await axios.get(`${url}/api/tags`, { timeout: 5000 });

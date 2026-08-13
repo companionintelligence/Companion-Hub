@@ -10,6 +10,24 @@ export function normalizeVllmBaseUrl(url: string): string {
   return url.trim().replace(/\/+$/, '').replace(/\/v1$/, '');
 }
 
+/**
+ * Hub probes vLLM from inside Docker. `localhost` / `127.0.0.1` in operator input refers to the
+ * container loopback, not the host where vLLM runs — rewrite to the compose bridge hostname.
+ */
+export function resolveVllmProbeUrl(url: string): string {
+  const normalized = normalizeVllmBaseUrl(url);
+  try {
+    const parsed = new URL(normalized);
+    if (parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1') {
+      parsed.hostname = 'host.docker.internal';
+      return normalizeVllmBaseUrl(parsed.toString());
+    }
+  } catch {
+    // Keep normalized input when URL parsing fails; healthCheck will surface the error.
+  }
+  return normalized;
+}
+
 @Injectable()
 export class VllmBackend implements InferenceBackend {
   readonly type = 'vllm' as const;
@@ -29,18 +47,19 @@ export class VllmBackend implements InferenceBackend {
     return normalizeVllmBaseUrl(configured || process.env.VLLM_URL || 'http://ci-hub-vllm:8000');
   }
 
-  private vllmAuthHeaders(): Record<string, string> | undefined {
-    const apiKey = this.configuration.getInferencePreferences().preferredVllmApiKey?.trim() || process.env.VLLM_API_KEY?.trim();
+  private vllmAuthHeaders(apiKeyOverride?: string): Record<string, string> | undefined {
+    const apiKey =
+      apiKeyOverride?.trim() || this.configuration.getInferencePreferences().preferredVllmApiKey?.trim() || process.env.VLLM_API_KEY?.trim();
     return apiKey ? { Authorization: `Bearer ${apiKey}` } : undefined;
   }
 
-  /** `baseUrlOverride` lets the status endpoint probe a candidate URL the operator typed but hasn't saved yet. */
-  async healthCheck(baseUrlOverride?: string): Promise<BackendHealthStatus> {
-    const baseUrl = baseUrlOverride ? normalizeVllmBaseUrl(baseUrlOverride) : this.getBaseUrl();
+  /** `baseUrlOverride` / `apiKeyOverride` let status + onboarding probe unsaved Settings input. */
+  async healthCheck(baseUrlOverride?: string, apiKeyOverride?: string): Promise<BackendHealthStatus> {
+    const baseUrl = baseUrlOverride ? resolveVllmProbeUrl(baseUrlOverride) : this.getBaseUrl();
     try {
       const response = await axios.get(`${baseUrl}/v1/models`, {
         timeout: 5000,
-        headers: this.vllmAuthHeaders(),
+        headers: this.vllmAuthHeaders(apiKeyOverride),
       });
       const models = response.data?.data ?? [];
       return {
@@ -49,11 +68,14 @@ export class VllmBackend implements InferenceBackend {
         modelsLoaded: models.map((m: { id: string }) => m.id),
       };
     } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      const status = axios.isAxiosError(err) ? err.response?.status : undefined;
+      const hint = status === 401 ? 'vLLM rejected the API key — it must match the --api-key you passed when starting vLLM.' : undefined;
       return {
         running: false,
         healthy: false,
         modelsLoaded: [],
-        error: err instanceof Error ? err.message : String(err),
+        error: hint ? `${message}. ${hint}` : message,
       };
     }
   }

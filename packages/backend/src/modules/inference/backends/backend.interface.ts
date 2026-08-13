@@ -10,7 +10,7 @@ export interface InferenceBackend {
   getBaseUrl(): string;
 
   /** Check if the backend container is running and healthy */
-  healthCheck(): Promise<BackendHealthStatus>;
+  healthCheck(baseUrlOverride?: string, apiKeyOverride?: string): Promise<BackendHealthStatus>;
 
   /** List models currently available in the backend */
   listModels(): Promise<BackendModelInfo[]>;

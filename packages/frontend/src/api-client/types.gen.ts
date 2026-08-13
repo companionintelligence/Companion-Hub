@@ -2989,6 +2989,7 @@ export type GetOnboardingProfileData = {
     query?: {
         backend?: 'ollama' | 'vllm' | 'lemonade';
         vllmUrl?: string;
+        vllmApiKey?: string;
     };
     url: '/api/inference/onboarding-profile';
 };
@@ -3011,7 +3012,10 @@ export type GetOllamaStatusResponses = {
 export type GetVllmStatusData = {
     body?: never;
     path?: never;
-    query?: never;
+    query?: {
+        url?: string;
+        apiKey?: string;
+    };
     url: '/api/inference/vllm/status';
 };
 

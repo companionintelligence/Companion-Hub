@@ -1,5 +1,5 @@
 import { Test, type TestingModule } from '@nestjs/testing';
-import { VllmBackend } from '../backends/vllm.backend';
+import { normalizeVllmBaseUrl, resolveVllmProbeUrl, VllmBackend } from '../backends/vllm.backend';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { mock, type MockProxy } from 'vitest-mock-extended';
@@ -106,12 +106,66 @@ describe('VllmBackend', () => {
       expect(backend.getBaseUrl()).toBe('http://192.168.1.50:8000');
     });
 
+    it('probes localhost via host.docker.internal when Hub runs in Docker', async () => {
+      (axios.get as any) = vi.fn().mockResolvedValue({ data: { data: [] } });
+
+      await backend.healthCheck('http://localhost:8000/v1');
+
+      expect(axios.get).toHaveBeenCalledWith('http://host.docker.internal:8000/v1/models', expect.any(Object));
+    });
+
     it('probes a candidate URL override without persisting it', async () => {
       (axios.get as any) = vi.fn().mockResolvedValue({ data: { data: [] } });
 
       await backend.healthCheck('http://10.0.0.9:8000');
 
       expect(axios.get).toHaveBeenCalledWith('http://10.0.0.9:8000/v1/models', expect.any(Object));
+    });
+
+    it('uses a candidate API key override before saved preferences', async () => {
+      configurationService.getInferencePreferences.mockReturnValue({
+        preferredBackend: 'vllm',
+        preferredModel: null,
+        preferredEmbeddingModel: null,
+        preferredVisionModel: null,
+        preferredVllmApiKey: 'saved-key',
+      });
+      (axios.get as any) = vi.fn().mockResolvedValue({ data: { data: [] } });
+
+      await backend.healthCheck(undefined, 'probe-key');
+
+      expect(axios.get).toHaveBeenCalledWith(
+        expect.stringContaining('/v1/models'),
+        expect.objectContaining({ headers: { Authorization: 'Bearer probe-key' } }),
+      );
+    });
+
+    it('reports a clearer error when vLLM rejects the API key', async () => {
+      (axios.get as any) = vi
+        .fn()
+        .mockRejectedValue({ response: { status: 401 }, message: 'Request failed with status code 401', isAxiosError: true });
+      vi.spyOn(axios, 'isAxiosError').mockReturnValue(true);
+
+      const health = await backend.healthCheck(undefined, 'wrong-key');
+
+      expect(health.error).toContain('API key');
+    });
+  });
+
+  describe('resolveVllmProbeUrl', () => {
+    it('rewrites localhost to host.docker.internal for Docker-side probes', () => {
+      expect(resolveVllmProbeUrl('http://localhost:8000/v1')).toBe('http://host.docker.internal:8000');
+      expect(resolveVllmProbeUrl('http://127.0.0.1:8000')).toBe('http://host.docker.internal:8000');
+    });
+
+    it('leaves remote URLs unchanged', () => {
+      expect(resolveVllmProbeUrl('http://192.168.1.50:8000')).toBe('http://192.168.1.50:8000');
+    });
+  });
+
+  describe('normalizeVllmBaseUrl', () => {
+    it('strips trailing slashes and /v1', () => {
+      expect(normalizeVllmBaseUrl('http://host.docker.internal:8000/v1/')).toBe('http://host.docker.internal:8000');
     });
   });
 

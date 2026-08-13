@@ -1463,6 +1463,14 @@
               "type": "string",
               "format": "uri"
             }
+          },
+          {
+            "name": "vllmApiKey",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -1492,7 +1500,20 @@
     "/api/inference/vllm/status": {
       "get": {
         "operationId": "getVllmStatus",
-        "parameters": [],
+        "parameters": [
+          {
+            "name": "url",
+            "required": false,
+            "in": "query",
+            "schema": { "type": "string" }
+          },
+          {
+            "name": "apiKey",
+            "required": false,
+            "in": "query",
+            "schema": { "type": "string" }
+          }
+        ],
         "responses": {
           "200": {
             "description": ""

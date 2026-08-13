@@ -17,7 +17,7 @@ export class LemonadeBackend implements InferenceBackend {
     return this.baseUrl;
   }
 
-  async healthCheck(): Promise<BackendHealthStatus> {
+  async healthCheck(_baseUrlOverride?: string, _apiKeyOverride?: string): Promise<BackendHealthStatus> {
     try {
       const response = await axios.get(`${this.baseUrl}/v1/health`, { timeout: 5000 });
       if (response.status === 200) {

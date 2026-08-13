@@ -1003,7 +1003,7 @@
   "ONBOARDING_VLLM_API_KEY_HINT": "Must match the --api-key you pass when starting vLLM on the host. Injected into apps as LLM_API_KEY.",
   "ONBOARDING_VLLM_ENDPOINT_URL_LABEL": "vLLM endpoint URL (optional)",
   "ONBOARDING_VLLM_ENDPOINT_URL_PLACEHOLDER": "http://host.docker.internal:8000",
-  "ONBOARDING_VLLM_ENDPOINT_URL_HINT": "Any reachable vLLM (OpenAI-compatible) server, local or remote. Leave blank to use the default host endpoint.",
+  "ONBOARDING_VLLM_ENDPOINT_URL_HINT": "Hub probes from inside Docker — use http://host.docker.internal:8000 (not localhost). Leave blank for the default host endpoint.",
   "ONBOARDING_EMBEDDINGS_OLLAMA_SECTION_TITLE": "Ollama for Semantic Fingerprint embeddings",
   "ONBOARDING_EMBEDDINGS_OLLAMA_SECTION_DESC": "Companion Memory uses vLLM for chat and summaries, but Semantic Fingerprint embeddings still run through Ollama. Run both services on your host at the same time.",
   "ONBOARDING_EMBEDDINGS_OLLAMA_WARNING": "Ollama is not reachable yet. Chat will work once vLLM is up, but embeddings will not until Ollama is running on the host.",

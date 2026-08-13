@@ -27,7 +27,7 @@ import {
   VllmStatusQueryDto,
 } from './inference.dto';
 import { OllamaBackend } from './backends/ollama.backend';
-import { VllmBackend } from './backends/vllm.backend';
+import { resolveVllmProbeUrl, VllmBackend } from './backends/vllm.backend';
 import { LemonadeBackend } from './backends/lemonade.backend';
 import { resolveInstalledCatalogIds, resolveInstalledCatalogIdsFromServedModels } from './model-availability.util';
 
@@ -368,7 +368,7 @@ export class InferenceController {
 
     let installedCatalogIds: string[];
     if (installBackend === 'vllm') {
-      const vllmHealth = await this.vllmBackend.healthCheck(query?.vllmUrl).catch(() => ({
+      const vllmHealth = await this.vllmBackend.healthCheck(query?.vllmUrl, query?.vllmApiKey).catch(() => ({
         running: false,
         healthy: false,
         modelsLoaded: [] as string[],
@@ -415,8 +415,8 @@ export class InferenceController {
   @UseGuards(AuthGuard)
   @Get('vllm/status')
   async getVllmStatus(@Query() query?: VllmStatusQueryDto) {
-    const endpointUrl = query?.url?.trim() || this.vllmBackend.getBaseUrl();
-    const health = await this.vllmBackend.healthCheck(endpointUrl).catch((err) => ({
+    const endpointUrl = query?.url?.trim() ? resolveVllmProbeUrl(query.url) : this.vllmBackend.getBaseUrl();
+    const health = await this.vllmBackend.healthCheck(endpointUrl, query?.apiKey).catch((err) => ({
       running: false,
       healthy: false,
       modelsLoaded: [] as string[],
@@ -438,7 +438,7 @@ export class InferenceController {
       error: ready ? undefined : health.error,
       hint: ready
         ? undefined
-        : `Run vLLM on the host machine (not inside Docker), or point the endpoint URL at any reachable vLLM server. Hub currently probes ${endpointUrl}.`,
+        : `Run vLLM on the host (not inside Docker). Hub probes from inside its container — use http://host.docker.internal:8000, not localhost. Currently probing ${endpointUrl}.`,
     };
   }
 
