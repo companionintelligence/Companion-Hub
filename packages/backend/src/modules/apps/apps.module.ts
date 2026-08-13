@@ -3,6 +3,7 @@ import { PortalModule } from '@/core/portal/portal.module';
 import { DockerModule } from '../docker/docker.module';
 import { EnvModule } from '../env/env.module';
 import { InferenceModule } from '../inference/inference.module';
+import { MarketplaceModule } from '../marketplace/marketplace.module';
 import { QueueModule } from '../queue/queue.module';
 import { AppHelpers } from './app.helpers';
 import { AppRuntimeMonitorService } from './app-runtime-monitor.service';
@@ -17,6 +18,8 @@ import { MemoryConnectionModule } from '../memory-connect/memory-connection.modu
 @Module({
   imports: [
     AppsReadModule,
+    // AppsService still calls MarketplaceService for ignore-version update metadata.
+    MarketplaceModule,
     QueueModule,
     EnvModule,
     // forwardRef: PortalModule ↔ RegistrationModule; a hard import here made
