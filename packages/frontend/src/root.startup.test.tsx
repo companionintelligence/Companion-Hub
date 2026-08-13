@@ -41,6 +41,7 @@ vi.mock('./lib/registration-cache', async (importOriginal) => {
 
 vi.mock('./lib/hub-session-refresh', () => ({
   refreshHubSessionIfDue: vi.fn().mockResolvedValue(false),
+  setServerSessionRefreshRecommendedAt: vi.fn(),
 }));
 
 vi.mock('./api-client', () => ({

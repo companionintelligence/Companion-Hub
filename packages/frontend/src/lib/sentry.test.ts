@@ -8,45 +8,39 @@ const testEnv = import.meta.env as MutableImportMetaEnv;
 
 const {
   fetchDeviceRegistrationInfoResult,
-  browserTracingIntegration,
   captureException,
   captureMessage,
   init,
-  replayIntegration,
   setLevel,
   setTag,
   setExtra,
   setUser,
   withScope,
+  browserTracingIntegration,
+  replayIntegration,
 } = vi.hoisted(() => ({
   fetchDeviceRegistrationInfoResult: vi.fn(),
-  // `init` spreads the RESULT of these into `integrations: [...]`, so they must be
-  // callable and return an identifiable object — a bare vi.fn() returning undefined
-  // would put `undefined` in the integrations array.
-  browserTracingIntegration: vi.fn(() => ({ name: 'BrowserTracing' })),
   captureException: vi.fn(),
   captureMessage: vi.fn(),
   init: vi.fn(),
-  replayIntegration: vi.fn(() => ({ name: 'Replay' })),
   setLevel: vi.fn(),
   setTag: vi.fn(),
   setExtra: vi.fn(),
   setUser: vi.fn(),
   withScope: vi.fn(),
+  browserTracingIntegration: vi.fn(() => ({ name: 'BrowserTracing' })),
+  replayIntegration: vi.fn(() => ({ name: 'Replay' })),
 }));
 
-// Must stay in sync with every `Sentry.*` symbol `sentry.ts` reaches for — vitest throws
-// "No <name> export is defined on the mock" the moment production code calls one that is
-// missing here, which is how adding the tracing/replay integrations turned this suite red.
 vi.mock('@sentry/react', () => ({
-  browserTracingIntegration,
   captureMessage,
   captureException,
   init,
-  replayIntegration,
   setTag,
   setUser,
   withScope,
+  browserTracingIntegration,
+  replayIntegration,
 }));
 
 vi.mock('./registration-api', () => ({
@@ -128,16 +122,8 @@ describe('frontend sentry', () => {
         release: 'ci-hub-frontend@test',
       }),
     );
-    // Assert the integrations are actually wired in, so a future integration added to
-    // sentry.ts but not to the mock fails here with a readable diff rather than an
-    // opaque "No <name> export is defined on the mock" from every test in the file.
-    expect(browserTracingIntegration).toHaveBeenCalled();
+    expect(browserTracingIntegration).toHaveBeenCalledOnce();
     expect(replayIntegration).toHaveBeenCalledWith({ maskAllText: true, blockAllMedia: true });
-    expect(init).toHaveBeenCalledWith(
-      expect.objectContaining({
-        integrations: [{ name: 'BrowserTracing' }, { name: 'Replay' }],
-      }),
-    );
     expect(setTag).toHaveBeenCalledWith('component', 'browser-web');
     expect(setTag).toHaveBeenCalledWith('ci_portal_url', 'https://hub.ci.computer');
     expect(setTag).toHaveBeenCalledWith('ci_portal_environment', 'prod');

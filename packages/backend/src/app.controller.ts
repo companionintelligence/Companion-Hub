@@ -39,7 +39,7 @@ export class AppController {
       return {};
     }
 
-    const sessionId = req.cookies[SESSION_COOKIE_NAME] || req.get('x-ci-hub-session');
+    const sessionId = req.hubSessionId ?? req.cookies[SESSION_COOKIE_NAME] ?? req.get('x-ci-hub-session');
     if (!sessionId) {
       return {};
     }

@@ -24,8 +24,10 @@ export function isHubSessionRefreshDue(): boolean {
   }
 
   if (!issuedAt) {
-    // Legacy sessions created before we tracked issue time — refresh once.
-    return true;
+    // Portal SSO (and other cookie-only logins) never write issued-at. Rotating on
+    // first paint used to delete the cookie's session while install still sent the
+    // previous header id — a 401 that looked like "not logged in yet".
+    return false;
   }
 
   return Date.now() - issuedAt >= HUB_SESSION_REFRESH_AFTER_MS;
@@ -45,7 +47,14 @@ function canAttemptHubSessionRefresh(): boolean {
  * concurrent callers share one in-flight request.
  */
 export async function refreshHubSessionIfDue(): Promise<boolean> {
-  if (!canAttemptHubSessionRefresh() || !isHubSessionRefreshDue()) {
+  if (!canAttemptHubSessionRefresh()) {
+    return false;
+  }
+
+  if (!isHubSessionRefreshDue()) {
+    if (!getHubSessionIssuedAt()) {
+      markHubSessionIssuedAt();
+    }
     return false;
   }
 
