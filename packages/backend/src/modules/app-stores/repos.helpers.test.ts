@@ -52,7 +52,7 @@ describe('ReposHelpers', () => {
     // @ts-expect-error
     configService.get.mockReturnValue({ dataDir: '/tmp/data' });
     // @ts-expect-error
-    configService.getConfig.mockReturnValue({ domain: 'local.test' });
+    configService.getConfig.mockReturnValue({ domain: 'local.test', ciHubApiKey: 'hub-api-key' });
 
     filesystemService = mock<FilesystemService>();
     filesystemService.pathExists.mockResolvedValue(false);
@@ -348,7 +348,11 @@ describe('ReposHelpers', () => {
       expect(axiosMock.get).toHaveBeenCalledWith(
         'http://cloud.api/store/app1/install',
         expect.objectContaining({
-          headers: expect.objectContaining({ 'x-device-id': 'test-uuid' }),
+          headers: expect.objectContaining({
+            'x-device-id': 'test-uuid',
+            Authorization: 'Bearer hub-api-key',
+            'x-device-key': 'hub-api-key',
+          }),
         }),
       );
       expect(fs.promises.writeFile).toHaveBeenCalledWith(expect.stringContaining('docker-compose.yml'), 'services: test');
