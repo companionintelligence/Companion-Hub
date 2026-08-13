@@ -40,6 +40,7 @@ export const OtpForm = (props: { totpEnabled: boolean }) => {
       toast.error(t(e.message, e.intlParams));
     },
     onSuccess: (data) => {
+      setPassword('');
       if (!data) return;
       setKey(data.key);
       setUri(data.uri);
@@ -71,6 +72,7 @@ export const OtpForm = (props: { totpEnabled: boolean }) => {
       toast.error(t(e.message, e.intlParams));
     },
     onSuccess: () => {
+      setPassword('');
       toast.success(t('SETTINGS_SECURITY_2FA_DISABLE_SUCCESS'));
       refreshAppContext();
     },
@@ -101,6 +103,10 @@ export const OtpForm = (props: { totpEnabled: boolean }) => {
   };
 
   const handleTotp = (enabled: boolean) => {
+    // Both dialogs share this state and mount their field empty, so a password left over
+    // from an earlier prompt would submit without the user retyping it.
+    setPassword('');
+
     if (enabled) {
       setupOtpDisclosure.open();
     } else {
