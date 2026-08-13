@@ -664,6 +664,27 @@ describe('DockerComposeBuilder — public web hostname in Traefik labels', () =>
     expect(hostRule).toBe('Host(`myapp-dev1-org.ci.lan`)');
   });
 
+  it('passes the public hostname to apps behind the cloudflare origin route', async () => {
+    const result = await builder.getDockerCompose(
+      [mainService],
+      { exposureMode: 'cloudflare', enableAuth: true },
+      urn,
+      subnet,
+      'example.com',
+      'ci.lan',
+      undefined,
+      'myapp-dev1-org.ci.lan',
+      'myapp-dev1-org.example.com',
+    );
+    const parsed = yaml.parse(result);
+    const labels: Record<string, string> = parsed.services.nginx.labels;
+
+    expect(labels['traefik.http.middlewares.nginx-store-id-public-host.headers.customrequestheaders.X-Forwarded-Host']).toBe(
+      'myapp-dev1-org.example.com',
+    );
+    expect(labels['traefik.http.routers.nginx-store-id-insecure.middlewares']).toBe('ci-hub@file,nginx-store-id-public-host@docker');
+  });
+
   it('keeps the same origin hostname even when the public domain has multiple labels', async () => {
     const result = await builder.getDockerCompose(
       [mainService],
@@ -698,7 +719,7 @@ describe('DockerComposeBuilder resource limits', () => {
   });
 
   const build = (form: Parameters<DockerComposeBuilder['getDockerCompose']>[1], services = [service], defaults?: { cpu?: string; memory?: string }) =>
-    builder.getDockerCompose(services, form, urn, subnet, 'example.com', 'ci.lan', undefined, undefined, defaults?.cpu, defaults?.memory);
+    builder.getDockerCompose(services, form, urn, subnet, 'example.com', 'ci.lan', undefined, undefined, undefined, defaults?.cpu, defaults?.memory);
 
   it('applies default cpu and memory limits when the app defines none', async () => {
     const compose = await build({}, [service], { cpu: '4', memory: '4096M' });

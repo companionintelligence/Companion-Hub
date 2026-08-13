@@ -85,6 +85,7 @@ export class DockerComposeBuilder {
   private volumeSources: Record<string, string> = {};
   private localDomain: string;
   private cloudflareOriginHostname?: string;
+  private cloudflarePublicHostname?: string;
   private defaultCpuLimit?: string;
   private defaultMemoryLimit?: string;
   private readonly posixPermissionsSupported: boolean;
@@ -317,6 +318,7 @@ export class DockerComposeBuilder {
         exposureMode: effectiveExposureMode as 'local' | 'cloudflare' | 'tailscale',
         enableAuth: form.enableAuth,
         cloudflareOriginHostname: this.cloudflareOriginHostname,
+        cloudflarePublicHostname: this.cloudflarePublicHostname,
         localDomain: this.localDomain,
         httpsBackend: params.httpsBackend,
       });
@@ -340,6 +342,7 @@ export class DockerComposeBuilder {
     localDomain?: string,
     envFile?: string,
     cloudflareOriginHostname?: string,
+    cloudflarePublicHostname?: string,
     defaultCpuLimit?: string,
     defaultMemoryLimit?: string,
   ) {
@@ -347,6 +350,7 @@ export class DockerComposeBuilder {
 
     this.localDomain = localDomain || process.env.LOCAL_DOMAIN || DEFAULT_LOCAL_DOMAIN;
     this.cloudflareOriginHostname = cloudflareOriginHostname;
+    this.cloudflarePublicHostname = cloudflarePublicHostname;
     this.defaultCpuLimit = defaultCpuLimit?.trim() || undefined;
     this.defaultMemoryLimit = defaultMemoryLimit?.trim() || undefined;
 
