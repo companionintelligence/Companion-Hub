@@ -97,15 +97,16 @@ export const AppContextProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   });
 
   useEffect(() => {
-    if (typeof updatesQuery.data?.updatesAvailable !== 'number') {
+    const updatesAvailable = updatesQuery.data?.updatesAvailable;
+    if (typeof updatesAvailable !== 'number') {
       return;
     }
     queryClient.setQueryData(appContextQueryKey(), (current: AppContextDto | undefined) => {
       const base = current ?? resolved;
-      if (base.updatesAvailable === updatesQuery.data.updatesAvailable) {
+      if (base.updatesAvailable === updatesAvailable) {
         return base;
       }
-      return { ...base, updatesAvailable: updatesQuery.data.updatesAvailable };
+      return { ...base, updatesAvailable };
     });
   }, [queryClient, resolved, updatesQuery.data?.updatesAvailable]);
 

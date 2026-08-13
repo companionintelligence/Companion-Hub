@@ -33,6 +33,7 @@ import { DockerService } from '@/modules/docker/docker.service';
 import { TraefikConfigService } from '@/modules/docker/traefik-config.service';
 import { EnvUtils } from '@/modules/env/env.utils';
 import { MarketplaceService } from '@/modules/marketplace/marketplace.service';
+import { MarketplaceCacheBus } from '@/modules/marketplace/marketplace-cache.bus';
 import { ImageSizeService } from '@/modules/marketplace/image-size.service';
 import { SubnetManagerService } from '@/modules/network/subnet-manager.service';
 import { AppEventsQueue, appEventSchema } from '@/modules/queue/entities/app-events';
@@ -181,6 +182,7 @@ describe('App lifecycle', () => {
         AppLifecycleService,
         ExposureSyncService,
         MarketplaceService,
+        MarketplaceCacheBus,
         {
           provide: ImageSizeService,
           useValue: imageSizeService,

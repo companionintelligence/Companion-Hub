@@ -1,4 +1,4 @@
-import { client } from '@/api-client/client.gen';
+import { getStoreFeaturedBundle } from '@/api-client/sdk.gen';
 import { normalizeStoreListingsPayload, type HubStoreApp, CI_MARKETPLACE_STORE_ID, mapPortalStoreAppToHub } from '@/lib/portal-store';
 import { queryOptions } from '@tanstack/react-query';
 
@@ -23,16 +23,7 @@ export const getFeaturedStoreBundleOptions = (storeId = CI_MARKETPLACE_STORE_ID)
   return queryOptions({
     queryKey: getFeaturedStoreBundleQueryKey(storeId),
     queryFn: async ({ signal }): Promise<FeaturedStoreBundle> => {
-      const { data, error } = await client.get<{
-        firstParty: unknown;
-        featured: unknown;
-        trending: unknown;
-        newest: unknown;
-      }>({
-        url: '/api/store/featured-bundle',
-        signal,
-        throwOnError: true,
-      });
+      const { data, error } = await getStoreFeaturedBundle({ signal });
       if (error) {
         throw error;
       }
