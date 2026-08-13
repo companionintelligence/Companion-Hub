@@ -14,42 +14,122 @@
     "pacingTail": 0.15
   },
   "chapters": {
-    "job": "The second job",
+    "job": "Start with what you have",
     "boot": "The machine you have",
     "tune": "Tuned to it",
     "run": "Day to day"
   },
   "media": {
-    "music": null,
-    "musicVolume": 0.14
+    "music": "assets/media/ci-campaign-bed.mp3",
+    "musicLufs": -22
   },
+  "master": [
+    {
+      "ref": "the-list",
+      "caption": "The computer you already own can become your AI home.",
+      "narration": "The desktop, mini PC, or laptop you already own can become your AI home."
+    },
+    {
+      "ref": "reads-the-machine",
+      "caption": "Hub checks the hardware before you choose a model.",
+      "narration": "Companion Hub checks the processor, memory, graphics, and storage so you can see what will run."
+    },
+    {
+      "ref": "picks-the-models",
+      "caption": "Models are recommended for the machine in front of you.",
+      "narration": "Then it recommends models that fit the machine in front of you."
+    },
+    {
+      "ref": "apps-arrive",
+      "caption": "A guided install shows exposure and settings first.",
+      "narration": "A guided install shows the network exposure and requested settings before the app starts."
+    },
+    {
+      "ref": "install-and-run",
+      "caption": "Installed. Running. Yours.",
+      "narration": "When the badge turns green, the app is running on your Hub."
+    },
+    {
+      "ref": "hermes-openclaw",
+      "caption": "Add Hermes and OpenClaw through their own app backends.",
+      "narration": "Add agents like Hermes and OpenClaw through their separate app backends, on the hardware you choose."
+    },
+    {
+      "ref": "from-a-phone",
+      "caption": "Choose this machine, your private network, or the web.",
+      "narration": "You choose whether a service stays on this machine, reaches your private network, or connects to the web."
+    },
+    {
+      "ref": "close",
+      "caption": "ci.computer/download",
+      "cta": "Get Companion Hub",
+      "tagline": "UnCloud your life.",
+      "url": "ci.computer/download",
+      "narration": "Your models. Your apps. Your machine. Get Companion Hub at ci dot computer slash download. UnCloud your life."
+    }
+  ],
   "scenes": [
     {
       "id": "second-job",
       "kind": "feature",
       "chapter": "job",
-      "seconds": 5,
-      "title": "What you got was a second job.",
-      "caption": "You wanted a home server.",
-      "narration": "You wanted a home server. What you got was a second job."
+      "seconds": 4.5,
+      "title": "Turn any computer into a private AI server.",
+      "caption": "Start with the machine you already own.",
+      "narration": "Turn the computer you already own into a private AI server."
     },
     {
       "id": "the-list",
       "kind": "feature",
       "chapter": "job",
-      "seconds": 4.5,
-      "caption": "The part everyone expects.",
-      "narration": "Install the OS. Find the apps. Configure the apps.",
+      "seconds": 5.5,
+      "caption": "Mac, Windows, Linux. Start with what you have.",
+      "narration": "That old desktop, mini PC, or laptop can run it.",
       "reveal": "paced",
+      "columns": {
+        "landscape": 4,
+        "portrait": 3
+      },
       "items": [
         {
-          "label": "Install the OS"
+          "image": "assets/hardware/01-acer-gaming-desktop.png",
+          "alt": "A glass-sided Acer gaming desktop tower with RGB fans."
         },
         {
-          "label": "Find the apps"
+          "image": "assets/hardware/02-all-in-one.png",
+          "alt": "A Dell all-in-one desktop computer with keyboard and mouse."
         },
         {
-          "label": "Configure the apps"
+          "image": "assets/hardware/03-mac-mini-m4.png",
+          "alt": "A silver Apple Mac mini M4 desktop computer."
+        },
+        {
+          "image": "assets/hardware/04-dell-desktop.png",
+          "alt": "A black Dell desktop tower."
+        },
+        {
+          "image": "assets/hardware/05-mac-mini.png",
+          "alt": "A compact silver Mac mini desktop computer."
+        },
+        {
+          "image": "assets/hardware/06-dell-pc-tower.png",
+          "alt": "A tall black Dell OptiPlex desktop tower."
+        },
+        {
+          "image": "assets/hardware/07-desktop-tower.png",
+          "alt": "A plain black desktop computer tower."
+        },
+        {
+          "image": "assets/hardware/08-mac-studio.png",
+          "alt": "A silver Apple Mac Studio desktop computer, shown close up."
+        },
+        {
+          "image": "assets/hardware/09-asus-nuc.png",
+          "alt": "A small black ASUS NUC mini PC."
+        },
+        {
+          "image": "assets/hardware/10-macbook-stand.png",
+          "alt": "A silver MacBook standing upright in a small wooden stand."
         }
       ]
     },
@@ -57,25 +137,20 @@
       "id": "the-longer-list",
       "kind": "feature",
       "chapter": "job",
-      "seconds": 10,
-      "caption": "The part nobody warns you about.",
-      "narration": "Open a port, and hope. Build a VPN. Learn what a reverse proxy is. Learn what a certificate is. Learn why it broke.",
+      "seconds": 4.5,
+      "title": "Download. Install. Finish.",
+      "caption": "One setup wizard.",
+      "narration": "Download Hub, run one installer, and finish one setup wizard.",
       "reveal": "paced",
       "items": [
         {
-          "label": "Open a port"
+          "label": "Download Hub"
         },
         {
-          "label": "Build a VPN"
+          "label": "Run one installer"
         },
         {
-          "label": "Reverse proxy"
-        },
-        {
-          "label": "Certificates"
-        },
-        {
-          "label": "Why it broke"
+          "label": "Finish the wizard"
         }
       ]
     },
@@ -84,9 +159,9 @@
       "kind": "feature",
       "chapter": "job",
       "seconds": 3,
-      "title": "Most people quit right about here.",
-      "caption": "No accepted answer.",
-      "narration": "Most people quit right about here.",
+      "title": "It reads the machine.",
+      "caption": "CPU, GPU, memory, storage.",
+      "narration": "Hub reads your hardware and knows what can run here.",
       "transition": "cut"
     },
     {
@@ -95,8 +170,8 @@
       "seconds": 3,
       "minSeconds": 2.9,
       "title": "Companion Hub",
-      "caption": "A private AI server, on a computer you already own.",
-      "narration": "There is a much shorter way.",
+      "caption": "Your own private AI server.",
+      "narration": "Then it recommends models that fit your machine.",
       "mark": "brand:logo.mark",
       "reveal": "paced",
       "transition": "hold"
@@ -105,38 +180,19 @@
       "id": "any-computer",
       "kind": "feature",
       "chapter": "boot",
-      "seconds": 9.5,
-      "caption": "Whatever is already in the house.",
-      "narration": "Any computer already sitting around. The old gaming rig. The laptop in the closet. Windows, Mac, Linux, it does not matter.",
-      "reveal": "paced",
-      "items": [
-        {
-          "label": "The old gaming rig"
-        },
-        {
-          "label": "The laptop in the closet"
-        },
-        {
-          "label": "Windows",
-          "icon": "brand:platform.windows"
-        },
-        {
-          "label": "macOS",
-          "icon": "brand:platform.macos"
-        },
-        {
-          "label": "Linux",
-          "icon": "brand:platform.linux"
-        }
-      ]
+      "seconds": 3.5,
+      "title": "Private apps. One click.",
+      "caption": "Settings shown before anything runs.",
+      "narration": "Install private apps in one click, with settings shown before anything runs.",
+      "transition": "cut"
     },
     {
       "id": "one-wizard",
       "kind": "screen",
       "chapter": "boot",
       "seconds": 3,
-      "caption": "One wizard, ending in Install & Finish.",
-      "narration": "One installer. One wizard.",
+      "caption": "Download Hub. Run one wizard. Finish.",
+      "narration": "Download Hub, run one installer, and finish one setup wizard.",
       "shots": [
         {
           "id": "onboarding-wizard",
@@ -184,8 +240,8 @@
       "kind": "screen",
       "chapter": "tune",
       "seconds": 5,
-      "caption": "OS, CPU, RAM, GPU, VRAM, storage — read off the machine it is on.",
-      "narration": "Companion Hub reads the machine. CPU, GPU, memory, storage.",
+      "caption": "Reads your CPU, GPU, memory, and storage.",
+      "narration": "Hub reads your hardware so it knows what can run here.",
       "transition": "cut",
       "shots": [
         {
@@ -238,8 +294,8 @@
       "kind": "screen",
       "chapter": "tune",
       "seconds": 9,
-      "caption": "Recommended models, pre-selected for this hardware — each one priced in RAM.",
-      "narration": "Then it tunes itself to the hardware that is actually there, and picks models that run fast on it, not models that melt it.",
+      "caption": "Models recommended for the machine you own.",
+      "narration": "Then it recommends models that fit your machine, instead of melting it.",
       "transition": "cut",
       "shots": [
         {
@@ -298,8 +354,8 @@
       "kind": "screen",
       "chapter": "run",
       "seconds": 3.5,
-      "caption": "Ports, domain and settings — filled in, and shown before anything runs.",
-      "narration": "Apps arrive already configured. Already private.",
+      "caption": "Private apps. One click. Your stack.",
+      "narration": "Install private apps like Hermes and OpenClaw in one click, with settings shown before anything runs.",
       "transition": "cut",
       "shots": [
         {
@@ -368,8 +424,8 @@
       "kind": "screen",
       "chapter": "run",
       "seconds": 5,
-      "caption": "This device, your private VPN, or the public web — you choose, before it is reachable.",
-      "narration": "Reachable from a phone, without putting anything on the open internet.",
+      "caption": "Reach it from your phone — your choice.",
+      "narration": "Use it from your phone over your private network, without putting it on the open internet.",
       "transition": "cut",
       "shots": [
         {
@@ -432,8 +488,8 @@
       "kind": "screen",
       "chapter": "run",
       "seconds": 5,
-      "caption": "Hermes and OpenClaw, in the Hub's own store.",
-      "narration": "Hermes runs locally. OpenClaw takes the boring parts of the day.",
+      "caption": "The agents reporting only to you.",
+      "narration": "Add Hermes and OpenClaw to the stack. Their apps run locally, on hardware you own.",
       "transition": "cut",
       "shots": [
         {
@@ -503,8 +559,8 @@
       "kind": "screen",
       "chapter": "run",
       "seconds": 4.5,
-      "caption": "Alternatives: the app you rent, beside the one you own.",
-      "narration": "Every service worth renting, beside the version worth owning.",
+      "caption": "Open-source alternatives, ready to install.",
+      "narration": "Find open-source alternatives to the services you are tired of renting.",
       "transition": "cut",
       "shots": [
         {
@@ -550,12 +606,60 @@
       ]
     },
     {
+      "id": "install-and-run",
+      "kind": "screen",
+      "chapter": "run",
+      "seconds": 5,
+      "caption": "Installed. Running. Yours.",
+      "narration": "When the badge turns green, the app is running on your Hub.",
+      "transition": "cut",
+      "shots": [
+        {
+          "id": "running-app",
+          "url": "hub-living-room-server-acme.ci.computer/apps/ci-marketplace/immich",
+          "alt": "An installed app in Companion Hub with a green Running status badge and controls to open or manage it.",
+          "motion": "push-in",
+          "capture": {
+            "path": "/apps/ci-marketplace/immich",
+            "waitUntil": "domcontentloaded",
+            "waitFor": "[data-testid='app-status-pill'], input[placeholder='you@example.com']",
+            "before": [
+              {
+                "eval": "async () => { await fetch('/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify({ username: 'owner@acme.com', password: 'password' }) }).catch(() => {}); setTimeout(() => window.location.assign('/apps/ci-marketplace/immich'), 0); }"
+              },
+              {
+                "waitFor": "[data-testid='app-status-pill']"
+              },
+              {
+                "wait": 2000
+              }
+            ],
+            "settle": 1200
+          },
+          "focus": {
+            "landscape": {
+              "x": 0.02,
+              "y": 0.07,
+              "w": 0.6,
+              "h": 0.6
+            },
+            "portrait": {
+              "x": 0.03,
+              "y": 0.04,
+              "w": 0.94,
+              "h": 0.94
+            }
+          }
+        }
+      ]
+    },
+    {
       "id": "the-things-stay",
       "kind": "screen",
       "chapter": "run",
       "seconds": 9,
-      "caption": "Home Assistant, Jellyfin, Nextcloud — on the box in the room.",
-      "narration": "The files stay in the house. The work stays in the office. The photos stay in the room where they were taken.",
+      "caption": "Your files and apps stay on your machine.",
+      "narration": "Your files, apps, and work stay on hardware you own.",
       "transition": "cut",
       "shots": [
         {
@@ -601,19 +705,20 @@
       "id": "the-uncloud",
       "kind": "feature",
       "seconds": 3,
-      "title": "The uncloud.",
-      "caption": "Not the cloud.",
-      "narration": "Not the cloud. The uncloud.",
+      "title": "Your own private cloud.",
+      "caption": "No datacenter. No subscription.",
+      "narration": "Your own private cloud, running on hardware you own.",
       "transition": "cut"
     },
     {
       "id": "close",
       "kind": "outro",
       "seconds": 3.5,
-      "caption": "ci.computer",
-      "cta": "UnCloud your life.",
-      "url": "ci.computer",
-      "narration": "Companion Hub. UnCloud your life.",
+      "caption": "ci.computer/download",
+      "cta": "Download Hub free",
+      "tagline": "UnCloud your life.",
+      "url": "ci.computer/download",
+      "narration": "Download Companion Hub free at ci.computer slash download. UnCloud your life.",
       "transition": "hold"
     }
   ],
@@ -621,127 +726,104 @@
     {
       "id": "ci-hub-30",
       "kind": "short",
-      "name": "Companion Hub — 30",
+      "name": "Companion Hub 30",
       "meta": {
-        "pacingTail": 0.12
+        "pacingTail": 0.16
       },
       "scenes": [
         {
-          "ref": "second-job",
-          "narration": "You wanted a home server. You got a second job.",
-          "title": "What you got was a second job.",
-          "seconds": 4.3
-        },
-        {
-          "ref": "the-longer-list",
-          "narration": "Open a port. Build a VPN. Learn what a reverse proxy is.",
-          "seconds": 6.2,
-          "items": [
-            {
-              "label": "Open a port"
-            },
-            {
-              "label": "Build a VPN"
-            },
-            {
-              "label": "Reverse proxy"
-            }
-          ]
-        },
-        {
-          "ref": "title",
-          "narration": "There is a much shorter way. One installer, one wizard."
+          "ref": "the-list",
+          "narration": "Start with the desktop, mini PC, or laptop you already own. Hub checks what it can run.",
+          "caption": "Start with the machine you already own.",
+          "seconds": 6
         },
         {
           "ref": "reads-the-machine",
-          "narration": "Companion Hub reads your hardware, and tunes itself to it.",
-          "seconds": 4.6
+          "narration": "Then it recommends local models that fit the hardware.",
+          "caption": "Checks the machine.",
+          "seconds": 5
         },
-        "apps-arrive",
         {
-          "ref": "the-things-stay",
-          "narration": "The files stay in the house. The photos stay in the room.",
-          "seconds": 4.8
+          "ref": "picks-the-models",
+          "narration": "See each model's requirements before you install it.",
+          "caption": "Models that fit.",
+          "seconds": 4.5
         },
-        "the-uncloud",
-        "close"
+        {
+          "ref": "apps-arrive",
+          "narration": "A guided install shows network exposure and settings before anything starts.",
+          "caption": "Install with the choices visible.",
+          "seconds": 4.5
+        },
+        {
+          "ref": "install-and-run",
+          "narration": "Then the app is running on your Hub, ready to open.",
+          "caption": "Installed. Running. Yours.",
+          "seconds": 5
+        },
+        {
+          "ref": "hermes-openclaw",
+          "narration": "Add Hermes and OpenClaw through their separate app backends.",
+          "caption": "Hermes and OpenClaw connect through separate app backends.",
+          "seconds": 4.5
+        },
+        {
+          "ref": "close",
+          "caption": "ci.computer/download",
+          "cta": "Get Companion Hub",
+          "tagline": "UnCloud your life.",
+          "url": "ci.computer/download",
+          "narration": "Your machine. Your AI. Get Hub at ci dot computer slash download.",
+          "seconds": 5.5
+        }
       ]
     },
     {
       "id": "ci-hub-bumper-laptop",
       "kind": "bumper",
-      "name": "Companion Hub — That old laptop is a server now.",
+      "name": "Companion Hub: Old computer, new AI home",
+      "meta": {
+        "pacing": "fit",
+        "pacingTail": 0.12
+      },
       "scenes": [
         {
-          "id": "line",
-          "kind": "feature",
-          "seconds": 3,
-          "title": "That old laptop is a server now.",
-          "caption": "A private AI server, on a computer you already own.",
-          "narration": "That old laptop is a server now."
-        },
-        {
-          "id": "close",
-          "kind": "outro",
-          "seconds": 2.4,
-          "minSeconds": 2.2,
-          "caption": "ci.computer",
-          "cta": "UnCloud your life.",
-          "url": "ci.computer",
-          "narration": "UnCloud your life.",
-          "transition": "cut"
+          "ref": "the-list",
+          "title": "Old computer. New AI home.",
+          "caption": "Get Hub · ci.computer/download",
+          "narration": "Old computer. New AI home. Get Companion Hub."
         }
       ]
     },
     {
       "id": "ci-hub-bumper-renting",
       "kind": "bumper",
-      "name": "Companion Hub — Stop renting what could be owned.",
+      "name": "Companion Hub: Stop renting the stack",
+      "meta": {
+        "pacing": "fit",
+        "pacingTail": 0.12
+      },
       "scenes": [
         {
-          "id": "line",
-          "kind": "feature",
-          "seconds": 3,
-          "title": "Stop renting what could be owned.",
-          "caption": "A private AI server, on a computer you already own.",
-          "narration": "Stop renting what could be owned."
-        },
-        {
-          "id": "close",
-          "kind": "outro",
-          "seconds": 2.4,
-          "minSeconds": 2.2,
-          "caption": "ci.computer",
-          "cta": "UnCloud your life.",
-          "url": "ci.computer",
-          "narration": "UnCloud your life.",
-          "transition": "cut"
+          "ref": "install-and-run",
+          "caption": "Stop renting your stack · ci.computer/download",
+          "narration": "Your apps. Your machine. Stop renting the stack."
         }
       ]
     },
     {
       "id": "ci-hub-bumper-landlord",
       "kind": "bumper",
-      "name": "Companion Hub — Local AI. One roof. No landlord.",
+      "name": "Companion Hub: Your machine",
+      "meta": {
+        "pacing": "fit",
+        "pacingTail": 0.12
+      },
       "scenes": [
         {
-          "id": "line",
-          "kind": "feature",
-          "seconds": 3,
-          "title": "Local AI. One roof. No landlord.",
-          "caption": "A private AI server, on a computer you already own.",
-          "narration": "Local AI, one roof, no landlord."
-        },
-        {
-          "id": "close",
-          "kind": "outro",
-          "seconds": 2.4,
-          "minSeconds": 2.2,
-          "caption": "ci.computer",
-          "cta": "UnCloud your life.",
-          "url": "ci.computer",
-          "narration": "UnCloud your life.",
-          "transition": "cut"
+          "ref": "from-a-phone",
+          "caption": "You choose what connects out · ci.computer/download",
+          "narration": "Your apps. Your AI. Your machine."
         }
       ]
     }
