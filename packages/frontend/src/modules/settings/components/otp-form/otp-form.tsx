@@ -103,8 +103,8 @@ export const OtpForm = (props: { totpEnabled: boolean }) => {
   };
 
   const handleTotp = (enabled: boolean) => {
-    // Both dialogs share this state and mount their field empty, so a password left over
-    // from an earlier prompt would submit without the user retyping it.
+    // Both dialogs submit from this one piece of state, so a password left over from an
+    // earlier prompt would carry into the next one.
     setPassword('');
 
     if (enabled) {
@@ -140,6 +140,7 @@ export const OtpForm = (props: { totpEnabled: boolean }) => {
               <PasswordInput
                 name="password"
                 autoComplete="current-password"
+                value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 placeholder={t('SETTINGS_SECURITY_PASSWORD_NEEDED')}
               />
@@ -169,6 +170,7 @@ export const OtpForm = (props: { totpEnabled: boolean }) => {
               <PasswordInput
                 name="password"
                 autoComplete="current-password"
+                value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 placeholder={t('SETTINGS_SECURITY_PASSWORD_NEEDED')}
               />
