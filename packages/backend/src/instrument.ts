@@ -9,6 +9,11 @@ const portalUrl = normalizePortalUrl(process.env.CI_CLOUD_URL);
 const deploymentVersion = process.env.CI_HUB_VERSION?.trim();
 const hubImage = process.env.CI_HUB_IMAGE?.trim();
 
+function sampleRate(name: string, fallback: number): number {
+  const value = Number(process.env[name] ?? fallback);
+  return Number.isFinite(value) && value >= 0 && value <= 1 ? value : fallback;
+}
+
 // The backend owns its own process-level uncaughtException/unhandledRejection
 // handlers (see main.ts) which log, capture, flush, and control exit. Drop
 // Sentry's default OnUncaughtException/OnUnhandledRejection integrations so
@@ -82,8 +87,10 @@ if (dsn && !envTelemetryBlock(process.env)) {
     environment: process.env.SENTRY_ENV ?? process.env.CI_HUB_ENVIRONMENT ?? process.env.NODE_ENV ?? 'production',
     release: process.env.SENTRY_RELEASE ?? process.env.CI_HUB_VERSION,
     enabled: true,
-    tracesSampleRate: 0,
-    profilesSampleRate: 0,
+    tracesSampleRate: sampleRate('SENTRY_TRACES_SAMPLE_RATE', 0.1),
+    profilesSampleRate: sampleRate('SENTRY_PROFILES_SAMPLE_RATE', 0.1),
+    enableMetrics: process.env.SENTRY_ENABLE_METRICS !== 'false',
+    enableLogs: process.env.SENTRY_ENABLE_LOGS !== 'false',
     // The rest of the fleet sends no PII, and the Sentry org has
     // `scrubIPAddresses` disabled — leaving this on made the Hub the one
     // component storing users' real IP addresses. In @sentry/core 10.x this
