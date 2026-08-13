@@ -1940,6 +1940,14 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     type AppFromDb = Awaited<ReturnType<typeof this.appRepository.getApps>>[number];
     const runningApps = apps.filter((app: AppFromDb) => app.status === 'running');
 
+    let openClawReconcile: import('../inference/openclaw-config-reconcile.service').OpenClawConfigReconcileService | undefined;
+    try {
+      const { OpenClawConfigReconcileService } = await import('../inference/openclaw-config-reconcile.service');
+      openClawReconcile = this.moduleRef.get(OpenClawConfigReconcileService, { strict: false });
+    } catch {
+      openClawReconcile = undefined;
+    }
+
     await Promise.all(
       runningApps.map(async (app) => {
         const appUrn = createAppUrn(app.appName, app.appStoreSlug);
@@ -1949,6 +1957,13 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
           const hasInferenceIntegration = inferenceMapping && Object.keys(inferenceMapping).length > 0;
           if (!info?.categories?.includes('ai') && !hasInferenceIntegration) {
             return;
+          }
+          if (openClawReconcile) {
+            try {
+              await openClawReconcile.reconcileBeforeRestart(appUrn);
+            } catch (err) {
+              this.logger.warn(`[OpenClawReconcile] pre-restart patch failed for ${appUrn}: ${err instanceof Error ? err.message : String(err)}`);
+            }
           }
           this.logger.info(`Restarting AI app ${appUrn} after inference preferences change`);
           return this.restartApp({ appUrn });

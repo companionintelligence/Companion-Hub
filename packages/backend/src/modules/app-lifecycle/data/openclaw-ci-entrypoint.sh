@@ -1,18 +1,19 @@
 #!/bin/sh
 # CI Hub OpenClaw entrypoint — auto-configures the gateway to use Hub-managed
-# inference and keeps the Ollama model catalog in sync on every container start.
+# inference and keeps the local model catalog in sync on every container start.
 #
 # Calls the Hub's per-app bootstrap endpoint on every container start:
 #   GET ${HUB_BASE_URL}/api/inference/apps/openclaw/bootstrap.env
 #
 # Bootstrap delegates "which model is best for the detected hardware" to the
-# Hub's AppBootstrapService. We merge that into .env, sync the local Ollama
-# catalog into openclaw.json on every start, and write structural defaults on
+# Hub's AppBootstrapService. We merge that into .env, sync the active backend's
+# model catalog into openclaw.json on every start, and write structural defaults on
 # first install.
 #
 # Environment variables consumed:
 #   OLLAMA_HOST                — native Ollama URL (injected by Hub, e.g. http://host.docker.internal:11434)
 #   OPENAI_API_BASE            — OpenAI-compatible /v1 URL (from bootstrap.env or app.env)
+#   CI_INFERENCE_BACKEND       — active Hub backend: ollama | vllm | lemonade
 #   HUB_INFERENCE_URL          — legacy Hub-proxied inference URL (optional)
 #   HUB_URL                    — Hub base URL fallback (default: http://ci-os-hub:5002)
 #   OPENCLAW_DATA_DIR          — state directory (default: /data/.openclaw)
@@ -48,7 +49,7 @@ fi
 # Fallback list used when the Hub doesn't send X-Hub-Managed-Keys
 # (older Hub releases). Kept in sync with AppBootstrapService's
 # OPENCLAW env keys as a last resort.
-FALLBACK_MANAGED_KEYS="OPENAI_API_BASE,OPENAI_API_KEY,DEFAULT_MODEL,DEFAULT_MODEL_BACKEND_ID,EMBEDDINGS_MODEL,EMBEDDINGS_MODEL_BACKEND_ID,OLLAMA_HOST,CI_LLM_NUM_CTX"
+FALLBACK_MANAGED_KEYS="OPENAI_API_BASE,OPENAI_API_KEY,DEFAULT_MODEL,DEFAULT_MODEL_BACKEND_ID,EMBEDDINGS_MODEL,EMBEDDINGS_MODEL_BACKEND_ID,OLLAMA_HOST,CI_LLM_NUM_CTX,CI_INFERENCE_BACKEND"
 
 # Convert a comma-separated key list into a ^KEY= alternation pattern.
 keys_to_pattern() {
@@ -104,6 +105,41 @@ resolve_inference_api_key() {
     fi
   fi
 
+  printf '%s' "ollama"
+}
+
+read_env_value() {
+  key="$1"
+  eval "val=\${${key}:-}"
+  if [ -n "${val}" ]; then
+    printf '%s' "${val}"
+    return 0
+  fi
+  if [ -f "${ENV_FILE}" ]; then
+    line="$(grep -E "^${key}=" "${ENV_FILE}" 2>/dev/null | tail -n1 | cut -d= -f2- | tr -d '"' || true)"
+    if [ -n "${line}" ]; then
+      printf '%s' "${line}"
+      return 0
+    fi
+  fi
+  printf '%s' ""
+}
+
+resolve_openai_api_base() {
+  base="$(read_env_value OPENAI_API_BASE)"
+  if [ -n "${base}" ]; then
+    printf '%s' "${base%/}"
+    return 0
+  fi
+  printf '%s' "http://host.docker.internal:11434/v1"
+}
+
+resolve_inference_backend() {
+  backend="$(read_env_value CI_INFERENCE_BACKEND)"
+  if [ -n "${backend}" ]; then
+    printf '%s' "${backend}"
+    return 0
+  fi
   printf '%s' "ollama"
 }
 
@@ -224,7 +260,6 @@ OCEOF
   echo "CI Hub: first-run openclaw.json + gateway token written"
 fi
 
-# ── Every start: sync Ollama models into openclaw.json ──────────────────
 sync_ollama_models() {
   if [ ! -f "${CONFIG_FILE}" ]; then
     return 0
@@ -416,7 +451,161 @@ const baseEntry = (id, name, caps) => {
 NODE
 }
 
-sync_ollama_models
+sync_vllm_models() {
+  if [ ! -f "${CONFIG_FILE}" ]; then
+    return 0
+  fi
+  if ! command -v node >/dev/null 2>&1; then
+    echo "CI Hub: node not available; skipping vLLM model sync"
+    return 0
+  fi
+
+  OPENAI_API_BASE="$(resolve_openai_api_base)"
+  INFERENCE_API_KEY="$(resolve_inference_api_key)"
+
+  CONFIG_FILE="${CONFIG_FILE}" \
+  ENV_FILE="${ENV_FILE}" \
+  OPENAI_API_BASE="${OPENAI_API_BASE}" \
+  INFERENCE_API_KEY="${INFERENCE_API_KEY}" \
+    node - <<'NODE'
+const fs = require('fs');
+
+const configPath = process.env.CONFIG_FILE;
+const envPath = process.env.ENV_FILE;
+const openAiBase = (process.env.OPENAI_API_BASE || '').replace(/\/$/, '');
+const inferenceApiKey = process.env.INFERENCE_API_KEY || '';
+
+const readEnvValue = (key) => {
+  try {
+    const body = fs.readFileSync(envPath, 'utf8');
+    for (const line of body.split('\n')) {
+      if (line.startsWith(key + '=')) {
+        return line.slice(key.length + 1).trim().replace(/^"|"$/g, '');
+      }
+    }
+  } catch {}
+  return '';
+};
+
+const defaultModel = readEnvValue('DEFAULT_MODEL');
+const isEmbeddingModel = (id) => /embed/i.test(id);
+const hubNumCtxRaw = readEnvValue('CI_LLM_NUM_CTX') || process.env.CI_LLM_NUM_CTX || '';
+const hubNumCtx = Number.parseInt(hubNumCtxRaw, 10);
+const contextWindow = Number.isFinite(hubNumCtx) && hubNumCtx > 0 ? hubNumCtx : 32000;
+
+const fetchJson = async (url, init) => {
+  const response = await fetch(url, init);
+  if (!response.ok) return null;
+  return response.json();
+};
+
+const baseEntry = (id, name) => ({
+  id,
+  name: name || id,
+  reasoning: false,
+  input: ['text'],
+  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+  contextWindow,
+  maxTokens: Math.min(4096, contextWindow),
+  compat: { supportsTools: true },
+});
+
+(async () => {
+  const headers = inferenceApiKey ? { Authorization: 'Bearer ' + inferenceApiKey } : undefined;
+  const modelsPayload = await fetchJson(openAiBase + '/models', { headers });
+  const discovered = Array.isArray(modelsPayload?.data)
+    ? modelsPayload.data.map((model) => ({ id: model.id })).filter((model) => typeof model.id === 'string' && model.id.length > 0)
+    : [];
+
+  const models = [];
+  const seen = new Set();
+  for (const model of discovered) {
+    if (seen.has(model.id) || isEmbeddingModel(model.id)) continue;
+    seen.add(model.id);
+    models.push(baseEntry(model.id, model.id));
+  }
+
+  const discoveredIds = new Set(models.map((model) => model.id));
+  const defaultModelAvailable = defaultModel && discoveredIds.has(defaultModel) ? defaultModel : null;
+  const firstModelId = models.find((model) => model.id !== 'auto')?.id ?? null;
+  const autoTargetId = defaultModelAvailable || firstModelId;
+
+  if (autoTargetId) {
+    models.unshift(baseEntry('auto', 'Hub Auto (' + autoTargetId + ')'));
+  }
+
+  const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+  config.models = config.models || { mode: 'merge', providers: {} };
+  config.models.mode = 'merge';
+  config.models.providers = config.models.providers || {};
+  config.models.providers['ci-hub'] = {
+    baseUrl: openAiBase,
+    apiKey: inferenceApiKey,
+    api: 'openai-completions',
+    models,
+  };
+
+  const existingModels = config.agents?.defaults?.models ?? {};
+  const map = Object.fromEntries(
+    Object.entries(existingModels).filter(([key]) => !key.startsWith('ci-hub/')),
+  );
+  for (const model of models) {
+    const key = 'ci-hub/' + model.id;
+    map[key] = existingModels[key] ?? {};
+  }
+
+  config.agents = config.agents || { defaults: {} };
+  config.agents.defaults = config.agents.defaults || {};
+  config.agents.defaults.models = map;
+
+  const availableIds = new Set(models.map((model) => model.id));
+  const existingPrimary = config.agents.defaults.model?.primary;
+  let primaryId = null;
+  if (typeof existingPrimary === 'string' && existingPrimary.startsWith('ci-hub/')) {
+    const existingId = existingPrimary.slice('ci-hub/'.length);
+    if (availableIds.has(existingId)) {
+      primaryId = existingId;
+    }
+  }
+  if (!primaryId) {
+    primaryId = defaultModelAvailable || firstModelId;
+  }
+  if (primaryId) {
+    config.agents.defaults.model = { primary: 'ci-hub/' + primaryId };
+  } else {
+    config.agents.defaults.model = { primary: null };
+  }
+
+  config.tools = config.tools || {};
+  config.tools.profile = models.some((model) => model.compat?.supportsTools === true) ? 'coding' : 'minimal';
+
+  if (models.length === 0) {
+    console.warn('CI Hub: no vLLM chat models found at ' + openAiBase + '; left existing agent defaults intact');
+    return;
+  }
+
+  fs.writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n');
+  console.log('CI Hub: synced ' + models.length + ' vLLM model(s) via OpenAI API at ' + openAiBase);
+})().catch((error) => {
+  console.error('CI Hub: vLLM model sync failed: ' + (error instanceof Error ? error.message : String(error)));
+});
+NODE
+}
+
+sync_inference_models() {
+  backend="$(resolve_inference_backend)"
+  case "${backend}" in
+    vllm)
+      sync_vllm_models
+      ;;
+    *)
+      sync_ollama_models
+      ;;
+  esac
+}
+
+# ── Every start: sync inference models into openclaw.json ───────────────
+sync_inference_models
 
 # ── Every start: allow Control UI from Hub-published URLs ───────────────
 patch_control_ui_origins() {

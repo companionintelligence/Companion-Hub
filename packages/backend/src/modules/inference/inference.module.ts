@@ -11,6 +11,7 @@ import { CloudFallbackService } from './cloud-fallback.service';
 import { OllamaInstallerService } from './ollama-installer.service';
 import { RocmInstallerService } from './rocm-installer.service';
 import { AppCredentialsService } from './app-credentials.service';
+import { OpenClawConfigReconcileService } from './openclaw-config-reconcile.service';
 import { InferenceEnvResolver } from './inference-env-resolver';
 import { OllamaBackend } from './backends/ollama.backend';
 import { VllmBackend } from './backends/vllm.backend';
@@ -30,6 +31,7 @@ import { InferenceController } from './inference.controller';
     OllamaInstallerService,
     RocmInstallerService,
     AppCredentialsService,
+    OpenClawConfigReconcileService,
     InferenceEnvResolver,
     OllamaBackend,
     VllmBackend,
@@ -45,6 +47,7 @@ import { InferenceController } from './inference.controller';
     OllamaInstallerService,
     RocmInstallerService,
     AppCredentialsService,
+    OpenClawConfigReconcileService,
     InferenceEnvResolver,
     OllamaBackend,
     VllmBackend,

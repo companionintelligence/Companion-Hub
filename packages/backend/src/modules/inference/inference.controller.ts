@@ -121,6 +121,8 @@ export class InferenceController {
       body.vllmUrl,
     );
 
+    this.appCredentials.invalidateCache();
+
     // Restart running apps that use AI models so they pick up the new inference
     // preferences. AppLifecycleService is resolved lazily via ModuleRef (rather
     // than imported into InferenceModule) to avoid a circular module dependency,
