@@ -1,7 +1,8 @@
-import { Module, forwardRef } from '@nestjs/common';
+import { Module } from '@nestjs/common';
 import Dockerode from 'dockerode';
-import { AppsModule } from '../apps/apps.module';
+import { AppsDataModule } from '../apps/apps-data.module';
 import { DOCKERODE } from './constants';
+import { DockerReadFacade } from './docker-read.facade';
 import { DockerService } from './docker.service';
 import { TraefikConfigService } from './traefik-config.service';
 
@@ -9,8 +10,11 @@ import { TraefikConfigService } from './traefik-config.service';
 export { DOCKERODE } from './constants';
 
 @Module({
-  imports: [forwardRef(() => AppsModule)],
+  // AppsDataModule has no Marketplace/Docker imports — keeps Docker out of the
+  // Marketplace ↔ Portal ↔ Cloudflare ↔ Docker service cycle.
+  imports: [AppsDataModule],
   providers: [
+    DockerReadFacade,
     DockerService,
     TraefikConfigService,
     {
@@ -19,6 +23,6 @@ export { DOCKERODE } from './constants';
       inject: [],
     },
   ],
-  exports: [DockerService, TraefikConfigService, DOCKERODE],
+  exports: [DockerReadFacade, DockerService, TraefikConfigService, DOCKERODE],
 })
 export class DockerModule {}

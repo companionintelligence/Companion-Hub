@@ -38,7 +38,16 @@ import {
   UpdateAppBody,
   ValidateConfigResultDto as LifecycleValidateConfigResultDto,
 } from './modules/app-lifecycle/dto/app-lifecycle.dto';
-import { GetAppDto, GetComposeDiffDto, GetConfigDiffDto, GetRandomPortDto, GuestAppsDto, MyAppsDto } from './modules/apps/dto/app.dto';
+import {
+  GetAppDto,
+  GetComposeDiffDto,
+  GetConfigDiffDto,
+  GetRandomPortDto,
+  GuestAppsDto,
+  InstalledAppUrnsDto,
+  MyAppsDto,
+  UpdatesAvailableDto,
+} from './modules/apps/dto/app.dto';
 import { InstallQueueDto } from './modules/apps/dto/install-queue.dto';
 import { AppRuntimeHealthDto, AppRuntimeMonitorDto } from './modules/apps/dto/runtime-health.dto';
 import { BackupRequestDto, DeleteAppBackupBodyDto, GetAppBackupsDto, RestoreAppBackupDto } from './modules/backups/dto/backups.dto';
@@ -122,6 +131,8 @@ export const SWAGGER_ZOD_DTOS: ZodDto[] = [
   GetConfigDiffDto,
   GetRandomPortDto,
   GuestAppsDto,
+  InstalledAppUrnsDto,
+  UpdatesAvailableDto,
   MyAppsDto,
   InstallQueueDto,
   AppRuntimeHealthDto,

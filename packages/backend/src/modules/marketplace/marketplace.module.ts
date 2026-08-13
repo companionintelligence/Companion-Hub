@@ -7,7 +7,9 @@ import { MarketplaceController } from './marketplace.controller';
 import { MarketplaceService } from './marketplace.service';
 
 @Module({
-  imports: [PortalModule, forwardRef(() => AppStoreModule), forwardRef(() => RegistrationModule)],
+  // AppStoreModule no longer imports MarketplaceModule — one-way dependency.
+  // MarketplaceCacheBus is owned/exported by AppStoreModule (shared instance).
+  imports: [PortalModule, AppStoreModule, forwardRef(() => RegistrationModule)],
   controllers: [MarketplaceController],
   providers: [MarketplaceService, ImageSizeService],
   exports: [MarketplaceService, ImageSizeService],

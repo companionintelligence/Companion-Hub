@@ -4,6 +4,7 @@ import { addOptimisticInstalledApp, isOptimisticAppId, removeOptimisticInstalled
 
 vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
   getInstalledAppsQueryKey: () => ['getInstalledApps'],
+  getInstalledAppUrnsQueryKey: () => ['getInstalledAppUrns'],
 }));
 
 const KEY = ['getInstalledApps'];

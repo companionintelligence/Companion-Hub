@@ -3,6 +3,7 @@ import type { AppInfo } from '@ci-hub/common/schemas';
 import type { AppUrn } from '@ci-hub/common/types';
 import type { AppStatus } from '@/core/database/drizzle/types';
 import { LoggerService } from '@/core/logger/logger.service';
+import { AppsReadService } from '@/modules/apps/apps-read.service';
 import { AppsService } from '@/modules/apps/apps.service';
 import { isMemoryProviderApp } from './memory-provider.predicate';
 
@@ -68,6 +69,7 @@ const PROVIDER_STARTING_STATUSES: ReadonlySet<AppStatus> = new Set<AppStatus>([
 @Injectable()
 export class MemoryProviderResolver {
   constructor(
+    private readonly appsReadService: AppsReadService,
     private readonly appsService: AppsService,
     private readonly logger: LoggerService,
   ) {}
@@ -118,7 +120,7 @@ export class MemoryProviderResolver {
    */
   async getAppName(appUrn: AppUrn): Promise<string | undefined> {
     try {
-      const { info } = await this.appsService.getApp(appUrn);
+      const { info } = await this.appsReadService.getApp(appUrn);
 
       return info.name;
     } catch {
@@ -132,7 +134,7 @@ export class MemoryProviderResolver {
    */
   async isConsumerApp(appUrn: AppUrn): Promise<boolean> {
     try {
-      const { info } = await this.appsService.getApp(appUrn);
+      const { info } = await this.appsReadService.getApp(appUrn);
 
       return this.isConsumer(info);
     } catch {
@@ -185,7 +187,7 @@ export class MemoryProviderResolver {
    * Cloudflare-tunnelled provider is reachable by an arbitrary public browser.
    */
   async getProviderRuntimeInfo(): Promise<{ status: MemoryProviderRuntimeStatus; localOnly: boolean }> {
-    const installed = await this.appsService.getInstalledAppsLite();
+    const installed = await this.appsReadService.getInstalledAppsLite();
 
     const row = installed.find((r) => isMemoryProviderApp({ urn: `${r.appName}:${r.appStoreSlug}` as AppUrn }));
 
@@ -212,7 +214,7 @@ export class MemoryProviderResolver {
    * uses only the internal S2S URL, so the probe is skipped by default.
    */
   async findProvider(opts: { withPublicUrl?: boolean } = {}): Promise<ResolvedMemoryProvider | null> {
-    const installed = await this.appsService.getInstalledApps();
+    const installed = await this.appsReadService.getInstalledApps();
 
     // Trust is pinned to the reserved ci-memory id — NOT to a manifest-declared
     // provider role, which any app could set to be selected here.

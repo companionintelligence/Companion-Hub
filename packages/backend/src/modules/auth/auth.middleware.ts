@@ -7,6 +7,7 @@ import type { NextFunction, Request, Response } from 'express';
 import jsonwebtoken from 'jsonwebtoken';
 import { UserRepository } from '../user/user.repository';
 import { SESSION_TTL_SECONDS, SessionManager } from './session.manager';
+import { SessionUserCache } from './session-user.cache';
 
 function addSessionId(ids: string[], seen: Set<string>, value: unknown) {
   if (typeof value !== 'string' || !value || seen.has(value)) {
@@ -36,6 +37,7 @@ export class AuthMiddleware implements NestMiddleware {
     private readonly sessionManager: SessionManager,
     private readonly config: ConfigurationService,
     private readonly userRepository: UserRepository,
+    private readonly sessionUserCache: SessionUserCache,
   ) {}
 
   /**
@@ -55,6 +57,18 @@ export class AuthMiddleware implements NestMiddleware {
     }
   }
 
+  private async loadSessionUser(userId: number) {
+    const cached = this.sessionUserCache.get(userId);
+    if (cached) {
+      return cached;
+    }
+    const user = await this.loadUserResilient(() => this.userRepository.getUserDtoById(userId));
+    if (user) {
+      this.sessionUserCache.set(userId, user);
+    }
+    return user;
+  }
+
   async use(req: Request, _: Response, next: NextFunction) {
     const bearerToken = req.headers.authorization;
 
@@ -72,7 +86,7 @@ export class AuthMiddleware implements NestMiddleware {
         }
       }
 
-      const user = await this.loadUserResilient(() => this.userRepository.getUserDtoById(userId));
+      const user = await this.loadSessionUser(userId);
       req.user = user;
       req.hubSessionId = sessionId;
       return next();

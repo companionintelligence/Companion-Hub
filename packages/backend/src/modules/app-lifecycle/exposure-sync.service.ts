@@ -11,7 +11,7 @@ import { AppFilesManager } from '../apps/app-files-manager';
 import { publishesCloudflarePublicRoute, type AppPublicRoutingSnapshot } from '../apps/app-public-routing.helpers';
 import { isPortExposeApp } from '@ci-hub/common/schemas';
 import { CloudflareClientService, AppInfo, type PublicDnsFailure, type PublicDnsFailureReason } from '../cloudflare/cloudflare-client.service';
-import { DockerService } from '../docker/docker.service';
+import { DockerReadFacade } from '../docker/docker-read.facade';
 import { RegistrationService } from '../registration/registration.service';
 import { TailscaleService } from '../tailscale/tailscale.service';
 import { hasRestoreIntent, readRehydrationState } from './registration-recovery-state';
@@ -100,7 +100,7 @@ export class ExposureSyncService {
     private readonly sseService: SSEService,
     private readonly cloudflareClientService: CloudflareClientService,
     private readonly registrationService: RegistrationService,
-    private readonly dockerService: DockerService,
+    private readonly dockerReadFacade: DockerReadFacade,
     private readonly moduleRef: ModuleRef,
     @Optional() private readonly errorReportingService?: ErrorReportingService,
   ) {}
@@ -182,7 +182,7 @@ export class ExposureSyncService {
           const upstreamPort = installedInfo.upstreamPort ?? installedInfo.port ?? app.port;
           upstreamUrl = `http://host.docker.internal:${upstreamPort}`;
         } else {
-          const target = await this.dockerService.getAppNetworkTarget(appUrn);
+          const target = await this.dockerReadFacade.getAppNetworkTarget(appUrn);
           if (!target) {
             this.logger.error(`[Tailscale] Skipping ${appUrn}: no running network target found for Private VPN publishing`);
             continue;

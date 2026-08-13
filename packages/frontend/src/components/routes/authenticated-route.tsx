@@ -66,8 +66,8 @@ function AuthenticatedContent({ children }: { children: React.ReactNode }) {
     };
   }, []);
 
-  // Wait for app context to load before checking onboarding
-  if (isAppLoading || !restoreRedirectChecked) {
+  // Drift / restore check is cheap; keep a short gate so we don't flash the wrong route.
+  if (!restoreRedirectChecked) {
     return (
       <DashboardLayoutSuspense>
         <div className="flex items-center justify-center p-5">
@@ -79,6 +79,20 @@ function AuthenticatedContent({ children }: { children: React.ReactNode }) {
 
   if (shouldRestoreApps && location.pathname !== '/restore-apps') {
     return <Navigate to="/restore-apps" replace />;
+  }
+
+  // Paint chrome (sidebar/header) while app-context is still loading. Do not
+  // decide onboarding until we have a real payload — defaults say false.
+  if (isAppLoading) {
+    return (
+      <SSEProvider>
+        <DashboardLayout>
+          <div className="flex items-center justify-center p-5">
+            <Loader2 role="img" aria-label={t('COMMON_LOADING')} className="h-8 w-8 animate-spin text-muted-foreground" />
+          </div>
+        </DashboardLayout>
+      </SSEProvider>
+    );
   }
 
   // Redirect to onboarding if not completed

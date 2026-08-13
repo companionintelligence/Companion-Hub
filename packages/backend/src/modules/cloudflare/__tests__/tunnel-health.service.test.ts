@@ -22,12 +22,12 @@ function makeService(overrides: { tunnelToken?: string | null; domain?: string; 
     getFirstDeviceRegistration: vi.fn().mockResolvedValue({ hubSubdomain: overrides.hubSubdomain ?? 'hub-core2-acme' }),
   };
   const configService = { getConfig: vi.fn().mockReturnValue({ domain: overrides.domain ?? 'companionintelligence.com' }) };
-  const dockerService = { isContainerRunning: vi.fn().mockResolvedValue(overrides.containerRunning ?? true) };
-  const moduleRef = { get: vi.fn().mockReturnValue(dockerService) };
+  const dockerReadFacade = { isContainerRunning: vi.fn().mockResolvedValue(overrides.containerRunning ?? true) };
+  const moduleRef = { get: vi.fn().mockReturnValue(dockerReadFacade) };
 
   const service = new TunnelHealthService(cloudflareClient as never, deviceRegistration as never, configService as never, moduleRef as never);
 
-  return { service, cloudflareClient, deviceRegistration, configService, dockerService };
+  return { service, cloudflareClient, deviceRegistration, configService, dockerReadFacade };
 }
 
 beforeEach(() => {
@@ -44,7 +44,7 @@ describe('TunnelHealthService.getHealth', () => {
     expect(service.getHealth()).toBe('unknown');
 
     // Poll rather than a single setImmediate: the background refresh now awaits a
-    // cold `import('../docker/docker.service')` whose module subtree is not
+    // cold `import('../docker/docker-read.facade')` whose module subtree is not
     // guaranteed to resolve within one macrotask, which would make a single flush
     // flaky.
     await vi.waitFor(() => expect(service.getHealth()).toBe('up'));
@@ -227,10 +227,10 @@ describe('TunnelHealthService.invalidate', () => {
     // guard it is discarded and the cache stays cold ('unknown'). A single 530 —
     // as an earlier version of this test used — could not distinguish the two,
     // because one sub-threshold failure resolves to 'unknown' either way.
-    const { service, dockerService } = makeService({ containerRunning: false });
+    const { service, dockerReadFacade } = makeService({ containerRunning: false });
     expect(await service.getHealthNow()).toBe('down');
 
-    dockerService.isContainerRunning.mockResolvedValue(true);
+    dockerReadFacade.isContainerRunning.mockResolvedValue(true);
     let landProbe: (value: unknown) => void = () => {};
     axiosGet.mockReturnValueOnce(
       new Promise((resolve) => {

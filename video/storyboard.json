@@ -322,16 +322,10 @@
             "waitFor": "input[placeholder='you@example.com']",
             "before": [
               {
-                "fill": [
-                  "input[placeholder='you@example.com']",
-                  "owner@acme.com"
-                ]
+                "fill": ["input[placeholder='you@example.com']", "owner@acme.com"]
               },
               {
-                "fill": [
-                  "input[placeholder='Enter your password']",
-                  "password"
-                ]
+                "fill": ["input[placeholder='Enter your password']", "password"]
               },
               {
                 "click": "button[type='submit']"

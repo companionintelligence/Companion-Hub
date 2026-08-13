@@ -16,12 +16,18 @@ describe('AuthMiddleware transient DB handling', () => {
     getUserDtoById: vi.fn(),
     getFirstOperator: vi.fn(),
   };
+  const sessionUserCache = {
+    get: vi.fn().mockReturnValue(undefined),
+    set: vi.fn(),
+    invalidate: vi.fn(),
+  };
 
   let middleware: AuthMiddleware;
 
   beforeEach(() => {
     vi.clearAllMocks();
-    middleware = new AuthMiddleware(sessionManager as never, config as never, userRepository as never);
+    sessionUserCache.get.mockReturnValue(undefined);
+    middleware = new AuthMiddleware(sessionManager as never, config as never, userRepository as never, sessionUserCache as never);
   });
 
   it('retries EAI_AGAIN on session user lookup then succeeds', async () => {
@@ -78,13 +84,33 @@ describe('AuthMiddleware session fallback', () => {
     getUserDtoById: vi.fn(),
     getFirstOperator: vi.fn(),
   };
+  const sessionUserCache = {
+    get: vi.fn().mockReturnValue(undefined),
+    set: vi.fn(),
+    invalidate: vi.fn(),
+  };
 
   let middleware: AuthMiddleware;
 
   beforeEach(() => {
     vi.clearAllMocks();
-    middleware = new AuthMiddleware(sessionManager as never, config as never, userRepository as never);
+    sessionUserCache.get.mockReturnValue(undefined);
+    middleware = new AuthMiddleware(sessionManager as never, config as never, userRepository as never, sessionUserCache as never);
     sessionManager.getSessionExpiresAt.mockReturnValue(null);
+  });
+
+  it('serves session user from cache without hitting the DB', async () => {
+    sessionManager.resolveSessionUserId.mockReturnValue(7);
+    sessionUserCache.get.mockReturnValue({ id: 7, username: 'cached' });
+
+    const req = { cookies: { 'ci-hub-sid': 'sess' }, headers: {}, get: () => undefined, query: {} } as never;
+    const next = vi.fn();
+
+    await middleware.use(req, {} as never, next);
+
+    expect(userRepository.getUserDtoById).not.toHaveBeenCalled();
+    expect((req as { user?: { id: number } }).user).toEqual({ id: 7, username: 'cached' });
+    expect(next).toHaveBeenCalledOnce();
   });
 
   it('authenticates from X-CI-Hub-Session when the cookie session is stale', async () => {

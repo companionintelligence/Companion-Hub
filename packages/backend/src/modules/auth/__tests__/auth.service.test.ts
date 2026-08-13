@@ -11,6 +11,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
 import { AuthService } from '../auth.service';
 import { SessionManager } from '../session.manager';
+import { SessionUserCache } from '../session-user.cache';
 import type { LoginBody } from '../dto/auth.dto';
 import axios from 'axios';
 
@@ -45,6 +46,7 @@ describe('AuthService', () => {
         { provide: EncryptionService, useValue: mock<EncryptionService>() },
         { provide: FilesystemService, useValue: mock<FilesystemService>() },
         { provide: LoggerService, useValue: mock<LoggerService>() },
+        { provide: SessionUserCache, useValue: mock<SessionUserCache>() },
       ],
     }).compile();
 

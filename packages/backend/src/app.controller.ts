@@ -6,7 +6,7 @@ import { Body, Controller, Get, Patch, Query, Req, UseGuards } from '@nestjs/com
 import type { Request } from 'express';
 import { AcknowledgeWelcomeBody, AppContextDto, UserSettingsBody, UserContextDto } from './app.dto';
 import { AppService } from './app.service';
-import { AppsService } from './modules/apps/apps.service';
+import { AppsReadService } from './modules/apps/apps-read.service';
 import { AuthGuard } from './modules/auth/auth.guard';
 import { SESSION_REFRESH_AFTER_SECONDS, SESSION_TTL_SECONDS, SessionManager } from './modules/auth/session.manager';
 import { RegistrationService } from '@/modules/registration/registration.service';
@@ -25,7 +25,7 @@ export class AppController {
     private readonly appService: AppService,
     private readonly userRepository: UserRepository,
     private readonly configuration: ConfigurationService,
-    private readonly appsService: AppsService,
+    private readonly appsReadService: AppsReadService,
     private readonly logger: LoggerService,
     private readonly registrationService: RegistrationService,
     private readonly cloudflareClientService: CloudflareClientService,
@@ -227,6 +227,25 @@ export class AppController {
     return this.appStoreService.fetchCiCloudStoreListings({ tags, sort, category, q });
   }
 
+  @Get('store/featured-bundle')
+  @ApiOperation({ summary: 'Featured store sections in one response (firstParty, featured, trending, newest)' })
+  @ApiResponse({ status: 200, description: 'Bundled store listing sections' })
+  @ApiResponse({ status: 503, description: 'CI Cloud unreachable or CI_CLOUD_URL not set' })
+  async getStoreFeaturedBundle() {
+    return this.appStoreService.fetchFeaturedBundle();
+  }
+
+  /**
+   * Authenticated shell context.
+   *
+   * Expected Hub API budget for cold `/store` after paint work (PR1–PR2):
+   * 1. root bootstrap: registration + user-context (skipped on warm nav via shouldRevalidate)
+   * 2. GET /api/app-context — light (cached version TTL; updatesAvailable peek/0, not FS walk)
+   * 3. GET /api/apps/installed-urns — DB-only badge set
+   * 4. GET /api/store/featured-bundle — one round-trip for four sections
+   * Deferred (after paint): GET /api/apps/updates-available
+   * AuthMiddleware session-user cache (PR3) keeps per-request DB user lookups cheap under fan-out.
+   */
   @Get('/app-context')
   @UseGuards(AuthGuard)
   @ApiResponse({ type: AppContextDto })
@@ -248,11 +267,11 @@ export class AppController {
       this.logger.warn(`Could not resolve app data root host path: ${error}`);
     }
 
-    // Parallelize all independent async calls
-    const [version, org, updatesAvailable, tailscaleStatus] = await Promise.all([
+    // Parallelize independent async calls. Update count is deferred: use cached/0
+    // here and let GET /api/apps/updates-available fill the badge after paint.
+    const [version, org, tailscaleStatus] = await Promise.all([
       this.appService.getVersion(),
       this.registrationService.getDeviceRegistrationInfo(),
-      this.appsService.countUpdatesAvailable(),
       this.tailscaleService.getStatus().catch(() => ({
         installed: false,
         connected: false,
@@ -264,7 +283,7 @@ export class AppController {
       })),
     ]);
 
-    const updatesAvailableCount = updatesAvailable;
+    const updatesAvailableCount = this.appsReadService.peekUpdatesAvailableCached();
 
     // Extract slug from domain
     const orgSlug = org?.slug;

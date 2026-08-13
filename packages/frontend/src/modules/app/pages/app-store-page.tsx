@@ -1,5 +1,6 @@
-import { getEnabledAppStoresOptions, getInstalledAppsOptions } from '@/api-client/@tanstack/react-query.gen';
+import { getEnabledAppStoresOptions } from '@/api-client/@tanstack/react-query.gen';
 import { searchAppsInfiniteOptions } from '@/lib/marketplace-search-query';
+import { getInstalledAppUrnsOptions } from '@/lib/installed-app-urns-query';
 import { applyStoreBrowseParams, parseStoreBrowseParams } from '@/lib/store-browse-params';
 import { invalidateStoreCatalogQueries } from '@/lib/invalidate-store-catalog-queries';
 import { pullAppStores } from '@/api-client/sdk.gen';
@@ -164,15 +165,14 @@ export default () => {
     staleTime: 30_000,
   });
 
-  const { data: installedAppsData } = useQuery({
-    ...getInstalledAppsOptions(),
-    staleTime: 30_000,
+  const { data: installedUrnsData } = useQuery({
+    ...getInstalledAppUrnsOptions(),
   });
 
   const installedAppUrns = useMemo(() => {
-    if (!installedAppsData?.installed) return new Set<string>();
-    return new Set(installedAppsData.installed.map((a) => a.info.urn));
-  }, [installedAppsData]);
+    if (!installedUrnsData?.urns) return new Set<string>();
+    return new Set(installedUrnsData.urns);
+  }, [installedUrnsData]);
 
   const ciCloudStore = appStores?.appStores?.find((s) => s.slug === 'ci-marketplace' || s.name === 'CI Marketplace');
   const marketplaceSlug = ciCloudStore?.slug ?? storeId ?? 'ci-marketplace';
@@ -273,7 +273,10 @@ export default () => {
     return <Navigate to={`/store?store=${params.storeId}`} />;
   }
 
-  if (isCheckingRegistration || (registrationStatus && !registrationStatus.registered)) {
+  // Root loader already resolved registration for operational hubs. Only block
+  // when we *know* the hub is not registered — not while the status query is
+  // still settling (avoids a full-page skeleton on every store revisit).
+  if (registrationStatus && !registrationStatus.registered) {
     return <AppStorePageSuspense />;
   }
 

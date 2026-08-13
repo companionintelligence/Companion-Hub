@@ -167,24 +167,47 @@ export class AppService implements OnApplicationShutdown {
     }
   }
 
+  private static readonly VERSION_TTL_MS = 30_000;
+  private versionCache: {
+    value: { current: string; latest: string; body: string; releases: { version: string; body: string }[] };
+    at: number;
+  } | null = null;
+  private versionInFlight: Promise<{ current: string; latest: string; body: string; releases: { version: string; body: string }[] }> | null = null;
+
   public async getVersion() {
-    const { version: currentVersion } = this.configuration.getConfig();
+    const now = Date.now();
+    if (this.versionCache && now - this.versionCache.at < AppService.VERSION_TTL_MS) {
+      return this.versionCache.value;
+    }
+    if (this.versionInFlight) {
+      return this.versionInFlight;
+    }
 
-    const [releasesSince] = await Promise.all([this.registryService.getTagsSinceWithHubFallback(HUB_STACK_REGISTRY_REPO, currentVersion)]);
+    this.versionInFlight = (async () => {
+      const { version: currentVersion } = this.configuration.getConfig();
 
-    const releases = releasesSince.map((tag) => ({
-      version: tag,
-      body: `Release ${tag}`,
-    }));
+      const [releasesSince] = await Promise.all([this.registryService.getTagsSinceWithHubFallback(HUB_STACK_REGISTRY_REPO, currentVersion)]);
 
-    const latest = releases[0]?.version ?? currentVersion;
+      const releases = releasesSince.map((tag) => ({
+        version: tag,
+        body: `Release ${tag}`,
+      }));
 
-    return {
-      current: currentVersion,
-      latest,
-      body: '',
-      releases,
-    };
+      const latest = releases[0]?.version ?? currentVersion;
+
+      const value = {
+        current: currentVersion,
+        latest,
+        body: '',
+        releases,
+      };
+      this.versionCache = { value, at: Date.now() };
+      return value;
+    })().finally(() => {
+      this.versionInFlight = null;
+    });
+
+    return this.versionInFlight;
   }
 
   public async copyAssets() {

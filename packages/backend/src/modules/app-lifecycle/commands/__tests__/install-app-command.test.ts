@@ -8,6 +8,7 @@ import { ConfigurationService } from '@/core/config/configuration.service';
 import { SSEService } from '@/core/sse/sse.service';
 import { AppFilesManager } from '@/modules/apps/app-files-manager';
 import { AppHelpers } from '@/modules/apps/app.helpers';
+import { DockerReadFacade } from '@/modules/docker/docker-read.facade';
 import { DockerService } from '@/modules/docker/docker.service';
 import { TraefikConfigService } from '@/modules/docker/traefik-config.service';
 import { EnvUtils } from '@/modules/env/env.utils';
@@ -69,6 +70,7 @@ describe('install progress helpers', () => {
 describe('InstallAppCommand — pull policy', () => {
   let command: InstallAppCommand;
   let dockerService: any;
+  let dockerReadFacade: any;
   let composeArgs: string[] = [];
 
   const appUrn = 'urn:store:test-app' as AppUrn;
@@ -79,12 +81,14 @@ describe('InstallAppCommand — pull policy', () => {
     vi.mocked(fs.promises.access).mockResolvedValue(undefined as any);
 
     composeArgs = [];
+    dockerReadFacade = {
+      diagnoseAppContainers: vi.fn().mockResolvedValue({ unhealthy: [], healthy: [] }),
+    };
     dockerService = {
       composeApp: vi.fn(async (_urn: string, args: string) => {
         composeArgs.push(args);
       }),
       pullImages: vi.fn().mockResolvedValue(undefined),
-      diagnoseAppContainers: vi.fn().mockResolvedValue({ unhealthy: [], healthy: [] }),
       waitForManagedAppContainersReady: vi.fn().mockResolvedValue({
         ok: true,
         appStatus: 'running',
@@ -155,6 +159,7 @@ describe('InstallAppCommand — pull policy', () => {
         if (token === AppFilesManager) return appFilesManager;
         if (token === MarketplaceService) return marketplaceService;
         if (token === DockerService) return dockerService;
+        if (token === DockerReadFacade) return dockerReadFacade;
         if (token === AppHelpers) return appHelpers;
         if (token === SSEService) return sseService;
         if (token === EnvUtils) return envUtils;

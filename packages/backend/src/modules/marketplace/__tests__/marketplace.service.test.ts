@@ -7,6 +7,7 @@ import { AppStoreService } from '../../app-stores/app-store.service';
 import { PortalCatalogService } from '@/core/portal/portal-catalog.service';
 import { mock, MockProxy } from 'vitest-mock-extended';
 import { AppStoreFilesManager } from '../../app-stores/app-store-files-manager';
+import { MarketplaceCacheBus } from '../marketplace-cache.bus';
 import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
 
 vi.mock('../../app-stores/app-store-files-manager');
@@ -18,6 +19,7 @@ describe('MarketplaceService', () => {
   let loggerService: MockProxy<LoggerService>;
   let appStoreService: MockProxy<AppStoreService>;
   let portalCatalog: MockProxy<PortalCatalogService>;
+  let marketplaceCacheBus: MarketplaceCacheBus;
   let spies: any;
 
   beforeEach(async () => {
@@ -26,6 +28,7 @@ describe('MarketplaceService', () => {
     loggerService = mock<LoggerService>();
     appStoreService = mock<AppStoreService>();
     portalCatalog = mock<PortalCatalogService>();
+    marketplaceCacheBus = new MarketplaceCacheBus();
     portalCatalog.warmCacheInBackground.mockReturnValue(undefined);
 
     configService.getConfig.mockReturnValue({
@@ -86,10 +89,12 @@ describe('MarketplaceService', () => {
         { provide: LoggerService, useValue: loggerService },
         { provide: AppStoreService, useValue: appStoreService },
         { provide: PortalCatalogService, useValue: portalCatalog },
+        { provide: MarketplaceCacheBus, useValue: marketplaceCacheBus },
       ],
     }).compile();
 
     service = module.get<MarketplaceService>(MarketplaceService);
+    service.onModuleInit();
   });
 
   afterEach(() => {
@@ -159,7 +164,7 @@ describe('MarketplaceService', () => {
       expect(spies.getAppInfoFromAppStoreLite).not.toHaveBeenCalled();
     });
 
-    it('falls back to local store when portal catalog is empty', async () => {
+    it('does not FS-walk on the request path when portal catalog is empty and local cache is cold', async () => {
       await service.initialize();
 
       portalCatalog.searchCatalog.mockResolvedValue({ data: [], total: 0, nextCursor: null });
@@ -177,14 +182,39 @@ describe('MarketplaceService', () => {
 
       const result = await service.searchApps({ pageSize: 50 });
 
+      expect(result.data).toHaveLength(0);
+      expect(result.total).toBe(0);
+      // Warm happens in background — not awaited on the request path.
+      expect(spies.getAppInfoFromAppStoreLite).not.toHaveBeenCalled();
+      expect(portalCatalog.warmCacheInBackground).toHaveBeenCalled();
+    });
+
+    it('serves warm local cache when portal is empty', async () => {
+      await service.initialize();
+
+      spies.getAvailableAppUrns.mockResolvedValue(['app-1:store-1' as any]);
+      spies.getAppInfoFromAppStoreLite.mockResolvedValue({
+        id: 'app-1',
+        urn: 'app-1:store-1' as any,
+        supported_architectures: ['amd64'],
+        name: 'Local App',
+        categories: ['utilities'],
+        available: true,
+        deprecated: false,
+        short_desc: '',
+      });
+      await service.getAvailableApps();
+
+      portalCatalog.searchCatalog.mockResolvedValue({ data: [], total: 0, nextCursor: null });
+
+      const result = await service.searchApps({ pageSize: 50 });
+
       expect(result.data).toHaveLength(1);
       expect(result.data[0]?.urn).toBe('app-1:store-1');
     });
 
-    it('should return search results from local store when portal is unavailable', async () => {
+    it('should return search results from warm local store when portal is unavailable', async () => {
       await service.initialize();
-
-      portalCatalog.searchCatalog.mockResolvedValue(null);
 
       spies.getAvailableAppUrns.mockResolvedValue(['app-1:store-1' as any]);
       spies.getAppInfoFromAppStoreLite.mockResolvedValue({
@@ -193,6 +223,9 @@ describe('MarketplaceService', () => {
         name: 'Search Me',
         categories: ['utility'],
       });
+      await service.getAvailableApps();
+
+      portalCatalog.searchCatalog.mockResolvedValue(null);
 
       const result = await service.searchApps({ search: 'Search' });
       expect(result.data).toHaveLength(1);

@@ -19,7 +19,7 @@ describe('AppStatusSyncService', () => {
   let sseService: MockProxy<SSEService>;
   let installPipelineTracker: InstallPipelineTracker;
   let operationRegistry: AppOperationRegistry;
-  let dockerService: { diagnoseAppContainers: ReturnType<typeof vi.fn> };
+  let dockerReadFacade: { diagnoseAppContainers: ReturnType<typeof vi.fn> };
 
   beforeEach(() => {
     appRepository = mock<AppsRepository>();
@@ -30,7 +30,7 @@ describe('AppStatusSyncService', () => {
     sseService = mock<SSEService>();
     installPipelineTracker = new InstallPipelineTracker();
     operationRegistry = new AppOperationRegistry(mock<LoggerService>());
-    dockerService = {
+    dockerReadFacade = {
       diagnoseAppContainers: vi.fn().mockResolvedValue({ unhealthy: [], healthy: [] }),
     };
 
@@ -59,7 +59,7 @@ describe('AppStatusSyncService', () => {
       undefined,
       errorReportingService,
       undefined,
-      dockerService as never,
+      dockerReadFacade as never,
     );
   });
 
@@ -291,14 +291,14 @@ describe('AppStatusSyncService', () => {
         Labels: { 'ci-os-hub.appurn': 'remotion-studio:ci-marketplace' },
       },
     ] as never);
-    dockerService.diagnoseAppContainers.mockResolvedValue({
+    dockerReadFacade.diagnoseAppContainers.mockResolvedValue({
       unhealthy: [{ name: 'remotion-studio_ci-marketplace-1', state: 'Exited (1)', logs: 'Error: out of memory' }],
       healthy: [],
     });
 
     await service.syncAllAppStatuses();
 
-    expect(dockerService.diagnoseAppContainers).toHaveBeenCalledWith('remotion-studio:ci-marketplace');
+    expect(dockerReadFacade.diagnoseAppContainers).toHaveBeenCalledWith('remotion-studio:ci-marketplace');
     expect(errorReportingService.reportAppFailure).toHaveBeenCalledWith({
       appUrn: 'remotion-studio:ci-marketplace',
       phase: 'crash',

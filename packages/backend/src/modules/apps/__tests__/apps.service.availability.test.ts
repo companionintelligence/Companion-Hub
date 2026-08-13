@@ -80,9 +80,7 @@ const createMockService = () => {
   (service as any).configurationService = { getConfig: getConfigMock };
   (service as any).registrationService = { getDeviceRegistrationInfo: getDeviceRegMock };
   (service as any).moduleRef = moduleRefMock;
-
-  // Override getApp
-  (service as any).getApp = getAppMock;
+  (service as any).appsReadService = { getApp: getAppMock };
 
   return { service, mockApp, mockInfo, mockConfig, mockOrg, getAppMock, getConfigMock, getDeviceRegMock, moduleRefMock, tailscaleService };
 };
