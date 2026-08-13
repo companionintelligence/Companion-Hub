@@ -180,6 +180,9 @@ export const links: Route.LinksFunction = () => [
 
 type RegistrationLookup = { kind: 'ok'; status: RegistrationStatus } | { kind: 'unavailable' };
 
+/** Set after a successful warm bootstrap so shouldRevalidate can skip redundant work. */
+let rootBootstrapWarm = false;
+
 async function loadRegistrationLookup(): Promise<RegistrationLookup> {
   const status = await resolveRegistrationStatus();
   if (status) {
@@ -187,6 +190,45 @@ async function loadRegistrationLookup(): Promise<RegistrationLookup> {
   }
 
   return { kind: 'unavailable' };
+}
+
+const AUTH_BOOTSTRAP_PATHS = new Set(['/login', '/register', '/connect', '/device-registration', '/reset-password', '/reset-password/confirm']);
+
+/**
+ * Skip re-running registration + user-context on warm authenticated navigations.
+ * Still revalidate on auth/registration routes, hard reload (default), and when
+ * bootstrap has never completed successfully.
+ */
+export function shouldRevalidate({
+  currentUrl,
+  nextUrl,
+  formMethod,
+  defaultShouldRevalidate,
+}: {
+  currentUrl: URL;
+  nextUrl: URL;
+  formMethod?: string;
+  defaultShouldRevalidate: boolean;
+}) {
+  if (formMethod && formMethod !== 'GET') {
+    return true;
+  }
+
+  if (AUTH_BOOTSTRAP_PATHS.has(currentUrl.pathname) || AUTH_BOOTSTRAP_PATHS.has(nextUrl.pathname)) {
+    rootBootstrapWarm = false;
+    return true;
+  }
+
+  if (!rootBootstrapWarm) {
+    return defaultShouldRevalidate;
+  }
+
+  // Warm SPA navigations under the authenticated shell — keep prior loader data.
+  if (currentUrl.origin === nextUrl.origin) {
+    return false;
+  }
+
+  return defaultShouldRevalidate;
 }
 
 export async function clientLoader({ request }: Route.ActionArgs) {
@@ -250,14 +292,22 @@ export async function clientLoader({ request }: Route.ActionArgs) {
       await refreshHubSessionIfDue();
     } else {
       await clearStaleServerSession();
+      rootBootstrapWarm = false;
     }
   } catch {
+    rootBootstrapWarm = false;
     // Tauri opens at `/` with no matching child route. Never leave the user on a
     // blank outlet — send them somewhere that renders UI while the backend wakes up.
     if (url.pathname === '/') {
       return redirect('/login');
     }
     return null;
+  }
+
+  if (registration.kind === 'ok' && isRegistrationOperational(registration.status) && userResult.data?.isLoggedIn) {
+    rootBootstrapWarm = true;
+  } else if (registration.kind === 'ok' && requiresDeviceRegistration(registration.status)) {
+    rootBootstrapWarm = false;
   }
 
   // Non-root paths: let individual route loaders handle redirects

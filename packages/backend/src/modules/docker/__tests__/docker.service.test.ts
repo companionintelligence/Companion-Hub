@@ -1,10 +1,11 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { DockerService } from '../docker.service';
+import { DockerReadFacade } from '../docker-read.facade';
 import { LoggerService } from '@/core/logger/logger.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { AppFilesManager } from '../../apps/app-files-manager';
-import { AppsService } from '../../apps/apps.service';
+import { AppsRepository } from '../../apps/apps.repository';
 import { DOCKERODE } from '../constants';
 import { getAppDataHostPath } from '@/common/helpers/app-data-path.helper';
 import { mock, MockProxy } from 'vitest-mock-extended';
@@ -45,11 +46,12 @@ vi.mock('node:child_process', () => ({
 
 describe('DockerService', () => {
   let service: DockerService;
+  let dockerReadFacade: DockerReadFacade;
   let loggerService: MockProxy<LoggerService>;
   let configService: MockProxy<ConfigurationService>;
   let filesystemService: MockProxy<FilesystemService>;
   let appFilesManager: MockProxy<AppFilesManager>;
-  let appsService: MockProxy<AppsService>;
+  let appsRepository: MockProxy<AppsRepository>;
   let dockerode: MockProxy<Dockerode>;
 
   beforeEach(async () => {
@@ -57,7 +59,7 @@ describe('DockerService', () => {
     configService = mock<ConfigurationService>();
     filesystemService = mock<FilesystemService>();
     appFilesManager = mock<AppFilesManager>();
-    appsService = mock<AppsService>();
+    appsRepository = mock<AppsRepository>();
     dockerode = mock<Dockerode>();
 
     configService.get.mockImplementation((key) => {
@@ -77,17 +79,19 @@ describe('DockerService', () => {
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
+        DockerReadFacade,
         DockerService,
         { provide: LoggerService, useValue: loggerService },
         { provide: ConfigurationService, useValue: configService },
         { provide: FilesystemService, useValue: filesystemService },
         { provide: AppFilesManager, useValue: appFilesManager },
-        { provide: AppsService, useValue: appsService },
+        { provide: AppsRepository, useValue: appsRepository },
         { provide: DOCKERODE, useValue: dockerode },
       ],
     }).compile();
 
     service = module.get<DockerService>(DockerService);
+    dockerReadFacade = module.get(DockerReadFacade);
   });
 
   afterEach(() => {
@@ -109,12 +113,10 @@ describe('DockerService', () => {
       appFilesManager.getDockerComposeYaml.mockResolvedValue({ path: '/apps/test-app/docker-compose.yml', content: 'services:' });
       appFilesManager.getUserComposeFile.mockResolvedValue({ path: '/apps/test-app/user-compose.yml', content: null });
 
-      appsService.getApp.mockResolvedValue({
-        app: {
-          id: 'test-app',
-          name: 'Test App',
-          userConfigEnabled: true,
-        },
+      appsRepository.getAppByUrn.mockResolvedValue({
+        id: 'test-app',
+        name: 'Test App',
+        userConfigEnabled: true,
       } as any);
 
       const result = await service.getBaseComposeArgsApp(appUrn);
@@ -136,12 +138,10 @@ describe('DockerService', () => {
       appFilesManager.getDockerComposeYaml.mockResolvedValue({ path: '/apps/test-app/docker-compose.yml', content: 'services:' });
       appFilesManager.getUserComposeFile.mockResolvedValue({ path: '/apps/test-app/user-compose.yml', content: 'services:' });
 
-      appsService.getApp.mockResolvedValue({
-        app: {
-          id: 'test-app',
-          name: 'Test App',
-          userConfigEnabled: true,
-        },
+      appsRepository.getAppByUrn.mockResolvedValue({
+        id: 'test-app',
+        name: 'Test App',
+        userConfigEnabled: true,
       } as any);
 
       const result = await service.getBaseComposeArgsApp(appUrn);
@@ -276,7 +276,7 @@ describe('DockerService', () => {
       appFilesManager.getUserEnv.mockResolvedValue({ path: '/apps/test-app/user.env', content: null });
       appFilesManager.getDockerComposeYaml.mockResolvedValue({ path: '/apps/test-app/docker-compose.yml', content: 'services:' });
       appFilesManager.getUserComposeFile.mockResolvedValue({ path: '/apps/test-app/user-compose.yml', content: null });
-      appsService.getApp.mockResolvedValue({ app: { id: 'test-app', userConfigEnabled: true } } as any);
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 'test-app', userConfigEnabled: true } as any);
 
       const probeProcess = createComposeProbeProcess(0);
       const mockSpawnProcess = createMockSpawnProcess();
@@ -305,7 +305,7 @@ describe('DockerService', () => {
       appFilesManager.getUserEnv.mockResolvedValue({ path: '/apps/test-app/user.env', content: null });
       appFilesManager.getDockerComposeYaml.mockResolvedValue({ path: '/apps/test-app/docker-compose.yml', content: 'services:' });
       appFilesManager.getUserComposeFile.mockResolvedValue({ path: '/apps/test-app/user-compose.yml', content: null });
-      appsService.getApp.mockResolvedValue({ app: { id: 'test-app', userConfigEnabled: true } } as any);
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 'test-app', userConfigEnabled: true } as any);
     };
 
     // A child that never emits 'close' or output on its own, but exits (killed-by-signal → null
@@ -485,7 +485,7 @@ describe('DockerService', () => {
 
     it('returns stopped with container logs when containers exited', async () => {
       dockerode.listContainers.mockResolvedValue([{ State: 'exited', Status: 'Exited (1) 2 seconds ago' }] as any);
-      vi.spyOn(service, 'diagnoseAppContainers').mockResolvedValue({
+      vi.spyOn(dockerReadFacade, 'diagnoseAppContainers').mockResolvedValue({
         unhealthy: [{ name: 'ghost', state: 'Exited (1)', logs: 'boot error' }],
         healthy: [],
       });

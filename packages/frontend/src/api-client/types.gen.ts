@@ -159,6 +159,14 @@ export type AcknowledgeWelcomeBody = {
     allowErrorMonitoring: boolean;
 };
 
+export type InstalledAppUrnsDto = {
+    urns: Array<string>;
+};
+
+export type UpdatesAvailableDto = {
+    updatesAvailable: number;
+};
+
 export type MyAppsDto = {
     installed: Array<{
         app: {
@@ -2118,6 +2126,34 @@ export type GetStoreListingsResponses = {
     200: unknown;
 };
 
+export type GetStoreFeaturedBundleData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/store/featured-bundle';
+};
+
+export type GetStoreFeaturedBundleErrors = {
+    /**
+     * CI Cloud unreachable or CI_CLOUD_URL not set
+     */
+    503: unknown;
+};
+
+export type GetStoreFeaturedBundleResponses = {
+    /**
+     * Bundled store listing sections
+     */
+    200: {
+        firstParty: Array<unknown>;
+        featured: Array<unknown>;
+        trending: Array<unknown>;
+        newest: Array<unknown>;
+    };
+};
+
+export type GetStoreFeaturedBundleResponse = GetStoreFeaturedBundleResponses[keyof GetStoreFeaturedBundleResponses];
+
 export type AppContextData = {
     body?: never;
     path?: never;
@@ -2596,6 +2632,32 @@ export type GetInstalledAppsResponses = {
 };
 
 export type GetInstalledAppsResponse = GetInstalledAppsResponses[keyof GetInstalledAppsResponses];
+
+export type GetInstalledAppUrnsData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/apps/installed-urns';
+};
+
+export type GetInstalledAppUrnsResponses = {
+    default: InstalledAppUrnsDto;
+};
+
+export type GetInstalledAppUrnsResponse = GetInstalledAppUrnsResponses[keyof GetInstalledAppUrnsResponses];
+
+export type GetUpdatesAvailableData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/apps/updates-available';
+};
+
+export type GetUpdatesAvailableResponses = {
+    default: UpdatesAvailableDto;
+};
+
+export type GetUpdatesAvailableResponse = GetUpdatesAvailableResponses[keyof GetUpdatesAvailableResponses];
 
 export type GetInstallQueueData = {
     body?: never;

@@ -21,12 +21,14 @@ import { AppStoreService } from '@/modules/app-stores/app-store.service';
 import { AppFilesManager } from '@/modules/apps/app-files-manager';
 import { AppHelpers } from '@/modules/apps/app.helpers';
 import { AppsRepository } from '@/modules/apps/apps.repository';
+import { AppsReadService } from '@/modules/apps/apps-read.service';
 import { AppsService } from '@/modules/apps/apps.service';
 import { AppRuntimeMonitorService } from '@/modules/apps/app-runtime-monitor.service';
 import { InstallPipelineTracker } from '@/modules/apps/install-pipeline.tracker';
 import { AppOperationRegistry } from '@/modules/app-lifecycle/app-operation-registry';
 import { PortAllocationRepository } from '@/modules/network/port-allocation.repository';
 import { DOCKERODE } from '@/modules/docker/constants';
+import { DockerReadFacade } from '@/modules/docker/docker-read.facade';
 import { DockerService } from '@/modules/docker/docker.service';
 import { TraefikConfigService } from '@/modules/docker/traefik-config.service';
 import { EnvUtils } from '@/modules/env/env.utils';
@@ -89,6 +91,7 @@ describe('App lifecycle', () => {
   const configurationService = mock<ConfigurationService>();
   let databaseService = mock<DatabaseService>();
   const dockerService = mock<DockerService>();
+  const dockerReadFacade = mock<DockerReadFacade>();
   const loggerService = mock<LoggerService>();
   const reposHelpers = mock<ReposHelpers>();
   const repoEventsQueue = mock<RepoEventsQueue>();
@@ -127,7 +130,7 @@ describe('App lifecycle', () => {
     summary: { total: 1, running: 1, exitZero: 0 },
     message: 'All containers are running',
   });
-  dockerService.diagnoseAppContainers.mockResolvedValue({ unhealthy: [], healthy: [] });
+  dockerReadFacade.diagnoseAppContainers.mockResolvedValue({ unhealthy: [], healthy: [] });
 
   const queueFactory = new QueueFactory(loggerService, configurationService);
   let appEventsQueue: AppEventsQueue;
@@ -195,6 +198,7 @@ describe('App lifecycle', () => {
         PortAllocationRepository,
         EnvUtils,
         AppHelpers,
+        AppsReadService,
         AppsService,
         {
           provide: AppRuntimeMonitorService,
@@ -247,6 +251,10 @@ describe('App lifecycle', () => {
         {
           provide: DockerService,
           useValue: dockerService,
+        },
+        {
+          provide: DockerReadFacade,
+          useValue: dockerReadFacade,
         },
         {
           provide: DatabaseService,

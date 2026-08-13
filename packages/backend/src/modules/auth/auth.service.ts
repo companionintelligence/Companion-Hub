@@ -24,6 +24,7 @@ import validator from 'validator';
 import type { LoginBody, RegisterBody } from './dto/auth.dto';
 import { passwordResetVerifyResponseSchema } from './dto/auth.dto';
 import { SessionManager } from './session.manager';
+import { SessionUserCache } from './session-user.cache';
 import { TotpAuthenticator } from './utils/totp-authenticator';
 
 @Injectable()
@@ -41,6 +42,7 @@ export class AuthService {
     private filesystem: FilesystemService,
     private passwordService: PasswordService,
     private logger: LoggerService,
+    private sessionUserCache: SessionUserCache,
   ) {}
 
   public getCookieDomain(domain?: string) {
@@ -431,7 +433,11 @@ export class AuthService {
    * Logs out the currently logged in user.
    */
   public logout = async (sessionId: string) => {
+    const userId = this.sessionManager.resolveSessionUserId(sessionId);
     await this.sessionManager.deleteSession(sessionId);
+    if (userId) {
+      this.sessionUserCache.invalidate(userId);
+    }
   };
 
   /**
@@ -482,6 +488,7 @@ export class AuthService {
 
     await this.userRepository.updateUser(user.id, { username: email });
     await this.sessionManager.destroyAllSessionsByUserId(user.id);
+    this.sessionUserCache.invalidate(user.id);
 
     return true;
   };
@@ -512,6 +519,7 @@ export class AuthService {
     const hash = await this.passwordService.hash(newPassword);
     await this.userRepository.updateUser(user.id, { password: hash });
     await this.sessionManager.destroyAllSessionsByUserId(user.id);
+    this.sessionUserCache.invalidate(user.id);
 
     return true;
   };

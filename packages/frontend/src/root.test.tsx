@@ -67,7 +67,7 @@ vi.mock('./api-client/client.gen', () => ({
   },
 }));
 
-const { clientLoader, ErrorBoundary } = await import('./root');
+const { clientLoader, ErrorBoundary, shouldRevalidate } = await import('./root');
 import { cacheRegistrationStatus } from './lib/registration-cache';
 
 // Captured at import time: `beforeEach(vi.clearAllMocks)` would otherwise wipe the
@@ -218,6 +218,54 @@ describe('root clientLoader registration gating', () => {
 
     // No forced bounce to /login — the user can stay and re-pair.
     expect(result).toBe(userResult);
+  });
+});
+
+describe('root shouldRevalidate', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    sessionStorage.clear();
+    resolveRegistrationStatus.mockResolvedValue(makeStatus('locally_ready', true));
+  });
+
+  it('skips revalidation on warm authenticated navigations after bootstrap', async () => {
+    userContext.mockResolvedValue({
+      data: {
+        isConfigured: true,
+        isLoggedIn: true,
+        isGuestDashboardEnabled: false,
+      },
+    });
+
+    await clientLoader({ request: new Request('http://localhost/store') } as never);
+
+    expect(
+      shouldRevalidate({
+        currentUrl: new URL('http://localhost/store'),
+        nextUrl: new URL('http://localhost/settings'),
+        defaultShouldRevalidate: true,
+      }),
+    ).toBe(false);
+  });
+
+  it('revalidates when navigating to login', async () => {
+    userContext.mockResolvedValue({
+      data: {
+        isConfigured: true,
+        isLoggedIn: true,
+        isGuestDashboardEnabled: false,
+      },
+    });
+
+    await clientLoader({ request: new Request('http://localhost/store') } as never);
+
+    expect(
+      shouldRevalidate({
+        currentUrl: new URL('http://localhost/store'),
+        nextUrl: new URL('http://localhost/login'),
+        defaultShouldRevalidate: true,
+      }),
+    ).toBe(true);
   });
 });
 

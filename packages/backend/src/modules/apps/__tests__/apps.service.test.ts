@@ -19,6 +19,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
 import type { AppUrn } from '@ci-hub/common/types';
+import { AppsReadService } from '../apps-read.service';
 import { AppsService } from '../apps.service';
 import { InstallPipelineTracker } from '../install-pipeline.tracker';
 import { AppFilesManager } from '../app-files-manager';
@@ -46,6 +47,7 @@ describe('AppsService', () => {
     installPipelineTracker = new InstallPipelineTracker();
     const module: TestingModule = await Test.createTestingModule({
       providers: [
+        AppsReadService,
         AppsService,
         { provide: AppsRepository, useValue: mock<AppsRepository>() },
         { provide: AppFilesManager, useValue: mock<AppFilesManager>() },

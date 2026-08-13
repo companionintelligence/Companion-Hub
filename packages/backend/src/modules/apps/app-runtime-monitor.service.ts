@@ -7,7 +7,7 @@ import type { App } from '@/core/database/drizzle/types';
 import si from 'systeminformation';
 import { AppsRepository } from './apps.repository';
 import { AppsService } from './apps.service';
-import { DockerService, type AppContainerRuntimeStats } from '../docker/docker.service';
+import { DockerReadFacade, type AppContainerRuntimeStats } from '../docker/docker-read.facade';
 
 const HIGH_CPU_THRESHOLD_PERCENT = 90;
 const HIGH_CPU_SAMPLE_COUNT = 3;
@@ -87,7 +87,7 @@ export class AppRuntimeMonitorService implements OnModuleInit, OnModuleDestroy {
     private readonly config: ConfigurationService,
     private readonly appsRepository: AppsRepository,
     private readonly appsService: AppsService,
-    private readonly dockerService: DockerService,
+    private readonly dockerReadFacade: DockerReadFacade,
   ) {}
 
   onModuleInit() {
@@ -182,7 +182,7 @@ export class AppRuntimeMonitorService implements OnModuleInit, OnModuleDestroy {
 
   private async collectHubRuntimeHealth(sampledAt: string): Promise<AppRuntimeHealth | null> {
     try {
-      const hubContainers = await this.dockerService.getHubRuntimeStats();
+      const hubContainers = await this.dockerReadFacade.getHubRuntimeStats();
       const backendProcess = this.isCurrentProcessRepresentedByHubContainers(hubContainers)
         ? null
         : await withTimeout(
@@ -313,7 +313,7 @@ export class AppRuntimeMonitorService implements OnModuleInit, OnModuleDestroy {
     const appUrn = `${app.appName}:${app.appStoreSlug}` as AppUrn;
 
     const sampledAt = new Date().toISOString();
-    const containers = await this.dockerService.getAppRuntimeStats(appUrn);
+    const containers = await this.dockerReadFacade.getAppRuntimeStats(appUrn);
     const cpuPercent = Number(containers.reduce((sum, container) => sum + container.cpuPercent, 0).toFixed(2));
     const memoryUsageBytes = containers.reduce((sum, container) => sum + container.memoryUsageBytes, 0);
     const memoryLimitBytes = containers.reduce((sum, container) => sum + container.memoryLimitBytes, 0);

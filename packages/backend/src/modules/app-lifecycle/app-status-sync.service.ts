@@ -4,7 +4,7 @@ import { Inject, Injectable, Optional } from '@nestjs/common';
 import type { AppUrn } from '@ci-hub/common/types';
 import type Dockerode from 'dockerode';
 import { DOCKERODE } from '../docker/constants';
-import { DockerService } from '../docker/docker.service';
+import { DockerReadFacade } from '../docker/docker-read.facade';
 import { AppsRepository } from '../apps/apps.repository';
 import { InstallPipelineTracker } from '../apps/install-pipeline.tracker';
 import type { AppStatus } from '@/core/database/drizzle/types';
@@ -45,7 +45,7 @@ export class AppStatusSyncService {
     @Optional() private readonly agentNotifyService?: AgentNotifyService,
     @Optional() private readonly errorReportingService?: ErrorReportingService,
     @Optional() private readonly networkDiagnostics?: NetworkDiagnosticsService,
-    @Optional() private readonly dockerService?: DockerService,
+    @Optional() private readonly dockerReadFacade?: DockerReadFacade,
   ) {
     if (this.configuration.get('userSettings').eventsTimeout > 5) {
       const eventsTimeout = this.configuration.get('userSettings').eventsTimeout;
@@ -259,9 +259,9 @@ export class AppStatusSyncService {
     let containers: Array<{ name: string; state: string; logs?: string }> | undefined;
     let message = `App transitioned from ${previousStatus} to ${newStatus} during status sync`;
 
-    if (this.dockerService) {
+    if (this.dockerReadFacade) {
       try {
-        const diag = await this.dockerService.diagnoseAppContainers(appUrn);
+        const diag = await this.dockerReadFacade.diagnoseAppContainers(appUrn);
         if (diag.unhealthy.length > 0) {
           containers = diag.unhealthy;
           const logSummary = diag.unhealthy.map((container) => `${container.name} (${container.state}): ${container.logs || '(no logs)'}`).join('\n');

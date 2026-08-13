@@ -11,14 +11,18 @@ function info(partial: Partial<AppInfo> & { id: string; urn: string }): AppInfo 
 }
 
 function makeResolver(installed: Array<{ info: AppInfo }>) {
-  const appsService = {
+  const appsReadService = {
     getInstalledApps: vi.fn().mockResolvedValue(installed),
     getInstalledAppsLite: vi.fn().mockResolvedValue([]),
+    getApp: vi.fn(),
+  };
+  const appsService = {
     checkAppAvailability: vi.fn().mockResolvedValue({ available: true, appUrl: 'https://ci-memory.example.com' }),
   };
   const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
   return {
-    resolver: new MemoryProviderResolver(appsService as never, logger as never),
+    resolver: new MemoryProviderResolver(appsReadService as never, appsService as never, logger as never),
+    appsReadService,
     appsService,
   };
 }
@@ -53,41 +57,41 @@ describe('MemoryProviderResolver.getProviderRuntimeStatus', () => {
   beforeEach(() => vi.clearAllMocks());
 
   it("is 'ready' for a running official-store ci-memory row via the DB-only lite check (no availability/full probe)", async () => {
-    const { resolver, appsService } = makeResolver([]);
-    appsService.getInstalledAppsLite.mockResolvedValue([
+    const { resolver, appsReadService, appsService } = makeResolver([]);
+    appsReadService.getInstalledAppsLite.mockResolvedValue([
       { appName: 'ci-openclaw', appStoreSlug: 'ci-marketplace', status: 'running' },
       { appName: 'ci-memory', appStoreSlug: 'ci-marketplace', status: 'running' },
     ]);
 
     expect(await resolver.getProviderRuntimeStatus()).toBe('ready');
     expect(appsService.checkAppAvailability).not.toHaveBeenCalled();
-    expect(appsService.getInstalledApps).not.toHaveBeenCalled();
+    expect(appsReadService.getInstalledApps).not.toHaveBeenCalled();
   });
 
   it("is 'starting' while ci-memory is still installing (a mere row is not connectable)", async () => {
-    const { resolver, appsService } = makeResolver([]);
-    appsService.getInstalledAppsLite.mockResolvedValue([{ appName: 'ci-memory', appStoreSlug: 'ci-marketplace', status: 'installing' }]);
+    const { resolver, appsReadService } = makeResolver([]);
+    appsReadService.getInstalledAppsLite.mockResolvedValue([{ appName: 'ci-memory', appStoreSlug: 'ci-marketplace', status: 'installing' }]);
 
     expect(await resolver.getProviderRuntimeStatus()).toBe('starting');
   });
 
   it("is 'offline' when ci-memory is installed but stopped", async () => {
-    const { resolver, appsService } = makeResolver([]);
-    appsService.getInstalledAppsLite.mockResolvedValue([{ appName: 'ci-memory', appStoreSlug: 'ci-marketplace', status: 'stopped' }]);
+    const { resolver, appsReadService } = makeResolver([]);
+    appsReadService.getInstalledAppsLite.mockResolvedValue([{ appName: 'ci-memory', appStoreSlug: 'ci-marketplace', status: 'stopped' }]);
 
     expect(await resolver.getProviderRuntimeStatus()).toBe('offline');
   });
 
   it("is 'absent' for a ci-memory row from a non-official store (no id-squat)", async () => {
-    const { resolver, appsService } = makeResolver([]);
-    appsService.getInstalledAppsLite.mockResolvedValue([{ appName: 'ci-memory', appStoreSlug: 'third-party', status: 'running' }]);
+    const { resolver, appsReadService } = makeResolver([]);
+    appsReadService.getInstalledAppsLite.mockResolvedValue([{ appName: 'ci-memory', appStoreSlug: 'third-party', status: 'running' }]);
 
     expect(await resolver.getProviderRuntimeStatus()).toBe('absent');
   });
 
   it("is 'absent' when ci-memory is not installed", async () => {
-    const { resolver, appsService } = makeResolver([]);
-    appsService.getInstalledAppsLite.mockResolvedValue([{ appName: 'ci-openclaw', appStoreSlug: 'ci-marketplace', status: 'running' }]);
+    const { resolver, appsReadService } = makeResolver([]);
+    appsReadService.getInstalledAppsLite.mockResolvedValue([{ appName: 'ci-openclaw', appStoreSlug: 'ci-marketplace', status: 'running' }]);
 
     expect(await resolver.getProviderRuntimeStatus()).toBe('absent');
   });
@@ -99,8 +103,8 @@ describe('MemoryProviderResolver.getProviderRuntimeInfo — localOnly', () => {
   const readyMemory = (exposureMode?: string) => [{ appName: 'ci-memory', appStoreSlug: 'ci-marketplace', status: 'running', exposureMode }];
 
   it('is local-only for a LAN-exposed provider', async () => {
-    const { resolver, appsService } = makeResolver([]);
-    appsService.getInstalledAppsLite.mockResolvedValue(readyMemory('local'));
+    const { resolver, appsReadService } = makeResolver([]);
+    appsReadService.getInstalledAppsLite.mockResolvedValue(readyMemory('local'));
 
     expect(await resolver.getProviderRuntimeInfo()).toEqual({ status: 'ready', localOnly: true });
   });
@@ -109,22 +113,22 @@ describe('MemoryProviderResolver.getProviderRuntimeInfo — localOnly', () => {
     // The bug this pins: a tailscale provider was reporting localOnly=false, so a
     // confirmed-remote caller was never blocked and got sent to an unreachable
     // tailnet consent URL that hangs.
-    const { resolver, appsService } = makeResolver([]);
-    appsService.getInstalledAppsLite.mockResolvedValue(readyMemory('tailscale'));
+    const { resolver, appsReadService } = makeResolver([]);
+    appsReadService.getInstalledAppsLite.mockResolvedValue(readyMemory('tailscale'));
 
     expect(await resolver.getProviderRuntimeInfo()).toEqual({ status: 'ready', localOnly: true });
   });
 
   it('is NOT local-only for a Cloudflare-exposed provider — a public browser can reach it', async () => {
-    const { resolver, appsService } = makeResolver([]);
-    appsService.getInstalledAppsLite.mockResolvedValue(readyMemory('cloudflare'));
+    const { resolver, appsReadService } = makeResolver([]);
+    appsReadService.getInstalledAppsLite.mockResolvedValue(readyMemory('cloudflare'));
 
     expect(await resolver.getProviderRuntimeInfo()).toEqual({ status: 'ready', localOnly: false });
   });
 
   it('treats a missing exposureMode as local (conservative pre-column default)', async () => {
-    const { resolver, appsService } = makeResolver([]);
-    appsService.getInstalledAppsLite.mockResolvedValue(readyMemory(undefined));
+    const { resolver, appsReadService } = makeResolver([]);
+    appsReadService.getInstalledAppsLite.mockResolvedValue(readyMemory(undefined));
 
     expect(await resolver.getProviderRuntimeInfo()).toEqual({ status: 'ready', localOnly: true });
   });

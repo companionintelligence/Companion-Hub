@@ -56,7 +56,7 @@ export function mapPortalStoreAppToHub(app: PortalStoreApp, storeId = CI_MARKETP
   };
 }
 
-function normalizeStoreListingsPayload(raw: unknown): HubStoreApp[] {
+export function normalizeStoreListingsPayload(raw: unknown): HubStoreApp[] {
   if (!Array.isArray(raw)) return [];
   const out: HubStoreApp[] = [];
   for (const item of raw) {

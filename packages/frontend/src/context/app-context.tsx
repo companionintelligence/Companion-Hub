@@ -1,5 +1,7 @@
 import type { AppContextDto } from '@/api-client';
-import { appContextOptions, appContextQueryKey, systemLoadOptions } from '@/api-client/@tanstack/react-query.gen';
+import { appContextOptions, appContextQueryKey, getUpdatesAvailableOptions, systemLoadOptions } from '@/api-client/@tanstack/react-query.gen';
+import { getFeaturedStoreBundleOptions } from '@/lib/featured-store-bundle-query';
+import { getInstalledAppUrnsOptions } from '@/lib/installed-app-urns-query';
 import { prefetchOnboardingMarketplace } from '@/modules/onboarding/helpers/prefetch-onboarding-marketplace';
 import { type QueryClient, useQueryClient, useQuery } from '@tanstack/react-query';
 import { createContext, useContext, useEffect } from 'react';
@@ -31,6 +33,10 @@ const APP_CONTEXT_DEFAULTS: AppContextDto = {
 // Optimistically prefetch pages that are likely to be visited
 const prefetch = async (queryClient: QueryClient) => {
   queryClient.ensureQueryData(systemLoadOptions());
+};
+
+const prefetchStoreShell = async (queryClient: QueryClient) => {
+  await Promise.all([queryClient.ensureQueryData(getInstalledAppUrnsOptions()), queryClient.ensureQueryData(getFeaturedStoreBundleOptions())]);
 };
 
 export const AppContextProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
@@ -75,8 +81,37 @@ export const AppContextProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     void prefetchOnboardingMarketplace(queryClient);
   }, [isLoading, queryClient, resolved.user.hasCompletedOnboarding]);
 
+  useEffect(() => {
+    if (isLoading || !resolved.user.hasCompletedOnboarding) {
+      return;
+    }
+
+    void prefetchStoreShell(queryClient);
+  }, [isLoading, queryClient, resolved.user.hasCompletedOnboarding]);
+
+  // Fill update badge after paint — app-context no longer awaits the FS walk.
+  const updatesQuery = useQuery({
+    ...getUpdatesAvailableOptions(),
+    enabled: !isLoading && Boolean(resolved.user.hasCompletedOnboarding),
+    staleTime: 60_000,
+  });
+
+  useEffect(() => {
+    if (typeof updatesQuery.data?.updatesAvailable !== 'number') {
+      return;
+    }
+    queryClient.setQueryData(appContextQueryKey(), (current: AppContextDto | undefined) => {
+      const base = current ?? resolved;
+      if (base.updatesAvailable === updatesQuery.data.updatesAvailable) {
+        return base;
+      }
+      return { ...base, updatesAvailable: updatesQuery.data.updatesAvailable };
+    });
+  }, [queryClient, resolved, updatesQuery.data?.updatesAvailable]);
+
   const value = {
     ...resolved,
+    updatesAvailable: updatesQuery.data?.updatesAvailable ?? resolved.updatesAvailable,
     isLoading,
     refreshAppContext,
     setAppContext: (newAppContext: Partial<AppContextDto>) => {

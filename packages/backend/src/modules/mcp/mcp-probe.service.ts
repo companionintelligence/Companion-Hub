@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { LoggerService } from '@/core/logger/logger.service';
-import { DockerService } from '@/modules/docker/docker.service';
+import { DockerReadFacade } from '@/modules/docker/docker-read.facade';
 import { AppsService } from '@/modules/apps/apps.service';
 import { buildMcpInstallSchema } from '@ci-hub/common/validation';
 import type { AppUrn } from '@ci-hub/common/types';
@@ -31,7 +31,7 @@ export class McpProbeService {
   constructor(
     private readonly logger: LoggerService,
     private readonly appsService: AppsService,
-    private readonly dockerService: DockerService,
+    private readonly dockerReadFacade: DockerReadFacade,
     private readonly agentConfigService: AgentConfigService,
     private readonly mcpBridgeService: McpBridgeService,
   ) {}
@@ -134,7 +134,7 @@ export class McpProbeService {
   private async resolveContainerStatus(appUrn: AppUrn, appStatus?: string): Promise<McpContainerStatus> {
     if (appStatus === 'missing' || !appStatus) return 'missing';
     try {
-      const diag = await this.dockerService.diagnoseAppContainers(appUrn);
+      const diag = await this.dockerReadFacade.diagnoseAppContainers(appUrn);
       if (diag.healthy.length > 0 && diag.unhealthy.length === 0) return 'running';
       if (diag.unhealthy.length > 0) return 'stopped';
       if (diag.healthy.length === 0 && diag.unhealthy.length === 0) return appStatus === 'running' ? 'unknown' : 'stopped';

@@ -94,8 +94,18 @@ const getConfigDiffSchema = z.object({
   new: z.string().nullable(),
 });
 
+const installedAppUrnsSchema = z.object({
+  urns: z.array(z.string()),
+});
+
+const updatesAvailableSchema = z.object({
+  updatesAvailable: z.number(),
+});
+
 export class MyAppsDto extends createZodDto(myAppsSchema) {}
 export class GuestAppsDto extends createZodDto(myAppsSchema) {}
+export class InstalledAppUrnsDto extends createZodDto(installedAppUrnsSchema) {}
+export class UpdatesAvailableDto extends createZodDto(updatesAvailableSchema) {}
 export class GetAppDto extends createZodDto(getAppSchema) {}
 export class GetRandomPortDto extends createZodDto(getRandomPortSchema) {}
 export class GetConfigDiffDto extends createZodDto(getConfigDiffSchema) {}

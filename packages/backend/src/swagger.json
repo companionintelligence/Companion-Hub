@@ -91,6 +91,55 @@
         ]
       }
     },
+    "/api/store/featured-bundle": {
+      "get": {
+        "operationId": "getStoreFeaturedBundle",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Bundled store listing sections",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "firstParty": {
+                      "type": "array",
+                      "items": {}
+                    },
+                    "featured": {
+                      "type": "array",
+                      "items": {}
+                    },
+                    "trending": {
+                      "type": "array",
+                      "items": {}
+                    },
+                    "newest": {
+                      "type": "array",
+                      "items": {}
+                    }
+                  },
+                  "required": [
+                    "firstParty",
+                    "featured",
+                    "trending",
+                    "newest"
+                  ]
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "CI Cloud unreachable or CI_CLOUD_URL not set"
+          }
+        },
+        "summary": "Featured store sections in one response (firstParty, featured, trending, newest)",
+        "tags": [
+          "App"
+        ]
+      }
+    },
     "/api/app-context": {
       "get": {
         "operationId": "appContext",
@@ -782,6 +831,48 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/MyAppsDto"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Apps"
+        ]
+      }
+    },
+    "/api/apps/installed-urns": {
+      "get": {
+        "operationId": "getInstalledAppUrns",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InstalledAppUrnsDto"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Apps"
+        ]
+      }
+    },
+    "/api/apps/updates-available": {
+      "get": {
+        "operationId": "getUpdatesAvailable",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UpdatesAvailableDto"
                 }
               }
             }
@@ -5799,6 +5890,33 @@
         },
         "required": [
           "allowErrorMonitoring"
+        ],
+        "additionalProperties": false
+      },
+      "InstalledAppUrnsDto": {
+        "type": "object",
+        "properties": {
+          "urns": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "urns"
+        ],
+        "additionalProperties": false
+      },
+      "UpdatesAvailableDto": {
+        "type": "object",
+        "properties": {
+          "updatesAvailable": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "updatesAvailable"
         ],
         "additionalProperties": false
       },

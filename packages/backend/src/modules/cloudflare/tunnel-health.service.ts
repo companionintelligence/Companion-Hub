@@ -5,11 +5,8 @@ import axios from 'axios';
 import { buildHubPublicOrigin, isLocalDevDomain } from '@/common/helpers/hub-origin';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { DeviceRegistrationRepository } from '../registration/device-registration.repository';
-// Type-only on purpose: docker.service reaches back here through apps.service, and
-// a value import would close that require cycle — leaving CloudflareClientService
-// undefined when this class is decorated, which stops the backend booting at all.
-// The class is loaded dynamically at its single use site.
-import type { DockerService } from '../docker/docker.service';
+// DockerReadFacade is loaded dynamically at its single use site so this module
+// does not pull docker.service (and its AppsService edge) into the static graph.
 import { CloudflareClientService } from './cloudflare-client.service';
 
 /**
@@ -295,15 +292,14 @@ export class TunnelHealthService {
       return { health: 'down', definite: true };
     }
 
-    // Layer 2 — cheap, certain local negative. Both the module and the class are
-    // resolved lazily: DockerModule is wired into this module behind a forwardRef,
-    // and a static import would close the require cycle described at the top of
-    // this file. A docker probe that itself fails must not read as "tunnel down".
+    // Layer 2 — cheap, certain local negative. Resolved lazily via DockerReadFacade
+    // (read-only; no AppsService edge). A docker probe that itself fails must not
+    // read as "tunnel down".
     try {
-      const { DockerService } = await import('../docker/docker.service');
-      const dockerService = this.moduleRef.get<DockerService>(DockerService, { strict: false });
+      const { DockerReadFacade } = await import('../docker/docker-read.facade');
+      const dockerReadFacade = this.moduleRef.get(DockerReadFacade, { strict: false });
 
-      if (dockerService && !(await dockerService.isContainerRunning('cloudflared'))) {
+      if (dockerReadFacade && !(await dockerReadFacade.isContainerRunning('cloudflared'))) {
         this.logger.debug('cloudflared container is not running — reporting the tunnel down');
 
         return { health: 'down', definite: true };
