@@ -463,12 +463,18 @@ export class ReposHelpers {
 
       // Fetch full install data
       const deviceId = await this.registrationService.getDeviceId();
+      const ciHubApiKey = this.configuration.getConfig().ciHubApiKey;
+      const headers: Record<string, string> = {
+        'x-device-id': deviceId,
+      };
+      if (typeof ciHubApiKey === 'string' && ciHubApiKey) {
+        headers.Authorization = `Bearer ${ciHubApiKey}`;
+        headers['x-device-key'] = ciHubApiKey;
+      }
       const response = await axios.get<{ files?: Record<string, string> }>(`${repoUrl}/store/${appSlug}/install`, {
         timeout: 20_000,
         validateStatus: () => true,
-        headers: {
-          'x-device-id': deviceId,
-        },
+        headers,
       });
       if (response.status < 200 || response.status >= 300) {
         if (response.status === 402) {

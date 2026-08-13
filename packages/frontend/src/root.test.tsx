@@ -11,6 +11,7 @@ const {
   loadHubSentryDeviceId,
   refreshHubSessionIfDue,
   clearStaleServerSession,
+  setServerSessionRefreshRecommendedAt,
 } = vi.hoisted(() => ({
   resolveRegistrationStatus: vi.fn(),
   userContext: vi.fn(),
@@ -21,6 +22,7 @@ const {
   loadHubSentryDeviceId: vi.fn(),
   refreshHubSessionIfDue: vi.fn().mockResolvedValue(false),
   clearStaleServerSession: vi.fn().mockResolvedValue(undefined),
+  setServerSessionRefreshRecommendedAt: vi.fn(),
 }));
 
 vi.mock('./lib/sentry', () => ({
@@ -44,6 +46,7 @@ vi.mock('./lib/registration-cache', async (importOriginal) => {
 
 vi.mock('./lib/hub-session-refresh', () => ({
   refreshHubSessionIfDue,
+  setServerSessionRefreshRecommendedAt,
 }));
 
 const { handleSessionExpired } = vi.hoisted(() => ({ handleSessionExpired: vi.fn() }));
@@ -231,11 +234,13 @@ describe('root clientLoader session continuity', () => {
         isConfigured: true,
         isLoggedIn: true,
         isGuestDashboardEnabled: false,
+        sessionRefreshRecommendedAt: 1_700_000_000_000,
       },
     });
 
     await clientLoader({ request: new Request('http://localhost/app-store') } as never);
 
+    expect(setServerSessionRefreshRecommendedAt).toHaveBeenCalledWith(1_700_000_000_000);
     expect(refreshHubSessionIfDue).toHaveBeenCalledOnce();
     expect(clearStaleServerSession).not.toHaveBeenCalled();
   });

@@ -15,7 +15,7 @@ import { ThemeProvider } from './components/providers/theme/theme-provider';
 import { normalizeApiErrorMessage } from './lib/normalize-api-error';
 import { TranslatableError } from './types/error.types';
 import { clearStaleServerSession, getTauriSessionId } from '@/lib/api-fetch';
-import { refreshHubSessionIfDue } from '@/lib/hub-session-refresh';
+import { refreshHubSessionIfDue, setServerSessionRefreshRecommendedAt } from '@/lib/hub-session-refresh';
 import { handleSessionExpired } from '@/lib/session-expired';
 import { isSessionExpiryExempt } from '@/lib/session-expiry-policy';
 import { clearHubConnection, getHubBaseUrlSync, initMobileConnection, isTauriMobileSync } from '@/lib/mobile-connection';
@@ -246,6 +246,7 @@ export async function clientLoader({ request }: Route.ActionArgs) {
   try {
     userResult = await userContext();
     if (userResult.data?.isLoggedIn) {
+      setServerSessionRefreshRecommendedAt(userResult.data.sessionRefreshRecommendedAt ?? null);
       await refreshHubSessionIfDue();
     } else {
       await clearStaleServerSession();

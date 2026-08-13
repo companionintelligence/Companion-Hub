@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ServiceUnavailableException } from '@nestjs/common';
-import { AuthMiddleware } from '../auth.middleware';
+import { AuthMiddleware, sessionIdsFromRequest } from '../auth.middleware';
+import type { Request } from 'express';
 
 describe('AuthMiddleware transient DB handling', () => {
   const sessionManager = {
@@ -49,5 +50,78 @@ describe('AuthMiddleware transient DB handling', () => {
 
     await expect(middleware.use(req, {} as never, vi.fn())).rejects.toBeInstanceOf(ServiceUnavailableException);
     expect(userRepository.getUserDtoById).toHaveBeenCalledTimes(3);
+  });
+});
+
+describe('sessionIdsFromRequest', () => {
+  it('lists cookie then header then query, skipping duplicates', () => {
+    const req = {
+      cookies: { 'ci-hub-sid': 'cookie-sess' },
+      query: { session_id: 'query-sess' },
+      get: (name: string) => (name === 'x-ci-hub-session' ? 'header-sess' : undefined),
+    } as unknown as Request;
+
+    expect(sessionIdsFromRequest(req)).toEqual(['cookie-sess', 'header-sess', 'query-sess']);
+  });
+});
+
+describe('AuthMiddleware session fallback', () => {
+  const sessionManager = {
+    resolveSessionUserId: vi.fn(),
+    getSessionExpiresAt: vi.fn(),
+    touchSession: vi.fn(),
+  };
+  const config = {
+    get: vi.fn(),
+  };
+  const userRepository = {
+    getUserDtoById: vi.fn(),
+    getFirstOperator: vi.fn(),
+  };
+
+  let middleware: AuthMiddleware;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    middleware = new AuthMiddleware(sessionManager as never, config as never, userRepository as never);
+    sessionManager.getSessionExpiresAt.mockReturnValue(null);
+  });
+
+  it('authenticates from X-CI-Hub-Session when the cookie session is stale', async () => {
+    sessionManager.resolveSessionUserId.mockImplementation((id: string) => (id === 'live-sess' ? 2 : null));
+    userRepository.getUserDtoById.mockResolvedValue({ id: 2, username: 'op' });
+
+    const req = {
+      cookies: { 'ci-hub-sid': 'stale-sess' },
+      headers: {},
+      query: {},
+      get: (name: string) => (name === 'x-ci-hub-session' ? 'live-sess' : undefined),
+    } as unknown as Request;
+    const next = vi.fn();
+
+    await middleware.use(req, {} as never, next);
+
+    expect(req.user).toEqual({ id: 2, username: 'op' });
+    expect(req.hubSessionId).toBe('live-sess');
+    expect(next).toHaveBeenCalledOnce();
+  });
+
+  it('falls through to the Hub API key when a stale cookie is the only session id', async () => {
+    sessionManager.resolveSessionUserId.mockReturnValue(null);
+    config.get.mockImplementation((key: string) => (key === 'ciHubApiKey' ? 'hub-api-key' : undefined));
+    userRepository.getFirstOperator.mockResolvedValue({ id: 1, username: 'op' });
+
+    const req = {
+      cookies: { 'ci-hub-sid': 'stale-sess' },
+      headers: { authorization: 'Bearer hub-api-key' },
+      query: {},
+      get: () => undefined,
+    } as unknown as Request;
+    const next = vi.fn();
+
+    await middleware.use(req, {} as never, next);
+
+    expect(req.user).toEqual({ id: 1, username: 'op' });
+    expect(next).toHaveBeenCalledOnce();
   });
 });

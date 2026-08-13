@@ -8,23 +8,26 @@ import jsonwebtoken from 'jsonwebtoken';
 import { UserRepository } from '../user/user.repository';
 import { SESSION_TTL_SECONDS, SessionManager } from './session.manager';
 
-function resolveSessionId(req: Request): string | undefined {
-  const cookieSession = req.cookies[SESSION_COOKIE_NAME];
-  if (typeof cookieSession === 'string' && cookieSession) {
-    return cookieSession;
+function addSessionId(ids: string[], seen: Set<string>, value: unknown) {
+  if (typeof value !== 'string' || !value || seen.has(value)) {
+    return;
   }
+  seen.add(value);
+  ids.push(value);
+}
 
-  const headerSession = req.get('x-ci-hub-session');
-  if (headerSession) {
-    return headerSession;
-  }
-
-  const querySession = req.query.session_id;
-  if (typeof querySession === 'string' && querySession) {
-    return querySession;
-  }
-
-  return undefined;
+/**
+ * Session ids in preference order. A stale `ci-hub-sid` cookie must not hide a
+ * live `X-CI-Hub-Session` from the login response body — that is the race that
+ * 401s app install right after a successful login.
+ */
+export function sessionIdsFromRequest(req: Request): string[] {
+  const ids: string[] = [];
+  const seen = new Set<string>();
+  addSessionId(ids, seen, req.cookies?.[SESSION_COOKIE_NAME]);
+  addSessionId(ids, seen, req.get('x-ci-hub-session'));
+  addSessionId(ids, seen, req.query?.session_id);
+  return ids;
 }
 
 @Injectable()
@@ -53,24 +56,25 @@ export class AuthMiddleware implements NestMiddleware {
   }
 
   async use(req: Request, _: Response, next: NextFunction) {
-    const sessionId = resolveSessionId(req);
     const bearerToken = req.headers.authorization;
 
-    if (sessionId) {
+    for (const sessionId of sessionIdsFromRequest(req)) {
       const userId = this.sessionManager.resolveSessionUserId(sessionId);
-      if (userId) {
-        const expiresAt = this.sessionManager.getSessionExpiresAt(sessionId);
-        if (expiresAt) {
-          const remainingMs = expiresAt - Date.now();
-          if (remainingMs < (SESSION_TTL_SECONDS * 1000) / 2) {
-            this.sessionManager.touchSession(sessionId);
-          }
-        }
-
-        const user = await this.loadUserResilient(() => this.userRepository.getUserDtoById(userId));
-        req.user = user;
+      if (!userId) {
+        continue;
       }
 
+      const expiresAt = this.sessionManager.getSessionExpiresAt(sessionId);
+      if (expiresAt) {
+        const remainingMs = expiresAt - Date.now();
+        if (remainingMs < (SESSION_TTL_SECONDS * 1000) / 2) {
+          this.sessionManager.touchSession(sessionId);
+        }
+      }
+
+      const user = await this.loadUserResilient(() => this.userRepository.getUserDtoById(userId));
+      req.user = user;
+      req.hubSessionId = sessionId;
       return next();
     }
 
