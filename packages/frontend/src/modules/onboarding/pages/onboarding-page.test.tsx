@@ -442,7 +442,7 @@ describe('OnboardingPage (single vertical form)', () => {
       await finishInstall();
 
       const failure = await screen.findByTestId('onboarding-complete-failed', undefined, { timeout: 3_000 });
-      expect(failure).toHaveTextContent(/could not save that setup is finished/i);
+      expect(failure).toHaveTextContent(/could not record that the setup is complete/i);
       // Still on the install phase, so Continue is there to retry with.
       expect(screen.getByRole('button', { name: 'install-complete' })).toBeInTheDocument();
       expect(mockNavigate).not.toHaveBeenCalled();
