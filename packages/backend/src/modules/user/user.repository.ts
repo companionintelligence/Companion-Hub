@@ -1,3 +1,4 @@
+import { SessionUserCache } from '@/core/cache/session-user.cache';
 import { DATABASE, type Database } from '@/core/database/database.module';
 import { user } from '@/core/database/drizzle/schema';
 import type { NewUser } from '@/core/database/drizzle/types';
@@ -6,7 +7,10 @@ import { eq } from 'drizzle-orm/sql';
 
 @Injectable()
 export class UserRepository {
-  constructor(@Inject(DATABASE) private db: Database) {}
+  constructor(
+    @Inject(DATABASE) private db: Database,
+    private readonly sessionUserCache: SessionUserCache,
+  ) {}
 
   /**
    * Given a username, return the user associated to it
@@ -49,17 +53,28 @@ export class UserRepository {
   /**
    * Given a userId, update the user with the given data
    *
+   * Drops the cached session DTO for this user: `getUserDtoById` feeds a 10s cache that
+   * `AuthMiddleware` reads into `req.user`, which `GET /app-context` returns verbatim. Without
+   * this, a caller that flips `hasCompletedOnboarding`, `totpEnabled`, `advancedMode` or the
+   * username sees its own write ignored until the entry expires.
+   *
    * @param {number} id - The id of the user to update
    * @param {Partial<NewUser>} data - The data to update the user with
    */
   public async updateUser(id: number, data: Partial<NewUser>) {
-    const updatedUsers = await this.db
-      .update(user)
-      .set(data)
-      .where(eq(user.id, Number(id)))
-      .returning();
+    // One coercion for both the row and the cache key: two would be free to drift apart, and a
+    // cache key that disagrees with the WHERE clause invalidates nobody while the row changes.
+    const userId = Number(id);
 
-    return updatedUsers[0];
+    try {
+      const updatedUsers = await this.db.update(user).set(data).where(eq(user.id, userId)).returning();
+      return updatedUsers[0];
+    } finally {
+      // In `finally` because the UPDATE can commit and still reject on the way back (the
+      // transient `ci-hub-db` drops this codebase retries elsewhere) — a committed write whose
+      // cache entry survived is the stale read this cache exists to avoid.
+      this.sessionUserCache.invalidate(userId);
+    }
   }
 
   /**
@@ -71,18 +86,45 @@ export class UserRepository {
 
   /**
    * Returns the first operator found in the system
+   *
+   * Projected to the same columns as `getUserDtoById`: `AuthMiddleware` assigns this straight to
+   * `req.user` on the API-key and CLI-JWT paths, and `GET /app-context` serializes `req.user`
+   * through a `reportOnly` parse that hands back the raw object when validation fails. An
+   * unprojected row would put the operator's password hash, salt and TOTP secret on that wire.
    */
   public async getFirstOperator() {
-    return this.db.query.user.findFirst({ where: eq(user.operator, true) });
+    return this.db.query.user.findFirst({
+      where: eq(user.operator, true),
+      columns: {
+        id: true,
+        username: true,
+        totpEnabled: true,
+        locale: true,
+        operator: true,
+        hasCompletedOnboarding: true,
+        advancedMode: true,
+      },
+    });
   }
 
   /**
    * Given user data, creates a new user
    *
+   * Invalidates the cached DTO for the new id as well: `FactoryResetService` truncates the
+   * user table with `RESTART IDENTITY`, so a fresh account can be handed an id that a cached
+   * entry still describes — without this the new operator would be served the deleted one's
+   * username and `hasCompletedOnboarding` for the rest of the TTL.
+   *
    * @param {NewUser} data - The data to create the user with
    */
   public async createUser(data: NewUser) {
     const newUsers = await this.db.insert(user).values(data).returning();
-    return newUsers[0];
+    const created = newUsers[0];
+
+    if (created) {
+      this.sessionUserCache.invalidate(created.id);
+    }
+
+    return created;
   }
 }

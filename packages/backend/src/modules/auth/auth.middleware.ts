@@ -7,7 +7,7 @@ import type { NextFunction, Request, Response } from 'express';
 import jsonwebtoken from 'jsonwebtoken';
 import { UserRepository } from '../user/user.repository';
 import { SESSION_TTL_SECONDS, SessionManager } from './session.manager';
-import { SessionUserCache } from './session-user.cache';
+import { SessionUserCache } from '@/core/cache/session-user.cache';
 
 function addSessionId(ids: string[], seen: Set<string>, value: unknown) {
   if (typeof value !== 'string' || !value || seen.has(value)) {
@@ -62,11 +62,18 @@ export class AuthMiddleware implements NestMiddleware {
     if (cached) {
       return cached;
     }
-    const user = await this.loadUserResilient(() => this.userRepository.getUserDtoById(userId));
-    if (user) {
-      this.sessionUserCache.set(userId, user);
-    }
-    return user;
+    // Stamp the read: a write that invalidates while this SELECT is in flight would otherwise
+    // be undone here, re-caching the pre-write DTO for a fresh TTL. Stamped inside the retry
+    // closure so each attempt is judged against the SELECT it actually issued — a token taken
+    // before the backoff would discard the correct post-write row a later attempt just read.
+    return this.loadUserResilient(async () => {
+      const readToken = this.sessionUserCache.beginRead(userId);
+      const user = await this.userRepository.getUserDtoById(userId);
+      if (user) {
+        this.sessionUserCache.set(userId, user, readToken);
+      }
+      return user;
+    });
   }
 
   async use(req: Request, _: Response, next: NextFunction) {

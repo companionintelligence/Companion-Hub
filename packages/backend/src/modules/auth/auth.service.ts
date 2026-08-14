@@ -24,7 +24,7 @@ import validator from 'validator';
 import type { LoginBody, RegisterBody } from './dto/auth.dto';
 import { passwordResetVerifyResponseSchema } from './dto/auth.dto';
 import { SessionManager } from './session.manager';
-import { SessionUserCache } from './session-user.cache';
+import { SessionUserCache } from '@/core/cache/session-user.cache';
 import { TotpAuthenticator } from './utils/totp-authenticator';
 
 @Injectable()
@@ -488,7 +488,6 @@ export class AuthService {
 
     await this.userRepository.updateUser(user.id, { username: email });
     await this.sessionManager.destroyAllSessionsByUserId(user.id);
-    this.sessionUserCache.invalidate(user.id);
 
     return true;
   };
@@ -519,7 +518,6 @@ export class AuthService {
     const hash = await this.passwordService.hash(newPassword);
     await this.userRepository.updateUser(user.id, { password: hash });
     await this.sessionManager.destroyAllSessionsByUserId(user.id);
-    this.sessionUserCache.invalidate(user.id);
 
     return true;
   };
