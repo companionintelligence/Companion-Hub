@@ -124,6 +124,13 @@ describe('frontend sentry', () => {
     );
     expect(browserTracingIntegration).toHaveBeenCalledOnce();
     expect(replayIntegration).toHaveBeenCalledWith({ maskAllText: true, blockAllMedia: true });
+    // Factories being called is not enough — dropping their return values from
+    // `init` silently disables production tracing / replay.
+    expect(init).toHaveBeenCalledWith(
+      expect.objectContaining({
+        integrations: [{ name: 'BrowserTracing' }, { name: 'Replay' }],
+      }),
+    );
     expect(setTag).toHaveBeenCalledWith('component', 'browser-web');
     expect(setTag).toHaveBeenCalledWith('ci_portal_url', 'https://hub.ci.computer');
     expect(setTag).toHaveBeenCalledWith('ci_portal_environment', 'prod');

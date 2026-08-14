@@ -160,6 +160,7 @@ describe('InferenceEnvResolver', () => {
       CI_OLLAMA_EMBED_HOST: OLLAMA_BASE_URL,
       // 24576 MB inference budget, zero-footprint test model, 131072 window → top tier.
       CI_LLM_NUM_CTX: '65536',
+      CI_INFERENCE_BACKEND: 'ollama',
     });
   });
 
@@ -246,6 +247,7 @@ describe('InferenceEnvResolver', () => {
       CI_LLM_BASE_URL: 'https://api.openai.com/v1',
       CI_LLM_API_KEY: 'sk-test',
       CI_CHAT_MODEL: 'gpt-4o',
+      CI_INFERENCE_BACKEND: 'cloud',
     });
     expect(modelRegistry.getRecommendedEmbeddingModel).not.toHaveBeenCalled();
     expect(modelRegistry.getRecommendedVisionModel).not.toHaveBeenCalled();

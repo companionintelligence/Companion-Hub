@@ -3,10 +3,36 @@ import { Card, CardContent } from '@/components/ui/Card';
 import { Input } from '@/components/ui/Input';
 import { openExternal } from '@/lib/helpers/open-external';
 import type { VllmStatus } from '@/modules/onboarding/helpers/ai-setup-types';
-import { CheckCircle2, Download, Loader2, RefreshCw } from 'lucide-react';
+import { AlertCircle, CheckCircle2, Download, Loader2, RefreshCw } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
 const VLLM_DOCS_URL = 'https://docs.vllm.ai/en/latest/getting_started/quickstart.html';
+
+function isVllmAuthError(error?: string): boolean {
+  return !!error && (error.includes('401') || /api key/i.test(error));
+}
+
+const VllmProbeError = ({ error }: { error: string }) => {
+  const { t } = useTranslation();
+  const authFailure = isVllmAuthError(error);
+
+  return (
+    <div
+      className="mb-3 flex items-start gap-2 rounded-lg border border-destructive/50 bg-destructive/10 p-3"
+      data-testid="vllm-probe-error"
+      role="alert"
+    >
+      <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-destructive" />
+      <div className="min-w-0">
+        <p className="text-sm font-semibold text-destructive">
+          {authFailure ? t('ONBOARDING_VLLM_PROBE_ERROR_AUTH_TITLE') : t('ONBOARDING_VLLM_PROBE_ERROR_TITLE')}
+        </p>
+        <p className="mt-1 break-all font-mono text-xs text-destructive/90">{error}</p>
+        {authFailure && <p className="mt-2 text-xs leading-relaxed text-destructive/90">{t('ONBOARDING_VLLM_PROBE_ERROR_AUTH_HINT')}</p>}
+      </div>
+    </div>
+  );
+};
 
 interface VllmSetupCardProps {
   status: VllmStatus | null;
@@ -37,9 +63,9 @@ const VllmConnectionFields = ({
 }) => {
   const { t } = useTranslation();
   return (
-    <div className="space-y-3">
+    <div className="min-w-0 space-y-3">
       {onEndpointUrlChange && (
-        <div>
+        <div className="min-w-0">
           <label htmlFor={`vllm-endpoint-url-${idSuffix}`} className={`mb-1 block text-xs font-medium ${labelClass}`}>
             {t('ONBOARDING_VLLM_ENDPOINT_URL_LABEL')}
           </label>
@@ -51,11 +77,12 @@ const VllmConnectionFields = ({
             onChange={(e) => onEndpointUrlChange(e.target.value)}
             placeholder={defaultEndpointUrl || t('ONBOARDING_VLLM_ENDPOINT_URL_PLACEHOLDER')}
             data-testid="vllm-endpoint-url-input"
+            className="w-full max-w-full"
           />
           <p className={`mt-1 text-xs ${hintClass}`}>{t('ONBOARDING_VLLM_ENDPOINT_URL_HINT')}</p>
         </div>
       )}
-      <div>
+      <div className="min-w-0">
         <label htmlFor={`vllm-api-key-${idSuffix}`} className={`mb-1 block text-xs font-medium ${labelClass}`}>
           {t('ONBOARDING_VLLM_API_KEY_LABEL')}
         </label>
@@ -67,6 +94,7 @@ const VllmConnectionFields = ({
           onChange={(e) => onApiKeyChange(e.target.value)}
           placeholder={t('ONBOARDING_VLLM_API_KEY_PLACEHOLDER')}
           data-testid="vllm-api-key-input"
+          className="w-full max-w-full"
         />
         <p className={`mt-1 text-xs ${hintClass}`}>{t('ONBOARDING_VLLM_API_KEY_HINT')}</p>
       </div>
@@ -135,18 +163,18 @@ export const VllmSetupCard = ({ status, checking, onRecheck, apiKey, onApiKeyCha
   }
 
   return (
-    <Card className="border-yellow-200 dark:border-yellow-800 bg-yellow-50 dark:bg-yellow-950">
-      <CardContent className="p-4">
-        <div className="flex items-start gap-3">
-          <Download className="h-5 w-5 text-yellow-600 dark:text-yellow-400 shrink-0 mt-0.5" />
-          <div className="flex-1">
-            <div className="text-sm font-medium text-yellow-900 dark:text-yellow-100 mb-1">{t('ONBOARDING_VLLM_NOT_DETECTED')}</div>
-            <div className="text-xs text-yellow-700 dark:text-yellow-300 mb-3">{status.hint ?? t('ONBOARDING_VLLM_NOT_DETECTED_DESC')}</div>
-            {status.error && <div className="mb-3 text-xs text-yellow-800 dark:text-yellow-200 font-mono">{status.error}</div>}
+    <Card className="overflow-hidden border-yellow-200 bg-yellow-50 dark:border-yellow-800 dark:bg-yellow-950">
+      <CardContent className="min-w-0 p-4">
+        <div className="flex min-w-0 items-start gap-3">
+          <Download className="mt-0.5 h-5 w-5 shrink-0 text-yellow-600 dark:text-yellow-400" />
+          <div className="min-w-0 flex-1">
+            <div className="mb-1 text-sm font-medium text-yellow-900 dark:text-yellow-100">{t('ONBOARDING_VLLM_NOT_DETECTED')}</div>
+            <div className="mb-3 text-xs text-yellow-700 dark:text-yellow-300">{status.hint ?? t('ONBOARDING_VLLM_NOT_DETECTED_DESC')}</div>
+            {status.error && <VllmProbeError error={status.error} />}
             {status.remediationCommand && (
-              <div className="mb-3" data-testid="vllm-remediation-command">
+              <div className="mb-3 min-w-0" data-testid="vllm-remediation-command">
                 <div className="mb-1 text-xs font-medium text-yellow-900 dark:text-yellow-100">{t('ONBOARDING_OLLAMA_RUN_ON_HOST')}</div>
-                <code className="block overflow-x-auto whitespace-pre rounded bg-yellow-100 dark:bg-yellow-900 px-2 py-1.5 text-xs text-yellow-900 dark:text-yellow-100">
+                <code className="block w-full max-w-full overflow-x-auto whitespace-pre-wrap break-all rounded bg-yellow-100 px-2 py-1.5 text-xs text-yellow-900 dark:bg-yellow-900 dark:text-yellow-100">
                   {status.remediationCommand}
                 </code>
               </div>
