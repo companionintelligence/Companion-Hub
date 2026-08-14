@@ -24,19 +24,27 @@ import type {
 } from '@/modules/onboarding/helpers/ai-setup-types';
 import { unwrapSdk, unwrapSdkOrNull } from '@/lib/sdk-unwrap';
 
+const VLLM_PROBE_API_KEY_HEADER = 'x-ci-vllm-api-key';
+
 async function unwrap<T>(promise: Promise<{ data?: T; error?: unknown }>): Promise<T> {
   return unwrapSdk(promise);
 }
 
-export async function fetchInferenceOnboardingProfile(backend?: InferenceBackendType, vllmUrl?: string): Promise<HardwareProfileResponse> {
+export async function fetchInferenceOnboardingProfile(
+  backend?: InferenceBackendType,
+  vllmUrl?: string,
+  vllmApiKey?: string,
+): Promise<HardwareProfileResponse> {
   const query: Record<string, string> = {};
   if (backend) query.backend = backend;
   // Candidate vLLM URL the operator typed but hasn't saved yet — keeps the profile's
   // installed-model resolution probing the same server the status card reports on.
   if (backend === 'vllm' && vllmUrl?.trim()) query.vllmUrl = vllmUrl.trim();
+  const headers = backend === 'vllm' && vllmApiKey?.trim() ? { [VLLM_PROBE_API_KEY_HEADER]: vllmApiKey.trim() } : undefined;
   return unwrap(
     getOnboardingProfile({
       query: Object.keys(query).length > 0 ? query : undefined,
+      headers,
     } as Parameters<typeof getOnboardingProfile>[0]),
   ) as Promise<HardwareProfileResponse>;
 }
@@ -115,8 +123,10 @@ export async function saveInferencePreferences(body: {
   );
 }
 
-export async function fetchVllmInstallStatus(url?: string) {
-  return unwrap(getVllmStatus({ query: url?.trim() ? { url: url.trim() } : undefined } as Parameters<typeof getVllmStatus>[0]));
+export async function fetchVllmInstallStatus(url?: string, apiKey?: string) {
+  const query = url?.trim() ? { url: url.trim() } : undefined;
+  const headers = apiKey?.trim() ? { [VLLM_PROBE_API_KEY_HEADER]: apiKey.trim() } : undefined;
+  return unwrap(getVllmStatus({ query, headers } as Parameters<typeof getVllmStatus>[0]));
 }
 
 export async function saveCloudProviderConfig(body: { provider: CloudProviderType; apiKey?: string; enabled: boolean }): Promise<void> {

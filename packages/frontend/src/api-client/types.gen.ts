@@ -3733,6 +3733,12 @@ export type SetCloudProviderResponses = {
 
 export type GetOnboardingProfileData = {
     body?: never;
+    headers?: {
+        /**
+         * Unsaved vLLM API key for Re-check before Save.
+         */
+        'x-ci-vllm-api-key'?: string;
+    };
     path?: never;
     query?: {
         backend?: 'ollama' | 'vllm' | 'lemonade';
@@ -3758,8 +3764,16 @@ export type GetOllamaStatusResponses = {
 
 export type GetVllmStatusData = {
     body?: never;
+    headers?: {
+        /**
+         * Unsaved vLLM API key for Re-check before Save.
+         */
+        'x-ci-vllm-api-key'?: string;
+    };
     path?: never;
-    query?: never;
+    query?: {
+        url?: string;
+    };
     url: '/api/inference/vllm/status';
 };
 

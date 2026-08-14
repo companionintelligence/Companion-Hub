@@ -59,7 +59,8 @@ function patchOperationParameters(document: SwaggerDocument) {
     if (!match || !dto.schema || !(dto.schema instanceof z.ZodObject)) {
       continue;
     }
-    (match.operation as { parameters?: unknown[] }).parameters = zodObjectToQueryParameters(dto.schema);
+    const existing = ((match.operation as { parameters?: Array<{ in?: string }> }).parameters ?? []).filter((parameter) => parameter.in === 'header');
+    (match.operation as { parameters?: unknown[] }).parameters = [...zodObjectToQueryParameters(dto.schema), ...existing];
   }
 
   for (const [operationId, { schemaName, schema }] of Object.entries(OPERATION_REQUEST_BODIES)) {

@@ -53,6 +53,8 @@ export interface StandardizedAiEnv {
    * window so apps don't inherit Ollama's oversized memory-based default.
    */
   CI_LLM_NUM_CTX?: string;
+  /** Active inference backend (`ollama` | `vllm` | `lemonade` | `cloud`). */
+  CI_INFERENCE_BACKEND?: string;
 }
 
 /**
@@ -98,7 +100,7 @@ export class InferenceEnvResolver {
   async resolve(options?: { minContextLength?: number }): Promise<StandardizedAiEnv> {
     const cloudProvider = this.cloudFallback.getEnabledProviders()[0];
     if (cloudProvider) {
-      const env: StandardizedAiEnv = {};
+      const env: StandardizedAiEnv = { CI_INFERENCE_BACKEND: 'cloud' };
       if (cloudProvider.baseUrl) env.CI_LLM_BASE_URL = cloudProvider.baseUrl;
       if (cloudProvider.apiKey) env.CI_LLM_API_KEY = cloudProvider.apiKey;
       if (cloudProvider.defaultModel) env.CI_CHAT_MODEL = cloudProvider.defaultModel;
@@ -225,6 +227,7 @@ export class InferenceEnvResolver {
     const env: StandardizedAiEnv = {
       CI_LLM_BASE_URL: baseUrl,
       CI_LLM_API_KEY: apiKey,
+      CI_INFERENCE_BACKEND: backendType,
     };
     // OLLAMA_HOST is Ollama's native (non-OpenAI-compatible) protocol URL — only meaningful,
     // and only ever populated, when Ollama is the active backend.

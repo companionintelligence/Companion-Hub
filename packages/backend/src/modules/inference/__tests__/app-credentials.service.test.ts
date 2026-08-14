@@ -17,10 +17,10 @@ import type { CloudProviderConfig, CuratedModel, HardwareProfile } from '@ci-hub
 const OLLAMA_BASE_URL = 'http://ci-hub-ollama:11434';
 const OLLAMA_OPENAI_URL = `${OLLAMA_BASE_URL}/v1`;
 
-const makeLlm = (id: string, backendModelId: string, minVramMb = 0, minRamMb = 0): CuratedModel =>
+const makeLlm = (id: string, backendModelId: string, minVramMb = 0, minRamMb = 0, backend: CuratedModel['backend'] = 'ollama'): CuratedModel =>
   ({
     id,
-    backend: 'ollama',
+    backend,
     backendModelId,
     modality: 'llm',
     purpose: 'general',
@@ -187,6 +187,7 @@ describe('AppCredentialsService', () => {
         OLLAMA_HOST: OLLAMA_BASE_URL,
         // 24576 MB budget, zero-footprint test model, 131072 window → top tier.
         HERMES_NUM_CTX: '65536',
+        CI_INFERENCE_BACKEND: 'ollama',
       });
     });
 
@@ -202,6 +203,7 @@ describe('AppCredentialsService', () => {
         DEFAULT_MODEL: 'hermes4:70b',
         OLLAMA_HOST: OLLAMA_BASE_URL,
         CI_LLM_NUM_CTX: '65536',
+        CI_INFERENCE_BACKEND: 'ollama',
       });
     });
 
@@ -249,6 +251,7 @@ describe('AppCredentialsService', () => {
         OPENAI_API_BASE: OLLAMA_OPENAI_URL,
         OPENAI_API_KEY: 'ollama',
         OLLAMA_HOST: OLLAMA_BASE_URL,
+        CI_INFERENCE_BACKEND: 'ollama',
       });
     });
 
@@ -296,6 +299,75 @@ describe('AppCredentialsService', () => {
     });
   });
 
+  describe('getCredentials — vLLM backend', () => {
+    const VLLM_BASE_URL = 'http://host.docker.internal:8000';
+    const VLLM_OPENAI_URL = `${VLLM_BASE_URL}/v1`;
+
+    beforeEach(() => {
+      configurationService.getInferencePreferences.mockReturnValue({
+        preferredBackend: 'vllm',
+        preferredModel: 'qwen-vllm',
+        preferredEmbeddingModel: null,
+        preferredVisionModel: null,
+        preferredVllmApiKey: 'vllm-local',
+        preferredVllmUrl: VLLM_BASE_URL,
+      });
+      vllmBackend.getBaseUrl.mockReturnValue(VLLM_BASE_URL);
+      vllmBackend.healthCheck.mockResolvedValue({
+        running: true,
+        healthy: true,
+        modelsLoaded: ['Qwen/Qwen2.5-7B-Instruct'],
+      });
+      ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['nomic-embed-text'] });
+      modelRegistry.getRecommendedModelsForHardware.mockReturnValue([makeLlm('qwen-vllm', 'Qwen/Qwen2.5-7B-Instruct', 8000, 16000, 'vllm')]);
+      modelRegistry.getCuratedModel.mockImplementation((id) => {
+        if (id === 'qwen-vllm') return makeLlm('qwen-vllm', 'Qwen/Qwen2.5-7B-Instruct', 8000, 16000, 'vllm');
+        if (id === 'nomic-embed-text') return makeEmbedding('nomic-embed-text', 'nomic-embed-text');
+        return undefined;
+      });
+      modelRegistry.getTrackedModel.mockReturnValue(undefined);
+      service.invalidateCache();
+    });
+
+    it('points openclaw at vLLM /v1 with the served model id, not a stale Ollama tag', async () => {
+      const config = await service.getCredentials('openclaw');
+
+      expect(config.provider).toBe('vllm');
+      expect(config.endpointUrl).toBe(VLLM_OPENAI_URL);
+      expect(config.chatModelId).toBe('Qwen/Qwen2.5-7B-Instruct');
+      expect(config.env).toEqual({
+        OPENAI_API_BASE: VLLM_OPENAI_URL,
+        OPENAI_API_KEY: 'vllm-local',
+        DEFAULT_MODEL: 'Qwen/Qwen2.5-7B-Instruct',
+        OLLAMA_HOST: OLLAMA_BASE_URL,
+        CI_LLM_NUM_CTX: '65536',
+        CI_INFERENCE_BACKEND: 'vllm',
+      });
+    });
+
+    it('falls back to the first served vLLM model when the preferred catalog model is absent', async () => {
+      vllmBackend.healthCheck.mockResolvedValue({
+        running: true,
+        healthy: true,
+        modelsLoaded: ['meta/custom-model'],
+      });
+      modelRegistry.getRecommendedModelsForHardware.mockReturnValue([]);
+      modelRegistry.getCuratedModel.mockReturnValue(undefined);
+      modelRegistry.getModelsForTier.mockReturnValue([]);
+      service.invalidateCache();
+
+      const config = await service.getCredentials('openclaw');
+
+      expect(config.chatModelId).toBe('meta/custom-model');
+    });
+
+    it('does not pre-pull chat models through Ollama when the backend is vLLM', async () => {
+      await service.getCredentials('openclaw');
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(modelPuller.startPull).not.toHaveBeenCalledWith('qwen-vllm', expect.anything());
+    });
+  });
+
   describe('getCredentials — cloud override', () => {
     const cloudProvider: CloudProviderConfig = {
       provider: 'openai',
@@ -319,6 +391,7 @@ describe('AppCredentialsService', () => {
         HERMES_DEFAULT_MODEL: 'gpt-4o',
         // OLLAMA_HOST is still exposed so the app can reach Ollama natively too
         OLLAMA_HOST: OLLAMA_BASE_URL,
+        CI_INFERENCE_BACKEND: 'cloud',
       });
     });
 

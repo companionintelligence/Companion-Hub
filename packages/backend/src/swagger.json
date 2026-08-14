@@ -2807,6 +2807,15 @@
               "type": "string",
               "format": "uri"
             }
+          },
+          {
+            "name": "x-ci-vllm-api-key",
+            "required": false,
+            "in": "header",
+            "description": "Unsaved vLLM API key for Re-check before Save.",
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -2836,7 +2845,26 @@
     "/api/inference/vllm/status": {
       "get": {
         "operationId": "getVllmStatus",
-        "parameters": [],
+        "parameters": [
+          {
+            "name": "url",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "uri"
+            }
+          },
+          {
+            "name": "x-ci-vllm-api-key",
+            "required": false,
+            "in": "header",
+            "description": "Unsaved vLLM API key for Re-check before Save.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": ""
