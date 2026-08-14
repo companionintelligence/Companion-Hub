@@ -64,8 +64,10 @@ describe('SystemUpdateService', () => {
   });
 
   describe('performUpdate', () => {
-    it('should pull the Hub image and recreate ci-os-hub on restart', async () => {
+    it('should pull the pinned Hub image and recreate ci-os-hub', async () => {
       vi.useFakeTimers();
+      vi.stubEnv('ROOT_FOLDER_HOST', '/host/companion-hub');
+      vi.stubEnv('CI_HUB_IMAGE', `${HUB_STACK_IMAGE_REPO}:old`);
       vi.mocked(fs.existsSync).mockReturnValue(true);
       vi.mocked(fs.readFileSync).mockReturnValue(`CI_HUB_IMAGE=${HUB_STACK_IMAGE_REPO}:old\nCI_HUB_VERSION=old\n`);
       vi.mocked(fs.mkdirSync).mockImplementation(() => undefined);
@@ -84,7 +86,7 @@ describe('SystemUpdateService', () => {
       };
       (spawn as any).mockReturnValue(mockProcess);
 
-      const resultPromise = service.performUpdate('1.1.0');
+      const resultPromise = service.performUpdate('v1.1.0');
       await vi.runAllTimersAsync();
       const result = await resultPromise;
 
@@ -96,8 +98,9 @@ describe('SystemUpdateService', () => {
       expect(spawn).toHaveBeenCalledTimes(2);
 
       const pullCall = (spawn as any).mock.calls[0];
-      expect(pullCall[1]).toContain('pull');
-      expect(pullCall[1]).toContain('ci-os-hub');
+      expect(pullCall[0]).toBe('docker');
+      expect(pullCall[1]).toEqual(['pull', `${HUB_STACK_IMAGE_REPO}:1.1.0`]);
+      expect(pullCall[2].env.CI_HUB_IMAGE).toBe(`${HUB_STACK_IMAGE_REPO}:1.1.0`);
 
       const upCall = (spawn as any).mock.calls[1];
       // The binary must be `docker` exactly once: a duplicated `docker` in argv
@@ -107,10 +110,17 @@ describe('SystemUpdateService', () => {
       expect(upCall[1][0]).toBe('compose');
       expect(upCall[1]).not.toContain('docker');
       expect(upCall[1]).toContain('up');
+      expect(upCall[1]).toContain('--pull');
+      expect(upCall[1]).toContain('always');
+      expect(upCall[1]).toContain('--force-recreate');
       expect(upCall[1]).toContain('--no-deps');
       expect(upCall[1]).toContain('ci-os-hub');
+      expect(upCall[1]).toContain('--project-directory');
+      expect(upCall[1]).toContain('/host/companion-hub');
+      expect(upCall[2].env.CI_HUB_IMAGE).toBe(`${HUB_STACK_IMAGE_REPO}:1.1.0`);
 
       vi.useRealTimers();
+      vi.unstubAllEnvs();
     });
   });
 

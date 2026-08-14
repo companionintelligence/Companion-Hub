@@ -42,7 +42,8 @@ export const GeneralActionsContainer = () => {
 
   const [updating, setUpdating] = useState(false);
   const [checking, setChecking] = useState(false);
-  const [updateMessage, setUpdateMessage] = useState<string | null>(null);
+  const [stackMessage, setStackMessage] = useState<string | null>(null);
+  const [shellMessage, setShellMessage] = useState<string | null>(null);
   const [autoUpdates, setAutoUpdates] = useState(true);
   const [autoUpdatesLoading, setAutoUpdatesLoading] = useState(false);
   const [restartingWizard, setRestartingWizard] = useState(false);
@@ -102,28 +103,16 @@ export const GeneralActionsContainer = () => {
   }, [demoMode, factoryResetPhrase, t]);
 
   const refreshShellUpdateState = useCallback(async () => {
-    if (!desktop) {
-      setShellUpdate(null);
-      setShellVersion(null);
-      return null;
-    }
-
-    const installedVersion = await getInstalledDesktopVersion();
+    const installedVersion = desktop ? await getInstalledDesktopVersion() : null;
     setShellVersion(installedVersion);
-    if (!installedVersion) {
-      setShellUpdate(null);
-      return null;
-    }
-
-    const info = await checkForUpdates(installedVersion);
+    const info = await checkForUpdates(installedVersion ?? undefined);
     setShellUpdate(info);
     return info;
   }, [desktop]);
 
   useEffect(() => {
-    if (!desktop) return;
     void refreshShellUpdateState();
-  }, [desktop, refreshShellUpdateState]);
+  }, [refreshShellUpdateState]);
 
   useEffect(() => {
     void unwrapSdkOrNull(getAutoUpdates()).then((data) => {
@@ -134,15 +123,13 @@ export const GeneralActionsContainer = () => {
 
   const handleCheckForUpdates = useCallback(async () => {
     setChecking(true);
-    setUpdateMessage(null);
+    setStackMessage(null);
     try {
       const result = await sdkResult(checkHubForUpdates());
       if (!result.ok) throw new Error(`HTTP ${result.status}`);
       const data = (result.data ?? {}) as { updateAvailable?: boolean; latest?: string };
       await refreshAppContext();
-      if (desktop) {
-        await refreshShellUpdateState();
-      }
+      await refreshShellUpdateState();
       if (data.updateAvailable) {
         toast.success(t('SETTINGS_ACTIONS_UPDATE_AVAILABLE', { version: data.latest ?? version.latest }));
       } else {
@@ -153,50 +140,50 @@ export const GeneralActionsContainer = () => {
     } finally {
       setChecking(false);
     }
-  }, [desktop, refreshAppContext, refreshShellUpdateState, t, version.latest]);
+  }, [refreshAppContext, refreshShellUpdateState, t, version.latest]);
 
   const handleUpdate = useCallback(async () => {
     setUpdating(true);
-    setUpdateMessage(null);
+    setStackMessage(null);
     try {
       const stackResult = await performStackUpdate(version.latest);
       if (stackResult.ok) {
         markStackUpdatePending();
         clearHubSteadySession();
-        setUpdateMessage(getUpdateMessage(stackResult));
+        setStackMessage(getUpdateMessage(stackResult));
       } else {
-        setUpdateMessage(getUpdateMessage(stackResult));
+        setStackMessage(getUpdateMessage(stackResult));
         setUpdating(false);
       }
     } catch {
-      setUpdateMessage(t('SETTINGS_ACTIONS_UPDATE_REQUEST_FAILED'));
+      setStackMessage(t('SETTINGS_ACTIONS_UPDATE_REQUEST_FAILED'));
       setUpdating(false);
     }
   }, [getUpdateMessage, t, version.latest]);
 
   const handleShellUpdate = useCallback(async () => {
     setUpdatingShell(true);
-    setUpdateMessage(null);
+    setShellMessage(null);
     try {
       const info = shellUpdate ?? (await refreshShellUpdateState());
-      if (!info?.updateAvailable) {
-        toast.success(t('SETTINGS_ACTIONS_ON_LATEST_VERSION'));
-        setUpdatingShell(false);
+      if (!info?.downloadUrl) {
+        const message = t('SETTINGS_ACTIONS_UPDATE_NO_DOWNLOAD_URL');
+        setShellMessage(message);
+        toast.error(message);
         return;
       }
 
       const result = await performUpdate(info);
       const message = getUpdateMessage(result);
+      setShellMessage(message);
       if (result.ok) {
-        setUpdateMessage(message);
         toast.success(message);
       } else {
-        setUpdateMessage(message);
         toast.error(message);
-        setUpdatingShell(false);
       }
     } catch {
-      setUpdateMessage(t('SETTINGS_ACTIONS_UPDATE_REQUEST_FAILED'));
+      setShellMessage(t('SETTINGS_ACTIONS_UPDATE_REQUEST_FAILED'));
+    } finally {
       setUpdatingShell(false);
     }
   }, [getUpdateMessage, refreshShellUpdateState, shellUpdate, t]);
@@ -219,41 +206,56 @@ export const GeneralActionsContainer = () => {
   const latestVersion = version.latest;
 
   /**
-   * Linux has no in-place desktop update: the button only downloads the
-   * installer, so spell out the remaining steps (tailored to the package
-   * format) right where the user is looking. Rendered alongside both the
-   * button and the post-download message.
+   * The desktop button only downloads an installer. Spell out the remaining
+   * steps for this computer's package format, including Linux apt/rpm.
    */
   const renderManualUpdateInstructions = () => {
-    if (!desktop || !shellUpdate?.updateAvailable || !shellUpdate.manualDownload || !shellUpdate.downloadUrl) {
+    if (!shellUpdate?.downloadUrl) {
       return null;
     }
 
     const kind = manualUpdateArtifactKind(shellUpdate.downloadUrl);
-    if (!kind) return null;
+    const platform = shellUpdate.platform;
+    let steps: { text: string; command?: string }[] | null = null;
 
-    const steps: { text: string; command?: string }[] =
-      kind === 'appimage'
-        ? [
-            { text: t('SETTINGS_ACTIONS_MANUAL_UPDATE_STEP_DOWNLOAD') },
-            {
-              text: t('SETTINGS_ACTIONS_MANUAL_UPDATE_APPIMAGE_STEP_REPLACE'),
-              command: 'chmod +x ~/Downloads/Companion.Hub_*.AppImage',
-            },
-            { text: t('SETTINGS_ACTIONS_MANUAL_UPDATE_STEP_RELAUNCH') },
-          ]
-        : [
-            { text: t('SETTINGS_ACTIONS_MANUAL_UPDATE_STEP_DOWNLOAD') },
-            {
-              text: t('SETTINGS_ACTIONS_MANUAL_UPDATE_STEP_REMOVE'),
-              command: kind === 'deb' ? 'sudo apt purge companion-hub -y' : 'sudo rpm -e companion-hub',
-            },
-            {
-              text: t('SETTINGS_ACTIONS_MANUAL_UPDATE_STEP_INSTALL'),
-              command: kind === 'deb' ? 'sudo apt install ./companion-hub_*.deb' : 'sudo rpm -U ./companion-hub-*.rpm',
-            },
-            { text: t('SETTINGS_ACTIONS_MANUAL_UPDATE_STEP_RELAUNCH') },
-          ];
+    if (kind === 'appimage') {
+      steps = [
+        { text: t('SETTINGS_ACTIONS_MANUAL_UPDATE_STEP_DOWNLOAD') },
+        {
+          text: t('SETTINGS_ACTIONS_MANUAL_UPDATE_APPIMAGE_STEP_REPLACE'),
+          command: 'chmod +x ~/Downloads/Companion.Hub_*.AppImage',
+        },
+        { text: t('SETTINGS_ACTIONS_MANUAL_UPDATE_STEP_RELAUNCH') },
+      ];
+    } else if (kind === 'deb' || kind === 'rpm') {
+      steps = [
+        { text: t('SETTINGS_ACTIONS_MANUAL_UPDATE_STEP_DOWNLOAD') },
+        {
+          text: t('SETTINGS_ACTIONS_MANUAL_UPDATE_STEP_REMOVE'),
+          command: kind === 'deb' ? 'sudo apt purge companion-hub -y' : 'sudo rpm -e companion-hub',
+        },
+        {
+          text: t('SETTINGS_ACTIONS_MANUAL_UPDATE_STEP_INSTALL'),
+          command: kind === 'deb' ? 'sudo apt install ./companion-hub_*.deb' : 'sudo rpm -U ./companion-hub-*.rpm',
+        },
+        { text: t('SETTINGS_ACTIONS_MANUAL_UPDATE_STEP_RELAUNCH') },
+      ];
+    } else if (kind === 'dmg' || platform === 'macos') {
+      steps = [
+        { text: t('SETTINGS_ACTIONS_MANUAL_UPDATE_STEP_DOWNLOAD') },
+        { text: t('SETTINGS_ACTIONS_MANUAL_UPDATE_MACOS_STEP_OPEN') },
+        { text: t('SETTINGS_ACTIONS_MANUAL_UPDATE_STEP_RELAUNCH') },
+      ];
+    } else if (kind === 'exe' || kind === 'msi' || platform === 'windows') {
+      steps = [
+        { text: t('SETTINGS_ACTIONS_MANUAL_UPDATE_STEP_DOWNLOAD') },
+        { text: t('SETTINGS_ACTIONS_MANUAL_UPDATE_WINDOWS_STEP_QUIT') },
+        { text: t('SETTINGS_ACTIONS_MANUAL_UPDATE_WINDOWS_STEP_RUN') },
+        { text: t('SETTINGS_ACTIONS_MANUAL_UPDATE_STEP_RELAUNCH') },
+      ];
+    }
+
+    if (!steps) return null;
 
     return (
       <Card className="mt-4 w-full max-w-md" data-testid="manual-update-instructions">
@@ -276,11 +278,11 @@ export const GeneralActionsContainer = () => {
   };
 
   const renderUpdateButton = () => {
-    if (updateMessage) {
+    if (stackMessage) {
       return (
         <div className="flex items-center gap-2 p-3 rounded-md bg-muted text-sm">
           {updating && <Loader2 className="h-4 w-4 animate-spin" />}
-          {updateMessage}
+          {stackMessage}
         </div>
       );
     }
@@ -297,10 +299,10 @@ export const GeneralActionsContainer = () => {
             {updating ? (
               <>
                 <Loader2 className="h-4 w-4 animate-spin mr-2" />
-                {t('SETTINGS_ACTIONS_UPDATING')}
+                {t('SETTINGS_ACTIONS_STACK_UPDATING')}
               </>
             ) : (
-              t('SETTINGS_ACTIONS_UPDATE_TO_VERSION', { version: latestVersion })
+              t('SETTINGS_ACTIONS_UPDATE_STACK_TO_VERSION', { version: latestVersion })
             )}
           </Button>
           {release ? (
@@ -381,35 +383,39 @@ export const GeneralActionsContainer = () => {
         </CardContent>
       </Card>
 
-      {desktop && shellVersion ? (
+      {shellUpdate ? (
         <Card data-testid="desktop-shell-update-card">
           <CardHeader>
             <CardTitle className="text-xl">{t('SETTINGS_ACTIONS_SHELL_UPDATE_TITLE')}</CardTitle>
             <CardDescription>
-              {t('SETTINGS_ACTIONS_SHELL_UPDATE_SUBTITLE', {
-                version: shellVersion,
-              })}
+              {shellVersion
+                ? t('SETTINGS_ACTIONS_SHELL_UPDATE_SUBTITLE_WITH_VERSION', { version: shellVersion })
+                : t('SETTINGS_ACTIONS_SHELL_UPDATE_SUBTITLE')}
             </CardDescription>
           </CardHeader>
           <CardContent>
-            {shellUpdate?.updateAvailable ? (
+            {shellUpdate.downloadUrl ? (
               <>
+                {shellVersion && !shellUpdate.updateAvailable ? (
+                  <p className="text-sm text-muted-foreground mb-3">{t('SETTINGS_ACTIONS_SHELL_UP_TO_DATE')}</p>
+                ) : null}
                 <Button onClick={handleShellUpdate} disabled={updatingShell} data-testid="hub-shell-update-btn">
                   {updatingShell ? (
                     <>
                       <Loader2 className="h-4 w-4 animate-spin mr-2" />
-                      {t('SETTINGS_ACTIONS_UPDATING')}
+                      {t('SETTINGS_ACTIONS_CHECKING')}
                     </>
-                  ) : shellUpdate.manualDownload ? (
-                    t('SETTINGS_ACTIONS_DOWNLOAD_INSTALLER')
                   ) : (
-                    t('SETTINGS_ACTIONS_UPDATE_TO_VERSION', { version: shellUpdate.latestVersion })
+                    t('SETTINGS_ACTIONS_DOWNLOAD_INSTALLER_VERSION', { version: shellUpdate.latestVersion })
                   )}
                 </Button>
+                {shellMessage ? <p className="mt-3 text-sm text-muted-foreground">{shellMessage}</p> : null}
                 {renderManualUpdateInstructions()}
               </>
             ) : (
-              <p className="text-sm text-muted-foreground">{t('SETTINGS_ACTIONS_SHELL_UP_TO_DATE')}</p>
+              <p className="text-sm text-muted-foreground">
+                {shellVersion && !shellUpdate.updateAvailable ? t('SETTINGS_ACTIONS_SHELL_UP_TO_DATE') : t('SETTINGS_ACTIONS_UPDATE_NO_DOWNLOAD_URL')}
+              </p>
             )}
           </CardContent>
         </Card>

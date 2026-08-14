@@ -9,8 +9,13 @@ import { LoggerService } from '@/core/logger/logger.service';
 import { RegistryService } from '@/utils/registry/registry.service';
 import { AgentNotifyService } from '../agent-notify/agent-notify.service';
 
-/** Prefer the live mounted compose file inside the running Hub container. */
-const COMPOSE_FILENAMES = ['docker-compose.yml', 'docker-compose.prod.yml'] as const;
+/** Desktop seeds `docker-compose.prod.yml`; other installs may only have `docker-compose.yml`. */
+const COMPOSE_FILENAMES = ['docker-compose.prod.yml', 'docker-compose.yml'] as const;
+
+/** GHCR tags are unprefixed (`0.2.56`). A leading `v` makes the pull 404. */
+function normalizeHubVersionTag(version: string): string {
+  return version.trim().replace(/^v/i, '');
+}
 
 @Injectable()
 export class SystemUpdateService implements OnApplicationBootstrap, OnApplicationShutdown {
@@ -105,6 +110,31 @@ export class SystemUpdateService implements OnApplicationBootstrap, OnApplicatio
     return targetVersion;
   }
 
+  /**
+   * Compose interpolates `${CI_HUB_IMAGE}` from the *shell* environment first.
+   * The running Hub container still has the old tag in `process.env`, so a spawn
+   * that inherits it will pull/recreate the image we are already on — which is
+   * why Settings → Update only restarted. Override those keys for every child.
+   */
+  private stackUpdateChildEnv(imageRef: string, version: string, envFile: string): NodeJS.ProcessEnv {
+    return {
+      ...process.env,
+      CI_HUB_IMAGE: imageRef,
+      CI_HUB_VERSION: version,
+      ENV_FILE: path.basename(envFile),
+    };
+  }
+
+  private composeBaseArgs(envFile: string, composeFile: string): string[] {
+    const args = ['compose', '--env-file', envFile, '--project-name', process.env.CI_HUB_COMPOSE_PROJECT_NAME || 'ci-hub'];
+    const hostProjectDir = process.env.ROOT_FOLDER_HOST?.trim();
+    if (hostProjectDir) {
+      args.push('--project-directory', hostProjectDir);
+    }
+    args.push('-f', composeFile);
+    return args;
+  }
+
   private stackUpdateLogPath(dataDir: string): string {
     const logsDir = path.join(dataDir, 'logs');
     fs.mkdirSync(logsDir, { recursive: true });
@@ -112,39 +142,42 @@ export class SystemUpdateService implements OnApplicationBootstrap, OnApplicatio
   }
 
   async performUpdate(targetVersion?: string) {
-    const pinned = targetVersion ?? (await this.checkForUpdates()).latest;
-    this.logger.info(`Hub stack update initiated${pinned ? ` to ${pinned}` : ''}`);
+    const pinned = normalizeHubVersionTag(targetVersion ?? (await this.checkForUpdates()).latest);
+    const imageRef = `${HUB_STACK_IMAGE_REPO}:${pinned}`;
+    this.logger.info(`Hub stack update initiated to ${imageRef}`);
 
     const { dataDir } = this.config.get('directories');
     const envFile = path.join(dataDir, '.env');
     const composeFile = this.resolveComposeFile(dataDir);
+    const childEnv = this.stackUpdateChildEnv(imageRef, pinned, envFile);
 
     this.pinHubStackVersionInEnv(envFile, pinned);
 
-    const composeBase = ['docker', 'compose', '--env-file', envFile, '--project-name', 'ci-hub', '-f', composeFile] as const;
-
     try {
-      await this.runComposeCommand([...composeBase, 'pull', 'ci-os-hub']);
-      this.logger.info(`Successfully pulled ci-os-hub:${pinned ?? 'latest'}`);
+      // Pull the pinned image by reference so compose interpolation cannot
+      // silently retarget the tag already baked into this container's env.
+      await this.runDockerCommand(['docker', 'pull', imageRef], childEnv);
+      this.logger.info(`Successfully pulled ${imageRef}`);
     } catch (error) {
       this.logger.error('Failed to pull new Hub image', error);
       throw error;
     }
 
     const updateLogPath = this.stackUpdateLogPath(dataDir);
-    const logBanner = `\n[${new Date().toISOString()}] Hub stack update restart (target=${pinned ?? 'latest'})\n`;
+    const logBanner = `\n[${new Date().toISOString()}] Hub stack update recreate (target=${imageRef})\n`;
     fs.appendFileSync(updateLogPath, logBanner);
 
+    const composeArgs = [...this.composeBaseArgs(envFile, composeFile), 'up', '-d', '--pull', 'always', '--force-recreate', '--no-deps', 'ci-os-hub'];
+
     setTimeout(() => {
-      this.logger.info(`Restarting Hub stack with new images (logging to ${updateLogPath})...`);
+      this.logger.info(`Recreating ci-os-hub from ${imageRef} (logging to ${updateLogPath})...`);
       const logFd = fs.openSync(updateLogPath, 'a');
-      // composeBase already begins with the `docker` binary — don't prepend it
-      // again, or docker sees `docker docker compose …` and rejects `--env-file`
-      // (which silently killed every stack update since 0.2.44).
-      const [dockerBin, ...composeArgs] = composeBase;
-      const cmd = spawn(dockerBin, [...composeArgs, 'up', '-d', '--pull', 'always', '--force-recreate', '--no-deps', 'ci-os-hub'], {
+      // Binary is `docker` exactly once — a duplicated `docker` in argv makes
+      // the CLI reject `--env-file` (the 0.2.44–0.2.46 stack-update regression).
+      const cmd = spawn('docker', composeArgs, {
         detached: true,
         stdio: ['ignore', logFd, logFd],
+        env: childEnv,
       });
       cmd.on('spawn', () => {
         try {
@@ -159,27 +192,27 @@ export class SystemUpdateService implements OnApplicationBootstrap, OnApplicatio
     return { success: true, message: 'Update initiated, hub will restart shortly' };
   }
 
-  private async runComposeCommand(command: string[]): Promise<void> {
+  private async runDockerCommand(command: string[], env: NodeJS.ProcessEnv): Promise<void> {
     const [bin, ...args] = command;
     if (!bin) {
       throw new Error('Empty command');
     }
     return new Promise((resolve, reject) => {
-      const cmd = spawn(bin, args, { stdio: 'pipe' });
+      const cmd = spawn(bin, args, { stdio: 'pipe', env });
       const stderr: string[] = [];
       cmd.stderr.on('data', (data: Buffer) => {
-        this.logger.debug(`compose: ${String(data).trim()}`);
+        this.logger.debug(`docker: ${String(data).trim()}`);
         stderr.push(String(data).trim());
       });
       cmd.stdout.on('data', (data: Buffer) => {
-        this.logger.debug(`compose: ${String(data).trim()}`);
+        this.logger.debug(`docker: ${String(data).trim()}`);
       });
       cmd.on('error', reject);
       cmd.on('close', (code) => {
         if (code === 0) {
           resolve();
         } else {
-          reject(new Error(`docker compose exited with code ${code}: ${stderr.join('\n')}`));
+          reject(new Error(`docker exited with code ${code}: ${stderr.join('\n')}`));
         }
       });
     });

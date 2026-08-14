@@ -85,6 +85,7 @@ describe('update-service', () => {
       downloadUrl: '',
       updateAvailable: false,
     });
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false }));
 
     await expect(checkForUpdates('0.2.24')).resolves.toEqual({
       currentVersion: '0.2.24',
@@ -223,11 +224,35 @@ describe('update-service', () => {
   });
 
   describe('requiresManualDesktopUpdate', () => {
-    it('requires manual installer downloads on linux only', () => {
+    it('downloads an installer on every platform instead of replacing the running binary', () => {
       expect(requiresManualDesktopUpdate('linux')).toBe(true);
-      expect(requiresManualDesktopUpdate('macos')).toBe(false);
-      expect(requiresManualDesktopUpdate('windows')).toBe(false);
-      expect(requiresManualDesktopUpdate(null)).toBe(false);
+      expect(requiresManualDesktopUpdate('macos')).toBe(true);
+      expect(requiresManualDesktopUpdate('windows')).toBe(true);
+      expect(requiresManualDesktopUpdate(null)).toBe(true);
     });
+  });
+
+  it('opens a trusted installer URL instead of invoking the native updater', async () => {
+    Object.defineProperty(window, '__TAURI_INTERNALS__', {
+      value: {},
+      configurable: true,
+    });
+
+    await expect(
+      performUpdate({
+        currentVersion: '0.2.23',
+        latestVersion: '0.2.24',
+        downloadUrl: 'https://dl.ci.computer/v0.2.24/macos/arm/Companion%20Hub_0.2.24_aarch64.dmg',
+        updateAvailable: true,
+        platform: 'macos',
+        manualDownload: true,
+      }),
+    ).resolves.toEqual({
+      ok: true,
+      messageKey: 'SETTINGS_ACTIONS_DOWNLOAD_INSTALLER_OPENED',
+      defaultMessage: 'Installer download opened in your browser.',
+    });
+    expect(mockOpenExternal).toHaveBeenCalledWith('https://dl.ci.computer/v0.2.24/macos/arm/Companion%20Hub_0.2.24_aarch64.dmg');
+    expect(mockInvoke).not.toHaveBeenCalled();
   });
 });

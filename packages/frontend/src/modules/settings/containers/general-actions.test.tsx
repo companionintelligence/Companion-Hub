@@ -81,6 +81,9 @@ describe('GeneralActionsContainer', () => {
 
     getAutoUpdates.mockResolvedValue(sdkOk({ enabled: true }));
     mockCheckHubForUpdatesApi.mockResolvedValue(sdkOk({ updateAvailable: false, latest: '4.7.0' }));
+    mockIsTauri.mockReturnValue(false);
+    mockGetInstalledDesktopVersion.mockResolvedValue(null);
+    mockCheckForUpdates.mockResolvedValue(null);
   });
 
   it('shows the stack version in the primary card and shell update in the shell card on desktop', async () => {
@@ -98,7 +101,7 @@ describe('GeneralActionsContainer', () => {
     render(<GeneralActionsContainer />);
 
     expect(await screen.findByText('Current version: 4.7.0')).toBeInTheDocument();
-    expect(screen.getByTestId('hub-shell-update-btn')).toHaveTextContent('Download installer');
+    expect(screen.getByTestId('hub-shell-update-btn')).toHaveTextContent('Download 0.2.24');
     expect(screen.queryByTestId('hub-update-btn')).not.toBeInTheDocument();
   });
 
@@ -117,7 +120,7 @@ describe('GeneralActionsContainer', () => {
     render(<GeneralActionsContainer />);
 
     const instructions = await screen.findByTestId('manual-update-instructions');
-    expect(instructions).toHaveTextContent('Finish the update manually');
+    expect(instructions).toHaveTextContent('Then install the app');
     expect(instructions).toHaveTextContent('sudo apt purge companion-hub -y');
     expect(instructions).toHaveTextContent('sudo apt install ./companion-hub_*.deb');
     expect(instructions).not.toHaveTextContent('rpm');
@@ -190,6 +193,42 @@ describe('GeneralActionsContainer', () => {
     });
     expect(screen.getByText('Current version: 4.7.0')).toBeInTheDocument();
     expect(screen.queryByTestId('desktop-shell-update-card')).not.toBeInTheDocument();
+  });
+
+  it('shows macos install steps for a dmg download', async () => {
+    mockIsTauri.mockReturnValue(true);
+    mockGetInstalledDesktopVersion.mockResolvedValue('0.2.23');
+    mockCheckForUpdates.mockResolvedValue({
+      currentVersion: '0.2.23',
+      latestVersion: '0.2.24',
+      downloadUrl: 'https://dl.ci.computer/v0.2.24/macos/arm/Companion%20Hub_0.2.24_aarch64.dmg',
+      updateAvailable: true,
+      platform: 'macos',
+      manualDownload: true,
+    });
+
+    render(<GeneralActionsContainer />);
+
+    const instructions = await screen.findByTestId('manual-update-instructions');
+    expect(instructions).toHaveTextContent('Open the downloaded DMG');
+    expect(instructions).not.toHaveTextContent('apt purge');
+  });
+
+  it('labels the stack button as a stack-only update', async () => {
+    mockIsTauri.mockReturnValue(false);
+    mockUseAppContext.mockReturnValue({
+      version: {
+        current: '0.2.44',
+        latest: '0.2.46',
+        body: '',
+        releases: [{ version: '0.2.46', body: 'Release 0.2.46' }],
+      },
+      refreshAppContext: vi.fn(),
+    } as unknown as ReturnType<typeof useAppContext>);
+
+    render(<GeneralActionsContainer />);
+
+    expect(await screen.findByTestId('hub-update-btn')).toHaveTextContent('Update stack to 0.2.46');
   });
 
   it('shows only the latest release card when multiple versions are available', async () => {
