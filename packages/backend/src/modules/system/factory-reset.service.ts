@@ -6,6 +6,7 @@ import { APP_DATA_DIR, DATA_DIR, TUNNEL_DIR } from '@/common/constants';
 import { app } from '@/core/database/drizzle/schema';
 import { DATABASE, type Database } from '@/core/database/database.module';
 import { CacheService } from '@/core/cache/cache.service';
+import { SessionUserCache } from '@/core/cache/session-user.cache';
 import { LoggerService } from '@/core/logger/logger.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
@@ -27,6 +28,7 @@ export class FactoryResetService {
     private readonly filesystem: FilesystemService,
     private readonly configuration: ConfigurationService,
     private readonly cache: CacheService,
+    private readonly sessionUserCache: SessionUserCache,
     private readonly logger: LoggerService,
     private readonly registrationService: RegistrationService,
   ) {}
@@ -82,6 +84,11 @@ export class FactoryResetService {
         "user"
       RESTART IDENTITY CASCADE
     `);
+
+    // This deletes every user row without going through UserRepository, so nothing else drops
+    // the cached DTOs. Until it does, a still-valid session resolves to a user id whose row is
+    // gone and `AuthGuard` keeps admitting it as an operator on an already-wiped Hub.
+    this.sessionUserCache.invalidate();
   }
 
   public async wipeDataMounts(): Promise<void> {

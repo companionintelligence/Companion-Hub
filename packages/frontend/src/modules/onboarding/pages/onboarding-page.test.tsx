@@ -1,4 +1,4 @@
-import { render, screen } from '@/tests/test-utils';
+import { render, screen, waitFor } from '@/tests/test-utils';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { ReactNode } from 'react';
@@ -7,11 +7,18 @@ import { describe, expect, it, vi, beforeEach } from 'vitest';
 import type { InstallSummary } from '../helpers/types';
 import OnboardingPage from './onboarding-page';
 
-const { mockCatalogState } = vi.hoisted(() => ({
+const { mockCatalogState, mockAppContext, mockCompleteOnboarding } = vi.hoisted(() => ({
   mockCatalogState: {
     isLoading: false,
     isError: false,
   },
+  // Stable across renders so tests can assert on them; a fresh vi.fn() per useAppContext() call
+  // would record nothing the test can see.
+  mockAppContext: {
+    setAppContext: vi.fn(),
+    refreshAppContext: vi.fn().mockResolvedValue(undefined),
+  },
+  mockCompleteOnboarding: vi.fn(),
 }));
 
 vi.mock('@/context/app-context', () => ({
@@ -20,9 +27,14 @@ vi.mock('@/context/app-context', () => ({
     user: { hasCompletedOnboarding: false },
     cloudflareAvailable: false,
     tailscaleAvailable: true,
-    setAppContext: vi.fn(),
-    refreshAppContext: vi.fn().mockResolvedValue(undefined),
+    setAppContext: mockAppContext.setAppContext,
+    refreshAppContext: mockAppContext.refreshAppContext,
   }),
+}));
+
+vi.mock('@/api-client/sdk.gen', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  completeOnboarding: mockCompleteOnboarding,
 }));
 
 vi.mock('../helpers/use-marketplace-catalog-apps', () => ({
@@ -306,6 +318,10 @@ describe('OnboardingPage (single vertical form)', () => {
   beforeEach(() => {
     mockCatalogState.isLoading = false;
     mockCatalogState.isError = false;
+    mockAppContext.setAppContext.mockClear();
+    mockAppContext.refreshAppContext.mockClear().mockResolvedValue(undefined);
+    // The generated client resolves with a `response`; `sdkResult` reads `.ok` off it.
+    mockCompleteOnboarding.mockReset().mockResolvedValue({ data: undefined, response: { ok: true, status: 200 } });
   });
 
   it('renders config sections and step 4 (app picker) on the same page', () => {
@@ -357,6 +373,58 @@ describe('OnboardingPage (single vertical form)', () => {
     // Completing the install navigates to /store (no complete-step shown).
     await user.click(screen.getByRole('button', { name: 'install-complete' }));
     expect(screen.queryByTestId('complete-step')).not.toBeInTheDocument();
+  });
+
+  describe('marking onboarding complete', () => {
+    const finishInstall = async () => {
+      const user = userEvent.setup();
+      renderPage();
+      await user.click(screen.getByRole('button', { name: 'emit-ai-config' }));
+      await user.click(screen.getByTestId('finish-setup-btn'));
+      await user.click(screen.getByRole('button', { name: 'install-complete' }));
+    };
+
+    it('re-reads the server context once the flag is written', async () => {
+      await finishInstall();
+
+      await waitFor(() => expect(mockCompleteOnboarding).toHaveBeenCalledTimes(1));
+      await waitFor(() => expect(mockAppContext.refreshAppContext).toHaveBeenCalled());
+    });
+
+    /**
+     * A rejected PATCH means the server flag is still false. Refetching then would replace the
+     * optimistic flag with that false and the /home guard would send the user straight back
+     * into the wizard, so the refetch has to be skipped on this path.
+     */
+    it('MUST NOT refetch the app context when the write never landed', async () => {
+      mockCompleteOnboarding.mockRejectedValue(new Error('Service Unavailable'));
+
+      await finishInstall();
+
+      await waitFor(() => expect(mockCompleteOnboarding).toHaveBeenCalledTimes(2), { timeout: 3_000 });
+      expect(mockAppContext.setAppContext).toHaveBeenCalledWith({ user: expect.objectContaining({ hasCompletedOnboarding: true }) });
+      expect(mockAppContext.refreshAppContext).not.toHaveBeenCalled();
+    });
+
+    it('retries once and stops when the second attempt lands', async () => {
+      mockCompleteOnboarding
+        .mockRejectedValueOnce(new Error('Service Unavailable'))
+        .mockResolvedValue({ data: undefined, response: { ok: true, status: 200 } });
+
+      await finishInstall();
+
+      await waitFor(() => expect(mockAppContext.refreshAppContext).toHaveBeenCalled(), { timeout: 3_000 });
+      expect(mockCompleteOnboarding).toHaveBeenCalledTimes(2);
+    });
+
+    it('treats a resolved response that is not ok as a failed write', async () => {
+      mockCompleteOnboarding.mockResolvedValue({ data: undefined, response: undefined });
+
+      await finishInstall();
+
+      await waitFor(() => expect(mockCompleteOnboarding).toHaveBeenCalledTimes(2), { timeout: 3_000 });
+      expect(mockAppContext.refreshAppContext).not.toHaveBeenCalled();
+    });
   });
 
   it('queues no agent when none was selected', async () => {

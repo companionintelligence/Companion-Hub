@@ -62,15 +62,19 @@ export class UserRepository {
    * @param {Partial<NewUser>} data - The data to update the user with
    */
   public async updateUser(id: number, data: Partial<NewUser>) {
-    const updatedUsers = await this.db
-      .update(user)
-      .set(data)
-      .where(eq(user.id, Number(id)))
-      .returning();
+    // One coercion for both the row and the cache key: two would be free to drift apart, and a
+    // cache key that disagrees with the WHERE clause invalidates nobody while the row changes.
+    const userId = Number(id);
 
-    this.sessionUserCache.invalidate(Number(id));
-
-    return updatedUsers[0];
+    try {
+      const updatedUsers = await this.db.update(user).set(data).where(eq(user.id, userId)).returning();
+      return updatedUsers[0];
+    } finally {
+      // In `finally` because the UPDATE can commit and still reject on the way back (the
+      // transient `ci-hub-db` drops this codebase retries elsewhere) — a committed write whose
+      // cache entry survived is the stale read this cache exists to avoid.
+      this.sessionUserCache.invalidate(userId);
+    }
   }
 
   /**
@@ -90,10 +94,21 @@ export class UserRepository {
   /**
    * Given user data, creates a new user
    *
+   * Invalidates the cached DTO for the new id as well: `FactoryResetService` truncates the
+   * user table with `RESTART IDENTITY`, so a fresh account can be handed an id that a cached
+   * entry still describes — without this the new operator would be served the deleted one's
+   * username and `hasCompletedOnboarding` for the rest of the TTL.
+   *
    * @param {NewUser} data - The data to create the user with
    */
   public async createUser(data: NewUser) {
     const newUsers = await this.db.insert(user).values(data).returning();
-    return newUsers[0];
+    const created = newUsers[0];
+
+    if (created) {
+      this.sessionUserCache.invalidate(Number(created.id));
+    }
+
+    return created;
   }
 }

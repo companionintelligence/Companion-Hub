@@ -18,6 +18,7 @@ describe('AuthMiddleware transient DB handling', () => {
   };
   const sessionUserCache = {
     get: vi.fn().mockReturnValue(undefined),
+    beginRead: vi.fn().mockReturnValue(0),
     set: vi.fn(),
     invalidate: vi.fn(),
   };
@@ -86,6 +87,7 @@ describe('AuthMiddleware session fallback', () => {
   };
   const sessionUserCache = {
     get: vi.fn().mockReturnValue(undefined),
+    beginRead: vi.fn().mockReturnValue(0),
     set: vi.fn(),
     invalidate: vi.fn(),
   };

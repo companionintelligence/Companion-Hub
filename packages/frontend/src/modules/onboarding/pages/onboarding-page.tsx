@@ -21,6 +21,12 @@ import { ModelDownloadFooterSummary, ModelDownloadStatus } from '../components/m
 import { useModelPullOrchestrator } from '@/lib/hooks/use-model-pull-orchestrator';
 import { prefetchOnboardingMarketplace } from '../helpers/prefetch-onboarding-marketplace';
 
+/**
+ * Long enough for a Hub that is still coming back up to start answering, short enough that the
+ * Continue button — which has no in-flight guard — is not left clickable for much longer.
+ */
+const COMPLETE_ONBOARDING_RETRY_DELAY_MS = 500;
+
 const AGENT_APP_ALIAS_CANONICAL: Record<string, string> = Object.fromEntries(
   Object.entries(AGENT_APP_SLUG).flatMap(([framework, slug]) => [
     [framework, slug],
@@ -187,11 +193,13 @@ function OnboardingWizard() {
           operatorUsername={user.username}
           aiSetupConfig={aiSetupConfig}
           onComplete={async (summary) => {
-            // `sdkResult` resolves on an HTTP failure instead of throwing, so the status has to
-            // be read: an unchecked PATCH that never landed leaves the server flag false, and the
-            // /home route guard reads that back and drops the user into the wizard a second time.
-            // Transport errors do still reject, so both paths stay non-fatal — stranding the user
-            // on a finished wizard is worse than navigating with the flag unset.
+            // Whether the PATCH landed decides what the rest of this handler may do: an
+            // unchecked write that never landed leaves the server flag false, and the /home
+            // route guard reads that back and drops the user into the wizard a second time.
+            // The client rejects on both failure modes — the response interceptor in root.tsx
+            // throws on any status >= 400, and a transport error rejects out of fetch — so the
+            // catch is what reports failure; `ok` only distinguishes a 2xx from a resolved
+            // response that carried none.
             const markComplete = async () => {
               try {
                 return (await sdkResult(completeOnboarding())).ok;
@@ -199,14 +207,23 @@ function OnboardingWizard() {
                 return false;
               }
             };
-            // One retry covers a transient blip; past that, navigate anyway.
-            if (!(await markComplete())) {
-              await markComplete();
+            // Retry once, after a pause. The blip worth covering is the Hub restarting, and a
+            // second PATCH issued in the same tick only hits the same closed socket.
+            let completed = await markComplete();
+            if (!completed) {
+              await new Promise((resolve) => setTimeout(resolve, COMPLETE_ONBOARDING_RETRY_DELAY_MS));
+              completed = await markComplete();
             }
             // Update the shared app-context cache (correct query key) so route guards
             // on /home and /store do not send the user back to onboarding.
             setAppContext({ user: { ...user, hasCompletedOnboarding: true } });
-            await refreshAppContext();
+            // Only re-read the server when the write landed. Refetching after a failed write
+            // replaces the optimistic flag with the server's `false`, and the /home guard then
+            // sends the user straight back into the wizard — the exact outcome that navigating
+            // anyway exists to avoid.
+            if (completed) {
+              await refreshAppContext();
+            }
             navigate('/home', {
               replace: true,
               state: summary?.continuedInBackground ? { showBackgroundInstallToast: true } : undefined,
