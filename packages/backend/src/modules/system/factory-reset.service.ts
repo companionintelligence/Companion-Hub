@@ -74,21 +74,29 @@ export class FactoryResetService {
   }
 
   public async wipeDatabase(): Promise<void> {
-    await this.db.execute(sql`
-      TRUNCATE TABLE
-        link,
-        app,
-        port_allocation,
-        device_registration,
-        app_store,
-        "user"
-      RESTART IDENTITY CASCADE
-    `);
-
-    // This deletes every user row without going through UserRepository, so nothing else drops
-    // the cached DTOs. Until it does, a still-valid session resolves to a user id whose row is
-    // gone and `AuthGuard` keeps admitting it as an operator on an already-wiped Hub.
-    this.sessionUserCache.invalidate();
+    try {
+      await this.db.execute(sql`
+        TRUNCATE TABLE
+          link,
+          app,
+          port_allocation,
+          device_registration,
+          app_store,
+          "user"
+        RESTART IDENTITY CASCADE
+      `);
+    } finally {
+      // In `finally` because the TRUNCATE can commit and still reject on the way back: a wiped
+      // user table whose cached DTOs and sessions survived is the worst of both states.
+      //
+      // This deletes every user row without going through UserRepository, so nothing else drops
+      // the cached DTOs. Sessions have to go with them, and they have to go *here*: `execute()`
+      // clears the cache only after three more awaits, so a reset that fails partway used to
+      // leave a live `ci-hub-sid` behind. `RESTART IDENTITY` then hands the next account the id
+      // that cookie names, and it would be admitted as the new operator.
+      this.sessionUserCache.invalidate();
+      this.cache.clear();
+    }
   }
 
   public async wipeDataMounts(): Promise<void> {

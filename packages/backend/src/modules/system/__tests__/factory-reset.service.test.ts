@@ -88,6 +88,28 @@ describe('FactoryResetService', () => {
     expect(sessionUserCache.get(1)).toBeUndefined();
   });
 
+  /**
+   * Sessions live in CacheService and outlive the rows they name. `execute()` only clears them
+   * after three more awaits, so a reset that failed partway used to leave a live `ci-hub-sid`
+   * behind — and `RESTART IDENTITY` hands the next account the very id that cookie resolves to,
+   * which would admit the old browser tab as the new operator.
+   */
+  it('MUST clear sessions in the same step that truncates the user rows they point at', async () => {
+    await service.wipeDatabase();
+
+    expect(cache.clear).toHaveBeenCalled();
+  });
+
+  it('MUST drop cached session users even when the TRUNCATE rejects on the way back', async () => {
+    sessionUserCache.set(1, { id: 1, username: 'previous-operator' } as never);
+    db.execute.mockRejectedValueOnce(new Error('ECONNRESET'));
+
+    await expect(service.wipeDatabase()).rejects.toThrow('ECONNRESET');
+
+    expect(sessionUserCache.get(1)).toBeUndefined();
+    expect(cache.clear).toHaveBeenCalled();
+  });
+
   it('tears down installed apps before wiping data mounts', async () => {
     db.query.app.findMany.mockResolvedValue([
       {

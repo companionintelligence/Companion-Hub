@@ -5,7 +5,8 @@ import { useUserContext } from '@/context/user-context';
 import { completeOnboarding, detectServices } from '@/api-client/sdk.gen';
 import { sdkResult, unwrapSdkOrNull } from '@/lib/sdk-unwrap';
 import { getLogo } from '@/lib/theme/theme';
-import { Suspense, useEffect, useMemo, useState } from 'react';
+import { TranslatableError } from '@/types/error.types';
+import { Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { Navigate, useNavigate } from 'react-router';
 import toast from 'react-hot-toast';
 import { useTranslation } from 'react-i18next';
@@ -23,11 +24,21 @@ import { ModelDownloadFooterSummary, ModelDownloadStatus } from '../components/m
 import { useModelPullOrchestrator } from '@/lib/hooks/use-model-pull-orchestrator';
 import { prefetchOnboardingMarketplace } from '../helpers/prefetch-onboarding-marketplace';
 
-/**
- * Long enough for a Hub that is still coming back up to start answering, short enough that the
- * Continue button — which has no in-flight guard — is not left clickable for much longer.
- */
+/** Long enough for a Hub that is still coming back up to start answering. */
 const COMPLETE_ONBOARDING_RETRY_DELAY_MS = 500;
+
+/** Fixed id so repeat failures replace the notice instead of stacking, and success can clear it. */
+const COMPLETE_ONBOARDING_TOAST_ID = 'onboarding-complete-failed';
+
+/**
+ * Only transient failures are worth a second identical PATCH. A 4xx will not become a 2xx —
+ * a 401 in particular means the session lapsed, which retrying cannot fix and whose remedy is
+ * not the "check that the Hub is running" the failure notice offers. `status` is 0 when the
+ * request never produced a response at all, which is the Hub-restart case the retry is for.
+ */
+function isRetryableCompletionFailure(status: number): boolean {
+  return status === 0 || status >= 500;
+}
 
 const AGENT_APP_ALIAS_CANONICAL: Record<string, string> = Object.fromEntries(
   Object.entries(AGENT_APP_SLUG).flatMap(([framework, slug]) => [
@@ -121,6 +132,18 @@ function OnboardingWizard() {
   const [aiSetupConfig, setAiSetupConfig] = useState<AiSetupConfig | undefined>();
   const [detectedServices, setDetectedServices] = useState<DetectedService[]>([]);
   const [completionFailed, setCompletionFailed] = useState(false);
+  /** Latches the completion handler, which stays alive across the retry pause. */
+  const completingRef = useRef(false);
+  const mountedRef = useRef(true);
+
+  useEffect(() => {
+    // Set on mount rather than at declaration: StrictMode's dev double-invoke runs the cleanup
+    // once before the real mount, which would otherwise latch this false for good.
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -201,48 +224,77 @@ function OnboardingWizard() {
           operatorUsername={user.username}
           aiSetupConfig={aiSetupConfig}
           onComplete={async (summary) => {
-            // Whether the PATCH landed decides what the rest of this handler may do: an
-            // unchecked write that never landed leaves the server flag false, and the /home
-            // route guard reads that back and drops the user into the wizard a second time.
-            // The client rejects on both failure modes — the response interceptor in root.tsx
-            // throws on any status >= 400, and a transport error rejects out of fetch — so the
-            // catch is what reports failure; `ok` only distinguishes a 2xx from a resolved
-            // response that carried none.
-            const markComplete = async () => {
-              try {
-                return (await sdkResult(completeOnboarding())).ok;
-              } catch {
-                return false;
-              }
-            };
-            // Retry once, after a pause. The blip worth covering is the Hub restarting, and a
-            // second PATCH issued in the same tick only hits the same closed socket.
-            let completed = await markComplete();
-            if (!completed) {
-              await new Promise((resolve) => setTimeout(resolve, COMPLETE_ONBOARDING_RETRY_DELAY_MS));
-              completed = await markComplete();
-            }
-
-            if (!completed) {
-              // Navigating anyway would land on /home only until the next app-context read —
-              // which reports the flag the server actually holds — bounced the user back here
-              // with no explanation and their install summary gone. Staying put says so, and
-              // leaves Continue as the retry. No optimistic write either: it would trip the
-              // `hasCompletedOnboarding` guard above and navigate for us.
-              setCompletionFailed(true);
-              toast.error(t('ONBOARDING_FINISH_SAVE_FAILED'));
+            // InstallStep's Continue button is never disabled and drops the promise it gets back,
+            // and this handler now stays alive across the retry pause — so without a latch a
+            // second click starts a parallel completion chain, and the loser of the two reports
+            // failure over the winner's navigation.
+            if (completingRef.current) {
               return;
             }
+            completingRef.current = true;
 
-            setCompletionFailed(false);
-            // Update the shared app-context cache (correct query key) so route guards
-            // on /home and /store do not send the user back to onboarding.
-            setAppContext({ user: { ...user, hasCompletedOnboarding: true } });
-            await refreshAppContext();
-            navigate('/home', {
-              replace: true,
-              state: summary?.continuedInBackground ? { showBackgroundInstallToast: true } : undefined,
-            });
+            try {
+              // Whether the PATCH landed decides what the rest of this handler may do: an
+              // unchecked write that never landed leaves the server flag false, and the /home
+              // route guard reads that back and drops the user into the wizard a second time.
+              // The client rejects on both failure modes — the response interceptor in root.tsx
+              // throws on any status >= 400, and a transport error rejects out of fetch — so the
+              // catch is what reports failure; `ok` only distinguishes a 2xx from a resolved
+              // response that carried none.
+              const markComplete = async () => {
+                try {
+                  const { ok, status } = await sdkResult(completeOnboarding());
+                  return { ok, retryable: isRetryableCompletionFailure(status) };
+                } catch (error) {
+                  // The interceptor rejects on any status >= 400 and carries it on `http.status`.
+                  // A transport error has no status at all — that is the Hub-restart case, and
+                  // falling back to 0 is what marks it retryable.
+                  const status = error instanceof TranslatableError ? (error.http?.status ?? 0) : 0;
+                  return { ok: false, retryable: isRetryableCompletionFailure(status) };
+                }
+              };
+              // Retry once, after a pause. The blip worth covering is the Hub restarting, and a
+              // second PATCH issued in the same tick only hits the same closed socket.
+              let result = await markComplete();
+              if (!result.ok && result.retryable) {
+                await new Promise((resolve) => setTimeout(resolve, COMPLETE_ONBOARDING_RETRY_DELAY_MS));
+                result = await markComplete();
+              }
+
+              if (!mountedRef.current) {
+                // The wizard is gone — a 401 hard-navigates to /login. The toast below outlives
+                // this component, so it would land on a page with no Continue button to retry on.
+                return;
+              }
+
+              if (!result.ok) {
+                // Navigating anyway would land on /home only until the next app-context read —
+                // which reports the flag the server actually holds — bounced the user back here
+                // with no explanation and their install summary gone. Staying put says so, and
+                // leaves Continue as the retry. No optimistic write either: it would trip the
+                // `hasCompletedOnboarding` guard above and navigate for us.
+                setCompletionFailed(true);
+                toast.error(t('ONBOARDING_FINISH_SAVE_FAILED'), { id: COMPLETE_ONBOARDING_TOAST_ID });
+                return;
+              }
+
+              setCompletionFailed(false);
+              // The Toaster is mounted above the router, so a failed attempt's toast would ride
+              // along to /home still claiming the setup could not be saved.
+              toast.dismiss(COMPLETE_ONBOARDING_TOAST_ID);
+              // Update the shared app-context cache (correct query key) so route guards
+              // on /home and /store do not send the user back to onboarding.
+              setAppContext({ user: { ...user, hasCompletedOnboarding: true } });
+              await refreshAppContext();
+              navigate('/home', {
+                replace: true,
+                state: summary?.continuedInBackground ? { showBackgroundInstallToast: true } : undefined,
+              });
+            } finally {
+              // Released even on the failure path: the notice tells the user to press Continue
+              // again, so the latch must not be what stops them.
+              completingRef.current = false;
+            }
           }}
         />
       </Shell>

@@ -8,8 +8,9 @@ import { UserModule } from '@/modules/user/user.module';
 import { UserRepository } from '@/modules/user/user.repository';
 import { Global, Module } from '@nestjs/common';
 import { MODULE_METADATA } from '@nestjs/common/constants';
-import { Test } from '@nestjs/testing';
+import { Test, type TestingModule } from '@nestjs/testing';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { mock } from 'vitest-mock-extended';
 
 const mockDb = {
   update: vi.fn().mockReturnValue({
@@ -36,22 +37,30 @@ class StubDatabaseModule {}
  * not a hand-assembled provider list that cannot notice the wiring drifting.
  */
 describe('SessionUserCache wiring', () => {
-  afterEach(() => {
+  let moduleRef: TestingModule | undefined;
+
+  afterEach(async () => {
+    // Closed here rather than at the end of each test: a failing assertion returns first, and
+    // these are the runs where a leaked Nest graph would pile up for the rest of the file.
+    await moduleRef?.close();
+    moduleRef = undefined;
     vi.clearAllMocks();
   });
 
-  const compileGraph = async () =>
-    Test.createTestingModule({ imports: [StubDatabaseModule, CacheModule, UserModule] })
+  const compileGraph = async () => {
+    moduleRef = await Test.createTestingModule({ imports: [StubDatabaseModule, CacheModule, UserModule] })
       // CacheService opens a real SQLite file on construction; irrelevant to these assertions.
       .overrideProvider(CacheService)
-      .useValue({})
+      .useValue(mock<CacheService>())
       .compile();
+    return moduleRef;
+  };
 
   it('MUST clear the globally shared cache entry when the user module writes the user row', async () => {
-    const moduleRef = await compileGraph();
+    const graph = await compileGraph();
 
-    const repository = moduleRef.get(UserRepository, { strict: false });
-    const cache = moduleRef.get(SessionUserCache, { strict: false });
+    const repository = graph.get(UserRepository, { strict: false });
+    const cache = graph.get(SessionUserCache, { strict: false });
 
     cache.set(1, { id: 1, hasCompletedOnboarding: false } as UserDto);
     expect(cache.get(1)).toBeDefined();
@@ -59,8 +68,6 @@ describe('SessionUserCache wiring', () => {
     await repository.updateUser(1, { hasCompletedOnboarding: true });
 
     expect(cache.get(1)).toBeUndefined();
-
-    await moduleRef.close();
   });
 
   /**
@@ -70,11 +77,9 @@ describe('SessionUserCache wiring', () => {
    * Counting the instance links is what actually pins "exactly one".
    */
   it('MUST resolve exactly one SessionUserCache instance across the module graph', async () => {
-    const moduleRef = await compileGraph();
+    const graph = await compileGraph();
 
-    expect(moduleRef.get(SessionUserCache, { strict: false, each: true })).toHaveLength(1);
-
-    await moduleRef.close();
+    expect(graph.get(SessionUserCache, { strict: false, each: true })).toHaveLength(1);
   });
 
   /**
@@ -86,6 +91,12 @@ describe('SessionUserCache wiring', () => {
   it('MUST NOT let AuthModule re-declare the provider AuthMiddleware reads through', () => {
     const authProviders: unknown[] = Reflect.getMetadata(MODULE_METADATA.PROVIDERS, AuthModule) ?? [];
 
-    expect(authProviders).not.toContain(SessionUserCache);
+    // Matched by token, not by reference: `{ provide: SessionUserCache, useClass: ... }` mints a
+    // second instance every bit as much as the bare class does, and `toContain` would miss it.
+    const declaresSessionUserCache = authProviders.some(
+      (provider) => provider === SessionUserCache || (provider as { provide?: unknown } | null)?.provide === SessionUserCache,
+    );
+
+    expect(declaresSessionUserCache).toBe(false);
   });
 });

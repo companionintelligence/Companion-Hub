@@ -63,13 +63,17 @@ export class AuthMiddleware implements NestMiddleware {
       return cached;
     }
     // Stamp the read: a write that invalidates while this SELECT is in flight would otherwise
-    // be undone here, re-caching the pre-write DTO for a fresh TTL.
-    const readToken = this.sessionUserCache.beginRead();
-    const user = await this.loadUserResilient(() => this.userRepository.getUserDtoById(userId));
-    if (user) {
-      this.sessionUserCache.set(userId, user, readToken);
-    }
-    return user;
+    // be undone here, re-caching the pre-write DTO for a fresh TTL. Stamped inside the retry
+    // closure so each attempt is judged against the SELECT it actually issued — a token taken
+    // before the backoff would discard the correct post-write row a later attempt just read.
+    return this.loadUserResilient(async () => {
+      const readToken = this.sessionUserCache.beginRead(userId);
+      const user = await this.userRepository.getUserDtoById(userId);
+      if (user) {
+        this.sessionUserCache.set(userId, user, readToken);
+      }
+      return user;
+    });
   }
 
   async use(req: Request, _: Response, next: NextFunction) {

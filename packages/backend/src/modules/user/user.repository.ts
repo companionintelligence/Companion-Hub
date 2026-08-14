@@ -86,9 +86,25 @@ export class UserRepository {
 
   /**
    * Returns the first operator found in the system
+   *
+   * Projected to the same columns as `getUserDtoById`: `AuthMiddleware` assigns this straight to
+   * `req.user` on the API-key and CLI-JWT paths, and `GET /app-context` serializes `req.user`
+   * through a `reportOnly` parse that hands back the raw object when validation fails. An
+   * unprojected row would put the operator's password hash, salt and TOTP secret on that wire.
    */
   public async getFirstOperator() {
-    return this.db.query.user.findFirst({ where: eq(user.operator, true) });
+    return this.db.query.user.findFirst({
+      where: eq(user.operator, true),
+      columns: {
+        id: true,
+        username: true,
+        totpEnabled: true,
+        locale: true,
+        operator: true,
+        hasCompletedOnboarding: true,
+        advancedMode: true,
+      },
+    });
   }
 
   /**
@@ -106,7 +122,7 @@ export class UserRepository {
     const created = newUsers[0];
 
     if (created) {
-      this.sessionUserCache.invalidate(Number(created.id));
+      this.sessionUserCache.invalidate(created.id);
     }
 
     return created;

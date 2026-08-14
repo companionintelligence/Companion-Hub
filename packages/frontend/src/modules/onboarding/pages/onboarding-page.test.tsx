@@ -1,4 +1,6 @@
+import { sdkOk } from '@/tests/sdk-mock-helpers';
 import { render, screen, waitFor } from '@/tests/test-utils';
+import { TranslatableError } from '@/types/error.types';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { ReactNode } from 'react';
@@ -7,7 +9,7 @@ import { describe, expect, it, vi, beforeEach } from 'vitest';
 import type { InstallSummary } from '../helpers/types';
 import OnboardingPage from './onboarding-page';
 
-const { mockCatalogState, mockAppContext, mockCompleteOnboarding, mockNavigate } = vi.hoisted(() => ({
+const { mockCatalogState, mockAppContext, mockCompleteOnboarding, mockNavigate, mockToast } = vi.hoisted(() => ({
   mockNavigate: vi.fn(),
   mockCatalogState: {
     isLoading: false,
@@ -20,7 +22,21 @@ const { mockCatalogState, mockAppContext, mockCompleteOnboarding, mockNavigate }
     refreshAppContext: vi.fn().mockResolvedValue(undefined),
   },
   mockCompleteOnboarding: vi.fn(),
+  mockToast: {
+    error: vi.fn(),
+    dismiss: vi.fn(),
+  },
 }));
+
+// Only error/dismiss are replaced; the real Toaster and the rest of the API stay in place.
+vi.mock('react-hot-toast', async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  const toast = Object.assign(((...args: unknown[]) => (actual.default as (...a: unknown[]) => unknown)(...args)) as never, actual.default, {
+    error: mockToast.error,
+    dismiss: mockToast.dismiss,
+  });
+  return { ...actual, default: toast, toast };
+});
 
 // Only useNavigate is replaced; MemoryRouter and <Navigate> stay real so the render guards behave.
 vi.mock('react-router', async (importOriginal) => ({
@@ -328,8 +344,10 @@ describe('OnboardingPage (single vertical form)', () => {
     mockAppContext.setAppContext.mockClear();
     mockAppContext.refreshAppContext.mockClear().mockResolvedValue(undefined);
     mockNavigate.mockClear();
-    // The generated client resolves with a `response`; `sdkResult` reads `.ok` off it.
-    mockCompleteOnboarding.mockReset().mockResolvedValue({ data: undefined, response: { ok: true, status: 200 } });
+    mockToast.error.mockClear();
+    mockToast.dismiss.mockClear();
+    // The generated client resolves with a real `Response`; `sdkResult` reads `.ok`/`.status` off it.
+    mockCompleteOnboarding.mockReset().mockResolvedValue(sdkOk(undefined));
   });
 
   it('renders config sections and step 4 (app picker) on the same page', () => {
@@ -384,12 +402,14 @@ describe('OnboardingPage (single vertical form)', () => {
   });
 
   describe('marking onboarding complete', () => {
+    /** Returns the `user` handle so a test can drive a retry without re-inlining these steps. */
     const finishInstall = async () => {
       const user = userEvent.setup();
       renderPage();
       await user.click(screen.getByRole('button', { name: 'emit-ai-config' }));
       await user.click(screen.getByTestId('finish-setup-btn'));
       await user.click(screen.getByRole('button', { name: 'install-complete' }));
+      return user;
     };
 
     it('re-reads the server context once the flag is written', async () => {
@@ -430,24 +450,21 @@ describe('OnboardingPage (single vertical form)', () => {
 
     it('clears the failure notice and navigates once a retry lands', async () => {
       mockCompleteOnboarding.mockRejectedValue(new Error('Service Unavailable'));
-      const user = userEvent.setup();
-      renderPage();
-      await user.click(screen.getByRole('button', { name: 'emit-ai-config' }));
-      await user.click(screen.getByTestId('finish-setup-btn'));
-      await user.click(screen.getByRole('button', { name: 'install-complete' }));
+      const user = await finishInstall();
       await screen.findByTestId('onboarding-complete-failed', undefined, { timeout: 3_000 });
 
-      mockCompleteOnboarding.mockReset().mockResolvedValue({ data: undefined, response: { ok: true, status: 200 } });
+      mockCompleteOnboarding.mockReset().mockResolvedValue(sdkOk(undefined));
       await user.click(screen.getByRole('button', { name: 'install-complete' }));
 
       await waitFor(() => expect(mockNavigate).toHaveBeenCalledWith('/home', expect.objectContaining({ replace: true })));
       expect(screen.queryByTestId('onboarding-complete-failed')).not.toBeInTheDocument();
+      // The Toaster outlives this route, so the failed attempt's toast would otherwise ride
+      // along to /home still claiming the setup could not be saved.
+      expect(mockToast.dismiss).toHaveBeenCalledWith('onboarding-complete-failed');
     });
 
     it('retries once and stops when the second attempt lands', async () => {
-      mockCompleteOnboarding
-        .mockRejectedValueOnce(new Error('Service Unavailable'))
-        .mockResolvedValue({ data: undefined, response: { ok: true, status: 200 } });
+      mockCompleteOnboarding.mockRejectedValueOnce(new Error('Service Unavailable')).mockResolvedValue(sdkOk(undefined));
 
       await finishInstall();
 
@@ -462,6 +479,55 @@ describe('OnboardingPage (single vertical form)', () => {
 
       await waitFor(() => expect(mockCompleteOnboarding).toHaveBeenCalledTimes(2), { timeout: 3_000 });
       expect(mockAppContext.refreshAppContext).not.toHaveBeenCalled();
+    });
+
+    /**
+     * A 401 means the session lapsed, not that the Hub is down: the interceptor has already
+     * started the redirect to /login, so a second identical PATCH cannot succeed and only
+     * delays the failure notice — whose advice ("check that the Hub is running") is wrong here.
+     */
+    it('MUST NOT retry a write the server refused outright', async () => {
+      mockCompleteOnboarding.mockRejectedValue(new TranslatableError('SESSION_EXPIRED', {}, { status: 401, url: '/api/complete-onboarding' }));
+
+      await finishInstall();
+
+      await screen.findByTestId('onboarding-complete-failed', undefined, { timeout: 3_000 });
+      expect(mockCompleteOnboarding).toHaveBeenCalledTimes(1);
+    });
+
+    it('retries a 5xx, which a restarting Hub answers with', async () => {
+      mockCompleteOnboarding.mockRejectedValue(new TranslatableError('SYSTEM_ERROR', {}, { status: 503, url: '/api/complete-onboarding' }));
+
+      await finishInstall();
+
+      await waitFor(() => expect(mockCompleteOnboarding).toHaveBeenCalledTimes(2), { timeout: 3_000 });
+    });
+
+    /**
+     * InstallStep's Continue button is never disabled and drops the promise it gets back, and
+     * the handler now stays alive across the retry pause — so without a latch the loser of two
+     * overlapping chains reports failure over the winner's navigation.
+     */
+    it('MUST NOT start a second completion chain while one is still in flight', async () => {
+      let releaseFirst: (() => void) | undefined;
+      mockCompleteOnboarding
+        .mockImplementationOnce(
+          () =>
+            new Promise((resolve) => {
+              releaseFirst = () => resolve(sdkOk(undefined));
+            }),
+        )
+        .mockResolvedValue(sdkOk(undefined));
+
+      const user = await finishInstall();
+      await waitFor(() => expect(mockCompleteOnboarding).toHaveBeenCalledTimes(1));
+
+      await user.click(screen.getByRole('button', { name: 'install-complete' }));
+      expect(mockCompleteOnboarding).toHaveBeenCalledTimes(1);
+
+      releaseFirst?.();
+      await waitFor(() => expect(mockNavigate).toHaveBeenCalledTimes(1));
+      expect(mockCompleteOnboarding).toHaveBeenCalledTimes(1);
     });
   });
 
