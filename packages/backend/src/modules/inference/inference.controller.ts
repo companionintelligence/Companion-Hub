@@ -1,7 +1,7 @@
 import { Body, Controller, ConflictException, Get, Headers, Param, Patch, Post, Query, Res, UseGuards } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
 import type { Response } from 'express';
-import { ApiTags } from '@nestjs/swagger';
+import { ApiHeader, ApiTags } from '@nestjs/swagger';
 import { TranslatableError } from '@/common/error/translatable-error';
 import { DemoModeGuard } from '@/common/guards/demo-mode.guard';
 import { InferenceRouterService } from './inference-router.service';
@@ -335,6 +335,7 @@ export class InferenceController {
 
   @UseGuards(AuthGuard)
   @Get('onboarding-profile')
+  @ApiHeader({ name: VLLM_PROBE_API_KEY_HEADER, required: false, description: 'Unsaved vLLM API key for Re-check before Save.' })
   async getOnboardingProfile(@Query() query: OnboardingProfileQueryDto, @Headers(VLLM_PROBE_API_KEY_HEADER) vllmApiKey?: string) {
     const profile = await this.hardwareInspector.getProfile();
     const recommendedBackend = this.getRecommendedBackend(profile);
@@ -416,6 +417,7 @@ export class InferenceController {
 
   @UseGuards(AuthGuard)
   @Get('vllm/status')
+  @ApiHeader({ name: VLLM_PROBE_API_KEY_HEADER, required: false, description: 'Unsaved vLLM API key for Re-check before Save.' })
   async getVllmStatus(@Query() query?: VllmStatusQueryDto, @Headers(VLLM_PROBE_API_KEY_HEADER) apiKey?: string) {
     const requestedUrl = query?.url?.trim() || this.vllmBackend.getBaseUrl();
     const probeUrl = resolveVllmProbeUrl(requestedUrl);
