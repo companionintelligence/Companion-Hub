@@ -58,6 +58,27 @@ describe('PortalCatalogService', () => {
     expect(result?.data[0]?.urn).toBe('ghost:ci-marketplace');
   });
 
+  it('filters Hub-managed Cloudflare Tunnel entries from the installable catalog', async () => {
+    portalClient.fetchStoreCatalog.mockResolvedValue([
+      { slug: 'cloudflared', name: 'Cloudflare Tunnel', short_desc: 'Hub-managed tunnel', categories: ['networking'] },
+      { slug: 'cloudflare-tunnel', name: 'Cloudflare Tunnel', short_desc: 'Legacy tunnel listing', categories: ['networking'] },
+      { slug: 'ghost', name: 'Ghost', short_desc: 'Blog', categories: ['social'] },
+    ] as any);
+
+    const result = await service.searchCatalog({ pageSize: 50 });
+
+    expect(result?.data.map((entry) => entry.urn)).toEqual(['ghost:ci-marketplace']);
+  });
+
+  it('does not resolve Hub-managed Cloudflare Tunnel entries as installable app details', async () => {
+    portalClient.fetchStoreCatalog.mockResolvedValue([
+      { slug: 'cloudflared', name: 'Cloudflare Tunnel', short_desc: 'Hub-managed tunnel', categories: ['networking'] },
+    ] as any);
+
+    await expect(service.getAppInfoForUrn('cloudflared:ci-marketplace' as any)).resolves.toBeNull();
+    expect(portalClient.fetchStoreCatalog).not.toHaveBeenCalled();
+  });
+
   it('resolves icon URLs by marketplace urn slug', async () => {
     portalClient.fetchStoreCatalog.mockResolvedValue([
       { slug: 'ghost', name: 'Ghost', short_desc: 'Blog', categories: ['social'], icon: 'https://cdn.example.com/ghost.png' },

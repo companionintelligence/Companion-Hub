@@ -48,6 +48,12 @@ describe('resolveDirectLocalUrl', () => {
     expect(service.resolveDirectLocalUrl(APP, { ...INFO, url_suffix: '/web' })).toBe('http://192.168.1.9:8080/web');
   });
 
+  it('uses https for apps that declare an HTTPS local endpoint', () => {
+    const service = makeService();
+
+    expect(service.resolveDirectLocalUrl(APP, { ...INFO, https: true })).toBe('https://192.168.1.9:8080');
+  });
+
   it('returns nothing without an allocated port', () => {
     const service = makeService();
 
