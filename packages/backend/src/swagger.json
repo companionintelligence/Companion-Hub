@@ -4789,6 +4789,20 @@
         }
       }
     },
+    "/api/system/update/host-listener": {
+      "get": {
+        "operationId": "getHostListenerStatus",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "SystemUpdate"
+        ]
+      }
+    },
     "/api/system/update/host-listener-token": {
       "get": {
         "operationId": "getHostListenerToken",

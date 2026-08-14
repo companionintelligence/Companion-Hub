@@ -31,6 +31,12 @@ export class SystemUpdateController {
     return { enabled: body.enabled };
   }
 
+  @Get('host-listener')
+  @UseGuards(AuthGuard)
+  async getHostListenerStatus() {
+    return this.systemUpdateService.getHostListenerStatus();
+  }
+
   @Get('host-listener-token')
   @UseGuards(AuthGuard)
   getHostListenerToken() {

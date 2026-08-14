@@ -71,6 +71,14 @@ describe('SystemUpdateController', () => {
     });
   });
 
+  describe('getHostListenerStatus', () => {
+    it('returns whether the desktop listener is reachable', async () => {
+      updateService.getHostListenerStatus.mockResolvedValue({ reachable: false });
+
+      await expect(controller.getHostListenerStatus()).resolves.toEqual({ reachable: false });
+    });
+  });
+
   describe('getHostListenerToken', () => {
     it('should return token when listener is available', () => {
       updateService.getHostUpdateListenerToken.mockReturnValue('secret-token');

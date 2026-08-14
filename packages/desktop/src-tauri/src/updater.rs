@@ -13,7 +13,11 @@ use sha2::{Digest, Sha256};
 use crate::hub_env::{default_update_cdn_base, default_update_cdn_host};
 use crate::hub_manager::{self, PersistedLaunchMode};
 
-const UPDATE_LISTENER_ADDR: &str = "127.0.0.1:17400";
+/// Bind all interfaces so the Hub container can reach this listener via
+/// `host.docker.internal:17400`. Loopback-only would drop that traffic on the
+/// host gateway. `POST /update` (and `/health`) still require the bearer token.
+const UPDATE_LISTENER_BIND_ADDR: &str = "0.0.0.0:17400";
+const UPDATE_LISTENER_LOCAL_URL: &str = "http://127.0.0.1:17400";
 const UPDATE_LISTENER_TOKEN_FILENAME: &str = "update-listener.token";
 #[cfg(debug_assertions)]
 const UPDATE_BASE_URL_ENV: &str = "CI_HUB_UPDATE_BASE_URL";
@@ -1217,7 +1221,10 @@ fn handle_update_http_request(mut stream: TcpStream) {
             },
         }
     } else if request.starts_with("GET /health") {
-        ("200 OK", "ok".to_string())
+        match authorize_update_listener_request(&request) {
+            Err(err) => ("401 Unauthorized", err),
+            Ok(()) => ("200 OK", "ok".to_string()),
+        }
     } else {
         ("404 Not Found", "not found".to_string())
     };
@@ -1352,7 +1359,7 @@ pub fn run_update_listener() {
     if ensure_update_listener_token().is_err() {
         return;
     }
-    let listener = match TcpListener::bind(UPDATE_LISTENER_ADDR) {
+    let listener = match TcpListener::bind(UPDATE_LISTENER_BIND_ADDR) {
         Ok(l) => l,
         Err(_) => return,
     };
@@ -1402,7 +1409,7 @@ pub fn trigger_host_update_via_listener() -> Result<String, String> {
         .build()
         .map_err(|e| format!("HTTP client: {}", e))?;
     let response = client
-        .post(format!("http://{}/update", UPDATE_LISTENER_ADDR))
+        .post(format!("{}/update", UPDATE_LISTENER_LOCAL_URL))
         .header("Authorization", format!("Bearer {token}"))
         .send()
         .map_err(|e| format!("Host update listener unavailable: {}", e))?;
@@ -1493,6 +1500,12 @@ mod tests {
             "https://{}/v0.2.18/%252e%252e/evil.exe",
             default_update_cdn_host()
         )));
+    }
+
+    #[test]
+    fn update_listener_binds_all_interfaces() {
+        assert_eq!(UPDATE_LISTENER_BIND_ADDR, "0.0.0.0:17400");
+        assert!(UPDATE_LISTENER_LOCAL_URL.starts_with("http://127.0.0.1:"));
     }
 
     #[test]

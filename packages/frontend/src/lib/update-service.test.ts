@@ -5,10 +5,24 @@ import {
   isHubUpdateAvailable,
   isStackUpdateAvailable,
   isTrustedDownloadUrl,
+  performStackUpdate,
   performUpdate,
   platformManifestKey,
   requiresManualDesktopUpdate,
 } from '@/lib/update-service';
+import { sdkOk } from '@/tests/sdk-mock-helpers';
+
+const { mockSdkPerformUpdate } = vi.hoisted(() => ({
+  mockSdkPerformUpdate: vi.fn(),
+}));
+
+vi.mock('@/api-client/sdk.gen', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/api-client/sdk.gen')>();
+  return {
+    ...actual,
+    performUpdate: (...args: unknown[]) => mockSdkPerformUpdate(...args),
+  };
+});
 
 const mockInvoke = vi.fn();
 const mockOpenExternal = vi.fn();
@@ -85,6 +99,7 @@ describe('update-service', () => {
       downloadUrl: '',
       updateAvailable: false,
     });
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false }));
 
     await expect(checkForUpdates('0.2.24')).resolves.toEqual({
       currentVersion: '0.2.24',
@@ -223,11 +238,59 @@ describe('update-service', () => {
   });
 
   describe('requiresManualDesktopUpdate', () => {
-    it('requires manual installer downloads on linux only', () => {
+    it('downloads an installer on every platform instead of replacing the running binary', () => {
       expect(requiresManualDesktopUpdate('linux')).toBe(true);
-      expect(requiresManualDesktopUpdate('macos')).toBe(false);
-      expect(requiresManualDesktopUpdate('windows')).toBe(false);
-      expect(requiresManualDesktopUpdate(null)).toBe(false);
+      expect(requiresManualDesktopUpdate('macos')).toBe(true);
+      expect(requiresManualDesktopUpdate('windows')).toBe(true);
+      expect(requiresManualDesktopUpdate(null)).toBe(true);
+    });
+  });
+
+  it('opens a trusted installer URL instead of invoking the native updater', async () => {
+    Object.defineProperty(window, '__TAURI_INTERNALS__', {
+      value: {},
+      configurable: true,
+    });
+
+    await expect(
+      performUpdate({
+        currentVersion: '0.2.23',
+        latestVersion: '0.2.24',
+        downloadUrl: 'https://dl.ci.computer/v0.2.24/macos/arm/Companion%20Hub_0.2.24_aarch64.dmg',
+        updateAvailable: true,
+        platform: 'macos',
+        manualDownload: true,
+      }),
+    ).resolves.toEqual({
+      ok: true,
+      messageKey: 'SETTINGS_ACTIONS_DOWNLOAD_INSTALLER_OPENED',
+      defaultMessage: 'Installer download opened in your browser.',
+    });
+    expect(mockOpenExternal).toHaveBeenCalledWith('https://dl.ci.computer/v0.2.24/macos/arm/Companion%20Hub_0.2.24_aarch64.dmg');
+    expect(mockInvoke).not.toHaveBeenCalled();
+  });
+
+  describe('performStackUpdate', () => {
+    it('uses host-started copy when the desktop listener accepts the update', async () => {
+      mockSdkPerformUpdate.mockResolvedValue(sdkOk({ success: true, stack: 'skipped', host: 'started' }));
+
+      await expect(performStackUpdate('1.1.0')).resolves.toEqual({
+        ok: true,
+        messageKey: 'SETTINGS_ACTIONS_UPDATE_HOST_STARTED',
+        stack: 'skipped',
+        host: 'started',
+      });
+    });
+
+    it('uses stack-only copy when the desktop listener is unavailable', async () => {
+      mockSdkPerformUpdate.mockResolvedValue(sdkOk({ success: true, stack: 'updating', host: 'unavailable' }));
+
+      await expect(performStackUpdate('1.1.0')).resolves.toEqual({
+        ok: true,
+        messageKey: 'SETTINGS_ACTIONS_UPDATE_STACK_HOST_UNAVAILABLE',
+        stack: 'updating',
+        host: 'unavailable',
+      });
     });
   });
 });
