@@ -1710,6 +1710,7 @@
   "HUB_STATUS_ERROR": "Hub Error",
   "HUB_STATUS_START_FAILED_TITLE": "Hub failed to start",
   "HUB_STATUS_START_FAILED_HINT": "Auto-start is paused until you confirm a retry. Check the error below or open the logs.",
+  "HUB_STATUS_ACL_DENIED": "The desktop app blocked this start command for the current page origin. Open the Hub at http://127.0.0.1 or install a desktop build that allowlists this URL.",
   "HUB_STATUS_RETRY_HUB": "Retry Start",
   "HUB_STATUS_RETRY_CONFIRM_PROMPT": "Retry starting the Hub now? If Docker Hub rate-limited you (HTTP 429), wait a few minutes first, or run docker login for higher pull limits.",
   "HUB_STATUS_RETRY_CONFIRM": "Yes, retry start",

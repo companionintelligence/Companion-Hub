@@ -712,6 +712,7 @@
   "HUB_STATUS_ERROR": "Error del Hub",
   "HUB_STATUS_START_FAILED_TITLE": "El Hub no pudo iniciarse",
   "HUB_STATUS_START_FAILED_HINT": "El inicio automático está en pausa hasta que confirmes un reintento. Revisa el error abajo o abre los registros.",
+  "HUB_STATUS_ACL_DENIED": "La app de escritorio bloqueó este comando de inicio para el origen de esta página. Abre el Hub en http://127.0.0.1 o instala una build de escritorio que permita esta URL.",
   "HUB_STATUS_RETRY_HUB": "Reintentar inicio",
   "HUB_STATUS_RETRY_CONFIRM_PROMPT": "¿Reintentar iniciar el Hub ahora? Si Docker Hub te limitó (HTTP 429), espera unos minutos primero, o ejecuta docker login para límites de descarga más altos.",
   "HUB_STATUS_RETRY_CONFIRM": "Sí, reintentar inicio",
