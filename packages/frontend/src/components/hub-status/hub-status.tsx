@@ -61,6 +61,15 @@ function getErrorMessage(err: unknown): string {
   return String(err);
 }
 
+/** Tauri denied the invoke — the Hub never tried to start. Keep the raw ACL text for logs. */
+function formatHubStartError(err: unknown, aclHint: string): string {
+  const raw = getErrorMessage(err);
+  if (raw.includes('not allowed by ACL')) {
+    return `${aclHint}\n\n${raw}`;
+  }
+  return raw;
+}
+
 export function reloadCurrentWindow() {
   window.location.reload();
 }
@@ -710,22 +719,25 @@ export function HubStatus({ children }: HubStatusProps) {
     setStatus('Stopped');
   }, []);
 
-  const startHub = useCallback(async (logMessage: string) => {
-    const invoke = getTauriInvoke();
-    if (!invoke) return false;
+  const startHub = useCallback(
+    async (logMessage: string) => {
+      const invoke = getTauriInvoke();
+      if (!invoke) return false;
 
-    hubSteadyRunningRef.current = false;
-    setStatus('Starting');
+      hubSteadyRunningRef.current = false;
+      setStatus('Starting');
 
-    try {
-      await invoke('start_hub_command');
-      return true;
-    } catch (err) {
-      console.error(logMessage, err);
-      setStatus({ Error: { message: getErrorMessage(err) } });
-      return false;
-    }
-  }, []);
+      try {
+        await invoke('start_hub_command');
+        return true;
+      } catch (err) {
+        console.error(logMessage, err);
+        setStatus({ Error: { message: formatHubStartError(err, t('HUB_STATUS_ACL_DENIED')) } });
+        return false;
+      }
+    },
+    [t],
+  );
 
   const isStackDevMode = useCallback(async () => {
     if (stackDevModeRef.current !== null) return stackDevModeRef.current;
