@@ -11,7 +11,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
 import { AuthService } from '../auth.service';
 import { SessionManager } from '../session.manager';
-import { SessionUserCache } from '../session-user.cache';
+import { SessionUserCache } from '@/core/cache/session-user.cache';
 import type { LoginBody } from '../dto/auth.dto';
 import axios from 'axios';
 

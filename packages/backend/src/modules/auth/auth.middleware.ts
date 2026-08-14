@@ -7,7 +7,7 @@ import type { NextFunction, Request, Response } from 'express';
 import jsonwebtoken from 'jsonwebtoken';
 import { UserRepository } from '../user/user.repository';
 import { SESSION_TTL_SECONDS, SessionManager } from './session.manager';
-import { SessionUserCache } from './session-user.cache';
+import { SessionUserCache } from '@/core/cache/session-user.cache';
 
 function addSessionId(ids: string[], seen: Set<string>, value: unknown) {
   if (typeof value !== 'string' || !value || seen.has(value)) {

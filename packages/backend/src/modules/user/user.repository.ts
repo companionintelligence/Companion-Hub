@@ -1,3 +1,4 @@
+import { SessionUserCache } from '@/core/cache/session-user.cache';
 import { DATABASE, type Database } from '@/core/database/database.module';
 import { user } from '@/core/database/drizzle/schema';
 import type { NewUser } from '@/core/database/drizzle/types';
@@ -6,7 +7,10 @@ import { eq } from 'drizzle-orm/sql';
 
 @Injectable()
 export class UserRepository {
-  constructor(@Inject(DATABASE) private db: Database) {}
+  constructor(
+    @Inject(DATABASE) private db: Database,
+    private readonly sessionUserCache: SessionUserCache,
+  ) {}
 
   /**
    * Given a username, return the user associated to it
@@ -49,6 +53,11 @@ export class UserRepository {
   /**
    * Given a userId, update the user with the given data
    *
+   * Drops the cached session DTO for this user: `getUserDtoById` feeds a 10s cache that
+   * `AuthMiddleware` reads into `req.user`, which `GET /app-context` returns verbatim. Without
+   * this, a caller that flips `hasCompletedOnboarding`, `totpEnabled`, `advancedMode` or the
+   * username sees its own write ignored until the entry expires.
+   *
    * @param {number} id - The id of the user to update
    * @param {Partial<NewUser>} data - The data to update the user with
    */
@@ -58,6 +67,8 @@ export class UserRepository {
       .set(data)
       .where(eq(user.id, Number(id)))
       .returning();
+
+    this.sessionUserCache.invalidate(Number(id));
 
     return updatedUsers[0];
   }

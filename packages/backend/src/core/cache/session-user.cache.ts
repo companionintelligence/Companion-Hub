@@ -1,12 +1,19 @@
 import { Injectable } from '@nestjs/common';
-import type { UserDto } from '../user/dto/user.dto';
+import type { UserDto } from '@/modules/user/dto/user.dto';
 
 /**
  * Short-lived per-process cache for AuthMiddleware session → user DTO lookups.
  * Cuts repeated `getUserDtoById` on Hub API fan-out (store browse, shell queries).
  *
- * Invalidate on logout / password change / user profile updates so identity cannot
- * leak across sessions after mutation.
+ * Every write to the user row invalidates this, from `UserRepository.updateUser` —
+ * the one choke point all mutations share. Invalidating at individual call sites
+ * instead left the cached DTO serving pre-write values for up to TTL_MS: finishing
+ * onboarding wrote `hasCompletedOnboarding: true`, the very next `GET /app-context`
+ * answered `false` from here, and the `/home` route guard bounced the user back
+ * into the wizard.
+ *
+ * Lives in the global CacheModule rather than the auth module so the user module
+ * can reach it without importing auth (which imports the user module).
  */
 @Injectable()
 export class SessionUserCache {

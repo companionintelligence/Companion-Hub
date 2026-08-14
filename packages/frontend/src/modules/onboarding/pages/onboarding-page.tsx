@@ -187,10 +187,21 @@ function OnboardingWizard() {
           operatorUsername={user.username}
           aiSetupConfig={aiSetupConfig}
           onComplete={async (summary) => {
-            try {
-              await sdkResult(completeOnboarding());
-            } catch {
-              // Non-fatal — navigate anyway.
+            // `sdkResult` resolves on an HTTP failure instead of throwing, so the status has to
+            // be read: an unchecked PATCH that never landed leaves the server flag false, and the
+            // /home route guard reads that back and drops the user into the wizard a second time.
+            // Transport errors do still reject, so both paths stay non-fatal — stranding the user
+            // on a finished wizard is worse than navigating with the flag unset.
+            const markComplete = async () => {
+              try {
+                return (await sdkResult(completeOnboarding())).ok;
+              } catch {
+                return false;
+              }
+            };
+            // One retry covers a transient blip; past that, navigate anyway.
+            if (!(await markComplete())) {
+              await markComplete();
             }
             // Update the shared app-context cache (correct query key) so route guards
             // on /home and /store do not send the user back to onboarding.
