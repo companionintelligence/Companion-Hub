@@ -1,7 +1,25 @@
 {
   "default": {
     "identifier": "default",
-    "description": "Default capabilities for the main window",
+    "description": "Default capabilities for the main window. remote.urls is the desktop IPC allowlist after bootstrap navigates away from tauri://. *:// covers http and https. URLPattern * is one hostname label, so hub.ci.localhost / hub.ci.lan need *.ci.localhost / *.ci.lan. A port wildcard does not match a default-port URL, so those hosts are listed both with and without :*.",
+    "remote": {
+      "urls": [
+        "https://*.companionintelligence.com",
+        "https://companionintelligence.com",
+        "https://*.ci.computer",
+        "https://ci.computer",
+        "*://localhost:*",
+        "*://127.0.0.1:*",
+        "*://*.localhost",
+        "*://*.localhost:*",
+        "*://*.ci.localhost",
+        "*://*.ci.localhost:*",
+        "*://ci.lan",
+        "*://ci.lan:*",
+        "*://*.ci.lan",
+        "*://*.ci.lan:*"
+      ]
+    },
     "local": true,
     "windows": ["main"],
     "permissions": [

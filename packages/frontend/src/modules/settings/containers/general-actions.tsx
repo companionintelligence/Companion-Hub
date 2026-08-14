@@ -23,6 +23,7 @@ import { clearHubSteadySession, markStackUpdatePending } from '@/lib/desktop-sta
 import toast from 'react-hot-toast';
 import {
   checkForUpdates,
+  fetchHostListenerStatus,
   getInstalledDesktopVersion,
   isStackUpdateAvailable,
   isTauri,
@@ -53,6 +54,7 @@ export const GeneralActionsContainer = () => {
   const [shellUpdate, setShellUpdate] = useState<UpdateInfo | null>(null);
   const [shellVersion, setShellVersion] = useState<string | null>(null);
   const [updatingShell, setUpdatingShell] = useState(false);
+  const [hostListenerReachable, setHostListenerReachable] = useState<boolean | null>(null);
   const [switchHubOpen, setSwitchHubOpen] = useState(false);
 
   const desktop = isTauri();
@@ -110,9 +112,19 @@ export const GeneralActionsContainer = () => {
     return info;
   }, [desktop]);
 
+  const refreshHostListenerStatus = useCallback(async () => {
+    const reachable = await fetchHostListenerStatus();
+    setHostListenerReachable(reachable);
+    return reachable;
+  }, []);
+
   useEffect(() => {
     void refreshShellUpdateState();
   }, [refreshShellUpdateState]);
+
+  useEffect(() => {
+    void refreshHostListenerStatus();
+  }, [refreshHostListenerStatus]);
 
   useEffect(() => {
     void unwrapSdkOrNull(getAutoUpdates()).then((data) => {
@@ -130,6 +142,7 @@ export const GeneralActionsContainer = () => {
       const data = (result.data ?? {}) as { updateAvailable?: boolean; latest?: string };
       await refreshAppContext();
       await refreshShellUpdateState();
+      await refreshHostListenerStatus();
       if (data.updateAvailable) {
         toast.success(t('SETTINGS_ACTIONS_UPDATE_AVAILABLE', { version: data.latest ?? version.latest }));
       } else {
@@ -140,7 +153,7 @@ export const GeneralActionsContainer = () => {
     } finally {
       setChecking(false);
     }
-  }, [refreshAppContext, refreshShellUpdateState, t, version.latest]);
+  }, [refreshAppContext, refreshHostListenerStatus, refreshShellUpdateState, t, version.latest]);
 
   const handleUpdate = useCallback(async () => {
     setUpdating(true);
@@ -344,7 +357,7 @@ export const GeneralActionsContainer = () => {
         <CardHeader>
           <div className="flex items-center gap-2">
             <ArrowUpCircle className="h-5 w-5 shrink-0 text-muted-foreground" />
-            <CardTitle className="text-xl">{t('COMMON_ACTIONS')}</CardTitle>
+            <CardTitle className="text-xl">{t('SETTINGS_ACTIONS_HUB_STACK_TITLE')}</CardTitle>
           </div>
           <CardDescription>{t('SETTINGS_ACTIONS_CURRENT_VERSION', { version: displayVersion })}</CardDescription>
         </CardHeader>
@@ -374,52 +387,64 @@ export const GeneralActionsContainer = () => {
               </button>
             </div>
           </div>
-
-          <div className="mt-6 pt-6 border-t">
-            <h3 className="text-lg font-semibold mb-1">{t('SETTINGS_ACTIONS_UPDATE_REPO_TITLE')}</h3>
-            <p className="text-sm text-muted-foreground mb-3">{t('SETTINGS_ACTIONS_UPDATE_REPO_SUBTITLE')}</p>
-            <UpdateRepoModal />
-          </div>
         </CardContent>
       </Card>
 
-      {shellUpdate ? (
-        <Card data-testid="desktop-shell-update-card">
-          <CardHeader>
-            <CardTitle className="text-xl">{t('SETTINGS_ACTIONS_SHELL_UPDATE_TITLE')}</CardTitle>
-            <CardDescription>
-              {shellVersion
-                ? t('SETTINGS_ACTIONS_SHELL_UPDATE_SUBTITLE_WITH_VERSION', { version: shellVersion })
-                : t('SETTINGS_ACTIONS_SHELL_UPDATE_SUBTITLE')}
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            {shellUpdate.downloadUrl ? (
-              <>
-                {shellVersion && !shellUpdate.updateAvailable ? (
-                  <p className="text-sm text-muted-foreground mb-3">{t('SETTINGS_ACTIONS_SHELL_UP_TO_DATE')}</p>
-                ) : null}
-                <Button onClick={handleShellUpdate} disabled={updatingShell} data-testid="hub-shell-update-btn">
-                  {updatingShell ? (
-                    <>
-                      <Loader2 className="h-4 w-4 animate-spin mr-2" />
-                      {t('SETTINGS_ACTIONS_CHECKING')}
-                    </>
-                  ) : (
-                    t('SETTINGS_ACTIONS_DOWNLOAD_INSTALLER_VERSION', { version: shellUpdate.latestVersion })
-                  )}
-                </Button>
-                {shellMessage ? <p className="mt-3 text-sm text-muted-foreground">{shellMessage}</p> : null}
-                {renderManualUpdateInstructions()}
-              </>
-            ) : (
-              <p className="text-sm text-muted-foreground">
-                {shellVersion && !shellUpdate.updateAvailable ? t('SETTINGS_ACTIONS_SHELL_UP_TO_DATE') : t('SETTINGS_ACTIONS_UPDATE_NO_DOWNLOAD_URL')}
-              </p>
-            )}
-          </CardContent>
-        </Card>
-      ) : null}
+      <Card data-testid="desktop-shell-update-card">
+        <CardHeader>
+          <CardTitle className="text-xl">{t('SETTINGS_ACTIONS_SHELL_UPDATE_TITLE')}</CardTitle>
+          <CardDescription>
+            {shellVersion
+              ? t('SETTINGS_ACTIONS_SHELL_UPDATE_SUBTITLE_WITH_VERSION', { version: shellVersion })
+              : t('SETTINGS_ACTIONS_SHELL_UPDATE_SUBTITLE')}
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          {hostListenerReachable === false ? (
+            <p className="text-sm text-muted-foreground mb-4" data-testid="host-listener-unavailable">
+              {t('SETTINGS_ACTIONS_HOST_LISTENER_UNAVAILABLE')}
+            </p>
+          ) : null}
+          {hostListenerReachable === true ? (
+            <p className="text-sm text-muted-foreground mb-4" data-testid="host-listener-ready">
+              {t('SETTINGS_ACTIONS_HOST_LISTENER_READY')}
+            </p>
+          ) : null}
+          {shellUpdate?.downloadUrl ? (
+            <>
+              {shellVersion && !shellUpdate.updateAvailable ? (
+                <p className="text-sm text-muted-foreground mb-3">{t('SETTINGS_ACTIONS_SHELL_UP_TO_DATE')}</p>
+              ) : null}
+              <Button onClick={handleShellUpdate} disabled={updatingShell} data-testid="hub-shell-update-btn">
+                {updatingShell ? (
+                  <>
+                    <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                    {t('SETTINGS_ACTIONS_CHECKING')}
+                  </>
+                ) : (
+                  t('SETTINGS_ACTIONS_DOWNLOAD_INSTALLER_VERSION', { version: shellUpdate.latestVersion })
+                )}
+              </Button>
+              {shellMessage ? <p className="mt-3 text-sm text-muted-foreground">{shellMessage}</p> : null}
+              {renderManualUpdateInstructions()}
+            </>
+          ) : (
+            <p className="text-sm text-muted-foreground">
+              {shellVersion && !shellUpdate?.updateAvailable ? t('SETTINGS_ACTIONS_SHELL_UP_TO_DATE') : t('SETTINGS_ACTIONS_UPDATE_NO_DOWNLOAD_URL')}
+            </p>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-xl">{t('SETTINGS_ACTIONS_UPDATE_REPO_TITLE')}</CardTitle>
+          <CardDescription>{t('SETTINGS_ACTIONS_UPDATE_REPO_SUBTITLE')}</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <UpdateRepoModal />
+        </CardContent>
+      </Card>
 
       <Card>
         <CardHeader>

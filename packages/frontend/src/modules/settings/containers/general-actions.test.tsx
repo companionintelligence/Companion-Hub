@@ -1,6 +1,6 @@
 import { render, screen, userEvent, waitFor } from '@/tests/test-utils';
 import { useAppContext } from '@/context/app-context';
-import { checkForUpdates, getInstalledDesktopVersion, isTauri, performUpdate } from '@/lib/update-service';
+import { checkForUpdates, fetchHostListenerStatus, getInstalledDesktopVersion, isTauri, performUpdate } from '@/lib/update-service';
 import { sdkOk } from '@/tests/sdk-mock-helpers';
 import toast from 'react-hot-toast';
 import { describe, expect, it, beforeEach, vi } from 'vitest';
@@ -36,6 +36,7 @@ vi.mock('@/lib/update-service', async () => {
   return {
     ...actual,
     checkForUpdates: vi.fn(),
+    fetchHostListenerStatus: vi.fn(),
     getInstalledDesktopVersion: vi.fn(),
     isTauri: vi.fn(),
     performUpdate: vi.fn(),
@@ -63,6 +64,7 @@ const mockCheckHubForUpdatesApi = vi.mocked(checkHubForUpdatesApi);
 const mockGetInstalledDesktopVersion = vi.mocked(getInstalledDesktopVersion);
 const mockIsTauri = vi.mocked(isTauri);
 const mockPerformUpdate = vi.mocked(performUpdate);
+const mockFetchHostListenerStatus = vi.mocked(fetchHostListenerStatus);
 const mockToastSuccess = vi.mocked(toast.success);
 
 describe('GeneralActionsContainer', () => {
@@ -84,6 +86,7 @@ describe('GeneralActionsContainer', () => {
     mockIsTauri.mockReturnValue(false);
     mockGetInstalledDesktopVersion.mockResolvedValue(null);
     mockCheckForUpdates.mockResolvedValue(null);
+    mockFetchHostListenerStatus.mockResolvedValue(false);
   });
 
   it('shows the stack version in the primary card and shell update in the shell card on desktop', async () => {
@@ -192,7 +195,31 @@ describe('GeneralActionsContainer', () => {
       expect(mockToastSuccess).toHaveBeenCalledWith('You are on the latest version.');
     });
     expect(screen.getByText('Current version: 4.7.0')).toBeInTheDocument();
-    expect(screen.queryByTestId('desktop-shell-update-card')).not.toBeInTheDocument();
+    expect(screen.getByTestId('desktop-shell-update-card')).toBeInTheDocument();
+    expect(screen.getByTestId('host-listener-unavailable')).toHaveTextContent('Start Companion Hub');
+  });
+
+  it('tells the operator to start the desktop app when the host listener is down', async () => {
+    mockFetchHostListenerStatus.mockResolvedValue(false);
+
+    render(<GeneralActionsContainer />);
+
+    expect(await screen.findByTestId('host-listener-unavailable')).toHaveTextContent(
+      'The desktop app is not running, so the app shell cannot update right now',
+    );
+    expect(screen.queryByTestId('host-listener-ready')).not.toBeInTheDocument();
+  });
+
+  it('does not POST the host listener from the browser tab', async () => {
+    const fetchSpy = vi.fn();
+    vi.stubGlobal('fetch', fetchSpy);
+    mockFetchHostListenerStatus.mockResolvedValue(false);
+
+    render(<GeneralActionsContainer />);
+
+    await screen.findByTestId('desktop-shell-update-card');
+    expect(fetchSpy.mock.calls.some(([url]) => String(url).includes('127.0.0.1:17400'))).toBe(false);
+    vi.unstubAllGlobals();
   });
 
   it('shows macos install steps for a dmg download', async () => {

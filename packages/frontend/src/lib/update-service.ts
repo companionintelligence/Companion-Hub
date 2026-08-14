@@ -337,6 +337,20 @@ export interface UpdateActionResult {
   messageKey: string;
   messageParams?: Record<string, string>;
   defaultMessage?: string;
+  stack?: 'updating' | 'skipped' | 'failed';
+  host?: 'started' | 'unavailable' | 'failed';
+}
+
+export async function fetchHostListenerStatus(): Promise<boolean | null> {
+  try {
+    const { getHostListenerStatus } = await import('@/api-client/sdk.gen');
+    const { sdkResult } = await import('@/lib/sdk-unwrap');
+    const result = await sdkResult(getHostListenerStatus());
+    if (!result.ok) return null;
+    return Boolean((result.data as { reachable?: boolean } | null)?.reachable);
+  } catch {
+    return null;
+  }
 }
 
 export async function performUpdate(info: UpdateInfo): Promise<UpdateActionResult> {
@@ -360,14 +374,23 @@ export async function performUpdate(info: UpdateInfo): Promise<UpdateActionResul
   }
 }
 
-/** Stack-only update via backend API (browser / in-container fallback). */
+/** Hub-driven update: stack pull, and host listener when the desktop app is running. */
 export async function performStackUpdate(targetVersion?: string): Promise<UpdateActionResult> {
   try {
     const { performUpdate } = await import('@/api-client/sdk.gen');
     const { sdkResult } = await import('@/lib/sdk-unwrap');
     const result = await sdkResult(performUpdate({ body: { targetVersion } } as Parameters<typeof performUpdate>[0]));
     if (result.ok) {
-      return { ok: true, messageKey: 'SETTINGS_ACTIONS_UPDATE_RESTARTING' };
+      const data = (result.data ?? {}) as { stack?: UpdateActionResult['stack']; host?: UpdateActionResult['host'] };
+      const host = data.host;
+      const stack = data.stack;
+      let messageKey = 'SETTINGS_ACTIONS_UPDATE_RESTARTING';
+      if (host === 'started') {
+        messageKey = 'SETTINGS_ACTIONS_UPDATE_HOST_STARTED';
+      } else if (host === 'unavailable' || host === 'failed') {
+        messageKey = 'SETTINGS_ACTIONS_UPDATE_STACK_HOST_UNAVAILABLE';
+      }
+      return { ok: true, messageKey, stack, host };
     }
     return { ok: false, messageKey: 'SETTINGS_ACTIONS_UPDATE_FAILED' };
   } catch {

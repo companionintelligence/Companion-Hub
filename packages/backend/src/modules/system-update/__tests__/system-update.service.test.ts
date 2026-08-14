@@ -1,10 +1,18 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { HUB_STACK_IMAGE_REPO, HUB_STACK_REGISTRY_REPO } from '@/common/constants';
-import { SystemUpdateService } from '../system-update.service';
+import { resolveHostListenerBaseUrl, SystemUpdateService } from '../system-update.service';
 import fs from 'node:fs';
+import axios from 'axios';
 
 vi.mock('node:child_process', () => ({
   spawn: vi.fn(),
+}));
+
+vi.mock('axios', () => ({
+  default: {
+    get: vi.fn(),
+    post: vi.fn(),
+  },
 }));
 
 vi.mock('node:fs', () => ({
@@ -28,6 +36,8 @@ describe('SystemUpdateService', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(axios.get).mockRejectedValue(new Error('listener down'));
+    vi.mocked(axios.post).mockRejectedValue(new Error('listener down'));
     mockLogger = {
       info: vi.fn(),
       debug: vi.fn(),
@@ -63,6 +73,16 @@ describe('SystemUpdateService', () => {
     });
   });
 
+  describe('resolveHostListenerBaseUrl', () => {
+    it('uses host.docker.internal from inside the Hub container', () => {
+      expect(resolveHostListenerBaseUrl(true)).toBe('http://host.docker.internal:17400');
+    });
+
+    it('uses loopback when Hub is not in a container', () => {
+      expect(resolveHostListenerBaseUrl(false)).toBe('http://127.0.0.1:17400');
+    });
+  });
+
   describe('performUpdate', () => {
     it('should pull the pinned Hub image and recreate ci-os-hub', async () => {
       vi.useFakeTimers();
@@ -91,6 +111,8 @@ describe('SystemUpdateService', () => {
       const result = await resultPromise;
 
       expect(result.success).toBe(true);
+      expect(result.stack).toBe('updating');
+      expect(result.host).toBe('unavailable');
       expect(fs.writeFileSync).toHaveBeenCalled();
       const written = vi.mocked(fs.writeFileSync).mock.calls[0]?.[1] as string;
       expect(written).toContain(`CI_HUB_IMAGE=${HUB_STACK_IMAGE_REPO}:1.1.0`);
@@ -121,6 +143,40 @@ describe('SystemUpdateService', () => {
 
       vi.useRealTimers();
       vi.unstubAllEnvs();
+    });
+
+    it('skips compose recreate when the host listener accepts the update', async () => {
+      vi.mocked(fs.existsSync).mockReturnValue(true);
+      vi.mocked(fs.readFileSync).mockReturnValue('listener-token\n');
+      vi.mocked(axios.get).mockResolvedValue({ status: 200 });
+      vi.mocked(axios.post).mockResolvedValue({ status: 200 });
+
+      const { spawn } = await import('node:child_process');
+      const result = await service.performUpdate('1.1.0');
+
+      expect(result).toEqual({
+        success: true,
+        message: 'Update initiated, hub will restart shortly',
+        stack: 'skipped',
+        host: 'started',
+      });
+      expect(spawn).not.toHaveBeenCalled();
+      expect(axios.post).toHaveBeenCalledWith(
+        expect.stringMatching(/\/update$/),
+        null,
+        expect.objectContaining({
+          headers: { Authorization: 'Bearer listener-token' },
+        }),
+      );
+    });
+
+    it('treats a probe timeout as an unavailable host listener', async () => {
+      vi.mocked(fs.existsSync).mockReturnValue(true);
+      vi.mocked(fs.readFileSync).mockReturnValue('listener-token\n');
+      vi.mocked(axios.get).mockRejectedValue(new Error('timeout'));
+
+      await expect(service.probeHostListener()).resolves.toBe(false);
+      await expect(service.getHostListenerStatus()).resolves.toEqual({ reachable: false });
     });
   });
 

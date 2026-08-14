@@ -4744,6 +4744,17 @@ export type SetAutoUpdatesResponses = {
     201: unknown;
 };
 
+export type GetHostListenerStatusData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/system/update/host-listener';
+};
+
+export type GetHostListenerStatusResponses = {
+    200: unknown;
+};
+
 export type GetHostListenerTokenData = {
     body?: never;
     path?: never;

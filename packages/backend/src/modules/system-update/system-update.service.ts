@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 import fs from 'node:fs';
+import axios from 'axios';
 import { Injectable, OnApplicationBootstrap, type OnApplicationShutdown, Optional } from '@nestjs/common';
 import { DATA_DIR, HUB_STACK_IMAGE_REPO, HUB_STACK_REGISTRY_REPO, UPDATE_LISTENER_TOKEN_FILENAME } from '@/common/constants';
 import { writeSettingsJsonFile } from '@/common/helpers/env-helpers';
@@ -11,6 +12,35 @@ import { AgentNotifyService } from '../agent-notify/agent-notify.service';
 
 /** Desktop seeds `docker-compose.prod.yml`; other installs may only have `docker-compose.yml`. */
 const COMPOSE_FILENAMES = ['docker-compose.prod.yml', 'docker-compose.yml'] as const;
+
+export const HOST_LISTENER_PORT = 17400;
+const HOST_LISTENER_PROBE_TIMEOUT_MS = 1500;
+const HOST_LISTENER_TRIGGER_TIMEOUT_MS = 10_000;
+
+export type StackUpdateState = 'updating' | 'skipped' | 'failed';
+export type HostUpdateState = 'started' | 'unavailable' | 'failed';
+
+export type PerformUpdateResult = {
+  success: boolean;
+  message: string;
+  stack: StackUpdateState;
+  host: HostUpdateState;
+};
+
+/** Hub container probe — `/.dockerenv` plus Podman's containerenv. Not the `/data` heuristic. */
+export function detectHubContainer(): boolean {
+  try {
+    return fs.existsSync('/.dockerenv') || fs.existsSync('/run/.containerenv');
+  } catch {
+    return false;
+  }
+}
+
+/** From inside Docker, the desktop listener is on the host — not this container's loopback. */
+export function resolveHostListenerBaseUrl(inContainer: boolean = detectHubContainer()): string {
+  const host = inContainer ? 'host.docker.internal' : '127.0.0.1';
+  return `http://${host}:${HOST_LISTENER_PORT}`;
+}
 
 /** GHCR tags are unprefixed (`0.2.56`). A leading `v` makes the pull 404. */
 function normalizeHubVersionTag(version: string): string {
@@ -141,7 +171,47 @@ export class SystemUpdateService implements OnApplicationBootstrap, OnApplicatio
     return path.join(logsDir, 'hub-stack-update.log');
   }
 
-  async performUpdate(targetVersion?: string) {
+  async getHostListenerStatus(): Promise<{ reachable: boolean }> {
+    return { reachable: await this.probeHostListener() };
+  }
+
+  async probeHostListener(): Promise<boolean> {
+    const token = this.getHostUpdateListenerToken();
+    if (!token) {
+      return false;
+    }
+
+    try {
+      const response = await axios.get(`${resolveHostListenerBaseUrl()}/health`, {
+        timeout: HOST_LISTENER_PROBE_TIMEOUT_MS,
+        headers: { Authorization: `Bearer ${token}` },
+        validateStatus: () => true,
+      });
+      return response.status === 200;
+    } catch {
+      return false;
+    }
+  }
+
+  async triggerHostListener(): Promise<Exclude<HostUpdateState, 'unavailable'>> {
+    const token = this.getHostUpdateListenerToken();
+    if (!token) {
+      return 'failed';
+    }
+
+    try {
+      const response = await axios.post(`${resolveHostListenerBaseUrl()}/update`, null, {
+        timeout: HOST_LISTENER_TRIGGER_TIMEOUT_MS,
+        headers: { Authorization: `Bearer ${token}` },
+        validateStatus: () => true,
+      });
+      return response.status >= 200 && response.status < 300 ? 'started' : 'failed';
+    } catch {
+      return 'failed';
+    }
+  }
+
+  async performUpdate(targetVersion?: string): Promise<PerformUpdateResult> {
     const pinned = normalizeHubVersionTag(targetVersion ?? (await this.checkForUpdates()).latest);
     const imageRef = `${HUB_STACK_IMAGE_REPO}:${pinned}`;
     this.logger.info(`Hub stack update initiated to ${imageRef}`);
@@ -153,6 +223,44 @@ export class SystemUpdateService implements OnApplicationBootstrap, OnApplicatio
 
     this.pinHubStackVersionInEnv(envFile, pinned);
 
+    const listenerReachable = await this.probeHostListener();
+    if (listenerReachable) {
+      const host = await this.triggerHostListener();
+      if (host === 'started') {
+        this.logger.info('Host update listener accepted the update; desktop will stop the stack and pull on relaunch');
+        return {
+          success: true,
+          message: 'Update initiated, hub will restart shortly',
+          stack: 'skipped',
+          host: 'started',
+        };
+      }
+      this.logger.warn('Host update listener trigger failed; falling back to stack-only update');
+      await this.pullAndRecreateHubStack(imageRef, envFile, composeFile, childEnv, dataDir);
+      return {
+        success: true,
+        message: 'Update initiated, hub will restart shortly',
+        stack: 'updating',
+        host: 'failed',
+      };
+    }
+
+    await this.pullAndRecreateHubStack(imageRef, envFile, composeFile, childEnv, dataDir);
+    return {
+      success: true,
+      message: 'Update initiated, hub will restart shortly',
+      stack: 'updating',
+      host: 'unavailable',
+    };
+  }
+
+  private async pullAndRecreateHubStack(
+    imageRef: string,
+    envFile: string,
+    composeFile: string,
+    childEnv: NodeJS.ProcessEnv,
+    dataDir: string,
+  ): Promise<void> {
     try {
       // Pull the pinned image by reference so compose interpolation cannot
       // silently retarget the tag already baked into this container's env.
@@ -188,8 +296,6 @@ export class SystemUpdateService implements OnApplicationBootstrap, OnApplicatio
       });
       cmd.unref();
     }, 3000);
-
-    return { success: true, message: 'Update initiated, hub will restart shortly' };
   }
 
   private async runDockerCommand(command: string[], env: NodeJS.ProcessEnv): Promise<void> {
@@ -260,7 +366,7 @@ export class SystemUpdateService implements OnApplicationBootstrap, OnApplicatio
     }
   }
 
-  /** Token for the desktop host update listener on 127.0.0.1:17400 (browser cannot reach it without auth). */
+  /** Token for the desktop host update listener (Hub POSTs to host.docker.internal:17400). */
   getHostUpdateListenerToken(): string | null {
     const tokenPath = path.join(DATA_DIR, UPDATE_LISTENER_TOKEN_FILENAME);
     if (!fs.existsSync(tokenPath)) {

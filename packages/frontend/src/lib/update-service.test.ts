@@ -5,10 +5,24 @@ import {
   isHubUpdateAvailable,
   isStackUpdateAvailable,
   isTrustedDownloadUrl,
+  performStackUpdate,
   performUpdate,
   platformManifestKey,
   requiresManualDesktopUpdate,
 } from '@/lib/update-service';
+import { sdkOk } from '@/tests/sdk-mock-helpers';
+
+const { mockSdkPerformUpdate } = vi.hoisted(() => ({
+  mockSdkPerformUpdate: vi.fn(),
+}));
+
+vi.mock('@/api-client/sdk.gen', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/api-client/sdk.gen')>();
+  return {
+    ...actual,
+    performUpdate: (...args: unknown[]) => mockSdkPerformUpdate(...args),
+  };
+});
 
 const mockInvoke = vi.fn();
 const mockOpenExternal = vi.fn();
@@ -254,5 +268,29 @@ describe('update-service', () => {
     });
     expect(mockOpenExternal).toHaveBeenCalledWith('https://dl.ci.computer/v0.2.24/macos/arm/Companion%20Hub_0.2.24_aarch64.dmg');
     expect(mockInvoke).not.toHaveBeenCalled();
+  });
+
+  describe('performStackUpdate', () => {
+    it('uses host-started copy when the desktop listener accepts the update', async () => {
+      mockSdkPerformUpdate.mockResolvedValue(sdkOk({ success: true, stack: 'skipped', host: 'started' }));
+
+      await expect(performStackUpdate('1.1.0')).resolves.toEqual({
+        ok: true,
+        messageKey: 'SETTINGS_ACTIONS_UPDATE_HOST_STARTED',
+        stack: 'skipped',
+        host: 'started',
+      });
+    });
+
+    it('uses stack-only copy when the desktop listener is unavailable', async () => {
+      mockSdkPerformUpdate.mockResolvedValue(sdkOk({ success: true, stack: 'updating', host: 'unavailable' }));
+
+      await expect(performStackUpdate('1.1.0')).resolves.toEqual({
+        ok: true,
+        messageKey: 'SETTINGS_ACTIONS_UPDATE_STACK_HOST_UNAVAILABLE',
+        stack: 'updating',
+        host: 'unavailable',
+      });
+    });
   });
 });
