@@ -1,3 +1,4 @@
+import { Alert, AlertDescription } from '@/components/ui/Alert/Alert';
 import { Button } from '@/components/ui/Button';
 import { AppContextProvider, useAppContext } from '@/context/app-context';
 import { useUserContext } from '@/context/user-context';
@@ -6,6 +7,7 @@ import { sdkResult, unwrapSdkOrNull } from '@/lib/sdk-unwrap';
 import { getLogo } from '@/lib/theme/theme';
 import { Suspense, useEffect, useMemo, useState } from 'react';
 import { Navigate, useNavigate } from 'react-router';
+import toast from 'react-hot-toast';
 import { useTranslation } from 'react-i18next';
 import { useQueryClient } from '@tanstack/react-query';
 import { AGENT_APP_SLUG } from '../helpers/ai-setup-types';
@@ -118,6 +120,7 @@ function OnboardingWizard() {
   const [companionApps, setCompanionApps] = useState<OnboardingApp[]>([]);
   const [aiSetupConfig, setAiSetupConfig] = useState<AiSetupConfig | undefined>();
   const [detectedServices, setDetectedServices] = useState<DetectedService[]>([]);
+  const [completionFailed, setCompletionFailed] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -186,6 +189,11 @@ function OnboardingWizard() {
   if (phase === 'installing') {
     return (
       <Shell>
+        {completionFailed && (
+          <Alert variant="danger" className="mb-4" data-testid="onboarding-complete-failed">
+            <AlertDescription>{t('ONBOARDING_FINISH_SAVE_FAILED')}</AlertDescription>
+          </Alert>
+        )}
         <InstallStep
           apps={installApps}
           start={true}
@@ -214,16 +222,23 @@ function OnboardingWizard() {
               await new Promise((resolve) => setTimeout(resolve, COMPLETE_ONBOARDING_RETRY_DELAY_MS));
               completed = await markComplete();
             }
+
+            if (!completed) {
+              // Navigating anyway would land on /home only until the next app-context read —
+              // which reports the flag the server actually holds — bounced the user back here
+              // with no explanation and their install summary gone. Staying put says so, and
+              // leaves Continue as the retry. No optimistic write either: it would trip the
+              // `hasCompletedOnboarding` guard above and navigate for us.
+              setCompletionFailed(true);
+              toast.error(t('ONBOARDING_FINISH_SAVE_FAILED'));
+              return;
+            }
+
+            setCompletionFailed(false);
             // Update the shared app-context cache (correct query key) so route guards
             // on /home and /store do not send the user back to onboarding.
             setAppContext({ user: { ...user, hasCompletedOnboarding: true } });
-            // Only re-read the server when the write landed. Refetching after a failed write
-            // replaces the optimistic flag with the server's `false`, and the /home guard then
-            // sends the user straight back into the wizard — the exact outcome that navigating
-            // anyway exists to avoid.
-            if (completed) {
-              await refreshAppContext();
-            }
+            await refreshAppContext();
             navigate('/home', {
               replace: true,
               state: summary?.continuedInBackground ? { showBackgroundInstallToast: true } : undefined,

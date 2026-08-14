@@ -915,6 +915,7 @@
   "ONBOARDING_MODEL_DOWNLOAD_STATUS_FAILED": "Failed",
   "ONBOARDING_MODEL_DOWNLOADS_SUMMARY": "Downloading {{count}} model(s)… {{percent}}%",
   "ONBOARDING_INSTALL_AND_FINISH": "Install & Finish",
+  "ONBOARDING_FINISH_SAVE_FAILED": "Your apps are installed, but the Hub could not save that setup is finished. Check that the Hub is running, then press Continue to try again.",
   "ONBOARDING_INSTALL_FAILED_SAVE_PREFERRED_BACKEND": "Failed to save preferred backend: HTTP {{status}}",
   "ONBOARDING_INSTALL_FAILED_CONFIGURE_PROVIDER": "Failed to configure {{provider}}: HTTP {{status}}",
   "ONBOARDING_INSTALL_MODEL_DOWNLOADS_FAILED": "{{count}} model download(s) failed. App installs will continue; retry from Settings.",

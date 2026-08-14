@@ -7,7 +7,8 @@ import { describe, expect, it, vi, beforeEach } from 'vitest';
 import type { InstallSummary } from '../helpers/types';
 import OnboardingPage from './onboarding-page';
 
-const { mockCatalogState, mockAppContext, mockCompleteOnboarding } = vi.hoisted(() => ({
+const { mockCatalogState, mockAppContext, mockCompleteOnboarding, mockNavigate } = vi.hoisted(() => ({
+  mockNavigate: vi.fn(),
   mockCatalogState: {
     isLoading: false,
     isError: false,
@@ -19,6 +20,12 @@ const { mockCatalogState, mockAppContext, mockCompleteOnboarding } = vi.hoisted(
     refreshAppContext: vi.fn().mockResolvedValue(undefined),
   },
   mockCompleteOnboarding: vi.fn(),
+}));
+
+// Only useNavigate is replaced; MemoryRouter and <Navigate> stay real so the render guards behave.
+vi.mock('react-router', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  useNavigate: () => mockNavigate,
 }));
 
 vi.mock('@/context/app-context', () => ({
@@ -320,6 +327,7 @@ describe('OnboardingPage (single vertical form)', () => {
     mockCatalogState.isError = false;
     mockAppContext.setAppContext.mockClear();
     mockAppContext.refreshAppContext.mockClear().mockResolvedValue(undefined);
+    mockNavigate.mockClear();
     // The generated client resolves with a `response`; `sdkResult` reads `.ok` off it.
     mockCompleteOnboarding.mockReset().mockResolvedValue({ data: undefined, response: { ok: true, status: 200 } });
   });
@@ -392,18 +400,48 @@ describe('OnboardingPage (single vertical form)', () => {
     });
 
     /**
-     * A rejected PATCH means the server flag is still false. Refetching then would replace the
-     * optimistic flag with that false and the /home guard would send the user straight back
-     * into the wizard, so the refetch has to be skipped on this path.
+     * A rejected PATCH means the server flag is still false, so every step that assumes it
+     * landed has to be skipped: refetching would replace the optimistic flag with that false,
+     * and the optimistic write itself would trip the `hasCompletedOnboarding` render guard and
+     * navigate for us. Both roads end at /home bouncing the user back into the wizard.
      */
-    it('MUST NOT refetch the app context when the write never landed', async () => {
+    it('MUST NOT refetch or optimistically flag the context when the write never landed', async () => {
       mockCompleteOnboarding.mockRejectedValue(new Error('Service Unavailable'));
 
       await finishInstall();
 
       await waitFor(() => expect(mockCompleteOnboarding).toHaveBeenCalledTimes(2), { timeout: 3_000 });
-      expect(mockAppContext.setAppContext).toHaveBeenCalledWith({ user: expect.objectContaining({ hasCompletedOnboarding: true }) });
+      expect(mockAppContext.setAppContext).not.toHaveBeenCalled();
       expect(mockAppContext.refreshAppContext).not.toHaveBeenCalled();
+    });
+
+    /** The user is left on a finished wizard, so the reason has to be on screen, not just a toast. */
+    it('MUST keep the user on the wizard and say why when the write never landed', async () => {
+      mockCompleteOnboarding.mockRejectedValue(new Error('Service Unavailable'));
+
+      await finishInstall();
+
+      const failure = await screen.findByTestId('onboarding-complete-failed', undefined, { timeout: 3_000 });
+      expect(failure).toHaveTextContent(/could not save that setup is finished/i);
+      // Still on the install phase, so Continue is there to retry with.
+      expect(screen.getByRole('button', { name: 'install-complete' })).toBeInTheDocument();
+      expect(mockNavigate).not.toHaveBeenCalled();
+    });
+
+    it('clears the failure notice and navigates once a retry lands', async () => {
+      mockCompleteOnboarding.mockRejectedValue(new Error('Service Unavailable'));
+      const user = userEvent.setup();
+      renderPage();
+      await user.click(screen.getByRole('button', { name: 'emit-ai-config' }));
+      await user.click(screen.getByTestId('finish-setup-btn'));
+      await user.click(screen.getByRole('button', { name: 'install-complete' }));
+      await screen.findByTestId('onboarding-complete-failed', undefined, { timeout: 3_000 });
+
+      mockCompleteOnboarding.mockReset().mockResolvedValue({ data: undefined, response: { ok: true, status: 200 } });
+      await user.click(screen.getByRole('button', { name: 'install-complete' }));
+
+      await waitFor(() => expect(mockNavigate).toHaveBeenCalledWith('/home', expect.objectContaining({ replace: true })));
+      expect(screen.queryByTestId('onboarding-complete-failed')).not.toBeInTheDocument();
     });
 
     it('retries once and stops when the second attempt lands', async () => {
