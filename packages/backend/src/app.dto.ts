@@ -50,6 +50,17 @@ export const settingsSchema = z.object({
   inferenceVisionModel: z.string().trim().optional(),
   inferenceVllmApiKey: z.string().trim().optional(),
   inferenceVllmUrl: z.string().trim().optional(),
+  inferenceCloudProviders: z
+    .array(
+      z.object({
+        provider: z.enum(['openai', 'anthropic', 'google', 'github-copilot']),
+        apiKey: z.string().optional(),
+        baseUrl: z.string().optional(),
+        defaultModel: z.string(),
+        enabled: z.boolean(),
+      }),
+    )
+    .optional(),
   // No MCP settings live here. SEC-MCP-8 moved MCP credentials into the hashed key store (Settings →
   // Security / `cihub api-key create`), and ISSUE-MCP-2's destructive gate became each key's
   // `capability` column — so neither an unrevocable second credential nor an appliance-wide authority

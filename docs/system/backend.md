@@ -5,7 +5,7 @@
 > **Key paths:** `packages/backend/src/modules/`, `packages/backend/src/database/`, `packages/backend/src/queue/`
 > **Commands:** `cd packages/backend && pnpm test`, `pnpm run test:integration` (root)
 > **Owner persona:** maintainability + security (see REVIEW_PERSONAS.md)
-> **Last updated:** 2026-08-11
+> **Last updated:** 2026-08-14
 > **Related:** docs/system/e2e.md, docs/ARCHITECTURE.md
 
 ---
@@ -84,6 +84,27 @@ Guards against that:
   throw after the publisher RPC timed out still reaches `install_failed`.
 - **Unique `(app_name, app_store_slug)`** — closes the concurrent-install race that used to insert
   two rows for the same app (duplicate tiles / "Firefly III, Firefly III" in the queue).
+
+## Inference cloud providers
+
+Settings → AI saves OpenAI / Anthropic / Google / GitHub Copilot keys to `settings.json`
+(`inferenceCloudProviders`) via `POST /api/inference/cloud-providers`. They used to live only in
+RAM and did not restart AI apps.
+
+On save the Hub:
+
+1. Persists every provider (a masked `••••` POST keeps the stored key).
+2. Debounces `restartAiApps()` (1.5s) so four provider POSTs + a preferences PATCH recreate
+   OpenClaw / Hermes once.
+3. Injects **all** enabled providers additively. Local Ollama/vLLM stays `CI_LLM_*` /
+   `OPENAI_API_*` / `CI_INFERENCE_BACKEND`. Cloud keys are `CI_CLOUD_<PROVIDER>_*` plus
+   conventional aliases (`ANTHROPIC_API_KEY`, `GOOGLE_API_KEY`, `GEMINI_API_KEY`). Cloud becomes
+   the primary `CI_LLM_*` only when the local backend is down.
+4. OpenClaw's entrypoint writes each Hub-managed provider into `openclaw.json`
+   (`models.providers.openai|anthropic|google|github-copilot`).
+
+AI apps that want these tokens must read the `CI_CLOUD_*` contract (or `hub_integration.inference`
+plus the extra env). See the tracking issue on marketplace / OpenClaw / Hermes.
 
 ## API client generation
 

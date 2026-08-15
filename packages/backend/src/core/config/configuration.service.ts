@@ -9,7 +9,7 @@ import { scrubString } from '@/core/error-reporting/sentry-scrubber';
 import { setUserConsent } from '@/core/error-reporting/telemetry-consent';
 import { EnvUtils } from '@/modules/env/env.utils';
 import { Injectable, InternalServerErrorException } from '@nestjs/common';
-import type { InferenceBackendType } from '@ci-hub/common/types';
+import type { CloudProviderConfig, InferenceBackendType } from '@ci-hub/common/types';
 import dotenv from 'dotenv';
 import { z } from 'zod';
 import { LOG_LEVEL_ENUM, type LogLevel, LoggerService } from '../logger/logger.service';
@@ -364,6 +364,15 @@ export class ConfigurationService {
     }
     await this.setUserSettings(settings);
     return this.getInferencePreferences();
+  }
+
+  public getInferenceCloudProviders(): CloudProviderConfig[] {
+    return this.config.userSettings.inferenceCloudProviders ?? [];
+  }
+
+  public async setInferenceCloudProviders(providers: CloudProviderConfig[]) {
+    await this.setUserSettings({ inferenceCloudProviders: providers });
+    return this.getInferenceCloudProviders();
   }
 
   /**

@@ -49,7 +49,7 @@ fi
 # Fallback list used when the Hub doesn't send X-Hub-Managed-Keys
 # (older Hub releases). Kept in sync with AppBootstrapService's
 # OPENCLAW env keys as a last resort.
-FALLBACK_MANAGED_KEYS="OPENAI_API_BASE,OPENAI_API_KEY,DEFAULT_MODEL,DEFAULT_MODEL_BACKEND_ID,EMBEDDINGS_MODEL,EMBEDDINGS_MODEL_BACKEND_ID,OLLAMA_HOST,CI_LLM_NUM_CTX,CI_INFERENCE_BACKEND"
+FALLBACK_MANAGED_KEYS="OPENAI_API_BASE,OPENAI_API_KEY,DEFAULT_MODEL,DEFAULT_MODEL_BACKEND_ID,EMBEDDINGS_MODEL,EMBEDDINGS_MODEL_BACKEND_ID,OLLAMA_HOST,CI_LLM_NUM_CTX,CI_INFERENCE_BACKEND,CI_CLOUD_OPENAI_API_KEY,CI_CLOUD_OPENAI_BASE_URL,CI_CLOUD_OPENAI_MODEL,CI_CLOUD_ANTHROPIC_API_KEY,CI_CLOUD_ANTHROPIC_BASE_URL,CI_CLOUD_ANTHROPIC_MODEL,ANTHROPIC_API_KEY,CI_CLOUD_GOOGLE_API_KEY,CI_CLOUD_GOOGLE_BASE_URL,CI_CLOUD_GOOGLE_MODEL,GOOGLE_API_KEY,GEMINI_API_KEY,CI_CLOUD_GITHUB_COPILOT_API_KEY,CI_CLOUD_GITHUB_COPILOT_BASE_URL,CI_CLOUD_GITHUB_COPILOT_MODEL"
 
 # Convert a comma-separated key list into a ^KEY= alternation pattern.
 keys_to_pattern() {
@@ -590,7 +590,7 @@ sync_inference_models() {
       sync_vllm_models
       ;;
     cloud)
-      echo "CI Hub: cloud inference selected; skipping local model catalog sync"
+      echo "CI Hub: cloud inference selected as primary; still registering additional Hub cloud providers"
       ;;
     *)
       sync_ollama_models
@@ -598,7 +598,81 @@ sync_inference_models() {
   esac
 }
 
+# Register every Hub-saved cloud provider in openclaw.json so the user can pick
+# OpenAI / Anthropic / Google / GitHub Copilot alongside the local ci-hub backend.
+sync_cloud_providers() {
+  if [ ! -f "${CONFIG_FILE}" ]; then
+    return 0
+  fi
+  if ! command -v node >/dev/null 2>&1; then
+    echo "CI Hub: node not available; skipping cloud provider sync"
+    return 0
+  fi
+
+  CONFIG_FILE="${CONFIG_FILE}" \
+  ENV_FILE="${ENV_FILE}" \
+    node - <<'NODE'
+const fs = require('fs');
+
+const configPath = process.env.CONFIG_FILE;
+const envPath = process.env.ENV_FILE;
+
+const readEnv = (key) => {
+  if (process.env[key]) return process.env[key];
+  try {
+    const body = fs.readFileSync(envPath, 'utf8');
+    for (const line of body.split('\n')) {
+      if (line.startsWith(key + '=')) {
+        return line.slice(key.length + 1).trim().replace(/^"|"$/g, '');
+      }
+    }
+  } catch {}
+  return '';
+};
+
+const specs = [
+  { id: 'openai', api: 'openai-completions', key: 'CI_CLOUD_OPENAI_API_KEY', base: 'CI_CLOUD_OPENAI_BASE_URL', model: 'CI_CLOUD_OPENAI_MODEL' },
+  { id: 'anthropic', api: 'anthropic-messages', key: 'CI_CLOUD_ANTHROPIC_API_KEY', base: 'CI_CLOUD_ANTHROPIC_BASE_URL', model: 'CI_CLOUD_ANTHROPIC_MODEL' },
+  { id: 'google', api: 'openai-completions', key: 'CI_CLOUD_GOOGLE_API_KEY', base: 'CI_CLOUD_GOOGLE_BASE_URL', model: 'CI_CLOUD_GOOGLE_MODEL' },
+  { id: 'github-copilot', api: 'openai-completions', key: 'CI_CLOUD_GITHUB_COPILOT_API_KEY', base: 'CI_CLOUD_GITHUB_COPILOT_BASE_URL', model: 'CI_CLOUD_GITHUB_COPILOT_MODEL' },
+];
+
+const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+config.models = config.models || { mode: 'merge', providers: {} };
+config.models.mode = 'merge';
+config.models.providers = config.models.providers || {};
+
+let written = 0;
+for (const spec of specs) {
+  const apiKey = readEnv(spec.key);
+  if (!apiKey) {
+    if (config.models.providers[spec.id] && config.models.providers[spec.id].hubManaged) {
+      delete config.models.providers[spec.id];
+    }
+    continue;
+  }
+  const baseUrl = readEnv(spec.base);
+  const modelId = readEnv(spec.model);
+  const models = modelId
+    ? [{ id: modelId, name: modelId, input: ['text'], contextWindow: 200000, maxTokens: 8192, compat: { supportsTools: true } }]
+    : [];
+  config.models.providers[spec.id] = {
+    hubManaged: true,
+    apiKey,
+    ...(baseUrl ? { baseUrl } : {}),
+    api: spec.api,
+    models,
+  };
+  written += 1;
+}
+
+fs.writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n');
+console.log('CI Hub: synced ' + written + ' cloud provider(s) into openclaw.json');
+NODE
+}
+
 sync_inference_models
+sync_cloud_providers
 
 # ── Every start: allow Control UI from Hub-published URLs ───────────────
 patch_control_ui_origins() {

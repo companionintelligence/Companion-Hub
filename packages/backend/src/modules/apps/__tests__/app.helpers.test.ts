@@ -60,6 +60,7 @@ describe('AppHelpers', () => {
     cloudFallback = moduleRef.get(CloudFallbackService);
     apiKeys = moduleRef.get(ApiKeyService);
     cloudFallback.getEnabledProviders.mockReturnValue([]);
+    cloudFallback.toAppEnv.mockReturnValue({});
     config.getInferencePreferences.mockReturnValue({
       preferredBackend: 'ollama',
       preferredModel: null,

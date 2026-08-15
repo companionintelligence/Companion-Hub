@@ -13,6 +13,7 @@ import { LemonadeBackend } from '../backends/lemonade.backend';
 import { LoggerService } from '@/core/logger/logger.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import type { CloudProviderConfig, CuratedModel, HardwareProfile } from '@ci-hub/common/types';
+import { cloudProviderManagedKeys } from '../cloud-provider-env';
 
 const OLLAMA_BASE_URL = 'http://ci-hub-ollama:11434';
 const OLLAMA_OPENAI_URL = `${OLLAMA_BASE_URL}/v1`;
@@ -141,6 +142,7 @@ describe('AppCredentialsService', () => {
     modelPuller.startPull.mockResolvedValue({ catalogId: 'hermes4-70b', status: 'queued' });
     modelPuller.waitForPullCompletion.mockResolvedValue(undefined);
     cloudFallback.getEnabledProviders.mockReturnValue([]);
+    cloudFallback.toAppEnv.mockReturnValue({});
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -368,7 +370,7 @@ describe('AppCredentialsService', () => {
     });
   });
 
-  describe('getCredentials — cloud override', () => {
+  describe('getCredentials — cloud providers', () => {
     const cloudProvider: CloudProviderConfig = {
       provider: 'openai',
       apiKey: 'sk-operator-key',
@@ -376,33 +378,37 @@ describe('AppCredentialsService', () => {
       baseUrl: 'https://api.openai.com/v1',
       defaultModel: 'gpt-4o',
     };
+    const cloudEnv = {
+      CI_CLOUD_OPENAI_API_KEY: 'sk-operator-key',
+      CI_CLOUD_OPENAI_BASE_URL: 'https://api.openai.com/v1',
+      CI_CLOUD_OPENAI_MODEL: 'gpt-4o',
+    };
 
-    it('OVERRIDES base/key/model with the first enabled cloud provider', async () => {
+    it('keeps the local backend as primary and attaches cloud provider env', async () => {
       cloudFallback.getEnabledProviders.mockReturnValue([cloudProvider]);
+      cloudFallback.toAppEnv.mockReturnValue(cloudEnv);
 
       const config = await service.getCredentials('hermes-agent');
 
-      expect(config.provider).toBe('cloud');
-      expect(config.endpointUrl).toBe('https://api.openai.com/v1');
-      expect(config.chatModelId).toBe('gpt-4o');
-      expect(config.env).toEqual({
-        HERMES_OPENAI_BASE_URL: 'https://api.openai.com/v1',
-        HERMES_OPENAI_API_KEY: 'sk-operator-key',
-        HERMES_DEFAULT_MODEL: 'gpt-4o',
-        // OLLAMA_HOST is still exposed so the app can reach Ollama natively too
-        OLLAMA_HOST: OLLAMA_BASE_URL,
-        CI_INFERENCE_BACKEND: 'cloud',
-      });
+      expect(config.provider).toBe('ollama');
+      expect(config.env.HERMES_OPENAI_API_KEY).toBe('ollama');
+      expect(config.env.CI_INFERENCE_BACKEND).toBe('ollama');
+      expect(config.env.CI_CLOUD_OPENAI_API_KEY).toBe('sk-operator-key');
+      expect(config.env.OLLAMA_HOST).toBe(OLLAMA_BASE_URL);
     });
 
-    it('still exposes OLLAMA_HOST as the direct native ollama url under a cloud override', async () => {
+    it('uses the first cloud provider as primary when the local backend is down', async () => {
+      ollamaBackend.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [] });
       cloudFallback.getEnabledProviders.mockReturnValue([cloudProvider]);
+      cloudFallback.toAppEnv.mockReturnValue(cloudEnv);
 
       const config = await service.getCredentials('openclaw');
 
-      expect(config.env.OLLAMA_HOST).toBe(OLLAMA_BASE_URL);
+      expect(config.provider).toBe('cloud');
       expect(config.env.OPENAI_API_BASE).toBe('https://api.openai.com/v1');
       expect(config.env.OPENAI_API_KEY).toBe('sk-operator-key');
+      expect(config.env.CI_CLOUD_OPENAI_API_KEY).toBe('sk-operator-key');
+      expect(config.env.OLLAMA_HOST).toBe(OLLAMA_BASE_URL);
     });
   });
 
@@ -473,7 +479,7 @@ describe('AppCredentialsService', () => {
       for (const k of Object.keys(config.env)) {
         expect(config.managedKeys).toContain(k);
       }
-      const expected = [...new Set([...Object.keys(config.env), 'HERMES_NUM_CTX'])];
+      const expected = [...new Set([...Object.keys(config.env), 'HERMES_NUM_CTX', ...cloudProviderManagedKeys()])];
       expect(config.managedKeys.sort()).toEqual(expected.sort());
     });
 
@@ -570,14 +576,15 @@ describe('AppCredentialsService', () => {
       expect(modelPuller.startPull).toHaveBeenCalledTimes(2);
     });
 
-    it('does not pre-pull chat models when a cloud provider is enabled', async () => {
+    it('still pre-pulls local chat models when cloud providers are also configured', async () => {
       cloudFallback.getEnabledProviders.mockReturnValue([
         { provider: 'openai', apiKey: 'sk-test', enabled: true, defaultModel: 'gpt-4o', baseUrl: 'https://api.openai.com/v1' },
       ] as CloudProviderConfig[]);
+      cloudFallback.toAppEnv.mockReturnValue({ CI_CLOUD_OPENAI_API_KEY: 'sk-test' });
       service.invalidateCache();
       await service.getCredentials('openclaw');
       await new Promise((resolve) => setImmediate(resolve));
-      expect(modelPuller.startPull).not.toHaveBeenCalledWith('hermes4-70b', expect.anything());
+      expect(modelPuller.startPull).toHaveBeenCalledWith('hermes4-70b', { bestEffort: true });
     });
 
     it('skips pre-pull when startPull reports blocked download', async () => {
