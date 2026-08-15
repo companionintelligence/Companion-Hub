@@ -8,6 +8,7 @@ const { mockIsMobile, mockClearHub } = vi.hoisted(() => ({
 
 vi.mock('@/lib/mobile-connection', () => ({
   isMobileClient: () => mockIsMobile(),
+  usesCloudConnect: () => mockIsMobile(),
   clearHubConnection: () => mockClearHub(),
 }));
 
