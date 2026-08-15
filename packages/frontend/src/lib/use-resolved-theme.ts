@@ -2,6 +2,10 @@ import { useEffect, useState } from 'react';
 import type { LogTheme } from './log-ansi';
 
 function readResolvedTheme(): LogTheme {
+  if (typeof document === 'undefined') {
+    return 'light';
+  }
+
   const root = document.documentElement;
 
   if (root.classList.contains('dark')) {

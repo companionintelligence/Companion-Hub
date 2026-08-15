@@ -219,6 +219,15 @@ export function shouldRevalidate({
 const MOBILE_ROOT_LOADER_MS = 6_000;
 const rootLoaderTimeout = Symbol('mobile-root-loader-timeout');
 
+/**
+ * SPA prerender (`ssr: false`) still runs a server loader to write index.html.
+ * Without this, `clientLoader.hydrate` paints HydrateFallback and React Router
+ * treats the shell as a 500 — Hub CI / agent-gates / integration-tests fail.
+ */
+export function loader() {
+  return null;
+}
+
 export async function clientLoader({ request }: Route.ActionArgs) {
   if (usesCloudConnect() || import.meta.env.VITE_HUB_RUNTIME === 'mobile') {
     const raced = await Promise.race([
@@ -387,7 +396,10 @@ export function HydrateFallback() {
 
 export function Layout({ children }: { children: React.ReactNode }) {
   useUpdateChecker();
-  const [apiReady, setApiReady] = useState(() => isMobileClient() || !waitForMobileOrCrossOrigin);
+  const [apiReady, setApiReady] = useState(() => {
+    if (typeof document === 'undefined') return false;
+    return isMobileClient() || !waitForMobileOrCrossOrigin;
+  });
   const [documentTitle, setDocumentTitle] = useState(() => (i18next.isInitialized ? i18next.t('APP_NAME') : 'CI Hub'));
   const [documentLang, setDocumentLang] = useState(() => i18next.resolvedLanguage || i18next.language || 'en');
 
@@ -586,14 +598,14 @@ export default function App({ loaderData }: Route.ComponentProps) {
   }, [onRootBootstrap, revalidate]);
 
   if (onRootBootstrap) {
-    if (usesCloudConnect()) {
+    if (typeof document !== 'undefined' && usesCloudConnect()) {
       return <Navigate to={needsRemoteHubConnect() ? '/connect' : '/login'} replace />;
     }
     return (
-      <Providers>
+      <>
         <DesktopStartupFallback />
         <Toaster position="bottom-center" />
-      </Providers>
+      </>
     );
   }
 
