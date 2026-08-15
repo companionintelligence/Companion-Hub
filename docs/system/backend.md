@@ -101,7 +101,8 @@ On save the Hub:
    conventional aliases (`ANTHROPIC_API_KEY`, `GOOGLE_API_KEY`, `GEMINI_API_KEY`). Cloud becomes
    the primary `CI_LLM_*` only when the local backend is down.
 4. OpenClaw's entrypoint writes each Hub-managed provider into `openclaw.json`
-   (`models.providers.openai|anthropic|google|github-copilot`).
+   (`models.providers.openai|anthropic|google|github-copilot`). Schema-safe fields
+   only — do not write `hubManaged` (unknown keys quarantine the whole file).
 
 AI apps that want these tokens must read the `CI_CLOUD_*` contract (or `hub_integration.inference`
 plus the extra env). See the tracking issue on marketplace / OpenClaw / Hermes.
