@@ -83,8 +83,6 @@ vi.mock('@tauri-apps/api/event', () => ({
 
 const { useDesktopPortalAuth } = await import('./use-desktop-portal-auth');
 
-const exchangeOk = () => new Response(JSON.stringify({ sessionId: 'sess-1', redirectPath: '/dashboard' }), { status: 200 });
-
 beforeEach(() => {
   runtime.getTauriInvoke.mockReturnValue({});
   runtime.isTauriDesktopApp.mockReturnValue(true);
@@ -102,7 +100,7 @@ beforeEach(() => {
     },
   });
   api.apiFetch.mockClear();
-  api.apiFetch.mockImplementation(async (path: string) => ({
+  api.apiFetch.mockImplementation(async (_path: string) => ({
     ok: true,
     status: 200,
     json: async () => ({ sessionId: 'sess-1', redirectPath: '/dashboard' }),
