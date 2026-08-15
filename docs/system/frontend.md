@@ -5,7 +5,7 @@
 > **Key paths:** `packages/frontend/src/components/hub-status/`, `packages/frontend/src/modules/`, `packages/frontend/src/lib/`
 > **Commands:** `cd packages/frontend && pnpm test`, `pnpm run local` (root, port 5004/5005)
 > **Owner persona:** code-quality + maintainability
-> **Last updated:** 2026-08-14 (SSO matrix + local:desktop origin traps)
+> **Last updated:** 2026-08-15 (cloud connect flow terminology + SSO matrix)
 > **Related:** docs/system/desktop.md, docs/DESKTOP-UI-ARCHITECTURE.md, docs/system/e2e.md
 
 ---
@@ -59,7 +59,9 @@ Tests: `packages/frontend/src/components/hub-status/hub-status.test.tsx`
 - Mock `@/lib/tauri-hub-probe` with `vi.hoisted` when intercepting module imports
 - Phone navigation: `src/lib/ios-navigation.smoke.test.tsx` (WKWebView white-screen guards — not XCUITest)
 
-## Mobile OIDC (`/connect`)
+## Cloud connect flow (iOS / Android)
+
+**Terminology:** **Cloud connect flow** is the official name for the iOS/Android thin-client path that starts at **`/connect`**: sign into the Portal (Companion Account / PKCE), then pick one of your registered Hubs from the device list. It is **not** Hub registration, **not** desktop Tauri SSO, and **not** browser login on a Hub URL. Code gate: `usesCloudConnect()` in `mobile-connection.ts`; auth kind: `mobile-cloud-connect` in `hub-auth-flow.ts`. After a Hub is chosen, the app continues on **`/login`** (Hub SSO / password — separate flow).
 
 The iOS/Android thin client signs into the Portal with PKCE and a `cihub://auth/callback` redirect.
 
