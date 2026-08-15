@@ -1810,5 +1810,7 @@
   "MOBILE_CONNECT_SWITCH_HUB_CONFIRM_TITLE": "Switch Hub?",
   "MOBILE_CONNECT_SWITCH_HUB_CONFIRM_DESC": "This disconnects from the current Hub and returns to the connect screen. You’ll need to choose a Hub and sign in again.",
   "MOBILE_CONNECT_HUB_UNREACHABLE_HINT": "Can't reach your Hub.",
-  "MOBILE_CONNECT_EMAIL": "Email"
+  "MOBILE_CONNECT_EMAIL": "Email",
+  "MOBILE_LOAD_FAILED": "This Hub isn't responding.",
+  "MOBILE_LOAD_FAILED_HINT": "Check that the Hub is online, or switch to a different Hub."
 }

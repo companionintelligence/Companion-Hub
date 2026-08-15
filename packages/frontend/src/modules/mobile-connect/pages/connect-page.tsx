@@ -4,12 +4,13 @@ import { Input } from '@/components/ui/Input';
 import { LoadingSpinner } from '@/components/ui/LoadingSpinner/loading-spinner';
 import { PasswordInput } from '@/components/ui/PasswordInput/PasswordInput';
 import { publishHubsToIntents } from '@/lib/app-intents';
-import { initMobileConnection, isTauriMobileSync, setHubConnection } from '@/lib/mobile-connection';
-import { type FormEvent, useState } from 'react';
+import { initMobileConnection, isMobileClient, setHubConnection } from '@/lib/mobile-connection';
+import { type FormEvent, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import toast from 'react-hot-toast';
 import { redirect, useNavigate } from 'react-router';
-import { loginWithPortalOidc, OidcCancelledError } from '../oidc';
+import { rememberPortalAccountEmail } from '@/lib/portal-session-hint';
+import { emailFromIdToken, loginWithPortalOidc, OidcCancelledError, resumePendingOidcLogin } from '../oidc';
 import { DEFAULT_PORTAL_URL, type HubDevice, listHubDevices, type PortalAuth, signInToPortal } from '../portal-client';
 
 /**
@@ -19,16 +20,20 @@ import { DEFAULT_PORTAL_URL, type HubDevice, listHubDevices, type PortalAuth, si
  * `/login` page against the chosen Hub.
  */
 export async function clientLoader() {
-  const { isMobile, hubBaseUrl } = await initMobileConnection();
-  if (!isMobile) {
-    // Web/desktop never see this screen.
-    return redirect('/');
-  }
+  const { hubBaseUrl } = await initMobileConnection();
   if (hubBaseUrl) {
-    // A Hub is already chosen — let the normal routing take over.
-    return redirect('/');
+    // A Hub is already chosen — go to that Hub's login. Redirecting to `/`
+    // leaves the phone on the root bootstrap spinner while registration
+    // probes the remote appliance (often forever from ios:dev).
+    return redirect('/login');
   }
-  return null;
+  if (isMobileClient()) {
+    // Stay here. Redirecting "not Tauri-mobile yet" back to `/` is what
+    // blanks the ios:dev connect screen after the first paint.
+    return null;
+  }
+  // Web/desktop never see this screen.
+  return redirect('/');
 }
 
 type Step = 'sign-in' | 'pick';
@@ -50,13 +55,63 @@ export default function ConnectPage() {
   const [busy, setBusy] = useState(false);
   const [oidcController, setOidcController] = useState<AbortController | null>(null);
   const [connectingId, setConnectingId] = useState<string | null>(null);
+  const [signInError, setSignInError] = useState<string | null>(null);
 
-  // Never render the picker on web/desktop. The loader already redirects
-  // off-mobile; this is the belt-and-suspenders guard if the route is reached
-  // directly.
-  if (!isTauriMobileSync()) {
-    return null;
-  }
+  // Safari → "Open with Companion Hub" often cold-starts the app. PKCE state
+  // lives in localStorage; Rust stashed the callback URL. Finish the exchange
+  // on mount, when we become visible again, and when Rust emits the callback.
+  useEffect(() => {
+    let cancelled = false;
+    let inFlight = false;
+    const finish = async () => {
+      if (cancelled || inFlight) return;
+      inFlight = true;
+      try {
+        const tokens = await resumePendingOidcLogin();
+        if (cancelled || !tokens) return;
+        const portalEmail = emailFromIdToken(tokens.idToken);
+        if (portalEmail) rememberPortalAccountEmail(portalEmail);
+        setBusy(true);
+        setSignInError(null);
+        const portalAuth = { token: tokens.accessToken, cookie: null, kind: 'oauth' as const };
+        setAuth(portalAuth);
+        const hubs = await listHubDevices(portalAuth, portalUrl);
+        if (cancelled) return;
+        setDevices(hubs);
+        void publishHubsToIntents(hubs.map((d) => ({ id: d.id, name: d.name, hubUrl: d.hubUrl })));
+        setStep('pick');
+      } catch (err) {
+        if (!cancelled && !(err instanceof OidcCancelledError)) {
+          const message = err instanceof Error ? err.message : t('MOBILE_CONNECT_SIGNIN_FAILED');
+          // Safari + resume both redeem the same one-time code. The winner
+          // already listed Hubs; "invalid code" from the loser is noise.
+          if (/invalid.?code|invalid_grant/i.test(message)) return;
+          setSignInError(message);
+          toast.error(message);
+        }
+      } finally {
+        inFlight = false;
+        if (!cancelled) setBusy(false);
+      }
+    };
+    void finish();
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') void finish();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    let unlisten: (() => void) | undefined;
+    void import('@tauri-apps/api/event')
+      .then(({ listen }) => listen<string>('deep-link-oidc', () => void finish()))
+      .then((stop) => {
+        unlisten = stop;
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+      document.removeEventListener('visibilitychange', onVisible);
+      unlisten?.();
+    };
+  }, [portalUrl, t]);
 
   const loadDevices = async (portalAuth: PortalAuth) => {
     setAuth(portalAuth);
@@ -72,6 +127,7 @@ export default function ConnectPage() {
     if (!email || !password) return;
     setBusy(true);
     try {
+      rememberPortalAccountEmail(email);
       await loadDevices(await signInToPortal(email, password, portalUrl));
     } catch (err) {
       toast.error(err instanceof Error ? err.message : t('MOBILE_CONNECT_SIGNIN_FAILED'));
@@ -84,13 +140,18 @@ export default function ConnectPage() {
     const controller = new AbortController();
     setOidcController(controller);
     setBusy(true);
+    setSignInError(null);
     try {
       // OIDC (PKCE) login to the Portal via the system browser + cihub:// callback.
       const tokens = await loginWithPortalOidc(portalUrl, { signal: controller.signal });
-      await loadDevices({ token: tokens.accessToken, cookie: null });
+      const portalEmail = emailFromIdToken(tokens.idToken);
+      if (portalEmail) rememberPortalAccountEmail(portalEmail);
+      await loadDevices({ token: tokens.accessToken, cookie: null, kind: 'oauth' });
     } catch (err) {
       if (!(err instanceof OidcCancelledError)) {
-        toast.error(err instanceof Error ? err.message : t('MOBILE_CONNECT_SIGNIN_FAILED'));
+        const message = err instanceof Error ? err.message : t('MOBILE_CONNECT_SIGNIN_FAILED');
+        setSignInError(message);
+        toast.error(message);
       }
     } finally {
       setBusy(false);
@@ -116,7 +177,7 @@ export default function ConnectPage() {
     try {
       await setHubConnection(device.hubUrl);
       // Hand off to the existing Hub login (portal SSO / password) for this Hub.
-      navigate('/login');
+      navigate('/login', { replace: true });
     } catch (err) {
       toast.error(err instanceof Error ? err.message : t('MOBILE_CONNECT_CONNECT_FAILED'));
       setConnectingId(null);
@@ -139,6 +200,11 @@ export default function ConnectPage() {
               <Button type="button" className={TOUCH} onClick={handleOidcLogin} loading={busy} disabled={busy} data-testid="oidc-login-btn">
                 {t('MOBILE_CONNECT_OIDC_BUTTON')}
               </Button>
+              {signInError ? (
+                <p className="text-sm text-destructive" data-testid="connect-signin-error" role="alert">
+                  {signInError}
+                </p>
+              ) : null}
 
               {oidcController ? (
                 <div className="flex flex-col items-center gap-2 rounded-md bg-muted/40 p-3 text-center text-xs text-muted-foreground">

@@ -67,6 +67,9 @@ to the connect screen.
   while-running delivery (the `deep-link://new-url` event is desktop-only).
   Verified on the Android emulator: `cihub://intent/settings` →
   `consume_pending_intent` returns `"settings"`.
+  The same `on_open_url` path now also claims `cihub://auth/callback` (OIDC
+  PKCE) and emits `deep-link-oidc` — the frontend cannot rely on
+  `deep-link://new-url` on iOS.
 
 ## Building / testing
 

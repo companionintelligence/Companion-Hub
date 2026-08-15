@@ -3,6 +3,7 @@ import { Input } from '@/components/ui/Input';
 import { PasswordInput } from '@/components/ui/PasswordInput/PasswordInput';
 import { zodResolver } from '@hookform/resolvers/zod';
 import type React from 'react';
+import { useEffect } from 'react';
 import { useForm } from 'react-hook-form';
 import { useTranslation } from 'react-i18next';
 import { Link } from 'react-router';
@@ -30,9 +31,17 @@ export const LoginForm: React.FC<IProps> = ({ loading, onSubmit, loginType, port
     handleSubmit,
     formState: { errors },
     watch,
+    setValue,
   } = useForm({
     resolver: zodResolver(schema),
+    defaultValues: { email: portalAccountEmail ?? '', password: '' },
   });
+
+  useEffect(() => {
+    if (portalAccountEmail) {
+      setValue('email', portalAccountEmail);
+    }
+  }, [portalAccountEmail, setValue]);
 
   const watchEmail = watch('email');
   const watchPassword = watch('password');

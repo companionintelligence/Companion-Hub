@@ -41,9 +41,30 @@ pnpm --filter mobile ios:init      # generate gen/apple (once, macOS + Xcode)
 pnpm --filter mobile ios:dev       # run in the Simulator
 ```
 
+Always pass the Simulator name so a plugged-in iPhone is not chosen, and do
+**not** add an extra `--` (that drops the device argument):
+
+```bash
+VITE_HUB_RUNTIME=mobile pnpm --filter frontend run dev   # :5005
+IPHONEOS_DEPLOYMENT_TARGET=16.0 \
+  pnpm --filter mobile exec tauri ios dev "iPhone 17"
+```
+
+`devUrl` is `http://lvh.me:5005` (`lvh.me` → `127.0.0.1`). That hostname is
+**not** treated as a local-network URL, so Tauri skips the `tauri://localhost`
+mobile-dev proxy (a black WKWebView on iOS 26). Do not pass `--host 127.0.0.1`
+— that puts the proxy back.
+
 > The `cihub://` URL scheme must be registered in the generated native projects
 > (`gen/apple/.../Info.plist` `CFBundleURLTypes`, and the Android manifest
-> `intent-filter`) for the Portal SSO callback to return to the app.
+> `intent-filter`) for the Portal SSO / OIDC callback to return to the app.
+>
+> **Simulator: "Open with Companion Hub" then a black screen.** iOS delivered
+> `cihub://auth/callback` but the webview navigated onto that custom scheme
+> (no HTML). Rebuild the mobile shell so Rust stashes the URL, emits
+> `deep-link-oidc`, and navigates the webview back to `/connect`. A stale
+> callback from a previous attempt can also re-open the app on `cihub://` —
+> delete the app from the Simulator and relaunch `ios:dev` after rebuilding.
 
 ## Building in CI (GitHub Actions)
 

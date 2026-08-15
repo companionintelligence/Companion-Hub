@@ -1,7 +1,19 @@
 {
   "$schema": "../gen/schemas/mobile-schema.json",
   "identifier": "default",
-  "description": "Default capabilities for the Companion Hub mobile app",
+  "description": "Default capabilities for the Companion Hub mobile app. remote.urls is required in ios:dev because the webview is http://localhost:5005 (not tauri://); without it event.listen / opener / invoke are denied and Sign in spins forever.",
+  "windows": ["main"],
+  "remote": {
+    "urls": [
+      "http://localhost:*",
+      "http://127.0.0.1:*",
+      "http://lvh.me:*",
+      "https://*.ci.computer",
+      "https://ci.computer",
+      "https://*.companionintelligence.com",
+      "https://companionintelligence.com"
+    ]
+  },
   "permissions": [
     "core:default",
     "core:app:default",

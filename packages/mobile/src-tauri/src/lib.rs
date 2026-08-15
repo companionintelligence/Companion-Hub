@@ -7,10 +7,12 @@
 //! appliance that the user selects from the cloud device picker.
 //!
 //! The only native responsibility kept from desktop is **deep-link capture**:
-//! the Portal SSO flow finishes by redirecting to `cihub://auth?token=…`, and
-//! pairing flows use `cihub://pair?code=…`. We capture those, stash them, and
-//! emit the same `deep-link-auth` / `deep-link-pair` events the frontend
-//! already listens for, so the existing login/pairing code works unchanged.
+//! the Portal SSO flow finishes by redirecting to `cihub://auth?token=…`,
+//! pairing flows use `cihub://pair?code=…`, and mobile OIDC PKCE returns via
+//! `cihub://auth/callback?code=…`. We capture those, stash them, and emit
+//! `deep-link-auth` / `deep-link-pair` / `deep-link-oidc` so the frontend can
+//! finish the flow even when iOS relaunches the app (the desktop-only
+//! `deep-link://new-url` event never fires on a phone).
 //!
 //! **App Intents** (iOS Siri/Shortcuts/Spotlight/Action Button) reuse the very
 //! same channel: the Swift `AppIntent`s open `cihub://intent/<action>` URLs
@@ -18,6 +20,8 @@
 //! capture those, stash the action, and emit a `deep-link-intent` event the
 //! frontend routes to the right screen — so an intent needs no extra IPC.
 
+use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
@@ -31,6 +35,9 @@ struct PendingPortalAuth(Mutex<Option<PortalAuthPayload>>);
 /// An App Intent action captured from a `cihub://intent/<action>` deep link
 /// (Siri/Shortcuts/Spotlight) before the UI mounted.
 struct PendingIntent(Mutex<Option<String>>);
+/// An OIDC PKCE callback URL (`cihub://auth/callback?code=…&state=…`) captured
+/// before the UI mounted — iOS often cold-starts the app from Safari.
+struct PendingOidcCallback(Mutex<Option<String>>);
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -59,12 +66,29 @@ fn consume_pending_intent(state: tauri::State<'_, PendingIntent>) -> Option<Stri
     state.0.lock().ok()?.take()
 }
 
+/// Returns the OIDC PKCE callback URL from a deep link that arrived before the
+/// UI was ready (Safari → "Open with Companion Hub" often cold-starts us).
+/// Peek, do not take: a `/connect` reload after the callback must still see it.
+#[tauri::command]
+fn consume_pending_oidc_callback(state: tauri::State<'_, PendingOidcCallback>) -> Option<String> {
+    state.0.lock().ok()?.clone()
+}
+
+/// Drop a consumed OIDC callback after a successful (or failed) exchange.
+#[tauri::command]
+fn clear_pending_oidc_callback(state: tauri::State<'_, PendingOidcCallback>) {
+    if let Ok(mut pending) = state.0.lock() {
+        *pending = None;
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .manage(PendingPairingCode(Mutex::new(None)))
         .manage(PendingPortalAuth(Mutex::new(None)))
         .manage(PendingIntent(Mutex::new(None)))
+        .manage(PendingOidcCallback(Mutex::new(None)))
         .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_deep_link::init())
@@ -74,6 +98,8 @@ pub fn run() {
             consume_pending_pairing_code,
             consume_pending_portal_auth,
             consume_pending_intent,
+            consume_pending_oidc_callback,
+            clear_pending_oidc_callback,
         ])
         .setup(|app| {
             let app_handle = app.handle().clone();
@@ -110,6 +136,20 @@ pub fn run() {
                 }
             }
 
+            // iOS may launch the webview on `cihub://`, `about:blank`, or the
+            // mobile-dev `tauri://localhost` proxy (all paint as a black
+            // WKWebView on iOS 26). Load the Vite / bundled frontend once the
+            // window exists. Do not fire overlapping force-navigates: wry
+            // `url_from_webview` unwraps a nil `WKWebView.URL` and aborts
+            // (the Simulator "Reopen / Report" dialog).
+            let handle = app_handle.clone();
+            std::thread::spawn(move || {
+                for delay_ms in [800_u64, 2000] {
+                    std::thread::sleep(std::time::Duration::from_millis(delay_ms));
+                    ensure_frontend_webview_on_main(&handle, false);
+                }
+            });
+
             Ok(())
         })
         .run(tauri::generate_context!())
@@ -143,19 +183,124 @@ fn queue_intent(app: &tauri::AppHandle, action: &str) {
     let _ = app.emit("deep-link-intent", action);
 }
 
+fn queue_oidc_callback(app: &tauri::AppHandle, url: &str) {
+    if let Some(state) = app.try_state::<PendingOidcCallback>() {
+        if let Ok(mut pending) = state.0.lock() {
+            *pending = Some(url.to_string());
+        }
+    }
+    // Dedicated mobile event — `deep-link://new-url` is desktop-only, so the
+    // frontend's OIDC waiter would hang forever without this.
+    let _ = app.emit("deep-link-oidc", url);
+}
+
 fn handle_deep_link_url(app: &tauri::AppHandle, url: &str) {
+    // OIDC first: `cihub://auth/callback` also matches the `cihub://auth` prefix
+    // used by the legacy token handoff, but must not be swallowed as portal-auth.
+    if let Some(callback) = extract_oidc_callback(url) {
+        eprintln!("[ci-hub-mobile] oidc callback captured");
+        queue_oidc_callback(app, &callback);
+        ensure_frontend_webview_on_main(app, false);
+        return;
+    }
+
     if let Some(code) = extract_pairing_code(url) {
         queue_pairing_code(app, &code);
+        ensure_frontend_webview_on_main(app, false);
         return;
     }
 
     if let Some(payload) = extract_portal_auth(url) {
         queue_portal_auth(app, payload);
+        ensure_frontend_webview_on_main(app, false);
         return;
     }
 
     if let Some(action) = extract_intent(url) {
         queue_intent(app, &action);
+        ensure_frontend_webview_on_main(app, false);
+    }
+}
+
+fn ensure_frontend_webview_on_main(app: &tauri::AppHandle, force: bool) {
+    let handle = app.clone();
+    if app
+        .run_on_main_thread(move || {
+            ensure_frontend_webview(&handle, force);
+        })
+        .is_err()
+    {
+        ensure_frontend_webview(app, force);
+    }
+}
+
+fn webview_already_on_frontend(href: &str) -> bool {
+    href.starts_with("http://localhost:")
+        || href.starts_with("http://127.0.0.1:")
+        || href.starts_with("http://lvh.me:")
+        || href.starts_with("https://")
+}
+
+/// wry 0.55 `url_from_webview` does `webview.URL().unwrap()`. Never call
+/// `window.url()` during startup — a nil URL aborts the process (SIGABRT).
+static FRONTEND_NAVIGATED: AtomicBool = AtomicBool::new(false);
+
+fn safe_navigate(window: &tauri::WebviewWindow, url: tauri::Url) -> Result<(), String> {
+    match catch_unwind(AssertUnwindSafe(|| window.navigate(url))) {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(error)) => Err(error.to_string()),
+        Err(_) => Err("wry panicked reading a nil WKWebView.URL".into()),
+    }
+}
+
+/// WKWebView is black for `cihub://`, `about:blank`, and the mobile-dev
+/// `tauri://localhost` proxy on iOS 26. Always load the real frontend over
+/// HTTP — `window.url()` reports the logical Vite URL even when the document
+/// is still the broken custom scheme, so we must not trust it.
+fn ensure_frontend_webview(app: &tauri::AppHandle, force: bool) {
+    let Some(start) = app_frontend_url(app) else {
+        return;
+    };
+    let windows: Vec<_> = match app.get_webview_window("main") {
+        Some(main) => vec![main],
+        None => app.webview_windows().into_values().collect(),
+    };
+    if windows.is_empty() {
+        eprintln!("[ci-hub-mobile] no webview yet; cannot load {start}");
+        return;
+    }
+    for window in windows {
+        let _ = catch_unwind(AssertUnwindSafe(|| {
+            let _ = window.set_background_color(Some(tauri::window::Color(0xf4, 0xf4, 0xf5, 0xff)));
+        }));
+        // Do not call `window.url()` — wry unwraps a nil WKWebView.URL on the
+        // main run loop and the Simulator shows Apple's Reopen/Report dialog.
+        if !force && FRONTEND_NAVIGATED.load(Ordering::SeqCst) {
+            eprintln!("[ci-hub-mobile] keep webview on frontend (skip reload)");
+            continue;
+        }
+        eprintln!("[ci-hub-mobile] navigate webview → {start}");
+        match safe_navigate(&window, start.clone()) {
+            Ok(()) => FRONTEND_NAVIGATED.store(true, Ordering::SeqCst),
+            Err(error) => eprintln!("[ci-hub-mobile] navigate failed: {error}"),
+        }
+    }
+}
+
+fn app_frontend_url(_app: &tauri::AppHandle) -> Option<tauri::Url> {
+    #[cfg(debug_assertions)]
+    {
+        // ios:dev must hit the Vite server. Falling through to tauri://localhost
+        // is what left the Simulator on a black custom-scheme document.
+        // `navigate()` is a raw WKWebView loadRequest — it is not rewritten to
+        // `tauri://`. ATS only auto-allows cleartext HTTP to `localhost`
+        // (`127.0.0.1` and public names like `lvh.me` are blocked).
+        return tauri::Url::parse("http://localhost:5005/connect").ok();
+    }
+
+    #[cfg(not(debug_assertions))]
+    {
+        tauri::Url::parse("tauri://localhost/connect").ok()
     }
 }
 
@@ -206,6 +351,15 @@ fn extract_pairing_code(url: &str) -> Option<String> {
         }
     }
     None
+}
+
+fn extract_oidc_callback(url: &str) -> Option<String> {
+    let trimmed = url.trim();
+    if trimmed.starts_with("cihub://auth/callback") {
+        Some(trimmed.to_string())
+    } else {
+        None
+    }
 }
 
 fn extract_portal_auth(url: &str) -> Option<PortalAuthPayload> {
@@ -272,9 +426,18 @@ fn extract_intent(url: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        deep_link_urls_from_payload, extract_intent, extract_pairing_code, extract_portal_auth,
-        PortalAuthPayload,
+        deep_link_urls_from_payload, extract_intent, extract_oidc_callback, extract_pairing_code,
+        extract_portal_auth, webview_already_on_frontend, PortalAuthPayload,
     };
+
+    #[test]
+    fn frontend_href_accepts_vite_and_https_hubs() {
+        assert!(webview_already_on_frontend("http://localhost:5005/connect"));
+        assert!(webview_already_on_frontend("https://hub-core3-bc.companionintelligence.com/login"));
+        assert!(!webview_already_on_frontend("tauri://localhost"));
+        assert!(!webview_already_on_frontend("cihub://auth/callback"));
+        assert!(!webview_already_on_frontend("about:blank"));
+    }
 
     // --- deep_link_urls_from_payload -------------------------------------
     // Every deep link the plugin delivers passes through here first. The
@@ -365,16 +528,16 @@ mod tests {
     }
 
     #[test]
-    fn oidc_callback_is_claimed_by_no_rust_extractor() {
-        // Design invariant: `cihub://auth/callback?code=…&state=…` is the OIDC
-        // PKCE leg, consumed by the frontend's own `deep-link://new-url`
-        // listener (modules/mobile-connect/oidc.ts). If the Rust shell ever
-        // started swallowing it into pending-portal-auth, OIDC login would hang
-        // waiting for a callback that already got eaten.
+    fn oidc_callback_is_claimed_as_oidc_not_portal_auth() {
+        // iOS delivers `cihub://auth/callback` via on_open_url, not the
+        // desktop-only `deep-link://new-url` event. Rust must stash + emit
+        // `deep-link-oidc` — and must not swallow it as a portal-auth token.
         let cb = "cihub://auth/callback?code=authcode&state=abc";
-        assert_eq!(extract_portal_auth(cb), None); // no `token=` param
+        assert_eq!(extract_oidc_callback(cb), Some(cb.to_string()));
+        assert_eq!(extract_portal_auth(cb), None);
         assert_eq!(extract_intent(cb), None);
         assert_eq!(extract_pairing_code(cb), None);
+        assert_eq!(extract_oidc_callback("cihub://auth?token=tok-123"), None);
     }
 
     #[test]

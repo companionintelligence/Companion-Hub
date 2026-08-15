@@ -2,17 +2,47 @@ import { render, screen } from '@/tests/test-utils';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import LoginPage from './login-page';
 
-const { mockUseUserContext, mockUseMutation, mockNavigate, mockSearchParams, mockLoginForm, mockClientGetConfig, mockToastError, mockToastSuccess } =
-  vi.hoisted(() => ({
-    mockUseUserContext: vi.fn(),
-    mockUseMutation: vi.fn(),
-    mockNavigate: vi.fn(),
-    mockSearchParams: vi.fn(),
-    mockLoginForm: vi.fn(({ loginType }: { loginType: string }) => <div data-testid="login-type">{loginType}</div>),
-    mockClientGetConfig: vi.fn(),
-    mockToastError: vi.fn(),
-    mockToastSuccess: vi.fn(),
-  }));
+const {
+  mockUseUserContext,
+  mockUseMutation,
+  mockNavigate,
+  mockSearchParams,
+  mockLoginForm,
+  mockClientGetConfig,
+  mockToastError,
+  mockToastSuccess,
+  mockIsMobile,
+  mockHubUrl,
+  mockResolveHint,
+} = vi.hoisted(() => ({
+  mockUseUserContext: vi.fn(),
+  mockUseMutation: vi.fn(),
+  mockNavigate: vi.fn(),
+  mockSearchParams: vi.fn(),
+  mockLoginForm: vi.fn(({ loginType }: { loginType: string }) => <div data-testid="login-type">{loginType}</div>),
+  mockClientGetConfig: vi.fn(),
+  mockToastError: vi.fn(),
+  mockToastSuccess: vi.fn(),
+  mockIsMobile: vi.fn(() => false),
+  mockHubUrl: vi.fn((): string | null => null),
+  mockResolveHint: vi.fn(
+    async (): Promise<{ email: string | null; portalBaseUrl: string | null; source: string | null }> => ({
+      email: null,
+      portalBaseUrl: null,
+      source: null,
+    }),
+  ),
+}));
+
+vi.mock('@/lib/mobile-connection', () => ({
+  isMobileClient: () => mockIsMobile(),
+  getHubBaseUrlSync: () => mockHubUrl(),
+  clearHubConnection: vi.fn(async () => {}),
+}));
+
+vi.mock('@/lib/portal-session-hint', () => ({
+  resolvePortalSessionHint: () => mockResolveHint(),
+}));
 
 vi.mock('@/api-client', () => ({
   userContext: vi.fn(),
@@ -100,6 +130,9 @@ describe('LoginPage', () => {
       isPending: false,
     });
     mockSearchParams.mockReturnValue([new URLSearchParams(), vi.fn()]);
+    mockIsMobile.mockReturnValue(false);
+    mockHubUrl.mockReturnValue(null);
+    mockResolveHint.mockResolvedValue({ email: null, portalBaseUrl: null, source: null });
   });
 
   it('defaults the login heading to the local admin account copy', () => {
@@ -145,5 +178,45 @@ describe('LoginPage', () => {
     );
 
     delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+  });
+
+  it('points Portal SSO at the chosen remote Hub on iOS (not localhost:5002)', () => {
+    Object.defineProperty(window, '__TAURI_INTERNALS__', {
+      value: {},
+      configurable: true,
+    });
+    mockIsMobile.mockReturnValue(true);
+    mockHubUrl.mockReturnValue('https://hub-core3-bc.companionintelligence.com');
+
+    render(<LoginPage />);
+
+    expect(mockLoginForm).toHaveBeenCalledWith(
+      expect.objectContaining({
+        portalSsoHref: 'https://hub-core3-bc.companionintelligence.com/api/auth/portal/start?desktop=1',
+      }),
+    );
+    expect(screen.getByTestId('login-switch-hub-btn')).toBeInTheDocument();
+
+    delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+  });
+
+  it('labels Companion Account with the Portal user, not the Hub operator', async () => {
+    mockIsMobile.mockReturnValue(true);
+    mockHubUrl.mockReturnValue('https://hub-core3-bc.companionintelligence.com');
+    mockResolveHint.mockResolvedValue({
+      email: 'chamberlain.bennett@gmail.com',
+      portalBaseUrl: 'https://hub.ci.computer',
+      source: 'remembered',
+    });
+
+    render(<LoginPage />);
+
+    await vi.waitFor(() => {
+      expect(mockLoginForm).toHaveBeenCalledWith(
+        expect.objectContaining({
+          portalAccountEmail: 'chamberlain.bennett@gmail.com',
+        }),
+      );
+    });
   });
 });

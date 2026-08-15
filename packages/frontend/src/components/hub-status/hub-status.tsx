@@ -6,7 +6,7 @@ import { useMemo, useState, useEffect, useCallback, useRef, type ReactNode } fro
 import { useRevalidator } from 'react-router';
 import { useAppIntentDeepLinks } from '@/hooks/use-app-intent-deep-links';
 import { useDeepLinkPairCapture } from '@/hooks/use-deep-link-pair-capture';
-import { isTauriMobileSync } from '@/lib/mobile-connection';
+import { isMobileClient, isTauriMobileSync } from '@/lib/mobile-connection';
 import { SetupCard } from '@/components/setup/setup-card';
 import { SetupPageShell } from '@/components/setup/setup-page-shell';
 import { HintText } from '@/components/ui/field-hint/field-hint';
@@ -917,7 +917,10 @@ export function HubStatus({ children }: HubStatusProps) {
   // is a thin client pointed at a remote Hub, so this local-Hub gate (and its
   // desktop-only commands / localhost probes) doesn't apply. The remote Hub's
   // reachability is handled by the connect flow and the normal app loaders.
-  if (!isTauri || isTauriMobileSync()) return <>{children}</>;
+  // /connect must never be replaced by the local-Hub spinner — that is the
+  // one-second flash then black screen on the iOS Simulator.
+  const onConnectScreen = typeof window !== 'undefined' && window.location.pathname === '/connect';
+  if (!isTauri || isTauriMobileSync() || isMobileClient() || onConnectScreen) return <>{children}</>;
 
   // Dark placeholder while the first hub status poll runs (avoids blank flash)
   if (status === null) {

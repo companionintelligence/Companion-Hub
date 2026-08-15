@@ -18,14 +18,113 @@ import { resetActiveFetch, runtimeFetch, setActiveFetch } from './runtime-fetch'
 
 const STORE_FILE = 'mobile-connection.json';
 const HUB_BASE_URL_KEY = 'hubBaseUrl';
+/** Survives a hydrate that would otherwise forget we already proved this is iOS. */
+const MOBILE_FLAG_KEY = 'cihub.isTauriMobile';
 
 let cachedIsMobile: boolean | null = null;
 let currentHubBaseUrl: string | null = null;
 let initialized = false;
 let cachedNativeFetch: typeof runtimeFetch | null = null;
 
+function readMobileFlag(): boolean {
+  try {
+    return sessionStorage.getItem(MOBILE_FLAG_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function persistMobileFlag(): void {
+  try {
+    sessionStorage.setItem(MOBILE_FLAG_KEY, '1');
+  } catch {
+    /* private mode */
+  }
+}
+
+function markMobile(): void {
+  cachedIsMobile = true;
+  persistMobileFlag();
+}
+
+/** Vitest only — `isTauriMobileSync` never downgrades, so a phone UA leaks across files. */
+export function resetMobileClientCacheForTests(): void {
+  cachedIsMobile = null;
+  currentHubBaseUrl = null;
+  initialized = false;
+  cachedNativeFetch = null;
+  try {
+    sessionStorage.removeItem(MOBILE_FLAG_KEY);
+  } catch {
+    /* ignore */
+  }
+}
+
 function isTauri(): boolean {
   return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
+}
+
+/**
+ * Phone/tablet user agent — no Tauri required. Used to unstick `ios:dev`
+ * (Vite `localhost` + late/missing IPC injection) without sending iPhone
+ * Safari on a live Hub to the picker: that path still has a Hub API.
+ *
+ * iPadOS "Request Desktop Website" reports Macintosh; touch points distinguish it.
+ */
+export function isMobileUserAgent(): boolean {
+  if (typeof navigator === 'undefined') return false;
+  const ua = navigator.userAgent || '';
+  if (/android/i.test(ua) || /iphone|ipad|ipod/i.test(ua)) return true;
+  if (/iphone|ipad|ipod/i.test(navigator.platform || '')) return true;
+  return /macintosh/i.test(ua) && typeof navigator.maxTouchPoints === 'number' && navigator.maxTouchPoints > 1;
+}
+
+/**
+ * True when this client should use the remote-Hub connect flow.
+ * Broader than {@link isTauriMobileSync}: covers the ios:dev race where Tauri
+ * IPC is missing and the iOS Simulator serves a desktop UA for localhost.
+ */
+/**
+ * ios:dev frontend — Vite's default port is 5005, `devUrl` is lvh.me, and the
+ * Simulator often reports a Macintosh UA with `innerWidth === 0` on first paint.
+ * Missing this is what left only the "UI has not painted yet" boot footer.
+ */
+export function isMobileDevFrontend(): boolean {
+  if (typeof window === 'undefined' || !import.meta.env.DEV) return false;
+  try {
+    const { port, hostname } = window.location;
+    if (port === '5005') return true;
+    if (hostname === 'lvh.me' || hostname.endsWith('.lvh.me')) return true;
+  } catch {
+    /* ignore */
+  }
+  const shortestScreen = typeof screen !== 'undefined' ? Math.min(screen.width || 0, screen.height || 0) : 0;
+  if (shortestScreen > 0 && shortestScreen <= 500) return true;
+  return false;
+}
+
+export function isMobileClient(): boolean {
+  if (isTauriMobileSync() || isMobileUserAgent()) return true;
+  if (import.meta.env.VITE_HUB_RUNTIME === 'mobile') return true;
+  if (isMobileDevFrontend()) {
+    markMobile();
+    return true;
+  }
+  // iPhone simulator + Request Desktop Website: Macintosh UA, maxTouchPoints 0.
+  // A phone-sized viewport in the Vite dev server is the remaining signal.
+  // iOS also reports the classic 980px layout width before the viewport meta
+  // applies — that flash is what blanks /connect after the first paint.
+  if (import.meta.env.DEV && typeof window !== 'undefined') {
+    const shortest = Math.min(window.innerWidth, window.innerHeight);
+    if (shortest > 0 && shortest <= 500) return true;
+    if (isTauri() && (window.innerWidth === 980 || window.innerHeight === 980)) return true;
+  }
+  return false;
+}
+
+/** True when the thin-client picker must stay up — no remote Hub chosen yet. */
+export function needsRemoteHubConnect(): boolean {
+  return isMobileClient() && !getHubBaseUrlSync();
 }
 
 /**
@@ -37,18 +136,23 @@ function isTauri(): boolean {
  */
 function detectMobileSync(): boolean {
   if (!isTauri()) return false;
-  const ua = typeof navigator === 'undefined' ? '' : navigator.userAgent || '';
-  return /android/i.test(ua) || /iphone|ipad|ipod/i.test(ua);
+  return isMobileUserAgent();
 }
 
 /** True once {@link initMobileConnection} has resolved this platform as iOS/Android. */
 export function isTauriMobileSync(): boolean {
-  if (cachedIsMobile === null) {
-    // Resolve eagerly the first time it's read so synchronous callers
-    // (root clientLoader, HubStatus) get the right answer immediately.
-    cachedIsMobile = detectMobileSync();
+  // Never downgrade a confirmed mobile detect. Overwriting `true` with a
+  // desktop-UA `false` (iOS Simulator + localhost) is what unmounts /connect
+  // after the first paint and leaves a black HubStatus gate.
+  if (cachedIsMobile === true || readMobileFlag()) {
+    cachedIsMobile = true;
+    return true;
   }
-  return cachedIsMobile === true;
+  if (detectMobileSync()) {
+    markMobile();
+    return true;
+  }
+  return false;
 }
 
 /** Promise that resolves to `fallback` if `p` hasn't settled within `ms`. */
@@ -86,7 +190,7 @@ async function loadNativeFetch(): Promise<typeof runtimeFetch | null> {
  * previous fetch in place. No-op off mobile.
  */
 async function ensureNativeFetchActive(): Promise<void> {
-  if (!isTauriMobileSync()) return;
+  if (!isTauriMobileSync() && !isMobileClient()) return;
   if (!cachedNativeFetch) {
     cachedNativeFetch = await withTimeout(loadNativeFetch(), 3000, null);
   }
@@ -107,12 +211,32 @@ function applyHubBaseUrl(baseUrl: string): void {
  * Resolve mobile-ness and any stored Hub URL, applying it to the API client.
  * Idempotent — safe to await from the root loader on every navigation.
  */
+async function detectOsMobile(): Promise<boolean | null> {
+  try {
+    const os = await import('@tauri-apps/plugin-os');
+    if (typeof os.type !== 'function') return null;
+    const platform = os.type();
+    if (platform === 'ios' || platform === 'android') return true;
+    if (platform) return false;
+  } catch {
+    // Plugin missing in unit tests / late IPC.
+  }
+  return null;
+}
+
 export async function initMobileConnection(): Promise<{ isMobile: boolean; hubBaseUrl: string | null }> {
+  if (detectMobileSync() || readMobileFlag()) {
+    markMobile();
+  }
+
+  const osMobile = await withTimeout(detectOsMobile(), 1500, null);
+  if (osMobile === true) {
+    markMobile();
+  }
+
   if (initialized) {
     return { isMobile: cachedIsMobile === true, hubBaseUrl: currentHubBaseUrl };
   }
-
-  cachedIsMobile = detectMobileSync();
 
   if (cachedIsMobile) {
     // Route remote-Hub API calls through native HTTP (best-effort; non-blocking).
@@ -131,9 +255,15 @@ export async function initMobileConnection(): Promise<{ isMobile: boolean; hubBa
     } catch {
       // No store yet / unreadable — user will pick a Hub via the connect screen.
     }
+    initialized = true;
+  } else if (isTauri() && !isMobileClient() && osMobile === false) {
+    // Confirmed desktop Tauri (macOS/Windows/Linux). Do not lock this when the
+    // OS plugin is missing — ios:dev often looks like desktop until it answers.
+    initialized = true;
   }
+  // If Tauri isn't injected yet, leave `initialized` false so a later loader
+  // pass can pick up iOS/Android after `__TAURI_INTERNALS__` appears.
 
-  initialized = true;
   return { isMobile: cachedIsMobile === true, hubBaseUrl: currentHubBaseUrl };
 }
 

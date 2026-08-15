@@ -58,5 +58,6 @@ describe('LoginForm', () => {
     );
 
     expect(screen.getByRole('link', { name: 'AUTH_LOGIN_COMPANION_ACCOUNT_BUTTON_AS' })).toBeInTheDocument();
+    expect(screen.getByLabelText('AUTH_FORM_EMAIL')).toHaveValue('operator@example.com');
   });
 });

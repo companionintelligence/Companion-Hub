@@ -3,6 +3,7 @@ import { appContextOptions, appContextQueryKey, getUpdatesAvailableOptions, syst
 import { getFeaturedStoreBundleOptions } from '@/lib/featured-store-bundle-query';
 import { getInstalledAppUrnsOptions } from '@/lib/installed-app-urns-query';
 import { prefetchOnboardingMarketplace } from '@/modules/onboarding/helpers/prefetch-onboarding-marketplace';
+import { isMobileClient } from '@/lib/mobile-connection';
 import { type QueryClient, useQueryClient, useQuery } from '@tanstack/react-query';
 import { createContext, useContext, useEffect } from 'react';
 
@@ -10,6 +11,7 @@ interface AppContextValue extends AppContextDto {
   refreshAppContext: () => Promise<void>;
   setAppContext: (newAppContext: Partial<AppContextDto>) => void;
   isLoading: boolean;
+  loadFailed: boolean;
 }
 
 const AppContext = createContext<AppContextValue | null>(null);
@@ -55,7 +57,7 @@ export const AppContextProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   } = useQuery({
     ...appContextOptions(),
     staleTime: 30_000, // 30 seconds — don't refetch on every navigation
-    retry: 3,
+    retry: isMobileClient() ? 0 : 3,
     retryDelay: (attempt) => Math.min(1_000 * 2 ** attempt, 5_000),
   });
 
@@ -71,6 +73,7 @@ export const AppContextProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     await queryClient.invalidateQueries({ queryKey });
   };
 
+  const loadFailed = Boolean(error && !isFetching && !appContext);
   const resolved = appContext ?? APP_CONTEXT_DEFAULTS;
 
   useEffect(() => {
@@ -114,6 +117,7 @@ export const AppContextProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     ...resolved,
     updatesAvailable: updatesQuery.data?.updatesAvailable ?? resolved.updatesAvailable,
     isLoading,
+    loadFailed,
     refreshAppContext,
     setAppContext: (newAppContext: Partial<AppContextDto>) => {
       queryClient.setQueryData(appContextQueryKey(), (current: AppContextDto | undefined) => {

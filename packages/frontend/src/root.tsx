@@ -3,7 +3,7 @@ import { HubStatus } from './components/hub-status/hub-status';
 import { useUpdateChecker } from './hooks/use-update-checker';
 import { Suspense, useEffect, useState } from 'react';
 import { Toaster } from 'react-hot-toast';
-import { Links, Meta, Outlet, Scripts, ScrollRestoration, isRouteErrorResponse, redirect, useLocation, useRevalidator } from 'react-router';
+import { Links, Meta, Navigate, Outlet, Scripts, ScrollRestoration, isRouteErrorResponse, redirect, useLocation, useRevalidator } from 'react-router';
 import type { Route } from './+types/root';
 import { userContext } from './api-client';
 import { client } from './api-client/client.gen';
@@ -18,7 +18,8 @@ import { clearStaleServerSession, getTauriSessionId } from '@/lib/api-fetch';
 import { refreshHubSessionIfDue, setServerSessionRefreshRecommendedAt } from '@/lib/hub-session-refresh';
 import { handleSessionExpired } from '@/lib/session-expired';
 import { isSessionExpiryExempt } from '@/lib/session-expiry-policy';
-import { clearHubConnection, getHubBaseUrlSync, initMobileConnection, isTauriMobileSync } from '@/lib/mobile-connection';
+import { getHubBaseUrlSync, initMobileConnection, isMobileClient, needsRemoteHubConnect } from '@/lib/mobile-connection';
+import { installMobileLoadWatchdog } from '@/lib/mobile-load-watchdog';
 import type { RegistrationStatus } from './lib/registration-status';
 import { isRegistrationOperational, requiresDeviceRegistration, requiresPortalRePairing } from './lib/registration-status';
 import { resolveRegistrationStatus } from './lib/registration-cache';
@@ -29,51 +30,32 @@ import i18next from 'i18next';
 
 const safeI18nText = (key: string, fallback: string) => (i18next.isInitialized ? i18next.t(key) : fallback);
 
-/** How long the mobile bootstrap spinner runs before offering a way out. */
-const MOBILE_SWITCH_HUB_ESCAPE_MS = 8000;
-
 export function DesktopStartupFallback() {
-  // Mobile is a thin client connecting to a *remote* Hub — there's no local API,
-  // so the desktop copy would be misleading.
-  const isMobile = isTauriMobileSync();
-  const message = isMobile
-    ? safeI18nText('ROOT_CONNECTING', 'Connecting…')
-    : safeI18nText('ROOT_CONNECTING_TO_LOCAL_API', 'Connecting to local API...');
+  // Mobile already has a real screen for this: `/connect` (cloud sign-in) or
+  // `/login` (chosen Hub). Do not paint a second unstyled "Connect to your Hub"
+  // page — send the user there.
+  const isMobile = isMobileClient();
+  const hasStoredHub = Boolean(getHubBaseUrlSync());
 
-  // Escape hatch: a returning mobile user whose stored Hub is unreachable would
-  // otherwise spin here forever (the '/' loader returns null while the Hub's
-  // registration status is unavailable, and the only Switch Hub UI lives behind
-  // a working Hub session). After a few seconds, offer the Hub picker.
-  const [showSwitchHub, setShowSwitchHub] = useState(false);
   useEffect(() => {
-    if (!isMobile || !getHubBaseUrlSync()) return;
-    const id = window.setTimeout(() => setShowSwitchHub(true), MOBILE_SWITCH_HUB_ESCAPE_MS);
-    return () => window.clearTimeout(id);
-  }, [isMobile]);
+    if (!isMobile || typeof window === 'undefined') return;
+    const path = window.location.pathname;
+    if (path === '/connect' || path === '/login') return;
+    window.location.replace(hasStoredHub ? '/login' : '/connect');
+  }, [isMobile, hasStoredHub]);
+
+  if (isMobile) {
+    return <main id="root" className="safe-area-inset min-h-dvh bg-background" role="status" aria-busy="true" />;
+  }
 
   return (
     <main
       id="root"
-      className="safe-area-inset flex min-h-dvh flex-col items-center justify-center gap-4 bg-background text-sm text-muted-foreground"
+      className="safe-area-inset flex min-h-dvh flex-col items-center justify-center gap-4 bg-background px-6"
       role="status"
       aria-busy="true"
     >
-      {message}
-      {showSwitchHub && (
-        <div className="flex flex-col items-center gap-3">
-          <span>{safeI18nText('MOBILE_CONNECT_HUB_UNREACHABLE_HINT', "Can't reach your Hub.")}</span>
-          <button
-            type="button"
-            data-testid="startup-switch-hub-btn"
-            className="min-h-[44px] rounded-md border border-input px-4 text-foreground transition-colors hover:bg-accent"
-            onClick={() => {
-              void clearHubConnection().finally(() => window.location.assign('/connect'));
-            }}
-          >
-            {safeI18nText('MOBILE_CONNECT_SWITCH_HUB', 'Switch Hub')}
-          </button>
-        </div>
-      )}
+      <p className="text-sm text-muted-foreground">{safeI18nText('ROOT_CONNECTING_TO_LOCAL_API', 'Connecting to local API...')}</p>
     </main>
   );
 }
@@ -148,24 +130,27 @@ client.interceptors.response.use(async (res) => {
 
 // Cross-origin desktop (legacy embedded SPA or mobile) uses header auth and API port probing.
 // Release desktop loads stack UI at http://127.0.0.1:PORT — same-origin cookies, like browser.
-const crossOriginDesktopApi = usesCrossOriginDesktopApi();
-const credentialMode: RequestCredentials = crossOriginDesktopApi ? 'omit' : 'include';
+// Recompute at use-time after initMobileConnection — a module-init snapshot on
+// iOS `devUrl` (http://localhost:5005) looks like desktop-same-origin / browser
+// and skipped mobile init, leaving the app stuck on a local API that isn't there.
+const waitForMobileOrCrossOrigin = isMobileClient() || usesCrossOriginDesktopApi();
+const credentialMode: RequestCredentials = usesCrossOriginDesktopApi() ? 'omit' : 'include';
 
 client.setConfig({
   credentials: credentialMode,
 });
 
-const tauriBaseUrlReady: Promise<void> = crossOriginDesktopApi
-  ? (async () => {
-      // On mobile there is no local backend — the app is a thin client pointed at
-      // a remote Hub the user chose. initMobileConnection() applies any stored Hub
-      // baseUrl; when none is set, clientLoader routes the user to /connect.
-      const { isMobile } = await initMobileConnection();
-      if (isMobile) return;
-      const port = await probeHealthyHubApiPort();
-      configureHubApiPort(port ?? 5002);
-    })()
-  : Promise.resolve();
+const tauriBaseUrlReady: Promise<void> = (async () => {
+  // Always run mobile init. On a phone there is no local backend — the app is a
+  // thin client pointed at a remote Hub. When none is stored, clientLoader
+  // routes the user to /connect. Previously this block was gated on a
+  // module-init `usesCrossOriginDesktopApi()` snapshot and never ran in ios:dev.
+  const { isMobile } = await initMobileConnection();
+  if (isMobile) return;
+  if (!usesCrossOriginDesktopApi()) return;
+  const port = await probeHealthyHubApiPort();
+  configureHubApiPort(port ?? 5002);
+})();
 
 export const links: Route.LinksFunction = () => [
   { rel: 'preconnect', href: 'https://fonts.googleapis.com' },
@@ -231,19 +216,72 @@ export function shouldRevalidate({
   return defaultShouldRevalidate;
 }
 
+const MOBILE_ROOT_LOADER_MS = 6_000;
+const rootLoaderTimeout = Symbol('mobile-root-loader-timeout');
+
 export async function clientLoader({ request }: Route.ActionArgs) {
+  if (isMobileClient() || import.meta.env.VITE_HUB_RUNTIME === 'mobile') {
+    const raced = await Promise.race([
+      runClientLoader(request),
+      new Promise<typeof rootLoaderTimeout>((resolve) => {
+        globalThis.setTimeout(() => resolve(rootLoaderTimeout), MOBILE_ROOT_LOADER_MS);
+      }),
+    ]);
+    if (raced !== rootLoaderTimeout) {
+      return raced;
+    }
+    const url = new URL(request.url);
+    if (url.pathname === '/connect' || url.pathname === '/login') {
+      return null;
+    }
+    return needsRemoteHubConnect() ? redirect('/connect') : redirect('/login');
+  }
+
+  return runClientLoader(request);
+}
+
+async function runClientLoader(request: Request) {
   // In Tauri release mode, wait for the backend port probe to complete
   await tauriBaseUrlReady;
+  // Re-run after the wait: iOS may have injected `__TAURI_INTERNALS__` by now.
+  await initMobileConnection();
 
   const url = new URL(request.url);
 
-  // On mobile, nothing works until a remote Hub is chosen. Send the user to the
-  // connect screen; the connect route itself is exempt so it can render.
-  if (isTauriMobileSync() && !getHubBaseUrlSync()) {
+  // Thin-client phone: stay on /connect until a Hub is chosen. Falling through
+  // to registration/user-context sends the app to /login against a missing
+  // local API — that is the flash-then-blank screen on ios:dev.
+  if (needsRemoteHubConnect()) {
     if (url.pathname !== '/connect') {
       return redirect('/connect');
     }
     return null;
+  }
+
+  // Phone with a chosen remote Hub: do not wait on this appliance's
+  // registration API. Those calls hang when the tunnel is slow or native
+  // fetch is not yet routed, and `/` then shows the bootstrap spinner forever.
+  if (isMobileClient() && getHubBaseUrlSync()) {
+    if (url.pathname === '/') {
+      return redirect('/login');
+    }
+    if (AUTH_BOOTSTRAP_PATHS.has(url.pathname)) {
+      return null;
+    }
+    try {
+      const userResult = await Promise.race([
+        userContext(),
+        new Promise<null>((resolve) => {
+          globalThis.setTimeout(() => resolve(null), 8_000);
+        }),
+      ]);
+      if (userResult?.data?.isLoggedIn) {
+        return userResult;
+      }
+    } catch {
+      /* show Hub login — the session check can retry there */
+    }
+    return redirect('/login');
   }
 
   const registration = await loadRegistrationLookup();
@@ -336,14 +374,28 @@ export async function clientLoader({ request }: Route.ActionArgs) {
   return redirect('/home');
 }
 
+// Run on first client hydration. Without this, SSR can skip the mobile
+// /connect redirect and leave ios:dev on a blank local-API spinner.
+clientLoader.hydrate = true;
+
+export function HydrateFallback() {
+  return <DesktopStartupFallback />;
+}
+
 export function Layout({ children }: { children: React.ReactNode }) {
   useUpdateChecker();
-  const [apiReady, setApiReady] = useState(() => !crossOriginDesktopApi);
+  const [apiReady, setApiReady] = useState(() => isMobileClient() || !waitForMobileOrCrossOrigin);
   const [documentTitle, setDocumentTitle] = useState(() => (i18next.isInitialized ? i18next.t('APP_NAME') : 'CI Hub'));
   const [documentLang, setDocumentLang] = useState(() => i18next.resolvedLanguage || i18next.language || 'en');
 
   useEffect(() => {
-    if (!crossOriginDesktopApi) return;
+    installMobileLoadWatchdog();
+    document.getElementById('ci-hub-boot')?.remove();
+    document.getElementById('ci-hub-mobile-hud')?.remove();
+  }, []);
+
+  useEffect(() => {
+    if (!waitForMobileOrCrossOrigin) return;
 
     let cancelled = false;
     void tauriBaseUrlReady.then(() => {
@@ -480,7 +532,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
   }, []);
 
   return (
-    <html lang={documentLang}>
+    <html lang={documentLang} className={isMobileClient() ? 'ci-mobile' : undefined}>
       <head>
         <title>{documentTitle}</title>
         <meta charSet="UTF-8" />
@@ -488,8 +540,8 @@ export function Layout({ children }: { children: React.ReactNode }) {
         <Meta />
         <Links />
       </head>
-      <body>
-        <ThemeProvider defaultTheme="dark">
+      <body className={isMobileClient() ? 'bg-background text-foreground' : undefined}>
+        <ThemeProvider defaultTheme={isMobileClient() ? 'light' : 'dark'}>
           {apiReady ? (
             <I18nProvider>
               <Suspense fallback={<DesktopStartupFallback />}>
@@ -519,8 +571,9 @@ export default function App({ loaderData }: Route.ComponentProps) {
 
   // Root has no index route. While the loader is still resolving (common during
   // desktop startup), keep polling so we redirect off `/` as soon as the API responds.
+  // Do not poll on an unconnected phone — that loop is what blanks the connect UI.
   useEffect(() => {
-    if (!onRootBootstrap) return;
+    if (!onRootBootstrap || needsRemoteHubConnect()) return;
 
     void revalidate();
     const id = window.setInterval(() => {
@@ -530,6 +583,9 @@ export default function App({ loaderData }: Route.ComponentProps) {
   }, [onRootBootstrap, revalidate]);
 
   if (onRootBootstrap) {
+    if (isMobileClient()) {
+      return <Navigate to={needsRemoteHubConnect() ? '/connect' : '/login'} replace />;
+    }
     return (
       <>
         <DesktopStartupFallback />

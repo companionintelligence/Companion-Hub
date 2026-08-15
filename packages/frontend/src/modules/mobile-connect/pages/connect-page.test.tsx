@@ -8,20 +8,25 @@ import ConnectPage, { clientLoader } from './connect-page';
 const navigate = vi.fn();
 vi.mock('react-router', async (orig) => ({ ...(await orig<typeof import('react-router')>()), useNavigate: () => navigate }));
 
-const { setHubConnection, toastError, initMobileConnection } = vi.hoisted(() => ({
+const { setHubConnection, toastError, initMobileConnection, isMobileClient } = vi.hoisted(() => ({
   setHubConnection: vi.fn(async () => {}),
   toastError: vi.fn(),
   initMobileConnection: vi.fn(async () => ({ isMobile: true, hubBaseUrl: null as string | null })),
+  isMobileClient: vi.fn(() => true),
 }));
 
 vi.mock('@/lib/mobile-connection', () => ({
   isTauriMobileSync: () => true,
+  isMobileClient,
   getHubBaseUrlSync: () => null,
   initMobileConnection,
   setHubConnection,
 }));
 
 vi.mock('react-hot-toast', () => ({ default: { error: toastError, success: vi.fn() } }));
+vi.mock('@tauri-apps/api/event', () => ({
+  listen: vi.fn(async () => () => {}),
+}));
 
 const signInToPortal = vi.fn();
 const listHubDevices = vi.fn();
@@ -32,9 +37,11 @@ vi.mock('../portal-client', async (orig) => ({
 }));
 
 const loginWithPortalOidc = vi.fn();
+const resumePendingOidcLogin = vi.fn<(...args: unknown[]) => Promise<import('../oidc').OidcTokens | null>>(async () => null);
 vi.mock('../oidc', async (orig) => ({
   ...(await orig<typeof import('../oidc')>()),
   loginWithPortalOidc: (...a: unknown[]) => loginWithPortalOidc(...a),
+  resumePendingOidcLogin: (...a: unknown[]) => resumePendingOidcLogin(...a),
 }));
 
 const devices: HubDevice[] = [
@@ -55,10 +62,14 @@ beforeEach(() => {
   signInToPortal.mockReset();
   listHubDevices.mockReset();
   loginWithPortalOidc.mockReset();
+  resumePendingOidcLogin.mockReset();
+  resumePendingOidcLogin.mockResolvedValue(null);
   setHubConnection.mockClear();
   toastError.mockClear();
   initMobileConnection.mockReset();
   initMobileConnection.mockResolvedValue({ isMobile: true, hubBaseUrl: null });
+  isMobileClient.mockReturnValue(true);
+  localStorage.clear();
 });
 
 describe('ConnectPage clientLoader (connect ↔ /login handoff guard)', () => {
@@ -71,14 +82,21 @@ describe('ConnectPage clientLoader (connect ↔ /login handoff guard)', () => {
     initMobileConnection.mockResolvedValue({ isMobile: true, hubBaseUrl: 'https://hub-x.ci.computer' });
     const res = (await clientLoader()) as Response;
     expect(res.status).toBe(302);
-    expect(res.headers.get('Location')).toBe('/');
+    expect(res.headers.get('Location')).toBe('/login');
   });
 
   it('redirects web/desktop away from the mobile-only connect screen', async () => {
     initMobileConnection.mockResolvedValue({ isMobile: false, hubBaseUrl: null });
+    isMobileClient.mockReturnValue(false);
     const res = (await clientLoader()) as Response;
     expect(res.status).toBe(302);
     expect(res.headers.get('Location')).toBe('/');
+  });
+
+  it('keeps the connect screen on a phone UA even when Tauri is not detected yet', async () => {
+    initMobileConnection.mockResolvedValue({ isMobile: false, hubBaseUrl: null });
+    isMobileClient.mockReturnValue(true);
+    expect(await clientLoader()).toBeNull();
   });
 });
 
@@ -140,7 +158,36 @@ describe('ConnectPage', () => {
     // The chosen Hub is applied (baseUrl + native fetch + session wiring) *before*
     // the login handoff, so /login's POST reaches the remote Hub.
     expect(setHubConnection).toHaveBeenCalledWith('https://hub-apple.ci.computer');
-    expect(navigate).toHaveBeenCalledWith('/login');
+    expect(navigate).toHaveBeenCalledWith('/login', { replace: true });
+  });
+
+  it('resumes a cold-start OIDC callback on mount and shows the Hub picker', async () => {
+    resumePendingOidcLogin.mockResolvedValue({ accessToken: 'AT', idToken: null, tokenType: 'Bearer', expiresIn: 3600 });
+    listHubDevices.mockResolvedValue(devices);
+    renderPage();
+
+    expect(await screen.findByText('Apple Hub')).toBeInTheDocument();
+    expect(listHubDevices).toHaveBeenCalledWith({ token: 'AT', cookie: null, kind: 'oauth' }, expect.any(String));
+  });
+
+  it('OIDC sign-in remembers the Portal email from the id_token', async () => {
+    const payload = btoa(JSON.stringify({ email: 'chamberlain.bennett@gmail.com' }))
+      .replace(/\+/g, '-')
+      .replace(/\//g, '_')
+      .replace(/=+$/, '');
+    loginWithPortalOidc.mockResolvedValue({
+      accessToken: 'AT',
+      idToken: `hdr.${payload}.sig`,
+      tokenType: 'Bearer',
+      expiresIn: 3600,
+    });
+    listHubDevices.mockResolvedValue(devices);
+    renderPage();
+
+    await user.click(screen.getByTestId('oidc-login-btn'));
+
+    expect(await screen.findByText('Apple Hub')).toBeInTheDocument();
+    expect(localStorage.getItem('ci-hub.portalAccountEmail')).toBe('chamberlain.bennett@gmail.com');
   });
 
   it('OIDC sign-in success loads the Hub picker', async () => {
@@ -152,7 +199,7 @@ describe('ConnectPage', () => {
 
     expect(await screen.findByText('Apple Hub')).toBeInTheDocument();
     // The OIDC access token is forwarded to the Portal device listing.
-    expect(listHubDevices).toHaveBeenCalledWith({ token: 'AT', cookie: null }, expect.any(String));
+    expect(listHubDevices).toHaveBeenCalledWith({ token: 'AT', cookie: null, kind: 'oauth' }, expect.any(String));
   });
 
   it('OIDC failure (not a cancel) surfaces an error toast', async () => {

@@ -102,7 +102,7 @@ fits the threat model given a persisted session token. Cargo dep + capability +
 ## P3 — polish
 
 - **Bundle Montserrat** instead of loading Google Fonts at every cold start (an IP disclosure to Google per launch; GDPR-relevant, and a font flash offline — which a thin client hits often). Then drop both Google hosts from the CSP.
-- **Post-connect safe areas** — `--titlebar-height` is never set on mobile while `enableEdgeToEdge()` is on, so the Hub header likely renders under the status bar/notch once connected. **Needs a device check.**
+- **Post-connect safe areas** — done: `--safe-area-top` / `--header-offset` on `html.ci-mobile` so the Hub header clears the Dynamic Island.
 - **Edge-to-edge status-bar icon contrast** — Android 15+ picks icon contrast from the *system* theme, not our forced-dark UI: a light-mode device gets dark icons on dark navy. Pass an explicit `SystemBarStyle`.
 - **i18n the Portal error paths** — timeouts surface as raw English / browser `TimeoutError` strings; add keys + inline errors instead of toast-only.
 - **Custom Portal URLs** silently fail — the Advanced field accepts any host, but the http capability allowlist only covers `*.ci.computer` + corporate domains + RFC1918 (and is missing `172.16/12`). Widen, or catch the denial and say so.

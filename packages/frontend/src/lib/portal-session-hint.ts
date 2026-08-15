@@ -1,4 +1,5 @@
 import { portalSessionHint } from '@/api-client/sdk.gen';
+import { isMobileClient } from '@/lib/mobile-connection';
 import { unwrapSdkOrNull } from '@/lib/sdk-unwrap';
 
 const PORTAL_ACCOUNT_EMAIL_KEY = 'ci-hub.portalAccountEmail';
@@ -77,7 +78,19 @@ export async function fetchPortalSessionEmailDirect(portalBaseUrl: string): Prom
 }
 
 export async function resolvePortalSessionHint(): Promise<PortalSessionHint> {
+  const remembered = readRememberedPortalAccountEmail();
   const hubHint = await fetchPortalSessionHintFromHub();
+
+  // Phone user just signed into Portal (OIDC). The Hub operator email is often
+  // a different account (e.g. support@…) and must not win the SSO button label.
+  if (isMobileClient() && remembered) {
+    return {
+      email: remembered,
+      portalBaseUrl: hubHint.portalBaseUrl,
+      source: 'remembered',
+    };
+  }
+
   if (hubHint.email) {
     rememberPortalAccountEmail(hubHint.email);
     return hubHint;
@@ -95,7 +108,6 @@ export async function resolvePortalSessionHint(): Promise<PortalSessionHint> {
     }
   }
 
-  const remembered = readRememberedPortalAccountEmail();
   if (remembered) {
     return {
       email: remembered,

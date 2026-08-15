@@ -69,6 +69,7 @@ vi.mock('./api-client/client.gen', () => ({
 
 const { clientLoader, ErrorBoundary, shouldRevalidate } = await import('./root');
 import { cacheRegistrationStatus } from './lib/registration-cache';
+import { resetMobileClientCacheForTests } from './lib/mobile-connection';
 
 // Captured at import time: `beforeEach(vi.clearAllMocks)` would otherwise wipe the
 // registration call this interceptor arrived on.
@@ -86,9 +87,13 @@ function makeStatus(phase: RegistrationStatus['phase'], registered = false): Reg
 }
 
 describe('root clientLoader registration gating', () => {
+  const desktopUa = 'Mozilla/5.0 (Macintosh; Intel Mac OS X)';
+
   beforeEach(() => {
     vi.clearAllMocks();
     sessionStorage.clear();
+    resetMobileClientCacheForTests();
+    Object.defineProperty(navigator, 'userAgent', { configurable: true, value: desktopUa });
     userContext.mockResolvedValue({
       data: {
         isConfigured: true,
@@ -124,6 +129,75 @@ describe('root clientLoader registration gating', () => {
     const result = await clientLoader({ request: new Request('http://localhost/') } as never);
 
     expect(result).toBeNull();
+  });
+
+  it('sends a phone with no Hub API to /connect instead of spinning on local registration', async () => {
+    Object.defineProperty(navigator, 'userAgent', {
+      configurable: true,
+      value: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)',
+    });
+    resolveRegistrationStatus.mockResolvedValue(null);
+
+    const result = (await clientLoader({ request: new Request('http://localhost/') } as never)) as Response;
+
+    expect(result.status).toBe(302);
+    expect(result.headers.get('Location')).toBe('/connect');
+    expect(userContext).not.toHaveBeenCalled();
+  });
+
+  it('keeps an unconnected phone on /connect without probing the local Hub', async () => {
+    Object.defineProperty(navigator, 'userAgent', {
+      configurable: true,
+      value: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)',
+    });
+
+    const result = await clientLoader({ request: new Request('http://localhost/connect') } as never);
+
+    expect(result).toBeNull();
+    expect(userContext).not.toHaveBeenCalled();
+    expect(resolveRegistrationStatus).not.toHaveBeenCalled();
+  });
+
+  it('sends a phone that already chose a Hub to /login without probing registration', async () => {
+    const { clearHubConnection, setHubConnection } = await import('./lib/mobile-connection');
+    Object.defineProperty(navigator, 'userAgent', {
+      configurable: true,
+      value: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)',
+    });
+    await setHubConnection('https://hub-core3-bc.companionintelligence.com');
+    try {
+      const loginResult = await clientLoader({ request: new Request('http://localhost/login') } as never);
+      const rootResult = (await clientLoader({ request: new Request('http://localhost/') } as never)) as Response;
+
+      expect(loginResult).toBeNull();
+      expect(rootResult.status).toBe(302);
+      expect(rootResult.headers.get('Location')).toBe('/login');
+      expect(resolveRegistrationStatus).not.toHaveBeenCalled();
+      expect(userContext).not.toHaveBeenCalled();
+    } finally {
+      await clearHubConnection();
+    }
+  });
+
+  it('lets a signed-in phone reach /home without waiting on registration', async () => {
+    const { clearHubConnection, setHubConnection } = await import('./lib/mobile-connection');
+    Object.defineProperty(navigator, 'userAgent', {
+      configurable: true,
+      value: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)',
+    });
+    await setHubConnection('https://hub-core3-bc.companionintelligence.com');
+    userContext.mockResolvedValue({
+      data: { isConfigured: true, isLoggedIn: true, isGuestDashboardEnabled: false },
+    });
+    try {
+      const result = await clientLoader({ request: new Request('http://localhost/home') } as never);
+      expect(result).toEqual({
+        data: { isConfigured: true, isLoggedIn: true, isGuestDashboardEnabled: false },
+      });
+      expect(resolveRegistrationStatus).not.toHaveBeenCalled();
+    } finally {
+      await clearHubConnection();
+    }
   });
 
   it('keeps login and root available when registration status is temporarily unavailable', async () => {

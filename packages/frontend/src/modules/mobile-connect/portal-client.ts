@@ -4,10 +4,10 @@
  * (`@tauri-apps/plugin-http`) rather than the webview `fetch`, so cross-origin
  * cookie/CORS limitations of a `tauri://localhost` origin don't apply.
  *
- * The Portal is better-auth + Hono on Cloudflare Workers. We support the
- * universal email/password path here; OAuth/passkey via the system browser is a
- * natural follow-up. Auth is presented to `/api/devices` as both a bearer token
- * and a cookie (whichever the deployment honours).
+ * The Portal is better-auth + Hono on Cloudflare Workers. Email/password
+ * yields a session (cookie / session token) for `GET /api/devices`. OIDC PKCE
+ * yields an opaque access token that `/api/devices` rejects (401) — that
+ * token is valid on `GET /api/users/me/apps?slug=hub` (`oauthBearerMiddleware`).
  */
 
 export const DEFAULT_PORTAL_URL = 'https://hub.ci.computer';
@@ -15,6 +15,8 @@ export const DEFAULT_PORTAL_URL = 'https://hub.ci.computer';
 export interface PortalAuth {
   token: string | null;
   cookie: string | null;
+  /** `oauth` = OIDC access token; `session` = email/password cookie/token. */
+  kind?: 'session' | 'oauth';
 }
 
 export interface HubDevice {
@@ -30,8 +32,15 @@ export interface HubDevice {
 }
 
 async function nativeFetch(): Promise<typeof fetch> {
-  const http = await import('@tauri-apps/plugin-http');
-  return http.fetch as unknown as typeof fetch;
+  try {
+    const http = await import('@tauri-apps/plugin-http');
+    if (typeof http.fetch === 'function') {
+      return http.fetch as unknown as typeof fetch;
+    }
+  } catch {
+    // ios:dev often has no Tauri HTTP IPC — fall through to window.fetch.
+  }
+  return globalThis.fetch.bind(globalThis);
 }
 
 function normalizePortalUrl(url: string): string {
@@ -85,7 +94,7 @@ export async function signInToPortal(email: string, password: string, portalUrl 
     throw new Error('Sign-in succeeded but no session was returned by the Portal.');
   }
 
-  return { token, cookie };
+  return { token, cookie, kind: 'session' };
 }
 
 /** Pull the Hub URL out of a device's app list (the privileged "hub" app). */
@@ -95,10 +104,53 @@ function hubUrlForDevice(device: { apps?: Array<{ slug?: string; name?: string; 
   return hub?.url ?? null;
 }
 
+async function listHubsWithOauthToken(auth: PortalAuth, portal: string, doFetch: typeof fetch): Promise<HubDevice[]> {
+  const headers: Record<string, string> = {};
+  if (auth.token) headers.Authorization = `Bearer ${auth.token}`;
+
+  // Portal matches application.slug or application.name. The Hub appliance
+  // is usually slug `hub`; try the first-party aliases if that is empty.
+  const slugs = ['hub', 'ci-hub', 'OS Hub'];
+  const seen = new Set<string>();
+  const devices: HubDevice[] = [];
+
+  for (const slug of slugs) {
+    const res = await doFetch(`${portal}/api/users/me/apps?slug=${encodeURIComponent(slug)}`, {
+      method: 'GET',
+      headers,
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!res.ok) {
+      throw new Error(`Could not load your Hubs (${res.status}).`);
+    }
+    const body = (await res.json()) as {
+      apps?: Array<{ slug?: string; url?: string; deviceName?: string; deviceSlug?: string }>;
+    };
+    for (const app of body.apps ?? []) {
+      const key = app.url || app.deviceSlug || app.deviceName;
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      devices.push({
+        id: app.deviceSlug || app.url || key,
+        name: app.deviceName || app.deviceSlug || key,
+        status: 'active',
+        hubUrl: app.url ?? null,
+      });
+    }
+    if (devices.length > 0) break;
+  }
+
+  return devices;
+}
+
 /** List the Hub appliances the authenticated user owns. */
 export async function listHubDevices(auth: PortalAuth, portalUrl = DEFAULT_PORTAL_URL): Promise<HubDevice[]> {
   const portal = normalizePortalUrl(portalUrl);
   const doFetch = await nativeFetch();
+
+  if (auth.kind === 'oauth') {
+    return listHubsWithOauthToken(auth, portal, doFetch);
+  }
 
   const headers: Record<string, string> = {};
   if (auth.token) headers.Authorization = `Bearer ${auth.token}`;

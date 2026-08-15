@@ -32,8 +32,12 @@ const mc = vi.hoisted(() => ({
   }),
   init: vi.fn(async () => ({ isMobile: conn.mobile, hubBaseUrl: conn.hubUrl })),
 }));
+vi.mock('@tauri-apps/api/event', () => ({
+  listen: vi.fn(async () => () => {}),
+}));
 vi.mock('@/lib/mobile-connection', () => ({
   isTauriMobileSync: () => conn.mobile,
+  isMobileClient: () => conn.mobile,
   getHubBaseUrlSync: () => conn.hubUrl,
   setHubConnection: (url: string) => mc.setHub(url),
   clearHubConnection: () => mc.clearHub(),
@@ -50,9 +54,11 @@ vi.mock('./portal-client', async (orig) => ({
 }));
 
 const loginWithPortalOidc = vi.fn();
+const resumePendingOidcLogin = vi.fn<(...args: unknown[]) => Promise<null>>(async () => null);
 vi.mock('./oidc', async (orig) => ({
   ...(await orig<typeof import('./oidc')>()),
   loginWithPortalOidc: (...a: unknown[]) => loginWithPortalOidc(...a),
+  resumePendingOidcLogin: (...a: unknown[]) => resumePendingOidcLogin(...a),
 }));
 
 const { toastError } = vi.hoisted(() => ({ toastError: vi.fn() }));
@@ -90,6 +96,8 @@ beforeEach(() => {
   signInToPortal.mockReset();
   listHubDevices.mockReset();
   loginWithPortalOidc.mockReset();
+  resumePendingOidcLogin.mockReset();
+  resumePendingOidcLogin.mockResolvedValue(null);
   toastError.mockClear();
 });
 
@@ -131,7 +139,7 @@ describe('mobile login journey', () => {
 
     // The OIDC access token is forwarded to the Portal device listing.
     expect(await screen.findByText('Apple Hub')).toBeInTheDocument();
-    expect(listHubDevices).toHaveBeenCalledWith({ token: 'AT', cookie: null }, expect.any(String));
+    expect(listHubDevices).toHaveBeenCalledWith({ token: 'AT', cookie: null, kind: 'oauth' }, expect.any(String));
 
     await user.click(screen.getByTestId('hub-row-reg-1'));
     expect(await screen.findByTestId('hub-login-screen')).toBeInTheDocument();
@@ -141,8 +149,8 @@ describe('mobile login journey', () => {
   it('an already-connected device is routed off /connect to the app (not stranded on the picker)', async () => {
     conn.hubUrl = 'https://hub-apple.ci.computer'; // returning user with a chosen Hub
     renderJourney('/connect');
-    // clientLoader sees a chosen Hub → redirects to `/`.
-    expect(await screen.findByTestId('home-screen')).toBeInTheDocument();
+    // clientLoader sees a chosen Hub → redirects to that Hub's /login.
+    expect(await screen.findByTestId('hub-login-screen')).toBeInTheDocument();
     expect(screen.queryByText('Connect to your Hub')).not.toBeInTheDocument();
   });
 

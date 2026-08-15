@@ -5,8 +5,11 @@ import * as SelectPrimitive from '@radix-ui/react-select';
 import { Check, ChevronDown, ChevronUp, X } from 'lucide-react';
 
 import { cn } from '@/lib/utils';
+import { isMobileClient } from '@/lib/mobile-connection';
 
-const Select = SelectPrimitive.Root;
+function Select({ modal, ...props }: React.ComponentProps<typeof SelectPrimitive.Root>) {
+  return <SelectPrimitive.Root modal={isMobileClient() ? false : modal} {...props} />;
+}
 
 const SelectGroup = SelectPrimitive.Group;
 

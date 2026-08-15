@@ -1,13 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, fireEvent, render, screen, waitFor } from './tests/test-utils';
+import { render, screen } from './tests/test-utils';
 
-// root.tsx runs module-load side effects (registers API-client interceptors,
-// sets client config) and pulls in the Sentry/registration/session modules.
-// Mirror the mocks in root.test.tsx so importing ./root is inert, and add a
-// controllable mock for the mobile-connection detector — the startup fallback
-// branches on isTauriMobileSync() to pick mobile vs. desktop "connecting" copy.
-const { isTauriMobileSync, getHubBaseUrlSync, initMobileConnection, clearHubConnection } = vi.hoisted(() => ({
+const { isTauriMobileSync, isMobileClient, getHubBaseUrlSync, initMobileConnection, clearHubConnection } = vi.hoisted(() => ({
   isTauriMobileSync: vi.fn(() => false),
+  isMobileClient: vi.fn(() => false),
   getHubBaseUrlSync: vi.fn((): string | null => null),
   initMobileConnection: vi.fn(async () => ({ isMobile: false, hubBaseUrl: null })),
   clearHubConnection: vi.fn(async () => {}),
@@ -15,7 +11,9 @@ const { isTauriMobileSync, getHubBaseUrlSync, initMobileConnection, clearHubConn
 
 vi.mock('./lib/mobile-connection', () => ({
   isTauriMobileSync,
+  isMobileClient,
   getHubBaseUrlSync,
+  needsRemoteHubConnect: () => isMobileClient() && !getHubBaseUrlSync(),
   initMobileConnection,
   clearHubConnection,
 }));
@@ -60,105 +58,56 @@ vi.mock('./api-client/client.gen', () => ({
 
 const { DesktopStartupFallback } = await import('./root');
 
-// English copy (setup.ts initializes i18next with the real en.json bundle).
-const MOBILE_COPY = 'Connecting…'; // ROOT_CONNECTING — note the single-char ellipsis
-const DESKTOP_COPY = 'Connecting to local API...'; // ROOT_CONNECTING_TO_LOCAL_API
+const DESKTOP_COPY = 'Connecting to local API...';
 
-describe('root startup/loading fallback — mobile branch', () => {
+describe('root startup/loading fallback', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     isTauriMobileSync.mockReturnValue(false);
+    isMobileClient.mockReturnValue(false);
+    getHubBaseUrlSync.mockReturnValue(null);
   });
 
-  it('shows the mobile "Connecting…" copy and NOT the desktop local-API copy on mobile', () => {
-    isTauriMobileSync.mockReturnValue(true);
+  it('sends a phone with no Hub to /connect instead of a second splash', () => {
+    isMobileClient.mockReturnValue(true);
+    const replace = vi.fn();
+    vi.stubGlobal('location', { pathname: '/', replace, assign: vi.fn(), href: 'http://localhost:5005/' });
 
     render(<DesktopStartupFallback />);
 
-    expect(screen.getByText(MOBILE_COPY)).toBeInTheDocument();
-    // The desktop copy names a "local API" that a thin-client phone never has —
-    // it must not leak onto the mobile loading screen.
+    expect(replace).toHaveBeenCalledWith('/connect');
+    expect(screen.queryByText('Connect to your Hub')).not.toBeInTheDocument();
     expect(screen.queryByText(DESKTOP_COPY)).not.toBeInTheDocument();
+    vi.unstubAllGlobals();
   });
 
-  it('renders without throwing on mobile', () => {
-    isTauriMobileSync.mockReturnValue(true);
-
-    expect(() => render(<DesktopStartupFallback />)).not.toThrow();
-  });
-
-  it('applies the mobile safe-area / full-height layout classes', () => {
-    isTauriMobileSync.mockReturnValue(true);
+  it('sends a phone that already chose a Hub to /login', () => {
+    isMobileClient.mockReturnValue(true);
+    getHubBaseUrlSync.mockReturnValue('https://hub-apple.ci.computer');
+    const replace = vi.fn();
+    vi.stubGlobal('location', { pathname: '/', replace, assign: vi.fn(), href: 'http://localhost:5005/' });
 
     render(<DesktopStartupFallback />);
 
-    // role="status" + aria-busy keep it accessible while the app connects.
-    const region = screen.getByRole('status');
-    expect(region).toHaveAttribute('aria-busy', 'true');
-    // safe-area-inset + min-h-dvh keep the loading screen clear of the notch/home
-    // indicator and fill the dynamic viewport; bg-background matches the dark app.
-    expect(region).toHaveClass('safe-area-inset', 'min-h-dvh', 'items-center', 'justify-center', 'bg-background');
+    expect(replace).toHaveBeenCalledWith('/login');
+    vi.unstubAllGlobals();
   });
 
-  it('shows the desktop local-API copy on desktop (branch differs from mobile)', () => {
-    isTauriMobileSync.mockReturnValue(false);
+  it('does not bounce when already on /connect', () => {
+    isMobileClient.mockReturnValue(true);
+    const replace = vi.fn();
+    vi.stubGlobal('location', { pathname: '/connect', replace, assign: vi.fn(), href: 'http://localhost:5005/connect' });
 
+    render(<DesktopStartupFallback />);
+
+    expect(replace).not.toHaveBeenCalled();
+    vi.unstubAllGlobals();
+  });
+
+  it('shows the desktop local-API copy on desktop', () => {
     render(<DesktopStartupFallback />);
 
     expect(screen.getByText(DESKTOP_COPY)).toBeInTheDocument();
-    expect(screen.queryByText(MOBILE_COPY)).not.toBeInTheDocument();
-  });
-
-  it('offers a Switch Hub escape hatch after 8s when a stored Hub is unreachable', async () => {
-    isTauriMobileSync.mockReturnValue(true);
-    getHubBaseUrlSync.mockReturnValue('https://hub-apple.ci.computer');
-    vi.useFakeTimers();
-    try {
-      render(<DesktopStartupFallback />);
-      // Not shown immediately — normal startups resolve well within the window.
-      expect(screen.queryByTestId('startup-switch-hub-btn')).not.toBeInTheDocument();
-
-      act(() => {
-        vi.advanceTimersByTime(8000);
-      });
-      const btn = screen.getByTestId('startup-switch-hub-btn');
-      expect(btn).toBeInTheDocument();
-      fireEvent.click(btn);
-    } finally {
-      vi.useRealTimers();
-    }
-    // Clicking clears the stored connection (then hard-navigates to /connect —
-    // jsdom logs "Not implemented: navigation", which is expected noise).
-    await waitFor(() => expect(clearHubConnection).toHaveBeenCalledTimes(1));
-  });
-
-  it('never shows the escape hatch on first run (no stored Hub)', () => {
-    isTauriMobileSync.mockReturnValue(true);
-    getHubBaseUrlSync.mockReturnValue(null);
-    vi.useFakeTimers();
-    try {
-      render(<DesktopStartupFallback />);
-      act(() => {
-        vi.advanceTimersByTime(20000);
-      });
-      expect(screen.queryByTestId('startup-switch-hub-btn')).not.toBeInTheDocument();
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it('picks a different message for mobile vs. desktop', () => {
-    isTauriMobileSync.mockReturnValue(true);
-    const { unmount } = render(<DesktopStartupFallback />);
-    const mobileText = screen.getByRole('status').textContent;
-    unmount();
-
-    isTauriMobileSync.mockReturnValue(false);
-    render(<DesktopStartupFallback />);
-    const desktopText = screen.getByRole('status').textContent;
-
-    expect(mobileText).toBe(MOBILE_COPY);
-    expect(desktopText).toBe(DESKTOP_COPY);
-    expect(mobileText).not.toBe(desktopText);
+    expect(screen.queryByTestId('startup-switch-hub-btn')).not.toBeInTheDocument();
   });
 });
