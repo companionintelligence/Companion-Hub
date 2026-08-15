@@ -119,6 +119,7 @@ describe('InferenceEnvResolver', () => {
     ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [] });
     ollamaBackend.getBaseUrl.mockReturnValue(OLLAMA_BASE_URL);
     cloudFallback.getEnabledProviders.mockReturnValue([]);
+    cloudFallback.toAppEnv.mockReturnValue({});
     modelRegistry.getRecommendedModelsForHardware.mockReturnValue([makeLlm('hermes4-70b', 'hermes4:70b')]);
     modelRegistry.getRecommendedEmbeddingModel.mockReturnValue(makeEmbedding('nomic-embed-text', 'nomic-embed-text'));
     modelRegistry.getRecommendedVisionModel.mockReturnValue(makeLlm('gemma4-27b', 'gemma4:27b', true));
@@ -202,7 +203,7 @@ describe('InferenceEnvResolver', () => {
     expect(modelRegistry.getRecommendedModelsForHardware).not.toHaveBeenCalled();
   });
 
-  it('returns cloud connection variables even when Ollama is unavailable', async () => {
+  it('uses the first cloud provider as primary when the local backend is unavailable', async () => {
     const provider: CloudProviderConfig = {
       provider: 'openai',
       enabled: true,
@@ -210,50 +211,56 @@ describe('InferenceEnvResolver', () => {
       baseUrl: 'https://api.openai.com/v1',
       defaultModel: 'gpt-4o',
     };
+    ollamaBackend.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [] });
     cloudFallback.getEnabledProviders.mockReturnValue([provider]);
+    cloudFallback.toAppEnv.mockReturnValue({
+      CI_CLOUD_OPENAI_API_KEY: 'sk-test',
+      CI_CLOUD_OPENAI_BASE_URL: 'https://api.openai.com/v1',
+      CI_CLOUD_OPENAI_MODEL: 'gpt-4o',
+    });
     const env = await service.resolve();
 
     expect(env).toMatchObject({
       CI_LLM_BASE_URL: 'https://api.openai.com/v1',
       CI_LLM_API_KEY: 'sk-test',
       CI_CHAT_MODEL: 'gpt-4o',
+      CI_INFERENCE_BACKEND: 'cloud',
+    });
+    expect(env.cloudProviderEnv).toEqual({
+      CI_CLOUD_OPENAI_API_KEY: 'sk-test',
+      CI_CLOUD_OPENAI_BASE_URL: 'https://api.openai.com/v1',
+      CI_CLOUD_OPENAI_MODEL: 'gpt-4o',
     });
     expect(env.CI_EMBEDDING_MODEL).toBeUndefined();
-    expect(env.CI_VISION_MODEL).toBeUndefined();
     expect(env.OLLAMA_HOST).toBeUndefined();
-    expect(ollamaBackend.healthCheck).not.toHaveBeenCalled();
-    expect(hardwareInspector.getProfile).not.toHaveBeenCalled();
   });
 
-  it('omits Ollama-specific embedding and vision model IDs when a cloud provider overrides the base URL', async () => {
+  it('keeps the local backend as primary and attaches every cloud provider', async () => {
     const provider: CloudProviderConfig = {
-      provider: 'openai',
+      provider: 'anthropic',
       enabled: true,
-      apiKey: 'sk-test',
-      baseUrl: 'https://api.openai.com/v1',
-      defaultModel: 'gpt-4o',
+      apiKey: 'sk-ant',
+      baseUrl: 'https://api.anthropic.com/v1',
+      defaultModel: 'claude-opus-4',
     };
     cloudFallback.getEnabledProviders.mockReturnValue([provider]);
-    config.getInferencePreferences.mockReturnValue({
-      preferredBackend: null,
-      preferredModel: 'preferred-llm',
-      preferredEmbeddingModel: 'preferred-embed',
-      preferredVisionModel: 'vision-capable',
+    cloudFallback.toAppEnv.mockReturnValue({
+      CI_CLOUD_ANTHROPIC_API_KEY: 'sk-ant',
+      CI_CLOUD_ANTHROPIC_BASE_URL: 'https://api.anthropic.com/v1',
+      CI_CLOUD_ANTHROPIC_MODEL: 'claude-opus-4',
+      ANTHROPIC_API_KEY: 'sk-ant',
     });
 
     const env = await service.resolve();
 
-    expect(env).toEqual({
-      CI_LLM_BASE_URL: 'https://api.openai.com/v1',
-      CI_LLM_API_KEY: 'sk-test',
-      CI_CHAT_MODEL: 'gpt-4o',
-      CI_INFERENCE_BACKEND: 'cloud',
+    expect(env.CI_INFERENCE_BACKEND).toBe('ollama');
+    expect(env.CI_LLM_API_KEY).toBe('ollama');
+    expect(env.cloudProviderEnv).toEqual({
+      CI_CLOUD_ANTHROPIC_API_KEY: 'sk-ant',
+      CI_CLOUD_ANTHROPIC_BASE_URL: 'https://api.anthropic.com/v1',
+      CI_CLOUD_ANTHROPIC_MODEL: 'claude-opus-4',
+      ANTHROPIC_API_KEY: 'sk-ant',
     });
-    expect(modelRegistry.getRecommendedEmbeddingModel).not.toHaveBeenCalled();
-    expect(modelRegistry.getRecommendedVisionModel).not.toHaveBeenCalled();
-    expect(ollamaBackend.healthCheck).not.toHaveBeenCalled();
-    expect(modelRegistry.getCuratedModel).not.toHaveBeenCalledWith('preferred-embed');
-    expect(modelRegistry.getCuratedModel).not.toHaveBeenCalledWith('vision-capable');
   });
 
   it('prefers an installed recommended model over an unpulled higher-ranked one', async () => {

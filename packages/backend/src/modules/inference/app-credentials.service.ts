@@ -13,6 +13,7 @@ import type { CuratedModel, HardwareTier, InferenceBackendType } from '@ci-hub/c
 import { isCatalogModelInstalled, isServedModelForCatalog } from './model-availability.util';
 import { appMinContextLength, recommendContextLength } from './context-length.util';
 import { BACKEND_API_KEY } from './inference-env-resolver';
+import { cloudProviderManagedKeys } from './cloud-provider-env';
 
 // Only Hub-managed sibling apps use the bootstrap credentials endpoints.
 // Standalone services (for example companion-memory / CI-Server) receive
@@ -176,7 +177,8 @@ export class AppCredentialsService {
       (preferences.preferredEmbeddingModel ? this.modelRegistry.getCuratedModel(preferences.preferredEmbeddingModel) : null) ??
       this.modelRegistry.getRecommendedEmbeddingModel(profile.tier, 'ollama');
 
-    const cloudProvider = this.cloudFallback.getEnabledProviders()[0];
+    const cloudProviders = this.cloudFallback.getEnabledProviders();
+    const cloudProvider = endpointReady ? undefined : cloudProviders[0];
 
     const chatModelReady = recommendedLlm ? this.isModelPulled(recommendedLlm.id, endpointHealth.modelsLoaded, backendType) : false;
     if (!cloudProvider && recommendedLlm && !chatModelReady && endpointReady && backendType === 'ollama') {
@@ -217,6 +219,7 @@ export class AppCredentialsService {
       [keys.baseUrl]: endpointUrl,
       [keys.apiKey]: apiKey,
       CI_INFERENCE_BACKEND: provider,
+      ...this.cloudFallback.toAppEnv(),
     };
     if (chatModelId) {
       env[keys.model] = chatModelId;
@@ -258,7 +261,7 @@ export class AppCredentialsService {
     // emit a value (cloud provider selected, or no runnable local model) — so the
     // X-Hub-Managed-Keys header tells consumers to strip any stale *_NUM_CTX left
     // in the app's .env rather than honoring an outdated context cap.
-    const managedKeys = Object.keys(env);
+    const managedKeys = [...new Set([...Object.keys(env), ...cloudProviderManagedKeys()])];
     if (!managedKeys.includes(keys.numCtx)) {
       managedKeys.push(keys.numCtx);
     }

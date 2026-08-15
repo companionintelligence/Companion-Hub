@@ -87,6 +87,36 @@ export class InferenceController {
     return profile.tier;
   }
 
+  private aiAppRestartTimer: ReturnType<typeof setTimeout> | undefined;
+
+  /**
+   * Restart running AI apps after inference config changes. Debounced so a Settings
+   * save that POSTs four cloud providers (then PATCH preferences) recreates
+   * OpenClaw / Hermes once, not five times.
+   */
+  private scheduleAiAppRestart(): void {
+    this.appCredentials.invalidateCache();
+    if (this.aiAppRestartTimer) {
+      clearTimeout(this.aiAppRestartTimer);
+    }
+    this.aiAppRestartTimer = setTimeout(() => {
+      this.aiAppRestartTimer = undefined;
+      void this.triggerAiAppRestart();
+    }, 1500);
+  }
+
+  private async triggerAiAppRestart(): Promise<void> {
+    try {
+      const { AppLifecycleService } = await import('../app-lifecycle/app-lifecycle.service');
+      const appLifecycle = this.moduleRef.get(AppLifecycleService, { strict: false });
+      if (appLifecycle) {
+        void appLifecycle.restartAiApps();
+      }
+    } catch (e) {
+      this._logger.error('Failed to trigger AI app restarts after inference config update', e);
+    }
+  }
+
   // ─── Health ───────────────────────────────────────────────────────────
 
   @Get('health')
@@ -121,21 +151,7 @@ export class InferenceController {
       body.vllmUrl,
     );
 
-    this.appCredentials.invalidateCache();
-
-    // Restart running apps that use AI models so they pick up the new inference
-    // preferences. AppLifecycleService is resolved lazily via ModuleRef (rather
-    // than imported into InferenceModule) to avoid a circular module dependency,
-    // and the restart is fire-and-forget so the response isn't blocked on it.
-    try {
-      const { AppLifecycleService } = await import('../app-lifecycle/app-lifecycle.service');
-      const appLifecycle = this.moduleRef.get(AppLifecycleService, { strict: false });
-      if (appLifecycle) {
-        void appLifecycle.restartAiApps();
-      }
-    } catch (e) {
-      this._logger.error('Failed to trigger AI app restarts after preferences update', e);
-    }
+    this.scheduleAiAppRestart();
 
     return result;
   }
@@ -320,7 +336,7 @@ export class InferenceController {
 
   @UseGuards(AuthGuard)
   @Post('cloud-providers')
-  async setCloudProvider(@Body() body: { provider: CloudProviderType; apiKey: string; enabled: boolean; baseUrl?: string; defaultModel?: string }) {
+  async setCloudProvider(@Body() body: { provider: CloudProviderType; apiKey?: string; enabled: boolean; baseUrl?: string; defaultModel?: string }) {
     this.cloudFallback.setProvider({
       provider: body.provider,
       apiKey: body.apiKey,
@@ -328,6 +344,7 @@ export class InferenceController {
       baseUrl: body.baseUrl,
       defaultModel: body.defaultModel || this.cloudFallback.getDefaultModel(body.provider),
     });
+    this.scheduleAiAppRestart();
     return { success: true };
   }
 

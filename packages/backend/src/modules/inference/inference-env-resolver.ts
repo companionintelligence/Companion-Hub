@@ -55,6 +55,8 @@ export interface StandardizedAiEnv {
   CI_LLM_NUM_CTX?: string;
   /** Active inference backend (`ollama` | `vllm` | `lemonade` | `cloud`). */
   CI_INFERENCE_BACKEND?: string;
+  /** Every enabled cloud provider (CI_CLOUD_* + conventional aliases). Additive. */
+  cloudProviderEnv?: Record<string, string>;
 }
 
 /**
@@ -98,20 +100,9 @@ export class InferenceEnvResolver {
    *   apps with no minimum — the pure hardware ladder is used.
    */
   async resolve(options?: { minContextLength?: number }): Promise<StandardizedAiEnv> {
-    const cloudProvider = this.cloudFallback.getEnabledProviders()[0];
-    if (cloudProvider) {
-      const env: StandardizedAiEnv = { CI_INFERENCE_BACKEND: 'cloud' };
-      if (cloudProvider.baseUrl) env.CI_LLM_BASE_URL = cloudProvider.baseUrl;
-      if (cloudProvider.apiKey) env.CI_LLM_API_KEY = cloudProvider.apiKey;
-      if (cloudProvider.defaultModel) env.CI_CHAT_MODEL = cloudProvider.defaultModel;
-
-      this.logger.info(
-        `[InferenceEnvResolver] chat=${cloudProvider.defaultModel ?? 'none'} embedding=none vision=none ` +
-          `baseUrl=${cloudProvider.baseUrl ?? 'none'} ollamaReady=skipped`,
-      );
-
-      return env;
-    }
+    const cloudProviderEnv = this.cloudFallback.toAppEnv();
+    const cloudProviders = this.cloudFallback.getEnabledProviders();
+    const fallbackCloud = cloudProviders[0];
 
     const preferences = this.config.getInferencePreferences();
     const backendType = preferences.preferredBackend ?? 'ollama';
@@ -125,6 +116,20 @@ export class InferenceEnvResolver {
     const backendReady = !!(backendHealth.running && backendHealth.healthy);
 
     if (!backendReady) {
+      if (fallbackCloud) {
+        const env: StandardizedAiEnv = {
+          CI_INFERENCE_BACKEND: 'cloud',
+          cloudProviderEnv,
+        };
+        if (fallbackCloud.baseUrl) env.CI_LLM_BASE_URL = fallbackCloud.baseUrl;
+        if (fallbackCloud.apiKey) env.CI_LLM_API_KEY = fallbackCloud.apiKey;
+        if (fallbackCloud.defaultModel) env.CI_CHAT_MODEL = fallbackCloud.defaultModel;
+        this.logger.info(
+          `[InferenceEnvResolver] ${backendType} unavailable; using cloud ${fallbackCloud.provider} as primary ` +
+            `(${cloudProviders.length} provider(s) provisioned)`,
+        );
+        return env;
+      }
       this.logger.warn(`[InferenceEnvResolver] ${backendType} unavailable and no cloud provider configured; omitting AI env.`);
       return {};
     }
@@ -251,9 +256,14 @@ export class InferenceEnvResolver {
       env.CI_LLM_NUM_CTX = String(numCtx);
     }
 
+    if (Object.keys(cloudProviderEnv).length > 0) {
+      env.cloudProviderEnv = cloudProviderEnv;
+    }
+
     this.logger.info(
       `[InferenceEnvResolver] backend=${backendType} chat=${chatModel ?? 'none'} embedding=${embeddingModel ?? 'none'} ` +
-        `vision=${visionModel ?? 'none'} baseUrl=${baseUrl} backendReady=${backendReady}`,
+        `vision=${visionModel ?? 'none'} baseUrl=${baseUrl} backendReady=${backendReady} ` +
+        `cloudProviders=${cloudProviders.length}`,
     );
 
     return env;

@@ -363,6 +363,16 @@ export const AiSettingsContainer = () => {
       const preferredEmbeddingModel = resolvePreferredModelId(profile, EMBEDDING_INFERENCE_BACKEND, isEmbeddingModel, compatibleSelectedModelIds);
       const preferredVisionModel = resolvePreferredModelId(profile, selectedBackend, isVisionModel, compatibleSelectedModelIds);
 
+      // Cloud keys first so the debounced AI-app restart (from preferences) sees them.
+      // Masked keys (`••••`) omit apiKey so the Hub keeps the stored secret.
+      for (const cp of cloudProviders) {
+        if (cp.apiKey.trim() && !cp.apiKey.startsWith('••')) {
+          await saveCloudProviderConfig({ provider: cp.provider, apiKey: cp.apiKey, enabled: cp.enabled });
+        } else if (cp.apiKey.startsWith('••')) {
+          await saveCloudProviderConfig({ provider: cp.provider, enabled: cp.enabled });
+        }
+      }
+
       await saveInferencePreferences({
         backend: selectedBackend,
         model: preferredModel,
@@ -371,16 +381,6 @@ export const AiSettingsContainer = () => {
         vllmApiKey: selectedBackend === 'vllm' ? vllmApiKey.trim() || null : null,
         vllmUrl: selectedBackend === 'vllm' ? vllmUrl.trim() || null : null,
       });
-
-      // Save cloud providers — for already-configured providers (masked key),
-      // always persist enabled state; for new/changed keys, send the full config.
-      for (const cp of cloudProviders) {
-        if (cp.apiKey.trim() && !cp.apiKey.startsWith('••')) {
-          await saveCloudProviderConfig({ provider: cp.provider, apiKey: cp.apiKey, enabled: cp.enabled });
-        } else if (cp.apiKey.startsWith('••')) {
-          await saveCloudProviderConfig({ provider: cp.provider, enabled: cp.enabled });
-        }
-      }
 
       const ollamaSelectedModelIds = compatibleSelectedModelIds.filter((modelId) => availableModelById.get(modelId)?.backend === 'ollama');
       const compatiblePinnedModelIds = unpinnablePins(availableModelById, pinnedModelIds);
