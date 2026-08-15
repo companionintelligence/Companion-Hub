@@ -42,7 +42,10 @@ struct PendingOidcCallback(Mutex<Option<String>>);
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 struct PortalAuthPayload {
-    token: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    token: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
 }
 
 /// Returns a pairing code from a deep link that arrived before the UI was ready.
@@ -369,18 +372,28 @@ fn extract_portal_auth(url: &str) -> Option<PortalAuthPayload> {
     }
 
     let query = trimmed.split('?').nth(1)?;
+    let mut token = None;
+    let mut error = None;
+
     for param in query.split('&') {
-        if let Some(token) = param.strip_prefix("token=") {
-            let token = token.trim();
-            if !token.is_empty() {
-                return Some(PortalAuthPayload {
-                    token: token.to_string(),
-                });
+        if let Some(value) = param.strip_prefix("token=") {
+            let value = value.trim();
+            if !value.is_empty() {
+                token = Some(value.to_string());
+            }
+        } else if let Some(value) = param.strip_prefix("error=") {
+            let value = value.trim();
+            if !value.is_empty() {
+                error = Some(value.to_string());
             }
         }
     }
 
-    None
+    if token.is_some() || error.is_some() {
+        Some(PortalAuthPayload { token, error })
+    } else {
+        None
+    }
 }
 
 /// Pulls the action out of an App Intent deep link.
@@ -522,7 +535,8 @@ mod tests {
         assert_eq!(
             extract_portal_auth("cihub://auth?state=xyz&token=tok-123"),
             Some(PortalAuthPayload {
-                token: "tok-123".to_string()
+                token: Some("tok-123".to_string()),
+                error: None,
             })
         );
     }
@@ -561,7 +575,8 @@ mod tests {
         assert_eq!(
             extract_portal_auth("cihub://auth?token=mobile-token"),
             Some(PortalAuthPayload {
-                token: "mobile-token".to_string()
+                token: Some("mobile-token".to_string()),
+                error: None,
             })
         );
     }
@@ -569,6 +584,17 @@ mod tests {
     #[test]
     fn ignore_non_auth_deep_links_for_portal_auth() {
         assert_eq!(extract_portal_auth("cihub://pair?code=abc123"), None);
+    }
+
+    #[test]
+    fn extract_portal_auth_error_from_query_param() {
+        assert_eq!(
+            extract_portal_auth("cihub://auth?error=account_mismatch"),
+            Some(PortalAuthPayload {
+                token: None,
+                error: Some("account_mismatch".to_string()),
+            })
+        );
     }
 
     #[test]

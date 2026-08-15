@@ -6,7 +6,10 @@ import {
   buildPortalSsoErrorRedirectUrl,
   exchangePortalAuthorizationCode,
   fetchPortalSessionEmail,
+  buildPortalDesktopHandoffHtml,
+  shouldHandoffPortalLoginToDesktop,
   resolvePortalCallbackUrl,
+  resolvePortalRootBounce,
   resolveSameOriginRedirectUrl,
   resolveTrustedReturnOrigin,
   toDesktopRedirectPath,
@@ -80,6 +83,52 @@ describe('portal-sso helpers', () => {
 
   it('builds the hub callback URL from the initiating origin', () => {
     expect(resolvePortalCallbackUrl('http://localhost:5002')).toBe('http://localhost:5002/api/auth/portal/callback');
+  });
+
+  it('bounces a path-stripped OAuth return onto the Hub callback', () => {
+    expect(resolvePortalRootBounce({ code: 'abc', state: 'xyz', desktop: '1' })).toBe('/api/auth/portal/callback?code=abc&state=xyz');
+  });
+
+  it('restarts desktop SSO when the browser lands on /?desktop=1 with no code', () => {
+    expect(resolvePortalRootBounce({ desktop: '1' })).toBe('/api/auth/portal/start?desktop=1');
+    expect(resolvePortalRootBounce({})).toBeNull();
+  });
+
+  it('builds an HTML handoff that opens the desktop deep link', () => {
+    const html = buildPortalDesktopHandoffHtml('cihub-dev://auth?token=tok-1');
+    expect(html).toContain('cihub-dev://auth?token=tok-1');
+    expect(html).toContain('Open Companion Hub');
+  });
+
+  it('hands loopback SSO to a running Tauri app even without desktop=1', () => {
+    expect(
+      shouldHandoffPortalLoginToDesktop({
+        desktop: false,
+        hubOrigin: 'http://localhost:5005',
+        desktopAppPresent: true,
+      }),
+    ).toBe(true);
+    expect(
+      shouldHandoffPortalLoginToDesktop({
+        desktop: false,
+        hubOrigin: 'http://localhost:5005',
+        desktopAppPresent: false,
+      }),
+    ).toBe(false);
+    expect(
+      shouldHandoffPortalLoginToDesktop({
+        desktop: false,
+        hubOrigin: 'https://hub-nicemac-devben.companionintelligence.com',
+        desktopAppPresent: true,
+      }),
+    ).toBe(false);
+    expect(
+      shouldHandoffPortalLoginToDesktop({
+        desktop: true,
+        hubOrigin: 'https://hub-nicemac-devben.companionintelligence.com',
+        desktopAppPresent: false,
+      }),
+    ).toBe(true);
   });
 
   it('exchanges authorization codes for user email via Portal OAuth endpoints', async () => {

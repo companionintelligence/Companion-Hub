@@ -58,6 +58,20 @@ describe('AuthMiddleware transient DB handling', () => {
     await expect(middleware.use(req, {} as never, vi.fn())).rejects.toBeInstanceOf(ServiceUnavailableException);
     expect(userRepository.getUserDtoById).toHaveBeenCalledTimes(3);
   });
+
+  it('continues unauthenticated when session user lookup fails with a non-transient error', async () => {
+    sessionManager.resolveSessionUserId.mockReturnValue(1);
+    sessionManager.getSessionExpiresAt.mockReturnValue(null);
+    userRepository.getUserDtoById.mockRejectedValue(new Error('Failed query: select id from user'));
+
+    const req = { cookies: { 'ci-hub-sid': 'sess' }, headers: {}, get: () => undefined, query: {} } as never;
+    const next = vi.fn();
+
+    await middleware.use(req, {} as never, next);
+
+    expect(next).toHaveBeenCalledOnce();
+    expect((req as { user?: unknown }).user).toBeUndefined();
+  });
 });
 
 describe('sessionIdsFromRequest', () => {

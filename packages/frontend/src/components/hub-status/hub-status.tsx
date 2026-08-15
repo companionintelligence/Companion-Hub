@@ -11,7 +11,7 @@ import { SetupCard } from '@/components/setup/setup-card';
 import { SetupPageShell } from '@/components/setup/setup-page-shell';
 import { HintText } from '@/components/ui/field-hint/field-hint';
 import { DockerAccessStatusPanel } from './docker-access-status-panel';
-import { configureHubApiPort, probeHealthyHubApiPort } from '@/lib/tauri-hub-probe';
+import { configureHubApiPort, isViteLocalFrontend, probeHealthyHubApiPort } from '@/lib/tauri-hub-probe';
 import { getTauriInvoke } from '@/lib/helpers/tauri-invoke';
 import {
   clearHubSteadySession,
@@ -764,6 +764,14 @@ export function HubStatus({ children }: HubStatusProps) {
       const invoke = getTauriInvoke();
       if (invoke) {
         try {
+          // `local:desktop` talks to source Nest via the Vite proxy. Docker
+          // compose status is the appliance stack (often a leftover :5002 Hub)
+          // and must not gate this UI.
+          if (isViteLocalFrontend()) {
+            await checkHealthFallback();
+            return;
+          }
+
           const result = (await invoke('get_hub_status_command')) as HubStatusResponse;
 
           if (isWindows && !(await isStackDevMode())) {

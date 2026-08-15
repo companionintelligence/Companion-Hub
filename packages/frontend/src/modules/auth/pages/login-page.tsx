@@ -5,7 +5,9 @@ import { markHubSessionIssuedAt, setTauriSessionId } from '@/lib/api-fetch';
 import { portalErrorTranslationKey } from '@/lib/portal-auth-errors';
 import { SIGNED_OUT_PARAM, signedOutTranslationKey } from '@/lib/signed-out-reasons';
 import { resolvePortalSessionHint } from '@/lib/portal-session-hint';
+import { isTauriDesktopApp } from '@/lib/hub-runtime-mode';
 import { clearHubConnection, getHubBaseUrlSync, isMobileClient } from '@/lib/mobile-connection';
+import { buildPortalSsoStartUrl, shouldOpenPortalSsoInSystemBrowser } from '@/lib/portal-sso-url';
 import { followSafeRedirect } from '@/lib/safe-redirect';
 import { useUserContext } from '@/context/user-context';
 import type { TranslatableError } from '@/types/error.types';
@@ -117,10 +119,9 @@ export default () => {
   }, []);
 
   const navigate = useNavigate();
-  const isTauriShell = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
   const isMobile = isMobileClient();
   const remoteHubUrl = getHubBaseUrlSync();
-  const isTauriDesktop = isTauriShell && !isMobile;
+  const isTauriDesktop = isTauriDesktopApp();
 
   const login = useMutation({
     ...loginMutation(),
@@ -180,19 +181,14 @@ export default () => {
     return <TotpForm loading={verifyTotp.isPending} onSubmit={(totpCode) => verifyTotp.mutate({ body: { totpCode, totpSessionId } })} />;
   }
 
-  const portalSsoHref = (() => {
-    const baseUrl = remoteHubUrl || (isTauriDesktop ? client.getConfig().baseUrl || 'http://localhost:5002' : window.location.origin);
-    const url = new URL('/api/auth/portal/start', baseUrl);
-    if (redirect_url) {
-      url.searchParams.set('redirect_url', redirect_url);
-    }
-    if (isTauriDesktop || isMobile) {
-      // Return via cihub://auth?token=… — without this, Safari stays on the Hub
-      // and the phone never gets a session (internal server error / blank /home).
-      url.searchParams.set('desktop', '1');
-    }
-    return url.toString();
-  })();
+  const portalSsoHref = buildPortalSsoStartUrl({
+    remoteHubUrl,
+    isTauriDesktop,
+    isMobileClient: isMobile,
+    configuredApiBaseUrl: client.getConfig().baseUrl,
+    pageOrigin: window.location.origin,
+    redirectUrl: redirect_url,
+  });
 
   return (
     <>
@@ -202,6 +198,7 @@ export default () => {
         loginType={loginType}
         portalSsoHref={portalSsoHref}
         portalAccountEmail={portalAccountEmail}
+        openPortalSsoExternally={shouldOpenPortalSsoInSystemBrowser(isMobile)}
       />
       {isMobile && remoteHubUrl ? (
         <button

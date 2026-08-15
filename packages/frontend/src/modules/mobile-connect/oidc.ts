@@ -13,6 +13,7 @@
  *
  * Token exchange goes through the Tauri HTTP plugin (native, no webview CORS).
  */
+import { openAuthInSystemBrowser } from '@/lib/helpers/open-auth-browser';
 import { DEFAULT_PORTAL_URL } from './portal-client';
 
 export const OIDC_CLIENT_ID = 'ci-hub';
@@ -75,34 +76,6 @@ async function nativeFetch(): Promise<typeof fetch> {
     // ios:dev often has no Tauri HTTP IPC — fall through to window.fetch.
   }
   return globalThis.fetch.bind(globalThis);
-}
-
-async function openInSystemBrowser(url: string): Promise<void> {
-  let openUrl: ((href: string) => Promise<void>) | undefined;
-  try {
-    const opener = await import('@tauri-apps/plugin-opener');
-    openUrl = opener.openUrl;
-  } catch {
-    openUrl = undefined;
-  }
-  if (openUrl) {
-    // Do not swallow ACL / plugin errors — a silent <a> fallback on iOS
-    // leaves Sign in spinning with no Safari window.
-    await openUrl(url);
-    return;
-  }
-  // Do not use window.open: WKWebView often treats it as same-document
-  // navigation, then follows the cihub:// redirect into a permanent blank page.
-  if (typeof document === 'undefined') {
-    throw new Error('Could not open the system browser for sign-in.');
-  }
-  const a = document.createElement('a');
-  a.href = url;
-  a.target = '_blank';
-  a.rel = 'noopener noreferrer';
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
 }
 
 interface PendingOidc {
@@ -375,7 +348,7 @@ export async function loginWithPortalOidc(portalUrl = DEFAULT_PORTAL_URL, option
 
   // Start listening BEFORE opening the browser so we never miss the redirect.
   const callback = awaitOidcCallback(state, options.signal);
-  await openInSystemBrowser(authorizeUrl.toString());
+  await openAuthInSystemBrowser(authorizeUrl.toString());
   try {
     const { code } = await callback;
     const tokens = await exchangeCode(portal, code, codeVerifier);

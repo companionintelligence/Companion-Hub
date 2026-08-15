@@ -11,6 +11,7 @@ const SESSION_EXPIRY_EXEMPT_PATHS = [
   '/api/auth/login',
   '/api/auth/logout',
   '/api/auth/session/refresh',
+  '/api/auth/portal/desktop-exchange',
   // A best-effort bridge on the way to an external open (`openExternalWithHubSession`),
   // documented as fail-open. Signing out here tears the page down mid-click — and
   // because `openExternal` first awaits a DNS pre-warm, that navigation also aborts the

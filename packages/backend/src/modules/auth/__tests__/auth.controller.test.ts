@@ -949,15 +949,47 @@ describe('AuthController', () => {
   });
 
   describe('exchangePortalDesktopLogin', () => {
-    it('returns the cached desktop handoff once', async () => {
-      cache.get.mockReturnValue(JSON.stringify({ sessionId: 'session-123', redirectPath: '/settings?tab=auth' }));
+    it('returns the cached desktop handoff once and plants the session cookie on the webview', async () => {
+      cache.get.mockReturnValue(JSON.stringify({ sessionId: 'session-123', redirectPath: '/settings?tab=auth', userId: 1 }));
+      sessionManager.resolveSessionUserId.mockReturnValue(1 as never);
+      config.get.mockReturnValue({ experimental: { insecureCookie: true } });
 
-      await expect(authController.exchangePortalDesktopLogin('desktop-token')).resolves.toEqual({
+      const req = {
+        protocol: 'http',
+        get: vi.fn((header: string) => (header === 'host' ? 'localhost:5005' : undefined)),
+        headers: {},
+        cookies: {},
+      } as unknown as Request;
+      const res = { cookie: vi.fn() } as unknown as Response;
+
+      await expect(authController.exchangePortalDesktopLogin(req, res, 'desktop-token')).resolves.toEqual({
         sessionId: 'session-123',
         redirectPath: '/settings?tab=auth',
       });
       expect(cache.get).toHaveBeenCalledWith('portal_sso_desktop:desktop-token');
       expect(cache.del).toHaveBeenCalledWith('portal_sso_desktop:desktop-token');
+      expect(res.cookie).toHaveBeenCalled();
+    });
+
+    it('mints a fresh session when the cached session id is gone', async () => {
+      cache.get.mockReturnValue(JSON.stringify({ sessionId: 'session-stale', redirectPath: '/home', userId: 7 }));
+      sessionManager.resolveSessionUserId.mockReturnValue(null as never);
+      sessionManager.createSession.mockResolvedValue('session-fresh');
+      config.get.mockReturnValue({ experimental: { insecureCookie: true } });
+
+      const req = {
+        protocol: 'http',
+        get: vi.fn((header: string) => (header === 'host' ? 'localhost:5005' : undefined)),
+        headers: {},
+        cookies: {},
+      } as unknown as Request;
+      const res = { cookie: vi.fn() } as unknown as Response;
+
+      await expect(authController.exchangePortalDesktopLogin(req, res, 'desktop-token')).resolves.toEqual({
+        sessionId: 'session-fresh',
+        redirectPath: '/home',
+      });
+      expect(sessionManager.createSession).toHaveBeenCalledWith(7);
     });
   });
 
@@ -1034,6 +1066,103 @@ describe('AuthController', () => {
 
       expect(res.redirect).toHaveBeenCalledWith('http://localhost:5002/login?portal_error=state_expired');
     });
+
+    it('sends an HTML desktop handoff and does not return the Express response object', async () => {
+      cache.get.mockReturnValue(
+        JSON.stringify({
+          codeVerifier: 'verifier',
+          redirectUrl: null,
+          hubOrigin: 'http://localhost:5005',
+          desktop: true,
+        }),
+      );
+      config.get.mockImplementation((key: string) => {
+        if (key === 'ciCloudUrl') {
+          return 'https://hub.ci.computer';
+        }
+        if (key === 'userSettings') {
+          return { experimental: { insecureCookie: true } };
+        }
+        return '';
+      });
+      vi.mocked(exchangePortalAuthorizationCode).mockResolvedValue({
+        ok: true,
+        accessToken: 'access-token',
+        email: 'operator@example.com',
+      });
+      userRepository.getFirstOperator.mockResolvedValue({ id: 1, username: 'operator@example.com' } as never);
+      sessionManager.createSession.mockResolvedValue('session-123');
+
+      const req = {
+        protocol: 'http',
+        get: vi.fn((header: string) => (header === 'host' ? 'localhost:5005' : undefined)),
+        headers: {},
+        cookies: {},
+      } as unknown as Request;
+      const res = {
+        redirect: vi.fn(),
+        cookie: vi.fn(),
+        status: vi.fn().mockReturnThis(),
+        setHeader: vi.fn(),
+        send: vi.fn().mockReturnThis(),
+      } as unknown as Response;
+
+      const returned = await authController.portalCallback(req, res, 'auth-code', 'state-123');
+
+      expect(returned).toBeUndefined();
+      expect(res.send).toHaveBeenCalledWith(expect.stringContaining('cihub-dev://auth?token='));
+      expect(res.redirect).not.toHaveBeenCalled();
+      expect(cache.set).toHaveBeenCalledWith(expect.stringMatching(/^portal_sso_desktop:/), expect.any(String), 60);
+    });
+
+    it('hands a loopback browser callback to the running Tauri app', async () => {
+      cache.get.mockImplementation((key: string) => {
+        if (key === 'portal_sso_desktop_present') {
+          return '1';
+        }
+        return JSON.stringify({
+          codeVerifier: 'verifier',
+          redirectUrl: null,
+          hubOrigin: 'http://localhost:5005',
+          desktop: false,
+        });
+      });
+      config.get.mockImplementation((key: string) => {
+        if (key === 'ciCloudUrl') {
+          return 'https://hub.ci.computer';
+        }
+        if (key === 'userSettings') {
+          return { experimental: { insecureCookie: true } };
+        }
+        return '';
+      });
+      vi.mocked(exchangePortalAuthorizationCode).mockResolvedValue({
+        ok: true,
+        accessToken: 'access-token',
+        email: 'operator@example.com',
+      });
+      userRepository.getFirstOperator.mockResolvedValue({ id: 1, username: 'operator@example.com' } as never);
+      sessionManager.createSession.mockResolvedValue('session-123');
+
+      const req = {
+        protocol: 'http',
+        get: vi.fn((header: string) => (header === 'host' ? 'localhost:5005' : undefined)),
+        headers: {},
+        cookies: {},
+      } as unknown as Request;
+      const res = {
+        redirect: vi.fn(),
+        cookie: vi.fn(),
+        status: vi.fn().mockReturnThis(),
+        setHeader: vi.fn(),
+        send: vi.fn().mockReturnThis(),
+      } as unknown as Response;
+
+      await authController.portalCallback(req, res, 'auth-code', 'state-123');
+
+      expect(res.send).toHaveBeenCalledWith(expect.stringContaining('cihub-dev://auth?token='));
+      expect(res.redirect).not.toHaveBeenCalled();
+    });
   });
 
   describe('startPortalLogin', () => {
@@ -1069,6 +1198,15 @@ describe('AuthController', () => {
         portalBaseUrl: 'https://hub.ci.computer',
         source: 'hub_operator',
       });
+    });
+
+    it('records that the Tauri desktop app is running when desktop=1', async () => {
+      config.get.mockReturnValue('https://hub.ci.computer');
+      userRepository.getFirstOperator.mockResolvedValue({ id: 1, username: 'operator@example.com' } as never);
+
+      await authController.portalSessionHint({ headers: {} } as Request, '1');
+
+      expect(cache.set).toHaveBeenCalledWith('portal_sso_desktop_present', '1', 600);
     });
 
     it('bootstraps the session hint from Portal cookies when no operator exists yet', async () => {

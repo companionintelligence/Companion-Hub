@@ -287,11 +287,14 @@ async function runClientLoader(request: Request) {
   const registration = await loadRegistrationLookup();
 
   if (registration.kind === 'unavailable') {
-    if (url.pathname === '/device-registration' || url.pathname === '/login' || url.pathname === '/') {
+    if (url.pathname === '/device-registration' || url.pathname === '/login') {
       // Stay on the current bootstrap route while the API wakes up. Redirecting `/`
       // to device-registration here caused a flash loop with the registration page,
       // which navigates away as soon as status becomes operational again.
       return null;
+    }
+    if (url.pathname === '/') {
+      return redirect('/login');
     }
   }
 
@@ -587,10 +590,10 @@ export default function App({ loaderData }: Route.ComponentProps) {
       return <Navigate to={needsRemoteHubConnect() ? '/connect' : '/login'} replace />;
     }
     return (
-      <>
+      <Providers>
         <DesktopStartupFallback />
         <Toaster position="bottom-center" />
-      </>
+      </Providers>
     );
   }
 

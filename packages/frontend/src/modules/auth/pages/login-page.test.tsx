@@ -14,6 +14,7 @@ const {
   mockIsMobile,
   mockHubUrl,
   mockResolveHint,
+  mockIsTauriDesktopApp,
 } = vi.hoisted(() => ({
   mockUseUserContext: vi.fn(),
   mockUseMutation: vi.fn(),
@@ -32,6 +33,11 @@ const {
       source: null,
     }),
   ),
+  mockIsTauriDesktopApp: vi.fn(() => false),
+}));
+
+vi.mock('@/lib/hub-runtime-mode', () => ({
+  isTauriDesktopApp: () => mockIsTauriDesktopApp(),
 }));
 
 vi.mock('@/lib/mobile-connection', () => ({
@@ -118,6 +124,7 @@ vi.mock('../components/totp-form/totp-form', () => ({
 describe('LoginPage', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockIsTauriDesktopApp.mockReturnValue(false);
     mockClientGetConfig.mockReturnValue({ baseUrl: 'http://localhost:5002' });
     mockUseUserContext.mockReturnValue({
       isLoggedIn: false,
@@ -164,23 +171,49 @@ describe('LoginPage', () => {
   });
 
   it('uses the local backend desktop callback flow in Tauri', () => {
-    Object.defineProperty(window, '__TAURI_INTERNALS__', {
-      value: {},
-      configurable: true,
-    });
+    mockIsTauriDesktopApp.mockReturnValue(true);
+    mockClientGetConfig.mockReturnValue({ baseUrl: 'http://localhost:5002' });
 
     render(<LoginPage />);
 
     expect(mockLoginForm).toHaveBeenCalledWith(
       expect.objectContaining({
         portalSsoHref: 'http://localhost:5002/api/auth/portal/start?desktop=1',
+        openPortalSsoExternally: false,
       }),
     );
-
-    delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
   });
 
-  it('points Portal SSO at the chosen remote Hub on iOS (not localhost:5002)', () => {
+  it('starts Companion Account SSO on the Vite origin during local:desktop, not a leftover :5002 Hub', () => {
+    mockIsTauriDesktopApp.mockReturnValue(true);
+    mockClientGetConfig.mockReturnValue({ baseUrl: 'http://localhost:5002' });
+    Object.defineProperty(window, 'location', {
+      configurable: true,
+      value: { ...window.location, origin: 'http://localhost:5005', port: '5005' },
+    });
+
+    render(<LoginPage />);
+
+    expect(mockLoginForm).toHaveBeenCalledWith(
+      expect.objectContaining({
+        portalSsoHref: 'http://localhost:5005/api/auth/portal/start?desktop=1',
+        openPortalSsoExternally: false,
+      }),
+    );
+  });
+
+  it('keeps browser Hub login on the page origin without a cihub:// handoff', () => {
+    render(<LoginPage />);
+
+    expect(mockLoginForm).toHaveBeenCalledWith(
+      expect.objectContaining({
+        portalSsoHref: `${window.location.origin}/api/auth/portal/start`,
+        openPortalSsoExternally: false,
+      }),
+    );
+  });
+
+  it('points Portal SSO at the chosen remote Hub on iOS/Android (not localhost:5002)', () => {
     Object.defineProperty(window, '__TAURI_INTERNALS__', {
       value: {},
       configurable: true,
@@ -193,6 +226,7 @@ describe('LoginPage', () => {
     expect(mockLoginForm).toHaveBeenCalledWith(
       expect.objectContaining({
         portalSsoHref: 'https://hub-core3-bc.companionintelligence.com/api/auth/portal/start?desktop=1',
+        openPortalSsoExternally: true,
       }),
     );
     expect(screen.getByTestId('login-switch-hub-btn')).toBeInTheDocument();

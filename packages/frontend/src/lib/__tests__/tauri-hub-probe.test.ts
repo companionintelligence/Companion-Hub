@@ -38,11 +38,39 @@ describe('tauri-hub-probe', () => {
     expect(client.getConfig().baseUrl).toBe('http://127.0.0.1:5002');
   });
 
+  it('on the Vite local frontend, prefers source API 5004 over a leftover Docker Hub on 5002', async () => {
+    Object.defineProperty(window, 'location', {
+      configurable: true,
+      value: { origin: 'http://localhost:5005', port: '5005' },
+    });
+
+    const fetch = vi.fn(async () => ({ ok: true }));
+    vi.stubGlobal('fetch', fetch);
+
+    expect(await probeHealthyHubApiPort()).toBe(5004);
+    expect(fetch.mock.calls.map(([url]) => url)).toEqual(['/api/health/live']);
+  });
+
+  it('does not bind the API client to :5004/:5002 while the UI is the Vite :5005 proxy', async () => {
+    Object.defineProperty(window, 'location', {
+      configurable: true,
+      value: { origin: 'http://localhost:5005', port: '5005' },
+    });
+    client.setConfig({ baseUrl: 'http://127.0.0.1:5004', credentials: 'include' });
+
+    const fetch = vi.fn(async () => ({ ok: true }));
+    vi.stubGlobal('fetch', fetch);
+
+    expect(await probeHealthyHubApiPort(true)).toBe(5004);
+    expect(client.getConfig().baseUrl).toBe('');
+    expect(client.getConfig().credentials).toBe('include');
+  });
+
   it('falls back to fetch in local Tauri dev', async () => {
     const invoke = vi.fn();
     Object.defineProperty(window, 'location', {
       configurable: true,
-      value: { origin: 'http://localhost:5005' },
+      value: { origin: 'http://localhost:5005', port: '5005' },
     });
     (window as unknown as { __TAURI_INTERNALS__: { invoke: typeof invoke } }).__TAURI_INTERNALS__ = { invoke };
 

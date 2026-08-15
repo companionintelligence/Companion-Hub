@@ -1,6 +1,7 @@
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
 import { PasswordInput } from '@/components/ui/PasswordInput/PasswordInput';
+import { openAuthInSystemBrowser } from '@/lib/helpers/open-auth-browser';
 import { zodResolver } from '@hookform/resolvers/zod';
 import type React from 'react';
 import { useEffect } from 'react';
@@ -22,9 +23,11 @@ interface IProps {
   loginType: string;
   portalSsoHref?: string;
   portalAccountEmail?: string | null;
+  /** Native app: keep this window mounted and finish SSO via cihub:// / cihub-dev://. */
+  openPortalSsoExternally?: boolean;
 }
 
-export const LoginForm: React.FC<IProps> = ({ loading, onSubmit, loginType, portalSsoHref, portalAccountEmail }) => {
+export const LoginForm: React.FC<IProps> = ({ loading, onSubmit, loginType, portalSsoHref, portalAccountEmail, openPortalSsoExternally = false }) => {
   const { t } = useTranslation();
   const {
     register,
@@ -54,13 +57,28 @@ export const LoginForm: React.FC<IProps> = ({ loading, onSubmit, loginType, port
 
       {portalSsoHref ? (
         <div className="mb-4">
-          <Button asChild variant="outline" className="h-10 w-full text-sm font-semibold">
-            <a href={portalSsoHref}>
+          {openPortalSsoExternally ? (
+            <Button
+              type="button"
+              variant="outline"
+              className="h-10 w-full text-sm font-semibold"
+              onClick={() => {
+                void openAuthInSystemBrowser(portalSsoHref);
+              }}
+            >
               {portalAccountEmail
                 ? t('AUTH_LOGIN_COMPANION_ACCOUNT_BUTTON_AS', { email: portalAccountEmail })
                 : t('AUTH_LOGIN_COMPANION_ACCOUNT_BUTTON')}
-            </a>
-          </Button>
+            </Button>
+          ) : (
+            <Button asChild variant="outline" className="h-10 w-full text-sm font-semibold">
+              <a href={portalSsoHref}>
+                {portalAccountEmail
+                  ? t('AUTH_LOGIN_COMPANION_ACCOUNT_BUTTON_AS', { email: portalAccountEmail })
+                  : t('AUTH_LOGIN_COMPANION_ACCOUNT_BUTTON')}
+              </a>
+            </Button>
+          )}
           <div className="text-xs text-muted-foreground text-center mt-2">{t('AUTH_LOGIN_COMPANION_ACCOUNT_HINT')}</div>
           <div className="my-4 h-px bg-border" />
         </div>

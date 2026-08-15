@@ -5,7 +5,7 @@
 > **Key paths:** `packages/frontend/src/components/hub-status/`, `packages/frontend/src/modules/`, `packages/frontend/src/lib/`
 > **Commands:** `cd packages/frontend && pnpm test`, `pnpm run local` (root, port 5004/5005)
 > **Owner persona:** code-quality + maintainability
-> **Last updated:** 2026-08-14 (iOS working; Hub sign-in reuses existing Portal org)
+> **Last updated:** 2026-08-14 (SSO matrix: iOS/Android + desktop + browser)
 > **Related:** docs/system/desktop.md, docs/system/e2e.md
 
 ---
@@ -39,6 +39,14 @@ Tests: `packages/frontend/src/components/hub-status/hub-status.test.tsx`
 - Generated from backend OpenAPI: `pnpm run gen:api-client`
 - Tauri release builds probe local ports via `packages/frontend/src/lib/tauri-hub-probe.ts`
 - Session refresh: `packages/frontend/src/lib/hub-session-refresh.ts`
+- Local Vite (`:5005`) must probe same-origin `/api/health/live` (the Vite proxy) before a leftover Docker Hub on `:5002`. Do **not** bind the API client to `:5004` or `:5002` — `/api` stays same-origin on `:5005` so the session cookie survives. Binding it was a 401 → full `/login` reload → "Connecting to local API...". HubStatus on `:5005` must ignore Docker compose status (that is the appliance stack). Featured (`GET /api/store/featured-bundle`) is served through that Vite proxy.
+- Companion Account SSO matrix (`packages/frontend/src/lib/portal-sso-url.ts`):
+  - **iOS / Android app** (`/connect`): Portal PKCE → Safari → `cihub://auth/callback` → `deep-link-oidc`.
+  - **iOS / Android app** (`/login` after a Hub is chosen): `{remoteHub}/api/auth/portal/start?desktop=1` in Safari → `cihub://auth?token=…` → `deep-link-auth`. Never localhost.
+  - **macOS / Linux / Windows** `local:desktop`: Vite `:5005` + `desktop=1` via a normal `<a href>` → `cihub-dev://auth?token=…`. Do not also call `openAuthInSystemBrowser` (that opens a second tab). The running Tauri window heartbeats `session-hint?desktop=1` so a loopback callback opened in Chrome still hands off into the app instead of finishing as a browser session. `GET /api/auth/portal/desktop-exchange` must `Set-Cookie` the Hub session on the Tauri webview (Safari already got the cookie on the callback). Persist the one-time token in `sessionStorage` so a Vite reload cannot drop it before exchange.
+  - **Packaged desktop**: Hub API (usually `:5002`) + `desktop=1` via `<a href>` → `cihub://auth?token=…`.
+  - **Browser on a Hub** (any OS, including a phone browser): same-origin `/api/auth/portal/start` with no `desktop=1` (cookie session).
+  iOS/Android Hub login must open SSO with `openAuthInSystemBrowser` (a `<button>`, not an `<a href>`) so the webview stays mounted. Do not use `window.open` on a phone.
 
 ## Styling
 
@@ -69,7 +77,7 @@ The iOS/Android thin client signs into the Portal with PKCE and a `cihub://auth/
 - Authorization codes are single-use. Safari + `/connect` resume both try the same code — exchange is memoized per code so the loser does not toast "invalid code".
 - After a Hub is chosen, go to `/login` (not `/`). Root must not wait on the remote Hub's registration API on any mobile route.
 - `I18nProvider` must not fetch `/api/i18n` on a phone — that `window.fetch` to the remote Hub never settles and leaves the exact "Loading…" screen. Use bundled `en`.
-- Hub `/login` Portal SSO on iOS uses the chosen Hub URL (not `localhost:5002`) with `desktop=1` so Safari returns via `cihub://auth?token=…` instead of leaving the user on the Hub in the browser.
+- Hub `/login` Portal SSO on iOS/Android uses the chosen Hub URL (not `localhost:5002`) with `desktop=1`, opened in Safari via `openAuthInSystemBrowser`, so the phone returns via `cihub://auth?token=…` instead of navigating the WKWebView away from `/login`.
 - The SSO button email is the **Portal user** from the OIDC `id_token` (or email/password), stored in `ci-hub.portalAccountEmail`. On a phone, that wins over the Hub operator (`hub_operator` is often `support@…` on a shared appliance).
 - Hung Hub calls must not spin forever. I18n never gates on "Loading…". Root loader, `/home` session/app-context, and a 6s DOM watchdog all end in Retry + Switch Hub. The HTML boot strip also grows Reload / Connect if React never paints. Do not send a failed app-context load into onboarding.
 

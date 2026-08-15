@@ -129,13 +129,14 @@ describe('root clientLoader registration gating', () => {
     expect(provisioningResult).toBeNull();
   });
 
-  it('keeps root on the startup bootstrap route when registration status is temporarily unavailable', async () => {
+  it('sends root to login when registration status is temporarily unavailable', async () => {
     resolveRegistrationStatus.mockResolvedValue(null);
     userContext.mockRejectedValue(new Error('backend unavailable'));
 
-    const result = await clientLoader({ request: new Request('http://localhost/') } as never);
+    const result = (await clientLoader({ request: new Request('http://localhost/') } as never)) as Response;
 
-    expect(result).toBeNull();
+    expect(result.status).toBe(302);
+    expect(result.headers.get('Location')).toBe('/login');
   });
 
   it('keeps a Mac / desktop client on the normal Hub path and never sends it to /connect', async () => {
@@ -218,13 +219,14 @@ describe('root clientLoader registration gating', () => {
     }
   });
 
-  it('keeps login and root available when registration status is temporarily unavailable', async () => {
+  it('keeps login available and sends root there when registration status is temporarily unavailable', async () => {
     resolveRegistrationStatus.mockResolvedValue(null);
 
-    const rootResult = await clientLoader({ request: new Request('http://localhost/') } as never);
+    const rootResult = (await clientLoader({ request: new Request('http://localhost/') } as never)) as Response;
     const loginResult = await clientLoader({ request: new Request('http://localhost/login') } as never);
 
-    expect(rootResult).toBeNull();
+    expect(rootResult.status).toBe(302);
+    expect(rootResult.headers.get('Location')).toBe('/login');
     expect(loginResult).toBeNull();
   });
 
