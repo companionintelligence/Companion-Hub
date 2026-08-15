@@ -714,6 +714,7 @@ export default function DeviceRegistrationPage() {
               {t('DEVICE_REGISTRATION_LOGIN_TO_COMPANION')}
             </a>
           </Button>
+          <p className="mt-3 text-sm leading-relaxed text-muted-foreground">{t('DEVICE_REGISTRATION_LOGIN_HINT')}</p>
           <div className="mt-6 space-y-3 border-t border-border/60 pt-5">
             <p className="text-center text-sm text-muted-foreground">{t('DEVICE_REGISTRATION_NO_ACCOUNT_YET')}</p>
             <Button asChild variant="outline" className="h-10 w-full text-sm font-semibold md:h-11 md:text-base">

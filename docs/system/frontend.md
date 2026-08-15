@@ -5,7 +5,7 @@
 > **Key paths:** `packages/frontend/src/components/hub-status/`, `packages/frontend/src/modules/`, `packages/frontend/src/lib/`
 > **Commands:** `cd packages/frontend && pnpm test`, `pnpm run local` (root, port 5004/5005)
 > **Owner persona:** code-quality + maintainability
-> **Last updated:** 2026-08-14 (iOS working; cloud connect is phone-only)
+> **Last updated:** 2026-08-14 (iOS working; Hub sign-in reuses existing Portal org)
 > **Related:** docs/system/desktop.md, docs/system/e2e.md
 
 ---
