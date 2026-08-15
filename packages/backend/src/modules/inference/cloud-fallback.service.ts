@@ -70,7 +70,7 @@ export class CloudFallbackService implements OnModuleInit {
       ...config,
       apiKey: config.apiKey?.trim() || existing?.apiKey,
       baseUrl: config.baseUrl || existing?.baseUrl,
-      defaultModel: config.defaultModel || existing?.defaultModel,
+      defaultModel: config.defaultModel || existing?.defaultModel || this.getDefaultModel(config.provider),
     });
     this.providers.set(resolved.provider, resolved);
     this.logger.info(`[CloudFallback] Configured provider: ${resolved.provider} (enabled: ${resolved.enabled}, baseUrl: ${resolved.baseUrl})`);

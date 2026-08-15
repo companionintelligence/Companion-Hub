@@ -5544,6 +5544,41 @@
               },
               "inferenceVllmUrl": {
                 "type": "string"
+              },
+              "inferenceCloudProviders": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "provider": {
+                      "type": "string",
+                      "enum": [
+                        "openai",
+                        "anthropic",
+                        "google",
+                        "github-copilot"
+                      ]
+                    },
+                    "apiKey": {
+                      "type": "string"
+                    },
+                    "baseUrl": {
+                      "type": "string"
+                    },
+                    "defaultModel": {
+                      "type": "string"
+                    },
+                    "enabled": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "provider",
+                    "defaultModel",
+                    "enabled"
+                  ],
+                  "additionalProperties": false
+                }
               }
             },
             "required": [
@@ -5895,6 +5930,41 @@
           },
           "inferenceVllmUrl": {
             "type": "string"
+          },
+          "inferenceCloudProviders": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "provider": {
+                  "type": "string",
+                  "enum": [
+                    "openai",
+                    "anthropic",
+                    "google",
+                    "github-copilot"
+                  ]
+                },
+                "apiKey": {
+                  "type": "string"
+                },
+                "baseUrl": {
+                  "type": "string"
+                },
+                "defaultModel": {
+                  "type": "string"
+                },
+                "enabled": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "provider",
+                "defaultModel",
+                "enabled"
+              ],
+              "additionalProperties": false
+            }
           }
         },
         "additionalProperties": false

@@ -108,16 +108,14 @@ export function applyHubInferenceEnv(options: {
       continue;
     }
 
-    let resolved = options.aiEnv[resolvedKey];
-    if (resolved === undefined) {
+    const resolved = options.aiEnv[resolvedKey];
+    if (typeof resolved !== 'string') {
       continue;
     }
 
-    if (hubKey === 'llm_base_url' && stripV1) {
-      resolved = resolved.replace(/\/v1\/?$/, '');
-    }
+    const value = hubKey === 'llm_base_url' && stripV1 ? resolved.replace(/\/v1\/?$/, '') : resolved;
 
-    options.envMap.set(appEnvVar, resolved);
+    options.envMap.set(appEnvVar, value);
   }
 }
 

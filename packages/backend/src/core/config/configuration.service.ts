@@ -136,6 +136,7 @@ export class ConfigurationService {
       inferenceVisionModel: string | undefined;
       inferenceVllmApiKey: string | undefined;
       inferenceVllmUrl: string | undefined;
+      inferenceCloudProviders: CloudProviderConfig[] | undefined;
     } = {
       ciHubApiKey: null,
       ciHubOrganizationId: null,
@@ -149,6 +150,7 @@ export class ConfigurationService {
       inferenceVisionModel: undefined,
       inferenceVllmApiKey: undefined,
       inferenceVllmUrl: undefined,
+      inferenceCloudProviders: undefined,
     };
     try {
       const settingsPath = path.join(DATA_DIR, 'state', 'settings.json');
@@ -168,6 +170,7 @@ export class ConfigurationService {
           inferenceVisionModel: settings.inferenceVisionModel,
           inferenceVllmApiKey: settings.inferenceVllmApiKey,
           inferenceVllmUrl: settings.inferenceVllmUrl,
+          inferenceCloudProviders: settings.inferenceCloudProviders,
         };
       }
     } catch (_e) {
@@ -234,6 +237,7 @@ export class ConfigurationService {
         inferenceVisionModel: settingsValues.inferenceVisionModel,
         inferenceVllmApiKey: settingsValues.inferenceVllmApiKey,
         inferenceVllmUrl: settingsValues.inferenceVllmUrl,
+        inferenceCloudProviders: settingsValues.inferenceCloudProviders,
         experimental: {
           insecureCookie: env.data.EXPERIMENTAL_INSECURE_COOKIE,
         },
