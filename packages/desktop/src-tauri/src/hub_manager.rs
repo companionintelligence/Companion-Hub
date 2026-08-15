@@ -136,13 +136,21 @@ const HOST_OLLAMA_SERVICE_ID: &str = "host-ollama";
 const HOST_OLLAMA_API_URL: &str = "http://127.0.0.1:11434/api/tags";
 const HOST_OLLAMA_PROBE_TIMEOUT: Duration = Duration::from_millis(500);
 const HOST_OLLAMA_PROBE_CACHE_TTL: Duration = Duration::from_secs(10);
+const HUB_API_LIVE_PROBE_TIMEOUT: Duration = Duration::from_millis(800);
+const HUB_API_LIVE_PROBE_CACHE_TTL: Duration = Duration::from_secs(2);
 
 struct CachedHostOllamaProbe {
     checked_at: Instant,
     available: bool,
 }
 
+struct CachedHubApiLiveProbe {
+    checked_at: Instant,
+    available: bool,
+}
+
 static HOST_OLLAMA_PROBE_CACHE: Mutex<Option<CachedHostOllamaProbe>> = Mutex::new(None);
+static HUB_API_LIVE_PROBE_CACHE: Mutex<Option<CachedHubApiLiveProbe>> = Mutex::new(None);
 
 fn base_docker_command() -> Command {
     let docker_path = find_docker_binary();
@@ -1965,6 +1973,43 @@ fn probe_host_ollama() -> bool {
     available
 }
 
+/// True when the Hub HTTP API answers `/api/health/live` on localhost.
+/// Docker may report `running` + health `starting` while Nest is already serving.
+fn probe_hub_api_live() -> bool {
+    {
+        let cache = lock_recovering(&HUB_API_LIVE_PROBE_CACHE);
+        if let Some(cached) = cache.as_ref() {
+            if cached.checked_at.elapsed() < HUB_API_LIVE_PROBE_CACHE_TTL {
+                return cached.available;
+            }
+        }
+    }
+
+    let port = crate::port_manager::read_api_port(&hub_env_path());
+    let url = format!("http://127.0.0.1:{port}/api/health/live");
+    let client = match reqwest::blocking::Client::builder()
+        .timeout(HUB_API_LIVE_PROBE_TIMEOUT)
+        .build()
+    {
+        Ok(client) => client,
+        Err(_) => return false,
+    };
+
+    let available = client
+        .get(&url)
+        .send()
+        .map(|response| response.status().is_success())
+        .unwrap_or(false);
+
+    let mut cache = lock_recovering(&HUB_API_LIVE_PROBE_CACHE);
+    *cache = Some(CachedHubApiLiveProbe {
+        checked_at: Instant::now(),
+        available,
+    });
+
+    available
+}
+
 /// Return per-service startup progress for the frontend loading screen.
 pub fn get_startup_progress() -> StartupProgress {
     let vpn_on = is_private_vpn_enabled();
@@ -2104,7 +2149,14 @@ pub fn get_hub_status() -> HubStatus {
             clear_start_failed(&data_dir);
             HubStatus::Running
         }
-        ("running", _) => HubStatus::Starting,
+        ("running", _) => {
+            if probe_hub_api_live() {
+                clear_start_failed(&data_dir);
+                HubStatus::Running
+            } else {
+                HubStatus::Starting
+            }
+        }
         ("restarting", _) => {
             // Check if database is still starting — if so, Hub restart is expected
             let db_status = docker_command()

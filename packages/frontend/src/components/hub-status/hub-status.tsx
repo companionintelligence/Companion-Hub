@@ -92,8 +92,6 @@ export function isUserInitiatedPageReload(): boolean {
 }
 
 const HUB_STATUS_POLL_INTERVAL_MS = 3000;
-/** Probe misses required before leaving the Running UI after the hub has been steady. */
-const HUB_STEADY_PROBE_FAILURE_THRESHOLD = 3;
 
 function detectPlatform(): 'windows' | 'macos' | 'linux' {
   const ua = navigator.userAgent.toLowerCase();
@@ -708,12 +706,12 @@ export function HubStatus({ children }: HubStatusProps) {
       setStatus('Running');
       return;
     }
+    // After the hub has been steady, keep the app mounted — only hard Docker
+    // non-running states (Stopped / Error) should regress the startup gate.
     if (hubSteadyRunningRef.current) {
       consecutiveProbeFailuresRef.current += 1;
-      if (consecutiveProbeFailuresRef.current < HUB_STEADY_PROBE_FAILURE_THRESHOLD) {
-        setStatus('Running');
-        return;
-      }
+      setStatus('Running');
+      return;
     }
     sawNonRunningRef.current = true;
     setStatus('Stopped');
@@ -810,19 +808,15 @@ export function HubStatus({ children }: HubStatusProps) {
               return;
             }
 
-            // After steady, tolerate brief probe misses so Tailscale/Docker blips do not
-            // flash the loading gate or force a full window reload on recovery.
+            // After steady, tolerate probe misses so Docker healthcheck lag / CPU
+            // spikes do not flash the startup gate. Hard stops clear steady above.
             if (hubSteadyRunningRef.current) {
               consecutiveProbeFailuresRef.current += 1;
-              if (consecutiveProbeFailuresRef.current < HUB_STEADY_PROBE_FAILURE_THRESHOLD) {
-                setStatus('Running');
-                return;
-              }
+              setStatus('Running');
+              return;
             }
 
             consecutiveProbeFailuresRef.current = 0;
-            hubSteadyRunningRef.current = false;
-            clearHubSteadySession();
             sawNonRunningRef.current = true;
             setStatus('Starting');
             return;
