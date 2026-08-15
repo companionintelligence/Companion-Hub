@@ -1,4 +1,4 @@
-import { clearHubConnection, isMobileClient } from '@/lib/mobile-connection';
+import { clearHubConnection, usesCloudConnect } from '@/lib/mobile-connection';
 
 const OVERLAY_ID = 'ci-hub-mobile-load-error';
 const BUDGET_MS = 6_000;
@@ -94,7 +94,7 @@ function showOverlay(): void {
 /** Last-resort: if the phone is still on a spinner after 6s, offer Retry / Switch Hub. */
 export function installMobileLoadWatchdog(): void {
   if (typeof window === 'undefined') return;
-  if (!isMobileClient() && import.meta.env.VITE_HUB_RUNTIME !== 'mobile') return;
+  if (!usesCloudConnect()) return;
   if ((window as Window & { __ciHubLoadWatchdog?: boolean }).__ciHubLoadWatchdog) return;
   (window as Window & { __ciHubLoadWatchdog?: boolean }).__ciHubLoadWatchdog = true;
 

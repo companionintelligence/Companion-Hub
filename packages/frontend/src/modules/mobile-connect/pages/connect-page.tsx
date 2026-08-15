@@ -4,7 +4,8 @@ import { Input } from '@/components/ui/Input';
 import { LoadingSpinner } from '@/components/ui/LoadingSpinner/loading-spinner';
 import { PasswordInput } from '@/components/ui/PasswordInput/PasswordInput';
 import { publishHubsToIntents } from '@/lib/app-intents';
-import { initMobileConnection, isMobileClient, setHubConnection } from '@/lib/mobile-connection';
+import { hubAuthFlowPolicy, readHubAuthFlow } from '@/lib/hub-auth-flow';
+import { initMobileConnection, setHubConnection, usesCloudConnect } from '@/lib/mobile-connection';
 import { type FormEvent, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import toast from 'react-hot-toast';
@@ -27,12 +28,12 @@ export async function clientLoader() {
     // probes the remote appliance (often forever from ios:dev).
     return redirect('/login');
   }
-  if (isMobileClient()) {
+  if (usesCloudConnect()) {
     // Stay here. Redirecting "not Tauri-mobile yet" back to `/` is what
     // blanks the ios:dev connect screen after the first paint.
     return null;
   }
-  // Web/desktop never see this screen.
+  // Mac / Linux / Windows (browser or desktop Tauri) never see this screen.
   return redirect('/');
 }
 
@@ -137,12 +138,15 @@ export default function ConnectPage() {
   };
 
   const handleOidcLogin = async () => {
+    if (!hubAuthFlowPolicy(readHubAuthFlow()).usesPortalPkce) {
+      return;
+    }
     const controller = new AbortController();
     setOidcController(controller);
     setBusy(true);
     setSignInError(null);
     try {
-      // OIDC (PKCE) login to the Portal via the system browser + cihub:// callback.
+      // Cloud-connect PKCE only — Hub /login OIDC is portal/start + deep-link-auth.
       const tokens = await loginWithPortalOidc(portalUrl, { signal: controller.signal });
       const portalEmail = emailFromIdToken(tokens.idToken);
       if (portalEmail) rememberPortalAccountEmail(portalEmail);

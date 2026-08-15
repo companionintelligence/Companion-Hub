@@ -20,41 +20,84 @@ const STORE_FILE = 'mobile-connection.json';
 const HUB_BASE_URL_KEY = 'hubBaseUrl';
 /** Survives a hydrate that would otherwise forget we already proved this is iOS. */
 const MOBILE_FLAG_KEY = 'cihub.isTauriMobile';
+/** Survives a hydrate so Linux/Windows/Mac desktop cannot inherit a leftover mobile flag. */
+const DESKTOP_FLAG_KEY = 'cihub.isTauriDesktop';
 
 let cachedIsMobile: boolean | null = null;
+let cachedIsDesktop = false;
 let currentHubBaseUrl: string | null = null;
 let initialized = false;
 let cachedNativeFetch: typeof runtimeFetch | null = null;
 
-function readMobileFlag(): boolean {
+function readSessionFlag(key: string): boolean {
   try {
-    return sessionStorage.getItem(MOBILE_FLAG_KEY) === '1';
+    return sessionStorage.getItem(key) === '1';
   } catch {
     return false;
   }
 }
 
-function persistMobileFlag(): void {
+function persistSessionFlag(key: string, on: boolean): void {
   try {
-    sessionStorage.setItem(MOBILE_FLAG_KEY, '1');
+    if (on) sessionStorage.setItem(key, '1');
+    else sessionStorage.removeItem(key);
   } catch {
     /* private mode */
   }
 }
 
+function readMobileFlag(): boolean {
+  return readSessionFlag(MOBILE_FLAG_KEY);
+}
+
 function markMobile(): void {
   cachedIsMobile = true;
-  persistMobileFlag();
+  cachedIsDesktop = false;
+  persistSessionFlag(MOBILE_FLAG_KEY, true);
+  persistSessionFlag(DESKTOP_FLAG_KEY, false);
+}
+
+function markDesktop(): void {
+  cachedIsMobile = false;
+  cachedIsDesktop = true;
+  persistSessionFlag(MOBILE_FLAG_KEY, false);
+  persistSessionFlag(DESKTOP_FLAG_KEY, true);
+}
+
+function isConfirmedDesktop(): boolean {
+  if (cachedIsDesktop || readSessionFlag(DESKTOP_FLAG_KEY)) {
+    cachedIsDesktop = true;
+    return true;
+  }
+  if (isConfirmedDesktopUserAgent()) {
+    markDesktop();
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Linux / Windows desktop UAs. Macintosh is omitted on purpose: iPad "Request
+ * Desktop Website" and some iOS Simulator builds report Macintosh, and those
+ * still use cloud connect via {@link isMobileDevFrontend} or the OS plugin.
+ */
+function isConfirmedDesktopUserAgent(): boolean {
+  if (typeof navigator === 'undefined') return false;
+  const ua = navigator.userAgent || '';
+  if (/android/i.test(ua) || /iphone|ipad|ipod/i.test(ua)) return false;
+  return /windows nt/i.test(ua) || /x11;/i.test(ua) || (/\blinux\b/i.test(ua) && !/android/i.test(ua));
 }
 
 /** Vitest only — `isTauriMobileSync` never downgrades, so a phone UA leaks across files. */
 export function resetMobileClientCacheForTests(): void {
   cachedIsMobile = null;
+  cachedIsDesktop = false;
   currentHubBaseUrl = null;
   initialized = false;
   cachedNativeFetch = null;
   try {
     sessionStorage.removeItem(MOBILE_FLAG_KEY);
+    sessionStorage.removeItem(DESKTOP_FLAG_KEY);
   } catch {
     /* ignore */
   }
@@ -79,43 +122,66 @@ export function isMobileUserAgent(): boolean {
   return /macintosh/i.test(ua) && typeof navigator.maxTouchPoints === 'number' && navigator.maxTouchPoints > 1;
 }
 
+function isLvhMeHost(): boolean {
+  if (typeof window === 'undefined') return false;
+  try {
+    const { hostname } = window.location;
+    return hostname === 'lvh.me' || hostname.endsWith('.lvh.me');
+  } catch {
+    return false;
+  }
+}
+
 /**
  * ios:dev / android:dev frontend. `VITE_HUB_RUNTIME=mobile` is the explicit
- * signal. `lvh.me` is the mobile `devUrl` host. Do not key off port 5005 —
- * that is also `pnpm run local` on Mac/Linux/Windows.
+ * signal for the Tauri phone webview. `lvh.me` is the mobile `devUrl` host.
+ * Do not key off port 5005 — that is also `pnpm run local` on Mac/Linux/Windows.
+ * A port-forwarded desktop browser on :5005 is not this.
  */
 export function isMobileDevFrontend(): boolean {
   if (typeof window === 'undefined' || !import.meta.env.DEV) return false;
-  if (import.meta.env.VITE_HUB_RUNTIME === 'mobile') return true;
-  try {
-    const { hostname } = window.location;
-    if (hostname === 'lvh.me' || hostname.endsWith('.lvh.me')) return true;
-  } catch {
-    /* ignore */
-  }
+  if (isLvhMeHost()) return true;
+  // Vite started for ios:dev must not flip a Linux/Windows Chrome (or a
+  // Cursor port-forward of :5005) into cloud connect. Those have no Tauri.
+  if (import.meta.env.VITE_HUB_RUNTIME === 'mobile' && (isTauri() || isLvhMeHost())) return true;
   return false;
 }
 
 /**
- * Thin-client phone app (iOS / Android). Those builds have no local Hub, so
- * they use cloud connect. Mac / Linux / Windows — browser or desktop Tauri —
- * always set up a Hub the normal way (registration → login).
+ * Single gate for the cloud-connect picker (`/connect`).
  *
- * A phone *browser* hitting a Hub URL is not this: that visitor is already on
- * an appliance and should see `/login`, not the picker.
+ * True only for the iOS / Android thin-client app (including `ios:dev` /
+ * `android:dev`). Mac / Linux / Windows — browser or desktop Tauri — always
+ * set up a Hub the normal way (registration → login).
+ *
+ * A leftover `cihub.isTauriMobile` flag, `VITE_HUB_RUNTIME=mobile` on a shared
+ * Vite, or a port-forwarded tab must not send desktop there. A phone *browser*
+ * hitting a Hub URL is already on an appliance and should see `/login`.
  */
-export function isMobileClient(): boolean {
-  if (isTauriMobileSync()) return true;
+export function usesCloudConnect(): boolean {
+  // Plain browser (Cursor port-forward, Chrome on :5005, phone Safari on a Hub):
+  // never the thin-client picker. ios:dev first paint is `lvh.me` or Tauri.
+  if (!isTauri() && !isLvhMeHost()) {
+    return false;
+  }
   if (isMobileDevFrontend()) {
     markMobile();
     return true;
   }
-  return false;
+  if (isConfirmedDesktop()) {
+    return false;
+  }
+  return isTauriMobileSync();
+}
+
+/** Alias of {@link usesCloudConnect} — the phone thin-client, not a phone browser. */
+export function isMobileClient(): boolean {
+  return usesCloudConnect();
 }
 
 /** True when the thin-client picker must stay up — no remote Hub chosen yet. */
 export function needsRemoteHubConnect(): boolean {
-  return isMobileClient() && !getHubBaseUrlSync();
+  return usesCloudConnect() && !getHubBaseUrlSync();
 }
 
 /**
@@ -132,9 +198,13 @@ function detectMobileSync(): boolean {
 
 /** True once {@link initMobileConnection} has resolved this platform as iOS/Android. */
 export function isTauriMobileSync(): boolean {
-  // Never downgrade a confirmed mobile detect. Overwriting `true` with a
-  // desktop-UA `false` (iOS Simulator + localhost) is what unmounts /connect
-  // after the first paint and leaves a black HubStatus gate.
+  // Desktop OS / Linux+Windows UA always wins over a leftover mobile session
+  // flag. ios:dev still reaches cloud connect via {@link isMobileDevFrontend}.
+  if (isConfirmedDesktop() && !isMobileDevFrontend()) {
+    return false;
+  }
+  // Never downgrade a confirmed mobile detect against a later desktop-looking
+  // UA (iOS Simulator + localhost). Confirmed *desktop OS* is the exception.
   if (cachedIsMobile === true || readMobileFlag()) {
     cachedIsMobile = true;
     return true;
@@ -223,6 +293,12 @@ export async function initMobileConnection(): Promise<{ isMobile: boolean; hubBa
   const osMobile = await withTimeout(detectOsMobile(), 1500, null);
   if (osMobile === true) {
     markMobile();
+  } else if (osMobile === false && !isMobileDevFrontend() && !detectMobileSync()) {
+    // linux / windows / macos desktop Tauri. Clear a leftover mobile flag from
+    // sharing Vite :5005 with ios:dev so /connect cannot appear on desktop.
+    // Do not override a live phone UA — tests and odd OS-plugin answers can
+    // report macos while the WebView is still Android/iOS.
+    markDesktop();
   }
 
   if (initialized) {

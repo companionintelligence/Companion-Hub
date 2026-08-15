@@ -14,7 +14,7 @@ import { useAppContext } from '@/context/app-context';
 import { useDemoMode } from '@/lib/hooks/use-demo-mode';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/Card';
 import { ArrowUpCircle, Loader2, Smartphone, Star, TriangleAlert, Wand2 } from 'lucide-react';
-import { clearHubConnection, getHubBaseUrlSync, isTauriMobileSync } from '@/lib/mobile-connection';
+import { clearHubConnection, getHubBaseUrlSync, usesCloudConnect } from '@/lib/mobile-connection';
 import { useTranslation } from 'react-i18next';
 import { UpdateRepoModal } from '../components/update-repo-modal/update-repo-modal';
 import { useState, useEffect, useCallback } from 'react';
@@ -521,7 +521,7 @@ export const GeneralActionsContainer = () => {
         </DialogContent>
       </Dialog>
 
-      {isTauriMobileSync() && (
+      {usesCloudConnect() && (
         <Card>
           <CardHeader>
             <div className="flex items-center gap-2">

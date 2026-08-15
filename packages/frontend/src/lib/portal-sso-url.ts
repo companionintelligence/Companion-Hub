@@ -49,15 +49,20 @@ export function resolvePortalSsoBaseUrl(input: {
   return input.pageOrigin.replace(/\/+$/, '');
 }
 
-/** Native app (iOS/Android/desktop) returns via `cihub://` / `cihub-dev://`. Browsers stay on the Hub. */
+/**
+ * Native Hub SSO (iOS/Android `/login` or Mac/Linux/Windows Tauri) returns via
+ * `cihub://` / `cihub-dev://`. Browsers stay on the Hub. Cloud-connect PKCE
+ * (`/connect`) does not use this — that is `oidc.ts`.
+ */
 export function shouldUsePortalDesktopHandoff(input: { isTauriDesktop: boolean; isMobileClient: boolean }): boolean {
   return input.isTauriDesktop || input.isMobileClient;
 }
 
 /**
- * iOS/Android must not navigate the WKWebView to Portal (black screen).
- * macOS/Linux/Windows desktop uses a normal `<a href>` — that is the path that
- * worked at 187f300. Opening via the opener plugin *and* the anchor is two tabs.
+ * iOS/Android *Hub* SSO (`mobile-hub-sso`) must not navigate the WKWebView.
+ * macOS/Linux/Windows desktop uses a normal `<a href>` — never also call
+ * `openAuthInSystemBrowser` (that opens a second tab). Cloud-connect PKCE
+ * opens Safari from `oidc.ts`, not from the login form.
  */
 export function shouldOpenPortalSsoInSystemBrowser(isMobileClient: boolean): boolean {
   return isMobileClient;

@@ -5,9 +5,10 @@ import { markHubSessionIssuedAt, setTauriSessionId } from '@/lib/api-fetch';
 import { portalErrorTranslationKey } from '@/lib/portal-auth-errors';
 import { SIGNED_OUT_PARAM, signedOutTranslationKey } from '@/lib/signed-out-reasons';
 import { resolvePortalSessionHint } from '@/lib/portal-session-hint';
+import { hubAuthFlowPolicy, resolveHubAuthFlow } from '@/lib/hub-auth-flow';
 import { isTauriDesktopApp } from '@/lib/hub-runtime-mode';
-import { clearHubConnection, getHubBaseUrlSync, isMobileClient } from '@/lib/mobile-connection';
-import { buildPortalSsoStartUrl, shouldOpenPortalSsoInSystemBrowser } from '@/lib/portal-sso-url';
+import { clearHubConnection, getHubBaseUrlSync, isMobileClient, usesCloudConnect } from '@/lib/mobile-connection';
+import { buildPortalSsoStartUrl } from '@/lib/portal-sso-url';
 import { followSafeRedirect } from '@/lib/safe-redirect';
 import { useUserContext } from '@/context/user-context';
 import type { TranslatableError } from '@/types/error.types';
@@ -122,6 +123,12 @@ export default () => {
   const isMobile = isMobileClient();
   const remoteHubUrl = getHubBaseUrlSync();
   const isTauriDesktop = isTauriDesktopApp();
+  const authFlow = resolveHubAuthFlow({
+    usesCloudConnect: usesCloudConnect(),
+    remoteHubUrl,
+    isTauriDesktop,
+  });
+  const authPolicy = hubAuthFlowPolicy(authFlow);
 
   const login = useMutation({
     ...loginMutation(),
@@ -181,14 +188,16 @@ export default () => {
     return <TotpForm loading={verifyTotp.isPending} onSubmit={(totpCode) => verifyTotp.mutate({ body: { totpCode, totpSessionId } })} />;
   }
 
-  const portalSsoHref = buildPortalSsoStartUrl({
-    remoteHubUrl,
-    isTauriDesktop,
-    isMobileClient: isMobile,
-    configuredApiBaseUrl: client.getConfig().baseUrl,
-    pageOrigin: window.location.origin,
-    redirectUrl: redirect_url,
-  });
+  const portalSsoHref = authPolicy.usesHubPortalSso
+    ? buildPortalSsoStartUrl({
+        remoteHubUrl,
+        isTauriDesktop,
+        isMobileClient: isMobile,
+        configuredApiBaseUrl: client.getConfig().baseUrl,
+        pageOrigin: window.location.origin,
+        redirectUrl: redirect_url,
+      })
+    : undefined;
 
   return (
     <>
@@ -198,9 +207,9 @@ export default () => {
         loginType={loginType}
         portalSsoHref={portalSsoHref}
         portalAccountEmail={portalAccountEmail}
-        openPortalSsoExternally={shouldOpenPortalSsoInSystemBrowser(isMobile)}
+        openPortalSsoExternally={authPolicy.openHubSsoInSystemBrowser}
       />
-      {isMobile && remoteHubUrl ? (
+      {authPolicy.showSwitchHub ? (
         <button
           type="button"
           data-testid="login-switch-hub-btn"

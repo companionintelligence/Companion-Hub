@@ -1,10 +1,14 @@
 /**
- * Open an auth URL in the real system browser (Safari / Chrome / Edge).
+ * Open an auth URL in the real system browser (Safari / Chrome Custom Tabs).
  *
- * Used by mobile Portal PKCE (`/connect`) and Hub Companion Account SSO
- * (`/login`) on every native shell: iOS, Android, macOS, Linux, Windows.
- * Do not use `window.open` — WKWebView treats it as same-document navigation
- * and then follows `cihub://` into a permanent black screen.
+ * Used only by iOS/Android:
+ *  - cloud-connect PKCE on `/connect` (`oidc.ts`)
+ *  - Hub Companion Account SSO on `/login` (`mobile-hub-sso`)
+ *
+ * Mac / Linux / Windows desktop must use a normal `<a href>` instead — calling
+ * this from desktop opens a second tab. Do not use `window.open` on a phone:
+ * WKWebView treats it as same-document navigation and then follows `cihub://`
+ * into a permanent black screen.
  */
 export async function openAuthInSystemBrowser(url: string): Promise<void> {
   let openUrl: ((href: string) => Promise<void>) | undefined;

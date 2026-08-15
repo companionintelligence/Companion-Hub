@@ -37,6 +37,7 @@ vi.mock('@/lib/helpers/tauri-invoke', () => ({ getTauriInvoke: () => runtime.get
 vi.mock('@/lib/hub-runtime-mode', () => ({ isTauriDesktopApp: () => runtime.isTauriDesktopApp() }));
 vi.mock('@/lib/mobile-connection', () => ({
   isMobileClient: () => runtime.isMobileClient(),
+  usesCloudConnect: () => runtime.isMobileClient(),
   getHubBaseUrlSync: () => runtime.getHubBaseUrlSync(),
 }));
 vi.mock('@/lib/portal-sso-url', () => ({
@@ -160,6 +161,17 @@ describe('useDesktopPortalAuth — wiring', () => {
   it('subscribes to deep-link-auth', async () => {
     renderHook(() => useDesktopPortalAuth());
     await waitFor(() => expect(ev.listen).toHaveBeenCalledWith('deep-link-auth'));
+  });
+
+  it('does not listen for Hub token handoff during iOS/Android cloud-connect PKCE', async () => {
+    runtime.isTauriDesktopApp.mockReturnValue(false);
+    runtime.isMobileClient.mockReturnValue(true);
+    runtime.getHubBaseUrlSync.mockReturnValue(null);
+
+    renderHook(() => useDesktopPortalAuth());
+
+    await waitFor(() => expect(dl.takePendingDesktopPortalAuth).not.toHaveBeenCalled());
+    expect(ev.listen).not.toHaveBeenCalled();
   });
 });
 

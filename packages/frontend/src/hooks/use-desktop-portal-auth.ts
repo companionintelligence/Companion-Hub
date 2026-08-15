@@ -1,6 +1,7 @@
 import { client } from '@/api-client/client.gen';
 import { apiFetch, markHubSessionIssuedAt, setTauriSessionId } from '@/lib/api-fetch';
 import { getTauriInvoke } from '@/lib/helpers/tauri-invoke';
+import { hubAuthFlowPolicy, readHubAuthFlow } from '@/lib/hub-auth-flow';
 import { isTauriDesktopApp } from '@/lib/hub-runtime-mode';
 import { getHubBaseUrlSync, isMobileClient } from '@/lib/mobile-connection';
 import { buildPortalDesktopExchangeUrl } from '@/lib/portal-sso-url';
@@ -107,9 +108,10 @@ export function useDesktopPortalAuth() {
   );
 
   useEffect(() => {
-    // Hub Portal SSO handoff (cihub://auth?token=…) — desktop and mobile /login only.
-    // Cloud connect PKCE (cihub://auth/callback) is handled separately in oidc.ts.
-    if (!getTauriInvoke()) {
+    // Hub Portal SSO handoff (cihub://auth?token=…) — desktop-hub-sso and
+    // mobile-hub-sso only. Cloud-connect PKCE (cihub://auth/callback) is oidc.ts.
+    const policy = hubAuthFlowPolicy(readHubAuthFlow());
+    if (!getTauriInvoke() || !policy.listenDeepLinkAuth) {
       return;
     }
 
@@ -118,7 +120,7 @@ export function useDesktopPortalAuth() {
     let presenceTimer: ReturnType<typeof setInterval> | undefined;
 
     const announceDesktopPresence = () => {
-      if (!isTauriDesktopApp()) {
+      if (!policy.announceDesktopPresence) {
         return;
       }
       void apiFetch('/api/auth/portal/session-hint?desktop=1').catch(() => undefined);

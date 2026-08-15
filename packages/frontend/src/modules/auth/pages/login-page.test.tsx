@@ -42,6 +42,7 @@ vi.mock('@/lib/hub-runtime-mode', () => ({
 
 vi.mock('@/lib/mobile-connection', () => ({
   isMobileClient: () => mockIsMobile(),
+  usesCloudConnect: () => mockIsMobile(),
   getHubBaseUrlSync: () => mockHubUrl(),
   clearHubConnection: vi.fn(async () => {}),
 }));

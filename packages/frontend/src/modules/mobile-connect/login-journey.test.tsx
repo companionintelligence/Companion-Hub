@@ -38,6 +38,7 @@ vi.mock('@tauri-apps/api/event', () => ({
 vi.mock('@/lib/mobile-connection', () => ({
   isTauriMobileSync: () => conn.mobile,
   isMobileClient: () => conn.mobile,
+  usesCloudConnect: () => conn.mobile,
   getHubBaseUrlSync: () => conn.hubUrl,
   setHubConnection: (url: string) => mc.setHub(url),
   clearHubConnection: () => mc.clearHub(),

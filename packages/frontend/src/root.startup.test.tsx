@@ -12,6 +12,7 @@ const { isTauriMobileSync, isMobileClient, getHubBaseUrlSync, initMobileConnecti
 vi.mock('./lib/mobile-connection', () => ({
   isTauriMobileSync,
   isMobileClient,
+  usesCloudConnect: () => isMobileClient(),
   getHubBaseUrlSync,
   needsRemoteHubConnect: () => isMobileClient() && !getHubBaseUrlSync(),
   initMobileConnection,

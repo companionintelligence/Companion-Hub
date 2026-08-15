@@ -5,8 +5,8 @@
 > **Key paths:** `packages/frontend/src/components/hub-status/`, `packages/frontend/src/modules/`, `packages/frontend/src/lib/`
 > **Commands:** `cd packages/frontend && pnpm test`, `pnpm run local` (root, port 5004/5005)
 > **Owner persona:** code-quality + maintainability
-> **Last updated:** 2026-08-14 (SSO matrix: iOS/Android + desktop + browser)
-> **Related:** docs/system/desktop.md, docs/system/e2e.md
+> **Last updated:** 2026-08-14 (SSO matrix + local:desktop origin traps)
+> **Related:** docs/system/desktop.md, docs/DESKTOP-UI-ARCHITECTURE.md, docs/system/e2e.md
 
 ---
 
@@ -40,13 +40,11 @@ Tests: `packages/frontend/src/components/hub-status/hub-status.test.tsx`
 - Tauri release builds probe local ports via `packages/frontend/src/lib/tauri-hub-probe.ts`
 - Session refresh: `packages/frontend/src/lib/hub-session-refresh.ts`
 - Local Vite (`:5005`) must probe same-origin `/api/health/live` (the Vite proxy) before a leftover Docker Hub on `:5002`. Do **not** bind the API client to `:5004` or `:5002` — `/api` stays same-origin on `:5005` so the session cookie survives. Binding it was a 401 → full `/login` reload → "Connecting to local API...". HubStatus on `:5005` must ignore Docker compose status (that is the appliance stack). Featured (`GET /api/store/featured-bundle`) is served through that Vite proxy.
-- Companion Account SSO matrix (`packages/frontend/src/lib/portal-sso-url.ts`):
-  - **iOS / Android app** (`/connect`): Portal PKCE → Safari → `cihub://auth/callback` → `deep-link-oidc`.
-  - **iOS / Android app** (`/login` after a Hub is chosen): `{remoteHub}/api/auth/portal/start?desktop=1` in Safari → `cihub://auth?token=…` → `deep-link-auth`. Never localhost.
-  - **macOS / Linux / Windows** `local:desktop`: Vite `:5005` + `desktop=1` via a normal `<a href>` → `cihub-dev://auth?token=…`. Do not also call `openAuthInSystemBrowser` (that opens a second tab). The running Tauri window heartbeats `session-hint?desktop=1` so a loopback callback opened in Chrome still hands off into the app instead of finishing as a browser session. `GET /api/auth/portal/desktop-exchange` must `Set-Cookie` the Hub session on the Tauri webview (Safari already got the cookie on the callback). Persist the one-time token in `sessionStorage` so a Vite reload cannot drop it before exchange.
-  - **Packaged desktop**: Hub API (usually `:5002`) + `desktop=1` via `<a href>` → `cihub://auth?token=…`.
-  - **Browser on a Hub** (any OS, including a phone browser): same-origin `/api/auth/portal/start` with no `desktop=1` (cookie session).
-  iOS/Android Hub login must open SSO with `openAuthInSystemBrowser` (a `<button>`, not an `<a href>`) so the webview stays mounted. Do not use `window.open` on a phone.
+- Companion Account flows (`packages/frontend/src/lib/hub-auth-flow.ts` — do not mix):
+  - **`mobile-cloud-connect`** — iOS/Android `/connect` only. Portal PKCE (`oidc.ts`) → Safari → `cihub://auth/callback` → `deep-link-oidc`. Not Hub `/portal/start`.
+  - **`mobile-hub-sso`** — iOS/Android `/login` after a Hub is chosen. `{remoteHub}/api/auth/portal/start?desktop=1` in Safari → `cihub://auth?token=…` → `deep-link-auth`. Never localhost. Button + `openAuthInSystemBrowser` so WKWebView stays mounted.
+  - **`desktop-hub-sso`** — Mac / Linux / Windows Tauri while the Hub is running. Same-origin (Vite `:5005` or packaged `:5002`) `/portal/start?desktop=1` via a normal `<a href>` → `cihub-dev://` / `cihub://` → desktop-exchange on that Hub. Do not also call `openAuthInSystemBrowser`. Heartbeat `session-hint?desktop=1` so a Chrome loopback callback can hand off into Tauri.
+  - **`browser-hub-sso`** — any browser on a Hub (including a phone browser). Same-origin `/portal/start` with no `desktop=1`; cookie session. On **loopback**, this is stolen into `desktop-hub-sso` while Tauri is announcing presence (10 min). Stop the desktop shell to test a real browser cookie session. Product origin is **`:5002`**; `:5005` is source-dev only — see `docs/system/desktop.md` ("Two stacks — do not mix").
 
 ## Styling
 
@@ -71,7 +69,7 @@ The iOS/Android thin client signs into the Portal with PKCE and a `cihub://auth/
 - ios:dev IPC: `capabilities/default.json` must list `remote.urls` for `http://localhost:*`. Without that, `event.listen` / `opener` are denied on the Vite origin and Sign in spins forever.
 - iOS 26: Info.plist must use Tao's scene (`TaoScene` / `TaoSceneDelegate`, `UIApplicationSupportsMultipleScenes: true`). A "Default Configuration" with no delegate shows a black scene while the webview runs off-screen.
 - Do not leave a debug HUD or a second "Connect to your Hub" splash on the phone. Bootstrap sends the user to `/connect` (cloud sign-in) or `/login` (chosen Hub). Switch Hub lives on `/login` and `MobileLoadError`.
-- Cloud connect (`/connect`) is **iOS/Android app only** (`isTauriMobileSync`, `VITE_HUB_RUNTIME=mobile`, or `lvh.me`). Mac / Linux / Windows never take that path — not via port 5005, viewport size, or a phone UA in Safari/Chrome. A phone *browser* on a Hub URL still uses normal `/login`.
+- Cloud connect (`/connect`) is **iOS/Android app only**. The single gate is `usesCloudConnect()` in `packages/frontend/src/lib/mobile-connection.ts` (`VITE_HUB_RUNTIME=mobile`, `lvh.me`, or Tauri + iOS/Android). Mac / Linux / Windows — browser or desktop Tauri — never take that path. A leftover `cihub.isTauriMobile` session flag from sharing Vite `:5005` with ios:dev must not send desktop there (Linux/Windows UA and the desktop OS plugin both clear it). A phone *browser* on a Hub URL still uses normal `/login`.
 - After OIDC, list Hubs with `GET /api/users/me/apps?slug=hub` (Bearer access token). `GET /api/devices` needs a better-auth session and returns 401 for the OIDC token. Email/password still uses `/api/devices`.
 - Portal URL is `CI_CLOUD_URL` (baked at frontend build). Unset + non-production `CI_HUB_ENVIRONMENT` → `https://hub.companionintelligence.com`. Production → `https://hub.ci.computer`.
 - Authorization codes are single-use. Safari + `/connect` resume both try the same code — exchange is memoized per code so the loser does not toast "invalid code".
@@ -87,4 +85,4 @@ Tests: `packages/frontend/src/modules/mobile-connect/oidc.test.ts`, `connect-pag
 
 - Biome forbids non-null assertions (`!`) — use explicit types
 - Run scoped tests: `pnpm test -- src/path/to/file.test.tsx`
-- Always run `pnpm run local` or `local:desktop` for UI changes
+- Always run `pnpm run local` or `local:desktop` for UI source changes. For appliance-parity SSO (browser or Tauri against `hub.companionintelligence.com`), use `pnpm run dev` / `dev:desktop` on `:5002` — never both stacks at once.

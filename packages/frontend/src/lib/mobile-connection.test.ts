@@ -142,6 +142,21 @@ describe('isMobileUserAgent', () => {
     expect(m.needsRemoteHubConnect()).toBe(false);
   });
 
+  it('does not send a port-forwarded or local desktop browser into cloud connect', async () => {
+    setTauri(false);
+    setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X)');
+    sessionStorage.setItem('cihub.isTauriMobile', '1');
+    vi.stubEnv('VITE_HUB_RUNTIME', 'mobile');
+    Object.defineProperty(window, 'location', {
+      configurable: true,
+      value: { ...window.location, port: '5005', hostname: 'localhost', href: 'http://localhost:5005/connect' },
+    });
+    const m = await freshModule();
+    expect(m.usesCloudConnect()).toBe(false);
+    expect(m.needsRemoteHubConnect()).toBe(false);
+    vi.unstubAllEnvs();
+  });
+
   it('does not send a Mac browser on the local Vite port into cloud connect', async () => {
     setTauri(false);
     setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X)');
@@ -156,6 +171,32 @@ describe('isMobileUserAgent', () => {
     expect(m.isMobileDevFrontend()).toBe(false);
     expect(m.isMobileClient()).toBe(false);
     expect(m.needsRemoteHubConnect()).toBe(false);
+  });
+
+  it.each([
+    ['Linux', 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/605.1.15 Tauri', 'linux'],
+    ['Windows', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Tauri', 'windows'],
+  ])('clears a leftover ios:dev mobile flag on %s desktop immediately (UA)', async (_label, ua, os) => {
+    setTauri(true);
+    setUserAgent(ua);
+    osType.mockReturnValue(os);
+    sessionStorage.setItem('cihub.isTauriMobile', '1');
+    const m = await freshModule();
+    expect(m.usesCloudConnect()).toBe(false);
+    expect(m.needsRemoteHubConnect()).toBe(false);
+    expect(sessionStorage.getItem('cihub.isTauriMobile')).toBeNull();
+  });
+
+  it('clears a leftover ios:dev mobile flag on macOS desktop after the OS plugin answers', async () => {
+    setTauri(true);
+    setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X) Tauri');
+    osType.mockReturnValue('macos');
+    sessionStorage.setItem('cihub.isTauriMobile', '1');
+    const m = await freshModule();
+    expect(await m.initMobileConnection()).toEqual({ isMobile: false, hubBaseUrl: null });
+    expect(m.usesCloudConnect()).toBe(false);
+    expect(m.needsRemoteHubConnect()).toBe(false);
+    expect(sessionStorage.getItem('cihub.isTauriMobile')).toBeNull();
   });
 
   it('does not treat desktop Tauri on the local stack as a phone', async () => {

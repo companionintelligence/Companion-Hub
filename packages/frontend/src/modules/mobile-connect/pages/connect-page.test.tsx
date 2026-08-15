@@ -18,9 +18,13 @@ const { setHubConnection, toastError, initMobileConnection, isMobileClient } = v
 vi.mock('@/lib/mobile-connection', () => ({
   isTauriMobileSync: () => true,
   isMobileClient,
+  usesCloudConnect: () => isMobileClient(),
   getHubBaseUrlSync: () => null,
   initMobileConnection,
   setHubConnection,
+}));
+vi.mock('@/lib/hub-runtime-mode', () => ({
+  isTauriDesktopApp: () => false,
 }));
 
 vi.mock('react-hot-toast', () => ({ default: { error: toastError, success: vi.fn() } }));

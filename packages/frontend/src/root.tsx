@@ -18,7 +18,7 @@ import { clearStaleServerSession, getTauriSessionId } from '@/lib/api-fetch';
 import { refreshHubSessionIfDue, setServerSessionRefreshRecommendedAt } from '@/lib/hub-session-refresh';
 import { handleSessionExpired } from '@/lib/session-expired';
 import { isSessionExpiryExempt } from '@/lib/session-expiry-policy';
-import { getHubBaseUrlSync, initMobileConnection, isMobileClient, needsRemoteHubConnect } from '@/lib/mobile-connection';
+import { getHubBaseUrlSync, initMobileConnection, isMobileClient, needsRemoteHubConnect, usesCloudConnect } from '@/lib/mobile-connection';
 import { installMobileLoadWatchdog } from '@/lib/mobile-load-watchdog';
 import type { RegistrationStatus } from './lib/registration-status';
 import { isRegistrationOperational, requiresDeviceRegistration, requiresPortalRePairing } from './lib/registration-status';
@@ -220,7 +220,7 @@ const MOBILE_ROOT_LOADER_MS = 6_000;
 const rootLoaderTimeout = Symbol('mobile-root-loader-timeout');
 
 export async function clientLoader({ request }: Route.ActionArgs) {
-  if (isMobileClient() || import.meta.env.VITE_HUB_RUNTIME === 'mobile') {
+  if (usesCloudConnect() || import.meta.env.VITE_HUB_RUNTIME === 'mobile') {
     const raced = await Promise.race([
       runClientLoader(request),
       new Promise<typeof rootLoaderTimeout>((resolve) => {
@@ -586,7 +586,7 @@ export default function App({ loaderData }: Route.ComponentProps) {
   }, [onRootBootstrap, revalidate]);
 
   if (onRootBootstrap) {
-    if (isMobileClient()) {
+    if (usesCloudConnect()) {
       return <Navigate to={needsRemoteHubConnect() ? '/connect' : '/login'} replace />;
     }
     return (
