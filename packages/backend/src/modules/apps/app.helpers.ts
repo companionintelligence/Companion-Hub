@@ -20,7 +20,6 @@ import { RegistrationService } from '../registration/registration.service';
 import { appMinContextLength } from '../inference/context-length.util';
 import { InferenceEnvResolver, type StandardizedAiEnv } from '../inference/inference-env-resolver';
 import { applyCloudProviderEnv } from '../inference/cloud-provider-env';
-import { CloudFallbackService } from '../inference/cloud-fallback.service';
 import { ApiKeyService } from '../api-keys/api-key.service';
 import type { ApiKeyScope } from '../api-keys/api-key.scopes';
 import { isOfficialStoreApp } from './official-store.predicate';
@@ -174,7 +173,6 @@ export class AppHelpers {
     private readonly deviceRegistrationRepository: DeviceRegistrationRepository,
     private readonly registrationService: RegistrationService,
     private readonly inferenceEnv: InferenceEnvResolver,
-    private readonly cloudFallback: CloudFallbackService,
     private readonly apiKeys: ApiKeyService,
     private readonly memoryConnection: MemoryConnectionService,
     private readonly portalClient: PortalClientService,

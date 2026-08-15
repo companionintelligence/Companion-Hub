@@ -14,7 +14,6 @@ import { AppFilesManager } from '../app-files-manager';
 import { AppHelpers } from '../app.helpers';
 import { DeviceRegistrationRepository } from '@/modules/registration/device-registration.repository';
 import { InferenceEnvResolver } from '../../inference/inference-env-resolver';
-import { CloudFallbackService } from '../../inference/cloud-fallback.service';
 import { ApiKeyService } from '@/modules/api-keys/api-key.service';
 import { MemoryConnectionService } from '@/modules/memory-connect/memory-connection.service';
 
@@ -32,7 +31,6 @@ describe('AppHelpers', () => {
   let deviceRegistrationRepository = mock<DeviceRegistrationRepository>();
   let registrationService = mock<RegistrationService>();
   let inferenceEnv = mock<InferenceEnvResolver>();
-  let cloudFallback = mock<CloudFallbackService>();
   let apiKeys: MockProxy<ApiKeyService>;
   let memoryConnection: MockProxy<MemoryConnectionService>;
   let portalClient: MockProxy<PortalClientService>;
@@ -57,10 +55,7 @@ describe('AppHelpers', () => {
     deviceRegistrationRepository = moduleRef.get(DeviceRegistrationRepository);
     registrationService = moduleRef.get(RegistrationService);
     inferenceEnv = moduleRef.get(InferenceEnvResolver);
-    cloudFallback = moduleRef.get(CloudFallbackService);
     apiKeys = moduleRef.get(ApiKeyService);
-    cloudFallback.getEnabledProviders.mockReturnValue([]);
-    cloudFallback.toAppEnv.mockReturnValue({});
     config.getInferencePreferences.mockReturnValue({
       preferredBackend: 'ollama',
       preferredModel: null,
@@ -684,7 +679,6 @@ describe('AppHelpers', () => {
         preferredVisionModel: null,
         preferredVllmApiKey: null,
       });
-      cloudFallback.getEnabledProviders.mockReturnValue([]);
       inferenceEnv.resolve.mockResolvedValue({
         CI_LLM_BASE_URL: 'http://host.docker.internal:11434/v1',
         CI_LLM_API_KEY: 'ollama',
@@ -725,7 +719,6 @@ describe('AppHelpers', () => {
         preferredVisionModel: null,
         preferredVllmApiKey: null,
       });
-      cloudFallback.getEnabledProviders.mockReturnValue([]);
       inferenceEnv.resolve.mockResolvedValue({
         CI_LLM_BASE_URL: 'http://host.docker.internal:8000/v1',
         CI_LLM_API_KEY: 'vllm',
