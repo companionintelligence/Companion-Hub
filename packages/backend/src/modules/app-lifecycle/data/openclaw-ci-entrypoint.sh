@@ -646,7 +646,10 @@ let written = 0;
 for (const spec of specs) {
   const apiKey = readEnv(spec.key);
   if (!apiKey) {
-    if (config.models.providers[spec.id] && config.models.providers[spec.id].hubManaged) {
+    // Hub owns these four provider ids on the appliance. Do not write
+    // `hubManaged` — OpenClaw's schema rejects unknown keys and quarantines
+    // the whole openclaw.json.
+    if (config.models.providers[spec.id]) {
       delete config.models.providers[spec.id];
     }
     continue;
@@ -657,7 +660,6 @@ for (const spec of specs) {
     ? [{ id: modelId, name: modelId, input: ['text'], contextWindow: 200000, maxTokens: 8192, compat: { supportsTools: true } }]
     : [];
   config.models.providers[spec.id] = {
-    hubManaged: true,
     apiKey,
     ...(baseUrl ? { baseUrl } : {}),
     api: spec.api,
