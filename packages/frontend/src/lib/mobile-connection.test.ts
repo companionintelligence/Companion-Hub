@@ -57,6 +57,7 @@ async function freshModulePair() {
 }
 
 const ANDROID_UA = 'Mozilla/5.0 (Linux; Android 14; Pixel) AppleWebKit/537.36 Chrome/134 Mobile';
+const desktopLocation = window.location;
 
 beforeEach(() => {
   storeData = {};
@@ -74,7 +75,9 @@ afterEach(() => {
   Object.defineProperty(window, 'innerWidth', { value: 1024, configurable: true });
   Object.defineProperty(window, 'innerHeight', { value: 768, configurable: true });
   Object.defineProperty(navigator, 'maxTouchPoints', { value: 0, configurable: true });
+  Object.defineProperty(window, 'location', { configurable: true, value: desktopLocation });
   sessionStorage.clear();
+  vi.unstubAllEnvs();
 });
 
 describe('isMobileUserAgent', () => {
@@ -98,24 +101,36 @@ describe('isMobileUserAgent', () => {
     expect(m.needsRemoteHubConnect()).toBe(false);
   });
 
-  it('treats the iOS 980px pre-viewport width as mobile inside Tauri DEV', async () => {
-    setTauri(true);
-    setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X) Tauri');
-    Object.defineProperty(window, 'innerWidth', { value: 980, configurable: true });
-    Object.defineProperty(window, 'innerHeight', { value: 980, configurable: true });
-    const m = await freshModule();
-    expect(m.isMobileClient()).toBe(true);
-  });
-
-  it('is true for a phone-sized Vite viewport (ios:dev desktop-UA fallback)', async () => {
+  it('does not treat a narrow Mac/Linux/Windows window as a phone', async () => {
     setTauri(false);
     setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X)');
-    Object.defineProperty(navigator, 'maxTouchPoints', { value: 0, configurable: true });
     Object.defineProperty(window, 'innerWidth', { value: 844, configurable: true });
     Object.defineProperty(window, 'innerHeight', { value: 390, configurable: true });
     const m = await freshModule();
-    expect(m.isMobileUserAgent()).toBe(false);
-    expect(m.isMobileClient()).toBe(true);
+    expect(m.isMobileClient()).toBe(false);
+    expect(m.needsRemoteHubConnect()).toBe(false);
+  });
+
+  it('does not send iPhone Safari on a live Hub into cloud connect', async () => {
+    setTauri(false);
+    setUserAgent('Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)');
+    const m = await freshModule();
+    expect(m.isMobileUserAgent()).toBe(true);
+    expect(m.isMobileClient()).toBe(false);
+    expect(m.needsRemoteHubConnect()).toBe(false);
+  });
+
+  it.each([
+    ['Windows', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'],
+    ['Linux', 'Mozilla/5.0 (X11; Linux x86_64)'],
+    ['macOS', 'Mozilla/5.0 (Macintosh; Intel Mac OS X)'],
+  ])('keeps %s on the normal Hub setup path', async (_label, ua) => {
+    setTauri(true);
+    setUserAgent(`${ua} Tauri`);
+    osType.mockReturnValue(_label === 'Windows' ? 'windows' : _label === 'Linux' ? 'linux' : 'macos');
+    const m = await freshModule();
+    expect(m.isMobileClient()).toBe(false);
+    expect(m.needsRemoteHubConnect()).toBe(false);
   });
 
   it('is false on desktop Macintosh without touch', async () => {
@@ -123,9 +138,55 @@ describe('isMobileUserAgent', () => {
     Object.defineProperty(navigator, 'maxTouchPoints', { value: 0, configurable: true });
     const m = await freshModule();
     expect(m.isMobileUserAgent()).toBe(false);
+    expect(m.isMobileClient()).toBe(false);
+    expect(m.needsRemoteHubConnect()).toBe(false);
   });
 
-  it('treats the ios:dev Vite origin (localhost:5005) as mobile even with a desktop UA', async () => {
+  it('does not send a Mac browser on the local Vite port into cloud connect', async () => {
+    setTauri(false);
+    setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X)');
+    Object.defineProperty(navigator, 'maxTouchPoints', { value: 0, configurable: true });
+    Object.defineProperty(window, 'innerWidth', { value: 1440, configurable: true });
+    Object.defineProperty(window, 'innerHeight', { value: 900, configurable: true });
+    Object.defineProperty(window, 'location', {
+      configurable: true,
+      value: { ...window.location, port: '5005', hostname: 'localhost', href: 'http://localhost:5005/' },
+    });
+    const m = await freshModule();
+    expect(m.isMobileDevFrontend()).toBe(false);
+    expect(m.isMobileClient()).toBe(false);
+    expect(m.needsRemoteHubConnect()).toBe(false);
+  });
+
+  it('does not treat desktop Tauri on the local stack as a phone', async () => {
+    setTauri(true);
+    setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X) Tauri');
+    Object.defineProperty(navigator, 'maxTouchPoints', { value: 0, configurable: true });
+    Object.defineProperty(window, 'innerWidth', { value: 1280, configurable: true });
+    Object.defineProperty(window, 'innerHeight', { value: 800, configurable: true });
+    osType.mockReturnValue('macos');
+    const m = await freshModule();
+    expect(m.isTauriMobileSync()).toBe(false);
+    expect(m.isMobileClient()).toBe(false);
+    expect(m.needsRemoteHubConnect()).toBe(false);
+    expect(await m.initMobileConnection()).toEqual({ isMobile: false, hubBaseUrl: null });
+  });
+
+  it('treats the ios:dev lvh.me origin as the phone frontend', async () => {
+    setTauri(true);
+    setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X)');
+    Object.defineProperty(window, 'location', {
+      configurable: true,
+      value: { ...window.location, port: '5005', hostname: 'lvh.me', href: 'http://lvh.me:5005/connect' },
+    });
+    const m = await freshModule();
+    expect(m.isMobileDevFrontend()).toBe(true);
+    expect(m.isMobileClient()).toBe(true);
+    expect(m.needsRemoteHubConnect()).toBe(true);
+  });
+
+  it('treats the ios:dev Vite origin as mobile when VITE_HUB_RUNTIME=mobile', async () => {
+    vi.stubEnv('VITE_HUB_RUNTIME', 'mobile');
     setTauri(true);
     setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X)');
     Object.defineProperty(navigator, 'maxTouchPoints', { value: 0, configurable: true });
@@ -139,6 +200,7 @@ describe('isMobileUserAgent', () => {
     expect(m.isMobileUserAgent()).toBe(false);
     expect(m.isMobileDevFrontend()).toBe(true);
     expect(m.isMobileClient()).toBe(true);
+    vi.unstubAllEnvs();
   });
 });
 

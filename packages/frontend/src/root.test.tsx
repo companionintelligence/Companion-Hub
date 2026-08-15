@@ -88,11 +88,18 @@ function makeStatus(phase: RegistrationStatus['phase'], registered = false): Reg
 
 describe('root clientLoader registration gating', () => {
   const desktopUa = 'Mozilla/5.0 (Macintosh; Intel Mac OS X)';
+  const iosAppUa = 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)';
+
+  function markIosApp() {
+    (window as Window & { __TAURI_INTERNALS__?: object }).__TAURI_INTERNALS__ = {};
+    Object.defineProperty(navigator, 'userAgent', { configurable: true, value: iosAppUa });
+  }
 
   beforeEach(() => {
     vi.clearAllMocks();
     sessionStorage.clear();
     resetMobileClientCacheForTests();
+    delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
     Object.defineProperty(navigator, 'userAgent', { configurable: true, value: desktopUa });
     userContext.mockResolvedValue({
       data: {
@@ -131,11 +138,31 @@ describe('root clientLoader registration gating', () => {
     expect(result).toBeNull();
   });
 
+  it('keeps a Mac / desktop client on the normal Hub path and never sends it to /connect', async () => {
+    resolveRegistrationStatus.mockResolvedValue(makeStatus('operational', true));
+
+    const root = (await clientLoader({ request: new Request('http://localhost:5005/') } as never)) as Response;
+    const connect = (await clientLoader({ request: new Request('http://localhost:5005/connect') } as never)) as { data?: { isLoggedIn?: boolean } };
+
+    expect(root.status).toBe(302);
+    expect(root.headers.get('Location')).toBe('/home');
+    expect(connect.data?.isLoggedIn).toBe(true);
+    expect(root.headers.get('Location')).not.toBe('/connect');
+  });
+
+  it('keeps iPhone Safari on a live Hub on the normal login path', async () => {
+    Object.defineProperty(navigator, 'userAgent', { configurable: true, value: iosAppUa });
+    resolveRegistrationStatus.mockResolvedValue(makeStatus('operational', true));
+
+    const result = (await clientLoader({ request: new Request('http://localhost/') } as never)) as Response;
+
+    expect(result.status).toBe(302);
+    expect(result.headers.get('Location')).toBe('/home');
+    expect(result.headers.get('Location')).not.toBe('/connect');
+  });
+
   it('sends a phone with no Hub API to /connect instead of spinning on local registration', async () => {
-    Object.defineProperty(navigator, 'userAgent', {
-      configurable: true,
-      value: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)',
-    });
+    markIosApp();
     resolveRegistrationStatus.mockResolvedValue(null);
 
     const result = (await clientLoader({ request: new Request('http://localhost/') } as never)) as Response;
@@ -146,10 +173,7 @@ describe('root clientLoader registration gating', () => {
   });
 
   it('keeps an unconnected phone on /connect without probing the local Hub', async () => {
-    Object.defineProperty(navigator, 'userAgent', {
-      configurable: true,
-      value: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)',
-    });
+    markIosApp();
 
     const result = await clientLoader({ request: new Request('http://localhost/connect') } as never);
 
@@ -160,10 +184,7 @@ describe('root clientLoader registration gating', () => {
 
   it('sends a phone that already chose a Hub to /login without probing registration', async () => {
     const { clearHubConnection, setHubConnection } = await import('./lib/mobile-connection');
-    Object.defineProperty(navigator, 'userAgent', {
-      configurable: true,
-      value: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)',
-    });
+    markIosApp();
     await setHubConnection('https://hub-core3-bc.companionintelligence.com');
     try {
       const loginResult = await clientLoader({ request: new Request('http://localhost/login') } as never);
@@ -181,10 +202,7 @@ describe('root clientLoader registration gating', () => {
 
   it('lets a signed-in phone reach /home without waiting on registration', async () => {
     const { clearHubConnection, setHubConnection } = await import('./lib/mobile-connection');
-    Object.defineProperty(navigator, 'userAgent', {
-      configurable: true,
-      value: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)',
-    });
+    markIosApp();
     await setHubConnection('https://hub-core3-bc.companionintelligence.com');
     userContext.mockResolvedValue({
       data: { isConfigured: true, isLoggedIn: true, isGuestDashboardEnabled: false },

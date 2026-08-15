@@ -5,7 +5,7 @@
 > **Key paths:** `packages/frontend/src/components/hub-status/`, `packages/frontend/src/modules/`, `packages/frontend/src/lib/`
 > **Commands:** `cd packages/frontend && pnpm test`, `pnpm run local` (root, port 5004/5005)
 > **Owner persona:** code-quality + maintainability
-> **Last updated:** 2026-08-14 (iOS: theme tokens + no page-slide + nav smoke)
+> **Last updated:** 2026-08-14 (iOS working; cloud connect is phone-only)
 > **Related:** docs/system/desktop.md, docs/system/e2e.md
 
 ---
@@ -23,7 +23,7 @@ packages/frontend/
 
 ## Hub status gate
 
-`packages/frontend/src/components/hub-status/hub-status.tsx` blocks the Tauri UI until the Hub API is healthy. Mobile (iOS/Android, including `ios:dev` on a phone UA) skips this local-Hub gate and goes to `/connect` until a remote Hub is chosen.
+`packages/frontend/src/components/hub-status/hub-status.tsx` blocks the Tauri UI until the Hub API is healthy. **iOS/Android** (the thin-client app, including `ios:dev` / `android:dev`) skip this local-Hub gate and go to `/connect` until a remote Hub is chosen. **Mac / Linux / Windows** (browser or desktop Tauri) always set up a Hub the normal way — registration, login, onboarding. Do not send those clients to cloud connect.
 
 Key behaviors agents must preserve:
 
@@ -63,8 +63,9 @@ The iOS/Android thin client signs into the Portal with PKCE and a `cihub://auth/
 - ios:dev IPC: `capabilities/default.json` must list `remote.urls` for `http://localhost:*`. Without that, `event.listen` / `opener` are denied on the Vite origin and Sign in spins forever.
 - iOS 26: Info.plist must use Tao's scene (`TaoScene` / `TaoSceneDelegate`, `UIApplicationSupportsMultipleScenes: true`). A "Default Configuration" with no delegate shows a black scene while the webview runs off-screen.
 - Do not leave a debug HUD or a second "Connect to your Hub" splash on the phone. Bootstrap sends the user to `/connect` (cloud sign-in) or `/login` (chosen Hub). Switch Hub lives on `/login` and `MobileLoadError`.
-- Treat `localhost:5005` / `lvh.me` as mobile even when the Simulator reports a Macintosh UA and `innerWidth === 0`.
+- Cloud connect (`/connect`) is **iOS/Android app only** (`isTauriMobileSync`, `VITE_HUB_RUNTIME=mobile`, or `lvh.me`). Mac / Linux / Windows never take that path — not via port 5005, viewport size, or a phone UA in Safari/Chrome. A phone *browser* on a Hub URL still uses normal `/login`.
 - After OIDC, list Hubs with `GET /api/users/me/apps?slug=hub` (Bearer access token). `GET /api/devices` needs a better-auth session and returns 401 for the OIDC token. Email/password still uses `/api/devices`.
+- Portal URL is `CI_CLOUD_URL` (baked at frontend build). Unset + non-production `CI_HUB_ENVIRONMENT` → `https://hub.companionintelligence.com`. Production → `https://hub.ci.computer`.
 - Authorization codes are single-use. Safari + `/connect` resume both try the same code — exchange is memoized per code so the loser does not toast "invalid code".
 - After a Hub is chosen, go to `/login` (not `/`). Root must not wait on the remote Hub's registration API on any mobile route.
 - `I18nProvider` must not fetch `/api/i18n` on a phone — that `window.fetch` to the remote Hub never settles and leaves the exact "Loading…" screen. Use bundled `en`.

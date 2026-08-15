@@ -65,9 +65,9 @@ function isTauri(): boolean {
 }
 
 /**
- * Phone/tablet user agent — no Tauri required. Used to unstick `ios:dev`
- * (Vite `localhost` + late/missing IPC injection) without sending iPhone
- * Safari on a live Hub to the picker: that path still has a Hub API.
+ * Phone/tablet user agent. Combined with Tauri this is the iOS/Android app.
+ * Alone (Safari/Chrome on a phone) it is not — those visitors are already on
+ * a Hub and should log in normally.
  *
  * iPadOS "Request Desktop Website" reports Macintosh; touch points distinguish it.
  */
@@ -80,44 +80,35 @@ export function isMobileUserAgent(): boolean {
 }
 
 /**
- * True when this client should use the remote-Hub connect flow.
- * Broader than {@link isTauriMobileSync}: covers the ios:dev race where Tauri
- * IPC is missing and the iOS Simulator serves a desktop UA for localhost.
- */
-/**
- * ios:dev frontend — Vite's default port is 5005, `devUrl` is lvh.me, and the
- * Simulator often reports a Macintosh UA with `innerWidth === 0` on first paint.
- * Missing this is what left only the "UI has not painted yet" boot footer.
+ * ios:dev / android:dev frontend. `VITE_HUB_RUNTIME=mobile` is the explicit
+ * signal. `lvh.me` is the mobile `devUrl` host. Do not key off port 5005 —
+ * that is also `pnpm run local` on Mac/Linux/Windows.
  */
 export function isMobileDevFrontend(): boolean {
   if (typeof window === 'undefined' || !import.meta.env.DEV) return false;
+  if (import.meta.env.VITE_HUB_RUNTIME === 'mobile') return true;
   try {
-    const { port, hostname } = window.location;
-    if (port === '5005') return true;
+    const { hostname } = window.location;
     if (hostname === 'lvh.me' || hostname.endsWith('.lvh.me')) return true;
   } catch {
     /* ignore */
   }
-  const shortestScreen = typeof screen !== 'undefined' ? Math.min(screen.width || 0, screen.height || 0) : 0;
-  if (shortestScreen > 0 && shortestScreen <= 500) return true;
   return false;
 }
 
+/**
+ * Thin-client phone app (iOS / Android). Those builds have no local Hub, so
+ * they use cloud connect. Mac / Linux / Windows — browser or desktop Tauri —
+ * always set up a Hub the normal way (registration → login).
+ *
+ * A phone *browser* hitting a Hub URL is not this: that visitor is already on
+ * an appliance and should see `/login`, not the picker.
+ */
 export function isMobileClient(): boolean {
-  if (isTauriMobileSync() || isMobileUserAgent()) return true;
-  if (import.meta.env.VITE_HUB_RUNTIME === 'mobile') return true;
+  if (isTauriMobileSync()) return true;
   if (isMobileDevFrontend()) {
     markMobile();
     return true;
-  }
-  // iPhone simulator + Request Desktop Website: Macintosh UA, maxTouchPoints 0.
-  // A phone-sized viewport in the Vite dev server is the remaining signal.
-  // iOS also reports the classic 980px layout width before the viewport meta
-  // applies — that flash is what blanks /connect after the first paint.
-  if (import.meta.env.DEV && typeof window !== 'undefined') {
-    const shortest = Math.min(window.innerWidth, window.innerHeight);
-    if (shortest > 0 && shortest <= 500) return true;
-    if (isTauri() && (window.innerWidth === 980 || window.innerHeight === 980)) return true;
   }
   return false;
 }
