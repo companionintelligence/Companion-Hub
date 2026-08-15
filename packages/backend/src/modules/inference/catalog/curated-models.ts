@@ -48,6 +48,12 @@ import type { CuratedModel, HardwareTier, InferenceBackendType, ModelModality, M
 // (`mistral-medium-3.5:128b`) was still the literal banned string; the id-only guard didn't catch it, so
 // it now also checks `backendModelId`. See `curated-models.test.ts` for both.
 //
+// 2026-08-14: added Qwen 3.8 27B (`qwen3-8-27b`) from a user-supplied ollama.com/library/qwen3.8 URL.
+// Verified via a real browser render of the library page and its /tags subpage (not this session's
+// WebFetch summarizer, per the 2026-07-27 fabrication lesson above) — 8k+ downloads, "updated 3 hours
+// ago", single `27b` size at 18GB / 256K context with vision+tools+thinking flags. No Artificial Analysis
+// leaderboard entry exists yet for a model this new, so `intel`/`agentic`/perf columns are left blank.
+//
 // Columns:
 //   id              catalog id (`${family}-${size}`)
 //   backendModelId  the exact ollama pull tag (`family:size`)
@@ -76,11 +82,12 @@ import type { CuratedModel, HardwareTier, InferenceBackendType, ModelModality, M
 // passes (e.g. gpt-oss-120b 33.3→24, llama-3.3-70b 14.5→9) — consistent with AA having rebased/recalibrated
 // the index in between, not with the older numbers being wrong at the time they were entered.
 const CATALOG_TOON = `
-llms[83|]{id,backendModelId,name,purpose,params,gb,tier,ctxK,creator,intel,agentic,reason,vision,tools,audio,tps,ttft,e2e}:
+llms[84|]{id,backendModelId,name,purpose,params,gb,tier,ctxK,creator,intel,agentic,reason,vision,tools,audio,tps,ttft,e2e}:
   gemma4-e2b|gemma4:e2b|Gemma 4 E2B|general|2|7.2|cpu-only|128|Google|9|7.4|1|1|1|1|||
   gemma4-e4b|gemma4:e4b|Gemma 4 E4B|general|4|9.6|cpu-only|128|Google|12|8.7|1|1|1|1|||
   gemma4-26b|gemma4:26b|Gemma 4 26B|general|26|18|medium|256|Google|26|28.9|1|1|1|0|78|1.59|8
   gemma4-31b|gemma4:31b|Gemma 4 31B|general|31|20|medium|256|Google|29|39.4|1|1|1|0|17|1.38|30.7
+  qwen3-8-27b|qwen3.8:27b|Qwen 3.8 27B|reasoning|27|18|medium|256|Alibaba|||1|1|1|0|||
   qwen3-6-27b|qwen3.6:27b|Qwen 3.6 27B|coding|27|17|medium|262|Alibaba|37.1|60.9|1|1|1|0|56|3.66|12.8
   qwen3-6-35b|qwen3.6:35b|Qwen 3.6 35B|coding|35|24|medium|262|Alibaba|31.5|52.5|1|1|1|0|158.2|2.22|5.4
   qwen3-5-0-8b|qwen3.5:0.8b|Qwen 3.5 0.8B|reasoning|0.8|1|cpu-only|262|Alibaba|9.9|21.7|1|1|1|0|74|0.45|7.2

@@ -182,7 +182,7 @@ export async function getDesktopArch(): Promise<string> {
     try {
       const { arch } = await import('@tauri-apps/plugin-os');
       const value = await arch();
-      if (value === 'aarch64' || value === 'arm64') return 'aarch64';
+      if (value === 'aarch64') return 'aarch64';
       if (value) return 'x86_64';
     } catch {
       // Fall through to user-agent detection.
