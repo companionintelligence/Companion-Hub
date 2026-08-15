@@ -3,9 +3,9 @@ import { MemoryRouter } from 'react-router';
 import { describe, expect, it, vi } from 'vitest';
 import { LoginForm } from './login-form';
 
-const openAuthInSystemBrowser = vi.fn(async () => {});
+const openAuthInSystemBrowser = vi.fn(async (_url?: string) => {});
 vi.mock('@/lib/helpers/open-auth-browser', () => ({
-  openAuthInSystemBrowser: (...args: unknown[]) => openAuthInSystemBrowser(...args),
+  openAuthInSystemBrowser: (url: string) => openAuthInSystemBrowser(url),
 }));
 
 vi.mock('react-i18next', () => ({

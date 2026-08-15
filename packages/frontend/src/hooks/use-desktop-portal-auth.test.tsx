@@ -28,7 +28,7 @@ vi.mock('@/api-client/client.gen', () => ({
 }));
 
 const runtime = vi.hoisted(() => ({
-  getTauriInvoke: vi.fn(() => ({})),
+  getTauriInvoke: vi.fn((): object | null => ({})),
   isTauriDesktopApp: vi.fn(() => true),
   isMobileClient: vi.fn(() => false),
   getHubBaseUrlSync: vi.fn(() => null as string | null),

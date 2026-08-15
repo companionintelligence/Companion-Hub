@@ -140,7 +140,7 @@ describe('root clientLoader registration gating', () => {
   });
 
   it('keeps a Mac / desktop client on the normal Hub path and never sends it to /connect', async () => {
-    resolveRegistrationStatus.mockResolvedValue(makeStatus('operational', true));
+    resolveRegistrationStatus.mockResolvedValue(makeStatus('locally_ready', true));
 
     const root = (await clientLoader({ request: new Request('http://localhost:5005/') } as never)) as Response;
     const connect = (await clientLoader({ request: new Request('http://localhost:5005/connect') } as never)) as { data?: { isLoggedIn?: boolean } };
@@ -153,7 +153,7 @@ describe('root clientLoader registration gating', () => {
 
   it('keeps iPhone Safari on a live Hub on the normal login path', async () => {
     Object.defineProperty(navigator, 'userAgent', { configurable: true, value: iosAppUa });
-    resolveRegistrationStatus.mockResolvedValue(makeStatus('operational', true));
+    resolveRegistrationStatus.mockResolvedValue(makeStatus('locally_ready', true));
 
     const result = (await clientLoader({ request: new Request('http://localhost/') } as never)) as Response;
 

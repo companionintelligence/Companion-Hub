@@ -1,9 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { openAuthInSystemBrowser } from './open-auth-browser';
 
-const openUrl = vi.fn(async () => {});
+const openUrl = vi.fn(async (_url?: string) => {});
 vi.mock('@tauri-apps/plugin-opener', () => ({
-  openUrl: (...args: unknown[]) => openUrl(...args),
+  openUrl: (url: string) => openUrl(url),
 }));
 
 describe('openAuthInSystemBrowser', () => {

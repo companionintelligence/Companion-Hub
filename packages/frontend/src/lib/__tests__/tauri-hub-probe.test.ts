@@ -44,7 +44,7 @@ describe('tauri-hub-probe', () => {
       value: { origin: 'http://localhost:5005', port: '5005' },
     });
 
-    const fetch = vi.fn(async () => ({ ok: true }));
+    const fetch = vi.fn(async (_url?: string) => ({ ok: true }));
     vi.stubGlobal('fetch', fetch);
 
     expect(await probeHealthyHubApiPort()).toBe(5004);
