@@ -111,10 +111,16 @@ describe('DeviceRegistrationPage', () => {
     expect(
       screen.getByText('In your CI Account, click Add Device, name your Hub, then paste the pairing code here to finish registration.'),
     ).toBeInTheDocument();
-    expect(screen.getByText('device-123')).toBeInTheDocument();
+    const deviceId = screen.getByText('device-123');
+    expect(deviceId).toBeInTheDocument();
+    expect(deviceId).toHaveClass('truncate');
+    expect(deviceId).toHaveAttribute('title', 'device-123');
     expect(setHubSentryDeviceId).toHaveBeenCalledWith('device-123');
     expect(screen.getByLabelText('Enter Pairing Code:')).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Sign in to CI Account' })).toHaveAttribute('href', 'https://portal.example.com');
+    expect(
+      screen.getByText("This Hub will be added to your existing organization. You'll only create an organization if you don't have one yet."),
+    ).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Create account' })).toHaveAttribute(
       'href',
       'https://portal.example.com/signup?redirect=%2Fhome%3Fadd_device%3D1%26hub_device_id%3Ddevice-123',

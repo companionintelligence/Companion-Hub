@@ -9,6 +9,7 @@ import { AppModule } from './app.module';
 import { AppService } from './app.service';
 import { generateSystemEnvFile } from './common/helpers/env-helpers';
 import { buildSwaggerDocument, writeSwaggerJsonFile } from './swagger-setup';
+import { resolvePortalRootBounce } from './modules/auth/portal-sso';
 
 // Process-level safety nets for failures that escape local try/catch handlers.
 // - unhandledRejection: log and keep running — detached async work (e.g. a DB
@@ -96,6 +97,20 @@ async function bootstrap() {
     credentials: true,
   });
   app.use(cookieParser());
+
+  // Portal / a proxy can drop `/api/auth/portal/callback` and land on `/` with
+  // `?code=&state=` or `?desktop=1`. Bounce those onto the real SSO routes.
+  app
+    .getHttpAdapter()
+    .getInstance()
+    .get('/', (req: { query: Record<string, unknown> }, res: { redirect: (url: string) => void }, next: () => void) => {
+      const bounce = resolvePortalRootBounce(req.query);
+      if (bounce) {
+        res.redirect(bounce);
+        return;
+      }
+      next();
+    });
 
   // Express `trust proxy`. Behind Traefik / the Cloudflare tunnel, `req.ip` is
   // the proxy's (private) address unless Express is told which hops to trust — so

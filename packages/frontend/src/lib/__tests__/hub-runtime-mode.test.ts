@@ -1,15 +1,21 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { getHubRuntimeMode, mayHoldCookielessSession, usesCrossOriginDesktopApi, usesSameOriginHubApi } from '@/lib/hub-runtime-mode';
+import { resetMobileClientCacheForTests } from '@/lib/mobile-connection';
 
 describe('hub-runtime-mode', () => {
   const originalLocation = window.location;
 
   beforeEach(() => {
+    resetMobileClientCacheForTests();
     delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
   });
 
   afterEach(() => {
     Object.defineProperty(window, 'location', { configurable: true, value: originalLocation });
+    Object.defineProperty(navigator, 'userAgent', {
+      configurable: true,
+      value: 'Mozilla/5.0 (Macintosh; Intel Mac OS X)',
+    });
   });
 
   it('returns browser without tauri internals', () => {
@@ -35,6 +41,22 @@ describe('hub-runtime-mode', () => {
     // The regression this predicate exists for: same-origin, so the old cross-origin
     // gate excluded it, yet the portal SSO handoff leaves it with no session cookie.
     expect(mayHoldCookielessSession()).toBe(true);
+  });
+
+  it('returns mobile-remote for Tauri iOS even when the vite devUrl is localhost', () => {
+    (window as Window & { __TAURI_INTERNALS__?: object }).__TAURI_INTERNALS__ = { invoke: vi.fn() };
+    Object.defineProperty(navigator, 'userAgent', {
+      configurable: true,
+      value: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)',
+    });
+    Object.defineProperty(window, 'location', {
+      configurable: true,
+      value: { ...originalLocation, origin: 'http://localhost:5005', protocol: 'http:', hostname: 'localhost', port: '5005' },
+    });
+
+    expect(getHubRuntimeMode()).toBe('mobile-remote');
+    expect(usesCrossOriginDesktopApi()).toBe(true);
+    expect(usesSameOriginHubApi()).toBe(false);
   });
 
   it('returns desktop-embedded for tauri bootstrap on tauri://', () => {

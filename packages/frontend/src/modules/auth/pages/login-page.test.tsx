@@ -2,17 +2,54 @@ import { render, screen } from '@/tests/test-utils';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import LoginPage from './login-page';
 
-const { mockUseUserContext, mockUseMutation, mockNavigate, mockSearchParams, mockLoginForm, mockClientGetConfig, mockToastError, mockToastSuccess } =
-  vi.hoisted(() => ({
-    mockUseUserContext: vi.fn(),
-    mockUseMutation: vi.fn(),
-    mockNavigate: vi.fn(),
-    mockSearchParams: vi.fn(),
-    mockLoginForm: vi.fn(({ loginType }: { loginType: string }) => <div data-testid="login-type">{loginType}</div>),
-    mockClientGetConfig: vi.fn(),
-    mockToastError: vi.fn(),
-    mockToastSuccess: vi.fn(),
-  }));
+const {
+  mockUseUserContext,
+  mockUseMutation,
+  mockNavigate,
+  mockSearchParams,
+  mockLoginForm,
+  mockClientGetConfig,
+  mockToastError,
+  mockToastSuccess,
+  mockIsMobile,
+  mockHubUrl,
+  mockResolveHint,
+  mockIsTauriDesktopApp,
+} = vi.hoisted(() => ({
+  mockUseUserContext: vi.fn(),
+  mockUseMutation: vi.fn(),
+  mockNavigate: vi.fn(),
+  mockSearchParams: vi.fn(),
+  mockLoginForm: vi.fn(({ loginType }: { loginType: string }) => <div data-testid="login-type">{loginType}</div>),
+  mockClientGetConfig: vi.fn(),
+  mockToastError: vi.fn(),
+  mockToastSuccess: vi.fn(),
+  mockIsMobile: vi.fn(() => false),
+  mockHubUrl: vi.fn((): string | null => null),
+  mockResolveHint: vi.fn(
+    async (): Promise<{ email: string | null; portalBaseUrl: string | null; source: string | null }> => ({
+      email: null,
+      portalBaseUrl: null,
+      source: null,
+    }),
+  ),
+  mockIsTauriDesktopApp: vi.fn(() => false),
+}));
+
+vi.mock('@/lib/hub-runtime-mode', () => ({
+  isTauriDesktopApp: () => mockIsTauriDesktopApp(),
+}));
+
+vi.mock('@/lib/mobile-connection', () => ({
+  isMobileClient: () => mockIsMobile(),
+  usesCloudConnect: () => mockIsMobile(),
+  getHubBaseUrlSync: () => mockHubUrl(),
+  clearHubConnection: vi.fn(async () => {}),
+}));
+
+vi.mock('@/lib/portal-session-hint', () => ({
+  resolvePortalSessionHint: () => mockResolveHint(),
+}));
 
 vi.mock('@/api-client', () => ({
   userContext: vi.fn(),
@@ -88,6 +125,7 @@ vi.mock('../components/totp-form/totp-form', () => ({
 describe('LoginPage', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockIsTauriDesktopApp.mockReturnValue(false);
     mockClientGetConfig.mockReturnValue({ baseUrl: 'http://localhost:5002' });
     mockUseUserContext.mockReturnValue({
       isLoggedIn: false,
@@ -100,6 +138,9 @@ describe('LoginPage', () => {
       isPending: false,
     });
     mockSearchParams.mockReturnValue([new URLSearchParams(), vi.fn()]);
+    mockIsMobile.mockReturnValue(false);
+    mockHubUrl.mockReturnValue(null);
+    mockResolveHint.mockResolvedValue({ email: null, portalBaseUrl: null, source: null });
   });
 
   it('defaults the login heading to the local admin account copy', () => {
@@ -131,19 +172,86 @@ describe('LoginPage', () => {
   });
 
   it('uses the local backend desktop callback flow in Tauri', () => {
-    Object.defineProperty(window, '__TAURI_INTERNALS__', {
-      value: {},
-      configurable: true,
-    });
+    mockIsTauriDesktopApp.mockReturnValue(true);
+    mockClientGetConfig.mockReturnValue({ baseUrl: 'http://localhost:5002' });
 
     render(<LoginPage />);
 
     expect(mockLoginForm).toHaveBeenCalledWith(
       expect.objectContaining({
         portalSsoHref: 'http://localhost:5002/api/auth/portal/start?desktop=1',
+        openPortalSsoExternally: false,
       }),
     );
+  });
+
+  it('starts Companion Account SSO on the Vite origin during local:desktop, not a leftover :5002 Hub', () => {
+    mockIsTauriDesktopApp.mockReturnValue(true);
+    mockClientGetConfig.mockReturnValue({ baseUrl: 'http://localhost:5002' });
+    Object.defineProperty(window, 'location', {
+      configurable: true,
+      value: { ...window.location, origin: 'http://localhost:5005', port: '5005' },
+    });
+
+    render(<LoginPage />);
+
+    expect(mockLoginForm).toHaveBeenCalledWith(
+      expect.objectContaining({
+        portalSsoHref: 'http://localhost:5005/api/auth/portal/start?desktop=1',
+        openPortalSsoExternally: false,
+      }),
+    );
+  });
+
+  it('keeps browser Hub login on the page origin without a cihub:// handoff', () => {
+    render(<LoginPage />);
+
+    expect(mockLoginForm).toHaveBeenCalledWith(
+      expect.objectContaining({
+        portalSsoHref: `${window.location.origin}/api/auth/portal/start`,
+        openPortalSsoExternally: false,
+      }),
+    );
+  });
+
+  it('points Portal SSO at the chosen remote Hub on iOS/Android (not localhost:5002)', () => {
+    Object.defineProperty(window, '__TAURI_INTERNALS__', {
+      value: {},
+      configurable: true,
+    });
+    mockIsMobile.mockReturnValue(true);
+    mockHubUrl.mockReturnValue('https://hub-core3-bc.companionintelligence.com');
+
+    render(<LoginPage />);
+
+    expect(mockLoginForm).toHaveBeenCalledWith(
+      expect.objectContaining({
+        portalSsoHref: 'https://hub-core3-bc.companionintelligence.com/api/auth/portal/start?desktop=1',
+        openPortalSsoExternally: true,
+      }),
+    );
+    expect(screen.getByTestId('login-switch-hub-btn')).toBeInTheDocument();
 
     delete (window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+  });
+
+  it('labels Companion Account with the Portal user, not the Hub operator', async () => {
+    mockIsMobile.mockReturnValue(true);
+    mockHubUrl.mockReturnValue('https://hub-core3-bc.companionintelligence.com');
+    mockResolveHint.mockResolvedValue({
+      email: 'chamberlain.bennett@gmail.com',
+      portalBaseUrl: 'https://hub.ci.computer',
+      source: 'remembered',
+    });
+
+    render(<LoginPage />);
+
+    await vi.waitFor(() => {
+      expect(mockLoginForm).toHaveBeenCalledWith(
+        expect.objectContaining({
+          portalAccountEmail: 'chamberlain.bennett@gmail.com',
+        }),
+      );
+    });
   });
 });

@@ -46,7 +46,11 @@ import {
 import { ApiResponse } from '@nestjs/swagger';
 import {
   buildPortalDesktopDeepLink,
+  buildPortalDesktopHandoffHtml,
   buildPortalSsoErrorRedirectUrl,
+  PORTAL_DESKTOP_PRESENCE_CACHE_KEY,
+  PORTAL_DESKTOP_PRESENCE_TTL_SECONDS,
+  shouldHandoffPortalLoginToDesktop,
   exchangePortalAuthorizationCode,
   fetchPortalSessionEmail,
   type PortalDesktopExchange,
@@ -460,7 +464,7 @@ export class AuthController {
    */
   @Get('/portal/start')
   async startPortalLogin(@Req() req: Request, @Res() res: Response, @Query('redirect_url') redirectUrl?: string, @Query('desktop') desktop?: string) {
-    const isDesktop = desktop === '1' || desktop === 'true';
+    const isDesktop = desktop === '1' || desktop === 'true' || this.cache.get(PORTAL_DESKTOP_PRESENCE_CACHE_KEY) === '1';
     const fallbackOrigin = resolveRequestOriginFallback(req);
     const redirectStartError = (errorCode: PortalSsoErrorCode, hubOrigin?: string | null) =>
       res.redirect(
@@ -510,7 +514,9 @@ export class AuthController {
   async portalCallback(@Req() req: Request, @Res({ passthrough: true }) res: Response, @Query('code') code?: string, @Query('state') state?: string) {
     const fallbackOrigin = resolveRequestOriginFallback(req);
     let desktop = false;
-    const redirectError = (hubOrigin: string | null, errorCode: PortalSsoErrorCode) =>
+    const redirectError = (hubOrigin: string | null, errorCode: PortalSsoErrorCode) => {
+      // Do not `return res.redirect(...)` — `@Res({ passthrough: true })` would
+      // then JSON-serialize the Express Response (circular Socket) and 500.
       res.redirect(
         buildPortalSsoErrorRedirectUrl({
           hubOrigin,
@@ -519,6 +525,7 @@ export class AuthController {
           fallbackOrigin,
         }),
       );
+    };
 
     try {
       if (!code || !state) {
@@ -602,23 +609,40 @@ export class AuthController {
       const sessionId = await this.sessionManager.createSession(operator.id);
       await this.setSessionCookie(res, sessionId, req);
 
-      if (desktop) {
+      const handoffToDesktop = shouldHandoffPortalLoginToDesktop({
+        desktop,
+        hubOrigin,
+        desktopAppPresent: this.cache.get(PORTAL_DESKTOP_PRESENCE_CACHE_KEY) === '1',
+      });
+
+      if (handoffToDesktop) {
         const desktopToken = crypto.randomUUID();
         const exchangePayload: PortalDesktopExchange = {
           sessionId,
           redirectPath: toDesktopRedirectPath(redirectUrl, hubOrigin),
+          userId: operator.id,
         };
         this.cache.set(`portal_sso_desktop:${desktopToken}`, JSON.stringify(exchangePayload), 60);
-        return res.redirect(buildPortalDesktopDeepLink(desktopToken, hubOrigin));
+        const deepLink = buildPortalDesktopDeepLink(desktopToken, hubOrigin);
+        this.logger.info('Portal desktop handoff issued one-time token', { hubOrigin, redirectPath: exchangePayload.redirectPath });
+        // A 302 to cihub-dev:// is dropped by some browsers (they stay on Hub `/`
+        // or show Nest JSON). Serve a page that navigates into the app.
+        // Do not return `res.send(...)` — passthrough would JSON-serialize `res`.
+        res.status(200);
+        res.setHeader('Content-Type', 'text/html; charset=utf-8');
+        res.send(buildPortalDesktopHandoffHtml(deepLink));
+        return;
       }
 
       // Redirect back to the requested URL if it's same-origin; otherwise go home.
       const safeRedirect = resolveSameOriginRedirectUrl(redirectUrl, hubOrigin);
       if (safeRedirect) {
-        return res.redirect(safeRedirect);
+        res.redirect(safeRedirect);
+        return;
       }
 
-      return res.redirect(new URL('/home', hubOrigin).toString());
+      res.redirect(new URL('/home', hubOrigin).toString());
+      return;
     } catch (error) {
       this.logger.error('Portal OAuth callback crashed', error);
       return redirectError(null, 'callback_error');
@@ -632,7 +656,10 @@ export class AuthController {
    */
   @Get('/portal/session-hint')
   @ApiResponse({ type: PortalSessionHintDto })
-  async portalSessionHint(@Req() req: Request) {
+  async portalSessionHint(@Req() req: Request, @Query('desktop') desktop?: string) {
+    if (desktop === '1' || desktop === 'true') {
+      this.cache.set(PORTAL_DESKTOP_PRESENCE_CACHE_KEY, '1', PORTAL_DESKTOP_PRESENCE_TTL_SECONDS);
+    }
     const portalBaseUrl = (this.config.get('ciCloudUrl') || '').replace(/\/+$/, '') || null;
 
     if (!portalBaseUrl) {
@@ -673,25 +700,39 @@ export class AuthController {
 
   @Get('/portal/desktop-exchange')
   @ApiResponse({ type: PortalDesktopExchangeDto })
-  async exchangePortalDesktopLogin(@Query('token') token?: string) {
+  async exchangePortalDesktopLogin(@Req() req: Request, @Res({ passthrough: true }) res: Response, @Query('token') token?: string) {
     if (!token) {
       throw new BadRequestException('Missing desktop exchange token');
     }
 
     const cacheKey = `portal_sso_desktop:${token}`;
     const cached = this.cache.get(cacheKey);
-    this.cache.del(cacheKey);
 
     if (!cached) {
       throw new BadRequestException('Invalid or expired desktop exchange token');
     }
 
+    let parsed: PortalDesktopExchange;
     try {
-      const parsed = JSON.parse(cached) as PortalDesktopExchange;
-      return PortalDesktopExchangeDto.parse(parsed, { reportOnly: true });
+      parsed = JSON.parse(cached) as PortalDesktopExchange;
     } catch {
+      this.cache.del(cacheKey);
       throw new BadRequestException('Malformed desktop exchange payload');
     }
+
+    let sessionId = parsed.sessionId;
+    if (!this.sessionManager.resolveSessionUserId(sessionId)) {
+      if (!parsed.userId) {
+        this.cache.del(cacheKey);
+        throw new BadRequestException('Invalid or expired desktop exchange token');
+      }
+      sessionId = await this.sessionManager.createSession(parsed.userId);
+    }
+
+    this.cache.del(cacheKey);
+    await this.setSessionCookie(res, sessionId, req);
+    this.logger.info('Portal desktop exchange planted a session cookie', { redirectPath: parsed.redirectPath });
+    return PortalDesktopExchangeDto.parse({ sessionId, redirectPath: parsed.redirectPath }, { reportOnly: true });
   }
 
   @Patch('/username')

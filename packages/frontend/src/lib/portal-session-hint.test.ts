@@ -6,6 +6,12 @@ import {
   resolvePortalSessionHint,
 } from './portal-session-hint';
 
+const { mockIsMobile } = vi.hoisted(() => ({ mockIsMobile: vi.fn(() => false) }));
+
+vi.mock('@/lib/mobile-connection', () => ({
+  isMobileClient: () => mockIsMobile(),
+}));
+
 vi.mock('@/api-client/sdk.gen', () => ({
   portalSessionHint: vi.fn(),
 }));
@@ -15,6 +21,7 @@ import { portalSessionHint } from '@/api-client/sdk.gen';
 describe('portal-session-hint', () => {
   beforeEach(() => {
     localStorage.clear();
+    mockIsMobile.mockReturnValue(false);
     vi.mocked(portalSessionHint).mockReset();
   });
 
@@ -82,6 +89,29 @@ describe('portal-session-hint', () => {
       portalBaseUrl: 'https://ci-portal.localhost',
       source: 'remembered',
     });
+  });
+
+  it('on a phone, prefers the remembered Portal user over the Hub operator', async () => {
+    mockIsMobile.mockReturnValue(true);
+    rememberPortalAccountEmail('chamberlain.bennett@gmail.com');
+
+    vi.mocked(portalSessionHint).mockResolvedValue({
+      data: {
+        email: 'support@lifescope.io',
+        portalBaseUrl: 'https://hub.ci.computer',
+        source: 'hub_operator',
+      },
+      error: undefined,
+      request: new Request('http://localhost/api/portal/session-hint'),
+      response: { ok: true } as Response,
+    });
+
+    await expect(resolvePortalSessionHint()).resolves.toEqual({
+      email: 'chamberlain.bennett@gmail.com',
+      portalBaseUrl: 'https://hub.ci.computer',
+      source: 'remembered',
+    });
+    expect(readRememberedPortalAccountEmail()).toBe('chamberlain.bennett@gmail.com');
   });
 
   it('parses direct portal session responses', async () => {

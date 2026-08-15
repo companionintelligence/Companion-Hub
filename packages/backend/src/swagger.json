@@ -1342,7 +1342,16 @@
     "/api/auth/portal/session-hint": {
       "get": {
         "operationId": "portalSessionHint",
-        "parameters": [],
+        "parameters": [
+          {
+            "name": "desktop",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "default": {
             "description": "",

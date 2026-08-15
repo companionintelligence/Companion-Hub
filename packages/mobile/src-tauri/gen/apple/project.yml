@@ -62,14 +62,16 @@ targets:
         CFBundleURLTypes:
           - CFBundleURLName: computer.ci.app.hub
             CFBundleURLSchemes: [cihub]
-        # iOS 26/27 hard-require UIScene lifecycle adoption; without this the app
-        # traps (EXC_BREAKPOINT) on launch. Minimal adoption (UIKit provides the
-        # default window scene) — Tauri's app delegate still drives the webview.
+        # iOS 26 hard-requires a scene manifest. Tao 0.35 only attaches the
+        # WKWebView to the UIWindowScene when SupportsMultipleScenes is true
+        # and the delegate is TaoSceneDelegate. "Default Configuration" with
+        # no delegate leaves an empty black scene window (webview runs off-screen).
         UIApplicationSceneManifest:
-          UIApplicationSupportsMultipleScenes: false
+          UIApplicationSupportsMultipleScenes: true
           UISceneConfigurations:
             UIWindowSceneSessionRoleApplication:
-              - UISceneConfigurationName: Default Configuration
+              - UISceneConfigurationName: TaoScene
+                UISceneDelegateClassName: TaoSceneDelegate
         # NSAllowsLocalNetworking is needed in BOTH dev and release:
         # - dev: `tauri ios dev` serves the frontend over http://127.0.0.1:PORT,
         #   which ATS blocks (only `localhost` is auto-excepted);
@@ -79,6 +81,17 @@ targets:
         # no App Review justification. Do not remove during cleanup.
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
+          # ios:dev loads Vite over HTTP. ATS auto-allows `localhost` only;
+          # `lvh.me` (devUrl, skips the tauri:// proxy) and `127.0.0.1` need
+          # an explicit exception or the WKWebView stays black.
+          NSExceptionDomains:
+            lvh.me:
+              NSExceptionAllowsInsecureHTTPLoads: true
+              NSIncludesSubdomains: true
+            localhost:
+              NSExceptionAllowsInsecureHTTPLoads: true
+            127.0.0.1:
+              NSExceptionAllowsInsecureHTTPLoads: true
         # Connecting to a LAN Hub triggers iOS's Local Network privacy prompt;
         # Apple requires an app-provided purpose string.
         NSLocalNetworkUsageDescription: Companion Hub connects to your Hub appliance on your local network.

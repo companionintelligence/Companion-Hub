@@ -401,8 +401,19 @@ describe('getComposeFiles', () => {
   });
 
   it('returns the prod compose file for dev and prod', () => {
-    expect(getComposeFiles('dev')).toEqual(['docker-compose.prod.yml']);
     expect(getComposeFiles('prod')).toEqual(['docker-compose.prod.yml']);
+  });
+
+  it('layers dev-image on prod for dev when CI_HUB_IMAGE is set in .env.dev', () => {
+    const devFiles = getComposeFiles('dev');
+    if (existsSync('.env.dev')) {
+      const devEnv = readFileSync('.env.dev', 'utf-8');
+      if (/^CI_HUB_IMAGE=/m.test(devEnv)) {
+        expect(devFiles).toEqual(['docker-compose.prod.yml', 'docker-compose.dev-image.yml']);
+        return;
+      }
+    }
+    expect(devFiles).toEqual(['docker-compose.prod.yml']);
   });
 
   it('layers staging on top of prod for staging', () => {

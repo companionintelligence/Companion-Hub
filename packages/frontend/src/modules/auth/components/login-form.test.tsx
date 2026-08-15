@@ -3,6 +3,11 @@ import { MemoryRouter } from 'react-router';
 import { describe, expect, it, vi } from 'vitest';
 import { LoginForm } from './login-form';
 
+const openAuthInSystemBrowser = vi.fn(async (_url?: string) => {});
+vi.mock('@/lib/helpers/open-auth-browser', () => ({
+  openAuthInSystemBrowser: (url: string) => openAuthInSystemBrowser(url),
+}));
+
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
     t: (key: string, fallbackOrOptions?: string | Record<string, unknown>) => (typeof fallbackOrOptions === 'string' ? fallbackOrOptions : key),
@@ -58,5 +63,26 @@ describe('LoginForm', () => {
     );
 
     expect(screen.getByRole('link', { name: 'AUTH_LOGIN_COMPANION_ACCOUNT_BUTTON_AS' })).toBeInTheDocument();
+    expect(screen.getByLabelText('AUTH_FORM_EMAIL')).toHaveValue('operator@example.com');
+  });
+
+  it('opens Companion Account SSO in the system browser so the native webview stays mounted', async () => {
+    openAuthInSystemBrowser.mockClear();
+    render(
+      <MemoryRouter>
+        <LoginForm
+          loading={false}
+          loginType="your local admin account"
+          onSubmit={vi.fn()}
+          portalSsoHref="http://localhost:5005/api/auth/portal/start?desktop=1"
+          openPortalSsoExternally
+        />
+      </MemoryRouter>,
+    );
+
+    await userEvent.click(screen.getByRole('button', { name: 'AUTH_LOGIN_COMPANION_ACCOUNT_BUTTON' }));
+
+    expect(openAuthInSystemBrowser).toHaveBeenCalledWith('http://localhost:5005/api/auth/portal/start?desktop=1');
+    expect(screen.queryByRole('link', { name: 'AUTH_LOGIN_COMPANION_ACCOUNT_BUTTON' })).not.toBeInTheDocument();
   });
 });

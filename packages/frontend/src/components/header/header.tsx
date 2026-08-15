@@ -3,25 +3,14 @@ import { LogOut, Home, Settings, Store, Menu, LogIn, Sun, Moon, Activity } from 
 import { clsx } from 'clsx';
 import { useTranslation } from 'react-i18next';
 import { Button, buttonVariants } from '@/components/ui/Button';
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuSub,
-  DropdownMenuSubTrigger,
-  DropdownMenuSubContent,
-  DropdownMenuPortal,
-  DropdownMenuTrigger,
-} from '@/components/ui/DropdownMenu';
 import { ModeToggle } from '@/components/mode-toggle';
-import { useTheme } from '@/components/providers/theme/theme-provider';
+import { type Theme, useTheme } from '@/components/providers/theme/theme-provider';
 import { useUserContext } from '@/context/user-context';
 import { useMutation } from '@tanstack/react-query';
 import { clearClientHubState } from '@/lib/clear-client-hub-state';
 import { logoutMutation } from '@/api-client/@tanstack/react-query.gen';
 import { useAppStoreState } from '@/stores/app-store';
-import { useCallback, useMemo } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { useAppContext } from '@/context/app-context';
 
 type HeaderProps = {
@@ -72,8 +61,13 @@ export const Header = (props: HeaderProps) => {
 
   return (
     <header
-      className="fixed left-0 top-0 z-50 flex h-14 w-full items-center gap-2 border-b bg-background/90 px-4 shadow-sm backdrop-blur-md"
-      style={{ top: 'var(--titlebar-height, 0px)' }}
+      data-testid="app-header"
+      className="fixed left-0 top-0 z-50 flex w-full items-center gap-2 border-b bg-background/90 px-4 shadow-sm backdrop-blur-md"
+      style={{
+        top: 'var(--titlebar-height, 0px)',
+        paddingTop: 'var(--safe-area-top, 0px)',
+        height: 'var(--header-offset)',
+      }}
     >
       {/* Logo (Left) */}
       <div className="flex items-center justify-start">
@@ -140,75 +134,120 @@ export const Header = (props: HeaderProps) => {
         )}
       </div>
 
-      {/* Mobile Menu (Right) */}
-      <div className="flex lg:hidden justify-end ml-auto">
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button variant="ghost" size="icon">
-              <Menu className="size-5" />
-              <span className="sr-only">{t('HEADER_OPEN_MENU')}</span>
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="w-56">
-            {isLoggedIn ? (
-              <>
-                <DropdownMenuItem asChild>
-                  <Link to="/home" className="w-full cursor-pointer flex items-center">
-                    <Home className="mr-2 size-4" />
-                    {t('COMMON_HOME')}
-                  </Link>
-                </DropdownMenuItem>
-                <DropdownMenuItem asChild>
-                  <Link to="/store" className="w-full cursor-pointer flex items-center" onClick={openStoreWithFeaturedDefaults}>
-                    <Store className="mr-2 size-4" />
-                    {t('COMMON_APP_STORE')}
-                  </Link>
-                </DropdownMenuItem>
-                <DropdownMenuItem asChild>
-                  <Link to="/resource-monitor" className="w-full cursor-pointer flex items-center">
-                    <Activity className="mr-2 size-4" />
-                    {t('RESOURCE_MONITOR_NAV')}
-                  </Link>
-                </DropdownMenuItem>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem asChild>
-                  <Link to="/settings" className="w-full cursor-pointer flex items-center">
-                    <Settings className="mr-2 size-4" />
-                    {t('COMMON_SETTINGS', 'Settings')}
-                  </Link>
-                </DropdownMenuItem>
-                <DropdownMenuSeparator />
-                <DropdownMenuSub>
-                  <DropdownMenuSubTrigger>
-                    <div className="relative mr-2 size-4">
-                      <Sun className="absolute size-4 rotate-0 scale-100 transition-all dark:-rotate-90 dark:scale-0" />
-                      <Moon className="absolute size-4 rotate-90 scale-0 transition-all dark:rotate-0 dark:scale-100" />
-                    </div>
-                    <span>{t('HEADER_THEME')}</span>
-                  </DropdownMenuSubTrigger>
-                  <DropdownMenuPortal>
-                    <DropdownMenuSubContent>
-                      <DropdownMenuItem onClick={() => setTheme('light')}>{t('THEME_LIGHT')}</DropdownMenuItem>
-                      <DropdownMenuItem onClick={() => setTheme('dark')}>{t('THEME_DARK')}</DropdownMenuItem>
-                      <DropdownMenuItem onClick={() => setTheme('system')}>{t('COMMON_SYSTEM')}</DropdownMenuItem>
-                    </DropdownMenuSubContent>
-                  </DropdownMenuPortal>
-                </DropdownMenuSub>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem onClick={handleLogout} className="cursor-pointer flex items-center text-red-600 focus:text-red-600">
-                  <LogOut className="mr-2 size-4" />
-                  {t('HEADER_LOGOUT', 'Logout')}
-                </DropdownMenuItem>
-              </>
-            ) : (
-              <DropdownMenuItem onClick={() => navigate('/login')} className="cursor-pointer flex items-center">
-                <LogIn className="mr-2 size-4" />
-                {t('login', 'Login')}
-              </DropdownMenuItem>
-            )}
-          </DropdownMenuContent>
-        </DropdownMenu>
-      </div>
+      <MobileAppMenu
+        isLoggedIn={isLoggedIn}
+        onLogout={handleLogout}
+        onOpenStore={openStoreWithFeaturedDefaults}
+        onLogin={() => navigate('/login')}
+        setTheme={setTheme}
+      />
     </header>
   );
 };
+
+const menuItemClass = 'flex min-h-[44px] w-full items-center rounded-sm px-2 text-sm text-foreground';
+
+function MobileAppMenu({
+  isLoggedIn,
+  onLogout,
+  onOpenStore,
+  onLogin,
+  setTheme,
+}: {
+  isLoggedIn: boolean;
+  onLogout: () => void;
+  onOpenStore: () => void;
+  onLogin: () => void;
+  setTheme: (theme: Theme) => void;
+}) {
+  const { t } = useTranslation();
+  const [open, setOpen] = useState(false);
+
+  return (
+    <div className="relative ml-auto flex justify-end lg:hidden">
+      <Button
+        type="button"
+        variant="ghost"
+        size="icon"
+        aria-expanded={open}
+        aria-haspopup="menu"
+        data-testid="mobile-app-menu-btn"
+        className="text-foreground"
+        onClick={() => setOpen((current) => !current)}
+      >
+        <Menu className="size-5" />
+        <span className="sr-only">{t('HEADER_OPEN_MENU')}</span>
+      </Button>
+      {open ? (
+        <>
+          <button type="button" aria-label={t('COMMON_CLOSE')} className="fixed inset-0 z-40 bg-black/25" onClick={() => setOpen(false)} />
+          <div
+            role="menu"
+            data-testid="mobile-app-menu"
+            className="absolute right-0 top-full z-50 mt-2 w-56 rounded-md border bg-popover p-1 text-popover-foreground shadow-md"
+          >
+            {isLoggedIn ? (
+              <>
+                <Link role="menuitem" to="/home" className={menuItemClass} onClick={() => setOpen(false)}>
+                  <Home className="mr-2 size-4" />
+                  {t('COMMON_HOME')}
+                </Link>
+                <Link
+                  role="menuitem"
+                  to="/store"
+                  className={menuItemClass}
+                  onClick={() => {
+                    setOpen(false);
+                    onOpenStore();
+                  }}
+                >
+                  <Store className="mr-2 size-4" />
+                  {t('COMMON_APP_STORE')}
+                </Link>
+                <Link role="menuitem" to="/resource-monitor" className={menuItemClass} onClick={() => setOpen(false)}>
+                  <Activity className="mr-2 size-4" />
+                  {t('RESOURCE_MONITOR_NAV')}
+                </Link>
+                <Link role="menuitem" to="/settings" className={menuItemClass} onClick={() => setOpen(false)}>
+                  <Settings className="mr-2 size-4" />
+                  {t('COMMON_SETTINGS', 'Settings')}
+                </Link>
+                <div className="my-1 h-px bg-muted" />
+                <p className="px-2 py-1 text-xs text-muted-foreground">{t('HEADER_THEME')}</p>
+                <button type="button" role="menuitem" className={menuItemClass} onClick={() => setTheme('light')}>
+                  <Sun className="mr-2 size-4" />
+                  {t('THEME_LIGHT')}
+                </button>
+                <button type="button" role="menuitem" className={menuItemClass} onClick={() => setTheme('dark')}>
+                  <Moon className="mr-2 size-4" />
+                  {t('THEME_DARK')}
+                </button>
+                <button type="button" role="menuitem" className={menuItemClass} onClick={() => setTheme('system')}>
+                  {t('COMMON_SYSTEM')}
+                </button>
+                <div className="my-1 h-px bg-muted" />
+                <button type="button" role="menuitem" className={`${menuItemClass} text-red-600`} onClick={onLogout}>
+                  <LogOut className="mr-2 size-4" />
+                  {t('HEADER_LOGOUT', 'Logout')}
+                </button>
+              </>
+            ) : (
+              <button
+                type="button"
+                role="menuitem"
+                className={menuItemClass}
+                onClick={() => {
+                  setOpen(false);
+                  onLogin();
+                }}
+              >
+                <LogIn className="mr-2 size-4" />
+                {t('login', 'Login')}
+              </button>
+            )}
+          </div>
+        </>
+      ) : null}
+    </div>
+  );
+}

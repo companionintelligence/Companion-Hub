@@ -714,6 +714,7 @@ export default function DeviceRegistrationPage() {
               {t('DEVICE_REGISTRATION_LOGIN_TO_COMPANION')}
             </a>
           </Button>
+          <p className="mt-3 text-sm leading-relaxed text-muted-foreground">{t('DEVICE_REGISTRATION_LOGIN_HINT')}</p>
           <div className="mt-6 space-y-3 border-t border-border/60 pt-5">
             <p className="text-center text-sm text-muted-foreground">{t('DEVICE_REGISTRATION_NO_ACCOUNT_YET')}</p>
             <Button asChild variant="outline" className="h-10 w-full text-sm font-semibold md:h-11 md:text-base">
@@ -738,7 +739,9 @@ export default function DeviceRegistrationPage() {
                 <LabelWithHint label={t('DEVICE_REGISTRATION_CURRENT_DEVICE_ID')} hint={t(REGISTRATION_DEVICE_ID_HINT)} hintId="reg-device-id" />
               </div>
               <div className="flex items-center gap-2 rounded-lg border border-border/60 bg-background/60 px-3 py-2">
-                <p className="min-w-0 flex-1 break-all font-mono text-sm text-foreground">{deviceId ?? t('DEVICE_REGISTRATION_LOADING_DEVICE_ID')}</p>
+                <p title={deviceId ?? undefined} className="min-w-0 flex-1 truncate font-mono text-sm text-foreground">
+                  {deviceId ?? t('DEVICE_REGISTRATION_LOADING_DEVICE_ID')}
+                </p>
                 <Button
                   type="button"
                   variant="ghost"

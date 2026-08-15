@@ -91,4 +91,53 @@ describe('listHubDevices', () => {
     httpFetch.mockResolvedValue(json({}, { status: 500 }));
     await expect(listHubDevices({ token: 't', cookie: null })).rejects.toThrow(/could not load your hubs/i);
   });
+
+  it('lists Hubs via /api/users/me/apps when the credential is an OIDC access token', async () => {
+    httpFetch.mockResolvedValue(
+      json({
+        apps: [
+          {
+            slug: 'hub',
+            url: 'https://hub-core3-bc.companionintelligence.com',
+            deviceName: 'hub-core3-bc',
+            deviceSlug: 'core3-bc',
+          },
+        ],
+      }),
+    );
+
+    const devices = await listHubDevices({ token: 'oidc-at', cookie: null, kind: 'oauth' });
+
+    expect(httpFetch.mock.calls[0]?.[0]).toBe(`${DEFAULT_PORTAL_URL}/api/users/me/apps?slug=hub`);
+    expect(httpFetch.mock.calls[0]?.[1].headers.Authorization).toBe('Bearer oidc-at');
+    expect(devices).toEqual([
+      {
+        id: 'core3-bc',
+        name: 'hub-core3-bc',
+        status: 'active',
+        hubUrl: 'https://hub-core3-bc.companionintelligence.com',
+      },
+    ]);
+  });
+
+  it('tries Hub name aliases when slug=hub returns no apps', async () => {
+    httpFetch
+      .mockResolvedValueOnce(json({ apps: [] }))
+      .mockResolvedValueOnce(json({ apps: [] }))
+      .mockResolvedValueOnce(
+        json({
+          apps: [{ slug: 'OS Hub', url: 'https://hub-x.ci.computer', deviceName: 'X', deviceSlug: 'x' }],
+        }),
+      );
+
+    const devices = await listHubDevices({ token: 'oidc-at', cookie: null, kind: 'oauth' });
+
+    expect(httpFetch.mock.calls.map((c) => c[0])).toEqual([
+      `${DEFAULT_PORTAL_URL}/api/users/me/apps?slug=hub`,
+      `${DEFAULT_PORTAL_URL}/api/users/me/apps?slug=ci-hub`,
+      `${DEFAULT_PORTAL_URL}/api/users/me/apps?slug=OS%20Hub`,
+    ]);
+    expect(devices).toHaveLength(1);
+    expect(devices[0]?.hubUrl).toBe('https://hub-x.ci.computer');
+  });
 });

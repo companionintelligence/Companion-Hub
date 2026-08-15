@@ -655,6 +655,28 @@ describe('HubStatus diagnostics (View Logs / Open Logs Folder)', () => {
     expect(reloadSpy).not.toHaveBeenCalled();
   });
 
+  it('keeps the app mounted through sustained probe misses while Docker reports Starting', async () => {
+    vi.useFakeTimers();
+    sessionStorage.setItem('ci-hub-steady-running', '1');
+    const reloadSpy = vi.spyOn(hubStatusModule, 'reloadCurrentWindow').mockImplementation(() => {});
+    probeMocks.probeHealthyHubApiPort.mockResolvedValue(null);
+
+    mockMacTauriWithStatus(['Starting', 'Starting', 'Starting', 'Starting']);
+
+    await flushAsyncWork();
+    expect(screen.getByText('Hub child')).toBeInTheDocument();
+    expect(screen.queryByText('Starting CI Hub')).not.toBeInTheDocument();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(9000);
+    });
+    await flushAsyncWork();
+
+    expect(screen.getByText('Hub child')).toBeInTheDocument();
+    expect(screen.queryByText('Starting CI Hub')).not.toBeInTheDocument();
+    expect(reloadSpy).not.toHaveBeenCalled();
+  });
+
   it('revalidates routes after the hub becomes healthy without a full window reload', async () => {
     vi.useFakeTimers();
     const reloadSpy = vi.spyOn(hubStatusModule, 'reloadCurrentWindow').mockImplementation(() => {});

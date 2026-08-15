@@ -1,10 +1,11 @@
 # Companion Hub — Mobile (iOS / Android)
 
-A Tauri 2 **thin client** for the Companion Intelligence Hub. Unlike the desktop
-app (`packages/desktop`), it does **not** run a Hub locally — phones can't run
-Docker. Instead it embeds the same React frontend (`packages/frontend`) and
-connects to a **remote Hub appliance** the user selects from the cloud device
-picker (sign in to `hub.ci.computer` → pick a Hub → it loads the normal Hub UI).
+A Tauri 2 **thin client** for the Companion Intelligence Hub. **iOS and Android**
+use the cloud connect flow (`/connect`: Portal sign-in → pick a remote Hub →
+Hub `/login`). **Mac, Linux, and Windows** (browser or `packages/desktop`) set
+up a Hub the normal way — they never see the picker. Phones can't run Docker,
+so this app embeds the same React frontend (`packages/frontend`) and points it
+at a remote appliance.
 
 ## How it works
 
@@ -41,9 +42,43 @@ pnpm --filter mobile ios:init      # generate gen/apple (once, macOS + Xcode)
 pnpm --filter mobile ios:dev       # run in the Simulator
 ```
 
+Always pass the Simulator name so a plugged-in iPhone is not chosen, and do
+**not** add an extra `--` (that drops the device argument):
+
+```bash
+VITE_HUB_RUNTIME=mobile pnpm --filter frontend run dev   # :5005
+IPHONEOS_DEPLOYMENT_TARGET=16.0 \
+  pnpm --filter mobile exec tauri ios dev "iPhone 17"
+```
+
+`devUrl` is `http://lvh.me:5005` (`lvh.me` → `127.0.0.1`). That hostname is
+**not** treated as a local-network URL, so Tauri skips the `tauri://localhost`
+mobile-dev proxy (a black WKWebView on iOS 26). Do not pass `--host 127.0.0.1`
+— that puts the proxy back.
+
+Compile and run on the Simulator against the **development** Portal
+(`hub.companionintelligence.com`):
+
+```bash
+CI_CLOUD_URL=https://hub.companionintelligence.com \
+CI_HUB_ENVIRONMENT=development \
+VITE_HUB_RUNTIME=mobile \
+  pnpm --filter frontend run dev
+
+IPHONEOS_DEPLOYMENT_TARGET=16.0 \
+  pnpm --filter mobile exec tauri ios dev "iPhone 17"
+```
+
 > The `cihub://` URL scheme must be registered in the generated native projects
 > (`gen/apple/.../Info.plist` `CFBundleURLTypes`, and the Android manifest
-> `intent-filter`) for the Portal SSO callback to return to the app.
+> `intent-filter`) for the Portal SSO / OIDC callback to return to the app.
+>
+> **Simulator: "Open with Companion Hub" then a black screen.** iOS delivered
+> `cihub://auth/callback` but the webview navigated onto that custom scheme
+> (no HTML). Rebuild the mobile shell so Rust stashes the URL, emits
+> `deep-link-oidc`, and navigates the webview back to `/connect`. A stale
+> callback from a previous attempt can also re-open the app on `cihub://` —
+> delete the app from the Simulator and relaunch `ios:dev` after rebuilding.
 
 ## Building in CI (GitHub Actions)
 

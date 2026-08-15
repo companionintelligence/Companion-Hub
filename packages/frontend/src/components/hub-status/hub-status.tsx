@@ -6,12 +6,12 @@ import { useMemo, useState, useEffect, useCallback, useRef, type ReactNode } fro
 import { useRevalidator } from 'react-router';
 import { useAppIntentDeepLinks } from '@/hooks/use-app-intent-deep-links';
 import { useDeepLinkPairCapture } from '@/hooks/use-deep-link-pair-capture';
-import { isTauriMobileSync } from '@/lib/mobile-connection';
+import { isMobileClient, isTauriMobileSync } from '@/lib/mobile-connection';
 import { SetupCard } from '@/components/setup/setup-card';
 import { SetupPageShell } from '@/components/setup/setup-page-shell';
 import { HintText } from '@/components/ui/field-hint/field-hint';
 import { DockerAccessStatusPanel } from './docker-access-status-panel';
-import { configureHubApiPort, probeHealthyHubApiPort } from '@/lib/tauri-hub-probe';
+import { configureHubApiPort, isViteLocalFrontend, probeHealthyHubApiPort } from '@/lib/tauri-hub-probe';
 import { getTauriInvoke } from '@/lib/helpers/tauri-invoke';
 import {
   clearHubSteadySession,
@@ -92,8 +92,6 @@ export function isUserInitiatedPageReload(): boolean {
 }
 
 const HUB_STATUS_POLL_INTERVAL_MS = 3000;
-/** Probe misses required before leaving the Running UI after the hub has been steady. */
-const HUB_STEADY_PROBE_FAILURE_THRESHOLD = 3;
 
 function detectPlatform(): 'windows' | 'macos' | 'linux' {
   const ua = navigator.userAgent.toLowerCase();
@@ -708,12 +706,12 @@ export function HubStatus({ children }: HubStatusProps) {
       setStatus('Running');
       return;
     }
+    // After the hub has been steady, keep the app mounted — only hard Docker
+    // non-running states (Stopped / Error) should regress the startup gate.
     if (hubSteadyRunningRef.current) {
       consecutiveProbeFailuresRef.current += 1;
-      if (consecutiveProbeFailuresRef.current < HUB_STEADY_PROBE_FAILURE_THRESHOLD) {
-        setStatus('Running');
-        return;
-      }
+      setStatus('Running');
+      return;
     }
     sawNonRunningRef.current = true;
     setStatus('Stopped');
@@ -764,6 +762,14 @@ export function HubStatus({ children }: HubStatusProps) {
       const invoke = getTauriInvoke();
       if (invoke) {
         try {
+          // `local:desktop` talks to source Nest via the Vite proxy. Docker
+          // compose status is the appliance stack (often a leftover :5002 Hub)
+          // and must not gate this UI.
+          if (isViteLocalFrontend()) {
+            await checkHealthFallback();
+            return;
+          }
+
           const result = (await invoke('get_hub_status_command')) as HubStatusResponse;
 
           if (isWindows && !(await isStackDevMode())) {
@@ -802,19 +808,15 @@ export function HubStatus({ children }: HubStatusProps) {
               return;
             }
 
-            // After steady, tolerate brief probe misses so Tailscale/Docker blips do not
-            // flash the loading gate or force a full window reload on recovery.
+            // After steady, tolerate probe misses so Docker healthcheck lag / CPU
+            // spikes do not flash the startup gate. Hard stops clear steady above.
             if (hubSteadyRunningRef.current) {
               consecutiveProbeFailuresRef.current += 1;
-              if (consecutiveProbeFailuresRef.current < HUB_STEADY_PROBE_FAILURE_THRESHOLD) {
-                setStatus('Running');
-                return;
-              }
+              setStatus('Running');
+              return;
             }
 
             consecutiveProbeFailuresRef.current = 0;
-            hubSteadyRunningRef.current = false;
-            clearHubSteadySession();
             sawNonRunningRef.current = true;
             setStatus('Starting');
             return;
@@ -917,7 +919,10 @@ export function HubStatus({ children }: HubStatusProps) {
   // is a thin client pointed at a remote Hub, so this local-Hub gate (and its
   // desktop-only commands / localhost probes) doesn't apply. The remote Hub's
   // reachability is handled by the connect flow and the normal app loaders.
-  if (!isTauri || isTauriMobileSync()) return <>{children}</>;
+  // /connect must never be replaced by the local-Hub spinner — that is the
+  // one-second flash then black screen on the iOS Simulator.
+  const onConnectScreen = typeof window !== 'undefined' && window.location.pathname === '/connect';
+  if (!isTauri || isTauriMobileSync() || isMobileClient() || onConnectScreen) return <>{children}</>;
 
   // Dark placeholder while the first hub status poll runs (avoids blank flash)
   if (status === null) {

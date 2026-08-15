@@ -6,8 +6,11 @@ import { X } from 'lucide-react';
 import i18next from 'i18next';
 
 import { cn } from '@/lib/utils';
+import { isMobileClient } from '@/lib/mobile-connection';
 
-const Dialog = DialogPrimitive.Root;
+function Dialog({ modal, ...props }: React.ComponentProps<typeof DialogPrimitive.Root>) {
+  return <DialogPrimitive.Root modal={isMobileClient() ? false : modal} {...props} />;
+}
 
 const DialogTrigger = DialogPrimitive.Trigger;
 

@@ -68,6 +68,14 @@ export function mayHoldCookielessSession(): boolean {
   return getHubRuntimeMode() !== 'browser';
 }
 
+/** macOS / Linux / Windows Tauri — not iOS / Android and not a plain browser. */
+export function isTauriDesktopApp(): boolean {
+  if (typeof window === 'undefined') {
+    return false;
+  }
+  return Boolean(getTauriInvoke()) && !isTauriMobileSync();
+}
+
 /** True on the minimal bootstrap splash before navigation to the stack UI. */
 export function isDesktopBootstrapPage(): boolean {
   if (typeof window === 'undefined') {

@@ -68,6 +68,8 @@ See [e2e/README.md](../../e2e/README.md) for lanes and local setup.
 - Tag slow tests appropriately
 - Write targeted specs for the flow you changed
 
+**iOS / phone Hub (not XCUITest):** We do not run the Simulator in CI. WKWebView white-screens are caught in Vitest by `packages/frontend/src/lib/ios-navigation.smoke.test.tsx` (page slides, body scroll-lock, inline theme lock). Add a case there when you add a route or overlay. Playwright `e2e/navigation.spec.ts` covers desktop Chromium only.
+
 **Don't:**
 - Use App Explorer for general Hub feature validation (marketplace QA only)
 - Rely on screenshot file-size heuristics — use `e2e/helpers/screenshot.ts` or Playwright `toHaveScreenshot`

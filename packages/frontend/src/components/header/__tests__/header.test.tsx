@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { render, screen, userEvent } from '@/tests/test-utils';
 import { describe, it, expect, vi } from 'vitest';
 import { MemoryRouter } from 'react-router';
 import { Header } from '../header';
@@ -68,6 +68,21 @@ describe('Header', () => {
     renderHeader(false);
 
     expect(screen.queryByRole('link', { name: /COMMON_APP_STORE|App Store|Store/i })).not.toBeInTheDocument();
+  });
+
+  it('offsets the bar with the iOS safe-area token so it clears the notch', () => {
+    renderHeader(true);
+    const header = screen.getByTestId('app-header');
+    expect(header.style.paddingTop).toBe('var(--safe-area-top, 0px)');
+    expect(header.style.height).toBe('var(--header-offset)');
+  });
+
+  it('opens the phone menu without a Radix portal', async () => {
+    renderHeader(true);
+    expect(screen.queryByTestId('mobile-app-menu')).not.toBeInTheDocument();
+    await userEvent.click(screen.getByTestId('mobile-app-menu-btn'));
+    expect(screen.getByTestId('mobile-app-menu')).toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: /COMMON_SETTINGS|Settings/i })).toBeInTheDocument();
   });
 
   it('uses the stronger active styling for the selected settings button', () => {

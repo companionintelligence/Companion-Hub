@@ -6,7 +6,7 @@
   "identifier": "computer.ci.app.hub",
   "build": {
     "beforeDevCommand": "",
-    "devUrl": "http://localhost:5005",
+    "devUrl": "http://lvh.me:5005",
     "beforeBuildCommand": "",
     "frontendDist": "../../../packages/frontend/dist/client"
   },
@@ -26,12 +26,12 @@
     "windows": [
       {
         "label": "main",
-        "url": "/",
+        "url": "/connect",
         "title": "Companion Hub"
       }
     ],
     "security": {
-      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; connect-src 'self' ipc: http://ipc.localhost https://hub.ci.computer https://*.ci.computer wss://*.ci.computer http://127.0.0.1:* http://localhost:* http://*.localhost:* https://localhost:* ws://127.0.0.1:* ws://localhost:* ws://*.localhost:* wss://localhost:*; img-src 'self' data: blob: https:; font-src 'self' data: https://fonts.gstatic.com"
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; connect-src 'self' ipc: http://ipc.localhost https://hub.ci.computer https://*.ci.computer wss://*.ci.computer https://hub.companionintelligence.com https://*.companionintelligence.com wss://*.companionintelligence.com http://127.0.0.1:* http://localhost:* http://lvh.me:* http://*.localhost:* https://localhost:* ws://127.0.0.1:* ws://localhost:* ws://lvh.me:* ws://*.localhost:* wss://localhost:*; img-src 'self' data: blob: https:; font-src 'self' data: https://fonts.gstatic.com"
     }
   },
   "plugins": {

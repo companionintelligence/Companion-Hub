@@ -93,10 +93,18 @@ export class AuthMiddleware implements NestMiddleware {
         }
       }
 
-      const user = await this.loadSessionUser(userId);
-      req.user = user;
-      req.hubSessionId = sessionId;
-      return next();
+      try {
+        const user = await this.loadSessionUser(userId);
+        req.user = user;
+        req.hubSessionId = sessionId;
+        return next();
+      } catch (err) {
+        if (err instanceof ServiceUnavailableException) {
+          throw err;
+        }
+        // A broken DB lookup must not turn GET / (OIDC returns, static pages)
+        // into a JSON 500 — continue without a user so the route can run.
+      }
     }
 
     if (bearerToken) {

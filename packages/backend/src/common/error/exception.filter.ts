@@ -28,6 +28,10 @@ export class MainExceptionFilter implements ExceptionFilter {
 
     const isDesktopStart = path.endsWith('/portal/start') && (request.query.desktop === '1' || request.query.desktop === 'true');
 
+    if (response.headersSent) {
+      return true;
+    }
+
     response.redirect(
       buildPortalSsoErrorRedirectUrl({
         hubOrigin: null,
@@ -46,16 +50,20 @@ export class MainExceptionFilter implements ExceptionFilter {
     const request = ctx.getRequest<Request>();
     const status = exception instanceof HttpException ? exception.getStatus() : HttpStatus.INTERNAL_SERVER_ERROR;
 
+    if (status === HttpStatus.INTERNAL_SERVER_ERROR) {
+      this.logger.error(`An error occured while calling: ${request.url}`, exception);
+    }
+
     if (this.tryRedirectPortalSsoError(request, response)) {
+      return;
+    }
+
+    if (response.headersSent) {
       return;
     }
 
     let message: string | undefined;
     let cause: unknown;
-
-    if (status === HttpStatus.INTERNAL_SERVER_ERROR) {
-      this.logger.error(`An error occured while calling: ${request.url}`, exception);
-    }
 
     // @ts-expect-error
     const error = exception?.error;

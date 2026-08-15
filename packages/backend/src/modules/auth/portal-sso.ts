@@ -17,6 +17,7 @@ export interface PortalSsoState {
 export interface PortalDesktopExchange {
   sessionId: string;
   redirectPath: string;
+  userId?: number;
 }
 
 export function resolveSameOriginRedirectUrl(redirectUrl: string | null | undefined, hubOrigin: string): string | null {
@@ -61,6 +62,17 @@ export function isLoopbackHubOrigin(hubOrigin: string): boolean {
   } catch {
     return false;
   }
+}
+
+export const PORTAL_DESKTOP_PRESENCE_CACHE_KEY = 'portal_sso_desktop_present';
+export const PORTAL_DESKTOP_PRESENCE_TTL_SECONDS = 10 * 60;
+
+/** The local Tauri window is alive — loopback browser SSO should hand off into it. */
+export function shouldHandoffPortalLoginToDesktop(input: { desktop: boolean; hubOrigin: string; desktopAppPresent: boolean }): boolean {
+  if (input.desktop) {
+    return true;
+  }
+  return isLoopbackHubOrigin(input.hubOrigin) && input.desktopAppPresent;
 }
 
 /** Loopback desktop dev uses cihub-dev:// so macOS does not steal cihub:// from the installed app. */
@@ -168,6 +180,34 @@ export function resolveTrustedReturnOrigin(
 
 export function resolvePortalCallbackUrl(hubOrigin: string): string {
   return new URL('/api/auth/portal/callback', hubOrigin).toString();
+}
+
+/**
+ * Portal / a proxy sometimes drops `/api/auth/portal/callback` and lands on Hub `/`
+ * with the OAuth query still attached. Bounce those document requests onto the
+ * real SSO routes so the browser does not sit on a Nest JSON 500.
+ */
+export function resolvePortalRootBounce(query: { code?: unknown; state?: unknown; desktop?: unknown }): string | null {
+  const code = typeof query.code === 'string' ? query.code.trim() : '';
+  const state = typeof query.state === 'string' ? query.state.trim() : '';
+  if (code && state) {
+    const url = new URL('/api/auth/portal/callback', 'http://hub.local');
+    url.searchParams.set('code', code);
+    url.searchParams.set('state', state);
+    return `${url.pathname}${url.search}`;
+  }
+  if (query.desktop === '1' || query.desktop === 'true') {
+    return '/api/auth/portal/start?desktop=1';
+  }
+  return null;
+}
+
+/** HTML interstitial — some browsers will not follow a 302 to cihub-dev://. */
+export function buildPortalDesktopHandoffHtml(deepLink: string): string {
+  const safeHref = deepLink.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+  // One navigation only — meta refresh + location.replace both fire and can
+  // consume the one-time desktop token twice (first succeeds, second 400s).
+  return `<!doctype html><html><head><meta charset="utf-8"></head><body><script>location.replace(${JSON.stringify(deepLink)})</script><p>Opening the Companion Hub app… <a href="${safeHref}">Open Companion Hub</a></p></body></html>`;
 }
 
 export interface PortalTokenExchangeResult {
