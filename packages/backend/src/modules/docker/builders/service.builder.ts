@@ -571,7 +571,7 @@ export class ServiceBuilder {
   }
 
   /*
-   * Search through the labels and replace any {{ CI_HUB_APP_ID }} / {{ RUNTIPI_APP_ID }} (legacy) with the appId.
+   * Search through the labels and replace any {{ CI_HUB_APP_ID }} / {{ RUNCIHUB_APP_ID }} (legacy) with the appId.
    * Also replaces ${LOCAL_DOMAIN} with the actual localDomain value if provided.
    * @param {string} appId The appId to replace the variables with.
    * @param {string} localDomain Optional localDomain to replace ${LOCAL_DOMAIN} with.
@@ -582,7 +582,7 @@ export class ServiceBuilder {
   public interpolateVariables(appId: string, localDomain?: string) {
     if (this.service.labels) {
       const interpolatedLabels: Record<string, string | boolean> = {};
-      const appIdPattern = /\{\{\s*(?:CI_HUB_APP_ID|RUNTIPI_APP_ID)\s*\}\}/g;
+      const appIdPattern = /\{\{\s*(?:CI_HUB_APP_ID|RUNCIHUB_APP_ID)\s*\}\}/g;
 
       for (const [key, value] of Object.entries(this.service.labels)) {
         const interpolatedKey = key.replace(appIdPattern, appId);

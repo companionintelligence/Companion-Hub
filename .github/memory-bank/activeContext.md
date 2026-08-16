@@ -2,7 +2,7 @@
 
 ## Current Work Focus
 
-As of May 2, 2025, the Runtipi project is in active development with a focus on enhancing the application ecosystem, improving user experience, and strengthening the platform's stability. The system has an established architecture with ongoing development of new features and app integrations.
+As of May 2, 2025, the CIHub project is in active development with a focus on enhancing the application ecosystem, improving user experience, and strengthening the platform's stability. The system has an established architecture with ongoing development of new features and app integrations.
 
 ## Recent Changes
 

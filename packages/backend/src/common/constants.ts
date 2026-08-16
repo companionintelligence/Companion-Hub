@@ -27,7 +27,7 @@ export function detectContainerDataRoot(): boolean {
  * mounts), so the container probe has to win before we consider it.
  */
 export function resolveDataDir(env: NodeJS.ProcessEnv = process.env, hasContainerDataRoot: () => boolean = detectContainerDataRoot): string {
-  const explicit = env.CI_HUB_DATA_DIR || env.TIPI_DATA_DIR;
+  const explicit = env.CI_HUB_DATA_DIR || env.CIHUB_DATA_DIR;
   if (explicit) return explicit;
   if (hasContainerDataRoot()) return '/data';
   return env.ROOT_FOLDER_HOST || path.join(os.homedir(), '.ci-hub');

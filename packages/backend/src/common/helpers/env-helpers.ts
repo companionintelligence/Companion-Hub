@@ -110,19 +110,19 @@ const isAbsoluteHostPath = (value: string) => path.isAbsolute(value) || path.win
  */
 // Map of new env var names to their legacy equivalents for backward compatibility
 const LEGACY_ENV_MAP: Record<string, string> = {
-  CI_HUB_STATE_PATH: 'RUNTIPI_STATE_PATH',
-  CI_HUB_APP_DATA_PATH: 'RUNTIPI_APP_DATA_PATH',
-  CI_HUB_FORWARD_AUTH_URL: 'RUNTIPI_FORWARD_AUTH_URL',
-  CI_HUB_DATA_DIR: 'TIPI_DATA_DIR',
-  CI_HUB_APP_DIR: 'TIPI_APP_DIR',
-  CI_HUB_APP_DATA_DIR: 'TIPI_APP_DATA_DIR',
+  CI_HUB_STATE_PATH: 'RUNCIHUB_STATE_PATH',
+  CI_HUB_APP_DATA_PATH: 'RUNCIHUB_APP_DATA_PATH',
+  CI_HUB_FORWARD_AUTH_URL: 'RUNCIHUB_FORWARD_AUTH_URL',
+  CI_HUB_DATA_DIR: 'CIHUB_DATA_DIR',
+  CI_HUB_APP_DIR: 'CIHUB_APP_DIR',
+  CI_HUB_APP_DATA_DIR: 'CIHUB_APP_DATA_DIR',
 
-  CI_HUB_MEDIA_PATH: 'RUNTIPI_MEDIA_PATH',
-  CI_HUB_REPOS_PATH: 'RUNTIPI_REPOS_PATH',
-  CI_HUB_APPS_PATH: 'RUNTIPI_APPS_PATH',
-  CI_HUB_LOGS_PATH: 'RUNTIPI_LOGS_PATH',
-  CI_HUB_USER_CONFIG_PATH: 'RUNTIPI_USER_CONFIG_PATH',
-  CI_HUB_BACKUPS_PATH: 'RUNTIPI_BACKUPS_PATH',
+  CI_HUB_MEDIA_PATH: 'RUNCIHUB_MEDIA_PATH',
+  CI_HUB_REPOS_PATH: 'RUNCIHUB_REPOS_PATH',
+  CI_HUB_APPS_PATH: 'RUNCIHUB_APPS_PATH',
+  CI_HUB_LOGS_PATH: 'RUNCIHUB_LOGS_PATH',
+  CI_HUB_USER_CONFIG_PATH: 'RUNCIHUB_USER_CONFIG_PATH',
+  CI_HUB_BACKUPS_PATH: 'RUNCIHUB_BACKUPS_PATH',
 };
 
 function resolve(
@@ -535,9 +535,9 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
   envMap.set('POSTGRES_USERNAME', resolve('POSTGRES_USERNAME', { envMap, fallback: DEFAULT_POSTGRES_USERNAME }));
   envMap.set('POSTGRES_PORT', resolve('POSTGRES_PORT', { envMap, fallback: DEFAULT_POSTGRES_PORT }));
 
-  // Message queue — handle legacy hostname migration (runtipi-queue was the original Runtipi hostname)
+  // Message queue — handle legacy hostname migration (runcihub-queue was the original CIHub hostname)
   let rabbitmqHost = resolve('RABBITMQ_HOST', { envMap, fallback: DEFAULT_RABBITMQ_HOST });
-  if (rabbitmqHost === 'runtipi-queue' || rabbitmqHost === 'ci-hub-queue') {
+  if (rabbitmqHost === 'runcihub-queue' || rabbitmqHost === 'ci-hub-queue') {
     rabbitmqHost = DEFAULT_RABBITMQ_HOST;
   }
   envMap.set('RABBITMQ_HOST', rabbitmqHost);

@@ -29,7 +29,7 @@ type PortalCatalogApp = {
   supported_architectures?: string[];
   available?: boolean;
   cihub_app_version?: number;
-  tipi_version?: number;
+  cihub_version?: number;
   min_hub_version?: number | null;
   exposable?: boolean;
   no_gui?: boolean;
@@ -104,7 +104,7 @@ export class PortalCatalogService {
       supported_architectures: app.supported_architectures,
       available: app.available !== false,
       cihub_app_version:
-        typeof app.cihub_app_version === 'number' ? app.cihub_app_version : typeof app.tipi_version === 'number' ? app.tipi_version : 1,
+        typeof app.cihub_app_version === 'number' ? app.cihub_app_version : typeof app.cihub_version === 'number' ? app.cihub_version : 1,
       version: typeof app.version === 'string' ? app.version : '0.0.1',
       min_hub_version: typeof app.min_hub_version === 'number' ? app.min_hub_version : null,
     };
@@ -261,7 +261,7 @@ export class PortalCatalogService {
       port: typeof app.port === 'number' ? app.port : isMcpListing ? undefined : 8080,
       version: typeof app.version === 'string' ? app.version : 'latest',
       cihub_app_version:
-        typeof app.cihub_app_version === 'number' ? app.cihub_app_version : typeof app.tipi_version === 'number' ? app.tipi_version : 1,
+        typeof app.cihub_app_version === 'number' ? app.cihub_app_version : typeof app.cihub_version === 'number' ? app.cihub_version : 1,
       source: typeof app.source === 'string' ? app.source : 'https://companionintelligence.com',
       website: typeof app.website === 'string' ? app.website : undefined,
       supported_architectures: app.supported_architectures?.length ? app.supported_architectures : ['amd64', 'arm64'],

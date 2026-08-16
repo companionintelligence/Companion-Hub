@@ -18,8 +18,8 @@ describe('hub-cleanup-lib', () => {
     expect(isRelatedVolume('hub_tailscale_state')).toBe(true);
     expect(isRelatedVolume('ci-os-hub_test_data')).toBe(true);
     expect(isRelatedVolume('ci_os_hub-prod_db_data')).toBe(true);
-    expect(isRelatedVolume('runtipi_media_data')).toBe(true);
-    expect(isRelatedVolume('runtipi_media')).toBe(true);
+    expect(isRelatedVolume('runcihub_media_data')).toBe(true);
+    expect(isRelatedVolume('runcihub_media')).toBe(true);
     expect(isRelatedVolume('postgres_data')).toBe(false);
     expect(isRelatedVolume('anotherstack_prod_data')).toBe(false);
   });

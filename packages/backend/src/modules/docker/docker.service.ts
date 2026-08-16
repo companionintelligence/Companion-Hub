@@ -451,7 +451,7 @@ export class DockerService {
 
     // User defined overrides (support both new and legacy filenames)
     const hubComposeFile = path.join(dataDir, 'user-config', 'hub-compose.yml');
-    const legacyComposeFile = path.join(dataDir, 'user-config', 'tipi-compose.yml');
+    const legacyComposeFile = path.join(dataDir, 'user-config', 'cihub-compose.yml');
     const userComposeFile = (await this.filesystem.pathExists(hubComposeFile)) ? hubComposeFile : legacyComposeFile;
     if (await this.filesystem.pathExists(userComposeFile)) {
       args.push('--file', userComposeFile);

@@ -1,5 +1,5 @@
 ---
-"@runtipi/common": minor
+"@runcihub/common": minor
 ---
 
 New schemas

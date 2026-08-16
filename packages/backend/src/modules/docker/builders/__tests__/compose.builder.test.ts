@@ -237,14 +237,14 @@ describe('DockerComposeBuilder', () => {
     expect(compose).toMatchSnapshot();
   });
 
-  it('should correctly interpolate RUNTIPI_APP_ID in service labels', () => {
+  it('should correctly interpolate RUNCIHUB_APP_ID in service labels', () => {
     const service = serviceBuilder
       .setName('service')
       .setImage('image')
       .setLabels({
-        '{{RUNTIPI_APP_ID}}.service': true,
-        'com.docker.compose.service': '{{RUNTIPI_APP_ID}}',
-        '{{ RUNTIPI_APP_ID }}': '{{ RUNTIPI_APP_ID }}',
+        '{{RUNCIHUB_APP_ID}}.service': true,
+        'com.docker.compose.service': '{{RUNCIHUB_APP_ID}}',
+        '{{ RUNCIHUB_APP_ID }}': '{{ RUNCIHUB_APP_ID }}',
       })
       .interpolateVariables('my-test-app')
       .build();
@@ -574,7 +574,7 @@ describe('DockerComposeBuilder', () => {
           internalPort: 8000,
           environment: [
             { key: 'UPLOAD_FOLDER', value: '/var/uploads' },
-            { key: 'DATABASE_URL', value: 'mysql+pymysql://tipi:${CTFD_MYSQL_DB_PASSWORD}@ctfd-db/ctfd' },
+            { key: 'DATABASE_URL', value: 'mysql+pymysql://cihub:${CTFD_MYSQL_DB_PASSWORD}@ctfd-db/ctfd' },
           ],
           dependsOn: ['ctfd-db'],
           volumes: [
@@ -589,9 +589,9 @@ describe('DockerComposeBuilder', () => {
           ],
           extraLabels: {
             'some-label': 'some-value',
-            '{{RUNTIPI_APP_ID}}.service': true,
-            'com.docker.compose.service': '{{RUNTIPI_APP_ID}}',
-            '{{ RUNTIPI_APP_ID }}': '{{ RUNTIPI_APP_ID }}',
+            '{{RUNCIHUB_APP_ID}}.service': true,
+            'com.docker.compose.service': '{{RUNCIHUB_APP_ID}}',
+            '{{ RUNCIHUB_APP_ID }}': '{{ RUNCIHUB_APP_ID }}',
           },
         },
         {
@@ -600,7 +600,7 @@ describe('DockerComposeBuilder', () => {
           internalPort: 3306,
           environment: [
             { key: 'MYSQL_ROOT_PASSWORD', value: '${CTFD_MYSQL_ROOT_PASSWORD}' },
-            { key: 'MYSQL_USER', value: 'tipi' },
+            { key: 'MYSQL_USER', value: 'cihub' },
             { key: 'MYSQL_PASSWORD', value: '${CTFD_MYSQL_DB_PASSWORD}' },
             { key: 'MYSQL_DATABASE', value: 'ctfd' },
           ],

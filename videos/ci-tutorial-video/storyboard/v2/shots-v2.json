@@ -240,7 +240,7 @@
       "app": "hub",
       "route": "/store/:storeId/immich",
       "viewport": "desktop",
-      "state": "'Install Immich' dialog open over the details page: Upload Location text field pre-filled ('/nfs/tipi/immich'), submit enabled. NO secret fields are rendered — Immich's three secrets (DB Password, JWT Secret, Typesense API Key) are type 'random' and filtered out by hiddenTypes in form-validators.ts:98; they generate server-side. Same capture as v1 hub-install-dialog-immich; state description corrected (v1 wrongly claimed visible generated-secret fields).",
+      "state": "'Install Immich' dialog open over the details page: Upload Location text field pre-filled ('/nfs/cihub/immich'), submit enabled. NO secret fields are rendered — Immich's three secrets (DB Password, JWT Secret, Typesense API Key) are type 'random' and filtered out by hiddenTypes in form-validators.ts:98; they generate server-side. Same capture as v1 hub-install-dialog-immich; state description corrected (v1 wrongly claimed visible generated-secret fields).",
       "authRequired": true,
       "reuseV1": true
     },

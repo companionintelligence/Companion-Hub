@@ -282,11 +282,11 @@ describe('hubIntegrationSchema', () => {
       }
     });
 
-    it('should parse legacy tipi_version as cihub_app_version', () => {
+    it('should parse legacy cihub_version as cihub_app_version', () => {
       const { cihub_app_version: _, ...legacyAppInfo } = minimalAppInfo;
       const result = appInfoSchema.safeParse({
         ...legacyAppInfo,
-        tipi_version: 3,
+        cihub_version: 3,
       });
       expect(result.success).toBe(true);
       if (result.success) {
