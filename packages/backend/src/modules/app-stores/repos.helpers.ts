@@ -252,7 +252,7 @@ export class ReposHelpers {
       };
 
       const incomingAppVersion =
-        typeof app.cihub_app_version === 'number' ? app.cihub_app_version : typeof app.tipi_version === 'number' ? app.tipi_version : 1;
+        typeof app.cihub_app_version === 'number' ? app.cihub_app_version : typeof app.cihub_version === 'number' ? app.cihub_version : 1;
       const incomingDockerVersion = typeof app.version === 'string' ? app.version : '0.0.1';
       const incomingAvailable = typeof app.available === 'boolean' ? app.available : true;
 
@@ -402,7 +402,7 @@ export class ReposHelpers {
               port: typeof app.port === 'number' ? app.port : 8080,
               version: typeof app.version === 'string' ? app.version : '0.0.1',
               cihub_app_version:
-                typeof app.cihub_app_version === 'number' ? app.cihub_app_version : typeof app.tipi_version === 'number' ? app.tipi_version : 1,
+                typeof app.cihub_app_version === 'number' ? app.cihub_app_version : typeof app.cihub_version === 'number' ? app.cihub_version : 1,
               source: typeof app.source === 'string' ? app.source : 'https://github.com/example/repo',
               supported_architectures: Array.isArray(app.supported_architectures) ? app.supported_architectures : ['amd64', 'arm64'],
             };

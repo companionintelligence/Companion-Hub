@@ -3,7 +3,7 @@ import { existsSync, rmSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
 
-/** Legacy Runtipi Docker project/volume names — kept for appliances upgraded from Runtipi. See scripts/LEGACY_MIGRATION.md. */
+/** Legacy CIHub Docker project/volume names — kept for appliances upgraded from CIHub. See scripts/LEGACY_MIGRATION.md. */
 
 type CleanupLevel = 'INFO' | 'WARN' | 'ERROR';
 
@@ -88,7 +88,7 @@ export function isRelatedVolume(volumeName: string): boolean {
   return (
     volumeName.includes('ci_os_hub') ||
     volumeName.includes('ci-os-hub') ||
-    volumeName.startsWith('runtipi_') ||
+    volumeName.startsWith('runcihub_') ||
     volumeName.includes('ci_hub_pgdata') ||
     volumeName.includes('ci_hub_app_data') ||
     volumeName.includes('hub_tailscale_state') ||
@@ -274,7 +274,7 @@ export function runHubCleanup(options?: CleanupOptions): CleanupSummary {
     'docker ps -a --filter network=ci-os-hub_network --format "{{.Names}}"',
     'docker ps -a --filter label=com.docker.compose.project=ci-os-hub --format "{{.Names}}"',
     'docker ps -a --filter label=com.docker.compose.project=ci-hub --format "{{.Names}}"',
-    'docker ps -a --filter label=com.docker.compose.project=runtipi --format "{{.Names}}"',
+    'docker ps -a --filter label=com.docker.compose.project=runcihub --format "{{.Names}}"',
     'docker ps -a --filter "name=e2e-" --format "{{.Names}}"',
   ];
 
@@ -286,7 +286,7 @@ export function runHubCleanup(options?: CleanupOptions): CleanupSummary {
   }
 
   // Snapshot Hub stack image IDs before any containers are removed.
-  const hubImages = [...new Set(['ci-os-hub', 'ci-hub', 'runtipi'].flatMap(snapshotProjectImages))];
+  const hubImages = [...new Set(['ci-os-hub', 'ci-hub', 'runcihub'].flatMap(snapshotProjectImages))];
 
   // Marketplace apps installed by Hub run as their own compose projects (<app>_<store>),
   // separate from the Hub stack. Hub stamps every managed app container with the
@@ -301,7 +301,7 @@ export function runHubCleanup(options?: CleanupOptions): CleanupSummary {
   // The Hub's own compose services in docker-compose.*.yml also carry `ci-os-hub.managed=true`,
   // so exclude the Hub stack projects here — they're handled by the dedicated Hub teardown
   // (which is also where Hub images are snapshotted), keeping that the single source of truth.
-  const hubProjects = new Set(['ci-os-hub', 'ci-hub', 'runtipi']);
+  const hubProjects = new Set(['ci-os-hub', 'ci-hub', 'runcihub']);
   const managedProjects = new Set<string>();
   for (const line of managedLabelLines) {
     for (const pair of line.split(',')) {
@@ -366,7 +366,7 @@ export function runHubCleanup(options?: CleanupOptions): CleanupSummary {
 
   runCommand('docker compose --project-name ci-os-hub -f docker-compose.prod.yml down -v', commandContext);
   runCommand('docker compose --project-name ci-hub -f docker-compose.prod.yml down -v', commandContext);
-  runCommand('docker compose --project-name runtipi -f docker-compose.prod.yml down -v', commandContext);
+  runCommand('docker compose --project-name runcihub -f docker-compose.prod.yml down -v', commandContext);
   runCommand('docker compose --project-name ci-hub -f docker-compose.local.yml down -v', commandContext);
 
   if (platform !== 'win32' && exists('/tmp/.buildx-cache')) {

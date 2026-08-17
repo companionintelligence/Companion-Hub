@@ -2,11 +2,11 @@
 
 ## Project Overview
 
-Runtipi is a personal homeserver orchestrator designed to simplify the deployment, management, and operation of multiple services on a single server. It provides an accessible and user-friendly solution for self-hosting applications without requiring deep technical knowledge of Docker, networking, or server administration.
+CIHub is a personal homeserver orchestrator designed to simplify the deployment, management, and operation of multiple services on a single server. It provides an accessible and user-friendly solution for self-hosting applications without requiring deep technical knowledge of Docker, networking, or server administration.
 
 ## Core Problem Statement
 
-Managing multiple self-hosted services is typically complex, requiring specialized knowledge of containers, networking, and Linux administration. Runtipi aims to make self-hosting accessible to users of all technical backgrounds by providing:
+Managing multiple self-hosted services is typically complex, requiring specialized knowledge of containers, networking, and Linux administration. CIHub aims to make self-hosting accessible to users of all technical backgrounds by providing:
 
 1. A streamlined installation process
 2. A user-friendly web interface for managing services
@@ -31,9 +31,9 @@ Managing multiple self-hosted services is typically complex, requiring specializ
 
 ## Success Criteria
 
-1. Users can install Runtipi with minimal technical knowledge
+1. Users can install CIHub with minimal technical knowledge
 2. Users can discover, install, and manage services through the web interface
-3. Services deployed through Runtipi are secure and isolated
+3. Services deployed through CIHub are secure and isolated
 4. The system is stable and handles service dependencies appropriately
 5. Updates and maintenance can be performed with minimal downtime
 
@@ -54,4 +54,4 @@ Managing multiple self-hosted services is typically complex, requiring specializ
 
 ## Current Status
 
-Runtipi is an active open-source project with a community of contributors. It has an established architecture with ongoing development of new features, improvements, and app integrations.
+CIHub is an active open-source project with a community of contributors. It has an established architecture with ongoing development of new features, improvements, and app integrations.

@@ -1,9 +1,9 @@
 {
-  "$schema": "https://schemas.runtipi.io/v2/app-info.json",
+  "$schema": "https://schemas.runcihub.io/v2/app-info.json",
   "id": "ci-e2e-test-app",
   "name": "CI E2E Test App",
   "version": "1.0.0",
-  "tipi_version": 1,
+  "cihub_version": 1,
   "short_desc": "Purpose-built test app for Hub platform E2E validation",
   "author": "Companion Intelligence",
   "source": "https://github.com/companionintelligence/CI-Hub",

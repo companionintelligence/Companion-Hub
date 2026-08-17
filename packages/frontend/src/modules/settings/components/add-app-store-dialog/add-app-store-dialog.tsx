@@ -3,7 +3,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { useDisclosure } from '@/lib/hooks/use-disclosure';
 import { useTranslation } from 'react-i18next';
 
-/** Manual app store URLs (Tipi-era) were removed; CI Hubs use the auto-configured CI Marketplace. */
+/** Manual app store URLs (CIHub-era) were removed; CI Hubs use the auto-configured CI Marketplace. */
 export const AddAppStoreDialog = () => {
   const { t } = useTranslation();
   const addAppStoreDisclosure = useDisclosure();

@@ -4,7 +4,7 @@
 
 Based on the repository analysis, the following core functionality appears to be working:
 
-1. **Core Platform**: The main Runtipi platform with web UI, backend services, and Docker orchestration
+1. **Core Platform**: The main CIHub platform with web UI, backend services, and Docker orchestration
 2. **App Store**: A repository of 268+ applications available for installation
 3. **User Management**: Registration, login, and password reset functionality
 4. **App Management**: Installation, configuration, and removal of applications

@@ -1,4 +1,4 @@
-# @runtipi/schemas
+# @runcihub/schemas
 
 ## 0.8.0
 

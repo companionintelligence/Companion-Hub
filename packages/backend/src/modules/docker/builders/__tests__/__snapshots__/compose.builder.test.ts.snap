@@ -12,7 +12,7 @@ exports[`DockerComposeBuilder > should be able to parse a compose.json file 1`] 
         gw_priority: 1
     environment:
       UPLOAD_FOLDER: /var/uploads
-      DATABASE_URL: mysql+pymysql://tipi:\${CTFD_MYSQL_DB_PASSWORD}@ctfd-db/ctfd
+      DATABASE_URL: mysql+pymysql://cihub:\${CTFD_MYSQL_DB_PASSWORD}@ctfd-db/ctfd
     ports:
       - \${APP_PORT}:8000
     volumes:
@@ -41,7 +41,7 @@ exports[`DockerComposeBuilder > should be able to parse a compose.json file 1`] 
         gw_priority: 0
     environment:
       MYSQL_ROOT_PASSWORD: \${CTFD_MYSQL_ROOT_PASSWORD}
-      MYSQL_USER: tipi
+      MYSQL_USER: cihub
       MYSQL_PASSWORD: \${CTFD_MYSQL_DB_PASSWORD}
       MYSQL_DATABASE: ctfd
     volumes:
@@ -345,7 +345,7 @@ networks:
 "
 `;
 
-exports[`DockerComposeBuilder > should correctly interpolate RUNTIPI_APP_ID in service labels 1`] = `
+exports[`DockerComposeBuilder > should correctly interpolate RUNCIHUB_APP_ID in service labels 1`] = `
 "services:
   service:
     image: image

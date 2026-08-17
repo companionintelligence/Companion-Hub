@@ -17,7 +17,7 @@ fi
 ### --------------------------------
 UPDATE="false"
 VERSION="latest"
-ASSET="runtipi-cli-linux-x86_64.tar.gz" # Legacy tarball name; ships `cihub` binary (rename tracked with CI packaging)
+ASSET="runcihub-cli-linux-x86_64.tar.gz" # Legacy tarball name; ships `cihub` binary (rename tracked with CI packaging)
 ENV_FILE=""
 
 while [ -n "${1-}" ]; do
@@ -206,33 +206,33 @@ if [[ "${VERSION}" == "latest" ]]; then
 fi
 
 if [[ "$ARCHITECTURE" == "arm64" || "$ARCHITECTURE" == "aarch64" ]]; then
-  ASSET="runtipi-cli-linux-aarch64.tar.gz"
+  ASSET="runcihub-cli-linux-aarch64.tar.gz"
 fi
 
 URL="https://github.com/companionintelligence/CI-OS-Hub/releases/download/$VERSION/$ASSET"
 
 if [[ "${UPDATE}" == "false" ]]; then
-  mkdir -p runtipi # Legacy install dir name; contains `cihub` binary after extract
-  cd runtipi || exit
+  mkdir -p runcihub # Legacy install dir name; contains `cihub` binary after extract
+  cd runcihub || exit
 fi
 
 # If the asset has a .tar.gz extension, it will be extracted
 if [[ "$ASSET" == *".tar.gz" ]]; then
-  curl --location "$URL" -o ./runtipi-cli.tar.gz
-  tar -xzf ./runtipi-cli.tar.gz
+  curl --location "$URL" -o ./runcihub-cli.tar.gz
+  tar -xzf ./runcihub-cli.tar.gz
 
-  asset_name=$(tar -tzf ./runtipi-cli.tar.gz | head -n 1 | cut -f1 -d"/")
-  mv "./${asset_name}" ./runtipi-cli
-  rm ./runtipi-cli.tar.gz
+  asset_name=$(tar -tzf ./runcihub-cli.tar.gz | head -n 1 | cut -f1 -d"/")
+  mv "./${asset_name}" ./runcihub-cli
+  rm ./runcihub-cli.tar.gz
 else
-  curl --location "$URL" -o ./runtipi-cli
+  curl --location "$URL" -o ./runcihub-cli
 fi
 
-chmod +x ./runtipi-cli
+chmod +x ./runcihub-cli
 
 if [[ "${ENV_FILE}" != "" ]]; then
   echo "Starting CI-Hub with env file ${ENV_FILE}"
-  sudo ./runtipi-cli start --env-file "${ENV_FILE}"
+  sudo ./runcihub-cli start --env-file "${ENV_FILE}"
 else
-  sudo ./runtipi-cli start
+  sudo ./runcihub-cli start
 fi

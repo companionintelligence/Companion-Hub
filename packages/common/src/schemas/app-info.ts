@@ -440,16 +440,16 @@ export const formFieldSchema = z.object({
   trailing_slash: z.boolean().optional(),
 });
 
-/** Accept legacy Runtipi field names when parsing app config.json from stores or backups. */
+/** Accept legacy CIHub field names when parsing app config.json from stores or backups. */
 function normalizeAppInfoInput(input: unknown): unknown {
   if (!input || typeof input !== 'object' || Array.isArray(input)) return input;
   const raw = input as Record<string, unknown>;
   return {
     ...raw,
     cihub_app_version:
-      typeof raw.cihub_app_version === 'number' ? raw.cihub_app_version : typeof raw.tipi_version === 'number' ? raw.tipi_version : 1,
+      typeof raw.cihub_app_version === 'number' ? raw.cihub_app_version : typeof raw.cihub_version === 'number' ? raw.cihub_version : 1,
     min_hub_version:
-      typeof raw.min_hub_version === 'string' ? raw.min_hub_version : typeof raw.min_tipi_version === 'string' ? raw.min_tipi_version : undefined,
+      typeof raw.min_hub_version === 'string' ? raw.min_hub_version : typeof raw.min_cihub_version === 'string' ? raw.min_cihub_version : undefined,
   };
 }
 

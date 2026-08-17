@@ -1,5 +1,5 @@
 ---
-"@runtipi/common": patch
+"@runcihub/common": patch
 ---
 
 Schema changes
