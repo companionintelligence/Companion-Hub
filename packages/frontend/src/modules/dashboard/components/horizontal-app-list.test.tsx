@@ -46,14 +46,14 @@ describe('HorizontalAppList', () => {
   // fiber per key, so when the array was swapped for the real rows only ONE stale fiber was deleted
   // and the other N-1 kept their DOM nodes: N apps rendered as 2N-1 tiles.
   it('MUST NOT strand ghost tiles when optimistic rows are replaced by real ones', () => {
-    const optimistic = [ghost('ci-hermes:ci-marketplace', 'Hermes', -1), ghost('ci-import-tools:ci-marketplace', 'Memory Import Tools', -1)];
+    const optimistic = [ghost('ci-hermes:ci-marketplace', 'Hermes', -1), ghost('ci-planning:ci-marketplace', 'Planning', -1)];
 
     const { rerender } = renderList(optimistic);
     expect(screen.getAllByRole('link')).toHaveLength(2);
 
     rerender(
       <MemoryRouter>
-        <HorizontalAppList apps={[real('ci-hermes:ci-marketplace', 'Hermes', 1), real('ci-import-tools:ci-marketplace', 'Import Tools', 2)]} />
+        <HorizontalAppList apps={[real('ci-hermes:ci-marketplace', 'Hermes', 1), real('ci-planning:ci-marketplace', 'Companion Planning', 2)]} />
       </MemoryRouter>,
     );
 
@@ -65,20 +65,20 @@ describe('HorizontalAppList', () => {
   });
 
   it('MUST update a tile in place as it goes from optimistic to installed', () => {
-    const urn = 'ci-import-tools:ci-marketplace';
+    const urn = 'ci-planning:ci-marketplace';
 
-    const { rerender } = renderList([ghost(urn, 'Memory Import Tools', -1)]);
-    expect(screen.getByText('Memory Import Tools')).toBeInTheDocument();
+    const { rerender } = renderList([ghost(urn, 'Planning', -1)]);
+    expect(screen.getByText('Planning')).toBeInTheDocument();
 
     rerender(
       <MemoryRouter>
-        <HorizontalAppList apps={[real(urn, 'Import Tools', 4)]} />
+        <HorizontalAppList apps={[real(urn, 'Companion Planning', 4)]} />
       </MemoryRouter>,
     );
 
     expect(screen.getAllByRole('link')).toHaveLength(1);
-    expect(screen.getByText('Import Tools')).toBeInTheDocument();
-    expect(screen.queryByText('Memory Import Tools')).not.toBeInTheDocument();
+    expect(screen.getByText('Companion Planning')).toBeInTheDocument();
+    expect(screen.queryByText('Planning')).not.toBeInTheDocument();
   });
 
   // A urn identifies an app exactly once. The DB has no unique index on (app_name, app_store_slug),

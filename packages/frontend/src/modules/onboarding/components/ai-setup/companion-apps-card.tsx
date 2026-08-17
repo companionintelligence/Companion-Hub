@@ -9,17 +9,15 @@ import { useMarketplaceCatalogApps } from '../../helpers/use-marketplace-catalog
 import { OnboardingAppIcon } from '../onboarding-app-icon';
 import { SelectIndicator, StepSection } from './primitives';
 
-/** First-party CI apps pre-selected during onboarding. */
-export const COMPANION_ONBOARDING_SLUGS = ['ci-memory', 'ci-import-tools'] as const;
+/** First-party CI apps pre-selected during onboarding. Import lives inside CI Memory. */
+export const COMPANION_ONBOARDING_SLUGS = ['ci-memory'] as const;
 
 const COMPANION_DESCRIPTION_KEYS: Record<(typeof COMPANION_ONBOARDING_SLUGS)[number], string> = {
   'ci-memory': 'ONBOARDING_COMPANION_MEMORY_DESC',
-  'ci-import-tools': 'ONBOARDING_COMPANION_IMPORT_TOOLS_DESC',
 };
 
 const COMPANION_NAME_KEYS: Partial<Record<(typeof COMPANION_ONBOARDING_SLUGS)[number], string>> = {
   'ci-memory': 'ONBOARDING_COMPANION_MEMORY_TITLE',
-  'ci-import-tools': 'ONBOARDING_COMPANION_IMPORT_TOOLS_NAME',
 };
 
 interface CompanionAppsCardProps {

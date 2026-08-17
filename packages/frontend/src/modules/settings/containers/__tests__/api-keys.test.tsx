@@ -206,12 +206,12 @@ describe('ApiKeysContainer', () => {
   describe('capability', () => {
     const APP_ONLY_KEY = {
       id: 3,
-      name: 'ci-import-tools',
+      name: 'ci-planning',
       prefix: 'cafe0001',
       scopes: ['app'],
       capability: 'write',
       managed: true,
-      ownerAppUrn: 'import-tools:ci-marketplace',
+      ownerAppUrn: 'ci-planning:ci-marketplace',
       expiresAt: null,
       lastUsedAt: null,
       createdAt: '2026-01-03T00:00:00Z',
@@ -237,7 +237,7 @@ describe('ApiKeysContainer', () => {
       render(<ApiKeysContainer />);
       await waitFor(() => expect(screen.getByTestId('api-key-list')).toBeTruthy());
 
-      const row = screen.getByText('ci-import-tools').closest('li') as HTMLElement;
+      const row = screen.getByText('ci-planning').closest('li') as HTMLElement;
       expect(within(row).queryByTestId('api-key-capability-write')).toBeNull();
       expect(within(row).queryByRole('button', { name: 'API_KEYS_CAPABILITY_CHANGE' })).toBeNull();
     });

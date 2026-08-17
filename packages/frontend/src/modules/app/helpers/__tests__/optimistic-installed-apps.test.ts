@@ -10,7 +10,7 @@ vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
 const KEY = ['getInstalledApps'];
 
 const HERMES = { urn: 'ci-hermes:ci-marketplace', name: 'Hermes', slug: 'ci-hermes' };
-const IMPORT_TOOLS = { urn: 'ci-import-tools:ci-marketplace', name: 'Import Tools', slug: 'ci-import-tools' };
+const PLANNING = { urn: 'ci-planning:ci-marketplace', name: 'Companion Planning', slug: 'ci-planning' };
 
 describe('optimistic installed apps', () => {
   let queryClient: QueryClient;
@@ -35,7 +35,7 @@ describe('optimistic installed apps', () => {
   // and stranded DOM nodes. Distinct ids are what make the keys safe.
   it('MUST give concurrently enqueued apps distinct app ids', () => {
     addOptimisticInstalledApp(queryClient, HERMES);
-    addOptimisticInstalledApp(queryClient, IMPORT_TOOLS);
+    addOptimisticInstalledApp(queryClient, PLANNING);
 
     const ids = installed().map((entry) => entry.app.id);
 
@@ -45,7 +45,7 @@ describe('optimistic installed apps', () => {
 
   it('MUST keep optimistic ids negative so they can never collide with a real serial id', () => {
     addOptimisticInstalledApp(queryClient, HERMES);
-    addOptimisticInstalledApp(queryClient, IMPORT_TOOLS);
+    addOptimisticInstalledApp(queryClient, PLANNING);
 
     for (const entry of installed()) {
       expect(entry.app.id).toBeLessThan(0);
@@ -101,7 +101,7 @@ describe('optimistic installed apps', () => {
       expect(() => removeOptimisticInstalledApp(queryClient, HERMES.urn)).not.toThrow();
 
       addOptimisticInstalledApp(queryClient, HERMES);
-      removeOptimisticInstalledApp(queryClient, IMPORT_TOOLS.urn);
+      removeOptimisticInstalledApp(queryClient, PLANNING.urn);
 
       expect(installed()).toHaveLength(1);
     });

@@ -1103,7 +1103,7 @@ export class AuthController {
         }
       }
 
-      // Sign the identity header so a consumer (e.g. CI-Server, ci-import-tools) can
+      // Sign the identity header so a consumer (e.g. CI-Server) can
       // verify it was issued by the Hub and not forged by another container on
       // ci_os_hub_network. The signing secret is PER TARGET APP (CI-Engineering#74):
       // the resolver maps X-Forwarded-Host to the destination app and signs with the

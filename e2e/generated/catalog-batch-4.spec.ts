@@ -2,7 +2,7 @@
 /**
  * Auto-generated app catalog tests for server batch 4
  * Generated: 2026-08-03T06:03:25.007Z
- * Apps: 50
+ * Apps: 49
  */
 
 import { expect, loginUser, test } from '../fixtures/fixtures';
@@ -105,21 +105,6 @@ const APPS = [
       "agents",
       "ai",
       "utilities"
-    ],
-    "priority": "low",
-    "mcp": false
-  },
-  {
-    "id": "ci-import-tools",
-    "storeSlug": "ci-apps",
-    "name": "Import Tools",
-    "expectedPort": 18802,
-    "healthEndpoint": "/",
-    "hasGui": true,
-    "categories": [
-      "companion-intelligence",
-      "utilities",
-      "featured"
     ],
     "priority": "low",
     "mcp": false

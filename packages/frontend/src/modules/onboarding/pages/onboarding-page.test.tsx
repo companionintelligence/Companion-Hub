@@ -222,16 +222,6 @@ vi.mock('../components/ai-setup-step', () => ({
               localSubdomain: 'ci-memory',
               exposureMode: 'tailscale',
             },
-            {
-              appSlug: 'ci-import-tools',
-              name: 'Import Tools',
-              icon: '',
-              category: 'companion-intelligence',
-              replacesNames: [],
-              urn: 'urn:store:ci-import-tools',
-              localSubdomain: 'ci-import-tools',
-              exposureMode: 'tailscale',
-            },
           ])
         }
       >
@@ -256,16 +246,6 @@ vi.mock('../components/ai-setup/companion-apps-card', () => ({
               replacesNames: [],
               urn: 'urn:store:ci-memory',
               localSubdomain: 'ci-memory',
-              exposureMode: 'tailscale',
-            },
-            {
-              appSlug: 'ci-import-tools',
-              name: 'Import Tools',
-              icon: '',
-              category: 'companion-intelligence',
-              replacesNames: [],
-              urn: 'urn:store:ci-import-tools',
-              localSubdomain: 'ci-import-tools',
               exposureMode: 'tailscale',
             },
           ])
@@ -571,7 +551,7 @@ describe('OnboardingPage (single vertical form)', () => {
     await user.click(screen.getByRole('button', { name: 'emit-companion-apps' }));
     await user.click(screen.getByTestId('finish-setup-btn'));
 
-    expect(screen.getByTestId('install-step')).toHaveAttribute('data-apps', 'ci-openclaw,ci-memory,ci-import-tools');
+    expect(screen.getByTestId('install-step')).toHaveAttribute('data-apps', 'ci-openclaw,ci-memory');
   });
 
   it('deduplicates Hermes when selected via agent framework and legacy app slug', async () => {

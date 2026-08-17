@@ -662,7 +662,7 @@ export class AppHelpers {
     // Portal origin per environment (https://hub.ci.computer in prod,
     // https://hub.companionintelligence.com in dev). NOTE: this is NOT hub.<DOMAIN>:
     // DOMAIN is the public *app* zone (apps deploy at
-    // ci-import-tools-<device>-<org>.companionintelligence.com), which in prod is a
+    // ci-memory-<device>-<org>.companionintelligence.com), which in prod is a
     // different zone from the Portal IdP. If the issuer is not injected, an exposed
     // app falls back to its hardcoded default IdP and the Portal rejects the
     // sign-in with INVALID_REDIRECT_URI (see CI-Hub#870).
