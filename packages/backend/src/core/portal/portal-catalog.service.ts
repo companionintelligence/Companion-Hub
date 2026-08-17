@@ -43,6 +43,12 @@ type PortalCatalogApp = {
   demo_video?: string;
 };
 
+const HUB_MANAGED_MARKETPLACE_APP_IDS = new Set(['cloudflared', 'cloudflare-tunnel']);
+
+function isHubManagedMarketplaceApp(slug: string): boolean {
+  return HUB_MANAGED_MARKETPLACE_APP_IDS.has(slug.trim().toLowerCase());
+}
+
 export type PortalCatalogEntry = {
   id: string;
   urn: AppUrn;
@@ -84,6 +90,7 @@ export class PortalCatalogService {
   private mapPortalApp(app: PortalCatalogApp): PortalCatalogEntry | null {
     const slug = app.slug ?? app.id;
     if (!slug) return null;
+    if (isHubManagedMarketplaceApp(slug)) return null;
     const name = app.name ?? app.title ?? slug;
     const short_desc = app.short_desc ?? app.shortDescription ?? app.description ?? '';
     const categories = new Set<string>();
@@ -294,6 +301,7 @@ export class PortalCatalogService {
     if (!this.isCiMarketplaceUrn(appUrn)) return null;
 
     const { appName } = extractAppUrn(appUrn);
+    if (isHubManagedMarketplaceApp(appName)) return null;
 
     try {
       const raw = await this.portalClient.fetchStoreCatalog();

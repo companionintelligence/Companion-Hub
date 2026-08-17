@@ -155,6 +155,30 @@ describe('buildAppAccessPoints', () => {
     });
   });
 
+  it('uses https for direct local access when the app declares an HTTPS endpoint', () => {
+    const accessPoints = buildAppAccessPoints({
+      app: {
+        status: 'running',
+        port: 6901,
+        localSubdomain: 'claude-code',
+        exposureMode: 'local',
+        exposedLocal: true,
+      } as any,
+      info: { ...info, https: true, port: 6901, url_suffix: '' },
+      sslPort: 443,
+      internalIp: '0.0.0.0',
+      publicDomain: 'companionintelligence.com',
+      cloudflareAvailable: true,
+      tailscaleAvailable: false,
+    });
+
+    expect(accessPoints[2]).toMatchObject({
+      key: 'local',
+      url: 'https://127.0.0.1:6901',
+      state: 'active',
+    });
+  });
+
   it('does not mark local access active for tailscale-only apps without a published host port', () => {
     const accessPoints = buildAppAccessPoints({
       app: {
