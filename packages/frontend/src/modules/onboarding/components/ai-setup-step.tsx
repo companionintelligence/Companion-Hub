@@ -168,7 +168,7 @@ export const AiSetupStep = ({
     const requestId = ++profileRequestId.current;
     try {
       const backend = backendOverride ?? selectedBackend;
-      const data = await fetchInferenceOnboardingProfile(backend, vllmUrl);
+      const data = await fetchInferenceOnboardingProfile(backend, vllmUrl, backend === 'vllm' ? vllmApiKey : undefined);
       // Superseded: a rescan that started before a backend switch but answers after it would push
       // `backends.recommended` back over the backend the operator just picked, and reset their
       // selection to that backend's defaults.
@@ -214,7 +214,7 @@ export const AiSetupStep = ({
   const checkVllmStatus = async (): Promise<VllmStatus> => {
     setCheckingVllm(true);
     try {
-      const data = (await fetchVllmInstallStatus(vllmUrl)) as VllmStatus;
+      const data = (await fetchVllmInstallStatus(vllmUrl, vllmApiKey)) as VllmStatus;
       setVllmStatus(data);
       return data;
     } catch (_e) {
@@ -239,7 +239,7 @@ export const AiSetupStep = ({
     const requestId = ++profileRequestId.current;
     try {
       const previouslyInstalled = new Set(profile?.installedCatalogIds ?? []);
-      const data = await fetchInferenceOnboardingProfile(backend, vllmUrl);
+      const data = await fetchInferenceOnboardingProfile(backend, vllmUrl, backend === 'vllm' ? vllmApiKey : undefined);
       // Drop a superseded answer. Rescan and the backend selector write the same `profile`, so a
       // refresh that started first but landed last would reinstate pre-rescan hardware figures, or
       // leave `profile` scoped to a backend the operator has already switched away from.
@@ -324,7 +324,7 @@ export const AiSetupStep = ({
     setSelectedBackend(backend);
     const requestId = ++profileRequestId.current;
     try {
-      const data = await fetchInferenceOnboardingProfile(backend, vllmUrl);
+      const data = await fetchInferenceOnboardingProfile(backend, vllmUrl, backend === 'vllm' ? vllmApiKey : undefined);
       // `setSelectedBackend` above is synchronous, so two quick switches already end on the right
       // backend — but the slower fetch can still answer last and leave `profile` (and the selection
       // derived from it) describing the backend the operator switched away from.

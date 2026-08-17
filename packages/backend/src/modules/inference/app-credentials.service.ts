@@ -10,9 +10,10 @@ import { VllmBackend } from './backends/vllm.backend';
 import { LemonadeBackend } from './backends/lemonade.backend';
 import type { InferenceBackend } from './backends/backend.interface';
 import type { CuratedModel, HardwareTier, InferenceBackendType } from '@ci-hub/common/types';
-import { isCatalogModelInstalled } from './model-availability.util';
+import { isCatalogModelInstalled, isServedModelForCatalog } from './model-availability.util';
 import { appMinContextLength, recommendContextLength } from './context-length.util';
 import { BACKEND_API_KEY } from './inference-env-resolver';
+import { cloudProviderManagedKeys } from './cloud-provider-env';
 
 // Only Hub-managed sibling apps use the bootstrap credentials endpoints.
 // Standalone services (for example companion-memory / CI-Server) receive
@@ -156,22 +157,35 @@ export class AppCredentialsService {
     });
     const endpointReady = !!(endpointHealth.running && endpointHealth.healthy);
 
+    // Embeddings stay on Ollama even when chat is vLLM/Lemonade. Probe Ollama
+    // separately so a vLLM-only health check cannot look like "embeddings ready"
+    // and so we do not fire an Ollama pull against a vLLM served-id list.
+    const ollamaHealth =
+      backendType === 'ollama'
+        ? endpointHealth
+        : await this.ollamaBackend.healthCheck().catch((err) => {
+            this.logger.error(`[AppCredentials] ollama health check threw: ${err instanceof Error ? err.message : String(err)}`);
+            return { running: false, healthy: false, modelsLoaded: [] as string[] };
+          });
+    const ollamaEndpointReady = !!(ollamaHealth.running && ollamaHealth.healthy);
+
     const candidates = this.modelRegistry.getRecommendedModelsForHardware(profile.tier, profile).filter((m) => m.backend === backendType);
     const preferredModelId = preferences.preferredModel;
     const recommendedLlm = this.resolveRecommendedLlm(candidates, preferredModelId, profile.tier);
-    const availableLlm = this.resolveAvailableLlm(candidates, preferredModelId, profile.tier, endpointHealth.modelsLoaded);
+    const availableLlm = this.resolveAvailableLlm(candidates, preferredModelId, profile.tier, endpointHealth.modelsLoaded, backendType);
     const embeddings =
       (preferences.preferredEmbeddingModel ? this.modelRegistry.getCuratedModel(preferences.preferredEmbeddingModel) : null) ??
       this.modelRegistry.getRecommendedEmbeddingModel(profile.tier, 'ollama');
 
-    const cloudProvider = this.cloudFallback.getEnabledProviders()[0];
+    const cloudProviders = this.cloudFallback.getEnabledProviders();
+    const cloudProvider = endpointReady ? undefined : cloudProviders[0];
 
-    const chatModelReady = recommendedLlm ? this.isModelPulled(recommendedLlm.id, endpointHealth.modelsLoaded) : false;
-    if (!cloudProvider && recommendedLlm && !chatModelReady && endpointReady) {
+    const chatModelReady = recommendedLlm ? this.isModelPulled(recommendedLlm.id, endpointHealth.modelsLoaded, backendType) : false;
+    if (!cloudProvider && recommendedLlm && !chatModelReady && endpointReady && backendType === 'ollama') {
       void this.maybeFirePrePull(recommendedLlm.id);
     }
-    const embeddingsReady = embeddings ? this.isModelPulled(embeddings.id, endpointHealth.modelsLoaded) : false;
-    if (embeddings && !embeddingsReady && endpointReady) {
+    const embeddingsReady = embeddings ? this.isModelPulled(embeddings.id, ollamaHealth.modelsLoaded, 'ollama') : false;
+    if (embeddings && !embeddingsReady && ollamaEndpointReady) {
       void this.maybeFirePrePull(embeddings.id);
     }
 
@@ -188,6 +202,9 @@ export class AppCredentialsService {
       }
     }
     let chatModelId = availableLlm?.backendModelId ?? null;
+    if (!chatModelId && backendType === 'vllm' && endpointHealth.modelsLoaded.length > 0) {
+      chatModelId = endpointHealth.modelsLoaded[0] ?? null;
+    }
     const embeddingsModelId = embeddings?.backendModelId ?? null;
 
     // ─── Cloud override: app → cloud provider API directly ───────────────
@@ -201,6 +218,8 @@ export class AppCredentialsService {
     const env: Record<string, string> = {
       [keys.baseUrl]: endpointUrl,
       [keys.apiKey]: apiKey,
+      CI_INFERENCE_BACKEND: provider,
+      ...this.cloudFallback.toAppEnv(),
     };
     if (chatModelId) {
       env[keys.model] = chatModelId;
@@ -242,7 +261,7 @@ export class AppCredentialsService {
     // emit a value (cloud provider selected, or no runnable local model) — so the
     // X-Hub-Managed-Keys header tells consumers to strip any stale *_NUM_CTX left
     // in the app's .env rather than honoring an outdated context cap.
-    const managedKeys = Object.keys(env);
+    const managedKeys = [...new Set([...Object.keys(env), ...cloudProviderManagedKeys()])];
     if (!managedKeys.includes(keys.numCtx)) {
       managedKeys.push(keys.numCtx);
     }
@@ -304,10 +323,11 @@ export class AppCredentialsService {
     preferredId: string | null,
     tier: HardwareTier,
     modelsLoaded: string[],
+    backendType: InferenceBackendType,
   ): CuratedModel | null {
     const pickIfAvailable = (model: CuratedModel | null | undefined): CuratedModel | null => {
       if (!model || model.modality !== 'llm') return null;
-      return this.isCuratedModelAvailable(model, modelsLoaded) ? model : null;
+      return this.isCuratedModelAvailable(model, modelsLoaded, backendType) ? model : null;
     };
 
     if (preferredId) {
@@ -321,7 +341,7 @@ export class AppCredentialsService {
         if (preferredCurated) return preferredCurated;
       }
 
-      this.logger.warn(`[AppBootstrap] preferred model ${preferredId} is not available in Ollama; falling back to a pulled model.`);
+      this.logger.warn(`[AppBootstrap] preferred model ${preferredId} is not available on ${backendType}; falling back to a served model.`);
     }
 
     for (const candidate of candidates) {
@@ -332,17 +352,24 @@ export class AppCredentialsService {
     return null;
   }
 
-  private isCuratedModelAvailable(model: CuratedModel, modelsLoaded: string[]): boolean {
-    if (this.isModelPulled(model.id, modelsLoaded)) return true;
+  private isCuratedModelAvailable(model: CuratedModel, modelsLoaded: string[], backendType: InferenceBackendType): boolean {
+    if (this.isModelPulled(model.id, modelsLoaded, backendType)) return true;
+    if (backendType === 'vllm') {
+      return isServedModelForCatalog(model, modelsLoaded);
+    }
     return isCatalogModelInstalled(model, modelsLoaded);
   }
 
-  private isModelPulled(catalogId: string, modelsLoaded: string[]): boolean {
+  private isModelPulled(catalogId: string, modelsLoaded: string[], backendType: InferenceBackendType): boolean {
+    const curated = this.modelRegistry.getCuratedModel(catalogId);
+    if (backendType === 'vllm') {
+      return curated ? isServedModelForCatalog(curated, modelsLoaded) : modelsLoaded.includes(catalogId);
+    }
+
     const tracked = this.modelRegistry.getTrackedModel(catalogId);
     if (tracked && (tracked.state === 'pulled' || tracked.state === 'loaded' || tracked.state === 'pinned')) {
       return true;
     }
-    const curated = this.modelRegistry.getCuratedModel(catalogId);
     return isCatalogModelInstalled(curated, modelsLoaded);
   }
 

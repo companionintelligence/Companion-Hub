@@ -46,7 +46,11 @@ import {
 import { ApiResponse } from '@nestjs/swagger';
 import {
   buildPortalDesktopDeepLink,
+  buildPortalDesktopHandoffHtml,
   buildPortalSsoErrorRedirectUrl,
+  PORTAL_DESKTOP_PRESENCE_CACHE_KEY,
+  PORTAL_DESKTOP_PRESENCE_TTL_SECONDS,
+  shouldHandoffPortalLoginToDesktop,
   exchangePortalAuthorizationCode,
   fetchPortalSessionEmail,
   type PortalDesktopExchange,
@@ -60,6 +64,7 @@ import {
   toDesktopRedirectPath,
 } from './portal-sso';
 import { extractBearerToken, portalClaimsIdentity, verifyPortalIdToken } from './portal-token';
+import { sessionIdsFromRequest } from './auth.middleware';
 
 /** Query param carrying the single-use edge-SSO ticket between the Hub and an app host (#77). */
 const EDGE_SSO_TICKET_PARAM = 'cihub_sso';
@@ -88,6 +93,16 @@ export class AuthController {
     private readonly deviceRegistration: DeviceRegistrationRepository,
   ) {}
 
+  private sessionCookieOptions(req: Request, scope?: { host?: string; proto?: string }) {
+    // Normalized for the same reason `/traefik` normalizes it: `getCookieDomain` gates on
+    // `validator.isFQDN`, which rejects a port (`ci.lan:8443`) and a comma-joined repeat.
+    const host = normalizeForwardedHost(scope?.host ?? req.headers['x-forwarded-host']);
+    const proto = (scope?.proto ?? (req.headers['x-forwarded-proto'] as string | undefined))?.split(',')[0]?.trim();
+    const domain = this.authService.getCookieDomain(host);
+    const secure = proto === 'https';
+    return { host, proto, domain, secure };
+  }
+
   /**
    * `scope` overrides the host/proto the cookie is scoped to. The edge-SSO consume needs it: that
    * request arrives with the tunnel-REWRITTEN host (`<app>.<localDomain>`) and the hop's `http`
@@ -96,44 +111,37 @@ export class AuthController {
    * domain-match the browser's host, so the cookie is discarded (RFC 6265) and the visitor loops.
    */
   private async setSessionCookie(res: Response, sessionId: string, req: Request, scope?: { host?: string; proto?: string }) {
-    // Normalized for the same reason `/traefik` normalizes it: `getCookieDomain` gates on
-    // `validator.isFQDN`, which rejects a port (`ci.lan:8443`) and a comma-joined repeat
-    // (`hub.example.com, proxy.example`) alike. Either one silently drops the Domain attribute and
-    // makes the cookie host-only — which on the LAN is not cosmetic: the `.ci.lan` domain cookie
-    // is exactly what lets an app subdomain see the session, so SSO stops working over the
-    // documented `:8443` tailnet path with nothing in the logs to say why.
-    const host = normalizeForwardedHost(scope?.host ?? req.headers['x-forwarded-host']);
-    // First hop only: a repeated header reaches Node comma-joined, and `https, http` matches
-    // neither branch below, so an https request would silently be treated as plaintext.
-    const proto = (scope?.proto ?? (req.headers['x-forwarded-proto'] as string | undefined))?.split(',')[0]?.trim();
-    const domain = this.authService.getCookieDomain(host);
-    // Derived from the SCHEME alone. `getCookieDomain` returns undefined for any non-FQDN host —
-    // an IP, `localhost`, a single label — which is a statement about the cookie's Domain
-    // attribute (omit it, make the cookie host-only), not about its transport. Gating `secure` on
-    // it too meant an https request to such a host got a cookie with no `Secure` flag, which the
-    // browser then sends in cleartext to the same host over http: the session id on the wire. The
-    // documented `https://<ip>:8443` tailnet path is exactly that shape.
-    const secure = proto === 'https';
-
-    // The whole header bag is NOT logged. `LoggerService.log` JSON.stringifies every object
-    // argument before winston gets to drop it, so the dump cost was paid at any level — and on
-    // the edge-SSO consume path the bag carries `cookie: ci-hub-sid=<live session>` and
-    // `x-forwarded-uri: …cihub_sso=<ticket>`, which is the very leak `/traefik` strips its own
-    // log line to avoid. The derived values below are what this function actually decides on.
-    this.logger.debug('Setting session cookie', { host, domain, proto, secure });
+    const options = this.sessionCookieOptions(req, scope);
+    this.logger.debug('Setting session cookie', { host: options.host, domain: options.domain, proto: options.proto, secure: options.secure });
 
     if (this.config.get('userSettings').experimental.insecureCookie) {
       this.logger.warn('WARNING: Using insecure cookies. This is not recommended for production environments.');
       res.cookie(SESSION_COOKIE_NAME, sessionId, { httpOnly: true, secure: false, sameSite: 'lax', maxAge: SESSION_COOKIE_MAX_AGE });
-    } else {
-      res.cookie(SESSION_COOKIE_NAME, sessionId, {
-        httpOnly: true,
-        secure,
-        sameSite: 'lax',
-        maxAge: SESSION_COOKIE_MAX_AGE,
-        domain,
-      });
+      return;
     }
+
+    res.cookie(SESSION_COOKIE_NAME, sessionId, {
+      httpOnly: true,
+      secure: options.secure,
+      sameSite: 'lax',
+      maxAge: SESSION_COOKIE_MAX_AGE,
+      domain: options.domain,
+    });
+  }
+
+  /** Must pass the same Domain/Secure flags as Set-Cookie or the browser keeps the stale session. */
+  private async clearSessionCookie(res: Response, req: Request, scope?: { host?: string; proto?: string }) {
+    const options = this.sessionCookieOptions(req, scope);
+    if (this.config.get('userSettings').experimental.insecureCookie) {
+      res.clearCookie(SESSION_COOKIE_NAME, { httpOnly: true, secure: false, sameSite: 'lax' });
+      return;
+    }
+    res.clearCookie(SESSION_COOKIE_NAME, {
+      httpOnly: true,
+      secure: options.secure,
+      sameSite: 'lax',
+      domain: options.domain,
+    });
   }
 
   /**
@@ -268,15 +276,15 @@ export class AuthController {
 
   @Post('/logout')
   async logout(@Res() res: Response, @Req() req: Request) {
-    res.clearCookie(SESSION_COOKIE_NAME);
-    // The auth middleware accepts both cookie and X-CI-Hub-Session header (Tauri desktop
-    // uses the header because WebView2 blocks cross-origin cookies). The logout handler
-    // must do the same — without the header fallback the Tauri logout request finds no
-    // session ID, hits the early return without sending a response, and the request hangs
-    // indefinitely so onSuccess (and the subsequent page reload) never fires.
-    const sessionId = req.cookies[SESSION_COOKIE_NAME] || req.get('x-ci-hub-session');
-
-    if (sessionId) {
+    await this.clearSessionCookie(res, req);
+    // Cookie and header can name different sessions after a login race. Destroy every
+    // id the client presented so a stale cookie cannot leave the live header session
+    // (or vice versa) authenticated after "log out".
+    const sessionIds = new Set(sessionIdsFromRequest(req));
+    if (req.hubSessionId) {
+      sessionIds.add(req.hubSessionId);
+    }
+    for (const sessionId of sessionIds) {
       await this.authService.logout(sessionId);
     }
 
@@ -292,7 +300,7 @@ export class AuthController {
   @UseGuards(AuthGuard)
   @ApiResponse({ type: SessionRefreshDto })
   async refreshSession(@Req() req: Request, @Res({ passthrough: true }) res: Response) {
-    const sessionId = req.cookies[SESSION_COOKIE_NAME] || req.get('x-ci-hub-session');
+    const sessionId = req.hubSessionId ?? req.cookies[SESSION_COOKIE_NAME] ?? req.get('x-ci-hub-session');
     if (!sessionId) {
       throw new TranslatableError('SYSTEM_ERROR_YOU_MUST_BE_LOGGED_IN', undefined, HttpStatus.UNAUTHORIZED);
     }
@@ -322,7 +330,7 @@ export class AuthController {
   @UseGuards(AuthGuard)
   @ApiResponse({ type: BrowserHandoffMintDto })
   async mintBrowserHandoff(@Body() body: BrowserHandoffMintBody, @Req() req: Request) {
-    const sessionId = req.cookies[SESSION_COOKIE_NAME] || req.get('x-ci-hub-session');
+    const sessionId = req.hubSessionId ?? req.cookies[SESSION_COOKIE_NAME] ?? req.get('x-ci-hub-session');
     if (!sessionId) {
       throw new TranslatableError('SYSTEM_ERROR_YOU_MUST_BE_LOGGED_IN', undefined, HttpStatus.UNAUTHORIZED);
     }
@@ -456,7 +464,7 @@ export class AuthController {
    */
   @Get('/portal/start')
   async startPortalLogin(@Req() req: Request, @Res() res: Response, @Query('redirect_url') redirectUrl?: string, @Query('desktop') desktop?: string) {
-    const isDesktop = desktop === '1' || desktop === 'true';
+    const isDesktop = desktop === '1' || desktop === 'true' || this.cache.get(PORTAL_DESKTOP_PRESENCE_CACHE_KEY) === '1';
     const fallbackOrigin = resolveRequestOriginFallback(req);
     const redirectStartError = (errorCode: PortalSsoErrorCode, hubOrigin?: string | null) =>
       res.redirect(
@@ -506,7 +514,9 @@ export class AuthController {
   async portalCallback(@Req() req: Request, @Res({ passthrough: true }) res: Response, @Query('code') code?: string, @Query('state') state?: string) {
     const fallbackOrigin = resolveRequestOriginFallback(req);
     let desktop = false;
-    const redirectError = (hubOrigin: string | null, errorCode: PortalSsoErrorCode) =>
+    const redirectError = (hubOrigin: string | null, errorCode: PortalSsoErrorCode) => {
+      // Do not `return res.redirect(...)` — `@Res({ passthrough: true })` would
+      // then JSON-serialize the Express Response (circular Socket) and 500.
       res.redirect(
         buildPortalSsoErrorRedirectUrl({
           hubOrigin,
@@ -515,6 +525,7 @@ export class AuthController {
           fallbackOrigin,
         }),
       );
+    };
 
     try {
       if (!code || !state) {
@@ -598,23 +609,40 @@ export class AuthController {
       const sessionId = await this.sessionManager.createSession(operator.id);
       await this.setSessionCookie(res, sessionId, req);
 
-      if (desktop) {
+      const handoffToDesktop = shouldHandoffPortalLoginToDesktop({
+        desktop,
+        hubOrigin,
+        desktopAppPresent: this.cache.get(PORTAL_DESKTOP_PRESENCE_CACHE_KEY) === '1',
+      });
+
+      if (handoffToDesktop) {
         const desktopToken = crypto.randomUUID();
         const exchangePayload: PortalDesktopExchange = {
           sessionId,
           redirectPath: toDesktopRedirectPath(redirectUrl, hubOrigin),
+          userId: operator.id,
         };
         this.cache.set(`portal_sso_desktop:${desktopToken}`, JSON.stringify(exchangePayload), 60);
-        return res.redirect(buildPortalDesktopDeepLink(desktopToken, hubOrigin));
+        const deepLink = buildPortalDesktopDeepLink(desktopToken, hubOrigin);
+        this.logger.info('Portal desktop handoff issued one-time token', { hubOrigin, redirectPath: exchangePayload.redirectPath });
+        // A 302 to cihub-dev:// is dropped by some browsers (they stay on Hub `/`
+        // or show Nest JSON). Serve a page that navigates into the app.
+        // Do not return `res.send(...)` — passthrough would JSON-serialize `res`.
+        res.status(200);
+        res.setHeader('Content-Type', 'text/html; charset=utf-8');
+        res.send(buildPortalDesktopHandoffHtml(deepLink));
+        return;
       }
 
       // Redirect back to the requested URL if it's same-origin; otherwise go home.
       const safeRedirect = resolveSameOriginRedirectUrl(redirectUrl, hubOrigin);
       if (safeRedirect) {
-        return res.redirect(safeRedirect);
+        res.redirect(safeRedirect);
+        return;
       }
 
-      return res.redirect(new URL('/home', hubOrigin).toString());
+      res.redirect(new URL('/home', hubOrigin).toString());
+      return;
     } catch (error) {
       this.logger.error('Portal OAuth callback crashed', error);
       return redirectError(null, 'callback_error');
@@ -628,7 +656,10 @@ export class AuthController {
    */
   @Get('/portal/session-hint')
   @ApiResponse({ type: PortalSessionHintDto })
-  async portalSessionHint(@Req() req: Request) {
+  async portalSessionHint(@Req() req: Request, @Query('desktop') desktop?: string) {
+    if (desktop === '1' || desktop === 'true') {
+      this.cache.set(PORTAL_DESKTOP_PRESENCE_CACHE_KEY, '1', PORTAL_DESKTOP_PRESENCE_TTL_SECONDS);
+    }
     const portalBaseUrl = (this.config.get('ciCloudUrl') || '').replace(/\/+$/, '') || null;
 
     if (!portalBaseUrl) {
@@ -669,25 +700,39 @@ export class AuthController {
 
   @Get('/portal/desktop-exchange')
   @ApiResponse({ type: PortalDesktopExchangeDto })
-  async exchangePortalDesktopLogin(@Query('token') token?: string) {
+  async exchangePortalDesktopLogin(@Req() req: Request, @Res({ passthrough: true }) res: Response, @Query('token') token?: string) {
     if (!token) {
       throw new BadRequestException('Missing desktop exchange token');
     }
 
     const cacheKey = `portal_sso_desktop:${token}`;
     const cached = this.cache.get(cacheKey);
-    this.cache.del(cacheKey);
 
     if (!cached) {
       throw new BadRequestException('Invalid or expired desktop exchange token');
     }
 
+    let parsed: PortalDesktopExchange;
     try {
-      const parsed = JSON.parse(cached) as PortalDesktopExchange;
-      return PortalDesktopExchangeDto.parse(parsed, { reportOnly: true });
+      parsed = JSON.parse(cached) as PortalDesktopExchange;
     } catch {
+      this.cache.del(cacheKey);
       throw new BadRequestException('Malformed desktop exchange payload');
     }
+
+    let sessionId = parsed.sessionId;
+    if (!this.sessionManager.resolveSessionUserId(sessionId)) {
+      if (!parsed.userId) {
+        this.cache.del(cacheKey);
+        throw new BadRequestException('Invalid or expired desktop exchange token');
+      }
+      sessionId = await this.sessionManager.createSession(parsed.userId);
+    }
+
+    this.cache.del(cacheKey);
+    await this.setSessionCookie(res, sessionId, req);
+    this.logger.info('Portal desktop exchange planted a session cookie', { redirectPath: parsed.redirectPath });
+    return PortalDesktopExchangeDto.parse({ sessionId, redirectPath: parsed.redirectPath }, { reportOnly: true });
   }
 
   @Patch('/username')
@@ -701,7 +746,7 @@ export class AuthController {
 
     await this.authService.changeUsername({ userId, ...body });
 
-    res.clearCookie(SESSION_COOKIE_NAME);
+    await this.clearSessionCookie(res, req);
     return res.status(204).send();
   }
 
@@ -716,7 +761,7 @@ export class AuthController {
 
     await this.authService.changePassword({ userId, ...body });
 
-    res.clearCookie(SESSION_COOKIE_NAME);
+    await this.clearSessionCookie(res, req);
     return res.status(204).send();
   }
 
@@ -1259,7 +1304,7 @@ export class AuthController {
       throw new BadRequestException('Unsupported edge SSO target');
     }
 
-    const sessionId = req.user ? req.cookies[SESSION_COOKIE_NAME] || req.get('x-ci-hub-session') : undefined;
+    const sessionId = req.user ? (req.hubSessionId ?? req.cookies[SESSION_COOKIE_NAME] ?? req.get('x-ci-hub-session')) : undefined;
     if (!sessionId) {
       // Not logged in on this origin (or Bearer-authed, which has no session to hand off): run
       // the normal login flow and come back here. The redirect_url must be ABSOLUTE — the portal

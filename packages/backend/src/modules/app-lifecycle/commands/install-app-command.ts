@@ -4,6 +4,7 @@ import { SSEService } from '@/core/sse/sse.service';
 import { AppsRepository } from '@/modules/apps/apps.repository';
 import { AppFilesManager } from '@/modules/apps/app-files-manager';
 import { AppHelpers } from '@/modules/apps/app.helpers';
+import { DockerReadFacade } from '@/modules/docker/docker-read.facade';
 import { DockerService } from '@/modules/docker/docker.service';
 import { TraefikConfigService } from '@/modules/docker/traefik-config.service';
 import { EnvUtils } from '@/modules/env/env.utils';
@@ -536,7 +537,11 @@ export class InstallAppCommand extends AppLifecycleCommand {
       // Supplemental health check for slow-fail crashes after the initial verification.
       setTimeout(async () => {
         try {
-          const diagResults = await dockerService.diagnoseAppContainers(appUrn);
+          const dockerReadFacade = this.moduleRef.get(DockerReadFacade, { strict: false });
+          if (!dockerReadFacade) {
+            return;
+          }
+          const diagResults = await dockerReadFacade.diagnoseAppContainers(appUrn);
           if (diagResults.unhealthy.length > 0) {
             const errorSummary = diagResults.unhealthy.map((c) => `${c.name} (${c.state}): ${c.logs}`).join('\n');
             logger.warn(`[AppDiag] App ${appUrn} has unhealthy containers:\n${errorSummary}`);

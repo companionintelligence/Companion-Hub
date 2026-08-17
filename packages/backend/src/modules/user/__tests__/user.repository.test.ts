@@ -1,6 +1,8 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { UserRepository } from '../user.repository';
 import { DATABASE } from '@/core/database/database.module';
+import { SessionUserCache } from '@/core/cache/session-user.cache';
+import type { UserDto } from '../dto/user.dto';
 import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
 
 const mockDb = {
@@ -16,13 +18,15 @@ const mockDb = {
 
 describe('UserRepository', () => {
   let repository: UserRepository;
+  let sessionUserCache: SessionUserCache;
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
-      providers: [UserRepository, { provide: DATABASE, useValue: mockDb }],
+      providers: [UserRepository, SessionUserCache, { provide: DATABASE, useValue: mockDb }],
     }).compile();
 
     repository = module.get<UserRepository>(UserRepository);
+    sessionUserCache = module.get<SessionUserCache>(SessionUserCache);
 
     vi.clearAllMocks();
 
@@ -89,6 +93,36 @@ describe('UserRepository', () => {
       const result = await repository.updateUser(1, { username: 'updated' });
       expect(result).toEqual({ id: 1 });
       expect(mockDb.update).toHaveBeenCalled();
+    });
+
+    // Regression: the cached DTO outlived the write, so `GET /app-context` kept answering
+    // `hasCompletedOnboarding: false` after the user finished onboarding and the /home guard
+    // sent them back through the wizard.
+    it('MUST drop the cached session DTO for the updated user', async () => {
+      sessionUserCache.set(1, { id: 1, hasCompletedOnboarding: false } as UserDto);
+      expect(sessionUserCache.get(1)).toBeDefined();
+
+      await repository.updateUser(1, { hasCompletedOnboarding: true });
+
+      expect(sessionUserCache.get(1)).toBeUndefined();
+    });
+
+    it('MUST leave other users cached when one user is updated', async () => {
+      sessionUserCache.set(1, { id: 1 } as UserDto);
+      sessionUserCache.set(2, { id: 2 } as UserDto);
+
+      await repository.updateUser(1, { hasCompletedOnboarding: true });
+
+      expect(sessionUserCache.get(1)).toBeUndefined();
+      expect(sessionUserCache.get(2)).toEqual({ id: 2 });
+    });
+
+    it('MUST invalidate when the id arrives as a string from the route layer', async () => {
+      sessionUserCache.set(1, { id: 1 } as UserDto);
+
+      await repository.updateUser('1' as unknown as number, { hasCompletedOnboarding: true });
+
+      expect(sessionUserCache.get(1)).toBeUndefined();
     });
   });
 

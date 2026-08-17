@@ -6,19 +6,31 @@ type MutableImportMetaEnv = {
 
 const testEnv = import.meta.env as MutableImportMetaEnv;
 
-const { fetchDeviceRegistrationInfoResult, captureException, captureMessage, init, setLevel, setTag, setExtra, setUser, withScope } = vi.hoisted(
-  () => ({
-    fetchDeviceRegistrationInfoResult: vi.fn(),
-    captureException: vi.fn(),
-    captureMessage: vi.fn(),
-    init: vi.fn(),
-    setLevel: vi.fn(),
-    setTag: vi.fn(),
-    setExtra: vi.fn(),
-    setUser: vi.fn(),
-    withScope: vi.fn(),
-  }),
-);
+const {
+  fetchDeviceRegistrationInfoResult,
+  captureException,
+  captureMessage,
+  init,
+  setLevel,
+  setTag,
+  setExtra,
+  setUser,
+  withScope,
+  browserTracingIntegration,
+  replayIntegration,
+} = vi.hoisted(() => ({
+  fetchDeviceRegistrationInfoResult: vi.fn(),
+  captureException: vi.fn(),
+  captureMessage: vi.fn(),
+  init: vi.fn(),
+  setLevel: vi.fn(),
+  setTag: vi.fn(),
+  setExtra: vi.fn(),
+  setUser: vi.fn(),
+  withScope: vi.fn(),
+  browserTracingIntegration: vi.fn(() => ({ name: 'BrowserTracing' })),
+  replayIntegration: vi.fn(() => ({ name: 'Replay' })),
+}));
 
 vi.mock('@sentry/react', () => ({
   captureMessage,
@@ -27,6 +39,8 @@ vi.mock('@sentry/react', () => ({
   setTag,
   setUser,
   withScope,
+  browserTracingIntegration,
+  replayIntegration,
 }));
 
 vi.mock('./registration-api', () => ({
@@ -106,6 +120,15 @@ describe('frontend sentry', () => {
         dsn: 'https://frontend@example.ingest.sentry.io/123456',
         environment: 'development',
         release: 'ci-hub-frontend@test',
+      }),
+    );
+    expect(browserTracingIntegration).toHaveBeenCalledOnce();
+    expect(replayIntegration).toHaveBeenCalledWith({ maskAllText: true, blockAllMedia: true });
+    // Factories being called is not enough — dropping their return values from
+    // `init` silently disables production tracing / replay.
+    expect(init).toHaveBeenCalledWith(
+      expect.objectContaining({
+        integrations: [{ name: 'BrowserTracing' }, { name: 'Replay' }],
       }),
     );
     expect(setTag).toHaveBeenCalledWith('component', 'browser-web');

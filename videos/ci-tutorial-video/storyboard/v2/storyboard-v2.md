@@ -393,7 +393,7 @@ timeline, dissolve to the phone-pocket stage — "everything you just built fits
 - **Visual/Motion:** Install button gets a highlight ring and a click; 'Install Immich' dialog springs open
   (scale 0.96→1.0 over 8f, soft overshoot). The dialog shows NO secret fields — Immich's three secrets are
   type 'random' and filtered out of the form entirely; do not animate secret characters filling in.
-  Instead, the pre-filled Upload Location field ('/nfs/tipi/immich') gets a brief underline pulse as
+  Instead, the pre-filled Upload Location field ('/nfs/cihub/immich') gets a brief underline pulse as
   narration mentions it. Cursor moves to submit and clicks on the final word of narration — the click is
   the transition into the lifecycle beat.
 - **Portrait:** The dialog is naturally narrow — near full-width in the portrait column, page dimmed

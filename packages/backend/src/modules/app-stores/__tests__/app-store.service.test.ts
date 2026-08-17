@@ -5,7 +5,7 @@ import { RepoEventsQueue } from '@/modules/queue/entities/repo-events';
 import { AppStoreRepository } from '../app-store.repository';
 import { ReposHelpers } from '../repos.helpers';
 import { ConfigurationService } from '@/core/config/configuration.service';
-import { MarketplaceService } from '@/modules/marketplace/marketplace.service';
+import { MarketplaceCacheBus } from '@/modules/marketplace/marketplace-cache.bus';
 import { PortalClientService } from '@/core/portal/portal-client.service';
 import { mock, MockProxy } from 'vitest-mock-extended';
 import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
@@ -17,7 +17,7 @@ describe('AppStoreService', () => {
   let repoHelpers: MockProxy<ReposHelpers>;
   let configService: MockProxy<ConfigurationService>;
   let appStoreRepository: MockProxy<AppStoreRepository>;
-  let marketplaceService: MockProxy<MarketplaceService>;
+  let marketplaceCacheBus: MockProxy<MarketplaceCacheBus>;
   let portalClient: MockProxy<PortalClientService>;
   let capturedQueueCallback: any;
 
@@ -27,7 +27,7 @@ describe('AppStoreService', () => {
     repoHelpers = mock<ReposHelpers>();
     configService = mock<ConfigurationService>();
     appStoreRepository = mock<AppStoreRepository>();
-    marketplaceService = mock<MarketplaceService>();
+    marketplaceCacheBus = mock<MarketplaceCacheBus>();
     portalClient = mock<PortalClientService>();
     portalClient.fetchStoreListings.mockResolvedValue([{ id: 'app1', title: 'App One' }]);
 
@@ -46,7 +46,7 @@ describe('AppStoreService', () => {
         { provide: ReposHelpers, useValue: repoHelpers },
         { provide: ConfigurationService, useValue: configService },
         { provide: AppStoreRepository, useValue: appStoreRepository },
-        { provide: MarketplaceService, useValue: marketplaceService },
+        { provide: MarketplaceCacheBus, useValue: marketplaceCacheBus },
         { provide: PortalClientService, useValue: portalClient },
       ],
     }).compile();
@@ -66,7 +66,7 @@ describe('AppStoreService', () => {
     await service.pullRepositories();
     expect(repoHelpers.pullRepo).toHaveBeenCalledWith('http://test', 'main', 'git');
     expect(repoHelpers.pullRepo).toHaveBeenCalledWith('http://portal/api', 'ci-marketplace', 'ci_cloud_api');
-    expect(marketplaceService.invalidateCache).toHaveBeenCalled();
+    expect(marketplaceCacheBus.invalidate).toHaveBeenCalled();
   });
 
   it('should register cloud app store if configured', async () => {
@@ -109,7 +109,7 @@ describe('AppStoreService', () => {
 
     expect(repoHelpers.pullRepo).toHaveBeenCalledWith('http://test', 'main', 'git');
     expect(repoHelpers.pullRepo).toHaveBeenCalledWith('http://portal/api', 'ci-marketplace', 'ci_cloud_api');
-    expect(marketplaceService.invalidateCache).toHaveBeenCalled();
+    expect(marketplaceCacheBus.invalidate).toHaveBeenCalled();
     expect(reply).toHaveBeenCalledWith({ success: true, message: 'All repos updated' });
   });
 

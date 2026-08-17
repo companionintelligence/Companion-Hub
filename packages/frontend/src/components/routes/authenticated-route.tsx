@@ -1,5 +1,8 @@
+import { MobileLoadError } from '@/components/mobile/mobile-load-error';
 import { AppContextProvider, useAppContext } from '@/context/app-context';
 import { useUserContext } from '@/context/user-context';
+import { isMobileClient } from '@/lib/mobile-connection';
+import { useMobileLoadTimeout } from '@/lib/use-mobile-load-timeout';
 import { getRehydrateStatus } from '@/api-client/sdk.gen';
 import { sdkResult } from '@/lib/sdk-unwrap';
 import { getStoredDriftChoice } from '@/lib/registration-state-drift';
@@ -18,7 +21,7 @@ import { SSEProvider } from '../providers/sse/sse-provider';
 import { RouteWrapper } from './route-wrapper';
 
 function AuthenticatedContent({ children }: { children: React.ReactNode }) {
-  const { user, isLoading: isAppLoading } = useAppContext();
+  const { user, isLoading: isAppLoading, loadFailed } = useAppContext();
   const { t } = useTranslation();
   const location = useLocation();
   const [restoreRedirectChecked, setRestoreRedirectChecked] = useState(false);
@@ -66,8 +69,14 @@ function AuthenticatedContent({ children }: { children: React.ReactNode }) {
     };
   }, []);
 
-  // Wait for app context to load before checking onboarding
-  if (isAppLoading || !restoreRedirectChecked) {
+  const appLoadTimedOut = useMobileLoadTimeout(isAppLoading || !restoreRedirectChecked);
+
+  if (isMobileClient() && (appLoadTimedOut || loadFailed)) {
+    return <MobileLoadError onRetry={() => window.location.reload()} />;
+  }
+
+  // Drift / restore check is cheap; keep a short gate so we don't flash the wrong route.
+  if (!restoreRedirectChecked) {
     return (
       <DashboardLayoutSuspense>
         <div className="flex items-center justify-center p-5">
@@ -79,6 +88,20 @@ function AuthenticatedContent({ children }: { children: React.ReactNode }) {
 
   if (shouldRestoreApps && location.pathname !== '/restore-apps') {
     return <Navigate to="/restore-apps" replace />;
+  }
+
+  // Paint chrome (sidebar/header) while app-context is still loading. Do not
+  // decide onboarding until we have a real payload — defaults say false.
+  if (isAppLoading) {
+    return (
+      <SSEProvider>
+        <DashboardLayout>
+          <div className="flex items-center justify-center p-5">
+            <Loader2 role="img" aria-label={t('COMMON_LOADING')} className="h-8 w-8 animate-spin text-muted-foreground" />
+          </div>
+        </DashboardLayout>
+      </SSEProvider>
+    );
   }
 
   // Redirect to onboarding if not completed
@@ -107,6 +130,7 @@ export default () => {
   const { isLoggedIn, isGuestDashboardEnabled, isLoading } = useUserContext();
   const { t } = useTranslation();
   const outlet = useOutlet();
+  const sessionLoadTimedOut = useMobileLoadTimeout(isLoading);
 
   // Wait for the session query to settle before deciding where to send the user.
   // On a cold refresh the user-context query is still pending and reads its
@@ -115,6 +139,10 @@ export default () => {
   // discarding a deep link like /apps/<store>/<app>. `isLoading` is only true on
   // the first uncached load, so cached navigations stay instant. Mirrors the
   // isAppLoading gate in AuthenticatedContent below.
+  if (isMobileClient() && sessionLoadTimedOut) {
+    return <MobileLoadError onRetry={() => window.location.reload()} />;
+  }
+
   if (isLoading) {
     return (
       <div className="flex min-h-screen items-center justify-center p-5">

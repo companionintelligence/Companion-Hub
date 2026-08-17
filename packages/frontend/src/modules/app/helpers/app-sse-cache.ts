@@ -1,5 +1,6 @@
 import type { GetAppDto } from '@/api-client';
 import { getAppQueryKey, getInstalledAppsQueryKey, appContextQueryKey } from '@/api-client/@tanstack/react-query.gen';
+import { getInstalledAppUrnsQueryKey } from '@/lib/installed-app-urns-query';
 import type { AppUrn } from '@ci-hub/common/types';
 import type { QueryClient } from '@tanstack/react-query';
 import { installQueueQueryKey, type InstallQueueState } from './install-queue';
@@ -100,6 +101,7 @@ function runtimeHealthQueryKey(appUrn: string) {
  */
 export function invalidateAppQueries(queryClient: QueryClient, appUrn: string) {
   void queryClient.invalidateQueries({ queryKey: getInstalledAppsQueryKey() });
+  void queryClient.invalidateQueries({ queryKey: getInstalledAppUrnsQueryKey() });
   void queryClient.invalidateQueries({ queryKey: getAppQueryKey({ path: { urn: appUrn } }) });
   void queryClient.invalidateQueries({ queryKey: appContextQueryKey() });
 }

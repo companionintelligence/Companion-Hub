@@ -8,7 +8,7 @@ import { DockerService } from '../docker.service';
  * exercised by the cancellation paths under test, so the rest are generic mocks.
  */
 function makeService(dockerMock: unknown): DockerService {
-  return new DockerService(mock(), mock(), mock(), mock(), mock(), dockerMock as never);
+  return new DockerService(mock(), mock(), mock(), mock(), mock(), dockerMock as never, mock());
 }
 
 // A self-contained, cross-platform long-running process (no reliance on an external `sleep` binary):

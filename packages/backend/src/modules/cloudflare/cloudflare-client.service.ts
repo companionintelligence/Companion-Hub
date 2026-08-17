@@ -2,6 +2,7 @@ import { APP_DIR, DATA_DIR, DEFAULT_CI_CLOUD_URL, TUNNEL_DIR, tunnelUserClearedM
 import { Injectable, Logger } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
 import { ConfigurationService } from '@/core/config/configuration.service';
+import { DockerReadFacade } from '../docker/docker-read.facade';
 import { DockerService } from '../docker/docker.service';
 import type { AvailableDomain, AvailableDomainsResponse } from '@ci-hub/common/types';
 import axios, { AxiosInstance, type AxiosResponse } from 'axios';
@@ -544,12 +545,18 @@ export class CloudflareClientService {
       return false;
     }
     try {
+      const dockerReadFacade = this.moduleRef.get(DockerReadFacade, { strict: false });
       const dockerService = this.moduleRef.get(DockerService, { strict: false });
 
-      const alreadyRunning = await dockerService.isContainerRunning('cloudflared');
+      const alreadyRunning = dockerReadFacade ? await dockerReadFacade.isContainerRunning('cloudflared') : false;
       if (alreadyRunning && !options.forceRestart) {
         this.logger.debug('ensureCloudflaredRunning: cloudflared is already running, skipping restart');
         return true;
+      }
+
+      if (!dockerService) {
+        this.logger.warn('ensureCloudflaredRunning: DockerService unavailable');
+        return false;
       }
 
       if (alreadyRunning && options.forceRestart) {

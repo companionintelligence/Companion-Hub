@@ -4,49 +4,35 @@
 
 *.swo
 *.swp
-
 .DS_Store
 .vscode
 .idea
-
 # See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
-
 # dependencies
-/node_modules
 /.pnp
 .pnp.js
-
 # testing
 /coverage
-
 # next.js
 /.next/
 /out/
-
 # production
 /build
 /dist
 server-preload.js
-
 # misc
-.DS_Store
 *.pem
-
 # debug
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
-
 # local env files
 .env*.local
-
 # vercel
 .vercel
-
 # typescript
 *.tsbuildinfo
-
 logs
 .pnpm-debug.log
 .env*
@@ -61,32 +47,22 @@ node_modules/
 /apps/
 /traefik/
 /backups/
-
 # media folder
 media
-
 /state/
 /test-results/
 /playwright-report/
 /playwright/.cache/
 temp
-
 ./traefik/
 /user-config/
-
 # Sentry Config File
 .sentryclirc
-
 public/js/*
 !public/js/.gitkeep
-
 /cache
-
 coverage
 docs/jira/
-
-docs/jira/
-
 .internal/
 .internal*
 .internal-*/
@@ -102,33 +78,26 @@ docs/jira/
 !.internal/cache/.gitkeep
 packages/backend/mock-auth-server/repo.zip
 temp_ci_store
-
 .env.*
-!.env.example
 temp_repo_server
 .log
 repo.zip
 # Tunnel Certs
 tunnel/*
-
 # Quarantined bind-mount / tunnel artifacts (heal scripts)
 *.stale-root-*
 tunnel.stale-*
-
 .env.local
-
 # Generated FTUE screenshot frames (the GIF is committed; PNG frames are intermediate)
 /docs/ftue-screenshots/
-
 # Visual regression artifacts (baselines are tracked)
 /e2e/screenshots/actual/
 /e2e/screenshots/diff/
 /e2e/screenshots/debug/
-
 # Scratch directories written by unit tests (cwd varies: repo root or the package dir)
 .tmp-bind-mount-helpers-test/
-
 # Fleet QA run reports (e2e/results/benchmarks/baseline.json is tracked and stays so —
 # only the dated per-run reports written by the fleet QA runner are ignored).
 /e2e/results/fleet-report-*.json
 /e2e/results/fleet-report-*.md
+.sentrux/

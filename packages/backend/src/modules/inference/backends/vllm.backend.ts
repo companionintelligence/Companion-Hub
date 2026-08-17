@@ -1,13 +1,47 @@
 import { Injectable } from '@nestjs/common';
+import fs from 'node:fs';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import type { InferenceBackend } from './backend.interface';
 import type { BackendHealthStatus, BackendModelInfo, PullProgress } from '@ci-hub/common/types';
 import axios from 'axios';
 
+/** Candidate API key for a Re-check probe — header, not query, so it stays out of access logs. */
+export const VLLM_PROBE_API_KEY_HEADER = 'x-ci-vllm-api-key';
+
 /** Accept `http://host:8000`, `http://host:8000/` or `http://host:8000/v1` and store the bare origin. */
 export function normalizeVllmBaseUrl(url: string): string {
   return url.trim().replace(/\/+$/, '').replace(/\/v1$/, '');
+}
+
+/** Hub container probe — `/.dockerenv` plus Podman's containerenv. Not the `/data` heuristic. */
+export function detectHubContainer(): boolean {
+  try {
+    return fs.existsSync('/.dockerenv') || fs.existsSync('/run/.containerenv');
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Operator `localhost` / `127.0.0.1` means the host where vLLM runs. From inside
+ * the Hub container that hostname is the container itself — rewrite only then.
+ */
+export function resolveVllmProbeUrl(url: string, inContainer: boolean = detectHubContainer()): string {
+  const normalized = normalizeVllmBaseUrl(url);
+  if (!inContainer) {
+    return normalized;
+  }
+  try {
+    const parsed = new URL(normalized);
+    if (parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1' || parsed.hostname === '[::1]') {
+      parsed.hostname = 'host.docker.internal';
+      return normalizeVllmBaseUrl(parsed.toString());
+    }
+  } catch {
+    // Keep normalized input; healthCheck will surface a bad URL.
+  }
+  return normalized;
 }
 
 @Injectable()
@@ -26,21 +60,22 @@ export class VllmBackend implements InferenceBackend {
    */
   getBaseUrl(): string {
     const configured = this.configuration.getInferencePreferences().preferredVllmUrl?.trim();
-    return normalizeVllmBaseUrl(configured || process.env.VLLM_URL || 'http://ci-hub-vllm:8000');
+    return resolveVllmProbeUrl(configured || process.env.VLLM_URL || 'http://ci-hub-vllm:8000');
   }
 
-  private vllmAuthHeaders(): Record<string, string> | undefined {
-    const apiKey = this.configuration.getInferencePreferences().preferredVllmApiKey?.trim() || process.env.VLLM_API_KEY?.trim();
+  private vllmAuthHeaders(apiKeyOverride?: string): Record<string, string> | undefined {
+    const apiKey =
+      apiKeyOverride?.trim() || this.configuration.getInferencePreferences().preferredVllmApiKey?.trim() || process.env.VLLM_API_KEY?.trim();
     return apiKey ? { Authorization: `Bearer ${apiKey}` } : undefined;
   }
 
-  /** `baseUrlOverride` lets the status endpoint probe a candidate URL the operator typed but hasn't saved yet. */
-  async healthCheck(baseUrlOverride?: string): Promise<BackendHealthStatus> {
-    const baseUrl = baseUrlOverride ? normalizeVllmBaseUrl(baseUrlOverride) : this.getBaseUrl();
+  /** Overrides let status + onboarding probe unsaved Settings input without persisting it. */
+  async healthCheck(baseUrlOverride?: string, apiKeyOverride?: string): Promise<BackendHealthStatus> {
+    const baseUrl = baseUrlOverride ? resolveVllmProbeUrl(baseUrlOverride) : this.getBaseUrl();
     try {
       const response = await axios.get(`${baseUrl}/v1/models`, {
         timeout: 5000,
-        headers: this.vllmAuthHeaders(),
+        headers: this.vllmAuthHeaders(apiKeyOverride),
       });
       const models = response.data?.data ?? [];
       return {
@@ -49,11 +84,14 @@ export class VllmBackend implements InferenceBackend {
         modelsLoaded: models.map((m: { id: string }) => m.id),
       };
     } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      const status = axios.isAxiosError(err) ? err.response?.status : undefined;
+      const hint = status === 401 ? 'vLLM rejected the API key — it must match the --api-key you passed when starting vLLM.' : undefined;
       return {
         running: false,
         healthy: false,
         modelsLoaded: [],
-        error: err instanceof Error ? err.message : String(err),
+        error: hint ? `${message}. ${hint}` : message,
       };
     }
   }

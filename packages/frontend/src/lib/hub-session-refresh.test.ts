@@ -41,14 +41,27 @@ describe('hub-session-refresh', () => {
     setTauriSessionId(null);
   });
 
-  it('marks refresh as due when no issue timestamp exists', () => {
+  it('does not treat a missing issue timestamp as refresh-due', () => {
     localStorage.setItem('ci-hub-session', 'session-1');
-    expect(isHubSessionRefreshDue()).toBe(true);
+    expect(isHubSessionRefreshDue()).toBe(false);
+  });
+
+  it('stamps a missing issue timestamp instead of rotating a fresh session', async () => {
+    localStorage.setItem('ci-hub-session', 'session-1');
+
+    await expect(refreshHubSessionIfDue()).resolves.toBe(false);
+    expect(refreshSession).not.toHaveBeenCalled();
+    expect(getHubSessionIssuedAt()).toEqual(expect.any(Number));
   });
 
   it('does not refresh before the 5-day threshold', () => {
     setTauriSessionId('session-1', Date.now());
     expect(isHubSessionRefreshDue()).toBe(false);
+  });
+
+  it('rotates when the server hint says a session without issued-at is due', () => {
+    setServerSessionRefreshRecommendedAt(Date.now() - 1_000);
+    expect(isHubSessionRefreshDue()).toBe(true);
   });
 
   it('prefers server refresh hints when local issue time predates the hint', () => {

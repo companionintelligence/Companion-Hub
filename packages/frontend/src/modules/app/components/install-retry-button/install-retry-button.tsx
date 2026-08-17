@@ -23,7 +23,7 @@ export const InstallRetryButton: React.FC<InstallRetryButtonProps> = ({ urn, nam
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { setOptimisticStatus } = useAppStatus();
-  const tooltipId = `retry-install-${urn.replace(':', '-')}`;
+  const toolcihubd = `retry-install-${urn.replace(':', '-')}`;
 
   const retryMutation = useMutation({
     ...installAppMutation(),
@@ -44,11 +44,11 @@ export const InstallRetryButton: React.FC<InstallRetryButtonProps> = ({ urn, nam
 
   return (
     <>
-      <Tooltip className="tooltip" anchorSelect={`#${tooltipId}`}>
+      <Tooltip className="tooltip" anchorSelect={`#${toolcihubd}`}>
         {t('APP_ACTION_RETRY_INSTALL')}
       </Tooltip>
       <button
-        id={tooltipId}
+        id={toolcihubd}
         type="button"
         aria-label={t('APP_ACTION_RETRY_INSTALL')}
         data-testid={`retry-install-${slug}`}

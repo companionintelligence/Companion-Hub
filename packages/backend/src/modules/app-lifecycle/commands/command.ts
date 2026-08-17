@@ -17,7 +17,7 @@ import type { ModuleRef } from '@nestjs/core';
 import { parseComposeJson } from '@ci-hub/common/schemas';
 import type { AppUrn } from '@ci-hub/common/types';
 import { ErrorReportingService, type AppFailurePhase } from '@/core/error-reporting/error-reporting.service';
-import { buildOriginServerName } from '@ci-hub/common/types';
+import { buildOriginServerName, buildPublicWebIdentity, resolvePublicDomainRoot } from '@ci-hub/common/types';
 import Dockerode from 'dockerode';
 import { ZodError } from 'zod';
 import { fromError } from 'zod-validation-error';
@@ -129,16 +129,28 @@ export class AppLifecycleCommand {
 
       const effectiveExposureMode = form.exposureMode || (form.exposedLocal ? 'cloudflare' : 'local');
       let cloudflareOriginHostname: string | undefined;
+      let cloudflarePublicHostname: string | undefined;
       if (effectiveExposureMode === 'cloudflare' && !form.openPort) {
         const registrationService = this.moduleRef.get(RegistrationService, { strict: false });
         const org = await registrationService.getDeviceRegistrationInfo();
         const { appName, appStoreId } = extractAppUrn(appUrn);
+        const appSubdomain = form.localSubdomain || `${appName}-${appStoreId}`;
         cloudflareOriginHostname = buildOriginServerName({
-          appSubdomain: form.localSubdomain || `${appName}-${appStoreId}`,
+          appSubdomain,
           hubSubdomain: org?.hubSubdomain,
           orgSlug: org?.slug,
           localDomain,
         });
+        cloudflarePublicHostname = buildPublicWebIdentity({
+          appSubdomain,
+          hubSubdomain: org?.hubSubdomain,
+          orgSlug: org?.slug,
+          publicDomainRoot: resolvePublicDomainRoot({
+            selectedPublicDomain: typeof form.publicDomain === 'string' && form.publicDomain.trim().length > 0 ? form.publicDomain : undefined,
+            envDomain: envMap.get('DOMAIN'),
+            configDomain: domain,
+          }),
+        }).hostname;
       }
 
       // Windows-backed app data (drvfs/9p) silently drops chown/chmod, so database services that
@@ -162,6 +174,7 @@ export class AppLifecycleCommand {
         localDomain,
         appEnv.path,
         cloudflareOriginHostname,
+        cloudflarePublicHostname,
         defaultCpuLimit,
         defaultMemoryLimit,
       );

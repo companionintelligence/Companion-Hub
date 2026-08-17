@@ -39,7 +39,7 @@ export const SimpleAppTile = ({ name, urn, status, isInstalling, installConfig }
         )}
       </div>
       <div className="min-w-0 flex-1">
-        <div className="truncate font-medium text-sm" title={name}>
+        <div className="truncate font-medium text-sm text-foreground" title={name}>
           {name}
         </div>
         {isInstalling && (

@@ -20,7 +20,8 @@
       "!**/packages/frontend/src/styles/transparent-theme.css",
       "!**/packages/frontend/src/styles/globals.css",
       "!**/videos",
-      "!**/e2e/generated"
+      "!**/e2e/generated",
+      "!**/src-tauri/gen"
     ]
   },
   "formatter": {

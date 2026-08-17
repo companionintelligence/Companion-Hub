@@ -10,11 +10,11 @@ describe('curated-models (TOON catalog)', () => {
   const byId = new Map(CURATED_MODELS.map((m) => [m.id, m]));
   const llms = CURATED_MODELS.filter((m) => m.modality === 'llm');
 
-  it('decodes the full catalog (83 Ollama LLMs + 4 Lemonade LLMs + 8 vLLM LLMs + voice + embeddings) with unique ids', () => {
-    expect(llms.filter((m) => m.backend === 'ollama').length).toBe(83);
+  it('decodes the full catalog (84 Ollama LLMs + 4 Lemonade LLMs + 8 vLLM LLMs + voice + embeddings) with unique ids', () => {
+    expect(llms.filter((m) => m.backend === 'ollama').length).toBe(84);
     expect(llms.filter((m) => m.backend === 'lemonade').length).toBe(4);
     expect(llms.filter((m) => m.backend === 'vllm').length).toBe(8);
-    expect(llms.length).toBe(95);
+    expect(llms.length).toBe(96);
     // 4 Ollama embeddings + 1 Lemonade embedding (nomic-embed-text-v1-lemonade).
     expect(CURATED_MODELS.filter((m) => m.modality === 'embedding').length).toBe(5);
     expect(CURATED_MODELS.filter((m) => m.modality === 'tts' || m.modality === 'stt').length).toBe(3);

@@ -8,6 +8,11 @@ vi.mock('@/api-client/client.gen', () => ({
 const httpFetch = vi.fn(async () => new Response('{}'));
 vi.mock('@tauri-apps/plugin-http', () => ({ fetch: httpFetch }));
 
+const osType = vi.fn(() => 'macos');
+vi.mock('@tauri-apps/plugin-os', () => ({
+  type: () => osType(),
+}));
+
 // Mutable store backing so each test can control persistence.
 let storeData: Record<string, unknown>;
 const storeSet = vi.fn(async (k: string, v: unknown) => {
@@ -52,17 +57,192 @@ async function freshModulePair() {
 }
 
 const ANDROID_UA = 'Mozilla/5.0 (Linux; Android 14; Pixel) AppleWebKit/537.36 Chrome/134 Mobile';
+const desktopLocation = window.location;
 
 beforeEach(() => {
   storeData = {};
   setConfig.mockClear();
   storeSet.mockClear();
   storeDelete.mockClear();
+  osType.mockReset();
+  osType.mockReturnValue('macos');
+  sessionStorage.clear();
 });
 
 afterEach(() => {
   setTauri(false);
   setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X)');
+  Object.defineProperty(window, 'innerWidth', { value: 1024, configurable: true });
+  Object.defineProperty(window, 'innerHeight', { value: 768, configurable: true });
+  Object.defineProperty(navigator, 'maxTouchPoints', { value: 0, configurable: true });
+  Object.defineProperty(window, 'location', { configurable: true, value: desktopLocation });
+  sessionStorage.clear();
+  vi.unstubAllEnvs();
+});
+
+describe('isMobileUserAgent', () => {
+  it('is true for Android / iPhone even without Tauri', async () => {
+    setTauri(false);
+    setUserAgent(ANDROID_UA);
+    const m = await freshModule();
+    expect(m.isMobileUserAgent()).toBe(true);
+
+    setUserAgent('Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)');
+    const m2 = await freshModule();
+    expect(m2.isMobileUserAgent()).toBe(true);
+  });
+
+  it('needsRemoteHubConnect is true on a phone with no stored Hub', async () => {
+    setTauri(true);
+    setUserAgent(ANDROID_UA);
+    const m = await freshModule();
+    expect(m.needsRemoteHubConnect()).toBe(true);
+    await m.setHubConnection('https://hub-x.ci.computer');
+    expect(m.needsRemoteHubConnect()).toBe(false);
+  });
+
+  it('does not treat a narrow Mac/Linux/Windows window as a phone', async () => {
+    setTauri(false);
+    setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X)');
+    Object.defineProperty(window, 'innerWidth', { value: 844, configurable: true });
+    Object.defineProperty(window, 'innerHeight', { value: 390, configurable: true });
+    const m = await freshModule();
+    expect(m.isMobileClient()).toBe(false);
+    expect(m.needsRemoteHubConnect()).toBe(false);
+  });
+
+  it('does not send iPhone Safari on a live Hub into cloud connect', async () => {
+    setTauri(false);
+    setUserAgent('Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)');
+    const m = await freshModule();
+    expect(m.isMobileUserAgent()).toBe(true);
+    expect(m.isMobileClient()).toBe(false);
+    expect(m.needsRemoteHubConnect()).toBe(false);
+  });
+
+  it.each([
+    ['Windows', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'],
+    ['Linux', 'Mozilla/5.0 (X11; Linux x86_64)'],
+    ['macOS', 'Mozilla/5.0 (Macintosh; Intel Mac OS X)'],
+  ])('keeps %s on the normal Hub setup path', async (_label, ua) => {
+    setTauri(true);
+    setUserAgent(`${ua} Tauri`);
+    osType.mockReturnValue(_label === 'Windows' ? 'windows' : _label === 'Linux' ? 'linux' : 'macos');
+    const m = await freshModule();
+    expect(m.isMobileClient()).toBe(false);
+    expect(m.needsRemoteHubConnect()).toBe(false);
+  });
+
+  it('is false on desktop Macintosh without touch', async () => {
+    setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X)');
+    Object.defineProperty(navigator, 'maxTouchPoints', { value: 0, configurable: true });
+    const m = await freshModule();
+    expect(m.isMobileUserAgent()).toBe(false);
+    expect(m.isMobileClient()).toBe(false);
+    expect(m.needsRemoteHubConnect()).toBe(false);
+  });
+
+  it('does not send a port-forwarded or local desktop browser into cloud connect', async () => {
+    setTauri(false);
+    setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X)');
+    sessionStorage.setItem('cihub.isTauriMobile', '1');
+    vi.stubEnv('VITE_HUB_RUNTIME', 'mobile');
+    Object.defineProperty(window, 'location', {
+      configurable: true,
+      value: { ...window.location, port: '5005', hostname: 'localhost', href: 'http://localhost:5005/connect' },
+    });
+    const m = await freshModule();
+    expect(m.usesCloudConnect()).toBe(false);
+    expect(m.needsRemoteHubConnect()).toBe(false);
+    vi.unstubAllEnvs();
+  });
+
+  it('does not send a Mac browser on the local Vite port into cloud connect', async () => {
+    setTauri(false);
+    setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X)');
+    Object.defineProperty(navigator, 'maxTouchPoints', { value: 0, configurable: true });
+    Object.defineProperty(window, 'innerWidth', { value: 1440, configurable: true });
+    Object.defineProperty(window, 'innerHeight', { value: 900, configurable: true });
+    Object.defineProperty(window, 'location', {
+      configurable: true,
+      value: { ...window.location, port: '5005', hostname: 'localhost', href: 'http://localhost:5005/' },
+    });
+    const m = await freshModule();
+    expect(m.isMobileDevFrontend()).toBe(false);
+    expect(m.isMobileClient()).toBe(false);
+    expect(m.needsRemoteHubConnect()).toBe(false);
+  });
+
+  it.each([
+    ['Linux', 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/605.1.15 Tauri', 'linux'],
+    ['Windows', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Tauri', 'windows'],
+  ])('clears a leftover ios:dev mobile flag on %s desktop immediately (UA)', async (_label, ua, os) => {
+    setTauri(true);
+    setUserAgent(ua);
+    osType.mockReturnValue(os);
+    sessionStorage.setItem('cihub.isTauriMobile', '1');
+    const m = await freshModule();
+    expect(m.usesCloudConnect()).toBe(false);
+    expect(m.needsRemoteHubConnect()).toBe(false);
+    expect(sessionStorage.getItem('cihub.isTauriMobile')).toBeNull();
+  });
+
+  it('clears a leftover ios:dev mobile flag on macOS desktop after the OS plugin answers', async () => {
+    setTauri(true);
+    setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X) Tauri');
+    osType.mockReturnValue('macos');
+    sessionStorage.setItem('cihub.isTauriMobile', '1');
+    const m = await freshModule();
+    expect(await m.initMobileConnection()).toEqual({ isMobile: false, hubBaseUrl: null });
+    expect(m.usesCloudConnect()).toBe(false);
+    expect(m.needsRemoteHubConnect()).toBe(false);
+    expect(sessionStorage.getItem('cihub.isTauriMobile')).toBeNull();
+  });
+
+  it('does not treat desktop Tauri on the local stack as a phone', async () => {
+    setTauri(true);
+    setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X) Tauri');
+    Object.defineProperty(navigator, 'maxTouchPoints', { value: 0, configurable: true });
+    Object.defineProperty(window, 'innerWidth', { value: 1280, configurable: true });
+    Object.defineProperty(window, 'innerHeight', { value: 800, configurable: true });
+    osType.mockReturnValue('macos');
+    const m = await freshModule();
+    expect(m.isTauriMobileSync()).toBe(false);
+    expect(m.isMobileClient()).toBe(false);
+    expect(m.needsRemoteHubConnect()).toBe(false);
+    expect(await m.initMobileConnection()).toEqual({ isMobile: false, hubBaseUrl: null });
+  });
+
+  it('treats the ios:dev lvh.me origin as the phone frontend', async () => {
+    setTauri(true);
+    setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X)');
+    Object.defineProperty(window, 'location', {
+      configurable: true,
+      value: { ...window.location, port: '5005', hostname: 'lvh.me', href: 'http://lvh.me:5005/connect' },
+    });
+    const m = await freshModule();
+    expect(m.isMobileDevFrontend()).toBe(true);
+    expect(m.isMobileClient()).toBe(true);
+    expect(m.needsRemoteHubConnect()).toBe(true);
+  });
+
+  it('treats the ios:dev Vite origin as mobile when VITE_HUB_RUNTIME=mobile', async () => {
+    vi.stubEnv('VITE_HUB_RUNTIME', 'mobile');
+    setTauri(true);
+    setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X)');
+    Object.defineProperty(navigator, 'maxTouchPoints', { value: 0, configurable: true });
+    Object.defineProperty(window, 'innerWidth', { value: 0, configurable: true });
+    Object.defineProperty(window, 'innerHeight', { value: 0, configurable: true });
+    Object.defineProperty(window, 'location', {
+      configurable: true,
+      value: { ...window.location, port: '5005', hostname: 'localhost', href: 'http://localhost:5005/connect' },
+    });
+    const m = await freshModule();
+    expect(m.isMobileUserAgent()).toBe(false);
+    expect(m.isMobileDevFrontend()).toBe(true);
+    expect(m.isMobileClient()).toBe(true);
+    vi.unstubAllEnvs();
+  });
 });
 
 describe('isTauriMobileSync', () => {
@@ -73,11 +253,29 @@ describe('isTauriMobileSync', () => {
     expect(m.isTauriMobileSync()).toBe(false);
   });
 
+  it('does not permanently cache a negative across late Tauri injection', async () => {
+    setTauri(false);
+    setUserAgent(ANDROID_UA);
+    const m = await freshModule();
+    expect(m.isTauriMobileSync()).toBe(false);
+    setTauri(true);
+    expect(m.isTauriMobileSync()).toBe(true);
+  });
+
   it('is false on desktop Tauri (no mobile UA)', async () => {
     setTauri(true);
     setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X) Tauri');
     const m = await freshModule();
     expect(m.isTauriMobileSync()).toBe(false);
+  });
+
+  it('does not downgrade a confirmed mobile detect when the UA looks like desktop', async () => {
+    setTauri(true);
+    setUserAgent(ANDROID_UA);
+    const m = await freshModule();
+    expect(m.isTauriMobileSync()).toBe(true);
+    setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X) Tauri');
+    expect(m.isTauriMobileSync()).toBe(true);
   });
 
   it('is true on Tauri + Android/iOS UA', async () => {
@@ -112,6 +310,32 @@ describe('initMobileConnection', () => {
     expect(result.hubBaseUrl).toBe('https://hub-apple-acme.ci.computer');
     expect(m.getHubBaseUrlSync()).toBe('https://hub-apple-acme.ci.computer');
     expect(setConfig).toHaveBeenCalledWith(expect.objectContaining({ baseUrl: 'https://hub-apple-acme.ci.computer', credentials: 'omit' }));
+  });
+
+  it('treats Tauri + OS plugin ios as mobile even with a Macintosh UA', async () => {
+    setTauri(true);
+    setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X) Tauri');
+    osType.mockReturnValue('ios');
+    const m = await freshModule();
+    const result = await m.initMobileConnection();
+    expect(result.isMobile).toBe(true);
+    expect(m.isTauriMobileSync()).toBe(true);
+    expect(m.needsRemoteHubConnect()).toBe(true);
+  });
+
+  it('picks up mobile after Tauri internals appear (ios:dev injection race)', async () => {
+    setTauri(false);
+    setUserAgent(ANDROID_UA);
+    storeData.hubBaseUrl = 'https://hub-apple-acme.ci.computer';
+    const m = await freshModule();
+
+    expect(await m.initMobileConnection()).toEqual({ isMobile: false, hubBaseUrl: null });
+    expect(setConfig).not.toHaveBeenCalled();
+
+    setTauri(true);
+    const result = await m.initMobileConnection();
+    expect(result.isMobile).toBe(true);
+    expect(result.hubBaseUrl).toBe('https://hub-apple-acme.ci.computer');
   });
 
   it('mobile with no stored Hub leaves baseUrl unset (connect screen path)', async () => {

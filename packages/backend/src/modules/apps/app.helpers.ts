@@ -19,7 +19,7 @@ import { DeviceRegistrationRepository } from '../registration/device-registratio
 import { RegistrationService } from '../registration/registration.service';
 import { appMinContextLength } from '../inference/context-length.util';
 import { InferenceEnvResolver, type StandardizedAiEnv } from '../inference/inference-env-resolver';
-import { CloudFallbackService } from '../inference/cloud-fallback.service';
+import { applyCloudProviderEnv } from '../inference/cloud-provider-env';
 import { ApiKeyService } from '../api-keys/api-key.service';
 import type { ApiKeyScope } from '../api-keys/api-key.scopes';
 import { isOfficialStoreApp } from './official-store.predicate';
@@ -107,16 +107,14 @@ export function applyHubInferenceEnv(options: {
       continue;
     }
 
-    let resolved = options.aiEnv[resolvedKey];
-    if (resolved === undefined) {
+    const resolved = options.aiEnv[resolvedKey];
+    if (typeof resolved !== 'string') {
       continue;
     }
 
-    if (hubKey === 'llm_base_url' && stripV1) {
-      resolved = resolved.replace(/\/v1\/?$/, '');
-    }
+    const value = hubKey === 'llm_base_url' && stripV1 ? resolved.replace(/\/v1\/?$/, '') : resolved;
 
-    options.envMap.set(appEnvVar, resolved);
+    options.envMap.set(appEnvVar, value);
   }
 }
 
@@ -175,7 +173,6 @@ export class AppHelpers {
     private readonly deviceRegistrationRepository: DeviceRegistrationRepository,
     private readonly registrationService: RegistrationService,
     private readonly inferenceEnv: InferenceEnvResolver,
-    private readonly cloudFallback: CloudFallbackService,
     private readonly apiKeys: ApiKeyService,
     private readonly memoryConnection: MemoryConnectionService,
     private readonly portalClient: PortalClientService,
@@ -632,22 +629,26 @@ export class AppHelpers {
     // to the app's expected env variable names. Apps without this field
     // receive no inference variables — zero overhead for non-AI apps.
     const inferenceMapping = config.hub_integration?.inference;
-    if (inferenceMapping && Object.keys(inferenceMapping).length > 0) {
+    const hasInferenceMapping = Boolean(inferenceMapping && Object.keys(inferenceMapping).length > 0);
+    const isAiApp = Boolean(config.categories?.includes('ai')) || hasInferenceMapping;
+    if (isAiApp) {
       try {
         // Apply the app's context floor (e.g. Hermes' 64K minimum) so this path
         // matches the credentials.env endpoint and never emits a sub-minimum
         // num_ctx that would make the app abort at startup.
         const aiEnv = await this.inferenceEnv.resolve({ minContextLength: appMinContextLength(appName) });
-        applyHubInferenceEnv({
-          hubIntegration: config.hub_integration,
-          aiEnv,
-          envMap,
-        });
+        if (hasInferenceMapping) {
+          applyHubInferenceEnv({
+            hubIntegration: config.hub_integration,
+            aiEnv,
+            envMap,
+          });
+        }
+        applyCloudProviderEnv(envMap, aiEnv.cloudProviderEnv);
 
         const providerSwitch = config.hub_integration?.inference_provider;
         if (providerSwitch) {
-          const usesOpenAiCompatible =
-            this.cloudFallback.getEnabledProviders().length > 0 || (this.config.getInferencePreferences().preferredBackend ?? 'ollama') !== 'ollama';
+          const usesOpenAiCompatible = (this.config.getInferencePreferences().preferredBackend ?? 'ollama') !== 'ollama';
           envMap.set(providerSwitch.env, usesOpenAiCompatible ? providerSwitch.openai_compatible : providerSwitch.ollama);
         }
       } catch (err) {

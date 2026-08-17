@@ -41,10 +41,25 @@ export function getEnvFileOrExit(env: string): string {
   return f;
 }
 
+function envFileHasCiHubImage(envFileName: string): boolean {
+  try {
+    const envPath = path.isAbsolute(envFileName) ? envFileName : join(process.cwd(), envFileName);
+    if (!existsSync(envPath)) return false;
+    const vars = parseEnvFile(envPath);
+    return Boolean(vars.CI_HUB_IMAGE?.trim());
+  } catch {
+    return false;
+  }
+}
+
 export function getComposeFiles(env: HubEnv): string[] {
   if (env === 'local') return ['docker-compose.local.yml'];
   if (env === 'staging') return ['docker-compose.prod.yml', 'docker-compose.staging.yml'];
-  return ['docker-compose.prod.yml'];
+  const files = ['docker-compose.prod.yml'];
+  if (env === 'dev' && envFileHasCiHubImage(envFileMap.dev)) {
+    files.push('docker-compose.dev-image.yml');
+  }
+  return files;
 }
 
 function tunnelTokenPath(envFileName: string): string {

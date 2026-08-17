@@ -19,6 +19,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
 import type { AppUrn } from '@ci-hub/common/types';
+import { AppsReadService } from '../apps-read.service';
 import { AppsService } from '../apps.service';
 import { InstallPipelineTracker } from '../install-pipeline.tracker';
 import { AppFilesManager } from '../app-files-manager';
@@ -46,6 +47,7 @@ describe('AppsService', () => {
     installPipelineTracker = new InstallPipelineTracker();
     const module: TestingModule = await Test.createTestingModule({
       providers: [
+        AppsReadService,
         AppsService,
         { provide: AppsRepository, useValue: mock<AppsRepository>() },
         { provide: AppFilesManager, useValue: mock<AppFilesManager>() },
@@ -270,12 +272,30 @@ describe('AppsService', () => {
       expect(result.appUrl).toBe('http://192.168.1.100:8080');
     });
 
+    it('MUST construct HTTPS local URLs for apps that declare HTTPS access', async () => {
+      setupApp({ exposureMode: 'local', openPort: true, port: 6901 });
+      appFilesManager.getInstalledAppInfo.mockResolvedValue({ id: appUrn, url_suffix: '', https: true } as any);
+      const result = await service.checkAppAvailability(appUrn);
+      expect(result.available).toBe(true);
+      expect(result.appUrl).toBe('https://192.168.1.100:6901');
+    });
+
     it('MUST fall back to the local URL when exposureMode is cloudflare but no tunnel token exists and a host port is published', async () => {
       setupApp({ exposureMode: 'cloudflare', exposedLocal: true, openPort: false, port: 8080 });
       moduleRef.get.mockReturnValue({ getTunnelToken: () => null } as any);
       const result = await service.checkAppAvailability(appUrn);
       expect(result.available).toBe(true);
       expect(result.appUrl).toBe('http://192.168.1.100:8080');
+      expect(mockAxiosGet).not.toHaveBeenCalled();
+    });
+
+    it('MUST fall back to an HTTPS local URL for cloudflare apps that declare HTTPS access', async () => {
+      setupApp({ exposureMode: 'cloudflare', exposedLocal: true, openPort: false, port: 6901 });
+      appFilesManager.getInstalledAppInfo.mockResolvedValue({ id: appUrn, url_suffix: '', https: true } as any);
+      moduleRef.get.mockReturnValue({ getTunnelToken: () => null } as any);
+      const result = await service.checkAppAvailability(appUrn);
+      expect(result.available).toBe(true);
+      expect(result.appUrl).toBe('https://192.168.1.100:6901');
       expect(mockAxiosGet).not.toHaveBeenCalled();
     });
 

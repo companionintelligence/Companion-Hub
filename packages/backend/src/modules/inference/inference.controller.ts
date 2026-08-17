@@ -1,7 +1,7 @@
-import { Body, Controller, ConflictException, Get, Param, Patch, Post, Query, Res, UseGuards } from '@nestjs/common';
+import { Body, Controller, ConflictException, Get, Headers, Param, Patch, Post, Query, Res, UseGuards } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
 import type { Response } from 'express';
-import { ApiTags } from '@nestjs/swagger';
+import { ApiHeader, ApiTags } from '@nestjs/swagger';
 import { TranslatableError } from '@/common/error/translatable-error';
 import { DemoModeGuard } from '@/common/guards/demo-mode.guard';
 import { InferenceRouterService } from './inference-router.service';
@@ -27,7 +27,7 @@ import {
   VllmStatusQueryDto,
 } from './inference.dto';
 import { OllamaBackend } from './backends/ollama.backend';
-import { VllmBackend } from './backends/vllm.backend';
+import { resolveVllmProbeUrl, VLLM_PROBE_API_KEY_HEADER, VllmBackend } from './backends/vllm.backend';
 import { LemonadeBackend } from './backends/lemonade.backend';
 import { resolveInstalledCatalogIds, resolveInstalledCatalogIdsFromServedModels } from './model-availability.util';
 
@@ -87,6 +87,36 @@ export class InferenceController {
     return profile.tier;
   }
 
+  private aiAppRestartTimer: ReturnType<typeof setTimeout> | undefined;
+
+  /**
+   * Restart running AI apps after inference config changes. Debounced so a Settings
+   * save that POSTs four cloud providers (then PATCH preferences) recreates
+   * OpenClaw / Hermes once, not five times.
+   */
+  private scheduleAiAppRestart(): void {
+    this.appCredentials.invalidateCache();
+    if (this.aiAppRestartTimer) {
+      clearTimeout(this.aiAppRestartTimer);
+    }
+    this.aiAppRestartTimer = setTimeout(() => {
+      this.aiAppRestartTimer = undefined;
+      void this.triggerAiAppRestart();
+    }, 1500);
+  }
+
+  private async triggerAiAppRestart(): Promise<void> {
+    try {
+      const { AppLifecycleService } = await import('../app-lifecycle/app-lifecycle.service');
+      const appLifecycle = this.moduleRef.get(AppLifecycleService, { strict: false });
+      if (appLifecycle) {
+        void appLifecycle.restartAiApps();
+      }
+    } catch (e) {
+      this._logger.error('Failed to trigger AI app restarts after inference config update', e);
+    }
+  }
+
   // ─── Health ───────────────────────────────────────────────────────────
 
   @Get('health')
@@ -121,19 +151,7 @@ export class InferenceController {
       body.vllmUrl,
     );
 
-    // Restart running apps that use AI models so they pick up the new inference
-    // preferences. AppLifecycleService is resolved lazily via ModuleRef (rather
-    // than imported into InferenceModule) to avoid a circular module dependency,
-    // and the restart is fire-and-forget so the response isn't blocked on it.
-    try {
-      const { AppLifecycleService } = await import('../app-lifecycle/app-lifecycle.service');
-      const appLifecycle = this.moduleRef.get(AppLifecycleService, { strict: false });
-      if (appLifecycle) {
-        void appLifecycle.restartAiApps();
-      }
-    } catch (e) {
-      this._logger.error('Failed to trigger AI app restarts after preferences update', e);
-    }
+    this.scheduleAiAppRestart();
 
     return result;
   }
@@ -318,7 +336,7 @@ export class InferenceController {
 
   @UseGuards(AuthGuard)
   @Post('cloud-providers')
-  async setCloudProvider(@Body() body: { provider: CloudProviderType; apiKey: string; enabled: boolean; baseUrl?: string; defaultModel?: string }) {
+  async setCloudProvider(@Body() body: { provider: CloudProviderType; apiKey?: string; enabled: boolean; baseUrl?: string; defaultModel?: string }) {
     this.cloudFallback.setProvider({
       provider: body.provider,
       apiKey: body.apiKey,
@@ -326,6 +344,7 @@ export class InferenceController {
       baseUrl: body.baseUrl,
       defaultModel: body.defaultModel || this.cloudFallback.getDefaultModel(body.provider),
     });
+    this.scheduleAiAppRestart();
     return { success: true };
   }
 
@@ -333,7 +352,8 @@ export class InferenceController {
 
   @UseGuards(AuthGuard)
   @Get('onboarding-profile')
-  async getOnboardingProfile(@Query() query: OnboardingProfileQueryDto) {
+  @ApiHeader({ name: VLLM_PROBE_API_KEY_HEADER, required: false, description: 'Unsaved vLLM API key for Re-check before Save.' })
+  async getOnboardingProfile(@Query() query: OnboardingProfileQueryDto, @Headers(VLLM_PROBE_API_KEY_HEADER) vllmApiKey?: string) {
     const profile = await this.hardwareInspector.getProfile();
     const recommendedBackend = this.getRecommendedBackend(profile);
     const installBackend = query?.backend ?? recommendedBackend;
@@ -368,7 +388,7 @@ export class InferenceController {
 
     let installedCatalogIds: string[];
     if (installBackend === 'vllm') {
-      const vllmHealth = await this.vllmBackend.healthCheck(query?.vllmUrl).catch(() => ({
+      const vllmHealth = await this.vllmBackend.healthCheck(query?.vllmUrl, vllmApiKey).catch(() => ({
         running: false,
         healthy: false,
         modelsLoaded: [] as string[],
@@ -414,20 +434,22 @@ export class InferenceController {
 
   @UseGuards(AuthGuard)
   @Get('vllm/status')
-  async getVllmStatus(@Query() query?: VllmStatusQueryDto) {
-    const endpointUrl = query?.url?.trim() || this.vllmBackend.getBaseUrl();
-    const health = await this.vllmBackend.healthCheck(endpointUrl).catch((err) => ({
+  @ApiHeader({ name: VLLM_PROBE_API_KEY_HEADER, required: false, description: 'Unsaved vLLM API key for Re-check before Save.' })
+  async getVllmStatus(@Query() query?: VllmStatusQueryDto, @Headers(VLLM_PROBE_API_KEY_HEADER) apiKey?: string) {
+    const requestedUrl = query?.url?.trim() || this.vllmBackend.getBaseUrl();
+    const probeUrl = resolveVllmProbeUrl(requestedUrl);
+    const health = await this.vllmBackend.healthCheck(requestedUrl, apiKey).catch((err) => ({
       running: false,
       healthy: false,
       modelsLoaded: [] as string[],
       error: err instanceof Error ? err.message : String(err),
     }));
     const ready = !!(health.running && health.healthy);
-    const displayEndpoint = ready ? `${endpointUrl}/v1` : undefined;
+    const displayEndpoint = ready ? `${probeUrl}/v1` : undefined;
     return {
       ready,
       running: health.running,
-      endpointUrl,
+      endpointUrl: probeUrl,
       displayEndpoint,
       // The suggested model must be a catalog `backendModelId` (so the served model is recognized
       // as installed) and must fit common consumer VRAM — Qwen3-4B-Instruct-2507 with bitsandbytes
@@ -438,7 +460,7 @@ export class InferenceController {
       error: ready ? undefined : health.error,
       hint: ready
         ? undefined
-        : `Run vLLM on the host machine (not inside Docker), or point the endpoint URL at any reachable vLLM server. Hub currently probes ${endpointUrl}.`,
+        : `Run vLLM on the host (not inside Docker). Hub probes from inside its container — use http://host.docker.internal:8000, not localhost. Currently probing ${probeUrl}.`,
     };
   }
 

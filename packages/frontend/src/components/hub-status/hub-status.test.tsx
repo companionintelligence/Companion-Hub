@@ -488,6 +488,21 @@ describe('HubStatus diagnostics (View Logs / Open Logs Folder)', () => {
     expect(screen.getByRole('button', { name: 'Open Logs Folder' })).toBeInTheDocument();
   });
 
+  it('explains an ACL denial instead of treating it as a Docker start failure', async () => {
+    const { invoke } = mockMacTauriWithStatus(['Stopped'], {
+      start_hub_command: async () => {
+        throw new Error('Command start_hub_command not allowed by ACL');
+      },
+    });
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Start Hub' }));
+
+    expect(await screen.findByRole('heading', { name: 'Hub failed to start' })).toBeInTheDocument();
+    expect(screen.getByText(/blocked this start command for the current page origin/)).toBeInTheDocument();
+    expect(screen.getByText(/Command start_hub_command not allowed by ACL/)).toBeInTheDocument();
+    expect(invoke).toHaveBeenCalledWith('start_hub_command');
+  });
+
   it('keeps a sticky start-failure screen and requires confirm before retry', async () => {
     const rateLimitError = "Docker Hub rate-limited image pulls from this machine's IP (HTTP 429). Wait several minutes.";
     let callCount = 0;
@@ -632,6 +647,28 @@ describe('HubStatus diagnostics (View Logs / Open Logs Folder)', () => {
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(3000);
+    });
+    await flushAsyncWork();
+
+    expect(screen.getByText('Hub child')).toBeInTheDocument();
+    expect(screen.queryByText('Starting CI Hub')).not.toBeInTheDocument();
+    expect(reloadSpy).not.toHaveBeenCalled();
+  });
+
+  it('keeps the app mounted through sustained probe misses while Docker reports Starting', async () => {
+    vi.useFakeTimers();
+    sessionStorage.setItem('ci-hub-steady-running', '1');
+    const reloadSpy = vi.spyOn(hubStatusModule, 'reloadCurrentWindow').mockImplementation(() => {});
+    probeMocks.probeHealthyHubApiPort.mockResolvedValue(null);
+
+    mockMacTauriWithStatus(['Starting', 'Starting', 'Starting', 'Starting']);
+
+    await flushAsyncWork();
+    expect(screen.getByText('Hub child')).toBeInTheDocument();
+    expect(screen.queryByText('Starting CI Hub')).not.toBeInTheDocument();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(9000);
     });
     await flushAsyncWork();
 

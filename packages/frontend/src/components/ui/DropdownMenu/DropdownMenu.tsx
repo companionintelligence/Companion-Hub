@@ -4,8 +4,11 @@ import * as DropdownMenuPrimitive from '@radix-ui/react-dropdown-menu';
 import { ChevronRight } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type * as React from 'react';
+import { isMobileClient } from '@/lib/mobile-connection';
 
-const DropdownMenu = DropdownMenuPrimitive.Root;
+function DropdownMenu({ modal, ...props }: React.ComponentProps<typeof DropdownMenuPrimitive.Root>) {
+  return <DropdownMenuPrimitive.Root modal={isMobileClient() ? false : modal} {...props} />;
+}
 
 const DropdownMenuTrigger = DropdownMenuPrimitive.Trigger;
 

@@ -2,7 +2,7 @@ import { z } from 'zod';
 import type { ZodDto } from '@/common/zod-dto';
 import { SearchAppsQueryDto } from '@/modules/marketplace/dto/marketplace.dto';
 import { GetAppBackupsQueryDto } from '@/modules/backups/dto/backups.dto';
-import { OnboardingProfileQueryDto, RuntimeModelsQueryDto } from '@/modules/inference/inference.dto';
+import { OnboardingProfileQueryDto, RuntimeModelsQueryDto, VllmStatusQueryDto } from '@/modules/inference/inference.dto';
 import { StreamAppLogsQueryDto, StreamHubLogsQueryDto } from '@/core/sse/dto/sse.dto';
 
 const availableDomainSchema = z.object({
@@ -29,11 +29,19 @@ export const rehydrateBodySchema = z.object({
   source: z.literal('restore').optional(),
 });
 
+export const featuredStoreBundleSchema = z.object({
+  firstParty: z.array(z.unknown()),
+  featured: z.array(z.unknown()),
+  trending: z.array(z.unknown()),
+  newest: z.array(z.unknown()),
+});
+
 /** Query DTOs Nest does not reflect into OpenAPI for @Query() Zod classes. */
 export const OPERATION_QUERY_DTOS: Record<string, ZodDto> = {
   searchApps: SearchAppsQueryDto,
   getRuntimeModels: RuntimeModelsQueryDto,
   getOnboardingProfile: OnboardingProfileQueryDto,
+  getVllmStatus: VllmStatusQueryDto,
   getAppBackups: GetAppBackupsQueryDto,
   appLogsEvents: StreamAppLogsQueryDto,
   hubLogsEvents: StreamHubLogsQueryDto,
@@ -72,4 +80,5 @@ export const OPERATION_PATH_PARAMS: Record<string, Array<Record<string, unknown>
 /** @ApiResponse({ type: Object }) placeholders → concrete response schemas. */
 export const OPERATION_RESPONSE_SCHEMAS: Record<string, { schemaName: string; schema: z.ZodType }> = {
   getDomains: { schemaName: 'AvailableDomainsResponseDto', schema: availableDomainsResponseSchema },
+  getStoreFeaturedBundle: { schemaName: 'FeaturedStoreBundleDto', schema: featuredStoreBundleSchema },
 };

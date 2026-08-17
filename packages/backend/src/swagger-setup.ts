@@ -59,7 +59,8 @@ function patchOperationParameters(document: SwaggerDocument) {
     if (!match || !dto.schema || !(dto.schema instanceof z.ZodObject)) {
       continue;
     }
-    (match.operation as { parameters?: unknown[] }).parameters = zodObjectToQueryParameters(dto.schema);
+    const existing = ((match.operation as { parameters?: Array<{ in?: string }> }).parameters ?? []).filter((parameter) => parameter.in === 'header');
+    (match.operation as { parameters?: unknown[] }).parameters = [...zodObjectToQueryParameters(dto.schema), ...existing];
   }
 
   for (const [operationId, { schemaName, schema }] of Object.entries(OPERATION_REQUEST_BODIES)) {
@@ -89,12 +90,17 @@ function patchOperationParameters(document: SwaggerDocument) {
     document.components.schemas ??= {};
     document.components.schemas[schemaName] = zodSchemaToOpenApiComponent(schema);
     const operation = match.operation as {
-      responses?: Record<string, { content?: Record<string, { schema?: unknown }> }>;
+      responses?: Record<string, { description?: string; content?: Record<string, { schema?: unknown }> }>;
     };
-    const response = operation.responses?.default ?? operation.responses?.['200'];
-    if (response?.content?.['application/json']) {
-      response.content['application/json'].schema = { $ref: `#/components/schemas/${schemaName}` };
+    operation.responses ??= {};
+    const responseKey = operation.responses.default ? 'default' : '200';
+    if (!operation.responses[responseKey]) {
+      operation.responses[responseKey] = { description: '' };
     }
+    const response = operation.responses[responseKey];
+    response.content ??= {};
+    response.content['application/json'] ??= {};
+    response.content['application/json'].schema = { $ref: `#/components/schemas/${schemaName}` };
   }
 
   for (const [operationId, parameters] of Object.entries(OPERATION_PATH_PARAMS)) {

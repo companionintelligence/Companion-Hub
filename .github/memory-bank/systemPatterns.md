@@ -2,14 +2,14 @@
 
 ## System Architecture
 
-Runtipi uses a containerized architecture with several key components working together:
+CIHub uses a containerized architecture with several key components working together:
 
-1. **Core Container**: The main Runtipi application that provides the web interface and manages the ecosystem
+1. **Core Container**: The main CIHub application that provides the web interface and manages the ecosystem
 2. **Traefik**: Handles routing, SSL termination, and domain management
 3. **Application Containers**: Individual Docker containers for each installed app
 4. **Shared Volume System**: For persistent data storage across containers
 
-The overall architecture follows a hub-and-spoke model where the Runtipi core orchestrates communication between services.
+The overall architecture follows a hub-and-spoke model where the CIHub core orchestrates communication between services.
 
 ## Key Technical Decisions
 
@@ -45,11 +45,11 @@ The overall architecture follows a hub-and-spoke model where the Runtipi core or
 
 ## Component Relationships
 
-1. **Core ↔ App Store**: The Runtipi core queries the app store repository for available applications.
+1. **Core ↔ App Store**: The CIHub core queries the app store repository for available applications.
 
-2. **Core ↔ Docker**: Runtipi core manages containers via Docker's API.
+2. **Core ↔ Docker**: CIHub core manages containers via Docker's API.
 
-3. **Core ↔ Traefik**: Runtipi configures Traefik for routing to application containers.
+3. **Core ↔ Traefik**: CIHub configures Traefik for routing to application containers.
 
 4. **Apps ↔ Shared Volumes**: Applications access persistent data through mounted volumes.
 
@@ -90,7 +90,7 @@ The overall architecture follows a hub-and-spoke model where the Runtipi core or
 
 1. **Container Isolation**: Applications run in isolated containers with limited permissions.
 
-2. **Authentication/Authorization**: Role-based access control for the Runtipi dashboard.
+2. **Authentication/Authorization**: Role-based access control for the CIHub dashboard.
 
 3. **HTTPS by Default**: SSL/TLS encryption for all web traffic.
 
@@ -100,7 +100,7 @@ The overall architecture follows a hub-and-spoke model where the Runtipi core or
 
 ## Scalability Considerations
 
-While primarily designed for single-server deployment, Runtipi's architecture incorporates:
+While primarily designed for single-server deployment, CIHub's architecture incorporates:
 
 1. **Resource Controls**: Docker resource limits for CPU, memory, etc.
 

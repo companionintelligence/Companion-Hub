@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 import fs from 'node:fs';
+import axios from 'axios';
 import { Injectable, OnApplicationBootstrap, type OnApplicationShutdown, Optional } from '@nestjs/common';
 import { DATA_DIR, HUB_STACK_IMAGE_REPO, HUB_STACK_REGISTRY_REPO, UPDATE_LISTENER_TOKEN_FILENAME } from '@/common/constants';
 import { writeSettingsJsonFile } from '@/common/helpers/env-helpers';
@@ -9,8 +10,42 @@ import { LoggerService } from '@/core/logger/logger.service';
 import { RegistryService } from '@/utils/registry/registry.service';
 import { AgentNotifyService } from '../agent-notify/agent-notify.service';
 
-/** Prefer the live mounted compose file inside the running Hub container. */
-const COMPOSE_FILENAMES = ['docker-compose.yml', 'docker-compose.prod.yml'] as const;
+/** Desktop seeds `docker-compose.prod.yml`; other installs may only have `docker-compose.yml`. */
+const COMPOSE_FILENAMES = ['docker-compose.prod.yml', 'docker-compose.yml'] as const;
+
+export const HOST_LISTENER_PORT = 17400;
+const HOST_LISTENER_PROBE_TIMEOUT_MS = 1500;
+const HOST_LISTENER_TRIGGER_TIMEOUT_MS = 10_000;
+
+export type StackUpdateState = 'updating' | 'skipped' | 'failed';
+export type HostUpdateState = 'started' | 'unavailable' | 'failed';
+
+export type PerformUpdateResult = {
+  success: boolean;
+  message: string;
+  stack: StackUpdateState;
+  host: HostUpdateState;
+};
+
+/** Hub container probe — `/.dockerenv` plus Podman's containerenv. Not the `/data` heuristic. */
+export function detectHubContainer(): boolean {
+  try {
+    return fs.existsSync('/.dockerenv') || fs.existsSync('/run/.containerenv');
+  } catch {
+    return false;
+  }
+}
+
+/** From inside Docker, the desktop listener is on the host — not this container's loopback. */
+export function resolveHostListenerBaseUrl(inContainer: boolean = detectHubContainer()): string {
+  const host = inContainer ? 'host.docker.internal' : '127.0.0.1';
+  return `http://${host}:${HOST_LISTENER_PORT}`;
+}
+
+/** GHCR tags are unprefixed (`0.2.56`). A leading `v` makes the pull 404. */
+function normalizeHubVersionTag(version: string): string {
+  return version.trim().replace(/^v/i, '');
+}
 
 @Injectable()
 export class SystemUpdateService implements OnApplicationBootstrap, OnApplicationShutdown {
@@ -105,46 +140,152 @@ export class SystemUpdateService implements OnApplicationBootstrap, OnApplicatio
     return targetVersion;
   }
 
+  /**
+   * Compose interpolates `${CI_HUB_IMAGE}` from the *shell* environment first.
+   * The running Hub container still has the old tag in `process.env`, so a spawn
+   * that inherits it will pull/recreate the image we are already on — which is
+   * why Settings → Update only restarted. Override those keys for every child.
+   */
+  private stackUpdateChildEnv(imageRef: string, version: string, envFile: string): NodeJS.ProcessEnv {
+    return {
+      ...process.env,
+      CI_HUB_IMAGE: imageRef,
+      CI_HUB_VERSION: version,
+      ENV_FILE: path.basename(envFile),
+    };
+  }
+
+  private composeBaseArgs(envFile: string, composeFile: string): string[] {
+    const args = ['compose', '--env-file', envFile, '--project-name', process.env.CI_HUB_COMPOSE_PROJECT_NAME || 'ci-hub'];
+    const hostProjectDir = process.env.ROOT_FOLDER_HOST?.trim();
+    if (hostProjectDir) {
+      args.push('--project-directory', hostProjectDir);
+    }
+    args.push('-f', composeFile);
+    return args;
+  }
+
   private stackUpdateLogPath(dataDir: string): string {
     const logsDir = path.join(dataDir, 'logs');
     fs.mkdirSync(logsDir, { recursive: true });
     return path.join(logsDir, 'hub-stack-update.log');
   }
 
-  async performUpdate(targetVersion?: string) {
-    const pinned = targetVersion ?? (await this.checkForUpdates()).latest;
-    this.logger.info(`Hub stack update initiated${pinned ? ` to ${pinned}` : ''}`);
+  async getHostListenerStatus(): Promise<{ reachable: boolean }> {
+    return { reachable: await this.probeHostListener() };
+  }
+
+  async probeHostListener(): Promise<boolean> {
+    const token = this.getHostUpdateListenerToken();
+    if (!token) {
+      return false;
+    }
+
+    try {
+      const response = await axios.get(`${resolveHostListenerBaseUrl()}/health`, {
+        timeout: HOST_LISTENER_PROBE_TIMEOUT_MS,
+        headers: { Authorization: `Bearer ${token}` },
+        validateStatus: () => true,
+      });
+      return response.status === 200;
+    } catch {
+      return false;
+    }
+  }
+
+  async triggerHostListener(): Promise<Exclude<HostUpdateState, 'unavailable'>> {
+    const token = this.getHostUpdateListenerToken();
+    if (!token) {
+      return 'failed';
+    }
+
+    try {
+      const response = await axios.post(`${resolveHostListenerBaseUrl()}/update`, null, {
+        timeout: HOST_LISTENER_TRIGGER_TIMEOUT_MS,
+        headers: { Authorization: `Bearer ${token}` },
+        validateStatus: () => true,
+      });
+      return response.status >= 200 && response.status < 300 ? 'started' : 'failed';
+    } catch {
+      return 'failed';
+    }
+  }
+
+  async performUpdate(targetVersion?: string): Promise<PerformUpdateResult> {
+    const pinned = normalizeHubVersionTag(targetVersion ?? (await this.checkForUpdates()).latest);
+    const imageRef = `${HUB_STACK_IMAGE_REPO}:${pinned}`;
+    this.logger.info(`Hub stack update initiated to ${imageRef}`);
 
     const { dataDir } = this.config.get('directories');
     const envFile = path.join(dataDir, '.env');
     const composeFile = this.resolveComposeFile(dataDir);
+    const childEnv = this.stackUpdateChildEnv(imageRef, pinned, envFile);
 
     this.pinHubStackVersionInEnv(envFile, pinned);
 
-    const composeBase = ['docker', 'compose', '--env-file', envFile, '--project-name', 'ci-hub', '-f', composeFile] as const;
+    const listenerReachable = await this.probeHostListener();
+    if (listenerReachable) {
+      const host = await this.triggerHostListener();
+      if (host === 'started') {
+        this.logger.info('Host update listener accepted the update; desktop will stop the stack and pull on relaunch');
+        return {
+          success: true,
+          message: 'Update initiated, hub will restart shortly',
+          stack: 'skipped',
+          host: 'started',
+        };
+      }
+      this.logger.warn('Host update listener trigger failed; falling back to stack-only update');
+      await this.pullAndRecreateHubStack(imageRef, envFile, composeFile, childEnv, dataDir);
+      return {
+        success: true,
+        message: 'Update initiated, hub will restart shortly',
+        stack: 'updating',
+        host: 'failed',
+      };
+    }
 
+    await this.pullAndRecreateHubStack(imageRef, envFile, composeFile, childEnv, dataDir);
+    return {
+      success: true,
+      message: 'Update initiated, hub will restart shortly',
+      stack: 'updating',
+      host: 'unavailable',
+    };
+  }
+
+  private async pullAndRecreateHubStack(
+    imageRef: string,
+    envFile: string,
+    composeFile: string,
+    childEnv: NodeJS.ProcessEnv,
+    dataDir: string,
+  ): Promise<void> {
     try {
-      await this.runComposeCommand([...composeBase, 'pull', 'ci-os-hub']);
-      this.logger.info(`Successfully pulled ci-os-hub:${pinned ?? 'latest'}`);
+      // Pull the pinned image by reference so compose interpolation cannot
+      // silently retarget the tag already baked into this container's env.
+      await this.runDockerCommand(['docker', 'pull', imageRef], childEnv);
+      this.logger.info(`Successfully pulled ${imageRef}`);
     } catch (error) {
       this.logger.error('Failed to pull new Hub image', error);
       throw error;
     }
 
     const updateLogPath = this.stackUpdateLogPath(dataDir);
-    const logBanner = `\n[${new Date().toISOString()}] Hub stack update restart (target=${pinned ?? 'latest'})\n`;
+    const logBanner = `\n[${new Date().toISOString()}] Hub stack update recreate (target=${imageRef})\n`;
     fs.appendFileSync(updateLogPath, logBanner);
 
+    const composeArgs = [...this.composeBaseArgs(envFile, composeFile), 'up', '-d', '--pull', 'always', '--force-recreate', '--no-deps', 'ci-os-hub'];
+
     setTimeout(() => {
-      this.logger.info(`Restarting Hub stack with new images (logging to ${updateLogPath})...`);
+      this.logger.info(`Recreating ci-os-hub from ${imageRef} (logging to ${updateLogPath})...`);
       const logFd = fs.openSync(updateLogPath, 'a');
-      // composeBase already begins with the `docker` binary — don't prepend it
-      // again, or docker sees `docker docker compose …` and rejects `--env-file`
-      // (which silently killed every stack update since 0.2.44).
-      const [dockerBin, ...composeArgs] = composeBase;
-      const cmd = spawn(dockerBin, [...composeArgs, 'up', '-d', '--pull', 'always', '--force-recreate', '--no-deps', 'ci-os-hub'], {
+      // Binary is `docker` exactly once — a duplicated `docker` in argv makes
+      // the CLI reject `--env-file` (the 0.2.44–0.2.46 stack-update regression).
+      const cmd = spawn('docker', composeArgs, {
         detached: true,
         stdio: ['ignore', logFd, logFd],
+        env: childEnv,
       });
       cmd.on('spawn', () => {
         try {
@@ -155,31 +296,29 @@ export class SystemUpdateService implements OnApplicationBootstrap, OnApplicatio
       });
       cmd.unref();
     }, 3000);
-
-    return { success: true, message: 'Update initiated, hub will restart shortly' };
   }
 
-  private async runComposeCommand(command: string[]): Promise<void> {
+  private async runDockerCommand(command: string[], env: NodeJS.ProcessEnv): Promise<void> {
     const [bin, ...args] = command;
     if (!bin) {
       throw new Error('Empty command');
     }
     return new Promise((resolve, reject) => {
-      const cmd = spawn(bin, args, { stdio: 'pipe' });
+      const cmd = spawn(bin, args, { stdio: 'pipe', env });
       const stderr: string[] = [];
       cmd.stderr.on('data', (data: Buffer) => {
-        this.logger.debug(`compose: ${String(data).trim()}`);
+        this.logger.debug(`docker: ${String(data).trim()}`);
         stderr.push(String(data).trim());
       });
       cmd.stdout.on('data', (data: Buffer) => {
-        this.logger.debug(`compose: ${String(data).trim()}`);
+        this.logger.debug(`docker: ${String(data).trim()}`);
       });
       cmd.on('error', reject);
       cmd.on('close', (code) => {
         if (code === 0) {
           resolve();
         } else {
-          reject(new Error(`docker compose exited with code ${code}: ${stderr.join('\n')}`));
+          reject(new Error(`docker exited with code ${code}: ${stderr.join('\n')}`));
         }
       });
     });
@@ -227,7 +366,7 @@ export class SystemUpdateService implements OnApplicationBootstrap, OnApplicatio
     }
   }
 
-  /** Token for the desktop host update listener on 127.0.0.1:17400 (browser cannot reach it without auth). */
+  /** Token for the desktop host update listener (Hub POSTs to host.docker.internal:17400). */
   getHostUpdateListenerToken(): string | null {
     const tokenPath = path.join(DATA_DIR, UPDATE_LISTENER_TOKEN_FILENAME);
     if (!fs.existsSync(tokenPath)) {

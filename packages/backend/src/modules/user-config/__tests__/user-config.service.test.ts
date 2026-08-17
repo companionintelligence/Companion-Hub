@@ -3,7 +3,7 @@ import { UserConfigService } from '../user-config.service';
 import { AppsRepository } from '../../apps/apps.repository';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { AppFilesManager } from '../../apps/app-files-manager';
-import { AppsService } from '../../apps/apps.service';
+import { AppsReadService } from '../../apps/apps-read.service';
 import { mock, MockProxy } from 'vitest-mock-extended';
 import { describe, it, expect, beforeEach } from 'vitest';
 import { TranslatableError } from '@/common/error/translatable-error';
@@ -12,13 +12,13 @@ describe('UserConfigService', () => {
   let service: UserConfigService;
   let appFilesManager: MockProxy<AppFilesManager>;
   let appsRepository: MockProxy<AppsRepository>;
-  let appsService: MockProxy<AppsService>;
+  let appsReadService: MockProxy<AppsReadService>;
   let filesystemService: MockProxy<FilesystemService>;
 
   beforeEach(async () => {
     appFilesManager = mock<AppFilesManager>();
     appsRepository = mock<AppsRepository>();
-    appsService = mock<AppsService>();
+    appsReadService = mock<AppsReadService>();
     filesystemService = mock<FilesystemService>();
 
     const module: TestingModule = await Test.createTestingModule({
@@ -26,7 +26,7 @@ describe('UserConfigService', () => {
         UserConfigService,
         { provide: AppFilesManager, useValue: appFilesManager },
         { provide: AppsRepository, useValue: appsRepository },
-        { provide: AppsService, useValue: appsService },
+        { provide: AppsReadService, useValue: appsReadService },
         { provide: FilesystemService, useValue: filesystemService },
       ],
     }).compile();
@@ -36,7 +36,7 @@ describe('UserConfigService', () => {
 
   describe('getUserConfig', () => {
     it('should return user config', async () => {
-      appsService.getApp.mockResolvedValue({ app: { id: 'app' as any, userConfigEnabled: true } } as any);
+      appsReadService.getApp.mockResolvedValue({ app: { id: 'app' as any, userConfigEnabled: true } } as any);
       appFilesManager.getUserComposeFile.mockResolvedValue({ path: 'path', content: 'compose' });
       appFilesManager.getUserEnv.mockResolvedValue({ path: 'path', content: 'env' });
 

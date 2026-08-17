@@ -1,11 +1,11 @@
 import { Module, forwardRef } from '@nestjs/common';
-import { AppLifecycleModule } from '../app-lifecycle/app-lifecycle.module';
 import { AppsModule } from '../apps/apps.module';
 import { UserConfigController } from './user-config.controller';
 import { UserConfigService } from './user-config.service';
 
 @Module({
-  imports: [forwardRef(() => AppLifecycleModule), forwardRef(() => AppsModule)],
+  // AppsModule only — UserConfigService reads via AppsReadService; no AppLifecycle coupling.
+  imports: [forwardRef(() => AppsModule)],
   controllers: [UserConfigController],
   providers: [UserConfigService],
   exports: [UserConfigService],

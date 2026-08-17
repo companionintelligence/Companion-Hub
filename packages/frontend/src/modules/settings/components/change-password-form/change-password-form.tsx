@@ -1,6 +1,6 @@
 import { changePasswordMutation } from '@/api-client/@tanstack/react-query.gen';
 import { Button } from '@/components/ui/Button';
-import { Input } from '@/components/ui/Input';
+import { PasswordInput } from '@/components/ui/PasswordInput/PasswordInput';
 import { clearClientHubState } from '@/lib/clear-client-hub-state';
 import { SIGNED_OUT_PARAM } from '@/lib/signed-out-reasons';
 import type { TranslatableError } from '@/types/error.types';
@@ -65,27 +65,27 @@ export const ChangePasswordForm = () => {
 
   return (
     <form onSubmit={handleSubmit(onSubmit)} className="mb-4 w-full">
-      <Input
+      <PasswordInput
         disabled={changePassword.isPending}
         {...register('currentPassword')}
         error={errors.currentPassword?.message}
-        type="password"
+        autoComplete="current-password"
         placeholder={t('SETTINGS_SECURITY_FORM_CURRENT_PASSWORD')}
       />
-      <Input
+      <PasswordInput
         disabled={changePassword.isPending}
         {...register('newPassword')}
         error={errors.newPassword?.message}
         className="mt-2"
-        type="password"
+        autoComplete="new-password"
         placeholder={t('SETTINGS_SECURITY_FORM_NEW_PASSWORD')}
       />
-      <Input
+      <PasswordInput
         disabled={changePassword.isPending}
         {...register('newPasswordConfirm')}
         error={errors.newPasswordConfirm?.message}
         className="mt-2"
-        type="password"
+        autoComplete="new-password"
         placeholder={t('SETTINGS_SECURITY_FORM_CONFIRM_PASSWORD')}
       />
       <Button disabled={changePassword.isPending} className="mt-3" type="submit">

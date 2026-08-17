@@ -21,6 +21,7 @@ import { ReposHelpers } from '@/modules/app-stores/repos.helpers';
 import { AppStoreService } from '@/modules/app-stores/app-store.service';
 import { InstallPipelineTracker } from '@/modules/apps/install-pipeline.tracker';
 import { AppOperationRegistry } from '../app-operation-registry';
+import { DockerReadFacade } from '@/modules/docker/docker-read.facade';
 import { DockerService } from '@/modules/docker/docker.service';
 import { APP_ASYNC_MUTEX } from '@/utils/mutex/mutex.module';
 import { mock, MockProxy } from 'vitest-mock-extended';
@@ -111,6 +112,7 @@ describe('AppLifecycleService', () => {
         { provide: AppRuntimeMonitorService, useValue: appRuntimeMonitor },
         { provide: AppFilesManager, useValue: appFilesManager },
         { provide: DockerService, useValue: dockerService },
+        { provide: DockerReadFacade, useValue: mock<DockerReadFacade>() },
         { provide: SSEService, useValue: sseService },
         { provide: BackupManager, useValue: backupManager },
         { provide: CloudflareClientService, useValue: cloudflareClientService },

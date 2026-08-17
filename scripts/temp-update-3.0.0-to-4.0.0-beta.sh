@@ -11,7 +11,7 @@ Yellow='\e[33m'
 ColorOff='\e[0m'
 
 # Welcome message
-echo -e "Welcome to the Runtipi migration script! It will automatically update everything to work with version ${Green}4.0.0${ColorOff}\n"
+echo -e "Welcome to the CIHub migration script! It will automatically update everything to work with version ${Green}4.0.0${ColorOff}\n"
 
 # Check if running as root
 if [[ "$EUID" -ne 0 ]]; then
@@ -34,9 +34,9 @@ else
   exit 1
 fi
 
-# Check if runtipi-cli exists
-if [[ ! -f "runtipi-cli" ]]; then
-  echo -e "❌ ${Red}You need to run this script from the runtipi directory!${ColorOff}"
+# Check if runcihub-cli exists
+if [[ ! -f "runcihub-cli" ]]; then
+  echo -e "❌ ${Red}You need to run this script from the runcihub directory!${ColorOff}"
   exit 1
 fi
 
@@ -164,19 +164,19 @@ echo -e "Stopping apps...\n"
 for app in apps/*; do
   app=${app#apps/}
   echo -ne "\033[KStopping ${Green}$app${ColorOff}\r"
-  if ! ./runtipi-cli app stop "$app" >/dev/null 2>&1; then
+  if ! ./runcihub-cli app stop "$app" >/dev/null 2>&1; then
     echo -e "${Red}Failed to stop $app!${ColorOff}"
   fi
   sleep 3
 done
 
-read -p "🚨 Please go  to the Runtipi web interface and make sure all apps are stopped, then press enter to continue..." -r
+read -p "🚨 Please go  to the CIHub web interface and make sure all apps are stopped, then press enter to continue..." -r
 
-# Stop runtipi
-echo -e "\nStopping Runtipi...\n"
+# Stop runcihub
+echo -e "\nStopping CIHub...\n"
 
-if ! ./runtipi-cli stop; then
-  echo -e "${Red}Failed to stop Runtipi${ColorOff}"
+if ! ./runcihub-cli stop; then
+  echo -e "${Red}Failed to stop CIHub${ColorOff}"
   exit 1
 fi
 
@@ -216,36 +216,36 @@ for app in migration-backups/apps/*; do
   fi
 done
 
-if [[ -f "migration-backups/user-config/tipi-compose.yml" ]]; then
-  mv migration-backups/user-config/tipi-compose.yml user-config/tipi-compose.yml
+if [[ -f "migration-backups/user-config/cihub-compose.yml" ]]; then
+  mv migration-backups/user-config/cihub-compose.yml user-config/cihub-compose.yml
 fi
 
-# Start runtipi
-echo -e "\nMigration complete! Updating Runtipi to v4.0.0...\n"
+# Start runcihub
+echo -e "\nMigration complete! Updating CIHub to v4.0.0...\n"
 
 ARCHITECTURE="$(uname -m)"
 
-ASSET="runtipi-cli-linux-x86_64.tar.gz"
+ASSET="runcihub-cli-linux-x86_64.tar.gz"
 if [[ "$ARCHITECTURE" == "arm64" || "$ARCHITECTURE" == "aarch64" ]]; then
-  ASSET="runtipi-cli-linux-aarch64.tar.gz"
+  ASSET="runcihub-cli-linux-aarch64.tar.gz"
 fi
 
-URL="https://github.com/runtipi/runtipi/releases/download/v4.0.0-beta.11/$ASSET"
+URL="https://github.com/runcihub/runcihub/releases/download/v4.0.0-beta.11/$ASSET"
 
-rm -f ./runtipi-cli
+rm -f ./runcihub-cli
 
 if [[ "$ASSET" == *".tar.gz" ]]; then
-  curl --location "$URL" -o ./runtipi-cli.tar.gz
-  tar -xzf ./runtipi-cli.tar.gz
+  curl --location "$URL" -o ./runcihub-cli.tar.gz
+  tar -xzf ./runcihub-cli.tar.gz
 
-  asset_name=$(tar -tzf ./runtipi-cli.tar.gz | head -n 1 | cut -f1 -d"/")
-  mv "./${asset_name}" ./runtipi-cli
-  rm ./runtipi-cli.tar.gz
+  asset_name=$(tar -tzf ./runcihub-cli.tar.gz | head -n 1 | cut -f1 -d"/")
+  mv "./${asset_name}" ./runcihub-cli
+  rm ./runcihub-cli.tar.gz
 else
-  curl --location "$URL" -o ./runtipi-cli
+  curl --location "$URL" -o ./runcihub-cli
 fi
 
-chmod +x ./runtipi-cli
-sudo ./runtipi-cli start
+chmod +x ./runcihub-cli
+sudo ./runcihub-cli start
 
-echo -e "🎉 Runtipi has been updated to v4.0.0! 🎉\nOnce you have confirmed everything is working, you can delete the migration-backups folder.\n"
+echo -e "🎉 CIHub has been updated to v4.0.0! 🎉\nOnce you have confirmed everything is working, you can delete the migration-backups folder.\n"

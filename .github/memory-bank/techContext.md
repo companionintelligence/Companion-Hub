@@ -146,7 +146,7 @@
    - Dynamic configuration based on application needs
 
 3. **Environment Variables**
-   - Used for configuration of both Runtipi and applications
+   - Used for configuration of both CIHub and applications
    - Centralized in .env files and propagated to containers
 
 4. **Volume Mounts**

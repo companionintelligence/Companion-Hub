@@ -5,7 +5,7 @@ import { LoggerService } from '@/core/logger/logger.service';
 import { HttpStatus, Injectable, Inject, forwardRef, OnApplicationBootstrap, type OnApplicationShutdown } from '@nestjs/common';
 import slugify from 'slugify';
 import type { UpdateAppStoreBodyDto } from '../marketplace/dto/marketplace.dto';
-import { MarketplaceService } from '../marketplace/marketplace.service';
+import { MarketplaceCacheBus } from '../marketplace/marketplace-cache.bus';
 import { RepoEventsQueue } from '../queue/entities/repo-events';
 import { CI_MARKETPLACE_STORE_SLUG } from '@/core/portal/portal.constants';
 import { AppStoreRepository } from './app-store.repository';
@@ -36,7 +36,7 @@ export class AppStoreService implements OnApplicationBootstrap, OnApplicationShu
     private readonly config: ConfigurationService,
     private readonly appStoreRepository: AppStoreRepository,
     private readonly portalClient: PortalClientService,
-    @Inject(forwardRef(() => MarketplaceService)) private readonly marketplaceService: MarketplaceService,
+    private readonly marketplaceCacheBus: MarketplaceCacheBus,
   ) {
     this.repoQueue.onEvent(async (data, reply) => {
       switch (data.command) {
@@ -51,7 +51,7 @@ export class AppStoreService implements OnApplicationBootstrap, OnApplicationShu
               this.logger.warn(`Skipped invalid repo ${stores[index]?.slug}: ${result.value.message}`);
             }
           });
-          this.marketplaceService.invalidateCache();
+          this.marketplaceCacheBus.invalidate();
           await reply({ success: true, message: 'All repos updated' });
           break;
         }
@@ -112,7 +112,7 @@ export class AppStoreService implements OnApplicationBootstrap, OnApplicationShu
       await this.repoHelpers.pullRepo(repo.url, repo.slug, repo.type ?? 'git');
     }
 
-    this.marketplaceService.invalidateCache();
+    this.marketplaceCacheBus.invalidate();
 
     return { success: true };
   }
@@ -159,6 +159,22 @@ export class AppStoreService implements OnApplicationBootstrap, OnApplicationShu
   /** Proxies Portal `GET /api/store` (featured/trending/newest listings for the app store UI). */
   public async fetchCiCloudStoreListings(params: { category?: string; tags?: string; sort?: 'newest' | 'trending'; q?: string }): Promise<unknown> {
     return this.portalClient.fetchStoreListings(params);
+  }
+
+  /** One round-trip for the featured store view (four listing queries in parallel). */
+  public async fetchFeaturedBundle(): Promise<{
+    firstParty: unknown;
+    featured: unknown;
+    trending: unknown;
+    newest: unknown;
+  }> {
+    const [firstParty, featured, trending, newest] = await Promise.all([
+      this.fetchCiCloudStoreListings({ tags: 'companion-intelligence' }),
+      this.fetchCiCloudStoreListings({ tags: 'featured' }),
+      this.fetchCiCloudStoreListings({ sort: 'trending' }),
+      this.fetchCiCloudStoreListings({ sort: 'newest' }),
+    ]);
+    return { firstParty, featured, trending, newest };
   }
 
   public async getEnabledAppStores() {

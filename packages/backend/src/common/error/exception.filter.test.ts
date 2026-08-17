@@ -17,6 +17,7 @@ describe('MainExceptionFilter', () => {
     logger = mock<LoggerService>();
     filter = new MainExceptionFilter(logger);
     response = mock<Response>();
+    response.headersSent = false;
     response.status.mockReturnThis();
     request = {
       method: 'GET',
@@ -58,5 +59,18 @@ describe('MainExceptionFilter', () => {
 
     expect(response.redirect).toHaveBeenCalled();
     expect(response.status).not.toHaveBeenCalled();
+  });
+
+  it('does not redirect or JSON-write when the portal handler already sent headers', () => {
+    request.path = '/api/auth/portal/start';
+    request.url = '/api/auth/portal/start?desktop=1';
+    request.query = { desktop: '1' };
+    response.headersSent = true;
+
+    filter.catch(new Error('headers already sent'), createHost());
+
+    expect(response.redirect).not.toHaveBeenCalled();
+    expect(response.status).not.toHaveBeenCalled();
+    expect(response.json).not.toHaveBeenCalled();
   });
 });

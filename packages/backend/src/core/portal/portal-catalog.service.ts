@@ -29,7 +29,7 @@ type PortalCatalogApp = {
   supported_architectures?: string[];
   available?: boolean;
   cihub_app_version?: number;
-  tipi_version?: number;
+  cihub_version?: number;
   min_hub_version?: number | null;
   exposable?: boolean;
   no_gui?: boolean;
@@ -42,6 +42,12 @@ type PortalCatalogApp = {
   screenshots?: string[];
   demo_video?: string;
 };
+
+const HUB_MANAGED_MARKETPLACE_APP_IDS = new Set(['cloudflared', 'cloudflare-tunnel']);
+
+function isHubManagedMarketplaceApp(slug: string): boolean {
+  return HUB_MANAGED_MARKETPLACE_APP_IDS.has(slug.trim().toLowerCase());
+}
 
 export type PortalCatalogEntry = {
   id: string;
@@ -84,6 +90,7 @@ export class PortalCatalogService {
   private mapPortalApp(app: PortalCatalogApp): PortalCatalogEntry | null {
     const slug = app.slug ?? app.id;
     if (!slug) return null;
+    if (isHubManagedMarketplaceApp(slug)) return null;
     const name = app.name ?? app.title ?? slug;
     const short_desc = app.short_desc ?? app.shortDescription ?? app.description ?? '';
     const categories = new Set<string>();
@@ -104,7 +111,7 @@ export class PortalCatalogService {
       supported_architectures: app.supported_architectures,
       available: app.available !== false,
       cihub_app_version:
-        typeof app.cihub_app_version === 'number' ? app.cihub_app_version : typeof app.tipi_version === 'number' ? app.tipi_version : 1,
+        typeof app.cihub_app_version === 'number' ? app.cihub_app_version : typeof app.cihub_version === 'number' ? app.cihub_version : 1,
       version: typeof app.version === 'string' ? app.version : '0.0.1',
       min_hub_version: typeof app.min_hub_version === 'number' ? app.min_hub_version : null,
     };
@@ -261,7 +268,7 @@ export class PortalCatalogService {
       port: typeof app.port === 'number' ? app.port : isMcpListing ? undefined : 8080,
       version: typeof app.version === 'string' ? app.version : 'latest',
       cihub_app_version:
-        typeof app.cihub_app_version === 'number' ? app.cihub_app_version : typeof app.tipi_version === 'number' ? app.tipi_version : 1,
+        typeof app.cihub_app_version === 'number' ? app.cihub_app_version : typeof app.cihub_version === 'number' ? app.cihub_version : 1,
       source: typeof app.source === 'string' ? app.source : 'https://companionintelligence.com',
       website: typeof app.website === 'string' ? app.website : undefined,
       supported_architectures: app.supported_architectures?.length ? app.supported_architectures : ['amd64', 'arm64'],
@@ -294,6 +301,7 @@ export class PortalCatalogService {
     if (!this.isCiMarketplaceUrn(appUrn)) return null;
 
     const { appName } = extractAppUrn(appUrn);
+    if (isHubManagedMarketplaceApp(appName)) return null;
 
     try {
       const raw = await this.portalClient.fetchStoreCatalog();

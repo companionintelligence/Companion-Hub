@@ -119,6 +119,8 @@ export const AiSettingsContainer = () => {
   // Mirrors for values the stable callbacks / effects below need without retriggering on change.
   const vllmUrlRef = useRef('');
   vllmUrlRef.current = vllmUrl;
+  const vllmApiKeyRef = useRef('');
+  vllmApiKeyRef.current = vllmApiKey;
   const trackedModelsRef = useRef<TrackedModel[]>([]);
   // One index of the tier catalog per profile, shared by the save and by the confirmation copy so
   // they cannot disagree — and so neither rebuilds it, the save on every press and the copy on
@@ -244,7 +246,11 @@ export const AiSettingsContainer = () => {
   const handleRecheckOllama = async () => {
     const status = await checkOllamaStatus();
     if (status?.ready) {
-      const data = await fetchInferenceOnboardingProfile(selectedBackend, vllmUrlRef.current);
+      const data = await fetchInferenceOnboardingProfile(
+        selectedBackend,
+        selectedBackend === 'vllm' ? vllmUrlRef.current : undefined,
+        selectedBackend === 'vllm' ? vllmApiKeyRef.current : undefined,
+      );
       setProfile(data);
       seedSelectedModelIds(data, selectedBackend, trackedModelsRef.current);
     }
@@ -253,7 +259,7 @@ export const AiSettingsContainer = () => {
   const checkVllmStatus = useCallback(async () => {
     setCheckingVllm(true);
     try {
-      const data = (await fetchVllmInstallStatus(vllmUrlRef.current)) as VllmStatus;
+      const data = (await fetchVllmInstallStatus(vllmUrlRef.current, vllmApiKeyRef.current)) as VllmStatus;
       setVllmStatus(data);
       return data;
     } catch {
@@ -270,7 +276,7 @@ export const AiSettingsContainer = () => {
   const handleRecheckVllm = useCallback(async () => {
     const status = await checkVllmStatus();
     if (status?.ready) {
-      const data = await fetchInferenceOnboardingProfile('vllm', vllmUrlRef.current);
+      const data = await fetchInferenceOnboardingProfile('vllm', vllmUrlRef.current, vllmApiKeyRef.current);
       setProfile(data);
       seedSelectedModelIds(data, 'vllm', trackedModelsRef.current);
     }
@@ -313,7 +319,11 @@ export const AiSettingsContainer = () => {
     if (!hasProfileRef.current) return;
     if (lastHandledBackendRef.current === selectedBackend) return;
     lastHandledBackendRef.current = selectedBackend;
-    void fetchInferenceOnboardingProfile(selectedBackend, vllmUrlRef.current).then((data) => {
+    void fetchInferenceOnboardingProfile(
+      selectedBackend,
+      selectedBackend === 'vllm' ? vllmUrlRef.current : undefined,
+      selectedBackend === 'vllm' ? vllmApiKeyRef.current : undefined,
+    ).then((data) => {
       setProfile(data);
       // Re-seed the checkboxes for the new backend from server truth (see seedSelectedModelIds).
       seedSelectedModelIds(data, selectedBackend, trackedModelsRef.current);
@@ -353,6 +363,16 @@ export const AiSettingsContainer = () => {
       const preferredEmbeddingModel = resolvePreferredModelId(profile, EMBEDDING_INFERENCE_BACKEND, isEmbeddingModel, compatibleSelectedModelIds);
       const preferredVisionModel = resolvePreferredModelId(profile, selectedBackend, isVisionModel, compatibleSelectedModelIds);
 
+      // Cloud keys first so the debounced AI-app restart (from preferences) sees them.
+      // Masked keys (`••••`) omit apiKey so the Hub keeps the stored secret.
+      for (const cp of cloudProviders) {
+        if (cp.apiKey.trim() && !cp.apiKey.startsWith('••')) {
+          await saveCloudProviderConfig({ provider: cp.provider, apiKey: cp.apiKey, enabled: cp.enabled });
+        } else if (cp.apiKey.startsWith('••')) {
+          await saveCloudProviderConfig({ provider: cp.provider, enabled: cp.enabled });
+        }
+      }
+
       await saveInferencePreferences({
         backend: selectedBackend,
         model: preferredModel,
@@ -361,16 +381,6 @@ export const AiSettingsContainer = () => {
         vllmApiKey: selectedBackend === 'vllm' ? vllmApiKey.trim() || null : null,
         vllmUrl: selectedBackend === 'vllm' ? vllmUrl.trim() || null : null,
       });
-
-      // Save cloud providers — for already-configured providers (masked key),
-      // always persist enabled state; for new/changed keys, send the full config.
-      for (const cp of cloudProviders) {
-        if (cp.apiKey.trim() && !cp.apiKey.startsWith('••')) {
-          await saveCloudProviderConfig({ provider: cp.provider, apiKey: cp.apiKey, enabled: cp.enabled });
-        } else if (cp.apiKey.startsWith('••')) {
-          await saveCloudProviderConfig({ provider: cp.provider, enabled: cp.enabled });
-        }
-      }
 
       const ollamaSelectedModelIds = compatibleSelectedModelIds.filter((modelId) => availableModelById.get(modelId)?.backend === 'ollama');
       const compatiblePinnedModelIds = unpinnablePins(availableModelById, pinnedModelIds);

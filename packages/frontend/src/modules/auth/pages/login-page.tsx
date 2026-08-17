@@ -5,6 +5,10 @@ import { markHubSessionIssuedAt, setTauriSessionId } from '@/lib/api-fetch';
 import { portalErrorTranslationKey } from '@/lib/portal-auth-errors';
 import { SIGNED_OUT_PARAM, signedOutTranslationKey } from '@/lib/signed-out-reasons';
 import { resolvePortalSessionHint } from '@/lib/portal-session-hint';
+import { hubAuthFlowPolicy, resolveHubAuthFlow } from '@/lib/hub-auth-flow';
+import { isTauriDesktopApp } from '@/lib/hub-runtime-mode';
+import { clearHubConnection, getHubBaseUrlSync, isMobileClient, usesCloudConnect } from '@/lib/mobile-connection';
+import { buildPortalSsoStartUrl } from '@/lib/portal-sso-url';
 import { followSafeRedirect } from '@/lib/safe-redirect';
 import { useUserContext } from '@/context/user-context';
 import type { TranslatableError } from '@/types/error.types';
@@ -20,7 +24,20 @@ const capitalize = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 
 export async function clientLoader({ request }: { request: Request }) {
   try {
-    const user = await userContext();
+    // A phone talking to a remote Hub must not wait forever on user-context.
+    // ios:dev often has no native HTTP yet; a hung GET leaves a blank /login.
+    const user =
+      isMobileClient() && getHubBaseUrlSync()
+        ? await Promise.race([
+            userContext(),
+            new Promise<null>((resolve) => {
+              globalThis.setTimeout(() => resolve(null), 5000);
+            }),
+          ])
+        : await userContext();
+    if (!user) {
+      return null;
+    }
 
     if (user.data?.isLoggedIn) {
       // Honor a safe redirect target instead of dropping it: a visitor who signed in from
@@ -103,7 +120,15 @@ export default () => {
   }, []);
 
   const navigate = useNavigate();
-  const isTauriDesktop = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
+  const isMobile = isMobileClient();
+  const remoteHubUrl = getHubBaseUrlSync();
+  const isTauriDesktop = isTauriDesktopApp();
+  const authFlow = resolveHubAuthFlow({
+    usesCloudConnect: usesCloudConnect(),
+    remoteHubUrl,
+    isTauriDesktop,
+  });
+  const authPolicy = hubAuthFlowPolicy(authFlow);
 
   const login = useMutation({
     ...loginMutation(),
@@ -163,25 +188,39 @@ export default () => {
     return <TotpForm loading={verifyTotp.isPending} onSubmit={(totpCode) => verifyTotp.mutate({ body: { totpCode, totpSessionId } })} />;
   }
 
-  const portalSsoHref = (() => {
-    const baseUrl = isTauriDesktop ? client.getConfig().baseUrl || 'http://localhost:5002' : window.location.origin;
-    const url = new URL('/api/auth/portal/start', baseUrl);
-    if (redirect_url) {
-      url.searchParams.set('redirect_url', redirect_url);
-    }
-    if (isTauriDesktop) {
-      url.searchParams.set('desktop', '1');
-    }
-    return url.toString();
-  })();
+  const portalSsoHref = authPolicy.usesHubPortalSso
+    ? buildPortalSsoStartUrl({
+        remoteHubUrl,
+        isTauriDesktop,
+        isMobileClient: isMobile,
+        configuredApiBaseUrl: client.getConfig().baseUrl,
+        pageOrigin: window.location.origin,
+        redirectUrl: redirect_url,
+      })
+    : undefined;
 
   return (
-    <LoginForm
-      onSubmit={(values) => login.mutate({ body: { password: values.password, username: values.email } })}
-      loading={login.isPending}
-      loginType={loginType}
-      portalSsoHref={portalSsoHref}
-      portalAccountEmail={portalAccountEmail}
-    />
+    <>
+      <LoginForm
+        onSubmit={(values) => login.mutate({ body: { password: values.password, username: values.email } })}
+        loading={login.isPending}
+        loginType={loginType}
+        portalSsoHref={portalSsoHref}
+        portalAccountEmail={portalAccountEmail}
+        openPortalSsoExternally={authPolicy.openHubSsoInSystemBrowser}
+      />
+      {authPolicy.showSwitchHub ? (
+        <button
+          type="button"
+          data-testid="login-switch-hub-btn"
+          className="mx-auto mt-6 block min-h-[44px] text-sm text-muted-foreground underline"
+          onClick={() => {
+            void clearHubConnection().finally(() => window.location.assign('/connect'));
+          }}
+        >
+          {t('MOBILE_CONNECT_SWITCH_HUB')}
+        </button>
+      ) : null}
+    </>
   );
 };

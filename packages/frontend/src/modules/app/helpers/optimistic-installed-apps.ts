@@ -1,5 +1,6 @@
 import type { GetInstalledAppsResponse } from '@/api-client';
 import { getInstalledAppsQueryKey } from '@/api-client/@tanstack/react-query.gen';
+import { getInstalledAppUrnsQueryKey, type InstalledAppUrnsResponse } from '@/lib/installed-app-urns-query';
 import type { QueryClient } from '@tanstack/react-query';
 
 type InstalledEntry = GetInstalledAppsResponse['installed'][number];
@@ -57,6 +58,12 @@ export function addOptimisticInstalledApp(queryClient: QueryClient, params: { ur
     metadata: { latestVersion: 0 },
   };
   queryClient.setQueryData(installedKey, { ...existing, installed: [optimistic, ...filtered] });
+
+  const urnsKey = getInstalledAppUrnsQueryKey();
+  const urnsExisting = queryClient.getQueryData(urnsKey) as InstalledAppUrnsResponse | undefined;
+  const nextUrns = new Set(urnsExisting?.urns ?? []);
+  nextUrns.add(params.urn);
+  queryClient.setQueryData(urnsKey, { urns: [...nextUrns] });
 }
 
 /**
@@ -82,4 +89,11 @@ export function removeOptimisticInstalledApp(queryClient: QueryClient, urn: stri
   }
 
   queryClient.setQueryData(installedKey, { ...existing, installed: remaining });
+
+  // Keep store badge URN set in sync when dropping a synthetic row.
+  const urnsKey = getInstalledAppUrnsQueryKey();
+  const urnsExisting = queryClient.getQueryData(urnsKey) as InstalledAppUrnsResponse | undefined;
+  if (urnsExisting?.urns?.includes(urn) && !remaining.some((it) => it.info?.urn === urn)) {
+    queryClient.setQueryData(urnsKey, { urns: urnsExisting.urns.filter((u) => u !== urn) });
+  }
 }

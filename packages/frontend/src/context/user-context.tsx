@@ -1,5 +1,6 @@
 import type { UserContextDto } from '@/api-client';
 import { userContextOptions, userContextQueryKey } from '@/api-client/@tanstack/react-query.gen';
+import { isMobileClient } from '@/lib/mobile-connection';
 import { useQueryClient, useQuery } from '@tanstack/react-query';
 import { createContext, useCallback, useContext, useMemo } from 'react';
 
@@ -38,7 +39,7 @@ export const UserContextProvider: React.FC<{ children: React.ReactNode }> = ({ c
   } = useQuery({
     ...userContextOptions(),
     staleTime: 30_000,
-    retry: 3,
+    retry: isMobileClient() ? 0 : 3,
     retryDelay: (attempt) => Math.min(1_000 * 2 ** attempt, 5_000),
   });
 

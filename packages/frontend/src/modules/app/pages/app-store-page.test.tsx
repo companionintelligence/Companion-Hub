@@ -67,7 +67,10 @@ vi.mock('@tanstack/react-query', () => ({
 vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
   getEnabledAppStoresOptions: () => ({ queryKey: ['enabledStores'] }),
   searchAppsOptions: () => ({ queryKey: ['searchAppsAll'] }),
-  getInstalledAppsOptions: () => ({ queryKey: ['installed'] }),
+}));
+
+vi.mock('@/lib/installed-app-urns-query', () => ({
+  getInstalledAppUrnsOptions: () => ({ queryKey: ['installed-urns'], queryFn: async () => ({ urns: [] }) }),
 }));
 
 vi.mock('@/lib/marketplace-search-query', () => ({

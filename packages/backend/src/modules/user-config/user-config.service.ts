@@ -4,7 +4,7 @@ import { AppsRepository } from '../apps/apps.repository';
 import { TranslatableError } from '@/common/error/translatable-error';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { AppFilesManager } from '../apps/app-files-manager';
-import { AppsService } from '../apps/apps.service';
+import { AppsReadService } from '../apps/apps-read.service';
 import { UpdateUserConfigDto } from './dto/user-config.dto';
 
 @Injectable()
@@ -12,12 +12,12 @@ export class UserConfigService {
   constructor(
     private readonly appFilesManager: AppFilesManager,
     private readonly appsRepository: AppsRepository,
-    private readonly appsService: AppsService,
+    private readonly appsReadService: AppsReadService,
     private readonly filesystem: FilesystemService,
   ) {}
 
   async getUserConfig(appUrn: AppUrn) {
-    const app = await this.appsService.getApp(appUrn);
+    const app = await this.appsReadService.getApp(appUrn);
     const userComposeFile = await this.appFilesManager.getUserComposeFile(appUrn);
     const userEnvFile = await this.appFilesManager.getUserEnv(appUrn);
 

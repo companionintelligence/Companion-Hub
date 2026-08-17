@@ -10,6 +10,7 @@ vi.mock('../use-installation-progress', () => ({
 
 vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
   getInstalledAppsQueryKey: () => ['getInstalledApps'],
+  getInstalledAppUrnsQueryKey: () => ['getInstalledAppUrns'],
   getAppQueryKey: ({ path }: { path: { urn: string } }) => ['getApp', path.urn],
   appContextQueryKey: () => ['appContext'],
 }));
@@ -68,7 +69,7 @@ describe('handleAppSseEvent', () => {
 
     expect(updateInstallationProgress).toHaveBeenCalledWith('plane:ci-marketplace', null);
     expect(queryClient.setQueryData).toHaveBeenCalledWith(['getApp', 'plane:ci-marketplace'], expect.any(Function));
-    expect(queryClient.invalidateQueries).toHaveBeenCalledTimes(3);
+    expect(queryClient.invalidateQueries).toHaveBeenCalledTimes(4);
   });
 
   it('refreshes install queue when an app enters installing', () => {
@@ -88,7 +89,7 @@ describe('handleAppSseEvent', () => {
       appStatus: 'running',
     });
 
-    expect(queryClient.invalidateQueries).toHaveBeenCalledTimes(3);
+    expect(queryClient.invalidateQueries).toHaveBeenCalledTimes(4);
     expect(queryClient.setQueryData).toHaveBeenCalledWith(['getApp', 'plane:ci-marketplace'], expect.any(Function));
     expect(queryClient.setQueryData).toHaveBeenCalledWith(['app-install-error', 'plane:ci-marketplace'], null);
   });
@@ -103,7 +104,7 @@ describe('handleAppSseEvent', () => {
     expect(queryClient.setQueryData).toHaveBeenCalledWith(['getApp', 'plane:ci-marketplace'], expect.any(Function));
     expect(queryClient.cancelQueries).toHaveBeenCalledWith({ queryKey: ['app-runtime-health', 'plane:ci-marketplace'] });
     expect(queryClient.removeQueries).toHaveBeenCalledWith({ queryKey: ['app-runtime-health', 'plane:ci-marketplace'] });
-    expect(queryClient.invalidateQueries).toHaveBeenCalledTimes(3);
+    expect(queryClient.invalidateQueries).toHaveBeenCalledTimes(4);
   });
 
   it('clears caches and progress on install_cancelled (like uninstall)', () => {
@@ -118,7 +119,7 @@ describe('handleAppSseEvent', () => {
     // App record is cleared (set to { app: null }) just like an uninstall.
     expect(queryClient.setQueryData).toHaveBeenCalledWith(['getApp', 'plane:ci-marketplace'], expect.any(Function));
     expect(queryClient.removeQueries).toHaveBeenCalledWith({ queryKey: ['app-runtime-health', 'plane:ci-marketplace'] });
-    expect(queryClient.invalidateQueries).toHaveBeenCalledTimes(3);
+    expect(queryClient.invalidateQueries).toHaveBeenCalledTimes(4);
   });
 
   it('ignores transient stopped status_change while the app is restarting', () => {

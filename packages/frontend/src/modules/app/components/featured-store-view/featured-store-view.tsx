@@ -1,6 +1,6 @@
 import { AppCard } from '@/modules/app/components/app-card/app-card';
 import type { HubStoreApp } from '@/lib/portal-store';
-import { portalStoreListingsQueryOptions } from '@/lib/portal-store';
+import { getFeaturedStoreBundleOptions } from '@/lib/featured-store-bundle-query';
 import { useQuery } from '@tanstack/react-query';
 import { ChevronDown, ChevronUp } from 'lucide-react';
 import { useId, useState } from 'react';
@@ -95,75 +95,50 @@ function AppSection({
 export function FeaturedStoreView({ storeId, installedAppUrns }: { storeId: string; installedAppUrns: Set<string> }) {
   const { t } = useTranslation();
 
-  const {
-    data: firstParty,
-    isLoading: loadingFirstParty,
-    isError: firstPartyError,
-    refetch: refetchFirstParty,
-  } = useQuery({
-    ...portalStoreListingsQueryOptions({ tags: 'companion-intelligence' }, storeId),
+  const { data, isLoading, isError, refetch } = useQuery({
+    ...getFeaturedStoreBundleOptions(storeId),
   });
-  const {
-    data: featured,
-    isLoading: loadingFeatured,
-    isError: featuredError,
-    refetch: refetchFeatured,
-  } = useQuery({
-    ...portalStoreListingsQueryOptions({ tags: 'featured' }, storeId),
-  });
-  const {
-    data: trending,
-    isLoading: loadingTrending,
-    isError: trendingError,
-    refetch: refetchTrending,
-  } = useQuery({
-    ...portalStoreListingsQueryOptions({ sort: 'trending' }, storeId),
-  });
-  const {
-    data: newest,
-    isLoading: loadingNewest,
-    isError: newestError,
-    refetch: refetchNewest,
-  } = useQuery({
-    ...portalStoreListingsQueryOptions({ sort: 'newest' }, storeId),
-  });
+
+  const onRetry = () => {
+    void refetch();
+  };
 
   return (
     <div className="w-full space-y-10 pb-10">
       <AppSection
         title={t('APP_STORE_FIRST_PARTY_SECTION_TITLE')}
         subtitle={t('APP_STORE_FIRST_PARTY_SECTION_SUBTITLE')}
-        apps={firstParty}
-        isLoading={loadingFirstParty}
-        isError={firstPartyError}
-        onRetry={() => void refetchFirstParty()}
+        apps={data?.firstParty}
+        isLoading={isLoading}
+        isError={isError}
+        onRetry={onRetry}
         installedAppUrns={installedAppUrns}
       />
       <AppSection
         title={t('APP_STORE_FEATURED_SECTION_TITLE')}
         subtitle={t('APP_STORE_FEATURED_SECTION_SUBTITLE')}
-        apps={featured}
-        isLoading={loadingFeatured}
-        isError={featuredError}
-        onRetry={() => void refetchFeatured()}
+        apps={data?.featured}
+        isLoading={isLoading}
+        isError={isError}
+        onRetry={onRetry}
         installedAppUrns={installedAppUrns}
       />
       <AppSection
         title={t('APP_STORE_TRENDING_SECTION_TITLE')}
         subtitle={t('APP_STORE_TRENDING_SECTION_SUBTITLE')}
-        apps={trending}
-        isLoading={loadingTrending}
-        isError={trendingError}
-        onRetry={() => void refetchTrending()}
+        apps={data?.trending}
+        isLoading={isLoading}
+        isError={isError}
+        onRetry={onRetry}
         installedAppUrns={installedAppUrns}
       />
       <AppSection
         title={t('APP_STORE_RECENT_SECTION_TITLE')}
         subtitle={t('APP_STORE_RECENT_SECTION_SUBTITLE')}
-        apps={newest}
-        isLoading={loadingNewest}
-        isError={newestError}
-        onRetry={() => void refetchNewest()}
+        apps={data?.newest}
+        isLoading={isLoading}
+        isError={isError}
+        onRetry={onRetry}
         installedAppUrns={installedAppUrns}
       />
     </div>

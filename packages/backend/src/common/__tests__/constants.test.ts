@@ -63,7 +63,7 @@ describe('resolveDataDir', () => {
     const { resolveDataDir } = await loadConstants();
 
     expect(resolveDataDir({ CI_HUB_DATA_DIR: '/tmp/ci-hub-e2e', ROOT_FOLDER_HOST: '/repo/.internal' }, inContainer)).toBe('/tmp/ci-hub-e2e');
-    expect(resolveDataDir({ TIPI_DATA_DIR: '/legacy/data' }, inContainer)).toBe('/legacy/data');
+    expect(resolveDataDir({ CIHUB_DATA_DIR: '/legacy/data' }, inContainer)).toBe('/legacy/data');
   });
 
   it('uses the container mount even though ROOT_FOLDER_HOST is set in the container', async () => {

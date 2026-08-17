@@ -12,7 +12,6 @@ function updateCdnConfig() {
 const POLL_INTERVAL_MS = 4 * 60 * 60 * 1000;
 const DISMISSED_KEY = 'ci-hub-update-dismissed-version';
 const TOAST_SHOWN_KEY = 'ci-hub-update-toast-shown';
-const HOST_UPDATE_URL = 'http://127.0.0.1:17400/update';
 
 function decodePathSegment(segment: string): string | null {
   try {
@@ -144,27 +143,61 @@ export async function getInstalledDesktopVersion(): Promise<string | null> {
   return getCurrentVersion();
 }
 
-export async function getDesktopPlatform(): Promise<DesktopPlatform | null> {
-  if (!isTauri()) return null;
+export function detectBrowserPlatform(): DesktopPlatform {
+  const ua = typeof navigator === 'undefined' ? '' : navigator.userAgent.toLowerCase();
+  if (ua.includes('win')) return 'windows';
+  if (ua.includes('mac')) return 'macos';
+  return 'linux';
+}
 
-  try {
-    const { platform } = await import('@tauri-apps/plugin-os');
-    const value = await platform();
-    if (value === 'linux' || value === 'macos' || value === 'windows') {
-      return value;
+export function detectBrowserArch(): string {
+  if (typeof navigator === 'undefined') return 'x86_64';
+  const ua = navigator.userAgent.toLowerCase();
+  const uad = (navigator as unknown as { userAgentData?: { architecture?: string } }).userAgentData;
+  if (uad?.architecture === 'arm' || /arm64|aarch64/.test(ua)) return 'aarch64';
+  // Safari on Apple Silicon still reports MacIntel; prefer arm for macOS downloads.
+  if (detectBrowserPlatform() === 'macos') return 'aarch64';
+  return 'x86_64';
+}
+
+export async function getDesktopPlatform(): Promise<DesktopPlatform | null> {
+  if (isTauri()) {
+    try {
+      const { platform } = await import('@tauri-apps/plugin-os');
+      const value = await platform();
+      if (value === 'linux' || value === 'macos' || value === 'windows') {
+        return value;
+      }
+    } catch {
+      // Fall through to user-agent detection.
     }
-  } catch {
-    return null;
   }
 
-  return null;
+  if (typeof navigator === 'undefined') return null;
+  return detectBrowserPlatform();
 }
 
-export function requiresManualDesktopUpdate(platform: DesktopPlatform | null): boolean {
-  return platform === 'linux';
+export async function getDesktopArch(): Promise<string> {
+  if (isTauri()) {
+    try {
+      const { arch } = await import('@tauri-apps/plugin-os');
+      const value = await arch();
+      if (value === 'aarch64' || value === 'arm') return 'aarch64';
+      if (value) return 'x86_64';
+    } catch {
+      // Fall through to user-agent detection.
+    }
+  }
+
+  return detectBrowserArch();
 }
 
-export type ManualUpdateArtifactKind = 'deb' | 'rpm' | 'appimage';
+/** Every platform downloads an installer; none replace the running binary in-place. */
+export function requiresManualDesktopUpdate(_platform?: DesktopPlatform | null): boolean {
+  return true;
+}
+
+export type ManualUpdateArtifactKind = 'deb' | 'rpm' | 'appimage' | 'dmg' | 'exe' | 'msi';
 
 /** Installer format of a manual-download update, for tailored on-screen instructions. */
 export function manualUpdateArtifactKind(downloadUrl: string): ManualUpdateArtifactKind | null {
@@ -172,15 +205,42 @@ export function manualUpdateArtifactKind(downloadUrl: string): ManualUpdateArtif
   if (path.endsWith('.deb')) return 'deb';
   if (path.endsWith('.rpm')) return 'rpm';
   if (path.endsWith('.appimage')) return 'appimage';
+  if (path.endsWith('.dmg')) return 'dmg';
+  if (path.endsWith('.msi')) return 'msi';
+  if (path.endsWith('.exe')) return 'exe';
   return null;
 }
 
+async function resolveInstallerFromCdn(
+  platform: DesktopPlatform | null,
+  osArch: string,
+): Promise<{ latestVersion: string; downloadUrl: string } | null> {
+  const { base } = updateCdnConfig();
+  const latestRes = await fetch(`${base}/latest.json`, { cache: 'no-store' });
+  if (!latestRes.ok) return null;
+
+  const latest = (await latestRes.json()) as LatestJson;
+  const latestVersion = latest.version.replace(/^v/, '');
+  if (!semver.valid(latestVersion)) return null;
+
+  const manifestRes = await fetch(`${base}/v${latestVersion}/manifest.json`, { cache: 'no-store' });
+  if (!manifestRes.ok) return null;
+
+  const manifest = (await manifestRes.json()) as ManifestJson;
+  let downloadUrl = platform ? (getDownloadUrl(manifest, platform, osArch) ?? '') : '';
+  if (downloadUrl && !isTrustedDownloadUrl(downloadUrl)) {
+    downloadUrl = '';
+  }
+
+  return { latestVersion, downloadUrl };
+}
+
 export async function checkForUpdates(fallbackCurrentVersion?: string): Promise<UpdateInfo | null> {
-  const currentVersion = fallbackCurrentVersion ?? (await getCurrentVersion()) ?? null;
-  if (!currentVersion || !semver.valid(currentVersion)) return null;
+  const currentVersion = (fallbackCurrentVersion ?? (await getCurrentVersion()) ?? '').replace(/^v/, '');
+  const desktopPlatform = await getDesktopPlatform();
+  const osArch = await getDesktopArch();
 
   try {
-    const desktopPlatform = await getDesktopPlatform();
     if (isTauri()) {
       try {
         const { invoke } = await import('@tauri-apps/api/core');
@@ -189,7 +249,7 @@ export async function checkForUpdates(fallbackCurrentVersion?: string): Promise<
         const nativeInfo = await invoke<NativeDesktopUpdateInfo>('check_desktop_update_command');
         const nativeCurrentVersion = nativeInfo.currentVersion.replace(/^v/, '');
         const latestVersion = nativeInfo.latestVersion.replace(/^v/, '');
-        if (!semver.valid(nativeCurrentVersion) || !semver.valid(latestVersion)) {
+        if (!semver.valid(latestVersion)) {
           return null;
         }
 
@@ -197,66 +257,42 @@ export async function checkForUpdates(fallbackCurrentVersion?: string): Promise<
         if (downloadUrl && !isTrustedDownloadUrl(downloadUrl)) {
           downloadUrl = '';
         }
+        if (!downloadUrl) {
+          try {
+            const resolved = await resolveInstallerFromCdn(desktopPlatform, osArch);
+            if (resolved?.downloadUrl) {
+              downloadUrl = resolved.downloadUrl;
+            }
+          } catch {
+            // CDN is best-effort when the native check omitted a URL.
+          }
+        }
 
+        const resolvedCurrent = semver.valid(nativeCurrentVersion) ? nativeCurrentVersion : currentVersion;
         return {
-          currentVersion: nativeCurrentVersion,
+          currentVersion: resolvedCurrent || latestVersion,
           latestVersion,
           downloadUrl,
-          updateAvailable: nativeInfo.updateAvailable,
+          updateAvailable: Boolean(resolvedCurrent && semver.valid(resolvedCurrent) && semver.gt(latestVersion, resolvedCurrent)),
           platform: desktopPlatform,
-          manualDownload: requiresManualDesktopUpdate(desktopPlatform),
+          manualDownload: true,
         };
       } catch {
         // Fall back to the fetch path for tests and nonstandard dev environments.
       }
     }
 
-    const { base } = updateCdnConfig();
-    const latestRes = await fetch(`${base}/latest.json`, { cache: 'no-store' });
-    if (!latestRes.ok) return null;
+    const resolved = await resolveInstallerFromCdn(desktopPlatform, osArch);
+    if (!resolved) return null;
 
-    const latest = (await latestRes.json()) as LatestJson;
-    const latestVersion = latest.version.replace(/^v/, '');
-
-    if (!semver.valid(latestVersion) || !semver.valid(currentVersion)) {
-      return null;
-    }
-
-    const updateAvailable = semver.gt(latestVersion, currentVersion);
-    if (!updateAvailable) {
-      return {
-        currentVersion,
-        latestVersion,
-        downloadUrl: '',
-        updateAvailable: false,
-        platform: desktopPlatform,
-        manualDownload: requiresManualDesktopUpdate(desktopPlatform),
-      };
-    }
-
-    const manifestRes = await fetch(`${base}/v${latestVersion}/manifest.json`, { cache: 'no-store' });
-    if (!manifestRes.ok) return null;
-
-    const manifest = (await manifestRes.json()) as ManifestJson;
-
-    let downloadUrl = '';
-    if (desktopPlatform) {
-      const { platform, arch } = await import('@tauri-apps/plugin-os');
-      const [osPlatform, osArch] = await Promise.all([platform(), arch()]);
-      downloadUrl = getDownloadUrl(manifest, osPlatform, osArch) ?? '';
-    }
-
-    if (downloadUrl && !isTrustedDownloadUrl(downloadUrl)) {
-      downloadUrl = '';
-    }
-
+    const updateAvailable = Boolean(currentVersion && semver.valid(currentVersion) && semver.gt(resolved.latestVersion, currentVersion));
     return {
-      currentVersion,
-      latestVersion,
-      downloadUrl,
-      updateAvailable: true,
+      currentVersion: currentVersion || resolved.latestVersion,
+      latestVersion: resolved.latestVersion,
+      downloadUrl: resolved.downloadUrl,
+      updateAvailable,
       platform: desktopPlatform,
-      manualDownload: requiresManualDesktopUpdate(desktopPlatform),
+      manualDownload: true,
     };
   } catch {
     return null;
@@ -301,80 +337,60 @@ export interface UpdateActionResult {
   messageKey: string;
   messageParams?: Record<string, string>;
   defaultMessage?: string;
+  stack?: 'updating' | 'skipped' | 'failed';
+  host?: 'started' | 'unavailable' | 'failed';
+}
+
+export async function fetchHostListenerStatus(): Promise<boolean | null> {
+  try {
+    const { getHostListenerStatus } = await import('@/api-client/sdk.gen');
+    const { sdkResult } = await import('@/lib/sdk-unwrap');
+    const result = await sdkResult(getHostListenerStatus());
+    if (!result.ok) return null;
+    return Boolean((result.data as { reachable?: boolean } | null)?.reachable);
+  } catch {
+    return null;
+  }
 }
 
 export async function performUpdate(info: UpdateInfo): Promise<UpdateActionResult> {
-  if (isTauri()) {
-    try {
-      if (info.manualDownload) {
-        if (!info.downloadUrl || !isTrustedDownloadUrl(info.downloadUrl)) {
-          return { ok: false, messageKey: 'SETTINGS_ACTIONS_UPDATE_NO_DOWNLOAD_URL' };
-        }
-
-        await openExternal(info.downloadUrl);
-        return {
-          ok: true,
-          messageKey: 'SETTINGS_ACTIONS_DOWNLOAD_INSTALLER_OPENED',
-          defaultMessage: 'Installer download opened in your browser.',
-        };
-      }
-
-      const { invoke } = await import('@tauri-apps/api/core');
-      if (info.downloadUrl) {
-        await invoke('perform_desktop_update_command', { downloadUrl: info.downloadUrl });
-        return { ok: true, messageKey: 'SETTINGS_ACTIONS_UPDATE_DESKTOP_STARTED' };
-      }
-      const desktopInfo = (await invoke('check_desktop_update_command')) as UpdateInfo & {
-        downloadUrl?: string;
-      };
-      const url = desktopInfo.downloadUrl ?? info.downloadUrl;
-      if (url) {
-        await invoke('perform_desktop_update_command', { downloadUrl: url });
-        return { ok: true, messageKey: 'SETTINGS_ACTIONS_UPDATE_DESKTOP_STARTED' };
-      }
-      return { ok: false, messageKey: 'SETTINGS_ACTIONS_UPDATE_NO_DOWNLOAD_URL' };
-    } catch {
-      return {
-        ok: false,
-        messageKey: info.manualDownload ? 'SETTINGS_ACTIONS_DOWNLOAD_INSTALLER_FAILED' : 'SETTINGS_ACTIONS_UPDATE_FAILED',
-        defaultMessage: info.manualDownload ? 'Could not open the installer download.' : undefined,
-      };
-    }
+  if (!info.downloadUrl || !isTrustedDownloadUrl(info.downloadUrl)) {
+    return { ok: false, messageKey: 'SETTINGS_ACTIONS_UPDATE_NO_DOWNLOAD_URL' };
   }
 
   try {
-    const { getHostListenerToken } = await import('@/api-client/sdk.gen');
-    const { sdkResult } = await import('@/lib/sdk-unwrap');
-    const tokenResult = await sdkResult(getHostListenerToken());
-    if (!tokenResult.ok) {
-      return { ok: false, messageKey: 'SETTINGS_ACTIONS_UPDATE_HOST_UNAVAILABLE' };
-    }
-    const { token } = (tokenResult.data ?? {}) as { token?: string };
-    if (!token) {
-      return { ok: false, messageKey: 'SETTINGS_ACTIONS_UPDATE_HOST_UNAVAILABLE' };
-    }
-
-    const res = await fetch(HOST_UPDATE_URL, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    if (res.ok) {
-      return { ok: true, messageKey: 'SETTINGS_ACTIONS_UPDATE_HOST_STARTED' };
-    }
-    return { ok: false, messageKey: 'SETTINGS_ACTIONS_UPDATE_HOST_UNAVAILABLE' };
+    await openExternal(info.downloadUrl);
+    return {
+      ok: true,
+      messageKey: 'SETTINGS_ACTIONS_DOWNLOAD_INSTALLER_OPENED',
+      defaultMessage: 'Installer download opened in your browser.',
+    };
   } catch {
-    return { ok: false, messageKey: 'SETTINGS_ACTIONS_UPDATE_HOST_UNREACHABLE' };
+    return {
+      ok: false,
+      messageKey: 'SETTINGS_ACTIONS_DOWNLOAD_INSTALLER_FAILED',
+      defaultMessage: 'Could not open the installer download.',
+    };
   }
 }
 
-/** Stack-only update via backend API (browser / in-container fallback). */
+/** Hub-driven update: stack pull, and host listener when the desktop app is running. */
 export async function performStackUpdate(targetVersion?: string): Promise<UpdateActionResult> {
   try {
     const { performUpdate } = await import('@/api-client/sdk.gen');
     const { sdkResult } = await import('@/lib/sdk-unwrap');
     const result = await sdkResult(performUpdate({ body: { targetVersion } } as Parameters<typeof performUpdate>[0]));
     if (result.ok) {
-      return { ok: true, messageKey: 'SETTINGS_ACTIONS_UPDATE_RESTARTING' };
+      const data = (result.data ?? {}) as { stack?: UpdateActionResult['stack']; host?: UpdateActionResult['host'] };
+      const host = data.host;
+      const stack = data.stack;
+      let messageKey = 'SETTINGS_ACTIONS_UPDATE_RESTARTING';
+      if (host === 'started') {
+        messageKey = 'SETTINGS_ACTIONS_UPDATE_HOST_STARTED';
+      } else if (host === 'unavailable' || host === 'failed') {
+        messageKey = 'SETTINGS_ACTIONS_UPDATE_STACK_HOST_UNAVAILABLE';
+      }
+      return { ok: true, messageKey, stack, host };
     }
     return { ok: false, messageKey: 'SETTINGS_ACTIONS_UPDATE_FAILED' };
   } catch {

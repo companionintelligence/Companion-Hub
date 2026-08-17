@@ -48,33 +48,33 @@ describe('ServiceBuilder', () => {
   });
 
   describe('interpolateVariables', () => {
-    it('should replace RUNTIPI_APP_ID in label values', () => {
+    it('should replace RUNCIHUB_APP_ID in label values', () => {
       const service = serviceBuilder
         .setName('name')
         .setImage('image')
-        .setLabels({ 'runtipi.app_id': '{{RUNTIPI_APP_ID}}' })
+        .setLabels({ 'runcihub.app_id': '{{RUNCIHUB_APP_ID}}' })
         .interpolateVariables('my-app')
         .build();
 
-      expect(service.labels).toEqual({ 'runtipi.app_id': 'my-app' });
+      expect(service.labels).toEqual({ 'runcihub.app_id': 'my-app' });
     });
 
-    it('should replace RUNTIPI_APP_ID in label keys', () => {
+    it('should replace RUNCIHUB_APP_ID in label keys', () => {
       const service = serviceBuilder
         .setName('name')
         .setImage('image')
-        .setLabels({ '{{RUNTIPI_APP_ID}}': 'value' })
+        .setLabels({ '{{RUNCIHUB_APP_ID}}': 'value' })
         .interpolateVariables('my-app')
         .build();
 
       expect(service.labels).toEqual({ 'my-app': 'value' });
     });
 
-    it('should replace RUNTIPI_APP_ID in both keys and values', () => {
+    it('should replace RUNCIHUB_APP_ID in both keys and values', () => {
       const service = serviceBuilder
         .setName('name')
         .setImage('image')
-        .setLabels({ '{{RUNTIPI_APP_ID}}': '{{RUNTIPI_APP_ID}}' })
+        .setLabels({ '{{RUNCIHUB_APP_ID}}': '{{RUNCIHUB_APP_ID}}' })
         .interpolateVariables('my-app')
         .build();
 
@@ -85,7 +85,7 @@ describe('ServiceBuilder', () => {
       const service = serviceBuilder
         .setName('name')
         .setImage('image')
-        .setLabels({ '{{ RUNTIPI_APP_ID }}': '{{ RUNTIPI_APP_ID }}' })
+        .setLabels({ '{{ RUNCIHUB_APP_ID }}': '{{ RUNCIHUB_APP_ID }}' })
         .interpolateVariables('my-app')
         .build();
 
@@ -96,7 +96,7 @@ describe('ServiceBuilder', () => {
       const service = serviceBuilder
         .setName('name')
         .setImage('image')
-        .setLabels({ test: '{{RUNTIPI_APP_ID}}-{{RUNTIPI_APP_ID}}' })
+        .setLabels({ test: '{{RUNCIHUB_APP_ID}}-{{RUNCIHUB_APP_ID}}' })
         .interpolateVariables('my-app')
         .build();
 

@@ -625,7 +625,7 @@ pub fn run() {
                 return Ok(());
             }
 
-            // Start the host update listener (127.0.0.1:17400) in desktop mode too,
+            // Start the host update listener (0.0.0.0:17400) in desktop mode too,
             // not just headless/detached. The Hub backend hands its token to
             // authenticated browser/in-container Settings UIs, which POST to this
             // listener to trigger a host update that controls the stack and repulls

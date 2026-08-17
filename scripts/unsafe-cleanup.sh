@@ -11,7 +11,7 @@ fi
 
 ROOT_FOLDER="$(readlink -f "$(dirname "${BASH_SOURCE[0]}")"/..)"
 
-# Stop Tipi
+# Stop CIHub
 "${ROOT_FOLDER}/scripts/stop.sh"
 
 echo y | docker system prune
@@ -26,4 +26,4 @@ rm -rf "${ROOT_FOLDER}/data/postgres"
 mkdir -p "${ROOT_FOLDER}/app-data"
 
 cd "$ROOT_FOLDER" || echo ""
-sudo ./runtipi-cli start
+sudo ./runcihub-cli start

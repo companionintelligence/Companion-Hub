@@ -4,48 +4,33 @@ import { abortError, isAbortError, throwIfAborted } from '@/common/abort';
 import { getAppDataHostPath, resolveAppDataHostRoot } from '@/common/helpers/app-data-path.helper';
 import { extractAppUrn } from '@/common/helpers/app-helpers';
 import {
+  DEFAULT_APP_COMPOSE_INACTIVITY_TIMEOUT_MS,
+  DEFAULT_APP_COMPOSE_TIMEOUT_MINUTES,
   DEFAULT_APP_IMAGE_PULL_INACTIVITY_TIMEOUT_MS,
   DEFAULT_APP_IMAGE_PULL_TIMEOUT_MINUTES,
   DEFAULT_HUB_CONTAINER_NAME,
   DEFAULT_NETWORK_NAME,
 } from '@/common/constants';
-import { pLimit } from '@/common/helpers/file-helpers';
-import { withTimeout } from '@/common/helpers/with-timeout';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { LoggerService } from '@/core/logger/logger.service';
-import { Injectable, InternalServerErrorException, Inject, forwardRef } from '@nestjs/common';
+import { Injectable, InternalServerErrorException, Inject } from '@nestjs/common';
 import type { AppUrn } from '@ci-hub/common/types';
 import type Dockerode from 'dockerode';
 import { AppFilesManager } from '../apps/app-files-manager';
-import { AppsService } from '../apps/apps.service';
+import { AppsRepository } from '../apps/apps.repository';
 import { DOCKERODE } from './constants';
-import {
-  managedAppStatusFromSummary,
-  summarizeManagedAppContainers,
-  type ManagedAppContainerAppStatus,
-  type ManagedAppContainerSummary,
-} from './managed-app-containers';
+import { DockerReadFacade, type ManagedAppContainerVerification } from './docker-read.facade';
 
-export type ManagedAppContainerVerification = {
-  ok: boolean;
-  appStatus: ManagedAppContainerAppStatus;
-  summary: ManagedAppContainerSummary;
-  message: string;
-  errorDetail?: string;
-};
+export type { AppContainerRuntimeStats, AppNetworkTarget, ManagedAppContainerVerification } from './docker-read.facade';
 
 const MANAGED_APP_STARTUP_MAX_ATTEMPTS = 6;
 const MANAGED_APP_STARTUP_DELAY_MS = 2_000;
 
 /** Grace period after SIGTERM before a cancelled `docker compose` child is force-killed with SIGKILL. */
 const COMPOSE_CANCEL_SIGKILL_GRACE_MS = 5_000;
-const DOCKER_INSPECT_TIMEOUT_MS = 5_000;
 // Upper bound for the privileged uninstall-remnant cleanup helper (image pull + delete).
 const PRIVILEGED_CLEANUP_TIMEOUT_MS = 120_000;
-const DOCKER_STATS_TIMEOUT_MS = 5_000;
-/** Container list states where docker stats() is skipped (crash-loops can hang indefinitely). */
-const SKIP_DOCKER_STATS_STATES = new Set(['restarting', 'created', 'dead']);
 
 /**
  * Time-box for `docker compose up <service>`. Generous because `up` pulls the
@@ -59,29 +44,6 @@ const COMPOSE_UP_TIMEOUT_MS = 300_000;
 const COMPOSE_OP_MAX_ATTEMPTS = 2;
 /** After the SIGKILL grace, unblock the caller even if the child never exits. */
 const PROCESS_EXIT_BACKSTOP_MS = 5_000;
-
-interface DockerCpuStatsSnapshot {
-  cpu_usage?: {
-    total_usage?: number;
-    percpu_usage?: number[];
-  };
-  system_cpu_usage?: number;
-  online_cpus?: number;
-}
-
-interface DockerMemoryStatsSnapshot {
-  usage?: number;
-  limit?: number;
-  stats?: {
-    cache?: number;
-  };
-}
-
-interface DockerStatsSnapshot {
-  cpu_stats?: DockerCpuStatsSnapshot;
-  precpu_stats?: DockerCpuStatsSnapshot;
-  memory_stats?: DockerMemoryStatsSnapshot;
-}
 
 interface DockerPullProgressDetail {
   current?: number;
@@ -100,18 +62,6 @@ interface DockerPullLayerSnapshot {
   status: string;
 }
 
-export interface AppContainerRuntimeStats {
-  containerId: string;
-  name: string;
-  state: string;
-  status: string;
-  health: string | null;
-  exitCode: number | null;
-  cpuPercent: number;
-  memoryUsageBytes: number;
-  memoryLimitBytes: number;
-}
-
 export interface DockerPullProgressEvent {
   activeImage: string;
   completedBytes: number;
@@ -121,20 +71,16 @@ export interface DockerPullProgressEvent {
   stage: 'downloading' | 'extracting' | 'complete';
 }
 
-export interface AppNetworkTarget {
-  url: string;
-  internalPort: number;
-}
-
 @Injectable()
 export class DockerService {
   constructor(
     private readonly logger: LoggerService,
     private readonly config: ConfigurationService,
-    @Inject(forwardRef(() => AppFilesManager)) private readonly appFilesManager: AppFilesManager,
+    private readonly appFilesManager: AppFilesManager,
     private readonly filesystem: FilesystemService,
-    @Inject(forwardRef(() => AppsService)) private readonly appsService: AppsService,
+    private readonly appsRepository: AppsRepository,
     @Inject(DOCKERODE) private readonly docker: Dockerode,
+    private readonly dockerReadFacade: DockerReadFacade,
   ) {}
 
   /**
@@ -144,23 +90,7 @@ export class DockerService {
    * @returns Compose project name used for labels and docker compose --project-name
    */
   private getComposeProjectName(appUrn: AppUrn): string {
-    return appUrn.replace(':', '_');
-  }
-
-  private shouldSkipDockerStats(containerState: string): boolean {
-    return SKIP_DOCKER_STATS_STATES.has(containerState.toLowerCase());
-  }
-
-  private calculateCpuPercent(stats: DockerStatsSnapshot): number {
-    const cpuDelta = (stats.cpu_stats?.cpu_usage?.total_usage ?? 0) - (stats.precpu_stats?.cpu_usage?.total_usage ?? 0);
-    const systemDelta = (stats.cpu_stats?.system_cpu_usage ?? 0) - (stats.precpu_stats?.system_cpu_usage ?? 0);
-    const onlineCpus = stats.cpu_stats?.online_cpus ?? stats.cpu_stats?.cpu_usage?.percpu_usage?.length ?? stats.precpu_stats?.online_cpus ?? 1;
-
-    if (cpuDelta <= 0 || systemDelta <= 0 || onlineCpus <= 0) {
-      return 0;
-    }
-
-    return (cpuDelta / systemDelta) * onlineCpus * 100;
+    return this.dockerReadFacade.getComposeProjectName(appUrn);
   }
 
   /**
@@ -193,6 +123,30 @@ export class DockerService {
     return message.includes('is being used') || message.includes('in use') || message.includes('has active endpoints');
   }
 
+  public getAppRuntimeStats(...args: Parameters<DockerReadFacade['getAppRuntimeStats']>) {
+    return this.dockerReadFacade.getAppRuntimeStats(...args);
+  }
+
+  public getHubRuntimeStats(...args: Parameters<DockerReadFacade['getHubRuntimeStats']>) {
+    return this.dockerReadFacade.getHubRuntimeStats(...args);
+  }
+
+  public getAppNetworkTarget(...args: Parameters<DockerReadFacade['getAppNetworkTarget']>) {
+    return this.dockerReadFacade.getAppNetworkTarget(...args);
+  }
+
+  public isContainerRunning(...args: Parameters<DockerReadFacade['isContainerRunning']>) {
+    return this.dockerReadFacade.isContainerRunning(...args);
+  }
+
+  public getManagedAppContainerVerification(...args: Parameters<DockerReadFacade['getManagedAppContainerVerification']>) {
+    return this.dockerReadFacade.getManagedAppContainerVerification(...args);
+  }
+
+  public diagnoseAppContainers(...args: Parameters<DockerReadFacade['diagnoseAppContainers']>) {
+    return this.dockerReadFacade.diagnoseAppContainers(...args);
+  }
+
   /**
    * Snapshot image IDs from all containers belonging to an app compose project.
    *
@@ -218,125 +172,6 @@ export class DockerService {
       this.logger.warn(`Failed to snapshot image IDs for ${appUrn}: ${error}`);
       return [];
     }
-  }
-
-  public async getAppRuntimeStats(appUrn: AppUrn): Promise<AppContainerRuntimeStats[]> {
-    const projectName = this.getComposeProjectName(appUrn);
-    return this.getComposeProjectRuntimeStats(projectName, appUrn);
-  }
-
-  public async getHubRuntimeStats(): Promise<AppContainerRuntimeStats[]> {
-    return this.getComposeProjectRuntimeStats('ci-hub', 'ci-hub');
-  }
-
-  private async getComposeProjectRuntimeStats(projectName: string, logLabel: string): Promise<AppContainerRuntimeStats[]> {
-    const containers = await this.docker.listContainers({
-      all: true,
-      filters: { label: [`com.docker.compose.project=${projectName}`] },
-    });
-
-    const results = await Promise.all(
-      containers.map((container) =>
-        (async () => {
-          const dockerContainer = this.docker.getContainer(container.Id);
-          const inspect = await withTimeout(dockerContainer.inspect(), DOCKER_INSPECT_TIMEOUT_MS, `Docker inspect timed out for ${container.Id}`);
-
-          let stats: DockerStatsSnapshot | null = null;
-          const skipStats = this.shouldSkipDockerStats(container.State) || !inspect.State?.Running;
-          if (!skipStats) {
-            try {
-              stats = (await withTimeout(
-                dockerContainer.stats({ stream: false }),
-                DOCKER_STATS_TIMEOUT_MS,
-                `Docker stats timed out for ${container.Id}`,
-              )) as DockerStatsSnapshot;
-            } catch (error) {
-              const message = error instanceof Error ? error.message : String(error);
-              this.logger.warn(`Skipping runtime stats for container ${container.Id} (${logLabel}): ${message}`);
-            }
-          }
-
-          const usage = stats?.memory_stats?.usage ?? 0;
-          const cache = stats?.memory_stats?.stats?.cache ?? 0;
-          return {
-            containerId: container.Id,
-            name: container.Names?.[0]?.replace(/^\//, '') || container.Id.slice(0, 12),
-            state: container.State,
-            status: container.Status,
-            health: inspect.State?.Health?.Status ?? null,
-            exitCode: inspect.State?.Running ? null : (inspect.State?.ExitCode ?? null),
-            cpuPercent: Number(this.calculateCpuPercent((stats ?? {}) as DockerStatsSnapshot).toFixed(2)),
-            memoryUsageBytes: Math.max(usage - cache, 0),
-            memoryLimitBytes: stats?.memory_stats?.limit ?? 0,
-          };
-        })().catch((error) => {
-          if (this.isResourceMissingError(error)) {
-            this.logger.warn(`Skipping runtime stats for disappearing container ${container.Id} (${logLabel}): ${error}`);
-            return null;
-          }
-
-          const message = error instanceof Error ? error.message : String(error);
-          if (message.includes('timed out')) {
-            this.logger.warn(`Skipping runtime stats for container ${container.Id} (${logLabel}): ${message}`);
-            return null;
-          }
-
-          throw error;
-        }),
-      ),
-    );
-
-    return results.filter((result): result is AppContainerRuntimeStats => result !== null);
-  }
-
-  public async getAppNetworkTarget(appUrn: AppUrn): Promise<AppNetworkTarget | null> {
-    const containers = await this.docker.listContainers({
-      all: false,
-      filters: {
-        label: [`ci-os-hub.appurn=${appUrn}`, 'traefik.enable=true'],
-      },
-    });
-
-    const limit = pLimit(5);
-    const targets = await Promise.all(
-      containers.map((containerInfo) =>
-        limit(async () => {
-          const inspect = await this.docker.getContainer(containerInfo.Id).inspect();
-          const labels = inspect.Config?.Labels || {};
-          const networkSettings = inspect.NetworkSettings?.Networks?.[DEFAULT_NETWORK_NAME];
-          const containerIP = networkSettings?.IPAddress;
-
-          if (!containerIP) {
-            return null;
-          }
-
-          const portEntry = Object.entries(labels).find(
-            ([key]) => key.startsWith('traefik.http.services.') && key.endsWith('.loadbalancer.server.port'),
-          );
-
-          if (!portEntry) {
-            return null;
-          }
-
-          const serviceName = portEntry[0].replace('traefik.http.services.', '').replace('.loadbalancer.server.port', '');
-          const internalPort = Number.parseInt(String(portEntry[1]), 10);
-
-          if (Number.isNaN(internalPort)) {
-            return null;
-          }
-
-          const backendScheme = labels[`traefik.http.services.${serviceName}.loadbalancer.server.scheme`];
-          const scheme = backendScheme === 'https' ? 'https+insecure' : 'http';
-
-          return {
-            url: `${scheme}://${containerIP}:${internalPort}`,
-            internalPort,
-          } satisfies AppNetworkTarget;
-        }),
-      ),
-    );
-
-    return targets.find((target): target is AppNetworkTarget => target !== null) ?? null;
   }
 
   public async forceStopApp(appUrn: AppUrn, graceSeconds = 10): Promise<{ stopped: string[]; killed: string[] }> {
@@ -578,7 +413,8 @@ export class DockerService {
     const appEnv = await this.appFilesManager.getAppEnv(appUrn);
     const args: string[] = ['--env-file', appEnv.path];
 
-    const { app } = await this.appsService.getApp(appUrn);
+    // DB-only — avoid AppsReadService/Marketplace (closes Docker↔Marketplace import cycle).
+    const app = await this.appsRepository.getAppByUrn(appUrn);
     const userConfigEnabled = app?.userConfigEnabled ?? true;
 
     // User custom env file
@@ -615,7 +451,7 @@ export class DockerService {
 
     // User defined overrides (support both new and legacy filenames)
     const hubComposeFile = path.join(dataDir, 'user-config', 'hub-compose.yml');
-    const legacyComposeFile = path.join(dataDir, 'user-config', 'tipi-compose.yml');
+    const legacyComposeFile = path.join(dataDir, 'user-config', 'cihub-compose.yml');
     const userComposeFile = (await this.filesystem.pathExists(hubComposeFile)) ? hubComposeFile : legacyComposeFile;
     if (await this.filesystem.pathExists(userComposeFile)) {
       args.push('--file', userComposeFile);
@@ -947,12 +783,62 @@ export class DockerService {
     // Bail out before spawning if the operation was already cancelled.
     throwIfAborted(signal);
 
+    // The process is spawned against an internal signal (not the caller's directly) so a hung compose
+    // command (unresponsive daemon, stuck volume/network) can be aborted on its own timeout without
+    // that abort being misread as a user cancel — see the timeoutReason check below. Without this a
+    // wedged `up`/`down` never resolves, holding the app in a transitional status (and, for install,
+    // INSTALL_PIPELINE_MUTEX_KEY) forever — see DEFAULT_APP_COMPOSE_TIMEOUT_MINUTES.
+    const controller = new AbortController();
+    type ComposeTimeoutReason = 'inactivity' | 'overall';
+    let timeoutReason: ComposeTimeoutReason | null = null;
+
+    const inactivityTimeoutMs = DEFAULT_APP_COMPOSE_INACTIVITY_TIMEOUT_MS;
+    const overallTimeoutMs = DEFAULT_APP_COMPOSE_TIMEOUT_MINUTES * 60 * 1000;
+
+    let inactivityTimer: ReturnType<typeof globalThis.setTimeout> | undefined;
+    const armInactivityTimer = () => {
+      if (inactivityTimer) {
+        globalThis.clearTimeout(inactivityTimer);
+      }
+      inactivityTimer = globalThis.setTimeout(() => {
+        if (!controller.signal.aborted) {
+          timeoutReason = 'inactivity';
+          this.logger.warn(`[compose-timeout] '${command.join(' ')}' produced no output for ${Math.round(inactivityTimeoutMs / 60000)}m — aborting`);
+          controller.abort();
+        }
+      }, inactivityTimeoutMs);
+      inactivityTimer.unref?.();
+    };
+
+    const overallTimer = globalThis.setTimeout(() => {
+      if (!controller.signal.aborted) {
+        timeoutReason = 'overall';
+        this.logger.warn(`[compose-timeout] '${command.join(' ')}' exceeded ${Math.round(overallTimeoutMs / 60000)}m — aborting`);
+        controller.abort();
+      }
+    }, overallTimeoutMs);
+    overallTimer.unref?.();
+
+    const onCallerAbort = () => {
+      if (!controller.signal.aborted) {
+        controller.abort();
+      }
+    };
+    if (signal?.aborted) {
+      onCallerAbort();
+    } else {
+      signal?.addEventListener('abort', onCallerAbort, { once: true });
+    }
+    armInactivityTimer();
+
+    const composeSignal = controller.signal;
+
     // Passing `signal` makes Node send SIGTERM to the child on abort. `docker compose` can spawn its
     // own child (the compose plugin) that survives a SIGTERM to the wrapper, so we layer an explicit
-    // SIGTERM->SIGKILL escalation on top to guarantee the process tree is torn down on cancel.
+    // SIGTERM->SIGKILL escalation on top to guarantee the process tree is torn down on cancel/timeout.
     const cmd = spawn(command[0], command.slice(1), {
       cwd, // Set working directory to compose file's directory
-      signal,
+      signal: composeSignal,
     });
     const stdout: string[] = [];
     const stderr: string[] = [];
@@ -980,10 +866,10 @@ export class DockerService {
         }
       }, COMPOSE_CANCEL_SIGKILL_GRACE_MS);
     };
-    signal?.addEventListener('abort', onAbort, { once: true });
+    composeSignal.addEventListener('abort', onAbort, { once: true });
     // Cover the race where the signal aborts between spawn() and listener registration: the 'abort'
     // event has already fired, so schedule the escalation now instead of missing it.
-    if (signal?.aborted) {
+    if (composeSignal.aborted) {
       onAbort();
     }
 
@@ -1007,10 +893,12 @@ export class DockerService {
           reject(error);
         });
         cmd.stdout.on('data', (data: Buffer | string) => {
+          armInactivityTimer();
           this.logger.debug(`${command[0]}: ${String(data).trim()}`);
           stdout.push(String(data).trim());
         });
         cmd.stderr.on('data', (data: Buffer | string) => {
+          armInactivityTimer();
           this.logger.debug(`${command[0]}: ${String(data).trim()}`);
           stderr.push(String(data).trim());
         });
@@ -1020,8 +908,21 @@ export class DockerService {
         });
       });
 
-      // A non-zero exit caused by our own SIGTERM/SIGKILL is a cancellation, not a config failure.
-      if (signal?.aborted) {
+      if (composeSignal.aborted) {
+        // Our own stall/budget timeout fired: surface a plain failure, not a cancellation, so install
+        // treats it as `install_failed` (and releases the pipeline mutex) rather than as a user cancel.
+        if (timeoutReason === 'inactivity') {
+          throw new Error(
+            `'${command.join(' ')}' produced no output for ${Math.round(inactivityTimeoutMs / 60000)} minutes and was aborted. Check Docker daemon/network connectivity and retry.`,
+          );
+        }
+        if (timeoutReason === 'overall') {
+          throw new Error(
+            `'${command.join(' ')}' exceeded the ${Math.round(overallTimeoutMs / 60000)}-minute budget and was aborted. Check Docker daemon/network connectivity and retry.`,
+          );
+        }
+        // A non-zero exit caused by our own SIGTERM/SIGKILL (relayed from the caller's signal) is a
+        // cancellation, not a config failure.
         throw abortError();
       }
 
@@ -1041,7 +942,12 @@ export class DockerService {
       if (sigkillTimer) {
         clearTimeout(sigkillTimer);
       }
-      signal?.removeEventListener('abort', onAbort);
+      composeSignal.removeEventListener('abort', onAbort);
+      if (inactivityTimer) {
+        globalThis.clearTimeout(inactivityTimer);
+      }
+      globalThis.clearTimeout(overallTimer);
+      signal?.removeEventListener('abort', onCallerAbort);
     }
   }
 
@@ -1284,25 +1190,6 @@ export class DockerService {
   }
 
   /**
-   * Returns true if the named container exists and its status is exactly
-   * "running" (i.e. not paused, restarting, exited, or in any other state).
-   *
-   * `.State.Status` is the canonical status string Docker maintains and is
-   * set to "running" only when the container is fully up and not paused or
-   * mid-restart — unlike `.State.Running`, which remains `true` for paused
-   * and restarting containers as well.
-   */
-  public async isContainerRunning(containerName: string): Promise<boolean> {
-    return new Promise((resolve) => {
-      const cmd = spawn('docker', ['inspect', '--format', '{{.State.Status}}', containerName]);
-      const chunks: string[] = [];
-      cmd.stdout.on('data', (data: Buffer) => chunks.push(String(data)));
-      cmd.on('close', (code) => resolve(code === 0 && chunks.join('').trim() === 'running'));
-      cmd.on('error', () => resolve(false));
-    });
-  }
-
-  /**
    * Ensure a container is running, starting it via docker compose if needed.
    * Tries `docker restart` first; if the container doesn't exist, falls back to
    * `docker compose --profile <profile> up <service> -d` using the appropriate
@@ -1495,55 +1382,6 @@ export class DockerService {
   }
 
   /**
-   * Verify Hub-labeled containers exist and match the same running/stopped/missing
-   * rules used by app status sync (ci-os-hub.managed + ci-os-hub.appurn labels).
-   */
-  public async getManagedAppContainerVerification(appUrn: AppUrn): Promise<ManagedAppContainerVerification> {
-    const containers = await this.docker.listContainers({
-      all: true,
-      filters: {
-        label: ['ci-os-hub.managed=true', `ci-os-hub.appurn=${appUrn}`],
-      },
-    });
-
-    const summary = summarizeManagedAppContainers(containers);
-    const appStatus = managedAppStatusFromSummary(summary);
-
-    if (appStatus === 'running') {
-      return {
-        ok: true,
-        appStatus,
-        summary,
-        message: 'All containers are running',
-      };
-    }
-
-    const diagResults = appStatus === 'missing' ? { unhealthy: [], healthy: [] } : await this.diagnoseAppContainers(appUrn);
-    const logSummary =
-      diagResults.unhealthy.length > 0
-        ? diagResults.unhealthy.map((container) => `${container.name} (${container.state}): ${container.logs}`).join('\n')
-        : undefined;
-
-    if (appStatus === 'missing') {
-      return {
-        ok: false,
-        appStatus,
-        summary,
-        message: 'Install finished but no Hub-managed containers were found. The app may have failed to start.',
-        errorDetail: logSummary,
-      };
-    }
-
-    return {
-      ok: false,
-      appStatus,
-      summary,
-      message: 'One or more containers exited after install.',
-      errorDetail: logSummary,
-    };
-  }
-
-  /**
    * Poll after compose up until labeled containers reach a stable running state,
    * or return the last failed verification.
    */
@@ -1556,7 +1394,7 @@ export class DockerService {
 
     let lastVerification: ManagedAppContainerVerification | undefined;
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-      lastVerification = await this.getManagedAppContainerVerification(appUrn);
+      lastVerification = await this.dockerReadFacade.getManagedAppContainerVerification(appUrn);
       if (lastVerification.ok) {
         return lastVerification;
       }
@@ -1569,84 +1407,6 @@ export class DockerService {
       await new Promise((resolve) => setTimeout(resolve, delayMs));
     }
 
-    return lastVerification ?? (await this.getManagedAppContainerVerification(appUrn));
-  }
-
-  /**
-   * Diagnose app containers after startup - check for crash-loops, exited containers, and capture logs
-   * @param appUrn - The app URN
-   * @returns Diagnostic results with unhealthy container info
-   */
-  public async diagnoseAppContainers(appUrn: AppUrn): Promise<{
-    unhealthy: Array<{ name: string; state: string; logs: string }>;
-    healthy: string[];
-  }> {
-    const projectName = this.getComposeProjectName(appUrn);
-    const result: { unhealthy: Array<{ name: string; state: string; logs: string }>; healthy: string[] } = {
-      unhealthy: [],
-      healthy: [],
-    };
-
-    try {
-      // List containers for this compose project
-      const listCmd = spawn('docker', [
-        'ps',
-        '-a',
-        '--filter',
-        `label=com.docker.compose.project=${projectName}`,
-        '--format',
-        '{{.Names}}|{{.Status}}',
-      ]);
-
-      const output = await new Promise<string>((resolve, reject) => {
-        const chunks: string[] = [];
-        listCmd.stdout.on('data', (data: Buffer) => chunks.push(String(data)));
-        listCmd.stderr.on('data', (data: Buffer) => this.logger.debug(`docker ps stderr: ${String(data)}`));
-        listCmd.on('close', (code) => {
-          if (code === 0) resolve(chunks.join(''));
-          else reject(new Error(`docker ps failed with code ${code}`));
-        });
-        listCmd.on('error', reject);
-      });
-
-      const lines = output.trim().split('\n').filter(Boolean);
-
-      for (const line of lines) {
-        const [containerName, status] = line.split('|');
-        if (!containerName || !status) continue;
-
-        const isUnhealthy = status.includes('Restarting') || status.includes('Exited') || status.includes('Created') || status.includes('Dead');
-
-        if (isUnhealthy) {
-          // Capture last 20 lines of logs
-          let logs = '';
-          try {
-            const logCmd = spawn('docker', ['logs', '--tail', '20', containerName]);
-            logs = await new Promise<string>((resolve, _reject) => {
-              const chunks: string[] = [];
-              logCmd.stdout.on('data', (data: Buffer) => chunks.push(String(data)));
-              logCmd.stderr.on('data', (data: Buffer) => chunks.push(String(data)));
-              logCmd.on('close', () => resolve(chunks.join('').trim()));
-              logCmd.on('error', () => resolve('(failed to capture logs)'));
-            });
-          } catch {
-            logs = '(failed to capture logs)';
-          }
-
-          this.logger.warn(`[AppDiag] Container ${containerName} is ${status}`);
-          if (logs) {
-            this.logger.warn(`[AppDiag] ${containerName} logs:\n${logs}`);
-          }
-
-          result.unhealthy.push({ name: containerName, state: status, logs });
-        } else {
-          result.healthy.push(containerName);
-        }
-      }
-    } catch (error) {
-      this.logger.error(`[AppDiag] Failed to diagnose containers for ${appUrn}: ${error}`);
-    }
-
-    return result;
+    return lastVerification ?? (await this.dockerReadFacade.getManagedAppContainerVerification(appUrn));
   }
 }

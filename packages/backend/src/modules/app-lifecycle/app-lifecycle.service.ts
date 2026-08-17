@@ -799,7 +799,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       return this.startApp({ appUrn });
     }
 
-    // min_hub_version enforcement intentionally disabled until Hub semver stabilizes (post-Runtipi migration).
+    // min_hub_version enforcement intentionally disabled until Hub semver stabilizes (post-CIHub migration).
     type InstallRow = { id: number; status: string; port: number | null; exposedLocal: boolean };
     let installRecord: InstallRow | undefined = existingApp
       ? { id: existingApp.id, status: existingApp.status, port: existingApp.port, exposedLocal: existingApp.exposedLocal }
@@ -1791,7 +1791,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       }
     }
 
-    // min_hub_version enforcement intentionally disabled until Hub semver stabilizes (post-Runtipi migration).
+    // min_hub_version enforcement intentionally disabled until Hub semver stabilizes (post-CIHub migration).
 
     await this.appRepository.updateAppById(app.id, { status: 'updating' });
 

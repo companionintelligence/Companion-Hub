@@ -7,24 +7,28 @@ import type { NextFunction, Request, Response } from 'express';
 import jsonwebtoken from 'jsonwebtoken';
 import { UserRepository } from '../user/user.repository';
 import { SESSION_TTL_SECONDS, SessionManager } from './session.manager';
+import { SessionUserCache } from '@/core/cache/session-user.cache';
 
-function resolveSessionId(req: Request): string | undefined {
-  const cookieSession = req.cookies[SESSION_COOKIE_NAME];
-  if (typeof cookieSession === 'string' && cookieSession) {
-    return cookieSession;
+function addSessionId(ids: string[], seen: Set<string>, value: unknown) {
+  if (typeof value !== 'string' || !value || seen.has(value)) {
+    return;
   }
+  seen.add(value);
+  ids.push(value);
+}
 
-  const headerSession = req.get('x-ci-hub-session');
-  if (headerSession) {
-    return headerSession;
-  }
-
-  const querySession = req.query.session_id;
-  if (typeof querySession === 'string' && querySession) {
-    return querySession;
-  }
-
-  return undefined;
+/**
+ * Session ids in preference order. A stale `ci-hub-sid` cookie must not hide a
+ * live `X-CI-Hub-Session` from the login response body — that is the race that
+ * 401s app install right after a successful login.
+ */
+export function sessionIdsFromRequest(req: Request): string[] {
+  const ids: string[] = [];
+  const seen = new Set<string>();
+  addSessionId(ids, seen, req.cookies?.[SESSION_COOKIE_NAME]);
+  addSessionId(ids, seen, req.get('x-ci-hub-session'));
+  addSessionId(ids, seen, req.query?.session_id);
+  return ids;
 }
 
 @Injectable()
@@ -33,6 +37,7 @@ export class AuthMiddleware implements NestMiddleware {
     private readonly sessionManager: SessionManager,
     private readonly config: ConfigurationService,
     private readonly userRepository: UserRepository,
+    private readonly sessionUserCache: SessionUserCache,
   ) {}
 
   /**
@@ -52,26 +57,54 @@ export class AuthMiddleware implements NestMiddleware {
     }
   }
 
+  private async loadSessionUser(userId: number) {
+    const cached = this.sessionUserCache.get(userId);
+    if (cached) {
+      return cached;
+    }
+    // Stamp the read: a write that invalidates while this SELECT is in flight would otherwise
+    // be undone here, re-caching the pre-write DTO for a fresh TTL. Stamped inside the retry
+    // closure so each attempt is judged against the SELECT it actually issued — a token taken
+    // before the backoff would discard the correct post-write row a later attempt just read.
+    return this.loadUserResilient(async () => {
+      const readToken = this.sessionUserCache.beginRead(userId);
+      const user = await this.userRepository.getUserDtoById(userId);
+      if (user) {
+        this.sessionUserCache.set(userId, user, readToken);
+      }
+      return user;
+    });
+  }
+
   async use(req: Request, _: Response, next: NextFunction) {
-    const sessionId = resolveSessionId(req);
     const bearerToken = req.headers.authorization;
 
-    if (sessionId) {
+    for (const sessionId of sessionIdsFromRequest(req)) {
       const userId = this.sessionManager.resolveSessionUserId(sessionId);
-      if (userId) {
-        const expiresAt = this.sessionManager.getSessionExpiresAt(sessionId);
-        if (expiresAt) {
-          const remainingMs = expiresAt - Date.now();
-          if (remainingMs < (SESSION_TTL_SECONDS * 1000) / 2) {
-            this.sessionManager.touchSession(sessionId);
-          }
-        }
-
-        const user = await this.loadUserResilient(() => this.userRepository.getUserDtoById(userId));
-        req.user = user;
+      if (!userId) {
+        continue;
       }
 
-      return next();
+      const expiresAt = this.sessionManager.getSessionExpiresAt(sessionId);
+      if (expiresAt) {
+        const remainingMs = expiresAt - Date.now();
+        if (remainingMs < (SESSION_TTL_SECONDS * 1000) / 2) {
+          this.sessionManager.touchSession(sessionId);
+        }
+      }
+
+      try {
+        const user = await this.loadSessionUser(userId);
+        req.user = user;
+        req.hubSessionId = sessionId;
+        return next();
+      } catch (err) {
+        if (err instanceof ServiceUnavailableException) {
+          throw err;
+        }
+        // A broken DB lookup must not turn GET / (OIDC returns, static pages)
+        // into a JSON 500 — continue without a user so the route can run.
+      }
     }
 
     if (bearerToken) {

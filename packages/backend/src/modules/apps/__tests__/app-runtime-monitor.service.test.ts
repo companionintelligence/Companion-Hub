@@ -6,7 +6,7 @@ import { LoggerService } from '@/core/logger/logger.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { AppsRepository } from '../apps.repository';
 import { AppsService } from '../apps.service';
-import { DockerService } from '@/modules/docker/docker.service';
+import { DockerReadFacade } from '@/modules/docker/docker-read.facade';
 import si from 'systeminformation';
 
 vi.mock('systeminformation');
@@ -17,7 +17,7 @@ describe('AppRuntimeMonitorService', () => {
   let config: MockProxy<ConfigurationService>;
   let appsRepository: MockProxy<AppsRepository>;
   let appsService: MockProxy<AppsService>;
-  let dockerService: MockProxy<DockerService>;
+  let dockerReadFacade: MockProxy<DockerReadFacade>;
   let service: AppRuntimeMonitorService;
 
   beforeEach(() => {
@@ -26,7 +26,7 @@ describe('AppRuntimeMonitorService', () => {
     config = mock<ConfigurationService>();
     appsRepository = mock<AppsRepository>();
     appsService = mock<AppsService>();
-    dockerService = mock<DockerService>();
+    dockerReadFacade = mock<DockerReadFacade>();
 
     config.get.mockImplementation((key: string) => {
       if (key === 'userSettings') {
@@ -44,9 +44,9 @@ describe('AppRuntimeMonitorService', () => {
         },
       ],
     });
-    dockerService.getHubRuntimeStats.mockResolvedValue([]);
+    dockerReadFacade.getHubRuntimeStats.mockResolvedValue([]);
 
-    service = new AppRuntimeMonitorService(logger, config, appsRepository, appsService, dockerService);
+    service = new AppRuntimeMonitorService(logger, config, appsRepository, appsService, dockerReadFacade);
   });
 
   afterEach(() => {
@@ -67,7 +67,7 @@ describe('AppRuntimeMonitorService', () => {
       config: {},
       updatedAt: new Date().toISOString(),
     } as any);
-    dockerService.getAppRuntimeStats.mockResolvedValue([
+    dockerReadFacade.getAppRuntimeStats.mockResolvedValue([
       {
         containerId: 'abc',
         name: 'svc',
@@ -96,7 +96,7 @@ describe('AppRuntimeMonitorService', () => {
       config: {},
       updatedAt: new Date().toISOString(),
     } as any);
-    dockerService.getAppRuntimeStats.mockResolvedValue([
+    dockerReadFacade.getAppRuntimeStats.mockResolvedValue([
       {
         containerId: 'abc',
         name: 'svc',
@@ -140,7 +140,7 @@ describe('AppRuntimeMonitorService', () => {
         updatedAt: new Date().toISOString(),
       } as any,
     ]);
-    dockerService.getAppRuntimeStats.mockResolvedValue([
+    dockerReadFacade.getAppRuntimeStats.mockResolvedValue([
       {
         containerId: 'abc',
         name: 'svc',
@@ -157,7 +157,7 @@ describe('AppRuntimeMonitorService', () => {
     await service.getRuntimeMonitorSnapshot();
     await service.getRuntimeMonitorSnapshot();
 
-    expect(dockerService.getAppRuntimeStats).toHaveBeenCalledTimes(1);
+    expect(dockerReadFacade.getAppRuntimeStats).toHaveBeenCalledTimes(1);
   });
 
   it('includes rolling history gathered before the page is opened', async () => {
@@ -172,7 +172,7 @@ describe('AppRuntimeMonitorService', () => {
         updatedAt: new Date().toISOString(),
       } as any,
     ]);
-    dockerService.getAppRuntimeStats
+    dockerReadFacade.getAppRuntimeStats
       .mockResolvedValueOnce([
         {
           containerId: 'abc',
@@ -219,7 +219,7 @@ describe('AppRuntimeMonitorService', () => {
 
   it('includes the companion hub api in monitor snapshots', async () => {
     appsRepository.getApps.mockResolvedValue([]);
-    dockerService.getHubRuntimeStats.mockResolvedValue([
+    dockerReadFacade.getHubRuntimeStats.mockResolvedValue([
       {
         containerId: 'hub-db',
         name: 'ci-hub-db',
@@ -261,7 +261,7 @@ describe('AppRuntimeMonitorService', () => {
   it('does not double-count the backend process when its container is already tracked', async () => {
     process.env.HOSTNAME = 'hub-api-container';
     appsRepository.getApps.mockResolvedValue([]);
-    dockerService.getHubRuntimeStats.mockResolvedValue([
+    dockerReadFacade.getHubRuntimeStats.mockResolvedValue([
       {
         containerId: 'hub-api-container-123456',
         name: 'ci-os-hub',
@@ -304,7 +304,7 @@ describe('AppRuntimeMonitorService', () => {
           updatedAt: new Date().toISOString(),
         } as any,
       ]);
-      dockerService.getAppRuntimeStats.mockResolvedValue([
+      dockerReadFacade.getAppRuntimeStats.mockResolvedValue([
         {
           containerId: 'abc',
           name: 'svc',
@@ -321,7 +321,7 @@ describe('AppRuntimeMonitorService', () => {
       const first = await service.getRuntimeMonitorSnapshot();
       await vi.advanceTimersByTimeAsync(31_000);
 
-      dockerService.getAppRuntimeStats.mockImplementation(
+      dockerReadFacade.getAppRuntimeStats.mockImplementation(
         () =>
           new Promise(() => {
             /* hang */
@@ -336,10 +336,10 @@ describe('AppRuntimeMonitorService', () => {
       expect(second).toBe(first);
       expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('timed out'));
 
-      dockerService.getAppRuntimeStats.mockClear();
+      dockerReadFacade.getAppRuntimeStats.mockClear();
       const third = await service.getRuntimeMonitorSnapshot();
       expect(third).toBe(first);
-      expect(dockerService.getAppRuntimeStats).not.toHaveBeenCalled();
+      expect(dockerReadFacade.getAppRuntimeStats).not.toHaveBeenCalled();
     } finally {
       vi.useRealTimers();
     }

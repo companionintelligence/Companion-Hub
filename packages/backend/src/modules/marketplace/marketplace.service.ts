@@ -3,7 +3,7 @@ import { notEmpty, pLimit } from '@/common/helpers/file-helpers';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { LoggerService } from '@/core/logger/logger.service';
-import { Injectable, Inject, forwardRef } from '@nestjs/common';
+import { Injectable, OnModuleInit } from '@nestjs/common';
 import type { AppUrn } from '@ci-hub/common/types';
 import type { AppInfo } from '@ci-hub/common/schemas';
 import MiniSearch from 'minisearch';
@@ -19,6 +19,7 @@ import {
   marketplaceScreenshotPath,
   portalScreenshotPath,
 } from './app-media.helpers';
+import { MarketplaceCacheBus } from './marketplace-cache.bus';
 
 type AppList = Awaited<ReturnType<InstanceType<typeof MarketplaceService>['getAllAppFromStores']>>;
 
@@ -27,20 +28,26 @@ const sortApps = (a: AppList[number], b: AppList[number]) => a.urn.localeCompare
 const filterApp = (app: AppList[number]): boolean => !app.deprecated;
 
 @Injectable()
-export class MarketplaceService {
+export class MarketplaceService implements OnModuleInit {
   private stores: Map<string, AppStoreFilesManager> = new Map();
   private appsAvailable: AppList | null = null;
   private miniSearch: MiniSearch<AppList[number]> | null = null;
   private cacheTimeout = 1000 * 60 * 15; // 15 minutes
   private cacheLastUpdated = 0;
+  private availableAppsWarmInFlight: Promise<void> | null = null;
 
   constructor(
     private readonly configuration: ConfigurationService,
     private readonly filesystem: FilesystemService,
     private readonly logger: LoggerService,
     private readonly portalCatalog: PortalCatalogService,
-    @Inject(forwardRef(() => AppStoreService)) private readonly appStoreService: AppStoreService,
+    private readonly appStoreService: AppStoreService,
+    private readonly marketplaceCacheBus: MarketplaceCacheBus,
   ) {}
+
+  onModuleInit() {
+    this.marketplaceCacheBus.register(() => this.invalidateCache());
+  }
 
   async initialize() {
     this.stores.clear();
@@ -214,20 +221,53 @@ export class MarketplaceService {
    * @param params - The search parameters
    * @returns The search results
    */
+  /** Background MiniSearch warm — never awaited on the search request path. */
+  private warmAvailableAppsInBackground() {
+    if (this.availableAppsWarmInFlight) {
+      return;
+    }
+    this.availableAppsWarmInFlight = this.getAvailableApps()
+      .then(() => undefined)
+      .catch((error) => {
+        this.logger.debug(`Background marketplace FS catalog warm failed: ${error instanceof Error ? error.message : String(error)}`);
+      })
+      .finally(() => {
+        this.availableAppsWarmInFlight = null;
+      });
+  }
+
   public async searchApps(params: { search?: string | null; category?: string | null; pageSize?: number; cursor?: string | null; storeId?: string }) {
     const { storeId } = params;
     const usePortalCatalog = !storeId || storeId === CI_MARKETPLACE_STORE_SLUG;
 
     if (usePortalCatalog) {
       const portalResult = await this.portalCatalog.searchCatalog(params);
+      // Prefer Portal catalog when it has hits. On empty/cold Portal, do NOT fall back to a
+      // full FS walk of every store dir on the request path — return empty + warm in background.
       if (portalResult && portalResult.data.length > 0) {
         return portalResult;
+      }
+      if (this.appsAvailable?.length) {
+        // Warm local cache already present — serve MiniSearch below.
+      } else {
+        void this.portalCatalog.warmCacheInBackground();
+        this.warmAvailableAppsInBackground();
+        return portalResult ?? { data: [], total: 0, nextCursor: null };
       }
     }
 
     const { search, category, pageSize, cursor } = params;
 
-    let filteredApps = await this.getAvailableApps();
+    // Non-portal store browse, or portal-empty with a warm local cache.
+    let filteredApps: AppList;
+    if (this.appsAvailable?.length) {
+      filteredApps = this.appsAvailable;
+    } else {
+      // Legacy/third-party storeId path may still need FS catalog, but keep latency bounded:
+      // kick warm and return empty rather than blocking the HTTP request on a full walk.
+      this.warmAvailableAppsInBackground();
+      return { data: [], total: 0, nextCursor: null };
+    }
 
     if (storeId) {
       filteredApps = filteredApps.filter((app) => {

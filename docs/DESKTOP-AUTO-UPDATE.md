@@ -8,7 +8,9 @@ How the Companion Hub desktop app updates itself, and how to QA it.
 
 The desktop app uses a custom updater (`packages/desktop/src-tauri/src/updater.rs`),
 not `tauri-plugin-updater`. It ships full installers from the production CDN and
-verifies them by size + SHA-256 from the release manifest.
+verifies them by size + SHA-256 from the release manifest. The host listener binds
+`0.0.0.0:17400` (token-authed) so the Hub container can reach it at
+`host.docker.internal:17400`.
 
 ```
 dl.ci.computer/latest.json            → {"version":"v0.2.16", ...}
@@ -31,7 +33,7 @@ separate dev feed so dev desktop builds can update without touching production.
 | Trigger | Path |
 |---|---|
 | Settings UI (desktop) | `perform_desktop_update_command` Tauri command |
-| Settings UI (browser) | backend `/api/system/update/host-listener-token` → `POST 127.0.0.1:17400/update` (token-authed listener) |
+| Settings UI (any browser) | backend `POST /api/system/update` — Hub probes `host.docker.internal:17400/health`, then `POST /update` with the listener token. The tab never talks to `127.0.0.1:17400`. If the listener is down, Hub updates the stack only and Settings tells the operator to start Companion Hub on the host. |
 | CLI | `companion-hub update` (`--check` for exit-code-only: 1 = update available) |
 | Hub Docker stack (separate from app binary) | backend `SystemUpdateService` daily timer, gated by the Settings auto-update toggle |
 
