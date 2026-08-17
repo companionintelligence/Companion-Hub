@@ -2891,21 +2891,6 @@
     "mcp": false
   },
   {
-    "id": "ci-import-tools",
-    "storeSlug": "ci-apps",
-    "name": "Import Tools",
-    "expectedPort": 18802,
-    "healthEndpoint": "/",
-    "hasGui": true,
-    "categories": [
-      "companion-intelligence",
-      "utilities",
-      "featured"
-    ],
-    "priority": "low",
-    "mcp": false
-  },
-  {
     "id": "ci-just-in-case",
     "storeSlug": "ci-apps",
     "name": "Just In Case",

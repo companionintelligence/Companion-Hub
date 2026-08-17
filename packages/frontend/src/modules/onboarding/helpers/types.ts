@@ -26,9 +26,9 @@ export interface OnboardingApp {
   name: string;
   /**
    * The app's canonical name in the marketplace. Onboarding sometimes shows a friendlier label than
-   * the store does ("Memory Import Tools" vs "Import Tools"), and that override must not leak into
-   * the dashboard: the optimistic row would render under the onboarding name and then visibly rename
-   * itself the moment the real row arrives. Falls back to `name` when the two agree.
+   * the store does, and that override must not leak into the dashboard: the optimistic row would
+   * render under the onboarding name and then visibly rename itself the moment the real row arrives.
+   * Falls back to `name` when the two agree.
    */
   storeName?: string;
   icon: string;

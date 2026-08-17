@@ -128,9 +128,9 @@ describe('AppHelpers Reproduction', () => {
   it('serializes an injected OIDC issuer as exactly one clean env line (real EnvUtils)', async () => {
     // Arrange: an opted-in app (hub_integration.oidc) on a paired Hub.
     const mockAppInfo: AppInfo = {
-      id: 'ci-import-tools',
+      id: 'ci-planning',
       urn: testAppUrn,
-      name: 'Import Tools',
+      name: 'Companion Planning',
       author: 'CI',
       port: 8000,
       https: false,
@@ -138,7 +138,7 @@ describe('AppHelpers Reproduction', () => {
       available: true,
       exposable: true,
       dynamic_config: true,
-      source: 'https://github.com/companionintelligence/CI-Import-Tools',
+      source: 'https://github.com/companionintelligence/Companion-Planning',
       version: '1.0.0',
       categories: ['utilities'],
       description: 'Test description',

@@ -27,9 +27,9 @@ describe('PortalCatalogService', () => {
         icon: 'https://cdn.example.com/ci-memory.png',
       },
       {
-        id: 'ci-import-tools',
-        name: 'CI Import Tools',
-        shortDescription: 'Import tooling',
+        id: 'ci-planning',
+        name: 'Companion Planning',
+        shortDescription: 'Local planning',
       },
     ] as any);
 
@@ -43,8 +43,8 @@ describe('PortalCatalogService', () => {
       icon: 'https://cdn.example.com/ci-memory.png',
     });
     expect(entries[1]).toMatchObject({
-      id: 'ci-import-tools',
-      urn: 'ci-import-tools:ci-marketplace',
+      id: 'ci-planning',
+      urn: 'ci-planning:ci-marketplace',
     });
   });
 

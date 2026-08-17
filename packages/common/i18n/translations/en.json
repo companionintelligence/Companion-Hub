@@ -982,8 +982,6 @@
   "ONBOARDING_AGENT_COMPANION_APPS": "Also available on:",
   "ONBOARDING_AGENT_NONE_SELECTED_HINT": "No agent selected - you can add one later from the App Store.",
   "ONBOARDING_COMPANION_MEMORY_DESC": "Connect your services and build a memory that knows you. Import messages, email, documents, and notes so your AI can use your information.",
-  "ONBOARDING_COMPANION_IMPORT_TOOLS_NAME": "Import Tools",
-  "ONBOARDING_COMPANION_IMPORT_TOOLS_DESC": "Import your existing data into CI Memory: files, social accounts, and cloud histories.",
   "ONBOARDING_COMPANION_APP_UNAVAILABLE": "Not available in your app store yet.",
   "ONBOARDING_CATALOG_LOADING": "Catalog still loading…",
   "ONBOARDING_RECOMMENDATIONS_LOADING": "Loading recommended apps…",

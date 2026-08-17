@@ -881,7 +881,6 @@
   "ONBOARDING_AGENT_FRAMEWORK_TITLE": "Marco de agentes",
   "ONBOARDING_AGENT_NONE_SELECTED_HINT": "Ningún agente seleccionado - puedes agregar uno más tarde desde la tienda de aplicaciones.",
   "ONBOARDING_COMPANION_MEMORY_DESC": "Servidor de memoria privado. contexto para ti y tus agentes.",
-  "ONBOARDING_COMPANION_IMPORT_TOOLS_DESC": "Importa archivos, cuentas sociales e historiales en la nube a tu ecosistema local.",
   "ONBOARDING_COMPANION_APP_UNAVAILABLE": "Aún no disponible en tu tienda de aplicaciones.",
   "ONBOARDING_AI_PROFILE_UNAVAILABLE": "Perfil de IA no disponible",
   "ONBOARDING_AI_SETUP_FAILED": "No se pudo completar la configuración de IA",

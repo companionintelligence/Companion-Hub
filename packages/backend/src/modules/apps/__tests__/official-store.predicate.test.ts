@@ -8,11 +8,11 @@ import { isMemoryProviderApp } from '@/modules/memory-connect/memory-provider.pr
  */
 describe('isOfficialStoreApp', () => {
   it('accepts an app installed from the official ci-marketplace store', () => {
-    expect(isOfficialStoreApp({ urn: 'ci-import-tools:ci-marketplace' })).toBe(true);
+    expect(isOfficialStoreApp({ urn: 'ci-planning:ci-marketplace' })).toBe(true);
   });
 
   it('rejects any other store slug, even for an identically-named app', () => {
-    expect(isOfficialStoreApp({ urn: 'ci-import-tools:sketchy-store' })).toBe(false);
+    expect(isOfficialStoreApp({ urn: 'ci-planning:sketchy-store' })).toBe(false);
     expect(isOfficialStoreApp({ urn: 'ci-memory:local' })).toBe(false);
   });
 
