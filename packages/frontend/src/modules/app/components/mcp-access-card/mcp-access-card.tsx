@@ -86,7 +86,7 @@ export function McpAccessCard({ app, info, mcpRuntime: initialRuntime }: Props) 
   );
 
   const probeMcp = useCallback(async () => {
-    if (!app || app.status === 'missing') return;
+    if (!app) return;
     setProbing(true);
     try {
       const res = await apiFetch(`/api/apps/${encodeURIComponent(info.urn)}/mcp/probe`, { method: 'POST' });
@@ -104,7 +104,7 @@ export function McpAccessCard({ app, info, mcpRuntime: initialRuntime }: Props) 
   }
 
   const tools = mcp.manifest?.tools ?? [];
-  const installed = Boolean(app && app.status !== 'missing');
+  const installed = Boolean(app);
   const badge = bridgeStatusBadge(runtime, installed, t);
 
   const copyToClipboard = async (value: string) => {

@@ -251,15 +251,18 @@ describe('AppStatus', () => {
     expect(presentation.tone).toBe('danger');
   });
 
-  it('renders the propagating pill with a warning tone and the reason as its tooltip', () => {
-    render(
-      <AppStatus status="running" runtimeHealth={healthyRuntime()} publicUrl={{ propagating: true, detail: 'DNS propagating...' }} variant="pill" />,
-    );
+  it('treats legacy missing status as Stopped', () => {
+    const presentation = getAppStatusPresentation('missing');
 
-    const pill = screen.getByTestId('app-status-pill');
-    expect(pill).toHaveTextContent('Running (DNS propagating...)');
-    expect(pill).toHaveAttribute('title', 'DNS propagating...');
-    expect(pill).toHaveClass('text-amber-500');
+    expect(presentation.labelKey).toBe('APP_STATUS_STOPPED');
+    expect(presentation.fallbackLabel).toBe('Stopped');
+    expect(presentation.tone).toBe('danger');
+  });
+
+  it('renders a Stopped pill for legacy missing status', () => {
+    render(<AppStatus status="missing" variant="pill" />);
+
+    expect(screen.getByTestId('app-status-pill')).toHaveTextContent('Stopped');
   });
 
   it('flags exited containers with a non-zero exit code', () => {

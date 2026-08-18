@@ -354,7 +354,7 @@ describe('AppActions', () => {
 
     render(
       <AppActions
-        app={makeApp({ status: 'missing' })}
+        app={null}
         metadata={metadata}
         info={makeInfo({ supported_architectures: ['amd64'] })}
         urlAvailability={idleAvailability}
@@ -366,6 +366,31 @@ describe('AppActions', () => {
     expect(install).toHaveAttribute('aria-disabled', 'true');
     await userEvent.click(install);
     expect(hoisted.toastError).toHaveBeenCalledWith('APP_ACTION_WRONG_ARCHITECTURE');
+  });
+
+  it('shows Start (not Install) when an installed app has no containers (stopped or legacy missing)', () => {
+    hoisted.queryClient.getQueryData.mockReturnValue(null);
+
+    const { rerender } = render(
+      <AppActions app={makeApp({ status: 'stopped' })} metadata={metadata} info={info} urlAvailability={idleAvailability} layout="hero" />,
+    );
+
+    expect(screen.getByTestId('action-app_action_start')).toBeInTheDocument();
+    expect(screen.queryByTestId('action-common_install')).not.toBeInTheDocument();
+
+    rerender(<AppActions app={makeApp({ status: 'missing' })} metadata={metadata} info={info} urlAvailability={idleAvailability} layout="hero" />);
+
+    expect(screen.getByTestId('action-app_action_start')).toBeInTheDocument();
+    expect(screen.queryByTestId('action-common_install')).not.toBeInTheDocument();
+  });
+
+  it('shows Install when the app is not installed', () => {
+    hoisted.queryClient.getQueryData.mockReturnValue(null);
+
+    render(<AppActions app={null} metadata={metadata} info={info} urlAvailability={idleAvailability} layout="hero" />);
+
+    expect(screen.getByTestId('action-common_install')).toBeInTheDocument();
+    expect(screen.queryByTestId('action-app_action_start')).not.toBeInTheDocument();
   });
 
   it('keeps install errors inline in hero layout with constrained width', () => {
