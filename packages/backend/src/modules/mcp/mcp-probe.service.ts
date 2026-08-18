@@ -113,8 +113,10 @@ export class McpProbeService {
     const bridgeable = installSchema.bridgeable;
     let lastError: string | undefined = installSchema.bridgeWarning;
 
-    if (!app || app.status === 'missing') {
+    if (!app) {
       lastError = 'App is not installed';
+    } else if (app.status === 'missing' || app.status === 'stopped') {
+      lastError = 'App is stopped';
     } else if (app.status !== 'running') {
       lastError = `App status is ${app.status}`;
     }
@@ -132,7 +134,8 @@ export class McpProbeService {
   }
 
   private async resolveContainerStatus(appUrn: AppUrn, appStatus?: string): Promise<McpContainerStatus> {
-    if (appStatus === 'missing' || !appStatus) return 'missing';
+    if (!appStatus) return 'missing';
+    if (appStatus === 'missing' || appStatus === 'stopped') return 'stopped';
     try {
       const diag = await this.dockerReadFacade.diagnoseAppContainers(appUrn);
       if (diag.healthy.length > 0 && diag.unhealthy.length === 0) return 'running';

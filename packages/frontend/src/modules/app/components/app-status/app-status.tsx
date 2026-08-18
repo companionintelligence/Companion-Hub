@@ -168,10 +168,10 @@ export function getAppStatusPresentation(
     };
   }
 
-  if (status === 'stopped') {
+  if (status === 'stopped' || status === 'missing') {
     return {
       labelKey: 'APP_STATUS_STOPPED',
-      fallbackLabel: friendlyStatusLabels[status] ?? humanizeStatus(status),
+      fallbackLabel: friendlyStatusLabels.stopped ?? 'Stopped',
       tone: 'danger',
       animate: false,
       detail: runtimeHealth?.reason ?? null,
@@ -206,8 +206,6 @@ export const AppStatus: React.FC<{
   variant?: AppStatusVariant;
 }> = ({ status, lite, runtimeHealth, publicUrl, variant = 'inline' }) => {
   const { t } = useTranslation();
-
-  if (status === 'missing') return null;
 
   const presentation = getAppStatusPresentation(status, runtimeHealth, publicUrl);
   const formattedStatus = t(presentation.labelKey, presentation.fallbackLabel);

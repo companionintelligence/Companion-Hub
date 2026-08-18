@@ -379,14 +379,34 @@ describe('AppAccessPoints', () => {
     expect(screen.getByText('http://127.0.0.1:3000/login')).toBeInTheDocument();
   });
 
-  it('hides the panel for missing apps', () => {
-    const { container } = render(
+  it('shows the panel for stopped apps including legacy missing status', () => {
+    render(
       <AppAccessPoints
-        app={{ status: 'missing' } as any}
-        info={{ urn: 'openwebui:community', no_gui: false, https: false, dynamic_config: true, exposable: true } as any}
+        app={
+          {
+            status: 'missing',
+            port: 3000,
+            localSubdomain: 'openwebui',
+            domain: 'openwebui-studio-companion.companionintelligence.com',
+            exposed: true,
+            exposedLocal: true,
+          } as any
+        }
+        info={
+          {
+            urn: 'openwebui:community',
+            name: 'Open WebUI',
+            no_gui: false,
+            https: false,
+            url_suffix: '/login',
+            port: 3000,
+            dynamic_config: true,
+            exposable: true,
+          } as any
+        }
       />,
     );
 
-    expect(container).toBeEmptyDOMElement();
+    expect(screen.getByText('APP_DETAILS_ACCESS_TITLE')).toBeInTheDocument();
   });
 });

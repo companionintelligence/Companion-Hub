@@ -77,7 +77,7 @@ describe('CustomAppService', () => {
 
       expect(result.appUrn).toBe('my-cool-app:_user' as any);
       expect(result.appName).toBe('my-cool-app');
-      expect(appsRepository.createApp).toHaveBeenCalledWith(expect.objectContaining({ appName: 'my-cool-app' }));
+      expect(appsRepository.createApp).toHaveBeenCalledWith(expect.objectContaining({ appName: 'my-cool-app', status: 'stopped' }));
     });
 
     it('hyphenates dots in the display name instead of truncating', async () => {

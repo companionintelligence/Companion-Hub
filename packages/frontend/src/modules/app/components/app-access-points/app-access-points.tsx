@@ -270,9 +270,7 @@ export const AppAccessPoints = ({ app, info }: Props) => {
     hubSubdomain: userSettings.ciHubHubSubdomain,
   });
 
-  const supportsAccessPanel = Boolean(
-    app && !['missing', 'installing', 'install_failed', 'uninstalling', 'backing_up', 'restoring'].includes(app.status),
-  );
+  const supportsAccessPanel = Boolean(app && !['installing', 'install_failed', 'uninstalling', 'backing_up', 'restoring'].includes(app.status));
 
   if (accessPoints.length === 0 || !supportsAccessPanel) {
     return null;

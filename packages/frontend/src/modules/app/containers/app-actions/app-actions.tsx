@@ -774,6 +774,26 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
 
   switch (app?.status ?? 'missing') {
     case 'stopped':
+    case 'missing': {
+      // No DB row → not installed. An installed row with status "missing" is a
+      // legacy/compose-down state and should offer Start, not Install.
+      if (!app) {
+        buttons.push(InstallButton);
+        if (info.urn.split(':')[1] === '_user') {
+          secondaryActions.push(
+            <IconActionButton key="edit-config" icon={Edit} label={t('CUSTOM_APP_EDIT_CONFIG')} onClick={() => navigate(`/apps/${info.id}/edit`)} />,
+            <IconActionButton
+              key="remove"
+              icon={Trash}
+              label={t('COMMON_REMOVE')}
+              onClick={uninstallDisclosure.open}
+              className="text-destructive hover:text-destructive"
+            />,
+          );
+        }
+        break;
+      }
+
       buttons.push(StartButton);
       secondaryActions.push(
         <IconActionButton key="settings" icon={Settings} label={t('COMMON_SETTINGS')} onClick={updateSettingsDisclosure.open} />,
@@ -786,6 +806,11 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
           className="text-destructive hover:text-destructive"
         />,
       );
+      if (info.urn.split(':')[1] === '_user') {
+        secondaryActions.push(
+          <IconActionButton key="edit-config" icon={Edit} label={t('CUSTOM_APP_EDIT_CONFIG')} onClick={() => navigate(`/apps/${info.id}/edit`)} />,
+        );
+      }
       if (openDataFolderButton) secondaryActions.push(openDataFolderButton);
       if (updateAvailable && !versionIsIgnored) {
         secondaryActions.push(
@@ -815,6 +840,7 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
         );
       }
       break;
+    }
     case 'running': {
       secondaryActions.push(
         <IconActionButton key="stop" icon={Pause} label={t('COMMON_STOP')} onClick={stopDisclosure.open} />,
@@ -922,21 +948,6 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
           className="text-destructive hover:text-destructive"
         />,
       );
-      break;
-    case 'missing':
-      buttons.push(InstallButton);
-      if (info.urn.split(':')[1] === '_user') {
-        secondaryActions.push(
-          <IconActionButton key="edit-config" icon={Edit} label={t('CUSTOM_APP_EDIT_CONFIG')} onClick={() => navigate(`/apps/${info.id}/edit`)} />,
-          <IconActionButton
-            key="remove"
-            icon={Trash}
-            label={t('COMMON_REMOVE')}
-            onClick={uninstallDisclosure.open}
-            className="text-destructive hover:text-destructive"
-          />,
-        );
-      }
       break;
     default:
       if (info.urn.split(':')[1] === '_user') {
