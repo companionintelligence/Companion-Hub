@@ -1313,6 +1313,31 @@ function valueForVar(name: string, cache: Map<string, string>, scratchBase: stri
   const hit = cache.get(name);
   if (hit !== undefined) return hit;
   let v: string;
+  const spec = FIELD_SPECS.get(name);
+  // Production's real app_base_url resolution (app.helpers.ts) keys off `field.type ===
+  // 'app_base_url'`, NOT the field's env_variable name — `envMap.set(field.env_variable,
+  // resolvedBaseUrl)` works identically whether that name is the catalog-wide convention
+  // "APP_BASE_URL" or something app-specific like checkmate's "CLIENT_HOST". This harness's
+  // FIELD_SPECS captures `type` but, before this check existed, never consulted it here — only the
+  // two name-specific cases below (APP_BASE_HOST/APP_BASE_WSS_ORIGIN) got a real URL; every OTHER
+  // app_base_url field (any name, any app) fell through to the generic HOST/DOMAIN heuristic, which
+  // yields a bare hostname with no scheme ("ci.localhost") — checkmate's own field is declared
+  // exactly this way (type: app_base_url, env_variable: CLIENT_HOST) and failed its own validator
+  // ("CLIENT_HOST must be a valid URL") for that reason alone once an unrelated earlier bug (a dead
+  // mongo image tag) stopped masking it. Route ANY app_base_url-typed field through the same
+  // APP_BASE_URL derivation used below, regardless of its declared name.
+  // The `name !== 'APP_BASE_URL'` guard matters: a field can be declared with that EXACT name (the
+  // catalog convention — e.g. wishlist, after its own fix) as well as a different one (checkmate's
+  // CLIENT_HOST). When it's the same name, recursing into valueForVar('APP_BASE_URL', ...) would
+  // just call this function again with identical arguments before `cache.set` ever runs — infinite
+  // recursion (reproduced: "Maximum call stack size exceeded"). Only delegate when there's an
+  // actual OTHER variable to delegate to; the literal APP_BASE_URL case falls through to the
+  // generic `/URL/` heuristic below like it always has.
+  if (spec?.type === 'app_base_url' && name !== 'APP_BASE_URL') {
+    v = valueForVar('APP_BASE_URL', cache, scratchBase);
+    cache.set(name, v);
+    return v;
+  }
   // Production derives these two from a single parsed APP_BASE_URL (app.helpers.ts,
   // deriveAppBaseWsOrigin + its call site) — never from a form_field, since they're not meant to be
   // user-supplied. Neither name matches any pattern below (APP_BASE_HOST doesn't end in
@@ -1339,7 +1364,6 @@ function valueForVar(name: string, cache: Map<string, string>, scratchBase: stri
   // Typed fields (fqdnip, password, email, text) carry a FORMAT the length alone can't satisfy:
   // pds declares PDS_HOSTNAME as fqdnip min=4, and a 4-char hex blob is a valid length but not a
   // valid hostname — zod rejects it and the app dies. Those keep the name-based heuristics below.
-  const spec = FIELD_SPECS.get(name);
   if (spec?.type === 'random' && spec.min && spec.min > 0) {
     // Mirror production's createRandomString (env.utils.ts) exactly — the two encodings measure
     // `min`/`length` in different units, and conflating them mis-sizes the result. `encoding:
