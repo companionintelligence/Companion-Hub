@@ -310,6 +310,10 @@ interface AppConfig {
   // smoke (scripts/qa-mcp.ts) instead of the HTTP path. Only `transport` is read here; qa-mcp reads
   // the full block (command/args/env/manifest) itself.
   mcp?: { transport?: string };
+  // The marketplace GPU contract. An app can need a GPU without saying so in its image name or a
+  // compose device reservation (e.g. tabbyml/tabby links libcuda at runtime), so this declaration
+  // is the only reliable signal for those.
+  gpu_requirements?: { type?: string; optional?: boolean };
 }
 
 interface HealthCheck {
@@ -366,7 +370,11 @@ interface ComposeJson {
  * compose `deploy.resources.reservations.devices`, or its image is a GPU-only build (rocm/cuda/
  * amd-strix). Such apps can't run on the GPU-less fleet nodes, so they're a skip(gpu), not a fail.
  */
-function requiresGpu(services: DockerService[]): boolean {
+function requiresGpu(services: DockerService[], config?: AppConfig): boolean {
+  // A declared, non-optional gpu_requirements block is authoritative — it catches apps whose image
+  // name and compose stanza give no hint that they need a GPU.
+  const gpu = config?.gpu_requirements;
+  if (gpu && gpu.optional !== true && /cuda|rocm|nvidia/i.test(gpu.type ?? '')) return true;
   for (const s of services) {
     if (s.image && /rocm|cuda|amd-strix/i.test(s.image)) return true;
     const devices = s.deploy?.resources?.reservations?.devices ?? [];
@@ -574,10 +582,10 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
     // ANY service, or a GPU-only image build (rocm/cuda/amd-strix). These need GPU hardware the
     // fleet nodes lack, so they're skip(gpu) — NOT a fail. (This stops hunyuan3d and similar image-
     // /video-gen apps from showing as false fails.) `reason:"gpu"` lets the dashboard bucket them.
-    if (requiresGpu(services) || /rocm|amd-strix|:cuda|\.cuda/i.test(mainImg)) {
+    if (requiresGpu(services, config) || /rocm|amd-strix|:cuda|\.cuda/i.test(mainImg)) {
       result.score = 'skip' as Score;
       result.reason = 'gpu';
-      result.notes = 'requires GPU (nvidia device reservation or rocm/cuda image) — no GPU on fleet nodes';
+      result.notes = 'requires GPU (declared gpu_requirements, nvidia device reservation, or rocm/cuda image) — no GPU on fleet nodes';
       return result;
     }
 

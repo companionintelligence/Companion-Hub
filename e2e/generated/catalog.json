@@ -156,6 +156,20 @@
     "mcp": false
   },
   {
+    "id": "accent",
+    "storeSlug": "ci-apps",
+    "name": "Accent",
+    "expectedPort": 53243,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "development",
+      "utilities"
+    ],
+    "priority": "medium",
+    "mcp": false
+  },
+  {
     "id": "appsmith",
     "storeSlug": "ci-apps",
     "name": "Appsmith",
@@ -363,6 +377,33 @@
     "mcp": false
   },
   {
+    "id": "cap",
+    "storeSlug": "ci-apps",
+    "name": "Cap",
+    "expectedPort": 53150,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "media"
+    ],
+    "priority": "medium",
+    "mcp": false
+  },
+  {
+    "id": "chartdb",
+    "storeSlug": "ci-apps",
+    "name": "ChartDB",
+    "expectedPort": 53048,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities",
+      "development"
+    ],
+    "priority": "medium",
+    "mcp": false
+  },
+  {
     "id": "chinesesubfinder",
     "storeSlug": "ci-apps",
     "name": "ChineseSubFinder",
@@ -371,6 +412,20 @@
     "hasGui": true,
     "categories": [
       "media"
+    ],
+    "priority": "medium",
+    "mcp": false
+  },
+  {
+    "id": "chronoframe",
+    "storeSlug": "ci-apps",
+    "name": "ChronoFrame",
+    "expectedPort": 53278,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "media",
+      "photography"
     ],
     "priority": "medium",
     "mcp": false
@@ -434,7 +489,7 @@
   {
     "id": "ci-webxr-time-machine",
     "storeSlug": "ci-apps",
-    "name": "Spatial Time Machine",
+    "name": "Companion Spatial",
     "expectedPort": 18811,
     "healthEndpoint": "/",
     "hasGui": true,
@@ -456,6 +511,20 @@
       "development",
       "agents",
       "ai"
+    ],
+    "priority": "medium",
+    "mcp": false
+  },
+  {
+    "id": "cockpit-cms",
+    "storeSlug": "ci-apps",
+    "name": "Cockpit CMS",
+    "expectedPort": 53381,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "development",
+      "data"
     ],
     "priority": "medium",
     "mcp": false
@@ -518,6 +587,19 @@
     "mcp": false
   },
   {
+    "id": "courselit",
+    "storeSlug": "ci-apps",
+    "name": "CourseLit",
+    "expectedPort": 53259,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "development"
+    ],
+    "priority": "medium",
+    "mcp": false
+  },
+  {
     "id": "crawl4ai",
     "storeSlug": "ci-apps",
     "name": "Crawl4AI",
@@ -527,6 +609,19 @@
     "categories": [
       "development",
       "ai"
+    ],
+    "priority": "medium",
+    "mcp": false
+  },
+  {
+    "id": "damselfly",
+    "storeSlug": "ci-apps",
+    "name": "Damselfly",
+    "expectedPort": 53289,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "media"
     ],
     "priority": "medium",
     "mcp": false
@@ -556,6 +651,19 @@
     "categories": [
       "development",
       "data"
+    ],
+    "priority": "medium",
+    "mcp": false
+  },
+  {
+    "id": "docassemble",
+    "storeSlug": "ci-apps",
+    "name": "docassemble",
+    "expectedPort": 53360,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "development"
     ],
     "priority": "medium",
     "mcp": false
@@ -599,6 +707,20 @@
       "development",
       "utilities",
       "featured"
+    ],
+    "priority": "medium",
+    "mcp": false
+  },
+  {
+    "id": "dreamfactory",
+    "storeSlug": "ci-apps",
+    "name": "DreamFactory",
+    "expectedPort": 53290,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "development",
+      "data"
     ],
     "priority": "medium",
     "mcp": false
@@ -796,6 +918,47 @@
     "mcp": false
   },
   {
+    "id": "fusio",
+    "storeSlug": "ci-apps",
+    "name": "Fusio",
+    "expectedPort": 53214,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "development",
+      "utilities"
+    ],
+    "priority": "medium",
+    "mcp": false
+  },
+  {
+    "id": "gaseous-server",
+    "storeSlug": "ci-apps",
+    "name": "Gaseous Server",
+    "expectedPort": 53314,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "gaming",
+      "media"
+    ],
+    "priority": "medium",
+    "mcp": false
+  },
+  {
+    "id": "gerbera",
+    "storeSlug": "ci-apps",
+    "name": "Gerbera",
+    "expectedPort": 53247,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "media"
+    ],
+    "priority": "medium",
+    "mcp": false
+  },
+  {
     "id": "geth",
     "storeSlug": "ci-apps",
     "name": "Ethereum",
@@ -823,6 +986,19 @@
     "priority": "medium",
     "mcp": true,
     "mcpTransport": "stdio"
+  },
+  {
+    "id": "gitbucket",
+    "storeSlug": "ci-apps",
+    "name": "GitBucket",
+    "expectedPort": 53128,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "development"
+    ],
+    "priority": "medium",
+    "mcp": false
   },
   {
     "id": "gitea",
@@ -922,6 +1098,19 @@
     "mcp": false
   },
   {
+    "id": "harness",
+    "storeSlug": "ci-apps",
+    "name": "Harness",
+    "expectedPort": 53015,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "development"
+    ],
+    "priority": "medium",
+    "mcp": false
+  },
+  {
     "id": "hasura",
     "storeSlug": "ci-apps",
     "name": "Hasura",
@@ -931,6 +1120,19 @@
     "categories": [
       "development",
       "data"
+    ],
+    "priority": "medium",
+    "mcp": false
+  },
+  {
+    "id": "homer-bookmark-managers",
+    "storeSlug": "ci-apps",
+    "name": "Homer",
+    "expectedPort": 53080,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "media"
     ],
     "priority": "medium",
     "mcp": false
@@ -956,6 +1158,20 @@
     "healthEndpoint": "/",
     "hasGui": true,
     "categories": [
+      "media"
+    ],
+    "priority": "medium",
+    "mcp": false
+  },
+  {
+    "id": "immich-kiosk",
+    "storeSlug": "ci-apps",
+    "name": "Immich Kiosk",
+    "expectedPort": 53345,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "photography",
       "media"
     ],
     "priority": "medium",
@@ -1021,7 +1237,7 @@
     "storeSlug": "ci-apps",
     "name": "IPFS",
     "expectedPort": 18930,
-    "healthEndpoint": "/",
+    "healthEndpoint": "/webui",
     "hasGui": true,
     "categories": [
       "development",
@@ -1071,6 +1287,19 @@
     "mcp": false
   },
   {
+    "id": "jelu",
+    "storeSlug": "ci-apps",
+    "name": "Jelu",
+    "expectedPort": 53383,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "media"
+    ],
+    "priority": "medium",
+    "mcp": false
+  },
+  {
     "id": "jsonhero",
     "storeSlug": "ci-apps",
     "name": "JSON Hero",
@@ -1080,6 +1309,19 @@
     "categories": [
       "development",
       "utilities"
+    ],
+    "priority": "medium",
+    "mcp": false
+  },
+  {
+    "id": "jumpserver",
+    "storeSlug": "ci-apps",
+    "name": "JumpServer",
+    "expectedPort": 53029,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "development"
     ],
     "priority": "medium",
     "mcp": false
@@ -1136,6 +1378,20 @@
     "categories": [
       "utilities",
       "development"
+    ],
+    "priority": "medium",
+    "mcp": false
+  },
+  {
+    "id": "kapowarr",
+    "storeSlug": "ci-apps",
+    "name": "Kapowarr",
+    "expectedPort": 53353,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "books",
+      "media"
     ],
     "priority": "medium",
     "mcp": false
@@ -1225,6 +1481,20 @@
     "mcp": false
   },
   {
+    "id": "lidify",
+    "storeSlug": "ci-apps",
+    "name": "Lidify",
+    "expectedPort": 53387,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "media",
+      "music"
+    ],
+    "priority": "medium",
+    "mcp": false
+  },
+  {
     "id": "litellm",
     "storeSlug": "ci-apps",
     "name": "LiteLLM",
@@ -1234,6 +1504,20 @@
     "categories": [
       "ai",
       "development"
+    ],
+    "priority": "medium",
+    "mcp": false
+  },
+  {
+    "id": "livebook",
+    "storeSlug": "ci-apps",
+    "name": "Livebook",
+    "expectedPort": 53181,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "development",
+      "data"
     ],
     "priority": "medium",
     "mcp": false
@@ -1295,6 +1579,19 @@
     "mcp": false
   },
   {
+    "id": "lyrion-music-server",
+    "storeSlug": "ci-apps",
+    "name": "Lyrion Music Server",
+    "expectedPort": 53292,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "media"
+    ],
+    "priority": "medium",
+    "mcp": false
+  },
+  {
     "id": "maxkb",
     "storeSlug": "ci-apps",
     "name": "MaxKB",
@@ -1327,6 +1624,19 @@
     "storeSlug": "ci-apps",
     "name": "WeChat Markdown Editor",
     "expectedPort": 18911,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "media"
+    ],
+    "priority": "medium",
+    "mcp": false
+  },
+  {
+    "id": "mediacms",
+    "storeSlug": "ci-apps",
+    "name": "MediaCMS",
+    "expectedPort": 53186,
     "healthEndpoint": "/",
     "hasGui": true,
     "categories": [
@@ -1405,6 +1715,58 @@
     "mcp": false
   },
   {
+    "id": "mirotalk-c2c",
+    "storeSlug": "ci-apps",
+    "name": "MiroTalk C2C",
+    "expectedPort": 53423,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "media"
+    ],
+    "priority": "medium",
+    "mcp": false
+  },
+  {
+    "id": "mirotalk-p2p",
+    "storeSlug": "ci-apps",
+    "name": "MiroTalk P2P",
+    "expectedPort": 53197,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "media"
+    ],
+    "priority": "medium",
+    "mcp": false
+  },
+  {
+    "id": "mirotalk-sfu",
+    "storeSlug": "ci-apps",
+    "name": "MiroTalk SFU",
+    "expectedPort": 53299,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "media"
+    ],
+    "priority": "medium",
+    "mcp": false
+  },
+  {
+    "id": "mistserver",
+    "storeSlug": "ci-apps",
+    "name": "MistServer",
+    "expectedPort": 53424,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "media"
+    ],
+    "priority": "medium",
+    "mcp": false
+  },
+  {
     "id": "mongodb",
     "storeSlug": "ci-apps",
     "name": "MongoDB",
@@ -1450,6 +1812,19 @@
     "storeSlug": "ci-apps",
     "name": "Music Assistant",
     "expectedPort": 8095,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "media"
+    ],
+    "priority": "medium",
+    "mcp": false
+  },
+  {
+    "id": "mylar3",
+    "storeSlug": "ci-apps",
+    "name": "Mylar3",
+    "expectedPort": 53242,
     "healthEndpoint": "/",
     "hasGui": true,
     "categories": [
@@ -1513,6 +1888,19 @@
     "categories": [
       "development",
       "network"
+    ],
+    "priority": "medium",
+    "mcp": false
+  },
+  {
+    "id": "octobox",
+    "storeSlug": "ci-apps",
+    "name": "Octobox",
+    "expectedPort": 53196,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "development"
     ],
     "priority": "medium",
     "mcp": false
@@ -1583,6 +1971,19 @@
     "hasGui": true,
     "categories": [
       "development"
+    ],
+    "priority": "medium",
+    "mcp": false
+  },
+  {
+    "id": "openinary",
+    "storeSlug": "ci-apps",
+    "name": "Openinary",
+    "expectedPort": 53431,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "media"
     ],
     "priority": "medium",
     "mcp": false
@@ -1663,6 +2064,32 @@
     "mcp": false
   },
   {
+    "id": "otter-wiki",
+    "storeSlug": "ci-apps",
+    "name": "Otter Wiki",
+    "expectedPort": 53234,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "development"
+    ],
+    "priority": "medium",
+    "mcp": false
+  },
+  {
+    "id": "ovenmediaengine",
+    "storeSlug": "ci-apps",
+    "name": "OvenMediaEngine",
+    "expectedPort": 53272,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "media"
+    ],
+    "priority": "medium",
+    "mcp": false
+  },
+  {
     "id": "owncast",
     "storeSlug": "ci-apps",
     "name": "Owncast",
@@ -1691,6 +2118,19 @@
     "mcp": false
   },
   {
+    "id": "peertube",
+    "storeSlug": "ci-apps",
+    "name": "PeerTube",
+    "expectedPort": 53072,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "media"
+    ],
+    "priority": "medium",
+    "mcp": false
+  },
+  {
     "id": "penpot",
     "storeSlug": "ci-apps",
     "name": "Penpot",
@@ -1699,6 +2139,20 @@
     "hasGui": true,
     "categories": [
       "development"
+    ],
+    "priority": "medium",
+    "mcp": false
+  },
+  {
+    "id": "photofield",
+    "storeSlug": "ci-apps",
+    "name": "Photofield",
+    "expectedPort": 53385,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "media",
+      "photography"
     ],
     "priority": "medium",
     "mcp": false
@@ -1728,6 +2182,19 @@
     "categories": [
       "media",
       "automation"
+    ],
+    "priority": "medium",
+    "mcp": false
+  },
+  {
+    "id": "pinepods",
+    "storeSlug": "ci-apps",
+    "name": "PinePods",
+    "expectedPort": 53324,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "media"
     ],
     "priority": "medium",
     "mcp": false
@@ -1858,6 +2325,19 @@
     "mcp": false
   },
   {
+    "id": "reaparr",
+    "storeSlug": "ci-apps",
+    "name": "Reaparr",
+    "expectedPort": 53422,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "media"
+    ],
+    "priority": "medium",
+    "mcp": false
+  },
+  {
     "id": "remotion-studio",
     "storeSlug": "ci-apps",
     "name": "Remotion Studio",
@@ -1873,6 +2353,33 @@
     "mcp": false
   },
   {
+    "id": "restreamer",
+    "storeSlug": "ci-apps",
+    "name": "Restreamer",
+    "expectedPort": 53108,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "media"
+    ],
+    "priority": "medium",
+    "mcp": false
+  },
+  {
+    "id": "retrom",
+    "storeSlug": "ci-apps",
+    "name": "Retrom",
+    "expectedPort": 53221,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "gaming",
+      "media"
+    ],
+    "priority": "medium",
+    "mcp": false
+  },
+  {
     "id": "romm",
     "storeSlug": "ci-apps",
     "name": "RomM",
@@ -1881,6 +2388,19 @@
     "hasGui": true,
     "categories": [
       "gaming",
+      "media"
+    ],
+    "priority": "medium",
+    "mcp": false
+  },
+  {
+    "id": "ryot",
+    "storeSlug": "ci-apps",
+    "name": "Ryot",
+    "expectedPort": 53262,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
       "media"
     ],
     "priority": "medium",
@@ -2027,6 +2547,19 @@
     "mcp": false
   },
   {
+    "id": "srs",
+    "storeSlug": "ci-apps",
+    "name": "SRS",
+    "expectedPort": 53031,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "media"
+    ],
+    "priority": "medium",
+    "mcp": false
+  },
+  {
     "id": "steam-headless",
     "storeSlug": "ci-apps",
     "name": "Steam Headless",
@@ -2056,6 +2589,20 @@
     "mcp": false
   },
   {
+    "id": "svix",
+    "storeSlug": "ci-apps",
+    "name": "Svix",
+    "expectedPort": 53266,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities",
+      "development"
+    ],
+    "priority": "medium",
+    "mcp": false
+  },
+  {
     "id": "swingmusic",
     "storeSlug": "ci-apps",
     "name": "Swing Music",
@@ -2065,6 +2612,20 @@
     "categories": [
       "music",
       "media"
+    ],
+    "priority": "medium",
+    "mcp": false
+  },
+  {
+    "id": "tabby",
+    "storeSlug": "ci-apps",
+    "name": "Tabby",
+    "expectedPort": 53024,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "ai",
+      "development"
     ],
     "priority": "medium",
     "mcp": false
@@ -2148,6 +2709,20 @@
     "categories": [
       "development",
       "data"
+    ],
+    "priority": "medium",
+    "mcp": false
+  },
+  {
+    "id": "trailbase",
+    "storeSlug": "ci-apps",
+    "name": "TrailBase",
+    "expectedPort": 53099,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "development",
+      "utilities"
     ],
     "priority": "medium",
     "mcp": false
@@ -2252,6 +2827,32 @@
     "mcp": false
   },
   {
+    "id": "weblate",
+    "storeSlug": "ci-apps",
+    "name": "Weblate",
+    "expectedPort": 53177,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "development"
+    ],
+    "priority": "medium",
+    "mcp": false
+  },
+  {
+    "id": "webtor",
+    "storeSlug": "ci-apps",
+    "name": "Webtor",
+    "expectedPort": 53406,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "media"
+    ],
+    "priority": "medium",
+    "mcp": false
+  },
+  {
     "id": "wikijs",
     "storeSlug": "ci-apps",
     "name": "WikiJS",
@@ -2285,6 +2886,34 @@
     "healthEndpoint": "/",
     "hasGui": true,
     "categories": [
+      "development"
+    ],
+    "priority": "medium",
+    "mcp": false
+  },
+  {
+    "id": "workbench",
+    "storeSlug": "ci-apps",
+    "name": "Workbench",
+    "expectedPort": 53428,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "development",
+      "utilities"
+    ],
+    "priority": "medium",
+    "mcp": false
+  },
+  {
+    "id": "xandikos",
+    "storeSlug": "ci-apps",
+    "name": "Xandikos",
+    "expectedPort": 53386,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities",
       "development"
     ],
     "priority": "medium",
@@ -2347,6 +2976,33 @@
     "mcp": false
   },
   {
+    "id": "zot",
+    "storeSlug": "ci-apps",
+    "name": "Zot",
+    "expectedPort": 53207,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "development",
+      "utilities"
+    ],
+    "priority": "medium",
+    "mcp": false
+  },
+  {
+    "id": "4ga-boards",
+    "storeSlug": "ci-apps",
+    "name": "4ga Boards",
+    "expectedPort": 53405,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
     "id": "ace-step",
     "storeSlug": "ci-apps",
     "name": "ACE-Step 1.5",
@@ -2374,6 +3030,19 @@
     "mcp": false
   },
   {
+    "id": "actual",
+    "storeSlug": "ci-apps",
+    "name": "Actual Budget",
+    "expectedPort": 53036,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "finance"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
     "id": "adguardhome",
     "storeSlug": "ci-apps",
     "name": "AdGuard Home",
@@ -2396,6 +3065,19 @@
     "hasGui": true,
     "categories": [
       "network",
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "adminer",
+    "storeSlug": "ci-apps",
+    "name": "Adminer",
+    "expectedPort": 53145,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
       "utilities"
     ],
     "priority": "low",
@@ -2471,6 +3153,20 @@
     "mcp": false
   },
   {
+    "id": "aitable",
+    "storeSlug": "ci-apps",
+    "name": "AITable",
+    "expectedPort": 53089,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "data",
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
     "id": "akaunting",
     "storeSlug": "ci-apps",
     "name": "Akaunting",
@@ -2479,6 +3175,19 @@
     "hasGui": true,
     "categories": [
       "finance"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "alf-io",
+    "storeSlug": "ci-apps",
+    "name": "Alf.io",
+    "expectedPort": 53347,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
     ],
     "priority": "low",
     "mcp": false
@@ -2539,6 +3248,19 @@
     "mcp": false
   },
   {
+    "id": "apache-solr",
+    "storeSlug": "ci-apps",
+    "name": "Apache Solr",
+    "expectedPort": 53341,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
     "id": "appflowy",
     "storeSlug": "ci-apps",
     "name": "AppFlowy",
@@ -2580,6 +3302,19 @@
     "mcp": false
   },
   {
+    "id": "atomic-server",
+    "storeSlug": "ci-apps",
+    "name": "Atomic Server",
+    "expectedPort": 53228,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
     "id": "autobrr",
     "storeSlug": "ci-apps",
     "name": "autobrr",
@@ -2589,6 +3324,19 @@
     "categories": [
       "automation",
       "network"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "bagisto",
+    "storeSlug": "ci-apps",
+    "name": "Bagisto",
+    "expectedPort": 53037,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
     ],
     "priority": "low",
     "mcp": false
@@ -2635,6 +3383,32 @@
     "mcp": false
   },
   {
+    "id": "beaver-habit-tracker",
+    "storeSlug": "ci-apps",
+    "name": "Beaver Habit Tracker",
+    "expectedPort": 53284,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "bencher",
+    "storeSlug": "ci-apps",
+    "name": "Bencher",
+    "expectedPort": 53329,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
     "id": "bentopdf",
     "storeSlug": "ci-apps",
     "name": "BentoPDF",
@@ -2644,6 +3418,19 @@
     "categories": [
       "utilities",
       "data"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "bichon",
+    "storeSlug": "ci-apps",
+    "name": "Bichon",
+    "expectedPort": 53279,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
     ],
     "priority": "low",
     "mcp": false
@@ -2690,6 +3477,20 @@
     "mcp": false
   },
   {
+    "id": "bitwarden",
+    "storeSlug": "ci-apps",
+    "name": "Bitwarden",
+    "expectedPort": 53057,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities",
+      "security"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
     "id": "blender-mcp",
     "storeSlug": "ci-apps",
     "name": "Blender MCP",
@@ -2719,6 +3520,19 @@
     "mcp": false
   },
   {
+    "id": "bludit",
+    "storeSlug": "ci-apps",
+    "name": "Bludit",
+    "expectedPort": 53240,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
     "id": "bookstack",
     "storeSlug": "ci-apps",
     "name": "BookStack",
@@ -2727,6 +3541,19 @@
     "hasGui": true,
     "categories": [
       "data",
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "bracket",
+    "storeSlug": "ci-apps",
+    "name": "Bracket",
+    "expectedPort": 53336,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
       "utilities"
     ],
     "priority": "low",
@@ -2749,6 +3576,19 @@
     "mcpTransport": "stdio"
   },
   {
+    "id": "budget-board",
+    "storeSlug": "ci-apps",
+    "name": "Budget Board",
+    "expectedPort": 53331,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "finance"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
     "id": "bytebase",
     "storeSlug": "ci-apps",
     "name": "Bytebase",
@@ -2758,6 +3598,19 @@
     "categories": [
       "data",
       "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "bytechef",
+    "storeSlug": "ci-apps",
+    "name": "ByteChef",
+    "expectedPort": 53307,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "automation"
     ],
     "priority": "low",
     "mcp": false
@@ -2803,6 +3656,19 @@
     "mcp": false
   },
   {
+    "id": "centrifugo",
+    "storeSlug": "ci-apps",
+    "name": "Centrifugo",
+    "expectedPort": 53113,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "social"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
     "id": "changedetection",
     "storeSlug": "ci-apps",
     "name": "changedetection.io",
@@ -2832,6 +3698,19 @@
     "mcp": false
   },
   {
+    "id": "checkmate",
+    "storeSlug": "ci-apps",
+    "name": "Checkmate",
+    "expectedPort": 53115,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "network"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
     "id": "chess-mcp",
     "storeSlug": "ci-apps",
     "name": "MCP Chess",
@@ -2846,6 +3725,46 @@
     "priority": "low",
     "mcp": true,
     "mcpTransport": "stdio"
+  },
+  {
+    "id": "chevereto",
+    "storeSlug": "ci-apps",
+    "name": "Chevereto",
+    "expectedPort": 53364,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "photography",
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "chhoto-url",
+    "storeSlug": "ci-apps",
+    "name": "Chhoto URL",
+    "expectedPort": 53308,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "chiefonboarding",
+    "storeSlug": "ci-apps",
+    "name": "ChiefOnboarding",
+    "expectedPort": 53309,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
   },
   {
     "id": "chromium",
@@ -2875,6 +3794,20 @@
     "mcp": false
   },
   {
+    "id": "ci-capture",
+    "storeSlug": "ci-apps",
+    "name": "Companion Capture",
+    "expectedPort": 18804,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "companion-intelligence",
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
     "id": "ci-hermes",
     "storeSlug": "ci-apps",
     "name": "Hermes",
@@ -2886,6 +3819,21 @@
       "agents",
       "ai",
       "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "ci-import-tools",
+    "storeSlug": "ci-apps",
+    "name": "Import Tools",
+    "expectedPort": 18802,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "companion-intelligence",
+      "utilities",
+      "featured"
     ],
     "priority": "low",
     "mcp": false
@@ -2942,6 +3890,7 @@
     "healthEndpoint": "/",
     "hasGui": true,
     "categories": [
+      "companion-intelligence",
       "agents",
       "ai",
       "utilities"
@@ -2971,6 +3920,7 @@
     "healthEndpoint": "/",
     "hasGui": true,
     "categories": [
+      "companion-intelligence",
       "ai"
     ],
     "priority": "low",
@@ -3005,6 +3955,45 @@
     "mcp": false
   },
   {
+    "id": "claper",
+    "storeSlug": "ci-apps",
+    "name": "Claper",
+    "expectedPort": 53377,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "classroomio",
+    "storeSlug": "ci-apps",
+    "name": "ClassroomIO",
+    "expectedPort": 53342,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "cloudbeaver",
+    "storeSlug": "ci-apps",
+    "name": "CloudBeaver",
+    "expectedPort": 53191,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
     "id": "cloudreve",
     "storeSlug": "ci-apps",
     "name": "Cloudreve",
@@ -3026,6 +4015,19 @@
     "hasGui": true,
     "categories": [
       "ai",
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "cncjs",
+    "storeSlug": "ci-apps",
+    "name": "CNCjs",
+    "expectedPort": 53205,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
       "utilities"
     ],
     "priority": "low",
@@ -3102,6 +4104,19 @@
     "mcp": false
   },
   {
+    "id": "coral",
+    "storeSlug": "ci-apps",
+    "name": "Coral",
+    "expectedPort": 53224,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "social"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
     "id": "cryptgeon",
     "storeSlug": "ci-apps",
     "name": "Cryptgeon",
@@ -3171,6 +4186,46 @@
     "mcp": false
   },
   {
+    "id": "databunker",
+    "storeSlug": "ci-apps",
+    "name": "Databunker",
+    "expectedPort": 53237,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "datasette",
+    "storeSlug": "ci-apps",
+    "name": "Datasette",
+    "expectedPort": 53083,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities",
+      "data"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "dawarich",
+    "storeSlug": "ci-apps",
+    "name": "Dawarich",
+    "expectedPort": 53122,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
     "id": "deepseek-ocr-webui",
     "storeSlug": "ci-apps",
     "name": "DeepSeek-OCR-WebUI",
@@ -3194,6 +4249,20 @@
       "agents",
       "ai",
       "automation"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "defguard",
+    "storeSlug": "ci-apps",
+    "name": "Defguard",
+    "expectedPort": 53198,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "security",
+      "network"
     ],
     "priority": "low",
     "mcp": false
@@ -3227,6 +4296,19 @@
     "mcp": false
   },
   {
+    "id": "dittofeed",
+    "storeSlug": "ci-apps",
+    "name": "Dittofeed",
+    "expectedPort": 53310,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
     "id": "dnsmasq",
     "storeSlug": "ci-apps",
     "name": "dnsmasq",
@@ -3235,6 +4317,19 @@
     "hasGui": false,
     "categories": [
       "network",
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "docat",
+    "storeSlug": "ci-apps",
+    "name": "Docat",
+    "expectedPort": 53311,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
       "utilities"
     ],
     "priority": "low",
@@ -3281,6 +4376,19 @@
     "mcp": false
   },
   {
+    "id": "dolibarr",
+    "storeSlug": "ci-apps",
+    "name": "Dolibarr",
+    "expectedPort": 53148,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "finance"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
     "id": "domain-locker",
     "storeSlug": "ci-apps",
     "name": "Domain Locker",
@@ -3290,6 +4398,19 @@
     "categories": [
       "network",
       "data"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "domjudge",
+    "storeSlug": "ci-apps",
+    "name": "DOMjudge",
+    "expectedPort": 53312,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
     ],
     "priority": "low",
     "mcp": false
@@ -3391,6 +4512,32 @@
     "mcp": false
   },
   {
+    "id": "ech0",
+    "storeSlug": "ci-apps",
+    "name": "Ech0",
+    "expectedPort": 53220,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "elabftw",
+    "storeSlug": "ci-apps",
+    "name": "eLabFTW",
+    "expectedPort": 53245,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "data"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
     "id": "electrs",
     "storeSlug": "ci-apps",
     "name": "Electrs (Electrum Server)",
@@ -3459,6 +4606,19 @@
     "mcp": false
   },
   {
+    "id": "espial",
+    "storeSlug": "ci-apps",
+    "name": "Espial",
+    "expectedPort": 53313,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
     "id": "espocrm",
     "storeSlug": "ci-apps",
     "name": "EspoCRM",
@@ -3500,6 +4660,45 @@
     "mcp": false
   },
   {
+    "id": "evcc",
+    "storeSlug": "ci-apps",
+    "name": "evcc",
+    "expectedPort": 53156,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "ever-teams",
+    "storeSlug": "ci-apps",
+    "name": "Ever Teams",
+    "expectedPort": 53397,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "evershop",
+    "storeSlug": "ci-apps",
+    "name": "EverShop",
+    "expectedPort": 53121,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
     "id": "excalidraw",
     "storeSlug": "ci-apps",
     "name": "Excalidraw",
@@ -3529,6 +4728,45 @@
     "mcpTransport": "stdio"
   },
   {
+    "id": "expenseowl",
+    "storeSlug": "ci-apps",
+    "name": "ExpenseOwl",
+    "expectedPort": 53238,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "finance"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "ezbookkeeping",
+    "storeSlug": "ci-apps",
+    "name": "ezBookkeeping",
+    "expectedPort": 53102,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "finance"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "farmos",
+    "storeSlug": "ci-apps",
+    "name": "farmOS",
+    "expectedPort": 53252,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
     "id": "fast-note-sync",
     "storeSlug": "ci-apps",
     "name": "Fast Note Sync",
@@ -3537,6 +4775,19 @@
     "hasGui": true,
     "categories": [
       "data",
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "faved",
+    "storeSlug": "ci-apps",
+    "name": "Faved",
+    "expectedPort": 53258,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
       "utilities"
     ],
     "priority": "low",
@@ -3579,6 +4830,45 @@
     "hasGui": true,
     "categories": [
       "data"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "filegator",
+    "storeSlug": "ci-apps",
+    "name": "FileGator",
+    "expectedPort": 53302,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "filerise",
+    "storeSlug": "ci-apps",
+    "name": "FileRise",
+    "expectedPort": 53355,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "security"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "filestash",
+    "storeSlug": "ci-apps",
+    "name": "Filestash",
+    "expectedPort": 53088,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
     ],
     "priority": "low",
     "mcp": false
@@ -3655,6 +4945,19 @@
     "mcp": false
   },
   {
+    "id": "fish-speech-cpu",
+    "storeSlug": "ci-apps",
+    "name": "Fish Speech (CPU)",
+    "expectedPort": 18979,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "ai"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
     "id": "fizzy",
     "storeSlug": "ci-apps",
     "name": "Fizzy",
@@ -3709,6 +5012,19 @@
     "mcp": false
   },
   {
+    "id": "fluidd",
+    "storeSlug": "ci-apps",
+    "name": "Fluidd",
+    "expectedPort": 53287,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
     "id": "focalboard",
     "storeSlug": "ci-apps",
     "name": "Focalboard",
@@ -3717,6 +5033,19 @@
     "hasGui": true,
     "categories": [
       "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "formance",
+    "storeSlug": "ci-apps",
+    "name": "Formance",
+    "expectedPort": 53401,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "finance"
     ],
     "priority": "low",
     "mcp": false
@@ -3731,6 +5060,32 @@
     "categories": [
       "utilities",
       "data"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "fossbilling",
+    "storeSlug": "ci-apps",
+    "name": "FOSSBilling",
+    "expectedPort": 53339,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "finance"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "fredy",
+    "storeSlug": "ci-apps",
+    "name": "Fredy",
+    "expectedPort": 53244,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
     ],
     "priority": "low",
     "mcp": false
@@ -3791,6 +5146,19 @@
     "mcp": false
   },
   {
+    "id": "friendica",
+    "storeSlug": "ci-apps",
+    "name": "Friendica",
+    "expectedPort": 53338,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "social"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
     "id": "frigate",
     "storeSlug": "ci-apps",
     "name": "Frigate",
@@ -3827,6 +5195,45 @@
     "hasGui": true,
     "categories": [
       "finance"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "gameyfin",
+    "storeSlug": "ci-apps",
+    "name": "Gameyfin",
+    "expectedPort": 53351,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "ganymede",
+    "storeSlug": "ci-apps",
+    "name": "Ganymede",
+    "expectedPort": 53357,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "social"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "gatus",
+    "storeSlug": "ci-apps",
+    "name": "Gatus",
+    "expectedPort": 53078,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "network"
     ],
     "priority": "low",
     "mcp": false
@@ -3869,6 +5276,32 @@
     "categories": [
       "automation",
       "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "globaleaks",
+    "storeSlug": "ci-apps",
+    "name": "GlobaLeaks",
+    "expectedPort": 53231,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "go-feature-flag",
+    "storeSlug": "ci-apps",
+    "name": "GO Feature Flag",
+    "expectedPort": 53216,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "network"
     ],
     "priority": "low",
     "mcp": false
@@ -3957,6 +5390,32 @@
     "mcp": false
   },
   {
+    "id": "handbrake-web",
+    "storeSlug": "ci-apps",
+    "name": "HandBrake Web",
+    "expectedPort": 53374,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "hedgedoc",
+    "storeSlug": "ci-apps",
+    "name": "HedgeDoc",
+    "expectedPort": 53154,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
     "id": "heimdall",
     "storeSlug": "ci-apps",
     "name": "Heimdall",
@@ -3966,6 +5425,19 @@
     "categories": [
       "utilities",
       "network"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "helicone",
+    "storeSlug": "ci-apps",
+    "name": "Helicone",
+    "expectedPort": 53175,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "data"
     ],
     "priority": "low",
     "mcp": false
@@ -4002,6 +5474,19 @@
     "mcp": false
   },
   {
+    "id": "heyform",
+    "storeSlug": "ci-apps",
+    "name": "HeyForm",
+    "expectedPort": 53136,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
     "id": "hi-events",
     "storeSlug": "ci-apps",
     "name": "Hi.Events",
@@ -4024,6 +5509,19 @@
     "hasGui": true,
     "categories": [
       "ai"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "hister",
+    "storeSlug": "ci-apps",
+    "name": "Hister",
+    "expectedPort": 53280,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
     ],
     "priority": "low",
     "mcp": false
@@ -4056,6 +5554,19 @@
     "mcp": false
   },
   {
+    "id": "homer-infrastructure-monitoring",
+    "storeSlug": "ci-apps",
+    "name": "Homer",
+    "expectedPort": 53223,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
     "id": "hoppscotch",
     "storeSlug": "ci-apps",
     "name": "Hoppscotch",
@@ -4083,6 +5594,45 @@
     "mcp": false
   },
   {
+    "id": "hyperdx",
+    "storeSlug": "ci-apps",
+    "name": "HyperDX",
+    "expectedPort": 53124,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "data"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "i-hate-money",
+    "storeSlug": "ci-apps",
+    "name": "I Hate Money",
+    "expectedPort": 53249,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "finance"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "imgproxy",
+    "storeSlug": "ci-apps",
+    "name": "imgproxy",
+    "expectedPort": 53095,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "network"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
     "id": "indexttsv2",
     "storeSlug": "ci-apps",
     "name": "IndexTTS2",
@@ -4091,6 +5641,19 @@
     "hasGui": true,
     "categories": [
       "ai"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "infisical",
+    "storeSlug": "ci-apps",
+    "name": "Infisical",
+    "expectedPort": 53033,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "security"
     ],
     "priority": "low",
     "mcp": false
@@ -4113,6 +5676,45 @@
     "storeSlug": "ci-apps",
     "name": "Invoice Ninja",
     "expectedPort": 8747,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "finance"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "invoiceplane",
+    "storeSlug": "ci-apps",
+    "name": "InvoicePlane",
+    "expectedPort": 53297,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "finance"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "invoiceshelf",
+    "storeSlug": "ci-apps",
+    "name": "InvoiceShelf",
+    "expectedPort": 53288,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "finance"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "itflow",
+    "storeSlug": "ci-apps",
+    "name": "ITFlow",
+    "expectedPort": 53363,
     "healthEndpoint": "/",
     "hasGui": true,
     "categories": [
@@ -4163,6 +5765,19 @@
     "mcp": false
   },
   {
+    "id": "joomla",
+    "storeSlug": "ci-apps",
+    "name": "Joomla!",
+    "expectedPort": 53109,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
     "id": "joplin",
     "storeSlug": "ci-apps",
     "name": "Joplin Server",
@@ -4185,6 +5800,32 @@
     "categories": [
       "utilities",
       "data"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "kanboard",
+    "storeSlug": "ci-apps",
+    "name": "Kanboard",
+    "expectedPort": 53125,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "kaneo",
+    "storeSlug": "ci-apps",
+    "name": "Kaneo",
+    "expectedPort": 53142,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
     ],
     "priority": "low",
     "mcp": false
@@ -4213,6 +5854,58 @@
     "categories": [
       "utilities",
       "network"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "kener",
+    "storeSlug": "ci-apps",
+    "name": "Kener",
+    "expectedPort": 53110,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "network"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "kestra",
+    "storeSlug": "ci-apps",
+    "name": "Kestra",
+    "expectedPort": 53038,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "automation"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "khoj",
+    "storeSlug": "ci-apps",
+    "name": "Khoj",
+    "expectedPort": 53018,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "ai"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "kill-bill",
+    "storeSlug": "ci-apps",
+    "name": "Kill Bill",
+    "expectedPort": 53097,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "finance"
     ],
     "priority": "low",
     "mcp": false
@@ -4259,6 +5952,45 @@
     "mcp": false
   },
   {
+    "id": "koillection",
+    "storeSlug": "ci-apps",
+    "name": "Koillection",
+    "expectedPort": 53255,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "krayin",
+    "storeSlug": "ci-apps",
+    "name": "Krayin",
+    "expectedPort": 53044,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "finance"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "kutt",
+    "storeSlug": "ci-apps",
+    "name": "Kutt",
+    "expectedPort": 53094,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
     "id": "kwaainet",
     "storeSlug": "ci-apps",
     "name": "KwaaiNet",
@@ -4282,6 +6014,19 @@
     "categories": [
       "gaming",
       "social"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "lancache",
+    "storeSlug": "ci-apps",
+    "name": "LanCache",
+    "expectedPort": 53316,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "network"
     ],
     "priority": "low",
     "mcp": false
@@ -4327,6 +6072,32 @@
     "mcp": false
   },
   {
+    "id": "learnhouse",
+    "storeSlug": "ci-apps",
+    "name": "LearnHouse",
+    "expectedPort": 53212,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "ledgersmb",
+    "storeSlug": "ci-apps",
+    "name": "LedgerSMB",
+    "expectedPort": 53394,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "finance"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
     "id": "lego-oracle-mcp",
     "storeSlug": "ci-apps",
     "name": "LEGO Oracle MCP",
@@ -4341,6 +6112,19 @@
     "priority": "low",
     "mcp": true,
     "mcpTransport": "stdio"
+  },
+  {
+    "id": "leomoon-wiki-go",
+    "storeSlug": "ci-apps",
+    "name": "LeoMoon Wiki-Go",
+    "expectedPort": 53419,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
   },
   {
     "id": "librechat",
@@ -4425,6 +6209,20 @@
     "mcp": false
   },
   {
+    "id": "linkace",
+    "storeSlug": "ci-apps",
+    "name": "LinkAce",
+    "expectedPort": 53268,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "social",
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
     "id": "linkstack",
     "storeSlug": "ci-apps",
     "name": "LinkStack",
@@ -4466,10 +6264,36 @@
     "mcp": false
   },
   {
+    "id": "littlelink",
+    "storeSlug": "ci-apps",
+    "name": "LittleLink",
+    "expectedPort": 53304,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
     "id": "llama-cpp",
     "storeSlug": "ci-apps",
     "name": "llama.cpp Server",
     "expectedPort": 18951,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "ai"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "llm-gateway",
+    "storeSlug": "ci-apps",
+    "name": "LLM Gateway",
+    "expectedPort": 53230,
     "healthEndpoint": "/",
     "hasGui": true,
     "categories": [
@@ -4492,6 +6316,19 @@
     "mcp": false
   },
   {
+    "id": "local-deep-research",
+    "storeSlug": "ci-apps",
+    "name": "Local Deep Research",
+    "expectedPort": 53137,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "ai"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
     "id": "logseq",
     "storeSlug": "ci-apps",
     "name": "Logseq",
@@ -4501,6 +6338,19 @@
     "categories": [
       "utilities",
       "data"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "loomio",
+    "storeSlug": "ci-apps",
+    "name": "Loomio",
+    "expectedPort": 53208,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
     ],
     "priority": "low",
     "mcp": false
@@ -4538,6 +6388,32 @@
     "storeSlug": "ci-apps",
     "name": "macOS",
     "expectedPort": 18826,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "mafl",
+    "storeSlug": "ci-apps",
+    "name": "Mafl",
+    "expectedPort": 53379,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "mage",
+    "storeSlug": "ci-apps",
+    "name": "Mage",
+    "expectedPort": 53139,
     "healthEndpoint": "/",
     "hasGui": true,
     "categories": [
@@ -4603,6 +6479,58 @@
     "mcp": false
   },
   {
+    "id": "manage-my-damn-life",
+    "storeSlug": "ci-apps",
+    "name": "Manage My Damn Life",
+    "expectedPort": 53415,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "manifest",
+    "storeSlug": "ci-apps",
+    "name": "Manifest",
+    "expectedPort": 53152,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "ai"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "many-notes",
+    "storeSlug": "ci-apps",
+    "name": "Many Notes",
+    "expectedPort": 53354,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "manyfold",
+    "storeSlug": "ci-apps",
+    "name": "Manyfold",
+    "expectedPort": 53211,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "data"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
     "id": "mastodon",
     "storeSlug": "ci-apps",
     "name": "Mastodon",
@@ -4612,6 +6540,20 @@
     "categories": [
       "social",
       "featured"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "mathesar",
+    "storeSlug": "ci-apps",
+    "name": "Mathesar",
+    "expectedPort": 53111,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities",
+      "data"
     ],
     "priority": "low",
     "mcp": false
@@ -4643,10 +6585,49 @@
     "mcp": false
   },
   {
+    "id": "mautic",
+    "storeSlug": "ci-apps",
+    "name": "Mautic",
+    "expectedPort": 53119,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "automation"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
     "id": "mealie",
     "storeSlug": "ci-apps",
     "name": "Mealie",
     "expectedPort": 18967,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "medama-analytics",
+    "storeSlug": "ci-apps",
+    "name": "Medama Analytics",
+    "expectedPort": 53410,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "data"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "meme-search",
+    "storeSlug": "ci-apps",
+    "name": "Meme Search",
+    "expectedPort": 53404,
     "healthEndpoint": "/",
     "hasGui": true,
     "categories": [
@@ -4682,6 +6663,19 @@
     "mcp": false
   },
   {
+    "id": "meshcentral",
+    "storeSlug": "ci-apps",
+    "name": "MeshCentral",
+    "expectedPort": 53158,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
     "id": "metabase",
     "storeSlug": "ci-apps",
     "name": "Metabase",
@@ -4692,6 +6686,19 @@
       "data",
       "utilities",
       "featured"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "middleware",
+    "storeSlug": "ci-apps",
+    "name": "Middleware",
+    "expectedPort": 53344,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "data"
     ],
     "priority": "low",
     "mcp": false
@@ -4780,6 +6787,45 @@
     "mcp": false
   },
   {
+    "id": "mongooseim",
+    "storeSlug": "ci-apps",
+    "name": "MongooseIM",
+    "expectedPort": 53293,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "social"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "monica",
+    "storeSlug": "ci-apps",
+    "name": "Monica",
+    "expectedPort": 53041,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "finance"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "morphic",
+    "storeSlug": "ci-apps",
+    "name": "Morphic",
+    "expectedPort": 53133,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "ai"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
     "id": "morphos",
     "storeSlug": "ci-apps",
     "name": "Morphos server",
@@ -4789,6 +6835,32 @@
     "categories": [
       "utilities",
       "data"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "motioneye",
+    "storeSlug": "ci-apps",
+    "name": "motionEye",
+    "expectedPort": 53192,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "movary",
+    "storeSlug": "ci-apps",
+    "name": "Movary",
+    "expectedPort": 53378,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
     ],
     "priority": "low",
     "mcp": false
@@ -4816,6 +6888,19 @@
     "hasGui": true,
     "categories": [
       "network",
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "myip",
+    "storeSlug": "ci-apps",
+    "name": "MyIP",
+    "expectedPort": 53081,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
       "utilities"
     ],
     "priority": "low",
@@ -4850,6 +6935,19 @@
     "mcp": false
   },
   {
+    "id": "neko",
+    "storeSlug": "ci-apps",
+    "name": "Neko",
+    "expectedPort": 53053,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
     "id": "netdata",
     "storeSlug": "ci-apps",
     "name": "Netdata",
@@ -4858,6 +6956,19 @@
     "hasGui": true,
     "categories": [
       "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "nginx-proxy-manager",
+    "storeSlug": "ci-apps",
+    "name": "Nginx Proxy Manager",
+    "expectedPort": 53023,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "network"
     ],
     "priority": "low",
     "mcp": false
@@ -4885,6 +6996,19 @@
     "hasGui": true,
     "categories": [
       "data"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "nodebb",
+    "storeSlug": "ci-apps",
+    "name": "NodeBB",
+    "expectedPort": 53074,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "social"
     ],
     "priority": "low",
     "mcp": false
@@ -4967,6 +7091,32 @@
       "utilities",
       "security",
       "data"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "notifo",
+    "storeSlug": "ci-apps",
+    "name": "Notifo",
+    "expectedPort": 53330,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "notifuse",
+    "storeSlug": "ci-apps",
+    "name": "Notifuse",
+    "expectedPort": 53219,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
     ],
     "priority": "low",
     "mcp": false
@@ -5074,6 +7224,19 @@
     "mcpTransport": "stdio"
   },
   {
+    "id": "ocular",
+    "storeSlug": "ci-apps",
+    "name": "Ocular",
+    "expectedPort": 53396,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "finance"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
     "id": "odoo",
     "storeSlug": "ci-apps",
     "name": "Odoo",
@@ -5141,6 +7304,19 @@
     "mcp": false
   },
   {
+    "id": "one-time-secret",
+    "storeSlug": "ci-apps",
+    "name": "Onetime Secret",
+    "expectedPort": 53318,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "security"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
     "id": "onlyoffice",
     "storeSlug": "ci-apps",
     "name": "ONLYOFFICE Desktop Editors",
@@ -5200,6 +7376,32 @@
     "mcp": false
   },
   {
+    "id": "open-trashmail",
+    "storeSlug": "ci-apps",
+    "name": "Open Trashmail",
+    "expectedPort": 53319,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "openbudgeteer",
+    "storeSlug": "ci-apps",
+    "name": "OpenBudgeteer",
+    "expectedPort": 53362,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "finance"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
     "id": "openclaw",
     "storeSlug": "ci-apps",
     "name": "OpenClaw",
@@ -5211,6 +7413,32 @@
       "ai",
       "utilities",
       "featured"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "openemr",
+    "storeSlug": "ci-apps",
+    "name": "OpenEMR",
+    "expectedPort": 53103,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "openfire",
+    "storeSlug": "ci-apps",
+    "name": "Openfire",
+    "expectedPort": 53301,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "social"
     ],
     "priority": "low",
     "mcp": false
@@ -5230,6 +7458,32 @@
     "mcp": false
   },
   {
+    "id": "openremote",
+    "storeSlug": "ci-apps",
+    "name": "OpenRemote",
+    "expectedPort": 53283,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "automation"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "openrouteservice",
+    "storeSlug": "ci-apps",
+    "name": "OpenRouteService",
+    "expectedPort": 53275,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
     "id": "outline",
     "storeSlug": "ci-apps",
     "name": "Outline",
@@ -5243,6 +7497,19 @@
     "mcp": false
   },
   {
+    "id": "overleaf",
+    "storeSlug": "ci-apps",
+    "name": "Overleaf",
+    "expectedPort": 53060,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
     "id": "owncloud",
     "storeSlug": "ci-apps",
     "name": "ownCloud",
@@ -5251,6 +7518,33 @@
     "hasGui": true,
     "categories": [
       "data"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "ownfoil",
+    "storeSlug": "ci-apps",
+    "name": "Ownfoil",
+    "expectedPort": 53321,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "paaster",
+    "storeSlug": "ci-apps",
+    "name": "Paaster",
+    "expectedPort": 53393,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "security",
+      "utilities"
     ],
     "priority": "low",
     "mcp": false
@@ -5340,6 +7634,19 @@
     "mcp": false
   },
   {
+    "id": "part-db",
+    "storeSlug": "ci-apps",
+    "name": "Part-DB",
+    "expectedPort": 53335,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
     "id": "passbolt",
     "storeSlug": "ci-apps",
     "name": "Passbolt",
@@ -5374,6 +7681,32 @@
     "hasGui": true,
     "categories": [
       "security"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "password-pusher",
+    "storeSlug": "ci-apps",
+    "name": "Password Pusher",
+    "expectedPort": 53295,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "security"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "pdfding",
+    "storeSlug": "ci-apps",
+    "name": "PdfDing",
+    "expectedPort": 53282,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
     ],
     "priority": "low",
     "mcp": false
@@ -5420,6 +7753,19 @@
     "mcp": false
   },
   {
+    "id": "phplist",
+    "storeSlug": "ci-apps",
+    "name": "phpList",
+    "expectedPort": 53366,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
     "id": "pi-hole",
     "storeSlug": "ci-apps",
     "name": "Pi-hole",
@@ -5448,6 +7794,19 @@
     "mcp": false
   },
   {
+    "id": "picoshare",
+    "storeSlug": "ci-apps",
+    "name": "PicoShare",
+    "expectedPort": 53305,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
     "id": "picsur",
     "storeSlug": "ci-apps",
     "name": "Picsur",
@@ -5456,6 +7815,19 @@
     "hasGui": true,
     "categories": [
       "photography",
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "pictshare",
+    "storeSlug": "ci-apps",
+    "name": "PictShare",
+    "expectedPort": 53323,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
       "utilities"
     ],
     "priority": "low",
@@ -5515,6 +7887,19 @@
     "mcp": false
   },
   {
+    "id": "plik",
+    "storeSlug": "ci-apps",
+    "name": "Plik",
+    "expectedPort": 53286,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
     "id": "plugnmeet",
     "storeSlug": "ci-apps",
     "name": "plugNmeet",
@@ -5523,6 +7908,19 @@
     "hasGui": true,
     "categories": [
       "social"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "pluton",
+    "storeSlug": "ci-apps",
+    "name": "Pluton",
+    "expectedPort": 53389,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
     ],
     "priority": "low",
     "mcp": false
@@ -5666,6 +8064,33 @@
     "mcp": false
   },
   {
+    "id": "psitransfer",
+    "storeSlug": "ci-apps",
+    "name": "PsiTransfer",
+    "expectedPort": 53276,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "pterodactyl",
+    "storeSlug": "ci-apps",
+    "name": "Pterodactyl",
+    "expectedPort": 53130,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "gaming",
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
     "id": "public-pool",
     "storeSlug": "ci-apps",
     "name": "Public Pool",
@@ -5703,6 +8128,45 @@
     "categories": [
       "network",
       "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "quant-ux",
+    "storeSlug": "ci-apps",
+    "name": "Quant-UX",
+    "expectedPort": 53204,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "quickshare",
+    "storeSlug": "ci-apps",
+    "name": "Quickshare",
+    "expectedPort": 53412,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "quickwit",
+    "storeSlug": "ci-apps",
+    "name": "Quickwit",
+    "expectedPort": 53084,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "data"
     ],
     "priority": "low",
     "mcp": false
@@ -5748,6 +8212,19 @@
     "mcp": false
   },
   {
+    "id": "raneto",
+    "storeSlug": "ci-apps",
+    "name": "Raneto",
+    "expectedPort": 53325,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
     "id": "razzia",
     "storeSlug": "ci-apps",
     "name": "Razzia",
@@ -5756,6 +8233,19 @@
     "hasGui": true,
     "categories": [
       "social"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "reactive-resume",
+    "storeSlug": "ci-apps",
+    "name": "Reactive Resume",
+    "expectedPort": 53012,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
     ],
     "priority": "low",
     "mcp": false
@@ -5789,6 +8279,19 @@
     "mcp": false
   },
   {
+    "id": "redash",
+    "storeSlug": "ci-apps",
+    "name": "Redash",
+    "expectedPort": 53032,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
     "id": "reddit-mcp",
     "storeSlug": "ci-apps",
     "name": "Reddit MCP",
@@ -5813,6 +8316,33 @@
     "categories": [
       "data",
       "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "relaticle",
+    "storeSlug": "ci-apps",
+    "name": "Relaticle",
+    "expectedPort": 53233,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "data",
+      "mcp"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "remark42",
+    "storeSlug": "ci-apps",
+    "name": "Remark42",
+    "expectedPort": 53098,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "social"
     ],
     "priority": "low",
     "mcp": false
@@ -5916,6 +8446,19 @@
     "mcp": false
   },
   {
+    "id": "roundcube-webmail",
+    "storeSlug": "ci-apps",
+    "name": "Roundcube Webmail",
+    "expectedPort": 53155,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
     "id": "route96",
     "storeSlug": "ci-apps",
     "name": "Route96",
@@ -5924,6 +8467,19 @@
     "hasGui": true,
     "categories": [
       "social",
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "rss-bridge",
+    "storeSlug": "ci-apps",
+    "name": "RSS-Bridge",
+    "expectedPort": 53129,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
       "utilities"
     ],
     "priority": "low",
@@ -5972,6 +8528,19 @@
     "mcp": false
   },
   {
+    "id": "saltcorn",
+    "storeSlug": "ci-apps",
+    "name": "Saltcorn",
+    "expectedPort": 53218,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
     "id": "samba",
     "storeSlug": "ci-apps",
     "name": "Samba",
@@ -5999,6 +8568,19 @@
     "mcp": false
   },
   {
+    "id": "scribble-rs",
+    "storeSlug": "ci-apps",
+    "name": "Scribble.rs",
+    "expectedPort": 53408,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
     "id": "seafile",
     "storeSlug": "ci-apps",
     "name": "Seafile",
@@ -6016,6 +8598,19 @@
     "storeSlug": "ci-apps",
     "name": "SearXNG",
     "expectedPort": 8325,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "seaweedfs",
+    "storeSlug": "ci-apps",
+    "name": "SeaweedFS",
+    "expectedPort": 53021,
     "healthEndpoint": "/",
     "hasGui": true,
     "categories": [
@@ -6052,6 +8647,32 @@
     "mcp": false
   },
   {
+    "id": "semaphore",
+    "storeSlug": "ci-apps",
+    "name": "Semaphore UI",
+    "expectedPort": 53229,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "automation"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "servas",
+    "storeSlug": "ci-apps",
+    "name": "Servas",
+    "expectedPort": 53369,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
     "id": "sglang",
     "storeSlug": "ci-apps",
     "name": "SGLang",
@@ -6065,6 +8686,72 @@
     "mcp": false
   },
   {
+    "id": "shiori",
+    "storeSlug": "ci-apps",
+    "name": "Shiori",
+    "expectedPort": 53079,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities",
+      "social"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "shkeeper",
+    "storeSlug": "ci-apps",
+    "name": "SHKeeper",
+    "expectedPort": 53421,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "finance"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "shlink",
+    "storeSlug": "ci-apps",
+    "name": "Shlink",
+    "expectedPort": 53107,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "signature-pdf",
+    "storeSlug": "ci-apps",
+    "name": "Signature PDF",
+    "expectedPort": 53370,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "silex",
+    "storeSlug": "ci-apps",
+    "name": "Silex",
+    "expectedPort": 53306,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
     "id": "sillytavern",
     "storeSlug": "ci-apps",
     "name": "SillyTavern",
@@ -6073,6 +8760,32 @@
     "hasGui": true,
     "categories": [
       "ai"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "silverbullet",
+    "storeSlug": "ci-apps",
+    "name": "SilverBullet",
+    "expectedPort": 53184,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "simplex-chat",
+    "storeSlug": "ci-apps",
+    "name": "SimpleX Chat",
+    "expectedPort": 53069,
+    "healthEndpoint": "/",
+    "hasGui": false,
+    "categories": [
+      "social"
     ],
     "priority": "low",
     "mcp": false
@@ -6092,6 +8805,19 @@
     "mcp": false
   },
   {
+    "id": "slash",
+    "storeSlug": "ci-apps",
+    "name": "Slash",
+    "expectedPort": 53274,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
     "id": "smartest-tv-mcp",
     "storeSlug": "ci-apps",
     "name": "Smartest TV MCP",
@@ -6105,6 +8831,20 @@
     "priority": "low",
     "mcp": true,
     "mcpTransport": "stdio"
+  },
+  {
+    "id": "snappymail",
+    "storeSlug": "ci-apps",
+    "name": "SnappyMail",
+    "expectedPort": 53340,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities",
+      "network"
+    ],
+    "priority": "low",
+    "mcp": false
   },
   {
     "id": "snort",
@@ -6129,6 +8869,19 @@
     "categories": [
       "network",
       "security"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "solidinvoice",
+    "storeSlug": "ci-apps",
+    "name": "SolidInvoice",
+    "expectedPort": 53327,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "finance"
     ],
     "priority": "low",
     "mcp": false
@@ -6191,6 +8944,45 @@
     "mcp": false
   },
   {
+    "id": "splitpro",
+    "storeSlug": "ci-apps",
+    "name": "SplitPro",
+    "expectedPort": 53248,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "spoolman",
+    "storeSlug": "ci-apps",
+    "name": "Spoolman",
+    "expectedPort": 53202,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "spree-commerce",
+    "storeSlug": "ci-apps",
+    "name": "Spree Commerce",
+    "expectedPort": 53068,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
     "id": "sqlite-mcp",
     "storeSlug": "ci-apps",
     "name": "SQLite MCP",
@@ -6228,6 +9020,19 @@
     "hasGui": true,
     "categories": [
       "data"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "starbase-80",
+    "storeSlug": "ci-apps",
+    "name": "Starbase 80",
+    "expectedPort": 53395,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
     ],
     "priority": "low",
     "mcp": false
@@ -6278,6 +9083,19 @@
     "mcp": false
   },
   {
+    "id": "storyden",
+    "storeSlug": "ci-apps",
+    "name": "Storyden",
+    "expectedPort": 53433,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "social"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
     "id": "stunnel",
     "storeSlug": "ci-apps",
     "name": "stunnel",
@@ -6292,6 +9110,19 @@
     "mcp": false
   },
   {
+    "id": "sup3rs3cretmes5age",
+    "storeSlug": "ci-apps",
+    "name": "sup3rS3cretMes5age",
+    "expectedPort": 53392,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "security"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
     "id": "super-productivity",
     "storeSlug": "ci-apps",
     "name": "Super Productivity",
@@ -6300,6 +9131,32 @@
     "hasGui": true,
     "categories": [
       "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "superdesk",
+    "storeSlug": "ci-apps",
+    "name": "Superdesk",
+    "expectedPort": 53380,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "supertokens",
+    "storeSlug": "ci-apps",
+    "name": "SuperTokens",
+    "expectedPort": 53087,
+    "healthEndpoint": "/",
+    "hasGui": false,
+    "categories": [
+      "security"
     ],
     "priority": "low",
     "mcp": false
@@ -6333,6 +9190,20 @@
     "mcp": false
   },
   {
+    "id": "swirl-search",
+    "storeSlug": "ci-apps",
+    "name": "Swirl Search",
+    "expectedPort": 53303,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "ai",
+      "data"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
     "id": "synapse",
     "storeSlug": "ci-apps",
     "name": "Synapse",
@@ -6341,6 +9212,19 @@
     "hasGui": true,
     "categories": [
       "social"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "sync-in",
+    "storeSlug": "ci-apps",
+    "name": "Sync-in",
+    "expectedPort": 53343,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
     ],
     "priority": "low",
     "mcp": false
@@ -6415,6 +9299,20 @@
     "mcp": false
   },
   {
+    "id": "technitium-dns-server",
+    "storeSlug": "ci-apps",
+    "name": "Technitium DNS Server",
+    "expectedPort": 53127,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "security",
+      "network"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
     "id": "telegrapho",
     "storeSlug": "ci-apps",
     "name": "Telegrapho",
@@ -6429,6 +9327,19 @@
     "mcp": false
   },
   {
+    "id": "teslamate",
+    "storeSlug": "ci-apps",
+    "name": "TeslaMate",
+    "expectedPort": 53138,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "data"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
     "id": "thelounge",
     "storeSlug": "ci-apps",
     "name": "The Lounge",
@@ -6437,6 +9348,19 @@
     "hasGui": true,
     "categories": [
       "social"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "thingsboard",
+    "storeSlug": "ci-apps",
+    "name": "ThingsBoard",
+    "expectedPort": 53051,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "automation"
     ],
     "priority": "low",
     "mcp": false
@@ -6468,6 +9392,46 @@
     "mcp": false
   },
   {
+    "id": "thumbor",
+    "storeSlug": "ci-apps",
+    "name": "Thumbor",
+    "expectedPort": 53114,
+    "healthEndpoint": "/",
+    "hasGui": false,
+    "categories": [
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "tiny-tiny-rss",
+    "storeSlug": "ci-apps",
+    "name": "Tiny Tiny RSS",
+    "expectedPort": 53371,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "tirreno",
+    "storeSlug": "ci-apps",
+    "name": "Tirreno",
+    "expectedPort": 53236,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities",
+      "security"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
     "id": "tor",
     "storeSlug": "ci-apps",
     "name": "Tor",
@@ -6491,6 +9455,19 @@
     "categories": [
       "network",
       "security"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "traggo",
+    "storeSlug": "ci-apps",
+    "name": "Traggo",
+    "expectedPort": 53346,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
     ],
     "priority": "low",
     "mcp": false
@@ -6579,6 +9556,32 @@
     "mcp": false
   },
   {
+    "id": "tubesync",
+    "storeSlug": "ci-apps",
+    "name": "TubeSync",
+    "expectedPort": 53200,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "tududi",
+    "storeSlug": "ci-apps",
+    "name": "tududi",
+    "expectedPort": 53271,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
     "id": "twenty",
     "storeSlug": "ci-apps",
     "name": "Twenty",
@@ -6587,6 +9590,20 @@
     "hasGui": true,
     "categories": [
       "data"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "typemill",
+    "storeSlug": "ci-apps",
+    "name": "Typemill",
+    "expectedPort": 53418,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "data",
+      "utilities"
     ],
     "priority": "low",
     "mcp": false
@@ -6607,6 +9624,19 @@
     "mcpTransport": "stdio"
   },
   {
+    "id": "usesend",
+    "storeSlug": "ci-apps",
+    "name": "useSend",
+    "expectedPort": 53194,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
     "id": "valorgrid",
     "storeSlug": "ci-apps",
     "name": "ValorGrid",
@@ -6615,6 +9645,19 @@
     "hasGui": true,
     "categories": [
       "finance"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "valour",
+    "storeSlug": "ci-apps",
+    "name": "Valour",
+    "expectedPort": 53429,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "social"
     ],
     "priority": "low",
     "mcp": false
@@ -6641,6 +9684,19 @@
     "hasGui": false,
     "categories": [
       "gaming"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "viseron",
+    "storeSlug": "ci-apps",
+    "name": "Viseron",
+    "expectedPort": 53265,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "automation"
     ],
     "priority": "low",
     "mcp": false
@@ -6687,6 +9743,58 @@
     "mcp": false
   },
   {
+    "id": "warracker",
+    "storeSlug": "ci-apps",
+    "name": "Warracker",
+    "expectedPort": 53239,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "wastebin",
+    "storeSlug": "ci-apps",
+    "name": "Wastebin",
+    "expectedPort": 53368,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "watcharr",
+    "storeSlug": "ci-apps",
+    "name": "Watcharr",
+    "expectedPort": 53241,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "wbo",
+    "storeSlug": "ci-apps",
+    "name": "WBO",
+    "expectedPort": 53206,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
     "id": "wealthfolio",
     "storeSlug": "ci-apps",
     "name": "Wealthfolio",
@@ -6709,6 +9817,32 @@
     "categories": [
       "network",
       "security"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "webhook-tester",
+    "storeSlug": "ci-apps",
+    "name": "WebHook Tester",
+    "expectedPort": 53399,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "wekan",
+    "storeSlug": "ci-apps",
+    "name": "Wekan",
+    "expectedPort": 53055,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
     ],
     "priority": "low",
     "mcp": false
@@ -6756,6 +9890,45 @@
     "mcp": false
   },
   {
+    "id": "wiki",
+    "storeSlug": "ci-apps",
+    "name": "Wiki.js",
+    "expectedPort": 53402,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "wildduck",
+    "storeSlug": "ci-apps",
+    "name": "WildDuck",
+    "expectedPort": 53213,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "windmill",
+    "storeSlug": "ci-apps",
+    "name": "Windmill",
+    "expectedPort": 53061,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
     "id": "windows",
     "storeSlug": "ci-apps",
     "name": "Windows",
@@ -6773,6 +9946,19 @@
     "storeSlug": "ci-apps",
     "name": "Wingfit",
     "expectedPort": 8827,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "wishlist",
+    "storeSlug": "ci-apps",
+    "name": "Wishlist",
+    "expectedPort": 53417,
     "healthEndpoint": "/",
     "hasGui": true,
     "categories": [
@@ -6804,6 +9990,71 @@
     "categories": [
       "ai",
       "data"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "wygiwyh",
+    "storeSlug": "ci-apps",
+    "name": "WYGIWYH",
+    "expectedPort": 53328,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "finance"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "xwiki",
+    "storeSlug": "ci-apps",
+    "name": "XWiki",
+    "expectedPort": 53254,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "yopass",
+    "storeSlug": "ci-apps",
+    "name": "Yopass",
+    "expectedPort": 53300,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "security"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "yourls",
+    "storeSlug": "ci-apps",
+    "name": "YOURLS",
+    "expectedPort": 53091,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "youtarr",
+    "storeSlug": "ci-apps",
+    "name": "Youtarr",
+    "expectedPort": 53235,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
     ],
     "priority": "low",
     "mcp": false
@@ -6850,6 +10101,19 @@
     "mcp": false
   },
   {
+    "id": "ziit",
+    "storeSlug": "ci-apps",
+    "name": "Ziit",
+    "expectedPort": 53434,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
     "id": "zima",
     "storeSlug": "ci-apps",
     "name": "ZimaOS",
@@ -6858,6 +10122,32 @@
     "hasGui": true,
     "categories": [
       "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "zipline",
+    "storeSlug": "ci-apps",
+    "name": "Zipline",
+    "expectedPort": 53267,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "utilities"
+    ],
+    "priority": "low",
+    "mcp": false
+  },
+  {
+    "id": "zoraxy",
+    "storeSlug": "ci-apps",
+    "name": "Zoraxy",
+    "expectedPort": 53101,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "network"
     ],
     "priority": "low",
     "mcp": false

@@ -39,7 +39,9 @@ const STREAM_SCRIPT = join(__dir, 'qa-stream.ts');
 // qa-stream dynamically imports ./qa-mcp.ts for MCP (no_gui + .mcp) apps, so it must ride along to
 // each node. Both import only Node built-ins, so tsx runs the pair standalone in /tmp.
 const MCP_SCRIPT = join(__dir, 'qa-mcp.ts');
-const CATALOG_FILE = join(__dir, '..', 'e2e', 'generated', 'catalog.json');
+// QA_CATALOG_FILE points the run at a filtered catalog (e.g. only newly-added apps) without
+// clobbering the generated full catalog. Falls back to the generated one.
+const CATALOG_FILE = process.env.QA_CATALOG_FILE ?? join(__dir, '..', 'e2e', 'generated', 'catalog.json');
 
 if (!existsSync(SCREENSHOTS_DIR)) mkdirSync(SCREENSHOTS_DIR, { recursive: true });
 
