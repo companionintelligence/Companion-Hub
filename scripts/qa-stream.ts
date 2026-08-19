@@ -507,7 +507,15 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
         const cache = new Map<string, string>();
         const scratchBase = join(RESULTS_DIR, 'scratch', appId);
         const subst = (s: string) =>
-          s.replace(/\$\{([A-Z0-9_]+)(?::-([^}]*))?\}/g, (_, k, def) => (def === undefined ? valueForVar(k, cache, scratchBase) : def));
+          s
+            .replace(/\$\{([A-Z0-9_]+)(?::-([^}]*))?\}/g, (_, k, def) => (def === undefined ? valueForVar(k, cache, scratchBase) : def))
+            // Manifests are authored for docker-compose semantics, where `$$` escapes a literal `$`
+            // (e.g. ollama's entrypoint uses `$$!`/`$$OLLAMA_MODEL` to survive compose's own
+            // interpolation pass). This single-container path invokes `docker run` directly, with no
+            // compose layer to perform that unescape, so a raw `$$` reaches the shell verbatim —
+            // where it means "this process's PID" — and breaks (`ollama`: `$$(...)` parsed as
+            // `<pid>(...)`, a syntax error). Replicate compose's unescape so both paths agree.
+            .replace(/\$\$/g, '$');
         for (const e of main?.environment ?? []) {
           if (!e.key || e.value == null) continue;
           runFlags += ` -e ${e.key}=${shQuote(subst(String(e.value)))}`;
