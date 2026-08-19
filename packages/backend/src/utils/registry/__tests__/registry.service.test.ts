@@ -1,4 +1,4 @@
-import { RegistryService } from '@/utils/registry/registry.service';
+import { RegistryService, REGISTRY_HTTP_TIMEOUT_MS } from '@/utils/registry/registry.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { HttpService } from '@nestjs/axios';
 import { Test } from '@nestjs/testing';
@@ -39,7 +39,7 @@ describe('RegistryService', () => {
       const result = await registryService.getTagsSince('ci-os-hub', '1.0.0');
 
       expect(result).toEqual(['1.2.0', '1.1.0']);
-      expect(httpService.get).toHaveBeenCalledWith('https://portal.ci.computer/v2/ci-os-hub/tags/list');
+      expect(httpService.get).toHaveBeenCalledWith('https://portal.ci.computer/v2/ci-os-hub/tags/list', { timeout: REGISTRY_HTTP_TIMEOUT_MS });
     });
 
     it('should return empty array when no newer tags exist', async () => {
@@ -118,8 +118,8 @@ describe('RegistryService', () => {
       const result = await registryService.getTagsSinceWithHubFallback('ci-os-hub', '1.0.0');
 
       expect(result).toEqual(['1.2.0']);
-      expect(httpService.get).toHaveBeenCalledWith('https://portal.ci.computer/v2/ci-os-hub/tags/list');
-      expect(httpService.get).toHaveBeenCalledWith('https://dl.ci.computer/latest.json');
+      expect(httpService.get).toHaveBeenCalledWith('https://portal.ci.computer/v2/ci-os-hub/tags/list', { timeout: REGISTRY_HTTP_TIMEOUT_MS });
+      expect(httpService.get).toHaveBeenCalledWith('https://dl.ci.computer/latest.json', { timeout: REGISTRY_HTTP_TIMEOUT_MS });
     });
 
     it('returns [] for non-hub repos without calling the release feed', async () => {
@@ -131,7 +131,7 @@ describe('RegistryService', () => {
 
       expect(result).toEqual([]);
       expect(httpService.get).toHaveBeenCalledTimes(1);
-      expect(httpService.get).toHaveBeenCalledWith('https://portal.ci.computer/v2/custom-repo/tags/list');
+      expect(httpService.get).toHaveBeenCalledWith('https://portal.ci.computer/v2/custom-repo/tags/list', { timeout: REGISTRY_HTTP_TIMEOUT_MS });
       expect(httpService.get.mock.calls.some(([url]) => url === 'https://dl.ci.computer/latest.json')).toBe(false);
     });
 

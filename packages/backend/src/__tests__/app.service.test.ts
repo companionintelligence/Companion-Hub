@@ -101,7 +101,7 @@ describe('AppService', () => {
     it('should return latest version when newer tags exist', async () => {
       const version = '1.0.0';
       const newerTags = ['1.2.0', '1.1.0'];
-      configurationService.getConfig.mockReturnValueOnce(fromPartial({ version }));
+      configurationService.getConfig.mockReturnValue(fromPartial({ version }));
       registryService.getTagsSinceWithHubFallback.mockResolvedValueOnce(newerTags);
 
       const result = await appService.getVersion();
@@ -112,6 +112,29 @@ describe('AppService', () => {
         { version: '1.2.0', body: 'Release 1.2.0' },
         { version: '1.1.0', body: 'Release 1.1.0' },
       ]);
+    });
+
+    it('peekLocalVersion never calls the registry', () => {
+      registryService.getTagsSinceWithHubFallback.mockClear();
+      configurationService.getConfig.mockReturnValue(fromPartial({ version: '1.0.0' }));
+
+      const result = appService.peekLocalVersion();
+
+      expect(result).toEqual({ current: '1.0.0', latest: '1.0.0', body: '', releases: [] });
+      expect(registryService.getTagsSinceWithHubFallback).not.toHaveBeenCalled();
+    });
+
+    it('returns the local version when the registry lookup times out', async () => {
+      vi.useFakeTimers();
+      configurationService.getConfig.mockReturnValue(fromPartial({ version: '1.0.0' }));
+      registryService.getTagsSinceWithHubFallback.mockReturnValue(new Promise(() => undefined) as Promise<string[]>);
+
+      const pending = appService.getVersion();
+      await vi.advanceTimersByTimeAsync(2_500);
+      const result = await pending;
+
+      expect(result).toEqual({ current: '1.0.0', latest: '1.0.0', body: '', releases: [] });
+      vi.useRealTimers();
     });
   });
 

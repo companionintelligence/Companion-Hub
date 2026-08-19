@@ -12,6 +12,8 @@ const TAGS_CACHE_TTL_MS = 10 * 60 * 1000;
 /** After a failed fetch, wait before retrying (reduces log + network noise when the registry rejects unauthenticated clients). */
 const TAGS_FAILURE_COOLDOWN_MS = 5 * 60 * 1000;
 const HUB_RELEASE_FEED_URL = 'https://dl.ci.computer/latest.json';
+/** Bound OCI + release-feed lookups so Settings cannot hang when CI Cloud is slow. */
+export const REGISTRY_HTTP_TIMEOUT_MS = 1_500;
 
 type LatestHubReleaseFeed = {
   version?: string;
@@ -74,7 +76,7 @@ export class RegistryService {
     }
 
     try {
-      const { data } = await firstValueFrom(this.httpService.get(HUB_RELEASE_FEED_URL));
+      const { data } = await firstValueFrom(this.httpService.get(HUB_RELEASE_FEED_URL, { timeout: REGISTRY_HTTP_TIMEOUT_MS }));
       const payload = data as LatestHubReleaseFeed;
       const cleaned = semver.clean(payload.version ?? '') ?? null;
 
@@ -107,7 +109,7 @@ export class RegistryService {
     }
 
     try {
-      const { data } = await firstValueFrom(this.httpService.get(`${base}/v2/${repository}/tags/list`));
+      const { data } = await firstValueFrom(this.httpService.get(`${base}/v2/${repository}/tags/list`, { timeout: REGISTRY_HTTP_TIMEOUT_MS }));
 
       const tags = (data.tags || []) as string[];
 
