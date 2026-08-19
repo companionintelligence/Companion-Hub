@@ -838,6 +838,48 @@
         ]
       }
     },
+    "/api/system/telemetry": {
+      "get": {
+        "operationId": "hostTelemetryHistory",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HostTelemetryHistoryDto"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "System"
+        ]
+      }
+    },
+    "/api/system/events": {
+      "get": {
+        "operationId": "hostEventLog",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HostEventLogDto"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "System"
+        ]
+      }
+    },
     "/api/system/logs/download": {
       "get": {
         "operationId": "downloadHubLogs",
@@ -6193,6 +6235,14 @@
           "tuning"
         ],
         "additionalProperties": false
+      },
+      "HostTelemetryHistoryDto": {
+        "type": "object",
+        "properties": {}
+      },
+      "HostEventLogDto": {
+        "type": "object",
+        "properties": {}
       },
       "FactoryResetDto": {
         "type": "object",
