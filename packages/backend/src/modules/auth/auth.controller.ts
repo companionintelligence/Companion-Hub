@@ -79,6 +79,26 @@ const EDGE_SSO_MINT_WINDOW_SECONDS = 60;
  *  to cover that round trip — a longer window just widens the replay surface. */
 const EDGE_SSO_TICKET_TTL_SECONDS = 60;
 
+/**
+ * App routes that must reach Nest without a Hub session. Phone Memory login
+ * finishes in the Capacitor webview, which has no Hub cookie — Safari already
+ * completed Hub SSO, then deep-linked back. Nest still authenticates these.
+ * Prefix match so `/api/authenticate/oidc/native/exchange` and `/api/health/live`
+ * are included. Browser HTML (`/`, `/login`, `/dashboard`) stays on cookie SSO.
+ */
+const FORWARD_AUTH_APP_PUBLIC_PREFIXES = ['/api/authenticate', '/api/health', '/api/keys'] as const;
+
+function isForwardAuthAppPublicPath(uri: string): boolean {
+  const path = (uri.split('?')[0] || '/').replace(/\/+$/, '') || '/';
+  return FORWARD_AUTH_APP_PUBLIC_PREFIXES.some((prefix) => path === prefix || path.startsWith(`${prefix}/`));
+}
+
+function requestHasApiKey(req: Request): boolean {
+  const raw = req.headers['x-api-key'];
+  const value = Array.isArray(raw) ? raw[0] : raw;
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
 @Controller('auth')
 export class AuthController {
   constructor(
@@ -1041,6 +1061,14 @@ export class AuthController {
     const proto = (req.headers['x-forwarded-proto'] as string | undefined)?.split(',')[0]?.trim() || 'http';
     const viaTunnel = this.viaCloudflareTunnel(req);
     const { ticket, cleanUri } = this.parseForwardedUri(uri);
+
+    // Phone Memory login has no Hub cookie. Safari already did Hub SSO, then
+    // deep-linked back; the webview's `/api/authenticate/oidc/native/exchange`
+    // and later `x-api-key` calls must reach the app. Nest still authenticates
+    // those routes. Browser HTML stays on the cookie / edge-SSO path below.
+    if (!req.user && (isForwardAuthAppPublicPath(cleanUri) || requestHasApiKey(req))) {
+      return res.status(200).send();
+    }
 
     // Machine clients (Companion Capture, browser extension) authenticate with a
     // Portal id_token Bearer — not a Hub session cookie. Accept a valid Portal
