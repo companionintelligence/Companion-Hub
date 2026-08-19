@@ -8,4 +8,6 @@ export const POLLING = {
   REGISTRATION_MS: 3000,
   /** System inspector / docker stats. */
   SYSTEM_INSPECTOR_MS: 5000,
+  /** Desktop Tauri hub-status / docker-access poll. */
+  HUB_STATUS_MS: 5000,
 } as const;

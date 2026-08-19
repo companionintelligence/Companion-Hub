@@ -341,7 +341,7 @@ describe('HubStatus Docker guidance', () => {
     expect(screen.getByRole('link', { name: 'Download Docker Desktop for Windows' })).toBeInTheDocument();
 
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(3000);
+      await vi.advanceTimersByTimeAsync(5000);
     });
     await flushAsyncWork();
 
@@ -350,7 +350,7 @@ describe('HubStatus Docker guidance', () => {
     expect(screen.queryByRole('button', { name: 'Start Hub' })).not.toBeInTheDocument();
 
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(3000);
+      await vi.advanceTimersByTimeAsync(5000);
     });
     await flushAsyncWork();
 
@@ -394,7 +394,7 @@ describe('HubStatus Docker guidance', () => {
     expect(screen.queryByRole('button', { name: 'Start Hub' })).not.toBeInTheDocument();
 
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(3000);
+      await vi.advanceTimersByTimeAsync(5000);
     });
     await flushAsyncWork();
 
@@ -429,7 +429,7 @@ describe('HubStatus Docker guidance', () => {
 
     await flushAsyncWork();
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(3000);
+      await vi.advanceTimersByTimeAsync(5000);
     });
     await flushAsyncWork();
 
@@ -609,7 +609,7 @@ describe('HubStatus diagnostics (View Logs / Open Logs Folder)', () => {
     expect(screen.getByText('Hub child')).toBeInTheDocument();
 
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(3000);
+      await vi.advanceTimersByTimeAsync(5000);
     });
     await flushAsyncWork();
 
@@ -617,7 +617,7 @@ describe('HubStatus diagnostics (View Logs / Open Logs Folder)', () => {
     expect(screen.queryByText('Starting CI Hub')).not.toBeInTheDocument();
 
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(3000);
+      await vi.advanceTimersByTimeAsync(5000);
     });
     await flushAsyncWork();
 
@@ -646,7 +646,7 @@ describe('HubStatus diagnostics (View Logs / Open Logs Folder)', () => {
     expect(reloadSpy).not.toHaveBeenCalled();
 
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(3000);
+      await vi.advanceTimersByTimeAsync(5000);
     });
     await flushAsyncWork();
 
@@ -690,7 +690,7 @@ describe('HubStatus diagnostics (View Logs / Open Logs Folder)', () => {
     probeMocks.probeHealthyHubApiPort.mockResolvedValue(5002);
 
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(3000);
+      await vi.advanceTimersByTimeAsync(5000);
     });
     await flushAsyncWork();
 
