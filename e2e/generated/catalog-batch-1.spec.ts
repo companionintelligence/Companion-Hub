@@ -1,181 +1,13 @@
 
 /**
  * Auto-generated app catalog tests for server batch 1
- * Generated: 2026-08-03T06:03:25.005Z
- * Apps: 50
+ * Generated: 2026-08-19T00:34:24.588Z
+ * Apps: 75
  */
 
 import { expect, loginUser, test } from '../fixtures/fixtures';
 
 const APPS = [
-  {
-    "id": "fastgpt",
-    "storeSlug": "ci-apps",
-    "name": "FastGPT",
-    "expectedPort": 18918,
-    "healthEndpoint": "/",
-    "hasGui": true,
-    "categories": [
-      "ai",
-      "development"
-    ],
-    "priority": "medium",
-    "mcp": false
-  },
-  {
-    "id": "firecrawl",
-    "storeSlug": "ci-apps",
-    "name": "Firecrawl",
-    "expectedPort": 18926,
-    "healthEndpoint": "/",
-    "hasGui": true,
-    "categories": [
-      "development",
-      "ai"
-    ],
-    "priority": "medium",
-    "mcp": false
-  },
-  {
-    "id": "foldergram",
-    "storeSlug": "ci-apps",
-    "name": "Foldergram",
-    "expectedPort": 8731,
-    "healthEndpoint": "/",
-    "hasGui": true,
-    "categories": [
-      "media",
-      "photography"
-    ],
-    "priority": "medium",
-    "mcp": false
-  },
-  {
-    "id": "forgejo",
-    "storeSlug": "ci-apps",
-    "name": "Forgejo",
-    "expectedPort": 8101,
-    "healthEndpoint": "/",
-    "hasGui": true,
-    "categories": [
-      "development"
-    ],
-    "priority": "medium",
-    "mcp": false
-  },
-  {
-    "id": "fossflow",
-    "storeSlug": "ci-apps",
-    "name": "FossFLOW",
-    "expectedPort": 8732,
-    "healthEndpoint": "/",
-    "hasGui": true,
-    "categories": [
-      "development",
-      "utilities"
-    ],
-    "priority": "medium",
-    "mcp": false
-  },
-  {
-    "id": "freecut",
-    "storeSlug": "ci-apps",
-    "name": "FreeCut",
-    "expectedPort": 8400,
-    "healthEndpoint": "/",
-    "hasGui": true,
-    "categories": [
-      "media",
-      "utilities"
-    ],
-    "priority": "medium",
-    "mcp": false
-  },
-  {
-    "id": "funclip",
-    "storeSlug": "ci-apps",
-    "name": "FunClip",
-    "expectedPort": 18895,
-    "healthEndpoint": "/",
-    "hasGui": true,
-    "categories": [
-      "ai",
-      "media"
-    ],
-    "priority": "medium",
-    "mcp": false
-  },
-  {
-    "id": "geth",
-    "storeSlug": "ci-apps",
-    "name": "Ethereum",
-    "expectedPort": 8545,
-    "healthEndpoint": "/",
-    "hasGui": true,
-    "categories": [
-      "finance",
-      "development"
-    ],
-    "priority": "medium",
-    "mcp": false
-  },
-  {
-    "id": "git-mcp",
-    "storeSlug": "ci-apps",
-    "name": "Git MCP",
-    "expectedPort": 80,
-    "healthEndpoint": "/",
-    "hasGui": false,
-    "categories": [
-      "mcp",
-      "development"
-    ],
-    "priority": "medium",
-    "mcp": true,
-    "mcpTransport": "stdio"
-  },
-  {
-    "id": "gitea",
-    "storeSlug": "ci-apps",
-    "name": "Gitea",
-    "expectedPort": 8283,
-    "healthEndpoint": "/",
-    "hasGui": true,
-    "categories": [
-      "development",
-      "featured"
-    ],
-    "priority": "medium",
-    "mcp": false
-  },
-  {
-    "id": "gitea-mirror",
-    "storeSlug": "ci-apps",
-    "name": "Gitea Mirror",
-    "expectedPort": 8734,
-    "healthEndpoint": "/",
-    "hasGui": true,
-    "categories": [
-      "development"
-    ],
-    "priority": "medium",
-    "mcp": false
-  },
-  {
-    "id": "github-mcp",
-    "storeSlug": "ci-apps",
-    "name": "GitHub MCP",
-    "expectedPort": 80,
-    "healthEndpoint": "/",
-    "hasGui": false,
-    "categories": [
-      "mcp",
-      "development"
-    ],
-    "priority": "medium",
-    "mcp": true,
-    "mcpTransport": "stdio"
-  },
   {
     "id": "gitingest",
     "storeSlug": "ci-apps",
@@ -232,6 +64,19 @@ const APPS = [
     "mcp": false
   },
   {
+    "id": "harness",
+    "storeSlug": "ci-apps",
+    "name": "Harness",
+    "expectedPort": 53015,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "development"
+    ],
+    "priority": "medium",
+    "mcp": false
+  },
+  {
     "id": "hasura",
     "storeSlug": "ci-apps",
     "name": "Hasura",
@@ -241,6 +86,19 @@ const APPS = [
     "categories": [
       "development",
       "data"
+    ],
+    "priority": "medium",
+    "mcp": false
+  },
+  {
+    "id": "homer-bookmark-managers",
+    "storeSlug": "ci-apps",
+    "name": "Homer",
+    "expectedPort": 53080,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "media"
     ],
     "priority": "medium",
     "mcp": false
@@ -266,6 +124,20 @@ const APPS = [
     "healthEndpoint": "/",
     "hasGui": true,
     "categories": [
+      "media"
+    ],
+    "priority": "medium",
+    "mcp": false
+  },
+  {
+    "id": "immich-kiosk",
+    "storeSlug": "ci-apps",
+    "name": "Immich Kiosk",
+    "expectedPort": 53345,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "photography",
       "media"
     ],
     "priority": "medium",
@@ -331,7 +203,7 @@ const APPS = [
     "storeSlug": "ci-apps",
     "name": "IPFS",
     "expectedPort": 18930,
-    "healthEndpoint": "/",
+    "healthEndpoint": "/webui",
     "hasGui": true,
     "categories": [
       "development",
@@ -381,6 +253,19 @@ const APPS = [
     "mcp": false
   },
   {
+    "id": "jelu",
+    "storeSlug": "ci-apps",
+    "name": "Jelu",
+    "expectedPort": 53383,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "media"
+    ],
+    "priority": "medium",
+    "mcp": false
+  },
+  {
     "id": "jsonhero",
     "storeSlug": "ci-apps",
     "name": "JSON Hero",
@@ -390,6 +275,19 @@ const APPS = [
     "categories": [
       "development",
       "utilities"
+    ],
+    "priority": "medium",
+    "mcp": false
+  },
+  {
+    "id": "jumpserver",
+    "storeSlug": "ci-apps",
+    "name": "JumpServer",
+    "expectedPort": 53029,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "development"
     ],
     "priority": "medium",
     "mcp": false
@@ -446,6 +344,20 @@ const APPS = [
     "categories": [
       "utilities",
       "development"
+    ],
+    "priority": "medium",
+    "mcp": false
+  },
+  {
+    "id": "kapowarr",
+    "storeSlug": "ci-apps",
+    "name": "Kapowarr",
+    "expectedPort": 53353,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "books",
+      "media"
     ],
     "priority": "medium",
     "mcp": false
@@ -535,6 +447,20 @@ const APPS = [
     "mcp": false
   },
   {
+    "id": "lidify",
+    "storeSlug": "ci-apps",
+    "name": "Lidify",
+    "expectedPort": 53387,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "media",
+      "music"
+    ],
+    "priority": "medium",
+    "mcp": false
+  },
+  {
     "id": "litellm",
     "storeSlug": "ci-apps",
     "name": "LiteLLM",
@@ -544,6 +470,20 @@ const APPS = [
     "categories": [
       "ai",
       "development"
+    ],
+    "priority": "medium",
+    "mcp": false
+  },
+  {
+    "id": "livebook",
+    "storeSlug": "ci-apps",
+    "name": "Livebook",
+    "expectedPort": 53181,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "development",
+      "data"
     ],
     "priority": "medium",
     "mcp": false
@@ -605,6 +545,19 @@ const APPS = [
     "mcp": false
   },
   {
+    "id": "lyrion-music-server",
+    "storeSlug": "ci-apps",
+    "name": "Lyrion Music Server",
+    "expectedPort": 53292,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "media"
+    ],
+    "priority": "medium",
+    "mcp": false
+  },
+  {
     "id": "maxkb",
     "storeSlug": "ci-apps",
     "name": "MaxKB",
@@ -637,6 +590,19 @@ const APPS = [
     "storeSlug": "ci-apps",
     "name": "WeChat Markdown Editor",
     "expectedPort": 18911,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "media"
+    ],
+    "priority": "medium",
+    "mcp": false
+  },
+  {
+    "id": "mediacms",
+    "storeSlug": "ci-apps",
+    "name": "MediaCMS",
+    "expectedPort": 53186,
     "healthEndpoint": "/",
     "hasGui": true,
     "categories": [
@@ -696,6 +662,382 @@ const APPS = [
     "categories": [
       "media",
       "featured"
+    ],
+    "priority": "medium",
+    "mcp": false
+  },
+  {
+    "id": "minio",
+    "storeSlug": "ci-apps",
+    "name": "MinIO",
+    "expectedPort": 9001,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "development",
+      "data"
+    ],
+    "priority": "medium",
+    "mcp": false
+  },
+  {
+    "id": "mirotalk-c2c",
+    "storeSlug": "ci-apps",
+    "name": "MiroTalk C2C",
+    "expectedPort": 53423,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "media"
+    ],
+    "priority": "medium",
+    "mcp": false
+  },
+  {
+    "id": "mirotalk-p2p",
+    "storeSlug": "ci-apps",
+    "name": "MiroTalk P2P",
+    "expectedPort": 53197,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "media"
+    ],
+    "priority": "medium",
+    "mcp": false
+  },
+  {
+    "id": "mirotalk-sfu",
+    "storeSlug": "ci-apps",
+    "name": "MiroTalk SFU",
+    "expectedPort": 53299,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "media"
+    ],
+    "priority": "medium",
+    "mcp": false
+  },
+  {
+    "id": "mistserver",
+    "storeSlug": "ci-apps",
+    "name": "MistServer",
+    "expectedPort": 53424,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "media"
+    ],
+    "priority": "medium",
+    "mcp": false
+  },
+  {
+    "id": "mongodb",
+    "storeSlug": "ci-apps",
+    "name": "MongoDB",
+    "expectedPort": 18981,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "data",
+      "development"
+    ],
+    "priority": "medium",
+    "mcp": false
+  },
+  {
+    "id": "mqttx-web",
+    "storeSlug": "ci-apps",
+    "name": "MQTTX Web",
+    "expectedPort": 8772,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "automation",
+      "development"
+    ],
+    "priority": "medium",
+    "mcp": false
+  },
+  {
+    "id": "mstream",
+    "storeSlug": "ci-apps",
+    "name": "mStream",
+    "expectedPort": 8773,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "media"
+    ],
+    "priority": "medium",
+    "mcp": false
+  },
+  {
+    "id": "music-assistant",
+    "storeSlug": "ci-apps",
+    "name": "Music Assistant",
+    "expectedPort": 8095,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "media"
+    ],
+    "priority": "medium",
+    "mcp": false
+  },
+  {
+    "id": "mylar3",
+    "storeSlug": "ci-apps",
+    "name": "Mylar3",
+    "expectedPort": 53242,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "media"
+    ],
+    "priority": "medium",
+    "mcp": false
+  },
+  {
+    "id": "mysql",
+    "storeSlug": "ci-apps",
+    "name": "MySQL",
+    "expectedPort": 18980,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "development",
+      "data"
+    ],
+    "priority": "medium",
+    "mcp": false
+  },
+  {
+    "id": "n8n-mcp",
+    "storeSlug": "ci-apps",
+    "name": "n8n MCP",
+    "expectedPort": 80,
+    "healthEndpoint": "/",
+    "hasGui": false,
+    "categories": [
+      "mcp",
+      "development",
+      "utilities"
+    ],
+    "priority": "medium",
+    "mcp": true,
+    "mcpTransport": "stdio"
+  },
+  {
+    "id": "navidrome",
+    "storeSlug": "ci-apps",
+    "name": "Navidrome",
+    "expectedPort": 8202,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "music",
+      "media",
+      "featured"
+    ],
+    "priority": "medium",
+    "mcp": false
+  },
+  {
+    "id": "networkingtoolbox",
+    "storeSlug": "ci-apps",
+    "name": "Networking Toolbox",
+    "expectedPort": 8774,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "development",
+      "network"
+    ],
+    "priority": "medium",
+    "mcp": false
+  },
+  {
+    "id": "octobox",
+    "storeSlug": "ci-apps",
+    "name": "Octobox",
+    "expectedPort": 53196,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "development"
+    ],
+    "priority": "medium",
+    "mcp": false
+  },
+  {
+    "id": "opencode",
+    "storeSlug": "ci-apps",
+    "name": "OpenCode",
+    "expectedPort": 4096,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "development",
+      "ai",
+      "featured"
+    ],
+    "priority": "medium",
+    "mcp": false
+  },
+  {
+    "id": "opencode-web",
+    "storeSlug": "ci-apps",
+    "name": "OpenCode Web",
+    "expectedPort": 4019,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "ai",
+      "development"
+    ],
+    "priority": "medium",
+    "mcp": false
+  },
+  {
+    "id": "opencut",
+    "storeSlug": "ci-apps",
+    "name": "OpenCut",
+    "expectedPort": 8402,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "media",
+      "utilities"
+    ],
+    "priority": "medium",
+    "mcp": false
+  },
+  {
+    "id": "openedai-speech",
+    "storeSlug": "ci-apps",
+    "name": "OpenedAI Speech",
+    "expectedPort": 18942,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "ai",
+      "media"
+    ],
+    "priority": "medium",
+    "mcp": false
+  },
+  {
+    "id": "opengist",
+    "storeSlug": "ci-apps",
+    "name": "Opengist",
+    "expectedPort": 8833,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "development"
+    ],
+    "priority": "medium",
+    "mcp": false
+  },
+  {
+    "id": "openinary",
+    "storeSlug": "ci-apps",
+    "name": "Openinary",
+    "expectedPort": 53431,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "media"
+    ],
+    "priority": "medium",
+    "mcp": false
+  },
+  {
+    "id": "openshell-base",
+    "storeSlug": "ci-apps",
+    "name": "OpenShell Sandbox",
+    "expectedPort": 18840,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "agents",
+      "ai",
+      "development"
+    ],
+    "priority": "medium",
+    "mcp": false
+  },
+  {
+    "id": "openshell-droid",
+    "storeSlug": "ci-apps",
+    "name": "OpenShell Droid",
+    "expectedPort": 18844,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "agents",
+      "ai",
+      "development"
+    ],
+    "priority": "medium",
+    "mcp": false
+  },
+  {
+    "id": "openshell-gemini",
+    "storeSlug": "ci-apps",
+    "name": "OpenShell Gemini CLI",
+    "expectedPort": 18843,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "agents",
+      "ai",
+      "development"
+    ],
+    "priority": "medium",
+    "mcp": false
+  },
+  {
+    "id": "openshell-ollama",
+    "storeSlug": "ci-apps",
+    "name": "OpenShell + Ollama",
+    "expectedPort": 18841,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "agents",
+      "ai",
+      "development"
+    ],
+    "priority": "medium",
+    "mcp": false
+  },
+  {
+    "id": "openshell-pi",
+    "storeSlug": "ci-apps",
+    "name": "OpenShell Pi",
+    "expectedPort": 18842,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "agents",
+      "ai",
+      "development"
+    ],
+    "priority": "medium",
+    "mcp": false
+  },
+  {
+    "id": "otter-wiki",
+    "storeSlug": "ci-apps",
+    "name": "Otter Wiki",
+    "expectedPort": 53234,
+    "healthEndpoint": "/",
+    "hasGui": true,
+    "categories": [
+      "development"
     ],
     "priority": "medium",
     "mcp": false

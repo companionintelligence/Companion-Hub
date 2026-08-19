@@ -28,27 +28,36 @@ reproduce a bug without the fleet.
 > were run and verified this session; commands that **mutate the fleet or start a
 > multi-hour run are marked ▶ TRIGGER** — run them when you're ready.
 
-## The fleet (10 nodes)
+## The fleet (8 nodes)
 
 `fleet.json` (next to this skill) is the source of truth and the `FLEET_CONFIG_JSON`
-the dashboard reads. Verified reachable over Tailscale SSH (`ci@…`) this session:
+the dashboard reads. **Re-verify it before every run** — tailnet names drift and nodes
+come and go. Verified reachable over Tailscale SSH (`ci@…`) on 2026-08-18:
 
-| Node | Tailscale IP | Batch | Git auth |
-|------|-------------|-------|----------|
-| core-1 | 100.108.17.53 | 0 | ✅ pull-ready (registry cache :5050) |
-| core-2 | 100.101.156.33 | 1 | ✅ pull-ready |
-| core-6 | 100.95.23.128 | 2 | ✅ pull-ready |
-| core-8 | 100.98.33.44 | 3 | ✅ pull-ready (deploy key `github-cihub`) |
-| core-9 | 100.113.188.103 | 4 | ✅ pull-ready (deploy key `github-cihub`) |
-| core-10 | 100.87.68.116 | 5 | ⚠ no git auth → tar-sync |
-| core-14 | 100.101.186.74 | 6 | ⚠ no git auth → tar-sync |
-| core-17 | 100.67.181.7 | 7 | ⚠ no git auth → tar-sync |
-| beta-1 | 100.124.211.75 | 8 | ✅ pull-ready |
-| beta-ms-a2 | 100.119.230.14 | 9 | ⚠ no git auth → tar-sync |
+| Node | Tailscale IP | Batch | Notes |
+|------|-------------|-------|-------|
+| core-10 | 100.87.68.116 | 0 | OS hostname is `ci` |
+| beta-max | 100.115.174.32 | 1 | no `~/.docker/config.json` → pulls anonymously |
+| beta-ms-a2 | 100.119.230.14 | 2 | dbus dead → `cgroupfs` driver, manual dockerd |
+| fzzy | 100.114.164.27 | 3 | must use the `default` docker context, not Desktop |
+| core-7 | 100.83.30.11 | 4 | |
+| bench-1 | 100.67.181.7 | 5 | OS hostname is `core-17` |
+| beta-glass | 100.86.79.25 | 6 | smallest node (8 cpu / 31G) |
+| liam-core | 100.98.33.44 | 7 | OS hostname is `liam-demo` |
 
-**Prereqs:** this Mac's Tailscale must be **up** (`tailscale status` → `Self.Online:True`)
-and the tailnet SSH ACL must grant `liambook → tag:ci-server` as `ci`. Locally:
-Docker running, Node 22, `pnpm install` done (for the dashboard + `drive-qa.mjs`).
+**Tailnet name ≠ OS hostname.** `tailscale status` prints the *tailnet* name; several
+nodes report a different `hostname`. Always key off the IP, never the name.
+
+**Not usable:** `core-2`, `beta-nas`, `beta-red` are reachable but have **no passwordless
+sudo**, so their dead registry mirror can't be removed (see Phase 0b). `core-1`, `core-6`,
+`bench-2` are offline. `core-4` runs a live CI-Memory/Hermes stack — do not disturb it.
+`*-kvm` peers are IPMI/PiKVM devices, not test targets. **beta-1 is the driver only** — it
+has no sshd and no passwordless sudo, so it cannot be a worker.
+
+**Prereqs:** the driver's Tailscale must be **up** and the tailnet SSH ACL must grant it
+`tag:ci-server` as `ci`. Each node needs Docker, Node ≥18, and a `tsx` **on the
+non-interactive SSH PATH** — `npm i -g tsx` often lands in `~/.npm-global/bin`, which is
+*not* on that PATH, so symlink it: `sudo ln -sf "$(command -v tsx)" /usr/local/bin/tsx`.
 
 ## Phase 0 — Distribute updated Hub to the fleet
 
@@ -75,36 +84,29 @@ node .claude/skills/run-fleet-qa/distribute-hub.mjs --execute --tar-from core-1
 re-attaches them from detached HEAD), then pipes `tar c … CI-Hub` from `core-1` into
 the no-auth nodes. `--only core-1,core-2` scopes it.
 
-## Phase 0b — Provision the Docker Hub pull-through cache
+## Phase 0b — Docker registry mirror (cache RETIRED)
 
-Full runs used to score ~30 `error` verdicts from Docker Hub's **unauthenticated** pull-rate limit
-(all 10 nodes share one public IP → one anon bucket) — NOT app bugs. The fix is two-sided and is now
-**codified** so it survives node re-provisioning: every node's `/etc/docker/daemon.json` mirrors
-through the cache on **core-1** (`http://<core-1-ip>:5050` + `insecure-registries`), and the
-`registry:2` pull-through cache on core-1 authenticates **upstream** (`REGISTRY_PROXY_USERNAME/PASSWORD`)
-so cache-miss pulls use Hub's far higher authenticated limit.
+The pull-through cache lived on **core-1, which is now offline** — but every node still
+mirrored to `100.108.17.53:5050`. A dead mirror does **not** fail fast: pulls hang until
+they time out, so a full run scores mass `error` verdicts that look like app bugs.
 
-**Check first — read-only, asserts the whole fleet and exits non-zero if anything drifted:**
+The mirror has been **stripped fleet-wide**; nodes now pull direct from Docker Hub using
+their own `~/.docker/config.json` auth. Assert no node has regained a dead mirror:
 
 ```bash
-node .claude/skills/run-fleet-qa/provision-docker-cache.mjs
-#   ✓ core-1   mirror=set insecure=set | cache running=true authed=yes upstream=https://registry-1.docker.io
-#   ✓ core-2   mirror=set insecure=set
-#   …  10/10 fully wired, 0 mis-configured, 0 down.  ✓ cache is fully provisioned.
+# should print nothing for every node
+for ip in 100.87.68.116 100.115.174.32 100.119.230.14 100.114.164.27 \
+          100.83.30.11 100.67.181.7 100.86.79.25 100.98.33.44; do
+  ssh ci@$ip 'grep -o "registry-mirrors" /etc/docker/daemon.json 2>/dev/null'
+done
 ```
 
-Re-provisioned a node (or CHECK flagged drift)? Re-wire it (needs Hub creds + sudo on the nodes):
+To strip one: remove `registry-mirrors` + `insecure-registries` from
+`/etc/docker/daemon.json`, then restart Docker. `provision-docker-cache.mjs` still exists
+if you ever re-host the cache — point `CACHE_NODE` at a node that is actually online.
 
-```bash
-# ▶ TRIGGER — mutates daemon.json + restarts docker on the nodes; recreates the authed cache on core-1
-REGISTRY_PROXY_USERNAME=drhegemon REGISTRY_PROXY_PASSWORD=… \
-  node .claude/skills/run-fleet-qa/provision-docker-cache.mjs --execute
-#   --only core-10,beta-1   scope to specific nodes ·   --no-cache   wire mirrors only, don't touch the cache
-```
-
-The cache recreate **preserves the existing ~49 GB data volume** (it inspects the running container to
-reuse its volume + port). The server's **preflight also asserts the mirror** per node (non-blocking) —
-a node pulling direct from Hub shows `⚠ docker registry-mirror NOT wired` in the run log.
+**If you re-introduce a cache, authenticate its upstream.** Without Hub creds a cold sweep
+of ~750 apps across 8 nodes sharing one public IP can trip the anonymous pull-rate limit.
 
 ## Phase 1 — Boot the e2e web UI and run the distributed tests
 
@@ -240,6 +242,24 @@ images. A `partial-arm` verdict = the app image is multi-arch but a **dependency
 (swap the dep for a multi-arch equivalent). To actually *run* arm64 on the x64 fleet you'd
 need qemu binfmt + `--platform linux/arm64` (slow, emulated) or real ARM nodes — neither is
 wired in yet.
+
+## Node-level gotchas (these masquerade as app bugs)
+
+A broken node poisons the whole run: work-stealing means it grabs a large share of the
+queue and errors every app it touches. **Always check the per-node score split before
+believing a wave of failures** — `error`s concentrated on one node are that node, not the
+apps. Real cases from the 2026-08-18 sweep:
+
+| Symptom in `notes` | Root cause | Fix |
+|---|---|---|
+| `Docker Desktop is unable to start` | node defaults to the `desktop-linux` context while a healthy system dockerd sits on `/var/run/docker.sock` | `docker context use default` |
+| container `Created` then hangs on `Starting` forever | Docker on the `systemd` cgroup driver but **dbus is dead** (`systemctl` returns *Failed to connect to system scope bus*) | set `"exec-opts": ["native.cgroupdriver=cgroupfs"]` in `daemon.json`, restart dockerd |
+| preflight FAILED right after provisioning a node | `tsx` installed to `~/.npm-global/bin`, not on the non-interactive SSH PATH | `sudo ln -sf "$(command -v tsx)" /usr/local/bin/tsx` |
+| every pull hangs, then `error` | dead registry mirror (see Phase 0b) | strip `registry-mirrors` from `daemon.json` |
+
+On a node with no `systemd` bus, `systemctl restart docker` cannot work at all. Restart by
+killing dockerd and relaunching it directly:
+`sudo sh -c "nohup /usr/bin/dockerd --containerd=/run/containerd/containerd.sock &"`.
 
 ## Gotchas
 
