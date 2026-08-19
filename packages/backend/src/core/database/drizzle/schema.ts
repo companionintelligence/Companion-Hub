@@ -1,5 +1,5 @@
 import { relations } from 'drizzle-orm';
-import { boolean, customType, integer, pgEnum, pgTable, serial, text, timestamp, uniqueIndex, varchar } from 'drizzle-orm/pg-core';
+import { boolean, customType, index, integer, pgEnum, pgTable, serial, text, timestamp, uniqueIndex, varchar } from 'drizzle-orm/pg-core';
 
 export const appStatusEnum = pgEnum('app_status_enum', [
   'running',
@@ -235,3 +235,61 @@ export const memoryConnection = pgTable('memory_connection', {
   createdAt: timestamp({ mode: 'string' }).defaultNow().notNull(),
   updatedAt: timestamp({ mode: 'string' }).defaultNow().notNull(),
 });
+
+const telemetryJson = customType<{ data: unknown; driverData: string }>({
+  dataType() {
+    return 'jsonb';
+  },
+  toDriver(value: unknown): string {
+    return JSON.stringify(value);
+  },
+  fromDriver(value: unknown): unknown {
+    if (typeof value === 'string') {
+      try {
+        return JSON.parse(value);
+      } catch {
+        return value;
+      }
+    }
+    return value;
+  },
+});
+
+/**
+ * Rolling local snapshots of host + Docker capacity/load. Survives Hub API restarts
+ * (Postgres is a separate volume) so the resources page and self-heal still have
+ * history from before the process died.
+ */
+export const hostTelemetrySample = pgTable(
+  'host_telemetry_sample',
+  {
+    id: serial().primaryKey().notNull(),
+    sampledAt: timestamp('sampled_at', { mode: 'string' }).defaultNow().notNull(),
+    cpuLoad: integer('cpu_load'),
+    cpuCores: integer('cpu_cores'),
+    memoryUsed: integer('memory_used'),
+    memoryTotal: integer('memory_total'),
+    diskUsed: integer('disk_used'),
+    diskTotal: integer('disk_total'),
+    percentUsedMemory: integer('percent_used_memory'),
+    dockerAvailable: boolean('docker_available'),
+    dockerInfo: telemetryJson('docker_info'),
+    apps: telemetryJson('apps'),
+    source: varchar().default('collector').notNull(),
+  },
+  (table) => [index('host_telemetry_sample_sampled_at_idx').on(table.sampledAt)],
+);
+
+/** Structured local events (API start/stop, docker flips, degraded apps) for post-mortem. */
+export const hostEventLog = pgTable(
+  'host_event_log',
+  {
+    id: serial().primaryKey().notNull(),
+    createdAt: timestamp('created_at', { mode: 'string' }).defaultNow().notNull(),
+    level: varchar().notNull(),
+    source: varchar().notNull(),
+    message: text().notNull(),
+    details: telemetryJson('details'),
+  },
+  (table) => [index('host_event_log_created_at_idx').on(table.createdAt)],
+);

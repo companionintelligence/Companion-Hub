@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
 import { pipeline } from 'node:stream/promises';
 import { ResourceAllocatorService } from '../resource-allocator.service';
+import { HostTelemetryService } from '../host-telemetry.service';
 import { SystemController } from '../system.controller';
 import { SystemService } from '../system.service';
 
@@ -16,6 +17,7 @@ describe('SystemController', () => {
   let controller: SystemController;
   let systemService: MockProxy<SystemService>;
   let dockerService: MockProxy<DockerService>;
+  let hostTelemetry: MockProxy<HostTelemetryService>;
 
   beforeEach(async () => {
     const moduleRef = await Test.createTestingModule({
@@ -24,6 +26,7 @@ describe('SystemController', () => {
         { provide: SystemService, useValue: mock<SystemService>() },
         { provide: DockerService, useValue: mock<DockerService>() },
         { provide: ResourceAllocatorService, useValue: mock<ResourceAllocatorService>() },
+        { provide: HostTelemetryService, useValue: mock<HostTelemetryService>() },
         { provide: LoggerService, useValue: mock<LoggerService>() },
       ],
     }).compile();
@@ -31,6 +34,7 @@ describe('SystemController', () => {
     controller = moduleRef.get(SystemController);
     systemService = moduleRef.get(SystemService);
     dockerService = moduleRef.get(DockerService);
+    hostTelemetry = moduleRef.get(HostTelemetryService);
   });
 
   it('should be defined', () => {
@@ -159,6 +163,43 @@ describe('SystemController', () => {
 
       const result = await controller.detectServices();
       expect(result).toEqual(services);
+    });
+  });
+
+  describe('host telemetry', () => {
+    it('returns persisted samples and events', async () => {
+      hostTelemetry.getRecentSamples.mockResolvedValue([
+        {
+          sampledAt: '2026-08-18T12:00:00.000Z',
+          cpuLoad: 41,
+          cpuCores: 8,
+          memoryUsed: 20,
+          memoryTotal: 32,
+          diskUsed: 100,
+          diskTotal: 500,
+          percentUsedMemory: 62,
+          dockerAvailable: true,
+          dockerInfo: { ncpu: 8, serverVersion: '27.0.0' },
+          apps: null,
+          source: 'collector',
+        },
+      ]);
+      hostTelemetry.getRecentEvents.mockResolvedValue([
+        {
+          createdAt: '2026-08-18T12:00:01.000Z',
+          level: 'info',
+          source: 'hub.api',
+          message: 'Hub API started',
+          details: null,
+        },
+      ]);
+
+      await expect(controller.hostTelemetryHistory()).resolves.toEqual({
+        samples: [expect.objectContaining({ sampledAt: '2026-08-18T12:00:00.000Z', dockerAvailable: true, source: 'collector' })],
+      });
+      await expect(controller.hostEventLog()).resolves.toEqual({
+        events: [expect.objectContaining({ source: 'hub.api', message: 'Hub API started' })],
+      });
     });
   });
 });
