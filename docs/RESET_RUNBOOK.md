@@ -13,6 +13,8 @@ Companion Hub has several reset surfaces. They are **not** equivalent — pick t
 
 After any **full** reset, start the stack again (`cihub up dev`, `cihub up prod`, or launch Companion Hub desktop) and open `http://localhost:5002/login` — you should see the first-operator setup flow (`isConfigured: false`).
 
+`cihub up prod` run outside a CI-Hub checkout (appliance mode) will recreate `~/.local/share/companion-hub` if it is missing. It prompts interactively for a database password (`POSTGRES_PASSWORD`); set that variable in the environment to skip the prompt.
+
 ## CLI: `cihub reset`
 
 From the CI-Hub repository (dev) or from any directory in appliance/prod mode:

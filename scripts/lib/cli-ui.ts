@@ -46,7 +46,7 @@ const commandSections: { title: string; entries: CommandEntry[] }[] = [
   {
     title: 'Hub lifecycle',
     entries: [
-      { command: `${BASE_COMMAND} up [env] [--detached]`, description: 'Start the hub stack' },
+      { command: `${BASE_COMMAND} up [env] [--detached]`, description: 'Start the hub stack (prompts for a password after a reset)' },
       { command: `${BASE_COMMAND} down [env]`, description: 'Stop the hub stack' },
       { command: `${BASE_COMMAND} restart [env]`, description: 'Restart the hub stack' },
       { command: `${BASE_COMMAND} recreate [env] [--detached] [--yes]`, description: 'Reset the target environment and start it again' },
