@@ -1,10 +1,10 @@
 [
-  { "name": "core-10",    "ip": "100.87.68.116",  "batch": 0 },
-  { "name": "beta-max",   "ip": "100.115.174.32", "batch": 1 },
+  { "name": "core-10", "ip": "100.87.68.116", "batch": 0 },
+  { "name": "beta-max", "ip": "100.115.174.32", "batch": 1 },
   { "name": "beta-ms-a2", "ip": "100.119.230.14", "batch": 2 },
-  { "name": "fzzy",       "ip": "100.114.164.27", "batch": 3 },
-  { "name": "core-7",     "ip": "100.83.30.11",   "batch": 4 },
-  { "name": "bench-1",    "ip": "100.67.181.7",   "batch": 5 },
-  { "name": "beta-glass", "ip": "100.86.79.25",   "batch": 6 },
-  { "name": "liam-core",  "ip": "100.98.33.44",   "batch": 7 }
+  { "name": "fzzy", "ip": "100.114.164.27", "batch": 3 },
+  { "name": "core-7", "ip": "100.83.30.11", "batch": 4 },
+  { "name": "bench-1", "ip": "100.67.181.7", "batch": 5 },
+  { "name": "beta-glass", "ip": "100.86.79.25", "batch": 6 },
+  { "name": "liam-core", "ip": "100.98.33.44", "batch": 7 }
 ]
