@@ -100,25 +100,9 @@ export class AppController {
       const domain = userSettings?.domain?.trim() || configuredDomain;
       const sslPort = userSettings?.sslPort ?? defaults.sslPort;
 
-      // Get version with error handling (GitHub API might be unavailable)
-      let version = defaults.version;
-      try {
-        version = await this.appService.getVersion();
-      } catch (_error) {
-        // Fallback to current version if GitHub API fails
-        try {
-          const { version: currentVersion } = this.configuration.getConfig();
-          version = {
-            current: currentVersion || defaults.version.current,
-            latest: currentVersion || defaults.version.latest,
-            body: '',
-            releases: [],
-          };
-        } catch (configError) {
-          this.logger.error('Failed to get version from config:', configError);
-          // Use defaults
-        }
-      }
+      // Version latest is refreshed in the background — never block bootstrap on CI Cloud.
+      const version = this.appService.peekLocalVersion();
+      this.appService.refreshVersionInBackground();
 
       // Get operator with error handling (database might not be ready)
       let operator = null;

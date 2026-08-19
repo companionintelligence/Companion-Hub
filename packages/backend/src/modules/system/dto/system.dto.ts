@@ -61,3 +61,47 @@ const systemResourcesSchema = z.object({
 
 // Resources
 export class SystemResourcesDto extends createZodDto(systemResourcesSchema) {}
+
+const telemetryAppPointSchema = z.object({
+  appUrn: z.string(),
+  appName: z.string(),
+  status: z.string(),
+  cpuPercent: z.number(),
+  memoryUsageBytes: z.number(),
+  containerCount: z.number(),
+});
+
+const hostTelemetrySampleSchema = z.object({
+  sampledAt: z.string(),
+  cpuLoad: z.number().nullable(),
+  cpuCores: z.number().nullable(),
+  memoryUsed: z.number().nullable(),
+  memoryTotal: z.number().nullable(),
+  diskUsed: z.number().nullable(),
+  diskTotal: z.number().nullable(),
+  percentUsedMemory: z.number().nullable(),
+  dockerAvailable: z.boolean().nullable(),
+  dockerInfo: z.record(z.string(), z.unknown()).nullable(),
+  apps: z.array(telemetryAppPointSchema).nullable(),
+  source: z.string(),
+});
+
+const hostEventSchema = z.object({
+  createdAt: z.string(),
+  level: z.string(),
+  source: z.string(),
+  message: z.string(),
+  details: z.unknown().optional(),
+});
+
+export class HostTelemetryHistoryDto extends createZodDto(
+  z.object({
+    samples: z.array(hostTelemetrySampleSchema),
+  }),
+) {}
+
+export class HostEventLogDto extends createZodDto(
+  z.object({
+    events: z.array(hostEventSchema),
+  }),
+) {}

@@ -138,6 +138,8 @@ const HOST_OLLAMA_PROBE_TIMEOUT: Duration = Duration::from_millis(500);
 const HOST_OLLAMA_PROBE_CACHE_TTL: Duration = Duration::from_secs(10);
 const HUB_API_LIVE_PROBE_TIMEOUT: Duration = Duration::from_millis(800);
 const HUB_API_LIVE_PROBE_CACHE_TTL: Duration = Duration::from_secs(2);
+/// `docker info` is expensive; reuse the last access check across hub-status polls.
+const DOCKER_ACCESS_CACHE_TTL: Duration = Duration::from_secs(5);
 
 struct CachedHostOllamaProbe {
     checked_at: Instant,
@@ -1736,6 +1738,12 @@ pub struct DockerAccessCheck {
     pub detail: Option<String>,
 }
 
+static DOCKER_ACCESS_CACHE: Mutex<Option<(Instant, DockerAccessCheck)>> = Mutex::new(None);
+
+fn docker_access_cache_is_fresh(checked_at: Instant, now: Instant, ttl: Duration) -> bool {
+    now.saturating_duration_since(checked_at) < ttl
+}
+
 #[derive(Clone, serde::Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum DockerInstallState {
@@ -3310,6 +3318,21 @@ fn should_defer_docker_bind_mount_probe(state: &DockerAccessState) -> bool {
 }
 
 pub fn check_docker_access() -> DockerAccessCheck {
+    {
+        let cache = lock_recovering(&DOCKER_ACCESS_CACHE);
+        if let Some((checked_at, check)) = cache.as_ref() {
+            if docker_access_cache_is_fresh(*checked_at, Instant::now(), DOCKER_ACCESS_CACHE_TTL) {
+                return check.clone();
+            }
+        }
+    }
+
+    let check = check_docker_access_uncached();
+    *lock_recovering(&DOCKER_ACCESS_CACHE) = Some((Instant::now(), check.clone()));
+    check
+}
+
+fn check_docker_access_uncached() -> DockerAccessCheck {
     let output = match docker_command().arg("info").output() {
         Ok(output) => output,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -9457,6 +9480,27 @@ mod tests {
         assert!(!super::webview_cache_clear_needed(
             Some("0.2.27\n"),
             "0.2.27"
+        ));
+    }
+
+    #[test]
+    fn docker_access_cache_ttl_is_five_seconds() {
+        use std::time::{Duration, Instant};
+        let start = Instant::now();
+        assert!(super::docker_access_cache_is_fresh(
+            start,
+            start,
+            Duration::from_secs(5)
+        ));
+        assert!(super::docker_access_cache_is_fresh(
+            start,
+            start + Duration::from_secs(4),
+            Duration::from_secs(5)
+        ));
+        assert!(!super::docker_access_cache_is_fresh(
+            start,
+            start + Duration::from_secs(5),
+            Duration::from_secs(5)
         ));
     }
 

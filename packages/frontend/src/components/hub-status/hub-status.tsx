@@ -1,4 +1,5 @@
 import { colorizeLogLine } from '@/lib/log-ansi';
+import { POLLING } from '@/lib/polling-budget';
 import { useResolvedTheme } from '@/lib/use-resolved-theme';
 import DOMPurify from 'dompurify';
 import '@/components/logs-terminal/logs-terminal.css';
@@ -91,7 +92,7 @@ export function isUserInitiatedPageReload(): boolean {
   }
 }
 
-const HUB_STATUS_POLL_INTERVAL_MS = 3000;
+const HUB_STATUS_POLL_INTERVAL_MS = POLLING.HUB_STATUS_MS;
 
 function detectPlatform(): 'windows' | 'macos' | 'linux' {
   const ua = navigator.userAgent.toLowerCase();

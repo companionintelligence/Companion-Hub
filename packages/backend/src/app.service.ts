@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { Inject, Injectable, type OnApplicationShutdown } from '@nestjs/common';
 import { APP_DATA_DIR, DATA_DIR, HUB_STACK_REGISTRY_REPO } from './common/constants';
+import { withTimeout } from './common/helpers/with-timeout';
 import { CacheService, ONE_DAY_IN_SECONDS } from './core/cache/cache.service';
 import { ConfigurationService } from './core/config/configuration.service';
 import { DatabaseService } from './core/database/database.service';
@@ -168,11 +169,31 @@ export class AppService implements OnApplicationShutdown {
   }
 
   private static readonly VERSION_TTL_MS = 30_000;
+  private static readonly VERSION_LOOKUP_TIMEOUT_MS = 2_500;
   private versionCache: {
     value: { current: string; latest: string; body: string; releases: { version: string; body: string }[] };
     at: number;
   } | null = null;
   private versionInFlight: Promise<{ current: string; latest: string; body: string; releases: { version: string; body: string }[] }> | null = null;
+
+  /** Current version from config plus any already-fetched latest. Never hits the network. */
+  public peekLocalVersion() {
+    const { version: currentVersion } = this.configuration.getConfig();
+    if (this.versionCache) {
+      return { ...this.versionCache.value, current: currentVersion };
+    }
+    return {
+      current: currentVersion,
+      latest: currentVersion,
+      body: '',
+      releases: [] as { version: string; body: string }[],
+    };
+  }
+
+  /** Warm the version cache without blocking bootstrap. */
+  public refreshVersionInBackground() {
+    void this.getVersion().catch(() => undefined);
+  }
 
   public async getVersion() {
     const now = Date.now();
@@ -184,25 +205,32 @@ export class AppService implements OnApplicationShutdown {
     }
 
     this.versionInFlight = (async () => {
-      const { version: currentVersion } = this.configuration.getConfig();
+      const local = this.peekLocalVersion();
+      try {
+        const releasesSince = await withTimeout(
+          this.registryService.getTagsSinceWithHubFallback(HUB_STACK_REGISTRY_REPO, local.current),
+          AppService.VERSION_LOOKUP_TIMEOUT_MS,
+          'version lookup timed out',
+        );
 
-      const [releasesSince] = await Promise.all([this.registryService.getTagsSinceWithHubFallback(HUB_STACK_REGISTRY_REPO, currentVersion)]);
+        const releases = releasesSince.map((tag) => ({
+          version: tag,
+          body: `Release ${tag}`,
+        }));
 
-      const releases = releasesSince.map((tag) => ({
-        version: tag,
-        body: `Release ${tag}`,
-      }));
-
-      const latest = releases[0]?.version ?? currentVersion;
-
-      const value = {
-        current: currentVersion,
-        latest,
-        body: '',
-        releases,
-      };
-      this.versionCache = { value, at: Date.now() };
-      return value;
+        const latest = releases[0]?.version ?? local.current;
+        const value = {
+          current: local.current,
+          latest,
+          body: '',
+          releases,
+        };
+        this.versionCache = { value, at: Date.now() };
+        return value;
+      } catch {
+        this.versionCache = { value: local, at: Date.now() };
+        return local;
+      }
     })().finally(() => {
       this.versionInFlight = null;
     });
