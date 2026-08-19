@@ -123,6 +123,11 @@ describe('renderHelp', () => {
     expect(plain).toContain('cihub doctor');
   });
 
+  it('documents that up prompts for a password after a reset', () => {
+    const plain = stripAnsi(renderHelp());
+    expect(plain).toContain('prompts for a password after a reset');
+  });
+
   it('documents cihub update as the host update command', () => {
     const plain = stripAnsi(renderHelp());
     expect(plain).toContain('cihub update [--check]');

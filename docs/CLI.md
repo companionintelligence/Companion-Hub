@@ -155,6 +155,7 @@ cihub config [env]           # show resolved config values only
 ```
 
 - `--detached` runs the stack in the background (equivalent to `docker compose up -d`).
+- After a reset (no `~/.local/share/companion-hub` seed), `cihub up prod` prompts interactively for a database password and writes a fresh install. Set `POSTGRES_PASSWORD` (or `CIHUB_POSTGRES_PASSWORD`) to skip the prompt.
 - `status` shows three sections: **Containers** (color-coded ●/✗), **Network** (local URL, Cloudflare tunnel URL from `CF_DOMAIN`/`DOMAIN`, Tailscale VPN IP), and **Models** (installed Ollama models).
 
 ![Screenshot of cihub status local](./images/cli/status.svg)

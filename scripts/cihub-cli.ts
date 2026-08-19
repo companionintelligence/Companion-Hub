@@ -8,6 +8,7 @@ import { createInterface } from 'node:readline/promises';
 import { isHostPortBindConflict, runDockerComposeUpOnce } from './compose-up';
 import { parseEnvFile, upsertEnvVar } from './env-file';
 import { CANONICAL_DATA_DIR_NAME, resolveProdApplianceContext, resolveRootFolderHost } from './lib/paths';
+import { resolvePostgresPassword, seedApplianceInstall } from './lib/seed-appliance';
 import {
   type DeviceIdResponse,
   type RegistrationStatusResponse,
@@ -275,24 +276,62 @@ function envOverridesForContext(ctx: HubContext): Record<string, string | undefi
   return overrides;
 }
 
+function noteApplianceTarget(dataDir: string): void {
+  if (applianceNoticeShown) return;
+  applianceNoticeShown = true;
+  printMessageBox('Targeting prod install', ['No CI-Hub checkout here \u2014 operating on the canonical prod data dir:', dim(dataDir)], 'cyan');
+}
+
+/**
+ * After a reset (or first CLI start) there is no seeded `.env` + compose. Prompt for a
+ * password and write a fresh appliance install instead of sending the user to the desktop app.
+ */
+async function ensureApplianceInstall(): Promise<void> {
+  const ctx = resolveProdApplianceContext();
+  if (ctx.exists) {
+    noteApplianceTarget(ctx.dataDir);
+    return;
+  }
+
+  printMessageBox(
+    'No prod Hub install found',
+    [
+      `Creating a fresh install at ${ctx.dataDir}`,
+      'Enter a password for the Hub database (POSTGRES_PASSWORD).',
+      'Set POSTGRES_PASSWORD in the environment to skip the prompt.',
+    ],
+    'yellow',
+  );
+
+  try {
+    const password = await resolvePostgresPassword({
+      env: process.env,
+      isTty: Boolean(process.stdin.isTTY && process.stdout.isTTY),
+    });
+    const seeded = seedApplianceInstall({ dataDir: ctx.dataDir, postgresPassword: password });
+    printMessageBox(
+      'Fresh Hub install created',
+      [`Data dir: ${seeded.dataDir}`, `Image: ${seeded.hubImage}`, `Next: ${BASE_COMMAND} up continues automatically.`],
+      'green',
+    );
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    printMessageBox('Could not create Hub install', [message, `Expected prod data at: ${ctx.dataDir}`], 'red');
+    process.exit(2);
+  }
+}
+
 /**
  * Gate for lifecycle commands. Allows a CI-Hub checkout (repo mode) or a canonical prod install
  * (appliance mode). When the prod data dir has no seeded `.env` + compose:
- *  - `require-seed` (up/setup/register): error and exit, directing the user to launch the desktop app.
+ *  - `require-seed` (up/setup): seed interactively (password prompt) then continue.
  *  - `allow-missing` (down/reset/clean): proceed anyway so broken/partial installs can still be torn down.
  */
 function requireRepoOrApplianceContext(action: string, gate: 'require-seed' | 'allow-missing' = 'require-seed'): void {
   if (isHubRepoRoot()) return;
   const ctx = resolveProdApplianceContext();
   if (ctx.exists) {
-    if (!applianceNoticeShown) {
-      applianceNoticeShown = true;
-      printMessageBox(
-        'Targeting prod install',
-        ['No CI-Hub checkout here \u2014 operating on the canonical prod data dir:', dim(ctx.dataDir)],
-        'cyan',
-      );
-    }
+    noteApplianceTarget(ctx.dataDir);
     return;
   }
   if (gate === 'allow-missing') {
@@ -309,9 +348,8 @@ function requireRepoOrApplianceContext(action: string, gate: 'require-seed' | 'a
   printMessageBox(
     'No prod Hub install found',
     [
-      `${action} needs either a CI-Hub checkout or an installed CI Hub.`,
-      `Expected prod data at: ${ctx.dataDir}`,
-      'Launch the CI Hub desktop app once to provision it, then retry.',
+      `${action} needs a seeded Hub at ${ctx.dataDir}.`,
+      `Run \`${BASE_COMMAND} up prod\` in a terminal to create one (it will prompt for a password).`,
     ],
     'red',
   );
@@ -403,7 +441,7 @@ async function runDockerComposeUp(
 
 export async function startHub(mode: StartMode, env: HubEnv) {
   if (isApplianceMode()) {
-    requireRepoOrApplianceContext('cihub up', 'require-seed');
+    await ensureApplianceInstall();
     await startApplianceHub(resolveHubContext(env), mode === 'attached' ? 'attached' : 'detached');
     return;
   }
@@ -495,13 +533,9 @@ async function startApplianceHub(ctx: HubContext, detachedMode: 'attached' | 'de
 
 export async function setupHub(env: HubEnv) {
   if (isApplianceMode()) {
-    requireRepoOrApplianceContext('cihub setup', 'require-seed');
+    await ensureApplianceInstall();
     const ctx = resolveHubContext(env);
-    printMessageBox(
-      'Setup managed by CI Hub',
-      ['The CI Hub desktop app provisions host assets for prod installs.', `Data dir: ${ctx.dataDir}`, `Next: ${BASE_COMMAND} up`],
-      'cyan',
-    );
+    printMessageBox('Setup complete', [`Prod install is ready at ${ctx.dataDir}.`, `Next: ${BASE_COMMAND} up`], 'cyan');
     return;
   }
   requireRepoRoot('cihub setup');
