@@ -220,6 +220,62 @@ describe('AuthController', () => {
       expect(headers['X-CI-Hub-User-Signature']).toBe(signForwardAuthUser('per-app-secret', 'support@lifescope.io', timestamp));
     });
 
+    it('lets Memory login and API-key traffic through without a Hub session', async () => {
+      const cases: Array<{ uri?: string; extra?: Record<string, string> }> = [
+        { uri: '/api/authenticate/oidc/native/exchange' },
+        { uri: '/api/authenticate?client=native' },
+        { uri: '/api/keys' },
+        { uri: '/graphql', extra: { 'x-api-key': 'mem_live_abc' } },
+      ];
+
+      for (const { uri, extra } of cases) {
+        vi.mocked(verifyPortalIdToken).mockClear();
+        const req = {
+          user: undefined,
+          headers: {
+            'x-forwarded-host': 'ci-memory-core3-team.companionintelligence.com',
+            ...(uri ? { 'x-forwarded-uri': uri } : {}),
+            ...extra,
+          },
+        } as unknown as Request;
+        const res = {
+          status: vi.fn().mockReturnThis(),
+          send: vi.fn(),
+          redirect: vi.fn(),
+          setHeader: vi.fn(),
+        } as unknown as Response;
+
+        await authController.traefik(req, res);
+
+        expect(res.redirect, uri).not.toHaveBeenCalled();
+        expect(res.status, uri).toHaveBeenCalledWith(200);
+        expect(verifyPortalIdToken).not.toHaveBeenCalled();
+      }
+    });
+
+    it('does not treat a Memory JWT on /api/keys as an invalid Portal Bearer', async () => {
+      vi.mocked(verifyPortalIdToken).mockResolvedValue(null);
+      const req = {
+        user: undefined,
+        headers: {
+          authorization: 'Bearer memory.jwt.not-portal',
+          'x-forwarded-host': 'ci-memory-core3-team.companionintelligence.com',
+          'x-forwarded-uri': '/api/keys',
+        },
+      } as unknown as Request;
+      const res = {
+        status: vi.fn().mockReturnThis(),
+        send: vi.fn(),
+        redirect: vi.fn(),
+      } as unknown as Response;
+
+      await authController.traefik(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(200);
+      expect(res.redirect).not.toHaveBeenCalled();
+      expect(verifyPortalIdToken).not.toHaveBeenCalled();
+    });
+
     it('returns 401 (not 302) when a Portal Bearer is present but invalid', async () => {
       config.get.mockImplementation((key: string) => {
         if (key === 'ciCloudUrl') {
