@@ -28,3 +28,27 @@ updates:
         update-types:
           - minor
           - patch
+
+  # Rust/Tauri mobile app crates
+  - package-ecosystem: 'cargo'
+    directory: '/packages/mobile/src-tauri'
+    schedule:
+      interval: 'daily'
+    rebase-strategy: 'auto'
+    groups:
+      minor-patch:
+        update-types:
+          - minor
+          - patch
+
+  # Isolated agent npm tree (not in the pnpm workspace)
+  - package-ecosystem: 'npm'
+    directory: '/agent'
+    schedule:
+      interval: 'daily'
+    rebase-strategy: 'auto'
+    groups:
+      minor-patch:
+        update-types:
+          - minor
+          - patch
