@@ -69,7 +69,7 @@
   "license": "CI-Commercial-1.0",
   "devDependencies": {
     "@biomejs/biome": "^2.0.4",
-    "@hey-api/openapi-ts": "^0.86.12",
+    "@hey-api/openapi-ts": "^0.97.3",
     "@playwright/test": "^1.52.0",
     "cloudflare": "^7.0.0",
     "dotenv-cli": "^10.0.0",
