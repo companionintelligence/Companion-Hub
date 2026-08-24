@@ -133,8 +133,8 @@ export default () => {
 
   const { mutate: pullApps, isPending: isPulling } = useMutation({
     mutationFn: () => pullAppStores(),
-    onSuccess: () => {
-      invalidateStoreCatalogQueries(queryClient);
+    onSuccess: async () => {
+      await invalidateStoreCatalogQueries(queryClient);
       toast.success(t('APP_STORES_UPDATE_SUCCESS'));
     },
     onError: () => {

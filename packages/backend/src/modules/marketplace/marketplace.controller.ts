@@ -203,6 +203,7 @@ export class MarketplaceController {
   async pullAppStores() {
     const res = await this.appStoreService.pullRepositories();
     await this.marketplaceService.initialize();
+    await this.marketplaceService.refreshPortalCatalog();
     return PullDto.parse(res, { reportOnly: true });
   }
 

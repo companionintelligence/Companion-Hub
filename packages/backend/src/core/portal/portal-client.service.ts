@@ -56,12 +56,17 @@ export class PortalClientService {
     };
   }
 
-  async fetchJson<T = unknown>(path: string, init?: { authenticated?: boolean; params?: Record<string, string> }): Promise<T> {
+  async fetchJson<T = unknown>(path: string, init?: { authenticated?: boolean; params?: Record<string, string>; bypassCache?: boolean }): Promise<T> {
     this.requirePortalUrl();
-    const headers = init?.authenticated ? this.getDeviceAuthHeaders() : {};
+    const headers: Record<string, string> = init?.authenticated ? this.getDeviceAuthHeaders() : {};
+    if (init?.bypassCache) {
+      headers['Cache-Control'] = 'no-cache';
+      headers.Pragma = 'no-cache';
+    }
+    const params = init?.bypassCache ? { ...init.params, _ts: String(Date.now()) } : init?.params;
     const response = await this.apiClient.get<T>(path.replace(/^\//, ''), {
       headers,
-      params: init?.params,
+      params,
       validateStatus: () => true,
     });
     if (response.status < 200 || response.status >= 300) {
@@ -102,8 +107,8 @@ export class PortalClientService {
     return this.fetchJson('/store/alternatives');
   }
 
-  async fetchStoreCatalog(): Promise<unknown> {
-    return this.fetchJson('/store');
+  async fetchStoreCatalog(init?: { bypassCache?: boolean }): Promise<unknown> {
+    return this.fetchJson('/store', { bypassCache: init?.bypassCache });
   }
 
   async fetchStoreAppDetails(slug: string): Promise<{ screenshots?: string[]; demo_video?: string } | null> {

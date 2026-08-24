@@ -101,7 +101,7 @@ export class MarketplaceService implements OnModuleInit {
     const local = await store.getAppInfoFromAppStore(appUrn);
     const info = local ?? (await this.portalCatalog.getAppInfoForUrn(appUrn));
     if (!info) return null;
-    return this.enrichAppInfoDescription(appUrn, info, store);
+    return this.enrichAppInfoDescription(appUrn, this.overlayPortalCatalogVersion(appUrn, info), store);
   }
 
   async getAppInfoFromAppStoreOrInstalled(appUrn: AppUrn): Promise<AppInfo | undefined> {
@@ -110,7 +110,27 @@ export class MarketplaceService implements OnModuleInit {
     const local = await store.getAppInfoFromAppStoreOrInstalled(appUrn);
     const info = local ?? (await this.portalCatalog.getAppInfoForUrn(appUrn));
     if (!info) return undefined;
-    return this.enrichAppInfoDescription(appUrn, info, store);
+    return this.enrichAppInfoDescription(appUrn, this.overlayPortalCatalogVersion(appUrn, info), store);
+  }
+
+  /**
+   * Local ci-marketplace replicas can lag Portal after a catalog publish.
+   * When the warmed Portal cache has a newer version, prefer it for Hub UI.
+   */
+  private overlayPortalCatalogVersion(appUrn: AppUrn, info: AppInfo): AppInfo {
+    if (!this.portalCatalog.isCiMarketplaceUrn(appUrn)) return info;
+    const portal = this.portalCatalog.getUpdateInfoForUrn(appUrn);
+    if (!portal) return info;
+    const localAppVersion = Number(info.cihub_app_version ?? 0);
+    const portalAppVersion = Number(portal.latestVersion ?? 0);
+    const dockerChanged = Boolean(portal.latestDockerVersion && portal.latestDockerVersion !== info.version);
+    const portalNewer = portalAppVersion > localAppVersion || (portalAppVersion === localAppVersion && dockerChanged);
+    if (!portalNewer) return info;
+    return {
+      ...info,
+      version: portal.latestDockerVersion || info.version,
+      cihub_app_version: Math.max(localAppVersion, portalAppVersion),
+    };
   }
 
   async getPortalIconUrl(appUrn: AppUrn): Promise<string | null> {
@@ -182,6 +202,21 @@ export class MarketplaceService implements OnModuleInit {
       this.miniSearch.removeAll();
     }
     this.portalCatalog.invalidateCache();
+  }
+
+  /**
+   * Force-refresh the Portal catalog cache and wait until it is populated.
+   * Check for Updates used to invalidate this cache and return immediately,
+   * so the store/details UI kept serving the previous 15-minute snapshot.
+   */
+  public async refreshPortalCatalog() {
+    this.appsAvailable = null;
+    if (this.miniSearch) {
+      this.miniSearch.removeAll();
+    }
+    this.cacheLastUpdated = 0;
+    this.portalCatalog.invalidateCache();
+    await this.portalCatalog.getCatalogEntries(true);
   }
 
   /**
@@ -342,7 +377,9 @@ export class MarketplaceService implements OnModuleInit {
 
     const localVersion = Number(localInfo.latestVersion ?? 0);
     const portalVersion = Number(portalInfo.latestVersion ?? 0);
-    if (portalVersion <= localVersion) {
+    const dockerChanged = Boolean(portalInfo.latestDockerVersion && portalInfo.latestDockerVersion !== localInfo.latestDockerVersion);
+    const portalNewer = portalVersion > localVersion || (portalVersion === localVersion && dockerChanged);
+    if (!portalNewer) {
       return localInfo;
     }
 

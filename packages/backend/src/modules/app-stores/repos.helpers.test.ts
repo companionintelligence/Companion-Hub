@@ -93,7 +93,14 @@ describe('ReposHelpers', () => {
 
       await service.pullRepo('http://cloud.api', 'ci-marketplace', 'ci_cloud_api');
 
-      expect(axiosMock.request).toHaveBeenCalledWith(expect.objectContaining({ method: 'GET', url: 'http://cloud.api/store' }));
+      expect(axiosMock.request).toHaveBeenCalledWith(
+        expect.objectContaining({
+          method: 'GET',
+          url: 'http://cloud.api/store',
+          params: expect.objectContaining({ _ts: expect.any(String) }),
+          headers: expect.objectContaining({ 'Cache-Control': 'no-cache', Pragma: 'no-cache' }),
+        }),
+      );
 
       // Verify it creates directories and writes files
       expect(fs.promises.mkdir).toHaveBeenCalled();
