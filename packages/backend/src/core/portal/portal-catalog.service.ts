@@ -164,7 +164,7 @@ export class PortalCatalogService {
         this.logger.warn(`Portal catalog fetch failed: ${message}`);
         return this.cache ?? [];
       } finally {
-        if (this.inflightFetch === fetch) {
+        if (generation === this.cacheGeneration) {
           this.inflightFetch = null;
           this.inflightBypassCache = false;
         }
