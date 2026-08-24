@@ -4,7 +4,6 @@ export default defineConfig({
   input: '../backend/src/swagger.json',
   output: {
     path: './src/api-client',
-    format: 'biome',
   },
   plugins: [...defaultPlugins, '@tanstack/react-query', '@hey-api/client-fetch'],
 });
