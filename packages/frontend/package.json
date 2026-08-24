@@ -42,7 +42,7 @@
     "better-ajv-errors": "^2.0.2",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
-    "dompurify": "^3.4.0",
+    "dompurify": "^3.4.13",
     "framer-motion": "^12.23.24",
     "i18next": "^25.1.2",
     "i18next-browser-languagedetector": "^8.1.0",
