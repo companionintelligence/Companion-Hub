@@ -196,15 +196,19 @@ jobs:
 
       - name: Push to Portal registry
         id: portal
-        continue-on-error: true
         env:
           PORTAL_USER: ${{ secrets.PORTAL_REGISTRY_USERNAME }}
           PORTAL_PASS: ${{ secrets.PORTAL_REGISTRY_PASSWORD }}
-        if: env.PORTAL_USER != ''
         run: |
           # Without -e the step's status is just the LAST command's, so a trailing
           # conditional would mask a failed login or copy and report success.
           set -euo pipefail
+
+          if [ -z "${PORTAL_USER}" ] || [ -z "${PORTAL_PASS}" ]; then
+            echo "::error::PORTAL_REGISTRY_USERNAME and PORTAL_REGISTRY_PASSWORD are required."
+            echo "::error::Refusing to skip the Portal mirror. Set both secrets on this environment."
+            exit 1
+          fi
 
           PORTAL="${{ steps.tags.outputs.portal_registry }}"
           TAG="${{ steps.tags.outputs.channel_tag }}"
@@ -234,13 +238,11 @@ jobs:
             crane copy "${VERSIONED_IMAGE}" "${PORTAL}/ci-os-hub:${VERSION}"
           fi
 
-      # This step is intentionally non-fatal (Portal is a mirror, not the pull path), but a
-      # silent failure leaves update listing degraded with no signal — so say so loudly.
-      # Keyed on "not success" rather than "failure": the most common degraded path is the
-      # mirror step being SKIPPED because no Portal credentials are configured, which is
-      # exactly the silence this warning exists to break.
+      # Fatal on the mirror step itself. This warning still fires if that step is
+      # cancelled or otherwise does not report success, so the GHCR-vs-Portal gap
+      # is visible in the job log rather than only as a red X.
       - name: Warn when the Portal mirror was not updated
-        if: ${{ !cancelled() && steps.portal.outcome != 'success' }}
+        if: ${{ always() && !cancelled() && steps.portal.outcome != 'success' }}
         run: |
           echo "::warning::Portal mirror was not updated (outcome: ${{ steps.portal.outcome }})." \
                "The image is published to GHCR and is still pullable, but" \

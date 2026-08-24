@@ -19,10 +19,16 @@ type LatestHubReleaseFeed = {
   version?: string;
 };
 
+type CachedRegistryToken = {
+  token: string;
+  expiresAt: number;
+};
+
 @Injectable()
 export class RegistryService {
   private readonly tagsCache = new Map<string, { tags: string[]; expiresAt: number }>();
   private latestHubVersionCache: { version: string | null; expiresAt: number } | null = null;
+  private registryTokenCache: CachedRegistryToken | null = null;
 
   constructor(
     private readonly httpService: HttpService,
@@ -94,6 +100,66 @@ export class RegistryService {
     }
   }
 
+  private jwtExpiryMs(token: string): number | null {
+    const payload = token.split('.')[1];
+    if (!payload) {
+      return null;
+    }
+
+    try {
+      const json = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')) as { exp?: unknown };
+      return typeof json.exp === 'number' ? json.exp * 1000 : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Mint a pull-only Portal registry JWT from the paired device key.
+   *
+   * Unpaired Hubs have no `ciHubApiKey`, so this returns null and callers fall
+   * back to an empty tag list (and `dl.ci.computer` for the Hub stack).
+   */
+  private async getDeviceRegistryToken(base: string): Promise<string | null> {
+    const deviceKey = this.configuration.get('ciHubApiKey');
+    if (!deviceKey) {
+      return null;
+    }
+
+    const now = Date.now();
+    if (this.registryTokenCache && this.registryTokenCache.expiresAt > now) {
+      return this.registryTokenCache.token;
+    }
+
+    try {
+      const { data } = await firstValueFrom(
+        this.httpService.post(
+          `${base}/api/devices/registry-token`,
+          {},
+          {
+            timeout: REGISTRY_HTTP_TIMEOUT_MS,
+            headers: { 'x-device-key': deviceKey, 'Content-Type': 'application/json' },
+          },
+        ),
+      );
+      const token = typeof (data as { token?: unknown })?.token === 'string' ? (data as { token: string }).token : null;
+      if (!token) {
+        return null;
+      }
+
+      const expiry = this.jwtExpiryMs(token);
+      this.registryTokenCache = {
+        token,
+        expiresAt: expiry ? expiry - 60_000 : now + TAGS_CACHE_TTL_MS,
+      };
+      return token;
+    } catch (error) {
+      this.registryTokenCache = null;
+      this.logger.debug(`Failed to mint Portal registry token: ${error instanceof Error ? error.message : String(error)}`);
+      return null;
+    }
+  }
+
   private async getTags(repository: string): Promise<string[]> {
     const registryUrl = this.configuration.get('ciCloudUrl');
     if (!registryUrl) {
@@ -108,8 +174,23 @@ export class RegistryService {
       return cached.tags;
     }
 
+    const headers: Record<string, string> = {};
+    if (repository === HUB_STACK_REGISTRY_REPO) {
+      const token = await this.getDeviceRegistryToken(base);
+      if (!token) {
+        this.tagsCache.set(cacheKey, { tags: [], expiresAt: now + TAGS_FAILURE_COOLDOWN_MS });
+        return [];
+      }
+      headers.Authorization = `Bearer ${token}`;
+    }
+
     try {
-      const { data } = await firstValueFrom(this.httpService.get(`${base}/v2/${repository}/tags/list`, { timeout: REGISTRY_HTTP_TIMEOUT_MS }));
+      const { data } = await firstValueFrom(
+        this.httpService.get(`${base}/v2/${repository}/tags/list`, {
+          timeout: REGISTRY_HTTP_TIMEOUT_MS,
+          ...(Object.keys(headers).length > 0 ? { headers } : {}),
+        }),
+      );
 
       const tags = (data.tags || []) as string[];
 
@@ -118,6 +199,9 @@ export class RegistryService {
       this.tagsCache.set(cacheKey, { tags: sorted, expiresAt: now + TAGS_CACHE_TTL_MS });
       return sorted;
     } catch (error) {
+      if (axios.isAxiosError(error) && error.response?.status === 401) {
+        this.registryTokenCache = null;
+      }
       this.tagsCache.set(cacheKey, { tags: [], expiresAt: now + TAGS_FAILURE_COOLDOWN_MS });
 
       if (axios.isAxiosError(error)) {

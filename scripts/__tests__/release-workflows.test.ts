@@ -103,9 +103,15 @@ describe('build-container.yml', () => {
     expect(portalStep).toContain('set -euo pipefail');
   });
 
-  it('warns whenever the Portal mirror did not succeed, including when skipped', () => {
-    // Missing credentials skip the step (outcome 'skipped'), which is exactly the silent
-    // degradation the warning exists to surface.
+  it('fails the Portal mirror when credentials are missing instead of skipping', () => {
+    const portalStep = buildContainer.slice(buildContainer.indexOf('- name: Push to Portal registry'));
+    const thisStep = portalStep.split('\n      - name:')[0];
+    expect(thisStep).not.toContain('continue-on-error: true');
+    expect(thisStep).not.toMatch(/if:\s*env\.PORTAL_USER/);
+    expect(thisStep).toMatch(/-z\s+"\$\{PORTAL_USER\}"/);
+  });
+
+  it('warns whenever the Portal mirror did not succeed', () => {
     expect(buildContainer).toContain("steps.portal.outcome != 'success'");
   });
 
