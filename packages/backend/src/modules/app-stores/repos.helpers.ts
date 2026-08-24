@@ -323,6 +323,8 @@ export class ReposHelpers {
       const apps = await this.requestCiCloud<Array<{ id: string; slug?: string; [key: string]: unknown }>>({
         method: 'GET',
         url: storeUrl,
+        params: { _ts: String(Date.now()) },
+        headers: { 'Cache-Control': 'no-cache', Pragma: 'no-cache' },
       });
 
       const limit = pLimit(12);

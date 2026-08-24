@@ -21,9 +21,9 @@ export const AppStoresContainer = () => {
 
   const pullMutation = useMutation({
     ...pullAppStoresMutation(),
-    onSuccess: () => {
+    onSuccess: async () => {
+      await invalidateStoreCatalogQueries(queryClient);
       toast.success(t('APP_STORES_UPDATE_SUCCESS'));
-      invalidateStoreCatalogQueries(queryClient);
     },
     onError: () => {
       toast.error(t('APP_STORES_UPDATE_ERROR'));

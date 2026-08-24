@@ -223,4 +223,64 @@ describe('PortalCatalogService', () => {
     expect(a).toEqual(b);
     expect(portalClient.fetchStoreCatalog).toHaveBeenCalledTimes(1);
   });
+
+  it('does not keep a stale inflight catalog after invalidateCache', async () => {
+    let resolveStale: (value: unknown) => void = () => {};
+    portalClient.fetchStoreCatalog.mockReturnValueOnce(new Promise((resolve) => (resolveStale = resolve)));
+
+    const stalePromise = service.getCatalogEntries(true);
+    service.invalidateCache();
+
+    portalClient.fetchStoreCatalog.mockResolvedValueOnce([
+      { slug: 'ci-memory', name: 'Companion Memory', version: '2026.8.23', categories: ['ai'] },
+    ] as any);
+
+    const freshPromise = service.getCatalogEntries(true);
+    resolveStale([{ slug: 'ci-memory', name: 'Companion Memory', version: '2026.8.18', categories: ['ai'] }]);
+
+    await stalePromise;
+    const fresh = await freshPromise;
+    expect(fresh[0]?.version).toBe('2026.8.23');
+
+    const cached = await service.getCatalogEntries(false);
+    expect(cached[0]?.version).toBe('2026.8.23');
+    expect(portalClient.fetchStoreCatalog).toHaveBeenCalledWith({ bypassCache: true });
+  });
+
+  it('force-refreshes even when a warm cache already exists', async () => {
+    portalClient.fetchStoreCatalog
+      .mockResolvedValueOnce([{ slug: 'ci-memory', name: 'Companion Memory', version: '2026.8.18', categories: ['ai'] }] as any)
+      .mockResolvedValueOnce([{ slug: 'ci-memory', name: 'Companion Memory', version: '2026.8.23', categories: ['ai'] }] as any);
+
+    const first = await service.getCatalogEntries(true);
+    expect(first[0]?.version).toBe('2026.8.18');
+
+    const second = await service.getCatalogEntries(true);
+    expect(second[0]?.version).toBe('2026.8.23');
+    expect(portalClient.fetchStoreCatalog).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not join a non-bypassing inflight fetch when force-refreshing', async () => {
+    let resolveStale: (value: unknown) => void = () => {};
+    portalClient.fetchStoreCatalog.mockReturnValueOnce(new Promise((resolve) => (resolveStale = resolve)));
+
+    const stalePromise = service.getCatalogEntries(false);
+    portalClient.fetchStoreCatalog.mockResolvedValueOnce([
+      { slug: 'ci-memory', name: 'Companion Memory', version: '2026.8.23', categories: ['ai'] },
+    ] as any);
+
+    const freshPromise = service.getCatalogEntries(true);
+    resolveStale([{ slug: 'ci-memory', name: 'Companion Memory', version: '2026.8.18', categories: ['ai'] }]);
+
+    const [stale, fresh] = await Promise.all([stalePromise, freshPromise]);
+    expect(fresh[0]?.version).toBe('2026.8.23');
+    expect(portalClient.fetchStoreCatalog).toHaveBeenCalledTimes(2);
+    expect(portalClient.fetchStoreCatalog).toHaveBeenLastCalledWith({ bypassCache: true });
+
+    const cached = await service.getCatalogEntries(false);
+    expect(cached[0]?.version).toBe('2026.8.23');
+    // The stale caller may still resolve to the catalog it requested; it must
+    // not republish over the force-refresh cache.
+    expect(['2026.8.18', '2026.8.23']).toContain(stale[0]?.version);
+  });
 });
