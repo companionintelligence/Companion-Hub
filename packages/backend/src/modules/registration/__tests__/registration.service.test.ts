@@ -512,6 +512,20 @@ describe('RegistrationService', () => {
       expect(result.message).toBe('Invalid pairing code');
     });
 
+    it('surfaces Portal 429 wait copy instead of a generic pairing failure', async () => {
+      mockedAxios.post.mockResolvedValue({
+        status: 429,
+        statusText: 'Too Many Requests',
+        headers: { 'retry-after': '8' },
+        data: { error: 'Rate limited' },
+      } as any);
+
+      const result = await service.pairDevice('ABC123');
+
+      expect(result.success).toBe(false);
+      expect(result.message).toBe('Too many attempts. Try again in 8 seconds.');
+    });
+
     it('returns error when device is already registered', async () => {
       deviceRegistrationRepository.hasAnyDeviceRegistration.mockResolvedValue(true);
       deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue({

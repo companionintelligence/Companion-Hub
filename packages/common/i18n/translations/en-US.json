@@ -474,6 +474,7 @@
   "AUTH_ERROR_ADMIN_ALREADY_EXISTS": "There is already an admin user. Please login to create a new user from the admin panel.",
   "AUTH_ERROR_ERROR_CREATING_USER": "Error creating user",
   "AUTH_ERROR_INVALID_CREDENTIALS": "Email or password didn't match. Check both fields and try again.",
+  "AUTH_ERROR_RATE_LIMITED": "Too many attempts. Try again in {{retryAfter}} seconds.",
   "AUTH_ERROR_EMAIL_NOT_VERIFIED": "Verify your CI Account email before signing in.",
   "AUTH_ERROR_INVALID_PASSWORD": "Invalid password",
   "AUTH_ERROR_INVALID_PASSWORD_LENGTH": "Password must be at least 8 characters long",

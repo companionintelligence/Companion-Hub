@@ -7,6 +7,7 @@ import { scrubString } from '@/core/error-reporting/sentry-scrubber';
 import { LoggerService } from '@/core/logger/logger.service';
 import { APP_DATA_DIR, DATA_DIR, TUNNEL_DIR, tunnelUserClearedMarkerPath } from '@/common/constants';
 import { buildPortalAxiosConfig, readPortalInternalUrlOverride, withPortalAxiosHeaders } from '@/common/helpers/portal-url';
+import { rateLimitedWaitCopy } from '@/common/helpers/retry-after';
 import { CloudflareClientService } from '../cloudflare/cloudflare-client.service';
 import { PortalClientService } from '@/core/portal/portal-client.service';
 import { TraefikConfigService } from '../docker/traefik-config.service';
@@ -1297,6 +1298,12 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
           timeout: 15_000,
         },
       );
+
+      if (response.status === 429) {
+        const message = rateLimitedWaitCopy(response.headers);
+        this.logger.warn(`Portal pairing rate-limited: ${message}`);
+        return { success: false, message };
+      }
 
       if (response.status < 200 || response.status >= 300) {
         const errorData = (response.data ?? { error: 'Unknown error' }) as { error?: string; message?: string };

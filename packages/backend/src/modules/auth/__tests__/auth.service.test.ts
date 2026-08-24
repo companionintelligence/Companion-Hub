@@ -81,6 +81,23 @@ describe('AuthService', () => {
       expect(sessionManager.createSession).toHaveBeenCalledWith(1);
     });
 
+    it('surfaces Portal 429 as a wait instead of bad credentials', async () => {
+      const loginBody: LoginBody = { username: 'test@example.com', password: 'Password1!' };
+
+      configurationService.getConfig.mockReturnValue({ ciCloudUrl: 'https://hub.example.com' } as never);
+      vi.mocked(axios.post).mockResolvedValue({
+        status: 429,
+        data: {},
+        headers: { 'retry-after': '12' },
+      });
+
+      await expect(authService.login(loginBody)).rejects.toMatchObject({
+        message: 'AUTH_ERROR_RATE_LIMITED',
+        status: 429,
+      });
+      expect(sessionManager.createSession).not.toHaveBeenCalled();
+    });
+
     it('should return totpSessionId if totp is enabled', async () => {
       const loginBody: LoginBody = { username: 'totp@example.com', password: 'Password1!' };
       const mockUser = { id: 2, password: 'hashedPassword', totpEnabled: 1 };
