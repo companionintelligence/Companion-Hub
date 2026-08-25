@@ -27,7 +27,7 @@ import {
   VllmStatusQueryDto,
 } from './inference.dto';
 import { OllamaBackend } from './backends/ollama.backend';
-import { resolveVllmProbeUrl, VLLM_PROBE_API_KEY_HEADER, VllmBackend } from './backends/vllm.backend';
+import { buildVllmRemediation, resolveVllmProbeUrl, VLLM_PROBE_API_KEY_HEADER, VllmBackend } from './backends/vllm.backend';
 import { LemonadeBackend } from './backends/lemonade.backend';
 import { resolveInstalledCatalogIds, resolveInstalledCatalogIdsFromServedModels } from './model-availability.util';
 
@@ -69,6 +69,12 @@ export class InferenceController {
     // /dev/dri) as the fallback — see OllamaBackend.getDockerImage()/.getComposeConfig(). vLLM has
     // no reliably maintained ROCm image for this hardware — see VllmBackend.getComposeConfig(),
     // which declines AMD outright rather than mount devices into an image that can't use them.
+    // Apple Silicon also always recommends Ollama — it already gets MLX acceleration transparently
+    // from Ollama 0.19+ (same `family:size` tags, no Hub-side change needed) once the operator
+    // upgrades the host app. vLLM-Metal (the catalog's `-mlx` rows) is a real option there too, but
+    // it has no Docker path and no auto-provisioning story (a native venv install script the Hub
+    // can't run for the operator), so it stays an opt-in Settings choice rather than the default —
+    // see buildVllmRemediation in vllm.backend.ts for the guidance surfaced when it's selected.
     return profile.npu.available ? 'lemonade' : profile.gpu.vendor === 'nvidia' && profile.gpu.runtimeAvailable ? 'vllm' : 'ollama';
   }
 
@@ -446,21 +452,20 @@ export class InferenceController {
     }));
     const ready = !!(health.running && health.healthy);
     const displayEndpoint = ready ? `${probeUrl}/v1` : undefined;
+    // Only worth a hardware lookup on the unhappy path — Apple Silicon has a completely different
+    // (Docker-less, MLX-based) remediation path than everything else. See buildVllmRemediation.
+    const profile = ready ? undefined : await this.hardwareInspector.getProfile().catch(() => undefined);
+    const remediation = ready ? undefined : buildVllmRemediation(profile?.gpu.vendor === 'apple');
     return {
       ready,
       running: health.running,
       endpointUrl: probeUrl,
       displayEndpoint,
-      // The suggested model must be a catalog `backendModelId` (so the served model is recognized
-      // as installed) and must fit common consumer VRAM — Qwen3-4B-Instruct-2507 with bitsandbytes
-      // quantization runs on an 8 GB card, unlike the old Qwen2.5-7B bf16 suggestion (#1103).
-      remediationCommand: ready
-        ? undefined
-        : 'vllm serve Qwen/Qwen3-4B-Instruct-2507 --host 0.0.0.0 --port 8000 --quantization bitsandbytes --max-model-len 8192 --gpu-memory-utilization 0.85',
+      remediationCommand: remediation?.command,
       error: ready ? undefined : health.error,
-      hint: ready
-        ? undefined
-        : `Run vLLM on the host (not inside Docker). Hub probes from inside its container — use http://host.docker.internal:8000, not localhost. Currently probing ${probeUrl}.`,
+      hint: remediation
+        ? `${remediation.hint} Hub probes from inside its container — use http://host.docker.internal:8000, not localhost. Currently probing ${probeUrl}.`
+        : undefined,
     };
   }
 
