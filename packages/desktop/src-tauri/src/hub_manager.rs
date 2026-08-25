@@ -10815,8 +10815,8 @@ Error response from daemon: CONFLICT. The container name "/ci-hub-app" IS ALREAD
             "user-cleared marker should be written",
         );
         assert!(
-            summary.contains("removed"),
-            "summary should report removal, got: {summary}",
+            summary.contains("cleared") && summary.contains(&token_path.display().to_string()),
+            "summary should report clearance of the token path, got: {summary}",
         );
     }
 
