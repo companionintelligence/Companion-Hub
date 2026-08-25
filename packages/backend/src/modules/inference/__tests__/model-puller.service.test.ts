@@ -10,6 +10,7 @@ import { ModelRegistryService } from '../model-registry.service';
 import { OllamaBackend } from '../backends/ollama.backend';
 import { VllmBackend } from '../backends/vllm.backend';
 import { LemonadeBackend } from '../backends/lemonade.backend';
+import { MtplxBackend } from '../backends/mtplx.backend';
 import type { CuratedModel, HardwareProfile } from '@ci-hub/common/types';
 
 const profile: HardwareProfile = {
@@ -94,6 +95,7 @@ describe('ModelPullerService.evaluatePull', () => {
         { provide: OllamaBackend, useValue: ollamaBackend },
         { provide: VllmBackend, useValue: mock<VllmBackend>() },
         { provide: LemonadeBackend, useValue: mock<LemonadeBackend>() },
+        { provide: MtplxBackend, useValue: mock<MtplxBackend>() },
       ],
     }).compile();
 
@@ -220,6 +222,7 @@ describe('ModelPullerService.startPull', () => {
         { provide: OllamaBackend, useValue: ollamaBackend },
         { provide: VllmBackend, useValue: mock<VllmBackend>() },
         { provide: LemonadeBackend, useValue: mock<LemonadeBackend>() },
+        { provide: MtplxBackend, useValue: mock<MtplxBackend>() },
       ],
     }).compile();
 

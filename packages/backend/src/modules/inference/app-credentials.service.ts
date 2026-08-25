@@ -8,6 +8,7 @@ import { CloudFallbackService } from './cloud-fallback.service';
 import { OllamaBackend } from './backends/ollama.backend';
 import { VllmBackend } from './backends/vllm.backend';
 import { LemonadeBackend } from './backends/lemonade.backend';
+import { MtplxBackend } from './backends/mtplx.backend';
 import type { InferenceBackend } from './backends/backend.interface';
 import type { CuratedModel, HardwareTier, InferenceBackendType } from '@ci-hub/common/types';
 import { isCatalogModelInstalled, isServedModelForCatalog } from './model-availability.util';
@@ -91,6 +92,7 @@ export class AppCredentialsService {
     private readonly ollamaBackend: OllamaBackend,
     private readonly vllmBackend: VllmBackend,
     private readonly lemonadeBackend: LemonadeBackend,
+    private readonly mtplxBackend: MtplxBackend,
     private readonly configurationService: ConfigurationService,
   ) {}
 
@@ -102,6 +104,8 @@ export class AppCredentialsService {
         return this.vllmBackend;
       case 'lemonade':
         return this.lemonadeBackend;
+      case 'mtplx':
+        return this.mtplxBackend;
     }
   }
 
@@ -202,7 +206,10 @@ export class AppCredentialsService {
       }
     }
     let chatModelId = availableLlm?.backendModelId ?? null;
-    if (!chatModelId && backendType === 'vllm' && endpointHealth.modelsLoaded.length > 0) {
+    // vLLM and MTPLX are both host-managed servers with no Hub pull registry — an operator can
+    // serve a model outside the catalog, so fall back to whatever it reports rather than leaving
+    // chatModelId empty.
+    if (!chatModelId && (backendType === 'vllm' || backendType === 'mtplx') && endpointHealth.modelsLoaded.length > 0) {
       chatModelId = endpointHealth.modelsLoaded[0] ?? null;
     }
     const embeddingsModelId = embeddings?.backendModelId ?? null;
@@ -354,7 +361,9 @@ export class AppCredentialsService {
 
   private isCuratedModelAvailable(model: CuratedModel, modelsLoaded: string[], backendType: InferenceBackendType): boolean {
     if (this.isModelPulled(model.id, modelsLoaded, backendType)) return true;
-    if (backendType === 'vllm') {
+    // vLLM and MTPLX have no Hub pull registry — "available" means the operator's server is
+    // actually reporting this exact id, not that the Hub tracked a pull for it.
+    if (backendType === 'vllm' || backendType === 'mtplx') {
       return isServedModelForCatalog(model, modelsLoaded);
     }
     return isCatalogModelInstalled(model, modelsLoaded);
@@ -362,7 +371,7 @@ export class AppCredentialsService {
 
   private isModelPulled(catalogId: string, modelsLoaded: string[], backendType: InferenceBackendType): boolean {
     const curated = this.modelRegistry.getCuratedModel(catalogId);
-    if (backendType === 'vllm') {
+    if (backendType === 'vllm' || backendType === 'mtplx') {
       return curated ? isServedModelForCatalog(curated, modelsLoaded) : modelsLoaded.includes(catalogId);
     }
 

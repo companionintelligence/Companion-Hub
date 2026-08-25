@@ -10,6 +10,7 @@ import { CloudFallbackService } from '@/modules/inference/cloud-fallback.service
 import { OllamaBackend } from '@/modules/inference/backends/ollama.backend';
 import { VllmBackend } from '@/modules/inference/backends/vllm.backend';
 import { LemonadeBackend } from '@/modules/inference/backends/lemonade.backend';
+import { MtplxBackend } from '@/modules/inference/backends/mtplx.backend';
 import type { InferenceBackendType, CloudProviderType } from '@ci-hub/common/types';
 
 @Injectable()
@@ -26,6 +27,7 @@ export class InferenceTools implements OnModuleInit {
     private readonly ollamaBackend: OllamaBackend,
     private readonly vllmBackend: VllmBackend,
     private readonly lemonadeBackend: LemonadeBackend,
+    private readonly mtplxBackend: MtplxBackend,
   ) {}
 
   onModuleInit() {
@@ -48,10 +50,10 @@ export class InferenceTools implements OnModuleInit {
       category: 'Inference & Models',
       name: 'hub_list_inference_backends',
       access: 'read',
-      description: 'List available inference backends (Ollama, vLLM, Lemonade) and their current status.',
+      description: 'List available inference backends (Ollama, vLLM, Lemonade, MTPLX) and their current status.',
       inputSchema: { type: 'object', properties: {}, required: [] },
       handler: async () => {
-        const backends = [this.ollamaBackend, this.vllmBackend, this.lemonadeBackend];
+        const backends = [this.ollamaBackend, this.vllmBackend, this.lemonadeBackend, this.mtplxBackend];
         const results = await Promise.all(
           backends.map(async (b) => {
             const health = await b.healthCheck();
@@ -81,13 +83,13 @@ export class InferenceTools implements OnModuleInit {
       name: 'hub_start_inference_backend',
       access: 'write',
       description:
-        'Report the live status of an inference backend ("ollama", "vllm", or "lemonade"). NOTE: this does NOT ' +
+        'Report the live status of an inference backend ("ollama", "vllm", "lemonade", or "mtplx"). NOTE: this does NOT ' +
         'start a container — inference backends are managed by the Hub runtime/compose stack. Use it to verify ' +
         'whether a backend is up before routing inference.',
       inputSchema: {
         type: 'object',
         properties: {
-          backend: { type: 'string', enum: ['ollama', 'vllm', 'lemonade'], description: 'Backend type to check' },
+          backend: { type: 'string', enum: ['ollama', 'vllm', 'lemonade', 'mtplx'], description: 'Backend type to check' },
         },
         required: ['backend'],
       },
@@ -105,7 +107,7 @@ export class InferenceTools implements OnModuleInit {
       inputSchema: {
         type: 'object',
         properties: {
-          backend: { type: 'string', enum: ['ollama', 'vllm', 'lemonade'], description: 'Backend type to check' },
+          backend: { type: 'string', enum: ['ollama', 'vllm', 'lemonade', 'mtplx'], description: 'Backend type to check' },
         },
         required: ['backend'],
       },
@@ -352,12 +354,14 @@ export class InferenceTools implements OnModuleInit {
   }
 
   /** Resolve the injected backend instance for a backend type. */
-  private backendFor(backendType: InferenceBackendType): OllamaBackend | VllmBackend | LemonadeBackend {
+  private backendFor(backendType: InferenceBackendType): OllamaBackend | VllmBackend | LemonadeBackend | MtplxBackend {
     switch (backendType) {
       case 'vllm':
         return this.vllmBackend;
       case 'lemonade':
         return this.lemonadeBackend;
+      case 'mtplx':
+        return this.mtplxBackend;
       default:
         return this.ollamaBackend;
     }

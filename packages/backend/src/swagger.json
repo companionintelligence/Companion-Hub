@@ -2546,7 +2546,8 @@
               "enum": [
                 "ollama",
                 "vllm",
-                "lemonade"
+                "lemonade",
+                "mtplx"
               ]
             }
           }
@@ -2846,12 +2847,22 @@
               "enum": [
                 "ollama",
                 "vllm",
-                "lemonade"
+                "lemonade",
+                "mtplx"
               ]
             }
           },
           {
             "name": "vllmUrl",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "uri"
+            }
+          },
+          {
+            "name": "mtplxUrl",
             "in": "query",
             "required": false,
             "schema": {
@@ -2916,6 +2927,20 @@
             }
           }
         ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Inference"
+        ]
+      }
+    },
+    "/api/inference/mtplx/status": {
+      "get": {
+        "operationId": "getMtplxStatus",
+        "parameters": [],
         "responses": {
           "200": {
             "description": ""
@@ -5578,7 +5603,8 @@
                 "enum": [
                   "ollama",
                   "vllm",
-                  "lemonade"
+                  "lemonade",
+                  "mtplx"
                 ]
               },
               "inferenceModel": {
@@ -5594,6 +5620,9 @@
                 "type": "string"
               },
               "inferenceVllmUrl": {
+                "type": "string"
+              },
+              "inferenceMtplxUrl": {
                 "type": "string"
               },
               "inferenceCloudProviders": {
@@ -5964,7 +5993,8 @@
             "enum": [
               "ollama",
               "vllm",
-              "lemonade"
+              "lemonade",
+              "mtplx"
             ]
           },
           "inferenceModel": {
@@ -5980,6 +6010,9 @@
             "type": "string"
           },
           "inferenceVllmUrl": {
+            "type": "string"
+          },
+          "inferenceMtplxUrl": {
             "type": "string"
           },
           "inferenceCloudProviders": {
@@ -10752,7 +10785,8 @@
             "enum": [
               "ollama",
               "vllm",
-              "lemonade"
+              "lemonade",
+              "mtplx"
             ]
           },
           "model": {
@@ -10775,6 +10809,11 @@
             "type": "string"
           },
           "vllmUrl": {
+            "nullable": true,
+            "type": "string",
+            "format": "uri"
+          },
+          "mtplxUrl": {
             "nullable": true,
             "type": "string",
             "format": "uri"
@@ -13980,10 +14019,15 @@
             "enum": [
               "ollama",
               "vllm",
-              "lemonade"
+              "lemonade",
+              "mtplx"
             ]
           },
           "vllmUrl": {
+            "type": "string",
+            "format": "uri"
+          },
+          "mtplxUrl": {
             "type": "string",
             "format": "uri"
           }
@@ -13998,7 +14042,8 @@
             "enum": [
               "ollama",
               "vllm",
-              "lemonade"
+              "lemonade",
+              "mtplx"
             ]
           }
         },

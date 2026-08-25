@@ -22,6 +22,7 @@ import { inferencePreferencesSchema } from '../inference.dto';
 import { OllamaBackend } from '../backends/ollama.backend';
 import { VllmBackend } from '../backends/vllm.backend';
 import { LemonadeBackend } from '../backends/lemonade.backend';
+import { MtplxBackend } from '../backends/mtplx.backend';
 import { HostMetricsService } from '@/modules/system/host-metrics.service';
 
 describe('InferenceController — preferences', () => {
@@ -47,6 +48,7 @@ describe('InferenceController — preferences', () => {
         { provide: OllamaBackend, useValue: mock<OllamaBackend>() },
         { provide: VllmBackend, useValue: mock<VllmBackend>() },
         { provide: LemonadeBackend, useValue: mock<LemonadeBackend>() },
+        { provide: MtplxBackend, useValue: mock<MtplxBackend>() },
         { provide: LoggerService, useValue: mock<LoggerService>() },
       ],
     }).compile();
@@ -102,7 +104,7 @@ describe('InferenceController — preferences', () => {
 
     const result = await controller.updatePreferences({ backend: 'lemonade' });
 
-    expect(configService.setInferencePreferences).toHaveBeenCalledWith('lemonade', undefined, undefined, undefined, undefined, undefined);
+    expect(configService.setInferencePreferences).toHaveBeenCalledWith('lemonade', undefined, undefined, undefined, undefined, undefined, undefined);
     expect(result).toEqual({
       preferredBackend: 'lemonade',
       preferredModel: null,
@@ -131,6 +133,7 @@ describe('InferenceController — preferences', () => {
       'hermes4-8b',
       'nomic-embed-text',
       'gemma4-27b',
+      undefined,
       undefined,
       undefined,
     );
@@ -164,6 +167,32 @@ describe('InferenceController — preferences', () => {
       undefined,
       undefined,
       'vllm-local',
+      'http://192.168.1.50:8000',
+      undefined,
+    );
+  }, 30_000);
+
+  it('passes the MTPLX endpoint URL through when provided', async () => {
+    configService.setInferencePreferences.mockResolvedValue({
+      preferredBackend: 'mtplx',
+      preferredModel: null,
+      preferredEmbeddingModel: null,
+      preferredVisionModel: null,
+      preferredMtplxUrl: 'http://192.168.1.50:8000',
+    } as never);
+
+    await controller.updatePreferences({
+      backend: 'mtplx',
+      mtplxUrl: 'http://192.168.1.50:8000',
+    });
+
+    expect(configService.setInferencePreferences).toHaveBeenCalledWith(
+      'mtplx',
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
       'http://192.168.1.50:8000',
     );
   }, 30_000);
@@ -206,5 +235,12 @@ describe('InferenceController — preferences', () => {
     expect(inferencePreferencesSchema.safeParse({ backend: 'ollama', embeddingModel: 'nomic-embed-text', visionModel: 'gemma4-27b' }).success).toBe(
       true,
     );
+  });
+
+  it('accepts the mtplx backend and a valid mtplxUrl in the preferences schema', () => {
+    expect(inferencePreferencesSchema.safeParse({ backend: 'mtplx' }).success).toBe(true);
+    expect(inferencePreferencesSchema.safeParse({ backend: 'mtplx', mtplxUrl: 'http://host.docker.internal:8000' }).success).toBe(true);
+    expect(inferencePreferencesSchema.safeParse({ backend: 'mtplx', mtplxUrl: null }).success).toBe(true);
+    expect(inferencePreferencesSchema.safeParse({ backend: 'mtplx', mtplxUrl: 'not-a-url' }).success).toBe(false);
   });
 });

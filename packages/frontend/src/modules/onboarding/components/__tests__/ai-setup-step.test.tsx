@@ -527,7 +527,7 @@ describe('AiSetupStep', () => {
     await user.click(screen.getByTestId('vllm-recheck-btn'));
 
     // Still on vLLM — the refetch must happen, and must not snap back to the recommended backend.
-    await waitFor(() => expect(fetchInferenceOnboardingProfile).toHaveBeenCalledWith('vllm', '', ''));
+    await waitFor(() => expect(fetchInferenceOnboardingProfile).toHaveBeenCalledWith('vllm', '', '', ''));
     expect(screen.getByText('vLLM detected')).toBeInTheDocument();
   });
 

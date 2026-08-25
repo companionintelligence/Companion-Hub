@@ -274,6 +274,7 @@ describe('AiSettingsContainer', () => {
         visionModel: null,
         vllmApiKey: null,
         vllmUrl: null,
+        mtplxUrl: null,
       });
     });
   });

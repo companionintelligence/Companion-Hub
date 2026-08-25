@@ -4,6 +4,7 @@ import {
   fetchInferencePreferences,
   fetchInferenceRuntimeModels,
   fetchInferenceTrackedModels,
+  fetchMtplxInstallStatus,
   fetchOllamaInstallStatus,
   fetchVllmInstallStatus,
   pinInferenceModel,
@@ -32,8 +33,9 @@ import { ModelIcon } from '@/modules/onboarding/components/ai-setup/icons';
 import { modelTags, modelMeta, modelScores } from '@/modules/onboarding/components/ai-setup/model-selection-card';
 import { OtherModelsSection } from '@/modules/onboarding/components/ai-setup/model-selection-card';
 import { VllmSetupCard } from '@/modules/onboarding/components/ai-setup/vllm-setup-card';
+import { MtplxSetupCard } from '@/modules/onboarding/components/ai-setup/mtplx-setup-card';
 import { OllamaSetupCard } from '@/modules/onboarding/components/ai-setup/ollama-setup-card';
-import type { OllamaStatus, VllmStatus } from '@/modules/onboarding/helpers/ai-setup-types';
+import type { MtplxStatus, OllamaStatus, VllmStatus } from '@/modules/onboarding/helpers/ai-setup-types';
 import { EMBEDDING_INFERENCE_BACKEND, unavailableInferenceBackends } from '@/modules/onboarding/helpers/inference-backend-availability';
 import { useTranslation } from 'react-i18next';
 
@@ -109,10 +111,13 @@ export const AiSettingsContainer = () => {
   const [runtimeDiscoveryUnavailable, setRuntimeDiscoveryUnavailable] = useState(false);
   const [vllmApiKey, setVllmApiKey] = useState('');
   const [vllmUrl, setVllmUrl] = useState('');
+  const [mtplxUrl, setMtplxUrl] = useState('');
   const [ollamaStatus, setOllamaStatus] = useState<OllamaStatus | null>(null);
   const [vllmStatus, setVllmStatus] = useState<VllmStatus | null>(null);
+  const [mtplxStatus, setMtplxStatus] = useState<MtplxStatus | null>(null);
   const [checkingOllama, setCheckingOllama] = useState(false);
   const [checkingVllm, setCheckingVllm] = useState(false);
+  const [checkingMtplx, setCheckingMtplx] = useState(false);
   // Backend the backend-switch effect has already refetched for (set by fetchProfile too, since it
   // fetches profile + runtime models itself); prevents a duplicate fetch right after mount.
   const lastHandledBackendRef = useRef<InferenceBackendType | null>(null);
@@ -121,6 +126,8 @@ export const AiSettingsContainer = () => {
   vllmUrlRef.current = vllmUrl;
   const vllmApiKeyRef = useRef('');
   vllmApiKeyRef.current = vllmApiKey;
+  const mtplxUrlRef = useRef('');
+  mtplxUrlRef.current = mtplxUrl;
   const trackedModelsRef = useRef<TrackedModel[]>([]);
   // One index of the tier catalog per profile, shared by the save and by the confirmation copy so
   // they cannot disagree — and so neither rebuilds it, the save on every press and the copy on
@@ -198,6 +205,9 @@ export const AiSettingsContainer = () => {
       if (prefData?.preferredVllmUrl) {
         setVllmUrl(prefData.preferredVllmUrl);
       }
+      if (prefData?.preferredMtplxUrl) {
+        setMtplxUrl(prefData.preferredMtplxUrl);
+      }
       const requestedBackend = backendOverride ?? prefData?.preferredBackend ?? undefined;
       const data = await fetchInferenceOnboardingProfile(requestedBackend);
       setProfile(data);
@@ -213,6 +223,8 @@ export const AiSettingsContainer = () => {
       void checkOllamaStatus();
       if (preferredBackend === 'vllm') {
         void checkVllmStatus();
+      } else if (preferredBackend === 'mtplx') {
+        void checkMtplxStatus();
       }
 
       const configured = await fetchConfiguredCloudProviders();
@@ -250,6 +262,7 @@ export const AiSettingsContainer = () => {
         selectedBackend,
         selectedBackend === 'vllm' ? vllmUrlRef.current : undefined,
         selectedBackend === 'vllm' ? vllmApiKeyRef.current : undefined,
+        selectedBackend === 'mtplx' ? mtplxUrlRef.current : undefined,
       );
       setProfile(data);
       seedSelectedModelIds(data, selectedBackend, trackedModelsRef.current);
@@ -281,6 +294,29 @@ export const AiSettingsContainer = () => {
       seedSelectedModelIds(data, 'vllm', trackedModelsRef.current);
     }
   }, [checkVllmStatus, seedSelectedModelIds]);
+
+  const checkMtplxStatus = useCallback(async () => {
+    setCheckingMtplx(true);
+    try {
+      const data = (await fetchMtplxInstallStatus(mtplxUrlRef.current)) as MtplxStatus;
+      setMtplxStatus(data);
+      return data;
+    } catch {
+      setMtplxStatus({ ready: false, running: false, endpointUrl: '' });
+      return null;
+    } finally {
+      setCheckingMtplx(false);
+    }
+  }, []);
+
+  const handleRecheckMtplx = useCallback(async () => {
+    const status = await checkMtplxStatus();
+    if (status?.ready) {
+      const data = await fetchInferenceOnboardingProfile('mtplx', undefined, undefined, mtplxUrlRef.current);
+      setProfile(data);
+      seedSelectedModelIds(data, 'mtplx', trackedModelsRef.current);
+    }
+  }, [checkMtplxStatus, seedSelectedModelIds]);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: only on mount
   useEffect(() => {
@@ -323,6 +359,7 @@ export const AiSettingsContainer = () => {
       selectedBackend,
       selectedBackend === 'vllm' ? vllmUrlRef.current : undefined,
       selectedBackend === 'vllm' ? vllmApiKeyRef.current : undefined,
+      selectedBackend === 'mtplx' ? mtplxUrlRef.current : undefined,
     ).then((data) => {
       setProfile(data);
       // Re-seed the checkboxes for the new backend from server truth (see seedSelectedModelIds).
@@ -331,8 +368,10 @@ export const AiSettingsContainer = () => {
     fetchRuntimeModels(selectedBackend);
     if (selectedBackend === 'vllm') {
       void checkVllmStatus();
+    } else if (selectedBackend === 'mtplx') {
+      void checkMtplxStatus();
     }
-  }, [selectedBackend, fetchRuntimeModels, checkVllmStatus, seedSelectedModelIds]);
+  }, [selectedBackend, fetchRuntimeModels, checkVllmStatus, checkMtplxStatus, seedSelectedModelIds]);
 
   const hasActiveTransfers = Object.values(trackedModels).some((model) => ['pulling', 'loading', 'unloading'].includes(model.state));
 
@@ -380,6 +419,7 @@ export const AiSettingsContainer = () => {
         visionModel: preferredVisionModel,
         vllmApiKey: selectedBackend === 'vllm' ? vllmApiKey.trim() || null : null,
         vllmUrl: selectedBackend === 'vllm' ? vllmUrl.trim() || null : null,
+        mtplxUrl: selectedBackend === 'mtplx' ? mtplxUrl.trim() || null : null,
       });
 
       const ollamaSelectedModelIds = compatibleSelectedModelIds.filter((modelId) => availableModelById.get(modelId)?.backend === 'ollama');
@@ -648,6 +688,27 @@ export const AiSettingsContainer = () => {
                 onApiKeyChange={setVllmApiKey}
                 endpointUrl={vllmUrl}
                 onEndpointUrlChange={setVllmUrl}
+              />
+              <div>
+                <h3 className="text-sm font-semibold">{t('ONBOARDING_EMBEDDINGS_OLLAMA_SECTION_TITLE')}</h3>
+                <p className="text-xs text-muted-foreground mt-0.5 mb-3">{t('ONBOARDING_EMBEDDINGS_OLLAMA_SECTION_DESC')}</p>
+                <OllamaSetupCard status={ollamaStatus} checking={checkingOllama} onRecheck={handleRecheckOllama} />
+              </div>
+            </section>
+          )}
+
+          {selectedBackend === 'mtplx' && (
+            <section className="rounded-lg border border-border bg-gradient-to-b from-card to-card/60 p-5 shadow-sm sm:p-6 space-y-4">
+              <div>
+                <h2 className="text-base font-bold uppercase tracking-wide">{t('ONBOARDING_MTPLX_SECTION_TITLE')}</h2>
+                <p className="text-xs sm:text-sm text-muted-foreground mt-0.5">{t('ONBOARDING_MTPLX_SECTION_DESC')}</p>
+              </div>
+              <MtplxSetupCard
+                status={mtplxStatus}
+                checking={checkingMtplx}
+                onRecheck={handleRecheckMtplx}
+                endpointUrl={mtplxUrl}
+                onEndpointUrlChange={setMtplxUrl}
               />
               <div>
                 <h3 className="text-sm font-semibold">{t('ONBOARDING_EMBEDDINGS_OLLAMA_SECTION_TITLE')}</h3>

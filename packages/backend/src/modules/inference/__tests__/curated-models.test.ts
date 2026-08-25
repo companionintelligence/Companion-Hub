@@ -10,11 +10,12 @@ describe('curated-models (TOON catalog)', () => {
   const byId = new Map(CURATED_MODELS.map((m) => [m.id, m]));
   const llms = CURATED_MODELS.filter((m) => m.modality === 'llm');
 
-  it('decodes the full catalog (84 Ollama LLMs + 4 Lemonade LLMs + 72 vLLM LLMs [8 CUDA + 64 MLX] + voice + embeddings) with unique ids', () => {
+  it('decodes the full catalog (84 Ollama LLMs + 4 Lemonade LLMs + 72 vLLM LLMs [8 CUDA + 64 MLX] + 8 MTPLX LLMs + voice + embeddings) with unique ids', () => {
     expect(llms.filter((m) => m.backend === 'ollama').length).toBe(84);
     expect(llms.filter((m) => m.backend === 'lemonade').length).toBe(4);
     expect(llms.filter((m) => m.backend === 'vllm').length).toBe(72);
-    expect(llms.length).toBe(160);
+    expect(llms.filter((m) => m.backend === 'mtplx').length).toBe(8);
+    expect(llms.length).toBe(168);
     // 4 Ollama embeddings + 1 Lemonade embedding (nomic-embed-text-v1-lemonade).
     expect(CURATED_MODELS.filter((m) => m.modality === 'embedding').length).toBe(5);
     expect(CURATED_MODELS.filter((m) => m.modality === 'tts' || m.modality === 'stt').length).toBe(3);
@@ -65,6 +66,26 @@ describe('curated-models (TOON catalog)', () => {
     expect(mlxRows.some((m) => m.requirements.minTier === 'high')).toBe(true);
     // MoE row carries active-params so hardware-fit ranking doesn't treat it as dense.
     expect(byId.get('qwen3-30b-a3b-mlx')?.activeParameterScale).toBe(3);
+  });
+
+  it('gates MTPLX rows to Apple Silicon only, with real Youssofal HF repo ids and dynamic-precision quant', () => {
+    const mtplxRows = llms.filter((m) => m.backend === 'mtplx');
+    expect(mtplxRows.length).toBe(8);
+    for (const m of mtplxRows) {
+      expect(m.id, `${m.id} id`).toMatch(/-mtplx/);
+      expect(m.backendModelId, `${m.id} tag`).toMatch(/^Youssofal\//);
+      expect(m.requirements.gpuVendors, `${m.id} gpuVendors`).toEqual(['apple']);
+      expect(m.runtime.quantization, `${m.id} quantization`).toBe('mtplx-dynamic');
+    }
+    // Spans cpu-only/low/medium/high, so Macs of different unified-memory sizes get a fit — even
+    // MTPLX's smallest curated model (Qwen 3.5 4B) is cpu-only-class small.
+    expect(mtplxRows.some((m) => m.requirements.minTier === 'cpu-only')).toBe(true);
+    expect(mtplxRows.some((m) => m.requirements.minTier === 'low')).toBe(true);
+    expect(mtplxRows.some((m) => m.requirements.minTier === 'medium')).toBe(true);
+    expect(mtplxRows.some((m) => m.requirements.minTier === 'high')).toBe(true);
+    // MoE rows carry active-params so hardware-fit ranking doesn't treat them as dense.
+    expect(byId.get('qwen3-6-35b-mtplx-speed')?.activeParameterScale).toBe(3);
+    expect(byId.get('qwen3-6-35b-mtplx-balance')?.activeParameterScale).toBe(3);
   });
 
   it('surfaces vLLM chat models so selecting the vLLM backend yields usable recommendations', () => {

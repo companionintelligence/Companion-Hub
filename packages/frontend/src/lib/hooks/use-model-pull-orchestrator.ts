@@ -1,4 +1,4 @@
-import { fetchOllamaInstallStatus, fetchVllmInstallStatus } from '@/lib/inference/inference-api';
+import { fetchMtplxInstallStatus, fetchOllamaInstallStatus, fetchVllmInstallStatus } from '@/lib/inference/inference-api';
 import {
   ensurePullStarted,
   ensurePullsStarted,
@@ -80,6 +80,11 @@ export function useModelPullOrchestrator({
       try {
         if (inferenceBackend === 'vllm') {
           const data = (await fetchVllmInstallStatus()) as { ready?: boolean; running?: boolean };
+          if (!cancelled) setBackendReady(!!(data.ready ?? data.running));
+          return;
+        }
+        if (inferenceBackend === 'mtplx') {
+          const data = (await fetchMtplxInstallStatus()) as { ready?: boolean; running?: boolean };
           if (!cancelled) setBackendReady(!!(data.ready ?? data.running));
           return;
         }

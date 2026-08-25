@@ -7,6 +7,7 @@ import {
   getTrackedModels,
   getOllamaStatus,
   getVllmStatus,
+  getMtplxStatus,
   pinModel,
   rescanHardware,
   setCloudProvider,
@@ -34,12 +35,14 @@ export async function fetchInferenceOnboardingProfile(
   backend?: InferenceBackendType,
   vllmUrl?: string,
   vllmApiKey?: string,
+  mtplxUrl?: string,
 ): Promise<HardwareProfileResponse> {
   const query: Record<string, string> = {};
   if (backend) query.backend = backend;
-  // Candidate vLLM URL the operator typed but hasn't saved yet — keeps the profile's
+  // Candidate vLLM/MTPLX URL the operator typed but hasn't saved yet — keeps the profile's
   // installed-model resolution probing the same server the status card reports on.
   if (backend === 'vllm' && vllmUrl?.trim()) query.vllmUrl = vllmUrl.trim();
+  if (backend === 'mtplx' && mtplxUrl?.trim()) query.mtplxUrl = mtplxUrl.trim();
   const headers = backend === 'vllm' && vllmApiKey?.trim() ? { [VLLM_PROBE_API_KEY_HEADER]: vllmApiKey.trim() } : undefined;
   return unwrap(
     getOnboardingProfile({
@@ -108,6 +111,7 @@ export async function saveInferencePreferences(body: {
   visionModel: string | null;
   vllmApiKey?: string | null;
   vllmUrl?: string | null;
+  mtplxUrl?: string | null;
 }): Promise<void> {
   await unwrap(
     updatePreferences({
@@ -118,6 +122,7 @@ export async function saveInferencePreferences(body: {
         visionModel: body.visionModel ?? undefined,
         vllmApiKey: body.vllmApiKey ?? undefined,
         vllmUrl: body.vllmUrl ?? undefined,
+        mtplxUrl: body.mtplxUrl ?? undefined,
       },
     } as Parameters<typeof updatePreferences>[0]),
   );
@@ -143,4 +148,9 @@ export async function unpinInferenceModel(modelId: string): Promise<void> {
 
 export async function fetchOllamaInstallStatus() {
   return unwrap(getOllamaStatus());
+}
+
+export async function fetchMtplxInstallStatus(url?: string) {
+  const query = url?.trim() ? { url: url.trim() } : undefined;
+  return unwrap(getMtplxStatus({ query } as Parameters<typeof getMtplxStatus>[0]));
 }

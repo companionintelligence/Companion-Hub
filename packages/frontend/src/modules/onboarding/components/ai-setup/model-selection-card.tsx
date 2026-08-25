@@ -109,7 +109,12 @@ export const RecommendedModels = ({
     .filter((m) => recommendedIds.has(m.id))
     .sort((a, b) => Number(b.id === preferredModelId) - Number(a.id === preferredModelId));
 
-  const installHint = chatBackend === 'vllm' ? t('ONBOARDING_MODELS_VLLM_INSTALL_HINT') : t('ONBOARDING_MODELS_INSTALL_AFTER_DOWNLOAD');
+  const installHint =
+    chatBackend === 'vllm'
+      ? t('ONBOARDING_MODELS_VLLM_INSTALL_HINT')
+      : chatBackend === 'mtplx'
+        ? t('ONBOARDING_MODELS_MTPLX_INSTALL_HINT')
+        : t('ONBOARDING_MODELS_INSTALL_AFTER_DOWNLOAD');
 
   return (
     <StepSection number={4} badge="recommended" title={t('ONBOARDING_MODELS_TITLE')} description={t('ONBOARDING_RECOMMENDED_MODELS_DESC')}>
