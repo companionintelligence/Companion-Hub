@@ -62,18 +62,39 @@ export function getComposeFiles(env: HubEnv): string[] {
   return files;
 }
 
-function tunnelTokenPath(envFileName: string): string {
+/** Canonical compose bind: `<ROOT_FOLDER_HOST>/../tunnel/token`. */
+export function tunnelTokenPath(envFileName: string): string {
   const rootFolderHost = resolveRootFolderHost(envFileName);
   return path.resolve(rootFolderHost, '..', 'tunnel', 'token');
 }
 
-function hasCloudflareTunnelToken(envFileName: string): boolean {
+/** Legacy nested path kept for installs that predate the sibling bind. */
+function legacyTunnelTokenPath(envFileName: string): string {
+  const rootFolderHost = resolveRootFolderHost(envFileName);
+  return path.join(rootFolderHost, 'tunnel', 'token');
+}
+
+function isNonEmptyTokenFile(tokenPath: string): boolean {
   try {
-    const tokenPath = tunnelTokenPath(envFileName);
     return existsSync(tokenPath) && statSync(tokenPath).isFile() && statSync(tokenPath).size > 0;
   } catch {
     return false;
   }
+}
+
+/**
+ * True when a tunnel token exists at the sibling compose path or the legacy nested path.
+ * Desktop profile gating must match this so stack updates keep the `cloudflare` profile.
+ */
+export function hasCloudflareTunnelToken(envFileName: string): boolean {
+  return isNonEmptyTokenFile(tunnelTokenPath(envFileName)) || isNonEmptyTokenFile(legacyTunnelTokenPath(envFileName));
+}
+
+/** Same rules as {@link hasCloudflareTunnelToken}, but for an absolute Hub data dir (appliance). */
+export function hasCloudflareTunnelTokenAtDataDir(dataDir: string): boolean {
+  const sibling = path.resolve(dataDir, '..', 'tunnel', 'token');
+  const legacy = path.join(dataDir, 'tunnel', 'token');
+  return isNonEmptyTokenFile(sibling) || isNonEmptyTokenFile(legacy);
 }
 
 function hasTailscaleAuthKey(vars: Record<string, string>): boolean {

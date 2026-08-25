@@ -517,7 +517,7 @@ describe('mergeComposeProfilesFromEnvFile', () => {
     expect(profiles).not.toContain('private-vpn');
   });
 
-  it('adds cloudflare profile when tunnel/token exists under ROOT_FOLDER_HOST', () => {
+  it('adds cloudflare profile when tunnel/token exists beside ROOT_FOLDER_HOST (sibling)', () => {
     const root = join(process.cwd(), '.internal.__vitest_tunnel__');
     const tokenDir = join(root, '..', 'tunnel');
     mkdirSync(tokenDir, { recursive: true });
@@ -527,6 +527,19 @@ describe('mergeComposeProfilesFromEnvFile', () => {
       expect(mergeComposeProfilesFromEnvFile(TMP).split(',')).toContain('cloudflare');
     } finally {
       rmSync(join(root, '..', 'tunnel'), { recursive: true, force: true });
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('adds cloudflare profile when a legacy nested ROOT_FOLDER_HOST/tunnel/token exists', () => {
+    const root = join(process.cwd(), '.internal.__vitest_tunnel_legacy__');
+    const tokenDir = join(root, 'tunnel');
+    mkdirSync(tokenDir, { recursive: true });
+    writeFileSync(join(tokenDir, 'token'), 'legacy-tunnel-token\n', 'utf8');
+    upsertEnvVar(TMP, 'ROOT_FOLDER_HOST', root);
+    try {
+      expect(mergeComposeProfilesFromEnvFile(TMP).split(',')).toContain('cloudflare');
+    } finally {
       rmSync(root, { recursive: true, force: true });
     }
   });

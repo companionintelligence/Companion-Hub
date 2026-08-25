@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
-import { existsSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, rmSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path, { join } from 'node:path';
 import { stdin as input, stdout as output } from 'node:process';
@@ -67,6 +67,8 @@ import {
   ensureLocalDevRuntimeEnv,
   getComposeFiles,
   getEnvFileOrExit,
+  hasCloudflareTunnelToken,
+  hasCloudflareTunnelTokenAtDataDir,
   mergeComposeProfilesFromEnvFile,
   packageVersion,
   renderConfigLines,
@@ -1054,15 +1056,13 @@ export async function doctorHub(env: HubEnv, options?: { repairNetworks?: boolea
   printMessageBox(`Hub doctor  [${ctx.env}]`, lines, tone);
 }
 
-/** Tunnel token lives at `<dataDir>/tunnel/token` in appliance mode, `<root>/../tunnel/token` in a checkout. */
+/**
+ * Tunnel token lives at `<ROOT>/../tunnel/token` (compose bind). Also accepts the
+ * legacy nested `<dataDir>/tunnel/token` so doctor matches profile detection.
+ */
 function doctorHasTunnelToken(ctx: HubContext): boolean {
   if (ctx.appliance && ctx.dataDir) {
-    const tokenPath = path.join(ctx.dataDir, 'tunnel', 'token');
-    try {
-      return existsSync(tokenPath) && statSync(tokenPath).isFile() && statSync(tokenPath).size > 0;
-    } catch {
-      return false;
-    }
+    return hasCloudflareTunnelTokenAtDataDir(ctx.dataDir);
   }
   return hasCloudflareTunnelToken(ctx.envFile);
 }
