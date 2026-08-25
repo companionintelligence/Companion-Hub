@@ -3045,12 +3045,41 @@ pub fn read_desktop_logs(max_lines: usize) -> String {
     lines[start..].join("\n")
 }
 
+/// Canonical tunnel dir on disk — sibling of the Hub data dir.
+///
+/// Matches compose `${ROOT_FOLDER_HOST}/../tunnel` (desktop + CLI + heal scripts).
+/// Do not use `<data_dir>/tunnel`; that nested path is legacy-only.
 pub(crate) fn tunnel_dir_for(data_dir: &Path) -> PathBuf {
+    data_dir
+        .parent()
+        .map(|parent| parent.join("tunnel"))
+        .unwrap_or_else(|| data_dir.join("tunnel"))
+}
+
+/// Pre-sibling migration path (`<data_dir>/tunnel`). Still accepted when reading.
+fn legacy_tunnel_dir_for(data_dir: &Path) -> PathBuf {
     data_dir.join("tunnel")
 }
 
 pub(crate) fn tunnel_token_path_for(data_dir: &Path) -> PathBuf {
     tunnel_dir_for(data_dir).join("token")
+}
+
+fn legacy_tunnel_token_path_for(data_dir: &Path) -> PathBuf {
+    legacy_tunnel_dir_for(data_dir).join("token")
+}
+
+/// True when a non-empty tunnel token exists at the canonical sibling path or the legacy nested path.
+fn tunnel_token_present_for_data_dir(data_dir: &Path) -> bool {
+    for path in [tunnel_token_path_for(data_dir), legacy_tunnel_token_path_for(data_dir)] {
+        if std::fs::metadata(&path)
+            .map(|m| m.is_file() && m.len() > 0)
+            .unwrap_or(false)
+        {
+            return true;
+        }
+    }
+    false
 }
 
 const TUNNEL_USER_CLEARED_MARKER: &str = ".user-cleared-token";
@@ -3063,20 +3092,27 @@ pub(crate) fn tunnel_user_cleared_marker_path_for(data_dir: &Path) -> PathBuf {
 /// Returns a human-readable summary of what was removed for logging. Errors only
 /// when the filesystem refuses to delete an existing file — a missing token is a
 /// no-op success since the post-condition (no token on disk) is already satisfied.
+///
+/// Clears both the canonical sibling token and any legacy nested copy so profile
+/// detection and compose cannot resurrect a "cleared" tunnel from the old path.
 pub fn clear_tunnel_token(data_dir: &Path) -> Result<String, String> {
     let token_path = tunnel_token_path_for(data_dir);
+    let legacy_token_path = legacy_tunnel_token_path_for(data_dir);
     let tunnel_dir = tunnel_dir_for(data_dir);
     let marker_path = tunnel_user_cleared_marker_path_for(data_dir);
 
-    let token_existed = token_path.exists();
-    if token_existed {
-        std::fs::remove_file(&token_path).map_err(|e| {
-            format!(
-                "Failed to remove tunnel token at {}: {}",
-                token_path.display(),
-                e
-            )
-        })?;
+    let mut removed: Vec<String> = Vec::new();
+    for path in [&token_path, &legacy_token_path] {
+        if path.exists() {
+            std::fs::remove_file(path).map_err(|e| {
+                format!(
+                    "Failed to remove tunnel token at {}: {}",
+                    path.display(),
+                    e
+                )
+            })?;
+            removed.push(path.display().to_string());
+        }
     }
 
     std::fs::create_dir_all(&tunnel_dir).map_err(|e| {
@@ -3094,10 +3130,10 @@ pub fn clear_tunnel_token(data_dir: &Path) -> Result<String, String> {
         )
     })?;
 
-    let summary = if token_existed {
+    let summary = if !removed.is_empty() {
         format!(
-            "Tunnel token cleared ({} removed) and user-cleared marker written.",
-            token_path.display()
+            "Tunnel token cleared ({}) and user-cleared marker written.",
+            removed.join(", ")
         )
     } else {
         format!(
@@ -3510,16 +3546,33 @@ const HUB_BIND_MOUNT_DIRS: &[&str] = &[
     "app-data",
     "user-config",
     "backups",
-    // Bind-mounted at compose `${ROOT_FOLDER_HOST}/tunnel:/app/tunnel`. Must be pre-created as
-    // the host user; otherwise Docker auto-creates it root-owned and the Hub container
-    // (UID 1000) cannot write the Cloudflare tunnel token/certs (EACCES).
-    // NOTE: this path is desktop-specific. Here ROOT_FOLDER_HOST is the top-level data dir,
-    // so the tunnel lives at ROOT_FOLDER_HOST/tunnel. The repo-root compose and
-    // scripts/heal-hub-bind-mounts.ts instead use the sibling ROOT_FOLDER_HOST/../tunnel
-    // because there ROOT_FOLDER_HOST is the .internal subdir. Both resolve to <hub-dir>/tunnel;
-    // do not "align" them — the base differs by stack.
-    "tunnel",
 ];
+
+/// Sibling tunnel dir bind-mounted at compose `${ROOT_FOLDER_HOST}/../tunnel`.
+/// Kept separate from [`HUB_BIND_MOUNT_DIRS`] because it is not under the data dir.
+fn ensure_sibling_tunnel_dir(data_dir: &Path) -> Result<(), String> {
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
+
+    let tunnel_dir = tunnel_dir_for(data_dir);
+    std::fs::create_dir_all(&tunnel_dir).map_err(|error| {
+        format!(
+            "Failed to create sibling tunnel dir {}: {}",
+            tunnel_dir.display(),
+            error
+        )
+    })?;
+    #[cfg(unix)]
+    if let Err(error) = std::fs::set_permissions(&tunnel_dir, std::fs::Permissions::from_mode(0o775))
+    {
+        eprintln!(
+            "warning: could not chmod 775 {}: {}",
+            tunnel_dir.display(),
+            error
+        );
+    }
+    Ok(())
+}
 
 /// Files prior root-owned Hub containers commonly leave on bind mounts (block EACCES on rewrite).
 const HUB_STALE_ROOT_OWNED_FILES: &[(&str, &str)] = &[
@@ -3861,6 +3914,9 @@ fn ensure_host_bind_mounts_writable(data_dir: &Path) -> Result<(), String> {
             eprintln!("warning: could not chmod 775 {}: {}", path.display(), error);
         }
     }
+
+    // Compose mounts ${ROOT_FOLDER_HOST}/../tunnel — create beside the data dir, not under it.
+    ensure_sibling_tunnel_dir(data_dir)?;
 
     for (subdir, file) in HUB_STALE_ROOT_OWNED_FILES {
         let stale = data_dir.join(subdir).join(file);
@@ -6151,12 +6207,9 @@ fn has_cloudflare_tunnel_token(existing: &std::collections::HashMap<String, Stri
     let Some(root) = get_non_empty_env_value(existing, "ROOT_FOLDER_HOST") else {
         return false;
     };
-    let token_path = host_path_from_docker_path(&root)
-        .join("tunnel")
-        .join("token");
-    std::fs::metadata(&token_path)
-        .map(|m| m.is_file() && m.len() > 0)
-        .unwrap_or(false)
+    // Canonical: sibling ../tunnel/token (compose bind). Also accept legacy <root>/tunnel/token
+    // so older installs keep the cloudflare profile until they migrate.
+    tunnel_token_present_for_data_dir(&host_path_from_docker_path(&root))
 }
 
 /// Ensures `private-vpn` and `cloudflare` compose profiles when enabled, without dropping other profiles.
@@ -10730,14 +10783,17 @@ Error response from daemon: CONFLICT. The container name "/ci-hub-app" IS ALREAD
     #[test]
     fn clear_tunnel_token_is_noop_when_absent() {
         let tempdir = tempfile::tempdir().expect("tempdir");
-        let summary = clear_tunnel_token(tempdir.path()).expect("clear_tunnel_token succeeds");
+        // Nested hub folder so sibling ../tunnel resolves inside the tempdir.
+        let data_dir = tempdir.path().join("hub");
+        std::fs::create_dir_all(&data_dir).expect("mkdir hub");
+        let summary = clear_tunnel_token(&data_dir).expect("clear_tunnel_token succeeds");
         assert!(
             summary.contains("already absent"),
             "missing token should report no-op, got: {summary}",
         );
-        assert!(!tunnel_token_path_for(tempdir.path()).exists());
+        assert!(!tunnel_token_path_for(&data_dir).exists());
         assert!(
-            tunnel_user_cleared_marker_path_for(tempdir.path()).exists(),
+            tunnel_user_cleared_marker_path_for(&data_dir).exists(),
             "user-cleared marker should be written even when token was absent",
         );
     }
@@ -10745,15 +10801,17 @@ Error response from daemon: CONFLICT. The container name "/ci-hub-app" IS ALREAD
     #[test]
     fn clear_tunnel_token_removes_token_and_writes_marker() {
         let tempdir = tempfile::tempdir().expect("tempdir");
-        let token_path = tunnel_token_path_for(tempdir.path());
+        let data_dir = tempdir.path().join("hub");
+        std::fs::create_dir_all(&data_dir).expect("mkdir hub");
+        let token_path = tunnel_token_path_for(&data_dir);
         std::fs::create_dir_all(token_path.parent().expect("parent")).expect("mkdir tunnel/");
         std::fs::write(&token_path, b"FAKE_TOKEN").expect("write token");
 
-        let summary = clear_tunnel_token(tempdir.path()).expect("clear_tunnel_token succeeds");
+        let summary = clear_tunnel_token(&data_dir).expect("clear_tunnel_token succeeds");
 
         assert!(!token_path.exists(), "token file should be removed");
         assert!(
-            tunnel_user_cleared_marker_path_for(tempdir.path()).exists(),
+            tunnel_user_cleared_marker_path_for(&data_dir).exists(),
             "user-cleared marker should be written",
         );
         assert!(
@@ -10763,21 +10821,83 @@ Error response from daemon: CONFLICT. The container name "/ci-hub-app" IS ALREAD
     }
 
     #[test]
+    fn clear_tunnel_token_removes_legacy_nested_token() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let data_dir = tempdir.path().join("hub");
+        let legacy_dir = data_dir.join("tunnel");
+        std::fs::create_dir_all(&legacy_dir).expect("mkdir legacy tunnel");
+        let legacy_token = legacy_dir.join("token");
+        std::fs::write(&legacy_token, b"LEGACY").expect("write legacy token");
+
+        clear_tunnel_token(&data_dir).expect("clear_tunnel_token succeeds");
+
+        assert!(!legacy_token.exists(), "legacy nested token should be removed");
+        assert!(
+            tunnel_user_cleared_marker_path_for(&data_dir).exists(),
+            "marker written to canonical sibling tunnel dir",
+        );
+    }
+
+    #[test]
     fn clear_tunnel_token_keeps_dir_with_siblings() {
         let tempdir = tempfile::tempdir().expect("tempdir");
-        let token_path = tunnel_token_path_for(tempdir.path());
+        let data_dir = tempdir.path().join("hub");
+        std::fs::create_dir_all(&data_dir).expect("mkdir hub");
+        let token_path = tunnel_token_path_for(&data_dir);
         std::fs::create_dir_all(token_path.parent().expect("parent")).expect("mkdir tunnel/");
         std::fs::write(&token_path, b"FAKE_TOKEN").expect("write token");
         // A sibling file (e.g. certs/) keeps the tunnel/ directory alive after token removal.
-        std::fs::write(tunnel_dir_for(tempdir.path()).join("certs.pem"), b"PEM")
-            .expect("write sibling");
+        std::fs::write(tunnel_dir_for(&data_dir).join("certs.pem"), b"PEM").expect("write sibling");
 
-        clear_tunnel_token(tempdir.path()).expect("clear_tunnel_token succeeds");
+        clear_tunnel_token(&data_dir).expect("clear_tunnel_token succeeds");
 
         assert!(!token_path.exists(), "token file should be removed");
         assert!(
-            tunnel_dir_for(tempdir.path()).exists(),
+            tunnel_dir_for(&data_dir).exists(),
             "tunnel dir with sibling files should be preserved",
+        );
+    }
+
+    #[test]
+    fn merge_compose_profiles_adds_cloudflare_for_sibling_tunnel_token() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let data_dir = tempdir.path().join("hub");
+        std::fs::create_dir_all(&data_dir).expect("mkdir hub");
+        let token_path = tunnel_token_path_for(&data_dir);
+        std::fs::create_dir_all(token_path.parent().expect("parent")).expect("mkdir tunnel/");
+        std::fs::write(&token_path, b"test-token").expect("write token");
+
+        let mut env = std::collections::HashMap::new();
+        env.insert(
+            "ROOT_FOLDER_HOST".to_string(),
+            data_dir.to_string_lossy().to_string(),
+        );
+
+        let profiles = merge_compose_profiles(&env, false);
+        assert!(
+            profiles.split(',').any(|p| p == "cloudflare"),
+            "expected cloudflare profile for sibling token, got {profiles}"
+        );
+    }
+
+    #[test]
+    fn merge_compose_profiles_adds_cloudflare_for_legacy_nested_tunnel_token() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let data_dir = tempdir.path().join("hub");
+        let legacy_dir = data_dir.join("tunnel");
+        std::fs::create_dir_all(&legacy_dir).expect("mkdir legacy tunnel");
+        std::fs::write(legacy_dir.join("token"), b"legacy-token").expect("write token");
+
+        let mut env = std::collections::HashMap::new();
+        env.insert(
+            "ROOT_FOLDER_HOST".to_string(),
+            data_dir.to_string_lossy().to_string(),
+        );
+
+        let profiles = merge_compose_profiles(&env, false);
+        assert!(
+            profiles.split(',').any(|p| p == "cloudflare"),
+            "expected cloudflare profile for legacy nested token, got {profiles}"
         );
     }
 
