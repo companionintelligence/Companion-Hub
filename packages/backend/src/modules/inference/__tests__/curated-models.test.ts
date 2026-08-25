@@ -10,11 +10,11 @@ describe('curated-models (TOON catalog)', () => {
   const byId = new Map(CURATED_MODELS.map((m) => [m.id, m]));
   const llms = CURATED_MODELS.filter((m) => m.modality === 'llm');
 
-  it('decodes the full catalog (84 Ollama LLMs + 4 Lemonade LLMs + 8 vLLM LLMs + voice + embeddings) with unique ids', () => {
+  it('decodes the full catalog (84 Ollama LLMs + 4 Lemonade LLMs + 72 vLLM LLMs [8 CUDA + 64 MLX] + voice + embeddings) with unique ids', () => {
     expect(llms.filter((m) => m.backend === 'ollama').length).toBe(84);
     expect(llms.filter((m) => m.backend === 'lemonade').length).toBe(4);
-    expect(llms.filter((m) => m.backend === 'vllm').length).toBe(8);
-    expect(llms.length).toBe(96);
+    expect(llms.filter((m) => m.backend === 'vllm').length).toBe(72);
+    expect(llms.length).toBe(160);
     // 4 Ollama embeddings + 1 Lemonade embedding (nomic-embed-text-v1-lemonade).
     expect(CURATED_MODELS.filter((m) => m.modality === 'embedding').length).toBe(5);
     expect(CURATED_MODELS.filter((m) => m.modality === 'tts' || m.modality === 'stt').length).toBe(3);
@@ -38,10 +38,33 @@ describe('curated-models (TOON catalog)', () => {
     }
     // vLLM LLM tags are HuggingFace repo ids (`org/model`) served as-is by `vllm serve`,
     // and their quantization reflects the served precision, never Ollama's q4_K_M default.
+    // ('mlx-4bit'/'mlx-8bit'/'mlx-2.4bit'/'mxfp4' cover the vLLM-Metal/MLX rows — mlx-community
+    // repos, served on Apple Silicon instead of the CUDA image the plain 'bf16'/'mxfp4' rows target.)
     for (const m of llms.filter((m) => m.backend === 'vllm')) {
       expect(m.backendModelId, `${m.id} tag`).toMatch(/^[\w.-]+\/[\w.-]+$/);
-      expect(['bf16', 'mxfp4'], `${m.id} quantization`).toContain(m.runtime.quantization);
+      expect(['bf16', 'mxfp4', 'mlx-4bit', 'mlx-8bit', 'mlx-2.4bit'], `${m.id} quantization`).toContain(m.runtime.quantization);
     }
+  });
+
+  it('gates vLLM-Metal (MLX) rows to Apple Silicon only, never an NVIDIA VRAM budget', () => {
+    const mlxRows = llms.filter((m) => m.id.endsWith('-mlx'));
+    expect(mlxRows.length).toBe(64);
+    for (const m of mlxRows) {
+      expect(m.backend, `${m.id} backend`).toBe('vllm');
+      expect(m.backendModelId, `${m.id} tag`).toMatch(/^mlx-community\//);
+      expect(m.requirements.gpuVendors, `${m.id} gpuVendors`).toEqual(['apple']);
+    }
+    // The plain (CUDA) vLLM rows are unaffected — still NVIDIA-only.
+    const cudaRows = llms.filter((m) => m.backend === 'vllm' && !m.id.endsWith('-mlx'));
+    for (const m of cudaRows) {
+      expect(m.requirements.gpuVendors, `${m.id} gpuVendors`).toEqual(['nvidia']);
+    }
+    // Spans low/medium/high like the CUDA table, so Macs of different unified-memory sizes get a fit.
+    expect(mlxRows.some((m) => m.requirements.minTier === 'low')).toBe(true);
+    expect(mlxRows.some((m) => m.requirements.minTier === 'medium')).toBe(true);
+    expect(mlxRows.some((m) => m.requirements.minTier === 'high')).toBe(true);
+    // MoE row carries active-params so hardware-fit ranking doesn't treat it as dense.
+    expect(byId.get('qwen3-30b-a3b-mlx')?.activeParameterScale).toBe(3);
   });
 
   it('surfaces vLLM chat models so selecting the vLLM backend yields usable recommendations', () => {

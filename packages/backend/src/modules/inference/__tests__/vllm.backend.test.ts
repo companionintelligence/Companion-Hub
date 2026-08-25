@@ -1,5 +1,5 @@
 import { Test, type TestingModule } from '@nestjs/testing';
-import { normalizeVllmBaseUrl, resolveVllmProbeUrl, VllmBackend } from '../backends/vllm.backend';
+import { buildVllmRemediation, normalizeVllmBaseUrl, resolveVllmProbeUrl, VllmBackend } from '../backends/vllm.backend';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { mock, type MockProxy } from 'vitest-mock-extended';
@@ -170,6 +170,26 @@ describe('VllmBackend', () => {
 
     it('should decline AMD vendor rather than mount devices into the CUDA-only image', () => {
       expect(() => backend.getComposeConfig('amd')).toThrow(/no reliably maintained ROCm image/);
+    });
+
+    it('should decline Apple vendor rather than deploy a Metal-blind CUDA container via Docker Desktop', () => {
+      expect(() => backend.getComposeConfig('apple')).toThrow(/no Docker path on Apple Silicon/);
+    });
+  });
+
+  describe('buildVllmRemediation', () => {
+    it('suggests the CUDA bitsandbytes command on non-Apple hosts', () => {
+      const remediation = buildVllmRemediation(false);
+      expect(remediation.command).toContain('--quantization bitsandbytes');
+      expect(remediation.command).toContain('Qwen/Qwen3-4B-Instruct-2507');
+      expect(remediation.hint).not.toMatch(/vllm-metal|mlx/i);
+    });
+
+    it('suggests the vLLM-Metal install + an MLX catalog model on Apple Silicon', () => {
+      const remediation = buildVllmRemediation(true);
+      expect(remediation.command).toContain('mlx-community/Qwen3-8B-4bit');
+      expect(remediation.command).not.toContain('bitsandbytes');
+      expect(remediation.hint).toContain('vllm-metal/main/install.sh');
     });
   });
 });
