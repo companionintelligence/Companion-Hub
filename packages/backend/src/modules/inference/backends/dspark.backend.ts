@@ -247,11 +247,15 @@ export class DsparkBackend implements InferenceBackend {
     onProgress?.({ status: `Loading ${modelId} into mlx-dspark`, percent: 0 });
 
     let lastReportedDone = -1;
+    // `clearInterval` stops future ticks but cannot cancel a probe already in flight, and that probe
+    // can resolve after the terminal emit below — which would leave the UI showing e.g. 47% *after*
+    // the download finished. Gate every emit on this instead.
+    let settled = false;
     const poll = setInterval(() => {
       void this.fetchHealth(baseUrl, DSPARK_PROGRESS_POLL_MS)
         .then((body) => {
           const download = body.download;
-          if (!download) {
+          if (settled || !download) {
             return;
           }
           const completed = typeof download.bytes_done === 'number' ? download.bytes_done : undefined;
@@ -290,21 +294,13 @@ export class DsparkBackend implements InferenceBackend {
     } catch (err) {
       throw new Error(`[mlx-dspark] Failed to load ${modelId}: ${this.describeAxiosError(err, modelId)}`);
     } finally {
+      settled = true;
       clearInterval(poll);
     }
-  }
-
-  /**
-   * Aborts an in-flight first-time download. `cleanup: false` keeps the partial blobs so a retried
-   * load resumes rather than restarting a multi-GB fetch; the cancelled `/admin/load` then fails
-   * cleanly and the server stays up, model-less.
-   */
-  async cancelPull(): Promise<void> {
-    try {
-      await axios.post(this.adminUrl('/admin/load/cancel'), { cleanup: false }, { timeout: 10000 });
-    } catch (err) {
-      this.logger.warn(`[mlx-dspark] Cancel request failed: ${err instanceof Error ? err.message : String(err)}`);
-    }
+    // NOTE: mlx-dspark also exposes `POST /admin/load/cancel { cleanup }` to abort an in-flight
+    // download (cleanup:false keeps the partial blobs so a retry resumes). Deliberately not wired
+    // up: ModelPullerService has no cancellation concept for any backend, so a method here would be
+    // unreachable. If pull cancellation is ever added Hub-wide, that is the endpoint to call.
   }
 
   /**

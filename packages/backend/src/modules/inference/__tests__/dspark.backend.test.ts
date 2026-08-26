@@ -1,5 +1,11 @@
 import { Test, type TestingModule } from '@nestjs/testing';
-import { buildDsparkRemediation, DsparkBackend, normalizeDsparkBaseUrl, resolveDsparkProbeUrl } from '../backends/dspark.backend';
+import {
+  buildDsparkRemediation,
+  DSPARK_PROGRESS_POLL_MS,
+  DsparkBackend,
+  normalizeDsparkBaseUrl,
+  resolveDsparkProbeUrl,
+} from '../backends/dspark.backend';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { mock, type MockProxy } from 'vitest-mock-extended';
@@ -246,6 +252,33 @@ describe('DsparkBackend', () => {
       const tick = progress.find((p) => p.status.includes('size unknown'));
       expect(tick?.percent).toBe(0);
       expect(tick?.total).toBeUndefined();
+    });
+
+    it('never emits stale progress after success, even if a probe resolves late', async () => {
+      let resolveLoad: (v: unknown) => void = () => {};
+      (axios.post as never) = vi.fn().mockReturnValue(new Promise((resolve) => (resolveLoad = resolve)));
+
+      // A probe that is still in flight when the load completes. clearInterval cannot cancel it, so
+      // without the `settled` guard its emit would land after {status:'success', percent:100} and
+      // the UI would snap back to a partial percentage.
+      let releaseProbe: (v: unknown) => void = () => {};
+      const lateProbe = new Promise((resolve) => (releaseProbe = resolve));
+      (axios.get as never) = vi.fn().mockReturnValue(lateProbe);
+
+      const progress: { status: string; percent: number }[] = [];
+      const pull = backend.pullModel(TARGET, (p) => progress.push(p));
+
+      // Let the interval fire (the probe stays pending), then finish the load.
+      await new Promise((r) => setTimeout(r, DSPARK_PROGRESS_POLL_MS + 200));
+      resolveLoad({ data: { ready: true, loading: false, model: 'Qwen3-8B-8bit', error: null } });
+      await pull;
+
+      // Now let the stranded probe answer with mid-download bytes.
+      releaseProbe({ data: { status: 'loading', download: { repo: TARGET, bytes_done: 4_700_000_000, bytes_total: 10_000_000_000 } } });
+      await new Promise((r) => setTimeout(r, 50));
+
+      expect(progress.at(-1)).toEqual({ status: 'success', percent: 100 });
+      expect(progress.filter((p) => p.percent === 47)).toHaveLength(0);
     });
 
     it('surfaces a 501 as actionable guidance rather than a bare HTTP error', async () => {

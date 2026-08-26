@@ -35,7 +35,12 @@ import { VllmSetupCard } from './ai-setup/vllm-setup-card';
 import { DsparkSetupCard } from './ai-setup/dspark-setup-card';
 import { TailscaleSetupStep } from './tailscale-setup-step';
 import { computeSelectionBudget } from '../helpers/onboarding-model-selection';
-import { EMBEDDING_INFERENCE_BACKEND, isHostServedBackend, unavailableInferenceBackends } from '../helpers/inference-backend-availability';
+import {
+  EMBEDDING_INFERENCE_BACKEND,
+  hubLoadableSelection,
+  isHostServedBackend,
+  unavailableInferenceBackends,
+} from '../helpers/inference-backend-availability';
 import { Skeleton } from '@/components/ui/Skeleton/Skeleton';
 import { Loader2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
@@ -445,7 +450,14 @@ export const AiSetupStep = ({
     return {
       agentFrameworks,
       selectedModels,
-      ollamaSelectedModelIds: profile.availableModels.filter((m) => selectedModels.includes(m.id) && m.backend === 'ollama').map((m) => m.id),
+      // Everything the Hub itself can install: Ollama rows, plus the single mlx-dspark row that
+      // will be resident (see hubLoadableSelection — the server holds one model, not a list).
+      // The field name is historical; it is the pull/pin list, not an Ollama-only list.
+      ollamaSelectedModelIds: hubLoadableSelection(
+        selectedModels,
+        (id) => profile.availableModels.find((m) => m.id === id)?.backend,
+        effectivePreferredModelId,
+      ),
       backend: selectedBackend,
       cloudProviders: validProviders,
       preferredModelId: effectivePreferredModelId,

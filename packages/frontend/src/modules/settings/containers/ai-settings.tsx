@@ -36,7 +36,12 @@ import { VllmSetupCard } from '@/modules/onboarding/components/ai-setup/vllm-set
 import { DsparkSetupCard } from '@/modules/onboarding/components/ai-setup/dspark-setup-card';
 import { OllamaSetupCard } from '@/modules/onboarding/components/ai-setup/ollama-setup-card';
 import type { DsparkStatus, OllamaStatus, VllmStatus } from '@/modules/onboarding/helpers/ai-setup-types';
-import { EMBEDDING_INFERENCE_BACKEND, unavailableInferenceBackends } from '@/modules/onboarding/helpers/inference-backend-availability';
+import {
+  EMBEDDING_INFERENCE_BACKEND,
+  hubLoadableSelection,
+  isHubLoadableBackend,
+  unavailableInferenceBackends,
+} from '@/modules/onboarding/helpers/inference-backend-availability';
 import { useTranslation } from 'react-i18next';
 
 // Role classifiers — mirror the onboarding AI-setup step so settings resolves the same defaults.
@@ -69,7 +74,7 @@ const compatibleSelection = (availableModelById: ModelIndex, backend: InferenceB
 // has to gate on it too — gating on every tracked pin would promise to unpin models the save leaves
 // alone (a pin outside the tier's model list, or on a backend the Hub does not pin through).
 const unpinnablePins = (availableModelById: ModelIndex, pinnedIds: Iterable<string>): string[] =>
-  [...pinnedIds].filter((modelId) => availableModelById.get(modelId)?.backend === 'ollama');
+  [...pinnedIds].filter((modelId) => isHubLoadableBackend(availableModelById.get(modelId)?.backend));
 
 // Pick the preferred model for a role from the user's selection, preferring a recommended model.
 // Returns null when no selected model fits the role.
@@ -425,10 +430,17 @@ export const AiSettingsContainer = () => {
         dsparkUrl: selectedBackend === 'dspark' ? dsparkUrl.trim() || null : null,
       });
 
-      const ollamaSelectedModelIds = compatibleSelectedModelIds.filter((modelId) => availableModelById.get(modelId)?.backend === 'ollama');
+      // Everything the Hub can install into itself — Ollama rows plus the one mlx-dspark row that
+      // will be resident. Filtering to 'ollama' here (as this did) made a ticked mlx-dspark model
+      // saveable but never actually loaded, while the preference still pointed apps at it.
+      const pullableSelectedModelIds = hubLoadableSelection(
+        compatibleSelectedModelIds,
+        (modelId) => availableModelById.get(modelId)?.backend,
+        preferredModel,
+      );
       const compatiblePinnedModelIds = unpinnablePins(availableModelById, pinnedModelIds);
       const modelOperationErrors: string[] = [];
-      const modelsToPull = ollamaSelectedModelIds.filter((modelId) => !compatiblePinnedModelIds.includes(modelId));
+      const modelsToPull = pullableSelectedModelIds.filter((modelId) => !compatiblePinnedModelIds.includes(modelId));
 
       if (modelsToPull.length > 0) {
         await ensurePullsStarted(modelsToPull, false);
