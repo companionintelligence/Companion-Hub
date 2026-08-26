@@ -1,5 +1,7 @@
 import { Button } from '@/components/ui/Button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card/Card';
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/Dialog';
+import { QrCode } from '@/components/ui/qr-code';
 import { useAppContext } from '@/context/app-context';
 import { getServeStatusOptions } from '@/api-client/@tanstack/react-query.gen';
 import { openExternal } from '@/lib/helpers/open-external';
@@ -7,8 +9,8 @@ import { cn } from '@/lib/utils';
 import type { AppDetails, AppInfo } from '@/types/app.types';
 import { buildPublicWebIdentity, sanitizeAppSubdomain } from '@ci-hub/common/types';
 import { useQuery } from '@tanstack/react-query';
-import { CheckCircle2, Copy, ExternalLink, Globe, Lock, MonitorSmartphone } from 'lucide-react';
-import { useMemo } from 'react';
+import { CheckCircle2, Copy, ExternalLink, Globe, Lock, MonitorSmartphone, QrCode as QrCodeIcon } from 'lucide-react';
+import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import toast from 'react-hot-toast';
 
@@ -35,6 +37,32 @@ function resolveBrowserHost(internalIp?: string | null): string {
   }
 
   return trimmed;
+}
+
+const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '0.0.0.0', '::1', '::', '[::1]', '[::]']);
+
+/**
+ * Whether a URL resolves to this machine and nothing else.
+ *
+ * `resolveBrowserHost` above deliberately falls back to `127.0.0.1` when the
+ * appliance has not reported an internal IP, which is right for a link the
+ * local browser follows but wrong for anything handed to another device: the
+ * backend's `buildHubLocalOrigin` returns null for the same case rather than
+ * publish a loopback origin. A QR is only ever scanned by another device, so a
+ * loopback address in one is guaranteed to fail — the card offers no code for it.
+ */
+export function isLoopbackAccessUrl(url: string | null): boolean {
+  if (!url) {
+    return false;
+  }
+
+  try {
+    const { hostname } = new URL(url);
+    return LOOPBACK_HOSTS.has(hostname) || hostname.startsWith('127.');
+  } catch {
+    // An unparseable URL is not something we should offer to another device either.
+    return true;
+  }
 }
 
 function buildHttpsUrl(hostname: string, sslPort: number, suffix: string): string {
@@ -244,6 +272,7 @@ interface Props {
 export const AppAccessPoints = ({ app, info }: Props) => {
   const { t } = useTranslation();
   const { userSettings, cloudflareAvailable, tailscaleAvailable, tailscaleNodeFqdn, tailscaleHttpsEnabled } = useAppContext();
+  const [qrEntry, setQrEntry] = useState<AppAccessPoint | null>(null);
 
   const { data: serveStatus } = useQuery({
     ...getServeStatusOptions(),
@@ -308,6 +337,10 @@ export const AppAccessPoints = ({ app, info }: Props) => {
             // you could enable but that don't resolve yet, so we hide the URL
             // and disable Open/Copy rather than offer a dead link.
             const isActive = entry.state === 'active';
+            // Open and Copy both land on this device. A QR is the off-device route —
+            // which is exactly why a loopback address must not get one.
+            const isLoopback = isLoopbackAccessUrl(entry.url);
+            const canShare = isActive && Boolean(entry.url) && !isLoopback;
 
             return (
               <div key={entry.key} className="min-w-0 rounded-md border border-border/60 bg-muted/20 p-3 sm:p-4">
@@ -361,12 +394,33 @@ export const AppAccessPoints = ({ app, info }: Props) => {
                   >
                     <Copy className="h-4 w-4" />
                   </Button>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    onClick={() => canShare && setQrEntry(entry)}
+                    disabled={!canShare}
+                    title={isActive && isLoopback ? t('APP_DETAILS_ACCESS_QR_LOOPBACK') : t('APP_DETAILS_ACCESS_SHOW_QR')}
+                    aria-label={t('APP_DETAILS_ACCESS_SHOW_QR')}
+                  >
+                    <QrCodeIcon className="h-4 w-4" />
+                  </Button>
                 </div>
               </div>
             );
           })}
         </div>
       </CardContent>
+
+      <Dialog open={qrEntry !== null} onOpenChange={(open: boolean) => !open && setQrEntry(null)}>
+        <DialogContent size="sm">
+          <DialogHeader>
+            <DialogTitle>{qrEntry ? t(qrEntry.title) : t('APP_DETAILS_ACCESS_SHOW_QR')}</DialogTitle>
+          </DialogHeader>
+          <DialogDescription className="flex flex-col">
+            {qrEntry?.url ? <QrCode value={qrEntry.url} fallback={qrEntry.url} mark caption={t('APP_DETAILS_ACCESS_QR_HINT')} /> : null}
+          </DialogDescription>
+        </DialogContent>
+      </Dialog>
     </Card>
   );
 };
