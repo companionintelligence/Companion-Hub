@@ -4,6 +4,7 @@ import { Test } from '@nestjs/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
 import { pipeline } from 'node:stream/promises';
+import { AuthGuard } from '../../auth/auth.guard';
 import { ResourceAllocatorService } from '../resource-allocator.service';
 import { HostTelemetryService } from '../host-telemetry.service';
 import { SystemController } from '../system.controller';
@@ -39,6 +40,28 @@ describe('SystemController', () => {
 
   it('should be defined', () => {
     expect(controller).toBeDefined();
+  });
+
+  describe('route guards', () => {
+    // There is no global APP_GUARD in this app: AuthGuard is applied per-method,
+    // so a route declared between two guarded ones inherits nothing. That is how
+    // GET /api/system/certificate — which serves the appliance's root CA trust
+    // anchor — ended up reachable without a session. Enumerating the prototype
+    // rather than a hand-written list means a newly added route fails here too.
+    const routeHandlers = Object.getOwnPropertyNames(SystemController.prototype).filter((name) => name !== 'constructor');
+
+    it('covers every route on the controller', () => {
+      expect(routeHandlers.length).toBeGreaterThan(0);
+    });
+
+    it.each(routeHandlers)('guards %s with AuthGuard', (name) => {
+      const handler = (SystemController.prototype as Record<string, unknown>)[name];
+      // Default to `[]` rather than asserting on the raw lookup: an unguarded route
+      // reads back as `undefined`, and `expect(undefined).toContain(...)` passes.
+      const guards = (Reflect.getMetadata('__guards__', handler as object) ?? []) as unknown[];
+
+      expect(guards).toContain(AuthGuard);
+    });
   });
 
   describe('systemLoad', () => {
