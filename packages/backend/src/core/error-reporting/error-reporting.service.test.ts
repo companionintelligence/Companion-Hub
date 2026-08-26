@@ -107,6 +107,29 @@ describe('ErrorReportingService', () => {
     expect(scope.setFingerprint).toHaveBeenCalledWith(['app-failure', 'home-assistant:ci-marketplace', 'start']);
   });
 
+  // Reproduces production Sentry issue dfe2be44b8084d35b76c6d1d282c043d (comfyui): the
+  // translated ROCm-missing message reads "This app needs AMD ROCm…" and names no device
+  // path, so it must be classified via errorCode, not by regex-matching the message.
+  it('classifies a translated ROCm-missing failure via errorCode, not message text', () => {
+    const configuration = {
+      get: vi.fn(() => ({ allowErrorMonitoring: true })),
+    } as any;
+    const service = new ErrorReportingService(configuration);
+
+    service.reportAppFailure({
+      appUrn: 'comfyui:ci-marketplace',
+      phase: 'start',
+      message: 'This app needs AMD ROCm. Set up ROCm in AI Settings, then retry.',
+      errorCode: 'rocm_kfd_missing',
+    });
+
+    expect(Sentry.captureMessage).toHaveBeenCalledWith(expect.stringContaining('comfyui:ci-marketplace'), 'warning');
+    const scope = lastScope();
+    expect(scope.setFingerprint).toHaveBeenCalledWith(['app-failure', 'start', 'rocm-unavailable']);
+    expect(scope.setTag).toHaveBeenCalledWith('failure_category', 'user_environment');
+    expect(scope.setTag).toHaveBeenCalledWith('error_class', 'rocm-unavailable');
+  });
+
   it('titles crash-phase reports as a crash, not "crash failed"', () => {
     const configuration = {
       get: vi.fn(() => ({ allowErrorMonitoring: true })),
@@ -225,6 +248,52 @@ describe('classifyAppFailure', () => {
     expect(classifyAppFailure('Invalid dynamic compose schema: [ … ]')).toEqual({
       category: 'app_config',
       errorClass: 'invalid-compose-schema',
+    });
+  });
+
+  // Reproduces production Sentry issue dfe2be44b8084d35b76c6d1d282c043d: Docker checks compose
+  // `devices` entries in order and fails on the first one it can't attach — ComfyUI lists
+  // /dev/dri before /dev/kfd, so a host missing both reports /dev/dri in the raw error text.
+  it('classifies raw device-missing errors that name /dev/dri or /dev/kfd as ROCm-unavailable', () => {
+    expect(
+      classifyAppFailure(
+        'Error response from daemon: error gathering device information while adding custom device "/dev/dri": no such file or directory',
+      ),
+    ).toEqual({
+      category: 'user_environment',
+      errorClass: 'rocm-unavailable',
+    });
+    expect(
+      classifyAppFailure(
+        'Error response from daemon: error gathering device information while adding custom device "/dev/kfd": no such file or directory',
+      ),
+    ).toEqual({
+      category: 'user_environment',
+      errorClass: 'rocm-unavailable',
+    });
+  });
+
+  it('prefers a structured errorCode over message-text regexes when both are available', () => {
+    expect(classifyAppFailure('This app needs AMD ROCm. Set up ROCm in AI Settings, then retry.', 'rocm_kfd_missing')).toEqual({
+      category: 'user_environment',
+      errorClass: 'rocm-unavailable',
+    });
+    expect(classifyAppFailure('This app needs hardware virtualization (KVM). It is not available on this machine.', 'kvm_missing')).toEqual({
+      category: 'user_environment',
+      errorClass: 'kvm-unavailable',
+    });
+    expect(
+      classifyAppFailure('App network range conflict — Hub is reassigning a new internal network. Retry install or start.', 'network_overlap'),
+    ).toEqual({
+      category: 'user_environment',
+      errorClass: 'network-overlap',
+    });
+  });
+
+  it('falls back to message-text classification when the errorCode is unrecognized', () => {
+    expect(classifyAppFailure('write /data/x: no space left on device', 'some_future_code')).toEqual({
+      category: 'user_environment',
+      errorClass: 'disk-full',
     });
   });
 

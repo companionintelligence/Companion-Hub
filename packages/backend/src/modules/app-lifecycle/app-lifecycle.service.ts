@@ -475,7 +475,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       void this.emitInstallQueueUpdate();
     }
     this.agentNotifyService?.notify('install_error', { appUrn }, 'high');
-    this.reportAppFailure(appUrn, 'install', result.message);
+    this.reportAppFailure(appUrn, 'install', result.message, result.errorCode);
   }
 
   /**
@@ -549,7 +549,8 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     this.registerDispatchedCommand(appUrn, requestId, 'start');
     this.appEventsQueue
       .publish({ appUrn, command: 'start', requestId, form: { ...app.config, skipPull } })
-      .then(async ({ success, message }) => {
+      .then(async (raw) => {
+        const { success, message, errorCode, errorDetail, settingsPath } = raw as z.output<typeof appEventResultSchema>;
         if (success) {
           this.logger.info(`App ${appUrn} started successfully`);
           await this.settleCommandOutcome({
@@ -580,6 +581,9 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
             command: 'start',
             success: false,
             message,
+            errorCode,
+            errorDetail,
+            settingsPath,
             failureOutcome: {
               status: 'stopped',
               event: 'start_error',
@@ -966,7 +970,8 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     this.registerDispatchedCommand(appUrn, requestId, 'stop');
     this.appEventsQueue
       .publish({ command: 'stop', appUrn, requestId, form: app.config })
-      .then(async ({ success, message }) => {
+      .then(async (raw) => {
+        const { success, message, errorCode, errorDetail, settingsPath } = raw as z.output<typeof appEventResultSchema>;
         if (success) {
           await this.settleCommandOutcome({
             appId: app.id,
@@ -1002,6 +1007,9 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
             command: 'stop',
             success: false,
             message,
+            errorCode,
+            errorDetail,
+            settingsPath,
             failureOutcome: {
               status: 'running',
               event: 'stop_error',
@@ -1100,7 +1108,8 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     this.registerDispatchedCommand(appUrn, requestId, 'restart');
     this.appEventsQueue
       .publish({ command: 'restart', appUrn, requestId, form: { ...app.config, skipPull } })
-      .then(async ({ success, message }) => {
+      .then(async (raw) => {
+        const { success, message, errorCode, errorDetail, settingsPath } = raw as z.output<typeof appEventResultSchema>;
         if (success) {
           this.logger.info(`App ${appUrn} restarted successfully`);
           await this.settleCommandOutcome({
@@ -1124,6 +1133,9 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
             command: 'restart',
             success: false,
             message,
+            errorCode,
+            errorDetail,
+            settingsPath,
             failureOutcome: {
               status: 'stopped',
               event: 'restart_error',
@@ -1158,12 +1170,13 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
 
     const requestId = crypto.randomUUID();
     this.registerDispatchedCommand(appUrn, requestId, 'start');
-    const { success, message } = await this.appEventsQueue.publish({
+    const raw = await this.appEventsQueue.publish({
       appUrn,
       command: 'start',
       requestId,
       form: { ...app.config, skipPull },
     });
+    const { success, message, errorCode, errorDetail, settingsPath } = raw as z.output<typeof appEventResultSchema>;
 
     if (success) {
       this.logger.info(`App ${appUrn} started successfully`);
@@ -1198,6 +1211,9 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       command: 'start',
       success: false,
       message,
+      errorCode,
+      errorDetail,
+      settingsPath,
       failureOutcome: {
         status: 'stopped',
         event: 'start_error',
@@ -1231,12 +1247,13 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
 
     const requestId = crypto.randomUUID();
     this.registerDispatchedCommand(appUrn, requestId, 'restart');
-    const { success, message } = await this.appEventsQueue.publish({
+    const raw = await this.appEventsQueue.publish({
       command: 'restart',
       appUrn,
       requestId,
       form: { ...app.config, skipPull },
     });
+    const { success, message, errorCode, errorDetail, settingsPath } = raw as z.output<typeof appEventResultSchema>;
 
     if (success) {
       this.logger.info(`App ${appUrn} restarted successfully`);
@@ -1264,6 +1281,9 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       command: 'restart',
       success: false,
       message,
+      errorCode,
+      errorDetail,
+      settingsPath,
       failureOutcome: {
         status: 'stopped',
         event: 'restart_error',
@@ -1411,7 +1431,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     this.appEventsQueue
       .publish({ command: 'uninstall', appUrn, requestId, form: app.config, deleteAllData })
       .then(async (result) => {
-        const { success, message } = result;
+        const { success, message, errorCode, errorDetail, settingsPath } = result as z.output<typeof appEventResultSchema>;
         if (success) {
           if (!this.operationRegistry.claimCompletion(appUrn, requestId)) {
             return;
@@ -1480,6 +1500,9 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
             command: 'uninstall',
             success: false,
             message,
+            errorCode,
+            errorDetail,
+            settingsPath,
             failureOutcome: {
               status: 'stopped',
               event: 'uninstall_error',
@@ -1516,7 +1539,8 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     this.registerDispatchedCommand(appUrn, requestId, 'reset');
     this.appEventsQueue
       .publish({ command: 'reset', appUrn, requestId, form: app.config })
-      .then(async ({ success, message }) => {
+      .then(async (raw) => {
+        const { success, message, errorCode, errorDetail, settingsPath } = raw as z.output<typeof appEventResultSchema>;
         if (success) {
           this.logger.info(`App ${appUrn} reset successfully`);
           await this.settleCommandOutcome({
@@ -1545,6 +1569,9 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
             command: 'reset',
             success: false,
             message,
+            errorCode,
+            errorDetail,
+            settingsPath,
             failureOutcome: {
               status: restoredStatus,
               event: 'reset_error',
@@ -1802,7 +1829,8 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     this.registerDispatchedCommand(appUrn, requestId, 'update');
     this.appEventsQueue
       .publish({ command: 'update', appUrn, requestId, form: app.config, performBackup })
-      .then(async ({ success, message }) => {
+      .then(async (raw) => {
+        const { success, message, errorCode, errorDetail, settingsPath } = raw as z.output<typeof appEventResultSchema>;
         if (success) {
           if (!this.operationRegistry.claimCompletion(appUrn, requestId)) {
             return;
@@ -1829,6 +1857,9 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
             command: 'update',
             success: false,
             message,
+            errorCode,
+            errorDetail,
+            settingsPath,
             failureOutcome: {
               status: restoredStatus,
               event: 'update_error',
@@ -1968,8 +1999,8 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     }
   }
 
-  private reportAppFailure(appUrn: AppUrn, phase: AppFailurePhase, message: string): void {
-    this.errorReportingService?.reportAppFailure({ appUrn, phase, message });
+  private reportAppFailure(appUrn: AppUrn, phase: AppFailurePhase, message: string, errorCode?: string): void {
+    this.errorReportingService?.reportAppFailure({ appUrn, phase, message, errorCode });
   }
 
   private registerDispatchedCommand(appUrn: AppUrn, requestId: string, command: OperationCommand): void {
@@ -2005,6 +2036,9 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     command: OperationCommand;
     success: boolean;
     message?: string;
+    errorCode?: string;
+    errorDetail?: string;
+    settingsPath?: string;
     successOutcome?: {
       status: AppStatus;
       event: AppOutcomeSseEvent;
@@ -2047,9 +2081,12 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
         appUrn: params.appUrn,
         appStatus: params.failureOutcome.status,
         error: params.message,
+        errorCode: params.errorCode,
+        errorDetail: params.errorDetail,
+        settingsPath: params.settingsPath,
       });
       this.agentNotifyService?.notify(params.failureOutcome.notifyEvent, { appUrn: params.appUrn }, params.failureOutcome.notifySeverity ?? 'high');
-      this.reportAppFailure(params.appUrn, params.failureOutcome.failurePhase, params.message ?? 'Unknown error');
+      this.reportAppFailure(params.appUrn, params.failureOutcome.failurePhase, params.message ?? 'Unknown error', params.errorCode);
       return true;
     }
 
