@@ -275,6 +275,8 @@ const MOE_ACTIVE_PARAMS_B: Record<string, number> = {
   'deepseek-v4-flash-0731-mlx': 13, // DeepSeek V4 Flash 0731 (MLX) — same MoE as deepseek-v4-flash-0731-284b above
   'north-mini-code-1-0-mlx': 3, // North Mini Code 1.0 (MLX) — same MoE as north-mini-code-1-0 above
   'minimax-m2-mlx': 10, // MiniMax M2 (MLX) — same MoE as minimax-m2-community-230b above
+  'qwen3-6-35b-dspark': 3, // Qwen3.6-35B-A3B (mlx-dspark) — same MoE as qwen3-6-35b-mlx above
+  'nemotron-3-5-lightning-30b-dspark': 3, // Nemotron 3.5 Lightning (mlx-dspark) — same MoE as nemotron-3-5-lightning-30b-mlx above
 };
 
 /**
@@ -298,9 +300,18 @@ function buildLlmModel(
   const gb = Number(row.gb);
   const tier = (row.tier ?? 'cpu-only') as HardwareTier;
   const diskMb = Math.round(gb * 1024);
+  // Optional `ramGb` column: resident RAM stated directly, for rows where it is NOT a fixed
+  // multiple of on-disk size. Only `DSPARK_LLM_TOON` sets it — an mlx-dspark row downloads a
+  // target *and* a speculative drafter, and the drafter's disk↔RAM ratio inverts the usual
+  // assumption (drafters ship BF16 but load.py quantizes them to 4-bit at load, so drafter RAM is
+  // roughly a third of drafter disk). Folding both into `gb` alone would over-state resident RAM
+  // by ~10 GB on the 27B rows — safe for fit-checking, but it hands the memory manager's eviction
+  // planner a footprint it can never actually free. Every row without the column keeps the
+  // historical `diskMb * 1.1` exactly (asserted in curated-models.test.ts).
+  const ramGb = numOrUndef(row.ramGb);
   // Runtime RAM ≈ weights on disk plus KV-cache / runtime overhead. The tier budget fractions
   // (0.9 VRAM, 0.7 unified/RAM) provide the remaining headroom for the OS, app container, and context.
-  const footprintMb = Math.round(diskMb * 1.1);
+  const footprintMb = ramGb === undefined ? Math.round(diskMb * 1.1) : Math.round(ramGb * 1024);
   const reasoning = flag(row.reason);
   const vision = flag(row.vision);
   const audio = flag(row.audio);
@@ -332,9 +343,12 @@ function buildLlmModel(
     parameterScale: params,
     activeParameterScale: MOE_ACTIVE_PARAMS_B[row.id ?? ''] ?? params,
     requirements: {
-      minVramMb: diskMb,
-      recommendedVramMb: Math.round(diskMb * 1.1 + 1024),
-      minRamMb: Math.round(diskMb * 1.15),
+      // Anchor the memory requirements on resident RAM when a row states it (`ramGb`), and on
+      // on-disk size otherwise. The `ramGb === undefined` arms are the historical expressions,
+      // left byte-identical so adding this column moved no existing row.
+      minVramMb: ramGb === undefined ? diskMb : footprintMb,
+      recommendedVramMb: ramGb === undefined ? Math.round(diskMb * 1.1 + 1024) : Math.round(footprintMb + 1024),
+      minRamMb: ramGb === undefined ? Math.round(diskMb * 1.15) : Math.round(footprintMb * 1.05),
       diskMb,
       // vLLM has no CPU serving path in the Hub and no viable AMD/generic-Apple image (see
       // VllmBackend.getComposeConfig), so its rows must only match an NVIDIA VRAM budget by default.
@@ -534,6 +548,75 @@ llms[64|]{id,backendModelId,name,purpose,params,gb,tier,ctxK,creator,intel,agent
 
 const vllmMlxLlms: CuratedModel[] = decodeToonTable(VLLM_MLX_LLM_TOON, 'llms').map((row) => buildLlmModel(row, 'vllm', { gpuVendors: ['apple'] }));
 
+// ─── mlx-dspark (speculative decoding / Apple Silicon) LLM catalog (TOON) ────
+// Chat models for mlx-dspark (github.com/ARahim3/mlx-dspark), which runs two EAGLE-family
+// speculative-decoding drafters natively on Apple Silicon via MLX: DeepSeek's DSpark and z-lab's
+// DFlash. Both are lossless — the target verifies every drafted token, so output is identical to
+// plain decoding and only the speed changes — provided the acceptance threshold stays at 0, which
+// DsparkBackend pins explicitly on every `/admin/load` (see its `loadPayload`).
+//
+// Same host-run posture as the vLLM-Metal table above: no Docker path on any platform, installed
+// natively (`pip install mlx-dspark`) and reached over an operator-configured URL. What is
+// different, and why this is a separate backend rather than more `-mlx` rows, is that mlx-dspark
+// loads a SECOND checkpoint — the drafter — alongside the target, and only its own runtime knows
+// how to pair them. A generic MLX loader pointed at these targets would serve them with no
+// speculation at all.
+//
+// `backendModelId` is the **target** repo: it is what `POST /admin/load` takes and what
+// `GET /health.target` reports back, so it compares directly against what the backend reports as
+// loaded. The drafter is not named here — mlx-dspark auto-resolves it from its own registry, and
+// pinning our own guess would silently diverge from theirs on their next release.
+//
+// Every id and size below was checked live against the Hugging Face API on 2026-08-26 (per-repo
+// `?blobs=true`, summing real `.safetensors` bytes — not a web-search summary, per the
+// fabrication-guard convention documented in this file's header). All 21 repos (11 targets + 10
+// distinct drafters) returned 200, `gated:false`, exact case-sensitive id match.
+//   gb     = total DOWNLOAD in decimal GB: target safetensors + the drafter `--mode auto` resolves
+//            for that target. `resolve_mode` (load.py:321) prefers a stamped measured-best mode —
+//            only the two Qwen3.8-27B rows have one, DFlash 2 — then the row's DSpark head, so
+//            every other row downloads its `dspark` drafter.
+//   ramGb  = PEAK RESIDENT, taken from each pair's own measured `ram` field in mlx-dspark's
+//            registry (load.py:60-217) rather than derived here. Measured beats arithmetic: the
+//            drafter is quantized to 4-bit at load, so weight math alone would say 5.1 GB for the
+//            4B row where the project measured ~8 GB — the difference is the KV cache and runtime
+//            overhead at chat-length context, which is precisely what memoryFootprintMb means.
+//            (This is also why one row's ramGb exceeds its gb: Muse-Glimmer is multimodal, and its
+//            vision tower sits outside the weight sum.) See buildLlmModel for why this needs its
+//            own column instead of being folded into `gb`.
+// `params`/`ctxK`/purpose/capability flags are reused from the matching existing catalog row for
+// the same base model rather than re-derived — architecture and context length don't change with
+// the serving engine. intel/agentic/perf are left blank for the same reason the vLLM tables leave
+// them blank: none of these pairs are on the Artificial Analysis leaderboard.
+//
+// The project's README quotes 2.6–4.06× speedups on an M4 Pro. Those are author-reported, measured
+// on hardware we do not have, against each engine's own baseline — deliberately NOT surfaced in
+// the UI and not encoded in any column here.
+//
+// Deliberately NOT included, though their repos verify: the LFM2.5 rows (1.2B/2.6B/8B-A1B) and
+// Ternary-Bonsai-27B. They are the only pairs small enough for 8/16 GB Macs, so they are worth a
+// follow-up — but no existing catalog row covers those base models, so their context windows and
+// capability flags would have to be sourced fresh, and this file's header is explicit that
+// unverified field-level metadata is how fabricated rows got in last time.
+const DSPARK_LLM_TOON = `
+llms[11|]{id,backendModelId,name,purpose,params,gb,ramGb,tier,ctxK,creator,intel,agentic,reason,vision,tools,audio,tps,ttft,e2e,quant}:
+  qwen3-4b-dspark|mlx-community/Qwen3-4B-8bit|Qwen 3 4B (mlx-dspark)|general|4|7.05|8.0|low|256|Alibaba|||1|0|1|0||||mlx-8bit+dspark
+  qwen3-8b-dspark|mlx-community/Qwen3-8B-8bit|Qwen 3 8B (mlx-dspark)|general|8|13.44|11.0|medium|40|Alibaba|||1|0|1|0||||mlx-8bit+dspark
+  ornith-9b-dspark|mlx-community/Ornith-1.0-9B-8bit|Ornith 1.0 9B (mlx-dspark)|coding|9|17.00|13.0|medium|256|Deep Reinforce|||1|0|1|0||||mlx-8bit+dspark
+  gemma4-12b-dspark|mlx-community/gemma-4-12B-it-8bit|Gemma 4 12B (mlx-dspark)|general|12|19.57|15.0|medium|128|Google|||1|1|1|0||||mlx-8bit+dspark
+  qwen3-8-27b-dspark|mlx-community/Qwen3.8-27B-4bit|Qwen 3.8 27B (mlx-dspark)|reasoning|27|19.89|18.0|medium|256|Alibaba|||1|1|1|0||||mlx-4bit+dflash2
+  qwen3-14b-dspark|mlx-community/Qwen3-14B-8bit|Qwen 3 14B (mlx-dspark)|general|14|22.52|19.0|medium|40|Alibaba|||1|0|1|0||||mlx-8bit+dspark
+  nemotron-3-5-lightning-30b-dspark|mlx-community/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-4bit|Nemotron 3.5 Lightning (mlx-dspark)|general|30|19.70|20.0|medium|1000|NVIDIA|||0|0|1|0||||mlx-4bit+dspark
+  qwen3-6-35b-dspark|mlx-community/Qwen3.6-35B-A3B-4bit|Qwen 3.6 35B A3B (mlx-dspark)|coding|35|23.46|23.0|medium|262|Alibaba|||1|1|1|0||||mlx-4bit+dspark
+  muse-glimmer-30b-dspark|mlx-community/Muse-Glimmer-30B-4bit|Muse Glimmer 30B (mlx-dspark)|general|30|24.72|26.0|high|128|Meta|||1|1|1|0||||mlx-4bit+dspark
+  qwen3-8-27b-8bit-dspark|mlx-community/Qwen3.8-27B-8bit|Qwen 3.8 27B 8-bit (mlx-dspark)|reasoning|27|33.34|29.0|high|256|Alibaba|||1|1|1|0||||mlx-8bit+dflash2
+  qwen3-6-27b-dspark|mlx-community/Qwen3.6-27B-8bit|Qwen 3.6 27B (mlx-dspark)|coding|27|38.30|32.0|high|262|Alibaba|||1|1|1|0||||mlx-8bit+dspark
+`;
+
+// `gpuVendors: ['apple']` is the whole gating story (enforced in ModelRegistryService): mlx-dspark
+// is Metal-only, and because the system-RAM fallback path reports vendor 'cpu', an 'apple'-only row
+// can never be resurrected onto non-Apple hardware.
+const dsparkLlms: CuratedModel[] = decodeToonTable(DSPARK_LLM_TOON, 'llms').map((row) => buildLlmModel(row, 'dspark', { gpuVendors: ['apple'] }));
+
 // Non-LLM models (voice + embedding) in TOON. Unlike the LLM table these carry explicit requirements
 // (they aren't derived from a parameter count); purpose and input modality are derived from `modality`.
 // Voice models run on the Lemonade backend; embedders on Ollama. cpu=1 means CPU inference is supported.
@@ -587,4 +670,4 @@ const extraModels: CuratedModel[] = decodeToonTable(EXTRAS_TOON, 'extras').map((
   };
 });
 
-export const CURATED_MODELS: CuratedModel[] = [...generatedLlms, ...lemonadeLlms, ...vllmLlms, ...vllmMlxLlms, ...extraModels];
+export const CURATED_MODELS: CuratedModel[] = [...generatedLlms, ...lemonadeLlms, ...vllmLlms, ...vllmMlxLlms, ...dsparkLlms, ...extraModels];

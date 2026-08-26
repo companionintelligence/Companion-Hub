@@ -22,6 +22,7 @@ import { inferencePreferencesSchema } from '../inference.dto';
 import { OllamaBackend } from '../backends/ollama.backend';
 import { VllmBackend } from '../backends/vllm.backend';
 import { LemonadeBackend } from '../backends/lemonade.backend';
+import { DsparkBackend } from '../backends/dspark.backend';
 import { HostMetricsService } from '@/modules/system/host-metrics.service';
 
 describe('InferenceController — preferences', () => {
@@ -47,6 +48,7 @@ describe('InferenceController — preferences', () => {
         { provide: OllamaBackend, useValue: mock<OllamaBackend>() },
         { provide: VllmBackend, useValue: mock<VllmBackend>() },
         { provide: LemonadeBackend, useValue: mock<LemonadeBackend>() },
+        { provide: DsparkBackend, useValue: mock<DsparkBackend>() },
         { provide: LoggerService, useValue: mock<LoggerService>() },
       ],
     }).compile();
@@ -102,7 +104,7 @@ describe('InferenceController — preferences', () => {
 
     const result = await controller.updatePreferences({ backend: 'lemonade' });
 
-    expect(configService.setInferencePreferences).toHaveBeenCalledWith('lemonade', undefined, undefined, undefined, undefined, undefined);
+    expect(configService.setInferencePreferences).toHaveBeenCalledWith('lemonade', undefined, undefined, undefined, undefined, undefined, undefined);
     expect(result).toEqual({
       preferredBackend: 'lemonade',
       preferredModel: null,
@@ -131,6 +133,7 @@ describe('InferenceController — preferences', () => {
       'hermes4-8b',
       'nomic-embed-text',
       'gemma4-27b',
+      undefined,
       undefined,
       undefined,
     );
@@ -165,6 +168,7 @@ describe('InferenceController — preferences', () => {
       undefined,
       'vllm-local',
       'http://192.168.1.50:8000',
+      undefined,
     );
   }, 30_000);
 

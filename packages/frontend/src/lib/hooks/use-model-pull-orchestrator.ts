@@ -1,4 +1,4 @@
-import { fetchOllamaInstallStatus, fetchVllmInstallStatus } from '@/lib/inference/inference-api';
+import { fetchDsparkInstallStatus, fetchOllamaInstallStatus, fetchVllmInstallStatus } from '@/lib/inference/inference-api';
 import {
   ensurePullStarted,
   ensurePullsStarted,
@@ -80,6 +80,11 @@ export function useModelPullOrchestrator({
       try {
         if (inferenceBackend === 'vllm') {
           const data = (await fetchVllmInstallStatus()) as { ready?: boolean; running?: boolean };
+          if (!cancelled) setBackendReady(!!(data.ready ?? data.running));
+          return;
+        }
+        if (inferenceBackend === 'dspark') {
+          const data = (await fetchDsparkInstallStatus()) as { ready?: boolean; running?: boolean };
           if (!cancelled) setBackendReady(!!(data.ready ?? data.running));
           return;
         }

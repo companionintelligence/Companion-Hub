@@ -1,7 +1,7 @@
 import type { BackendHealthStatus, BackendModelInfo, InferenceBackendType, PullProgress } from '@ci-hub/common/types';
 
 /**
- * Common interface implemented by all inference backends (Ollama, vLLM, Lemonade).
+ * Common interface implemented by all inference backends (Ollama, vLLM, Lemonade, mlx-dspark).
  */
 export interface InferenceBackend {
   readonly type: InferenceBackendType;

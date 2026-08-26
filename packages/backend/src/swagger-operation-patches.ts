@@ -2,7 +2,7 @@ import { z } from 'zod';
 import type { ZodDto } from '@/common/zod-dto';
 import { SearchAppsQueryDto } from '@/modules/marketplace/dto/marketplace.dto';
 import { GetAppBackupsQueryDto } from '@/modules/backups/dto/backups.dto';
-import { OnboardingProfileQueryDto, RuntimeModelsQueryDto, VllmStatusQueryDto } from '@/modules/inference/inference.dto';
+import { DsparkStatusQueryDto, OnboardingProfileQueryDto, RuntimeModelsQueryDto, VllmStatusQueryDto } from '@/modules/inference/inference.dto';
 import { StreamAppLogsQueryDto, StreamHubLogsQueryDto } from '@/core/sse/dto/sse.dto';
 
 const availableDomainSchema = z.object({
@@ -42,6 +42,7 @@ export const OPERATION_QUERY_DTOS: Record<string, ZodDto> = {
   getRuntimeModels: RuntimeModelsQueryDto,
   getOnboardingProfile: OnboardingProfileQueryDto,
   getVllmStatus: VllmStatusQueryDto,
+  getDsparkStatus: DsparkStatusQueryDto,
   getAppBackups: GetAppBackupsQueryDto,
   appLogsEvents: StreamAppLogsQueryDto,
   hubLogsEvents: StreamHubLogsQueryDto,
