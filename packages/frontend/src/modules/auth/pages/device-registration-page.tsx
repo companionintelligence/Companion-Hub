@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router';
 import { Button } from '@/components/ui/Button';
 import { Alert, AlertDescription } from '@/components/ui/Alert/Alert';
+import { QrCode } from '@/components/ui/qr-code';
 import { AlertCircle, CheckCircle2, ChevronRight, Copy, Loader2 } from 'lucide-react';
 import {
   fetchDeviceRegistrationInfoResult,
@@ -715,6 +716,18 @@ export default function DeviceRegistrationPage() {
             </a>
           </Button>
           <p className="mt-3 text-sm leading-relaxed text-muted-foreground">{t('DEVICE_REGISTRATION_LOGIN_HINT')}</p>
+          {/*
+            The button above assumes a browser on the appliance itself, which a
+            headless CI-OS box or an SSH session does not have. The QR carries the
+            same device-scoped URL, so a phone can finish step 1 instead.
+
+            No `mark` on either code here: these URLs are long enough that level `H`
+            plus the logo pushes the version up, and this is the one screen where a
+            failed scan leaves the user with no way forward.
+          */}
+          <div className="mt-5 flex justify-center border-t border-border/60 pt-5">
+            <QrCode value={loginUrl} fallback={loginUrl} size={160} caption={t('DEVICE_REGISTRATION_SCAN_TO_SIGN_IN')} />
+          </div>
           <div className="mt-6 space-y-3 border-t border-border/60 pt-5">
             <p className="text-center text-sm text-muted-foreground">{t('DEVICE_REGISTRATION_NO_ACCOUNT_YET')}</p>
             <Button asChild variant="outline" className="h-10 w-full text-sm font-semibold md:h-11 md:text-base">
@@ -722,6 +735,9 @@ export default function DeviceRegistrationPage() {
                 {t('DEVICE_REGISTRATION_CREATE_ACCOUNT')}
               </a>
             </Button>
+            <div className="flex justify-center pt-2">
+              <QrCode value={signupUrl} fallback={signupUrl} size={160} caption={t('DEVICE_REGISTRATION_SCAN_TO_CREATE_ACCOUNT')} />
+            </div>
           </div>
         </section>
 

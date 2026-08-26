@@ -1319,6 +1319,8 @@
   "DEVICE_REGISTRATION_LOGIN_HINT": "This Hub will be added to your existing organization. You'll only create an organization if you don't have one yet.",
   "DEVICE_REGISTRATION_NO_ACCOUNT_YET": "Don't have an account yet?",
   "DEVICE_REGISTRATION_CREATE_ACCOUNT": "Create account",
+  "DEVICE_REGISTRATION_SCAN_TO_SIGN_IN": "No browser on this device? Scan to sign in on your phone.",
+  "DEVICE_REGISTRATION_SCAN_TO_CREATE_ACCOUNT": "Or scan to create your account on your phone.",
   "DEVICE_REGISTRATION_STEP_2_TITLE": "Step 2: Connect this device",
   "DEVICE_REGISTRATION_STEP_2_SUBTITLE": "In your CI Account, click Add Device, name your Hub, then paste the pairing code here to finish registration.",
   "DEVICE_REGISTRATION_CURRENT_DEVICE_ID": "Current Device ID:",
