@@ -41,6 +41,14 @@ function resolveBrowserHost(internalIp?: string | null): string {
 
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '0.0.0.0', '::1', '::', '[::1]', '[::]']);
 
+function parseAccessUrl(url: string): URL | null {
+  try {
+    return new URL(url);
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Whether a URL resolves to this machine and nothing else.
  *
@@ -56,13 +64,27 @@ export function isLoopbackAccessUrl(url: string | null): boolean {
     return false;
   }
 
-  try {
-    const { hostname } = new URL(url);
-    return LOOPBACK_HOSTS.has(hostname) || hostname.startsWith('127.');
-  } catch {
+  const parsed = parseAccessUrl(url);
+  if (!parsed) {
     // An unparseable URL is not something we should offer to another device either.
     return true;
   }
+
+  return LOOPBACK_HOSTS.has(parsed.hostname) || parsed.hostname.startsWith('127.');
+}
+
+/**
+ * Whether a URL is not a URL at all.
+ *
+ * `isLoopbackAccessUrl` folds this case into its `true` answer so the QR button
+ * stays fail-closed, which is the right call for the *behaviour*. It is the
+ * wrong call for the *copy*: telling someone a garbled address "only works on
+ * this machine" is a specific factual claim, and it is false — nothing is known
+ * about where that address points, including whether it points anywhere. The
+ * card asks this first so the two failures can say different things.
+ */
+export function isMalformedAccessUrl(url: string | null): boolean {
+  return url ? parseAccessUrl(url) === null : false;
 }
 
 function buildHttpsUrl(hostname: string, sslPort: number, suffix: string): string {
@@ -340,6 +362,9 @@ export const AppAccessPoints = ({ app, info }: Props) => {
             // Open and Copy both land on this device. A QR is the off-device route —
             // which is exactly why a loopback address must not get one.
             const isLoopback = isLoopbackAccessUrl(entry.url);
+            // A subset of the above: `isLoopback` is also true for an address we
+            // could not parse, and that case needs its own explanation.
+            const isMalformed = isMalformedAccessUrl(entry.url);
             const canShare = isActive && Boolean(entry.url) && !isLoopback;
 
             return (
@@ -399,7 +424,13 @@ export const AppAccessPoints = ({ app, info }: Props) => {
                     size="icon"
                     onClick={() => canShare && setQrEntry(entry)}
                     disabled={!canShare}
-                    title={isActive && isLoopback ? t('APP_DETAILS_ACCESS_QR_LOOPBACK') : t('APP_DETAILS_ACCESS_SHOW_QR')}
+                    title={
+                      isActive && isMalformed
+                        ? t('APP_DETAILS_ACCESS_QR_MALFORMED')
+                        : isActive && isLoopback
+                          ? t('APP_DETAILS_ACCESS_QR_LOOPBACK')
+                          : t('APP_DETAILS_ACCESS_SHOW_QR')
+                    }
                     aria-label={t('APP_DETAILS_ACCESS_SHOW_QR')}
                   >
                     <QrCodeIcon className="h-4 w-4" />

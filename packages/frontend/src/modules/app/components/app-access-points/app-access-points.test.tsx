@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
-import { AppAccessPoints, buildAppAccessPoints, isLoopbackAccessUrl } from './app-access-points';
+import { AppAccessPoints, buildAppAccessPoints, isLoopbackAccessUrl, isMalformedAccessUrl } from './app-access-points';
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
@@ -485,5 +485,26 @@ describe('isLoopbackAccessUrl', () => {
 
   it('refuses to share an unparseable URL', () => {
     expect(isLoopbackAccessUrl('not a url')).toBe(true);
+  });
+});
+
+describe('isMalformedAccessUrl', () => {
+  it('separates an unreadable address from a loopback one', () => {
+    // Both disable the QR button, but only one of them is a claim about *where*
+    // the address points — telling someone a garbled string "only works on this
+    // machine" is a fact the card does not have.
+    expect(isMalformedAccessUrl('not a url')).toBe(true);
+    expect(isLoopbackAccessUrl('not a url')).toBe(true);
+
+    expect(isMalformedAccessUrl('http://127.0.0.1:3000/login')).toBe(false);
+    expect(isLoopbackAccessUrl('http://127.0.0.1:3000/login')).toBe(true);
+  });
+
+  it.each(['https://openwebui.example.com/login', 'http://192.168.1.5:3000'])('treats %s as readable', (url) => {
+    expect(isMalformedAccessUrl(url)).toBe(false);
+  });
+
+  it('does not call a missing URL malformed', () => {
+    expect(isMalformedAccessUrl(null)).toBe(false);
   });
 });

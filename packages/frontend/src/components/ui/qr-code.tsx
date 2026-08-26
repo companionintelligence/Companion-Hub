@@ -93,7 +93,16 @@ export const QrCode = ({ value, fallback, size = 200, level = 'M', mark = false,
 
         {isHidden ? (
           <div className="absolute inset-0 flex items-center justify-center rounded-md">
-            <Button type="button" size="sm" intent="primary" aria-controls={plateId} aria-expanded={false} onClick={() => setRevealed(true)}>
+            {/*
+              No `aria-expanded`. This is not a disclosure widget: the button
+              unmounts the moment the payload is revealed and a separate
+              `COMMON_QR_HIDE_CODE` button takes its place, so the attribute could
+              only ever be read as `false` — a permanent claim that the thing it
+              controls is collapsed, made by a control that is only on screen while
+              that happens to be true. `aria-controls` stays because it is still
+              accurate: both buttons act on the plate below.
+            */}
+            <Button type="button" size="sm" intent="primary" aria-controls={plateId} onClick={() => setRevealed(true)}>
               {t('COMMON_QR_SHOW_CODE')}
             </Button>
           </div>
@@ -109,7 +118,7 @@ export const QrCode = ({ value, fallback, size = 200, level = 'M', mark = false,
       </div>
 
       {reveal && revealed ? (
-        <Button type="button" size="sm" variant="ghost" onClick={() => setRevealed(false)}>
+        <Button type="button" size="sm" variant="ghost" aria-controls={plateId} onClick={() => setRevealed(false)}>
           {t('COMMON_QR_HIDE_CODE')}
         </Button>
       ) : null}

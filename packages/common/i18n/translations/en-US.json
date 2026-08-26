@@ -99,6 +99,7 @@
   "APP_DETAILS_ACCESS_SHOW_QR": "Show QR code",
   "APP_DETAILS_ACCESS_QR_HINT": "Scan with your phone to open this app there.",
   "APP_DETAILS_ACCESS_QR_LOOPBACK": "This address only works on this machine, so there is nothing another device could scan.",
+  "APP_DETAILS_ACCESS_QR_MALFORMED": "This app reported an address we could not read, so there is nothing to turn into a code.",
   "APP_SETTINGS_HUB_ACCESS_TITLE": "Hub access",
   "APP_SETTINGS_HUB_ACCESS_DESC": "Credentials this app uses to talk to the Hub.",
   "APP_SETTINGS_HUB_ACCESS_KEY_LABEL": "App key",
