@@ -266,6 +266,31 @@ describe('InstallAppCommand — pull policy', () => {
     expect(result.settingsPath).toBe('/settings?tab=ai&section=rocm');
   });
 
+  // Reproduces production Sentry issue dfe2be44b8084d35b76c6d1d282c043d (comfyui, failure_phase
+  // "start"): Docker checked /dev/dri first — listed before /dev/kfd in the app's
+  // docker-compose.json — and failed on that device, so the raw error names /dev/dri.
+  it('SHOULD return friendly guidance when Docker fails on /dev/dri (checked before /dev/kfd)', async () => {
+    vi.mocked(parseComposeJson).mockReturnValue({
+      services: [{ name: 'comfyui', image: 'docker.io/example/comfyui:latest', devices: ['/dev/dri:/dev/dri', '/dev/kfd:/dev/kfd'] }],
+      overrides: [],
+    } as any);
+
+    dockerService.composeApp = vi.fn(async (_urn: string, args: string) => {
+      if (args.includes('up --detach')) {
+        throw new Error(
+          'Error response from daemon: error gathering device information while adding custom device "/dev/dri": no such file or directory',
+        );
+      }
+    });
+
+    const result = await command.execute('comfyui:store' as AppUrn, {});
+
+    expect(result.success).toBe(false);
+    expect(result.errorCode).toBe('rocm_kfd_missing');
+    expect(result.message).toContain('Set up ROCm in AI Settings');
+    expect(result.settingsPath).toBe('/settings?tab=ai&section=rocm');
+  });
+
   it('SHOULD allow install when host ROCm probe reports /dev/kfd even if container lacks /dev/kfd', async () => {
     vi.mocked(parseComposeJson).mockReturnValue({
       services: [{ name: 'comfyui', image: 'docker.io/example/comfyui:latest', devices: ['/dev/kfd:/dev/kfd'] }],
