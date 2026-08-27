@@ -560,12 +560,197 @@ export class ExposureSyncService {
         } catch (error) {
           this.logger.error(`[Cloudflare] Custom-domain reconcile failed: ${error instanceof Error ? error.message : String(error)}`);
         }
+
+        /*
+         * And only THEN are unfulfilled install-time choices asked of CI-Cloud.
+         *
+         * After the reconcile, so an intent CI-Cloud has already delivered is
+         * seen as satisfied and costs no request. After the sync, because
+         * CI-Cloud cannot wire a domain to an app it has never heard of — the
+         * sync above is what registers it — which is the entire reason the
+         * choice is recorded at install time rather than acted on there.
+         */
+        try {
+          await this.bindCustomDomainIntents({ apps: await this.appRepository.getApps(), syncedAppUrns, toPublicHostname });
+        } catch (error) {
+          this.logger.error(`[Cloudflare] Custom-domain bind pass failed: ${error instanceof Error ? error.message : String(error)}`);
+        }
       }
     } catch (error) {
       if (error instanceof Error) {
         this.logger.error(`[Cloudflare] Sync failed: ${error.message}`);
       } else {
         this.logger.error(`[Cloudflare] Sync failed: ${String(error)}`);
+      }
+    }
+  }
+
+  /**
+   * Ask CI-Cloud to wire the custom domain somebody CHOSE when they installed an
+   * app, once there is an app for it to be wired to.
+   *
+   * ── WHY THIS IS NOT DONE AT INSTALL TIME ────────────────────────────────────
+   *
+   * The install dialog is where the choice is made and the only place it can be:
+   * it is the moment a person knows which app is meant to live at
+   * `comfy.acme.com`. But CI-Cloud derives a domain's routing target from an
+   * `application` row it holds, and at that moment it has never heard of this app
+   * — the tunnel sync that registers it has not run yet, because the app does not
+   * exist yet. Binding there would mean CI-Cloud accepting a hostname the CALLER
+   * named, which is the hole the whole design closed.
+   *
+   * So the choice is recorded (`app.custom_domain_intent`) and acted on here,
+   * after a sync has told CI-Cloud what this device runs. The path from a click
+   * to a serving domain is: intent → sync registers the app → this bind → the
+   * NEXT sync reports the hostname in `customDomains` → `reconcileCustomDomains`
+   * writes `custom_domain` and raises `pendingRestart` → the user's restart
+   * regenerates the env. Every step is one CI-Cloud has confirmed, which is why
+   * an app is never told about a hostname on the strength of a form field.
+   *
+   * ⚠ THE INTENT IS NOT THE BINDING. Nothing in this method writes
+   * `custom_domain`, and nothing may: this Hub cannot tell whether a hostname
+   * resolves to its own tunnel, and an app emitting `APP_PUBLIC_URL` for one that
+   * does not signs OAuth redirects for an address nothing answers on.
+   */
+  private async bindCustomDomainIntents(params: {
+    apps: Awaited<ReturnType<AppsRepository['getApps']>>;
+    syncedAppUrns: Set<AppUrn>;
+    toPublicHostname: (app: Awaited<ReturnType<AppsRepository['getApps']>>[number]) => string;
+  }): Promise<void> {
+    const candidates = params.apps.filter((app) => {
+      const intent = normalizeStoredHostname(app.customDomainIntent);
+
+      if (!intent) {
+        return false;
+      }
+
+      /*
+       * SATISFIED INTENTS COST NOTHING. `custom_domain` is written only from what
+       * CI-Cloud reported delivered, so an intent that equals it is a choice that
+       * has already come true — and the common case, on every heartbeat for the
+       * life of the app.
+       */
+      if (normalizeStoredHostname(app.customDomain) === intent) {
+        return false;
+      }
+
+      /*
+       * Same two gates the delivery reconcile applies: an app that emits no
+       * public identity has nothing for a domain to alias, and an app absent from
+       * this sync's payload is one CI-Cloud was not told about — asking it to
+       * wire a domain to that app can only be refused.
+       */
+      return canServeOnCustomDomain(app as AppPublicRoutingSnapshot) && params.syncedAppUrns.has(createAppUrn(app.appName, app.appStoreSlug));
+    });
+
+    if (candidates.length === 0) {
+      return;
+    }
+
+    const available = await this.cloudflareClientService.fetchOrganizationCustomDomains();
+
+    /*
+     * ⚠ COULD NOT ASK IS NOT "NOT CONNECTED". An older CI-Cloud, an unreachable
+     * one, or a payload that would not parse all arrive here as `undefined`, and
+     * every intent is KEPT — clearing on a failed read would throw away a
+     * person's choice because a request failed, silently and with nothing left to
+     * retry from.
+     */
+    if (!available) {
+      this.logger.debug(`[Cloudflare] ${candidates.length} custom-domain choice(s) still pending; CI-Cloud did not answer the listing`);
+
+      return;
+    }
+
+    const byDomain = new Map(available.map((entry) => [entry.domain, entry]));
+
+    for (const app of candidates) {
+      const appUrn = createAppUrn(app.appName, app.appStoreSlug);
+      const intent = normalizeStoredHostname(app.customDomainIntent);
+
+      if (!intent) {
+        continue;
+      }
+
+      try {
+        const entry = byDomain.get(intent);
+
+        /*
+         * The organization no longer holds this domain — disconnected in the
+         * portal, or released. The listing IS the org's full set, so this is a
+         * fact rather than a gap, and a choice naming a domain that no longer
+         * exists can only fail forever. Cleared, loudly: the app stays on its
+         * platform hostname, which works, and the log says why.
+         */
+        if (!entry) {
+          await this.appRepository.updateAppById(app.id, { customDomainIntent: null });
+          this.logger.warn(
+            `[Cloudflare] ${appUrn} was set up to serve on ${intent}, but that domain is no longer connected to this organization; clearing the choice and leaving the app on its platform hostname.`,
+          );
+
+          continue;
+        }
+
+        const target = normalizeHostname(params.toPublicHostname(app));
+
+        /*
+         * CI-Cloud already points it here and simply has not reported it
+         * delivered yet — the ingress clone lands on the next sync. Asking again
+         * would spend a Cloudflare call per heartbeat to assert what is already
+         * asserted.
+         */
+        if (normalizeStoredHostname(entry.targetHostname) === target) {
+          continue;
+        }
+
+        /*
+         * Connected but not proved yet. Nothing to do here and nothing wrong:
+         * verification is a person finishing a DNS change in their own zone, and
+         * the intent waits for them. Debug rather than warn — this is a normal
+         * state that can last for hours, and warning about it every heartbeat
+         * would train people to ignore the log.
+         */
+        if (!entry.bindable) {
+          this.logger.debug(`[Cloudflare] ${appUrn} is waiting for ${intent} to finish verifying before it can be bound`);
+
+          continue;
+        }
+
+        // The SUBDOMAIN this device syncs under, not a hostname and not a local
+        // guess at CI-Cloud's slug: CI-Cloud canonicalizes it with the same
+        // function it used when it created the row.
+        const appSubdomain = app.localSubdomain || `${app.appName}-${app.appStoreSlug}`;
+        const bound = await this.cloudflareClientService.bindCustomDomain(entry.id, appSubdomain);
+
+        if (bound.ok) {
+          this.logger.info(
+            `[Cloudflare] ${intent} is now wired to ${appUrn}; it will be published to the app once the next sync reports it delivered.`,
+          );
+
+          continue;
+        }
+
+        /*
+         * A refusal that can clear itself keeps the intent and retries on the
+         * next sync: the app may not be registered yet (its first sync can land
+         * after this pass), and a domain mid-verification becomes bindable
+         * without anyone touching the Hub. Only "that domain is not yours / does
+         * not exist" is terminal, and that is the same conclusion the missing
+         * entry above reaches.
+         */
+        if (bound.code === 'DOMAIN_NOT_FOUND') {
+          await this.appRepository.updateAppById(app.id, { customDomainIntent: null });
+          this.logger.warn(`[Cloudflare] CI-Cloud does not recognise ${intent} for this organization; clearing the choice on ${appUrn}.`);
+
+          continue;
+        }
+
+        this.logger.warn(
+          `[Cloudflare] Could not wire ${intent} to ${appUrn}: ${bound.message}${bound.code ? ` (${bound.code})` : ''}. Retrying on the next sync.`,
+        );
+      } catch (error) {
+        // One app's failure must not abandon the rest of the pass.
+        this.logger.error(`[Cloudflare] Custom-domain bind failed for ${appUrn}: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
   }

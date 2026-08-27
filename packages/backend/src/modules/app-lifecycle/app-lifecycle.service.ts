@@ -824,6 +824,10 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
           domain: domain ?? null,
           localSubdomain: parsedForm.localSubdomain ?? null,
           publicDomain: parsedForm.publicDomain ?? null,
+          // The custom domain the installer picked, recorded as an intent. It is
+          // asked of CI-Cloud once the app registers — see `custom_domain_intent`
+          // — and never reaches this app's env until CI-Cloud reports it wired.
+          customDomainIntent: parsedForm.customDomain || null,
           openPort: openPort ?? false,
           exposedLocal: exposedLocal ?? !!appInfo.exposable,
           exposureMode: parsedForm.exposureMode ?? 'local',
@@ -871,6 +875,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
         domain: domain ?? null,
         localSubdomain: parsedForm.localSubdomain ?? null,
         publicDomain: parsedForm.publicDomain ?? null,
+        customDomainIntent: parsedForm.customDomain || null,
         openPort: openPort ?? false,
         exposedLocal: exposedLocal ?? !!appInfo.exposable,
         exposureMode: parsedForm.exposureMode ?? 'local',
@@ -1733,6 +1738,16 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       domain: parsedForm.domain ?? null,
       localSubdomain: parsedForm.localSubdomain ?? null,
       publicDomain: parsedForm.publicDomain ?? null,
+      /*
+       * ⚠ ABSENT IS NOT NULL HERE. Every field beside this one is rewritten from
+       * the form on every save, because the settings dialog sends all of them.
+       * `customDomain` is sent only by a client that knows about custom domains,
+       * so treating an omitted field as "clear it" would let an older client — or
+       * any caller that patches one setting — silently unbind a domain the
+       * customer is being served on. The empty string IS a real instruction: it
+       * is what the picker sends for "use the platform address".
+       */
+      ...(parsedForm.customDomain === undefined ? {} : { customDomainIntent: parsedForm.customDomain || null }),
       config: parsedForm,
       isVisibleOnGuestDashboard: parsedForm.isVisibleOnGuestDashboard ?? false,
       enableAuth: parsedForm.enableAuth ?? false,

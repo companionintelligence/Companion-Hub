@@ -1251,6 +1251,7 @@ export type AppFormBody = {
     enableAuth?: boolean;
     localSubdomain?: string;
     publicDomain?: string;
+    customDomain?: string;
     maxBackups?: number;
     cpuLimit?: string;
     memoryLimit?: string;
@@ -1986,6 +1987,19 @@ export type AvailableDomainsResponseDto = {
     }>;
 };
 
+export type AvailableCustomDomainsResponseDto = {
+    supported: boolean;
+    domains: Array<{
+        id: string;
+        domain: string;
+        state: 'live' | 'parked' | 'pending';
+        bindable: boolean;
+        targetHostname: string;
+        boundAppSlug: string;
+        boundElsewhere: boolean;
+    }>;
+};
+
 export type FeaturedStoreBundleDto = {
     firstParty: Array<unknown>;
     featured: Array<unknown>;
@@ -2462,6 +2476,19 @@ export type GetDomainsResponses = {
 };
 
 export type GetDomainsResponse = GetDomainsResponses[keyof GetDomainsResponses];
+
+export type GetCustomDomainsData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/cloudflare/custom-domains';
+};
+
+export type GetCustomDomainsResponses = {
+    default: AvailableCustomDomainsResponseDto;
+};
+
+export type GetCustomDomainsResponse = GetCustomDomainsResponses[keyof GetCustomDomainsResponses];
 
 export type GetStatus2Data = {
     body?: never;

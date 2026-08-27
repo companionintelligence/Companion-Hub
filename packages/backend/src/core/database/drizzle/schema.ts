@@ -75,6 +75,25 @@ export const app = pgTable(
      * app's compose env is stale until it is restarted (`pendingRestart`).
      */
     customDomain: varchar('custom_domain'),
+    /**
+     * The custom domain the person installing this app ASKED for — the choice,
+     * not the outcome.
+     *
+     * ⚠ NEVER READ BY ENV GENERATION. {@link customDomain} is what CI-Cloud
+     * confirmed it wired and is the only value an app may be told to emit; this
+     * is user input, and the Hub cannot tell whether a hostname really resolves
+     * to this tunnel. Emitting a public URL for one that does not is worse than
+     * emitting the platform URL, because the app would sign OAuth redirects for
+     * an address nothing answers on.
+     *
+     * It exists because the two cannot happen at the same moment: at install
+     * time CI-Cloud has never heard of the app, so there is nothing to bind a
+     * domain to yet. The intent is recorded here, the tunnel sync registers the
+     * app, the bind follows, and the delivered binding then lands in
+     * `custom_domain` like any other. `null` means "serve on the platform
+     * hostname", which is also what clearing the field asks for.
+     */
+    customDomainIntent: varchar('custom_domain_intent'),
     pendingRestart: boolean('pending_restart').default(false).notNull(),
     userConfigEnabled: boolean('user_config_enabled').default(true).notNull(),
     maxBackups: integer('max_backups'),

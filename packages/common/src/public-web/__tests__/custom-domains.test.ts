@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { indexCustomDomainsByTarget, parseTunnelCustomDomains, selectCustomDomain } from '../custom-domains';
+import { indexCustomDomainsByTarget, parseAvailableCustomDomains, parseTunnelCustomDomains, selectCustomDomain } from '../custom-domains';
 
 describe('parseTunnelCustomDomains', () => {
   it('keeps "absent" and "empty" apart', () => {
@@ -154,5 +154,75 @@ describe('selectCustomDomain', () => {
   it('unbinds when nothing is delivered for the target', () => {
     expect(selectCustomDomain(undefined, 'zzz.acme.com')).toBeNull();
     expect(selectCustomDomain([], 'zzz.acme.com')).toBeNull();
+  });
+});
+
+describe('parseAvailableCustomDomains', () => {
+  const listed = (overrides: Record<string, unknown> = {}) => ({
+    id: 'cd_1',
+    domain: 'comfy.acme.com',
+    state: 'parked',
+    bindable: true,
+    targetHostname: null,
+    boundAppSlug: null,
+    boundElsewhere: false,
+    ...overrides,
+  });
+
+  it('reads a well-formed listing', () => {
+    expect(parseAvailableCustomDomains([listed()])).toEqual([
+      {
+        id: 'cd_1',
+        domain: 'comfy.acme.com',
+        state: 'parked',
+        bindable: true,
+        targetHostname: null,
+        boundAppSlug: null,
+        boundElsewhere: false,
+      },
+    ]);
+  });
+
+  it('reports an unreadable payload as unanswered, not as none', () => {
+    /*
+     * ⚠ THE DISTINCTION THE PICKER IS BUILT ON. "You have no custom domains,
+     * connect one in the portal" is a sentence; saying it because the request
+     * failed is the silence this feature exists to end.
+     */
+    expect(parseAvailableCustomDomains(undefined)).toBeUndefined();
+    expect(parseAvailableCustomDomains({ domains: [] })).toBeUndefined();
+    expect(parseAvailableCustomDomains('nope')).toBeUndefined();
+  });
+
+  it('reports a genuinely empty listing as empty', () => {
+    expect(parseAvailableCustomDomains([])).toEqual([]);
+  });
+
+  it('drops entries it cannot use rather than the whole listing', () => {
+    const domains = parseAvailableCustomDomains([
+      null,
+      listed({ id: '' }),
+      listed({ domain: 'not a hostname' }),
+      listed({ state: 'whatever' }),
+      listed({ id: 'cd_ok', domain: 'ok.acme.com' }),
+    ]);
+
+    expect(domains?.map((entry) => entry.domain)).toEqual(['ok.acme.com']);
+  });
+
+  it('defaults bindable to false when the answer is missing', () => {
+    // Offering a domain the server would refuse spends a person's attention on
+    // a choice that cannot be honoured.
+    expect(parseAvailableCustomDomains([listed({ bindable: undefined })])?.[0]?.bindable).toBe(false);
+    expect(parseAvailableCustomDomains([listed({ bindable: 'yes' })])?.[0]?.bindable).toBe(false);
+  });
+
+  it('normalizes hostnames so both sides compare equal', () => {
+    const domains = parseAvailableCustomDomains([listed({ domain: 'Comfy.Acme.Com.', targetHostname: 'ComfyUI-Core2-Acme.Example.Com' })]);
+
+    expect(domains?.[0]).toMatchObject({
+      domain: 'comfy.acme.com',
+      targetHostname: 'comfyui-core2-acme.example.com',
+    });
   });
 });

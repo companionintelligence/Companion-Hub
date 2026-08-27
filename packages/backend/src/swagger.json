@@ -673,6 +673,27 @@
         ]
       }
     },
+    "/api/cloudflare/custom-domains": {
+      "get": {
+        "operationId": "getCustomDomains",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AvailableCustomDomainsResponseDto"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Cloudflare"
+        ]
+      }
+    },
     "/api/cloudflare/status": {
       "get": {
         "operationId": "getStatus",
@@ -10903,6 +10924,9 @@
             "type": "string",
             "minLength": 1
           },
+          "customDomain": {
+            "type": "string"
+          },
           "maxBackups": {
             "type": "number",
             "minimum": 0,
@@ -14258,6 +14282,65 @@
           }
         },
         "required": [
+          "domains"
+        ],
+        "additionalProperties": false
+      },
+      "AvailableCustomDomainsResponseDto": {
+        "type": "object",
+        "properties": {
+          "supported": {
+            "type": "boolean"
+          },
+          "domains": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "domain": {
+                  "type": "string"
+                },
+                "state": {
+                  "type": "string",
+                  "enum": [
+                    "live",
+                    "parked",
+                    "pending"
+                  ]
+                },
+                "bindable": {
+                  "type": "boolean"
+                },
+                "targetHostname": {
+                  "nullable": true,
+                  "type": "string"
+                },
+                "boundAppSlug": {
+                  "nullable": true,
+                  "type": "string"
+                },
+                "boundElsewhere": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "id",
+                "domain",
+                "state",
+                "bindable",
+                "targetHostname",
+                "boundAppSlug",
+                "boundElsewhere"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "supported",
           "domains"
         ],
         "additionalProperties": false

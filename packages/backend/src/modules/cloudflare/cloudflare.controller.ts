@@ -44,6 +44,24 @@ export class CloudflareController {
     return this.cloudflareClientService.fetchAvailableDomains();
   }
 
+  /**
+   * The organization's connected custom domains, for the install dialog's picker.
+   *
+   * `supported: false` is NOT "none connected". It is "this CI-Cloud cannot be
+   * asked" — a deployment predating the feature, or one that did not answer — and
+   * the dialog says something different for each: an empty list invites you to
+   * connect one in the portal, an unanswerable question must not. Gap 3 of
+   * CI-Hub#1181 was precisely the Hub behaving as though domains it could not see
+   * did not exist.
+   */
+  @Get('custom-domains')
+  @ApiResponse({ type: Object })
+  async getCustomDomains() {
+    const domains = await this.cloudflareClientService.fetchOrganizationCustomDomains();
+
+    return { supported: domains !== undefined, domains: domains ?? [] };
+  }
+
   @Get('status')
   @ApiResponse({ type: Object })
   async getStatus() {

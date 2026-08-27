@@ -97,6 +97,24 @@ vi.mock('@ci-hub/common/types', () => {
 });
 
 const MOCK_AVAILABLE_DOMAINS = { domains: [] as Array<{ id: string; domain: string; isDefault: boolean; scope?: string }> };
+/**
+ * The organization's connected custom domains, as `GET /cloudflare/custom-domains`
+ * reports them. `supported: false` is the default because it is the default
+ * DEPLOYMENT: an older CI-Cloud, or one that did not answer — and the picker must
+ * render nothing there rather than an empty dropdown advertising the feature.
+ */
+const MOCK_CUSTOM_DOMAINS = {
+  supported: false,
+  domains: [] as Array<{
+    id: string;
+    domain: string;
+    state: 'live' | 'parked' | 'pending';
+    bindable: boolean;
+    targetHostname: string | null;
+    boundAppSlug: string | null;
+    boundElsewhere: boolean;
+  }>,
+};
 const MOCK_USE_QUERY_RESULT = {
   data: MOCK_AVAILABLE_DOMAINS,
   isLoading: false,
@@ -107,7 +125,11 @@ vi.mock('@tanstack/react-query', () => ({
     mutateAsync: vi.fn().mockResolvedValue({}),
     isPending: false,
   }),
-  useQuery: () => MOCK_USE_QUERY_RESULT,
+  // Keyed, so the two listings the form reads cannot answer each other's
+  // question — a single shared result had the custom-domain picker reading the
+  // platform domain list.
+  useQuery: (options: { queryKey?: unknown[] }) =>
+    options?.queryKey?.[0] === 'getCustomDomains' ? { data: MOCK_CUSTOM_DOMAINS, isLoading: false } : MOCK_USE_QUERY_RESULT,
   queryOptions: (options: unknown) => options,
 }));
 
@@ -115,11 +137,14 @@ vi.mock('@tanstack/react-query', () => ({
 vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
   getRandomPortMutation: () => ({ mutationFn: vi.fn() }),
   getDomainsOptions: () => ({ queryKey: ['getDomains'], queryFn: vi.fn() }),
+  getCustomDomainsOptions: () => ({ queryKey: ['getCustomDomains'], queryFn: vi.fn() }),
 }));
 
 describe('InstallForm', () => {
   afterEach(() => {
     MOCK_AVAILABLE_DOMAINS.domains = [];
+    MOCK_CUSTOM_DOMAINS.supported = false;
+    MOCK_CUSTOM_DOMAINS.domains = [];
     vi.useRealTimers();
     vi.clearAllMocks();
   });
@@ -540,6 +565,110 @@ describe('InstallForm', () => {
     expect(fetchDnsAvailability).not.toHaveBeenCalled();
   });
 
+  describe('custom domain picker', () => {
+    const CONTEXT = {
+      userSettings: {
+        ciHubOrganizationSlug: 'acme',
+        ciHubDeviceSlug: 'core2',
+        localDomain: 'ci.lan',
+        domain: 'companionintelligence.com',
+        maxBackups: 5,
+        guestDashboard: false,
+      },
+      user: { advancedMode: true },
+      isProduction: true,
+      cloudflareAvailable: true,
+      tailscaleAvailable: false,
+    } as unknown as ReturnType<typeof useAppContext>;
+
+    const INFO = {
+      urn: 'comfyui:store',
+      form_fields: [],
+      exposable: true,
+      dynamic_config: true,
+      port: 8188,
+    } as unknown as AppInfo;
+
+    const connected = (overrides: Record<string, unknown> = {}) => ({
+      id: 'cd_1',
+      domain: 'comfy.acme.com',
+      state: 'parked' as const,
+      bindable: true,
+      targetHostname: null,
+      boundAppSlug: null,
+      boundElsewhere: false,
+      ...overrides,
+    });
+
+    const renderForm = (initialValues: Record<string, unknown> = { exposureMode: 'cloudflare' }) => {
+      vi.mocked(useAppContext).mockReturnValue(CONTEXT);
+
+      return render(
+        <MemoryRouter>
+          <InstallForm info={INFO} onSubmit={vi.fn()} formId="test-form" formFields={[]} initialValues={initialValues} />
+        </MemoryRouter>,
+      );
+    };
+
+    it('renders nothing when CI-Cloud could not be asked', () => {
+      /*
+       * ⚠ NOT AN EMPTY DROPDOWN. An older CI-Cloud, or one that did not answer,
+       * must not have the Hub advertise a feature it cannot offer — and must not
+       * be mistaken for "this organization owns no domains", which is a different
+       * sentence with a different next step.
+       */
+      MOCK_CUSTOM_DOMAINS.supported = false;
+      MOCK_CUSTOM_DOMAINS.domains = [connected()];
+
+      renderForm();
+
+      expect(screen.queryByLabelText('APP_INSTALL_FORM_CUSTOM_DOMAIN')).not.toBeInTheDocument();
+    });
+
+    it('renders nothing when the organization owns no custom domains', () => {
+      MOCK_CUSTOM_DOMAINS.supported = true;
+      MOCK_CUSTOM_DOMAINS.domains = [];
+
+      renderForm();
+
+      expect(screen.queryByLabelText('APP_INSTALL_FORM_CUSTOM_DOMAIN')).not.toBeInTheDocument();
+    });
+
+    it('offers the organization connected domains under public exposure', () => {
+      MOCK_CUSTOM_DOMAINS.supported = true;
+      MOCK_CUSTOM_DOMAINS.domains = [connected()];
+
+      renderForm();
+
+      expect(screen.getByLabelText('APP_INSTALL_FORM_CUSTOM_DOMAIN')).toBeInTheDocument();
+      // Defaults to the platform address: a custom domain is a choice somebody
+      // makes, never one the dialog makes for them.
+      expect(screen.getByLabelText('APP_INSTALL_FORM_CUSTOM_DOMAIN')).toHaveTextContent('APP_INSTALL_FORM_CUSTOM_DOMAIN_NONE');
+    });
+
+    it('does not offer a custom domain for an app that publishes no public route', () => {
+      // A custom domain is delivered by cloning this app's tunnel ingress rule.
+      // A local-only app has nothing for one to alias.
+      MOCK_CUSTOM_DOMAINS.supported = true;
+      MOCK_CUSTOM_DOMAINS.domains = [connected()];
+
+      renderForm({ exposureMode: 'local' });
+
+      expect(screen.queryByLabelText('APP_INSTALL_FORM_CUSTOM_DOMAIN')).not.toBeInTheDocument();
+    });
+
+    it('shows the domain a saved app was set up to use', () => {
+      MOCK_CUSTOM_DOMAINS.supported = true;
+      MOCK_CUSTOM_DOMAINS.domains = [connected()];
+
+      renderForm({ exposureMode: 'cloudflare', customDomain: 'comfy.acme.com' });
+
+      expect(screen.getByLabelText('APP_INSTALL_FORM_CUSTOM_DOMAIN')).toHaveTextContent('comfy.acme.com');
+      // And says the restart out loud, rather than springing it after the install.
+      expect(screen.getByText(/APP_INSTALL_FORM_CUSTOM_DOMAIN_PENDING_HINT/)).toBeInTheDocument();
+    });
+  });
+
   it('hides the subdomain field for Private VPN exposure mode', () => {
     vi.mocked(useAppContext).mockReturnValue({
       userSettings: {
@@ -838,6 +967,8 @@ describe('InstallForm', () => {
     expect(screen.getByLabelText('COMMON_PUBLIC_DOMAIN')).toBeInTheDocument();
 
     MOCK_AVAILABLE_DOMAINS.domains = [];
+    MOCK_CUSTOM_DOMAINS.supported = false;
+    MOCK_CUSTOM_DOMAINS.domains = [];
   });
 
   it('shows hostname details with copy buttons in simple mode', async () => {
@@ -882,6 +1013,8 @@ describe('InstallForm', () => {
     expect(toast.success).toHaveBeenCalledWith('SETTINGS_NETWORK_COPIED');
 
     MOCK_AVAILABLE_DOMAINS.domains = [];
+    MOCK_CUSTOM_DOMAINS.supported = false;
+    MOCK_CUSTOM_DOMAINS.domains = [];
   });
 
   it('shows a DNS-specific toast when DNS availability fails', async () => {

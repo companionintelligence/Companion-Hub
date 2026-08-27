@@ -19,6 +19,7 @@ export const INSTALL_FORM_META_KEYS = [
   'exposureMode',
   'enableAuth',
   'publicDomain',
+  'customDomain',
   'maxBackups',
   'cpuLimit',
   'isVisibleOnGuestDashboard',

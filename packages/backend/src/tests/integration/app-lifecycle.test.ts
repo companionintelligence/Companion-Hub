@@ -704,6 +704,74 @@ describe('App lifecycle', () => {
       expect(revertedEnv.get('APP_BASE_URL')).toBe(`https://${platformHostname}`);
     });
 
+    it('carries an install-time choice through to a bind, and only then to the env', async () => {
+      /*
+       * The whole install-time path, seam by seam — and the only test that proves
+       * `custom_domain_intent` exists after `migrate`.
+       *
+       * The choice cannot be honoured at install time: CI-Cloud derives a
+       * domain's routing target from an `application` row, and at that moment it
+       * has never heard of this app. So it is recorded, asked for after the sync
+       * that registers the app, and reaches the env only once CI-Cloud reports
+       * the hostname actually wired.
+       */
+      cloudflareClientService.fetchOrganizationCustomDomains.mockResolvedValue([
+        {
+          id: 'cd_1',
+          domain: 'comfy.acme.com',
+          state: 'parked',
+          bindable: true,
+          targetHostname: null,
+          boundAppSlug: null,
+          boundElsewhere: false,
+        },
+      ]);
+      cloudflareClientService.bindCustomDomain.mockResolvedValue({ ok: true });
+
+      const appInfo = await createAppInStore('test', { id: 'cdomain-intent' });
+
+      await appLifecycleService.installApp({ appUrn: appInfo.urn, form: { ...exposedForm, customDomain: 'comfy.acme.com' } });
+      await waitFor(async () => {
+        expect((await appsRepository.getAppByUrn(appInfo.urn))?.status).toBe('running');
+      });
+
+      const platformHostname = 'cdomain-intent-test-core2-acme.ci.test';
+      const installed = await appsRepository.getAppByUrn(appInfo.urn);
+
+      // Recorded as the choice — and NOT as the binding. The app is installed at
+      // its platform address, because that is the only address anyone has
+      // confirmed answers for it.
+      expect(installed?.customDomainIntent).toBe('comfy.acme.com');
+      expect(installed?.customDomain).toBeNull();
+      expect((await readEnv(appInfo.urn)).get('APP_PUBLIC_URL')).toBe(`https://${platformHostname}`);
+
+      // The sync registers the app with CI-Cloud, and the bind pass then asks for
+      // the domain — by the app's subdomain, never by a hostname.
+      await syncReporting([]);
+
+      // The SAME subdomain the tunnel-state payload carries — `cdomain-intent-test`,
+      // not the app's name — because that is the string CI-Cloud canonicalized
+      // into the `application` row it will resolve the target from.
+      expect(cloudflareClientService.bindCustomDomain).toHaveBeenCalledWith('cd_1', 'cdomain-intent-test');
+      // Still nothing in the env: a bind is CI-Cloud moving the alias, not proof
+      // that the tunnel answers for it.
+      expect((await appsRepository.getAppByUrn(appInfo.urn))?.customDomain).toBeNull();
+
+      // The next sync reports it delivered, which is what binds the row.
+      await syncReporting([{ id: 'cd_1', domain: 'comfy.acme.com', targetHostname: platformHostname }]);
+
+      const bound = await appsRepository.getAppByUrn(appInfo.urn);
+      expect(bound?.customDomain).toBe('comfy.acme.com');
+      expect(bound?.pendingRestart).toBe(true);
+
+      await appLifecycleService.restartApp({ appUrn: appInfo.urn, skipPull: true });
+      await waitFor(async () => {
+        expect((await appsRepository.getAppByUrn(appInfo.urn))?.status).toBe('running');
+      });
+
+      expect((await readEnv(appInfo.urn)).get('APP_PUBLIC_URL')).toBe('https://comfy.acme.com');
+    });
+
     it('leaves a bound app untouched when CI-Cloud predates custom domains', async () => {
       const appInfo = await installExposed('cdomain-old');
       const platformHostname = 'cdomain-old-test-core2-acme.ci.test';

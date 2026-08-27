@@ -6,86 +6,86 @@
     <title>Companion Hub</title>
     <style>
       :root {
-                          color-scheme: dark;
-                          --bg: #041620;
-                          --text: #e8f4f8;
-                          --muted: #8aa8b5;
-                          --accent: #3ec9e0;
-                        }
-                        * {
-                          box-sizing: border-box;
-                        }
-                        body {
-                          margin: 0;
-                          min-height: 100vh;
-                          display: flex;
-                          align-items: center;
-                          justify-content: center;
-                          background: var(--bg);
-                          color: var(--text);
-                          font-family: 'Manrope', system-ui, -apple-system, sans-serif;
-                        }
-                        main {
-                          text-align: center;
-                          padding: 2rem;
-                          max-width: 28rem;
-                        }
-                        h1 {
-                          font-size: 1.25rem;
-                          font-weight: 600;
-                          margin: 0 0 0.5rem;
-                        }
-                        p {
-                          margin: 0;
-                          color: var(--muted);
-                          font-size: 0.95rem;
-                          line-height: 1.5;
-                        }
-                        .spinner {
-                          width: 2rem;
-                          height: 2rem;
-                          margin: 0 auto 1.25rem;
-                          border: 2px solid rgba(62, 201, 224, 0.25);
-                          border-top-color: var(--accent);
-                          border-radius: 50%;
-                          animation: spin 0.8s linear infinite;
-                        }
-                        @keyframes spin {
-                          to {
-                            transform: rotate(360deg);
-                          }
-                        }
-                        .actions {
-                          margin-top: 1.5rem;
-                          display: none;
-                          flex-direction: column;
-                          gap: 0.5rem;
-                        }
-                        .actions.visible {
-                          display: flex;
-                        }
-                        button {
-                          appearance: none;
-                          border: 1px solid rgba(62, 201, 224, 0.45);
-                          background: transparent;
-                          color: var(--text);
-                          border-radius: 0.5rem;
-                          padding: 0.625rem 1rem;
-                          font: inherit;
-                          cursor: pointer;
-                        }
-                        button.primary {
-                          background: var(--accent);
-                          border-color: var(--accent);
-                          color: var(--bg);
-                          font-weight: 600;
-                        }
-                        button:hover {
-                          filter: brightness(1.08);
-                        }
-                        #status.error {
-                          color: #f87171;
-                        }
+                                      color-scheme: dark;
+                                      --bg: #041620;
+                                      --text: #e8f4f8;
+                                      --muted: #8aa8b5;
+                                      --accent: #3ec9e0;
+                                    }
+                                    * {
+                                      box-sizing: border-box;
+                                    }
+                                    body {
+                                      margin: 0;
+                                      min-height: 100vh;
+                                      display: flex;
+                                      align-items: center;
+                                      justify-content: center;
+                                      background: var(--bg);
+                                      color: var(--text);
+                                      font-family: 'Manrope', system-ui, -apple-system, sans-serif;
+                                    }
+                                    main {
+                                      text-align: center;
+                                      padding: 2rem;
+                                      max-width: 28rem;
+                                    }
+                                    h1 {
+                                      font-size: 1.25rem;
+                                      font-weight: 600;
+                                      margin: 0 0 0.5rem;
+                                    }
+                                    p {
+                                      margin: 0;
+                                      color: var(--muted);
+                                      font-size: 0.95rem;
+                                      line-height: 1.5;
+                                    }
+                                    .spinner {
+                                      width: 2rem;
+                                      height: 2rem;
+                                      margin: 0 auto 1.25rem;
+                                      border: 2px solid rgba(62, 201, 224, 0.25);
+                                      border-top-color: var(--accent);
+                                      border-radius: 50%;
+                                      animation: spin 0.8s linear infinite;
+                                    }
+                                    @keyframes spin {
+                                      to {
+                                        transform: rotate(360deg);
+                                      }
+                                    }
+                                    .actions {
+                                      margin-top: 1.5rem;
+                                      display: none;
+                                      flex-direction: column;
+                                      gap: 0.5rem;
+                                    }
+                                    .actions.visible {
+                                      display: flex;
+                                    }
+                                    button {
+                                      appearance: none;
+                                      border: 1px solid rgba(62, 201, 224, 0.45);
+                                      background: transparent;
+                                      color: var(--text);
+                                      border-radius: 0.5rem;
+                                      padding: 0.625rem 1rem;
+                                      font: inherit;
+                                      cursor: pointer;
+                                    }
+                                    button.primary {
+                                      background: var(--accent);
+                                      border-color: var(--accent);
+                                      color: var(--bg);
+                                      font-weight: 600;
+                                    }
+                                    button:hover {
+                                      filter: brightness(1.08);
+                                    }
+                                    #status.error {
+                                      color: #f87171;
+                                    }
     </style>
   </head>
   <body>

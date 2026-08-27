@@ -255,3 +255,106 @@ export function selectCustomDomain(delivered: readonly string[] | undefined, cur
 
   return delivered[0] ?? null;
 }
+
+/**
+ * ═══════════════════════════════════════════════════════════════════════════
+ * THE DOMAINS AN INSTALL DIALOG MAY OFFER
+ * ═══════════════════════════════════════════════════════════════════════════
+ *
+ * Everything above is about domains CI-Cloud has ALREADY WIRED — what the tunnel
+ * answers for today. This is the other direction: what the organization owns and
+ * could be asked to wire, read from `GET /api/custom-domains/device` so a person
+ * installing an app can pick one.
+ *
+ * The two must not be confused. A row here is a domain that EXISTS; only a
+ * {@link TunnelCustomDomain} is a domain that SERVES. Nothing in this shape may
+ * ever reach `APP_PUBLIC_URL` — an app told to emit a hostname CI-Cloud has not
+ * wired would sign OAuth redirects for an address that resolves nowhere. The
+ * binding an app actually serves on still comes from the tunnel sync, and only
+ * from there.
+ */
+export interface AvailableCustomDomain {
+  /** CI-Cloud's row id — the handle a bind request names. Required here. */
+  id: string;
+  /** The customer-owned hostname (e.g. `comfy.acme.com`). */
+  domain: string;
+  /**
+   * `live` — verified and pointing at something. `parked` — verified and
+   * pointing at nothing, the state connect-first/bind-later leaves behind.
+   * `pending` — connected but not proved yet, so not routable.
+   */
+  state: 'live' | 'parked' | 'pending';
+  /** Whether CI-Cloud would accept a bind for it now. */
+  bindable: boolean;
+  /** The platform hostname it currently aliases, if any. */
+  targetHostname: string | null;
+  /** The app on THIS device it is bound to, when CI-Cloud could name one. */
+  boundAppSlug: string | null;
+  /** Bound to an app this Hub does not hold — another Hub in the org. */
+  boundElsewhere: boolean;
+}
+
+const DOMAIN_STATES = new Set(['live', 'parked', 'pending']);
+
+/**
+ * Validate the `domains` field of the device custom-domain listing.
+ *
+ * Elements are validated individually and junk is DROPPED, the same wire-boundary
+ * discipline {@link parseTunnelCustomDomains} applies — this is the same pair of
+ * independently deployed services, and one malformed row must not cost the
+ * person the whole picker.
+ *
+ * `undefined` for a payload that could not be read AT ALL — an older CI-Cloud
+ * with no such route, a shape that drifted — because "we could not ask" and "the
+ * organization owns none" call for different sentences in the dialog. Offering
+ * an empty picker for a failed read is how Gap 3 looked in the first place: the
+ * Hub silently behaving as though the customer's domains did not exist.
+ */
+export function parseAvailableCustomDomains(value: unknown): AvailableCustomDomain[] | undefined {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+
+  const domains: AvailableCustomDomain[] = [];
+
+  for (const candidate of value) {
+    if (typeof candidate !== 'object' || candidate === null) {
+      continue;
+    }
+
+    const source = candidate as Record<string, unknown>;
+    const id = readString(source, 'id');
+    const domain = readString(source, 'domain');
+    const state = readString(source, 'state');
+
+    if (!id || !domain || !state || !DOMAIN_STATES.has(state)) {
+      continue;
+    }
+
+    const normalizedDomain = normalizeHostname(domain);
+
+    if (!isHostname(normalizedDomain)) {
+      continue;
+    }
+
+    const targetHostname = readString(source, 'targetHostname');
+
+    domains.push({
+      id,
+      domain: normalizedDomain,
+      state: state as AvailableCustomDomain['state'],
+      /*
+       * ⚠ DEFAULTS TO FALSE, NOT TRUE. An absent or non-boolean `bindable` means
+       * an answer we did not get, and offering a domain the server would refuse
+       * spends a person's attention on a choice that cannot be honoured. The
+       * dialog can always say "manage it in the portal".
+       */
+      bindable: source.bindable === true,
+      targetHostname: targetHostname ? normalizeHostname(targetHostname) : null,
+      boundAppSlug: readString(source, 'boundAppSlug'),
+      boundElsewhere: source.boundElsewhere === true,
+    });
+  }
+
+  return domains;
+}
