@@ -236,6 +236,70 @@ describe('CloudflareClientService', () => {
       expect(message).not.toContain('undefined');
     });
 
+    it('should surface the custom domains CI-Cloud reports as wired', async () => {
+      portalClient.postTunnelState.mockResolvedValue({
+        success: true,
+        synced: 1,
+        customDomains: [{ id: 'cd_1', domain: 'Comfy.Acme.com', targetHostname: 'ComfyUI-Hub-Acme.example.com' }],
+      } as any);
+
+      const result = await service.syncState('org-id', [], 'tun-id');
+
+      expect(result.customDomains).toEqual([{ id: 'cd_1', domain: 'comfy.acme.com', targetHostname: 'comfyui-hub-acme.example.com' }]);
+    });
+
+    it('should leave customDomains undefined when CI-Cloud predates the field', async () => {
+      // NOT an empty array: an older Portal saying nothing must not be read as
+      // "this device has none", which downstream treats as an instruction to
+      // unbind every app currently serving on a custom hostname.
+      portalClient.postTunnelState.mockResolvedValue({ success: true, synced: 1 });
+
+      const result = await service.syncState('org-id', [], 'tun-id');
+
+      expect(result.ok).toBe(true);
+      expect(result.customDomains).toBeUndefined();
+    });
+
+    it('should report an empty array as an empty array', async () => {
+      portalClient.postTunnelState.mockResolvedValue({ success: true, synced: 1, customDomains: [] } as any);
+
+      const result = await service.syncState('org-id', [], 'tun-id');
+
+      expect(result.customDomains).toEqual([]);
+    });
+
+    it('should drop malformed custom-domain entries without failing the sync', async () => {
+      const loggerRef = (service as unknown as { logger: { warn: (message: string) => void } }).logger;
+      const warn = vi.spyOn(loggerRef, 'warn');
+
+      portalClient.postTunnelState.mockResolvedValue({
+        success: true,
+        synced: 1,
+        customDomains: [
+          null,
+          { id: 'cd_1', domain: 'no-target.acme.com' },
+          { id: 'cd_2', domain: 'good.acme.com', targetHostname: 'app-hub-acme.example.com' },
+        ],
+      } as any);
+
+      const result = await service.syncState('org-id', [], 'tun-id');
+
+      expect(result.ok).toBe(true);
+      expect(result.customDomains).toEqual([{ id: 'cd_2', domain: 'good.acme.com', targetHostname: 'app-hub-acme.example.com' }]);
+      expect(warn.mock.calls.map(([line]) => String(line)).join('\n')).toContain('Dropped 2 malformed custom-domain');
+    });
+
+    it('should not report custom domains from a failed sync', async () => {
+      // A sync that did not complete delivered nothing, and an empty array here
+      // would unbind every app on the next reconcile.
+      portalClient.postTunnelState.mockRejectedValue(new Error('Network Error'));
+
+      const result = await service.syncState('org-id', [], 'tun-id');
+
+      expect(result.ok).toBe(false);
+      expect(result.customDomains).toBeUndefined();
+    });
+
     it('should fail if no tunnelId', async () => {
       const result = await service.syncState('org-id', []);
       expect(result).toMatchObject({

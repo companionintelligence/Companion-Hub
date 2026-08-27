@@ -22,6 +22,8 @@ export interface PublicWebDiagnosticEntry {
   envHostname: string | null;
   envMismatch: boolean;
   action: 'ok' | 'repair';
+  /** Custom hostname CI-Cloud has wired for this app, when it has one. */
+  customDomain: string | null;
 }
 
 export interface PublicWebDiagnosticsResponse {
@@ -88,7 +90,18 @@ export class PublicWebService {
         envDomain: envMap.get('APP_PUBLIC_DOMAIN') || envMap.get('DOMAIN'),
       });
 
-      const envMismatch = envHostname !== identity.hostname;
+      /*
+       * A bound custom domain is what `generateEnvFile` will emit, so it is what
+       * "correct" means here. Comparing against the platform hostname instead
+       * would report every app on a custom domain as permanently broken and have
+       * repair rewrite the very value the sync just set — the two would fight,
+       * and the app would flip hostname on every repair.
+       */
+      const customDomain = app.customDomain?.trim().toLowerCase() || null;
+      const expectedHostname = customDomain ?? identity.hostname;
+      const expectedPublicUrl = customDomain ? `https://${customDomain}` : identity.publicUrl;
+
+      const envMismatch = envHostname !== expectedHostname;
 
       entries.push({
         appUrn,
@@ -96,11 +109,12 @@ export class PublicWebService {
         status: app.status,
         dbPublicDomain: app.publicDomain,
         dbLocalSubdomain: app.localSubdomain,
-        computedHostname: identity.hostname,
-        computedPublicUrl: identity.publicUrl,
+        computedHostname: expectedHostname,
+        computedPublicUrl: expectedPublicUrl,
         envHostname,
         envMismatch,
         action: envMismatch ? 'repair' : 'ok',
+        customDomain,
       });
     }
 

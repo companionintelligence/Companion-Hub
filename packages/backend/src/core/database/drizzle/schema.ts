@@ -64,6 +64,17 @@ export const app = pgTable(
     subnet: varchar().unique(),
     localSubdomain: varchar('local_subdomain'),
     publicDomain: varchar('public_domain'),
+    /**
+     * Customer-owned hostname CI-Cloud has actually wired to this app's platform
+     * hostname, mirrored from the `customDomains[]` of the last successful tunnel
+     * sync. NOT user input: the Hub cannot tell whether a hostname is really
+     * routed, so only a delivered binding may land here.
+     *
+     * `null` means "serve on the platform hostname" — the state an unbind
+     * restores. Env generation reads this column, so a change here means the
+     * app's compose env is stale until it is restarted (`pendingRestart`).
+     */
+    customDomain: varchar('custom_domain'),
     pendingRestart: boolean('pending_restart').default(false).notNull(),
     userConfigEnabled: boolean('user_config_enabled').default(true).notNull(),
     maxBackups: integer('max_backups'),

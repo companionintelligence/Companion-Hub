@@ -274,7 +274,12 @@ export class AppsService {
         orgSlug: organizationSlug,
         publicDomainRoot: resolvedDomain,
       });
-      appUrl = `${identity.publicUrl}${urlSuffix}`;
+      // A custom hostname CI-Cloud has wired for this app is the one a user
+      // actually visits, so it is the one to link to and to probe — probing the
+      // platform hostname would report an app as reachable at an address the
+      // user is not being sent to.
+      const customDomain = app.customDomain?.trim();
+      appUrl = `${customDomain ? `https://${customDomain}` : identity.publicUrl}${urlSuffix}`;
     }
 
     // Helper to determine stage from error code

@@ -5,7 +5,8 @@ import { SSEService } from '@/core/sse/sse.service';
 import { Injectable, Optional } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
 import type { AppUrn } from '@ci-hub/common/types';
-import { buildOriginServerName, buildPublicWebIdentity } from '@ci-hub/common/types';
+import { buildOriginServerName, buildPublicWebIdentity, indexCustomDomainsByTarget } from '@ci-hub/common/types';
+import type { TunnelCustomDomain } from '@ci-hub/common/types';
 import { AppsRepository } from '../apps/apps.repository';
 import { AppFilesManager } from '../apps/app-files-manager';
 import { publishesCloudflarePublicRoute, type AppPublicRoutingSnapshot } from '../apps/app-public-routing.helpers';
@@ -433,6 +434,18 @@ export class ExposureSyncService {
         hostname: toPublicHostname(dbApp),
       });
 
+      // Only a sync that COMPLETED may change bindings: a failed one delivered
+      // nothing, and reading that as "no domains" would unbind every app that is
+      // serving on one. The failure branches below own everything else.
+      if (result.ok) {
+        await this.reconcileCustomDomains({
+          apps,
+          syncedAppNames: new Set(appEntries.map((entry) => entry.name)),
+          customDomains: result.customDomains,
+          toPublicHostname,
+        });
+      }
+
       if (!result.ok) {
         // A full sync failure means none of the exposed apps were updated, so
         // raise a per-app toast for every exposed app — not only the partial
@@ -521,6 +534,87 @@ export class ExposureSyncService {
       } else {
         this.logger.error(`[Cloudflare] Sync failed: ${String(error)}`);
       }
+    }
+  }
+
+  /**
+   * Mirror the custom hostnames CI-Cloud actually wired onto the app rows they
+   * belong to, so env generation can emit the hostname the browser really
+   * arrives on instead of the platform one.
+   *
+   * The join key is the app's own platform hostname: CI-Cloud composes
+   * `targetHostname` with the same `<app>-<hub>-<org>.<root>` convention
+   * `buildPublicWebIdentity` does, so no new identifier is needed on either side.
+   *
+   * ⚠ WHAT THIS DELIBERATELY DOES NOT DO IS RESTART ANYTHING. The bound hostname
+   * is an env var, so the app's compose env is stale the moment it changes — but
+   * recreating a running container underneath a user because a background
+   * heartbeat came back is not an acceptable way to deliver that. The row is
+   * flagged `pendingRestart` instead, which is the same badge a settings change
+   * raises, and the restart the user chooses regenerates the env.
+   */
+  private async reconcileCustomDomains(params: {
+    apps: Awaited<ReturnType<AppsRepository['getApps']>>;
+    /** App names that were in THIS sync's payload — see the skip rule below. */
+    syncedAppNames: Set<string>;
+    customDomains: TunnelCustomDomain[] | undefined;
+    toPublicHostname: (app: Awaited<ReturnType<AppsRepository['getApps']>>[number]) => string;
+  }): Promise<void> {
+    /*
+     * ABSENT IS NOT EMPTY. A CI-Cloud predating custom domains sends no
+     * `customDomains` field at all; treating that as "none delivered" would
+     * unbind every app that is serving happily on a custom hostname the moment a
+     * Hub talks to an older Portal. Only an array that was actually sent — even
+     * an empty one — is allowed to change anything.
+     */
+    if (params.customDomains === undefined) {
+      return;
+    }
+
+    const byTarget = indexCustomDomainsByTarget(params.customDomains);
+
+    for (const app of params.apps) {
+      const current = app.customDomain ?? null;
+      let next: string | null;
+
+      if (!publishesCloudflarePublicRoute(app as AppPublicRoutingSnapshot)) {
+        // Not publicly routed at all any more. Its binding cannot be delivered
+        // by definition, so drop it — this is durable configuration, not a
+        // transient absence from one payload.
+        next = null;
+      } else if (params.syncedAppNames.has(app.appName)) {
+        // Lowercased on both sides: DNS is case-insensitive, but the Hub composes
+        // its hostname from an organization slug it stores verbatim, which a
+        // rename can leave with uppercase in it.
+        next = byTarget.get(params.toPublicHostname(app).trim().toLowerCase()) ?? null;
+      } else {
+        /*
+         * Published, but absent from this payload — it is stopped, or was
+         * deliberately excluded for a release pass. CI-Cloud only reports a
+         * domain as delivered when it produced an ingress rule, and it cannot
+         * produce one for an app it was not told about, so "not in the array"
+         * here means "not asked about", NOT "unbound".
+         *
+         * Clearing on that would flap: stopping an app would unbind it, starting
+         * it would generate its env without the custom hostname, and the sync
+         * that follows the start would rebind and demand a second restart.
+         */
+        continue;
+      }
+
+      if (next === current) {
+        continue;
+      }
+
+      const appUrn = `${app.appName}:${app.appStoreSlug}` as AppUrn;
+
+      await this.appRepository.updateAppById(app.id, { customDomain: next, pendingRestart: true });
+      this.logger.info(
+        next
+          ? `[Cloudflare] ${appUrn} is now served on custom domain ${next}; restart it to publish that hostname to the app.`
+          : `[Cloudflare] Custom domain ${current} is no longer wired for ${appUrn}; restart it to revert to its platform hostname.`,
+      );
+      this.sseService.emit('app', { event: 'custom_domain_changed', appUrn }, appUrn);
     }
   }
 }

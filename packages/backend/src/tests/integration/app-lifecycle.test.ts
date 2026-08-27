@@ -3,7 +3,7 @@ import { APP_DATA_DIR, APP_DIR, DATA_DIR } from '@/common/constants';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { DATABASE } from '@/core/database/database.module';
 import { DatabaseService } from '@/core/database/database.service';
-import { appStore } from '@/core/database/drizzle/schema';
+import { appStore, deviceRegistration as deviceRegistrationTable } from '@/core/database/drizzle/schema';
 import { app as appTable } from '@/core/database/drizzle/schema';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { LoggerService } from '@/core/logger/logger.service';
@@ -89,6 +89,8 @@ describe('App lifecycle', () => {
   let appLifecycleService: AppLifecycleService;
   let marketplaceService: MarketplaceService;
   let appsRepository: AppsRepository;
+  let appFilesManager: AppFilesManager;
+  let deviceRegistrationRepository: DeviceRegistrationRepository;
   const configurationService = mock<ConfigurationService>();
   let databaseService = mock<DatabaseService>();
   const dockerService = mock<DockerService>();
@@ -324,6 +326,8 @@ describe('App lifecycle', () => {
     databaseService = moduleRef.get(DatabaseService);
     marketplaceService = moduleRef.get(MarketplaceService);
     appsRepository = moduleRef.get(AppsRepository);
+    appFilesManager = moduleRef.get(AppFilesManager);
+    deviceRegistrationRepository = moduleRef.get(DeviceRegistrationRepository);
 
     databaseService.db = db;
 
@@ -612,6 +616,106 @@ describe('App lifecycle', () => {
       const composeFileContent = await fs.promises.readFile(`${DATA_DIR}/apps/test/arch-test/docker-compose.yml`, 'utf8');
       expect(composeFileContent).toContain('app:arm64-latest');
       expect(composeFileContent).not.toContain('app:latest');
+    });
+  });
+
+  /*
+   * The whole custom-domain path, against a real database and the real
+   * migrations: CI-Cloud reports a wired hostname → it lands on the app row →
+   * a restart regenerates the env with it → dropping it reverts the app.
+   *
+   * The unit tests cover each link; this covers the seams, and is the only test
+   * that proves the new column actually exists after `migrate`.
+   */
+  describe('custom domains', () => {
+    const ORG = { id: 'org-1', slug: 'acme', name: 'Acme', hubSubdomain: 'core2-acme', tunnelId: 'tunnel-1' };
+
+    const exposedForm = { exposureMode: 'cloudflare' as const, exposedLocal: true, openPort: false };
+
+    /** The env actually written for the app, parsed. */
+    const readEnv = async (urn: AppUrn) => {
+      const env = await appFilesManager.getAppEnv(urn);
+
+      return new EnvUtils().envStringToMap(env.content ?? '');
+    };
+
+    const installExposed = async (id: string) => {
+      const appInfo = await createAppInStore('test', { id });
+
+      await appLifecycleService.installApp({ appUrn: appInfo.urn, form: exposedForm });
+      await waitFor(async () => {
+        expect((await appsRepository.getAppByUrn(appInfo.urn))?.status).toBe('running');
+      });
+
+      return appInfo;
+    };
+
+    const syncReporting = async (customDomains: unknown) => {
+      cloudflareClientService.syncState.mockResolvedValue({ ok: true, failed: [], failures: [], synced: 1, customDomains } as never);
+      await appLifecycleService.triggerCloudflareSync();
+    };
+
+    beforeEach(async () => {
+      await db.delete(deviceRegistrationTable);
+      await deviceRegistrationRepository.createDeviceRegistration(ORG);
+      registrationService.getDeviceRegistrationInfo.mockResolvedValue(fromPartial(ORG));
+      registrationService.getDeviceId.mockResolvedValue('device-1');
+    });
+
+    it('binds a wired hostname, publishes it on restart, and reverts when it is dropped', async () => {
+      const appInfo = await installExposed('cdomain');
+      const platformHostname = 'cdomain-test-core2-acme.ci.test';
+
+      // Installed on the platform hostname — CI-Cloud cannot have wired a domain
+      // to an app it had not been told about yet.
+      expect((await readEnv(appInfo.urn)).get('APP_PUBLIC_URL')).toBe(`https://${platformHostname}`);
+
+      // CI-Cloud reports the alias it actually produced an ingress rule for.
+      await syncReporting([{ id: 'cd_1', domain: 'comfy.acme.com', targetHostname: platformHostname }]);
+
+      const bound = await appsRepository.getAppByUrn(appInfo.urn);
+      expect(bound?.customDomain).toBe('comfy.acme.com');
+      // Flagged, not recreated: the running container is left alone.
+      expect(bound?.pendingRestart).toBe(true);
+      expect((await readEnv(appInfo.urn)).get('APP_PUBLIC_URL')).toBe(`https://${platformHostname}`);
+
+      await appLifecycleService.restartApp({ appUrn: appInfo.urn, skipPull: true });
+      await waitFor(async () => {
+        expect((await appsRepository.getAppByUrn(appInfo.urn))?.status).toBe('running');
+      });
+
+      const boundEnv = await readEnv(appInfo.urn);
+      expect(boundEnv.get('APP_PUBLIC_URL')).toBe('https://comfy.acme.com');
+      expect(boundEnv.get('APP_PUBLIC_HOSTNAME')).toBe('comfy.acme.com');
+      expect(boundEnv.get('APP_BASE_URL')).toBe('https://comfy.acme.com');
+      expect(await appsRepository.getAppByUrn(appInfo.urn).then((row) => row?.pendingRestart)).toBe(false);
+
+      // Released in CI-Cloud: the array is now empty, which is an instruction to unbind.
+      await syncReporting([]);
+      expect((await appsRepository.getAppByUrn(appInfo.urn))?.customDomain).toBeNull();
+
+      await appLifecycleService.restartApp({ appUrn: appInfo.urn, skipPull: true });
+      await waitFor(async () => {
+        expect((await appsRepository.getAppByUrn(appInfo.urn))?.status).toBe('running');
+      });
+
+      const revertedEnv = await readEnv(appInfo.urn);
+      expect(revertedEnv.get('APP_PUBLIC_URL')).toBe(`https://${platformHostname}`);
+      expect(revertedEnv.get('APP_BASE_URL')).toBe(`https://${platformHostname}`);
+    });
+
+    it('leaves a bound app untouched when CI-Cloud predates custom domains', async () => {
+      const appInfo = await installExposed('cdomain-old');
+      const platformHostname = 'cdomain-old-test-core2-acme.ci.test';
+
+      await syncReporting([{ id: 'cd_1', domain: 'comfy.acme.com', targetHostname: platformHostname }]);
+      expect((await appsRepository.getAppByUrn(appInfo.urn))?.customDomain).toBe('comfy.acme.com');
+
+      // An older Portal sends no `customDomains` key at all. Reading that as
+      // "none" would take a live customer domain off the air.
+      await syncReporting(undefined);
+
+      expect((await appsRepository.getAppByUrn(appInfo.urn))?.customDomain).toBe('comfy.acme.com');
     });
   });
 });

@@ -210,7 +210,10 @@ export function buildAppAccessPoints(input: {
           publicDomainRoot: resolvedPublicDomain,
         })
       : null;
-  const publicHost = configuredPublicDomain || derivedPublicIdentity?.hostname || null;
+  // A custom hostname CI-Cloud has actually wired for this app is the address the
+  // user visits, so it is the one this card links to and shows in its QR code.
+  const syncedCustomDomain = record.customDomain?.trim() || null;
+  const publicHost = syncedCustomDomain || configuredPublicDomain || derivedPublicIdentity?.hostname || null;
   const publicUrl = publicHost ? buildHttpsUrl(publicHost, sslPort, urlSuffix) : null;
 
   const expectsTailscalePublish = record.exposureMode === 'tailscale';

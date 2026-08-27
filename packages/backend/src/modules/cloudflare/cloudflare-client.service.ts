@@ -4,7 +4,8 @@ import { ModuleRef } from '@nestjs/core';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { DockerReadFacade } from '../docker/docker-read.facade';
 import { DockerService } from '../docker/docker.service';
-import type { AvailableDomain, AvailableDomainsResponse } from '@ci-hub/common/types';
+import type { AvailableDomain, AvailableDomainsResponse, TunnelCustomDomain } from '@ci-hub/common/types';
+import { parseTunnelCustomDomains } from '@ci-hub/common/types';
 import axios, { AxiosInstance, type AxiosResponse } from 'axios';
 import * as fs from 'node:fs/promises';
 import * as fsSync from 'node:fs';
@@ -84,6 +85,16 @@ export interface CloudflareSyncResult {
    */
   failures: PublicDnsFailure[];
   synced: number;
+  /**
+   * Custom hostnames CI-Cloud reported as wired into this device's tunnel on
+   * this sync.
+   *
+   * ⚠ `undefined` and `[]` MEAN DIFFERENT THINGS. `undefined` is "this CI-Cloud
+   * does not report custom domains" — every version predating the feature, and
+   * every failed sync — and callers must leave the bindings they already have
+   * alone. `[]` is "this device has none", which is an instruction to unbind.
+   */
+  customDomains?: TunnelCustomDomain[];
   /** HTTP status from Portal when the control-plane request failed. */
   errorStatus?: number;
   /** Short, user-safe reason for a full sync failure (auth, ownership, timeout, …). */
@@ -312,6 +323,20 @@ export class CloudflareClientService {
             )
           : [];
         const synced: number | undefined = typeof response.data.synced === 'number' ? response.data.synced : undefined;
+        // Same wire-boundary reasoning as `failures`, with one extra rule: the field being
+        // ABSENT is meaningful. An older CI-Cloud sends no `customDomains` at all, and
+        // reporting that as an empty array would tell every downstream consumer to unbind
+        // domains that are still serving. `parseTunnelCustomDomains` returns `undefined`
+        // for absent and `{ entries: [] }` for "none", and that distinction is carried all
+        // the way to the persistence step.
+        const parsedCustomDomains = parseTunnelCustomDomains(response.data.customDomains);
+
+        if (parsedCustomDomains && parsedCustomDomains.dropped > 0) {
+          const dropped = parsedCustomDomains.dropped;
+          this.logger.warn(
+            `[Cloudflare] Dropped ${dropped} malformed custom-domain ${dropped === 1 ? 'entry' : 'entries'} from the tunnel state response; the rest of the sync is unaffected.`,
+          );
+        }
 
         if (failed.length > 0) {
           // Report what actually went wrong per app. Blaming zone provisioning for
@@ -343,7 +368,7 @@ export class CloudflareClientService {
           this.logger.log(`State sync successful${synced === undefined ? '' : ` (${synced} DNS record(s) synced)`}`);
         }
 
-        return { ok: true, failed, failures, synced: synced ?? 0 };
+        return { ok: true, failed, failures, synced: synced ?? 0, customDomains: parsedCustomDomains?.entries };
       }
       return {
         ok: false,

@@ -129,6 +129,63 @@ describe('PublicWebService', () => {
     });
   });
 
+  it('treats a bound custom domain as the correct hostname', async () => {
+    // Comparing against the platform hostname instead would report every app on
+    // a custom domain as permanently broken, and repair would rewrite the value
+    // the sync just set — the two would fight on every pass.
+    appsRepository.getApps.mockResolvedValue([
+      {
+        appName: 'nextcloud',
+        appStoreSlug: 'store',
+        status: 'running',
+        exposureMode: 'cloudflare',
+        exposedLocal: true,
+        openPort: false,
+        localSubdomain: 'nextcloud',
+        publicDomain: 'example.com',
+        customDomain: 'cloud.acme.com',
+      },
+    ] as any);
+
+    appFilesManager.getAppEnv.mockResolvedValue({ path: '/tmp/env', content: 'APP_PUBLIC_HOSTNAME=cloud.acme.com\n' });
+    envUtils.envStringToMap.mockReturnValue(new Map([['APP_PUBLIC_HOSTNAME', 'cloud.acme.com']]));
+
+    const result = await service.getDiagnostics();
+
+    expect(result.mismatchCount).toBe(0);
+    expect(result.apps[0]).toMatchObject({
+      computedHostname: 'cloud.acme.com',
+      computedPublicUrl: 'https://cloud.acme.com',
+      customDomain: 'cloud.acme.com',
+      envMismatch: false,
+      action: 'ok',
+    });
+  });
+
+  it('flags an app still on the platform hostname after a domain was bound', async () => {
+    appsRepository.getApps.mockResolvedValue([
+      {
+        appName: 'nextcloud',
+        appStoreSlug: 'store',
+        status: 'running',
+        exposureMode: 'cloudflare',
+        exposedLocal: true,
+        openPort: false,
+        localSubdomain: 'nextcloud',
+        publicDomain: 'example.com',
+        customDomain: 'cloud.acme.com',
+      },
+    ] as any);
+
+    appFilesManager.getAppEnv.mockResolvedValue({ path: '/tmp/env', content: 'APP_PUBLIC_HOSTNAME=nextcloud-dev1-myorg.example.com\n' });
+    envUtils.envStringToMap.mockReturnValue(new Map([['APP_PUBLIC_HOSTNAME', 'nextcloud-dev1-myorg.example.com']]));
+
+    const result = await service.getDiagnostics();
+
+    expect(result.mismatchCount).toBe(1);
+    expect(result.apps[0]).toMatchObject({ computedHostname: 'cloud.acme.com', envMismatch: true, action: 'repair' });
+  });
+
   it('repairs mismatched apps and triggers cloudflare sync', async () => {
     appsRepository.getApps.mockResolvedValue([
       {
