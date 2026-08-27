@@ -507,7 +507,22 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
         const cache = new Map<string, string>();
         const scratchBase = join(RESULTS_DIR, 'scratch', appId);
         const subst = (s: string) =>
-          s.replace(/\$\{([A-Z0-9_]+)(?::-([^}]*))?\}/g, (_, k, def) => (def === undefined ? valueForVar(k, cache, scratchBase) : def));
+          s
+            // The negative lookbehind excludes a `${VAR}` immediately preceded by another `$` — i.e.
+            // a compose-escaped `$${VAR}` (see the unescape step below). Without it, this regex still
+            // matches starting at the SECOND `$` of that pair (a bare `{`/`}` search doesn't care what
+            // came before), substituting the inner placeholder and leaving the leading `$` orphaned —
+            // e.g. mesh-llm's `"$${APP_MODEL}"` became `$<generated-value>`, and the container's own
+            // shell then expanded that as its own (unset) `$APP_MODEL`-shaped variable, silently
+            // truncating the value and breaking its CLI arg parsing.
+            .replace(/(?<!\$)\$\{([A-Z0-9_]+)(?::-([^}]*))?\}/g, (_, k, def) => (def === undefined ? valueForVar(k, cache, scratchBase) : def))
+            // Manifests are authored for docker-compose semantics, where `$$` escapes a literal `$`
+            // (e.g. ollama's entrypoint uses `$$!`/`$$OLLAMA_MODEL` to survive compose's own
+            // interpolation pass). This single-container path invokes `docker run` directly, with no
+            // compose layer to perform that unescape, so a raw `$$` reaches the shell verbatim —
+            // where it means "this process's PID" — and breaks (`ollama`: `$$(...)` parsed as
+            // `<pid>(...)`, a syntax error). Replicate compose's unescape so both paths agree.
+            .replace(/\$\$/g, '$');
         for (const e of main?.environment ?? []) {
           if (!e.key || e.value == null) continue;
           runFlags += ` -e ${e.key}=${shQuote(subst(String(e.value)))}`;
@@ -515,6 +530,11 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
         // Host-privilege flags — mirror the Hub builder (service.builder.ts). steam-headless
         // declares `privileged: true` and dies on `mount: /proc: permission denied` without it;
         // pi-hole/searxng/anything-llm/collabora need cap_add; home-assistant needs devices.
+        // `user` was already honored by the compose path (composeUp's `user:` YAML line below) but
+        // silently dropped here — invoiceshelf declares "user": "root" (needed so its entrypoint's
+        // self-healing chown step can run) and instead ran as the image's default non-root user,
+        // hit an EPERM writing to storage/, and never got the chance to prove the fix.
+        if (main?.user) runFlags += ` --user ${shQuote(subst(String(main.user)))}`;
         if (main?.privileged === true) runFlags += ' --privileged';
         for (const c of main?.capAdd ?? []) runFlags += ` --cap-add ${shQuote(String(c))}`;
         for (const d of main?.devices ?? []) runFlags += ` --device ${shQuote(subst(String(d)))}`;
@@ -1226,7 +1246,7 @@ function serverGreets(port: number, waitMs = 3000): Promise<boolean> {
  * QA run while a real Hub install was fine. That is the harness testing something the product
  * never does.
  */
-type FieldSpec = { min?: number; max?: number; type?: string; def?: string };
+type FieldSpec = { min?: number; max?: number; type?: string; def?: string; encoding?: string };
 let FIELD_SPECS: Map<string, FieldSpec> = new Map();
 
 function loadFieldSpecs(config: Record<string, unknown>): void {
@@ -1241,6 +1261,7 @@ function loadFieldSpecs(config: Record<string, unknown>): void {
       max: typeof f.max === 'number' ? f.max : undefined,
       type: typeof f.type === 'string' ? f.type : undefined,
       def: f.default !== undefined && f.default !== null ? String(f.default) : undefined,
+      encoding: typeof f.encoding === 'string' ? f.encoding : undefined,
     });
   }
 }
@@ -1292,14 +1313,69 @@ function valueForVar(name: string, cache: Map<string, string>, scratchBase: stri
   const hit = cache.get(name);
   if (hit !== undefined) return hit;
   let v: string;
+  const spec = FIELD_SPECS.get(name);
+  // Production's real app_base_url resolution (app.helpers.ts) keys off `field.type ===
+  // 'app_base_url'`, NOT the field's env_variable name — `envMap.set(field.env_variable,
+  // resolvedBaseUrl)` works identically whether that name is the catalog-wide convention
+  // "APP_BASE_URL" or something app-specific like checkmate's "CLIENT_HOST". This harness's
+  // FIELD_SPECS captures `type` but, before this check existed, never consulted it here — only the
+  // two name-specific cases below (APP_BASE_HOST/APP_BASE_WSS_ORIGIN) got a real URL; every OTHER
+  // app_base_url field (any name, any app) fell through to the generic HOST/DOMAIN heuristic, which
+  // yields a bare hostname with no scheme ("ci.localhost") — checkmate's own field is declared
+  // exactly this way (type: app_base_url, env_variable: CLIENT_HOST) and failed its own validator
+  // ("CLIENT_HOST must be a valid URL") for that reason alone once an unrelated earlier bug (a dead
+  // mongo image tag) stopped masking it. Route ANY app_base_url-typed field through the same
+  // APP_BASE_URL derivation used below, regardless of its declared name.
+  // The `name !== 'APP_BASE_URL'` guard matters: a field can be declared with that EXACT name (the
+  // catalog convention — e.g. wishlist, after its own fix) as well as a different one (checkmate's
+  // CLIENT_HOST). When it's the same name, recursing into valueForVar('APP_BASE_URL', ...) would
+  // just call this function again with identical arguments before `cache.set` ever runs — infinite
+  // recursion (reproduced: "Maximum call stack size exceeded"). Only delegate when there's an
+  // actual OTHER variable to delegate to; the literal APP_BASE_URL case falls through to the
+  // generic `/URL/` heuristic below like it always has.
+  if (spec?.type === 'app_base_url' && name !== 'APP_BASE_URL') {
+    v = valueForVar('APP_BASE_URL', cache, scratchBase);
+    cache.set(name, v);
+    return v;
+  }
+  // Production derives these two from a single parsed APP_BASE_URL (app.helpers.ts,
+  // deriveAppBaseWsOrigin + its call site) — never from a form_field, since they're not meant to be
+  // user-supplied. Neither name matches any pattern below (APP_BASE_HOST doesn't end in
+  // HOST/HOSTNAME; APP_BASE_WSS_ORIGIN matches nothing at all), so both fell through to a random
+  // hex string. outline (and dify/skyvern/superdesk/taiga, which reference the same variable) then
+  // fail their own env validation at boot ("COLLABORATION_URL must be a URL address") — a QA
+  // artifact, not an app bug: the manifests correctly use the Hub-derived variable, this harness
+  // just never computed it. Mirror production exactly: parse whatever APP_BASE_URL this run
+  // resolves to (via the same cache, so a compose-path pre-seeded real value is honored) and derive
+  // both from it, ws:// unless the base URL is https.
+  if (name === 'APP_BASE_HOST' || name === 'APP_BASE_WSS_ORIGIN') {
+    const baseUrl = valueForVar('APP_BASE_URL', cache, scratchBase);
+    try {
+      const parsed = new URL(/^https?:\/\//i.test(baseUrl) ? baseUrl : `http://${baseUrl}`);
+      v = name === 'APP_BASE_HOST' ? parsed.host : `${parsed.protocol === 'https:' ? 'wss' : 'ws'}://${parsed.host}`;
+    } catch {
+      v = name === 'APP_BASE_HOST' ? 'ci.localhost' : 'ws://ci.localhost';
+    }
+    cache.set(name, v);
+    return v;
+  }
   // Honour the declared length, but ONLY for `random` fields — those are the ones the Hub itself
   // mints as opaque strings (app.helpers.ts createRandomString), so length is the whole contract.
   // Typed fields (fqdnip, password, email, text) carry a FORMAT the length alone can't satisfy:
   // pds declares PDS_HOSTNAME as fqdnip min=4, and a 4-char hex blob is a valid length but not a
   // valid hostname — zod rejects it and the app dies. Those keep the name-based heuristics below.
-  const spec = FIELD_SPECS.get(name);
   if (spec?.type === 'random' && spec.min && spec.min > 0) {
-    v = hexOfLength(spec.min);
+    // Mirror production's createRandomString (env.utils.ts) exactly — the two encodings measure
+    // `min`/`length` in different units, and conflating them mis-sizes the result. `encoding:
+    // 'base64'` means `length` RAW BYTES, base64-encoded afterward (so the resulting STRING is
+    // longer than `min` — a 32-byte key becomes a 44-character base64 string, matching e.g.
+    // dittofeed's own upstream default secretKey). The default `hex` encoding instead means `min`
+    // HEX CHARACTERS directly. Before this branch existed, EVERY `random` field got a hex string
+    // regardless of its declared encoding, so a `base64:${KEY}`-style Laravel app (mixpost) or a
+    // raw base64 secret (dittofeed) got a value that decodes to 3/4 the byte length it declared —
+    // wrong for any cipher with a fixed valid key size, and neither app could ever boot under this
+    // harness even though their manifests were already correct for real production.
+    v = spec.encoding === 'base64' ? randomBytes(spec.min).toString('base64') : hexOfLength(spec.min);
     cache.set(name, v);
     return v;
   }
@@ -1460,8 +1536,21 @@ async function composeUp(
   if (reservedHostPort > 0 && composeReferencesVar(services, 'APP_BASE_URL')) {
     cache.set('APP_BASE_URL', `http://127.0.0.1:${reservedHostPort}`);
   }
+  // The negative lookbehind excludes a `${VAR}` immediately preceded by another `$` — a
+  // compose-escaped `$${VAR}` sequence a manifest uses (e.g. in a healthCheck.test string) to defer
+  // expansion to the CONTAINER's own runtime shell via its `environment:` block, past not just this
+  // JS-level substitution but also real `docker compose`'s own interpolation pass over the YAML this
+  // function writes. Without the lookbehind, this regex still matches starting at the second `$` of
+  // that pair, splicing in the QA-generated secret value and leaving the leading `$` orphaned (e.g.
+  // `$${MONGO_INITDB_ROOT_USERNAME}` -> `$admin`) — which compose's own interpolation then treats as
+  // an ORDINARY (unset) compose variable reference and blanks to "", corrupting the healthcheck
+  // (mongodb: `--username ""` unconditionally fails mongosh's own arg validation). Unlike the
+  // single-container path's subst(), this one must NOT also unescape `$$` -> `$` afterward — that's
+  // real compose's job once it parses the YAML this writes; doing it here would collapse `$${VAR}`
+  // to `${VAR}` before compose ever sees the escape, and compose would then try to interpolate that
+  // ${VAR} using ITS OWN (unset) environment instead of leaving it for the container's shell.
   const subst = (s: string) =>
-    s.replace(/\$\{([A-Z0-9_]+)(?::-([^}]*))?\}/g, (_, k, def) => (def === undefined ? valueForVar(k, cache, scratchBase) : def));
+    s.replace(/(?<!\$)\$\{([A-Z0-9_]+)(?::-([^}]*))?\}/g, (_, k, def) => (def === undefined ? valueForVar(k, cache, scratchBase) : def));
   // One scratch dir per declared hostPath, shared by every service that mounts it (see the volumes
   // block below), plus the set of dirs already seeded so shared ones are prepared exactly once.
   const sharedMounts = new Map<string, string>();
