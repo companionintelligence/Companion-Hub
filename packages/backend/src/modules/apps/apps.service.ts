@@ -7,7 +7,7 @@ import { ModuleRef } from '@nestjs/core';
 import type { AppInfo } from '@ci-hub/common/schemas';
 import type { App } from '@/core/database/drizzle/types';
 import type { AppUrn } from '@ci-hub/common/types';
-import { buildPublicWebIdentity } from '@ci-hub/common/types';
+import { buildPublicWebIdentity, normalizeStoredHostname } from '@ci-hub/common/types';
 import axios from 'axios';
 import { MarketplaceService } from '../marketplace/marketplace.service';
 import { RegistrationService } from '../registration/registration.service';
@@ -278,7 +278,7 @@ export class AppsService {
       // actually visits, so it is the one to link to and to probe — probing the
       // platform hostname would report an app as reachable at an address the
       // user is not being sent to.
-      const customDomain = app.customDomain?.trim();
+      const customDomain = normalizeStoredHostname(app.customDomain);
       appUrl = `${customDomain ? `https://${customDomain}` : identity.publicUrl}${urlSuffix}`;
     }
 

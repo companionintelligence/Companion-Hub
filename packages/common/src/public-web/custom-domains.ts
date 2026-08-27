@@ -6,8 +6,15 @@
  * as delivered rather than re-deriving entitlement or re-checking verification.
  */
 export interface TunnelCustomDomain {
-  /** CI-Cloud's row id for the connected domain. */
-  id: string;
+  /**
+   * CI-Cloud's row id for the connected domain, when it sent one.
+   *
+   * Nothing in the Hub reads it — the join is on `targetHostname` — so it must
+   * NOT gate acceptance. Dropping an entry over an id no consumer wants would
+   * take a live customer domain off the air (CI-Cloud's own `AvailableDomain`
+   * ids arrive as numbers on a sibling endpoint, so the shape is not guaranteed).
+   */
+  id?: string;
   /** The customer-owned hostname the browser arrives on (e.g. `comfy.acme.com`). */
   domain: string;
   /**
@@ -19,7 +26,17 @@ export interface TunnelCustomDomain {
 }
 
 export interface ParsedTunnelCustomDomains {
-  entries: TunnelCustomDomain[];
+  /**
+   * The bindings CI-Cloud delivered, or `undefined` when the payload could not
+   * be understood at all.
+   *
+   * ⚠ `undefined` and `[]` MEAN DIFFERENT THINGS, and the difference is what
+   * stops this feature taking live domains off the air. `[]` is CI-Cloud saying
+   * "this device has none", which is an instruction to unbind. `undefined` is
+   * "nothing usable arrived" — an older Portal, or a payload whose shape drifted
+   * — and the caller must leave every binding it already has alone.
+   */
+  entries: TunnelCustomDomain[] | undefined;
   /** Entries CI-Cloud sent that were unusable and were dropped. */
   dropped: number;
 }
@@ -32,8 +49,26 @@ const MAX_HOSTNAME_LENGTH = 253;
  * The one spelling: trimmed, lowercased, trailing dot removed — the same
  * normalization CI-Cloud stores these under, so the two sides compare equal.
  */
-function normalizeHostname(value: string): string {
+export function normalizeHostname(value: string): string {
   return value.trim().toLowerCase().replace(/\.$/, '');
+}
+
+/**
+ * The one spelling for a value read back off an app row.
+ *
+ * Every consumer of `app.custom_domain` — env generation, the app's link and
+ * availability probe, public-web diagnostics, the access-points card — must
+ * agree on it, or they compare unequal against each other and against the env
+ * they just wrote. `null` for absent/blank so callers can compare with `===`.
+ */
+export function normalizeStoredHostname(value: string | null | undefined): string | null {
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  const normalized = normalizeHostname(value);
+
+  return normalized.length > 0 ? normalized : null;
 }
 
 /**
@@ -102,11 +137,15 @@ export function parseTunnelCustomDomains(value: unknown): ParsedTunnelCustomDoma
   }
 
   if (!Array.isArray(value)) {
-    // Present but not an array: the field WAS sent, so this is a malformed
-    // payload rather than an older Portal. Report it as "none delivered" with
-    // everything dropped so the caller can log it, and so a device that really
-    // has no custom domains is not left with stale bindings forever.
-    return { entries: [], dropped: 1 };
+    /*
+     * Present but not an array. The field WAS sent, so this is a shape drift
+     * rather than an older Portal — but "we could not read this payload" is NOT
+     * the same instruction as "this device has none". Reporting it as an empty
+     * array would hand the reconcile a fleet-wide unbind on the strength of a
+     * response nobody could parse, so it is reported as not-delivered and the
+     * caller keeps the bindings it has. `dropped` still lets it log.
+     */
+    return { entries: undefined, dropped: 1 };
   }
 
   const entries: TunnelCustomDomain[] = [];
@@ -119,11 +158,12 @@ export function parseTunnelCustomDomains(value: unknown): ParsedTunnelCustomDoma
     }
 
     const source = candidate as Record<string, unknown>;
-    const id = readString(source, 'id');
+    // `id` is informational — see TunnelCustomDomain.id for why it must not gate.
+    const id = readString(source, 'id') ?? undefined;
     const domain = readString(source, 'domain');
     const targetHostname = readString(source, 'targetHostname');
 
-    if (!id || !domain || !targetHostname) {
+    if (!domain || !targetHostname) {
       dropped += 1;
       continue;
     }
@@ -139,6 +179,16 @@ export function parseTunnelCustomDomains(value: unknown): ParsedTunnelCustomDoma
     entries.push({ id, domain: normalizedDomain, targetHostname: normalizedTarget });
   }
 
+  /*
+   * Everything CI-Cloud sent was junk. Same reasoning as the non-array branch:
+   * a payload that arrived with rows in it and yielded none is a Portal whose
+   * wire shape moved, not a device that has no custom domains, and the safe
+   * reading of "we understood nothing" is to change nothing.
+   */
+  if (entries.length === 0 && dropped > 0) {
+    return { entries: undefined, dropped };
+  }
+
   return { entries, dropped };
 }
 
@@ -146,20 +196,62 @@ export function parseTunnelCustomDomains(value: unknown): ParsedTunnelCustomDoma
  * Index delivered bindings by the platform hostname they alias.
  *
  * Two domains can legitimately point at the same app — a rename in progress, an
- * apex plus its `www`. Only one can be the app's `APP_PUBLIC_URL`, so the choice
- * is made here, once, and made deterministically: the lexicographically first
- * domain wins, so the value does not flip between syncs on CI-Cloud's row order.
+ * apex plus its `www` — so every delivered domain for a target is returned,
+ * sorted, and the choice between them is left to {@link selectCustomDomain},
+ * which can see what the app is already serving on.
+ *
+ * A domain aliasing MORE THAN ONE target is dropped from all of them. That is a
+ * rebind caught in flight (a customer moving `comfy.acme.com` from one app to
+ * another), and the Hub cannot tell which side Cloudflare is actually routing.
+ * Binding both would have the app that is NOT being routed emit
+ * `APP_PUBLIC_URL=https://comfy.acme.com` and sign OAuth redirects that land the
+ * user in a sibling app; leaving both on their platform hostnames works.
  */
-export function indexCustomDomainsByTarget(entries: readonly TunnelCustomDomain[]): Map<string, string> {
-  const byTarget = new Map<string, string>();
+export function indexCustomDomainsByTarget(entries: readonly TunnelCustomDomain[]): Map<string, string[]> {
+  const targetsByDomain = new Map<string, Set<string>>();
 
   for (const entry of entries) {
-    const current = byTarget.get(entry.targetHostname);
-
-    if (current === undefined || entry.domain < current) {
-      byTarget.set(entry.targetHostname, entry.domain);
-    }
+    const targets = targetsByDomain.get(entry.domain) ?? new Set<string>();
+    targets.add(entry.targetHostname);
+    targetsByDomain.set(entry.domain, targets);
   }
 
-  return byTarget;
+  const byTarget = new Map<string, Set<string>>();
+
+  for (const entry of entries) {
+    if ((targetsByDomain.get(entry.domain)?.size ?? 0) > 1) {
+      continue;
+    }
+
+    const domains = byTarget.get(entry.targetHostname) ?? new Set<string>();
+    domains.add(entry.domain);
+    byTarget.set(entry.targetHostname, domains);
+  }
+
+  // Sorted so the fallback pick below cannot flip between syncs on CI-Cloud's
+  // row order, which would ask for a restart on every heartbeat.
+  return new Map([...byTarget].map(([target, domains]) => [target, [...domains].sort()]));
+}
+
+/**
+ * Choose which of a target's delivered domains the app should be served on.
+ *
+ * STICKY BY DESIGN. Deterministic is not enough: an app bound to `zzz.acme.com`
+ * for months, whose customer then adds `aaa.acme.com` as a second alias, would
+ * be moved off the hostname it is already serving on by a plain lexicographic
+ * pick — rewriting `APP_PUBLIC_URL` and `APP_BASE_URL`, and breaking every OAuth
+ * `redirect_uri` registered against the old name. So the domain already bound
+ * wins for as long as CI-Cloud keeps delivering it, and the sort order only
+ * decides the FIRST binding.
+ */
+export function selectCustomDomain(delivered: readonly string[] | undefined, current: string | null): string | null {
+  if (!delivered || delivered.length === 0) {
+    return null;
+  }
+
+  if (current && delivered.includes(current)) {
+    return current;
+  }
+
+  return delivered[0] ?? null;
 }

@@ -11,6 +11,7 @@ import { Injectable } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
 import type { AppInfo, MemoryUrlStyle, HubIntegration } from '@ci-hub/common/schemas';
 import type { AppUrn } from '@ci-hub/common/types';
+import { normalizeStoredHostname } from '@ci-hub/common/types';
 import { buildFqdnSubdomain, buildPublicWebIdentity, resolvePublicDomainRoot, sanitizeAppSubdomain } from '@ci-hub/common/types';
 import { EnvUtils } from '../env/env.utils';
 import type { AppEventFormInput } from '../queue/entities/app-events';
@@ -293,8 +294,20 @@ export class AppHelpers {
      * Absent at install time by construction (CI-Cloud can only wire a domain to
      * an app it has been told about), which is why binding lands as a pending
      * restart rather than at first boot.
+     *
+     * Read LAZILY: the value is only ever consulted for an exposed app, and this
+     * method runs on every install/start/stop/restart/update/reset, so fetching a
+     * joined row (with the whole `config` jsonb) up front would spend a query per
+     * lifecycle command on the majority of apps — local-only ones — that can
+     * never use it.
      */
-    const syncedCustomDomain = (await this.appsRepository.getAppByUrn(appUrn))?.customDomain?.trim().toLowerCase() || null;
+    let syncedCustomDomainCache: string | null | undefined;
+    const readSyncedCustomDomain = async (): Promise<string | null> => {
+      if (syncedCustomDomainCache === undefined) {
+        syncedCustomDomainCache = normalizeStoredHostname((await this.appsRepository.getAppByUrn(appUrn))?.customDomain);
+      }
+      return syncedCustomDomainCache;
+    };
 
     // the domain is the root domain for the deployment
     const domain = this.config.getConfig().domain;
@@ -484,6 +497,8 @@ export class AppHelpers {
      * Only applied when the app is exposed at all: a local/VPN-only app has no
      * public identity for a domain to alias.
      */
+    const syncedCustomDomain = isExposed ? await readSyncedCustomDomain() : null;
+
     if (isExposed && syncedCustomDomain) {
       scheme = 'https';
       publicHostname = syncedCustomDomain;
@@ -565,14 +580,15 @@ export class AppHelpers {
      * `APP_PUBLIC_URL` is written by this method and never by a user, so "the
      * base URL equals what the Hub last derived" identifies an auto-derived value
      * exactly — in both directions, and without the Hub needing to remember which
-     * domain was bound before. The current platform URL joins it so an app that
-     * was not exposed when its base URL was first written is covered too.
+     * domain was bound before. The current platform URL joins it so an app whose
+     * public domain moved is corrected too. (An app whose base URL was first
+     * written while the Hub was unregistered carries a LAN `APP_URL` that matches
+     * neither, and is left alone.)
      */
     const supersededAutoBaseUrls = new Set(
       [existingAppEnvMap.get('APP_PUBLIC_URL'), platformPublicUrl]
         .filter((url): url is string => typeof url === 'string' && url.trim().length > 0)
-        .map((url) => url.replace(/\/+$/, ''))
-        .filter((url) => url !== defaultAppBaseUrl),
+        .map((url) => url.replace(/\/+$/, '')),
     );
 
     for (const field of config.form_fields) {

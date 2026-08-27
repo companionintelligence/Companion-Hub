@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { indexCustomDomainsByTarget, parseTunnelCustomDomains } from '../custom-domains';
+import { indexCustomDomainsByTarget, parseTunnelCustomDomains, selectCustomDomain } from '../custom-domains';
 
 describe('parseTunnelCustomDomains', () => {
   it('keeps "absent" and "empty" apart', () => {
@@ -27,13 +27,18 @@ describe('parseTunnelCustomDomains', () => {
       'not-an-object',
       { id: 'cd_1' },
       { id: 'cd_2', domain: 'ok.acme.com' },
-      { id: '', domain: 'blank-id.acme.com', targetHostname: 'app-hub-acme.example.com' },
+      { id: '', domain: 'kept-despite-blank-id.acme.com', targetHostname: 'other-hub-acme.example.com' },
       { id: 'cd_3', domain: '   ', targetHostname: 'app-hub-acme.example.com' },
       { id: 'cd_4', domain: 'good.acme.com', targetHostname: 'app-hub-acme.example.com' },
     ]);
 
-    expect(parsed?.entries).toEqual([{ id: 'cd_4', domain: 'good.acme.com', targetHostname: 'app-hub-acme.example.com' }]);
-    expect(parsed?.dropped).toBe(6);
+    expect(parsed?.entries).toEqual([
+      { id: undefined, domain: 'kept-despite-blank-id.acme.com', targetHostname: 'other-hub-acme.example.com' },
+      { id: 'cd_4', domain: 'good.acme.com', targetHostname: 'app-hub-acme.example.com' },
+    ]);
+    // `{ id: '' }` survives: the id is informational and must never gate a live
+    // domain, so only the missing domain/target rows and the junk are dropped.
+    expect(parsed?.dropped).toBe(5);
   });
 
   it('drops entries whose domain or target is not a hostname', () => {
@@ -71,9 +76,18 @@ describe('parseTunnelCustomDomains', () => {
   });
 
   it('treats a non-array value as delivered-but-broken, not as absent', () => {
-    // The field WAS sent, so the Portal is new enough to speak custom domains.
-    // Reporting it as absent would freeze whatever bindings the Hub already has.
-    expect(parseTunnelCustomDomains({ domain: 'comfy.acme.com' })).toEqual({ entries: [], dropped: 1 });
+    // The field WAS sent, but nothing in it could be read. "We could not parse
+    // this" is not the same instruction as "this device has none" — reporting it
+    // as an empty array would unbind every app on a custom hostname, fleet-wide,
+    // on the strength of a response nobody understood.
+    expect(parseTunnelCustomDomains({ domain: 'comfy.acme.com' })).toEqual({ entries: undefined, dropped: 1 });
+    // Same for an array whose every row was junk (a renamed wire field).
+    expect(parseTunnelCustomDomains([{ id: 'cd_1', domain: 'comfy.acme.com', target: 'app-hub-acme.example.com' }])).toEqual({
+      entries: undefined,
+      dropped: 1,
+    });
+    // An array that parsed cleanly to nothing is still a real "none".
+    expect(parseTunnelCustomDomains([])).toEqual({ entries: [], dropped: 0 });
   });
 });
 
@@ -84,25 +98,61 @@ describe('indexCustomDomainsByTarget', () => {
       { id: 'cd_2', domain: 'chat.acme.com', targetHostname: 'openwebui-hub-acme.example.com' },
     ]);
 
-    expect(index.get('comfyui-hub-acme.example.com')).toBe('comfy.acme.com');
-    expect(index.get('openwebui-hub-acme.example.com')).toBe('chat.acme.com');
+    expect(index.get('comfyui-hub-acme.example.com')).toEqual(['comfy.acme.com']);
+    expect(index.get('openwebui-hub-acme.example.com')).toEqual(['chat.acme.com']);
     expect(index.get('nothing-hub-acme.example.com')).toBeUndefined();
   });
 
-  it('picks the same winner every sync when two domains share one target', () => {
+  it("orders a target's domains the same way every sync", () => {
     const target = 'comfyui-hub-acme.example.com';
     const forward = indexCustomDomainsByTarget([
       { id: 'cd_1', domain: 'zzz.acme.com', targetHostname: target },
       { id: 'cd_2', domain: 'aaa.acme.com', targetHostname: target },
     ]);
-    // Same set, opposite order — a hostname that flipped with CI-Cloud's row
-    // order would ask for a restart on every heartbeat.
+    // Same set, opposite order — an order that flipped with CI-Cloud's rows would
+    // ask for a restart on every heartbeat.
     const reversed = indexCustomDomainsByTarget([
       { id: 'cd_2', domain: 'aaa.acme.com', targetHostname: target },
       { id: 'cd_1', domain: 'zzz.acme.com', targetHostname: target },
     ]);
 
-    expect(forward.get(target)).toBe('aaa.acme.com');
-    expect(reversed.get(target)).toBe('aaa.acme.com');
+    expect(forward.get(target)).toEqual(['aaa.acme.com', 'zzz.acme.com']);
+    expect(reversed.get(target)).toEqual(['aaa.acme.com', 'zzz.acme.com']);
+  });
+
+  it('drops a domain that is reported against two different targets', () => {
+    // A rebind caught mid-flight. The Hub cannot tell which app Cloudflare is
+    // actually routing, and binding both would have the app that is NOT routed
+    // emit the hostname and sign redirects landing users in a sibling app.
+    const index = indexCustomDomainsByTarget([
+      { id: 'cd_1', domain: 'comfy.acme.com', targetHostname: 'comfyui-hub-acme.example.com' },
+      { id: 'cd_2', domain: 'comfy.acme.com', targetHostname: 'openwebui-hub-acme.example.com' },
+      { id: 'cd_3', domain: 'chat.acme.com', targetHostname: 'openwebui-hub-acme.example.com' },
+    ]);
+
+    expect(index.get('comfyui-hub-acme.example.com')).toBeUndefined();
+    expect(index.get('openwebui-hub-acme.example.com')).toEqual(['chat.acme.com']);
+  });
+});
+
+describe('selectCustomDomain', () => {
+  it('keeps the domain the app is already serving on', () => {
+    // Deterministic is not enough. An app bound to zzz.acme.com whose customer
+    // adds an apex alias must not be moved off the hostname its OAuth client is
+    // registered against just because the new name sorts first.
+    expect(selectCustomDomain(['aaa.acme.com', 'zzz.acme.com'], 'zzz.acme.com')).toBe('zzz.acme.com');
+  });
+
+  it('takes the first delivered domain when nothing is bound yet', () => {
+    expect(selectCustomDomain(['aaa.acme.com', 'zzz.acme.com'], null)).toBe('aaa.acme.com');
+  });
+
+  it('moves on when the bound domain stops being delivered', () => {
+    expect(selectCustomDomain(['aaa.acme.com'], 'zzz.acme.com')).toBe('aaa.acme.com');
+  });
+
+  it('unbinds when nothing is delivered for the target', () => {
+    expect(selectCustomDomain(undefined, 'zzz.acme.com')).toBeNull();
+    expect(selectCustomDomain([], 'zzz.acme.com')).toBeNull();
   });
 });

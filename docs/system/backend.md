@@ -5,7 +5,7 @@
 > **Key paths:** `packages/backend/src/modules/`, `packages/backend/src/database/`, `packages/backend/src/queue/`
 > **Commands:** `cd packages/backend && pnpm test`, `pnpm run test:integration` (root)
 > **Owner persona:** maintainability + security (see REVIEW_PERSONAS.md)
-> **Last updated:** 2026-08-14
+> **Last updated:** 2026-08-27
 > **Related:** docs/system/e2e.md, docs/ARCHITECTURE.md
 
 ---
@@ -84,6 +84,31 @@ Guards against that:
   throw after the publisher RPC timed out still reaches `install_failed`.
 - **Unique `(app_name, app_store_slug)`** — closes the concurrent-install race that used to insert
   two rows for the same app (duplicate tiles / "Firefly III, Firefly III" in the queue).
+
+## Custom domains
+
+CI-Cloud reports the customer hostnames it actually cloned into this device's tunnel ingress on
+`POST /api/tunnels/state`. The Hub is a **mirror** of that array, never a re-derivation of it —
+only CI-Cloud knows whether a hostname really routes here.
+
+- `syncStateOnce` (`modules/cloudflare`) validates the wire elements and drops malformed ones.
+  `undefined` (a CI-Cloud predating the field, a failed sync, or a payload nothing could parse)
+  means *change nothing*; `[]` means *unbind*. Collapsing those two takes live domains off the air.
+- `reconcileCustomDomains` (`modules/app-lifecycle/exposure-sync.service.ts`) joins each delivered
+  `targetHostname` against the app's own platform hostname and writes `app.custom_domain`. It runs
+  last in the sync and in its own try/catch, so a DB error cannot swallow the per-app DNS reporting
+  above it. Apps absent from the payload (stopped, or excluded for a release pass) keep their
+  binding — "not asked about" is not "unbound".
+- `generateEnvFile` emits the bound hostname for `APP_PUBLIC_URL` / `APP_PUBLIC_HOSTNAME` /
+  `APP_HOST` / `APP_DOMAIN` / `APP_BASE_URL`. The cloned ingress rule keeps the platform
+  `httpHostHeader`, so these env vars are the **only** way an app learns the name the browser used —
+  which is what OAuth `redirect_uri` is built from.
+- The change reaches a running app via `pendingRestart` + an SSE nudge, never by recreating
+  containers on a background sync. Writes are deferred while an app is `starting`/`restarting`,
+  because the in-command sync would otherwise be clobbered by `settleCommandOutcome`.
+
+⚠ `SSEService.emit('app', data, appUrn)` publishes to topic `app:<urn>`, which **nothing
+subscribes to** — the frontend opens `/api/sse/app` only. Omit the third argument.
 
 ## Inference cloud providers
 

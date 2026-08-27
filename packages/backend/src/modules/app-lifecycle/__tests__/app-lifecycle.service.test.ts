@@ -941,11 +941,9 @@ describe('AppLifecycleService', () => {
       expect(appsRepository.updateAppById).toHaveBeenCalledWith(7, { customDomain: 'comfy.acme.com', pendingRestart: true });
       // Flagged, never recreated: a background heartbeat must not take a running
       // app down under the user.
-      expect(sseService.emit).toHaveBeenCalledWith(
-        'app',
-        { event: 'custom_domain_changed', appUrn: 'comfyui:ci-marketplace' },
-        'comfyui:ci-marketplace',
-      );
+      // No third argument: that publishes to `app:<urn>`, a topic nothing
+      // subscribes to, so the badge would never appear without a reload.
+      expect(sseService.emit).toHaveBeenCalledWith('app', { event: 'custom_domain_changed', appUrn: 'comfyui:ci-marketplace' });
     });
 
     it('is idempotent once the binding is already stored', async () => {
@@ -1047,20 +1045,91 @@ describe('AppLifecycleService', () => {
     });
 
     it('matches the target hostname case-insensitively', async () => {
-      appsRepository.getApps.mockResolvedValue([runningComfy()] as any);
+      // The Hub composes its side of the join from slugs it stores VERBATIM, and
+      // a rename can leave uppercase in them; CI-Cloud's side is already
+      // lowercased by the wire parser. Without normalization the two never match
+      // and the whole feature is a silent no-op for that org.
+      registrationService.getDeviceRegistrationInfo.mockResolvedValue({ ...REGISTRATION, slug: 'ACME', hubSubdomain: 'Core2-ACME' } as any);
+      appsRepository.getApps.mockResolvedValue([runningComfy({ localSubdomain: 'ComfyUI' })] as any);
       cloudflareClientService.syncState.mockResolvedValue({
         ok: true,
         failed: [],
         failures: [],
         synced: 1,
-        // Already lowercased by the wire parser; the Hub composes its side from
-        // slugs stored verbatim, which a rename can leave uppercase.
         customDomains: [{ id: 'cd_1', domain: 'comfy.acme.com', targetHostname: TARGET }],
       });
 
       await service.triggerCloudflareSync();
 
       expect(appsRepository.updateAppById).toHaveBeenCalledWith(7, { customDomain: 'comfy.acme.com', pendingRestart: true });
+    });
+
+    it('leaves a bound app alone when the payload could not be parsed', async () => {
+      appsRepository.getApps.mockResolvedValue([runningComfy({ customDomain: 'comfy.acme.com' })] as any);
+      // Every row unusable — a CI-Cloud whose wire shape drifted. Reading that as
+      // "none delivered" would unbind every app on a custom hostname fleet-wide.
+      cloudflareClientService.syncState.mockResolvedValue({ ok: true, failed: [], failures: [], synced: 1, customDomains: undefined });
+
+      await service.triggerCloudflareSync();
+
+      expect(appsRepository.updateAppById).not.toHaveBeenCalled();
+    });
+
+    it('keeps the domain the app already serves on when a second alias appears', async () => {
+      appsRepository.getApps.mockResolvedValue([runningComfy({ customDomain: 'zzz.acme.com' })] as any);
+      cloudflareClientService.syncState.mockResolvedValue({
+        ok: true,
+        failed: [],
+        failures: [],
+        synced: 1,
+        customDomains: [
+          { id: 'cd_1', domain: 'zzz.acme.com', targetHostname: TARGET },
+          { id: 'cd_2', domain: 'aaa.acme.com', targetHostname: TARGET },
+        ],
+      });
+
+      await service.triggerCloudflareSync();
+
+      // Moving to the lexicographically first name would break every OAuth
+      // redirect_uri registered against the one it is already serving.
+      expect(appsRepository.updateAppById).not.toHaveBeenCalled();
+    });
+
+    it('does not bind an app served on an open host port', async () => {
+      // `publishesCloudflarePublicRoute` admits it, but `generateEnvFile` treats
+      // openPort as "not exposed" and emits no public identity at all — binding
+      // would raise a restart badge for a restart that changes nothing.
+      appsRepository.getApps.mockResolvedValue([runningComfy({ openPort: true })] as any);
+      cloudflareClientService.syncState.mockResolvedValue({
+        ok: true,
+        failed: [],
+        failures: [],
+        synced: 1,
+        customDomains: [{ id: 'cd_1', domain: 'comfy.acme.com', targetHostname: TARGET }],
+      });
+
+      await service.triggerCloudflareSync();
+
+      expect(appsRepository.updateAppById).not.toHaveBeenCalled();
+    });
+
+    it('defers the write while a lifecycle command is regenerating the env', async () => {
+      // The sync runs from inside the restart command, which already wrote the
+      // env. Binding now would be undone: settleCommandOutcome clears
+      // pendingRestart when the command lands, leaving the row bound, the badge
+      // clear and the env stale — and `next === current` never raises it again.
+      appsRepository.getApps.mockResolvedValue([runningComfy({ status: 'restarting' })] as any);
+      cloudflareClientService.syncState.mockResolvedValue({
+        ok: true,
+        failed: [],
+        failures: [],
+        synced: 1,
+        customDomains: [{ id: 'cd_1', domain: 'comfy.acme.com', targetHostname: TARGET }],
+      });
+
+      await service.triggerCloudflareSync();
+
+      expect(appsRepository.updateAppById).not.toHaveBeenCalled();
     });
   });
 

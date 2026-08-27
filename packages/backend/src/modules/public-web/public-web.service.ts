@@ -9,7 +9,7 @@ import { EnvUtils } from '@/modules/env/env.utils';
 import { RegistrationService } from '@/modules/registration/registration.service';
 import { Injectable } from '@nestjs/common';
 import type { AppUrn } from '@ci-hub/common/types';
-import { buildPublicWebIdentity, resolvePublicDomainRoot } from '@ci-hub/common/types';
+import { buildPublicWebIdentity, normalizeStoredHostname, resolvePublicDomainRoot } from '@ci-hub/common/types';
 
 export interface PublicWebDiagnosticEntry {
   appUrn: AppUrn;
@@ -24,6 +24,11 @@ export interface PublicWebDiagnosticEntry {
   action: 'ok' | 'repair';
   /** Custom hostname CI-Cloud has wired for this app, when it has one. */
   customDomain: string | null;
+  /**
+   * The app is already flagged for a restart that will regenerate this env, so
+   * an `envMismatch` here is a scheduled change rather than drift.
+   */
+  pendingRestart: boolean;
 }
 
 export interface PublicWebDiagnosticsResponse {
@@ -97,11 +102,26 @@ export class PublicWebService {
        * repair rewrite the very value the sync just set — the two would fight,
        * and the app would flip hostname on every repair.
        */
-      const customDomain = app.customDomain?.trim().toLowerCase() || null;
+      const customDomain = normalizeStoredHostname(app.customDomain);
       const expectedHostname = customDomain ?? identity.hostname;
       const expectedPublicUrl = customDomain ? `https://${customDomain}` : identity.publicUrl;
 
       const envMismatch = envHostname !== expectedHostname;
+
+      /*
+       * A binding that has landed on the row but not yet in the env is the state
+       * this feature DESIGNS for: the sync deliberately does not recreate a
+       * running container, it raises `pendingRestart` and lets the user choose
+       * when. Calling that "repair" would report a healthy, freshly bound app as
+       * broken — and `repair()` with no `appUrns` restarts everything it finds,
+       * so an operator running the CLI's suggested repair would restart apps they
+       * never selected, for a change already scheduled.
+       *
+       * The mismatch is still reported (it is real, and it is what the badge is
+       * about); only the verdict waits for the restart the user was asked for.
+       */
+      const awaitingScheduledRestart = envMismatch && app.pendingRestart;
+      const action: PublicWebDiagnosticEntry['action'] = envMismatch && !awaitingScheduledRestart ? 'repair' : 'ok';
 
       entries.push({
         appUrn,
@@ -113,14 +133,15 @@ export class PublicWebService {
         computedPublicUrl: expectedPublicUrl,
         envHostname,
         envMismatch,
-        action: envMismatch ? 'repair' : 'ok',
+        action,
         customDomain,
+        pendingRestart: app.pendingRestart,
       });
     }
 
     return {
       apps: entries,
-      mismatchCount: entries.filter((entry) => entry.envMismatch).length,
+      mismatchCount: entries.filter((entry) => entry.action === 'repair').length,
     };
   }
 
@@ -128,10 +149,12 @@ export class PublicWebService {
     const diagnostics = await this.getDiagnostics();
     const targetUrns = new Set(request.appUrns ?? []);
     const toRepair = diagnostics.apps.filter((entry) => {
-      if (targetUrns.size > 0 && !targetUrns.has(entry.appUrn)) {
-        return false;
+      if (targetUrns.size > 0) {
+        // Explicitly named: repair it even if it is only awaiting its scheduled
+        // restart — the operator asked for this app by name.
+        return targetUrns.has(entry.appUrn) && entry.envMismatch;
       }
-      return entry.envMismatch;
+      return entry.action === 'repair';
     });
 
     const results: PublicWebRepairResult[] = [];

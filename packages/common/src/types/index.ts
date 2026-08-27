@@ -27,7 +27,13 @@ export {
   RESERVED_APP_NAMES,
   sanitizeAppSubdomain,
 } from '../public-web/identity.js';
-export { indexCustomDomainsByTarget, parseTunnelCustomDomains } from '../public-web/custom-domains.js';
+export {
+  indexCustomDomainsByTarget,
+  normalizeHostname,
+  normalizeStoredHostname,
+  parseTunnelCustomDomains,
+  selectCustomDomain,
+} from '../public-web/custom-domains.js';
 export { buildTailscaleNodeFqdn, buildTailscalePortHost, buildTailscalePortUrl, buildTailscaleWebIdentity } from '../tailscale/identity.js';
 export type {
   HardwareProfile,

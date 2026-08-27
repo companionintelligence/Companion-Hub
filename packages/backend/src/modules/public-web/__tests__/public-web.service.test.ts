@@ -186,6 +186,36 @@ describe('PublicWebService', () => {
     expect(result.apps[0]).toMatchObject({ computedHostname: 'cloud.acme.com', envMismatch: true, action: 'repair' });
   });
 
+  it('does not call a scheduled restart "repair"', async () => {
+    // The sync deliberately does not recreate a running container: it binds the
+    // row and raises pendingRestart. Reporting that designed window as a fault
+    // would have `repair` with no appUrns restart apps the operator never chose.
+    appsRepository.getApps.mockResolvedValue([
+      {
+        appName: 'nextcloud',
+        appStoreSlug: 'store',
+        status: 'running',
+        exposureMode: 'cloudflare',
+        exposedLocal: true,
+        openPort: false,
+        localSubdomain: 'nextcloud',
+        publicDomain: 'example.com',
+        customDomain: 'cloud.acme.com',
+        pendingRestart: true,
+      },
+    ] as any);
+
+    appFilesManager.getAppEnv.mockResolvedValue({ path: '/tmp/env', content: 'APP_PUBLIC_HOSTNAME=nextcloud-dev1-myorg.example.com\n' });
+    envUtils.envStringToMap.mockReturnValue(new Map([['APP_PUBLIC_HOSTNAME', 'nextcloud-dev1-myorg.example.com']]));
+
+    const result = await service.getDiagnostics();
+
+    expect(result.mismatchCount).toBe(0);
+    // The drift is still reported — it is what the badge is about — only the
+    // verdict waits for the restart the user was already asked for.
+    expect(result.apps[0]).toMatchObject({ envMismatch: true, pendingRestart: true, action: 'ok' });
+  });
+
   it('repairs mismatched apps and triggers cloudflare sync', async () => {
     appsRepository.getApps.mockResolvedValue([
       {
