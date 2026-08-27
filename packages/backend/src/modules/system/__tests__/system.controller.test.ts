@@ -1,9 +1,12 @@
 import { LoggerService } from '@/core/logger/logger.service';
 import { DockerService } from '@/modules/docker/docker.service';
+import { Get } from '@nestjs/common';
+import { METHOD_METADATA, PATH_METADATA } from '@nestjs/common/constants';
 import { Test } from '@nestjs/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
 import { pipeline } from 'node:stream/promises';
+import { AuthGuard } from '../../auth/auth.guard';
 import { ResourceAllocatorService } from '../resource-allocator.service';
 import { HostTelemetryService } from '../host-telemetry.service';
 import { SystemController } from '../system.controller';
@@ -39,6 +42,63 @@ describe('SystemController', () => {
 
   it('should be defined', () => {
     expect(controller).toBeDefined();
+  });
+
+  describe('route guards', () => {
+    // There is no global APP_GUARD in this app: AuthGuard is applied per-method,
+    // so a route declared between two guarded ones inherits nothing. That is how
+    // GET /api/system/certificate — which serves the appliance's root CA trust
+    // anchor — ended up reachable without a session. Enumerating the prototype
+    // rather than a hand-written list means a newly added route fails here too.
+    //
+    // Enumerating it *unfiltered* would over-reach the other way: a private helper
+    // on the controller is not reachable over HTTP and has nothing to guard, so
+    // demanding AuthGuard on it would fail this suite for a change that is safe.
+    // Nest stamps PATH_METADATA and METHOD_METADATA onto exactly the methods its
+    // router will expose, which is the set this test means.
+    const isRouteHandler = (prototype: object, name: string): boolean => {
+      if (name === 'constructor') {
+        return false;
+      }
+
+      const handler = (prototype as Record<string, unknown>)[name];
+      if (typeof handler !== 'function') {
+        return false;
+      }
+
+      return Reflect.hasMetadata(PATH_METADATA, handler) && Reflect.hasMetadata(METHOD_METADATA, handler);
+    };
+
+    const routeHandlers = Object.getOwnPropertyNames(SystemController.prototype).filter((name) => isRouteHandler(SystemController.prototype, name));
+
+    it('covers every route on the controller', () => {
+      expect(routeHandlers.length).toBeGreaterThan(0);
+    });
+
+    it('counts routes only, so a future helper method cannot fail this suite', () => {
+      class Fixture {
+        @Get('/thing')
+        thing() {
+          return null;
+        }
+
+        // Not reachable over HTTP, so there is nothing here for AuthGuard to protect.
+        helper() {
+          return null;
+        }
+      }
+
+      expect(Object.getOwnPropertyNames(Fixture.prototype).filter((name) => isRouteHandler(Fixture.prototype, name))).toEqual(['thing']);
+    });
+
+    it.each(routeHandlers)('guards %s with AuthGuard', (name) => {
+      const handler = (SystemController.prototype as Record<string, unknown>)[name];
+      // Default to `[]` rather than asserting on the raw lookup: an unguarded route
+      // reads back as `undefined`, and `expect(undefined).toContain(...)` passes.
+      const guards = (Reflect.getMetadata('__guards__', handler as object) ?? []) as unknown[];
+
+      expect(guards).toContain(AuthGuard);
+    });
   });
 
   describe('systemLoad', () => {

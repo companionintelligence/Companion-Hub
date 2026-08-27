@@ -144,6 +144,22 @@ describe('DeviceRegistrationPage', () => {
     );
   });
 
+  it('offers both step 1 links as scannable codes for appliances with no browser', async () => {
+    // A headless CI-OS box (or an SSH session) has no browser to open the anchor
+    // in, so each link is also published as a QR plus its selectable fallback.
+    render(<DeviceRegistrationPage />);
+
+    expect(await screen.findByText('No browser on this device? Scan to sign in on your phone.')).toBeInTheDocument();
+    expect(screen.getByText('Or scan to create your account on your phone.')).toBeInTheDocument();
+
+    const codes = screen.getAllByTitle('QR code');
+    expect(codes).toHaveLength(2);
+
+    // The fallback text must carry exactly what the anchors carry
+    expect(screen.getByText('https://portal.example.com')).toBeInTheDocument();
+    expect(screen.getByText('https://portal.example.com/signup?redirect=%2Fhome%3Fadd_device%3D1%26hub_device_id%3Ddevice-123')).toBeInTheDocument();
+  });
+
   it('shows a retryable temporary-unavailable state instead of the pairing form when status lookup fails', async () => {
     fetchRegistrationStatusResult.mockResolvedValue({ ok: false, status: 503, data: undefined });
 

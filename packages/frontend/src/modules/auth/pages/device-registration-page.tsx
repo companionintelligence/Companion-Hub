@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router';
 import { Button } from '@/components/ui/Button';
 import { Alert, AlertDescription } from '@/components/ui/Alert/Alert';
+import { QrCode } from '@/components/ui/qr-code';
 import { AlertCircle, CheckCircle2, ChevronRight, Copy, Loader2 } from 'lucide-react';
 import {
   fetchDeviceRegistrationInfoResult,
@@ -715,6 +716,29 @@ export default function DeviceRegistrationPage() {
             </a>
           </Button>
           <p className="mt-3 text-sm leading-relaxed text-muted-foreground">{t('DEVICE_REGISTRATION_LOGIN_HINT')}</p>
+          {/*
+            The button above assumes a browser on the appliance itself, which a
+            headless CI-OS box or an SSH session does not have. The QR carries the
+            same device-scoped URL, so a phone can finish step 1 instead.
+
+            No `mark` on either code here: these URLs are long enough that level `H`
+            plus the logo pushes the version up, and this is the one screen where a
+            failed scan leaves the user with no way forward.
+
+            Size is pinned rather than left to the component default for the same
+            reason. The signup URL is ~110 bytes, which at level `M` lands around
+            version 7 — 45 data modules plus the 8-module quiet zone, so 160px gave
+            each module barely 3px. 200px buys back a module pitch phone cameras can
+            actually resolve, and it fits everywhere this screen is reachable: the
+            plate is size + 28px of padding and border, and the tightest column this
+            card ever gives it is 239px, at exactly the `md` breakpoint where the
+            three-column grid kicks in (255px at the 800px desktop minimum window).
+            Narrower than ~360px the code is `max-w-full`, so it scales down with the
+            card — at 320px it lands back on 160px rather than overflowing.
+          */}
+          <div className="mt-5 flex justify-center border-t border-border/60 pt-5">
+            <QrCode value={loginUrl} fallback={loginUrl} size={200} caption={t('DEVICE_REGISTRATION_SCAN_TO_SIGN_IN')} />
+          </div>
           <div className="mt-6 space-y-3 border-t border-border/60 pt-5">
             <p className="text-center text-sm text-muted-foreground">{t('DEVICE_REGISTRATION_NO_ACCOUNT_YET')}</p>
             <Button asChild variant="outline" className="h-10 w-full text-sm font-semibold md:h-11 md:text-base">
@@ -722,6 +746,9 @@ export default function DeviceRegistrationPage() {
                 {t('DEVICE_REGISTRATION_CREATE_ACCOUNT')}
               </a>
             </Button>
+            <div className="flex justify-center pt-2">
+              <QrCode value={signupUrl} fallback={signupUrl} size={200} caption={t('DEVICE_REGISTRATION_SCAN_TO_CREATE_ACCOUNT')} />
+            </div>
           </div>
         </section>
 
