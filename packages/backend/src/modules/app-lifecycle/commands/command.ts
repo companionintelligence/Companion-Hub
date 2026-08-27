@@ -385,7 +385,7 @@ export class AppLifecycleCommand {
 
   protected handleAppError = async (err: unknown, appId: string, event: string): Promise<AppCommandFailureResult> => {
     if (err instanceof AppLifecycleError) {
-      this.reportCommandFailure(appId, event, err.errorDetail ?? err.message);
+      this.reportCommandFailure(appId, event, err.errorDetail ?? err.message, err.errorCode);
       return {
         success: false,
         message: err.message,
@@ -398,7 +398,7 @@ export class AppLifecycleCommand {
     if (err instanceof Error) {
       const overlapTranslated = translateDockerNetworkOverlapError(err);
       if (overlapTranslated) {
-        this.reportCommandFailure(appId, event, overlapTranslated.errorDetail ?? overlapTranslated.message);
+        this.reportCommandFailure(appId, event, overlapTranslated.errorDetail ?? overlapTranslated.message, overlapTranslated.errorCode);
         return {
           success: false,
           message: overlapTranslated.message,
@@ -409,7 +409,7 @@ export class AppLifecycleCommand {
 
       const translated = translateRocmKfdInstallMessage(err.message) ?? translateKvmInstallMessage(err.message);
       if (translated) {
-        this.reportCommandFailure(appId, event, translated.errorDetail ?? translated.message);
+        this.reportCommandFailure(appId, event, translated.errorDetail ?? translated.message, translated.errorCode);
         return {
           success: false,
           message: translated.message,
@@ -428,7 +428,16 @@ export class AppLifecycleCommand {
     return { success: false, message };
   };
 
-  private reportCommandFailure(appId: string, event: string, message: string): void {
+  /**
+   * Reports to Sentry synchronously, inside the queue worker, before the result round-trips back
+   * to AppLifecycleService's settleCommandOutcome (which also reports, with errorCode, once the
+   * RPC reply arrives). ErrorReportingService debounces per `${phase}:${appUrn}` for 30s, so
+   * whichever call lands first is what Sentry actually receives — this one, here, usually wins the
+   * race since it runs before the round-trip. errorCode must therefore be threaded through HERE
+   * too, not only on the settleCommandOutcome side, or a classified failure can still surface in
+   * Sentry as unclassified depending on timing.
+   */
+  private reportCommandFailure(appId: string, event: string, message: string, errorCode?: string): void {
     const errorReportingService = this.moduleRef.get(ErrorReportingService, { strict: false });
     const phase = this.mapEventToFailurePhase(event);
     if (!phase) {
@@ -439,6 +448,7 @@ export class AppLifecycleCommand {
       appUrn: appId,
       phase,
       message,
+      errorCode,
     });
   }
 
