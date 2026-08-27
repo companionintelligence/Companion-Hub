@@ -24,6 +24,45 @@ export interface ParsedTunnelCustomDomains {
   dropped: number;
 }
 
+/** RFC 1123: a label is 1–63 chars of letters, digits and inner hyphens. */
+const HOSTNAME_LABEL = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
+const MAX_HOSTNAME_LENGTH = 253;
+
+/**
+ * The one spelling: trimmed, lowercased, trailing dot removed — the same
+ * normalization CI-Cloud stores these under, so the two sides compare equal.
+ */
+function normalizeHostname(value: string): string {
+  return value.trim().toLowerCase().replace(/\.$/, '');
+}
+
+/**
+ * Is this a hostname at all?
+ *
+ * ⚠ DELIBERATELY THE SAME RULE CI-CLOUD ALREADY APPLIED, AND NO STRICTER. This
+ * runs on a value that CI-Cloud validated on the way in and then wired into a
+ * live tunnel, so anything rejected here is a domain that IS serving and that
+ * the Hub would silently refuse to tell its app about. Mirroring the label rule
+ * (≥2 RFC-1123 labels, ≤253 chars) can only reject strings CI-Cloud would have
+ * rejected too.
+ *
+ * What it is here for is the other direction: the value is interpolated into
+ * `https://<domain>` and written into an app's compose env, so a string that is
+ * not a hostname would produce a malformed `APP_PUBLIC_URL` — an app signing
+ * OAuth redirects for an address that cannot resolve. Dropping the entry leaves
+ * the app on its platform hostname, which works.
+ */
+function isHostname(value: string): boolean {
+  if (value.length === 0 || value.length > MAX_HOSTNAME_LENGTH) {
+    return false;
+  }
+
+  const labels = value.split('.');
+
+  // Two labels minimum: a bare `localhost` is not a name anyone can delegate.
+  return labels.length >= 2 && labels.every((label) => HOSTNAME_LABEL.test(label));
+}
+
 function readString(source: Record<string, unknown>, key: string): string | null {
   const value = source[key];
 
@@ -51,9 +90,11 @@ function readString(source: Record<string, unknown>, key: string): string | null
  * independently deployed services, and turning one malformed row into a hard
  * sync failure would misreport the blast radius of a partial sync.
  *
- * Hostnames are lowercased because DNS is case-insensitive but string equality
+ * Hostnames are normalized because DNS is case-insensitive but string equality
  * is not, and `targetHostname` is joined against a hostname the Hub composes
- * from slugs it stores verbatim.
+ * from slugs it stores verbatim. They are also shape-checked — see
+ * {@link isHostname} for why that check is deliberately no stricter than the one
+ * CI-Cloud already applied.
  */
 export function parseTunnelCustomDomains(value: unknown): ParsedTunnelCustomDomains | undefined {
   if (value === undefined || value === null) {
@@ -87,7 +128,15 @@ export function parseTunnelCustomDomains(value: unknown): ParsedTunnelCustomDoma
       continue;
     }
 
-    entries.push({ id, domain: domain.toLowerCase(), targetHostname: targetHostname.toLowerCase() });
+    const normalizedDomain = normalizeHostname(domain);
+    const normalizedTarget = normalizeHostname(targetHostname);
+
+    if (!isHostname(normalizedDomain) || !isHostname(normalizedTarget)) {
+      dropped += 1;
+      continue;
+    }
+
+    entries.push({ id, domain: normalizedDomain, targetHostname: normalizedTarget });
   }
 
   return { entries, dropped };

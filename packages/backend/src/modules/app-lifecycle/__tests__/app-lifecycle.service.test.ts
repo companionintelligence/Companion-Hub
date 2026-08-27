@@ -1023,6 +1023,29 @@ describe('AppLifecycleService', () => {
       expect(appsRepository.updateAppById).not.toHaveBeenCalled();
     });
 
+    it('does not unbind a stopped app that merely shares an app name with a running one', async () => {
+      // `app` is unique on (app_name, app_store_slug), so two stores can both
+      // ship an app called `comfyui`. The sync payload carries only the NAME.
+      appsRepository.getApps.mockResolvedValue([
+        runningComfy({ id: 7, appStoreSlug: 'ci-marketplace', localSubdomain: 'comfyui' }),
+        runningComfy({ id: 8, appStoreSlug: 'other-store', localSubdomain: 'comfyui-alt', status: 'stopped', customDomain: 'art.acme.com' }),
+      ] as any);
+      cloudflareClientService.syncState.mockResolvedValue({
+        ok: true,
+        failed: [],
+        failures: [],
+        synced: 1,
+        customDomains: [{ id: 'cd_1', domain: 'comfy.acme.com', targetHostname: TARGET }],
+      });
+
+      await service.triggerCloudflareSync();
+
+      // The running one binds...
+      expect(appsRepository.updateAppById).toHaveBeenCalledWith(7, { customDomain: 'comfy.acme.com', pendingRestart: true });
+      // ...and the stopped one, which was never in the payload, keeps its domain.
+      expect(appsRepository.updateAppById).not.toHaveBeenCalledWith(8, expect.anything());
+    });
+
     it('matches the target hostname case-insensitively', async () => {
       appsRepository.getApps.mockResolvedValue([runningComfy()] as any);
       cloudflareClientService.syncState.mockResolvedValue({

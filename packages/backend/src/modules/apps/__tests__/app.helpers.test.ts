@@ -363,6 +363,21 @@ describe('AppHelpers', () => {
           expect(written().get('PUBLIC_BASE_URL')).toBe(PLATFORM_URL);
         });
 
+        it('also follows a plain public-domain change, not just a custom-domain one', async () => {
+          // Widens existing behaviour on purpose: a base URL that is merely the
+          // app's previous public URL used to be carried forward verbatim, so an
+          // app whose public domain moved kept signing redirects for the hostname
+          // it had left. The rule is "the Hub does not argue with a value a human
+          // chose", not "the Hub never corrects its own".
+          bind(null);
+          const stale = 'https://test-app-test-store-core2-acme.old.example';
+          withBaseUrlField(`APP_PUBLIC_URL=${stale}\nPUBLIC_BASE_URL=${stale}\n`);
+
+          await appHelpers.generateEnvFile(testAppUrn, exposedForm);
+
+          expect(written().get('PUBLIC_BASE_URL')).toBe(PLATFORM_URL);
+        });
+
         it('never argues with a base URL the operator chose', async () => {
           bind('comfy.acme.com');
           withBaseUrlField('PUBLIC_BASE_URL=https://pinned.example.org\n');

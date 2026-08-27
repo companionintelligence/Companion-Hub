@@ -353,33 +353,45 @@ export class ExposureSyncService {
       type AppFromDb = Awaited<ReturnType<AppsRepository['getApps']>>[number];
       const exclude = new Set(options?.excludeAppUrns ?? []);
 
+      const syncedDbApps = apps.filter((app: AppFromDb) => {
+        const appUrn = `${app.appName}:${app.appStoreSlug}` as AppUrn;
+        if (exclude.has(appUrn)) {
+          return false;
+        }
+        return publishesCloudflarePublicRoute(app as AppPublicRoutingSnapshot) && ['running', 'starting', 'restarting'].includes(app.status);
+      });
+
+      /*
+       * Which apps this payload actually asks CI-Cloud about, keyed by URN.
+       *
+       * ⚠ NOT BY `appName`. `app` is unique on (app_name, app_store_slug), so two
+       * stores can both ship an app called `comfyui`, and the sync entries below
+       * carry only the name. Keyed by name, a running `comfyui` would vouch for a
+       * stopped one from another store — which the custom-domain reconcile reads
+       * as "CI-Cloud was asked about it and reported nothing", and unbinds a
+       * domain that is merely waiting for its app to start again.
+       */
+      const syncedAppUrns = new Set(syncedDbApps.map((app: AppFromDb) => `${app.appName}:${app.appStoreSlug}` as AppUrn));
+
       const exposedApps: AppInfo[] = await Promise.all(
-        apps
-          .filter((app: AppFromDb) => {
-            const appUrn = `${app.appName}:${app.appStoreSlug}` as AppUrn;
-            if (exclude.has(appUrn)) {
-              return false;
-            }
-            return publishesCloudflarePublicRoute(app as AppPublicRoutingSnapshot) && ['running', 'starting', 'restarting'].includes(app.status);
-          })
-          .map(async (app: AppFromDb) => {
-            const subdomain = app.localSubdomain || `${app.appName}-${app.appStoreSlug}`;
-            const appPublicDomain = app.publicDomain || defaultPublicDomain;
-            return {
-              name: app.appName,
-              subdomain,
-              publicDomain: appPublicDomain,
-              localPort: 80,
-              protocol: 'http' as const,
-              hostname: 'traefik',
-              originServerName: buildOriginServerName({
-                appSubdomain: subdomain,
-                hubSubdomain: orgInfo.hubSubdomain,
-                orgSlug: orgInfo.slug,
-                localDomain,
-              }),
-            };
-          }),
+        syncedDbApps.map(async (app: AppFromDb) => {
+          const subdomain = app.localSubdomain || `${app.appName}-${app.appStoreSlug}`;
+          const appPublicDomain = app.publicDomain || defaultPublicDomain;
+          return {
+            name: app.appName,
+            subdomain,
+            publicDomain: appPublicDomain,
+            localPort: 80,
+            protocol: 'http' as const,
+            hostname: 'traefik',
+            originServerName: buildOriginServerName({
+              appSubdomain: subdomain,
+              hubSubdomain: orgInfo.hubSubdomain,
+              orgSlug: orgInfo.slug,
+              localDomain,
+            }),
+          };
+        }),
       );
 
       // Include the Hub in every sync so CI-Cloud preserves its tunnel route.
@@ -440,7 +452,7 @@ export class ExposureSyncService {
       if (result.ok) {
         await this.reconcileCustomDomains({
           apps,
-          syncedAppNames: new Set(appEntries.map((entry) => entry.name)),
+          syncedAppUrns,
           customDomains: result.customDomains,
           toPublicHostname,
         });
@@ -555,8 +567,8 @@ export class ExposureSyncService {
    */
   private async reconcileCustomDomains(params: {
     apps: Awaited<ReturnType<AppsRepository['getApps']>>;
-    /** App names that were in THIS sync's payload — see the skip rule below. */
-    syncedAppNames: Set<string>;
+    /** URNs of the apps THIS sync's payload asked about — see the skip rule below. */
+    syncedAppUrns: Set<AppUrn>;
     customDomains: TunnelCustomDomain[] | undefined;
     toPublicHostname: (app: Awaited<ReturnType<AppsRepository['getApps']>>[number]) => string;
   }): Promise<void> {
@@ -574,7 +586,10 @@ export class ExposureSyncService {
     const byTarget = indexCustomDomainsByTarget(params.customDomains);
 
     for (const app of params.apps) {
-      const current = app.customDomain ?? null;
+      const appUrn = `${app.appName}:${app.appStoreSlug}` as AppUrn;
+      // Normalized on the way in and on the way out, so a value that ever landed
+      // with different casing settles instead of re-flagging every sync.
+      const current = app.customDomain?.trim().toLowerCase() || null;
       let next: string | null;
 
       if (!publishesCloudflarePublicRoute(app as AppPublicRoutingSnapshot)) {
@@ -582,7 +597,7 @@ export class ExposureSyncService {
         // by definition, so drop it — this is durable configuration, not a
         // transient absence from one payload.
         next = null;
-      } else if (params.syncedAppNames.has(app.appName)) {
+      } else if (params.syncedAppUrns.has(appUrn)) {
         // Lowercased on both sides: DNS is case-insensitive, but the Hub composes
         // its hostname from an organization slug it stores verbatim, which a
         // rename can leave with uppercase in it.
@@ -605,8 +620,6 @@ export class ExposureSyncService {
       if (next === current) {
         continue;
       }
-
-      const appUrn = `${app.appName}:${app.appStoreSlug}` as AppUrn;
 
       await this.appRepository.updateAppById(app.id, { customDomain: next, pendingRestart: true });
       this.logger.info(
