@@ -163,7 +163,7 @@ export function dockerContextHostFromInspectOutput(raw: string): string | null {
   }
 }
 
-export function currentDockerContextName(hostDockerDir?: string, env: NodeJS.ProcessEnv = process.env): string | null {
+export function currentDockerContextName(hostDockerDir?: string, _env: NodeJS.ProcessEnv = process.env): string | null {
   const dockerDir = hostDockerDir ?? path.join(os.homedir(), '.docker');
   try {
     const raw = readFileSync(path.join(dockerDir, 'config.json'), 'utf8');
@@ -346,7 +346,10 @@ export function selectDockerEngine(reachable: ReachableEngine[], explicitHost: s
 
   const withStack = reachable.filter((e) => e.hasHubIdentity);
   if (withStack.length === 1) {
-    const engine = withStack[0]!;
+    const engine = withStack[0];
+    if (!engine) {
+      throw new Error('No reachable Docker engine found. Start Docker Desktop (or your Docker Engine) and try again.');
+    }
     return {
       candidate: engine.candidate,
       reason: `affinity: Hub stack already on ${engine.candidate.label} (${engine.candidate.dockerHost})`,
@@ -354,7 +357,10 @@ export function selectDockerEngine(reachable: ReachableEngine[], explicitHost: s
   }
   if (withStack.length > 1) {
     const desktop = withStack.find((e) => e.candidate.kind === 'desktop');
-    const engine = desktop ?? withStack[0]!;
+    const engine = desktop ?? withStack[0];
+    if (!engine) {
+      throw new Error('No reachable Docker engine found. Start Docker Desktop (or your Docker Engine) and try again.');
+    }
     return {
       candidate: engine.candidate,
       reason: desktop
@@ -370,7 +376,10 @@ export function selectDockerEngine(reachable: ReachableEngine[], explicitHost: s
       reason: `fresh install: prefer Docker Desktop at ${desktop.candidate.dockerHost}`,
     };
   }
-  const engine = reachable[0]!;
+  const engine = reachable[0];
+  if (!engine) {
+    throw new Error('No reachable Docker engine found. Start Docker Desktop (or your Docker Engine) and try again.');
+  }
   return {
     candidate: engine.candidate,
     reason: `fresh install: platform fallback ${engine.candidate.label} (${engine.candidate.dockerHost})`,

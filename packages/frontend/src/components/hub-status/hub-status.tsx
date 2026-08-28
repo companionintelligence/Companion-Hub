@@ -722,12 +722,16 @@ export function HubStatus({ children }: HubStatusProps) {
     setStatus('Stopped');
   }, []);
 
+  const statusRef = useRef(status);
+  statusRef.current = status;
+
   const startHub = useCallback(
     async (logMessage: string) => {
       const invoke = getTauriInvoke();
       if (!invoke) return false;
 
-      const previousSticky = typeof status === 'object' && status !== null && 'Error' in status ? status.Error.message : undefined;
+      const current = statusRef.current;
+      const previousSticky = typeof current === 'object' && current !== null && 'Error' in current ? current.Error.message : undefined;
 
       hubSteadyRunningRef.current = false;
       setStatus('Starting');
@@ -743,7 +747,7 @@ export function HubStatus({ children }: HubStatusProps) {
         return false;
       }
     },
-    [t, status],
+    [t],
   );
 
   const isStackDevMode = useCallback(async () => {
