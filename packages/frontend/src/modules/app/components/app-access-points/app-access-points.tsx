@@ -214,7 +214,11 @@ export function buildAppAccessPoints(input: {
   // user visits, so it is the one this card links to and shows in its QR code.
   const syncedCustomDomain = normalizeStoredHostname(record.customDomain);
   const publicHost = syncedCustomDomain || configuredPublicDomain || derivedPublicIdentity?.hostname || null;
-  const publicUrl = publicHost ? buildHttpsUrl(publicHost, sslPort, urlSuffix) : null;
+  // `sslPort` is the HUB's own local HTTPS port. A custom hostname is terminated by
+  // Cloudflare, which only answers on 443, so appending the local port to it would
+  // link and QR-code an address that cannot connect — and would disagree with the
+  // backend probe, which requests the same hostname on 443 and reports it healthy.
+  const publicUrl = publicHost ? buildHttpsUrl(publicHost, syncedCustomDomain ? 443 : sslPort, urlSuffix) : null;
 
   const expectsTailscalePublish = record.exposureMode === 'tailscale';
   // Legacy (pre-exposureMode) installs may still infer VPN from older flags.

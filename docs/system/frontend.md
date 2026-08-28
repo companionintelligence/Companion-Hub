@@ -5,7 +5,7 @@
 > **Key paths:** `packages/frontend/src/components/hub-status/`, `packages/frontend/src/modules/`, `packages/frontend/src/lib/`
 > **Commands:** `cd packages/frontend && pnpm test`, `pnpm run local` (root, port 5004/5005)
 > **Owner persona:** code-quality + maintainability
-> **Last updated:** 2026-08-15 (cloud connect flow terminology + SSO matrix)
+> **Last updated:** 2026-08-27 (custom-domain address + pending-restart diagnostics)
 > **Related:** docs/system/desktop.md, docs/DESKTOP-UI-ARCHITECTURE.md, docs/system/e2e.md
 
 ---
@@ -82,6 +82,21 @@ The iOS/Android thin client signs into the Portal with PKCE and a `cihub://auth/
 - Hung Hub calls must not spin forever. I18n never gates on "Loading…". Root loader, `/home` session/app-context, and a 6s DOM watchdog all end in Retry + Switch Hub. The HTML boot strip also grows Reload / Connect if React never paints. Do not send a failed app-context load into onboarding.
 
 Tests: `packages/frontend/src/modules/mobile-connect/oidc.test.ts`, `connect-page.test.tsx`
+
+## Custom domains
+
+When CI-Cloud has wired a customer hostname to an app, `app.customDomain` carries it and that is the
+address the UI shows — the access-points card links and QR-codes it, and `resolveAppAvailability`
+probes it. It always resolves on 443: Cloudflare terminates the customer hostname there and nowhere
+else, so the Hub's local `sslPort` must never be appended to it.
+
+Binding raises `pendingRestart` rather than recreating the container, so there is a deliberate window
+where the row names the custom domain and the running container does not. `public-web/diagnostics`
+reports that window as `action: 'ok'` with `envMismatch: true` — **key UI off `action`, not
+`envMismatch`**, or a healthy app awaiting its restart is shown as broken.
+
+⚠ `SSEService.emit('app', data, appUrn)` publishes to `app:<urn>`, which nothing subscribes to: the
+client opens `/api/sse/app` only. Omit the third argument.
 
 ## Agent notes
 

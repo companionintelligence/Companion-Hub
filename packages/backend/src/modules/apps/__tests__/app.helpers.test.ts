@@ -120,7 +120,7 @@ describe('AppHelpers', () => {
       // useMocker reuses mock instances across tests and clearAllMocks does not
       // drop implementations, so a bound custom domain from one test would
       // otherwise rewrite the public hostname of every test after it.
-      appsRepository.getAppByUrn.mockResolvedValue(undefined);
+      appsRepository.getAppCustomDomain.mockResolvedValue(null);
       deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue(undefined);
       appFilesManager.getInstalledAppInfo.mockResolvedValue(mockAppInfo);
       appFilesManager.getAppEnv.mockResolvedValue({ path: '/data/.env', content: '' });
@@ -267,7 +267,7 @@ describe('AppHelpers', () => {
       });
 
       const bind = (customDomain: string | null) => {
-        appsRepository.getAppByUrn.mockResolvedValue(fromPartial({ customDomain }));
+        appsRepository.getAppCustomDomain.mockResolvedValue(customDomain);
       };
 
       /** The env map actually written out for the app. */
@@ -385,6 +385,34 @@ describe('AppHelpers', () => {
           await appHelpers.generateEnvFile(testAppUrn, exposedForm);
 
           // Only the two hostnames the Hub derives itself are superseded.
+          expect(written().get('PUBLIC_BASE_URL')).toBe('https://pinned.example.org');
+        });
+
+        it('moves an auto-derived value that arrives on the FORM, not just one already in the env', async () => {
+          /*
+           * This is the path essentially every UI install actually takes. The
+           * install dialog pre-fills each `app_base_url` field with the suggested
+           * public URL, that value is persisted into `app.config`, and every later
+           * start/restart replays `config` as the form — so `hasValidFormValue` is
+           * true and the env branch never runs. A correction that lived only in the
+           * env branch left `APP_PUBLIC_URL` on the custom domain while the value
+           * the OAuth `redirect_uri` is built from stayed on the platform hostname.
+           */
+          bind('comfy.acme.com');
+          withBaseUrlField('');
+
+          await appHelpers.generateEnvFile(testAppUrn, { ...exposedForm, PUBLIC_BASE_URL: PLATFORM_URL });
+
+          expect(written().get('PUBLIC_BASE_URL')).toBe(CUSTOM_URL);
+          expect(written().get('NEXTAUTH_URL')).toBe(CUSTOM_URL);
+        });
+
+        it('still leaves an operator-chosen form value alone', async () => {
+          bind('comfy.acme.com');
+          withBaseUrlField('');
+
+          await appHelpers.generateEnvFile(testAppUrn, { ...exposedForm, PUBLIC_BASE_URL: 'https://pinned.example.org' });
+
           expect(written().get('PUBLIC_BASE_URL')).toBe('https://pinned.example.org');
         });
       });

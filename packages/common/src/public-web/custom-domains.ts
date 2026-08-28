@@ -1,3 +1,5 @@
+import validator from 'validator';
+
 /**
  * The custom-domain bindings CI-Cloud reports back on `POST /api/tunnels/state`.
  *
@@ -41,10 +43,6 @@ export interface ParsedTunnelCustomDomains {
   dropped: number;
 }
 
-/** RFC 1123: a label is 1–63 chars of letters, digits and inner hyphens. */
-const HOSTNAME_LABEL = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
-const MAX_HOSTNAME_LENGTH = 253;
-
 /**
  * The one spelling: trimmed, lowercased, trailing dot removed — the same
  * normalization CI-Cloud stores these under, so the two sides compare equal.
@@ -77,25 +75,25 @@ export function normalizeStoredHostname(value: string | null | undefined): strin
  * ⚠ DELIBERATELY THE SAME RULE CI-CLOUD ALREADY APPLIED, AND NO STRICTER. This
  * runs on a value that CI-Cloud validated on the way in and then wired into a
  * live tunnel, so anything rejected here is a domain that IS serving and that
- * the Hub would silently refuse to tell its app about. Mirroring the label rule
- * (≥2 RFC-1123 labels, ≤253 chars) can only reject strings CI-Cloud would have
- * rejected too.
+ * the Hub would silently refuse to tell its app about. Mirroring the rule
+ * CI-Cloud applies can only reject strings CI-Cloud would have rejected too.
  *
  * What it is here for is the other direction: the value is interpolated into
  * `https://<domain>` and written into an app's compose env, so a string that is
  * not a hostname would produce a malformed `APP_PUBLIC_URL` — an app signing
  * OAuth redirects for an address that cannot resolve. Dropping the entry leaves
  * the app on its platform hostname, which works.
+ *
+ * `validator.isFQDN` is the SAME check the rest of the Hub already applies to a
+ * domain — `validateDomain` in `validation/form-fields.ts`, and the
+ * `publicDomain` field of `appFormSchema` — which is what keeps the two from
+ * drifting: a second, hand-rolled definition of "is this a domain name" only has
+ * to disagree once to drop a live customer domain that the operator-facing side
+ * accepts. `require_tld` rejects a bare `localhost`; the trailing dot is already
+ * removed by {@link normalizeHostname} before this runs.
  */
 function isHostname(value: string): boolean {
-  if (value.length === 0 || value.length > MAX_HOSTNAME_LENGTH) {
-    return false;
-  }
-
-  const labels = value.split('.');
-
-  // Two labels minimum: a bare `localhost` is not a name anyone can delegate.
-  return labels.length >= 2 && labels.every((label) => HOSTNAME_LABEL.test(label));
+  return validator.isFQDN(value, { require_tld: true });
 }
 
 function readString(source: Record<string, unknown>, key: string): string | null {
@@ -207,7 +205,17 @@ export function parseTunnelCustomDomains(value: unknown): ParsedTunnelCustomDoma
  * `APP_PUBLIC_URL=https://comfy.acme.com` and sign OAuth redirects that land the
  * user in a sibling app; leaving both on their platform hostnames works.
  */
-export function indexCustomDomainsByTarget(entries: readonly TunnelCustomDomain[]): Map<string, string[]> {
+/**
+ * The domains {@link indexCustomDomainsByTarget} refused to attribute, because
+ * CI-Cloud reported them against more than one target.
+ *
+ * The caller needs these separately from the index: dropping such a domain from
+ * `byTarget` makes an affected app look like one whose target was never
+ * delivered, and for an app ALREADY serving on that hostname the two are not the
+ * same instruction. "No domain was delivered for you" is an unbind; "the domain
+ * you are on is mid-rebind" is a reason to hold still until CI-Cloud settles.
+ */
+export function collectAmbiguousCustomDomains(entries: readonly TunnelCustomDomain[]): Set<string> {
   const targetsByDomain = new Map<string, Set<string>>();
 
   for (const entry of entries) {
@@ -216,10 +224,15 @@ export function indexCustomDomainsByTarget(entries: readonly TunnelCustomDomain[
     targetsByDomain.set(entry.domain, targets);
   }
 
+  return new Set([...targetsByDomain].filter(([, targets]) => targets.size > 1).map(([domain]) => domain));
+}
+
+export function indexCustomDomainsByTarget(entries: readonly TunnelCustomDomain[]): Map<string, string[]> {
+  const ambiguous = collectAmbiguousCustomDomains(entries);
   const byTarget = new Map<string, Set<string>>();
 
   for (const entry of entries) {
-    if ((targetsByDomain.get(entry.domain)?.size ?? 0) > 1) {
+    if (ambiguous.has(entry.domain)) {
       continue;
     }
 
