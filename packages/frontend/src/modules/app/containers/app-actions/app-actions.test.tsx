@@ -54,6 +54,7 @@ vi.mock('@/modules/app/helpers/use-memory-connection', () => ({
 vi.mock('@/lib/helpers/open-folder', () => ({
   openPathInFileExplorer: (...args: unknown[]) => hoisted.openPath(...args),
   openLogsFolder: vi.fn(),
+  canOpenFolderInFileExplorer: () => hoisted.tauriInvoke !== null,
 }));
 
 vi.mock('@/lib/helpers/tauri-invoke', () => ({
@@ -248,6 +249,7 @@ const runningApp = makeApp();
 const exposedApp = makeApp({ exposureMode: 'cloudflare' });
 
 const OPEN_DATA_FOLDER_TESTID = 'icon-action-app_action_open_data_folder';
+const COPY_DATA_FOLDER_TESTID = 'icon-action-app_action_copy_data_folder_path';
 
 describe('AppActions', () => {
   afterEach(() => {
@@ -299,7 +301,7 @@ describe('AppActions', () => {
     expect(hoisted.invalidateAppQueries).toHaveBeenCalledWith(hoisted.queryClient, 'test-app:community');
   });
 
-  it('hides the "Open data folder" button in the web client (no Tauri)', () => {
+  it('offers "Copy data folder path" in the web client instead of a native open', () => {
     hoisted.queryClient.getQueryData.mockReturnValue(null);
     hoisted.tauriInvoke = null;
 
@@ -315,6 +317,7 @@ describe('AppActions', () => {
     );
 
     expect(screen.queryByTestId(OPEN_DATA_FOLDER_TESTID)).not.toBeInTheDocument();
+    expect(screen.getByTestId(COPY_DATA_FOLDER_TESTID)).toBeInTheDocument();
   });
 
   it('shows the "Open data folder" button in the desktop app and opens the host path on click', async () => {
@@ -346,6 +349,7 @@ describe('AppActions', () => {
     render(<AppActions app={runningApp} metadata={metadata} info={info} urlAvailability={idleAvailability} layout="hero" />);
 
     expect(screen.queryByTestId(OPEN_DATA_FOLDER_TESTID)).not.toBeInTheDocument();
+    expect(screen.queryByTestId(COPY_DATA_FOLDER_TESTID)).not.toBeInTheDocument();
   });
 
   it('disables Install and toasts wrong architecture when the Hub arch is unsupported', async () => {

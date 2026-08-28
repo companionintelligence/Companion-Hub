@@ -1,12 +1,13 @@
 import { useAppContext } from '@/context/app-context';
 import { getFullInspectionOptions } from '@/api-client/@tanstack/react-query.gen';
 import { POLLING } from '@/lib/polling-budget';
-import { openPathInFileExplorer } from '@/lib/helpers/open-folder';
-import { getTauriInvoke } from '@/lib/helpers/tauri-invoke';
+import { copyToClipboard } from '@/lib/copy-to-clipboard';
+import { canOpenFolderInFileExplorer, openPathInFileExplorer } from '@/lib/helpers/open-folder';
 import { useQuery } from '@tanstack/react-query';
 import {
   Activity,
   Cpu,
+  Copy,
   FolderOpen,
   HardDrive,
   Loader2,
@@ -518,12 +519,13 @@ const PortManagementSection = ({ ports }: { ports: { allocations: PortStatus[]; 
 // ─── Storage Section ─────────────────────────────────────────────────────────
 
 /**
- * Desktop-only section that reveals the root app-data folder (parent of every
- * app's persistent data) in the OS file explorer. Hidden in the web client,
- * where opening a host folder is not possible.
+ * Shows the root app-data folder (parent of every app's persistent data).
+ * Desktop Tauri opens it in the OS file manager; a browser or phone copies
+ * the host path instead — those clients are not the Hub machine.
  */
 const StorageSection = ({ appDataRootHostPath }: { appDataRootHostPath: string }) => {
   const { t } = useTranslation();
+  const canOpen = canOpenFolderInFileExplorer();
 
   return (
     <section className="rounded-lg border border-border bg-linear-to-b from-card to-card/60 p-5 shadow-sm sm:p-6">
@@ -539,15 +541,27 @@ const StorageSection = ({ appDataRootHostPath }: { appDataRootHostPath: string }
             {appDataRootHostPath}
           </div>
         </div>
-        <button
-          type="button"
-          onClick={() => openPathInFileExplorer(appDataRootHostPath)}
-          className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-sm text-muted-foreground hover:bg-muted/50 hover:text-foreground transition-colors"
-          data-testid="open-app-data-folder-btn"
-        >
-          <FolderOpen className="h-4 w-4" />
-          {t('SETTINGS_OPEN_APP_DATA_FOLDER')}
-        </button>
+        {canOpen ? (
+          <button
+            type="button"
+            onClick={() => openPathInFileExplorer(appDataRootHostPath)}
+            className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-sm text-muted-foreground hover:bg-muted/50 hover:text-foreground transition-colors"
+            data-testid="open-app-data-folder-btn"
+          >
+            <FolderOpen className="h-4 w-4" />
+            {t('SETTINGS_OPEN_APP_DATA_FOLDER')}
+          </button>
+        ) : (
+          <button
+            type="button"
+            onClick={() => copyToClipboard(appDataRootHostPath, t('APP_ACTION_DATA_FOLDER_PATH_COPIED'))}
+            className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-sm text-muted-foreground hover:bg-muted/50 hover:text-foreground transition-colors"
+            data-testid="copy-app-data-folder-btn"
+          >
+            <Copy className="h-4 w-4" />
+            {t('SETTINGS_COPY_APP_DATA_FOLDER')}
+          </button>
+        )}
       </div>
     </section>
   );
@@ -558,9 +572,6 @@ const StorageSection = ({ appDataRootHostPath }: { appDataRootHostPath: string }
 export const SystemInspectorContainer = () => {
   const { t } = useTranslation();
   const { appDataRootHostPath } = useAppContext();
-  // Native open-folder action: only meaningful inside the desktop app on the
-  // same machine as the data.
-  const canOpenAppDataFolder = Boolean(getTauriInvoke()) && Boolean(appDataRootHostPath);
   const { data, isLoading, refetch, isFetching, dataUpdatedAt } = useQuery({
     ...getFullInspectionOptions(),
     select: (payload) => payload as InspectionData,
@@ -607,7 +618,7 @@ export const SystemInspectorContainer = () => {
         </div>
       </div>
 
-      {canOpenAppDataFolder && appDataRootHostPath && <StorageSection appDataRootHostPath={appDataRootHostPath} />}
+      {appDataRootHostPath && <StorageSection appDataRootHostPath={appDataRootHostPath} />}
       {data.health.hostResources && <HostResourcesSection hostResources={data.health.hostResources} />}
       <SystemHealthSection health={data.health} />
       <ContainersSection containers={data.containers} />

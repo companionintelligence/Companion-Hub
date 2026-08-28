@@ -97,3 +97,4 @@ CI: `.github/workflows/desktop-tests.yml` on `packages/desktop/**` changes.
 - Reload/watchdog interactions can restart stack — see hub-status frontend gate
 - Update both Rust tests and hub-status.test.tsx for status behavior changes
 - Linux GTK3 pins `glib` 0.18.5. `[patch.crates-io]` in `src-tauri/Cargo.toml` (and the mobile twin) overlays `third_party/glib-0.18.5` with the GHSA-wrw7-89jp-8q8g backport. Drop it when Tauri ships glib >= 0.20.
+- "Open data folder" is desktop-Tauri-only (`reveal_item_in_dir` → Finder / Explorer / the Linux file manager). A browser or phone copies the Hub host path instead — those clients are not that machine.
