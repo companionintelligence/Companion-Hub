@@ -251,8 +251,17 @@ export class PortalClientService {
    * 404 on a CI-Cloud that predates the route, which the caller reports as
    * "nothing offerable" rather than as an error.
    */
-  async fetchDeviceCustomDomains(): Promise<{ status: number; data: { domains?: unknown } }> {
-    return this.requestWithStatus('get', '/custom-domains/device');
+  async fetchDeviceCustomDomains(organizationId?: string): Promise<{ status: number; data: { domains?: unknown } }> {
+    /*
+     * The organization is VERIFIED by CI-Cloud against a `device_registration`
+     * row, never believed — so sending it is not a trust boundary, it is a
+     * disambiguation. A device CAN be registered to more than one organization
+     * (a half-completed cross-org move leaves exactly that), and CI-Cloud refuses
+     * to guess rather than answering with an arbitrary tenant's domains.
+     */
+    const query = organizationId ? `?organizationId=${encodeURIComponent(organizationId)}` : '';
+
+    return this.requestWithStatus('get', `/custom-domains/device${query}`);
   }
 
   /**
@@ -265,7 +274,7 @@ export class PortalClientService {
    * not honestly supply one anyway, since it cannot know whether a name really
    * resolves here.
    */
-  async postDeviceCustomDomainBind(payload: { domainId: string; appSlug: string }): Promise<{
+  async postDeviceCustomDomainBind(payload: { domainId: string; appSlug: string; organizationId?: string }): Promise<{
     status: number;
     data: { id?: string; domain?: string; targetHostname?: string; code?: string; error?: string };
   }> {

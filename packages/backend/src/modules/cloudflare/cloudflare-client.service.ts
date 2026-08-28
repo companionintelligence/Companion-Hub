@@ -433,9 +433,9 @@ export class CloudflareClientService {
    * can say, and saying it because a request failed is exactly the silence this
    * feature exists to end.
    */
-  async fetchOrganizationCustomDomains(): Promise<AvailableCustomDomain[] | undefined> {
+  async fetchOrganizationCustomDomains(organizationId?: string): Promise<AvailableCustomDomain[] | undefined> {
     try {
-      const { status, data } = await this.portalClient.fetchDeviceCustomDomains();
+      const { status, data } = await this.portalClient.fetchDeviceCustomDomains(organizationId);
 
       if (status === 404) {
         // A CI-Cloud predating custom domains has no such route. A supported
@@ -488,9 +488,10 @@ export class CloudflareClientService {
   async bindCustomDomain(
     domainId: string,
     appSlug: string,
+    organizationId?: string,
   ): Promise<{ ok: true; targetHostname?: string } | { ok: false; status?: number; code?: string; message: string }> {
     try {
-      const { status, data } = await this.portalClient.postDeviceCustomDomainBind({ domainId, appSlug });
+      const { status, data } = await this.portalClient.postDeviceCustomDomainBind({ domainId, appSlug, organizationId });
 
       if (status >= 200 && status < 300) {
         return { ok: true, targetHostname: typeof data?.targetHostname === 'string' ? data.targetHostname : undefined };

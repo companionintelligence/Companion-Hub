@@ -4,7 +4,7 @@ import { app } from '@/core/database/drizzle/schema';
 import type { AppStatus, NewApp } from '@/core/database/drizzle/types';
 import { Inject, Injectable } from '@nestjs/common';
 import type { AppUrn } from '@ci-hub/common/types';
-import { and, asc, eq, ne, notInArray, or } from 'drizzle-orm';
+import { and, asc, eq, ne, notInArray, or, sql } from 'drizzle-orm';
 
 @Injectable()
 export class AppsRepository {
@@ -39,6 +39,41 @@ export class AppsRepository {
       .returning()
       .execute();
     return updatedApps[0];
+  }
+
+  /**
+   * Make a custom-domain choice exclusive: clear this intent from every OTHER
+   * app.
+   *
+   * ⚠ A DOMAIN SERVES EXACTLY ONE APP, and two rows naming it turns every sync
+   * into a tug of war — whichever binds last takes it, the delivery reconcile
+   * unbinds the loser, the loser becomes a candidate again, and both apps are
+   * asked to restart, forever. Enforced HERE, where the choice is written,
+   * because that is the only moment the intent is a decision somebody just made:
+   * the newest choice wins, which is what a person picking a domain already
+   * serving another app plainly means (the picker names that app beside it).
+   *
+   * Deliberately does NOT touch `custom_domain`. That column is what CI-Cloud
+   * reported delivered, and the app losing the choice keeps serving on the
+   * hostname it was actually wired to until CI-Cloud says otherwise — which it
+   * will, on the sync after the new binding lands.
+   *
+   * Matching is case-insensitive because DNS is: the value is stored normalized,
+   * but a row written before that was, or by hand, must not escape the rule.
+   */
+  public async clearCustomDomainIntentElsewhere(appId: number, customDomain: string) {
+    const normalized = customDomain.trim().toLowerCase();
+
+    if (!normalized) {
+      return [];
+    }
+
+    return this.db
+      .update(app)
+      .set({ customDomainIntent: null, updatedAt: new Date().toISOString() })
+      .where(and(ne(app.id, appId), sql`lower(${app.customDomainIntent}) = ${normalized}`))
+      .returning({ id: app.id, appName: app.appName, appStoreSlug: app.appStoreSlug })
+      .execute();
   }
 
   /**

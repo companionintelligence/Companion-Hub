@@ -836,6 +836,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
           enableAuth: parsedForm.enableAuth ?? false,
         });
         installRecord = { id: created.id, status: created.status, port: created.port, exposedLocal: created.exposedLocal };
+        await this.claimCustomDomainIntent(created.id, parsedForm.customDomain);
       } catch (createError) {
         const isUniqueViolation =
           createError instanceof Error &&
@@ -882,6 +883,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
         isVisibleOnGuestDashboard,
         enableAuth: parsedForm.enableAuth ?? false,
       });
+      await this.claimCustomDomainIntent(installRecord.id, parsedForm.customDomain);
     }
 
     this.sseService.emit('app', { event: 'status_change', appUrn, appStatus: 'installing' });
@@ -1754,6 +1756,8 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       maxBackups: parsedForm.maxBackups ?? null,
     });
 
+    await this.claimCustomDomainIntent(app.id, parsedForm.customDomain);
+
     const { appName, appStoreId } = extractAppUrn(appUrn);
     const routingChanged = didPublicRoutingIdentityChange(app as AppPublicRoutingSnapshot, parsedForm, appName, appStoreId);
 
@@ -2106,5 +2110,38 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     }
 
     return true;
+  }
+  /**
+   * Record a custom-domain choice, and take it off any app that held it before.
+   *
+   * ⚠ A DOMAIN SERVES EXACTLY ONE APP. Two rows naming the same one turns every
+   * sync into a tug of war — whichever binds last takes it, the delivery
+   * reconcile unbinds the loser, the loser becomes a candidate again, and both
+   * apps carry a restart badge forever. The picker deliberately OFFERS a domain
+   * that is already serving something (naming the app beside it), because moving
+   * one is legitimate; this is what makes the move a move rather than a fight.
+   *
+   * Only `custom_domain_intent` moves. The app that lost the choice keeps
+   * serving on the hostname CI-Cloud actually wired until CI-Cloud says
+   * otherwise, which it does on the sync after the new binding lands.
+   *
+   * Best-effort: a failure here leaves a duplicate choice, which the bind pass
+   * then refuses to act on rather than flapping over. Failing the install for it
+   * would be worse than the state it prevents.
+   */
+  private async claimCustomDomainIntent(appId: number, customDomain: string | undefined): Promise<void> {
+    if (!customDomain) {
+      return;
+    }
+
+    try {
+      const cleared = await this.appRepository.clearCustomDomainIntentElsewhere(appId, customDomain);
+
+      for (const row of cleared) {
+        this.logger.info(`[Cloudflare] ${row.appName}:${row.appStoreSlug} no longer requests ${customDomain}; it was chosen for another app.`);
+      }
+    } catch (error) {
+      this.logger.error(`Failed to make the custom-domain choice exclusive: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
 }

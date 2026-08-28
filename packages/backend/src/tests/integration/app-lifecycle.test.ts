@@ -752,7 +752,7 @@ describe('App lifecycle', () => {
       // The SAME subdomain the tunnel-state payload carries — `cdomain-intent-test`,
       // not the app's name — because that is the string CI-Cloud canonicalized
       // into the `application` row it will resolve the target from.
-      expect(cloudflareClientService.bindCustomDomain).toHaveBeenCalledWith('cd_1', 'cdomain-intent-test');
+      expect(cloudflareClientService.bindCustomDomain).toHaveBeenCalledWith('cd_1', 'cdomain-intent-test', ORG.id);
       // Still nothing in the env: a bind is CI-Cloud moving the alias, not proof
       // that the tunnel answers for it.
       expect((await appsRepository.getAppByUrn(appInfo.urn))?.customDomain).toBeNull();
@@ -770,6 +770,59 @@ describe('App lifecycle', () => {
       });
 
       expect((await readEnv(appInfo.urn)).get('APP_PUBLIC_URL')).toBe('https://comfy.acme.com');
+    });
+
+    it('takes a choice off the app that held it when another app claims it', async () => {
+      /*
+       * Against the real database, because the rule is enforced by a raw
+       * `lower(...)` comparison a mocked repository would happily pretend to run.
+       *
+       * A domain serves ONE app. Two rows naming it makes every sync a tug of
+       * war: whichever binds last takes it, the delivery reconcile unbinds the
+       * loser, the loser becomes a candidate again, and both apps carry a restart
+       * badge forever. The picker deliberately offers a domain that is already
+       * serving something, so the exclusivity has to be enforced where the choice
+       * is written.
+       */
+      /*
+       * The listing has to contain the domain being chosen. It always does in
+       * production — the picker is populated from this same endpoint — but the
+       * mock carries over from the case above, and a successful listing that
+       * omits a domain is (correctly) read as "the organization no longer holds
+       * it", which clears the choice.
+       */
+      cloudflareClientService.fetchOrganizationCustomDomains.mockResolvedValue([
+        {
+          id: 'cd_shared',
+          domain: 'shared.acme.com',
+          state: 'parked',
+          bindable: true,
+          targetHostname: null,
+          boundAppSlug: null,
+          boundElsewhere: false,
+        },
+      ]);
+      cloudflareClientService.bindCustomDomain.mockResolvedValue({ ok: true });
+
+      const first = await createAppInStore('test', { id: 'cdomain-first' });
+      const second = await createAppInStore('test', { id: 'cdomain-second' });
+
+      await appLifecycleService.installApp({ appUrn: first.urn, form: { ...exposedForm, customDomain: 'shared.acme.com' } });
+      await waitFor(async () => {
+        expect((await appsRepository.getAppByUrn(first.urn))?.status).toBe('running');
+      });
+
+      expect((await appsRepository.getAppByUrn(first.urn))?.customDomainIntent).toBe('shared.acme.com');
+
+      // Mixed case on the way in: DNS is case-insensitive, so the rule cannot be
+      // escaped by spelling the same name differently.
+      await appLifecycleService.installApp({ appUrn: second.urn, form: { ...exposedForm, customDomain: 'Shared.Acme.Com' } });
+      await waitFor(async () => {
+        expect((await appsRepository.getAppByUrn(second.urn))?.status).toBe('running');
+      });
+
+      expect((await appsRepository.getAppByUrn(second.urn))?.customDomainIntent).toBe('Shared.Acme.Com');
+      expect((await appsRepository.getAppByUrn(first.urn))?.customDomainIntent).toBeNull();
     });
 
     it('leaves a bound app untouched when CI-Cloud predates custom domains', async () => {

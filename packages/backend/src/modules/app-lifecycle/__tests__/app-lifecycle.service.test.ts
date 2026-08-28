@@ -1192,8 +1192,10 @@ describe('AppLifecycleService', () => {
 
       // The domain's id and the app's SUBDOMAIN — never a hostname. CI-Cloud
       // composes the target from rows it owns; a Hub that named one would be
-      // asserting something it cannot know.
-      expect(cloudflareClientService.bindCustomDomain).toHaveBeenCalledWith('cd_1', 'comfyui');
+      // asserting something it cannot know. The organization is named too: a
+      // device can be registered to more than one, and CI-Cloud refuses to guess.
+      expect(cloudflareClientService.bindCustomDomain).toHaveBeenCalledWith('cd_1', 'comfyui', 'org-1');
+      expect(cloudflareClientService.fetchOrganizationCustomDomains).toHaveBeenCalledWith('org-1');
     });
 
     it('never writes the binding itself — only a delivered sync may do that', async () => {
@@ -1309,6 +1311,30 @@ describe('AppLifecycleService', () => {
       expect(appsRepository.updateAppById).not.toHaveBeenCalled();
     });
 
+    it('never lets two apps chase the same domain', async () => {
+      /*
+       * ⚠ THE FLAP THIS RULE EXISTS TO PREVENT.
+       *
+       * A domain can serve exactly one app. Two apps both naming it as their
+       * choice makes every sync a tug of war: whichever binds last takes it, the
+       * delivery reconcile unbinds the loser, the loser becomes a candidate
+       * again, and both apps are asked to restart — forever, on every heartbeat.
+       *
+       * The invariant is enforced where the choice is WRITTEN, so this can only
+       * be reached by rows that predate it or a hand-edited database. The pass
+       * still refuses to act on both, because a flap is worse than a stale row.
+       */
+      appsRepository.getApps.mockResolvedValue([wantsComfy(), wantsComfy({ id: 8, appName: 'comfyui-alt', localSubdomain: 'comfyui-alt' })] as any);
+      cloudflareClientService.fetchOrganizationCustomDomains.mockResolvedValue([parked()] as any);
+
+      await service.triggerCloudflareSync();
+
+      expect(cloudflareClientService.bindCustomDomain).toHaveBeenCalledTimes(1);
+      // Deterministic, not arbitrary: the same app wins every pass, so the
+      // binding settles instead of oscillating between them.
+      expect(cloudflareClientService.bindCustomDomain).toHaveBeenCalledWith('cd_1', 'comfyui', 'org-1');
+    });
+
     it('does not ask for an app CI-Cloud was never told about', async () => {
       // Stopped, so it is not in this sync's payload — CI-Cloud cannot wire a
       // domain to an app it was not asked about, and the choice waits.
@@ -1382,6 +1408,48 @@ describe('AppLifecycleService', () => {
       appsRepository.updateAppById.mockImplementation(async (_id, patch) => ({ id: 1, ...patch }) as any);
       registrationService.getDeviceRegistrationInfo.mockResolvedValue(null as any);
       appsRepository.getApps.mockResolvedValue([]);
+    });
+
+    it('takes a custom-domain choice off whatever app held it before', async () => {
+      /*
+       * ⚠ THE INVARIANT, ENFORCED WHERE THE CHOICE IS MADE. A domain serves one
+       * app. The picker deliberately offers one that is already serving something
+       * — naming that app beside it — because moving a domain is legitimate; this
+       * is what makes it a move rather than two apps fighting over it on every
+       * sync, each demanding a restart.
+       */
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 1, status: 'stopped', config: { port: 8080 } } as any);
+
+      await service.updateAppConfig({ appUrn, form: { port: 8080, customDomain: 'comfy.acme.com' } });
+
+      expect(appsRepository.updateAppById).toHaveBeenCalledWith(1, expect.objectContaining({ customDomainIntent: 'comfy.acme.com' }));
+      expect(appsRepository.clearCustomDomainIntentElsewhere).toHaveBeenCalledWith(1, 'comfy.acme.com');
+    });
+
+    it('clears the choice when the platform address is chosen, and claims nothing', async () => {
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 1, status: 'stopped', config: { port: 8080 } } as any);
+
+      await service.updateAppConfig({ appUrn, form: { port: 8080, customDomain: '' } });
+
+      expect(appsRepository.updateAppById).toHaveBeenCalledWith(1, expect.objectContaining({ customDomainIntent: null }));
+      expect(appsRepository.clearCustomDomainIntentElsewhere).not.toHaveBeenCalled();
+    });
+
+    it('leaves an existing choice alone when the form says nothing about it', async () => {
+      /*
+       * ⚠ ABSENT IS NOT "CLEAR IT". Every other field here is rewritten from the
+       * form on every save because the dialog sends them all; `customDomain` is
+       * sent only by a client that knows about custom domains, so an omitted
+       * field must not unbind a domain the customer is being served on.
+       */
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 1, status: 'stopped', config: { port: 8080 } } as any);
+
+      await service.updateAppConfig({ appUrn, form: { port: 8080 } });
+
+      const patch = appsRepository.updateAppById.mock.calls.at(-1)?.[1] ?? {};
+
+      expect(patch).not.toHaveProperty('customDomainIntent');
+      expect(appsRepository.clearCustomDomainIntentElsewhere).not.toHaveBeenCalled();
     });
 
     it('applies the manifest edge-auth default when the stored config never decided it (version-bump self-heal, #74)', async () => {

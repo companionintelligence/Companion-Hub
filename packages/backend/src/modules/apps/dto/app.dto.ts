@@ -26,6 +26,15 @@ const appSchema = z.object({
   publicDomain: z.string().nullable().optional(),
   /** Custom hostname CI-Cloud has wired for this app; null when it serves on the platform hostname. */
   customDomain: z.string().nullable().optional(),
+  /**
+   * The custom domain this app was set up to use — the CHOICE, not the outcome.
+   *
+   * Exposed so the settings dialog can seed its picker from the row rather than
+   * from the stored form snapshot: the Hub clears the choice when the domain
+   * stops being connected, or when it is chosen for another app, and a snapshot
+   * that still names it would silently re-claim it on the next save.
+   */
+  customDomainIntent: z.string().nullable().optional(),
   pendingRestart: z.boolean(),
   ignoredVersion: z.number().nullable(),
 });

@@ -6740,6 +6740,10 @@
                       "nullable": true,
                       "type": "string"
                     },
+                    "customDomainIntent": {
+                      "nullable": true,
+                      "type": "string"
+                    },
                     "pendingRestart": {
                       "type": "boolean"
                     },
@@ -7921,6 +7925,10 @@
                       "type": "string"
                     },
                     "customDomain": {
+                      "nullable": true,
+                      "type": "string"
+                    },
+                    "customDomainIntent": {
                       "nullable": true,
                       "type": "string"
                     },
@@ -9223,6 +9231,10 @@
                 "type": "string"
               },
               "customDomain": {
+                "nullable": true,
+                "type": "string"
+              },
+              "customDomainIntent": {
                 "nullable": true,
                 "type": "string"
               },

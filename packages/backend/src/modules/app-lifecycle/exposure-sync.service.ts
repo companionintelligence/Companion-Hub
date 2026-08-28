@@ -571,7 +571,15 @@ export class ExposureSyncService {
          * choice is recorded at install time rather than acted on there.
          */
         try {
-          await this.bindCustomDomainIntents({ apps: await this.appRepository.getApps(), syncedAppUrns, toPublicHostname });
+          await this.bindCustomDomainIntents({
+            // Re-read: `reconcileCustomDomains` has just written `custom_domain`
+            // on these rows, and a stale snapshot would ask CI-Cloud to wire a
+            // domain it reported delivered seconds ago.
+            apps: await this.appRepository.getApps(),
+            syncedAppUrns,
+            organizationId: orgInfo.id,
+            toPublicHostname,
+          });
         } catch (error) {
           this.logger.error(`[Cloudflare] Custom-domain bind pass failed: ${error instanceof Error ? error.message : String(error)}`);
         }
@@ -614,7 +622,17 @@ export class ExposureSyncService {
    */
   private async bindCustomDomainIntents(params: {
     apps: Awaited<ReturnType<AppsRepository['getApps']>>;
+    /** URNs of the apps THIS sync's payload asked about — see the skip rule below. */
     syncedAppUrns: Set<AppUrn>;
+    /**
+     * The organization this Hub syncs as, named on both CI-Cloud calls.
+     *
+     * CI-Cloud verifies it against a `device_registration` row rather than
+     * believing it, so this is disambiguation and not trust: a device registered
+     * to more than one organization — what a half-completed cross-org move leaves
+     * behind — is refused rather than answered with an arbitrary tenant's domains.
+     */
+    organizationId: string;
     toPublicHostname: (app: Awaited<ReturnType<AppsRepository['getApps']>>[number]) => string;
   }): Promise<void> {
     const candidates = params.apps.filter((app) => {
@@ -647,7 +665,51 @@ export class ExposureSyncService {
       return;
     }
 
-    const available = await this.cloudflareClientService.fetchOrganizationCustomDomains();
+    /*
+     * ⚠ ONE APP PER DOMAIN, ENFORCED AGAIN HERE.
+     *
+     * `claimCustomDomainIntent` makes a choice exclusive when it is written, so
+     * two apps naming one domain should be unreachable. Should be: a row written
+     * before that rule, a hand-edited database, or a failed clear can still
+     * produce it — and acting on both is not a small error. Each pass would bind
+     * the domain to whichever app came last, the delivery reconcile would unbind
+     * the other, that one becomes a candidate again, and both apps carry a
+     * restart badge on every heartbeat, forever.
+     *
+     * So a domain is acted on ONCE per pass, and always for the same app: the
+     * lowest app id, which is stable across syncs and independent of row order,
+     * so the binding settles instead of oscillating. The rest are logged and left
+     * — a stale choice that does nothing is strictly better than a flap.
+     */
+    const byIntent = new Map<string, (typeof candidates)[number]>();
+
+    for (const app of candidates) {
+      const intent = normalizeStoredHostname(app.customDomainIntent);
+
+      if (!intent) {
+        continue;
+      }
+
+      const held = byIntent.get(intent);
+
+      if (!held) {
+        byIntent.set(intent, app);
+        continue;
+      }
+
+      const winner = held.id <= app.id ? held : app;
+      const loser = winner === held ? app : held;
+
+      byIntent.set(intent, winner);
+      this.logger.warn(
+        `[Cloudflare] ${createAppUrn(loser.appName, loser.appStoreSlug)} also requests ${intent}, which is already claimed by ` +
+          `${createAppUrn(winner.appName, winner.appStoreSlug)}. A domain serves one app; leaving the duplicate choice unacted on.`,
+      );
+    }
+
+    const claimed = [...byIntent.values()];
+
+    const available = await this.cloudflareClientService.fetchOrganizationCustomDomains(params.organizationId);
 
     /*
      * ⚠ COULD NOT ASK IS NOT "NOT CONNECTED". An older CI-Cloud, an unreachable
@@ -664,7 +726,7 @@ export class ExposureSyncService {
 
     const byDomain = new Map(available.map((entry) => [entry.domain, entry]));
 
-    for (const app of candidates) {
+    for (const app of claimed) {
       const appUrn = createAppUrn(app.appName, app.appStoreSlug);
       const intent = normalizeStoredHostname(app.customDomainIntent);
 
@@ -720,7 +782,7 @@ export class ExposureSyncService {
         // guess at CI-Cloud's slug: CI-Cloud canonicalizes it with the same
         // function it used when it created the row.
         const appSubdomain = app.localSubdomain || `${app.appName}-${app.appStoreSlug}`;
-        const bound = await this.cloudflareClientService.bindCustomDomain(entry.id, appSubdomain);
+        const bound = await this.cloudflareClientService.bindCustomDomain(entry.id, appSubdomain, params.organizationId);
 
         if (bound.ok) {
           this.logger.info(
