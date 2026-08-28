@@ -4,6 +4,7 @@ import { ModuleRef } from '@nestjs/core';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { DockerReadFacade } from '../docker/docker-read.facade';
 import { DockerService } from '../docker/docker.service';
+import { DeviceRegistrationRepository } from '../registration/device-registration.repository';
 import type { AvailableCustomDomain, AvailableDomain, AvailableDomainsResponse, TunnelCustomDomain } from '@ci-hub/common/types';
 import { parseAvailableCustomDomains, parseTunnelCustomDomains } from '@ci-hub/common/types';
 import axios, { AxiosInstance, type AxiosResponse } from 'axios';
@@ -435,7 +436,7 @@ export class CloudflareClientService {
    */
   async fetchOrganizationCustomDomains(organizationId?: string): Promise<AvailableCustomDomain[] | undefined> {
     try {
-      const { status, data } = await this.portalClient.fetchDeviceCustomDomains(organizationId);
+      const { status, data } = await this.portalClient.fetchDeviceCustomDomains(organizationId ?? (await this.resolveOrganizationId()));
 
       if (status === 404) {
         // A CI-Cloud predating custom domains has no such route. A supported
@@ -466,6 +467,33 @@ export class CloudflareClientService {
     } catch (error) {
       this.logger.warn(`[Cloudflare] Could not list custom domains: ${error instanceof Error ? error.message : String(error)}`);
 
+      return undefined;
+    }
+  }
+
+  /**
+   * The organization this Hub syncs as, for a caller that has no reason to know
+   * one — the install dialog's endpoint.
+   *
+   * ⚠ NOT COSMETIC. CI-Cloud refuses to guess rather than answering with an
+   * arbitrary tenant's domains when a device is registered to more than one
+   * organization, which a half-completed cross-org move leaves behind. Asking
+   * without the id there gets a refusal, which this service reports as "could not
+   * be asked" and the dialog renders as no picker at all — on exactly the device
+   * state the disambiguation was added for, while the background bind pass, which
+   * does send the id, works fine. Resolved the same way the sync resolves it:
+   * the configured organization first, else the single registration this Hub has.
+   */
+  private async resolveOrganizationId(): Promise<string | undefined> {
+    try {
+      const registrations = this.moduleRef.get(DeviceRegistrationRepository, { strict: false });
+      const configured = this.configService.getConfig().ciHubOrganizationId;
+      const row = configured ? await registrations.getDeviceRegistrationById(configured) : null;
+
+      return (row ?? (await registrations.getFirstDeviceRegistration()))?.id;
+    } catch {
+      // An unregistered Hub has nothing to name, and CI-Cloud will answer the
+      // un-disambiguated question for a single-tenant device anyway.
       return undefined;
     }
   }

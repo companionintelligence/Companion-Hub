@@ -28,7 +28,18 @@ export const availableDomainsResponseSchema = z.object({
 const availableCustomDomainSchema = z.object({
   id: z.string(),
   domain: z.string(),
-  state: z.enum(['live', 'parked', 'pending']),
+  /*
+   * ⚠ WIDER THAN IT LOOKS, AND DELIBERATELY OPEN AT THE EDGES. CI-Cloud reports
+   * `securing` (proved, certificate still issuing — Cloudflare gates the two
+   * independently) and `drifted` (the customer's records changed under it), and
+   * will add more. `unknown` is what this Hub calls a state newer than itself:
+   * the parser keeps such a row rather than dropping it, because a Hub is older
+   * than the Portal it talks to for most of its life and a vanished domain reads
+   * as "the Hub cannot see my domain".
+   *
+   * The state is a LABEL. `bindable` is the gate.
+   */
+  state: z.enum(['live', 'parked', 'pending', 'securing', 'drifted', 'unknown']),
   bindable: z.boolean(),
   targetHostname: z.string().nullable(),
   boundAppSlug: z.string().nullable(),

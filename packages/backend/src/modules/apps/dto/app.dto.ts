@@ -49,6 +49,28 @@ const myAppsSchema = z.object({
   ),
 });
 
+/**
+ * The guest dashboard is served WITHOUT `AuthGuard` (`apps.controller.ts`,
+ * `GET /apps/guest`), so its payload is the set of app facts anyone on the
+ * network may read.
+ *
+ * ⚠ THE CHOICE IS NOT ONE OF THEM. `custom_domain` is a hostname CI-Cloud has
+ * already WIRED — live and publicly resolvable, so naming it discloses nothing.
+ * `custom_domain_intent` can name a domain the organization owns but has not
+ * published: parked, or still verifying, and not discoverable any other way.
+ * `reportOnly` parsing strips whatever the schema omits, so leaving it out here
+ * is what keeps it out of the response.
+ */
+const guestAppsSchema = z.object({
+  installed: z.array(
+    z.object({
+      app: appSchema.omit({ customDomainIntent: true }),
+      info: appInfoSchemaRef,
+      metadata: metadataSchema,
+    }),
+  ),
+});
+
 const getAppSchema = z.object({
   app: appSchema.nullable().optional(),
   info: appInfoSchemaRef,
@@ -114,7 +136,7 @@ const updatesAvailableSchema = z.object({
 });
 
 export class MyAppsDto extends createZodDto(myAppsSchema) {}
-export class GuestAppsDto extends createZodDto(myAppsSchema) {}
+export class GuestAppsDto extends createZodDto(guestAppsSchema) {}
 export class InstalledAppUrnsDto extends createZodDto(installedAppUrnsSchema) {}
 export class UpdatesAvailableDto extends createZodDto(updatesAvailableSchema) {}
 export class GetAppDto extends createZodDto(getAppSchema) {}

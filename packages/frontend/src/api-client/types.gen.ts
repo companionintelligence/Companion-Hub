@@ -618,7 +618,6 @@ export type GuestAppsDto = {
             exposureMode?: 'local' | 'cloudflare' | 'tailscale';
             publicDomain?: string;
             customDomain?: string;
-            customDomainIntent?: string;
             pendingRestart: boolean;
             ignoredVersion: number;
         };
@@ -1995,7 +1994,7 @@ export type AvailableCustomDomainsResponseDto = {
     domains: Array<{
         id: string;
         domain: string;
-        state: 'live' | 'parked' | 'pending';
+        state: 'live' | 'parked' | 'pending' | 'securing' | 'drifted' | 'unknown';
         bindable: boolean;
         targetHostname: string;
         boundAppSlug: string;

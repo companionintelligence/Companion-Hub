@@ -4,6 +4,7 @@ import { app } from '@/core/database/drizzle/schema';
 import type { AppStatus, NewApp } from '@/core/database/drizzle/types';
 import { Inject, Injectable } from '@nestjs/common';
 import type { AppUrn } from '@ci-hub/common/types';
+import { normalizeStoredHostname } from '@ci-hub/common/types';
 import { and, asc, eq, ne, notInArray, or, sql } from 'drizzle-orm';
 
 @Injectable()
@@ -84,7 +85,11 @@ export class AppsRepository {
    * but a row written before that was, or by hand, must not escape the rule.
    */
   public async clearCustomDomainIntentElsewhere(appId: number, customDomain: string) {
-    const normalized = customDomain.trim().toLowerCase();
+    // The one spelling, not a second hand-rolled one: `normalizeStoredHostname`
+    // also strips the trailing dot, which every reader of this column applies —
+    // a local trim+lowercase would let `comfy.acme.com.` escape the rule and
+    // leave two apps chasing the same domain.
+    const normalized = normalizeStoredHostname(customDomain);
 
     if (!normalized) {
       return [];

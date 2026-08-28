@@ -72,6 +72,16 @@ export function CustomDomainField<TFormValues extends FieldValues>({
         name={'customDomain' as Path<TFormValues>}
         render={({ field: { onChange, value } }) => {
           const selected = (value as string | undefined) || PLATFORM_ADDRESS;
+          /*
+           * ⚠ A VALUE WITH NO MATCHING ITEM RENDERS A BLANK TRIGGER, not the
+           * placeholder — radix only falls back for `''`/undefined. An app can
+           * legitimately hold a choice this listing does not contain (the domain
+           * was disconnected and the Hub has not cleared the intent yet), and
+           * showing an empty control for an app that HAS a custom domain is the
+           * same silence this feature exists to end. Listed, disabled, saying what
+           * it is: the component already does exactly that for one still verifying.
+           */
+          const unlisted = selected !== PLATFORM_ADDRESS && !domains.some((entry) => entry.domain === selected);
 
           return (
             <>
@@ -91,10 +101,25 @@ export function CustomDomainField<TFormValues extends FieldValues>({
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value={PLATFORM_ADDRESS}>{t('APP_INSTALL_FORM_CUSTOM_DOMAIN_NONE')}</SelectItem>
+                  {unlisted ? (
+                    <SelectItem value={selected} disabled>
+                      {selected} — {t('APP_INSTALL_FORM_CUSTOM_DOMAIN_UNAVAILABLE')}
+                    </SelectItem>
+                  ) : null}
                   {domains.map((entry) => (
                     <SelectItem key={entry.id} value={entry.domain} disabled={!entry.bindable}>
                       {entry.domain}
                       {entry.state === 'pending' ? ` — ${t('APP_INSTALL_FORM_CUSTOM_DOMAIN_VERIFYING')}` : null}
+                      {/*
+                       * Both are CHOOSABLE — CI-Cloud reports them bindable, a
+                       * certificate finishes on its own, and drift is about the
+                       * customer's DNS rather than our permission to point the
+                       * row. Said out loud anyway: picking a domain that is not
+                       * serving yet, or has stopped, should not be a surprise
+                       * discovered after the install.
+                       */}
+                      {entry.state === 'securing' ? ` — ${t('APP_INSTALL_FORM_CUSTOM_DOMAIN_SECURING')}` : null}
+                      {entry.state === 'drifted' ? ` — ${t('APP_INSTALL_FORM_CUSTOM_DOMAIN_DRIFTED')}` : null}
                       {/*
                        * Named, so moving a live domain is a decision rather than
                        * a surprise: choosing it here takes it off whatever it is

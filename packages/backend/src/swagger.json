@@ -7928,10 +7928,6 @@
                       "nullable": true,
                       "type": "string"
                     },
-                    "customDomainIntent": {
-                      "nullable": true,
-                      "type": "string"
-                    },
                     "pendingRestart": {
                       "type": "boolean"
                     },
@@ -14320,7 +14316,10 @@
                   "enum": [
                     "live",
                     "parked",
-                    "pending"
+                    "pending",
+                    "securing",
+                    "drifted",
+                    "unknown"
                   ]
                 },
                 "bindable": {

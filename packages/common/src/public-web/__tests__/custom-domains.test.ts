@@ -203,11 +203,68 @@ describe('parseAvailableCustomDomains', () => {
       null,
       listed({ id: '' }),
       listed({ domain: 'not a hostname' }),
-      listed({ state: 'whatever' }),
       listed({ id: 'cd_ok', domain: 'ok.acme.com' }),
     ]);
 
     expect(domains?.map((entry) => entry.domain)).toEqual(['ok.acme.com']);
+  });
+
+  it('reads the states CI-Cloud reports for a certificate still issuing, and for drift', () => {
+    // Ownership and TLS are gated independently by Cloudflare, so `securing` is
+    // a routine state rather than an edge case — and both are BINDABLE, because
+    // a certificate finishes on its own and drift is a fact about the customer's
+    // DNS rather than about our permission to point the row somewhere.
+    const domains = parseAvailableCustomDomains([
+      listed({ id: 'cd_1', domain: 'securing.acme.com', state: 'securing' }),
+      listed({ id: 'cd_2', domain: 'drifted.acme.com', state: 'drifted' }),
+    ]);
+
+    expect(domains).toEqual([
+      expect.objectContaining({ domain: 'securing.acme.com', state: 'securing', bindable: true }),
+      expect.objectContaining({ domain: 'drifted.acme.com', state: 'drifted', bindable: true }),
+    ]);
+  });
+
+  it('keeps a domain whose state this build has never heard of', () => {
+    /*
+     * ⚠ THE FAILURE THIS PICKER EXISTS TO END, ARRIVING BY THE BACK DOOR. A Hub
+     * is older than the Portal it talks to for most of its life, so meeting a
+     * new state is the ordinary case. Dropping the row made a connected,
+     * bindable domain silently absent — "the Hub cannot see my domain" — and,
+     * because the bind pass reads a successful listing as the organization's
+     * full set, it would also have cleared that domain's install-time choice.
+     *
+     * The state is a label; `bindable` is the gate.
+     */
+    const domains = parseAvailableCustomDomains([listed({ state: 'quiesced' })]);
+
+    expect(domains).toEqual([expect.objectContaining({ domain: 'comfy.acme.com', state: 'unknown', bindable: true })]);
+  });
+
+  it('reports a listing whose every row was junk as unanswered, not as empty', () => {
+    /*
+     * ⚠ DESTRUCTIVE IF COLLAPSED. The bind pass reads a successful listing as the
+     * organization's FULL set and clears every intent naming a domain absent from
+     * it — so a payload whose shape drifted (an `id` that arrives as a number,
+     * which CI-Cloud's sibling domain endpoint already does) would wipe every
+     * custom-domain choice on the Hub in one pass.
+     *
+     * A NEW `state` is deliberately NOT such a drift any more: it keeps the row
+     * as `unknown`, because a Hub meeting a newer Portal must not lose domains.
+     */
+    expect(parseAvailableCustomDomains([listed({ id: 41 })])).toBeUndefined();
+    expect(parseAvailableCustomDomains([listed({ domain: 'not a hostname' })])).toBeUndefined();
+    expect(parseAvailableCustomDomains([null, 'nope'])).toBeUndefined();
+  });
+
+  it('keeps a domain whose target CI-Cloud reported as junk, without the junk', () => {
+    // Dropping the row would read as "the organization no longer holds it" and
+    // clear the choice; keeping an unusable target would make the "already points
+    // here" check miss forever and re-bind on every sync.
+    const domains = parseAvailableCustomDomains([listed({ targetHostname: 'not a hostname' })]);
+
+    expect(domains).toHaveLength(1);
+    expect(domains?.[0]?.targetHostname).toBeNull();
   });
 
   it('defaults bindable to false when the answer is missing', () => {

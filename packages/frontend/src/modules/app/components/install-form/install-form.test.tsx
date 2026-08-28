@@ -108,7 +108,7 @@ const MOCK_CUSTOM_DOMAINS = {
   domains: [] as Array<{
     id: string;
     domain: string;
-    state: 'live' | 'parked' | 'pending';
+    state: 'live' | 'parked' | 'pending' | 'securing' | 'drifted' | 'unknown';
     bindable: boolean;
     targetHostname: string | null;
     boundAppSlug: string | null;
@@ -655,6 +655,32 @@ describe('InstallForm', () => {
       renderForm({ exposureMode: 'local' });
 
       expect(screen.queryByLabelText('APP_INSTALL_FORM_CUSTOM_DOMAIN')).not.toBeInTheDocument();
+    });
+
+    it('offers a domain whose certificate is still issuing, and says so', () => {
+      /*
+       * CI-Cloud reports `securing` as BINDABLE — Cloudflare gates ownership and
+       * TLS independently, so a proved domain routinely has minutes of issuance
+       * left, and it finishes on its own. Choosing it is fine; being surprised
+       * by it afterwards is not.
+       */
+      MOCK_CUSTOM_DOMAINS.supported = true;
+      MOCK_CUSTOM_DOMAINS.domains = [connected({ state: 'securing' })];
+
+      renderForm();
+
+      expect(screen.getByLabelText('APP_INSTALL_FORM_CUSTOM_DOMAIN')).toBeInTheDocument();
+    });
+
+    it('still offers a domain whose state this build has never heard of', () => {
+      // A Hub is older than the Portal it talks to for most of its life. An
+      // unrecognised state must not make a connected domain disappear.
+      MOCK_CUSTOM_DOMAINS.supported = true;
+      MOCK_CUSTOM_DOMAINS.domains = [connected({ state: 'unknown' })];
+
+      renderForm();
+
+      expect(screen.getByLabelText('APP_INSTALL_FORM_CUSTOM_DOMAIN')).toBeInTheDocument();
     });
 
     it('shows the domain a saved app was set up to use', () => {

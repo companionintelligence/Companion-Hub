@@ -17,7 +17,12 @@ import {
 import type { TunnelCustomDomain } from '@ci-hub/common/types';
 import { AppsRepository } from '../apps/apps.repository';
 import { AppFilesManager } from '../apps/app-files-manager';
-import { canServeOnCustomDomain, publishesCloudflarePublicRoute, type AppPublicRoutingSnapshot } from '../apps/app-public-routing.helpers';
+import {
+  canServeOnCustomDomain,
+  publishesCloudflarePublicRoute,
+  resolveRoutingSubdomain,
+  type AppPublicRoutingSnapshot,
+} from '../apps/app-public-routing.helpers';
 import { isPortExposeApp } from '@ci-hub/common/schemas';
 import { CloudflareClientService, AppInfo, type PublicDnsFailure, type PublicDnsFailureReason } from '../cloudflare/cloudflare-client.service';
 import { DockerReadFacade } from '../docker/docker-read.facade';
@@ -639,11 +644,17 @@ export class ExposureSyncService {
     organizationId: string;
     toPublicHostname: (app: Awaited<ReturnType<AppsRepository['getApps']>>[number]) => string;
   }): Promise<void> {
-    const candidates = params.apps.filter((app) => {
+    /*
+     * Resolved ONCE, into the shape both loops below need. Re-deriving the intent
+     * per loop meant `!intent` guards that the filter had already made
+     * unreachable — branches no test can cover, and one more place for the three
+     * spellings to drift apart.
+     */
+    const candidates = params.apps.flatMap((app) => {
       const intent = normalizeStoredHostname(app.customDomainIntent);
 
       if (!intent) {
-        return false;
+        return [];
       }
 
       /*
@@ -653,7 +664,7 @@ export class ExposureSyncService {
        * life of the app.
        */
       if (normalizeStoredHostname(app.customDomain) === intent) {
-        return false;
+        return [];
       }
 
       /*
@@ -662,7 +673,13 @@ export class ExposureSyncService {
        * this sync's payload is one CI-Cloud was not told about — asking it to
        * wire a domain to that app can only be refused.
        */
-      return canServeOnCustomDomain(app as AppPublicRoutingSnapshot) && params.syncedAppUrns.has(createAppUrn(app.appName, app.appStoreSlug));
+      const appUrn = createAppUrn(app.appName, app.appStoreSlug);
+
+      if (!canServeOnCustomDomain(app as AppPublicRoutingSnapshot) || !params.syncedAppUrns.has(appUrn)) {
+        return [];
+      }
+
+      return [{ app, appUrn, intent }];
     });
 
     if (candidates.length === 0) {
@@ -687,27 +704,20 @@ export class ExposureSyncService {
      */
     const byIntent = new Map<string, (typeof candidates)[number]>();
 
-    for (const app of candidates) {
-      const intent = normalizeStoredHostname(app.customDomainIntent);
-
-      if (!intent) {
-        continue;
-      }
-
-      const held = byIntent.get(intent);
+    for (const candidate of candidates) {
+      const held = byIntent.get(candidate.intent);
 
       if (!held) {
-        byIntent.set(intent, app);
+        byIntent.set(candidate.intent, candidate);
         continue;
       }
 
-      const winner = held.id <= app.id ? held : app;
-      const loser = winner === held ? app : held;
+      const [winner, loser] = held.app.id <= candidate.app.id ? [held, candidate] : [candidate, held];
 
-      byIntent.set(intent, winner);
+      byIntent.set(candidate.intent, winner);
       this.logger.warn(
-        `[Cloudflare] ${createAppUrn(loser.appName, loser.appStoreSlug)} also requests ${intent}, which is already claimed by ` +
-          `${createAppUrn(winner.appName, winner.appStoreSlug)}. A domain serves one app; leaving the duplicate choice unacted on.`,
+        `[Cloudflare] ${loser.appUrn} also requests ${candidate.intent}, which is already claimed by ${winner.appUrn}. ` +
+          'A domain serves one app; leaving the duplicate choice unacted on.',
       );
     }
 
@@ -730,14 +740,7 @@ export class ExposureSyncService {
 
     const byDomain = new Map(available.map((entry) => [entry.domain, entry]));
 
-    for (const app of claimed) {
-      const appUrn = createAppUrn(app.appName, app.appStoreSlug);
-      const intent = normalizeStoredHostname(app.customDomainIntent);
-
-      if (!intent) {
-        continue;
-      }
-
+    for (const { app, appUrn, intent } of claimed) {
       try {
         const entry = byDomain.get(intent);
 
@@ -777,7 +780,22 @@ export class ExposureSyncService {
          * would train people to ignore the log.
          */
         if (!entry.bindable) {
-          this.logger.debug(`[Cloudflare] ${appUrn} is waiting for ${intent} to finish verifying before it can be bound`);
+          /*
+           * `pending` IS that person: verification is a DNS change in their own
+           * zone, it clears itself, and warning every sync would train people to
+           * ignore the log. Any OTHER state that CI-Cloud still will not bind is
+           * not self-clearing — the domain belongs to another Hub, the zone left
+           * the account, an entitlement lapsed — and reporting it at debug leaves
+           * the operator with a choice that silently never happens and nothing on
+           * screen or in the log to explain why.
+           */
+          if (entry.state === 'pending') {
+            this.logger.debug(`[Cloudflare] ${appUrn} is waiting for ${intent} to finish verifying before it can be bound`);
+          } else {
+            this.logger.warn(
+              `[Cloudflare] CI-Cloud will not currently bind ${intent} (state: ${entry.state}); ${appUrn} stays on its platform hostname.`,
+            );
+          }
 
           continue;
         }
@@ -785,7 +803,12 @@ export class ExposureSyncService {
         // The SUBDOMAIN this device syncs under, not a hostname and not a local
         // guess at CI-Cloud's slug: CI-Cloud canonicalizes it with the same
         // function it used when it created the row.
-        const appSubdomain = app.localSubdomain || `${app.appName}-${app.appStoreSlug}`;
+        //
+        // Through `resolveRoutingSubdomain` rather than inline, so it cannot drift
+        // from the string the tunnel-state payload carried: the helper TRIMS and a
+        // hand-rolled `||` does not, so a `localSubdomain` of `" comfy "` would be
+        // sent verbatim as a slug no `application` row holds and every bind refused.
+        const appSubdomain = resolveRoutingSubdomain(app.localSubdomain, app.appName, app.appStoreSlug);
         const bound = await this.cloudflareClientService.bindCustomDomain(entry.id, appSubdomain, params.organizationId);
 
         if (bound.ok) {

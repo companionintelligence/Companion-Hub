@@ -1490,19 +1490,101 @@ describe('AppLifecycleService', () => {
        */
       appsRepository.getAppByUrn.mockResolvedValue({ id: 1, status: 'stopped', config: { port: 8080 } } as any);
 
-      await service.updateAppConfig({ appUrn, form: { port: 8080, customDomain: 'comfy.acme.com' } });
+      // Publicly routed, which is the only shape the picker is ever offered for:
+      // a domain is delivered by cloning this app's tunnel ingress rule, so an app
+      // that publishes none has nothing for one to alias.
+      await service.updateAppConfig({
+        appUrn,
+        form: { port: 8080, exposureMode: 'cloudflare', exposedLocal: true, openPort: false, customDomain: 'comfy.acme.com' },
+      });
 
       expect(appsRepository.updateAppById).toHaveBeenCalledWith(1, expect.objectContaining({ customDomainIntent: 'comfy.acme.com' }));
       expect(appsRepository.clearCustomDomainIntentElsewhere).toHaveBeenCalledWith(1, 'comfy.acme.com');
     });
 
-    it('clears the choice when the platform address is chosen, and claims nothing', async () => {
+    it('ignores a choice on an app that could never be served on it', async () => {
+      /*
+       * ⚠ AN UNMOUNTED PICKER STILL SUBMITS ITS VALUE. The field only renders under
+       * Cloudflare exposure, but react-hook-form keeps an unmounted field's value —
+       * so switching an app to Local after picking a domain sends the choice anyway.
+       * Acting on it would take that domain off the app actually serving on it and
+       * park it on one the bind pass skips forever.
+       */
       appsRepository.getAppByUrn.mockResolvedValue({ id: 1, status: 'stopped', config: { port: 8080 } } as any);
 
+      await service.updateAppConfig({
+        appUrn,
+        form: { port: 8080, exposureMode: 'local', exposedLocal: false, openPort: true, customDomain: 'comfy.acme.com' },
+      });
+
+      const patch = appsRepository.updateAppById.mock.calls.at(-1)?.[1] ?? {};
+
+      expect(patch).not.toHaveProperty('customDomainIntent');
+      expect(appsRepository.clearCustomDomainIntentElsewhere).not.toHaveBeenCalled();
+    });
+
+    it('clears the choice when the platform address is chosen, and claims nothing', async () => {
+      // An app that HOLDS a choice, so clearing it is a real change: the row is
+      // what the save is compared against, not the stored form snapshot.
+      appsRepository.getAppByUrn.mockResolvedValue({
+        id: 1,
+        status: 'stopped',
+        config: { port: 8080 },
+        customDomainIntent: 'comfy.acme.com',
+      } as any);
+
+      // The platform address is honourable for ANY app, so this one needs no
+      // public route to ask for it — unlike naming a domain.
       await service.updateAppConfig({ appUrn, form: { port: 8080, customDomain: '' } });
 
       expect(appsRepository.updateAppById).toHaveBeenCalledWith(1, expect.objectContaining({ customDomainIntent: null }));
       expect(appsRepository.clearCustomDomainIntentElsewhere).not.toHaveBeenCalled();
+    });
+
+    it('re-records a choice the Hub cleared, even though the saved snapshot still names it', async () => {
+      /*
+       * ⚠ THE CHOICE IS COMPARED AGAINST THE ROW, NOT THE SNAPSHOT. The Hub clears
+       * `custom_domain_intent` on its own — when the organization disconnects the
+       * domain, or when another app claims it — so a person re-picking it submits a
+       * form identical to the one last saved. Compared against the snapshot alone
+       * that reads as "no changes detected", and the choice is dropped on the floor
+       * behind a success toast, every time and with no way to tell.
+       */
+      appsRepository.getAppByUrn.mockResolvedValue({
+        id: 1,
+        status: 'stopped',
+        config: { port: 8080, exposureMode: 'cloudflare', exposedLocal: true, openPort: false },
+        customDomainIntent: null,
+      } as any);
+
+      await service.updateAppConfig({
+        appUrn,
+        form: { port: 8080, exposureMode: 'cloudflare', exposedLocal: true, openPort: false, customDomain: 'comfy.acme.com' },
+      });
+
+      expect(appsRepository.updateAppById).toHaveBeenCalledWith(1, expect.objectContaining({ customDomainIntent: 'comfy.acme.com' }));
+    });
+
+    it('does not store the choice in the config snapshot, so a version bump cannot resurrect it', async () => {
+      /*
+       * `updateApp` replays `app.config` verbatim through this method. A copy of
+       * the choice there would rewrite an intent the Hub had deliberately given up
+       * — and `claimCustomDomainIntent` would strip the domain off whichever app
+       * legitimately holds it now, on an unrelated version bump.
+       */
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 1, status: 'stopped', config: { port: 8080 } } as any);
+
+      await service.updateAppConfig({
+        appUrn,
+        form: { port: 8080, exposureMode: 'cloudflare', exposedLocal: true, openPort: false, customDomain: 'comfy.acme.com' },
+      });
+
+      const patch = appsRepository.updateAppById.mock.calls
+        .map((call) => call[1] as { config?: Record<string, unknown> })
+        .find((candidate) => candidate?.config !== undefined);
+
+      expect(patch?.config).not.toHaveProperty('customDomain');
+      expect(patch).toHaveProperty('customDomainIntent', 'comfy.acme.com');
     });
 
     it('leaves an existing choice alone when the form says nothing about it', async () => {

@@ -821,7 +821,10 @@ describe('App lifecycle', () => {
         expect((await appsRepository.getAppByUrn(second.urn))?.status).toBe('running');
       });
 
-      expect((await appsRepository.getAppByUrn(second.urn))?.customDomainIntent).toBe('Shared.Acme.Com');
+      // Normalized on the way in — DNS is case-insensitive, and every reader of
+      // the column (the exclusivity check, the bind pass, the picker's options)
+      // already is, so the row must be too.
+      expect((await appsRepository.getAppByUrn(second.urn))?.customDomainIntent).toBe('shared.acme.com');
       expect((await appsRepository.getAppByUrn(first.urn))?.customDomainIntent).toBeNull();
     });
 

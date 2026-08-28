@@ -1829,5 +1829,8 @@
   "APP_INSTALL_FORM_CUSTOM_DOMAIN_IN_USE": "currently serving",
   "APP_INSTALL_FORM_CUSTOM_DOMAIN_IN_USE_ELSEWHERE": "currently serving another app",
   "APP_INSTALL_FORM_CUSTOM_DOMAIN_HINT": "One of your organization's connected domains can serve this app instead of its platform address.",
-  "APP_INSTALL_FORM_CUSTOM_DOMAIN_PENDING_HINT": "The app is installed at its platform address first; once the domain is wired the app asks for a restart to start using it."
+  "APP_INSTALL_FORM_CUSTOM_DOMAIN_PENDING_HINT": "The app is installed at its platform address first; once the domain is wired the app asks for a restart to start using it.",
+  "APP_INSTALL_FORM_CUSTOM_DOMAIN_UNAVAILABLE": "no longer available",
+  "APP_INSTALL_FORM_CUSTOM_DOMAIN_SECURING": "finishing its certificate",
+  "APP_INSTALL_FORM_CUSTOM_DOMAIN_DRIFTED": "records need repair"
 }

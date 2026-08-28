@@ -45,8 +45,28 @@ export const appFormSchema = z
      */
     customDomain: z
       .string()
+      /*
+       * Checked BEFORE trimming, so whitespace-only input is rejected rather than
+       * silently unbinding a live domain: trimming first turns `'   '` into the
+       * empty string, which is the deliberate "go back to the platform hostname"
+       * instruction. `publicDomain` above gets the same protection from `.min(1)`.
+       */
+      .refine((value) => value === '' || isFQDN(value.trim()), { message: 'Invalid custom domain' })
+      /*
+       * STORED NORMALIZED, because DNS is case-insensitive and every reader of
+       * this value already is: the exclusivity check lowercases, the bind pass
+       * runs it through `normalizeStoredHostname`, and the picker's options are
+       * the normalized hostnames CI-Cloud listed. A row left holding
+       * `Comfy.Acme.Com` matches no option, so the settings dialog would show no
+       * custom domain for an app that has one.
+       *
+       * Zod's own string checks rather than `.transform(normalizeHostname)`: a
+       * transform turns the field into a pipe, and the OpenAPI generator emits `{}`
+       * for one — the frontend client would type this `unknown`. The trailing dot
+       * `normalizeHostname` also strips cannot survive `isFQDN` above anyway.
+       */
       .trim()
-      .refine((value) => value === '' || isFQDN(value), { message: 'Invalid custom domain' })
+      .toLowerCase()
       .optional(),
     maxBackups: z.number().min(0).max(100).optional(),
     cpuLimit: optionalCpuLimitSchema,
