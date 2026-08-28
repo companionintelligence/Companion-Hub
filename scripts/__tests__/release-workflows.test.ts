@@ -85,7 +85,8 @@ describe('build-container.yml', () => {
   });
 
   it('mirrors the versioned tag to Portal so update listing sees semver tags', () => {
-    expect(buildContainer).toContain('${PORTAL}/ci-os-hub:${VERSION}');
+    expect(buildContainer).toContain('${PORTAL}/ci-hub:${VERSION}');
+    expect(buildContainer).not.toContain('${PORTAL}/ci-os-hub:');
   });
 
   it('sources the Portal versioned mirror from the versioned image, not the channel tag', () => {
@@ -93,7 +94,17 @@ describe('build-container.yml', () => {
     // the mirror; copying from the channel tag would publish a different digest under the
     // version's name and desync Portal listing from what Docker actually pulls.
     expect(buildContainer).toContain('VERSIONED_IMAGE="${{ steps.tags.outputs.image_repo }}:${VERSION}"');
-    expect(buildContainer).toContain('crane copy "${VERSIONED_IMAGE}" "${PORTAL}/ci-os-hub:${VERSION}"');
+    expect(buildContainer).toContain('crane copy "${VERSIONED_IMAGE}" "${PORTAL}/ci-hub:${VERSION}"');
+  });
+
+  it('proves Portal Basic credentials before crane copy', () => {
+    // crane auth login only writes docker config. Without this GET /v2/_catalog probe,
+    // a mismatched PORTAL_REGISTRY_* pair fails later as an opaque dest-HEAD 401.
+    const portalStep = buildContainer.slice(buildContainer.indexOf('- name: Push to Portal registry'));
+    const thisStep = portalStep.split('\n      - name:')[0];
+    expect(thisStep).toContain('/v2/_catalog');
+    expect(thisStep).toContain('docker login');
+    expect(thisStep).toMatch(/CATALOG_CODE/);
   });
 
   it('fails the Portal mirror step on a failed copy instead of masking it', () => {
@@ -189,8 +200,8 @@ describe('no workflow publishes to the private ci-os-hub package', () => {
   const workflows = fs.readdirSync(workflowsDir).filter((file) => file.endsWith('.yml') || file.endsWith('.yaml'));
 
   it.each(workflows)('%s does not reference ghcr.io/…/ci-os-hub as an image', (file) => {
-    // ci-os-hub remains valid as a compose service name and as the Portal mirror path; only
-    // the GHCR image repo moved. This catches a regression to the private package.
+    // ci-os-hub remains valid as a compose service name; the GHCR package and Portal
+    // listing path are both ci-hub. This catches a regression to the private package.
     const content = readWorkflow(file);
     expect(content).not.toMatch(/ghcr\.io\/companionintelligence\/ci-os-hub/);
   });
