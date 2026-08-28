@@ -3,6 +3,7 @@
 
 mod commands;
 mod discovery;
+pub mod docker_engine;
 mod error_reporting;
 pub mod hub_env;
 pub mod hub_manager;

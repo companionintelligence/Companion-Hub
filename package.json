@@ -28,6 +28,7 @@
     "gen:api-client": "pnpm --filter frontend exec openapi-ts -f openapi-ts.config.ts",
     "gen:swagger": "pnpm --filter backend run gen:swagger",
     "check:openapi": "node scripts/check-openapi-drift.cjs",
+    "check:pr": "pnpm run lint:ci && pnpm run knip:ci && pnpm run tsc && pnpm run check:openapi && pnpm run test && cargo test --manifest-path packages/desktop/src-tauri/Cargo.toml --bin ci-os-hub-desktop",
     "lint:ci": "biome ci . --error-on-warnings --no-errors-on-unmatched",
     "lint": "biome check",
     "lint:fix": "biome check --write --no-errors-on-unmatched",
