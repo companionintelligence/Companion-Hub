@@ -1,12 +1,8 @@
 name: Agent Gates
+# TEMPORARY (Actions credit): automatic PR triggers disabled.
+# Re-enable pull_request when credits recover. Manual: gh workflow run agent-gates.yml
 on:
-  pull_request:
-    paths:
-      - 'packages/frontend/**'
-      - 'e2e/visual/**'
-      - 'e2e/helpers/screenshot.ts'
-      - 'scripts/agent/**'
-      - 'e2e/results/benchmarks/**'
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
