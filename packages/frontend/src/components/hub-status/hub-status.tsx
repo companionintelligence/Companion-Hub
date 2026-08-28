@@ -63,9 +63,13 @@ function getErrorMessage(err: unknown): string {
 }
 
 /** Tauri denied the invoke — the Hub never tried to start. Keep the raw ACL text for logs. */
-function formatHubStartError(err: unknown, aclHint: string): string {
+function formatHubStartError(err: unknown, aclHint: string, previousSticky?: string): string {
   const raw = getErrorMessage(err);
   if (raw.includes('not allowed by ACL')) {
+    // Do not let an ACL denial replace a real sticky start failure (e.g. Postgres probe).
+    if (previousSticky && !previousSticky.includes('not allowed by ACL')) {
+      return `${previousSticky}\n\n${aclHint}\n\n${raw}`;
+    }
     return `${aclHint}\n\n${raw}`;
   }
   return raw;
@@ -723,6 +727,8 @@ export function HubStatus({ children }: HubStatusProps) {
       const invoke = getTauriInvoke();
       if (!invoke) return false;
 
+      const previousSticky = typeof status === 'object' && status !== null && 'Error' in status ? status.Error.message : undefined;
+
       hubSteadyRunningRef.current = false;
       setStatus('Starting');
 
@@ -731,11 +737,13 @@ export function HubStatus({ children }: HubStatusProps) {
         return true;
       } catch (err) {
         console.error(logMessage, err);
-        setStatus({ Error: { message: formatHubStartError(err, t('HUB_STATUS_ACL_DENIED')) } });
+        setStatus({
+          Error: { message: formatHubStartError(err, t('HUB_STATUS_ACL_DENIED'), previousSticky) },
+        });
         return false;
       }
     },
-    [t],
+    [t, status],
   );
 
   const isStackDevMode = useCallback(async () => {
