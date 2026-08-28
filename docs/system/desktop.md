@@ -5,7 +5,7 @@
 > **Key paths:** `packages/desktop/src-tauri/src/hub_manager.rs`, `packages/desktop/src-tauri/resources/`
 > **Commands:** `pnpm run local:desktop` (Vite :5005), `pnpm run dev:desktop` (appliance :5002), `cd packages/desktop/src-tauri && cargo test`
 > **Owner persona:** maintainability + security
-> **Last updated:** 2026-08-14
+> **Last updated:** 2026-08-28
 > **Related:** docs/system/frontend.md, docs/DESKTOP-UI-ARCHITECTURE.md, docs/AUTO_HEALING.md
 
 ---
@@ -96,3 +96,4 @@ CI: `.github/workflows/desktop-tests.yml` on `packages/desktop/**` changes.
 - Rust + TypeScript boundary: frontend calls Tauri commands, not Rust directly
 - Reload/watchdog interactions can restart stack — see hub-status frontend gate
 - Update both Rust tests and hub-status.test.tsx for status behavior changes
+- Linux GTK3 pins `glib` 0.18.5. `[patch.crates-io]` in `src-tauri/Cargo.toml` (and the mobile twin) overlays `third_party/glib-0.18.5` with the GHSA-wrw7-89jp-8q8g backport. Drop it when Tauri ships glib >= 0.20.
