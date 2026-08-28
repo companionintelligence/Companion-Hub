@@ -27,6 +27,14 @@ export type PublicWebDiagnosticsApp = {
   appUrn: string;
   envMismatch: boolean;
   computedPublicUrl: string;
+  /**
+   * The backend's verdict. `envMismatch` alone is NOT one: a freshly bound custom
+   * domain deliberately leaves the env behind until the user takes the restart it
+   * was asked for, and reporting that window as damage tells the operator a
+   * healthy app is broken. Only `'repair'` is drift that needs acting on.
+   */
+  action?: 'ok' | 'repair';
+  pendingRestart?: boolean;
 };
 
 export async function fetchPublicWebDiagnostics(): Promise<{ apps: PublicWebDiagnosticsApp[] } | null> {

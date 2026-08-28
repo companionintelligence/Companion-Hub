@@ -295,19 +295,10 @@ export class AppHelpers {
      * an app it has been told about), which is why binding lands as a pending
      * restart rather than at first boot.
      *
-     * Read LAZILY: the value is only ever consulted for an exposed app, and this
-     * method runs on every install/start/stop/restart/update/reset, so fetching a
-     * joined row (with the whole `config` jsonb) up front would spend a query per
-     * lifecycle command on the majority of apps — local-only ones — that can
-     * never use it.
+     * Read at the point of use, and only for an exposed app: this method runs on
+     * every install/start/stop/restart/update/reset, and the majority of apps —
+     * local-only ones — can never use the value.
      */
-    let syncedCustomDomainCache: string | null | undefined;
-    const readSyncedCustomDomain = async (): Promise<string | null> => {
-      if (syncedCustomDomainCache === undefined) {
-        syncedCustomDomainCache = normalizeStoredHostname((await this.appsRepository.getAppByUrn(appUrn))?.customDomain);
-      }
-      return syncedCustomDomainCache;
-    };
 
     // the domain is the root domain for the deployment
     const domain = this.config.getConfig().domain;
@@ -497,7 +488,7 @@ export class AppHelpers {
      * Only applied when the app is exposed at all: a local/VPN-only app has no
      * public identity for a domain to alias.
      */
-    const syncedCustomDomain = isExposed ? await readSyncedCustomDomain() : null;
+    const syncedCustomDomain = isExposed ? normalizeStoredHostname(await this.appsRepository.getAppCustomDomain(appUrn)) : null;
 
     if (isExposed && syncedCustomDomain) {
       scheme = 'https';
@@ -591,6 +582,26 @@ export class AppHelpers {
         .map((url) => url.replace(/\/+$/, '')),
     );
 
+    /*
+     * ⚠ THIS MUST BE APPLIED TO THE FORM VALUE TOO, NOT ONLY THE EXISTING ENV.
+     *
+     * The install dialog PRE-FILLS every `app_base_url` field with the suggested
+     * public URL (install-form.tsx, `suggestedAppBaseUrl`), that value is
+     * submitted, `appFormSchema` is `.passthrough()`, and it is persisted as
+     * `app.config` — which every later start/restart/update replays verbatim as
+     * `form`. So for essentially every app installed through the UI the form
+     * value is present, `hasValidFormValue` is true, and a correction that lived
+     * only in the `existingAppEnvMap` branch would never run: `APP_PUBLIC_URL`
+     * would move onto the custom domain while the base URL every OAuth
+     * `redirect_uri` is built from stayed on the platform hostname.
+     *
+     * An auto-derived value is not an operator choice wherever it arrives from,
+     * so it moves with the exposed identity in both cases; anything the operator
+     * actually typed matches neither superseded URL and is left exactly as found.
+     */
+    const followExposedIdentity = (baseUrl: string): string =>
+      defaultAppBaseUrl && supersededAutoBaseUrls.has(baseUrl) ? defaultAppBaseUrl : baseUrl;
+
     for (const field of config.form_fields) {
       if (field.type !== 'app_base_url') {
         continue;
@@ -603,10 +614,9 @@ export class AppHelpers {
       let resolvedBaseUrl: string | undefined;
 
       if (hasValidFormValue) {
-        resolvedBaseUrl = String(formValue).replace(/\/+$/, '');
+        resolvedBaseUrl = followExposedIdentity(String(formValue).replace(/\/+$/, ''));
       } else if (existingAppEnvMap.has(envVar)) {
-        const existingBaseUrl = String(existingAppEnvMap.get(envVar)).replace(/\/+$/, '');
-        resolvedBaseUrl = defaultAppBaseUrl && supersededAutoBaseUrls.has(existingBaseUrl) ? defaultAppBaseUrl : existingBaseUrl;
+        resolvedBaseUrl = followExposedIdentity(String(existingAppEnvMap.get(envVar)).replace(/\/+$/, ''));
       } else if (field.default !== undefined && String(field.default).trim() !== '') {
         resolvedBaseUrl = String(field.default).replace(/\/+$/, '');
       } else if (defaultAppBaseUrl) {

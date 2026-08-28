@@ -119,8 +119,23 @@ export class PublicWebService {
        *
        * The mismatch is still reported (it is real, and it is what the badge is
        * about); only the verdict waits for the restart the user was asked for.
+       *
+       * ⚠ NARROWED TO THAT ONE WINDOW ON PURPOSE. `pendingRestart` is raised for
+       * ANY settings change (`updateAppConfig`), and it survives when the app is
+       * not running to be auto-restarted. Suppressing on the flag alone would
+       * hide genuine hostname drift on any app that happens to carry it — the
+       * count would read clean and `repair()` with no `appUrns` would skip the
+       * app entirely, leaving an operator with a mismatch the CLI reports and
+       * offers no way to fix. So the verdict only waits when the env is still on
+       * the platform hostname and a custom domain is what it is waiting for,
+       * which is exactly the state the bind deliberately leaves behind.
+       *
+       * The unbind window is deliberately NOT suppressed: once the binding is
+       * gone the env holds a hostname that is indistinguishable from ordinary
+       * drift, and repairing it is the right answer anyway — it regenerates the
+       * platform identity and restarts, which is the pending restart itself.
        */
-      const awaitingScheduledRestart = envMismatch && app.pendingRestart;
+      const awaitingScheduledRestart = envMismatch && app.pendingRestart && customDomain !== null && envHostname === identity.hostname;
       const action: PublicWebDiagnosticEntry['action'] = envMismatch && !awaitingScheduledRestart ? 'repair' : 'ok';
 
       entries.push({

@@ -938,7 +938,7 @@ describe('AppLifecycleService', () => {
 
       await service.triggerCloudflareSync();
 
-      expect(appsRepository.updateAppById).toHaveBeenCalledWith(7, { customDomain: 'comfy.acme.com', pendingRestart: true });
+      expect(appsRepository.updateAppByIdIfStatus).toHaveBeenCalledWith(7, 'running', { customDomain: 'comfy.acme.com', pendingRestart: true });
       // Flagged, never recreated: a background heartbeat must not take a running
       // app down under the user.
       // No third argument: that publishes to `app:<urn>`, a topic nothing
@@ -959,7 +959,7 @@ describe('AppLifecycleService', () => {
       await service.triggerCloudflareSync();
 
       // Re-flagging on every heartbeat would leave the badge stuck on forever.
-      expect(appsRepository.updateAppById).not.toHaveBeenCalled();
+      expect(appsRepository.updateAppByIdIfStatus).not.toHaveBeenCalled();
     });
 
     it('unbinds an app CI-Cloud no longer reports as wired', async () => {
@@ -968,7 +968,7 @@ describe('AppLifecycleService', () => {
 
       await service.triggerCloudflareSync();
 
-      expect(appsRepository.updateAppById).toHaveBeenCalledWith(7, { customDomain: null, pendingRestart: true });
+      expect(appsRepository.updateAppByIdIfStatus).toHaveBeenCalledWith(7, 'running', { customDomain: null, pendingRestart: true });
     });
 
     it('changes nothing when CI-Cloud predates custom domains', async () => {
@@ -978,7 +978,7 @@ describe('AppLifecycleService', () => {
 
       await service.triggerCloudflareSync();
 
-      expect(appsRepository.updateAppById).not.toHaveBeenCalled();
+      expect(appsRepository.updateAppByIdIfStatus).not.toHaveBeenCalled();
     });
 
     it('leaves a stopped app bound rather than flapping it off and back on', async () => {
@@ -991,7 +991,7 @@ describe('AppLifecycleService', () => {
 
       await service.triggerCloudflareSync();
 
-      expect(appsRepository.updateAppById).not.toHaveBeenCalled();
+      expect(appsRepository.updateAppByIdIfStatus).not.toHaveBeenCalled();
     });
 
     it('drops the binding of an app that no longer publishes a public route', async () => {
@@ -1002,8 +1002,10 @@ describe('AppLifecycleService', () => {
 
       await service.triggerCloudflareSync();
 
-      // Durable configuration, not a transient absence from one payload.
-      expect(appsRepository.updateAppById).toHaveBeenCalledWith(7, { customDomain: null, pendingRestart: true });
+      // Durable configuration, not a transient absence from one payload. The write is
+      // conditional on the status the reconcile saw, so a command that claims the app
+      // mid-sync wins instead of having its env silently contradicted.
+      expect(appsRepository.updateAppByIdIfStatus).toHaveBeenCalledWith(7, 'stopped', { customDomain: null, pendingRestart: true });
     });
 
     it('does not unbind on a failed sync', async () => {
@@ -1018,7 +1020,7 @@ describe('AppLifecycleService', () => {
 
       await service.triggerCloudflareSync();
 
-      expect(appsRepository.updateAppById).not.toHaveBeenCalled();
+      expect(appsRepository.updateAppByIdIfStatus).not.toHaveBeenCalled();
     });
 
     it('does not unbind a stopped app that merely shares an app name with a running one', async () => {
@@ -1039,9 +1041,9 @@ describe('AppLifecycleService', () => {
       await service.triggerCloudflareSync();
 
       // The running one binds...
-      expect(appsRepository.updateAppById).toHaveBeenCalledWith(7, { customDomain: 'comfy.acme.com', pendingRestart: true });
+      expect(appsRepository.updateAppByIdIfStatus).toHaveBeenCalledWith(7, 'running', { customDomain: 'comfy.acme.com', pendingRestart: true });
       // ...and the stopped one, which was never in the payload, keeps its domain.
-      expect(appsRepository.updateAppById).not.toHaveBeenCalledWith(8, expect.anything());
+      expect(appsRepository.updateAppByIdIfStatus).not.toHaveBeenCalledWith(8, expect.anything(), expect.anything());
     });
 
     it('matches the target hostname case-insensitively', async () => {
@@ -1061,7 +1063,7 @@ describe('AppLifecycleService', () => {
 
       await service.triggerCloudflareSync();
 
-      expect(appsRepository.updateAppById).toHaveBeenCalledWith(7, { customDomain: 'comfy.acme.com', pendingRestart: true });
+      expect(appsRepository.updateAppByIdIfStatus).toHaveBeenCalledWith(7, 'running', { customDomain: 'comfy.acme.com', pendingRestart: true });
     });
 
     it('leaves a bound app alone when the payload could not be parsed', async () => {
@@ -1072,7 +1074,7 @@ describe('AppLifecycleService', () => {
 
       await service.triggerCloudflareSync();
 
-      expect(appsRepository.updateAppById).not.toHaveBeenCalled();
+      expect(appsRepository.updateAppByIdIfStatus).not.toHaveBeenCalled();
     });
 
     it('keeps the domain the app already serves on when a second alias appears', async () => {
@@ -1092,7 +1094,7 @@ describe('AppLifecycleService', () => {
 
       // Moving to the lexicographically first name would break every OAuth
       // redirect_uri registered against the one it is already serving.
-      expect(appsRepository.updateAppById).not.toHaveBeenCalled();
+      expect(appsRepository.updateAppByIdIfStatus).not.toHaveBeenCalled();
     });
 
     it('does not bind an app served on an open host port', async () => {
@@ -1110,7 +1112,7 @@ describe('AppLifecycleService', () => {
 
       await service.triggerCloudflareSync();
 
-      expect(appsRepository.updateAppById).not.toHaveBeenCalled();
+      expect(appsRepository.updateAppByIdIfStatus).not.toHaveBeenCalled();
     });
 
     it('defers the write while a lifecycle command is regenerating the env', async () => {
@@ -1129,7 +1131,75 @@ describe('AppLifecycleService', () => {
 
       await service.triggerCloudflareSync();
 
-      expect(appsRepository.updateAppById).not.toHaveBeenCalled();
+      expect(appsRepository.updateAppByIdIfStatus).not.toHaveBeenCalled();
+    });
+
+    it('leaves the row alone when a command claimed the app during the CI-Cloud round trip', async () => {
+      // The status the deferral above checks is a SNAPSHOT taken before syncState,
+      // which retries with backoff and can take seconds. A restart begun inside that
+      // window is still `running` in the array, so the guard cannot see it. The write
+      // is conditional on the status not having moved, and when it has, the row must
+      // be left exactly as it was for the next sync to re-derive — otherwise
+      // settleCommandOutcome clears the badge and `next === current` never raises it
+      // again.
+      appsRepository.getApps.mockResolvedValue([runningComfy()] as any);
+      appsRepository.updateAppByIdIfStatus.mockResolvedValue(false);
+      cloudflareClientService.syncState.mockResolvedValue({
+        ok: true,
+        failed: [],
+        failures: [],
+        synced: 1,
+        customDomains: [{ id: 'cd_1', domain: 'comfy.acme.com', targetHostname: TARGET }],
+      });
+
+      await service.triggerCloudflareSync();
+
+      expect(appsRepository.updateAppByIdIfStatus).toHaveBeenCalledWith(7, 'running', { customDomain: 'comfy.acme.com', pendingRestart: true });
+      // No badge event for a write that did not land.
+      expect(sseService.emit).not.toHaveBeenCalledWith('app', expect.objectContaining({ event: 'custom_domain_changed' }));
+    });
+
+    it('holds a live binding when CI-Cloud reports the same domain against two apps', async () => {
+      // A rebind caught in flight. The domain is dropped from both targets, which
+      // makes this app look like one whose target was never delivered — but for an
+      // app ALREADY serving on that hostname the two are not the same instruction.
+      // Unbinding here takes a live customer hostname off the air because a sibling
+      // app briefly claimed the same name.
+      appsRepository.getApps.mockResolvedValue([runningComfy({ customDomain: 'comfy.acme.com' })] as any);
+      cloudflareClientService.syncState.mockResolvedValue({
+        ok: true,
+        failed: [],
+        failures: [],
+        synced: 1,
+        customDomains: [
+          { id: 'cd_1', domain: 'comfy.acme.com', targetHostname: TARGET },
+          { id: 'cd_2', domain: 'comfy.acme.com', targetHostname: 'openwebui-core2-acme.companionintelligence.com' },
+        ],
+      });
+
+      await service.triggerCloudflareSync();
+
+      expect(appsRepository.updateAppByIdIfStatus).not.toHaveBeenCalled();
+    });
+
+    it('does not warn that a delivered domain matches no app when the app is merely stopped', async () => {
+      // The warning means "CI-Cloud wired a hostname no app on this Hub answers
+      // for". An app that is here but absent from this payload — stopped, or
+      // excluded for a release pass — is not that, and telling the operator to
+      // check settings that are correct is how a working feature looks broken.
+      logger.warn.mockClear();
+      appsRepository.getApps.mockResolvedValue([runningComfy({ status: 'stopped', customDomain: 'comfy.acme.com' })] as any);
+      cloudflareClientService.syncState.mockResolvedValue({
+        ok: true,
+        failed: [],
+        failures: [],
+        synced: 0,
+        customDomains: [{ id: 'cd_1', domain: 'comfy.acme.com', targetHostname: TARGET }],
+      });
+
+      await service.triggerCloudflareSync();
+
+      expect(logger.warn.mock.calls.map(([line]) => String(line)).join('\n')).not.toContain('match no app on this Hub');
     });
   });
 

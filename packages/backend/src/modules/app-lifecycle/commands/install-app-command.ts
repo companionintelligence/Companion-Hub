@@ -74,7 +74,11 @@ export class InstallAppCommand extends AppLifecycleCommand {
 
     const emitProgress = async (progress: number) => {
       if (sseService) {
-        sseService.emit('app', { event: 'status_change', appUrn, appStatus: 'installing', progress }, appUrn);
+        // No `appUrn` third argument: that publishes to the `app:<urn>` topic, which
+        // nothing subscribes to (`sse.controller.ts` opens `getTopicObservable('app')`
+        // with no urn), so every install-progress tick was dropped before it reached
+        // the progress bar in `app-sse-cache.ts`.
+        sseService.emit('app', { event: 'status_change', appUrn, appStatus: 'installing', progress });
       }
       if (appsRepository) {
         const app = await appsRepository.getAppByUrn(appUrn);

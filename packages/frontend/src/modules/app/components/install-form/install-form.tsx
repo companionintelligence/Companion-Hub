@@ -409,11 +409,14 @@ export const InstallForm: React.FC<IProps> = ({
         const data = await fetchPublicWebDiagnostics();
         if (!data) return;
         const entry = data.apps.find((app) => app.appUrn === info.urn);
-        if (!cancelled && entry?.envMismatch) {
-          setPublicWebExpectedUrl(entry.computedPublicUrl);
-        } else if (!cancelled) {
-          setPublicWebExpectedUrl(null);
-        }
+        if (cancelled) return;
+        // `action`, not `envMismatch`: a freshly bound custom domain deliberately
+        // leaves the env behind until the restart the user was asked for, and that
+        // window reports `envMismatch: true, action: 'ok'`. Warning on it told the
+        // operator a healthy app was broken and pointed them at a repair that (now
+        // correctly) declines to touch it.
+        const needsRepair = entry ? (entry.action ? entry.action === 'repair' : entry.envMismatch) : false;
+        setPublicWebExpectedUrl(needsRepair && entry ? entry.computedPublicUrl : null);
       } catch {
         if (!cancelled) setPublicWebExpectedUrl(null);
       }

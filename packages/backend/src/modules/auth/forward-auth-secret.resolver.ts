@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import type { AppUrn } from '@ci-hub/common/types';
-import { buildOriginServerName, buildPublicWebIdentity, resolvePublicDomainRoot } from '@ci-hub/common/types';
+import { buildOriginServerName, buildPublicWebIdentity, normalizeStoredHostname, resolvePublicDomainRoot } from '@ci-hub/common/types';
 import { createAppUrn } from '@/common/helpers/app-helpers';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
@@ -153,8 +153,22 @@ export class ForwardAuthSecretResolver {
             orgSlug: org?.slug,
           }).hostname,
         );
-        if (publicHostname) {
-          publicHosts.set(appUrn, publicHostname);
+        /*
+         * The customer hostname CI-Cloud actually wired for this app OUTRANKS the
+         * platform one here, because this map is what the edge-SSO return URL is
+         * built from. Without it a visitor who signed in on `comfy.acme.com` is
+         * redirected to the platform hostname mid-ceremony — the exact "absolute
+         * links hop back to the platform hostname" failure the custom-domain env
+         * vars exist to prevent, one layer up — and `validateEdgeSsoTarget` would
+         * reject any attempt to point the ticket back at the customer's name,
+         * since an unregistered host resolves to no app.
+         */
+        const boundCustomDomain = normalizeStoredHostname(app.customDomain);
+        const registeredCustomDomain = boundCustomDomain ? register(boundCustomDomain) : null;
+
+        const effectivePublicHostname = registeredCustomDomain || publicHostname;
+        if (effectivePublicHostname) {
+          publicHosts.set(appUrn, effectivePublicHostname);
         }
         register(app.domain); // operator-entered custom domain
       } catch (err) {

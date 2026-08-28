@@ -28,6 +28,7 @@ export {
   sanitizeAppSubdomain,
 } from '../public-web/identity.js';
 export {
+  collectAmbiguousCustomDomains,
   indexCustomDomainsByTarget,
   normalizeHostname,
   normalizeStoredHostname,

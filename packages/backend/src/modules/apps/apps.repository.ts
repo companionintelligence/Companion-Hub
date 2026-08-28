@@ -26,6 +26,28 @@ export class AppsRepository {
   }
 
   /**
+   * The custom hostname bound to this app, or `null` when it serves on its
+   * platform hostname (and when the row does not exist yet, which is the state
+   * every install starts from).
+   *
+   * Deliberately NOT `getAppByUrn`: env generation needs this one `varchar` on
+   * every install/start/stop/restart/update/reset, and the joined read ships the
+   * whole `config` jsonb plus every `app_store` column to get it.
+   */
+  public async getAppCustomDomain(appUrn: AppUrn): Promise<string | null> {
+    const { appStoreId, appName } = extractAppUrn(appUrn);
+
+    const [row] = await this.db
+      .select({ customDomain: app.customDomain })
+      .from(app)
+      .where(and(eq(app.appName, appName), eq(app.appStoreSlug, appStoreId)))
+      .limit(1)
+      .execute();
+
+    return row?.customDomain ?? null;
+  }
+
+  /**
    * Given an app id, update the app with the given data
    *
    * @param {string} appId - The id of the app to update
