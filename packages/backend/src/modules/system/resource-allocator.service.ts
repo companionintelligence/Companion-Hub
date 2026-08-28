@@ -9,8 +9,9 @@ import { HostMetricsService } from './host-metrics.service';
 const DOCKER_INFO_CACHE_MS = 60_000;
 const DOCKER_TUNING_RECORD_PATH = '/data/state/hardware/docker-tuning.json';
 
-// Per-app cap policy: a single app may use up to this share of the resources
-// Docker actually has, leaving headroom for the hub stack and other apps.
+// Per-app *recommendation* for the UI / settings. Compose generation must
+// not stamp these onto every service (that is a per-container cgroup at
+// half the host, N times). Inference (vLLM/Ollama) is outside app compose.
 const APP_MEMORY_FRACTION = 0.5;
 const APP_CPU_FRACTION = 0.75;
 const HUB_STACK_RESERVE_MB = 2048;
