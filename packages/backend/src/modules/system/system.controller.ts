@@ -122,6 +122,7 @@ export class SystemController {
     }
   }
 
+  @UseGuards(AuthGuard)
   @Get('/certificate')
   async downloadLocalCertificate(@Res() res: Response) {
     const cert = await this.systemService.getLocalCertificate();

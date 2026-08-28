@@ -45,6 +45,12 @@ const COMPOSE_OP_MAX_ATTEMPTS = 2;
 /** After the SIGKILL grace, unblock the caller even if the child never exits. */
 const PROCESS_EXIT_BACKSTOP_MS = 5_000;
 
+/** True when compose/docker failed because the container's network endpoint is gone. */
+function isStaleContainerNetworkError(error: unknown): boolean {
+  const msg = error instanceof Error ? error.message : String(error);
+  return /network .+ not found/i.test(msg) || /failed to set up container networking/i.test(msg);
+}
+
 interface DockerPullProgressDetail {
   current?: number;
   total?: number;
@@ -1191,13 +1197,14 @@ export class DockerService {
 
   /**
    * Ensure a container is running, starting it via docker compose if needed.
-   * Tries `docker restart` first; if the container doesn't exist, falls back to
-   * `docker compose --profile <profile> up <service> -d` using the appropriate
-   * compose file for the current environment.
+   * Tries `docker restart` first; if the container doesn't exist or cannot start
+   * (e.g. stale network after a stack recreate), falls back to compose up and,
+   * when that still fails, removes the container and force-recreates it.
    */
   public async ensureContainerRunning(containerName: string, opts: { composeFile: string; profile?: string }): Promise<void> {
     try {
       await this.restartContainer(containerName);
+      return;
     } catch (error) {
       // restart fails when the container does not exist (the common case) but also
       // on a genuine restart error — surface the reason rather than always claiming
@@ -1205,7 +1212,32 @@ export class DockerService {
       this.logger.info(
         `Restart of ${containerName} failed (${error instanceof Error ? error.message : String(error)}); creating via docker compose...`,
       );
+    }
+
+    try {
       await this.composeUpService(containerName, opts);
+    } catch (upError) {
+      // After `compose down` / network recreate, an exited container can retain a
+      // deleted NetworkID. Plain `compose up` then tries to start it and fails with
+      // "network … not found". Remove and force-recreate so the tunnel self-heals.
+      if (!isStaleContainerNetworkError(upError)) {
+        throw upError;
+      }
+      this.logger.warn(
+        `compose up ${containerName} failed with stale networking (${upError instanceof Error ? upError.message : String(upError)}); removing container and force-recreating...`,
+      );
+      await this.removeContainerBestEffort(containerName);
+      await this.composeUpService(containerName, { ...opts, forceRecreate: true });
+    }
+  }
+
+  /** Best-effort `docker rm -f` so a stale exited container cannot block recreate. */
+  private async removeContainerBestEffort(containerName: string): Promise<void> {
+    try {
+      await this.runProcessBounded('docker', ['rm', '-f', containerName], {}, 30_000, `docker rm -f ${containerName}`);
+      this.logger.info(`Removed stale container ${containerName} before recreate`);
+    } catch (error) {
+      this.logger.debug(`removeContainerBestEffort(${containerName}): ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 
@@ -1331,7 +1363,7 @@ export class DockerService {
     throw lastError instanceof Error ? lastError : new Error(`${label} failed after ${total} attempts`);
   }
 
-  private async composeUpService(serviceName: string, opts: { composeFile: string; profile?: string }): Promise<void> {
+  private async composeUpService(serviceName: string, opts: { composeFile: string; profile?: string; forceRecreate?: boolean }): Promise<void> {
     const baseArgs = ['compose'];
     const runtimeComposeFile = path.join(this.config.get('directories').dataDir, 'docker-compose.yml');
     const spawnOptions: { cwd: string; env?: NodeJS.ProcessEnv } = { cwd: path.dirname(opts.composeFile) };
@@ -1372,6 +1404,9 @@ export class DockerService {
     // pull/up no longer hangs forever: it is killed at the deadline and retried,
     // and completed image layers persist across attempts.
     const upArgs = [...baseArgs, 'up', serviceName, '-d', '--no-build', '--no-deps'];
+    if (opts.forceRecreate) {
+      upArgs.push('--force-recreate');
+    }
     this.logger.info(`Running: docker ${upArgs.join(' ')}`);
     await this.retryAsync(
       () => this.runProcessBounded('docker', upArgs, spawnOptions, COMPOSE_UP_TIMEOUT_MS, `docker compose up ${serviceName}`),

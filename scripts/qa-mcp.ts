@@ -575,6 +575,16 @@ export async function qaMcpApp(appId: string, options: QaMcpOptions = {}): Promi
     const base = scoreHandshake(declared, liveNames);
     result.score = base.score;
     result.notes = base.notes;
+    // A NON-empty live list can still be missing tools purely because declared host software the
+    // fleet lacks is unmet (e.g. unreal-engine-mcp lists 22/35 tools until a live Unreal Editor +
+    // bridge plugin connects — the other 13 are editor/asset tools that can't exist without one).
+    // scoreHandshake() above can't tell that apart from real drift, so downgrade its warn to skip
+    // here when host software explains the gap — same signal as the empty-list case above, just
+    // for a PARTIAL list instead of a totally empty one.
+    if (base.score === 'warn' && hostSoftware.length > 0) {
+      result.score = 'skip';
+      result.notes = `needs host software: ${hostSoftware.join(', ')} — ${base.notes}`;
+    }
     applyProbeVerdict(result, hs.probe, probeSpec);
     return result;
   } catch (err) {
