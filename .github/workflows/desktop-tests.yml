@@ -1,16 +1,8 @@
 name: Desktop Tests
-
+# TEMPORARY (Actions credit): automatic PR/push triggers disabled.
+# Re-enable when credits recover. Manual: gh workflow run desktop-tests.yml
 on:
-  pull_request:
-    paths:
-      - "packages/desktop/**"
-      - ".github/workflows/desktop-tests.yml"
-  push:
-    branches:
-      - dev
-    paths:
-      - "packages/desktop/**"
-      - ".github/workflows/desktop-tests.yml"
+  workflow_dispatch:
 
 concurrency:
   group: desktop-tests-${{ github.ref }}
