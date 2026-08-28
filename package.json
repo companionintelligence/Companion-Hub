@@ -1,6 +1,6 @@
 {
   "name": "ci-hub",
-  "version": "0.2.56",
+  "version": "0.2.61",
   "description": "Companion Intelligence Hub CLI and self-hosted app platform runtime.",
   "packageManager": "pnpm@11.5.1",
   "engines": {

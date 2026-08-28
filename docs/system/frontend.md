@@ -5,7 +5,7 @@
 > **Key paths:** `packages/frontend/src/components/hub-status/`, `packages/frontend/src/modules/`, `packages/frontend/src/lib/`
 > **Commands:** `cd packages/frontend && pnpm test`, `pnpm run local` (root, port 5004/5005)
 > **Owner persona:** code-quality + maintainability
-> **Last updated:** 2026-08-15 (cloud connect flow terminology + SSO matrix)
+> **Last updated:** 2026-08-28
 > **Related:** docs/system/desktop.md, docs/DESKTOP-UI-ARCHITECTURE.md, docs/system/e2e.md
 
 ---
@@ -88,3 +88,4 @@ Tests: `packages/frontend/src/modules/mobile-connect/oidc.test.ts`, `connect-pag
 - Biome forbids non-null assertions (`!`) — use explicit types
 - Run scoped tests: `pnpm test -- src/path/to/file.test.tsx`
 - Always run `pnpm run local` or `local:desktop` for UI source changes. For appliance-parity SSO (browser or Tauri against `hub.companionintelligence.com`), use `pnpm run dev` / `dev:desktop` on `:5002` — never both stacks at once.
+- App-detail "Open data folder" is desktop Tauri only. Web / phone copy the Hub host path (`canOpenFolderInFileExplorer` in `lib/helpers/open-folder.ts`).
