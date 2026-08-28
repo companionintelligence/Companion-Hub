@@ -134,11 +134,11 @@ export const DEFAULT_ADVANCED_SETTINGS = 'false';
 export const DEFAULT_LOG_LEVEL = 'info';
 export const DEFAULT_EXPERIMENTAL_INSECURE_COOKIE = 'false';
 
-// Hub stack container. These name the SAME artifact in two different registries, so the
-// repo names deliberately differ — do not "align" them:
+// Hub stack container. Same package name (`ci-hub`) on two registries; do not
+// point either at the retired `ci-os-hub` GHCR package (#920).
 //
-// - HUB_STACK_REGISTRY_REPO is a path on the CI Cloud/Portal registry, used only to LIST
-//   available versions (`{ciCloudUrl}/v2/<repo>/tags/list`). Portal receives a crane copy
+// - HUB_STACK_REGISTRY_REPO is the path on the CI Cloud/Portal registry, used only to LIST
+//   available versions (`{ciCloudUrl}/v2/ci-hub/tags/list`). Portal receives a crane copy
 //   of every production build under this name.
 // - HUB_STACK_IMAGE_REPO is the GHCR repo Docker actually PULLS from. It is the package
 //   `build-container.yml` publishes to, and it is public. It must match
@@ -151,7 +151,7 @@ export const DEFAULT_EXPERIMENTAL_INSECURE_COOKIE = 'false';
 // GHCR still carries legacy `v`-prefixed tags from a retired workflow; they are inert only
 // because listing reads Portal, not GHCR. Repointing listing at GHCR would surface both
 // spellings in one list and reintroduce that hazard.
-export const HUB_STACK_REGISTRY_REPO = 'ci-os-hub';
+export const HUB_STACK_REGISTRY_REPO = 'ci-hub';
 export const HUB_STACK_IMAGE_REPO = 'ghcr.io/companionintelligence/ci-hub';
 
 // Theming

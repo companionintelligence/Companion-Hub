@@ -706,10 +706,11 @@ reference a shipped desktop bundle pins via `CI_HUB_BUILD_VERSION`. Non-producti
 publish their channel tag alone, because they compile a different `CI_CLOUD_URL` and must
 never claim a production version tag.
 
-The repo name is `ci-hub`. Note that `ci-os-hub` appearing throughout the compose files and
-backend is the **service/container name** (`container_name: ci-os-hub`, `ci-os-hub_network`,
-`ci-os-hub.managed` labels) and the Portal mirror path — not the image repo. Pointing the
-image at the private `ci-os-hub` package is what broke Hub 0.2.44 (#920).
+The repo name is `ci-hub` on GHCR and on the Portal listing path (`/v2/ci-hub`). Note that
+`ci-os-hub` appearing throughout the compose files is the **service/container name**
+(`container_name: ci-os-hub`, `ci-os-hub_network`, `ci-os-hub.managed` labels) — not the
+image or Portal package. Pointing the image at the retired private `ci-os-hub` GHCR package
+is what broke Hub 0.2.44 (#920).
 
 Images are pushed to **GitHub Container Registry** (ghcr.io). The package must remain
 **public**: the desktop shells out to `docker compose` with no registry credentials, so any

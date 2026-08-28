@@ -61,7 +61,7 @@ const deviceCheckIn: RouteHandler = () => ({ body: { active: true, device_id: 't
 /** Shared routes present in every scenario (health / registry / auth). */
 const baseRoutes: RouteMap = {
   'GET /v2/': () => ({ body: {}, status: 200 }),
-  'GET /v2/ci-os-hub/tags/list': () => ({ body: { name: 'ci-os-hub', tags: ['1.0.0'] }, status: 200 }),
+  'GET /v2/ci-hub/tags/list': () => ({ body: { name: 'ci-hub', tags: ['1.0.0'] }, status: 200 }),
   'POST /api/auth/sign-in/email': signInWithEmail,
   'POST /api/devices/check-in': deviceCheckIn,
 };
