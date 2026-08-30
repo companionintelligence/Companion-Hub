@@ -22,6 +22,12 @@ export class RestartAppCommand extends AppLifecycleCommand {
         return { success: true, message: 'App config not found. Skipping...' };
       }
 
+      // Host-device preflight — a device present at install time (e.g. /dev/kfd for ROCm)
+      // can be gone by the time the app is restarted (driver not loaded yet at boot, host
+      // reconfigured). Catch that here with friendly guidance instead of letting Docker's
+      // raw device-attach error reach the user unclassified.
+      await this.assertRequiredHostDevices(appUrn);
+
       await this.ensureAppDir(appUrn, form);
 
       logger.info(`Stopping app ${appUrn}`);

@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
-import { existsSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, rmSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path, { join } from 'node:path';
 import { stdin as input, stdout as output } from 'node:process';
@@ -28,6 +28,7 @@ import {
 import { connectAgent, normalizeMemoryUrl, parseConnectArgs } from './lib/connect-agent';
 import { healHubPortBindConflict, healHubPortsBeforeStartup } from './heal-hub-ports';
 import { dockerBindMountPath } from './heal-hub-bind-mounts';
+import { resolveAndPinHubDockerEngine, splitBrainConflict, enumerateDockerEngineCandidates, probeReachableEngines } from './lib/docker-engine';
 import { getDeviceId as resolveLocalDeviceId } from './get-device-id';
 import { isRelatedVolume, parseNames, runHubCleanup } from './hub-cleanup-lib';
 import { initDockerConfig } from './init-docker-config';
@@ -67,6 +68,8 @@ import {
   ensureLocalDevRuntimeEnv,
   getComposeFiles,
   getEnvFileOrExit,
+  hasCloudflareTunnelToken,
+  hasCloudflareTunnelTokenAtDataDir,
   mergeComposeProfilesFromEnvFile,
   packageVersion,
   renderConfigLines,
@@ -269,10 +272,40 @@ function composeArgsForContext(ctx: HubContext): string[] {
   return buildComposeBaseArgs(ctx.envFile, ctx.composeFiles);
 }
 
+/**
+ * Resolve/pin the Hub Docker engine for appliance installs so CLI compose matches
+ * the desktop app (`state/docker-engine.json`).
+ */
+function applyDockerEnginePin(overrides: Record<string, string | undefined>, dataDir: string): Record<string, string | undefined> {
+  try {
+    const engine = resolveAndPinHubDockerEngine({ dataDir });
+    const reachable = probeReachableEngines(enumerateDockerEngineCandidates());
+    const conflict = splitBrainConflict(engine, reachable);
+    if (conflict) {
+      printMessageBox('Docker engine conflict', [conflict], 'red');
+      process.exit(1);
+    }
+    console.log(colorize(`→ Docker engine: ${engine.kind} at ${engine.dockerHost} (${engine.reason})`, 'dim'));
+    const next = { ...overrides, DOCKER_HOST: engine.dockerHost };
+    delete next.DOCKER_CONTEXT;
+    if (engine.pathStyle) {
+      next.CI_HUB_DOCKER_PATH_STYLE = engine.pathStyle;
+    }
+    return next;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    printMessageBox('Docker engine selection failed', [message], 'red');
+    process.exit(1);
+  }
+}
+
 /** Env overrides for a context; pins ROOT_FOLDER_HOST to the data dir in appliance mode. */
 function envOverridesForContext(ctx: HubContext): Record<string, string | undefined> {
-  const overrides = buildEnvOverrides(ctx.envFile);
-  if (ctx.appliance && ctx.dataDir) overrides.ROOT_FOLDER_HOST = ctx.dataDir;
+  let overrides = buildEnvOverrides(ctx.envFile);
+  if (ctx.appliance && ctx.dataDir) {
+    overrides.ROOT_FOLDER_HOST = ctx.dataDir;
+    overrides = applyDockerEnginePin(overrides, ctx.dataDir);
+  }
   return overrides;
 }
 
@@ -504,7 +537,12 @@ async function startApplianceHub(ctx: HubContext, detachedMode: 'attached' | 'de
   const dataDir = ctx.dataDir as string;
   const envOverrides = envOverridesForContext(ctx);
 
-  await runScript('scripts/init-hub-data-dirs.ts', () => initHubDataDirs(), { ENV_FILE: ctx.envFile, ROOT_FOLDER_HOST: dataDir }, dataDir);
+  await runScript(
+    'scripts/init-hub-data-dirs.ts',
+    () => initHubDataDirs(),
+    { ENV_FILE: ctx.envFile, ROOT_FOLDER_HOST: dataDir, ...envOverrides },
+    dataDir,
+  );
   await runScript('scripts/init-gpu-runtime.ts', () => initGpuRuntime(), envOverrides);
   await runScript('scripts/init-host-probe.ts', () => initHostProbe(), { ENV_FILE: ctx.envFile, ...envOverrides }, dataDir);
 
@@ -1054,15 +1092,13 @@ export async function doctorHub(env: HubEnv, options?: { repairNetworks?: boolea
   printMessageBox(`Hub doctor  [${ctx.env}]`, lines, tone);
 }
 
-/** Tunnel token lives at `<dataDir>/tunnel/token` in appliance mode, `<root>/../tunnel/token` in a checkout. */
+/**
+ * Tunnel token lives at `<ROOT>/../tunnel/token` (compose bind). Also accepts the
+ * legacy nested `<dataDir>/tunnel/token` so doctor matches profile detection.
+ */
 function doctorHasTunnelToken(ctx: HubContext): boolean {
   if (ctx.appliance && ctx.dataDir) {
-    const tokenPath = path.join(ctx.dataDir, 'tunnel', 'token');
-    try {
-      return existsSync(tokenPath) && statSync(tokenPath).isFile() && statSync(tokenPath).size > 0;
-    } catch {
-      return false;
-    }
+    return hasCloudflareTunnelTokenAtDataDir(ctx.dataDir);
   }
   return hasCloudflareTunnelToken(ctx.envFile);
 }

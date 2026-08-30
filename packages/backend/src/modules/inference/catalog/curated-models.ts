@@ -62,6 +62,22 @@ import type { CuratedModel, HardwareTier, InferenceBackendType, ModelModality, M
 // size were checked live via the Hugging Face Hub API (hub_repo_search + hf_fs), not web search
 // summaries, per the fabrication lesson above.
 //
+// 2026-08-29: five ollama.com/library URLs supplied directly by a human were checked. Per the
+// fabrication lesson above, verification used a real browser render of each library page and its
+// /tags subpage, not this session's WebFetch summarizer. `glm-5.3` and `glm-5.3-flash` are real but
+// `:cloud`-only (no local tag exists for either) — excluded per the LOCAL ONLY rule above, not added.
+// `nemotron-3.5-lightning` was already in the catalog (added 2026-08-12) — nothing to do. `ornith-1.5`
+// (creator: Deep Reinforce, same family as `ornith-9b`/`ornith-35b`) added as three new rows —
+// `ornith-1-5-9b`/`-35b`/`-397b` — with real default tags; unlike the 1.0 rows, its library page shows
+// no `tools`/`thinking` capability badge (only `vision`), so those flags were left unset rather than
+// copied from the older sibling rows. `qwen3.8-flash-next` (Alibaba, billed as an early preview of the
+// architecture behind Qwen4) is real but was NOT added: its only tags are Apple-MLX/NVIDIA-NVFP4
+// (`125b-mlx`, `125b-a6b-nvfp4`, `125b-a6b-mlx-bf16`) — there is no bare GGUF default build, which
+// breaks this table's `quantization === 'q4_K_M'` invariant (see curated-models.test.ts) and would also
+// need a per-row Apple/NVIDIA-only `gpuVendors` gate the shared CATALOG_TOON → `generatedLlms` mapping
+// has no mechanism for. Needs a deliberate schema decision (new `quant` column + gate, or its own small
+// table like VLLM_MLX_LLM_TOON), not a same-shape row — left out pending that.
+//
 // Columns:
 //   id              catalog id (`${family}-${size}`)
 //   backendModelId  the exact ollama pull tag (`family:size`)
@@ -90,7 +106,7 @@ import type { CuratedModel, HardwareTier, InferenceBackendType, ModelModality, M
 // passes (e.g. gpt-oss-120b 33.3→24, llama-3.3-70b 14.5→9) — consistent with AA having rebased/recalibrated
 // the index in between, not with the older numbers being wrong at the time they were entered.
 const CATALOG_TOON = `
-llms[84|]{id,backendModelId,name,purpose,params,gb,tier,ctxK,creator,intel,agentic,reason,vision,tools,audio,tps,ttft,e2e}:
+llms[87|]{id,backendModelId,name,purpose,params,gb,tier,ctxK,creator,intel,agentic,reason,vision,tools,audio,tps,ttft,e2e}:
   gemma4-e2b|gemma4:e2b|Gemma 4 E2B|general|2|7.2|cpu-only|128|Google|9|7.4|1|1|1|1|||
   gemma4-e4b|gemma4:e4b|Gemma 4 E4B|general|4|9.6|cpu-only|128|Google|12|8.7|1|1|1|1|||
   gemma4-26b|gemma4:26b|Gemma 4 26B|general|26|18|medium|256|Google|26|28.9|1|1|1|0|78|1.59|8
@@ -175,6 +191,9 @@ llms[84|]{id,backendModelId,name,purpose,params,gb,tier,ctxK,creator,intel,agent
   glm-4-7-flash-30b|glm-4.7-flash:latest|GLM-4.7 Flash|reasoning|30|19|medium|200|Z AI|||1|0|1|0|||
   nemotron-3-5-lightning-30b|nemotron-3.5-lightning:30b|Nemotron 3.5 Lightning|general|30|25|medium|1000|NVIDIA|24||0|0|1|0|293|1.04|
   deepseek-v4-flash-0731-284b|frob/deepseek-v4-flash-0731:284b-a13b-ud-q4_k_xl|DeepSeek V4 Flash 0731|reasoning|284|155|high|1000|DeepSeek|52||1|0|1|0|128|1.43|20.95
+  ornith-1-5-9b|ornith-1.5:9b|Ornith 1.5 9B|coding|9|6.6|low|256|Deep Reinforce|||0|1|0|0|||
+  ornith-1-5-35b|ornith-1.5:35b|Ornith 1.5 35B|coding|35|23|medium|256|Deep Reinforce|||0|1|0|0|||
+  ornith-1-5-397b|ornith-1.5:397b|Ornith 1.5 397B|coding|397|242|high|256|Deep Reinforce|||0|1|0|0|||
 `;
 
 /** A decoded TOON row: every column mapped to its raw string cell (empty string when blank). */
@@ -255,6 +274,7 @@ const MOE_ACTIVE_PARAMS_B: Record<string, number> = {
   'glm-4-7-flash-30b': 3, // GLM-4.7 Flash — 30B-A3B MoE
   'nemotron-3-5-lightning-30b': 3, // Nemotron 3.5 Lightning — 30B-A3B MoE
   'deepseek-v4-flash-0731-284b': 13, // DeepSeek V4 Flash 0731 — 284B total / 13B active MoE
+  'ornith-1-5-35b': 3, // Ornith 1.5 35B — 35B-A3B MoE per the library readme; the 9B/397B sizes are dense
   // 2026-08-24 MLX expansion — active params reused from the matching Ollama-backend row above, or
   // (where the base row has no MoE entry) taken directly from the HF repo's own `-A#B` name suffix.
   'gemma4-26b-mlx': 3.8, // Gemma 4 26B (MLX) — same MoE as gemma4-26b above

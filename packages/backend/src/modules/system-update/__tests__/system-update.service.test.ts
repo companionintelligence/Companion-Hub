@@ -211,12 +211,12 @@ describe('SystemUpdateService', () => {
       expect(HUB_STACK_IMAGE_REPO).not.toContain('ci-os-hub');
     });
 
-    it('lists versions from the Portal ci-os-hub path, which is a different registry', () => {
-      // Deliberately NOT the same name as the GHCR repo: this is the path the Portal mirror
-      // is copied to, used only for tag listing. Versions correspond because both come from
-      // the same build.
-      expect(HUB_STACK_REGISTRY_REPO).toBe('ci-os-hub');
+    it('lists versions from the Portal ci-hub path, not the retired ci-os-hub package', () => {
+      // Same package name as GHCR, different registry. The retired ci-os-hub GHCR
+      // package must not appear here — that is what broke Hub 0.2.44 (#920).
+      expect(HUB_STACK_REGISTRY_REPO).toBe('ci-hub');
       expect(HUB_STACK_REGISTRY_REPO).not.toContain('ghcr.io');
+      expect(HUB_STACK_REGISTRY_REPO).not.toContain('ci-os-hub');
     });
   });
 });

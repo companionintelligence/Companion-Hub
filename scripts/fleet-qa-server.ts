@@ -160,6 +160,7 @@ interface NodeState {
   error: string | null;
   preflight: Record<string, unknown> | null;
   storeDir: string | null; // resolved during preflight: CI-Marketplace or CI-App-Store
+  consecutiveErrors: number; // tripped by the error-circuit-breaker below when a node is wedged
 }
 
 const appStates = new Map<string, AppState>(
@@ -195,6 +196,7 @@ const nodeStates = new Map<string, NodeState>(
       error: null,
       preflight: null,
       storeDir: null,
+      consecutiveErrors: 0,
     },
   ]),
 );
@@ -603,20 +605,37 @@ function handleStreamEvent(node: FleetNode, raw: Record<string, unknown>) {
       return;
     }
     finalizedApps.add(appId);
+    const score = (res?.score as AppStatus) ?? 'fail';
     const s = appStates.get(appId);
     if (s) {
-      s.status = (res?.score as AppStatus) ?? 'fail';
+      s.status = score;
       s.result = res;
       s.endTs = Date.now();
       s.message = String(res?.notes ?? '');
     }
     ns.done++;
+    ns.consecutiveErrors = score === 'error' ? ns.consecutiveErrors + 1 : 0;
     // Persist the result durably (ndjson + in-memory) so the run survives a disconnect and
     // GET /api/results.json reflects it.
     recordResult(node.name, appId, res ?? {});
-    // Work-stealing: this node just freed a slot — hand it the next app off the shared queue
-    // (or close its stdin if the queue is drained). Fast nodes naturally pull more.
-    feedNode(node);
+    if (ns.consecutiveErrors >= NODE_ERROR_CIRCUIT_BREAKER) {
+      // This node is wedged, not the apps — stop pulling more work into it (its remaining apps stay
+      // in the shared queue for other nodes) and let its in-flight qa-stream wind down on its own.
+      const reason = `circuit breaker: ${ns.consecutiveErrors} consecutive error verdicts — node likely wedged, stopped feeding it new work`;
+      logNode(node.name, `⚠ ${reason}`);
+      ns.status = 'error';
+      ns.error = reason;
+      const stdin = sshProcesses.get(node.name)?.stdin;
+      try {
+        stdin?.end();
+      } catch {
+        /* already closed */
+      }
+    } else {
+      // Work-stealing: this node just freed a slot — hand it the next app off the shared queue
+      // (or close its stdin if the queue is drained). Fast nodes naturally pull more.
+      feedNode(node);
+    }
     logNode(node.name, `app_result ${appId}: ${String(res?.score ?? 'unknown')}${res?.notes ? ` (${summarizeError(String(res.notes))})` : ''}`);
     broadcast({ event: 'app_result', node: node.name, appId, result: res });
     broadcast({ event: 'node_status', node: node.name, ...ns });
@@ -651,6 +670,14 @@ const APP_DEADLINE_MS = Math.max(60_000, Number(process.env.QA_APP_DEADLINE_MS) 
 const WATCHDOG_INTERVAL_MS = Math.max(5_000, Number(process.env.QA_WATCHDOG_INTERVAL_MS) || 15_000);
 // Absolute backstop for an entire run — force-completes no matter what.
 const RUN_MAX_MS = Math.max(60_000, Number(process.env.QA_RUN_MAX_MS) || 6 * 60 * 60_000);
+// A node that returns this many `error` verdicts in a row is treated as wedged (daemon/fd/resource
+// exhaustion — an `error` result on a genuinely healthy node is rare, a long run of them back-to-back
+// isn't the apps, it's the node) and is stopped from pulling more work. Without this, a wedged node
+// silently drains the entire remaining queue into fast, wall-clock-cheap "error" verdicts and can drag
+// itself down hard enough that even SSH stops responding (observed: 297 straight `spawn EIO` results on
+// one node before its sshd itself became unreachable — the run kept dispatching new apps into it the
+// whole time). Any real `pass`/`warn`/`fail` resets the counter.
+const NODE_ERROR_CIRCUIT_BREAKER = Math.max(1, Number(process.env.QA_NODE_ERROR_BREAKER) || 5);
 
 let watchdogTimer: ReturnType<typeof setInterval> | null = null;
 let runMaxTimer: ReturnType<typeof setTimeout> | null = null;
@@ -810,6 +837,7 @@ function resetState() {
     ns.currentApp = null;
     ns.error = null;
     ns.preflight = null;
+    ns.consecutiveErrors = 0;
   }
   broadcast({ event: 'reset' });
   broadcastFleetStatus();
@@ -1128,7 +1156,11 @@ header {
 .btn.primary { background: linear-gradient(135deg, var(--grad-a), var(--grad-b)); border-color: var(--grad-b); color: #eafdfd; box-shadow: 0 2px 12px -4px #22b87e77; }
 .btn.primary:hover { filter: brightness(1.08); color: #eafdfd; }
 .btn.danger { border-color: var(--fail); color: var(--fail); }
-.btn.active { border-color: var(--accent); color: var(--accent); background: var(--accent-dim); }
+/* Distinct from :hover on purpose — a hover and a real mode selection look identical at a glance
+   otherwise (same border/text color), which reads as "Full mode is already selected" when it isn't
+   and has caused real accidental Quick-mode runs against the live fleet. */
+.btn.active { border-color: var(--accent-bright); color: var(--accent-bright); background: var(--accent-dim); box-shadow: inset 0 0 0 1px var(--accent-bright); font-weight: 700; }
+.btn.active::before { content: '✓ '; }
 .btn:disabled { opacity: .4; cursor: not-allowed; }
 .mode-sep { width: 1px; height: 24px; background: var(--border); margin: 0 4px; }
 .node-sel { display: flex; gap: 4px; flex-wrap: wrap; }

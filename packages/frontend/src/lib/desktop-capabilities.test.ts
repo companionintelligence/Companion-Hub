@@ -48,4 +48,9 @@ describe('desktop Tauri remote URL allowlist', () => {
       expect(url).not.toBe('http://*:*');
     }
   });
+
+  it('keeps local bootstrap (tauri://) on the allowlist for Retry Start', () => {
+    const parsed = JSON.parse(readFileSync(CAPABILITIES, 'utf8')) as { local?: boolean };
+    expect(parsed.local).toBe(true);
+  });
 });

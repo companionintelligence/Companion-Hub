@@ -16,7 +16,14 @@ export const useAppStatus = () => {
     }
 
     const queryKey = getAppQueryKey({ path: { urn: appUrn } });
-    const data = queryClient.getQueryData(queryKey) as GetAppDto;
+    const data = queryClient.getQueryData(queryKey) as GetAppDto | undefined;
+
+    // No cache entry yet for an app that's never been fetched (e.g. installing straight from a
+    // store listing without visiting its detail page first) — nothing to optimistically patch.
+    // The detail page's own query populates the cache with real data on its next fetch.
+    if (!data) {
+      return;
+    }
 
     const newData = produce(data, (draft) => {
       if (!draft.app) {

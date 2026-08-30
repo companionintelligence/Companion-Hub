@@ -1,15 +1,14 @@
 import { disableTotpMutation, getTotpUriMutation, setupTotpMutation } from '@/api-client/@tanstack/react-query.gen';
 import { Button } from '@/components/ui/Button';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/Dialog';
-import { Input } from '@/components/ui/Input';
 import { OtpInput } from '@/components/ui/OtpInput';
 import { PasswordInput } from '@/components/ui/PasswordInput/PasswordInput';
+import { QrCode } from '@/components/ui/qr-code';
 import { Switch } from '@/components/ui/Switch';
 import { useAppContext } from '@/context/app-context';
 import { useDisclosure } from '@/lib/hooks/use-disclosure';
 import type { TranslatableError } from '@/types/error.types';
 import { useMutation } from '@tanstack/react-query';
-import { QRCodeSVG } from 'qrcode.react';
 import React from 'react';
 import { toast } from 'react-hot-toast';
 import { useTranslation } from 'react-i18next';
@@ -83,13 +82,28 @@ export const OtpForm = (props: { totpEnabled: boolean }) => {
 
     return (
       <div className="mt-4">
+        {/*
+          Both the QR and the base32 key encode the same second factor, so both sit
+          behind `reveal`. They used to render unconditionally: a screenshot or a
+          screen share of this panel handed over a permanent second factor, and
+          neither re-encodes away like a copied string does.
+
+          `fallback` is the manual-entry key rather than the otpauth URI — the URI
+          is only useful to a camera, while the key is what someone types into an
+          authenticator when the camera will not focus.
+        */}
         <div className="mb-4">
-          <p className="text-muted-foreground">{t('SETTINGS_SECURITY_SCAN_QR_CODE')}</p>
-          <QRCodeSVG value={uri} />
-        </div>
-        <div className="mb-4">
-          <p className="text-muted-foreground">{t('SETTINGS_SECURITY_ENTER_KEY_MANUALLY')}</p>
-          <Input name="secret key" value={key} readOnly />
+          <QrCode
+            value={uri}
+            fallback={key}
+            reveal
+            caption={
+              <>
+                <span className="block">{t('SETTINGS_SECURITY_SCAN_QR_CODE')}</span>
+                <span className="block">{t('SETTINGS_SECURITY_ENTER_KEY_MANUALLY')}</span>
+              </>
+            }
+          />
         </div>
         <div className="mb-4">
           <p className="text-muted-foreground">{t('SETTINGS_SECURITY_ENTER_2FA_CODE')}</p>

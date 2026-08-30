@@ -561,9 +561,15 @@ export class CloudflareClientService {
 
       if (alreadyRunning && options.forceRestart) {
         this.logger.warn('ensureCloudflaredRunning: restarting cloudflared after tunnel credential recovery...');
-        await dockerService.restartContainer('cloudflared');
-        this.logger.warn('Cloudflared container restarted with recovered credentials.');
-        return true;
+        try {
+          await dockerService.restartContainer('cloudflared');
+          this.logger.warn('Cloudflared container restarted with recovered credentials.');
+          return true;
+        } catch (restartError) {
+          this.logger.warn(
+            `ensureCloudflaredRunning: restart failed (${restartError instanceof Error ? restartError.message : String(restartError)}); falling through to recreate`,
+          );
+        }
       }
 
       this.logger.warn('Ensuring cloudflared container is running (post-boot)...');

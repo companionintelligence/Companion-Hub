@@ -1,13 +1,8 @@
 name: 'CodeQL - Code Quality'
-
+# TEMPORARY (Actions credit): automatic PR/push/schedule triggers disabled.
+# Re-enable when credits recover. Manual: gh workflow run codeql.yml
 on:
-  push:
-    branches:
-      - dev
-      - main
-  pull_request:
-  schedule:
-    - cron: '0 6 * * 1'
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
