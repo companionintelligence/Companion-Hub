@@ -79,7 +79,7 @@ function ScanQrDisclosure({ value, label, summaryLabel }: { value: string; label
         aria-expanded={open}
         aria-label={summaryLabel}
         onClick={() => setOpen((current) => !current)}
-        className="flex shrink-0 cursor-pointer items-center justify-center gap-1.5 rounded-md border border-border/70 bg-background/40 px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+        className="flex h-10 shrink-0 cursor-pointer items-center justify-center gap-1.5 rounded-md border border-border/70 bg-background/40 px-3 text-xs font-medium text-foreground transition-colors hover:bg-accent hover:text-accent-foreground md:h-11"
       >
         <QrCodeIcon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden />
         {label}
@@ -766,7 +766,7 @@ export default function DeviceRegistrationPage() {
               <ScanQrDisclosure value={loginUrl} label={t('DEVICE_REGISTRATION_SCAN_QR')} summaryLabel={t('DEVICE_REGISTRATION_SCAN_QR_SIGN_IN')} />
             </div>
           </div>
-          <div className="mt-3 space-y-3 border-t border-border/60 pt-2">
+          <div className="mt-3 space-y-2 border-t border-border/60 pt-2">
             <p className="text-sm text-muted-foreground">{t('DEVICE_REGISTRATION_NO_ACCOUNT_YET')}</p>
             <div className="flex flex-wrap items-center gap-2">
               <Button asChild variant="outline" className="h-10 flex-1 text-sm font-semibold md:h-11 md:text-base">
@@ -845,14 +845,14 @@ export default function DeviceRegistrationPage() {
                   }}
                   maxLength={6}
                   disabled={isPairing}
-                  className={`h-9 min-w-0 flex-1 rounded-md border bg-background/60 px-3 py-1 text-base font-mono tracking-widest shadow-sm transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 md:text-sm ${pairingError ? 'border-destructive focus-visible:ring-destructive' : 'border-input'}`}
+                  className={`h-10 min-w-0 flex-1 rounded-md border bg-background/60 px-3 py-1 text-base font-mono tracking-widest shadow-sm transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 md:h-11 md:text-sm ${pairingError ? 'border-destructive focus-visible:ring-destructive' : 'border-input'}`}
                 />
                 <Button
                   intent="primary"
                   onClick={() => void handlePair()}
                   disabled={pairingCode.length !== 6 || isPairing}
                   loading={isPairing}
-                  className="w-full shrink-0 sm:w-40"
+                  className="h-10 w-full shrink-0 sm:w-40 md:h-11"
                 >
                   {isPairing ? t('DEVICE_REGISTRATION_REGISTERING') : t('DEVICE_REGISTRATION_REGISTER')}
                 </Button>
