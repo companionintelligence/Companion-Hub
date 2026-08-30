@@ -746,16 +746,28 @@ export default function DeviceRegistrationPage() {
               {t('DEVICE_REGISTRATION_STEP_1_TITLE')}
             </HintText>
           </div>
-          <div className="mt-6 flex flex-wrap items-center gap-2">
-            <Button asChild className="h-10 flex-1 text-sm font-semibold md:h-11 md:text-base" intent="primary">
-              <a href={loginUrl} target="_blank" rel="noopener noreferrer">
-                {t('DEVICE_REGISTRATION_LOGIN_TO_COMPANION')}
-              </a>
-            </Button>
-            <ScanQrDisclosure value={loginUrl} label={t('DEVICE_REGISTRATION_SCAN_QR')} summaryLabel={t('DEVICE_REGISTRATION_SCAN_QR_SIGN_IN')} />
+          <div className="mt-6 space-y-2">
+            {/*
+              Invisible, matching Step 2's "Current Device ID:" label line
+              in height. Step 2's first row is a label-then-box pair; this
+              row is just a button. Without this spacer the two panels'
+              first rows start at different heights and everything below
+              them drifts out of alignment between the columns.
+            */}
+            <div className="text-sm text-muted-foreground invisible select-none" aria-hidden="true">
+              &nbsp;
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <Button asChild className="h-10 flex-1 text-sm font-semibold md:h-11 md:text-base" intent="primary">
+                <a href={loginUrl} target="_blank" rel="noopener noreferrer">
+                  {t('DEVICE_REGISTRATION_LOGIN_TO_COMPANION')}
+                </a>
+              </Button>
+              <ScanQrDisclosure value={loginUrl} label={t('DEVICE_REGISTRATION_SCAN_QR')} summaryLabel={t('DEVICE_REGISTRATION_SCAN_QR_SIGN_IN')} />
+            </div>
           </div>
-          <div className="mt-6 space-y-3 border-t border-border/60 pt-4">
-            <p className="text-center text-sm text-muted-foreground">{t('DEVICE_REGISTRATION_NO_ACCOUNT_YET')}</p>
+          <div className="mt-3 space-y-3 border-t border-border/60 pt-2">
+            <p className="text-sm text-muted-foreground">{t('DEVICE_REGISTRATION_NO_ACCOUNT_YET')}</p>
             <div className="flex flex-wrap items-center gap-2">
               <Button asChild variant="outline" className="h-10 flex-1 text-sm font-semibold md:h-11 md:text-base">
                 <a href={signupUrl} target="_blank" rel="noopener noreferrer">
@@ -783,7 +795,7 @@ export default function DeviceRegistrationPage() {
               <div className="text-sm text-muted-foreground">
                 <LabelWithHint label={t('DEVICE_REGISTRATION_CURRENT_DEVICE_ID')} hint={t(REGISTRATION_DEVICE_ID_HINT)} hintId="reg-device-id" />
               </div>
-              <div className="flex items-center gap-2 rounded-lg border border-border/60 bg-background/60 px-3 py-2">
+              <div className="flex h-10 items-center gap-2 rounded-lg border border-border/60 bg-background/60 px-3 md:h-11">
                 <p title={deviceId ?? undefined} className="min-w-0 flex-1 truncate font-mono text-sm text-foreground">
                   {deviceId ?? t('DEVICE_REGISTRATION_LOADING_DEVICE_ID')}
                 </p>
