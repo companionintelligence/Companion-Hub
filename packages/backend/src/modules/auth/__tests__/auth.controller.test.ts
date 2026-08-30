@@ -437,6 +437,36 @@ describe('AuthController', () => {
       expect(location.searchParams.get('redirect')).toBe('http://importer-org.ci.lan/');
     });
 
+    it('does not 500 when device_registration lookup fails during tunnel forward-auth', async () => {
+      // Regression: Postgres auth/connection errors used to escape resolvePublicHub as an
+      // unhandled exception on GET /api/auth/traefik (Sentry CI-HUB-BACKEND-JD). Treat like
+      // "no registration" so Traefik gets a redirect instead of a hard failure.
+      deviceRegistration.getFirstDeviceRegistration.mockRejectedValue(
+        Object.assign(new Error('Failed query: select ... from "device_registration" limit $1\nparams: 1'), {
+          cause: new Error('password authentication failed for user "companion"'),
+        }),
+      );
+      config.getConfig.mockReturnValue({ domain: 'example.com' } as never);
+      forwardAuthSecrets.resolveAppUrnForHost.mockResolvedValue('nextcloud:ci-marketplace' as never);
+      const req = {
+        user: undefined,
+        headers: {
+          'cf-ray': 'a32648954da24bbb-BUF',
+          'x-forwarded-uri': '/',
+          'x-forwarded-proto': 'https',
+          'x-forwarded-host': 'nextcloud-test-echolign.ci.lan',
+        },
+      } as unknown as Request;
+      const res = { status: vi.fn().mockReturnThis(), redirect: vi.fn() } as unknown as Response;
+
+      await expect(authController.traefik(req, res)).resolves.toBeUndefined();
+
+      expect(res.redirect).toHaveBeenCalled();
+      const location = new URL((res.redirect as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]);
+      expect(location.origin).toBe('https://ci.lan');
+      expect(logger.warn).toHaveBeenCalledWith('Failed to load device registration while resolving public Hub origin', expect.any(Error));
+    });
+
     it('sends a tunnel visitor to the Hub login when the app has no public hostname to return to', async () => {
       // Registered appliance, but the host map cannot name a public address for this host (a
       // fresh install the map has not caught up with, a router created outside the app

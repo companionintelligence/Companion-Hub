@@ -1,8 +1,8 @@
 name: PR Compliance
-
+# TEMPORARY (Actions credit): automatic PR triggers disabled.
+# Re-enable when credits recover. Manual: gh workflow run pr-compliance.yml
 on:
-  pull_request:
-    types: [opened, edited, synchronize]
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}

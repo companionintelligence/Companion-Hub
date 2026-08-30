@@ -3,6 +3,7 @@
 
 mod commands;
 mod discovery;
+pub mod docker_engine;
 mod error_reporting;
 pub mod hub_env;
 pub mod hub_manager;
@@ -291,17 +292,32 @@ fn open_directory(
         &format!("opening {}", path.display()),
     );
 
-    app.opener()
-        .open_path(path.to_string_lossy().to_string(), None::<&str>)
-        .map_err(|err| {
-            let message = err.to_string();
-            let _ = hub_manager::append_desktop_log_for(
-                &data_dir,
-                "open_folder",
-                &format!("failed to open {}: {message}", path.display()),
-            );
-            message
-        })
+    // Reveal in the OS file manager (Finder / Explorer / Nautilus). `open_path`
+    // goes through xdg-open / `open`, which on Linux often fails for directories
+    // even when they exist — that produced the "folder may not exist" toast.
+    if let Err(reveal_err) = app.opener().reveal_item_in_dir(path) {
+        let _ = hub_manager::append_desktop_log_for(
+            &data_dir,
+            "open_folder",
+            &format!(
+                "reveal_item_in_dir failed for {}: {reveal_err}; falling back to open_path",
+                path.display()
+            ),
+        );
+        app.opener()
+            .open_path(path.to_string_lossy().to_string(), None::<&str>)
+            .map_err(|err| {
+                let message = err.to_string();
+                let _ = hub_manager::append_desktop_log_for(
+                    &data_dir,
+                    "open_folder",
+                    &format!("failed to open {}: {message}", path.display()),
+                );
+                message
+            })
+    } else {
+        Ok(())
+    }
 }
 
 /// Open the desktop logs directory in the system file manager.

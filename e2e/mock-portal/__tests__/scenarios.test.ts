@@ -177,7 +177,7 @@ describe('buildRoutes', () => {
   });
 
   describe('base routes present in every scenario', () => {
-    const BASE_ROUTES = ['GET /v2/', 'GET /v2/ci-os-hub/tags/list'] as const;
+    const BASE_ROUTES = ['GET /v2/', 'GET /v2/ci-hub/tags/list'] as const;
 
     for (const scenario of PORTAL_SCENARIOS) {
       it(`scenario "${scenario}" exposes all base routes`, () => {

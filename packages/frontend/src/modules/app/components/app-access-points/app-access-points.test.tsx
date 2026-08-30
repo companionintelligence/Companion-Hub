@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
-import { AppAccessPoints, buildAppAccessPoints } from './app-access-points';
+import { AppAccessPoints, buildAppAccessPoints, isLoopbackAccessUrl, isMalformedAccessUrl } from './app-access-points';
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
@@ -408,5 +408,103 @@ describe('AppAccessPoints', () => {
     );
 
     expect(screen.getByText('APP_DETAILS_ACCESS_TITLE')).toBeInTheDocument();
+  });
+
+  it('offers a QR for routable access points and refuses one for the loopback local URL', () => {
+    // `internalIp` is `0.0.0.0` in this suite's app-context mock, so the local
+    // entry resolves to `http://127.0.0.1:3000/login` — a URL no phone can dial.
+    render(
+      <AppAccessPoints
+        app={
+          {
+            status: 'running',
+            port: 3000,
+            localSubdomain: 'openwebui',
+            domain: 'openwebui-studio-companion.companionintelligence.com',
+            exposed: true,
+            exposedLocal: true,
+          } as any
+        }
+        info={
+          {
+            urn: 'openwebui:community',
+            name: 'Open WebUI',
+            no_gui: false,
+            https: false,
+            url_suffix: '/login',
+            port: 3000,
+            dynamic_config: true,
+            exposable: true,
+          } as any
+        }
+      />,
+    );
+
+    const qrButtons = screen.getAllByLabelText('APP_DETAILS_ACCESS_SHOW_QR');
+    expect(qrButtons).toHaveLength(3);
+
+    const [publicQr, vpnQr, localQr] = qrButtons;
+    expect(publicQr).toBeEnabled();
+    expect(vpnQr).toBeEnabled();
+    expect(localQr).toBeDisabled();
+    expect(localQr).toHaveAttribute('title', 'APP_DETAILS_ACCESS_QR_LOOPBACK');
+
+    fireEvent.click(publicQr as HTMLElement);
+
+    // The dialog must carry the same URL the card shows, as a scannable code and
+    // as selectable text
+    expect(screen.getByTitle('COMMON_QR_CODE')).toBeInTheDocument();
+    expect(screen.getAllByText('https://openwebui-studio-companion.companionintelligence.com/login').length).toBeGreaterThan(1);
+  });
+});
+
+describe('isLoopbackAccessUrl', () => {
+  it.each([
+    'http://127.0.0.1:3000/login',
+    'http://127.1.2.3:3000',
+    'http://localhost:8080',
+    'http://[::1]:3000',
+    'http://0.0.0.0:3000',
+  ])('treats %s as loopback', (url) => {
+    expect(isLoopbackAccessUrl(url)).toBe(true);
+  });
+
+  it.each([
+    'https://openwebui.example.com/login',
+    'http://192.168.1.5:3000',
+    'https://hub-tailscale-1.capybara-ulmer.ts.net:3000',
+  ])('treats %s as routable', (url) => {
+    expect(isLoopbackAccessUrl(url)).toBe(false);
+  });
+
+  it('does not claim a missing URL is loopback', () => {
+    // A null URL means "no route", which the card already handles by disabling
+    // every button — it must not be reported as a loopback address.
+    expect(isLoopbackAccessUrl(null)).toBe(false);
+  });
+
+  it('refuses to share an unparseable URL', () => {
+    expect(isLoopbackAccessUrl('not a url')).toBe(true);
+  });
+});
+
+describe('isMalformedAccessUrl', () => {
+  it('separates an unreadable address from a loopback one', () => {
+    // Both disable the QR button, but only one of them is a claim about *where*
+    // the address points — telling someone a garbled string "only works on this
+    // machine" is a fact the card does not have.
+    expect(isMalformedAccessUrl('not a url')).toBe(true);
+    expect(isLoopbackAccessUrl('not a url')).toBe(true);
+
+    expect(isMalformedAccessUrl('http://127.0.0.1:3000/login')).toBe(false);
+    expect(isLoopbackAccessUrl('http://127.0.0.1:3000/login')).toBe(true);
+  });
+
+  it.each(['https://openwebui.example.com/login', 'http://192.168.1.5:3000'])('treats %s as readable', (url) => {
+    expect(isMalformedAccessUrl(url)).toBe(false);
+  });
+
+  it('does not call a missing URL malformed', () => {
+    expect(isMalformedAccessUrl(null)).toBe(false);
   });
 });

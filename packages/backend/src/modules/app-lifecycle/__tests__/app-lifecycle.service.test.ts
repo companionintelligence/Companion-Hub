@@ -1253,6 +1253,36 @@ describe('AppLifecycleService', () => {
       expectEventAfterNthUpdate('start_error', 1);
     });
 
+    // Reproduces production Sentry issue dfe2be44b8084d35b76c6d1d282c043d (comfyui,
+    // failure_phase "start"): the command's errorCode/errorDetail/settingsPath must reach the
+    // emitted SSE event, not just its message — otherwise the frontend's Settings deep-link and
+    // errorCode-driven i18n (app-actions.tsx) never fire for a start failure.
+    it('startApp error: errorCode/errorDetail/settingsPath reach the emitted SSE event', async () => {
+      appEventsQueue.publish.mockResolvedValue({
+        success: false,
+        message: 'This app needs AMD ROCm. Set up ROCm in AI Settings, then retry.',
+        errorCode: 'rocm_kfd_missing',
+        errorDetail: 'The ROCm compute device (/dev/kfd) was not found on this machine.',
+        settingsPath: '/settings?tab=ai&section=rocm',
+      } as any);
+
+      await service.startApp({ appUrn });
+      await flushMicrotasks();
+
+      expect(sseService.emit).toHaveBeenCalledWith(
+        'app',
+        expect.objectContaining({
+          event: 'start_error',
+          errorCode: 'rocm_kfd_missing',
+          errorDetail: 'The ROCm compute device (/dev/kfd) was not found on this machine.',
+          settingsPath: '/settings?tab=ai&section=rocm',
+        }),
+      );
+      // The Sentry classification path also needs errorCode — without it, classifyAppFailure
+      // has nothing to key off since the friendly message contains no device path or regex hit.
+      expect(errorReportingService.reportAppFailure).toHaveBeenCalledWith(expect.objectContaining({ phase: 'start', errorCode: 'rocm_kfd_missing' }));
+    });
+
     it('startApp: transitional status_change emitted after DB commit', async () => {
       await service.startApp({ appUrn });
 
@@ -1277,6 +1307,29 @@ describe('AppLifecycleService', () => {
       await flushMicrotasks();
 
       expectEventAfterNthUpdate('stop_error', 1);
+    });
+
+    it('stopApp error: errorCode/errorDetail/settingsPath reach the emitted SSE event', async () => {
+      appEventsQueue.publish.mockResolvedValue({
+        success: false,
+        message: 'This app needs AMD ROCm. Set up ROCm in AI Settings, then retry.',
+        errorCode: 'rocm_kfd_missing',
+        errorDetail: 'The ROCm compute device (/dev/kfd) was not found on this machine.',
+        settingsPath: '/settings?tab=ai&section=rocm',
+      } as any);
+
+      await service.stopApp({ appUrn });
+      await flushMicrotasks();
+
+      expect(sseService.emit).toHaveBeenCalledWith(
+        'app',
+        expect.objectContaining({
+          event: 'stop_error',
+          errorCode: 'rocm_kfd_missing',
+          errorDetail: 'The ROCm compute device (/dev/kfd) was not found on this machine.',
+          settingsPath: '/settings?tab=ai&section=rocm',
+        }),
+      );
     });
 
     it('stopApp: transitional status_change emitted after DB commit', async () => {
@@ -1361,12 +1414,89 @@ describe('AppLifecycleService', () => {
       expectEventAfterNthUpdate('restart_error', 1);
     });
 
+    // A device present at install time can be gone by a later restart (ROCm/KVM modules not
+    // yet loaded at boot, host reconfigured) — the classification fields must reach the client
+    // the same way they do for start.
+    it('restartApp error: errorCode/errorDetail/settingsPath reach the emitted SSE event', async () => {
+      appEventsQueue.publish.mockResolvedValue({
+        success: false,
+        message: 'This app needs AMD ROCm. Set up ROCm in AI Settings, then retry.',
+        errorCode: 'rocm_kfd_missing',
+        errorDetail: 'The ROCm compute device (/dev/kfd) was not found on this machine.',
+        settingsPath: '/settings?tab=ai&section=rocm',
+      } as any);
+
+      await service.restartApp({ appUrn });
+      await flushMicrotasks();
+
+      expect(sseService.emit).toHaveBeenCalledWith(
+        'app',
+        expect.objectContaining({
+          event: 'restart_error',
+          errorCode: 'rocm_kfd_missing',
+          errorDetail: 'The ROCm compute device (/dev/kfd) was not found on this machine.',
+          settingsPath: '/settings?tab=ai&section=rocm',
+        }),
+      );
+    });
+
     it('restartApp: transitional status_change emitted after DB commit', async () => {
       await service.restartApp({ appUrn });
 
       const dbIdx = callOrder.indexOf('db_update');
       const sseIdx = callOrder.indexOf('sse:status_change');
       expect(sseIdx).toBeGreaterThan(dbIdx);
+    });
+
+    // ── startAppAndWait / restartAppAndWait ─────────────────────────────
+    // These are separate await-based code paths from startApp/restartApp (used by callers like
+    // post-update restart that must block on the outcome, not just publishing) with their own
+    // destructure-and-cast of the queue result — worth covering independently of the .then()-based
+    // variants above, since a mistake in one does not imply a mistake in the other.
+    it('startAppAndWait error: errorCode/errorDetail/settingsPath reach the emitted SSE event', async () => {
+      appEventsQueue.publish.mockResolvedValue({
+        success: false,
+        message: 'This app needs AMD ROCm. Set up ROCm in AI Settings, then retry.',
+        errorCode: 'rocm_kfd_missing',
+        errorDetail: 'The ROCm compute device (/dev/kfd) was not found on this machine.',
+        settingsPath: '/settings?tab=ai&section=rocm',
+      } as any);
+
+      const result = await service.startAppAndWait({ appUrn });
+
+      expect(result).toBe(false);
+      expect(sseService.emit).toHaveBeenCalledWith(
+        'app',
+        expect.objectContaining({
+          event: 'start_error',
+          errorCode: 'rocm_kfd_missing',
+          errorDetail: 'The ROCm compute device (/dev/kfd) was not found on this machine.',
+          settingsPath: '/settings?tab=ai&section=rocm',
+        }),
+      );
+    });
+
+    it('restartAppAndWait error: errorCode/errorDetail/settingsPath reach the emitted SSE event', async () => {
+      appEventsQueue.publish.mockResolvedValue({
+        success: false,
+        message: 'This app needs AMD ROCm. Set up ROCm in AI Settings, then retry.',
+        errorCode: 'rocm_kfd_missing',
+        errorDetail: 'The ROCm compute device (/dev/kfd) was not found on this machine.',
+        settingsPath: '/settings?tab=ai&section=rocm',
+      } as any);
+
+      const result = await service.restartAppAndWait({ appUrn });
+
+      expect(result).toBe(false);
+      expect(sseService.emit).toHaveBeenCalledWith(
+        'app',
+        expect.objectContaining({
+          event: 'restart_error',
+          errorCode: 'rocm_kfd_missing',
+          errorDetail: 'The ROCm compute device (/dev/kfd) was not found on this machine.',
+          settingsPath: '/settings?tab=ai&section=rocm',
+        }),
+      );
     });
 
     // ── uninstallApp ─────────────────────────────────────────────────────
@@ -1394,6 +1524,29 @@ describe('AppLifecycleService', () => {
       // Backups follow the data choice: preserving app data/volumes preserves the backups too (#908).
       expect(backupManager.deleteAppBackupsByUrn).not.toHaveBeenCalled();
       expect(appEventsQueue.publish).toHaveBeenCalledWith(expect.objectContaining({ command: 'uninstall', appUrn, deleteAllData: false }));
+    });
+
+    it('uninstallApp error: errorCode/errorDetail/settingsPath reach the emitted SSE event', async () => {
+      appEventsQueue.publish.mockResolvedValue({
+        success: false,
+        message: 'This app needs AMD ROCm. Set up ROCm in AI Settings, then retry.',
+        errorCode: 'rocm_kfd_missing',
+        errorDetail: 'The ROCm compute device (/dev/kfd) was not found on this machine.',
+        settingsPath: '/settings?tab=ai&section=rocm',
+      } as any);
+
+      await service.uninstallApp({ appUrn, deleteAllData: false });
+      await flushMicrotasks();
+
+      expect(sseService.emit).toHaveBeenCalledWith(
+        'app',
+        expect.objectContaining({
+          event: 'uninstall_error',
+          errorCode: 'rocm_kfd_missing',
+          errorDetail: 'The ROCm compute device (/dev/kfd) was not found on this machine.',
+          settingsPath: '/settings?tab=ai&section=rocm',
+        }),
+      );
     });
 
     // Each scenario is its own `it` so a regression in one reports independently —
@@ -1527,6 +1680,29 @@ describe('AppLifecycleService', () => {
       await flushMicrotasks();
 
       expect(sseService.emit).toHaveBeenCalledWith('app', expect.objectContaining({ event: 'reset_error', appStatus: 'stopped', error: 'fail' }));
+    });
+
+    it('resetApp error: errorCode/errorDetail/settingsPath reach the emitted SSE event', async () => {
+      appEventsQueue.publish.mockResolvedValue({
+        success: false,
+        message: 'This app needs AMD ROCm. Set up ROCm in AI Settings, then retry.',
+        errorCode: 'rocm_kfd_missing',
+        errorDetail: 'The ROCm compute device (/dev/kfd) was not found on this machine.',
+        settingsPath: '/settings?tab=ai&section=rocm',
+      } as any);
+
+      await service.resetApp({ appUrn });
+      await flushMicrotasks();
+
+      expect(sseService.emit).toHaveBeenCalledWith(
+        'app',
+        expect.objectContaining({
+          event: 'reset_error',
+          errorCode: 'rocm_kfd_missing',
+          errorDetail: 'The ROCm compute device (/dev/kfd) was not found on this machine.',
+          settingsPath: '/settings?tab=ai&section=rocm',
+        }),
+      );
     });
 
     it('resetApp: transitional status_change emitted after DB commit', async () => {
@@ -1689,6 +1865,29 @@ describe('AppLifecycleService', () => {
       await flushMicrotasks();
 
       expectEventAfterNthUpdate('update_error', 1);
+    });
+
+    it('updateApp error: errorCode/errorDetail/settingsPath reach the emitted SSE event', async () => {
+      appEventsQueue.publish.mockResolvedValue({
+        success: false,
+        message: 'This app needs AMD ROCm. Set up ROCm in AI Settings, then retry.',
+        errorCode: 'rocm_kfd_missing',
+        errorDetail: 'The ROCm compute device (/dev/kfd) was not found on this machine.',
+        settingsPath: '/settings?tab=ai&section=rocm',
+      } as any);
+
+      await service.updateApp({ appUrn, performBackup: false });
+      await flushMicrotasks();
+
+      expect(sseService.emit).toHaveBeenCalledWith(
+        'app',
+        expect.objectContaining({
+          event: 'update_error',
+          errorCode: 'rocm_kfd_missing',
+          errorDetail: 'The ROCm compute device (/dev/kfd) was not found on this machine.',
+          settingsPath: '/settings?tab=ai&section=rocm',
+        }),
+      );
     });
 
     it('updateApp success restores stopped state before emitting update_success', async () => {

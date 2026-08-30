@@ -2,7 +2,8 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router';
 import { Button } from '@/components/ui/Button';
 import { Alert, AlertDescription } from '@/components/ui/Alert/Alert';
-import { AlertCircle, CheckCircle2, ChevronRight, Copy, Loader2 } from 'lucide-react';
+import { QrCode } from '@/components/ui/qr-code';
+import { AlertCircle, CheckCircle2, ChevronRight, Copy, Loader2, QrCode as QrCodeIcon } from 'lucide-react';
 import {
   fetchDeviceRegistrationInfoResult,
   fetchRegistrationStateDrift,
@@ -60,6 +61,42 @@ type PairingTarget = {
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Headless appliances (and SSH sessions) have no browser for the Sign in /
+ * Create account links. Keep the QR + fallback URL off the default two-column
+ * layout — those plates were stretching Step 1 while Step 2 sat empty — and
+ * reveal them from a "Scan QR" disclosure instead.
+ */
+function ScanQrDisclosure({ value, label, summaryLabel }: { value: string; label: string; summaryLabel: string }) {
+  const [open, setOpen] = useState(false);
+
+  return (
+    <>
+      <button
+        type="button"
+        aria-expanded={open}
+        aria-label={summaryLabel}
+        onClick={() => setOpen((current) => !current)}
+        className="flex h-10 shrink-0 cursor-pointer items-center justify-center gap-1.5 rounded-md border border-border/70 bg-background/40 px-3 text-xs font-medium text-foreground transition-colors hover:bg-accent hover:text-accent-foreground md:h-11"
+      >
+        <QrCodeIcon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden />
+        {label}
+      </button>
+      {open ? (
+        <div className="mt-4 flex w-full justify-center">
+          {/*
+            No `mark`: these URLs are long enough that level `H` plus the logo
+            pushes the version up, and this is the one screen where a failed scan
+            leaves the user with no way forward. Size is pinned at 200px so the
+            module pitch is scannable (160px gave ~3px/module on the signup URL).
+          */}
+          <QrCode value={value} fallback={value} size={200} bare />
+        </div>
+      ) : null}
+    </>
+  );
 }
 
 function getProgressCopy(status: RegistrationStatus | null, redirectStatus: string, t: (key: string) => string) {
@@ -697,7 +734,7 @@ export default function DeviceRegistrationPage() {
 
       {driftChoice === 'restore' ? <RegistrationRestoreBanner /> : null}
 
-      <div className="grid grid-cols-1 items-stretch gap-4 md:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] md:gap-5">
+      <div className="grid grid-cols-1 items-start gap-4 md:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] md:gap-5">
         <section className="flex flex-col rounded-lg border border-border/60 bg-muted/20 p-6 md:p-8">
           <div className="flex items-start gap-1 flex-wrap">
             <HintText
@@ -709,36 +746,56 @@ export default function DeviceRegistrationPage() {
               {t('DEVICE_REGISTRATION_STEP_1_TITLE')}
             </HintText>
           </div>
-          <Button asChild className="mt-6 h-10 w-full text-sm font-semibold md:h-11 md:text-base" intent="primary">
-            <a href={loginUrl} target="_blank" rel="noopener noreferrer">
-              {t('DEVICE_REGISTRATION_LOGIN_TO_COMPANION')}
-            </a>
-          </Button>
-          <p className="mt-3 text-sm leading-relaxed text-muted-foreground">{t('DEVICE_REGISTRATION_LOGIN_HINT')}</p>
-          <div className="mt-6 space-y-3 border-t border-border/60 pt-5">
-            <p className="text-center text-sm text-muted-foreground">{t('DEVICE_REGISTRATION_NO_ACCOUNT_YET')}</p>
-            <Button asChild variant="outline" className="h-10 w-full text-sm font-semibold md:h-11 md:text-base">
-              <a href={signupUrl} target="_blank" rel="noopener noreferrer">
-                {t('DEVICE_REGISTRATION_CREATE_ACCOUNT')}
-              </a>
-            </Button>
+          <div className="mt-6 space-y-2">
+            {/*
+              Invisible, matching Step 2's "Current Device ID:" label line
+              in height. Step 2's first row is a label-then-box pair; this
+              row is just a button. Without this spacer the two panels'
+              first rows start at different heights and everything below
+              them drifts out of alignment between the columns.
+            */}
+            <div className="text-sm text-muted-foreground invisible select-none" aria-hidden="true">
+              &nbsp;
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <Button asChild className="h-10 flex-1 text-sm font-semibold md:h-11 md:text-base" intent="primary">
+                <a href={loginUrl} target="_blank" rel="noopener noreferrer">
+                  {t('DEVICE_REGISTRATION_LOGIN_TO_COMPANION')}
+                </a>
+              </Button>
+              <ScanQrDisclosure value={loginUrl} label={t('DEVICE_REGISTRATION_SCAN_QR')} summaryLabel={t('DEVICE_REGISTRATION_SCAN_QR_SIGN_IN')} />
+            </div>
+          </div>
+          <div className="mt-3 space-y-2 border-t border-border/60 pt-2">
+            <p className="text-sm text-muted-foreground">{t('DEVICE_REGISTRATION_NO_ACCOUNT_YET')}</p>
+            <div className="flex flex-wrap items-center gap-2">
+              <Button asChild variant="outline" className="h-10 flex-1 text-sm font-semibold md:h-11 md:text-base">
+                <a href={signupUrl} target="_blank" rel="noopener noreferrer">
+                  {t('DEVICE_REGISTRATION_CREATE_ACCOUNT')}
+                </a>
+              </Button>
+              <ScanQrDisclosure
+                value={signupUrl}
+                label={t('DEVICE_REGISTRATION_SCAN_QR')}
+                summaryLabel={t('DEVICE_REGISTRATION_SCAN_QR_CREATE_ACCOUNT')}
+              />
+            </div>
           </div>
         </section>
 
-        <div aria-hidden="true" className="hidden items-center justify-center text-muted-foreground md:flex">
-          <ChevronRight className="h-5 w-5" />
+        <div aria-hidden="true" className="hidden items-center justify-center self-stretch text-muted-foreground md:flex">
+          <ChevronRight className="h-8 w-8" />
         </div>
 
-        <section className="flex flex-col rounded-lg border border-border/60 bg-muted/20 p-5">
+        <section className="flex flex-col rounded-lg border border-border/60 bg-muted/20 p-6 md:p-8">
           <h2 className="text-lg font-semibold leading-snug text-foreground md:text-xl">{t('DEVICE_REGISTRATION_STEP_2_TITLE')}</h2>
-          <p className="mt-3 text-sm leading-relaxed text-muted-foreground">{t('DEVICE_REGISTRATION_STEP_2_SUBTITLE')}</p>
 
-          <div className="mt-5 space-y-4">
+          <div className="mt-6 space-y-4">
             <div className="space-y-2">
               <div className="text-sm text-muted-foreground">
                 <LabelWithHint label={t('DEVICE_REGISTRATION_CURRENT_DEVICE_ID')} hint={t(REGISTRATION_DEVICE_ID_HINT)} hintId="reg-device-id" />
               </div>
-              <div className="flex items-center gap-2 rounded-lg border border-border/60 bg-background/60 px-3 py-2">
+              <div className="flex h-10 items-center gap-2 rounded-lg border border-border/60 bg-background/60 px-3 md:h-11">
                 <p title={deviceId ?? undefined} className="min-w-0 flex-1 truncate font-mono text-sm text-foreground">
                   {deviceId ?? t('DEVICE_REGISTRATION_LOADING_DEVICE_ID')}
                 </p>
@@ -788,14 +845,14 @@ export default function DeviceRegistrationPage() {
                   }}
                   maxLength={6}
                   disabled={isPairing}
-                  className={`h-9 min-w-0 flex-1 rounded-md border bg-background/60 px-3 py-1 text-base font-mono tracking-widest shadow-sm transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 md:text-sm ${pairingError ? 'border-destructive focus-visible:ring-destructive' : 'border-input'}`}
+                  className={`h-10 min-w-0 flex-1 rounded-md border bg-background/60 px-3 py-1 text-base font-mono tracking-widest shadow-sm transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 md:h-11 md:text-sm ${pairingError ? 'border-destructive focus-visible:ring-destructive' : 'border-input'}`}
                 />
                 <Button
                   intent="primary"
                   onClick={() => void handlePair()}
                   disabled={pairingCode.length !== 6 || isPairing}
                   loading={isPairing}
-                  className="w-full shrink-0 sm:w-40"
+                  className="h-10 w-full shrink-0 sm:w-40 md:h-11"
                 >
                   {isPairing ? t('DEVICE_REGISTRATION_REGISTERING') : t('DEVICE_REGISTRATION_REGISTER')}
                 </Button>

@@ -13,16 +13,10 @@ name: Mobile Build
 # secrets (Google Play upload key / Apple Developer cert + provisioning profile);
 # see the "Release signing" section in packages/mobile/README.md.
 
+# TEMPORARY (Actions credit): automatic push triggers disabled.
+# Re-enable when credits recover. Manual: gh workflow run mobile-build.yml
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - dev
-    paths:
-      - 'packages/mobile/**'
-      - 'packages/frontend/**'
-      - 'packages/common/**'
-      - '.github/workflows/mobile-build.yml'
 
 concurrency:
   group: mobile-${{ github.ref }}

@@ -115,12 +115,16 @@ export function translateDockerNetworkOverlapError(error: unknown, conflictingCi
 
 export function translateRocmKfdInstallMessage(message: string): AppLifecycleError | null {
   const normalizedMessage = message.toLowerCase();
-  const referencesKfd = normalizedMessage.includes('/dev/kfd');
+  // Docker checks compose `devices` entries in order and fails on the first one it can't
+  // attach. ROCm apps list /dev/dri before /dev/kfd (see CI-Marketplace comfyui/hunyuan3d-rocm
+  // docker-compose.json), so a host missing both reports /dev/dri in the error text, not
+  // /dev/kfd — match either device path, not just /dev/kfd.
+  const referencesRocmDevice = normalizedMessage.includes('/dev/kfd') || normalizedMessage.includes('/dev/dri');
   const missingRocmDevice =
     normalizedMessage.includes('error gathering device information') && normalizedMessage.includes('no such file or directory');
   const blockedKfdPath = normalizedMessage.includes('file path') && normalizedMessage.includes('is not allowed');
 
-  if (referencesKfd && (missingRocmDevice || blockedKfdPath)) {
+  if (referencesRocmDevice && (missingRocmDevice || blockedKfdPath)) {
     return createRocmKfdMissingError();
   }
 
