@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import type { HardwareProfileResponse } from '@/modules/onboarding/helpers/ai-setup-types';
-import { EMBEDDING_INFERENCE_BACKEND, unavailableInferenceBackends } from '@/modules/onboarding/helpers/inference-backend-availability';
+import type { InferenceBackendType } from '@ci-hub/common/types';
+import {
+  EMBEDDING_INFERENCE_BACKEND,
+  hubLoadableSelection,
+  isHubLoadableBackend,
+  unavailableInferenceBackends,
+} from '@/modules/onboarding/helpers/inference-backend-availability';
 
 const nvidiaProfile = {
   hardware: {
@@ -26,5 +32,49 @@ describe('inference-backend-availability', () => {
 
   it('keeps embeddings on Ollama', () => {
     expect(EMBEDDING_INFERENCE_BACKEND).toBe('ollama');
+  });
+
+  describe('isHubLoadableBackend', () => {
+    // Deliberately NOT the complement of isHostServedBackend: mlx-dspark is both host-run (the Hub
+    // only holds a URL) and Hub-loadable (it accepts POST /admin/load). vLLM is only the former.
+    it('covers the backends the Hub can install into, which includes mlx-dspark', () => {
+      expect(isHubLoadableBackend('ollama')).toBe(true);
+      expect(isHubLoadableBackend('dspark')).toBe(true);
+      expect(isHubLoadableBackend('vllm')).toBe(false);
+      expect(isHubLoadableBackend('lemonade')).toBe(false);
+      expect(isHubLoadableBackend(undefined)).toBe(false);
+    });
+  });
+
+  describe('hubLoadableSelection', () => {
+    const backends: Record<string, InferenceBackendType> = {
+      'nomic-embed': 'ollama',
+      'llama3-2-3b': 'ollama',
+      'qwen3-8b-dspark': 'dspark',
+      'qwen3-4b-dspark': 'dspark',
+      'qwen3-8b-vllm': 'vllm',
+    };
+    const backendOf = (id: string) => backends[id];
+
+    it('drops vLLM rows — the Hub cannot install into a host vLLM server', () => {
+      expect(hubLoadableSelection(['llama3-2-3b', 'qwen3-8b-vllm'], backendOf)).toEqual(['llama3-2-3b']);
+    });
+
+    it('keeps every Ollama row but only ONE mlx-dspark row', () => {
+      // mlx-dspark holds a single resident target+drafter pair — /admin/load swaps rather than
+      // adds — so installing a whole ticked list would download tens of GB and leave only the last
+      // load actually served, with the registry recording all of them as loaded.
+      const result = hubLoadableSelection(['nomic-embed', 'llama3-2-3b', 'qwen3-8b-dspark', 'qwen3-4b-dspark'], backendOf);
+      expect(result.filter((id) => backendOf(id) === 'ollama')).toEqual(['nomic-embed', 'llama3-2-3b']);
+      expect(result.filter((id) => backendOf(id) === 'dspark')).toHaveLength(1);
+    });
+
+    it('keeps the operator-chosen default when several mlx-dspark rows are ticked', () => {
+      expect(hubLoadableSelection(['qwen3-8b-dspark', 'qwen3-4b-dspark'], backendOf, 'qwen3-4b-dspark')).toEqual(['qwen3-4b-dspark']);
+    });
+
+    it('falls back to the first ticked row when the preferred model is not an mlx-dspark row', () => {
+      expect(hubLoadableSelection(['qwen3-8b-dspark', 'qwen3-4b-dspark'], backendOf, 'nomic-embed')).toEqual(['qwen3-8b-dspark']);
+    });
   });
 });

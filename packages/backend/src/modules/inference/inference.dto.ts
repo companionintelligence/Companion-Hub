@@ -1,7 +1,7 @@
 import { createZodDto } from '@/common/zod-dto';
 import { z } from 'zod';
 
-const inferenceBackendSchema = z.enum(['ollama', 'vllm', 'lemonade']);
+const inferenceBackendSchema = z.enum(['ollama', 'vllm', 'lemonade', 'dspark']);
 
 export const inferencePreferencesSchema = z.object({
   backend: inferenceBackendSchema,
@@ -16,6 +16,9 @@ export const inferencePreferencesSchema = z.object({
   // Base URL of the operator's vLLM server (e.g. http://host.docker.internal:8000).
   // `null` clears the stored preference and falls back to the VLLM_URL env default.
   vllmUrl: z.string().trim().url().nullable().optional(),
+  // Base URL of the operator's mlx-dspark server (e.g. http://host.docker.internal:8080).
+  // `null` clears the stored preference and falls back to the DSPARK_URL env default.
+  dsparkUrl: z.string().trim().url().nullable().optional(),
 });
 
 export class UpdateInferencePreferencesBody extends createZodDto(inferencePreferencesSchema) {}
@@ -31,6 +34,8 @@ const onboardingProfileQuerySchema = z.object({
   // Candidate vLLM base URL the operator typed but has not saved yet — lets the profile's
   // installed-model resolution probe the same server the status card shows as detected.
   vllmUrl: z.string().trim().url().optional(),
+  // Same candidate-URL semantics, for the mlx-dspark backend.
+  dsparkUrl: z.string().trim().url().optional(),
 });
 
 export class OnboardingProfileQueryDto extends createZodDto(onboardingProfileQuerySchema) {}
@@ -41,6 +46,13 @@ const vllmStatusQuerySchema = z.object({
 });
 
 export class VllmStatusQueryDto extends createZodDto(vllmStatusQuerySchema) {}
+
+const dsparkStatusQuerySchema = z.object({
+  // Same candidate-URL semantics as onboardingProfileQuerySchema.dsparkUrl.
+  url: z.string().trim().url().optional(),
+});
+
+export class DsparkStatusQueryDto extends createZodDto(dsparkStatusQuerySchema) {}
 
 export const rocmInstallPhaseSchema = z.enum(['idle', 'downloading', 'installing', 'reboot_required', 'failed', 'completed']);
 

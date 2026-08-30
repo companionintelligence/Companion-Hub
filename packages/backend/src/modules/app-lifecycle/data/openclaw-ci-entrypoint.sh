@@ -13,7 +13,7 @@
 # Environment variables consumed:
 #   OLLAMA_HOST                — native Ollama URL (injected by Hub, e.g. http://host.docker.internal:11434)
 #   OPENAI_API_BASE            — OpenAI-compatible /v1 URL (from bootstrap.env or app.env)
-#   CI_INFERENCE_BACKEND       — active Hub backend: ollama | vllm | lemonade | cloud
+#   CI_INFERENCE_BACKEND       — active Hub backend: ollama | vllm | lemonade | dspark | cloud
 #   HUB_INFERENCE_URL          — legacy Hub-proxied inference URL (optional)
 #   HUB_URL                    — Hub base URL fallback (default: http://ci-os-hub:5002)
 #   OPENCLAW_DATA_DIR          — state directory (default: /data/.openclaw)
@@ -586,7 +586,10 @@ NODE
 sync_inference_models() {
   backend="$(resolve_inference_backend)"
   case "${backend}" in
-    vllm)
+    # mlx-dspark shares vLLM's path here: both are host-run servers reached over the OpenAI
+    # /v1 surface, so the model list comes from /v1/models rather than Ollama's native API.
+    # Without this arm dspark falls to *) and syncs against Ollama, which is not what is serving.
+    vllm|dspark)
       sync_vllm_models
       ;;
     cloud)

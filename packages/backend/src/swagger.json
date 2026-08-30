@@ -2546,7 +2546,8 @@
               "enum": [
                 "ollama",
                 "vllm",
-                "lemonade"
+                "lemonade",
+                "dspark"
               ]
             }
           }
@@ -2846,12 +2847,22 @@
               "enum": [
                 "ollama",
                 "vllm",
-                "lemonade"
+                "lemonade",
+                "dspark"
               ]
             }
           },
           {
             "name": "vllmUrl",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "uri"
+            }
+          },
+          {
+            "name": "dsparkUrl",
             "in": "query",
             "required": false,
             "schema": {
@@ -2913,6 +2924,30 @@
             "description": "Unsaved vLLM API key for Re-check before Save.",
             "schema": {
               "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Inference"
+        ]
+      }
+    },
+    "/api/inference/dspark/status": {
+      "get": {
+        "operationId": "getDsparkStatus",
+        "parameters": [
+          {
+            "name": "url",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "uri"
             }
           }
         ],
@@ -5578,7 +5613,8 @@
                 "enum": [
                   "ollama",
                   "vllm",
-                  "lemonade"
+                  "lemonade",
+                  "dspark"
                 ]
               },
               "inferenceModel": {
@@ -5594,6 +5630,9 @@
                 "type": "string"
               },
               "inferenceVllmUrl": {
+                "type": "string"
+              },
+              "inferenceDsparkUrl": {
                 "type": "string"
               },
               "inferenceCloudProviders": {
@@ -5964,7 +6003,8 @@
             "enum": [
               "ollama",
               "vllm",
-              "lemonade"
+              "lemonade",
+              "dspark"
             ]
           },
           "inferenceModel": {
@@ -5980,6 +6020,9 @@
             "type": "string"
           },
           "inferenceVllmUrl": {
+            "type": "string"
+          },
+          "inferenceDsparkUrl": {
             "type": "string"
           },
           "inferenceCloudProviders": {
@@ -10752,7 +10795,8 @@
             "enum": [
               "ollama",
               "vllm",
-              "lemonade"
+              "lemonade",
+              "dspark"
             ]
           },
           "model": {
@@ -10775,6 +10819,11 @@
             "type": "string"
           },
           "vllmUrl": {
+            "nullable": true,
+            "type": "string",
+            "format": "uri"
+          },
+          "dsparkUrl": {
             "nullable": true,
             "type": "string",
             "format": "uri"
@@ -13980,10 +14029,15 @@
             "enum": [
               "ollama",
               "vllm",
-              "lemonade"
+              "lemonade",
+              "dspark"
             ]
           },
           "vllmUrl": {
+            "type": "string",
+            "format": "uri"
+          },
+          "dsparkUrl": {
             "type": "string",
             "format": "uri"
           }
@@ -13998,7 +14052,8 @@
             "enum": [
               "ollama",
               "vllm",
-              "lemonade"
+              "lemonade",
+              "dspark"
             ]
           }
         },

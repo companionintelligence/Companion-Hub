@@ -10,15 +10,58 @@ describe('curated-models (TOON catalog)', () => {
   const byId = new Map(CURATED_MODELS.map((m) => [m.id, m]));
   const llms = CURATED_MODELS.filter((m) => m.modality === 'llm');
 
-  it('decodes the full catalog (87 Ollama LLMs + 4 Lemonade LLMs + 72 vLLM LLMs [8 CUDA + 64 MLX] + voice + embeddings) with unique ids', () => {
+  it('decodes the full catalog (87 Ollama LLMs + 4 Lemonade LLMs + 72 vLLM LLMs [8 CUDA + 64 MLX] + 11 mlx-dspark LLMs + voice + embeddings) with unique ids', () => {
     expect(llms.filter((m) => m.backend === 'ollama').length).toBe(87);
     expect(llms.filter((m) => m.backend === 'lemonade').length).toBe(4);
     expect(llms.filter((m) => m.backend === 'vllm').length).toBe(72);
-    expect(llms.length).toBe(163);
+    expect(llms.length).toBe(174);
     // 4 Ollama embeddings + 1 Lemonade embedding (nomic-embed-text-v1-lemonade).
     expect(CURATED_MODELS.filter((m) => m.modality === 'embedding').length).toBe(5);
     expect(CURATED_MODELS.filter((m) => m.modality === 'tts' || m.modality === 'stt').length).toBe(3);
     expect(new Set(CURATED_MODELS.map((m) => m.id)).size).toBe(CURATED_MODELS.length);
+  });
+
+  describe('mlx-dspark rows', () => {
+    const dspark = llms.filter((m) => m.backend === 'dspark');
+
+    it('are Apple-Silicon-gated MLX repos with a speculative-decoding quant tag', () => {
+      expect(dspark.length).toBe(11);
+      for (const m of dspark) {
+        expect(m.id, `${m.id} id suffix`).toMatch(/-dspark$/);
+        // `gpuVendors: ['apple']` is the entire gating story — the CPU/RAM fallback path reports
+        // vendor 'cpu', so an apple-only row can never be resurrected onto non-Apple hardware.
+        expect(m.requirements.gpuVendors, `${m.id} vendors`).toEqual(['apple']);
+        // backendModelId is the TARGET repo — what POST /admin/load takes and what
+        // GET /health.target reports back, so DsparkBackend.isModelLoaded matches it exactly.
+        expect(m.backendModelId, `${m.id} target repo`).toMatch(/^[\w.-]+\/[\w.-]+$/);
+        expect(m.runtime.quantization, `${m.id} quant`).toMatch(/\+(dspark|dflash2)$/);
+      }
+    });
+
+    it('budget resident RAM from the measured ramGb column, not disk x 1.1', () => {
+      for (const m of dspark) {
+        // A dspark row downloads a target AND a drafter, and the drafter is quantized to 4-bit at
+        // load — so neither `diskMb` nor `diskMb * 1.1` describes what is actually resident.
+        expect(m.runtime.memoryFootprintMb, `${m.id} footprint`).not.toBe(Math.round(m.requirements.diskMb * 1.1));
+        expect(m.requirements.minVramMb, `${m.id} minVram`).toBe(m.runtime.memoryFootprintMb);
+      }
+    });
+
+    it('carry MoE active-parameter counts so unified-memory ranking is right', () => {
+      expect(byId.get('qwen3-6-35b-dspark')?.activeParameterScale).toBe(3);
+      expect(byId.get('nemotron-3-5-lightning-30b-dspark')?.activeParameterScale).toBe(3);
+    });
+  });
+
+  it('leaves every row without a ramGb column on the historical diskMb x 1.1 footprint', () => {
+    // Regression guard for the optional `ramGb` column added for mlx-dspark: adding it must not
+    // have shifted a single pre-existing row's memory numbers.
+    for (const m of CURATED_MODELS.filter((m) => m.modality === 'llm' && m.backend !== 'dspark')) {
+      expect(m.runtime.memoryFootprintMb, `${m.id} footprint`).toBe(Math.round(m.requirements.diskMb * 1.1));
+      expect(m.requirements.minVramMb, `${m.id} minVram`).toBe(m.requirements.diskMb);
+      expect(m.requirements.recommendedVramMb, `${m.id} recVram`).toBe(Math.round(m.requirements.diskMb * 1.1 + 1024));
+      expect(m.requirements.minRamMb, `${m.id} minRam`).toBe(Math.round(m.requirements.diskMb * 1.15));
+    }
   });
 
   it('gives every model a real, pullable backend tag and sane derived requirements', () => {

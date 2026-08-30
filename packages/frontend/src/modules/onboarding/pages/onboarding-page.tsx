@@ -203,6 +203,15 @@ function OnboardingWizard() {
     installedCatalogIds: aiSetupConfig?.installedCatalogIds ?? [],
     enabled: modelPullEnabled,
     bestEffort: true,
+    // Readiness has to be gated on the backend the operator actually chose. Left unset, this
+    // defaulted to Ollama — harmless while vLLM was the only alternative (the Hub cannot pull vLLM
+    // models anyway), but mlx-dspark IS Hub-loadable, so an operator with mlx-dspark up and Ollama
+    // down would have had their model silently never load.
+    inferenceBackend: aiSetupConfig?.backend,
+    backendUrl: aiSetupConfig?.backend === 'dspark' ? aiSetupConfig?.dsparkUrl : aiSetupConfig?.vllmUrl,
+    // Only the rows the Hub can install — `selectedModels` also carries vLLM rows the operator
+    // fetched themselves.
+    pullableModelIds: aiSetupConfig?.ollamaSelectedModelIds,
   });
 
   if (user.hasCompletedOnboarding) {

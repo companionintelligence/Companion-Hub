@@ -2,8 +2,10 @@ import { act, renderHook, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { useModelPullOrchestrator } from '@/lib/hooks/use-model-pull-orchestrator';
 
-const { fetchOllamaInstallStatus } = vi.hoisted(() => ({
+const { fetchOllamaInstallStatus, fetchVllmInstallStatus, fetchDsparkInstallStatus } = vi.hoisted(() => ({
   fetchOllamaInstallStatus: vi.fn(),
+  fetchVllmInstallStatus: vi.fn(),
+  fetchDsparkInstallStatus: vi.fn(),
 }));
 
 const { fetchTrackedModels, ensurePullStarted } = vi.hoisted(() => ({
@@ -13,6 +15,8 @@ const { fetchTrackedModels, ensurePullStarted } = vi.hoisted(() => ({
 
 vi.mock('@/lib/inference/inference-api', () => ({
   fetchOllamaInstallStatus,
+  fetchVllmInstallStatus,
+  fetchDsparkInstallStatus,
 }));
 
 vi.mock('@/lib/inference/tracked-models', async (importOriginal) => {
@@ -28,6 +32,8 @@ describe('useModelPullOrchestrator', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     fetchOllamaInstallStatus.mockResolvedValue({ ready: true, running: true });
+    fetchVllmInstallStatus.mockResolvedValue({ ready: false, running: false });
+    fetchDsparkInstallStatus.mockResolvedValue({ ready: true, running: true });
     ensurePullStarted.mockResolvedValue(undefined);
     fetchTrackedModels.mockResolvedValue([{ catalogId: 'phi-4-mini', state: 'pulling', pullProgress: 42 }] as never);
   });
@@ -86,5 +92,49 @@ describe('useModelPullOrchestrator', () => {
     await waitFor(() => {
       expect(result.current.progressById['phi-4-mini']).toBe(42);
     });
+  });
+
+  // Regression: the hook's readiness gate used to be resolved with Ollama's probe regardless of the
+  // selected backend, because the only production caller never passed `inferenceBackend`. That was
+  // inert while vLLM was the only alternative (the Hub cannot pull vLLM models at all), but
+  // mlx-dspark IS Hub-loadable, so an operator with mlx-dspark up and Ollama down had their model
+  // silently never load.
+  it('gates readiness on mlx-dspark, not Ollama, when dspark is the selected backend', async () => {
+    fetchOllamaInstallStatus.mockResolvedValue({ ready: false, running: false });
+    fetchDsparkInstallStatus.mockResolvedValue({ ready: true, running: true });
+
+    renderHook(() =>
+      useModelPullOrchestrator({
+        selectedModelIds: ['qwen3-8b-dspark'],
+        installedCatalogIds: [],
+        enabled: true,
+        inferenceBackend: 'dspark',
+        backendUrl: 'http://192.168.1.50:8080',
+      }),
+    );
+
+    await waitFor(() => expect(ensurePullStarted).toHaveBeenCalledWith('qwen3-8b-dspark', expect.anything()));
+    // The operator's unsaved endpoint must reach the probe — onboarding collects it before
+    // install-step persists it, so the Hub default would be the wrong server to ask.
+    expect(fetchDsparkInstallStatus).toHaveBeenCalledWith('http://192.168.1.50:8080');
+  });
+
+  it('does not start pulls when the selected backend is down, even if Ollama is up', async () => {
+    fetchOllamaInstallStatus.mockResolvedValue({ ready: true, running: true });
+    fetchDsparkInstallStatus.mockResolvedValue({ ready: false, running: false });
+
+    renderHook(() =>
+      useModelPullOrchestrator({
+        selectedModelIds: ['qwen3-8b-dspark'],
+        installedCatalogIds: [],
+        enabled: true,
+        inferenceBackend: 'dspark',
+      }),
+    );
+
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 50));
+    });
+    expect(ensurePullStarted).not.toHaveBeenCalled();
   });
 });

@@ -10,6 +10,7 @@ import { CloudFallbackService } from '../cloud-fallback.service';
 import { OllamaBackend } from '../backends/ollama.backend';
 import { VllmBackend } from '../backends/vllm.backend';
 import { LemonadeBackend } from '../backends/lemonade.backend';
+import { DsparkBackend } from '../backends/dspark.backend';
 import { LoggerService } from '@/core/logger/logger.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import type { CloudProviderConfig, CuratedModel, HardwareProfile } from '@ci-hub/common/types';
@@ -97,6 +98,7 @@ describe('AppCredentialsService', () => {
   let ollamaBackend: MockProxy<OllamaBackend>;
   let vllmBackend: MockProxy<VllmBackend>;
   let lemonadeBackend: MockProxy<LemonadeBackend>;
+  let dsparkBackend: MockProxy<DsparkBackend>;
   let configurationService: MockProxy<ConfigurationService>;
 
   beforeEach(async () => {
@@ -108,6 +110,7 @@ describe('AppCredentialsService', () => {
     ollamaBackend = mock<OllamaBackend>();
     vllmBackend = mock<VllmBackend>();
     lemonadeBackend = mock<LemonadeBackend>();
+    dsparkBackend = mock<DsparkBackend>();
     configurationService = mock<ConfigurationService>();
 
     configurationService.getInferencePreferences.mockReturnValue({
@@ -155,6 +158,7 @@ describe('AppCredentialsService', () => {
         { provide: OllamaBackend, useValue: ollamaBackend },
         { provide: VllmBackend, useValue: vllmBackend },
         { provide: LemonadeBackend, useValue: lemonadeBackend },
+        { provide: DsparkBackend, useValue: dsparkBackend },
         { provide: ConfigurationService, useValue: configurationService },
       ],
     }).compile();
