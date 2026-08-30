@@ -52,9 +52,18 @@ export interface QrCodeProps {
   caption?: ReactNode;
   /** Hide the code and the fallback behind a blurred plate until asked for. */
   reveal?: boolean;
+  /**
+   * Drop the plate's padding and the printed fallback text/link entirely.
+   *
+   * Only for a screen where the QR sits next to its own obvious context (a
+   * "Scan QR" disclosure the user just opened) and the fallback text would be
+   * pure clutter. `fallback` stays a required prop even here — it is still
+   * used for the `alt`/accessible name — this only controls what's painted.
+   */
+  bare?: boolean;
 }
 
-export const QrCode = ({ value, fallback, size = 200, level = 'M', mark = false, caption, reveal = false }: QrCodeProps) => {
+export const QrCode = ({ value, fallback, size = 200, level = 'M', mark = false, caption, reveal = false, bare = false }: QrCodeProps) => {
   const { t } = useTranslation();
   const [revealed, setRevealed] = useState(false);
   const plateId = useId();
@@ -69,7 +78,10 @@ export const QrCode = ({ value, fallback, size = 200, level = 'M', mark = false,
     <div className="flex flex-col items-start gap-3">
       {caption ? <div className="text-sm text-muted-foreground">{caption}</div> : null}
 
-      <div className="relative inline-flex rounded-lg border-2 border-primary/40 p-3" style={{ backgroundColor: QR_PLATE_COLOR }}>
+      <div
+        className={cn('relative inline-flex rounded-lg border-2 border-primary/40', bare ? 'p-0' : 'p-3')}
+        style={{ backgroundColor: QR_PLATE_COLOR }}
+      >
         <QRCodeSVG
           value={value}
           size={size}
@@ -78,6 +90,7 @@ export const QrCode = ({ value, fallback, size = 200, level = 'M', mark = false,
           bgColor={QR_PLATE_COLOR}
           fgColor={QR_MODULE_COLOR}
           title={t('COMMON_QR_CODE')}
+          aria-label={fallback}
           className={cn('block h-auto max-w-full', isHidden && 'select-none blur-md')}
           imageSettings={
             mark
@@ -109,13 +122,15 @@ export const QrCode = ({ value, fallback, size = 200, level = 'M', mark = false,
         ) : null}
       </div>
 
-      <div id={plateId} className="w-full min-w-0">
-        {isHidden ? (
-          <p className="text-xs leading-relaxed text-muted-foreground">{t('COMMON_QR_HIDDEN_HINT')}</p>
-        ) : (
-          <p className="min-w-0 break-all font-mono text-xs leading-relaxed text-foreground select-all">{fallback}</p>
-        )}
-      </div>
+      {bare ? null : (
+        <div id={plateId} className="w-full min-w-0">
+          {isHidden ? (
+            <p className="text-xs leading-relaxed text-muted-foreground">{t('COMMON_QR_HIDDEN_HINT')}</p>
+          ) : (
+            <p className="min-w-0 break-all font-mono text-xs leading-relaxed text-foreground select-all">{fallback}</p>
+          )}
+        </div>
+      )}
 
       {reveal && revealed ? (
         <Button type="button" size="sm" variant="ghost" aria-controls={plateId} onClick={() => setRevealed(false)}>
