@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router';
 import { Button } from '@/components/ui/Button';
 import { Alert, AlertDescription } from '@/components/ui/Alert/Alert';
 import { QrCode } from '@/components/ui/qr-code';
-import { AlertCircle, CheckCircle2, ChevronRight, Copy, Loader2 } from 'lucide-react';
+import { AlertCircle, CheckCircle2, ChevronDown, ChevronRight, Copy, Loader2 } from 'lucide-react';
 import {
   fetchDeviceRegistrationInfoResult,
   fetchRegistrationStateDrift,
@@ -18,6 +18,7 @@ import { isRegistrationOperational, isRegistrationPending, requiresDeviceRegistr
 import { cacheRegistrationStatus, clearRegistrationCache } from '@/lib/registration-cache';
 import toast from 'react-hot-toast';
 import { HintText, LabelWithHint } from '@/components/ui/field-hint/field-hint';
+import { cn } from '@/lib/utils';
 import {
   REGISTRATION_ACCOUNT_HINT,
   REGISTRATION_DEVICE_ID_HINT,
@@ -61,6 +62,42 @@ type PairingTarget = {
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Headless appliances (and SSH sessions) have no browser for the Sign in /
+ * Create account links. Keep the QR + fallback URL off the default two-column
+ * layout — those plates were stretching Step 1 while Step 2 sat empty — and
+ * reveal them from a "Scan QR" disclosure instead.
+ */
+function ScanQrDisclosure({ value, caption, label, summaryLabel }: { value: string; caption: string; label: string; summaryLabel: string }) {
+  const [open, setOpen] = useState(false);
+
+  return (
+    <div className="mt-3">
+      <button
+        type="button"
+        aria-expanded={open}
+        aria-label={summaryLabel}
+        onClick={() => setOpen((current) => !current)}
+        className="flex w-full cursor-pointer items-center justify-center gap-2 rounded-md border border-border/70 bg-background/40 px-3 py-2 text-sm font-medium text-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+      >
+        <ChevronDown className={cn('h-4 w-4 shrink-0 text-muted-foreground transition-transform', open && 'rotate-180')} aria-hidden />
+        {label}
+      </button>
+      {open ? (
+        <div className="mt-4 flex justify-center">
+          {/*
+            No `mark`: these URLs are long enough that level `H` plus the logo
+            pushes the version up, and this is the one screen where a failed scan
+            leaves the user with no way forward. Size is pinned at 200px so the
+            module pitch is scannable (160px gave ~3px/module on the signup URL).
+          */}
+          <QrCode value={value} fallback={value} size={200} caption={caption} />
+        </div>
+      ) : null}
+    </div>
+  );
 }
 
 function getProgressCopy(status: RegistrationStatus | null, redirectStatus: string, t: (key: string) => string) {
@@ -698,7 +735,7 @@ export default function DeviceRegistrationPage() {
 
       {driftChoice === 'restore' ? <RegistrationRestoreBanner /> : null}
 
-      <div className="grid grid-cols-1 items-stretch gap-4 md:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] md:gap-5">
+      <div className="grid grid-cols-1 items-start gap-4 md:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] md:gap-5">
         <section className="flex flex-col rounded-lg border border-border/60 bg-muted/20 p-6 md:p-8">
           <div className="flex items-start gap-1 flex-wrap">
             <HintText
@@ -716,29 +753,12 @@ export default function DeviceRegistrationPage() {
             </a>
           </Button>
           <p className="mt-3 text-sm leading-relaxed text-muted-foreground">{t('DEVICE_REGISTRATION_LOGIN_HINT')}</p>
-          {/*
-            The button above assumes a browser on the appliance itself, which a
-            headless CI-OS box or an SSH session does not have. The QR carries the
-            same device-scoped URL, so a phone can finish step 1 instead.
-
-            No `mark` on either code here: these URLs are long enough that level `H`
-            plus the logo pushes the version up, and this is the one screen where a
-            failed scan leaves the user with no way forward.
-
-            Size is pinned rather than left to the component default for the same
-            reason. The signup URL is ~110 bytes, which at level `M` lands around
-            version 7 — 45 data modules plus the 8-module quiet zone, so 160px gave
-            each module barely 3px. 200px buys back a module pitch phone cameras can
-            actually resolve, and it fits everywhere this screen is reachable: the
-            plate is size + 28px of padding and border, and the tightest column this
-            card ever gives it is 239px, at exactly the `md` breakpoint where the
-            three-column grid kicks in (255px at the 800px desktop minimum window).
-            Narrower than ~360px the code is `max-w-full`, so it scales down with the
-            card — at 320px it lands back on 160px rather than overflowing.
-          */}
-          <div className="mt-5 flex justify-center border-t border-border/60 pt-5">
-            <QrCode value={loginUrl} fallback={loginUrl} size={200} caption={t('DEVICE_REGISTRATION_SCAN_TO_SIGN_IN')} />
-          </div>
+          <ScanQrDisclosure
+            value={loginUrl}
+            caption={t('DEVICE_REGISTRATION_SCAN_TO_SIGN_IN')}
+            label={t('DEVICE_REGISTRATION_SCAN_QR')}
+            summaryLabel={t('DEVICE_REGISTRATION_SCAN_QR_SIGN_IN')}
+          />
           <div className="mt-6 space-y-3 border-t border-border/60 pt-5">
             <p className="text-center text-sm text-muted-foreground">{t('DEVICE_REGISTRATION_NO_ACCOUNT_YET')}</p>
             <Button asChild variant="outline" className="h-10 w-full text-sm font-semibold md:h-11 md:text-base">
@@ -746,9 +766,12 @@ export default function DeviceRegistrationPage() {
                 {t('DEVICE_REGISTRATION_CREATE_ACCOUNT')}
               </a>
             </Button>
-            <div className="flex justify-center pt-2">
-              <QrCode value={signupUrl} fallback={signupUrl} size={200} caption={t('DEVICE_REGISTRATION_SCAN_TO_CREATE_ACCOUNT')} />
-            </div>
+            <ScanQrDisclosure
+              value={signupUrl}
+              caption={t('DEVICE_REGISTRATION_SCAN_TO_CREATE_ACCOUNT')}
+              label={t('DEVICE_REGISTRATION_SCAN_QR')}
+              summaryLabel={t('DEVICE_REGISTRATION_SCAN_QR_CREATE_ACCOUNT')}
+            />
           </div>
         </section>
 

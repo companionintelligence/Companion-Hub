@@ -147,16 +147,22 @@ describe('DeviceRegistrationPage', () => {
   it('offers both step 1 links as scannable codes for appliances with no browser', async () => {
     // A headless CI-OS box (or an SSH session) has no browser to open the anchor
     // in, so each link is also published as a QR plus its selectable fallback.
+    // Those plates stay collapsed so the two-column desktop layout stays balanced.
     render(<DeviceRegistrationPage />);
 
-    expect(await screen.findByText('No browser on this device? Scan to sign in on your phone.')).toBeInTheDocument();
-    expect(screen.getByText('Or scan to create your account on your phone.')).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: 'Scan QR to sign in' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Scan QR to create an account' })).toBeInTheDocument();
+    expect(screen.queryByTitle('QR code')).not.toBeInTheDocument();
+    expect(screen.queryByText('https://portal.example.com')).not.toBeInTheDocument();
 
-    const codes = screen.getAllByTitle('QR code');
-    expect(codes).toHaveLength(2);
-
-    // The fallback text must carry exactly what the anchors carry
+    fireEvent.click(screen.getByRole('button', { name: 'Scan QR to sign in' }));
+    expect(screen.getByText('No browser on this device? Scan to sign in on your phone.')).toBeInTheDocument();
+    expect(screen.getByTitle('QR code')).toBeInTheDocument();
     expect(screen.getByText('https://portal.example.com')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Scan QR to create an account' }));
+    expect(screen.getByText('Or scan to create your account on your phone.')).toBeInTheDocument();
+    expect(screen.getAllByTitle('QR code')).toHaveLength(2);
     expect(screen.getByText('https://portal.example.com/signup?redirect=%2Fhome%3Fadd_device%3D1%26hub_device_id%3Ddevice-123')).toBeInTheDocument();
   });
 
