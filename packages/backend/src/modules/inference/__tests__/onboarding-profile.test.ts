@@ -30,6 +30,7 @@ describe('InferenceController — onboarding-profile', () => {
   let hostMetrics: MockProxy<HostMetricsService>;
   let ollamaBackend: MockProxy<OllamaBackend>;
   let vllmBackend: MockProxy<VllmBackend>;
+  let dsparkBackend: MockProxy<DsparkBackend>;
 
   const fakeProfile: HardwareProfile = {
     gpu: {
@@ -102,8 +103,10 @@ describe('InferenceController — onboarding-profile', () => {
     hostMetrics = moduleRef.get(HostMetricsService);
     ollamaBackend = moduleRef.get(OllamaBackend);
     vllmBackend = moduleRef.get(VllmBackend);
+    dsparkBackend = moduleRef.get(DsparkBackend);
     ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['phi4-mini'] });
     vllmBackend.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [] });
+    dsparkBackend.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [] });
     modelRegistry.getCatalog.mockReturnValue([{ id: 'phi-4-mini', backendModelId: 'phi4-mini', backend: 'ollama' }] as any);
     modelRegistry.getTrackedModel.mockReturnValue(undefined);
     hostMetrics.readHostSection.mockResolvedValue(null);
@@ -183,6 +186,18 @@ describe('InferenceController — onboarding-profile', () => {
 
     const result = await controller.getOnboardingProfile();
     expect(result.backends.recommended).toBe('ollama');
+  });
+
+  it('should recommend mlx-dspark for Apple Silicon — real hot-swap via /admin/load, unlike vLLM-Metal', async () => {
+    const appleProfile = { ...fakeProfile, gpu: { ...fakeProfile.gpu, vendor: 'apple' as const, unifiedMemory: true, runtimeAvailable: false } };
+    hardwareInspector.getProfile.mockResolvedValue(appleProfile);
+    modelRegistry.getRecommendedModelsForHardware.mockReturnValue([]);
+    modelRegistry.getModelsForTier.mockReturnValue([]);
+    memoryManager.calculateBudget.mockReturnValue(fakeStatus.memoryBudget);
+    router.getStatus.mockResolvedValue(fakeStatus);
+
+    const result = await controller.getOnboardingProfile();
+    expect(result.backends.recommended).toBe('dspark');
   });
 
   it('should recommend ollama for nvidia without runtime', async () => {

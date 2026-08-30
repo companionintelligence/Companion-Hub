@@ -92,13 +92,22 @@ export class InferenceController {
     // /dev/dri) as the fallback — see OllamaBackend.getDockerImage()/.getComposeConfig(). vLLM has
     // no reliably maintained ROCm image for this hardware — see VllmBackend.getComposeConfig(),
     // which declines AMD outright rather than mount devices into an image that can't use them.
-    // Apple Silicon also always recommends Ollama — it already gets MLX acceleration transparently
-    // from Ollama 0.19+ (same `family:size` tags, no Hub-side change needed) once the operator
-    // upgrades the host app. vLLM-Metal (the catalog's `-mlx` rows) is a real option there too, but
-    // it has no Docker path and no auto-provisioning story (a native venv install script the Hub
-    // can't run for the operator), so it stays an opt-in Settings choice rather than the default —
-    // see buildVllmRemediation in vllm.backend.ts for the guidance surfaced when it's selected.
-    return profile.npu.available ? 'lemonade' : profile.gpu.vendor === 'nvidia' && profile.gpu.runtimeAvailable ? 'vllm' : 'ollama';
+    // Apple Silicon recommends mlx-dspark (2026-08-30): like vLLM-Metal, it has no Docker path — it's
+    // a host-run Python process (see DsparkBackend.getComposeConfig, which throws unconditionally) —
+    // but unlike vLLM-Metal it supports real hot-swap via POST /admin/load, so the Hub can actually
+    // install/switch models into it the way it can with Ollama (see isHubLoadableBackend). The install
+    // gap is a single `pip install mlx-dspark`, and DsparkSetupCard already surfaces that command
+    // prominently with a live recheck when the endpoint isn't reachable yet — recommending it before
+    // install just means a new Mac user sees that card instead of a green one, not a dead end. vLLM-
+    // Metal remains opt-in only in Settings: no hot-swap support means the Hub can only stub its
+    // load/unload — see buildVllmRemediation in vllm.backend.ts for the guidance surfaced there.
+    return profile.npu.available
+      ? 'lemonade'
+      : profile.gpu.vendor === 'nvidia' && profile.gpu.runtimeAvailable
+        ? 'vllm'
+        : profile.gpu.vendor === 'apple'
+          ? 'dspark'
+          : 'ollama';
   }
 
   private getOnboardingTier(profile: HardwareProfile, recommendedBackend: InferenceBackendType): HardwareTier {
