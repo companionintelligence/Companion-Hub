@@ -15,6 +15,7 @@ import { InferenceEnvResolver } from './inference-env-resolver';
 import { OllamaBackend } from './backends/ollama.backend';
 import { VllmBackend } from './backends/vllm.backend';
 import { LemonadeBackend } from './backends/lemonade.backend';
+import { MtplxBackend } from './backends/mtplx.backend';
 import { DsparkBackend } from './backends/dspark.backend';
 import { InferenceController } from './inference.controller';
 
@@ -35,6 +36,7 @@ import { InferenceController } from './inference.controller';
     OllamaBackend,
     VllmBackend,
     LemonadeBackend,
+    MtplxBackend,
     DsparkBackend,
   ],
   exports: [
@@ -51,6 +53,7 @@ import { InferenceController } from './inference.controller';
     OllamaBackend,
     VllmBackend,
     LemonadeBackend,
+    MtplxBackend,
     DsparkBackend,
   ],
 })

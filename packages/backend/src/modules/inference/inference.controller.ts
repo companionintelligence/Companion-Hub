@@ -25,11 +25,13 @@ import {
   UpdateRocmInstallStateBody,
   OnboardingProfileQueryDto,
   VllmStatusQueryDto,
+  MtplxStatusQueryDto,
   DsparkStatusQueryDto,
 } from './inference.dto';
 import { OllamaBackend } from './backends/ollama.backend';
 import { buildVllmRemediation, resolveVllmProbeUrl, VLLM_PROBE_API_KEY_HEADER, VllmBackend } from './backends/vllm.backend';
 import { LemonadeBackend } from './backends/lemonade.backend';
+import { buildMtplxRemediation, resolveMtplxProbeUrl, MtplxBackend } from './backends/mtplx.backend';
 import { buildDsparkRemediation, DsparkBackend, resolveDsparkProbeUrl } from './backends/dspark.backend';
 import { resolveInstalledCatalogIds, resolveInstalledCatalogIdsFromServedModels } from './model-availability.util';
 import type { InferenceBackend } from './backends/backend.interface';
@@ -61,6 +63,7 @@ export class InferenceController {
     private readonly ollamaBackend: OllamaBackend,
     private readonly vllmBackend: VllmBackend,
     private readonly lemonadeBackend: LemonadeBackend,
+    private readonly mtplxBackend: MtplxBackend,
     private readonly dsparkBackend: DsparkBackend,
     private readonly moduleRef: ModuleRef,
     readonly _logger: LoggerService,
@@ -80,6 +83,8 @@ export class InferenceController {
         return this.vllmBackend;
       case 'lemonade':
         return this.lemonadeBackend;
+      case 'mtplx':
+        return this.mtplxBackend;
       case 'dspark':
         return this.dsparkBackend;
     }
@@ -92,15 +97,17 @@ export class InferenceController {
     // /dev/dri) as the fallback — see OllamaBackend.getDockerImage()/.getComposeConfig(). vLLM has
     // no reliably maintained ROCm image for this hardware — see VllmBackend.getComposeConfig(),
     // which declines AMD outright rather than mount devices into an image that can't use them.
-    // Apple Silicon recommends mlx-dspark (2026-08-30): like vLLM-Metal, it has no Docker path — it's
-    // a host-run Python process (see DsparkBackend.getComposeConfig, which throws unconditionally) —
-    // but unlike vLLM-Metal it supports real hot-swap via POST /admin/load, so the Hub can actually
-    // install/switch models into it the way it can with Ollama (see isHubLoadableBackend). The install
-    // gap is a single `pip install mlx-dspark`, and DsparkSetupCard already surfaces that command
-    // prominently with a live recheck when the endpoint isn't reachable yet — recommending it before
-    // install just means a new Mac user sees that card instead of a green one, not a dead end. vLLM-
-    // Metal remains opt-in only in Settings: no hot-swap support means the Hub can only stub its
-    // load/unload — see buildVllmRemediation in vllm.backend.ts for the guidance surfaced there.
+    // Apple Silicon recommends mlx-dspark (2026-08-30): like vLLM-Metal and MTPLX, it has no Docker
+    // path — it's a host-run Python process (see DsparkBackend.getComposeConfig, which throws
+    // unconditionally) — but unlike either of them it supports real hot-swap via POST /admin/load,
+    // so the Hub can actually install/switch models into it the way it can with Ollama (see
+    // isHubLoadableBackend). The install gap is a single `pip install mlx-dspark`, and
+    // DsparkSetupCard already surfaces that command prominently with a live recheck when the
+    // endpoint isn't reachable yet — recommending it before install just means a new Mac user sees
+    // that card instead of a green one, not a dead end. vLLM-Metal and MTPLX remain opt-in only in
+    // Settings: neither supports hot-swap, so the Hub can only stub their load/unload — see
+    // buildVllmRemediation in vllm.backend.ts and buildMtplxRemediation in mtplx.backend.ts for the
+    // guidance surfaced when either is selected.
     return profile.npu.available
       ? 'lemonade'
       : profile.gpu.vendor === 'nvidia' && profile.gpu.runtimeAvailable
@@ -187,6 +194,7 @@ export class InferenceController {
       body.visionModel,
       body.vllmApiKey,
       body.vllmUrl,
+      body.mtplxUrl,
       body.dsparkUrl,
     );
 
@@ -426,10 +434,12 @@ export class InferenceController {
     const ollamaInstalled = resolveInstalledCatalogIds(catalog, ollamaHealth.modelsLoaded ?? [], getTrackedState);
 
     let installedCatalogIds: string[];
-    // vLLM and mlx-dspark are both host-run servers with no Hub-side pull registry, so "installed"
-    // has to be read back off what they are actually serving. Ollama's embedding rows are merged in
-    // for either, because embeddings stay on Ollama regardless of the chat backend.
-    if (installBackend === 'vllm' || installBackend === 'dspark') {
+    // vLLM, MTPLX, and mlx-dspark are all host-run servers with no Hub-side pull registry, so
+    // "installed" has to be read back off what they are actually serving. Ollama's embedding rows
+    // are merged in regardless of chat backend, because embeddings stay on Ollama either way.
+    // vLLM's probe takes an optional API key override; MTPLX has no auth concept, so it only takes
+    // the URL, same as mlx-dspark.
+    if (installBackend === 'vllm' || installBackend === 'mtplx' || installBackend === 'dspark') {
       const servedHealth =
         installBackend === 'dspark'
           ? await this.dsparkBackend.healthCheck(query?.dsparkUrl).catch(() => ({
@@ -437,11 +447,17 @@ export class InferenceController {
               healthy: false,
               modelsLoaded: [] as string[],
             }))
-          : await this.vllmBackend.healthCheck(query?.vllmUrl, vllmApiKey).catch(() => ({
-              running: false,
-              healthy: false,
-              modelsLoaded: [] as string[],
-            }));
+          : installBackend === 'mtplx'
+            ? await this.mtplxBackend.healthCheck(query?.mtplxUrl).catch(() => ({
+                running: false,
+                healthy: false,
+                modelsLoaded: [] as string[],
+              }))
+            : await this.vllmBackend.healthCheck(query?.vllmUrl, vllmApiKey).catch(() => ({
+                running: false,
+                healthy: false,
+                modelsLoaded: [] as string[],
+              }));
       const servedInstalled = resolveInstalledCatalogIdsFromServedModels(catalog, servedHealth.modelsLoaded ?? [], installBackend, getTrackedState);
       const ollamaEmbeddingIds = ollamaInstalled.filter((id) => {
         const model = catalog.find((m) => m.id === id);
@@ -546,6 +562,33 @@ export class InferenceController {
       error: ready ? undefined : health.error,
       hint: remediation
         ? `${remediation.hint} Hub probes from inside its container — use http://host.docker.internal:8080, not localhost. Currently probing ${probeUrl}.`
+        : undefined,
+    };
+  }
+
+  @UseGuards(AuthGuard)
+  @Get('mtplx/status')
+  async getMtplxStatus(@Query() query?: MtplxStatusQueryDto) {
+    const requestedUrl = query?.url?.trim() || this.mtplxBackend.getBaseUrl();
+    const probeUrl = resolveMtplxProbeUrl(requestedUrl);
+    const health = await this.mtplxBackend.healthCheck(requestedUrl).catch((err) => ({
+      running: false,
+      healthy: false,
+      modelsLoaded: [] as string[],
+      error: err instanceof Error ? err.message : String(err),
+    }));
+    const ready = !!(health.running && health.healthy);
+    const displayEndpoint = ready ? `${probeUrl}/v1` : undefined;
+    const remediation = ready ? undefined : buildMtplxRemediation();
+    return {
+      ready,
+      running: health.running,
+      endpointUrl: probeUrl,
+      displayEndpoint,
+      remediationCommand: remediation?.command,
+      error: ready ? undefined : health.error,
+      hint: remediation
+        ? `${remediation.hint} Hub probes from inside its container — use http://host.docker.internal:8000, not localhost. Currently probing ${probeUrl}.`
         : undefined,
     };
   }

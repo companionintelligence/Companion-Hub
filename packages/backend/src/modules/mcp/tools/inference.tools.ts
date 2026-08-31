@@ -10,6 +10,7 @@ import { CloudFallbackService } from '@/modules/inference/cloud-fallback.service
 import { OllamaBackend } from '@/modules/inference/backends/ollama.backend';
 import { VllmBackend } from '@/modules/inference/backends/vllm.backend';
 import { LemonadeBackend } from '@/modules/inference/backends/lemonade.backend';
+import { MtplxBackend } from '@/modules/inference/backends/mtplx.backend';
 import { DsparkBackend } from '@/modules/inference/backends/dspark.backend';
 import type { InferenceBackendType, CloudProviderType } from '@ci-hub/common/types';
 
@@ -27,6 +28,7 @@ export class InferenceTools implements OnModuleInit {
     private readonly ollamaBackend: OllamaBackend,
     private readonly vllmBackend: VllmBackend,
     private readonly lemonadeBackend: LemonadeBackend,
+    private readonly mtplxBackend: MtplxBackend,
     private readonly dsparkBackend: DsparkBackend,
   ) {}
 
@@ -50,10 +52,10 @@ export class InferenceTools implements OnModuleInit {
       category: 'Inference & Models',
       name: 'hub_list_inference_backends',
       access: 'read',
-      description: 'List available inference backends (Ollama, vLLM, Lemonade, mlx-dspark) and their current status.',
+      description: 'List available inference backends (Ollama, vLLM, Lemonade, MTPLX, mlx-dspark) and their current status.',
       inputSchema: { type: 'object', properties: {}, required: [] },
       handler: async () => {
-        const backends = [this.ollamaBackend, this.vllmBackend, this.lemonadeBackend, this.dsparkBackend];
+        const backends = [this.ollamaBackend, this.vllmBackend, this.lemonadeBackend, this.mtplxBackend, this.dsparkBackend];
         const results = await Promise.all(
           backends.map(async (b) => {
             const health = await b.healthCheck();
@@ -83,13 +85,13 @@ export class InferenceTools implements OnModuleInit {
       name: 'hub_start_inference_backend',
       access: 'write',
       description:
-        'Report the live status of an inference backend ("ollama", "vllm", "lemonade", or "dspark"). NOTE: this does NOT ' +
+        'Report the live status of an inference backend ("ollama", "vllm", "lemonade", "mtplx", or "dspark"). NOTE: this does NOT ' +
         'start a container — inference backends are managed by the Hub runtime/compose stack. Use it to verify ' +
         'whether a backend is up before routing inference.',
       inputSchema: {
         type: 'object',
         properties: {
-          backend: { type: 'string', enum: ['ollama', 'vllm', 'lemonade', 'dspark'], description: 'Backend type to check' },
+          backend: { type: 'string', enum: ['ollama', 'vllm', 'lemonade', 'mtplx', 'dspark'], description: 'Backend type to check' },
         },
         required: ['backend'],
       },
@@ -107,7 +109,7 @@ export class InferenceTools implements OnModuleInit {
       inputSchema: {
         type: 'object',
         properties: {
-          backend: { type: 'string', enum: ['ollama', 'vllm', 'lemonade', 'dspark'], description: 'Backend type to check' },
+          backend: { type: 'string', enum: ['ollama', 'vllm', 'lemonade', 'mtplx', 'dspark'], description: 'Backend type to check' },
         },
         required: ['backend'],
       },
@@ -354,7 +356,7 @@ export class InferenceTools implements OnModuleInit {
   }
 
   /** Resolve the injected backend instance for a backend type. */
-  private backendFor(backendType: InferenceBackendType): OllamaBackend | VllmBackend | LemonadeBackend | DsparkBackend {
+  private backendFor(backendType: InferenceBackendType): OllamaBackend | VllmBackend | LemonadeBackend | MtplxBackend | DsparkBackend {
     // Exhaustive on purpose — no `default:`. The previous default fell through to Ollama, so a
     // newly added backend type silently reported Ollama's health under another backend's name.
     switch (backendType) {
@@ -364,6 +366,8 @@ export class InferenceTools implements OnModuleInit {
         return this.vllmBackend;
       case 'lemonade':
         return this.lemonadeBackend;
+      case 'mtplx':
+        return this.mtplxBackend;
       case 'dspark':
         return this.dsparkBackend;
     }

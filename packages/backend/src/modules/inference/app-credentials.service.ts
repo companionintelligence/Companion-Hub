@@ -8,6 +8,7 @@ import { CloudFallbackService } from './cloud-fallback.service';
 import { OllamaBackend } from './backends/ollama.backend';
 import { VllmBackend } from './backends/vllm.backend';
 import { LemonadeBackend } from './backends/lemonade.backend';
+import { MtplxBackend } from './backends/mtplx.backend';
 import { DsparkBackend } from './backends/dspark.backend';
 import type { InferenceBackend } from './backends/backend.interface';
 import type { CuratedModel, HardwareTier, InferenceBackendType } from '@ci-hub/common/types';
@@ -80,12 +81,12 @@ interface CacheEntry {
  */
 /**
  * Backends whose models are served by a process the operator runs, not pulled into a Hub-managed
- * registry: vLLM (including vLLM-Metal) and mlx-dspark. For these, "is this model installed?" can
- * only be answered from what the server reports it is serving, so catalog matching goes through
- * `isServedModelForCatalog` rather than the Ollama-style pulled-tag comparison.
+ * registry: vLLM (including vLLM-Metal), mlx-dspark, and MTPLX. For these, "is this model
+ * installed?" can only be answered from what the server reports it is serving, so catalog matching
+ * goes through `isServedModelForCatalog` rather than the Ollama-style pulled-tag comparison.
  */
 function isHostServedBackend(backendType: InferenceBackendType): boolean {
-  return backendType === 'vllm' || backendType === 'dspark';
+  return backendType === 'vllm' || backendType === 'dspark' || backendType === 'mtplx';
 }
 
 @Injectable()
@@ -102,6 +103,7 @@ export class AppCredentialsService {
     private readonly ollamaBackend: OllamaBackend,
     private readonly vllmBackend: VllmBackend,
     private readonly lemonadeBackend: LemonadeBackend,
+    private readonly mtplxBackend: MtplxBackend,
     private readonly dsparkBackend: DsparkBackend,
     private readonly configurationService: ConfigurationService,
   ) {}
@@ -114,6 +116,8 @@ export class AppCredentialsService {
         return this.vllmBackend;
       case 'lemonade':
         return this.lemonadeBackend;
+      case 'mtplx':
+        return this.mtplxBackend;
       case 'dspark':
         return this.dsparkBackend;
     }
@@ -216,6 +220,9 @@ export class AppCredentialsService {
       }
     }
     let chatModelId = availableLlm?.backendModelId ?? null;
+    // vLLM, MTPLX, and mlx-dspark are all host-managed servers with no Hub pull registry — an
+    // operator can serve a model outside the catalog, so fall back to whatever it reports rather
+    // than leaving chatModelId empty.
     if (!chatModelId && isHostServedBackend(backendType) && endpointHealth.modelsLoaded.length > 0) {
       chatModelId = endpointHealth.modelsLoaded[0] ?? null;
     }
@@ -368,6 +375,8 @@ export class AppCredentialsService {
 
   private isCuratedModelAvailable(model: CuratedModel, modelsLoaded: string[], backendType: InferenceBackendType): boolean {
     if (this.isModelPulled(model.id, modelsLoaded, backendType)) return true;
+    // vLLM, MTPLX, and mlx-dspark have no Hub pull registry — "available" means the operator's
+    // server is actually reporting this exact id, not that the Hub tracked a pull for it.
     if (isHostServedBackend(backendType)) {
       return isServedModelForCatalog(model, modelsLoaded);
     }
