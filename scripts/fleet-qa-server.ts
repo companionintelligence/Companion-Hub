@@ -1191,6 +1191,7 @@ header {
 .drawer .bar-track { height: 6px; }
 .bar-fill { height: 100%; border-radius: 3px; background: linear-gradient(90deg, var(--grad-a), var(--accent-bright)); transition: width .3s; }
 .bar-fill.mem { background: linear-gradient(90deg, #7a5cff, var(--timeout)); }
+.bar-fill.disk { background: linear-gradient(90deg, var(--warn), #e8d13a); }
 .bar-val { font-size: 10px; color: var(--text2); min-width: 52px; text-align: right; flex-shrink: 0; font-variant-numeric: tabular-nums; }
 .grid {
   display: grid;
@@ -1357,7 +1358,7 @@ var currentMode = 'quick';
 var drawerApp = null;
 var elapsedTimer = null;
 var statFilter = '';                      // active stat-chip filter ('' = all)
-var maxima = { maxStart: 1, maxMem: 1 };  // run-wide maxima for the time/size bar graphs
+var maxima = { maxStart: 1, maxMem: 1, maxDisk: 1 };  // run-wide maxima for the time/size bar graphs
 
 // Stat chips double as filters: click toggles; clicking the active chip (or Total) clears.
 function setStatFilter(f) {
@@ -1479,6 +1480,7 @@ function cardHtml(app, s) {
     var r = s.result;
     if (r.startupMs > 0) bars += barRow('boot', fmtMs(r.startupMs), r.startupMs, maxima.maxStart, '');
     if (r.memMb > 0) bars += barRow('ram', r.memMb + 'MB', r.memMb, maxima.maxMem, 'mem');
+    if (r.diskMb > 0) bars += barRow('disk', r.diskMb + 'MB', r.diskMb, maxima.maxDisk, 'disk');
     var parts = [];
     if (r.pullMs > 0) parts.push('pull ' + fmtMs(r.pullMs));
     if (r.readyVia) parts.push('via ' + r.readyVia);
@@ -1541,15 +1543,16 @@ function updateSummary(fleet) {
   document.getElementById('progress-fill').style.width = pct + '%';
   document.getElementById('progress-label').textContent = done + ' / ' + total + ' tested' + (skip ? ' (' + skip + ' skipped)' : '');
   // Refresh run-wide maxima for the card/drawer bar graphs (outlier-damped).
-  var starts = [], mems = [];
+  var starts = [], mems = [], disks = [];
   apps.forEach(function(a) {
     var r = a.result;
     if (r) {
       if (r.startupMs > 0) starts.push(r.startupMs);
       if (r.memMb > 0) mems.push(r.memMb);
+      if (r.diskMb > 0) disks.push(r.diskMb);
     }
   });
-  maxima = { maxStart: scaleMax(starts), maxMem: scaleMax(mems) };
+  maxima = { maxStart: scaleMax(starts), maxMem: scaleMax(mems), maxDisk: scaleMax(disks) };
 }
 
 // Bar-graph scale: the run-wide max, except a single extreme outlier doesn't get to
@@ -1649,6 +1652,7 @@ function renderDrawer(appId) {
   if (r.startupMs > 0) bars += barRow('boot', fmtMs(r.startupMs), r.startupMs, maxima.maxStart, '');
   if (r.memMb > 0) bars += barRow('ram', r.memMb + ' MB', r.memMb, maxima.maxMem, 'mem');
   if (r.memPeakMb > 0) bars += barRow('peak', r.memPeakMb + ' MB', r.memPeakMb, maxima.maxMem, 'mem');
+  if (r.diskMb > 0) bars += barRow('disk', r.diskMb + ' MB', r.diskMb, maxima.maxDisk, 'disk');
   if (r.cpuPct > 0) bars += barRow('cpu', r.cpuPct + '%', r.cpuPct, 100, '');
   if (bars) {
     html += '<div class="section-label" style="margin-top:12px">Performance</div>';
@@ -1658,9 +1662,20 @@ function renderDrawer(appId) {
   html += '<div class="section-label" style="margin-top:12px">Container</div>';
   html += metaGrid([
     ['Image size', r.imageMb > 0 ? Math.round(r.imageMb) + ' MB' : '—'],
+    ['Disk (writable)', r.diskMb > 0 ? r.diskMb + ' MB' : '—'],
     ['Port', r.port || app.port || '—'],
+    ['Containers', r.containerCount || '1'],
     ['Categories', ((s && s.categories) || app.categories || []).join(', ') || '—'],
     ['Image', (r.image || app.image) || '—', true],
+  ]);
+  // ── Requirements — manifest-declared constraints, surfaced so a poorly-declared config
+  // (missing arch list, undeclared host access) is visible without opening config.json.
+  html += '<div class="section-label" style="margin-top:12px">Requirements</div>';
+  html += metaGrid([
+    ['Architectures', (r.architectures && r.architectures.length) ? r.architectures.join(', ') : '⚠ none declared'],
+    ['Host access', r.hostAccess ? '⚠ required' : 'no'],
+    ['Form fields', (r.formFieldsCount != null ? r.formFieldsCount : '—') + (r.formFieldsCount === 0 ? ' (no config options)' : '')],
+    ['MCP', app.mcp ? (app.mcpTransport || 'stdio') : 'no'],
   ]);
   // Notes
   if (r.notes || (s && s.message)) {
