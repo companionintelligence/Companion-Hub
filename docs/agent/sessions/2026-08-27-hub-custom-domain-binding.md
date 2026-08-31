@@ -75,7 +75,12 @@ reached at `comfy.acme.com` loaded but still built every absolute URL — includ
 - [x] `pnpm run tsc` (backend, common, frontend)
 - [x] `pnpm test` — backend 2596, common 176, frontend 1325
 - [x] `pnpm run test:integration` — 10 passed against real Postgres + real migrations
-- [ ] App run — Actions budget blocked CI; no live custom-domain zone available here
+- [x] App run — verified end to end against the DEPLOYED dev Portal
+      (`hub.companionintelligence.com`) with real Cloudflare for SaaS and real Entri:
+      `customDomains[]` delivered on the tunnel sync, joined on the app's platform hostname,
+      `custom_domain` written, `pendingRestart` raised, and the restart regenerated the env —
+      `APP_PUBLIC_URL`/`APP_BASE_URL`/`APP_HOST`/`APP_DOMAIN` all `https://wordpress.ci9.pw`
+      inside the running container instead of `wordpress-<hub>-<org>.companionintelligence.com`.
 - [ ] `bin/agent-validate-shift`
 
 ---
@@ -93,6 +98,19 @@ reached at `comfy.acme.com` loaded but still built every absolute URL — includ
 - **`emit('app', data, appUrn)` publishes to a topic nothing subscribes to.** Fixed at the three
   live call sites; the trap itself remains representable and the existing tests assert the broken
   form. Worth making unrepresentable.
+- **Testing this locally needs a lifecycle event on a DIFFERENT app.** The sync that carries
+  `customDomains[]` runs from inside the lifecycle command that triggered it, and
+  `reconcileCustomDomains` deliberately skips an app that is `starting`/`restarting` — so
+  restarting the app you are trying to bind can never bind it. There IS a post-settle sync that
+  would (`AppLifecycleService`, the `settleCommandOutcome` callback), but it is gated on
+  `isProduction`, so on a source-dev Hub it never fires. Install or restart any second app while
+  the target app sits `running`, and the binding lands on that sync. On an appliance the
+  post-settle sync makes the app's own restart sufficient.
+- **`isProdEnv && app.exposedLocal` gates a correctness path on the environment.** Pre-existing,
+  not introduced here, and out of scope for this PR — but a binding that is delivered in
+  production and silently not delivered in development is a difference that hides real defects
+  from local testing (it cost an hour in this session, and produced a false bug report). Worth
+  its own ticket to decide whether the gate belongs there at all.
 - GitHub Actions is budget-blocked org-wide, so nothing in this PR ran in CI.
 
 ---
