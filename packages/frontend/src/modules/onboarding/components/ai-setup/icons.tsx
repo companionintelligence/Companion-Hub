@@ -91,6 +91,17 @@ export function LemonadeIcon({ className }: IconProps) {
   );
 }
 
+/** MTPLX — three staggered chevrons, for multiple tokens drafted ahead at once. */
+export function MtplxIcon({ className }: IconProps) {
+  return (
+    <Glyph className={className}>
+      <path d="M4 6l4 6-4 6" />
+      <path d="M10 6l4 6-4 6" />
+      <path d="M16 6l4 6-4 6" />
+    </Glyph>
+  );
+}
+
 /** mlx-dspark — a speculative branch: one path drafts ahead, the target verifies and commits. */
 export function DsparkIcon({ className }: IconProps) {
   return (

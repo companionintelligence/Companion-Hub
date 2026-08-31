@@ -112,9 +112,11 @@ export const RecommendedModels = ({
   const installHint =
     chatBackend === 'vllm'
       ? t('ONBOARDING_MODELS_VLLM_INSTALL_HINT')
-      : chatBackend === 'dspark'
-        ? t('ONBOARDING_MODELS_DSPARK_INSTALL_HINT')
-        : t('ONBOARDING_MODELS_INSTALL_AFTER_DOWNLOAD');
+      : chatBackend === 'mtplx'
+        ? t('ONBOARDING_MODELS_MTPLX_INSTALL_HINT')
+        : chatBackend === 'dspark'
+          ? t('ONBOARDING_MODELS_DSPARK_INSTALL_HINT')
+          : t('ONBOARDING_MODELS_INSTALL_AFTER_DOWNLOAD');
 
   return (
     <StepSection number={4} badge="recommended" title={t('ONBOARDING_MODELS_TITLE')} description={t('ONBOARDING_RECOMMENDED_MODELS_DESC')}>

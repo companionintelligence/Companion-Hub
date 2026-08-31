@@ -25,11 +25,13 @@ import {
   UpdateRocmInstallStateBody,
   OnboardingProfileQueryDto,
   VllmStatusQueryDto,
+  MtplxStatusQueryDto,
   DsparkStatusQueryDto,
 } from './inference.dto';
 import { OllamaBackend } from './backends/ollama.backend';
 import { buildVllmRemediation, resolveVllmProbeUrl, VLLM_PROBE_API_KEY_HEADER, VllmBackend } from './backends/vllm.backend';
 import { LemonadeBackend } from './backends/lemonade.backend';
+import { buildMtplxRemediation, resolveMtplxProbeUrl, MtplxBackend } from './backends/mtplx.backend';
 import { buildDsparkRemediation, DsparkBackend, resolveDsparkProbeUrl } from './backends/dspark.backend';
 import { resolveInstalledCatalogIds, resolveInstalledCatalogIdsFromServedModels } from './model-availability.util';
 import type { InferenceBackend } from './backends/backend.interface';
@@ -61,6 +63,7 @@ export class InferenceController {
     private readonly ollamaBackend: OllamaBackend,
     private readonly vllmBackend: VllmBackend,
     private readonly lemonadeBackend: LemonadeBackend,
+    private readonly mtplxBackend: MtplxBackend,
     private readonly dsparkBackend: DsparkBackend,
     private readonly moduleRef: ModuleRef,
     readonly _logger: LoggerService,
@@ -80,6 +83,8 @@ export class InferenceController {
         return this.vllmBackend;
       case 'lemonade':
         return this.lemonadeBackend;
+      case 'mtplx':
+        return this.mtplxBackend;
       case 'dspark':
         return this.dsparkBackend;
     }
@@ -94,10 +99,11 @@ export class InferenceController {
     // which declines AMD outright rather than mount devices into an image that can't use them.
     // Apple Silicon also always recommends Ollama — it already gets MLX acceleration transparently
     // from Ollama 0.19+ (same `family:size` tags, no Hub-side change needed) once the operator
-    // upgrades the host app. vLLM-Metal (the catalog's `-mlx` rows) is a real option there too, but
-    // it has no Docker path and no auto-provisioning story (a native venv install script the Hub
-    // can't run for the operator), so it stays an opt-in Settings choice rather than the default —
-    // see buildVllmRemediation in vllm.backend.ts for the guidance surfaced when it's selected.
+    // upgrades the host app. vLLM-Metal (the catalog's `-mlx` rows) and MTPLX (the catalog's
+    // `-mtplx` rows) are both real options there too, but neither has a Docker path or an
+    // auto-provisioning story (a native install the Hub can't run for the operator), so they stay
+    // opt-in Settings choices rather than the default — see buildVllmRemediation in vllm.backend.ts
+    // and buildMtplxRemediation in mtplx.backend.ts for the guidance surfaced when either is selected.
     return profile.npu.available ? 'lemonade' : profile.gpu.vendor === 'nvidia' && profile.gpu.runtimeAvailable ? 'vllm' : 'ollama';
   }
 
@@ -178,6 +184,7 @@ export class InferenceController {
       body.visionModel,
       body.vllmApiKey,
       body.vllmUrl,
+      body.mtplxUrl,
       body.dsparkUrl,
     );
 
@@ -417,10 +424,12 @@ export class InferenceController {
     const ollamaInstalled = resolveInstalledCatalogIds(catalog, ollamaHealth.modelsLoaded ?? [], getTrackedState);
 
     let installedCatalogIds: string[];
-    // vLLM and mlx-dspark are both host-run servers with no Hub-side pull registry, so "installed"
-    // has to be read back off what they are actually serving. Ollama's embedding rows are merged in
-    // for either, because embeddings stay on Ollama regardless of the chat backend.
-    if (installBackend === 'vllm' || installBackend === 'dspark') {
+    // vLLM, MTPLX, and mlx-dspark are all host-run servers with no Hub-side pull registry, so
+    // "installed" has to be read back off what they are actually serving. Ollama's embedding rows
+    // are merged in regardless of chat backend, because embeddings stay on Ollama either way.
+    // vLLM's probe takes an optional API key override; MTPLX has no auth concept, so it only takes
+    // the URL, same as mlx-dspark.
+    if (installBackend === 'vllm' || installBackend === 'mtplx' || installBackend === 'dspark') {
       const servedHealth =
         installBackend === 'dspark'
           ? await this.dsparkBackend.healthCheck(query?.dsparkUrl).catch(() => ({
@@ -428,11 +437,17 @@ export class InferenceController {
               healthy: false,
               modelsLoaded: [] as string[],
             }))
-          : await this.vllmBackend.healthCheck(query?.vllmUrl, vllmApiKey).catch(() => ({
-              running: false,
-              healthy: false,
-              modelsLoaded: [] as string[],
-            }));
+          : installBackend === 'mtplx'
+            ? await this.mtplxBackend.healthCheck(query?.mtplxUrl).catch(() => ({
+                running: false,
+                healthy: false,
+                modelsLoaded: [] as string[],
+              }))
+            : await this.vllmBackend.healthCheck(query?.vllmUrl, vllmApiKey).catch(() => ({
+                running: false,
+                healthy: false,
+                modelsLoaded: [] as string[],
+              }));
       const servedInstalled = resolveInstalledCatalogIdsFromServedModels(catalog, servedHealth.modelsLoaded ?? [], installBackend, getTrackedState);
       const ollamaEmbeddingIds = ollamaInstalled.filter((id) => {
         const model = catalog.find((m) => m.id === id);
@@ -537,6 +552,33 @@ export class InferenceController {
       error: ready ? undefined : health.error,
       hint: remediation
         ? `${remediation.hint} Hub probes from inside its container — use http://host.docker.internal:8080, not localhost. Currently probing ${probeUrl}.`
+        : undefined,
+    };
+  }
+
+  @UseGuards(AuthGuard)
+  @Get('mtplx/status')
+  async getMtplxStatus(@Query() query?: MtplxStatusQueryDto) {
+    const requestedUrl = query?.url?.trim() || this.mtplxBackend.getBaseUrl();
+    const probeUrl = resolveMtplxProbeUrl(requestedUrl);
+    const health = await this.mtplxBackend.healthCheck(requestedUrl).catch((err) => ({
+      running: false,
+      healthy: false,
+      modelsLoaded: [] as string[],
+      error: err instanceof Error ? err.message : String(err),
+    }));
+    const ready = !!(health.running && health.healthy);
+    const displayEndpoint = ready ? `${probeUrl}/v1` : undefined;
+    const remediation = ready ? undefined : buildMtplxRemediation();
+    return {
+      ready,
+      running: health.running,
+      endpointUrl: probeUrl,
+      displayEndpoint,
+      remediationCommand: remediation?.command,
+      error: ready ? undefined : health.error,
+      hint: remediation
+        ? `${remediation.hint} Hub probes from inside its container — use http://host.docker.internal:8000, not localhost. Currently probing ${probeUrl}.`
         : undefined,
     };
   }

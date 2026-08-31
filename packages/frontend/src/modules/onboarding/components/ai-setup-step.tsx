@@ -1,5 +1,6 @@
 import {
   fetchInferenceOnboardingProfile,
+  fetchMtplxInstallStatus,
   fetchOllamaInstallStatus,
   fetchDsparkInstallStatus,
   fetchVllmInstallStatus,
@@ -15,6 +16,7 @@ import {
   type CloudProviderInput,
   type ExposureMode,
   type HardwareProfileResponse,
+  type MtplxStatus,
   type OllamaStatus,
   type VllmStatus,
   type DsparkStatus,
@@ -32,6 +34,7 @@ import { SystemOverview } from './ai-setup/system-overview';
 import { ResourceSummaryBar } from './ai-setup/resource-summary-bar';
 import { OllamaSetupCard } from './ai-setup/ollama-setup-card';
 import { VllmSetupCard } from './ai-setup/vllm-setup-card';
+import { MtplxSetupCard } from './ai-setup/mtplx-setup-card';
 import { DsparkSetupCard } from './ai-setup/dspark-setup-card';
 import { TailscaleSetupStep } from './tailscale-setup-step';
 import { computeSelectionBudget } from '../helpers/onboarding-model-selection';
@@ -108,12 +111,15 @@ export const AiSetupStep = ({
   const [cloudProviders, setCloudProviders] = useState<CloudProviderInput[]>([]);
   const [ollamaStatus, setOllamaStatus] = useState<OllamaStatus | null>(null);
   const [vllmStatus, setVllmStatus] = useState<VllmStatus | null>(null);
+  const [mtplxStatus, setMtplxStatus] = useState<MtplxStatus | null>(null);
   const [dsparkStatus, setDsparkStatus] = useState<DsparkStatus | null>(null);
   const [checkingOllama, setCheckingOllama] = useState(false);
   const [checkingVllm, setCheckingVllm] = useState(false);
+  const [checkingMtplx, setCheckingMtplx] = useState(false);
   const [checkingDspark, setCheckingDspark] = useState(false);
   const [vllmApiKey, setVllmApiKey] = useState('');
   const [vllmUrl, setVllmUrl] = useState('');
+  const [mtplxUrl, setMtplxUrl] = useState('');
   const [dsparkUrl, setDsparkUrl] = useState('');
   const [selectedBackend, setSelectedBackend] = useState<InferenceBackendType>('ollama');
 
@@ -179,7 +185,7 @@ export const AiSetupStep = ({
     const requestId = ++profileRequestId.current;
     try {
       const backend = backendOverride ?? selectedBackend;
-      const data = await fetchInferenceOnboardingProfile(backend, vllmUrl, backend === 'vllm' ? vllmApiKey : undefined, dsparkUrl);
+      const data = await fetchInferenceOnboardingProfile(backend, vllmUrl, backend === 'vllm' ? vllmApiKey : undefined, mtplxUrl, dsparkUrl);
       // Superseded: a rescan that started before a backend switch but answers after it would push
       // `backends.recommended` back over the backend the operator just picked, and reset their
       // selection to that backend's defaults.
@@ -252,6 +258,21 @@ export const AiSetupStep = ({
     }
   };
 
+  const checkMtplxStatus = async (): Promise<MtplxStatus> => {
+    setCheckingMtplx(true);
+    try {
+      const data = (await fetchMtplxInstallStatus(mtplxUrl)) as MtplxStatus;
+      setMtplxStatus(data);
+      return data;
+    } catch (_e) {
+      const unreachable: MtplxStatus = { ready: false, running: false, endpointUrl: '' };
+      setMtplxStatus(unreachable);
+      return unreachable;
+    } finally {
+      setCheckingMtplx(false);
+    }
+  };
+
   // "Re-check" is the documented last step of both backend flows ("start it, then re-check" /
   // "load a model in your host vLLM server, then Re-check"), so it must also refresh what the
   // backend reports as installed: `installedCatalogIds` is what decides whether a model card reads
@@ -265,7 +286,7 @@ export const AiSetupStep = ({
     const requestId = ++profileRequestId.current;
     try {
       const previouslyInstalled = new Set(profile?.installedCatalogIds ?? []);
-      const data = await fetchInferenceOnboardingProfile(backend, vllmUrl, backend === 'vllm' ? vllmApiKey : undefined, dsparkUrl);
+      const data = await fetchInferenceOnboardingProfile(backend, vllmUrl, backend === 'vllm' ? vllmApiKey : undefined, mtplxUrl, dsparkUrl);
       // Drop a superseded answer. Rescan and the backend selector write the same `profile`, so a
       // refresh that started first but landed last would reinstate pre-rescan hardware figures, or
       // leave `profile` scoped to a backend the operator has already switched away from.
@@ -275,10 +296,13 @@ export const AiSetupStep = ({
       const nextInstalled = new Set(data.installedCatalogIds ?? []);
       // Adopt only models that appeared since the last look, so an earlier opt-out survives.
       const newlySelectable = getDefaultSelectedModelIds(data, backend).filter((id) => !previouslyInstalled.has(id));
-      // The Hub cannot pull a vLLM model, so `handleToggleModel` only lets one be ticked while the
-      // host is serving it. Drop the ones it stopped serving to keep that invariant: left ticked,
-      // `computeSelectionBudget` bills them as pending downloads and can block Continue on disk.
-      const isStillSelectable = (id: string) => data.availableModels.find((m) => m.id === id)?.backend !== 'vllm' || nextInstalled.has(id);
+      // The Hub cannot pull a vLLM or MTPLX model, so `handleToggleModel` only lets one be ticked
+      // while the host is serving it. Drop the ones it stopped serving to keep that invariant: left
+      // ticked, `computeSelectionBudget` bills them as pending downloads and can block Continue on disk.
+      const isStillSelectable = (id: string) => {
+        const modelBackend = data.availableModels.find((m) => m.id === id)?.backend;
+        return (modelBackend !== 'vllm' && modelBackend !== 'mtplx') || nextInstalled.has(id);
+      };
       const nextSelected = [...new Set([...selectedModelIdsRef.current, ...newlySelectable])].filter(isStillSelectable);
       setSelectedModelIds(nextSelected);
 
@@ -323,12 +347,13 @@ export const AiSetupStep = ({
   const handleVllmRecheck = () => handleRecheck(checkVllmStatus, setCheckingVllm);
   const handleDsparkRecheck = () => handleRecheck(checkDsparkStatus, setCheckingDspark);
   const handleOllamaRecheck = () => handleRecheck(checkOllamaStatus, setCheckingOllama);
+  const handleMtplxRecheck = () => handleRecheck(checkMtplxStatus, setCheckingMtplx);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: only on mount
   useEffect(() => {
     void (async () => {
       await fetchProfile(false);
-      await Promise.all([checkOllamaStatus(), checkVllmStatus(), checkDsparkStatus()]);
+      await Promise.all([checkOllamaStatus(), checkVllmStatus(), checkMtplxStatus(), checkDsparkStatus()]);
     })();
   }, []);
 
@@ -351,7 +376,7 @@ export const AiSetupStep = ({
     setSelectedBackend(backend);
     const requestId = ++profileRequestId.current;
     try {
-      const data = await fetchInferenceOnboardingProfile(backend, vllmUrl, backend === 'vllm' ? vllmApiKey : undefined, dsparkUrl);
+      const data = await fetchInferenceOnboardingProfile(backend, vllmUrl, backend === 'vllm' ? vllmApiKey : undefined, mtplxUrl, dsparkUrl);
       // `setSelectedBackend` above is synchronous, so two quick switches already end on the right
       // backend — but the slower fetch can still answer last and leave `profile` (and the selection
       // derived from it) describing the backend the operator switched away from.
@@ -366,6 +391,8 @@ export const AiSetupStep = ({
     }
     if (backend === 'vllm') {
       void checkVllmStatus();
+    } else if (backend === 'mtplx') {
+      void checkMtplxStatus();
     }
     if (backend === 'dspark') {
       void checkDsparkStatus();
@@ -375,10 +402,11 @@ export const AiSetupStep = ({
   const handleToggleModel = (modelId: string) => {
     const model = profile?.availableModels.find((m) => m.id === modelId);
     const installed = new Set(profile?.installedCatalogIds ?? []);
-    // vLLM only: the Hub cannot load a model into a host vLLM server, so selecting an uninstalled
-    // one sends the operator to Hugging Face to fetch it themselves. mlx-dspark is deliberately NOT
-    // included — the Hub loads its models over `POST /admin/load`, so they tick like Ollama's.
-    if (model?.backend === 'vllm' && !installed.has(modelId) && !selectedModelIds.includes(modelId)) {
+    // vLLM and MTPLX: the Hub cannot load a model into either server (MTPLX's load/unload are
+    // stubs — no hot-swap support), so selecting an uninstalled one sends the operator to Hugging
+    // Face to fetch it themselves. mlx-dspark is deliberately NOT included — the Hub loads its
+    // models over `POST /admin/load`, so they tick like Ollama's.
+    if ((model?.backend === 'vllm' || model?.backend === 'mtplx') && !installed.has(modelId) && !selectedModelIds.includes(modelId)) {
       openExternal(`https://huggingface.co/${model.backendModelId}`);
       return;
     }
@@ -471,6 +499,7 @@ export const AiSetupStep = ({
       installBlockReason,
       ...(selectedBackend === 'vllm' && vllmApiKey.trim() ? { vllmApiKey: vllmApiKey.trim() } : {}),
       ...(selectedBackend === 'vllm' && vllmUrl.trim() ? { vllmUrl: vllmUrl.trim() } : {}),
+      ...(selectedBackend === 'mtplx' && mtplxUrl.trim() ? { mtplxUrl: mtplxUrl.trim() } : {}),
       ...(selectedBackend === 'dspark' && dsparkUrl.trim() ? { dsparkUrl: dsparkUrl.trim() } : {}),
     };
   };
@@ -502,6 +531,7 @@ export const AiSetupStep = ({
     cloudProviders,
     vllmApiKey,
     vllmUrl,
+    mtplxUrl,
     dsparkUrl,
     onConfigChange,
   ]);
@@ -578,8 +608,9 @@ export const AiSetupStep = ({
   const availableMemoryMb = profile.resourceEstimate.availableMemoryMb;
   const needsOllamaForContinue = selectedBackend === 'ollama' && (ollamaStatus === null || !ollamaStatus.ready);
   const needsVllmForContinue = selectedBackend === 'vllm' && (vllmStatus === null || !vllmStatus.ready);
+  const needsMtplxForContinue = selectedBackend === 'mtplx' && (mtplxStatus === null || !mtplxStatus.ready);
   const needsDsparkForContinue = selectedBackend === 'dspark' && (dsparkStatus === null || !dsparkStatus.ready);
-  // Both host-run backends leave embeddings on Ollama, so the co-install warning covers both.
+  // All three host-run backends leave embeddings on Ollama, so the co-install warning covers all.
   const ollamaEmbeddingsWarning = isHostServedBackend(selectedBackend) && ollamaStatus !== null && !ollamaStatus.ready && !checkingOllama;
   const showTailscaleSetup = remoteAccess.includes('tailscale');
 
@@ -624,6 +655,16 @@ export const AiSetupStep = ({
                 onApiKeyChange={setVllmApiKey}
                 endpointUrl={vllmUrl}
                 onEndpointUrlChange={setVllmUrl}
+              />
+            </StepSection>
+          ) : selectedBackend === 'mtplx' ? (
+            <StepSection number={3} badge="required" title={t('ONBOARDING_MTPLX_SECTION_TITLE')} description={t('ONBOARDING_MTPLX_SECTION_DESC')}>
+              <MtplxSetupCard
+                status={mtplxStatus}
+                checking={checkingMtplx}
+                onRecheck={handleMtplxRecheck}
+                endpointUrl={mtplxUrl}
+                onEndpointUrlChange={setMtplxUrl}
               />
             </StepSection>
           ) : selectedBackend === 'dspark' ? (
@@ -712,10 +753,11 @@ export const AiSetupStep = ({
               onClick={handleContinue}
               data-testid="ai-continue-btn"
               disabled={
-                (needsOllamaForContinue || needsVllmForContinue || needsDsparkForContinue) &&
+                (needsOllamaForContinue || needsVllmForContinue || needsMtplxForContinue || needsDsparkForContinue) &&
                 !isInsufficient &&
                 ((needsOllamaForContinue && (checkingOllama || !ollamaStatus?.ready)) ||
                   (needsVllmForContinue && (checkingVllm || !vllmStatus?.ready)) ||
+                  (needsMtplxForContinue && (checkingMtplx || !mtplxStatus?.ready)) ||
                   (needsDsparkForContinue && (checkingDspark || !dsparkStatus?.ready)))
               }
             >

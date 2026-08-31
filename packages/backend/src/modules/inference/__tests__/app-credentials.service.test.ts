@@ -9,6 +9,7 @@ import { ModelPullerService } from '../model-puller.service';
 import { CloudFallbackService } from '../cloud-fallback.service';
 import { OllamaBackend } from '../backends/ollama.backend';
 import { VllmBackend } from '../backends/vllm.backend';
+import { MtplxBackend } from '../backends/mtplx.backend';
 import { LemonadeBackend } from '../backends/lemonade.backend';
 import { DsparkBackend } from '../backends/dspark.backend';
 import { LoggerService } from '@/core/logger/logger.service';
@@ -98,6 +99,7 @@ describe('AppCredentialsService', () => {
   let ollamaBackend: MockProxy<OllamaBackend>;
   let vllmBackend: MockProxy<VllmBackend>;
   let lemonadeBackend: MockProxy<LemonadeBackend>;
+  let mtplxBackend: MockProxy<MtplxBackend>;
   let dsparkBackend: MockProxy<DsparkBackend>;
   let configurationService: MockProxy<ConfigurationService>;
 
@@ -110,6 +112,7 @@ describe('AppCredentialsService', () => {
     ollamaBackend = mock<OllamaBackend>();
     vllmBackend = mock<VllmBackend>();
     lemonadeBackend = mock<LemonadeBackend>();
+    mtplxBackend = mock<MtplxBackend>();
     dsparkBackend = mock<DsparkBackend>();
     configurationService = mock<ConfigurationService>();
 
@@ -158,6 +161,7 @@ describe('AppCredentialsService', () => {
         { provide: OllamaBackend, useValue: ollamaBackend },
         { provide: VllmBackend, useValue: vllmBackend },
         { provide: LemonadeBackend, useValue: lemonadeBackend },
+        { provide: MtplxBackend, useValue: mtplxBackend },
         { provide: DsparkBackend, useValue: dsparkBackend },
         { provide: ConfigurationService, useValue: configurationService },
       ],
