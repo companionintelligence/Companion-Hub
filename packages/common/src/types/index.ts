@@ -14,6 +14,7 @@ export type {
   AvailableDomainsResponse,
 } from './domains.js';
 export type { PublicWebIdentity, BuildOriginServerNameInput, BuildPublicWebIdentityInput } from '../public-web/identity.js';
+export type { TunnelCustomDomain, ParsedTunnelCustomDomains } from '../public-web/custom-domains.js';
 export type { BuildTailscalePortUrlInput, BuildTailscaleWebIdentityInput, TailscaleWebIdentity } from '../tailscale/identity.js';
 // biome-ignore lint/performance/noBarrelFile: Re-export public-web helpers through @ci-hub/common/types
 export {
@@ -26,6 +27,14 @@ export {
   RESERVED_APP_NAMES,
   sanitizeAppSubdomain,
 } from '../public-web/identity.js';
+export {
+  collectAmbiguousCustomDomains,
+  indexCustomDomainsByTarget,
+  normalizeHostname,
+  normalizeStoredHostname,
+  parseTunnelCustomDomains,
+  selectCustomDomain,
+} from '../public-web/custom-domains.js';
 export { buildTailscaleNodeFqdn, buildTailscalePortHost, buildTailscalePortUrl, buildTailscaleWebIdentity } from '../tailscale/identity.js';
 export type {
   HardwareProfile,

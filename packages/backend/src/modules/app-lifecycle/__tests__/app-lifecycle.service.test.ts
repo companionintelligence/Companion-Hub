@@ -889,6 +889,320 @@ describe('AppLifecycleService', () => {
     });
   });
 
+  describe('custom domain reconciliation', () => {
+    const REGISTRATION = {
+      id: 'org-1',
+      slug: 'acme',
+      hubSubdomain: 'core2-acme',
+      tunnelId: 'tunnel-123',
+      tunnelToken: 'token',
+    };
+
+    const CONFIG = {
+      userSettings: { domain: 'companionintelligence.com', localDomain: 'ci.lan' },
+      localDomain: 'ci.lan',
+      domain: 'companionintelligence.com',
+    };
+
+    /** The platform hostname CI-Cloud composes for the app below. */
+    const TARGET = 'comfyui-core2-acme.companionintelligence.com';
+
+    const runningComfy = (overrides: Record<string, unknown> = {}) => ({
+      id: 7,
+      appName: 'comfyui',
+      appStoreSlug: 'ci-marketplace',
+      localSubdomain: 'comfyui',
+      exposedLocal: true,
+      exposureMode: 'cloudflare',
+      openPort: false,
+      status: 'running',
+      port: 80,
+      customDomain: null,
+      ...overrides,
+    });
+
+    beforeEach(() => {
+      registrationService.getDeviceRegistrationInfo.mockResolvedValue(REGISTRATION as any);
+      configService.getConfig.mockReturnValue(CONFIG as any);
+    });
+
+    it('binds a delivered custom domain to the app it aliases and asks for a restart', async () => {
+      appsRepository.getApps.mockResolvedValue([runningComfy()] as any);
+      cloudflareClientService.syncState.mockResolvedValue({
+        ok: true,
+        failed: [],
+        failures: [],
+        synced: 1,
+        customDomains: [{ id: 'cd_1', domain: 'comfy.acme.com', targetHostname: TARGET }],
+      });
+
+      await service.triggerCloudflareSync();
+
+      expect(appsRepository.updateAppByIdIfStatus).toHaveBeenCalledWith(7, 'running', { customDomain: 'comfy.acme.com', pendingRestart: true });
+      // Flagged, never recreated: a background heartbeat must not take a running
+      // app down under the user.
+      // No third argument: that publishes to `app:<urn>`, a topic nothing
+      // subscribes to, so the badge would never appear without a reload.
+      expect(sseService.emit).toHaveBeenCalledWith('app', { event: 'custom_domain_changed', appUrn: 'comfyui:ci-marketplace' });
+    });
+
+    it('is idempotent once the binding is already stored', async () => {
+      appsRepository.getApps.mockResolvedValue([runningComfy({ customDomain: 'comfy.acme.com' })] as any);
+      cloudflareClientService.syncState.mockResolvedValue({
+        ok: true,
+        failed: [],
+        failures: [],
+        synced: 1,
+        customDomains: [{ id: 'cd_1', domain: 'comfy.acme.com', targetHostname: TARGET }],
+      });
+
+      await service.triggerCloudflareSync();
+
+      // Re-flagging on every heartbeat would leave the badge stuck on forever.
+      expect(appsRepository.updateAppByIdIfStatus).not.toHaveBeenCalled();
+    });
+
+    it('unbinds an app CI-Cloud no longer reports as wired', async () => {
+      appsRepository.getApps.mockResolvedValue([runningComfy({ customDomain: 'comfy.acme.com' })] as any);
+      cloudflareClientService.syncState.mockResolvedValue({ ok: true, failed: [], failures: [], synced: 1, customDomains: [] });
+
+      await service.triggerCloudflareSync();
+
+      expect(appsRepository.updateAppByIdIfStatus).toHaveBeenCalledWith(7, 'running', { customDomain: null, pendingRestart: true });
+    });
+
+    it('changes nothing when CI-Cloud predates custom domains', async () => {
+      appsRepository.getApps.mockResolvedValue([runningComfy({ customDomain: 'comfy.acme.com' })] as any);
+      // No `customDomains` key at all — every Portal released before the feature.
+      cloudflareClientService.syncState.mockResolvedValue({ ok: true, failed: [], failures: [], synced: 1 });
+
+      await service.triggerCloudflareSync();
+
+      expect(appsRepository.updateAppByIdIfStatus).not.toHaveBeenCalled();
+    });
+
+    it('leaves a stopped app bound rather than flapping it off and back on', async () => {
+      // A stopped app is not in the sync payload, so CI-Cloud produced no ingress
+      // rule for it and cannot report its domain as delivered. Reading that as
+      // "unbound" would unbind on stop, regenerate its env without the custom
+      // hostname on start, and demand a second restart right after.
+      appsRepository.getApps.mockResolvedValue([runningComfy({ status: 'stopped', customDomain: 'comfy.acme.com' })] as any);
+      cloudflareClientService.syncState.mockResolvedValue({ ok: true, failed: [], failures: [], synced: 0, customDomains: [] });
+
+      await service.triggerCloudflareSync();
+
+      expect(appsRepository.updateAppByIdIfStatus).not.toHaveBeenCalled();
+    });
+
+    it('drops the binding of an app that no longer publishes a public route', async () => {
+      appsRepository.getApps.mockResolvedValue([
+        runningComfy({ status: 'stopped', exposedLocal: false, exposureMode: 'local', customDomain: 'comfy.acme.com' }),
+      ] as any);
+      cloudflareClientService.syncState.mockResolvedValue({ ok: true, failed: [], failures: [], synced: 0, customDomains: [] });
+
+      await service.triggerCloudflareSync();
+
+      // Durable configuration, not a transient absence from one payload. The write is
+      // conditional on the status the reconcile saw, so a command that claims the app
+      // mid-sync wins instead of having its env silently contradicted.
+      expect(appsRepository.updateAppByIdIfStatus).toHaveBeenCalledWith(7, 'stopped', { customDomain: null, pendingRestart: true });
+    });
+
+    it('does not unbind on a failed sync', async () => {
+      appsRepository.getApps.mockResolvedValue([runningComfy({ customDomain: 'comfy.acme.com' })] as any);
+      cloudflareClientService.syncState.mockResolvedValue({
+        ok: false,
+        failed: [],
+        failures: [],
+        synced: 0,
+        errorMessage: 'Portal unreachable',
+      });
+
+      await service.triggerCloudflareSync();
+
+      expect(appsRepository.updateAppByIdIfStatus).not.toHaveBeenCalled();
+    });
+
+    it('does not unbind a stopped app that merely shares an app name with a running one', async () => {
+      // `app` is unique on (app_name, app_store_slug), so two stores can both
+      // ship an app called `comfyui`. The sync payload carries only the NAME.
+      appsRepository.getApps.mockResolvedValue([
+        runningComfy({ id: 7, appStoreSlug: 'ci-marketplace', localSubdomain: 'comfyui' }),
+        runningComfy({ id: 8, appStoreSlug: 'other-store', localSubdomain: 'comfyui-alt', status: 'stopped', customDomain: 'art.acme.com' }),
+      ] as any);
+      cloudflareClientService.syncState.mockResolvedValue({
+        ok: true,
+        failed: [],
+        failures: [],
+        synced: 1,
+        customDomains: [{ id: 'cd_1', domain: 'comfy.acme.com', targetHostname: TARGET }],
+      });
+
+      await service.triggerCloudflareSync();
+
+      // The running one binds...
+      expect(appsRepository.updateAppByIdIfStatus).toHaveBeenCalledWith(7, 'running', { customDomain: 'comfy.acme.com', pendingRestart: true });
+      // ...and the stopped one, which was never in the payload, keeps its domain.
+      expect(appsRepository.updateAppByIdIfStatus).not.toHaveBeenCalledWith(8, expect.anything(), expect.anything());
+    });
+
+    it('matches the target hostname case-insensitively', async () => {
+      // The Hub composes its side of the join from slugs it stores VERBATIM, and
+      // a rename can leave uppercase in them; CI-Cloud's side is already
+      // lowercased by the wire parser. Without normalization the two never match
+      // and the whole feature is a silent no-op for that org.
+      registrationService.getDeviceRegistrationInfo.mockResolvedValue({ ...REGISTRATION, slug: 'ACME', hubSubdomain: 'Core2-ACME' } as any);
+      appsRepository.getApps.mockResolvedValue([runningComfy({ localSubdomain: 'ComfyUI' })] as any);
+      cloudflareClientService.syncState.mockResolvedValue({
+        ok: true,
+        failed: [],
+        failures: [],
+        synced: 1,
+        customDomains: [{ id: 'cd_1', domain: 'comfy.acme.com', targetHostname: TARGET }],
+      });
+
+      await service.triggerCloudflareSync();
+
+      expect(appsRepository.updateAppByIdIfStatus).toHaveBeenCalledWith(7, 'running', { customDomain: 'comfy.acme.com', pendingRestart: true });
+    });
+
+    it('leaves a bound app alone when the payload could not be parsed', async () => {
+      appsRepository.getApps.mockResolvedValue([runningComfy({ customDomain: 'comfy.acme.com' })] as any);
+      // Every row unusable — a CI-Cloud whose wire shape drifted. Reading that as
+      // "none delivered" would unbind every app on a custom hostname fleet-wide.
+      cloudflareClientService.syncState.mockResolvedValue({ ok: true, failed: [], failures: [], synced: 1, customDomains: undefined });
+
+      await service.triggerCloudflareSync();
+
+      expect(appsRepository.updateAppByIdIfStatus).not.toHaveBeenCalled();
+    });
+
+    it('keeps the domain the app already serves on when a second alias appears', async () => {
+      appsRepository.getApps.mockResolvedValue([runningComfy({ customDomain: 'zzz.acme.com' })] as any);
+      cloudflareClientService.syncState.mockResolvedValue({
+        ok: true,
+        failed: [],
+        failures: [],
+        synced: 1,
+        customDomains: [
+          { id: 'cd_1', domain: 'zzz.acme.com', targetHostname: TARGET },
+          { id: 'cd_2', domain: 'aaa.acme.com', targetHostname: TARGET },
+        ],
+      });
+
+      await service.triggerCloudflareSync();
+
+      // Moving to the lexicographically first name would break every OAuth
+      // redirect_uri registered against the one it is already serving.
+      expect(appsRepository.updateAppByIdIfStatus).not.toHaveBeenCalled();
+    });
+
+    it('does not bind an app served on an open host port', async () => {
+      // `publishesCloudflarePublicRoute` admits it, but `generateEnvFile` treats
+      // openPort as "not exposed" and emits no public identity at all — binding
+      // would raise a restart badge for a restart that changes nothing.
+      appsRepository.getApps.mockResolvedValue([runningComfy({ openPort: true })] as any);
+      cloudflareClientService.syncState.mockResolvedValue({
+        ok: true,
+        failed: [],
+        failures: [],
+        synced: 1,
+        customDomains: [{ id: 'cd_1', domain: 'comfy.acme.com', targetHostname: TARGET }],
+      });
+
+      await service.triggerCloudflareSync();
+
+      expect(appsRepository.updateAppByIdIfStatus).not.toHaveBeenCalled();
+    });
+
+    it('defers the write while a lifecycle command is regenerating the env', async () => {
+      // The sync runs from inside the restart command, which already wrote the
+      // env. Binding now would be undone: settleCommandOutcome clears
+      // pendingRestart when the command lands, leaving the row bound, the badge
+      // clear and the env stale — and `next === current` never raises it again.
+      appsRepository.getApps.mockResolvedValue([runningComfy({ status: 'restarting' })] as any);
+      cloudflareClientService.syncState.mockResolvedValue({
+        ok: true,
+        failed: [],
+        failures: [],
+        synced: 1,
+        customDomains: [{ id: 'cd_1', domain: 'comfy.acme.com', targetHostname: TARGET }],
+      });
+
+      await service.triggerCloudflareSync();
+
+      expect(appsRepository.updateAppByIdIfStatus).not.toHaveBeenCalled();
+    });
+
+    it('leaves the row alone when a command claimed the app during the CI-Cloud round trip', async () => {
+      // The status the deferral above checks is a SNAPSHOT taken before syncState,
+      // which retries with backoff and can take seconds. A restart begun inside that
+      // window is still `running` in the array, so the guard cannot see it. The write
+      // is conditional on the status not having moved, and when it has, the row must
+      // be left exactly as it was for the next sync to re-derive — otherwise
+      // settleCommandOutcome clears the badge and `next === current` never raises it
+      // again.
+      appsRepository.getApps.mockResolvedValue([runningComfy()] as any);
+      appsRepository.updateAppByIdIfStatus.mockResolvedValue(false);
+      cloudflareClientService.syncState.mockResolvedValue({
+        ok: true,
+        failed: [],
+        failures: [],
+        synced: 1,
+        customDomains: [{ id: 'cd_1', domain: 'comfy.acme.com', targetHostname: TARGET }],
+      });
+
+      await service.triggerCloudflareSync();
+
+      expect(appsRepository.updateAppByIdIfStatus).toHaveBeenCalledWith(7, 'running', { customDomain: 'comfy.acme.com', pendingRestart: true });
+      // No badge event for a write that did not land.
+      expect(sseService.emit).not.toHaveBeenCalledWith('app', expect.objectContaining({ event: 'custom_domain_changed' }));
+    });
+
+    it('holds a live binding when CI-Cloud reports the same domain against two apps', async () => {
+      // A rebind caught in flight. The domain is dropped from both targets, which
+      // makes this app look like one whose target was never delivered — but for an
+      // app ALREADY serving on that hostname the two are not the same instruction.
+      // Unbinding here takes a live customer hostname off the air because a sibling
+      // app briefly claimed the same name.
+      appsRepository.getApps.mockResolvedValue([runningComfy({ customDomain: 'comfy.acme.com' })] as any);
+      cloudflareClientService.syncState.mockResolvedValue({
+        ok: true,
+        failed: [],
+        failures: [],
+        synced: 1,
+        customDomains: [
+          { id: 'cd_1', domain: 'comfy.acme.com', targetHostname: TARGET },
+          { id: 'cd_2', domain: 'comfy.acme.com', targetHostname: 'openwebui-core2-acme.companionintelligence.com' },
+        ],
+      });
+
+      await service.triggerCloudflareSync();
+
+      expect(appsRepository.updateAppByIdIfStatus).not.toHaveBeenCalled();
+    });
+
+    it('does not warn that a delivered domain matches no app when the app is merely stopped', async () => {
+      // The warning means "CI-Cloud wired a hostname no app on this Hub answers
+      // for". An app that is here but absent from this payload — stopped, or
+      // excluded for a release pass — is not that, and telling the operator to
+      // check settings that are correct is how a working feature looks broken.
+      logger.warn.mockClear();
+      appsRepository.getApps.mockResolvedValue([runningComfy({ status: 'stopped', customDomain: 'comfy.acme.com' })] as any);
+      cloudflareClientService.syncState.mockResolvedValue({
+        ok: true,
+        failed: [],
+        failures: [],
+        synced: 0,
+        customDomains: [{ id: 'cd_1', domain: 'comfy.acme.com', targetHostname: TARGET }],
+      });
+
+      await service.triggerCloudflareSync();
+
+      expect(logger.warn.mock.calls.map(([line]) => String(line)).join('\n')).not.toContain('match no app on this Hub');
+    });
+  });
+
   describe('triggerCloudflareSync during device restore', () => {
     it('skips sync while restore intent is active and rehydration is incomplete', async () => {
       vi.spyOn(registrationRecoveryState, 'hasRestoreIntent').mockResolvedValue(true);

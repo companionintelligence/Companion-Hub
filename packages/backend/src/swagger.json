@@ -6801,6 +6801,10 @@
                       "nullable": true,
                       "type": "string"
                     },
+                    "customDomain": {
+                      "nullable": true,
+                      "type": "string"
+                    },
                     "pendingRestart": {
                       "type": "boolean"
                     },
@@ -7978,6 +7982,10 @@
                       ]
                     },
                     "publicDomain": {
+                      "nullable": true,
+                      "type": "string"
+                    },
+                    "customDomain": {
                       "nullable": true,
                       "type": "string"
                     },
@@ -9276,6 +9284,10 @@
                 ]
               },
               "publicDomain": {
+                "nullable": true,
+                "type": "string"
+              },
+              "customDomain": {
                 "nullable": true,
                 "type": "string"
               },

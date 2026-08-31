@@ -12,6 +12,7 @@ import { type MockProxy, mock } from 'vitest-mock-extended';
 import { PortalClientService } from '@/core/portal/portal-client.service';
 import { AppFilesManager } from '../app-files-manager';
 import { AppHelpers } from '../app.helpers';
+import { AppsRepository } from '../apps.repository';
 import { DeviceRegistrationRepository } from '@/modules/registration/device-registration.repository';
 import { InferenceEnvResolver } from '../../inference/inference-env-resolver';
 import { ApiKeyService } from '@/modules/api-keys/api-key.service';
@@ -34,6 +35,7 @@ describe('AppHelpers', () => {
   let apiKeys: MockProxy<ApiKeyService>;
   let memoryConnection: MockProxy<MemoryConnectionService>;
   let portalClient: MockProxy<PortalClientService>;
+  let appsRepository: MockProxy<AppsRepository>;
   const testAppUrn: AppUrn = createAppUrn('test-app', 'test-store');
 
   beforeEach(async () => {
@@ -66,6 +68,7 @@ describe('AppHelpers', () => {
     memoryConnection = moduleRef.get(MemoryConnectionService);
     portalClient = moduleRef.get(PortalClientService);
     portalClient.fetchMapsConfig.mockResolvedValue(null);
+    appsRepository = moduleRef.get(AppsRepository);
   });
 
   describe('generateEnvFile', () => {
@@ -114,6 +117,11 @@ describe('AppHelpers', () => {
 
       envUtils.envStringToMap.mockReturnValue(new Map());
       envUtils.envMapToString.mockReturnValue('');
+      // useMocker reuses mock instances across tests and clearAllMocks does not
+      // drop implementations, so a bound custom domain from one test would
+      // otherwise rewrite the public hostname of every test after it.
+      appsRepository.getAppCustomDomain.mockResolvedValue(null);
+      deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue(undefined);
       appFilesManager.getInstalledAppInfo.mockResolvedValue(mockAppInfo);
       appFilesManager.getAppEnv.mockResolvedValue({ path: '/data/.env', content: '' });
       filesystem.readTextFile.mockResolvedValue('');
@@ -234,6 +242,179 @@ describe('AppHelpers', () => {
 
         expect(envMap.has('CI_SERVER_TOKEN')).toBe(false);
         expect(memoryConnection.markManual).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('custom domain binding', () => {
+      /** What `buildPublicWebIdentity` composes for this app, and CI-Cloud's join key. */
+      const PLATFORM_HOSTNAME = 'test-app-test-store-core2-acme.example.com';
+      const PLATFORM_URL = `https://${PLATFORM_HOSTNAME}`;
+      const CUSTOM_URL = 'https://comfy.acme.com';
+
+      const exposedForm = { exposedLocal: true, openPort: false } as const;
+
+      beforeEach(() => {
+        // The real parser, so the app's PREVIOUS env is read as an env file
+        // rather than as the same empty map the Hub seed produces — the
+        // carry-forward rules for base URLs only exist against a real one.
+        const realEnvUtils = new EnvUtils();
+        envUtils.envStringToMap.mockImplementation(realEnvUtils.envStringToMap);
+        envUtils.envMapToString.mockImplementation(realEnvUtils.envMapToString);
+
+        deviceRegistrationRepository.getFirstDeviceRegistration.mockResolvedValue(
+          fromPartial({ id: 'org-1', slug: 'acme', hubSubdomain: 'core2-acme' }),
+        );
+      });
+
+      const bind = (customDomain: string | null) => {
+        appsRepository.getAppCustomDomain.mockResolvedValue(customDomain);
+      };
+
+      /** The env map actually written out for the app. */
+      const written = () => envUtils.envMapToString.mock.calls.at(-1)?.[0] as Map<string, string>;
+
+      it('emits the platform hostname when nothing is bound', async () => {
+        bind(null);
+
+        await appHelpers.generateEnvFile(testAppUrn, exposedForm);
+
+        expect(written().get('APP_PUBLIC_HOSTNAME')).toBe(PLATFORM_HOSTNAME);
+        expect(written().get('APP_PUBLIC_URL')).toBe(PLATFORM_URL);
+      });
+
+      it('emits the custom hostname on every public identity var once bound', async () => {
+        // The cloned tunnel rule keeps the platform Host header, so the app cannot
+        // learn the customer's hostname from the request — these vars are the only
+        // way it ever finds out, and `redirect_uri` is built from them.
+        bind('comfy.acme.com');
+
+        await appHelpers.generateEnvFile(testAppUrn, exposedForm);
+
+        const env = written();
+        expect(env.get('APP_PUBLIC_HOSTNAME')).toBe('comfy.acme.com');
+        expect(env.get('APP_PUBLIC_URL')).toBe(CUSTOM_URL);
+        expect(env.get('APP_HOST')).toBe('comfy.acme.com');
+        expect(env.get('APP_DOMAIN')).toBe('comfy.acme.com');
+        expect(env.get('APP_EXPOSED_DOMAIN')).toBe('comfy.acme.com');
+        expect(env.get('APP_URL')).toBe(CUSTOM_URL);
+        expect(env.get('APP_BASE_URL')).toBe(CUSTOM_URL);
+        expect(env.get('APP_SCHEME')).toBe('https');
+      });
+
+      it('reverts to the platform hostname when the binding is dropped', async () => {
+        bind(null);
+        // The env still carries the previous binding — regeneration is what
+        // reverts it, so an unbind has to be as reliable as a bind.
+        appFilesManager.getAppEnv.mockResolvedValue({ path: '/data/app.env', content: `APP_PUBLIC_URL=${CUSTOM_URL}\nAPP_BASE_URL=${CUSTOM_URL}\n` });
+
+        await appHelpers.generateEnvFile(testAppUrn, exposedForm);
+
+        expect(written().get('APP_PUBLIC_URL')).toBe(PLATFORM_URL);
+        expect(written().get('APP_BASE_URL')).toBe(PLATFORM_URL);
+      });
+
+      it('leaves a local-only app alone — there is no public identity to alias', async () => {
+        bind('comfy.acme.com');
+
+        await appHelpers.generateEnvFile(testAppUrn, { exposedLocal: false });
+
+        expect(written().get('APP_EXPOSED')).toBe('false');
+        expect(written().has('APP_PUBLIC_URL')).toBe(false);
+      });
+
+      describe('app_base_url form fields', () => {
+        const withBaseUrlField = (content: string) => {
+          appFilesManager.getInstalledAppInfo.mockResolvedValue({
+            ...mockAppInfo,
+            form_fields: [
+              {
+                type: 'app_base_url',
+                label: 'Base URL',
+                env_variable: 'PUBLIC_BASE_URL',
+                required: false,
+                alias_env_variables: ['NEXTAUTH_URL'],
+              },
+            ],
+          } as AppInfo);
+          appFilesManager.getAppEnv.mockResolvedValue({ path: '/data/app.env', content });
+        };
+
+        it('moves a stale auto-derived base URL onto the newly bound domain', async () => {
+          // Most apps build their OAuth redirect_uri from this value, so leaving it
+          // on the platform hostname is INVALID_REDIRECT_URI even though
+          // APP_PUBLIC_URL is right.
+          bind('comfy.acme.com');
+          withBaseUrlField(`PUBLIC_BASE_URL=${PLATFORM_URL}\n`);
+
+          await appHelpers.generateEnvFile(testAppUrn, exposedForm);
+
+          expect(written().get('PUBLIC_BASE_URL')).toBe(CUSTOM_URL);
+          expect(written().get('NEXTAUTH_URL')).toBe(CUSTOM_URL);
+        });
+
+        it('moves it back when the domain is unbound', async () => {
+          bind(null);
+          // Carrying the app's previous public URL — that is what identifies the
+          // base URL as auto-derived rather than operator-chosen.
+          withBaseUrlField(`APP_PUBLIC_URL=${CUSTOM_URL}\nPUBLIC_BASE_URL=${CUSTOM_URL}\n`);
+
+          await appHelpers.generateEnvFile(testAppUrn, exposedForm);
+
+          expect(written().get('PUBLIC_BASE_URL')).toBe(PLATFORM_URL);
+        });
+
+        it('also follows a plain public-domain change, not just a custom-domain one', async () => {
+          // Widens existing behaviour on purpose: a base URL that is merely the
+          // app's previous public URL used to be carried forward verbatim, so an
+          // app whose public domain moved kept signing redirects for the hostname
+          // it had left. The rule is "the Hub does not argue with a value a human
+          // chose", not "the Hub never corrects its own".
+          bind(null);
+          const stale = 'https://test-app-test-store-core2-acme.old.example';
+          withBaseUrlField(`APP_PUBLIC_URL=${stale}\nPUBLIC_BASE_URL=${stale}\n`);
+
+          await appHelpers.generateEnvFile(testAppUrn, exposedForm);
+
+          expect(written().get('PUBLIC_BASE_URL')).toBe(PLATFORM_URL);
+        });
+
+        it('never argues with a base URL the operator chose', async () => {
+          bind('comfy.acme.com');
+          withBaseUrlField('PUBLIC_BASE_URL=https://pinned.example.org\n');
+
+          await appHelpers.generateEnvFile(testAppUrn, exposedForm);
+
+          // Only the two hostnames the Hub derives itself are superseded.
+          expect(written().get('PUBLIC_BASE_URL')).toBe('https://pinned.example.org');
+        });
+
+        it('moves an auto-derived value that arrives on the FORM, not just one already in the env', async () => {
+          /*
+           * This is the path essentially every UI install actually takes. The
+           * install dialog pre-fills each `app_base_url` field with the suggested
+           * public URL, that value is persisted into `app.config`, and every later
+           * start/restart replays `config` as the form — so `hasValidFormValue` is
+           * true and the env branch never runs. A correction that lived only in the
+           * env branch left `APP_PUBLIC_URL` on the custom domain while the value
+           * the OAuth `redirect_uri` is built from stayed on the platform hostname.
+           */
+          bind('comfy.acme.com');
+          withBaseUrlField('');
+
+          await appHelpers.generateEnvFile(testAppUrn, { ...exposedForm, PUBLIC_BASE_URL: PLATFORM_URL });
+
+          expect(written().get('PUBLIC_BASE_URL')).toBe(CUSTOM_URL);
+          expect(written().get('NEXTAUTH_URL')).toBe(CUSTOM_URL);
+        });
+
+        it('still leaves an operator-chosen form value alone', async () => {
+          bind('comfy.acme.com');
+          withBaseUrlField('');
+
+          await appHelpers.generateEnvFile(testAppUrn, { ...exposedForm, PUBLIC_BASE_URL: 'https://pinned.example.org' });
+
+          expect(written().get('PUBLIC_BASE_URL')).toBe('https://pinned.example.org');
+        });
       });
     });
 

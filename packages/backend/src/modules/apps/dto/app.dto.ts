@@ -24,6 +24,8 @@ const appSchema = z.object({
   localSubdomain: z.string().nullable().optional(),
   exposureMode: z.enum(['local', 'cloudflare', 'tailscale']).optional(),
   publicDomain: z.string().nullable().optional(),
+  /** Custom hostname CI-Cloud has wired for this app; null when it serves on the platform hostname. */
+  customDomain: z.string().nullable().optional(),
   pendingRestart: z.boolean(),
   ignoredVersion: z.number().nullable(),
 });

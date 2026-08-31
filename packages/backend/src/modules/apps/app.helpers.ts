@@ -11,10 +11,12 @@ import { Injectable } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
 import type { AppInfo, MemoryUrlStyle, HubIntegration } from '@ci-hub/common/schemas';
 import type { AppUrn } from '@ci-hub/common/types';
+import { normalizeStoredHostname } from '@ci-hub/common/types';
 import { buildFqdnSubdomain, buildPublicWebIdentity, resolvePublicDomainRoot, sanitizeAppSubdomain } from '@ci-hub/common/types';
 import { EnvUtils } from '../env/env.utils';
 import type { AppEventFormInput } from '../queue/entities/app-events';
 import { AppFilesManager } from './app-files-manager';
+import { AppsRepository } from './apps.repository';
 import { DeviceRegistrationRepository } from '../registration/device-registration.repository';
 import { RegistrationService } from '../registration/registration.service';
 import { appMinContextLength } from '../inference/context-length.util';
@@ -166,6 +168,7 @@ function deriveAppBaseWsOrigin(parsed: URL): string {
 export class AppHelpers {
   constructor(
     private readonly appFilesManager: AppFilesManager,
+    private readonly appsRepository: AppsRepository,
     private readonly config: ConfigurationService,
     private readonly filesytem: FilesystemService,
     private readonly envUtils: EnvUtils,
@@ -277,6 +280,25 @@ export class AppHelpers {
     // Fetch organization info to get the correct domain
     // This fixes the issue where apps are generated with the default ci.computer domain instead of the user's specific subdomain
     const org = await this.deviceRegistrationRepository.getFirstDeviceRegistration();
+
+    /*
+     * The custom hostname CI-Cloud has actually WIRED for this app, mirrored onto
+     * the row by the last successful tunnel sync (`reconcileCustomDomains`).
+     *
+     * Read from the row and never from `form`: the Hub cannot tell whether a
+     * hostname really resolves to this tunnel, and emitting a public URL for one
+     * that does not is worse than emitting the platform URL — the app would sign
+     * OAuth redirects for a name nothing answers on. CI-Cloud is the only side
+     * that knows, so its answer is the only one used.
+     *
+     * Absent at install time by construction (CI-Cloud can only wire a domain to
+     * an app it has been told about), which is why binding lands as a pending
+     * restart rather than at first boot.
+     *
+     * Read at the point of use, and only for an exposed app: this method runs on
+     * every install/start/stop/restart/update/reset, and the majority of apps —
+     * local-only ones — can never use the value.
+     */
 
     // the domain is the root domain for the deployment
     const domain = this.config.getConfig().domain;
@@ -448,6 +470,32 @@ export class AppHelpers {
       publicUrl = `https://${form.domain}`;
     }
 
+    /*
+     * ═══ CUSTOM DOMAIN WINS OVER THE PLATFORM HOSTNAME ══════════════════════
+     *
+     * Cloudflare terminates TLS for the customer's hostname and the tunnel
+     * answers on it, but the cloned ingress rule keeps the ORIGINAL
+     * `httpHostHeader` — so the app is handed the platform Host and has no way
+     * to learn from the request which name the browser actually used. These env
+     * vars are that way.
+     *
+     * This is what breaks without the override: `redirect_uri` is built from
+     * `APP_PUBLIC_URL`, so a user arriving on the custom domain is bounced to
+     * their provider with a mismatched redirect (INVALID_REDIRECT_URI), absolute
+     * links hop back to the platform hostname mid-session, and origin-checked
+     * WebSockets validate against a host the browser is not on.
+     *
+     * Only applied when the app is exposed at all: a local/VPN-only app has no
+     * public identity for a domain to alias.
+     */
+    const syncedCustomDomain = isExposed ? normalizeStoredHostname(await this.appsRepository.getAppCustomDomain(appUrn)) : null;
+
+    if (isExposed && syncedCustomDomain) {
+      scheme = 'https';
+      publicHostname = syncedCustomDomain;
+      publicUrl = `https://${syncedCustomDomain}`;
+    }
+
     // Set Exposure Variables
     envMap.set('APP_EXPOSED', String(isExposed));
     envMap.set('APP_SCHEME', scheme);
@@ -488,7 +536,7 @@ export class AppHelpers {
     }
 
     const configDomain = domain;
-    const suggestedPublicUrl =
+    const platformPublicUrl =
       org?.slug && config.exposable
         ? buildPublicWebIdentity({
             appSubdomain: form.localSubdomain ? form.localSubdomain : `${appName}-${appStoreId}`,
@@ -502,7 +550,57 @@ export class AppHelpers {
           }).publicUrl
         : undefined;
 
+    /*
+     * `APP_BASE_URL` (and every `app_base_url` form field) has to agree with the
+     * exposed identity resolved above, not re-derive the platform one: for most
+     * apps this is the value the OAuth `redirect_uri` is actually built from, so
+     * a base URL still naming the platform hostname breaks sign-in on the custom
+     * domain even though `APP_PUBLIC_URL` is correct.
+     */
+    const suggestedPublicUrl = isExposed && syncedCustomDomain ? publicUrl : platformPublicUrl;
+
     const defaultAppBaseUrl = (suggestedPublicUrl ?? envMap.get('APP_URL') ?? '').replace(/\/+$/, '');
+
+    /*
+     * A base URL already in the app's env is normally KEPT — an operator may have
+     * pinned one, and regeneration must not argue with that. But a value that is
+     * merely the app's PREVIOUS public URL is not a choice, it is the last
+     * binding: keeping it would leave an app that just moved onto (or off) a
+     * custom domain signing redirects for the hostname it is no longer served on.
+     *
+     * `APP_PUBLIC_URL` is written by this method and never by a user, so "the
+     * base URL equals what the Hub last derived" identifies an auto-derived value
+     * exactly — in both directions, and without the Hub needing to remember which
+     * domain was bound before. The current platform URL joins it so an app whose
+     * public domain moved is corrected too. (An app whose base URL was first
+     * written while the Hub was unregistered carries a LAN `APP_URL` that matches
+     * neither, and is left alone.)
+     */
+    const supersededAutoBaseUrls = new Set(
+      [existingAppEnvMap.get('APP_PUBLIC_URL'), platformPublicUrl]
+        .filter((url): url is string => typeof url === 'string' && url.trim().length > 0)
+        .map((url) => url.replace(/\/+$/, '')),
+    );
+
+    /*
+     * ⚠ THIS MUST BE APPLIED TO THE FORM VALUE TOO, NOT ONLY THE EXISTING ENV.
+     *
+     * The install dialog PRE-FILLS every `app_base_url` field with the suggested
+     * public URL (install-form.tsx, `suggestedAppBaseUrl`), that value is
+     * submitted, `appFormSchema` is `.passthrough()`, and it is persisted as
+     * `app.config` — which every later start/restart/update replays verbatim as
+     * `form`. So for essentially every app installed through the UI the form
+     * value is present, `hasValidFormValue` is true, and a correction that lived
+     * only in the `existingAppEnvMap` branch would never run: `APP_PUBLIC_URL`
+     * would move onto the custom domain while the base URL every OAuth
+     * `redirect_uri` is built from stayed on the platform hostname.
+     *
+     * An auto-derived value is not an operator choice wherever it arrives from,
+     * so it moves with the exposed identity in both cases; anything the operator
+     * actually typed matches neither superseded URL and is left exactly as found.
+     */
+    const followExposedIdentity = (baseUrl: string): string =>
+      defaultAppBaseUrl && supersededAutoBaseUrls.has(baseUrl) ? defaultAppBaseUrl : baseUrl;
 
     for (const field of config.form_fields) {
       if (field.type !== 'app_base_url') {
@@ -516,9 +614,9 @@ export class AppHelpers {
       let resolvedBaseUrl: string | undefined;
 
       if (hasValidFormValue) {
-        resolvedBaseUrl = String(formValue).replace(/\/+$/, '');
+        resolvedBaseUrl = followExposedIdentity(String(formValue).replace(/\/+$/, ''));
       } else if (existingAppEnvMap.has(envVar)) {
-        resolvedBaseUrl = String(existingAppEnvMap.get(envVar)).replace(/\/+$/, '');
+        resolvedBaseUrl = followExposedIdentity(String(existingAppEnvMap.get(envVar)).replace(/\/+$/, ''));
       } else if (field.default !== undefined && String(field.default).trim() !== '') {
         resolvedBaseUrl = String(field.default).replace(/\/+$/, '');
       } else if (defaultAppBaseUrl) {

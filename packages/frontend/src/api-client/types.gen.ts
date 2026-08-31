@@ -374,6 +374,7 @@ export type MyAppsDto = {
             localSubdomain?: string;
             exposureMode?: 'local' | 'cloudflare' | 'tailscale';
             publicDomain?: string;
+            customDomain?: string;
             pendingRestart: boolean;
             ignoredVersion: number;
         };
@@ -619,6 +620,7 @@ export type GuestAppsDto = {
             localSubdomain?: string;
             exposureMode?: 'local' | 'cloudflare' | 'tailscale';
             publicDomain?: string;
+            customDomain?: string;
             pendingRestart: boolean;
             ignoredVersion: number;
         };
@@ -890,6 +892,7 @@ export type GetAppDto = {
         localSubdomain?: string;
         exposureMode?: 'local' | 'cloudflare' | 'tailscale';
         publicDomain?: string;
+        customDomain?: string;
         pendingRestart: boolean;
         ignoredVersion: number;
     };

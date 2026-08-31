@@ -5,15 +5,25 @@ import { SSEService } from '@/core/sse/sse.service';
 import { Injectable, Optional } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
 import type { AppUrn } from '@ci-hub/common/types';
-import { buildOriginServerName, buildPublicWebIdentity } from '@ci-hub/common/types';
+import {
+  buildOriginServerName,
+  buildPublicWebIdentity,
+  collectAmbiguousCustomDomains,
+  indexCustomDomainsByTarget,
+  normalizeHostname,
+  normalizeStoredHostname,
+  selectCustomDomain,
+} from '@ci-hub/common/types';
+import type { TunnelCustomDomain } from '@ci-hub/common/types';
 import { AppsRepository } from '../apps/apps.repository';
 import { AppFilesManager } from '../apps/app-files-manager';
-import { publishesCloudflarePublicRoute, type AppPublicRoutingSnapshot } from '../apps/app-public-routing.helpers';
+import { canServeOnCustomDomain, publishesCloudflarePublicRoute, type AppPublicRoutingSnapshot } from '../apps/app-public-routing.helpers';
 import { isPortExposeApp } from '@ci-hub/common/schemas';
 import { CloudflareClientService, AppInfo, type PublicDnsFailure, type PublicDnsFailureReason } from '../cloudflare/cloudflare-client.service';
 import { DockerReadFacade } from '../docker/docker-read.facade';
 import { RegistrationService } from '../registration/registration.service';
 import { TailscaleService } from '../tailscale/tailscale.service';
+import { createAppUrn } from '@/common/helpers/app-helpers';
 import { hasRestoreIntent, readRehydrationState } from './registration-recovery-state';
 
 function buildPublicHostname(params: { appSubdomain: string; hubSubdomain?: string | null; orgSlug?: string | null; publicDomainRoot: string }) {
@@ -174,7 +184,7 @@ export class ExposureSyncService {
           continue;
         }
 
-        const appUrn = `${app.appName}:${app.appStoreSlug}` as AppUrn;
+        const appUrn = createAppUrn(app.appName, app.appStoreSlug);
         const installedInfo = appFilesManager ? await appFilesManager.getInstalledAppInfo(appUrn) : null;
 
         let upstreamUrl: string | null = null;
@@ -317,7 +327,10 @@ export class ExposureSyncService {
       return;
     }
     this.lastTailscaleServeToastAt.set(appUrn, now);
-    this.sseService.emit('app', { event: 'tailscale_serve_error', appUrn }, appUrn);
+    // No `appUrn` third argument: that publishes to the `app:<urn>` topic, which
+    // nothing subscribes to (`sse.controller.ts` opens `getTopicObservable('app')`
+    // with no urn), so the toast this exists for never reached the browser.
+    this.sseService.emit('app', { event: 'tailscale_serve_error', appUrn });
   }
 
   public async triggerCloudflareSync(options?: { excludeAppUrns?: AppUrn[] }) {
@@ -352,34 +365,43 @@ export class ExposureSyncService {
       type AppFromDb = Awaited<ReturnType<AppsRepository['getApps']>>[number];
       const exclude = new Set(options?.excludeAppUrns ?? []);
 
-      const exposedApps: AppInfo[] = await Promise.all(
-        apps
-          .filter((app: AppFromDb) => {
-            const appUrn = `${app.appName}:${app.appStoreSlug}` as AppUrn;
-            if (exclude.has(appUrn)) {
-              return false;
-            }
-            return publishesCloudflarePublicRoute(app as AppPublicRoutingSnapshot) && ['running', 'starting', 'restarting'].includes(app.status);
-          })
-          .map(async (app: AppFromDb) => {
-            const subdomain = app.localSubdomain || `${app.appName}-${app.appStoreSlug}`;
-            const appPublicDomain = app.publicDomain || defaultPublicDomain;
-            return {
-              name: app.appName,
-              subdomain,
-              publicDomain: appPublicDomain,
-              localPort: 80,
-              protocol: 'http' as const,
-              hostname: 'traefik',
-              originServerName: buildOriginServerName({
-                appSubdomain: subdomain,
-                hubSubdomain: orgInfo.hubSubdomain,
-                orgSlug: orgInfo.slug,
-                localDomain,
-              }),
-            };
+      const syncedDbApps = apps.filter((app: AppFromDb) => {
+        const appUrn = createAppUrn(app.appName, app.appStoreSlug);
+        if (exclude.has(appUrn)) {
+          return false;
+        }
+        return publishesCloudflarePublicRoute(app as AppPublicRoutingSnapshot) && ['running', 'starting', 'restarting'].includes(app.status);
+      });
+
+      /*
+       * Which apps this payload actually asks CI-Cloud about, keyed by URN.
+       *
+       * ⚠ NOT BY `appName`. `app` is unique on (app_name, app_store_slug), so two
+       * stores can both ship an app called `comfyui`, and the sync entries below
+       * carry only the name. Keyed by name, a running `comfyui` would vouch for a
+       * stopped one from another store — which the custom-domain reconcile reads
+       * as "CI-Cloud was asked about it and reported nothing", and unbinds a
+       * domain that is merely waiting for its app to start again.
+       */
+      const syncedAppUrns = new Set(syncedDbApps.map((app: AppFromDb) => createAppUrn(app.appName, app.appStoreSlug)));
+
+      const exposedApps: AppInfo[] = syncedDbApps.map((app: AppFromDb) => {
+        const subdomain = app.localSubdomain || `${app.appName}-${app.appStoreSlug}`;
+        return {
+          name: app.appName,
+          subdomain,
+          publicDomain: app.publicDomain || defaultPublicDomain,
+          localPort: 80,
+          protocol: 'http' as const,
+          hostname: 'traefik',
+          originServerName: buildOriginServerName({
+            appSubdomain: subdomain,
+            hubSubdomain: orgInfo.hubSubdomain,
+            orgSlug: orgInfo.slug,
+            localDomain,
           }),
-      );
+        };
+      });
 
       // Include the Hub in every sync so CI-Cloud preserves its tunnel route.
       // `hubSubdomain` (from device_registration) is the canonical source for Hub route identity.
@@ -429,7 +451,7 @@ export class ExposureSyncService {
         });
 
       const toToastTarget = (dbApp: AppFromDb): PublicDnsToastTarget => ({
-        appUrn: `${dbApp.appName}:${dbApp.appStoreSlug}` as AppUrn,
+        appUrn: createAppUrn(dbApp.appName, dbApp.appStoreSlug),
         hostname: toPublicHostname(dbApp),
       });
 
@@ -515,12 +537,220 @@ export class ExposureSyncService {
             .join(', ')}`,
         );
       }
+
+      /*
+       * Bindings are reconciled LAST, and in their own try/catch.
+       *
+       * Last, because everything above is the sync's own reporting: a DB error
+       * in here must not unwind past the per-app failure toasts and relabel a
+       * partial sync as a total one — misreporting the blast radius is exactly
+       * the failure this file exists to prevent.
+       *
+       * Only when the sync completed, because a failed one delivered nothing and
+       * reading that as "no domains" would unbind every app that is serving on
+       * one. (`ok` with a non-empty `failed` is fine: CI-Cloud builds
+       * `customDomains` from the ingress rules it produced, before the per-app
+       * DNS writes that populate `failed`, so an app whose DNS record failed is
+       * still reported as wired — and its customer hostname is still serving.)
+       */
+      if (result.ok) {
+        try {
+          await this.reconcileCustomDomains({
+            apps,
+            syncedAppUrns,
+            customDomains: result.customDomains,
+            toPublicHostname,
+          });
+        } catch (error) {
+          this.logger.error(`[Cloudflare] Custom-domain reconcile failed: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
     } catch (error) {
       if (error instanceof Error) {
         this.logger.error(`[Cloudflare] Sync failed: ${error.message}`);
       } else {
         this.logger.error(`[Cloudflare] Sync failed: ${String(error)}`);
       }
+    }
+  }
+
+  /**
+   * Mirror the custom hostnames CI-Cloud actually wired onto the app rows they
+   * belong to, so env generation can emit the hostname the browser really
+   * arrives on instead of the platform one.
+   *
+   * The join key is the app's own platform hostname: CI-Cloud composes
+   * `targetHostname` with the same `<app>-<hub>-<org>.<root>` convention
+   * `buildPublicWebIdentity` does, so no new identifier is needed on either side.
+   *
+   * ⚠ WHAT THIS DELIBERATELY DOES NOT DO IS RESTART ANYTHING. The bound hostname
+   * is an env var, so the app's compose env is stale the moment it changes — but
+   * recreating a running container underneath a user because a background
+   * heartbeat came back is not an acceptable way to deliver that. The row is
+   * flagged `pendingRestart` instead, which is the same badge a settings change
+   * raises, and the restart the user chooses regenerates the env.
+   */
+  private async reconcileCustomDomains(params: {
+    apps: Awaited<ReturnType<AppsRepository['getApps']>>;
+    /** URNs of the apps THIS sync's payload asked about — see the skip rule below. */
+    syncedAppUrns: Set<AppUrn>;
+    customDomains: TunnelCustomDomain[] | undefined;
+    toPublicHostname: (app: Awaited<ReturnType<AppsRepository['getApps']>>[number]) => string;
+  }): Promise<void> {
+    /*
+     * ABSENT IS NOT EMPTY. A CI-Cloud predating custom domains sends no
+     * `customDomains` field at all; treating that as "none delivered" would
+     * unbind every app that is serving happily on a custom hostname the moment a
+     * Hub talks to an older Portal. Only an array that was actually sent — even
+     * an empty one — is allowed to change anything.
+     */
+    if (params.customDomains === undefined) {
+      return;
+    }
+
+    const byTarget = indexCustomDomainsByTarget(params.customDomains);
+    const ambiguousDomains = collectAmbiguousCustomDomains(params.customDomains);
+    const matchedTargets = new Set<string>();
+
+    for (const app of params.apps) {
+      const appUrn = createAppUrn(app.appName, app.appStoreSlug);
+      // Normalized on the way in and on the way out, so a value that ever landed
+      // with different casing settles instead of re-flagging every sync.
+      const current = normalizeStoredHostname(app.customDomain);
+      let next: string | null;
+
+      /*
+       * Attribute the delivered target to this app BEFORE deciding what to do
+       * with it. The unmatched warning below means "CI-Cloud wired a hostname no
+       * app on this Hub answers for", and an app that is here but declines the
+       * binding — stopped, excluded from this pass, on an open host port — is not
+       * that. Recording the match only inside the branch that binds made the
+       * warning fire on every release pass and for every stopped app, telling the
+       * operator to check settings that are perfectly correct.
+       *
+       * Lowercased on both sides: DNS is case-insensitive, but the Hub composes
+       * its hostname from an organization slug it stores verbatim, which a rename
+       * can leave with uppercase in it.
+       */
+      const target = normalizeHostname(params.toPublicHostname(app));
+      if (byTarget.has(target)) {
+        matchedTargets.add(target);
+      }
+
+      if (!canServeOnCustomDomain(app as AppPublicRoutingSnapshot)) {
+        // Not publicly routed at all any more — or routed by an open host port,
+        // which `generateEnvFile` treats as "not exposed" and so never emits a
+        // public identity for. Either way its binding cannot be delivered, so
+        // drop it: durable configuration, not a transient absence from a payload.
+        next = null;
+      } else if (params.syncedAppUrns.has(appUrn)) {
+        /*
+         * The hostname this app is serving on is mid-rebind — CI-Cloud reported
+         * it against more than one target, so `indexCustomDomainsByTarget` drops
+         * it from both and this app's target has no delivered domain at all.
+         *
+         * That is NOT an instruction to unbind. Unbinding here would take a live
+         * customer hostname off the app on its next restart because a SIBLING app
+         * briefly claimed the same name, and the drop already means neither side
+         * can be trusted. Hold the current binding and let the next sync, once
+         * CI-Cloud has settled on one target, decide.
+         */
+        if (current && ambiguousDomains.has(current)) {
+          this.logger.warn(`[Cloudflare] CI-Cloud reports ${current} wired to more than one app; keeping ${appUrn} on it until that resolves.`);
+          continue;
+        }
+        next = selectCustomDomain(byTarget.get(target), current);
+      } else {
+        /*
+         * Published, but absent from this payload — it is stopped, or was
+         * deliberately excluded for a release pass. CI-Cloud only reports a
+         * domain as delivered when it produced an ingress rule, and it cannot
+         * produce one for an app it was not told about, so "not in the array"
+         * here means "not asked about", NOT "unbound".
+         *
+         * Clearing on that would flap: stopping an app would unbind it, starting
+         * it would generate its env without the custom hostname, and the sync
+         * that follows the start would rebind and demand a second restart.
+         */
+        continue;
+      }
+
+      if (next === current) {
+        continue;
+      }
+
+      /*
+       * A lifecycle command is mid-flight on this app, and it has ALREADY
+       * regenerated the env — start and restart both do that before the
+       * container comes up, and this sync runs from inside the same command.
+       * Writing the binding now would be silently undone: `settleCommandOutcome`
+       * clears `pendingRestart` when the command lands, so the row would end up
+       * bound with the badge cleared and the env still on the old hostname, and
+       * the `next === current` check above would never raise it again.
+       *
+       * Deferring to the next sync costs one cycle and leaves the row unchanged,
+       * so the binding is re-derived from scratch with the badge intact.
+       */
+      if (app.status === 'starting' || app.status === 'restarting') {
+        continue;
+      }
+
+      /*
+       * ⚠ THE STATUS ABOVE IS A SNAPSHOT, SO THE CHECK ALONE IS NOT ENOUGH.
+       *
+       * `apps` is read once at the top of the sync, BEFORE the CI-Cloud round
+       * trip (which retries with backoff and can take seconds). A restart begun
+       * inside that window is still `running` in this array, sails past the
+       * guard, and lands the write that `settleCommandOutcome` then clears —
+       * exactly the state the guard exists to prevent, and one the `next ===
+       * current` check above guarantees is never raised again.
+       *
+       * So the write is conditional on the status not having moved since the
+       * snapshot. If a command claimed the app in the meantime the update simply
+       * does not apply, and the next sync re-derives the binding from scratch.
+       */
+      let persisted: boolean;
+      try {
+        persisted = await this.appRepository.updateAppByIdIfStatus(app.id, app.status, { customDomain: next, pendingRestart: true });
+      } catch (error) {
+        // One row's write must not abandon the rest of the reconcile.
+        this.logger.error(`[Cloudflare] Failed to persist custom domain for ${appUrn}: ${error instanceof Error ? error.message : String(error)}`);
+        continue;
+      }
+
+      if (!persisted) {
+        this.logger.debug(`[Cloudflare] Deferred custom-domain write for ${appUrn}: a lifecycle command claimed it during this sync`);
+        continue;
+      }
+
+      this.logger.info(
+        next
+          ? `[Cloudflare] ${appUrn} is now served on custom domain ${next}; restart it to publish that hostname to the app.`
+          : `[Cloudflare] Custom domain ${current} is no longer wired for ${appUrn}; restart it to revert to its platform hostname.`,
+      );
+      // No `appUrn` third argument: that would publish to the `app:<urn>` topic,
+      // which nothing subscribes to — the frontend opens `/api/sse/app` only, so
+      // the event would never reach the cache invalidation it exists for.
+      this.sseService.emit('app', { event: 'custom_domain_changed', appUrn });
+    }
+
+    /*
+     * CI-Cloud wired a hostname the Hub could not attribute to any app.
+     *
+     * The join is on a string both sides compose independently, so it can miss:
+     * CI-Cloud falls back to its own root domain when an app's requested
+     * `publicDomain` is unapproved, unentitled or in an unreachable zone, and an
+     * operator renaming a subdomain moves the Hub's side out from under a target
+     * CI-Cloud has already stored. Every one of those is a customer domain that
+     * IS serving and that the Hub is quietly declining to tell its app about, so
+     * say so — without this the feature simply appears not to work.
+     */
+    const unmatched = [...byTarget.keys()].filter((target) => !matchedTargets.has(target));
+    if (unmatched.length > 0) {
+      this.logger.warn(
+        `[Cloudflare] CI-Cloud reports custom domains wired to ${unmatched.length} hostname(s) that match no app on this Hub: ${unmatched.join(', ')}. ` +
+          `Those domains are serving but their apps will keep emitting their platform hostname — check the apps' public domain and subdomain settings.`,
+      );
     }
   }
 }

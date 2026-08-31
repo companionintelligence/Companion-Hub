@@ -17,7 +17,7 @@ import type { ModuleRef } from '@nestjs/core';
 import { parseComposeJson } from '@ci-hub/common/schemas';
 import type { AppUrn } from '@ci-hub/common/types';
 import { ErrorReportingService, type AppFailurePhase } from '@/core/error-reporting/error-reporting.service';
-import { buildOriginServerName, buildPublicWebIdentity, resolvePublicDomainRoot } from '@ci-hub/common/types';
+import { buildOriginServerName, buildPublicWebIdentity, normalizeStoredHostname, resolvePublicDomainRoot } from '@ci-hub/common/types';
 import Dockerode from 'dockerode';
 import { ZodError } from 'zod';
 import { fromError } from 'zod-validation-error';
@@ -154,7 +154,7 @@ export class AppLifecycleCommand {
           orgSlug: org?.slug,
           localDomain,
         });
-        cloudflarePublicHostname = buildPublicWebIdentity({
+        const platformPublicHostname = buildPublicWebIdentity({
           appSubdomain,
           hubSubdomain: org?.hubSubdomain,
           orgSlug: org?.slug,
@@ -164,6 +164,29 @@ export class AppLifecycleCommand {
             configDomain: domain,
           }),
         }).hostname;
+
+        /*
+         * This value becomes Traefik's `X-Forwarded-Host` custom request header
+         * (traefik-labels.builder.ts), so it MUST follow the same binding
+         * `generateEnvFile` follows. A whole class of frameworks — Rails, Django
+         * with USE_X_FORWARDED_HOST, Laravel/Symfony trusted proxies, anything
+         * that trusts proxy headers over its own env — builds absolute URLs and
+         * OAuth `redirect_uri` from this header and never looks at
+         * `APP_PUBLIC_URL`. Leaving it on the platform hostname makes the two
+         * sources disagree and the feature silently do nothing for those apps.
+         *
+         * Read from the row, exactly as env generation does, so the header and
+         * the env cannot drift regardless of which runs first.
+         */
+        let boundCustomDomain: string | null = null;
+        try {
+          const appsRepository = this.moduleRef.get(AppsRepository, { strict: false });
+          boundCustomDomain = normalizeStoredHostname(await appsRepository.getAppCustomDomain(appUrn));
+        } catch (customDomainError) {
+          logger.warn(`Could not resolve the bound custom domain for ${appUrn}; using the platform hostname: ${customDomainError}`);
+        }
+
+        cloudflarePublicHostname = boundCustomDomain || platformPublicHostname;
       }
 
       // Windows-backed app data (drvfs/9p) silently drops chown/chmod, so database services that

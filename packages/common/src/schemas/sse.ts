@@ -58,6 +58,10 @@ const appScopedEventSchema = z.object({
     'restore_error',
     'public_dns_error',
     'tailscale_serve_error',
+    // A custom hostname CI-Cloud wired for this app was bound or unbound. Carries
+    // no status — the row's `pendingRestart` is what changed, so the client just
+    // refetches the app.
+    'custom_domain_changed',
   ]),
   appUrn: appUrnSchema,
   appStatus: appStatusSchema.optional(),

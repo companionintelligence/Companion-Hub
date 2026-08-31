@@ -5,7 +5,7 @@
 > **Key paths:** `packages/backend/src/modules/`, `packages/backend/src/database/`, `packages/backend/src/queue/`
 > **Commands:** `cd packages/backend && pnpm test`, `pnpm run test:integration` (root)
 > **Owner persona:** maintainability + security (see REVIEW_PERSONAS.md)
-> **Last updated:** 2026-08-14
+> **Last updated:** 2026-08-27
 > **Related:** docs/system/e2e.md, docs/ARCHITECTURE.md
 
 ---
@@ -84,6 +84,47 @@ Guards against that:
   throw after the publisher RPC timed out still reaches `install_failed`.
 - **Unique `(app_name, app_store_slug)`** — closes the concurrent-install race that used to insert
   two rows for the same app (duplicate tiles / "Firefly III, Firefly III" in the queue).
+
+## Custom domains
+
+CI-Cloud reports the customer hostnames it actually cloned into this device's tunnel ingress on
+`POST /api/tunnels/state`. The Hub is a **mirror** of that array, never a re-derivation of it —
+only CI-Cloud knows whether a hostname really routes here.
+
+- `syncStateOnce` (`modules/cloudflare`) validates the wire elements and drops malformed ones.
+  `undefined` (a CI-Cloud predating the field, a failed sync, or a payload nothing could parse)
+  means *change nothing*; `[]` means *unbind*. Collapsing those two takes live domains off the air.
+- `reconcileCustomDomains` (`modules/app-lifecycle/exposure-sync.service.ts`) joins each delivered
+  `targetHostname` against the app's own platform hostname and writes `app.custom_domain`. It runs
+  last in the sync and in its own try/catch, so a DB error cannot swallow the per-app DNS reporting
+  above it. Apps absent from the payload (stopped, or excluded for a release pass) keep their
+  binding — "not asked about" is not "unbound".
+  A domain CI-Cloud reports against two targets is a rebind in flight: it is dropped from both,
+  and an app already serving on it **holds** its binding rather than being unbound by the drop.
+- `generateEnvFile` emits the bound hostname for `APP_PUBLIC_URL` / `APP_PUBLIC_HOSTNAME` /
+  `APP_HOST` / `APP_DOMAIN` / `APP_BASE_URL`. The cloned ingress rule keeps the platform
+  `httpHostHeader`, so these env vars are the **only** way an app learns the name the browser used —
+  which is what OAuth `redirect_uri` is built from.
+- An `app_base_url` value that is merely an auto-derived public URL follows the binding **wherever
+  it arrives from**. The install dialog pre-fills these fields and the value is persisted into
+  `app.config`, which every later lifecycle command replays as `form` — so a correction that only
+  looked at the app's existing env would never run for a UI install.
+- Two more consumers must follow the same binding, because they are what an app or a browser
+  actually sees: Traefik's `X-Forwarded-Host` middleware (`commands/command.ts` →
+  `traefik-labels.builder.ts`), which frameworks that trust proxy headers use instead of the env,
+  and the forward-auth host map (`modules/auth`), which the edge-SSO return URL is built from.
+- The change reaches a running app via `pendingRestart` + an SSE nudge, never by recreating
+  containers on a background sync. Writes are deferred while an app is `starting`/`restarting`,
+  because the in-command sync would otherwise be clobbered by `settleCommandOutcome` — and, because
+  that status is a snapshot taken before the CI-Cloud round trip, the write itself is a
+  compare-and-set on it (`updateAppByIdIfStatus`) so a command that claims the app mid-sync wins.
+- Diagnostics report `action: 'ok'` **only** for the bind window itself (a custom domain bound, the
+  env still on the platform hostname). `pendingRestart` alone must not suppress a verdict: it is
+  raised by any settings change, and suppressing on it hides real drift from `mismatchCount` and
+  from an untargeted `repair()`.
+
+⚠ `SSEService.emit('app', data, appUrn)` publishes to topic `app:<urn>`, which **nothing
+subscribes to** — the frontend opens `/api/sse/app` only. Always omit the third argument.
 
 ## Inference cloud providers
 

@@ -4,6 +4,7 @@ import { ConfigurationService } from '@/core/config/configuration.service';
 import { HttpStatus, Injectable } from '@nestjs/common';
 import axios, { type AxiosInstance } from 'axios';
 import type { PublicDnsFailure } from '@/modules/cloudflare/cloudflare-client.service';
+import type { TunnelCustomDomain } from '@ci-hub/common/types';
 
 export type PortalStoreListingsParams = {
   category?: string;
@@ -199,6 +200,13 @@ export class PortalClientService {
     /** Per-app failure detail; absent on CI-Cloud versions that predate it. */
     failures?: PublicDnsFailure[];
     synced?: number;
+    /**
+     * Custom hostnames CI-Cloud actually wired into this device's tunnel ingress
+     * on this sync. Absent on CI-Cloud versions that predate custom domains —
+     * which is NOT the same as an empty array, and the consumer must keep the
+     * two apart (see `parseTunnelCustomDomains`).
+     */
+    customDomains?: TunnelCustomDomain[];
   }> {
     return this.postJson('tunnels/state', payload, { authenticated: true });
   }

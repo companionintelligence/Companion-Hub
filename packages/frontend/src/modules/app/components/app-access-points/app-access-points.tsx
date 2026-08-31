@@ -7,7 +7,7 @@ import { getServeStatusOptions } from '@/api-client/@tanstack/react-query.gen';
 import { openExternal } from '@/lib/helpers/open-external';
 import { cn } from '@/lib/utils';
 import type { AppDetails, AppInfo } from '@/types/app.types';
-import { buildPublicWebIdentity, sanitizeAppSubdomain } from '@ci-hub/common/types';
+import { buildPublicWebIdentity, normalizeStoredHostname, sanitizeAppSubdomain } from '@ci-hub/common/types';
 import { useQuery } from '@tanstack/react-query';
 import { CheckCircle2, Copy, ExternalLink, Globe, Lock, MonitorSmartphone, QrCode as QrCodeIcon } from 'lucide-react';
 import { useMemo, useState } from 'react';
@@ -210,8 +210,15 @@ export function buildAppAccessPoints(input: {
           publicDomainRoot: resolvedPublicDomain,
         })
       : null;
-  const publicHost = configuredPublicDomain || derivedPublicIdentity?.hostname || null;
-  const publicUrl = publicHost ? buildHttpsUrl(publicHost, sslPort, urlSuffix) : null;
+  // A custom hostname CI-Cloud has actually wired for this app is the address the
+  // user visits, so it is the one this card links to and shows in its QR code.
+  const syncedCustomDomain = normalizeStoredHostname(record.customDomain);
+  const publicHost = syncedCustomDomain || configuredPublicDomain || derivedPublicIdentity?.hostname || null;
+  // `sslPort` is the HUB's own local HTTPS port. A custom hostname is terminated by
+  // Cloudflare, which only answers on 443, so appending the local port to it would
+  // link and QR-code an address that cannot connect — and would disagree with the
+  // backend probe, which requests the same hostname on 443 and reports it healthy.
+  const publicUrl = publicHost ? buildHttpsUrl(publicHost, syncedCustomDomain ? 443 : sslPort, urlSuffix) : null;
 
   const expectsTailscalePublish = record.exposureMode === 'tailscale';
   // Legacy (pre-exposureMode) installs may still infer VPN from older flags.
