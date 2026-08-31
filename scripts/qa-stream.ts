@@ -697,14 +697,63 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
         result.notes = `Container start failed: ${run.err.slice(0, 200)}`;
         return result;
       }
-      // Resolve the host port Docker assigned (output like "0.0.0.0:49154\n[::]:49154").
-      const portMap = execQuiet(`docker port ${containerName} ${result.port}/tcp`);
-      hostPort = portMap.ok ? Number(portMap.out.split('\n')[0]?.trim().split(':').pop()) : 0;
+      // Resolve the host port. When reserveHostPort() succeeded above, `publishFlag` already asked
+      // Docker for that EXACT port (not `0:<port>`) — `docker run` either bound it or failed outright
+      // (caught by `!run.ok` above), so there is nothing left to discover. Trust it directly instead
+      // of re-querying `docker port` immediately after `-d` returns, for two independent reasons:
+      //
+      //  1. A genuine (if narrow) eventual-consistency gap: `docker run -d` returns as soon as the
+      //     daemon acknowledges container creation, not necessarily after the iptables/userland-proxy
+      //     publish step has fully landed, so a same-tick `docker port` query can race ahead of that.
+      //     This mirrors the established fix in composeUp() below (`reservedHostPort > 0 ?
+      //     reservedHostPort : ...`), which already trusts its reservation for the identical reason.
+      //  2. The dominant cause found while investigating the 11-app/6-node fleet run that hit this:
+      //     reproduced locally, several of the affected apps (immich-kiosk, jellysweep, drivebase,
+      //     self-hosted-metrics, glance — 5/5 tried) turned out to EXIT IMMEDIATELY on this exact
+      //     synthesized-config path (missing required env vars the manifest doesn't declare, images
+      //     needing a real backing service, one app rejecting the harness's 0777 scratch-dir chmod
+      //     outright) — real per-app problems, not a harness race. `docker port` on an already-exited
+      //     container correctly returns nothing (its mapping is gone), but the single unretried check
+      //     here turned that into a generic, misleading 'error'/'portmap' — masking what the readiness
+      //     loop below would have diagnosed accurately (`fail`/`exit`, with the real exit reason and
+      //     log tail). The apparent "same bug on 6 different nodes" pattern was this ONE unhelpful
+      //     message swallowing many unrelated, fully-deterministic per-app crashes, not a shared race.
+      //
+      // Only fall back to querying `docker port` (with retries) when reservation failed and we
+      // published on `0:<port>` — there Docker itself chose the port and there's genuinely nothing
+      // else to trust. Either way, a container that crashed immediately is still caught correctly: the
+      // readiness loop right below inspects the container's own State.Status/RestartCount and fails
+      // fast with a clear `exit` failKind + captured logs — a strictly better diagnosis than this
+      // early portmap check ever gave it.
+      if (reserved > 0) {
+        hostPort = reserved;
+      } else {
+        const portAttempts = 5;
+        for (let attempt = 0; attempt < portAttempts && !hostPort; attempt++) {
+          if (attempt > 0) await new Promise((r) => setTimeout(r, 1000));
+          // Output like "0.0.0.0:49154\n[::]:49154".
+          const portMap = execQuiet(`docker port ${containerName} ${result.port}/tcp`);
+          hostPort = portMap.ok ? Number(portMap.out.split('\n')[0]?.trim().split(':').pop()) : 0;
+        }
+      }
       if (!hostPort) {
+        // Distinguish a genuine crash (real app bug) from a still-unresolved mapping (daemon/harness
+        // issue) so the note points a future investigator at the right place instead of always
+        // reading as a harness bug.
+        const ins = execQuiet(`docker inspect ${containerName} --format '{{.State.Running}}|{{.State.ExitCode}}'`, 10_000);
+        const [running = '', exitCode = ''] = ins.ok ? ins.out.split('|') : [];
+        const crashed = ins.ok && running.trim() === 'false';
+        let crashLogs = '';
+        if (crashed) {
+          const logs = execQuiet(`docker logs --tail 20 ${containerName}`, 10_000);
+          crashLogs = (logs.out || logs.err || '').replace(/\s+/g, ' ').trim().slice(0, 200);
+        }
         execQuiet(`docker rm -f ${containerName}`, 30_000);
         result.score = 'error';
         result.failKind = 'portmap';
-        result.notes = `Could not resolve host port mapping for container :${result.port}`;
+        result.notes = crashed
+          ? `Container exited (code ${exitCode.trim()}) before host port mapping could be resolved for :${result.port}${crashLogs ? ` | ${crashLogs}` : ''}`
+          : `Could not resolve host port mapping for container :${result.port}`;
         return result;
       }
     }
