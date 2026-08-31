@@ -75,7 +75,12 @@ reached at `comfy.acme.com` loaded but still built every absolute URL — includ
 - [x] `pnpm run tsc` (backend, common, frontend)
 - [x] `pnpm test` — backend 2596, common 176, frontend 1325
 - [x] `pnpm run test:integration` — 10 passed against real Postgres + real migrations
-- [ ] App run — Actions budget blocked CI; no live custom-domain zone available here
+- [x] App run — verified end to end against the DEPLOYED dev Portal
+      (`hub.companionintelligence.com`) with real Cloudflare for SaaS and real Entri:
+      `customDomains[]` delivered on the tunnel sync, joined on the app's platform hostname,
+      `custom_domain` written, `pendingRestart` raised, and the restart regenerated the env —
+      `APP_PUBLIC_URL`/`APP_BASE_URL`/`APP_HOST`/`APP_DOMAIN` all `https://wordpress.ci9.pw`
+      inside the running container instead of `wordpress-<hub>-<org>.companionintelligence.com`.
 - [ ] `bin/agent-validate-shift`
 
 ---
@@ -93,6 +98,22 @@ reached at `comfy.acme.com` loaded but still built every absolute URL — includ
 - **`emit('app', data, appUrn)` publishes to a topic nothing subscribes to.** Fixed at the three
   live call sites; the trap itself remains representable and the existing tests assert the broken
   form. Worth making unrepresentable.
+- **Restarting the app you are binding can never bind it.** The sync that carries
+  `customDomains[]` runs from inside the lifecycle command that triggered it, and
+  `reconcileCustomDomains` deliberately skips an app that is `starting`/`restarting`. Only the
+  `start` path has an `afterApply` sync that runs AFTER `settleCommandOutcome` — the point at
+  which the app is `running` and the reconcile will act. **`restart` has no `afterApply` at all,
+  in any environment**, so a restart delivers nothing. What binds an already-running app is a
+  lifecycle event on a DIFFERENT app, or a stop followed by a start.
+- **The post-settle sync is no longer gated on `isProduction`** (fixed here). It used to be, so a
+  binding was delivered on an appliance and silently never delivered on a source-dev Hub — the one
+  path that matters could not be exercised locally, which cost an hour in this session and
+  produced a false bug report. `triggerCloudflareSync` is already inert for an unregistered device
+  and during a restore, so the gate bought nothing.
+- **`restart` still has no post-settle sync.** Adding an `afterApply` there would make the
+  restart a user reaches for after connecting a domain actually deliver it, instead of requiring
+  an unrelated second app. Deliberately not done here — it changes when every exposed app syncs,
+  which is broader than custom domains and wants its own change and its own review.
 - GitHub Actions is budget-blocked org-wide, so nothing in this PR ran in CI.
 
 ---

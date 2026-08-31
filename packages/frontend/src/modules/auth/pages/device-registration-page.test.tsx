@@ -108,9 +108,6 @@ describe('DeviceRegistrationPage', () => {
     render(<DeviceRegistrationPage />);
 
     expect(await screen.findByRole('heading', { name: 'Step 2: Connect this device' })).toBeInTheDocument();
-    expect(
-      screen.getByText('In your CI Account, click Add Device, name your Hub, then paste the pairing code here to finish registration.'),
-    ).toBeInTheDocument();
     const deviceId = screen.getByText('device-123');
     expect(deviceId).toBeInTheDocument();
     expect(deviceId).toHaveClass('truncate');
@@ -118,9 +115,6 @@ describe('DeviceRegistrationPage', () => {
     expect(setHubSentryDeviceId).toHaveBeenCalledWith('device-123');
     expect(screen.getByLabelText('Enter Pairing Code:')).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Sign in to CI Account' })).toHaveAttribute('href', 'https://portal.example.com');
-    expect(
-      screen.getByText("This Hub will be added to your existing organization. You'll only create an organization if you don't have one yet."),
-    ).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Create account' })).toHaveAttribute(
       'href',
       'https://portal.example.com/signup?redirect=%2Fhome%3Fadd_device%3D1%26hub_device_id%3Ddevice-123',
@@ -146,18 +140,33 @@ describe('DeviceRegistrationPage', () => {
 
   it('offers both step 1 links as scannable codes for appliances with no browser', async () => {
     // A headless CI-OS box (or an SSH session) has no browser to open the anchor
-    // in, so each link is also published as a QR plus its selectable fallback.
+    // in, so each link is also published as a QR. The disclosure stays collapsed
+    // so the two-column desktop layout stays balanced, and once open the plate
+    // is bare — no caption, no printed fallback link — since the "Scan QR"
+    // button the user just pressed is already all the context it needs; the
+    // payload is still carried on the SVG's accessible name for screen readers.
     render(<DeviceRegistrationPage />);
 
-    expect(await screen.findByText('No browser on this device? Scan to sign in on your phone.')).toBeInTheDocument();
-    expect(screen.getByText('Or scan to create your account on your phone.')).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: 'Scan QR to sign in' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Scan QR to create an account' })).toBeInTheDocument();
+    expect(screen.queryByTitle('QR code')).not.toBeInTheDocument();
+    expect(screen.queryByText('https://portal.example.com')).not.toBeInTheDocument();
 
-    const codes = screen.getAllByTitle('QR code');
-    expect(codes).toHaveLength(2);
+    fireEvent.click(screen.getByRole('button', { name: 'Scan QR to sign in' }));
+    expect(screen.queryByText('No browser on this device? Scan to sign in on your phone.')).not.toBeInTheDocument();
+    expect(screen.getByRole('img', { name: 'https://portal.example.com' })).toBeInTheDocument();
+    expect(screen.queryByText('https://portal.example.com')).not.toBeInTheDocument();
 
-    // The fallback text must carry exactly what the anchors carry
-    expect(screen.getByText('https://portal.example.com')).toBeInTheDocument();
-    expect(screen.getByText('https://portal.example.com/signup?redirect=%2Fhome%3Fadd_device%3D1%26hub_device_id%3Ddevice-123')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Scan QR to create an account' }));
+    expect(screen.queryByText('Or scan to create your account on your phone.')).not.toBeInTheDocument();
+    expect(
+      screen.getByRole('img', {
+        name: 'https://portal.example.com/signup?redirect=%2Fhome%3Fadd_device%3D1%26hub_device_id%3Ddevice-123',
+      }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText('https://portal.example.com/signup?redirect=%2Fhome%3Fadd_device%3D1%26hub_device_id%3Ddevice-123'),
+    ).not.toBeInTheDocument();
   });
 
   it('shows a retryable temporary-unavailable state instead of the pairing form when status lookup fails', async () => {

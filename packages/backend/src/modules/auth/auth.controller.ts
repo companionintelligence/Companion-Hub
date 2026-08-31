@@ -172,7 +172,19 @@ export class AuthController {
    * and the org slug bounds which sibling app hosts are an acceptable redirect target.
    */
   private async resolvePublicHub(): Promise<{ origin: string; orgSlug: string } | null> {
-    const org = await this.deviceRegistration.getFirstDeviceRegistration();
+    // Forward-auth (`/api/auth/traefik`) and SSO handoff call this on every unauthenticated
+    // tunnel visit. A transient Postgres failure (auth, connection, schema) must not escape as
+    // an unhandled 500 — Traefik surfaces that to the visitor as a hard outage, and Sentry
+    // floods with the same wrapped Drizzle "Failed query" for every app hit. Treat a DB miss
+    // like "no registration row": callers already fall back to the LAN / login paths.
+    let org: Awaited<ReturnType<DeviceRegistrationRepository['getFirstDeviceRegistration']>>;
+    try {
+      org = await this.deviceRegistration.getFirstDeviceRegistration();
+    } catch (error) {
+      this.logger.warn('Failed to load device registration while resolving public Hub origin', error);
+      return null;
+    }
+
     // `buildHubPublicOrigin` owns the construction AND the unprovisioned-domain sentinel, so a
     // change to what counts as "provisioned" cannot apply to memory-connect and not to here.
     const origin = buildHubPublicOrigin({ hubSubdomain: org?.hubSubdomain, domain: this.publicDomainRoot() });

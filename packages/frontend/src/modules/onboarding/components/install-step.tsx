@@ -209,6 +209,7 @@ export const InstallStep = ({
             visionModel: resolvedVisionPreference && availablePreferenceModelIds.has(resolvedVisionPreference) ? resolvedVisionPreference : null,
             vllmApiKey: aiSetupConfig.vllmApiKey ?? null,
             vllmUrl: aiSetupConfig.vllmUrl ?? null,
+            dsparkUrl: aiSetupConfig.dsparkUrl ?? null,
           });
         } catch {
           setAiPhase((prev) => ({ ...prev, error: t('ONBOARDING_INSTALL_FAILED_SAVE_PREFERRED_BACKEND', { status: 0 }) }));

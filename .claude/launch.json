@@ -20,6 +20,13 @@
       "runtimeExecutable": "pnpm",
       "runtimeArgs": ["--filter", "backend", "dev"],
       "port": 3000
+    },
+    {
+      "name": "local",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": ["run", "local"],
+      "port": 5005,
+      "autoPort": false
     }
   ]
 }

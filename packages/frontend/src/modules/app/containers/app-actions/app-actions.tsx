@@ -4,6 +4,7 @@ import {
   BrainCircuit,
   CheckCircle,
   CircleStop,
+  Copy,
   Download,
   Edit,
   Eraser,
@@ -44,7 +45,8 @@ import { useLocation, useNavigate, Link, useSearchParams } from 'react-router';
 import { invalidateAppQueries, type AppInstallErrorCache } from '../../helpers/app-sse-cache';
 import type { AppUrn } from '@ci-hub/common/types';
 import { openExternal } from '@/lib/helpers/open-external';
-import { openPathInFileExplorer } from '@/lib/helpers/open-folder';
+import { copyToClipboard } from '@/lib/copy-to-clipboard';
+import { canOpenFolderInFileExplorer, openPathInFileExplorer } from '@/lib/helpers/open-folder';
 import { getTauriInvoke } from '@/lib/helpers/tauri-invoke';
 import { openExternalWithHubSession } from '@/lib/hub-browser-handoff';
 import type { AppRuntimeHealth } from '@/lib/app-runtime-monitor';
@@ -660,17 +662,27 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
   const buttons: React.JSX.Element[] = [];
   const secondaryActions: React.JSX.Element[] = [];
 
-  // "Open data folder" is a desktop-only native action: it needs the Tauri
-  // runtime and a backend-resolved host path. Hidden in the web client.
-  const openDataFolderButton =
-    getTauriInvoke() && appDataHostPath ? (
+  // Native open only works in the desktop shell on the Hub host (Finder /
+  // Explorer / the Linux file manager). A browser tab or the phone app is not
+  // that machine — offer a copy of the host path so the operator can open it
+  // there instead of a dead "folder may not exist" toast.
+  const openDataFolderButton = appDataHostPath ? (
+    canOpenFolderInFileExplorer() ? (
       <IconActionButton
         key="open-data-folder"
         icon={FolderOpen}
         label={t('APP_ACTION_OPEN_DATA_FOLDER')}
         onClick={() => openPathInFileExplorer(appDataHostPath)}
       />
-    ) : null;
+    ) : (
+      <IconActionButton
+        key="copy-data-folder"
+        icon={Copy}
+        label={t('APP_ACTION_COPY_DATA_FOLDER_PATH')}
+        onClick={() => copyToClipboard(appDataHostPath, t('APP_ACTION_DATA_FOLDER_PATH_COPIED'))}
+      />
+    )
+  ) : null;
 
   // Companion Memory connect/disconnect, sized to match the Open button and
   // placed just before it (running case). Only for memory-consumer apps; the

@@ -9,6 +9,8 @@ import { HardwareInspectorService } from '../hardware-inspector.service';
 import { OllamaBackend } from '../backends/ollama.backend';
 import { VllmBackend } from '../backends/vllm.backend';
 import { LemonadeBackend } from '../backends/lemonade.backend';
+import { MtplxBackend } from '../backends/mtplx.backend';
+import { DsparkBackend } from '../backends/dspark.backend';
 import { CloudFallbackService } from '../cloud-fallback.service';
 import type { CloudProviderConfig, CuratedModel, HardwareProfile } from '@ci-hub/common/types';
 
@@ -97,6 +99,8 @@ describe('InferenceEnvResolver', () => {
   let ollamaBackend: MockProxy<OllamaBackend>;
   let vllmBackend: MockProxy<VllmBackend>;
   let lemonadeBackend: MockProxy<LemonadeBackend>;
+  let mtplxBackend: MockProxy<MtplxBackend>;
+  let dsparkBackend: MockProxy<DsparkBackend>;
   let cloudFallback: MockProxy<CloudFallbackService>;
 
   beforeEach(async () => {
@@ -107,6 +111,8 @@ describe('InferenceEnvResolver', () => {
     ollamaBackend = mock<OllamaBackend>();
     vllmBackend = mock<VllmBackend>();
     lemonadeBackend = mock<LemonadeBackend>();
+    mtplxBackend = mock<MtplxBackend>();
+    dsparkBackend = mock<DsparkBackend>();
     cloudFallback = mock<CloudFallbackService>();
 
     config.getInferencePreferences.mockReturnValue({
@@ -141,6 +147,8 @@ describe('InferenceEnvResolver', () => {
         { provide: OllamaBackend, useValue: ollamaBackend },
         { provide: VllmBackend, useValue: vllmBackend },
         { provide: LemonadeBackend, useValue: lemonadeBackend },
+        { provide: MtplxBackend, useValue: mtplxBackend },
+        { provide: DsparkBackend, useValue: dsparkBackend },
         { provide: CloudFallbackService, useValue: cloudFallback },
       ],
     }).compile();

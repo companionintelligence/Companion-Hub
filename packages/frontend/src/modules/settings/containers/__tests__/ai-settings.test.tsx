@@ -13,6 +13,7 @@ const {
   fetchConfiguredCloudProviders,
   fetchOllamaInstallStatus,
   fetchVllmInstallStatus,
+  fetchDsparkInstallStatus,
   saveInferencePreferences,
   rescanInferenceHardware,
   pinInferenceModel,
@@ -27,6 +28,7 @@ const {
   fetchConfiguredCloudProviders: vi.fn(),
   fetchOllamaInstallStatus: vi.fn(),
   fetchVllmInstallStatus: vi.fn(),
+  fetchDsparkInstallStatus: vi.fn(),
   saveInferencePreferences: vi.fn(),
   rescanInferenceHardware: vi.fn(),
   pinInferenceModel: vi.fn(),
@@ -43,6 +45,7 @@ vi.mock('@/lib/inference/inference-api', () => ({
   fetchConfiguredCloudProviders,
   fetchOllamaInstallStatus,
   fetchVllmInstallStatus,
+  fetchDsparkInstallStatus,
   saveInferencePreferences,
   rescanInferenceHardware,
   pinInferenceModel,
@@ -227,6 +230,7 @@ describe('AiSettingsContainer', () => {
     fetchConfiguredCloudProviders.mockResolvedValue([]);
     fetchOllamaInstallStatus.mockResolvedValue({ ready: true, running: true, endpointUrl: 'http://localhost:11434' });
     fetchVllmInstallStatus.mockResolvedValue({ ready: true, running: true, endpointUrl: 'http://localhost:8000' });
+    fetchDsparkInstallStatus.mockResolvedValue({ ready: false, running: false, endpointUrl: 'http://localhost:8080' });
     saveInferencePreferences.mockResolvedValue(undefined);
     rescanInferenceHardware.mockResolvedValue(undefined);
     ensurePullsStarted.mockResolvedValue(undefined);
@@ -274,6 +278,8 @@ describe('AiSettingsContainer', () => {
         visionModel: null,
         vllmApiKey: null,
         vllmUrl: null,
+        mtplxUrl: null,
+        dsparkUrl: null,
       });
     });
   });

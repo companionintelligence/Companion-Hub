@@ -15,6 +15,8 @@ import { InferenceEnvResolver } from './inference-env-resolver';
 import { OllamaBackend } from './backends/ollama.backend';
 import { VllmBackend } from './backends/vllm.backend';
 import { LemonadeBackend } from './backends/lemonade.backend';
+import { MtplxBackend } from './backends/mtplx.backend';
+import { DsparkBackend } from './backends/dspark.backend';
 import { InferenceController } from './inference.controller';
 
 @Module({
@@ -34,6 +36,8 @@ import { InferenceController } from './inference.controller';
     OllamaBackend,
     VllmBackend,
     LemonadeBackend,
+    MtplxBackend,
+    DsparkBackend,
   ],
   exports: [
     HardwareInspectorService,
@@ -49,6 +53,8 @@ import { InferenceController } from './inference.controller';
     OllamaBackend,
     VllmBackend,
     LemonadeBackend,
+    MtplxBackend,
+    DsparkBackend,
   ],
 })
 export class InferenceModule {}

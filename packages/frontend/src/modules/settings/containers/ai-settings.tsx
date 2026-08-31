@@ -4,7 +4,9 @@ import {
   fetchInferencePreferences,
   fetchInferenceRuntimeModels,
   fetchInferenceTrackedModels,
+  fetchMtplxInstallStatus,
   fetchOllamaInstallStatus,
+  fetchDsparkInstallStatus,
   fetchVllmInstallStatus,
   pinInferenceModel,
   rescanInferenceHardware,
@@ -32,9 +34,16 @@ import { ModelIcon } from '@/modules/onboarding/components/ai-setup/icons';
 import { modelTags, modelMeta, modelScores } from '@/modules/onboarding/components/ai-setup/model-selection-card';
 import { OtherModelsSection } from '@/modules/onboarding/components/ai-setup/model-selection-card';
 import { VllmSetupCard } from '@/modules/onboarding/components/ai-setup/vllm-setup-card';
+import { MtplxSetupCard } from '@/modules/onboarding/components/ai-setup/mtplx-setup-card';
+import { DsparkSetupCard } from '@/modules/onboarding/components/ai-setup/dspark-setup-card';
 import { OllamaSetupCard } from '@/modules/onboarding/components/ai-setup/ollama-setup-card';
-import type { OllamaStatus, VllmStatus } from '@/modules/onboarding/helpers/ai-setup-types';
-import { EMBEDDING_INFERENCE_BACKEND, unavailableInferenceBackends } from '@/modules/onboarding/helpers/inference-backend-availability';
+import type { MtplxStatus, DsparkStatus, OllamaStatus, VllmStatus } from '@/modules/onboarding/helpers/ai-setup-types';
+import {
+  EMBEDDING_INFERENCE_BACKEND,
+  hubLoadableSelection,
+  isHubLoadableBackend,
+  unavailableInferenceBackends,
+} from '@/modules/onboarding/helpers/inference-backend-availability';
 import { useTranslation } from 'react-i18next';
 
 // Role classifiers — mirror the onboarding AI-setup step so settings resolves the same defaults.
@@ -67,7 +76,7 @@ const compatibleSelection = (availableModelById: ModelIndex, backend: InferenceB
 // has to gate on it too — gating on every tracked pin would promise to unpin models the save leaves
 // alone (a pin outside the tier's model list, or on a backend the Hub does not pin through).
 const unpinnablePins = (availableModelById: ModelIndex, pinnedIds: Iterable<string>): string[] =>
-  [...pinnedIds].filter((modelId) => availableModelById.get(modelId)?.backend === 'ollama');
+  [...pinnedIds].filter((modelId) => isHubLoadableBackend(availableModelById.get(modelId)?.backend));
 
 // Pick the preferred model for a role from the user's selection, preferring a recommended model.
 // Returns null when no selected model fits the role.
@@ -109,10 +118,16 @@ export const AiSettingsContainer = () => {
   const [runtimeDiscoveryUnavailable, setRuntimeDiscoveryUnavailable] = useState(false);
   const [vllmApiKey, setVllmApiKey] = useState('');
   const [vllmUrl, setVllmUrl] = useState('');
+  const [mtplxUrl, setMtplxUrl] = useState('');
+  const [dsparkUrl, setDsparkUrl] = useState('');
   const [ollamaStatus, setOllamaStatus] = useState<OllamaStatus | null>(null);
   const [vllmStatus, setVllmStatus] = useState<VllmStatus | null>(null);
+  const [mtplxStatus, setMtplxStatus] = useState<MtplxStatus | null>(null);
+  const [dsparkStatus, setDsparkStatus] = useState<DsparkStatus | null>(null);
   const [checkingOllama, setCheckingOllama] = useState(false);
   const [checkingVllm, setCheckingVllm] = useState(false);
+  const [checkingMtplx, setCheckingMtplx] = useState(false);
+  const [checkingDspark, setCheckingDspark] = useState(false);
   // Backend the backend-switch effect has already refetched for (set by fetchProfile too, since it
   // fetches profile + runtime models itself); prevents a duplicate fetch right after mount.
   const lastHandledBackendRef = useRef<InferenceBackendType | null>(null);
@@ -121,6 +136,10 @@ export const AiSettingsContainer = () => {
   vllmUrlRef.current = vllmUrl;
   const vllmApiKeyRef = useRef('');
   vllmApiKeyRef.current = vllmApiKey;
+  const mtplxUrlRef = useRef('');
+  mtplxUrlRef.current = mtplxUrl;
+  const dsparkUrlRef = useRef('');
+  dsparkUrlRef.current = dsparkUrl;
   const trackedModelsRef = useRef<TrackedModel[]>([]);
   // One index of the tier catalog per profile, shared by the save and by the confirmation copy so
   // they cannot disagree — and so neither rebuilds it, the save on every press and the copy on
@@ -195,8 +214,14 @@ export const AiSettingsContainer = () => {
       if (prefData?.preferredVllmApiKey) {
         setVllmApiKey(prefData.preferredVllmApiKey);
       }
+      if (prefData?.preferredDsparkUrl) {
+        setDsparkUrl(prefData.preferredDsparkUrl);
+      }
       if (prefData?.preferredVllmUrl) {
         setVllmUrl(prefData.preferredVllmUrl);
+      }
+      if (prefData?.preferredMtplxUrl) {
+        setMtplxUrl(prefData.preferredMtplxUrl);
       }
       const requestedBackend = backendOverride ?? prefData?.preferredBackend ?? undefined;
       const data = await fetchInferenceOnboardingProfile(requestedBackend);
@@ -211,8 +236,13 @@ export const AiSettingsContainer = () => {
       seedSelectedModelIds(data, preferredBackend, tracked);
       await fetchRuntimeModels(preferredBackend);
       void checkOllamaStatus();
+      if (preferredBackend === 'dspark') {
+        void checkDsparkStatus();
+      }
       if (preferredBackend === 'vllm') {
         void checkVllmStatus();
+      } else if (preferredBackend === 'mtplx') {
+        void checkMtplxStatus();
       }
 
       const configured = await fetchConfiguredCloudProviders();
@@ -250,6 +280,8 @@ export const AiSettingsContainer = () => {
         selectedBackend,
         selectedBackend === 'vllm' ? vllmUrlRef.current : undefined,
         selectedBackend === 'vllm' ? vllmApiKeyRef.current : undefined,
+        selectedBackend === 'mtplx' ? mtplxUrlRef.current : undefined,
+        selectedBackend === 'dspark' ? dsparkUrlRef.current : undefined,
       );
       setProfile(data);
       seedSelectedModelIds(data, selectedBackend, trackedModelsRef.current);
@@ -281,6 +313,53 @@ export const AiSettingsContainer = () => {
       seedSelectedModelIds(data, 'vllm', trackedModelsRef.current);
     }
   }, [checkVllmStatus, seedSelectedModelIds]);
+
+  const checkMtplxStatus = useCallback(async () => {
+    setCheckingMtplx(true);
+    try {
+      const data = (await fetchMtplxInstallStatus(mtplxUrlRef.current)) as MtplxStatus;
+      setMtplxStatus(data);
+      return data;
+    } catch {
+      setMtplxStatus({ ready: false, running: false, endpointUrl: '' });
+      return null;
+    } finally {
+      setCheckingMtplx(false);
+    }
+  }, []);
+
+  const handleRecheckMtplx = useCallback(async () => {
+    const status = await checkMtplxStatus();
+    if (status?.ready) {
+      const data = await fetchInferenceOnboardingProfile('mtplx', undefined, undefined, mtplxUrlRef.current);
+      setProfile(data);
+      seedSelectedModelIds(data, 'mtplx', trackedModelsRef.current);
+    }
+  }, [checkMtplxStatus, seedSelectedModelIds]);
+
+  const checkDsparkStatus = useCallback(async () => {
+    setCheckingDspark(true);
+    try {
+      const data = await fetchDsparkInstallStatus(dsparkUrlRef.current);
+      setDsparkStatus(data);
+      return data;
+    } catch {
+      setDsparkStatus({ ready: false, running: false, endpointUrl: '' });
+      return null;
+    } finally {
+      setCheckingDspark(false);
+    }
+  }, []);
+
+  // Same stale-profile reason as handleRecheckVllm above (#1105).
+  const handleRecheckDspark = useCallback(async () => {
+    const status = await checkDsparkStatus();
+    if (status?.ready) {
+      const data = await fetchInferenceOnboardingProfile('dspark', undefined, undefined, undefined, dsparkUrlRef.current);
+      setProfile(data);
+      seedSelectedModelIds(data, 'dspark', trackedModelsRef.current);
+    }
+  }, [checkDsparkStatus, seedSelectedModelIds]);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: only on mount
   useEffect(() => {
@@ -323,6 +402,8 @@ export const AiSettingsContainer = () => {
       selectedBackend,
       selectedBackend === 'vllm' ? vllmUrlRef.current : undefined,
       selectedBackend === 'vllm' ? vllmApiKeyRef.current : undefined,
+      selectedBackend === 'mtplx' ? mtplxUrlRef.current : undefined,
+      selectedBackend === 'dspark' ? dsparkUrlRef.current : undefined,
     ).then((data) => {
       setProfile(data);
       // Re-seed the checkboxes for the new backend from server truth (see seedSelectedModelIds).
@@ -331,8 +412,13 @@ export const AiSettingsContainer = () => {
     fetchRuntimeModels(selectedBackend);
     if (selectedBackend === 'vllm') {
       void checkVllmStatus();
+    } else if (selectedBackend === 'mtplx') {
+      void checkMtplxStatus();
     }
-  }, [selectedBackend, fetchRuntimeModels, checkVllmStatus, seedSelectedModelIds]);
+    if (selectedBackend === 'dspark') {
+      void checkDsparkStatus();
+    }
+  }, [selectedBackend, fetchRuntimeModels, checkVllmStatus, checkMtplxStatus, checkDsparkStatus, seedSelectedModelIds]);
 
   const hasActiveTransfers = Object.values(trackedModels).some((model) => ['pulling', 'loading', 'unloading'].includes(model.state));
 
@@ -380,12 +466,21 @@ export const AiSettingsContainer = () => {
         visionModel: preferredVisionModel,
         vllmApiKey: selectedBackend === 'vllm' ? vllmApiKey.trim() || null : null,
         vllmUrl: selectedBackend === 'vllm' ? vllmUrl.trim() || null : null,
+        mtplxUrl: selectedBackend === 'mtplx' ? mtplxUrl.trim() || null : null,
+        dsparkUrl: selectedBackend === 'dspark' ? dsparkUrl.trim() || null : null,
       });
 
-      const ollamaSelectedModelIds = compatibleSelectedModelIds.filter((modelId) => availableModelById.get(modelId)?.backend === 'ollama');
+      // Everything the Hub can install into itself — Ollama rows plus the one mlx-dspark row that
+      // will be resident. Filtering to 'ollama' here (as this did) made a ticked mlx-dspark model
+      // saveable but never actually loaded, while the preference still pointed apps at it.
+      const pullableSelectedModelIds = hubLoadableSelection(
+        compatibleSelectedModelIds,
+        (modelId) => availableModelById.get(modelId)?.backend,
+        preferredModel,
+      );
       const compatiblePinnedModelIds = unpinnablePins(availableModelById, pinnedModelIds);
       const modelOperationErrors: string[] = [];
-      const modelsToPull = ollamaSelectedModelIds.filter((modelId) => !compatiblePinnedModelIds.includes(modelId));
+      const modelsToPull = pullableSelectedModelIds.filter((modelId) => !compatiblePinnedModelIds.includes(modelId));
 
       if (modelsToPull.length > 0) {
         await ensurePullsStarted(modelsToPull, false);
@@ -652,6 +747,50 @@ export const AiSettingsContainer = () => {
               <div>
                 <h3 className="text-sm font-semibold">{t('ONBOARDING_EMBEDDINGS_OLLAMA_SECTION_TITLE')}</h3>
                 <p className="text-xs text-muted-foreground mt-0.5 mb-3">{t('ONBOARDING_EMBEDDINGS_OLLAMA_SECTION_DESC')}</p>
+                <OllamaSetupCard status={ollamaStatus} checking={checkingOllama} onRecheck={handleRecheckOllama} />
+              </div>
+            </section>
+          )}
+
+          {selectedBackend === 'mtplx' && (
+            <section className="rounded-lg border border-border bg-gradient-to-b from-card to-card/60 p-5 shadow-sm sm:p-6 space-y-4">
+              <div>
+                <h2 className="text-base font-bold uppercase tracking-wide">{t('ONBOARDING_MTPLX_SECTION_TITLE')}</h2>
+                <p className="text-xs sm:text-sm text-muted-foreground mt-0.5">{t('ONBOARDING_MTPLX_SECTION_DESC')}</p>
+              </div>
+              <MtplxSetupCard
+                status={mtplxStatus}
+                checking={checkingMtplx}
+                onRecheck={handleRecheckMtplx}
+                endpointUrl={mtplxUrl}
+                onEndpointUrlChange={setMtplxUrl}
+              />
+              <div>
+                <h3 className="text-sm font-semibold">{t('ONBOARDING_EMBEDDINGS_OLLAMA_SECTION_TITLE')}</h3>
+                <p className="text-xs text-muted-foreground mt-0.5 mb-3">{t('ONBOARDING_EMBEDDINGS_OLLAMA_SECTION_DESC')}</p>
+                <OllamaSetupCard status={ollamaStatus} checking={checkingOllama} onRecheck={handleRecheckOllama} />
+              </div>
+            </section>
+          )}
+
+          {selectedBackend === 'dspark' && (
+            <section className="rounded-lg border border-border bg-gradient-to-b from-card to-card/60 p-5 shadow-sm sm:p-6 space-y-4">
+              <div>
+                <h2 className="text-base font-bold uppercase tracking-wide">{t('ONBOARDING_DSPARK_SECTION_TITLE')}</h2>
+                <p className="text-xs sm:text-sm text-muted-foreground mt-0.5">{t('ONBOARDING_DSPARK_SECTION_DESC')}</p>
+              </div>
+              <DsparkSetupCard
+                status={dsparkStatus}
+                checking={checkingDspark}
+                onRecheck={handleRecheckDspark}
+                endpointUrl={dsparkUrl}
+                onEndpointUrlChange={setDsparkUrl}
+              />
+              {/* Embeddings stay on Ollama regardless of the chat backend — mlx-dspark serves no
+                  /v1/embeddings route at all, so the co-install is required, not merely advised. */}
+              <div>
+                <h3 className="text-sm font-semibold">{t('ONBOARDING_EMBEDDINGS_OLLAMA_SECTION_TITLE')}</h3>
+                <p className="text-xs text-muted-foreground mt-0.5 mb-3">{t('ONBOARDING_EMBEDDINGS_DSPARK_SECTION_DESC')}</p>
                 <OllamaSetupCard status={ollamaStatus} checking={checkingOllama} onRecheck={handleRecheckOllama} />
               </div>
             </section>

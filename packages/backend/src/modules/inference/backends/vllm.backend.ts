@@ -1,8 +1,8 @@
 import { Injectable } from '@nestjs/common';
-import fs from 'node:fs';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import type { InferenceBackend } from './backend.interface';
+import { detectHubContainer, normalizeHostBackendUrl, resolveHostBackendProbeUrl } from './host-url.util';
 import type { BackendHealthStatus, BackendModelInfo, PullProgress } from '@ci-hub/common/types';
 import axios from 'axios';
 
@@ -10,9 +10,7 @@ import axios from 'axios';
 export const VLLM_PROBE_API_KEY_HEADER = 'x-ci-vllm-api-key';
 
 /** Accept `http://host:8000`, `http://host:8000/` or `http://host:8000/v1` and store the bare origin. */
-export function normalizeVllmBaseUrl(url: string): string {
-  return url.trim().replace(/\/+$/, '').replace(/\/v1$/, '');
-}
+export const normalizeVllmBaseUrl = normalizeHostBackendUrl;
 
 export interface VllmRemediation {
   /** Copy-pasteable `vllm serve` command for the host's viable install path. */
@@ -48,35 +46,13 @@ export function buildVllmRemediation(isAppleSilicon: boolean): VllmRemediation {
   };
 }
 
-/** Hub container probe — `/.dockerenv` plus Podman's containerenv. Not the `/data` heuristic. */
-export function detectHubContainer(): boolean {
-  try {
-    return fs.existsSync('/.dockerenv') || fs.existsSync('/run/.containerenv');
-  } catch {
-    return false;
-  }
-}
+export { detectHubContainer };
 
 /**
  * Operator `localhost` / `127.0.0.1` means the host where vLLM runs. From inside
  * the Hub container that hostname is the container itself — rewrite only then.
  */
-export function resolveVllmProbeUrl(url: string, inContainer: boolean = detectHubContainer()): string {
-  const normalized = normalizeVllmBaseUrl(url);
-  if (!inContainer) {
-    return normalized;
-  }
-  try {
-    const parsed = new URL(normalized);
-    if (parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1' || parsed.hostname === '[::1]') {
-      parsed.hostname = 'host.docker.internal';
-      return normalizeVllmBaseUrl(parsed.toString());
-    }
-  } catch {
-    // Keep normalized input; healthCheck will surface a bad URL.
-  }
-  return normalized;
-}
+export const resolveVllmProbeUrl = resolveHostBackendProbeUrl;
 
 @Injectable()
 export class VllmBackend implements InferenceBackend {
