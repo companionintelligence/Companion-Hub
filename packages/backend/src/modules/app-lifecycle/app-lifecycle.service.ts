@@ -564,8 +564,21 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
               event: 'start_success',
               clearPendingRestart: true,
               afterApply: async () => {
-                const { isProduction: isProdEnv } = this.config.getConfig();
-                if (isProdEnv && app.exposedLocal) {
+                /*
+                 * NOT GATED ON `isProduction`, and that is the fix.
+                 *
+                 * This is the only sync that runs AFTER `settleCommandOutcome` has applied the
+                 * outcome, so it is the only one that sees the app as `running` rather than
+                 * `starting` — which is exactly the state `reconcileCustomDomains` requires
+                 * before it will write a binding. Gated on the environment, a custom domain
+                 * was delivered on an appliance and silently never delivered on a source-dev
+                 * Hub, so the one path that matters could not be exercised locally at all.
+                 *
+                 * A correctness path must not depend on NODE_ENV. The sync is already inert
+                 * when it has nothing to talk to: `triggerCloudflareSync` returns early, at
+                 * debug level, for an unregistered device and during a restore.
+                 */
+                if (app.exposedLocal) {
                   this.logger.info(`[Cloudflare] App ${appUrn} started and is exposedLocal. Triggering sync.`);
                   await this.syncExposure();
                 }
@@ -1191,8 +1204,21 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
           event: 'start_success',
           clearPendingRestart: true,
           afterApply: async () => {
-            const { isProduction: isProdEnv } = this.config.getConfig();
-            if (isProdEnv && app.exposedLocal) {
+            /*
+             * NOT GATED ON `isProduction`, and that is the fix.
+             *
+             * This is the only sync that runs AFTER `settleCommandOutcome` has applied the
+             * outcome, so it is the only one that sees the app as `running` rather than
+             * `starting` — which is exactly the state `reconcileCustomDomains` requires
+             * before it will write a binding. Gated on the environment, a custom domain
+             * was delivered on an appliance and silently never delivered on a source-dev
+             * Hub, so the one path that matters could not be exercised locally at all.
+             *
+             * A correctness path must not depend on NODE_ENV. The sync is already inert
+             * when it has nothing to talk to: `triggerCloudflareSync` returns early, at
+             * debug level, for an unregistered device and during a restore.
+             */
+            if (app.exposedLocal) {
               this.logger.info(`[Cloudflare] App ${appUrn} started and is exposedLocal. Triggering sync.`);
               await this.syncExposure();
             }

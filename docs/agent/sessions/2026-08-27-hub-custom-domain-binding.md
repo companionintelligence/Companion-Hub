@@ -98,19 +98,22 @@ reached at `comfy.acme.com` loaded but still built every absolute URL — includ
 - **`emit('app', data, appUrn)` publishes to a topic nothing subscribes to.** Fixed at the three
   live call sites; the trap itself remains representable and the existing tests assert the broken
   form. Worth making unrepresentable.
-- **Testing this locally needs a lifecycle event on a DIFFERENT app.** The sync that carries
+- **Restarting the app you are binding can never bind it.** The sync that carries
   `customDomains[]` runs from inside the lifecycle command that triggered it, and
-  `reconcileCustomDomains` deliberately skips an app that is `starting`/`restarting` — so
-  restarting the app you are trying to bind can never bind it. There IS a post-settle sync that
-  would (`AppLifecycleService`, the `settleCommandOutcome` callback), but it is gated on
-  `isProduction`, so on a source-dev Hub it never fires. Install or restart any second app while
-  the target app sits `running`, and the binding lands on that sync. On an appliance the
-  post-settle sync makes the app's own restart sufficient.
-- **`isProdEnv && app.exposedLocal` gates a correctness path on the environment.** Pre-existing,
-  not introduced here, and out of scope for this PR — but a binding that is delivered in
-  production and silently not delivered in development is a difference that hides real defects
-  from local testing (it cost an hour in this session, and produced a false bug report). Worth
-  its own ticket to decide whether the gate belongs there at all.
+  `reconcileCustomDomains` deliberately skips an app that is `starting`/`restarting`. Only the
+  `start` path has an `afterApply` sync that runs AFTER `settleCommandOutcome` — the point at
+  which the app is `running` and the reconcile will act. **`restart` has no `afterApply` at all,
+  in any environment**, so a restart delivers nothing. What binds an already-running app is a
+  lifecycle event on a DIFFERENT app, or a stop followed by a start.
+- **The post-settle sync is no longer gated on `isProduction`** (fixed here). It used to be, so a
+  binding was delivered on an appliance and silently never delivered on a source-dev Hub — the one
+  path that matters could not be exercised locally, which cost an hour in this session and
+  produced a false bug report. `triggerCloudflareSync` is already inert for an unregistered device
+  and during a restore, so the gate bought nothing.
+- **`restart` still has no post-settle sync.** Adding an `afterApply` there would make the
+  restart a user reaches for after connecting a domain actually deliver it, instead of requiring
+  an unrelated second app. Deliberately not done here — it changes when every exposed app syncs,
+  which is broader than custom domains and wants its own change and its own review.
 - GitHub Actions is budget-blocked org-wide, so nothing in this PR ran in CI.
 
 ---
