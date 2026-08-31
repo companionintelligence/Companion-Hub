@@ -97,14 +97,24 @@ export class InferenceController {
     // /dev/dri) as the fallback — see OllamaBackend.getDockerImage()/.getComposeConfig(). vLLM has
     // no reliably maintained ROCm image for this hardware — see VllmBackend.getComposeConfig(),
     // which declines AMD outright rather than mount devices into an image that can't use them.
-    // Apple Silicon also always recommends Ollama — it already gets MLX acceleration transparently
-    // from Ollama 0.19+ (same `family:size` tags, no Hub-side change needed) once the operator
-    // upgrades the host app. vLLM-Metal (the catalog's `-mlx` rows) and MTPLX (the catalog's
-    // `-mtplx` rows) are both real options there too, but neither has a Docker path or an
-    // auto-provisioning story (a native install the Hub can't run for the operator), so they stay
-    // opt-in Settings choices rather than the default — see buildVllmRemediation in vllm.backend.ts
-    // and buildMtplxRemediation in mtplx.backend.ts for the guidance surfaced when either is selected.
-    return profile.npu.available ? 'lemonade' : profile.gpu.vendor === 'nvidia' && profile.gpu.runtimeAvailable ? 'vllm' : 'ollama';
+    // Apple Silicon recommends mlx-dspark (2026-08-30): like vLLM-Metal and MTPLX, it has no Docker
+    // path — it's a host-run Python process (see DsparkBackend.getComposeConfig, which throws
+    // unconditionally) — but unlike either of them it supports real hot-swap via POST /admin/load,
+    // so the Hub can actually install/switch models into it the way it can with Ollama (see
+    // isHubLoadableBackend). The install gap is a single `pip install mlx-dspark`, and
+    // DsparkSetupCard already surfaces that command prominently with a live recheck when the
+    // endpoint isn't reachable yet — recommending it before install just means a new Mac user sees
+    // that card instead of a green one, not a dead end. vLLM-Metal and MTPLX remain opt-in only in
+    // Settings: neither supports hot-swap, so the Hub can only stub their load/unload — see
+    // buildVllmRemediation in vllm.backend.ts and buildMtplxRemediation in mtplx.backend.ts for the
+    // guidance surfaced when either is selected.
+    return profile.npu.available
+      ? 'lemonade'
+      : profile.gpu.vendor === 'nvidia' && profile.gpu.runtimeAvailable
+        ? 'vllm'
+        : profile.gpu.vendor === 'apple'
+          ? 'dspark'
+          : 'ollama';
   }
 
   private getOnboardingTier(profile: HardwareProfile, recommendedBackend: InferenceBackendType): HardwareTier {
