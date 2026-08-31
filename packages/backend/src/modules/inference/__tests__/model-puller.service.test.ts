@@ -11,6 +11,7 @@ import { OllamaBackend } from '../backends/ollama.backend';
 import { VllmBackend } from '../backends/vllm.backend';
 import { LemonadeBackend } from '../backends/lemonade.backend';
 import { MtplxBackend } from '../backends/mtplx.backend';
+import { DsparkBackend } from '../backends/dspark.backend';
 import type { CuratedModel, HardwareProfile } from '@ci-hub/common/types';
 
 const profile: HardwareProfile = {
@@ -96,6 +97,7 @@ describe('ModelPullerService.evaluatePull', () => {
         { provide: VllmBackend, useValue: mock<VllmBackend>() },
         { provide: LemonadeBackend, useValue: mock<LemonadeBackend>() },
         { provide: MtplxBackend, useValue: mock<MtplxBackend>() },
+        { provide: DsparkBackend, useValue: mock<DsparkBackend>() },
       ],
     }).compile();
 
@@ -223,6 +225,7 @@ describe('ModelPullerService.startPull', () => {
         { provide: VllmBackend, useValue: mock<VllmBackend>() },
         { provide: LemonadeBackend, useValue: mock<LemonadeBackend>() },
         { provide: MtplxBackend, useValue: mock<MtplxBackend>() },
+        { provide: DsparkBackend, useValue: mock<DsparkBackend>() },
       ],
     }).compile();
 

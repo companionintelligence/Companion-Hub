@@ -52,6 +52,11 @@ export interface AiSetupConfig {
   /** Optional custom MTPLX base URL (persisted to Hub settings as inferenceMtplxUrl). MTPLX has no
    *  API key concept — its server is local-only with no auth, unlike vLLM's optional --api-key. */
   mtplxUrl?: string;
+  /**
+   * Optional custom mlx-dspark base URL (persisted to Hub settings as inferenceDsparkUrl). No
+   * API-key sibling: mlx-dspark's /health probe is auth-exempt, so none is needed to detect it.
+   */
+  dsparkUrl?: string;
   /** When true, onboarding install must not proceed (budget or missing agent model). */
   installBlocked?: boolean;
   installBlockReason?: string;
@@ -101,6 +106,16 @@ export interface VllmStatus {
  *  unauthenticated server. */
 export type MtplxStatus = VllmStatus;
 
+/**
+ * Same shape as {@link VllmStatus} plus `loadedModels`: mlx-dspark can be up and healthy with no
+ * model resident (the state `serve --no-model` starts in), which the card distinguishes from a
+ * server that is actually ready to answer.
+ */
+export interface DsparkStatus extends VllmStatus {
+  /** Full HF repo ids the server reports as loaded. Empty when started with `--no-model`. */
+  loadedModels?: string[];
+}
+
 export interface InferencePreferencesResponse {
   preferredBackend: InferenceBackendType | null;
   preferredModel: string | null;
@@ -109,6 +124,7 @@ export interface InferencePreferencesResponse {
   preferredVllmApiKey?: string | null;
   preferredVllmUrl?: string | null;
   preferredMtplxUrl?: string | null;
+  preferredDsparkUrl?: string | null;
 }
 
 export interface RuntimeModelInfo {

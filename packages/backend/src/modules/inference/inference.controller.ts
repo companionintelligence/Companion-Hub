@@ -26,11 +26,13 @@ import {
   OnboardingProfileQueryDto,
   VllmStatusQueryDto,
   MtplxStatusQueryDto,
+  DsparkStatusQueryDto,
 } from './inference.dto';
 import { OllamaBackend } from './backends/ollama.backend';
 import { buildVllmRemediation, resolveVllmProbeUrl, VLLM_PROBE_API_KEY_HEADER, VllmBackend } from './backends/vllm.backend';
 import { LemonadeBackend } from './backends/lemonade.backend';
 import { buildMtplxRemediation, resolveMtplxProbeUrl, MtplxBackend } from './backends/mtplx.backend';
+import { buildDsparkRemediation, DsparkBackend, resolveDsparkProbeUrl } from './backends/dspark.backend';
 import { resolveInstalledCatalogIds, resolveInstalledCatalogIdsFromServedModels } from './model-availability.util';
 import type { InferenceBackend } from './backends/backend.interface';
 
@@ -62,10 +64,17 @@ export class InferenceController {
     private readonly vllmBackend: VllmBackend,
     private readonly lemonadeBackend: LemonadeBackend,
     private readonly mtplxBackend: MtplxBackend,
+    private readonly dsparkBackend: DsparkBackend,
     private readonly moduleRef: ModuleRef,
     readonly _logger: LoggerService,
   ) {}
 
+  /**
+   * Exhaustive backend lookup. Deliberately a `switch` on the union rather than a ternary chain:
+   * the previous `backend === 'ollama' ? … : backend === 'vllm' ? … : this.lemonadeBackend` shape
+   * silently handed back Lemonade for any newly added backend type, and the compiler could not
+   * see it. A missing `case` here is a build error instead.
+   */
   private getBackendService(type: InferenceBackendType): InferenceBackend {
     switch (type) {
       case 'ollama':
@@ -76,6 +85,8 @@ export class InferenceController {
         return this.lemonadeBackend;
       case 'mtplx':
         return this.mtplxBackend;
+      case 'dspark':
+        return this.dsparkBackend;
     }
   }
 
@@ -174,6 +185,7 @@ export class InferenceController {
       body.vllmApiKey,
       body.vllmUrl,
       body.mtplxUrl,
+      body.dsparkUrl,
     );
 
     this.scheduleAiAppRestart();
@@ -412,28 +424,36 @@ export class InferenceController {
     const ollamaInstalled = resolveInstalledCatalogIds(catalog, ollamaHealth.modelsLoaded ?? [], getTrackedState);
 
     let installedCatalogIds: string[];
-    if (installBackend === 'vllm' || installBackend === 'mtplx') {
-      // Both are host-managed servers with no Hub pull registry — "installed" means the operator's
-      // server is actually reporting the id, not that the Hub tracked a pull for it. vLLM's probe
-      // takes an optional API key override; MTPLX has no auth concept, so it only takes the URL.
-      const health =
-        installBackend === 'vllm'
-          ? await this.vllmBackend.healthCheck(query?.vllmUrl, vllmApiKey).catch(() => ({
+    // vLLM, MTPLX, and mlx-dspark are all host-run servers with no Hub-side pull registry, so
+    // "installed" has to be read back off what they are actually serving. Ollama's embedding rows
+    // are merged in regardless of chat backend, because embeddings stay on Ollama either way.
+    // vLLM's probe takes an optional API key override; MTPLX has no auth concept, so it only takes
+    // the URL, same as mlx-dspark.
+    if (installBackend === 'vllm' || installBackend === 'mtplx' || installBackend === 'dspark') {
+      const servedHealth =
+        installBackend === 'dspark'
+          ? await this.dsparkBackend.healthCheck(query?.dsparkUrl).catch(() => ({
               running: false,
               healthy: false,
               modelsLoaded: [] as string[],
             }))
-          : await this.mtplxBackend.healthCheck(query?.mtplxUrl).catch(() => ({
-              running: false,
-              healthy: false,
-              modelsLoaded: [] as string[],
-            }));
-      const backendInstalled = resolveInstalledCatalogIdsFromServedModels(catalog, health.modelsLoaded ?? [], installBackend, getTrackedState);
+          : installBackend === 'mtplx'
+            ? await this.mtplxBackend.healthCheck(query?.mtplxUrl).catch(() => ({
+                running: false,
+                healthy: false,
+                modelsLoaded: [] as string[],
+              }))
+            : await this.vllmBackend.healthCheck(query?.vllmUrl, vllmApiKey).catch(() => ({
+                running: false,
+                healthy: false,
+                modelsLoaded: [] as string[],
+              }));
+      const servedInstalled = resolveInstalledCatalogIdsFromServedModels(catalog, servedHealth.modelsLoaded ?? [], installBackend, getTrackedState);
       const ollamaEmbeddingIds = ollamaInstalled.filter((id) => {
         const model = catalog.find((m) => m.id === id);
         return model?.modality === 'embedding';
       });
-      installedCatalogIds = [...new Set([...backendInstalled, ...ollamaEmbeddingIds])];
+      installedCatalogIds = [...new Set([...servedInstalled, ...ollamaEmbeddingIds])];
     } else {
       installedCatalogIds = ollamaInstalled;
     }
@@ -494,6 +514,44 @@ export class InferenceController {
       error: ready ? undefined : health.error,
       hint: remediation
         ? `${remediation.hint} Hub probes from inside its container — use http://host.docker.internal:8000, not localhost. Currently probing ${probeUrl}.`
+        : undefined,
+    };
+  }
+
+  /**
+   * Probe the operator's mlx-dspark server. No API-key header, unlike the vLLM route: mlx-dspark
+   * defaults to no key, and `GET /health` — the route DsparkBackend probes — is the one route that
+   * stays auth-exempt even when a key IS configured, so this works either way.
+   */
+  @UseGuards(AuthGuard)
+  @Get('dspark/status')
+  async getDsparkStatus(@Query() query?: DsparkStatusQueryDto) {
+    const requestedUrl = query?.url?.trim() || this.dsparkBackend.getBaseUrl();
+    const probeUrl = resolveDsparkProbeUrl(requestedUrl);
+    const health = await this.dsparkBackend.healthCheck(requestedUrl).catch((err) => ({
+      running: false,
+      healthy: false,
+      modelsLoaded: [] as string[],
+      error: err instanceof Error ? err.message : String(err),
+    }));
+    const ready = !!(health.running && health.healthy);
+    const displayEndpoint = ready ? `${probeUrl}/v1` : undefined;
+    // Only worth a hardware lookup on the unhappy path — the remediation text differs sharply off
+    // Apple Silicon, where mlx-dspark cannot run at all. See buildDsparkRemediation.
+    const profile = ready ? undefined : await this.hardwareInspector.getProfile().catch(() => undefined);
+    const remediation = ready ? undefined : buildDsparkRemediation(profile?.gpu.vendor === 'apple');
+    return {
+      ready,
+      running: health.running,
+      endpointUrl: probeUrl,
+      displayEndpoint,
+      // A reachable server with no model loaded is `ready` but serves nothing yet — the onboarding
+      // card uses this to say "detected, no model loaded" rather than "detected".
+      loadedModels: health.modelsLoaded,
+      remediationCommand: remediation?.command,
+      error: ready ? undefined : health.error,
+      hint: remediation
+        ? `${remediation.hint} Hub probes from inside its container — use http://host.docker.internal:8080, not localhost. Currently probing ${probeUrl}.`
         : undefined,
     };
   }

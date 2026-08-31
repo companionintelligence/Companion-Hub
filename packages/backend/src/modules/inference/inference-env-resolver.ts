@@ -7,6 +7,7 @@ import { OllamaBackend } from './backends/ollama.backend';
 import { VllmBackend } from './backends/vllm.backend';
 import { LemonadeBackend } from './backends/lemonade.backend';
 import { MtplxBackend } from './backends/mtplx.backend';
+import { DsparkBackend } from './backends/dspark.backend';
 import type { InferenceBackend } from './backends/backend.interface';
 import { CloudFallbackService } from './cloud-fallback.service';
 import { recommendContextLength } from './context-length.util';
@@ -19,6 +20,7 @@ export const BACKEND_API_KEY: Record<InferenceBackendType, string> = {
   vllm: 'vllm',
   lemonade: 'lemonade',
   mtplx: 'mtplx',
+  dspark: 'dspark',
 };
 
 /**
@@ -82,6 +84,7 @@ export class InferenceEnvResolver {
     private readonly vllmBackend: VllmBackend,
     private readonly lemonadeBackend: LemonadeBackend,
     private readonly mtplxBackend: MtplxBackend,
+    private readonly dsparkBackend: DsparkBackend,
     private readonly cloudFallback: CloudFallbackService,
   ) {}
 
@@ -95,6 +98,8 @@ export class InferenceEnvResolver {
         return this.lemonadeBackend;
       case 'mtplx':
         return this.mtplxBackend;
+      case 'dspark':
+        return this.dsparkBackend;
     }
   }
 

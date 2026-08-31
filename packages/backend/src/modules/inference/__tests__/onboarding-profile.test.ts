@@ -19,6 +19,7 @@ import { OllamaBackend } from '../backends/ollama.backend';
 import { VllmBackend } from '../backends/vllm.backend';
 import { LemonadeBackend } from '../backends/lemonade.backend';
 import { MtplxBackend } from '../backends/mtplx.backend';
+import { DsparkBackend } from '../backends/dspark.backend';
 import { HostMetricsService } from '@/modules/system/host-metrics.service';
 
 describe('InferenceController — onboarding-profile', () => {
@@ -31,6 +32,7 @@ describe('InferenceController — onboarding-profile', () => {
   let ollamaBackend: MockProxy<OllamaBackend>;
   let vllmBackend: MockProxy<VllmBackend>;
   let mtplxBackend: MockProxy<MtplxBackend>;
+  let dsparkBackend: MockProxy<DsparkBackend>;
 
   const fakeProfile: HardwareProfile = {
     gpu: {
@@ -91,6 +93,7 @@ describe('InferenceController — onboarding-profile', () => {
         { provide: VllmBackend, useValue: mock<VllmBackend>() },
         { provide: LemonadeBackend, useValue: mock<LemonadeBackend>() },
         { provide: MtplxBackend, useValue: mock<MtplxBackend>() },
+        { provide: DsparkBackend, useValue: mock<DsparkBackend>() },
         { provide: LoggerService, useValue: mock<LoggerService>() },
       ],
     }).compile();
@@ -104,9 +107,11 @@ describe('InferenceController — onboarding-profile', () => {
     ollamaBackend = moduleRef.get(OllamaBackend);
     vllmBackend = moduleRef.get(VllmBackend);
     mtplxBackend = moduleRef.get(MtplxBackend);
+    dsparkBackend = moduleRef.get(DsparkBackend);
     ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['phi4-mini'] });
     vllmBackend.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [] });
     mtplxBackend.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [] });
+    dsparkBackend.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [] });
     modelRegistry.getCatalog.mockReturnValue([{ id: 'phi-4-mini', backendModelId: 'phi4-mini', backend: 'ollama' }] as any);
     modelRegistry.getTrackedModel.mockReturnValue(undefined);
     hostMetrics.readHostSection.mockResolvedValue(null);

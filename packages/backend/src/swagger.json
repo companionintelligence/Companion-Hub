@@ -2547,7 +2547,8 @@
                 "ollama",
                 "vllm",
                 "lemonade",
-                "mtplx"
+                "mtplx",
+                "dspark"
               ]
             }
           }
@@ -2848,7 +2849,8 @@
                 "ollama",
                 "vllm",
                 "lemonade",
-                "mtplx"
+                "mtplx",
+                "dspark"
               ]
             }
           },
@@ -2863,6 +2865,15 @@
           },
           {
             "name": "mtplxUrl",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "uri"
+            }
+          },
+          {
+            "name": "dsparkUrl",
             "in": "query",
             "required": false,
             "schema": {
@@ -2937,10 +2948,44 @@
         ]
       }
     },
+    "/api/inference/dspark/status": {
+      "get": {
+        "operationId": "getDsparkStatus",
+        "parameters": [
+          {
+            "name": "url",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "uri"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Inference"
+        ]
+      }
+    },
     "/api/inference/mtplx/status": {
       "get": {
         "operationId": "getMtplxStatus",
-        "parameters": [],
+        "parameters": [
+          {
+            "name": "url",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "uri"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": ""
@@ -5604,7 +5649,8 @@
                   "ollama",
                   "vllm",
                   "lemonade",
-                  "mtplx"
+                  "mtplx",
+                  "dspark"
                 ]
               },
               "inferenceModel": {
@@ -5623,6 +5669,9 @@
                 "type": "string"
               },
               "inferenceMtplxUrl": {
+                "type": "string"
+              },
+              "inferenceDsparkUrl": {
                 "type": "string"
               },
               "inferenceCloudProviders": {
@@ -5994,7 +6043,8 @@
               "ollama",
               "vllm",
               "lemonade",
-              "mtplx"
+              "mtplx",
+              "dspark"
             ]
           },
           "inferenceModel": {
@@ -6013,6 +6063,9 @@
             "type": "string"
           },
           "inferenceMtplxUrl": {
+            "type": "string"
+          },
+          "inferenceDsparkUrl": {
             "type": "string"
           },
           "inferenceCloudProviders": {
@@ -10786,7 +10839,8 @@
               "ollama",
               "vllm",
               "lemonade",
-              "mtplx"
+              "mtplx",
+              "dspark"
             ]
           },
           "model": {
@@ -10814,6 +10868,11 @@
             "format": "uri"
           },
           "mtplxUrl": {
+            "nullable": true,
+            "type": "string",
+            "format": "uri"
+          },
+          "dsparkUrl": {
             "nullable": true,
             "type": "string",
             "format": "uri"
@@ -14020,7 +14079,8 @@
               "ollama",
               "vllm",
               "lemonade",
-              "mtplx"
+              "mtplx",
+              "dspark"
             ]
           },
           "vllmUrl": {
@@ -14028,6 +14088,10 @@
             "format": "uri"
           },
           "mtplxUrl": {
+            "type": "string",
+            "format": "uri"
+          },
+          "dsparkUrl": {
             "type": "string",
             "format": "uri"
           }
@@ -14043,7 +14107,8 @@
               "ollama",
               "vllm",
               "lemonade",
-              "mtplx"
+              "mtplx",
+              "dspark"
             ]
           }
         },

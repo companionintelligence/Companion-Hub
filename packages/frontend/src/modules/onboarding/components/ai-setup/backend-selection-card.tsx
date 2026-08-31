@@ -2,6 +2,7 @@ import { Card, CardContent } from '@/components/ui/Card';
 import type { InferenceBackendType } from '@ci-hub/common/types';
 import { LabelWithHint } from '@/components/ui/field-hint/field-hint';
 import {
+  ONBOARDING_BACKEND_DSPARK_HINT,
   ONBOARDING_BACKEND_LEMONADE_HINT,
   ONBOARDING_BACKEND_MTPLX_HINT,
   ONBOARDING_BACKEND_OLLAMA_HINT,
@@ -16,6 +17,7 @@ const BACKEND_HINT_KEYS: Record<InferenceBackendType, string> = {
   vllm: ONBOARDING_BACKEND_VLLM_HINT,
   lemonade: ONBOARDING_BACKEND_LEMONADE_HINT,
   mtplx: ONBOARDING_BACKEND_MTPLX_HINT,
+  dspark: ONBOARDING_BACKEND_DSPARK_HINT,
 };
 
 const BACKEND_INFO: Record<InferenceBackendType, { label: string; descriptionKey: string }> = {
@@ -23,6 +25,7 @@ const BACKEND_INFO: Record<InferenceBackendType, { label: string; descriptionKey
   vllm: { label: 'vLLM', descriptionKey: 'ONBOARDING_BACKEND_VLLM_DESC' },
   lemonade: { label: 'Lemonade', descriptionKey: 'ONBOARDING_BACKEND_LEMONADE_DESC' },
   mtplx: { label: 'MTPLX', descriptionKey: 'ONBOARDING_BACKEND_MTPLX_DESC' },
+  dspark: { label: 'mlx-dspark', descriptionKey: 'ONBOARDING_BACKEND_DSPARK_DESC' },
 };
 
 interface BackendSelectionCardProps {

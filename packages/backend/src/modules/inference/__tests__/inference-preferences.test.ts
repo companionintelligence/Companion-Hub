@@ -23,6 +23,7 @@ import { OllamaBackend } from '../backends/ollama.backend';
 import { VllmBackend } from '../backends/vllm.backend';
 import { LemonadeBackend } from '../backends/lemonade.backend';
 import { MtplxBackend } from '../backends/mtplx.backend';
+import { DsparkBackend } from '../backends/dspark.backend';
 import { HostMetricsService } from '@/modules/system/host-metrics.service';
 
 describe('InferenceController — preferences', () => {
@@ -49,6 +50,7 @@ describe('InferenceController — preferences', () => {
         { provide: VllmBackend, useValue: mock<VllmBackend>() },
         { provide: LemonadeBackend, useValue: mock<LemonadeBackend>() },
         { provide: MtplxBackend, useValue: mock<MtplxBackend>() },
+        { provide: DsparkBackend, useValue: mock<DsparkBackend>() },
         { provide: LoggerService, useValue: mock<LoggerService>() },
       ],
     }).compile();
@@ -104,7 +106,16 @@ describe('InferenceController — preferences', () => {
 
     const result = await controller.updatePreferences({ backend: 'lemonade' });
 
-    expect(configService.setInferencePreferences).toHaveBeenCalledWith('lemonade', undefined, undefined, undefined, undefined, undefined, undefined);
+    expect(configService.setInferencePreferences).toHaveBeenCalledWith(
+      'lemonade',
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+    );
     expect(result).toEqual({
       preferredBackend: 'lemonade',
       preferredModel: null,
@@ -133,6 +144,7 @@ describe('InferenceController — preferences', () => {
       'hermes4-8b',
       'nomic-embed-text',
       'gemma4-27b',
+      undefined,
       undefined,
       undefined,
       undefined,
@@ -169,6 +181,7 @@ describe('InferenceController — preferences', () => {
       'vllm-local',
       'http://192.168.1.50:8000',
       undefined,
+      undefined,
     );
   }, 30_000);
 
@@ -194,6 +207,33 @@ describe('InferenceController — preferences', () => {
       undefined,
       undefined,
       'http://192.168.1.50:8000',
+      undefined,
+    );
+  }, 30_000);
+
+  it('passes the mlx-dspark endpoint URL through when provided', async () => {
+    configService.setInferencePreferences.mockResolvedValue({
+      preferredBackend: 'dspark',
+      preferredModel: null,
+      preferredEmbeddingModel: null,
+      preferredVisionModel: null,
+      preferredDsparkUrl: 'http://192.168.1.50:8080',
+    } as never);
+
+    await controller.updatePreferences({
+      backend: 'dspark',
+      dsparkUrl: 'http://192.168.1.50:8080',
+    });
+
+    expect(configService.setInferencePreferences).toHaveBeenCalledWith(
+      'dspark',
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      'http://192.168.1.50:8080',
     );
   }, 30_000);
 
@@ -242,5 +282,12 @@ describe('InferenceController — preferences', () => {
     expect(inferencePreferencesSchema.safeParse({ backend: 'mtplx', mtplxUrl: 'http://host.docker.internal:8000' }).success).toBe(true);
     expect(inferencePreferencesSchema.safeParse({ backend: 'mtplx', mtplxUrl: null }).success).toBe(true);
     expect(inferencePreferencesSchema.safeParse({ backend: 'mtplx', mtplxUrl: 'not-a-url' }).success).toBe(false);
+  });
+
+  it('accepts the dspark backend and a valid dsparkUrl in the preferences schema', () => {
+    expect(inferencePreferencesSchema.safeParse({ backend: 'dspark' }).success).toBe(true);
+    expect(inferencePreferencesSchema.safeParse({ backend: 'dspark', dsparkUrl: 'http://host.docker.internal:8080' }).success).toBe(true);
+    expect(inferencePreferencesSchema.safeParse({ backend: 'dspark', dsparkUrl: null }).success).toBe(true);
+    expect(inferencePreferencesSchema.safeParse({ backend: 'dspark', dsparkUrl: 'not-a-url' }).success).toBe(false);
   });
 });

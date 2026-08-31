@@ -44,13 +44,14 @@ export const settingsSchema = z.object({
   ciHubOrganizationLabel: z.string().trim().optional(),
   ciHubDeviceSlug: z.string().trim().optional(),
   ciHubHubSubdomain: z.string().trim().optional(),
-  inferenceBackend: z.enum(['ollama', 'vllm', 'lemonade', 'mtplx']).optional(),
+  inferenceBackend: z.enum(['ollama', 'vllm', 'lemonade', 'mtplx', 'dspark']).optional(),
   inferenceModel: z.string().trim().optional(),
   inferenceEmbeddingModel: z.string().trim().optional(),
   inferenceVisionModel: z.string().trim().optional(),
   inferenceVllmApiKey: z.string().trim().optional(),
   inferenceVllmUrl: z.string().trim().optional(),
   inferenceMtplxUrl: z.string().trim().optional(),
+  inferenceDsparkUrl: z.string().trim().optional(),
   inferenceCloudProviders: z
     .array(
       z.object({
