@@ -1,10 +1,9 @@
 name: Integraton tests
+# TEMPORARY (Actions credit): automatic PR/push triggers disabled.
+# Re-enable when credits recover. Manual: gh workflow run integration-tests.yml
 on:
   workflow_call:
-  pull_request:
-  push:
-    branches:
-      - dev
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}

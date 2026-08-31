@@ -7,6 +7,8 @@ import { CloudFallbackService } from '../cloud-fallback.service';
 import { OllamaBackend } from '../backends/ollama.backend';
 import { VllmBackend } from '../backends/vllm.backend';
 import { LemonadeBackend } from '../backends/lemonade.backend';
+import { MtplxBackend } from '../backends/mtplx.backend';
+import { DsparkBackend } from '../backends/dspark.backend';
 import { LoggerService } from '@/core/logger/logger.service';
 import { mock, type MockProxy } from 'vitest-mock-extended';
 import { describe, it, expect, beforeEach } from 'vitest';
@@ -22,6 +24,8 @@ describe('InferenceRouterService', () => {
   let ollamaBackend: MockProxy<OllamaBackend>;
   let vllmBackend: MockProxy<VllmBackend>;
   let lemonadeBackend: MockProxy<LemonadeBackend>;
+  let mtplxBackend: MockProxy<MtplxBackend>;
+  let dsparkBackend: MockProxy<DsparkBackend>;
 
   const defaultProfile: HardwareProfile = {
     gpu: { available: true, vendor: 'nvidia', model: 'RTX 4090', vramMb: 24576, unifiedMemory: false, driverVersion: '535', runtimeAvailable: true },
@@ -41,6 +45,8 @@ describe('InferenceRouterService', () => {
     ollamaBackend = mock<OllamaBackend>();
     vllmBackend = mock<VllmBackend>();
     lemonadeBackend = mock<LemonadeBackend>();
+    mtplxBackend = mock<MtplxBackend>();
+    dsparkBackend = mock<DsparkBackend>();
 
     hardwareInspector.getProfile.mockResolvedValue(defaultProfile);
     modelRegistry.getTrackedModels.mockReturnValue([]);
@@ -56,6 +62,10 @@ describe('InferenceRouterService', () => {
     vllmBackend.getBaseUrl.mockReturnValue('http://ci-hub-vllm:8000');
     lemonadeBackend.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [] });
     lemonadeBackend.getBaseUrl.mockReturnValue('http://ci-hub-lemonade:13305');
+    mtplxBackend.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [] });
+    mtplxBackend.getBaseUrl.mockReturnValue('http://ci-hub-mtplx:8000');
+    dsparkBackend.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [] });
+    dsparkBackend.getBaseUrl.mockReturnValue('http://127.0.0.1:8080');
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -68,6 +78,8 @@ describe('InferenceRouterService', () => {
         { provide: OllamaBackend, useValue: ollamaBackend },
         { provide: VllmBackend, useValue: vllmBackend },
         { provide: LemonadeBackend, useValue: lemonadeBackend },
+        { provide: MtplxBackend, useValue: mtplxBackend },
+        { provide: DsparkBackend, useValue: dsparkBackend },
       ],
     }).compile();
 
@@ -149,7 +161,7 @@ describe('InferenceRouterService', () => {
       const status = await service.getStatus();
 
       expect(status.hardwareTier).toBe('high');
-      expect(status.backends).toHaveLength(3);
+      expect(status.backends).toHaveLength(5);
       expect(status.memoryBudget).toBeDefined();
     });
 

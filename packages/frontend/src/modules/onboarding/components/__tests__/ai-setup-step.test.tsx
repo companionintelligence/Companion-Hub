@@ -4,17 +4,20 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { AiSetupStep } from '../ai-setup-step';
 import type { HardwareProfileResponse } from '../../helpers/ai-setup-types';
 
-const { fetchInferenceOnboardingProfile, fetchOllamaInstallStatus, fetchVllmInstallStatus, rescanInferenceHardware } = vi.hoisted(() => ({
-  fetchInferenceOnboardingProfile: vi.fn(),
-  fetchOllamaInstallStatus: vi.fn(),
-  fetchVllmInstallStatus: vi.fn(),
-  rescanInferenceHardware: vi.fn(),
-}));
+const { fetchInferenceOnboardingProfile, fetchOllamaInstallStatus, fetchVllmInstallStatus, fetchDsparkInstallStatus, rescanInferenceHardware } =
+  vi.hoisted(() => ({
+    fetchInferenceOnboardingProfile: vi.fn(),
+    fetchOllamaInstallStatus: vi.fn(),
+    fetchVllmInstallStatus: vi.fn(),
+    fetchDsparkInstallStatus: vi.fn(),
+    rescanInferenceHardware: vi.fn(),
+  }));
 
 vi.mock('@/lib/inference/inference-api', () => ({
   fetchInferenceOnboardingProfile,
   fetchOllamaInstallStatus,
   fetchVllmInstallStatus,
+  fetchDsparkInstallStatus,
   rescanInferenceHardware,
 }));
 
@@ -239,6 +242,7 @@ describe('AiSetupStep', () => {
     });
     fetchOllamaInstallStatus.mockImplementation(() => Promise.resolve(api.ollama));
     fetchVllmInstallStatus.mockImplementation(() => Promise.resolve(api.vllm));
+    fetchDsparkInstallStatus.mockImplementation(() => Promise.resolve({ ready: false, running: false, endpointUrl: 'http://127.0.0.1:8080' }));
     rescanInferenceHardware.mockImplementation(async () => {
       if (!api.rescanOk) throw new Error('HTTP 503');
     });
@@ -527,7 +531,7 @@ describe('AiSetupStep', () => {
     await user.click(screen.getByTestId('vllm-recheck-btn'));
 
     // Still on vLLM — the refetch must happen, and must not snap back to the recommended backend.
-    await waitFor(() => expect(fetchInferenceOnboardingProfile).toHaveBeenCalledWith('vllm', '', ''));
+    await waitFor(() => expect(fetchInferenceOnboardingProfile).toHaveBeenCalledWith('vllm', '', '', '', ''));
     expect(screen.getByText('vLLM detected')).toBeInTheDocument();
   });
 

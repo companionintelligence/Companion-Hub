@@ -257,6 +257,13 @@ export function handleAppSseEvent(queryClient: QueryClient, data: AppSsePayload)
 
   if (LIFECYCLE_INVALIDATE_EVENTS.has(event)) {
     setCachedAppStatus(queryClient, appUrn, appStatus, { allowDowngradeFromTransitional: true });
+    // A `start_success`/`restart_success` (etc.) landing the app on `running` proves any earlier
+    // install failure is stale — the same rule the `status_change` branch below already applies.
+    // Without this, a launch that fixes a prior install error left the banner stuck forever: those
+    // *_success events never flow through the `status_change` branch, so line ~296's clear never ran.
+    if (appStatus === 'running') {
+      queryClient.setQueryData(['app-install-error', urn], null);
+    }
     invalidateAppQueries(queryClient, appUrn);
     return;
   }

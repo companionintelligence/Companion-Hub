@@ -314,6 +314,9 @@ interface AppConfig {
   // compose device reservation (e.g. tabbyml/tabby links libcuda at runtime), so this declaration
   // is the only reliable signal for those.
   gpu_requirements?: { type?: string; optional?: boolean };
+  supported_architectures?: string[];
+  host_access?: boolean;
+  form_fields?: unknown[];
 }
 
 interface HealthCheck {
@@ -426,6 +429,11 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
     result.name = config.name ?? appId;
     result.port = config.port ?? 80;
     result.categories = config.categories ?? [];
+    // Requirements — surfaced in the dashboard drawer so a reviewer can spot a poorly-declared
+    // manifest (e.g. no arch list, an undeclared host-access need) without opening config.json.
+    result.architectures = config.supported_architectures ?? [];
+    result.hostAccess = !!config.host_access;
+    result.formFieldsCount = Array.isArray(config.form_fields) ? config.form_fields.length : 0;
 
     // Non-HTTP apps have no web surface to check. MCP-server apps (a `.mcp` block) speak JSON-RPC
     // over stdio — route them to the protocol smoke (boot → initialize → tools/list → manifest
@@ -912,6 +920,8 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
     phase(appId, 'benchmark', 'Collecting metrics');
     await new Promise((r) => setTimeout(r, 2000));
 
+    result.containerCount = services.length || 1;
+
     let memTotal = 0;
     let memPeak = 0;
     let cpuTotal = 0;
@@ -936,6 +946,14 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
     result.memMb = samples ? Math.round(memTotal / samples) : 0;
     result.memPeakMb = Math.round(memPeak);
     result.cpuPct = samples ? Math.round((cpuTotal / samples) * 10) / 10 : 0;
+
+    // Writable-layer disk usage (SizeRw) of the main container — same single-container convention
+    // as the RAM/CPU sample above (statsName), not an aggregate across a multi-service compose app.
+    const diskSample = await execAsync(`docker inspect ${statsName} --size --format "{{.SizeRw}}"`, 10_000);
+    if (diskSample.ok) {
+      const bytes = Number.parseInt(diskSample.out.trim(), 10);
+      if (Number.isFinite(bytes) && bytes >= 0) result.diskMb = Math.round(bytes / (1024 * 1024));
+    }
 
     // ── Score ─────────────────────────────────────────────────
     // httpOk is guaranteed true here (the !httpOk early-return is above)

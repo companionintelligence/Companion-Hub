@@ -145,4 +145,37 @@ describe('handleAppSseEvent', () => {
 
     expect(queryClient.invalidateQueries).not.toHaveBeenCalled();
   });
+
+  it('clears a stale install-error banner when a later start_success lands the app on running', () => {
+    // Regression: an install that failed once (banner cached under app-install-error) followed by a
+    // successful manual start/restart previously left the banner stuck — start_success/restart_success
+    // never flowed through the status_change branch that clears it.
+    handleAppSseEvent(queryClient as unknown as QueryClient, {
+      event: 'start_success',
+      appUrn: 'safeos:ci-marketplace',
+      appStatus: 'running',
+    });
+
+    expect(queryClient.setQueryData).toHaveBeenCalledWith(['app-install-error', 'safeos:ci-marketplace'], null);
+  });
+
+  it('clears a stale install-error banner on restart_success landing on running', () => {
+    handleAppSseEvent(queryClient as unknown as QueryClient, {
+      event: 'restart_success',
+      appUrn: 'safeos:ci-marketplace',
+      appStatus: 'running',
+    });
+
+    expect(queryClient.setQueryData).toHaveBeenCalledWith(['app-install-error', 'safeos:ci-marketplace'], null);
+  });
+
+  it('does not touch the install-error cache on stop_success (app is not running)', () => {
+    handleAppSseEvent(queryClient as unknown as QueryClient, {
+      event: 'stop_success',
+      appUrn: 'safeos:ci-marketplace',
+      appStatus: 'stopped',
+    });
+
+    expect(queryClient.setQueryData).not.toHaveBeenCalledWith(['app-install-error', 'safeos:ci-marketplace'], null);
+  });
 });

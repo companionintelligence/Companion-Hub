@@ -91,6 +91,30 @@ export function LemonadeIcon({ className }: IconProps) {
   );
 }
 
+/** MTPLX — three staggered chevrons, for multiple tokens drafted ahead at once. */
+export function MtplxIcon({ className }: IconProps) {
+  return (
+    <Glyph className={className}>
+      <path d="M4 6l4 6-4 6" />
+      <path d="M10 6l4 6-4 6" />
+      <path d="M16 6l4 6-4 6" />
+    </Glyph>
+  );
+}
+
+/** mlx-dspark — a speculative branch: one path drafts ahead, the target verifies and commits. */
+export function DsparkIcon({ className }: IconProps) {
+  return (
+    <Glyph className={className}>
+      <path d="M4 12h5" />
+      <path d="M9 12l5-5" />
+      <path d="M9 12l5 5" />
+      <circle cx="16.5" cy="7" r="2" />
+      <circle cx="16.5" cy="17" r="2" />
+    </Glyph>
+  );
+}
+
 /* ── Model labs without an official brand mark (custom marks) ────────────────────────────────── */
 // These labs don't have a sourced SVG in /public/brands (unlike the CREATOR_BRAND set below, which
 // are official marks). Rather than fetch third-party logo files we can't vet the provenance of, these

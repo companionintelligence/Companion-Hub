@@ -1,4 +1,4 @@
-import { fetchOllamaInstallStatus, fetchVllmInstallStatus } from '@/lib/inference/inference-api';
+import { fetchDsparkInstallStatus, fetchMtplxInstallStatus, fetchOllamaInstallStatus, fetchVllmInstallStatus } from '@/lib/inference/inference-api';
 import {
   ensurePullStarted,
   ensurePullsStarted,
@@ -26,8 +26,14 @@ interface UseModelPullOrchestratorOptions {
   /** When false, no pulls are started and polling is paused. */
   enabled: boolean;
   bestEffort?: boolean;
-  /** Chat inference backend — gates readiness on Ollama or vLLM health. */
+  /** Chat inference backend — gates readiness on that backend's health probe. */
   inferenceBackend?: InferenceBackendType;
+  /**
+   * Operator-supplied base URL for a host-run backend that has not been persisted yet (onboarding
+   * collects it before install-step saves preferences). Without it the readiness probe checks the
+   * Hub's default endpoint rather than the one the operator just typed into the setup card.
+   */
+  backendUrl?: string;
   /** Only these selected ids are pulled (Ollama-backed models when chat uses vLLM). */
   pullableModelIds?: string[];
 }
@@ -58,6 +64,7 @@ export function useModelPullOrchestrator({
   enabled,
   bestEffort = true,
   inferenceBackend = 'ollama',
+  backendUrl,
   pullableModelIds,
 }: UseModelPullOrchestratorOptions): ModelPullOrchestratorResult {
   const [progressById, setProgressById] = useState<Record<string, number>>({});
@@ -79,7 +86,17 @@ export function useModelPullOrchestrator({
     void (async () => {
       try {
         if (inferenceBackend === 'vllm') {
-          const data = (await fetchVllmInstallStatus()) as { ready?: boolean; running?: boolean };
+          const data = (await fetchVllmInstallStatus(backendUrl)) as { ready?: boolean; running?: boolean };
+          if (!cancelled) setBackendReady(!!(data.ready ?? data.running));
+          return;
+        }
+        if (inferenceBackend === 'dspark') {
+          const data = (await fetchDsparkInstallStatus(backendUrl)) as { ready?: boolean; running?: boolean };
+          if (!cancelled) setBackendReady(!!(data.ready ?? data.running));
+          return;
+        }
+        if (inferenceBackend === 'mtplx') {
+          const data = (await fetchMtplxInstallStatus()) as { ready?: boolean; running?: boolean };
           if (!cancelled) setBackendReady(!!(data.ready ?? data.running));
           return;
         }
@@ -93,7 +110,7 @@ export function useModelPullOrchestrator({
     return () => {
       cancelled = true;
     };
-  }, [enabled, inferenceBackend]);
+  }, [enabled, inferenceBackend, backendUrl]);
 
   const applyParsed = useCallback((parsed: ParsedPullProgress) => {
     setProgressById(parsed.progressById);

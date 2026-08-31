@@ -57,6 +57,31 @@ describe('<QrCode />', () => {
     });
   });
 
+  describe('bare', () => {
+    it('drops the plate padding and the printed fallback text', () => {
+      const { container } = render(<QrCode value={VALUE} fallback={VALUE} bare />);
+
+      expect(screen.queryByText(VALUE)).not.toBeInTheDocument();
+      expect(container.querySelector('.p-3')).not.toBeInTheDocument();
+      expect(container.querySelector('.p-0')).toBeInTheDocument();
+    });
+
+    it('still carries the payload as the accessible name', () => {
+      // The fallback text is gone from the page, but the payload must stay
+      // reachable for assistive tech — otherwise `bare` silently reintroduces
+      // the dead end `fallback` exists to prevent, just for screen readers.
+      render(<QrCode value={VALUE} fallback={VALUE} bare />);
+
+      expect(screen.getByRole('img', { name: VALUE })).toBeInTheDocument();
+    });
+
+    it('renders the caption and the fallback by default', () => {
+      render(<QrCode value={VALUE} fallback={VALUE} />);
+
+      expect(screen.getByText(VALUE)).toBeInTheDocument();
+    });
+  });
+
   describe('reveal', () => {
     it('hides the code and the payload until asked for', () => {
       render(<QrCode value={VALUE} fallback={VALUE} reveal />);

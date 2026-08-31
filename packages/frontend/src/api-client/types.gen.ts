@@ -74,12 +74,14 @@ export type AppContextDto = {
         ciHubOrganizationLabel?: string;
         ciHubDeviceSlug?: string;
         ciHubHubSubdomain?: string;
-        inferenceBackend?: 'ollama' | 'vllm' | 'lemonade';
+        inferenceBackend?: 'ollama' | 'vllm' | 'lemonade' | 'mtplx' | 'dspark';
         inferenceModel?: string;
         inferenceEmbeddingModel?: string;
         inferenceVisionModel?: string;
         inferenceVllmApiKey?: string;
         inferenceVllmUrl?: string;
+        inferenceMtplxUrl?: string;
+        inferenceDsparkUrl?: string;
         inferenceCloudProviders?: Array<{
             provider: 'openai' | 'anthropic' | 'google' | 'github-copilot';
             apiKey?: string;
@@ -154,12 +156,14 @@ export type UserSettingsBody = {
     ciHubOrganizationLabel?: string;
     ciHubDeviceSlug?: string;
     ciHubHubSubdomain?: string;
-    inferenceBackend?: 'ollama' | 'vllm' | 'lemonade';
+    inferenceBackend?: 'ollama' | 'vllm' | 'lemonade' | 'mtplx' | 'dspark';
     inferenceModel?: string;
     inferenceEmbeddingModel?: string;
     inferenceVisionModel?: string;
     inferenceVllmApiKey?: string;
     inferenceVllmUrl?: string;
+    inferenceMtplxUrl?: string;
+    inferenceDsparkUrl?: string;
     inferenceCloudProviders?: Array<{
         provider: 'openai' | 'anthropic' | 'google' | 'github-copilot';
         apiKey?: string;
@@ -1218,12 +1222,14 @@ export type UpdateAppStoreDto = {
 };
 
 export type UpdateInferencePreferencesBody = {
-    backend: 'ollama' | 'vllm' | 'lemonade';
+    backend: 'ollama' | 'vllm' | 'lemonade' | 'mtplx' | 'dspark';
     model?: string;
     embeddingModel?: string;
     visionModel?: string;
     vllmApiKey?: string;
     vllmUrl?: string;
+    mtplxUrl?: string;
+    dsparkUrl?: string;
 };
 
 export type UpdateRocmInstallStateBody = {
@@ -1910,12 +1916,14 @@ export type StreamHubLogsQueryDto = {
 };
 
 export type OnboardingProfileQueryDto = {
-    backend?: 'ollama' | 'vllm' | 'lemonade';
+    backend?: 'ollama' | 'vllm' | 'lemonade' | 'mtplx' | 'dspark';
     vllmUrl?: string;
+    mtplxUrl?: string;
+    dsparkUrl?: string;
 };
 
 export type RuntimeModelsQueryDto = {
-    backend: 'ollama' | 'vllm' | 'lemonade';
+    backend: 'ollama' | 'vllm' | 'lemonade' | 'mtplx' | 'dspark';
 };
 
 export type MetadataDto = {
@@ -3494,7 +3502,7 @@ export type GetRuntimeModelsData = {
     body?: never;
     path?: never;
     query: {
-        backend: 'ollama' | 'vllm' | 'lemonade';
+        backend: 'ollama' | 'vllm' | 'lemonade' | 'mtplx' | 'dspark';
     };
     url: '/api/inference/models/runtime';
 };
@@ -3689,8 +3697,10 @@ export type GetOnboardingProfileData = {
     };
     path?: never;
     query?: {
-        backend?: 'ollama' | 'vllm' | 'lemonade';
+        backend?: 'ollama' | 'vllm' | 'lemonade' | 'mtplx' | 'dspark';
         vllmUrl?: string;
+        mtplxUrl?: string;
+        dsparkUrl?: string;
     };
     url: '/api/inference/onboarding-profile';
 };
@@ -3726,6 +3736,32 @@ export type GetVllmStatusData = {
 };
 
 export type GetVllmStatusResponses = {
+    200: unknown;
+};
+
+export type GetDsparkStatusData = {
+    body?: never;
+    path?: never;
+    query?: {
+        url?: string;
+    };
+    url: '/api/inference/dspark/status';
+};
+
+export type GetDsparkStatusResponses = {
+    200: unknown;
+};
+
+export type GetMtplxStatusData = {
+    body?: never;
+    path?: never;
+    query?: {
+        url?: string;
+    };
+    url: '/api/inference/mtplx/status';
+};
+
+export type GetMtplxStatusResponses = {
     200: unknown;
 };
 

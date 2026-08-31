@@ -49,14 +49,14 @@ describe('RegistryService', () => {
     it('should throw if CI_CLOUD_URL is not configured', async () => {
       mockConfig({ ciCloudUrl: '' });
 
-      await expect(registryService.getTagsSince('ci-os-hub', '1.0.0')).rejects.toThrow('ciCloudUrl is not configured');
+      await expect(registryService.getTagsSince('ci-hub', '1.0.0')).rejects.toThrow('ciCloudUrl is not configured');
     });
 
     it('should return tags newer than current version sorted descending', async () => {
       mockPairedHub();
       httpService.get.mockReturnValue(ok({ tags: ['1.0.0', '1.1.0', '1.2.0', '0.9.0'] }));
 
-      const result = await registryService.getTagsSince('ci-os-hub', '1.0.0');
+      const result = await registryService.getTagsSince('ci-hub', '1.0.0');
 
       expect(result).toEqual(['1.2.0', '1.1.0']);
       expect(httpService.post).toHaveBeenCalledWith(
@@ -67,7 +67,7 @@ describe('RegistryService', () => {
           headers: { 'x-device-key': DEVICE_KEY, 'Content-Type': 'application/json' },
         },
       );
-      expect(httpService.get).toHaveBeenCalledWith(`${PORTAL}/v2/ci-os-hub/tags/list`, {
+      expect(httpService.get).toHaveBeenCalledWith(`${PORTAL}/v2/ci-hub/tags/list`, {
         timeout: REGISTRY_HTTP_TIMEOUT_MS,
         headers: { Authorization: `Bearer ${PULL_TOKEN}` },
       });
@@ -79,9 +79,9 @@ describe('RegistryService', () => {
       mockPairedHub();
       httpService.get.mockReturnValue(ok({ tags: ['1.1.0'] }));
 
-      await registryService.getLatestVersion('ci-os-hub');
+      await registryService.getLatestVersion('ci-hub');
       vi.advanceTimersByTime(11 * 60 * 1000);
-      await registryService.getLatestVersion('ci-os-hub');
+      await registryService.getLatestVersion('ci-hub');
 
       expect(httpService.post).toHaveBeenCalledTimes(1);
       expect(httpService.get).toHaveBeenCalledTimes(2);
@@ -92,7 +92,7 @@ describe('RegistryService', () => {
       mockPairedHub();
       httpService.get.mockReturnValue(ok({ tags: ['1.0.0', '0.9.0'] }));
 
-      const result = await registryService.getTagsSince('ci-os-hub', '1.0.0');
+      const result = await registryService.getTagsSince('ci-hub', '1.0.0');
 
       expect(result).toEqual([]);
     });
@@ -101,14 +101,14 @@ describe('RegistryService', () => {
       mockPairedHub();
       httpService.get.mockReturnValue(ok({ tags: ['latest', 'dev', '1.1.0', 'abc', '1.2.0'] }));
 
-      const result = await registryService.getTagsSince('ci-os-hub', '1.0.0');
+      const result = await registryService.getTagsSince('ci-hub', '1.0.0');
 
       expect(result).toEqual(['1.2.0', '1.1.0']);
     });
 
     it('should return empty array when currentVersion is not valid semver', async () => {
       const callsBefore = httpService.get.mock.calls.length;
-      const result = await registryService.getTagsSince('ci-os-hub', 'e2e');
+      const result = await registryService.getTagsSince('ci-hub', 'e2e');
 
       expect(result).toEqual([]);
       expect(httpService.get.mock.calls.length).toBe(callsBefore);
@@ -118,7 +118,7 @@ describe('RegistryService', () => {
       mockPairedHub();
       httpService.get.mockReturnValue(throwError(() => new Error('Network error')));
 
-      const result = await registryService.getTagsSince('ci-os-hub', '1.0.0');
+      const result = await registryService.getTagsSince('ci-hub', '1.0.0');
 
       expect(result).toEqual([]);
     });
@@ -126,7 +126,7 @@ describe('RegistryService', () => {
     it('skips the Hub stack listing when unpaired', async () => {
       mockConfig({ ciHubApiKey: null });
 
-      const result = await registryService.getTagsSince('ci-os-hub', '1.0.0');
+      const result = await registryService.getTagsSince('ci-hub', '1.0.0');
 
       expect(result).toEqual([]);
       expect(httpService.post).not.toHaveBeenCalled();
@@ -139,7 +139,7 @@ describe('RegistryService', () => {
       mockPairedHub();
       httpService.get.mockReturnValue(ok({ tags: ['1.0.0', '2.0.0', '1.5.0'] }));
 
-      const result = await registryService.getLatestVersion('ci-os-hub');
+      const result = await registryService.getLatestVersion('ci-hub');
 
       expect(result).toBe('2.0.0');
     });
@@ -148,7 +148,7 @@ describe('RegistryService', () => {
       mockPairedHub();
       httpService.get.mockReturnValue(ok({ tags: [] }));
 
-      const result = await registryService.getLatestVersion('ci-os-hub');
+      const result = await registryService.getLatestVersion('ci-hub');
 
       expect(result).toBe('0.0.0');
     });
@@ -164,10 +164,10 @@ describe('RegistryService', () => {
         throw new Error(`unexpected url: ${url}`);
       });
 
-      const result = await registryService.getTagsSinceWithHubFallback('ci-os-hub', '1.0.0');
+      const result = await registryService.getTagsSinceWithHubFallback('ci-hub', '1.0.0');
 
       expect(result).toEqual(['1.2.0']);
-      expect(httpService.get).not.toHaveBeenCalledWith(`${PORTAL}/v2/ci-os-hub/tags/list`, expect.anything());
+      expect(httpService.get).not.toHaveBeenCalledWith(`${PORTAL}/v2/ci-hub/tags/list`, expect.anything());
       expect(httpService.get).toHaveBeenCalledWith('https://dl.ci.computer/latest.json', { timeout: REGISTRY_HTTP_TIMEOUT_MS });
     });
 
@@ -193,7 +193,7 @@ describe('RegistryService', () => {
         throw new Error(`unexpected url: ${url}`);
       });
 
-      const result = await registryService.getTagsSinceWithHubFallback('ci-os-hub', '1.0.0');
+      const result = await registryService.getTagsSinceWithHubFallback('ci-hub', '1.0.0');
 
       expect(result).toEqual([]);
     });
@@ -207,7 +207,7 @@ describe('RegistryService', () => {
         throw new Error(`unexpected url: ${url}`);
       });
 
-      const result = await registryService.getTagsSinceWithHubFallback('ci-os-hub', '1.0.0');
+      const result = await registryService.getTagsSinceWithHubFallback('ci-hub', '1.0.0');
 
       expect(result).toEqual([]);
     });
