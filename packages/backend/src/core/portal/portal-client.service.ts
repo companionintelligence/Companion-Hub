@@ -211,6 +211,76 @@ export class PortalClientService {
     return this.postJson('tunnels/state', payload, { authenticated: true });
   }
 
+  /**
+   * A device-authenticated request whose STATUS AND BODY are part of the answer.
+   *
+   * `fetchJson` / `postJson` collapse every non-2xx into one `PORTAL_REQUEST_FAILED`
+   * carrying a status string and nothing else, which is right for the calls whose
+   * only question is "did it work". The custom-domain routes are not those: a 404
+   * means this CI-Cloud predates the feature (a supported deployment, not a
+   * fault), a 422 means the domain is still verifying and the caller should try
+   * again later, and a 404 on the bind distinguishes "the app has not registered
+   * yet" from "that domain is gone" by its `code`. Throwing all of that away and
+   * then guessing is how a caller ends up retrying something that can never
+   * succeed, or giving up on something that would have worked next minute.
+   */
+  private async requestWithStatus<T>(method: 'get' | 'post', path: string, body?: unknown): Promise<{ status: number; data: T }> {
+    this.requirePortalUrl();
+    const url = path.replace(/^\//, '');
+    const headers = {
+      ...this.getDeviceAuthHeaders(),
+      ...(method === 'post' ? { 'Content-Type': 'application/json' } : {}),
+    };
+    const response =
+      method === 'get'
+        ? await this.apiClient.get<T>(url, { headers, validateStatus: () => true })
+        : await this.apiClient.post<T>(url, body, { headers, validateStatus: () => true });
+
+    return { status: response.status, data: response.data };
+  }
+
+  /**
+   * The organization's connected custom domains, with the bind state of each.
+   *
+   * ⚠ NOT THE SAME THING AS `customDomains` ON THE TUNNEL-STATE RESPONSE. That
+   * one is what CI-Cloud has WIRED — the hostnames the tunnel answers for, and
+   * the only source an app's public identity may be built from. This is what the
+   * organization OWNS: the catalogue an install dialog offers, including domains
+   * pointing at nothing and domains not yet proved.
+   *
+   * 404 on a CI-Cloud that predates the route, which the caller reports as
+   * "nothing offerable" rather than as an error.
+   */
+  async fetchDeviceCustomDomains(organizationId?: string): Promise<{ status: number; data: { domains?: unknown } }> {
+    /*
+     * The organization is VERIFIED by CI-Cloud against a `device_registration`
+     * row, never believed — so sending it is not a trust boundary, it is a
+     * disambiguation. A device CAN be registered to more than one organization
+     * (a half-completed cross-org move leaves exactly that), and CI-Cloud refuses
+     * to guess rather than answering with an arbitrary tenant's domains.
+     */
+    const query = organizationId ? `?organizationId=${encodeURIComponent(organizationId)}` : '';
+
+    return this.requestWithStatus('get', `/custom-domains/device${query}`);
+  }
+
+  /**
+   * Ask CI-Cloud to point one of those domains at an app on THIS device.
+   *
+   * The body names the domain's id and the app's SUBDOMAIN — the same string the
+   * tunnel-state payload carries — never a hostname: the target is composed on
+   * the CI-Cloud side from rows it owns, which is the invariant that stops a
+   * device pointing a domain into another organization's tunnel. The Hub could
+   * not honestly supply one anyway, since it cannot know whether a name really
+   * resolves here.
+   */
+  async postDeviceCustomDomainBind(payload: { domainId: string; appSlug: string; organizationId?: string }): Promise<{
+    status: number;
+    data: { id?: string; domain?: string; targetHostname?: string; code?: string; error?: string };
+  }> {
+    return this.requestWithStatus('post', '/custom-domains/device/bind', payload);
+  }
+
   async postDeviceCheckIn(payload: Record<string, unknown>): Promise<unknown> {
     return this.postJson('/devices/check-in', payload, { authenticated: true });
   }

@@ -9,6 +9,7 @@ import { SSEService } from '@/core/sse/sse.service';
 import { HttpStatus, Inject, Injectable, OnApplicationBootstrap, OnModuleDestroy, Optional } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
 import type { AppUrn } from '@ci-hub/common/types';
+import { normalizeStoredHostname } from '@ci-hub/common/types';
 import validator from 'validator';
 import { AppFilesManager } from '../apps/app-files-manager';
 import { AppRuntimeMonitorService } from '../apps/app-runtime-monitor.service';
@@ -39,7 +40,7 @@ import { DATA_DIR } from '@/common/constants';
 import { AgentNotifyService } from '../agent-notify/agent-notify.service';
 import { ErrorReportingService, type AppFailurePhase } from '@/core/error-reporting/error-reporting.service';
 import { publishesHostPort } from '../apps/app-exposure.helpers';
-import { didPublicRoutingIdentityChange, type AppPublicRoutingSnapshot } from '../apps/app-public-routing.helpers';
+import { canServeOnCustomDomain, didPublicRoutingIdentityChange, type AppPublicRoutingSnapshot } from '../apps/app-public-routing.helpers';
 import { DockerService } from '../docker/docker.service';
 import { AppIntentSyncService } from '../apps/app-intent-sync.service';
 import { isMemoryProviderApp } from '../memory-connect/memory-provider.predicate';
@@ -60,6 +61,31 @@ function uniqueRoutingLocalSubdomain(parsedForm: AppFormForSubdomain): string | 
   return undefined;
 }
 
+/**
+ * Ignore a custom-domain CHOICE that this app could never be served on.
+ *
+ * ⚠ AN UNMOUNTED PICKER STILL SUBMITS ITS VALUE. The field only renders under
+ * Cloudflare exposure, but react-hook-form keeps the value of a field it has
+ * unmounted, so a domain picked before the operator switched to Local or Private
+ * VPN is still in the payload — and acting on it takes that domain off the app
+ * that is actually serving on it (`claimCustomDomainIntent` makes the newest
+ * choice exclusive) and parks it on one the bind pass will skip forever, because
+ * an app that emits no public identity has no ingress rule for a domain to alias.
+ *
+ * Exactly {@link canServeOnCustomDomain}, the gate the bind pass itself applies,
+ * so the two cannot disagree about which apps a domain may be recorded for.
+ *
+ * Only a NON-EMPTY choice is dropped: `''` says "serve on the platform address",
+ * which is honourable for any app and is what a caller turning exposure off
+ * plainly means. `undefined` is "the caller said nothing", which leaves whatever
+ * choice the row already holds alone.
+ */
+function dropUnservableCustomDomain(parsedForm: ParsedAppForm, exposable: boolean | undefined): void {
+  if (parsedForm.customDomain && (!exposable || !canServeOnCustomDomain(parsedForm))) {
+    parsedForm.customDomain = undefined;
+  }
+}
+
 function normalizeLocalOpenPort(parsedForm: ParsedAppForm): ParsedAppForm {
   if ((parsedForm.exposureMode ?? 'local') === 'local' && !parsedForm.openPort) {
     return { ...parsedForm, openPort: true };
@@ -68,13 +94,62 @@ function normalizeLocalOpenPort(parsedForm: ParsedAppForm): ParsedAppForm {
   return parsedForm;
 }
 
+/**
+ * The row patch a re-install writes, from a parsed install form.
+ *
+ * ⚠ `customDomain` MUST NOT REACH THE ROW UNDER THAT NAME. `appFormSchema` is
+ * `.passthrough()`, `updateAppById` takes `Partial<NewApp>`, and drizzle's
+ * `buildUpdateSet` applies every set key that names a real column — so spreading
+ * the form wholesale wrote the picker's choice straight into `app.custom_domain`,
+ * the column that carries what CI-Cloud CONFIRMED it wired and the one env
+ * generation builds `APP_PUBLIC_URL` from. An app told to emit a hostname nobody
+ * verified signs OAuth redirects for an address that may resolve nowhere, which
+ * is the single invariant the intent/binding split exists to hold.
+ *
+ * The choice is recorded as an intent instead, and only when the caller actually
+ * said something about it: absent leaves an existing choice alone, `''` clears it.
+ */
+function buildInstallRowPatch(parsedForm: ParsedAppForm): Record<string, unknown> {
+  const { customDomain, ...rowFields } = parsedForm;
+
+  return {
+    config: toStoredConfig(parsedForm),
+    ...rowFields,
+    ...(customDomain === undefined ? {} : { customDomainIntent: customDomain || null }),
+  };
+}
+
+/**
+ * The install form as it is STORED in `app.config` — without the custom-domain
+ * choice.
+ *
+ * ⚠ THE CHOICE HAS ONE HOME, AND IT IS THE ROW. `custom_domain_intent` is
+ * cleared by the Hub itself — when the organization disconnects the domain, or
+ * when another app claims it — while `config` is a snapshot of whatever was last
+ * saved. A second copy there gives the two different answers, and every path that
+ * REPLAYS the snapshot resurrects a choice that had already been given up: a
+ * version bump re-submits `app.config` verbatim, which would rewrite this app's
+ * intent and strip the domain off whichever app legitimately holds it now. It
+ * would also make re-picking a domain the Hub had cleared compare equal to the
+ * snapshot and be discarded as "no change". The frontend already seeds its picker
+ * from the row rather than from here, for exactly this reason.
+ */
+function toStoredConfig(parsedForm: ParsedAppForm): Record<string, unknown> {
+  const stored: Record<string, unknown> = { ...parsedForm };
+  delete stored.customDomain;
+
+  return stored;
+}
+
 /** Apply the same schema defaults/normalization used on save so unchanged configs compare equal. */
 function normalizeConfigForCompare(raw: Record<string, unknown>): Record<string, unknown> {
   const parsed = appFormSchema.safeParse(raw);
   if (!parsed.success) {
-    return raw;
+    return toStoredConfig(raw as ParsedAppForm);
   }
-  return normalizeLocalOpenPort(parsed.data) as Record<string, unknown>;
+  // Through `toStoredConfig` so a row written before the choice moved to its own
+  // column does not read as a diff on the first save after the upgrade.
+  return toStoredConfig(normalizeLocalOpenPort(parsed.data));
 }
 
 @Injectable()
@@ -766,6 +841,8 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       parsedForm.publicDomain = undefined;
     }
 
+    dropUnservableCustomDomain(parsedForm, appInfo.exposable);
+
     // Manifest edge-auth default (CI-Engineering#74): when the caller did not decide the
     // "Require Auth" toggle — the onboarding install path sends no enableAuth at all — an
     // exposable app that ships `hub_integration.edge_auth.default: true` starts protected.
@@ -812,7 +889,8 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     }
 
     if (existingApp && existingApp.status !== 'install_failed') {
-      await this.appRepository.updateAppById(existingApp.id, { config: parsedForm, ...parsedForm });
+      await this.appRepository.updateAppById(existingApp.id, buildInstallRowPatch(parsedForm));
+      await this.claimCustomDomainIntent(existingApp.id, parsedForm.customDomain);
       return this.startApp({ appUrn });
     }
 
@@ -826,7 +904,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
         const created = await this.appRepository.createApp({
           appName,
           status: 'installing' as const,
-          config: parsedForm,
+          config: toStoredConfig(parsedForm),
           // Port semantics:
           // - Local exposure always publishes the host port (normalized to openPort=true when needed).
           // - Cloudflare/Tailscale with exposedLocal also publish the host port for LAN access during DNS propagation.
@@ -837,6 +915,10 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
           domain: domain ?? null,
           localSubdomain: parsedForm.localSubdomain ?? null,
           publicDomain: parsedForm.publicDomain ?? null,
+          // The custom domain the installer picked, recorded as an intent. It is
+          // asked of CI-Cloud once the app registers — see `custom_domain_intent`
+          // — and never reaches this app's env until CI-Cloud reports it wired.
+          customDomainIntent: parsedForm.customDomain || null,
           openPort: openPort ?? false,
           exposedLocal: exposedLocal ?? !!appInfo.exposable,
           exposureMode: parsedForm.exposureMode ?? 'local',
@@ -845,6 +927,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
           enableAuth: parsedForm.enableAuth ?? false,
         });
         installRecord = { id: created.id, status: created.status, port: created.port, exposedLocal: created.exposedLocal };
+        await this.claimCustomDomainIntent(created.id, parsedForm.customDomain);
       } catch (createError) {
         const isUniqueViolation =
           createError instanceof Error &&
@@ -862,7 +945,8 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
         }
 
         if (raced.status !== 'install_failed') {
-          await this.appRepository.updateAppById(raced.id, { config: parsedForm, ...parsedForm });
+          await this.appRepository.updateAppById(raced.id, buildInstallRowPatch(parsedForm));
+          await this.claimCustomDomainIntent(raced.id, parsedForm.customDomain);
           return this.startApp({ appUrn });
         }
 
@@ -877,19 +961,29 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     if (existingApp || installRecord.status === 'install_failed') {
       await this.appRepository.updateAppById(installRecord.id, {
         status: 'installing',
-        config: parsedForm,
+        config: toStoredConfig(parsedForm),
         port: parsedForm.port ?? installRecord.port ?? appInfo.port,
         version: appInfo.cihub_app_version,
         exposed: exposed ?? false,
         domain: domain ?? null,
         localSubdomain: parsedForm.localSubdomain ?? null,
         publicDomain: parsedForm.publicDomain ?? null,
+        /*
+         * ⚠ ABSENT IS NOT NULL HERE EITHER — this branch rewrites a row that
+         * ALREADY EXISTS (a reinstall, or an install retried after a failure), so
+         * the same rule `updateAppConfig` applies holds: a caller that says
+         * nothing about custom domains must not unbind one the customer is being
+         * served on. The device-restore form never sends the field, and it would
+         * otherwise wipe every recorded choice on the Hub.
+         */
+        ...(parsedForm.customDomain === undefined ? {} : { customDomainIntent: parsedForm.customDomain || null }),
         openPort: openPort ?? false,
         exposedLocal: exposedLocal ?? !!appInfo.exposable,
         exposureMode: parsedForm.exposureMode ?? 'local',
         isVisibleOnGuestDashboard,
         enableAuth: parsedForm.enableAuth ?? false,
       });
+      await this.claimCustomDomainIntent(installRecord.id, parsedForm.customDomain);
     }
 
     this.sseService.emit('app', { event: 'status_change', appUrn, appStatus: 'installing' });
@@ -1672,10 +1766,30 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       parsedForm.enableAuth = storedEnableAuth ?? (manifestDefaultsEdgeAuthOn(appInfo) || undefined);
     }
 
-    const settingsChanged = this.hasConfigChanged(
-      normalizeConfigForCompare((app.config ?? {}) as Record<string, unknown>),
-      parsedForm as Record<string, unknown>,
-    );
+    // Before the comparison below, so a choice this app can never be served on
+    // does not read as a change and restart it for nothing.
+    dropUnservableCustomDomain(parsedForm, appInfo.exposable);
+
+    /*
+     * ⚠ THE CUSTOM-DOMAIN CHOICE IS COMPARED AGAINST THE ROW, NOT THE SNAPSHOT.
+     *
+     * `config` is what was last SAVED; `custom_domain_intent` is what the app
+     * currently asks for, and the Hub changes it on its own — clearing it when
+     * the organization disconnects the domain, or when another app claims it.
+     * Deciding "nothing changed" from the snapshot alone means a person who
+     * re-picks a domain the Hub had cleared submits a form identical to the
+     * stored one, gets a success toast, and has their choice dropped on the
+     * floor — every time, with no way to tell.
+     *
+     * `undefined` still says nothing: a caller that omits the field is not asking
+     * for a change and must not force a restart.
+     */
+    const customDomainChanged =
+      parsedForm.customDomain !== undefined && normalizeStoredHostname(parsedForm.customDomain) !== normalizeStoredHostname(app.customDomainIntent);
+
+    const settingsChanged =
+      this.hasConfigChanged(normalizeConfigForCompare((app.config ?? {}) as Record<string, unknown>), toStoredConfig(parsedForm)) ||
+      customDomainChanged;
     if (!settingsChanged) {
       this.logger.debug(`App ${appUrn} config update skipped — no changes detected`);
       return { requestId: crypto.randomUUID() };
@@ -1759,11 +1873,23 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       domain: parsedForm.domain ?? null,
       localSubdomain: parsedForm.localSubdomain ?? null,
       publicDomain: parsedForm.publicDomain ?? null,
-      config: parsedForm,
+      /*
+       * ⚠ ABSENT IS NOT NULL HERE. Every field beside this one is rewritten from
+       * the form on every save, because the settings dialog sends all of them.
+       * `customDomain` is sent only by a client that knows about custom domains,
+       * so treating an omitted field as "clear it" would let an older client — or
+       * any caller that patches one setting — silently unbind a domain the
+       * customer is being served on. The empty string IS a real instruction: it
+       * is what the picker sends for "use the platform address".
+       */
+      ...(parsedForm.customDomain === undefined ? {} : { customDomainIntent: parsedForm.customDomain || null }),
+      config: toStoredConfig(parsedForm),
       isVisibleOnGuestDashboard: parsedForm.isVisibleOnGuestDashboard ?? false,
       enableAuth: parsedForm.enableAuth ?? false,
       maxBackups: parsedForm.maxBackups ?? null,
     });
+
+    await this.claimCustomDomainIntent(app.id, parsedForm.customDomain);
 
     const { appName, appStoreId } = extractAppUrn(appUrn);
     const routingChanged = didPublicRoutingIdentityChange(app as AppPublicRoutingSnapshot, parsedForm, appName, appStoreId);
@@ -2117,5 +2243,38 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     }
 
     return true;
+  }
+  /**
+   * Record a custom-domain choice, and take it off any app that held it before.
+   *
+   * ⚠ A DOMAIN SERVES EXACTLY ONE APP. Two rows naming the same one turns every
+   * sync into a tug of war — whichever binds last takes it, the delivery
+   * reconcile unbinds the loser, the loser becomes a candidate again, and both
+   * apps carry a restart badge forever. The picker deliberately OFFERS a domain
+   * that is already serving something (naming the app beside it), because moving
+   * one is legitimate; this is what makes the move a move rather than a fight.
+   *
+   * Only `custom_domain_intent` moves. The app that lost the choice keeps
+   * serving on the hostname CI-Cloud actually wired until CI-Cloud says
+   * otherwise, which it does on the sync after the new binding lands.
+   *
+   * Best-effort: a failure here leaves a duplicate choice, which the bind pass
+   * then refuses to act on rather than flapping over. Failing the install for it
+   * would be worse than the state it prevents.
+   */
+  private async claimCustomDomainIntent(appId: number, customDomain: string | undefined): Promise<void> {
+    if (!customDomain) {
+      return;
+    }
+
+    try {
+      const cleared = await this.appRepository.clearCustomDomainIntentElsewhere(appId, customDomain);
+
+      for (const row of cleared) {
+        this.logger.info(`[Cloudflare] ${row.appName}:${row.appStoreSlug} no longer requests ${customDomain}; it was chosen for another app.`);
+      }
+    } catch (error) {
+      this.logger.error(`Failed to make the custom-domain choice exclusive: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
 }

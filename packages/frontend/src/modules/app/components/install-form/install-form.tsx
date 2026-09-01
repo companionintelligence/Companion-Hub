@@ -1,6 +1,6 @@
 import { fetchDnsAvailability, fetchPublicWebDiagnostics } from '@/lib/cloudflare-api';
-import type { GetRandomPortResponse } from '@/api-client';
-import { getRandomPortMutation, getDomainsOptions } from '@/api-client/@tanstack/react-query.gen';
+import type { AvailableCustomDomainsResponseDto, GetRandomPortResponse } from '@/api-client';
+import { getRandomPortMutation, getDomainsOptions, getCustomDomainsOptions } from '@/api-client/@tanstack/react-query.gen';
 import { Input } from '@/components/ui/Input';
 import { ScrollArea } from '@/components/ui/ScrollArea';
 import { Switch } from '@/components/ui/Switch';
@@ -24,6 +24,7 @@ import { isMcpOptionalOnlyInstall } from '@ci-hub/common/validation';
 import { isInstallFormValid, mergeFormFieldDefaults, validateAppConfig } from './form-validators';
 import { HIDDEN_FIELD_TYPES } from '@ci-hub/common/validation';
 import { CloudflareSubdomainField } from './cloudflare-subdomain-field';
+import { CustomDomainField } from './custom-domain-field';
 import { HostnamePreviewCard } from './hostname-preview-card';
 import { InstallFormField } from './install-form-field';
 import { useDnsAvailability } from './use-dns-availability';
@@ -54,6 +55,12 @@ export type FormValues = {
   domain?: string;
   localSubdomain?: string;
   publicDomain?: string;
+  /**
+   * A connected custom domain to serve this app on, or `''` for the platform
+   * address. Recorded as an intent and wired by CI-Cloud after the app registers
+   * — never written into the app's env directly.
+   */
+  customDomain?: string;
   isVisibleOnGuestDashboard?: boolean;
   enableAuth: boolean;
   maxBackups?: number;
@@ -62,6 +69,7 @@ export type FormValues = {
 };
 
 const EMPTY_AVAILABLE_DOMAINS: AvailableDomain[] = [];
+const EMPTY_CUSTOM_DOMAINS: AvailableCustomDomainsResponseDto['domains'] = [];
 
 function buildTailscalePortHost(nodeFqdn?: string | null, port?: number | null): string | null {
   const cleanNodeFqdn = nodeFqdn?.trim();
@@ -173,6 +181,15 @@ export const InstallForm: React.FC<IProps> = ({
 
   const { data: availableDomainsData } = useQuery(getDomainsOptions());
   const availableDomains = useMemo(() => availableDomainsData?.domains ?? EMPTY_AVAILABLE_DOMAINS, [availableDomainsData?.domains]);
+
+  /*
+   * The organization's connected custom domains. Read unconditionally rather
+   * than only for `exposureMode === 'cloudflare'`: the query is cached across
+   * the dialog's lifetime and switching modes must not make the picker appear
+   * with a request's worth of delay behind the rest of the section.
+   */
+  const { data: customDomainsData } = useQuery(getCustomDomainsOptions());
+  const customDomains = useMemo(() => customDomainsData?.domains ?? EMPTY_CUSTOM_DOMAINS, [customDomainsData?.domains]);
 
   const requiredFieldNames = formFields.filter((f) => f.required && !isHiddenFieldType(f.type)).map((f) => f.env_variable);
   const _watchedRequiredValues = watch(requiredFieldNames);
@@ -570,7 +587,32 @@ export const InstallForm: React.FC<IProps> = ({
             t={t}
           />
         ) : null}
+        {/*
+         * Directly under the subdomain that composes it, and ABOVE the custom
+         * domain picker. This card shows the PLATFORM hostname — the address the
+         * subdomain field builds — so sitting below the picker read as though it
+         * were previewing the chosen custom domain, which it never is.
+         */}
         <HostnamePreviewCard hostname={previewHostname} onCopy={copyToClipboard} title={t('COMMON_HOSTNAME')} />
+        {/*
+         * Only under Cloudflare exposure. A custom domain is delivered by cloning
+         * this app's tunnel ingress rule, so an app that publishes no public
+         * route has nothing for one to alias — offering the choice there would be
+         * offering something that cannot be honoured.
+         */}
+        {watchExposureMode === 'cloudflare' ? (
+          <CustomDomainField
+            control={control}
+            domains={customDomains}
+            supported={customDomainsData?.supported === true}
+            platformHostname={publicWebPreview?.hostname}
+            // The same value the bind sends as `appSlug`, so a domain already
+            // serving THIS app is recognised instead of warned about.
+            currentAppSlug={watchLocalSubdomain || defaultAppSubdomain}
+            loading={loading}
+            t={t}
+          />
+        ) : null}
       </>
     );
   };

@@ -26,6 +26,15 @@ const appSchema = z.object({
   publicDomain: z.string().nullable().optional(),
   /** Custom hostname CI-Cloud has wired for this app; null when it serves on the platform hostname. */
   customDomain: z.string().nullable().optional(),
+  /**
+   * The custom domain this app was set up to use — the CHOICE, not the outcome.
+   *
+   * Exposed so the settings dialog can seed its picker from the row rather than
+   * from the stored form snapshot: the Hub clears the choice when the domain
+   * stops being connected, or when it is chosen for another app, and a snapshot
+   * that still names it would silently re-claim it on the next save.
+   */
+  customDomainIntent: z.string().nullable().optional(),
   pendingRestart: z.boolean(),
   ignoredVersion: z.number().nullable(),
 });
@@ -34,6 +43,28 @@ const myAppsSchema = z.object({
   installed: z.array(
     z.object({
       app: appSchema,
+      info: appInfoSchemaRef,
+      metadata: metadataSchema,
+    }),
+  ),
+});
+
+/**
+ * The guest dashboard is served WITHOUT `AuthGuard` (`apps.controller.ts`,
+ * `GET /apps/guest`), so its payload is the set of app facts anyone on the
+ * network may read.
+ *
+ * ⚠ THE CHOICE IS NOT ONE OF THEM. `custom_domain` is a hostname CI-Cloud has
+ * already WIRED — live and publicly resolvable, so naming it discloses nothing.
+ * `custom_domain_intent` can name a domain the organization owns but has not
+ * published: parked, or still verifying, and not discoverable any other way.
+ * `reportOnly` parsing strips whatever the schema omits, so leaving it out here
+ * is what keeps it out of the response.
+ */
+const guestAppsSchema = z.object({
+  installed: z.array(
+    z.object({
+      app: appSchema.omit({ customDomainIntent: true }),
       info: appInfoSchemaRef,
       metadata: metadataSchema,
     }),
@@ -105,7 +136,7 @@ const updatesAvailableSchema = z.object({
 });
 
 export class MyAppsDto extends createZodDto(myAppsSchema) {}
-export class GuestAppsDto extends createZodDto(myAppsSchema) {}
+export class GuestAppsDto extends createZodDto(guestAppsSchema) {}
 export class InstalledAppUrnsDto extends createZodDto(installedAppUrnsSchema) {}
 export class UpdatesAvailableDto extends createZodDto(updatesAvailableSchema) {}
 export class GetAppDto extends createZodDto(getAppSchema) {}

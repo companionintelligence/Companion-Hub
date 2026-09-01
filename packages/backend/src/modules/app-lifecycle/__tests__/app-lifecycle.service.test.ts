@@ -1203,6 +1203,237 @@ describe('AppLifecycleService', () => {
     });
   });
 
+  describe('custom domain install-time intents', () => {
+    const REGISTRATION = {
+      id: 'org-1',
+      slug: 'acme',
+      hubSubdomain: 'core2-acme',
+      tunnelId: 'tunnel-123',
+      tunnelToken: 'token',
+    };
+
+    const CONFIG = {
+      userSettings: { domain: 'companionintelligence.com', localDomain: 'ci.lan' },
+      localDomain: 'ci.lan',
+      domain: 'companionintelligence.com',
+    };
+
+    const TARGET = 'comfyui-core2-acme.companionintelligence.com';
+
+    const wantsComfy = (overrides: Record<string, unknown> = {}) => ({
+      id: 7,
+      appName: 'comfyui',
+      appStoreSlug: 'ci-marketplace',
+      localSubdomain: 'comfyui',
+      exposedLocal: true,
+      exposureMode: 'cloudflare',
+      openPort: false,
+      status: 'running',
+      port: 80,
+      customDomain: null,
+      customDomainIntent: 'comfy.acme.com',
+      ...overrides,
+    });
+
+    /** A connected, verified, unbound domain — what a parked row looks like. */
+    const parked = (overrides: Record<string, unknown> = {}) => ({
+      id: 'cd_1',
+      domain: 'comfy.acme.com',
+      state: 'parked' as const,
+      bindable: true,
+      targetHostname: null,
+      boundAppSlug: null,
+      boundElsewhere: false,
+      ...overrides,
+    });
+
+    beforeEach(() => {
+      registrationService.getDeviceRegistrationInfo.mockResolvedValue(REGISTRATION as any);
+      configService.getConfig.mockReturnValue(CONFIG as any);
+      cloudflareClientService.syncState.mockResolvedValue({ ok: true, failed: [], failures: [], synced: 1, customDomains: [] });
+      cloudflareClientService.bindCustomDomain.mockResolvedValue({ ok: true } as any);
+    });
+
+    it('asks CI-Cloud to wire the chosen domain once the app has been registered', async () => {
+      appsRepository.getApps.mockResolvedValue([wantsComfy()] as any);
+      cloudflareClientService.fetchOrganizationCustomDomains.mockResolvedValue([parked()] as any);
+
+      await service.triggerCloudflareSync();
+
+      // The domain's id and the app's SUBDOMAIN — never a hostname. CI-Cloud
+      // composes the target from rows it owns; a Hub that named one would be
+      // asserting something it cannot know. The organization is named too: a
+      // device can be registered to more than one, and CI-Cloud refuses to guess.
+      expect(cloudflareClientService.bindCustomDomain).toHaveBeenCalledWith('cd_1', 'comfyui', 'org-1');
+      expect(cloudflareClientService.fetchOrganizationCustomDomains).toHaveBeenCalledWith('org-1');
+    });
+
+    it('never writes the binding itself — only a delivered sync may do that', async () => {
+      /*
+       * ⚠ THE SAFETY PROPERTY OF THE WHOLE FEATURE. A successful bind means
+       * CI-Cloud moved the alias; whether the tunnel answers for it is reported
+       * by the NEXT sync. Writing `custom_domain` here would have the app emit
+       * APP_PUBLIC_URL — and sign OAuth redirects — for a name that may not
+       * resolve to this tunnel at all.
+       */
+      appsRepository.getApps.mockResolvedValue([wantsComfy()] as any);
+      cloudflareClientService.fetchOrganizationCustomDomains.mockResolvedValue([parked()] as any);
+
+      await service.triggerCloudflareSync();
+
+      expect(appsRepository.updateAppById).not.toHaveBeenCalled();
+    });
+
+    it('costs nothing once the choice has been delivered', async () => {
+      appsRepository.getApps.mockResolvedValue([wantsComfy({ customDomain: 'comfy.acme.com' })] as any);
+      cloudflareClientService.syncState.mockResolvedValue({
+        ok: true,
+        failed: [],
+        failures: [],
+        synced: 1,
+        customDomains: [{ id: 'cd_1', domain: 'comfy.acme.com', targetHostname: TARGET }],
+      });
+
+      await service.triggerCloudflareSync();
+
+      // Not even the listing: this is the steady state for the life of the app,
+      // on every heartbeat.
+      expect(cloudflareClientService.fetchOrganizationCustomDomains).not.toHaveBeenCalled();
+      expect(cloudflareClientService.bindCustomDomain).not.toHaveBeenCalled();
+    });
+
+    it('does not ask again while CI-Cloud already points the domain here', async () => {
+      // Bound but not yet reported delivered — the ingress clone lands on the
+      // next sync. Asking again spends a Cloudflare call per heartbeat.
+      appsRepository.getApps.mockResolvedValue([wantsComfy()] as any);
+      cloudflareClientService.fetchOrganizationCustomDomains.mockResolvedValue([parked({ state: 'live', targetHostname: TARGET })] as any);
+
+      await service.triggerCloudflareSync();
+
+      expect(cloudflareClientService.bindCustomDomain).not.toHaveBeenCalled();
+    });
+
+    it('waits, without complaining, while the domain is still verifying', async () => {
+      appsRepository.getApps.mockResolvedValue([wantsComfy()] as any);
+      cloudflareClientService.fetchOrganizationCustomDomains.mockResolvedValue([parked({ state: 'pending', bindable: false })] as any);
+
+      await service.triggerCloudflareSync();
+
+      expect(cloudflareClientService.bindCustomDomain).not.toHaveBeenCalled();
+      // The choice survives: verification is a person finishing a DNS change in
+      // their own zone, and it becomes bindable without anyone touching the Hub.
+      expect(appsRepository.updateAppById).not.toHaveBeenCalled();
+    });
+
+    it('keeps the choice when CI-Cloud could not be asked at all', async () => {
+      // An older CI-Cloud, an unreachable one, or a payload that would not parse.
+      // Clearing here would throw away a person's choice because a request failed.
+      appsRepository.getApps.mockResolvedValue([wantsComfy()] as any);
+      cloudflareClientService.fetchOrganizationCustomDomains.mockResolvedValue(undefined as any);
+
+      await service.triggerCloudflareSync();
+
+      expect(cloudflareClientService.bindCustomDomain).not.toHaveBeenCalled();
+      expect(appsRepository.updateAppById).not.toHaveBeenCalled();
+    });
+
+    it('clears a choice naming a domain the organization no longer holds', async () => {
+      // The listing IS the org's full set, so absence is a fact rather than a
+      // gap — and a choice that can only fail forever is worse than none.
+      appsRepository.getApps.mockResolvedValue([wantsComfy()] as any);
+      cloudflareClientService.fetchOrganizationCustomDomains.mockResolvedValue([parked({ domain: 'other.acme.com' })] as any);
+
+      await service.triggerCloudflareSync();
+
+      expect(appsRepository.updateAppById).toHaveBeenCalledWith(7, { customDomainIntent: null });
+      expect(cloudflareClientService.bindCustomDomain).not.toHaveBeenCalled();
+    });
+
+    it('clears the choice when CI-Cloud refuses the domain as unknown', async () => {
+      appsRepository.getApps.mockResolvedValue([wantsComfy()] as any);
+      cloudflareClientService.fetchOrganizationCustomDomains.mockResolvedValue([parked()] as any);
+      cloudflareClientService.bindCustomDomain.mockResolvedValue({
+        ok: false,
+        status: 404,
+        code: 'DOMAIN_NOT_FOUND',
+        message: 'Domain not found',
+      } as any);
+
+      await service.triggerCloudflareSync();
+
+      expect(appsRepository.updateAppById).toHaveBeenCalledWith(7, { customDomainIntent: null });
+    });
+
+    it('retries a refusal that can clear itself rather than discarding the choice', async () => {
+      // The app's first sync can land after this pass, so CI-Cloud legitimately
+      // does not know it yet. Next heartbeat it will.
+      appsRepository.getApps.mockResolvedValue([wantsComfy()] as any);
+      cloudflareClientService.fetchOrganizationCustomDomains.mockResolvedValue([parked()] as any);
+      cloudflareClientService.bindCustomDomain.mockResolvedValue({
+        ok: false,
+        status: 404,
+        code: 'APPLICATION_NOT_FOUND',
+        message: 'That application is not installed on this device yet',
+      } as any);
+
+      await service.triggerCloudflareSync();
+
+      expect(appsRepository.updateAppById).not.toHaveBeenCalled();
+    });
+
+    it('never lets two apps chase the same domain', async () => {
+      /*
+       * ⚠ THE FLAP THIS RULE EXISTS TO PREVENT.
+       *
+       * A domain can serve exactly one app. Two apps both naming it as their
+       * choice makes every sync a tug of war: whichever binds last takes it, the
+       * delivery reconcile unbinds the loser, the loser becomes a candidate
+       * again, and both apps are asked to restart — forever, on every heartbeat.
+       *
+       * The invariant is enforced where the choice is WRITTEN, so this can only
+       * be reached by rows that predate it or a hand-edited database. The pass
+       * still refuses to act on both, because a flap is worse than a stale row.
+       */
+      appsRepository.getApps.mockResolvedValue([wantsComfy(), wantsComfy({ id: 8, appName: 'comfyui-alt', localSubdomain: 'comfyui-alt' })] as any);
+      cloudflareClientService.fetchOrganizationCustomDomains.mockResolvedValue([parked()] as any);
+
+      await service.triggerCloudflareSync();
+
+      expect(cloudflareClientService.bindCustomDomain).toHaveBeenCalledTimes(1);
+      // Deterministic, not arbitrary: the same app wins every pass, so the
+      // binding settles instead of oscillating between them.
+      expect(cloudflareClientService.bindCustomDomain).toHaveBeenCalledWith('cd_1', 'comfyui', 'org-1');
+    });
+
+    it('does not ask for an app CI-Cloud was never told about', async () => {
+      // Stopped, so it is not in this sync's payload — CI-Cloud cannot wire a
+      // domain to an app it was not asked about, and the choice waits.
+      appsRepository.getApps.mockResolvedValue([wantsComfy({ status: 'stopped' })] as any);
+
+      await service.triggerCloudflareSync();
+
+      expect(cloudflareClientService.fetchOrganizationCustomDomains).not.toHaveBeenCalled();
+      expect(appsRepository.updateAppById).not.toHaveBeenCalled();
+    });
+
+    it('does not ask for an app that emits no public identity', async () => {
+      appsRepository.getApps.mockResolvedValue([wantsComfy({ openPort: true })] as any);
+
+      await service.triggerCloudflareSync();
+
+      expect(cloudflareClientService.fetchOrganizationCustomDomains).not.toHaveBeenCalled();
+    });
+
+    it('does nothing at all when the sync itself failed', async () => {
+      appsRepository.getApps.mockResolvedValue([wantsComfy()] as any);
+      cloudflareClientService.syncState.mockResolvedValue({ ok: false, failed: [], failures: [], synced: 0 } as any);
+
+      await service.triggerCloudflareSync();
+
+      expect(cloudflareClientService.fetchOrganizationCustomDomains).not.toHaveBeenCalled();
+    });
+  });
+
   describe('triggerCloudflareSync during device restore', () => {
     it('skips sync while restore intent is active and rehydration is incomplete', async () => {
       vi.spyOn(registrationRecoveryState, 'hasRestoreIntent').mockResolvedValue(true);
@@ -1247,6 +1478,130 @@ describe('AppLifecycleService', () => {
       appsRepository.updateAppById.mockImplementation(async (_id, patch) => ({ id: 1, ...patch }) as any);
       registrationService.getDeviceRegistrationInfo.mockResolvedValue(null as any);
       appsRepository.getApps.mockResolvedValue([]);
+    });
+
+    it('takes a custom-domain choice off whatever app held it before', async () => {
+      /*
+       * ⚠ THE INVARIANT, ENFORCED WHERE THE CHOICE IS MADE. A domain serves one
+       * app. The picker deliberately offers one that is already serving something
+       * — naming that app beside it — because moving a domain is legitimate; this
+       * is what makes it a move rather than two apps fighting over it on every
+       * sync, each demanding a restart.
+       */
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 1, status: 'stopped', config: { port: 8080 } } as any);
+
+      // Publicly routed, which is the only shape the picker is ever offered for:
+      // a domain is delivered by cloning this app's tunnel ingress rule, so an app
+      // that publishes none has nothing for one to alias.
+      await service.updateAppConfig({
+        appUrn,
+        form: { port: 8080, exposureMode: 'cloudflare', exposedLocal: true, openPort: false, customDomain: 'comfy.acme.com' },
+      });
+
+      expect(appsRepository.updateAppById).toHaveBeenCalledWith(1, expect.objectContaining({ customDomainIntent: 'comfy.acme.com' }));
+      expect(appsRepository.clearCustomDomainIntentElsewhere).toHaveBeenCalledWith(1, 'comfy.acme.com');
+    });
+
+    it('ignores a choice on an app that could never be served on it', async () => {
+      /*
+       * ⚠ AN UNMOUNTED PICKER STILL SUBMITS ITS VALUE. The field only renders under
+       * Cloudflare exposure, but react-hook-form keeps an unmounted field's value —
+       * so switching an app to Local after picking a domain sends the choice anyway.
+       * Acting on it would take that domain off the app actually serving on it and
+       * park it on one the bind pass skips forever.
+       */
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 1, status: 'stopped', config: { port: 8080 } } as any);
+
+      await service.updateAppConfig({
+        appUrn,
+        form: { port: 8080, exposureMode: 'local', exposedLocal: false, openPort: true, customDomain: 'comfy.acme.com' },
+      });
+
+      const patch = appsRepository.updateAppById.mock.calls.at(-1)?.[1] ?? {};
+
+      expect(patch).not.toHaveProperty('customDomainIntent');
+      expect(appsRepository.clearCustomDomainIntentElsewhere).not.toHaveBeenCalled();
+    });
+
+    it('clears the choice when the platform address is chosen, and claims nothing', async () => {
+      // An app that HOLDS a choice, so clearing it is a real change: the row is
+      // what the save is compared against, not the stored form snapshot.
+      appsRepository.getAppByUrn.mockResolvedValue({
+        id: 1,
+        status: 'stopped',
+        config: { port: 8080 },
+        customDomainIntent: 'comfy.acme.com',
+      } as any);
+
+      // The platform address is honourable for ANY app, so this one needs no
+      // public route to ask for it — unlike naming a domain.
+      await service.updateAppConfig({ appUrn, form: { port: 8080, customDomain: '' } });
+
+      expect(appsRepository.updateAppById).toHaveBeenCalledWith(1, expect.objectContaining({ customDomainIntent: null }));
+      expect(appsRepository.clearCustomDomainIntentElsewhere).not.toHaveBeenCalled();
+    });
+
+    it('re-records a choice the Hub cleared, even though the saved snapshot still names it', async () => {
+      /*
+       * ⚠ THE CHOICE IS COMPARED AGAINST THE ROW, NOT THE SNAPSHOT. The Hub clears
+       * `custom_domain_intent` on its own — when the organization disconnects the
+       * domain, or when another app claims it — so a person re-picking it submits a
+       * form identical to the one last saved. Compared against the snapshot alone
+       * that reads as "no changes detected", and the choice is dropped on the floor
+       * behind a success toast, every time and with no way to tell.
+       */
+      appsRepository.getAppByUrn.mockResolvedValue({
+        id: 1,
+        status: 'stopped',
+        config: { port: 8080, exposureMode: 'cloudflare', exposedLocal: true, openPort: false },
+        customDomainIntent: null,
+      } as any);
+
+      await service.updateAppConfig({
+        appUrn,
+        form: { port: 8080, exposureMode: 'cloudflare', exposedLocal: true, openPort: false, customDomain: 'comfy.acme.com' },
+      });
+
+      expect(appsRepository.updateAppById).toHaveBeenCalledWith(1, expect.objectContaining({ customDomainIntent: 'comfy.acme.com' }));
+    });
+
+    it('does not store the choice in the config snapshot, so a version bump cannot resurrect it', async () => {
+      /*
+       * `updateApp` replays `app.config` verbatim through this method. A copy of
+       * the choice there would rewrite an intent the Hub had deliberately given up
+       * — and `claimCustomDomainIntent` would strip the domain off whichever app
+       * legitimately holds it now, on an unrelated version bump.
+       */
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 1, status: 'stopped', config: { port: 8080 } } as any);
+
+      await service.updateAppConfig({
+        appUrn,
+        form: { port: 8080, exposureMode: 'cloudflare', exposedLocal: true, openPort: false, customDomain: 'comfy.acme.com' },
+      });
+
+      const patch = appsRepository.updateAppById.mock.calls
+        .map((call) => call[1] as { config?: Record<string, unknown> })
+        .find((candidate) => candidate?.config !== undefined);
+
+      expect(patch?.config).not.toHaveProperty('customDomain');
+      expect(patch).toHaveProperty('customDomainIntent', 'comfy.acme.com');
+    });
+
+    it('leaves an existing choice alone when the form says nothing about it', async () => {
+      /*
+       * ⚠ ABSENT IS NOT "CLEAR IT". Every other field here is rewritten from the
+       * form on every save because the dialog sends them all; `customDomain` is
+       * sent only by a client that knows about custom domains, so an omitted
+       * field must not unbind a domain the customer is being served on.
+       */
+      appsRepository.getAppByUrn.mockResolvedValue({ id: 1, status: 'stopped', config: { port: 8080 } } as any);
+
+      await service.updateAppConfig({ appUrn, form: { port: 8080 } });
+
+      const patch = appsRepository.updateAppById.mock.calls.at(-1)?.[1] ?? {};
+
+      expect(patch).not.toHaveProperty('customDomainIntent');
+      expect(appsRepository.clearCustomDomainIntentElsewhere).not.toHaveBeenCalled();
     });
 
     it('applies the manifest edge-auth default when the stored config never decided it (version-bump self-heal, #74)', async () => {

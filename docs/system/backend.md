@@ -126,6 +126,31 @@ only CI-Cloud knows whether a hostname really routes here.
 ⚠ `SSEService.emit('app', data, appUrn)` publishes to topic `app:<urn>`, which **nothing
 subscribes to** — the frontend opens `/api/sse/app` only. Always omit the third argument.
 
+### Choosing one at install time
+
+The install dialog offers the organization's connected domains (`GET /api/cloudflare/custom-domains`
+→ CI-Cloud's `GET /api/custom-domains/device`). Picking one records an **intent**, not a binding.
+
+- `app.custom_domain_intent` is the CHOICE; `app.custom_domain` is the OUTCOME. Only the second is
+  ever read by env generation. The Hub cannot tell whether a hostname resolves to its own tunnel, so
+  an app is never told about one on the strength of a form field.
+- The two cannot happen at the same moment: CI-Cloud derives a domain's target from an `application`
+  row, and at install time it has never heard of this app. So `bindCustomDomainIntents` runs after
+  each successful sync — the sync is what registers the app — and asks CI-Cloud to wire it.
+- End to end: pick → sync registers the app → bind → the **next** sync reports the hostname in
+  `customDomains` → `reconcileCustomDomains` writes `app.custom_domain` + `pendingRestart` → the
+  user's restart regenerates the env. Every step is one CI-Cloud confirmed.
+- The bind names the domain id and the app's **subdomain** (the same string the tunnel-state payload
+  carries), never a hostname: CI-Cloud composes the target from rows it owns, which is what stops a
+  device pointing a domain into another organization's tunnel.
+- An intent that equals the delivered binding costs nothing — no listing, no bind — which is the
+  steady state for the life of the app. A refusal that can clear itself (app not registered yet,
+  domain still verifying) keeps the intent and retries; only "that domain is not this
+  organization's" clears it.
+- A listing that could not be READ (older CI-Cloud, unreachable, unparseable) keeps every intent.
+  `supported: false` on the Hub's own endpoint means "could not ask", which the dialog must not
+  render as "you have none".
+
 ## Inference cloud providers
 
 Settings → AI saves OpenAI / Anthropic / Google / GitHub Copilot keys to `settings.json`

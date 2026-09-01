@@ -4,8 +4,9 @@ import { ModuleRef } from '@nestjs/core';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { DockerReadFacade } from '../docker/docker-read.facade';
 import { DockerService } from '../docker/docker.service';
-import type { AvailableDomain, AvailableDomainsResponse, TunnelCustomDomain } from '@ci-hub/common/types';
-import { parseTunnelCustomDomains } from '@ci-hub/common/types';
+import { DeviceRegistrationRepository } from '../registration/device-registration.repository';
+import type { AvailableCustomDomain, AvailableDomain, AvailableDomainsResponse, TunnelCustomDomain } from '@ci-hub/common/types';
+import { parseAvailableCustomDomains, parseTunnelCustomDomains } from '@ci-hub/common/types';
 import axios, { AxiosInstance, type AxiosResponse } from 'axios';
 import * as fs from 'node:fs/promises';
 import * as fsSync from 'node:fs';
@@ -413,6 +414,125 @@ export class CloudflareClientService {
         this.logger.error(`Failed to fetch Portal device applications: ${String(error)}`);
       }
       return [];
+    }
+  }
+
+  /**
+   * The custom domains this organization has CONNECTED, with the bind state of
+   * each — the catalogue an install dialog offers.
+   *
+   * ⚠ NOT WHAT AN APP MAY BE TOLD TO EMIT. A row here is a domain that exists;
+   * only `customDomains` on the tunnel-state response is a domain that SERVES,
+   * and that is still the only source `app.custom_domain` is written from. The
+   * distinction is the whole safety property: a Hub cannot tell whether a
+   * hostname resolves to its own tunnel, so it must never build a public URL
+   * from one CI-Cloud has not confirmed.
+   *
+   * `undefined` means the question could not be ASKED — an older CI-Cloud with
+   * no such route (404), an unreachable one, or a payload whose shape drifted.
+   * Deliberately not `[]`: "the organization owns none" is a sentence a dialog
+   * can say, and saying it because a request failed is exactly the silence this
+   * feature exists to end.
+   */
+  async fetchOrganizationCustomDomains(organizationId?: string): Promise<AvailableCustomDomain[] | undefined> {
+    try {
+      const { status, data } = await this.portalClient.fetchDeviceCustomDomains(organizationId ?? (await this.resolveOrganizationId()));
+
+      if (status === 404) {
+        // A CI-Cloud predating custom domains has no such route. A supported
+        // deployment, not a fault — reported the same way an unreachable one is:
+        // nothing offerable.
+        this.logger.debug('[Cloudflare] This CI-Cloud does not serve the device custom-domain listing');
+
+        return undefined;
+      }
+
+      if (status < 200 || status >= 300) {
+        this.logger.warn(`[Cloudflare] Could not list custom domains: CI-Cloud answered ${status}`);
+
+        return undefined;
+      }
+
+      const domains = parseAvailableCustomDomains(data?.domains);
+
+      if (!domains) {
+        this.logger.warn('[Cloudflare] CI-Cloud answered the custom-domain listing with a payload that could not be read');
+
+        return undefined;
+      }
+
+      this.logger.debug(`Fetched ${domains.length} custom domain(s) from CI-Cloud`);
+
+      return domains;
+    } catch (error) {
+      this.logger.warn(`[Cloudflare] Could not list custom domains: ${error instanceof Error ? error.message : String(error)}`);
+
+      return undefined;
+    }
+  }
+
+  /**
+   * The organization this Hub syncs as, for a caller that has no reason to know
+   * one — the install dialog's endpoint.
+   *
+   * ⚠ NOT COSMETIC. CI-Cloud refuses to guess rather than answering with an
+   * arbitrary tenant's domains when a device is registered to more than one
+   * organization, which a half-completed cross-org move leaves behind. Asking
+   * without the id there gets a refusal, which this service reports as "could not
+   * be asked" and the dialog renders as no picker at all — on exactly the device
+   * state the disambiguation was added for, while the background bind pass, which
+   * does send the id, works fine. Resolved the same way the sync resolves it:
+   * the configured organization first, else the single registration this Hub has.
+   */
+  private async resolveOrganizationId(): Promise<string | undefined> {
+    try {
+      const registrations = this.moduleRef.get(DeviceRegistrationRepository, { strict: false });
+      const configured = this.configService.getConfig().ciHubOrganizationId;
+      const row = configured ? await registrations.getDeviceRegistrationById(configured) : null;
+
+      return (row ?? (await registrations.getFirstDeviceRegistration()))?.id;
+    } catch {
+      // An unregistered Hub has nothing to name, and CI-Cloud will answer the
+      // un-disambiguated question for a single-tenant device anyway.
+      return undefined;
+    }
+  }
+
+  /**
+   * Ask CI-Cloud to point one of those domains at an app on this device.
+   *
+   * ⚠ THIS CHANGES NOTHING LOCALLY, AND THAT IS THE DESIGN. A successful bind
+   * means CI-Cloud has moved the alias; the app learns about it only when a
+   * later sync reports the hostname in `customDomains`, which is what writes
+   * `app.custom_domain` and raises the restart. Nothing here may shortcut that
+   * — a Hub that wrote the binding on its own say-so would emit a public URL for
+   * a name the edge might have refused.
+   *
+   * Reports WHY it failed rather than a boolean: the caller keeps the intent and
+   * retries on the next sync for a refusal that can clear itself (the app is not
+   * registered yet, the domain is still verifying), and clears it for one that
+   * cannot (the domain is gone).
+   */
+  async bindCustomDomain(
+    domainId: string,
+    appSlug: string,
+    organizationId?: string,
+  ): Promise<{ ok: true; targetHostname?: string } | { ok: false; status?: number; code?: string; message: string }> {
+    try {
+      const { status, data } = await this.portalClient.postDeviceCustomDomainBind({ domainId, appSlug, organizationId });
+
+      if (status >= 200 && status < 300) {
+        return { ok: true, targetHostname: typeof data?.targetHostname === 'string' ? data.targetHostname : undefined };
+      }
+
+      return {
+        ok: false,
+        status,
+        code: typeof data?.code === 'string' ? data.code : undefined,
+        message: typeof data?.error === 'string' ? data.error : `CI-Cloud answered ${status}`,
+      };
+    } catch (error) {
+      return { ok: false, message: error instanceof Error ? error.message : String(error) };
     }
   }
 

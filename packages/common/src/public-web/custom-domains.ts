@@ -268,3 +268,162 @@ export function selectCustomDomain(delivered: readonly string[] | undefined, cur
 
   return delivered[0] ?? null;
 }
+
+/**
+ * ═══════════════════════════════════════════════════════════════════════════
+ * THE DOMAINS AN INSTALL DIALOG MAY OFFER
+ * ═══════════════════════════════════════════════════════════════════════════
+ *
+ * Everything above is about domains CI-Cloud has ALREADY WIRED — what the tunnel
+ * answers for today. This is the other direction: what the organization owns and
+ * could be asked to wire, read from `GET /api/custom-domains/device` so a person
+ * installing an app can pick one.
+ *
+ * The two must not be confused. A row here is a domain that EXISTS; only a
+ * {@link TunnelCustomDomain} is a domain that SERVES. Nothing in this shape may
+ * ever reach `APP_PUBLIC_URL` — an app told to emit a hostname CI-Cloud has not
+ * wired would sign OAuth redirects for an address that resolves nowhere. The
+ * binding an app actually serves on still comes from the tunnel sync, and only
+ * from there.
+ */
+export interface AvailableCustomDomain {
+  /** CI-Cloud's row id — the handle a bind request names. Required here. */
+  id: string;
+  /** The customer-owned hostname (e.g. `comfy.acme.com`). */
+  domain: string;
+  /**
+   * What the domain is, as CI-Cloud sees it.
+   *
+   * `live` — verified and pointing at something. `parked` — verified and
+   * pointing at nothing, the state connect-first/bind-later leaves behind.
+   * `pending` — connected but not proved yet, so not routable. `securing` —
+   * proved, but its certificate is still issuing (Cloudflare gates ownership and
+   * TLS independently, so this is a real and common state). `drifted` — the
+   * records the customer's zone held have changed since, and the monitor noticed.
+   *
+   * ⚠ A LABEL, NOT A GATE. `bindable` is the only field that decides whether a
+   * domain may be chosen — `securing` and `drifted` are both bindable, because a
+   * certificate finishes on its own and drift is a fact about someone else's DNS
+   * rather than about our permission to point the row somewhere.
+   *
+   * `unknown` is this Hub meeting a CI-Cloud newer than itself. See
+   * {@link parseAvailableCustomDomains} for why that must not hide the domain.
+   */
+  state: 'live' | 'parked' | 'pending' | 'securing' | 'drifted' | 'unknown';
+  /** Whether CI-Cloud would accept a bind for it now. */
+  bindable: boolean;
+  /** The platform hostname it currently aliases, if any. */
+  targetHostname: string | null;
+  /** The app on THIS device it is bound to, when CI-Cloud could name one. */
+  boundAppSlug: string | null;
+  /** Bound to an app this Hub does not hold — another Hub in the org. */
+  boundElsewhere: boolean;
+}
+
+const DOMAIN_STATES = new Set(['live', 'parked', 'pending', 'securing', 'drifted']);
+
+/**
+ * Validate the `domains` field of the device custom-domain listing.
+ *
+ * Elements are validated individually and junk is DROPPED, the same wire-boundary
+ * discipline {@link parseTunnelCustomDomains} applies — this is the same pair of
+ * independently deployed services, and one malformed row must not cost the
+ * person the whole picker.
+ *
+ * `undefined` for a payload that could not be read AT ALL — an older CI-Cloud
+ * with no such route, a shape that drifted — because "we could not ask" and "the
+ * organization owns none" call for different sentences in the dialog. Offering
+ * an empty picker for a failed read is how Gap 3 looked in the first place: the
+ * Hub silently behaving as though the customer's domains did not exist.
+ */
+export function parseAvailableCustomDomains(value: unknown): AvailableCustomDomain[] | undefined {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+
+  const domains: AvailableCustomDomain[] = [];
+  let dropped = 0;
+
+  for (const candidate of value) {
+    if (typeof candidate !== 'object' || candidate === null) {
+      dropped += 1;
+      continue;
+    }
+
+    const source = candidate as Record<string, unknown>;
+    const id = readString(source, 'id');
+    const domain = readString(source, 'domain');
+    const state = readString(source, 'state');
+
+    if (!id || !domain || !state) {
+      dropped += 1;
+      continue;
+    }
+
+    const normalizedDomain = normalizeHostname(domain);
+
+    if (!isHostname(normalizedDomain)) {
+      dropped += 1;
+      continue;
+    }
+
+    const rawTarget = readString(source, 'targetHostname');
+    /*
+     * Shape-checked like the domain itself, for the reason
+     * {@link parseTunnelCustomDomains} checks it: this value is compared against a
+     * hostname the Hub composes, and a string that is not a hostname can never
+     * equal one — so keeping it would make the "CI-Cloud already points it here"
+     * check miss forever and re-issue a bind on every sync. Nulled rather than
+     * dropped, because dropping the row would send the choice into the "the
+     * organization no longer holds this domain" branch and clear it.
+     */
+    const normalizedTarget = rawTarget ? normalizeHostname(rawTarget) : null;
+    const targetHostname = normalizedTarget && isHostname(normalizedTarget) ? normalizedTarget : null;
+
+    domains.push({
+      id,
+      domain: normalizedDomain,
+      /*
+       * ⚠ AN UNRECOGNISED STATE MUST NOT HIDE THE DOMAIN.
+       *
+       * CI-Cloud added `securing` and `drifted` after this Hub's first release,
+       * and dropping every row whose state this build had not heard of made
+       * exactly the failure the picker exists to end: a connected, BINDABLE
+       * domain silently absent, reading as "the Hub cannot see my domain". A
+       * Hub is older than the Portal it talks to for most of its life, so this
+       * is the ordinary case, not an edge one.
+       *
+       * The state is a label; `bindable` is the gate. So an unknown one keeps
+       * the row, keeps whatever CI-Cloud said about bindability, and simply has
+       * nothing to add in the dialog.
+       */
+      state: DOMAIN_STATES.has(state) ? (state as AvailableCustomDomain['state']) : 'unknown',
+      /*
+       * ⚠ DEFAULTS TO FALSE, NOT TRUE. An absent or non-boolean `bindable` means
+       * an answer we did not get, and offering a domain the server would refuse
+       * spends a person's attention on a choice that cannot be honoured. The
+       * dialog can always say "manage it in the portal".
+       */
+      bindable: source.bindable === true,
+      targetHostname,
+      boundAppSlug: readString(source, 'boundAppSlug'),
+      boundElsewhere: source.boundElsewhere === true,
+    });
+  }
+
+  /*
+   * ⚠ EVERYTHING CI-CLOUD SENT WAS JUNK — WHICH IS NOT "THE ORGANIZATION OWNS
+   * NONE". The same guard {@link parseTunnelCustomDomains} applies, and here it
+   * is destructive rather than merely misleading: the bind pass reads a listing
+   * it could read as the organization's FULL set, and clears every intent naming
+   * a domain absent from it. A payload whose shape drifted — a fourth `state`, an
+   * `id` that arrives as a number, as CI-Cloud's sibling domain endpoint already
+   * sends — would otherwise wipe every custom-domain choice on the Hub in one
+   * pass. Understanding nothing means changing nothing.
+   */
+  if (domains.length === 0 && dropped > 0) {
+    return undefined;
+  }
+
+  return domains;
+}

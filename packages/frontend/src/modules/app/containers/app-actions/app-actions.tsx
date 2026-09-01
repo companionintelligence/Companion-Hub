@@ -1001,7 +1001,25 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
         isOpen={updateSettingsDisclosure.isOpen}
         onClose={updateSettingsDisclosure.close}
         info={info}
-        config={app?.config ?? {}}
+        config={{
+          ...(app?.config ?? {}),
+          /*
+           * ⚠ THE ROW WINS FOR THIS ONE FIELD. `config` is the form snapshot as
+           * it was last saved; `customDomainIntent` is the live choice, which the
+           * Hub clears on its own when the domain stops being connected or is
+           * picked for another app. Seeding from the snapshot would re-submit a
+           * choice that has since been dropped — taking the domain off whatever
+           * app holds it now, on a save the person thought changed nothing else.
+           *
+           * Falling back to the DELIVERED binding, because an app can be served on
+           * a domain it never asked for here — one an operator bound in the portal,
+           * or one whose intent the Hub has since cleared while CI-Cloud keeps
+           * serving it. Showing "use the platform address" for an app the browser
+           * reaches at `comfy.acme.com` is a flat lie about where it lives, and the
+           * save that follows sends `''` — the explicit instruction to give it up.
+           */
+          ...(app ? { customDomain: app.customDomainIntent ?? app.customDomain ?? '' } : {}),
+        }}
         status={app?.status}
       />
       <div className={clsx('space-y-1', layout === 'default' && 'mt-1')}>

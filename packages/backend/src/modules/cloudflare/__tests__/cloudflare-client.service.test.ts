@@ -415,6 +415,115 @@ describe('CloudflareClientService', () => {
     });
   });
 
+  describe('fetchOrganizationCustomDomains', () => {
+    const listing = (overrides: Record<string, unknown> = {}) => ({
+      id: 'cd_1',
+      domain: 'comfy.acme.com',
+      state: 'parked',
+      bindable: true,
+      targetHostname: null,
+      boundAppSlug: null,
+      boundElsewhere: false,
+      ...overrides,
+    });
+
+    it('returns the organization listing', async () => {
+      portalClient.fetchDeviceCustomDomains.mockResolvedValue({ status: 200, data: { domains: [listing()] } });
+
+      await expect(service.fetchOrganizationCustomDomains()).resolves.toEqual([
+        expect.objectContaining({ id: 'cd_1', domain: 'comfy.acme.com', bindable: true }),
+      ]);
+    });
+
+    it('reports a CI-Cloud without the route as unanswered, not as none', async () => {
+      /*
+       * ⚠ NOT `[]`. A Hub talking to an older Portal is a supported deployment,
+       * and the install dialog owes it a different sentence than an organization
+       * that genuinely owns no domains — offering "you have none, add one" for a
+       * question that was never answered is the failure this feature fixes.
+       */
+      portalClient.fetchDeviceCustomDomains.mockResolvedValue({ status: 404, data: {} });
+
+      await expect(service.fetchOrganizationCustomDomains()).resolves.toBeUndefined();
+    });
+
+    it('reports an error status as unanswered', async () => {
+      portalClient.fetchDeviceCustomDomains.mockResolvedValue({ status: 503, data: {} });
+
+      await expect(service.fetchOrganizationCustomDomains()).resolves.toBeUndefined();
+    });
+
+    it('reports an unreadable payload as unanswered', async () => {
+      portalClient.fetchDeviceCustomDomains.mockResolvedValue({ status: 200, data: { domains: 'nope' } });
+
+      await expect(service.fetchOrganizationCustomDomains()).resolves.toBeUndefined();
+    });
+
+    it('survives a transport failure', async () => {
+      portalClient.fetchDeviceCustomDomains.mockRejectedValue(new Error('socket hang up'));
+
+      await expect(service.fetchOrganizationCustomDomains()).resolves.toBeUndefined();
+    });
+
+    it('drops a malformed entry without losing the rest', async () => {
+      portalClient.fetchDeviceCustomDomains.mockResolvedValue({
+        status: 200,
+        data: { domains: [listing({ domain: 'not a hostname' }), listing({ id: 'cd_2', domain: 'ok.acme.com' })] },
+      });
+
+      const domains = await service.fetchOrganizationCustomDomains();
+
+      expect(domains?.map((entry) => entry.domain)).toEqual(['ok.acme.com']);
+    });
+  });
+
+  describe('bindCustomDomain', () => {
+    it('reports the hostname CI-Cloud composed', async () => {
+      portalClient.postDeviceCustomDomainBind.mockResolvedValue({
+        status: 200,
+        data: { id: 'cd_1', domain: 'comfy.acme.com', targetHostname: 'comfyui-core2-acme.example.com' },
+      });
+
+      await expect(service.bindCustomDomain('cd_1', 'comfyui')).resolves.toEqual({
+        ok: true,
+        targetHostname: 'comfyui-core2-acme.example.com',
+      });
+    });
+
+    it('carries the refusal code through so the caller can tell retry from give up', async () => {
+      // `APPLICATION_NOT_FOUND` clears itself once the app registers;
+      // `DOMAIN_NOT_FOUND` never will. Collapsing both into "failed" means either
+      // retrying forever or discarding a live choice.
+      portalClient.postDeviceCustomDomainBind.mockResolvedValue({
+        status: 404,
+        data: { code: 'APPLICATION_NOT_FOUND', error: 'That application is not installed on this device yet' },
+      });
+
+      await expect(service.bindCustomDomain('cd_1', 'comfyui')).resolves.toEqual({
+        ok: false,
+        status: 404,
+        code: 'APPLICATION_NOT_FOUND',
+        message: 'That application is not installed on this device yet',
+      });
+    });
+
+    it('reports a bodiless refusal by its status', async () => {
+      portalClient.postDeviceCustomDomainBind.mockResolvedValue({ status: 502, data: {} });
+
+      await expect(service.bindCustomDomain('cd_1', 'comfyui')).resolves.toMatchObject({
+        ok: false,
+        status: 502,
+        message: 'CI-Cloud answered 502',
+      });
+    });
+
+    it('survives a transport failure', async () => {
+      portalClient.postDeviceCustomDomainBind.mockRejectedValue(new Error('socket hang up'));
+
+      await expect(service.bindCustomDomain('cd_1', 'comfyui')).resolves.toMatchObject({ ok: false, message: 'socket hang up' });
+    });
+  });
+
   describe('loadTunnelTokenFromDisk', () => {
     it('logs only when the in-memory token changes', async () => {
       const logSpy = vi.spyOn((service as any).logger, 'log').mockImplementation(() => undefined);

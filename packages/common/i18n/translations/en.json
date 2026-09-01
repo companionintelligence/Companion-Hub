@@ -1864,5 +1864,15 @@
   "MOBILE_CONNECT_HUB_UNREACHABLE_HINT": "Can't reach your Hub.",
   "MOBILE_CONNECT_EMAIL": "Email",
   "MOBILE_LOAD_FAILED": "This Hub isn't responding.",
-  "MOBILE_LOAD_FAILED_HINT": "Check that the Hub is online, or switch to a different Hub."
+  "MOBILE_LOAD_FAILED_HINT": "Check that the Hub is online, or switch to a different Hub.",
+  "APP_INSTALL_FORM_CUSTOM_DOMAIN": "Custom domain",
+  "APP_INSTALL_FORM_CUSTOM_DOMAIN_NONE": "Use the platform address",
+  "APP_INSTALL_FORM_CUSTOM_DOMAIN_VERIFYING": "still verifying",
+  "APP_INSTALL_FORM_CUSTOM_DOMAIN_IN_USE": "currently serving",
+  "APP_INSTALL_FORM_CUSTOM_DOMAIN_IN_USE_ELSEWHERE": "currently serving another app",
+  "APP_INSTALL_FORM_CUSTOM_DOMAIN_HINT": "One of your organization's connected domains can serve this app instead of its platform address.",
+  "APP_INSTALL_FORM_CUSTOM_DOMAIN_PENDING_HINT": "The app is installed at its platform address first; once the domain is wired the app asks for a restart to start using it.",
+  "APP_INSTALL_FORM_CUSTOM_DOMAIN_UNAVAILABLE": "no longer available",
+  "APP_INSTALL_FORM_CUSTOM_DOMAIN_SECURING": "finishing its certificate",
+  "APP_INSTALL_FORM_CUSTOM_DOMAIN_DRIFTED": "records need repair"
 }
