@@ -606,6 +606,9 @@ export const InstallForm: React.FC<IProps> = ({
             domains={customDomains}
             supported={customDomainsData?.supported === true}
             platformHostname={publicWebPreview?.hostname}
+            // The same value the bind sends as `appSlug`, so a domain already
+            // serving THIS app is recognised instead of warned about.
+            currentAppSlug={watchLocalSubdomain || defaultAppSubdomain}
             loading={loading}
             t={t}
           />

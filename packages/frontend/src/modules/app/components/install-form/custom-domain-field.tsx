@@ -14,6 +14,36 @@ type AvailableCustomDomain = AvailableCustomDomainsResponseDto['domains'][number
  */
 const PLATFORM_ADDRESS = '__platform__';
 
+/**
+ * The one-line status shown beside a domain in the list, or `null` when there is
+ * nothing worth saying.
+ *
+ * Derived in one place rather than as a ladder of conditional JSX suffixes: the
+ * states are mutually exclusive, and spelling that by hand meant `parked` — a
+ * real state, and bindable — silently got no label at all.
+ *
+ * `currentAppSlug` is why "currently serving" is not simply `boundAppSlug`. A
+ * domain already bound to the app being configured is the NORMAL case in the
+ * settings dialog, and announcing that choosing it would take the domain from
+ * that app — when that app is this one — warns about nothing.
+ */
+function describeEntry(entry: AvailableCustomDomain, currentAppSlug: string | undefined, t: (key: string) => string): string | null {
+  if (entry.state === 'pending') return t('APP_INSTALL_FORM_CUSTOM_DOMAIN_VERIFYING');
+  if (entry.state === 'securing') return t('APP_INSTALL_FORM_CUSTOM_DOMAIN_SECURING');
+  if (entry.state === 'drifted') return t('APP_INSTALL_FORM_CUSTOM_DOMAIN_DRIFTED');
+  if (entry.state !== 'live') return null;
+  /*
+   * Named, so moving a live domain is a decision rather than a surprise:
+   * choosing it takes it off whatever it is serving now, and the person doing it
+   * is entitled to know that before they click rather than after.
+   */
+  if (entry.boundAppSlug) {
+    return entry.boundAppSlug === currentAppSlug ? null : `${t('APP_INSTALL_FORM_CUSTOM_DOMAIN_IN_USE')} ${entry.boundAppSlug}`;
+  }
+  if (entry.boundElsewhere) return t('APP_INSTALL_FORM_CUSTOM_DOMAIN_IN_USE_ELSEWHERE');
+  return null;
+}
+
 interface CustomDomainFieldProps<TFormValues extends FieldValues> {
   control: Control<TFormValues>;
   domains: AvailableCustomDomain[];
@@ -24,6 +54,13 @@ interface CustomDomainFieldProps<TFormValues extends FieldValues> {
   supported: boolean;
   /** The platform hostname this app gets regardless — what the domain aliases. */
   platformHostname?: string;
+  /**
+   * The app being configured, as CI-Cloud names it in `boundAppSlug`. Lets a
+   * domain already serving THIS app drop the "currently serving" warning, which
+   * otherwise tells the operator they are about to take the domain from the very
+   * app whose settings they have open.
+   */
+  currentAppSlug?: string;
   loading?: boolean;
   t: (key: string) => string;
 }
@@ -51,6 +88,7 @@ export function CustomDomainField<TFormValues extends FieldValues>({
   domains,
   supported,
   platformHostname,
+  currentAppSlug,
   loading,
   t,
 }: CustomDomainFieldProps<TFormValues>) {
@@ -109,34 +147,13 @@ export function CustomDomainField<TFormValues extends FieldValues>({
                 <SelectContent>
                   <SelectItem value={PLATFORM_ADDRESS}>{t('APP_INSTALL_FORM_CUSTOM_DOMAIN_NONE')}</SelectItem>
                   {unlisted ? (
-                    <SelectItem value={selected} disabled>
-                      {selected} — {t('APP_INSTALL_FORM_CUSTOM_DOMAIN_UNAVAILABLE')}
+                    <SelectItem value={selected} disabled note={t('APP_INSTALL_FORM_CUSTOM_DOMAIN_UNAVAILABLE')}>
+                      {selected}
                     </SelectItem>
                   ) : null}
                   {domains.map((entry) => (
-                    <SelectItem key={entry.id} value={entry.domain} disabled={!entry.bindable}>
+                    <SelectItem key={entry.id} value={entry.domain} disabled={!entry.bindable} note={describeEntry(entry, currentAppSlug, t)}>
                       {entry.domain}
-                      {entry.state === 'pending' ? ` — ${t('APP_INSTALL_FORM_CUSTOM_DOMAIN_VERIFYING')}` : null}
-                      {/*
-                       * Both are CHOOSABLE — CI-Cloud reports them bindable, a
-                       * certificate finishes on its own, and drift is about the
-                       * customer's DNS rather than our permission to point the
-                       * row. Said out loud anyway: picking a domain that is not
-                       * serving yet, or has stopped, should not be a surprise
-                       * discovered after the install.
-                       */}
-                      {entry.state === 'securing' ? ` — ${t('APP_INSTALL_FORM_CUSTOM_DOMAIN_SECURING')}` : null}
-                      {entry.state === 'drifted' ? ` — ${t('APP_INSTALL_FORM_CUSTOM_DOMAIN_DRIFTED')}` : null}
-                      {/*
-                       * Named, so moving a live domain is a decision rather than
-                       * a surprise: choosing it here takes it off whatever it is
-                       * serving now, and the person doing it is entitled to know
-                       * that before they click rather than after.
-                       */}
-                      {entry.state === 'live' && entry.boundAppSlug ? ` — ${t('APP_INSTALL_FORM_CUSTOM_DOMAIN_IN_USE')} ${entry.boundAppSlug}` : null}
-                      {entry.state === 'live' && !entry.boundAppSlug && entry.boundElsewhere
-                        ? ` — ${t('APP_INSTALL_FORM_CUSTOM_DOMAIN_IN_USE_ELSEWHERE')}`
-                        : null}
                     </SelectItem>
                   ))}
                 </SelectContent>

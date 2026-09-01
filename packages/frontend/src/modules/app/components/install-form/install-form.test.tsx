@@ -693,6 +693,37 @@ describe('InstallForm', () => {
       // And says the restart out loud, rather than springing it after the install.
       expect(screen.getByText(/APP_INSTALL_FORM_CUSTOM_DOMAIN_PENDING_HINT/)).toBeInTheDocument();
     });
+
+    it('shows the closed control the hostname alone, never an option status', () => {
+      /*
+       * ⚠ THE ASSERTION IS `toHaveTextContent(/^…$/)`, NOT A SUBSTRING. Radix
+       * portals an item's `ItemText` into the trigger, so a status put inside the
+       * option followed it there and the collapsed control read
+       * "comfy.acme.com — in use by comfyui" where every other select in the
+       * dialog shows a short value. A substring assertion passes either way,
+       * which is exactly how it shipped.
+       */
+      MOCK_CUSTOM_DOMAINS.supported = true;
+      MOCK_CUSTOM_DOMAINS.domains = [connected({ state: 'live', boundAppSlug: 'wordpress' })];
+
+      renderForm({ exposureMode: 'cloudflare', customDomain: 'comfy.acme.com' });
+
+      expect(screen.getByLabelText('APP_INSTALL_FORM_CUSTOM_DOMAIN')).toHaveTextContent(/^comfy\.acme\.com$/);
+    });
+
+    it('does not warn that a domain is in use by the app being configured', () => {
+      /*
+       * The normal case in the settings dialog. Telling the operator that
+       * choosing this domain takes it away from `comfyui` — while they are
+       * editing `comfyui` — warns about nothing and reads as a bug.
+       */
+      MOCK_CUSTOM_DOMAINS.supported = true;
+      MOCK_CUSTOM_DOMAINS.domains = [connected({ state: 'live', boundAppSlug: 'comfyui' })];
+
+      renderForm({ exposureMode: 'cloudflare', localSubdomain: 'comfyui', customDomain: 'comfy.acme.com' });
+
+      expect(screen.queryByText(/APP_INSTALL_FORM_CUSTOM_DOMAIN_IN_USE/)).not.toBeInTheDocument();
+    });
   });
 
   it('hides the subdomain field for Private VPN exposure mode', () => {
