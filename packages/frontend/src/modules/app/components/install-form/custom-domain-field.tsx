@@ -85,9 +85,6 @@ export function CustomDomainField<TFormValues extends FieldValues>({
 
           return (
             <>
-              <label className="mb-1.5 block text-sm font-medium" htmlFor="install-custom-domain">
-                {t('APP_INSTALL_FORM_CUSTOM_DOMAIN')}
-              </label>
               <Select
                 value={selected}
                 disabled={loading}
@@ -96,7 +93,17 @@ export function CustomDomainField<TFormValues extends FieldValues>({
                 // empty string is the instruction to go back to the platform name.
                 onValueChange={(next) => onChange(next === PLATFORM_ADDRESS ? '' : next)}
               >
-                <SelectTrigger id="install-custom-domain" aria-label={t('APP_INSTALL_FORM_CUSTOM_DOMAIN')} className="h-11">
+                {/*
+                 * `label` rather than a hand-rolled <label>: SelectTrigger owns
+                 * the label markup every other select in this dialog renders,
+                 * including the peer-disabled treatment that dims it in step with
+                 * the control. Spelling it locally drifted on both.
+                 */}
+                <SelectTrigger
+                  id="install-custom-domain"
+                  aria-label={t('APP_INSTALL_FORM_CUSTOM_DOMAIN')}
+                  label={t('APP_INSTALL_FORM_CUSTOM_DOMAIN')}
+                >
                   <SelectValue placeholder={t('APP_INSTALL_FORM_CUSTOM_DOMAIN_NONE')} />
                 </SelectTrigger>
                 <SelectContent>
@@ -134,7 +141,7 @@ export function CustomDomainField<TFormValues extends FieldValues>({
                   ))}
                 </SelectContent>
               </Select>
-              <p className="mt-1.5 text-sm text-muted-foreground">
+              <p className="mt-2 text-xs text-muted-foreground">
                 {selected === PLATFORM_ADDRESS
                   ? t('APP_INSTALL_FORM_CUSTOM_DOMAIN_HINT')
                   : /*
