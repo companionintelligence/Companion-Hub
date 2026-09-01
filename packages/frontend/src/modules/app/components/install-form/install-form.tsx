@@ -588,6 +588,13 @@ export const InstallForm: React.FC<IProps> = ({
           />
         ) : null}
         {/*
+         * Directly under the subdomain that composes it, and ABOVE the custom
+         * domain picker. This card shows the PLATFORM hostname — the address the
+         * subdomain field builds — so sitting below the picker read as though it
+         * were previewing the chosen custom domain, which it never is.
+         */}
+        <HostnamePreviewCard hostname={previewHostname} onCopy={copyToClipboard} title={t('COMMON_HOSTNAME')} />
+        {/*
          * Only under Cloudflare exposure. A custom domain is delivered by cloning
          * this app's tunnel ingress rule, so an app that publishes no public
          * route has nothing for one to alias — offering the choice there would be
@@ -603,7 +610,6 @@ export const InstallForm: React.FC<IProps> = ({
             t={t}
           />
         ) : null}
-        <HostnamePreviewCard hostname={previewHostname} onCopy={copyToClipboard} title={t('COMMON_HOSTNAME')} />
       </>
     );
   };

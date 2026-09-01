@@ -35,8 +35,11 @@ const SelectTrigger = React.forwardRef<
     <SelectPrimitive.Trigger
       ref={ref}
       className={cn(
-        'flex h-9 w-full items-center justify-between rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm ring-offset-background placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring disabled:cursor-not-allowed disabled:opacity-50',
-        error && 'border-destructive focus:ring-destructive',
+        // `focus-visible`, not `focus`, to match Input: a plain `focus` ring fires
+        // on a mouse click too, so clicking a select drew a ring that clicking an
+        // input never did — the two controls sit side by side in the install form.
+        'flex h-9 w-full items-center justify-between rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm ring-offset-background placeholder:text-muted-foreground focus:outline-none focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50',
+        error && 'border-destructive focus-visible:ring-destructive',
         !label && className,
       )}
       {...props}
