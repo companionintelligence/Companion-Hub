@@ -10,6 +10,27 @@ use tauri::{
 use tauri_plugin_opener::OpenerExt;
 use tauri_plugin_store::StoreExt;
 
+fn save_window_geometry(app_handle: &tauri::AppHandle) {
+    if let Some(win) = app_handle.get_webview_window("main") {
+        // A maximized window would bake the full screen size into the store;
+        // keep the last normal geometry instead.
+        if win.is_maximized().unwrap_or(false) {
+            return;
+        }
+        if let Ok(store) = app_handle.store("settings.json") {
+            if let Ok(pos) = win.outer_position() {
+                store.set("window_x", serde_json::json!(pos.x));
+                store.set("window_y", serde_json::json!(pos.y));
+            }
+            if let Ok(size) = win.outer_size() {
+                store.set("window_width", serde_json::json!(size.width));
+                store.set("window_height", serde_json::json!(size.height));
+            }
+            let _ = store.save();
+        }
+    }
+}
+
 fn describe_hub_status(status: &crate::hub_manager::HubStatus) -> String {
     match status {
         crate::hub_manager::HubStatus::DockerNotAvailable => "docker not available".to_string(),
@@ -116,18 +137,7 @@ pub fn create_tray(app: &App) -> Result<(), Box<dyn std::error::Error>> {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
                 if let Some(win) = app_handle.get_webview_window("main") {
-                    // Save geometry
-                    if let Ok(store) = app_handle.store("settings.json") {
-                        if let Ok(pos) = win.outer_position() {
-                            store.set("window_x", serde_json::json!(pos.x));
-                            store.set("window_y", serde_json::json!(pos.y));
-                        }
-                        if let Ok(size) = win.outer_size() {
-                            store.set("window_width", serde_json::json!(size.width));
-                            store.set("window_height", serde_json::json!(size.height));
-                        }
-                        let _ = store.save();
-                    }
+                    save_window_geometry(&app_handle);
                     let _ = win.hide();
                     visible_for_close.store(false, Ordering::Relaxed);
                     let _ = show_hide_for_close.set_text("Show Hub");
@@ -347,6 +357,7 @@ pub fn create_tray(app: &App) -> Result<(), Box<dyn std::error::Error>> {
                 let _ = app.opener().open_path(path, None::<&str>);
             }
             "quit" => {
+                save_window_geometry(app);
                 app.exit(0);
             }
             _ => {}
