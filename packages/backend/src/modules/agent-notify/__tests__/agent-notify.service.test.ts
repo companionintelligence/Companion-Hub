@@ -476,4 +476,21 @@ describe('AgentNotifyService', () => {
       expect(webhooks[0]?.token).toBe('new-secret');
     });
   });
+
+  describe('wakeApp', () => {
+    it('POSTs only to the named app with the job id', async () => {
+      delete process.env.AGENT_WEBHOOK_URL;
+      service.registerWebhook('ci-openclaw:ci-marketplace', 'http://openclaw:18789/hooks/wake', 's');
+      service.registerWebhook('ci-hermes:ci-marketplace', 'http://hermes:18790/hooks/wake', 'h');
+
+      const ok = await service.wakeApp('ci-openclaw:ci-marketplace', { jobId: 'job-1' });
+
+      expect(ok).toBe(true);
+      expect(fetch).toHaveBeenCalledTimes(1);
+      expect(fetch).toHaveBeenCalledWith('http://openclaw:18789/hooks/wake', expect.objectContaining({ method: 'POST' }));
+      const body = JSON.parse(vi.mocked(fetch).mock.calls[0]?.[1]?.body as string);
+      expect(body.mode).toBe('now');
+      expect(body.text).toContain('job-1');
+    });
+  });
 });

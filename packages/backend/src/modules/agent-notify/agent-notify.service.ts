@@ -235,6 +235,33 @@ export class AgentNotifyService implements OnApplicationBootstrap, OnModuleDestr
   }
 
   /**
+   * Targeted doorbell for one app. No fan-out, no urgency floor, no debounce.
+   * The body is a job id only — OpenClaw fetches the packet from Memory.
+   */
+  async wakeApp(appUrn: string, data: { jobId: string }): Promise<boolean> {
+    let target = this.webhooks.get(appUrn);
+    if (!target) {
+      try {
+        const resolved = await this.resolveWebhookTarget(appUrn);
+        if (resolved) {
+          this.registerWebhook(appUrn, resolved.url, resolved.token);
+          target = this.webhooks.get(appUrn);
+        }
+      } catch (error) {
+        this.logger.warn(`Could not resolve wake target for ${appUrn}: ${error}`);
+      }
+    }
+
+    if (!target) {
+      this.logger.warn(`No wake target registered for ${appUrn}`);
+      return false;
+    }
+
+    const text = `Memory dispatch job ${data.jobId}. Fetch the packet from Memory.`;
+    return this.postWake(target, text);
+  }
+
+  /**
    * Wake the agent for a Hub event.
    *
    * The target is OpenClaw's NATIVE wake hook (`POST /hooks/wake`), which takes
@@ -276,41 +303,41 @@ export class AgentNotifyService implements OnApplicationBootstrap, OnModuleDestr
     // "next-heartbeat", defers it to the next scheduled slot — up to 30 minutes away.
     const body = JSON.stringify({ text: buildWakeText(event, data, urgency), mode: 'now' });
 
-    await Promise.allSettled(
-      targets.map(async (target) => {
-        try {
-          const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-          if (target.token) {
-            headers[WAKE_TOKEN_HEADER] = target.token;
-            headers.Authorization = `Bearer ${target.token}`;
-          }
+    await Promise.allSettled(targets.map((target) => this.postWake(target, buildWakeText(event, data, urgency))));
+  }
 
-          const response = await fetch(target.url, {
-            method: 'POST',
-            headers,
-            body,
-            signal: AbortSignal.timeout(10_000),
-          });
+  private async postWake(target: { url: string; token?: string }, text: string): Promise<boolean> {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (target.token) {
+      headers[WAKE_TOKEN_HEADER] = target.token;
+      headers.Authorization = `Bearer ${target.token}`;
+    }
 
-          if (response.status === 429) {
-            // OpenClaw is shedding load, not failing. The system events we already queued
-            // are still delivered by the next heartbeat, so nothing is lost — only delayed.
-            const retryAfter = response.headers.get('Retry-After') ?? 'unspecified';
-            this.logger.warn(`Agent wake throttled by ${target.url} (retry-after: ${retryAfter}s)`);
-            return;
-          }
+    try {
+      const response = await fetch(target.url, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ text, mode: 'now' }),
+        signal: AbortSignal.timeout(10_000),
+      });
 
-          if (!response.ok) {
-            this.logger.error(`Agent wake ${target.url} returned ${response.status}: ${response.statusText}`);
-            return;
-          }
+      if (response.status === 429) {
+        const retryAfter = response.headers.get('Retry-After') ?? 'unspecified';
+        this.logger.warn(`Agent wake throttled by ${target.url} (retry-after: ${retryAfter}s)`);
+        return false;
+      }
 
-          this.logger.debug(`Agent woken for ${event} (${urgency}) via ${target.url}`);
-        } catch (error) {
-          this.logger.error(`Agent wake POST to ${target.url} failed:`, error);
-        }
-      }),
-    );
+      if (!response.ok) {
+        this.logger.error(`Agent wake ${target.url} returned ${response.status}: ${response.statusText}`);
+        return false;
+      }
+
+      this.logger.debug(`Agent woken via ${target.url}`);
+      return true;
+    } catch (error) {
+      this.logger.error(`Agent wake POST to ${target.url} failed:`, error);
+      return false;
+    }
   }
 
   /**
