@@ -1615,6 +1615,21 @@ async function composeUp(
       y += '    sysctls:\n';
       for (const [k, v] of Object.entries(s.sysctls)) y += `      ${k}: ${yamlStr(String(v))}\n`;
     }
+    // dns / extra_hosts — mirror the Hub builder (service.builder.ts setDNS/setExtraHosts) and the
+    // single-container path above. Dropping these is a spurious fail: mailu's admin service
+    // (start.py::test_DNS()) blocks forever waiting for a DNSSEC AD flag Docker's embedded resolver
+    // (127.0.0.11) never sends without an external forwarder — every mailu service declares
+    // `"dns": "8.8.8.8"` for exactly this. vui needs a fixed resolver the same way.
+    const dnsRaw = s.dns;
+    const dnsList = Array.isArray(dnsRaw) ? dnsRaw : dnsRaw ? [String(dnsRaw)] : [];
+    if (dnsList.length) {
+      y += '    dns:\n';
+      for (const d of dnsList) y += `      - ${yamlStr(String(d))}\n`;
+    }
+    if (Array.isArray(s.extraHosts) && s.extraHosts.length) {
+      y += '    extra_hosts:\n';
+      for (const eh of s.extraHosts) y += `      - ${yamlStr(subst(String(eh)))}\n`;
+    }
     // Command override — for some apps (e.g. affine) this is the ONLY thing that runs the
     // DB migration/predeploy step; dropping it boots the app against an empty schema and
     // crashes with `relation "..." does not exist`.
