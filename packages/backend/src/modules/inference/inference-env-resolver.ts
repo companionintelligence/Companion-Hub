@@ -209,7 +209,7 @@ export class InferenceEnvResolver {
         const curated = this.modelRegistry.getCuratedModel(preferences.preferredEmbeddingModel);
         if (curated?.backend === type) return curated.backendModelId;
       }
-      return this.modelRegistry.getRecommendedEmbeddingModel(profile.tier, type)?.backendModelId;
+      return this.modelRegistry.getRecommendedEmbeddingModel(profile.tier, type, profile)?.backendModelId;
     };
 
     let embeddingModel = resolveEmbedding(backendType);
@@ -235,7 +235,7 @@ export class InferenceEnvResolver {
       }
     }
     if (!visionModel) {
-      const recommended = this.modelRegistry.getRecommendedVisionModel(profile.tier, backendType);
+      const recommended = this.modelRegistry.getRecommendedVisionModel(profile.tier, backendType, profile);
       visionModel = recommended?.backendModelId;
     }
 

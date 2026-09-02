@@ -280,7 +280,7 @@ export class InferenceController {
     return {
       tier: profile.tier,
       recommended: this.modelRegistry.getRecommendedModelsForHardware(profile.tier, profile),
-      available: this.modelRegistry.getModelsForTier(profile.tier),
+      available: this.modelRegistry.getModelsForHardware(profile.tier, profile),
     };
   }
 
@@ -406,7 +406,11 @@ export class InferenceController {
     const installBackend = query?.backend ?? recommendedBackend;
     const tier = this.getOnboardingTier(profile, recommendedBackend);
     const recommendedModels = this.modelRegistry.getRecommendedModelsForHardware(tier, profile);
-    const availableModels = this.modelRegistry.getModelsForTier(tier);
+    // Keep rows for an explicitly selected host-served backend visible even when its server lives
+    // on another OS (for example, a Linux Hub pointing at a Mac's Speculative inference endpoint).
+    // Automatic recommendations remain local-platform-aware; this exception only preserves remote
+    // endpoint configuration and lets the live probe decide what that server actually serves.
+    const availableModels = this.modelRegistry.getModelsForHardware(tier, profile, { includeRemoteHostBackends: true });
     const budget = this.memoryManager.calculateBudget(profile);
     const status = await this.router.getStatus();
 

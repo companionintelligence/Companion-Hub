@@ -116,6 +116,7 @@ describe('InferenceController — onboarding-profile', () => {
     dsparkBackend.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [] });
     lemonadeBackend.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [] });
     modelRegistry.getCatalog.mockReturnValue([{ id: 'phi-4-mini', backendModelId: 'phi4-mini', backend: 'ollama' }] as any);
+    modelRegistry.getModelsForHardware.mockImplementation((tier) => modelRegistry.getModelsForTier(tier));
     modelRegistry.getTrackedModel.mockReturnValue(undefined);
     hostMetrics.readHostSection.mockResolvedValue(null);
     hostMetrics.getDisplayLoad.mockResolvedValue({

@@ -181,7 +181,8 @@ export function resolveBridgeServices(envFileName: string): BridgeServiceSpec[] 
     { label: 'Hub API (cloudflared origin)', port: port(vars.API_PORT, 5002) },
     { label: 'Ollama', port: port(portFromUrl(vars.OLLAMA_URL), 11434) },
     { label: 'vLLM', port: port(portFromUrl(vars.VLLM_URL), 8000) },
-    { label: 'mlx-dspark', port: port(portFromUrl(vars.DSPARK_URL), 8080) },
+    { label: 'MTPLX', port: port(portFromUrl(vars.MTPLX_URL), 8000) },
+    { label: 'Speculative inference', port: port(portFromUrl(vars.DSPARK_URL), 8080) },
     { label: 'Lemonade', port: port(portFromUrl(vars.LEMONADE_URL), 13305) },
   ];
 }

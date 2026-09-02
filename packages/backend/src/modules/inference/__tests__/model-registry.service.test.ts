@@ -3,7 +3,7 @@ import { ModelRegistryService } from '../model-registry.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { mock, type MockProxy } from 'vitest-mock-extended';
 import { describe, it, expect, beforeEach } from 'vitest';
-import type { CuratedModel, HardwareProfile, HardwareTier } from '@ci-hub/common/types';
+import type { CuratedModel, HardwareProfile, HardwareTier, HostPlatform } from '@ci-hub/common/types';
 
 describe('ModelRegistryService', () => {
   let service: ModelRegistryService;
@@ -118,6 +118,7 @@ describe('ModelRegistryService', () => {
         vramMb?: number;
         unifiedMemory?: boolean;
         arch?: HardwareProfile['cpu']['arch'];
+        platform?: HostPlatform;
         ramMb: number;
         tier: HardwareTier;
       }): HardwareProfile => ({
@@ -135,9 +136,49 @@ describe('ModelRegistryService', () => {
         cpu: { arch: overrides.arch ?? 'x86_64', cores: 16, model: 'Test CPU' },
         effectiveInferenceMemoryMb: overrides.unifiedMemory ? overrides.ramMb : (overrides.vramMb ?? 0),
         tier: overrides.tier,
+        ...(overrides.platform ? { os: { platform: overrides.platform, name: overrides.platform, version: '' } } : {}),
       });
 
       const topLlm = (models: CuratedModel[]): CuratedModel | undefined => models.find((m) => m.modality === 'llm');
+
+      it('filters local recommendations by host platform across macOS, Linux, and Windows', () => {
+        const linux = service.getRecommendedModelsForHardware('high', profile({ platform: 'linux', vramMb: 48 * GB, ramMb: 128 * GB, tier: 'high' }));
+        const windows = service.getRecommendedModelsForHardware(
+          'high',
+          profile({ platform: 'win32', vramMb: 48 * GB, ramMb: 128 * GB, tier: 'high' }),
+        );
+        const macos = service.getRecommendedModelsForHardware(
+          'high',
+          profile({ platform: 'darwin', vendor: 'apple', unifiedMemory: true, arch: 'arm64', ramMb: 64 * GB, tier: 'high' }),
+        );
+
+        const assertPlatform = (models: CuratedModel[], platform: HostPlatform) => {
+          for (const model of models) {
+            expect(model.requirements.supportedPlatforms, `${model.id} platform`).toContain(platform);
+          }
+        };
+        assertPlatform(linux, 'linux');
+        assertPlatform(windows, 'win32');
+        assertPlatform(macos, 'darwin');
+
+        expect(linux.some((m) => m.backend === 'vllm' && !m.id.endsWith('-mlx'))).toBe(true);
+        expect(windows.some((m) => m.backend === 'vllm' && !m.id.endsWith('-mlx'))).toBe(true);
+        expect(linux.some((m) => m.backend === 'dspark' || m.backend === 'mtplx' || m.id.endsWith('-mlx'))).toBe(false);
+        expect(windows.some((m) => m.backend === 'dspark' || m.backend === 'mtplx' || m.id.endsWith('-mlx'))).toBe(false);
+        expect(macos.some((m) => m.backend === 'dspark' || m.backend === 'mtplx' || m.id.endsWith('-mlx'))).toBe(true);
+        expect(macos.some((m) => m.backend === 'vllm' && !m.id.endsWith('-mlx'))).toBe(false);
+      });
+
+      it('keeps cross-platform host-served rows available only for explicit remote setup', () => {
+        const linux = profile({ platform: 'linux', vramMb: 48 * GB, ramMb: 128 * GB, tier: 'high' });
+        const local = service.getModelsForHardware('high', linux);
+        const remoteSetup = service.getModelsForHardware('high', linux, { includeRemoteHostBackends: true });
+
+        expect(local.some((m) => m.backend === 'dspark' || m.backend === 'mtplx' || m.id.endsWith('-mlx'))).toBe(false);
+        expect(remoteSetup.some((m) => m.backend === 'dspark')).toBe(true);
+        expect(remoteSetup.some((m) => m.backend === 'mtplx')).toBe(true);
+        expect(remoteSetup.some((m) => m.id.endsWith('-mlx'))).toBe(true);
+      });
 
       it('picks a runnable, size-capped LLM for CPU-only machines (regression: previously returned none)', () => {
         const recs = service.getRecommendedModelsForHardware(

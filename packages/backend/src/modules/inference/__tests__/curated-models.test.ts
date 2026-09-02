@@ -23,6 +23,29 @@ describe('curated-models (TOON catalog)', () => {
     expect(new Set(CURATED_MODELS.map((m) => m.id)).size).toBe(CURATED_MODELS.length);
   });
 
+  it('declares the native host platform matrix for every curated backend', () => {
+    const expectedByBackend = {
+      ollama: ['darwin', 'linux', 'win32'],
+      lemonade: ['darwin', 'linux', 'win32'],
+      vllm: ['linux', 'win32'],
+      mtplx: ['darwin'],
+      dspark: ['darwin'],
+    } as const;
+
+    for (const model of CURATED_MODELS) {
+      const expected = model.backend === 'vllm' && model.id.endsWith('-mlx') ? ['darwin'] : expectedByBackend[model.backend];
+      expect(model.requirements.supportedPlatforms, `${model.id} platform matrix`).toEqual(expected);
+    }
+
+    // vLLM's Apple-native MLX rows are a separate serving path from its CUDA rows.
+    expect(
+      llms.filter((m) => m.backend === 'vllm' && m.id.endsWith('-mlx')).every((m) => m.requirements.supportedPlatforms?.includes('darwin')),
+    ).toBe(true);
+    expect(
+      llms.filter((m) => m.backend === 'vllm' && !m.id.endsWith('-mlx')).every((m) => !m.requirements.supportedPlatforms?.includes('darwin')),
+    ).toBe(true);
+  });
+
   describe('mlx-dspark rows', () => {
     const dspark = llms.filter((m) => m.backend === 'dspark');
 

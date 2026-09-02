@@ -4,6 +4,7 @@ import type {
   CuratedModel,
   HardwareProfile,
   HardwareTier,
+  HostPlatform,
   InferenceBackendType,
   ModelModality,
   ModelState,
@@ -21,6 +22,8 @@ type GpuVendorKey = CuratedModel['requirements']['gpuVendors'][number]; // 'nvid
 
 // Vendors Ollama can actually offload to. Anything else (e.g. Intel) falls back to CPU inference.
 const GPU_INFERENCE_VENDORS = new Set<HardwareProfile['gpu']['vendor']>(['nvidia', 'amd', 'apple']);
+
+const HOST_SERVED_BACKENDS = new Set<InferenceBackendType>(['vllm', 'mtplx', 'dspark']);
 
 // Fraction of each memory pool a model may occupy, leaving headroom for the OS, the app container,
 // KV-cache/context growth, and (for shared pools) everything else running on the machine.
@@ -76,11 +79,15 @@ function activeParamsOf(model: CuratedModel): number {
  * that comparison is only meaningful between models that actually run on the box being sized. Per
  * product decision, this tool exists to find the best model a user's own hardware can run, so a
  * cloud-proxied model must never even be *shown* — not just excluded from the recommendation — which is
- * why `getModelsForTier()` (the single gate every browsing path filters through, not just the
- * recommendation functions below) excludes it too.
+ * why `getModelsForTier()` (the tier gate every browsing path filters through, before the optional
+ * host-platform gate below) excludes it too.
  */
 function isCloudProxyModel(model: CuratedModel): boolean {
   return model.backendModelId.endsWith(':cloud');
+}
+
+function isHostPlatform(platform: string | undefined): platform is HostPlatform {
+  return platform === 'darwin' || platform === 'linux' || platform === 'win32';
 }
 
 /**
@@ -134,7 +141,7 @@ export class ModelRegistryService implements OnModuleInit {
     return CURATED_MODELS;
   }
 
-  /** Filter catalog by hardware tier */
+  /** Filter catalog by hardware tier. Platform-specific filtering is applied by getModelsForHardware. */
   getModelsForTier(tier: HardwareTier): CuratedModel[] {
     const tierKey = tier === 'cpu-only' ? 'cpuOnly' : tier;
     if (tier === 'insufficient') return [];
@@ -145,23 +152,42 @@ export class ModelRegistryService implements OnModuleInit {
     });
   }
 
+  /**
+   * Filter the tier catalog against the detected host platform. A missing or unknown platform is
+   * treated as legacy/unknown data and keeps the historical tier-only behavior. Host-served rows
+   * can optionally remain visible because their endpoint may be on another machine; they are never
+   * included in automatic local recommendations unless the platform matches.
+   */
+  getModelsForHardware(tier: HardwareTier, profile: HardwareProfile, options?: { includeRemoteHostBackends?: boolean }): CuratedModel[] {
+    const models = this.getModelsForTier(tier);
+    const platform = profile.os?.platform;
+    if (!isHostPlatform(platform)) return models;
+
+    return models.filter(
+      (model) =>
+        model.requirements.supportedPlatforms?.includes(platform) !== false ||
+        (options?.includeRemoteHostBackends === true && HOST_SERVED_BACKENDS.has(model.backend)),
+    );
+  }
+
   /** Get recommended models for a tier (default pulls) */
-  getRecommendedModels(tier: HardwareTier): CuratedModel[] {
+  getRecommendedModels(tier: HardwareTier, profile?: HardwareProfile): CuratedModel[] {
     const tierKey = tier === 'cpu-only' ? 'cpuOnly' : tier;
     if (tier === 'insufficient') return [];
-    return CURATED_MODELS.filter((m) => m.tiers[tierKey as keyof typeof m.tiers] === 'recommended');
+    const models = profile ? this.getModelsForHardware(tier, profile) : this.getModelsForTier(tier);
+    return models.filter((m) => m.tiers[tierKey as keyof typeof m.tiers] === 'recommended');
   }
 
   /**
-   * Get hardware-aware recommendations: the best-fit Ollama LLMs computed from the catalog (best
+   * Get hardware-aware recommendations: the best-fit LLMs for every locally runnable backend computed from the catalog (best
    * first; index 0 is what app bootstrap auto-installs), followed by the tier's recommended non-LLM
    * models (voice/STT). LLM sizing is derived from each model's real footprint vs. the hardware
    * budget, so it stays consistent with the catalog instead of a parallel hand-maintained table.
    */
   getRecommendedModelsForHardware(tier: HardwareTier, profile: HardwareProfile): CuratedModel[] {
     if (tier === 'insufficient') return [];
-    const nonLlmRecommended = this.getRecommendedModels(tier).filter((m) => m.modality !== 'llm');
-    return [...this.selectLlmsForHardware(profile), ...nonLlmRecommended];
+    const nonLlmRecommended = this.getRecommendedModels(tier, profile).filter((m) => m.modality !== 'llm');
+    return [...this.selectLlmsForHardware(profile, tier), ...nonLlmRecommended];
   }
 
   /**
@@ -174,9 +200,9 @@ export class ModelRegistryService implements OnModuleInit {
    * handle that gracefully (e.g. a Lemonade-only host with no Ollama installed) rather
    * than falling back to a different backend's model ID, which would be unreachable.
    */
-  getRecommendedEmbeddingModel(tier: HardwareTier, backend: InferenceBackendType = 'ollama'): CuratedModel | null {
+  getRecommendedEmbeddingModel(tier: HardwareTier, backend: InferenceBackendType = 'ollama', profile?: HardwareProfile): CuratedModel | null {
     if (tier === 'insufficient') return null;
-    return this.getRecommendedModels(tier).find((m) => m.modality === 'embedding' && m.backend === backend) ?? null;
+    return this.getRecommendedModels(tier, profile).find((m) => m.modality === 'embedding' && m.backend === backend) ?? null;
   }
 
   /**
@@ -186,9 +212,9 @@ export class ModelRegistryService implements OnModuleInit {
    * match the requested backend. Returns null when no vision model is available for the
    * tier on that backend.
    */
-  getRecommendedVisionModel(tier: HardwareTier, backend: InferenceBackendType = 'ollama'): CuratedModel | null {
+  getRecommendedVisionModel(tier: HardwareTier, backend: InferenceBackendType = 'ollama', profile?: HardwareProfile): CuratedModel | null {
     if (tier === 'insufficient') return null;
-    const candidates = this.getModelsForTier(tier).filter(
+    const candidates = (profile ? this.getModelsForHardware(tier, profile) : this.getModelsForTier(tier)).filter(
       (m) => m.modality === 'llm' && m.backend === backend && m.metadata?.capabilities?.vision === true && !isCloudProxyModel(m),
     );
     if (candidates.length === 0) return null;
@@ -239,8 +265,8 @@ export class ModelRegistryService implements OnModuleInit {
    * InferenceEnvResolver / AppCredentialsService) filters this list down to `m.backend === active`.
    * Adding a backend with no catalog rows yet is a no-op here — it simply contributes nothing.
    */
-  private selectLlmsForHardware(profile: HardwareProfile): CuratedModel[] {
-    const tierAllowedIds = new Set(this.getModelsForTier(profile.tier).map((m) => m.id));
+  private selectLlmsForHardware(profile: HardwareProfile, tier = profile.tier): CuratedModel[] {
+    const tierAllowedIds = new Set(this.getModelsForHardware(tier, profile).map((m) => m.id));
     const budget = this.computeInferenceBudget(profile);
     const backends = new Set(CURATED_MODELS.filter((m) => m.modality === 'llm').map((m) => m.backend));
 

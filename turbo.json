@@ -79,6 +79,7 @@
         "APPS_REPO_URL",
         "OLLAMA_URL",
         "VLLM_URL",
+        "MTPLX_URL",
         "DSPARK_URL",
         "LEMONADE_URL"
       ]
@@ -115,6 +116,7 @@
         "APPS_REPO_URL",
         "OLLAMA_URL",
         "VLLM_URL",
+        "MTPLX_URL",
         "DSPARK_URL",
         "LEMONADE_URL"
       ]
