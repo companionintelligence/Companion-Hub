@@ -12,6 +12,7 @@ import { VllmBackend } from '../backends/vllm.backend';
 import { MtplxBackend } from '../backends/mtplx.backend';
 import { LemonadeBackend } from '../backends/lemonade.backend';
 import { DsparkBackend } from '../backends/dspark.backend';
+import { MlxBackend } from '../backends/mlx.backend';
 import { LoggerService } from '@/core/logger/logger.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import type { CloudProviderConfig, CuratedModel, HardwareProfile } from '@ci-hub/common/types';
@@ -101,6 +102,7 @@ describe('AppCredentialsService', () => {
   let lemonadeBackend: MockProxy<LemonadeBackend>;
   let mtplxBackend: MockProxy<MtplxBackend>;
   let dsparkBackend: MockProxy<DsparkBackend>;
+  let mlxBackend: MockProxy<MlxBackend>;
   let configurationService: MockProxy<ConfigurationService>;
 
   beforeEach(async () => {
@@ -114,6 +116,7 @@ describe('AppCredentialsService', () => {
     lemonadeBackend = mock<LemonadeBackend>();
     mtplxBackend = mock<MtplxBackend>();
     dsparkBackend = mock<DsparkBackend>();
+    mlxBackend = mock<MlxBackend>();
     configurationService = mock<ConfigurationService>();
 
     configurationService.getInferencePreferences.mockReturnValue({
@@ -163,6 +166,7 @@ describe('AppCredentialsService', () => {
         { provide: LemonadeBackend, useValue: lemonadeBackend },
         { provide: MtplxBackend, useValue: mtplxBackend },
         { provide: DsparkBackend, useValue: dsparkBackend },
+        { provide: MlxBackend, useValue: mlxBackend },
         { provide: ConfigurationService, useValue: configurationService },
       ],
     }).compile();

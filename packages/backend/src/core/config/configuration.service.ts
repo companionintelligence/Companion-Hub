@@ -138,6 +138,7 @@ export class ConfigurationService {
       inferenceVllmUrl: string | undefined;
       inferenceMtplxUrl: string | undefined;
       inferenceDsparkUrl: string | undefined;
+      inferenceMlxUrl: string | undefined;
       inferenceCloudProviders: CloudProviderConfig[] | undefined;
     } = {
       ciHubApiKey: null,
@@ -154,6 +155,7 @@ export class ConfigurationService {
       inferenceVllmUrl: undefined,
       inferenceMtplxUrl: undefined,
       inferenceDsparkUrl: undefined,
+      inferenceMlxUrl: undefined,
       inferenceCloudProviders: undefined,
     };
     try {
@@ -176,6 +178,7 @@ export class ConfigurationService {
           inferenceVllmUrl: settings.inferenceVllmUrl,
           inferenceMtplxUrl: settings.inferenceMtplxUrl,
           inferenceDsparkUrl: settings.inferenceDsparkUrl,
+          inferenceMlxUrl: settings.inferenceMlxUrl,
           inferenceCloudProviders: settings.inferenceCloudProviders,
         };
       }
@@ -245,6 +248,7 @@ export class ConfigurationService {
         inferenceVllmUrl: settingsValues.inferenceVllmUrl,
         inferenceMtplxUrl: settingsValues.inferenceMtplxUrl,
         inferenceDsparkUrl: settingsValues.inferenceDsparkUrl,
+        inferenceMlxUrl: settingsValues.inferenceMlxUrl,
         inferenceCloudProviders: settingsValues.inferenceCloudProviders,
         experimental: {
           insecureCookie: env.data.EXPERIMENTAL_INSECURE_COOKIE,
@@ -337,6 +341,7 @@ export class ConfigurationService {
       preferredVllmUrl: this.config.userSettings.inferenceVllmUrl ?? null,
       preferredMtplxUrl: this.config.userSettings.inferenceMtplxUrl ?? null,
       preferredDsparkUrl: this.config.userSettings.inferenceDsparkUrl ?? null,
+      preferredMlxUrl: this.config.userSettings.inferenceMlxUrl ?? null,
     };
   }
 
@@ -354,6 +359,7 @@ export class ConfigurationService {
     vllmUrl?: string | null,
     mtplxUrl?: string | null,
     dsparkUrl?: string | null,
+    mlxUrl?: string | null,
   ) {
     const settings: {
       inferenceBackend: InferenceBackendType;
@@ -364,6 +370,7 @@ export class ConfigurationService {
       inferenceVllmUrl?: string;
       inferenceMtplxUrl?: string;
       inferenceDsparkUrl?: string;
+      inferenceMlxUrl?: string;
     } = { inferenceBackend: backend };
     if (model !== undefined) {
       settings.inferenceModel = model ?? undefined;
@@ -385,6 +392,9 @@ export class ConfigurationService {
     }
     if (dsparkUrl !== undefined) {
       settings.inferenceDsparkUrl = dsparkUrl?.trim() ? dsparkUrl.trim() : undefined;
+    }
+    if (mlxUrl !== undefined) {
+      settings.inferenceMlxUrl = mlxUrl?.trim() ? mlxUrl.trim() : undefined;
     }
     await this.setUserSettings(settings);
     return this.getInferencePreferences();

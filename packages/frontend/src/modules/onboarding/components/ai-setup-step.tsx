@@ -1,5 +1,7 @@
 import {
   fetchInferenceOnboardingProfile,
+  fetchLemonadeInstallStatus,
+  fetchMlxInstallStatus,
   fetchMtplxInstallStatus,
   fetchOllamaInstallStatus,
   fetchDsparkInstallStatus,
@@ -17,6 +19,8 @@ import {
   type ExposureMode,
   type HardwareProfileResponse,
   type MtplxStatus,
+  type LemonadeStatus,
+  type MlxStatus,
   type OllamaStatus,
   type VllmStatus,
   type DsparkStatus,
@@ -36,6 +40,8 @@ import { OllamaSetupCard } from './ai-setup/ollama-setup-card';
 import { VllmSetupCard } from './ai-setup/vllm-setup-card';
 import { MtplxSetupCard } from './ai-setup/mtplx-setup-card';
 import { DsparkSetupCard } from './ai-setup/dspark-setup-card';
+import { LemonadeSetupCard } from './ai-setup/lemonade-setup-card';
+import { MlxSetupCard } from './ai-setup/mlx-setup-card';
 import { TailscaleSetupStep } from './tailscale-setup-step';
 import { computeSelectionBudget } from '../helpers/onboarding-model-selection';
 import {
@@ -113,14 +119,19 @@ export const AiSetupStep = ({
   const [vllmStatus, setVllmStatus] = useState<VllmStatus | null>(null);
   const [mtplxStatus, setMtplxStatus] = useState<MtplxStatus | null>(null);
   const [dsparkStatus, setDsparkStatus] = useState<DsparkStatus | null>(null);
+  const [lemonadeStatus, setLemonadeStatus] = useState<LemonadeStatus | null>(null);
+  const [mlxStatus, setMlxStatus] = useState<MlxStatus | null>(null);
   const [checkingOllama, setCheckingOllama] = useState(false);
   const [checkingVllm, setCheckingVllm] = useState(false);
   const [checkingMtplx, setCheckingMtplx] = useState(false);
   const [checkingDspark, setCheckingDspark] = useState(false);
+  const [checkingLemonade, setCheckingLemonade] = useState(false);
+  const [checkingMlx, setCheckingMlx] = useState(false);
   const [vllmApiKey, setVllmApiKey] = useState('');
   const [vllmUrl, setVllmUrl] = useState('');
   const [mtplxUrl, setMtplxUrl] = useState('');
   const [dsparkUrl, setDsparkUrl] = useState('');
+  const [mlxUrl, setMlxUrl] = useState('');
   const [selectedBackend, setSelectedBackend] = useState<InferenceBackendType>('ollama');
 
   // Three code paths fetch the same profile endpoint concurrently (mount/Rescan, backend switch,
@@ -185,7 +196,7 @@ export const AiSetupStep = ({
     const requestId = ++profileRequestId.current;
     try {
       const backend = backendOverride ?? selectedBackend;
-      const data = await fetchInferenceOnboardingProfile(backend, vllmUrl, backend === 'vllm' ? vllmApiKey : undefined, mtplxUrl, dsparkUrl);
+      const data = await fetchInferenceOnboardingProfile(backend, vllmUrl, backend === 'vllm' ? vllmApiKey : undefined, mtplxUrl, dsparkUrl, mlxUrl);
       // Superseded: a rescan that started before a backend switch but answers after it would push
       // `backends.recommended` back over the backend the operator just picked, and reset their
       // selection to that backend's defaults.
@@ -225,6 +236,36 @@ export const AiSetupStep = ({
       return unreachable;
     } finally {
       setCheckingOllama(false);
+    }
+  };
+
+  const checkLemonadeStatus = async (): Promise<LemonadeStatus> => {
+    setCheckingLemonade(true);
+    try {
+      const data = await fetchLemonadeInstallStatus();
+      setLemonadeStatus(data);
+      return data;
+    } catch {
+      const unreachable: LemonadeStatus = { ready: false, running: false, endpointUrl: '' };
+      setLemonadeStatus(unreachable);
+      return unreachable;
+    } finally {
+      setCheckingLemonade(false);
+    }
+  };
+
+  const checkMlxStatus = async (): Promise<MlxStatus> => {
+    setCheckingMlx(true);
+    try {
+      const data = await fetchMlxInstallStatus(mlxUrl);
+      setMlxStatus(data);
+      return data;
+    } catch {
+      const unreachable: MlxStatus = { ready: false, running: false, endpointUrl: '' };
+      setMlxStatus(unreachable);
+      return unreachable;
+    } finally {
+      setCheckingMlx(false);
     }
   };
 
@@ -286,7 +327,7 @@ export const AiSetupStep = ({
     const requestId = ++profileRequestId.current;
     try {
       const previouslyInstalled = new Set(profile?.installedCatalogIds ?? []);
-      const data = await fetchInferenceOnboardingProfile(backend, vllmUrl, backend === 'vllm' ? vllmApiKey : undefined, mtplxUrl, dsparkUrl);
+      const data = await fetchInferenceOnboardingProfile(backend, vllmUrl, backend === 'vllm' ? vllmApiKey : undefined, mtplxUrl, dsparkUrl, mlxUrl);
       // Drop a superseded answer. Rescan and the backend selector write the same `profile`, so a
       // refresh that started first but landed last would reinstate pre-rescan hardware figures, or
       // leave `profile` scoped to a backend the operator has already switched away from.
@@ -301,7 +342,7 @@ export const AiSetupStep = ({
       // ticked, `computeSelectionBudget` bills them as pending downloads and can block Continue on disk.
       const isStillSelectable = (id: string) => {
         const modelBackend = data.availableModels.find((m) => m.id === id)?.backend;
-        return (modelBackend !== 'vllm' && modelBackend !== 'mtplx') || nextInstalled.has(id);
+        return !isHostServedBackend(modelBackend) || nextInstalled.has(id);
       };
       const nextSelected = [...new Set([...selectedModelIdsRef.current, ...newlySelectable])].filter(isStillSelectable);
       setSelectedModelIds(nextSelected);
@@ -348,12 +389,14 @@ export const AiSetupStep = ({
   const handleDsparkRecheck = () => handleRecheck(checkDsparkStatus, setCheckingDspark);
   const handleOllamaRecheck = () => handleRecheck(checkOllamaStatus, setCheckingOllama);
   const handleMtplxRecheck = () => handleRecheck(checkMtplxStatus, setCheckingMtplx);
+  const handleLemonadeRecheck = () => handleRecheck(checkLemonadeStatus, setCheckingLemonade);
+  const handleMlxRecheck = () => handleRecheck(checkMlxStatus, setCheckingMlx);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: only on mount
   useEffect(() => {
     void (async () => {
       await fetchProfile(false);
-      await Promise.all([checkOllamaStatus(), checkVllmStatus(), checkMtplxStatus(), checkDsparkStatus()]);
+      await Promise.all([checkOllamaStatus(), checkVllmStatus(), checkMtplxStatus(), checkDsparkStatus(), checkLemonadeStatus(), checkMlxStatus()]);
     })();
   }, []);
 
@@ -376,7 +419,7 @@ export const AiSetupStep = ({
     setSelectedBackend(backend);
     const requestId = ++profileRequestId.current;
     try {
-      const data = await fetchInferenceOnboardingProfile(backend, vllmUrl, backend === 'vllm' ? vllmApiKey : undefined, mtplxUrl, dsparkUrl);
+      const data = await fetchInferenceOnboardingProfile(backend, vllmUrl, backend === 'vllm' ? vllmApiKey : undefined, mtplxUrl, dsparkUrl, mlxUrl);
       // `setSelectedBackend` above is synchronous, so two quick switches already end on the right
       // backend — but the slower fetch can still answer last and leave `profile` (and the selection
       // derived from it) describing the backend the operator switched away from.
@@ -393,6 +436,10 @@ export const AiSetupStep = ({
       void checkVllmStatus();
     } else if (backend === 'mtplx') {
       void checkMtplxStatus();
+    } else if (backend === 'lemonade') {
+      void checkLemonadeStatus();
+    } else if (backend === 'mlx') {
+      void checkMlxStatus();
     }
     if (backend === 'dspark') {
       void checkDsparkStatus();
@@ -401,12 +448,12 @@ export const AiSetupStep = ({
 
   const handleToggleModel = (modelId: string) => {
     const model = profile?.availableModels.find((m) => m.id === modelId);
+    if (!model) return;
     const installed = new Set(profile?.installedCatalogIds ?? []);
-    // vLLM and MTPLX: the Hub cannot load a model into either server (MTPLX's load/unload are
-    // stubs — no hot-swap support), so selecting an uninstalled one sends the operator to Hugging
-    // Face to fetch it themselves. mlx-dspark is deliberately NOT included — the Hub loads its
-    // models over `POST /admin/load`, so they tick like Ollama's.
-    if ((model?.backend === 'vllm' || model?.backend === 'mtplx') && !installed.has(modelId) && !selectedModelIds.includes(modelId)) {
+    // Host-served backends cannot hot-swap a running server, so selecting an uninstalled model
+    // sends the operator to its model page. Lemonade and mlx-dspark are Hub-loadable and tick like
+    // Ollama; generic MLX-LM is host-served and must be restarted with a new --model value.
+    if (isHostServedBackend(model?.backend) && !installed.has(modelId) && !selectedModelIds.includes(modelId)) {
       openExternal(`https://huggingface.co/${model.backendModelId}`);
       return;
     }
@@ -472,14 +519,15 @@ export const AiSetupStep = ({
       preferredModelId && selectedModels.includes(preferredModelId)
         ? preferredModelId
         : selectedModels.find((id) => profile.availableModels.some((m) => m.id === id && isAgentModel(m)));
-    const effectivePreferredEmbeddingModelId = getDefaultPreferredAuxModelId(profile, EMBEDDING_INFERENCE_BACKEND, isEmbeddingModel, selectedModels);
+    const embeddingBackend = selectedBackend === 'lemonade' ? selectedBackend : EMBEDDING_INFERENCE_BACKEND;
+    const effectivePreferredEmbeddingModelId = getDefaultPreferredAuxModelId(profile, embeddingBackend, isEmbeddingModel, selectedModels);
     const effectivePreferredVisionModelId = getDefaultPreferredAuxModelId(profile, selectedBackend, isVisionModel, selectedModels);
 
     return {
       agentFrameworks,
       selectedModels,
-      // Everything the Hub itself can install: Ollama rows, plus the single mlx-dspark row that
-      // will be resident (see hubLoadableSelection — the server holds one model, not a list).
+      // Everything the Hub itself can install: Ollama/Lemonade rows, plus the single mlx-dspark row
+      // that will be resident (see hubLoadableSelection — that server holds one model, not a list).
       // The field name is historical; it is the pull/pin list, not an Ollama-only list.
       ollamaSelectedModelIds: hubLoadableSelection(
         selectedModels,
@@ -501,6 +549,7 @@ export const AiSetupStep = ({
       ...(selectedBackend === 'vllm' && vllmUrl.trim() ? { vllmUrl: vllmUrl.trim() } : {}),
       ...(selectedBackend === 'mtplx' && mtplxUrl.trim() ? { mtplxUrl: mtplxUrl.trim() } : {}),
       ...(selectedBackend === 'dspark' && dsparkUrl.trim() ? { dsparkUrl: dsparkUrl.trim() } : {}),
+      ...(selectedBackend === 'mlx' && mlxUrl.trim() ? { mlxUrl: mlxUrl.trim() } : {}),
     };
   };
 
@@ -533,6 +582,7 @@ export const AiSetupStep = ({
     vllmUrl,
     mtplxUrl,
     dsparkUrl,
+    mlxUrl,
     onConfigChange,
   ]);
 
@@ -610,7 +660,9 @@ export const AiSetupStep = ({
   const needsVllmForContinue = selectedBackend === 'vllm' && (vllmStatus === null || !vllmStatus.ready);
   const needsMtplxForContinue = selectedBackend === 'mtplx' && (mtplxStatus === null || !mtplxStatus.ready);
   const needsDsparkForContinue = selectedBackend === 'dspark' && (dsparkStatus === null || !dsparkStatus.ready);
-  // All three host-run backends leave embeddings on Ollama, so the co-install warning covers all.
+  const needsLemonadeForContinue = selectedBackend === 'lemonade' && (lemonadeStatus === null || !lemonadeStatus.ready);
+  const needsMlxForContinue = selectedBackend === 'mlx' && (mlxStatus === null || !mlxStatus.ready);
+  // Host-run backends leave embeddings on Ollama, so the co-install warning covers all of them.
   const ollamaEmbeddingsWarning = isHostServedBackend(selectedBackend) && ollamaStatus !== null && !ollamaStatus.ready && !checkingOllama;
   const showTailscaleSetup = remoteAccess.includes('tailscale');
 
@@ -675,6 +727,25 @@ export const AiSetupStep = ({
                 onRecheck={handleDsparkRecheck}
                 endpointUrl={dsparkUrl}
                 onEndpointUrlChange={setDsparkUrl}
+              />
+            </StepSection>
+          ) : selectedBackend === 'lemonade' ? (
+            <StepSection
+              number={3}
+              badge="required"
+              title={t('ONBOARDING_LEMONADE_SECTION_TITLE')}
+              description={t('ONBOARDING_LEMONADE_SECTION_DESC')}
+            >
+              <LemonadeSetupCard status={lemonadeStatus} checking={checkingLemonade} onRecheck={handleLemonadeRecheck} />
+            </StepSection>
+          ) : selectedBackend === 'mlx' ? (
+            <StepSection number={3} badge="required" title={t('ONBOARDING_MLX_SECTION_TITLE')} description={t('ONBOARDING_MLX_SECTION_DESC')}>
+              <MlxSetupCard
+                status={mlxStatus}
+                checking={checkingMlx}
+                onRecheck={handleMlxRecheck}
+                endpointUrl={mlxUrl}
+                onEndpointUrlChange={setMlxUrl}
               />
             </StepSection>
           ) : (
@@ -753,12 +824,19 @@ export const AiSetupStep = ({
               onClick={handleContinue}
               data-testid="ai-continue-btn"
               disabled={
-                (needsOllamaForContinue || needsVllmForContinue || needsMtplxForContinue || needsDsparkForContinue) &&
+                (needsOllamaForContinue ||
+                  needsVllmForContinue ||
+                  needsMtplxForContinue ||
+                  needsDsparkForContinue ||
+                  needsLemonadeForContinue ||
+                  needsMlxForContinue) &&
                 !isInsufficient &&
                 ((needsOllamaForContinue && (checkingOllama || !ollamaStatus?.ready)) ||
                   (needsVllmForContinue && (checkingVllm || !vllmStatus?.ready)) ||
                   (needsMtplxForContinue && (checkingMtplx || !mtplxStatus?.ready)) ||
-                  (needsDsparkForContinue && (checkingDspark || !dsparkStatus?.ready)))
+                  (needsDsparkForContinue && (checkingDspark || !dsparkStatus?.ready)) ||
+                  (needsLemonadeForContinue && (checkingLemonade || !lemonadeStatus?.ready)) ||
+                  (needsMlxForContinue && (checkingMlx || !mlxStatus?.ready)))
               }
             >
               {isInsufficient && cloudProviders.filter((p) => p.apiKey.trim()).length === 0

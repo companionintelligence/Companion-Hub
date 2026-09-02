@@ -74,7 +74,7 @@ export type AppContextDto = {
         ciHubOrganizationLabel?: string;
         ciHubDeviceSlug?: string;
         ciHubHubSubdomain?: string;
-        inferenceBackend?: 'ollama' | 'vllm' | 'lemonade' | 'mtplx' | 'dspark';
+        inferenceBackend?: 'ollama' | 'vllm' | 'lemonade' | 'mtplx' | 'dspark' | 'mlx';
         inferenceModel?: string;
         inferenceEmbeddingModel?: string;
         inferenceVisionModel?: string;
@@ -82,6 +82,7 @@ export type AppContextDto = {
         inferenceVllmUrl?: string;
         inferenceMtplxUrl?: string;
         inferenceDsparkUrl?: string;
+        inferenceMlxUrl?: string;
         inferenceCloudProviders?: Array<{
             provider: 'openai' | 'anthropic' | 'google' | 'github-copilot';
             apiKey?: string;
@@ -156,7 +157,7 @@ export type UserSettingsBody = {
     ciHubOrganizationLabel?: string;
     ciHubDeviceSlug?: string;
     ciHubHubSubdomain?: string;
-    inferenceBackend?: 'ollama' | 'vllm' | 'lemonade' | 'mtplx' | 'dspark';
+    inferenceBackend?: 'ollama' | 'vllm' | 'lemonade' | 'mtplx' | 'dspark' | 'mlx';
     inferenceModel?: string;
     inferenceEmbeddingModel?: string;
     inferenceVisionModel?: string;
@@ -164,6 +165,7 @@ export type UserSettingsBody = {
     inferenceVllmUrl?: string;
     inferenceMtplxUrl?: string;
     inferenceDsparkUrl?: string;
+    inferenceMlxUrl?: string;
     inferenceCloudProviders?: Array<{
         provider: 'openai' | 'anthropic' | 'google' | 'github-copilot';
         apiKey?: string;
@@ -1224,7 +1226,7 @@ export type UpdateAppStoreDto = {
 };
 
 export type UpdateInferencePreferencesBody = {
-    backend: 'ollama' | 'vllm' | 'lemonade' | 'mtplx' | 'dspark';
+    backend: 'ollama' | 'vllm' | 'lemonade' | 'mtplx' | 'dspark' | 'mlx';
     model?: string;
     embeddingModel?: string;
     visionModel?: string;
@@ -1232,6 +1234,7 @@ export type UpdateInferencePreferencesBody = {
     vllmUrl?: string;
     mtplxUrl?: string;
     dsparkUrl?: string;
+    mlxUrl?: string;
 };
 
 export type UpdateRocmInstallStateBody = {
@@ -1919,14 +1922,15 @@ export type StreamHubLogsQueryDto = {
 };
 
 export type OnboardingProfileQueryDto = {
-    backend?: 'ollama' | 'vllm' | 'lemonade' | 'mtplx' | 'dspark';
+    backend?: 'ollama' | 'vllm' | 'lemonade' | 'mtplx' | 'dspark' | 'mlx';
     vllmUrl?: string;
     mtplxUrl?: string;
     dsparkUrl?: string;
+    mlxUrl?: string;
 };
 
 export type RuntimeModelsQueryDto = {
-    backend: 'ollama' | 'vllm' | 'lemonade' | 'mtplx' | 'dspark';
+    backend: 'ollama' | 'vllm' | 'lemonade' | 'mtplx' | 'dspark' | 'mlx';
 };
 
 export type MetadataDto = {
@@ -3531,7 +3535,7 @@ export type GetRuntimeModelsData = {
     body?: never;
     path?: never;
     query: {
-        backend: 'ollama' | 'vllm' | 'lemonade' | 'mtplx' | 'dspark';
+        backend: 'ollama' | 'vllm' | 'lemonade' | 'mtplx' | 'dspark' | 'mlx';
     };
     url: '/api/inference/models/runtime';
 };
@@ -3726,10 +3730,11 @@ export type GetOnboardingProfileData = {
     };
     path?: never;
     query?: {
-        backend?: 'ollama' | 'vllm' | 'lemonade' | 'mtplx' | 'dspark';
+        backend?: 'ollama' | 'vllm' | 'lemonade' | 'mtplx' | 'dspark' | 'mlx';
         vllmUrl?: string;
         mtplxUrl?: string;
         dsparkUrl?: string;
+        mlxUrl?: string;
     };
     url: '/api/inference/onboarding-profile';
 };
@@ -3746,6 +3751,17 @@ export type GetOllamaStatusData = {
 };
 
 export type GetOllamaStatusResponses = {
+    200: unknown;
+};
+
+export type GetLemonadeStatusData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/inference/lemonade/status';
+};
+
+export type GetLemonadeStatusResponses = {
     200: unknown;
 };
 
@@ -3791,6 +3807,19 @@ export type GetMtplxStatusData = {
 };
 
 export type GetMtplxStatusResponses = {
+    200: unknown;
+};
+
+export type GetMlxStatusData = {
+    body?: never;
+    path?: never;
+    query?: {
+        url?: string;
+    };
+    url: '/api/inference/mlx/status';
+};
+
+export type GetMlxStatusResponses = {
     200: unknown;
 };
 

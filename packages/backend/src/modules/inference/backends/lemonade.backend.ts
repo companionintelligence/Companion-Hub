@@ -3,6 +3,7 @@ import { LoggerService } from '@/core/logger/logger.service';
 import type { InferenceBackend } from './backend.interface';
 import type { BackendHealthStatus, BackendModelInfo, PullProgress } from '@ci-hub/common/types';
 import axios from 'axios';
+import { OpenAiCompatibleClient } from './openai-compatible.client';
 
 @Injectable()
 export class LemonadeBackend implements InferenceBackend {
@@ -21,12 +22,11 @@ export class LemonadeBackend implements InferenceBackend {
     try {
       const response = await axios.get(`${this.baseUrl}/v1/health`, { timeout: 5000 });
       if (response.status === 200) {
-        const modelsResp = await axios.get(`${this.baseUrl}/v1/models`, { timeout: 5000 }).catch(() => ({ data: { data: [] } }));
-        const models = modelsResp.data?.data ?? [];
+        const models = await new OpenAiCompatibleClient(this.baseUrl).listModels(5000).catch(() => []);
         return {
           running: true,
           healthy: true,
-          modelsLoaded: models.map((m: { id: string }) => m.id),
+          modelsLoaded: models.map((model) => model.id),
         };
       }
       return { running: true, healthy: false, modelsLoaded: [] };
@@ -42,11 +42,10 @@ export class LemonadeBackend implements InferenceBackend {
 
   async listModels(): Promise<BackendModelInfo[]> {
     try {
-      const response = await axios.get(`${this.baseUrl}/v1/models`, { timeout: 10000 });
-      const models = response.data?.data ?? [];
-      return models.map((m: { id: string; owned_by?: string }) => ({
-        id: m.id,
-        name: m.id,
+      const models = await new OpenAiCompatibleClient(this.baseUrl).listModels();
+      return models.map((model) => ({
+        id: model.id,
+        name: model.id,
         size: 0,
         loaded: true,
       }));
@@ -69,12 +68,12 @@ export class LemonadeBackend implements InferenceBackend {
 
   async loadModel(modelId: string): Promise<void> {
     this.logger.info(`[Lemonade] Loading model: ${modelId}`);
-    await axios.post(`${this.baseUrl}/v1/models/load`, { model: modelId }, { timeout: 120000 });
+    await axios.post(`${this.baseUrl}/v1/load`, { model_name: modelId }, { timeout: 120000 });
   }
 
   async unloadModel(modelId: string): Promise<void> {
     this.logger.info(`[Lemonade] Unloading model: ${modelId}`);
-    await axios.post(`${this.baseUrl}/v1/models/unload`, { model: modelId }, { timeout: 30000 });
+    await axios.post(`${this.baseUrl}/v1/unload`, { model_name: modelId }, { timeout: 30000 });
   }
 
   async isModelLoaded(modelId: string): Promise<boolean> {

@@ -14,6 +14,8 @@ const {
   fetchOllamaInstallStatus,
   fetchVllmInstallStatus,
   fetchDsparkInstallStatus,
+  fetchLemonadeInstallStatus,
+  fetchMlxInstallStatus,
   saveInferencePreferences,
   rescanInferenceHardware,
   pinInferenceModel,
@@ -29,6 +31,8 @@ const {
   fetchOllamaInstallStatus: vi.fn(),
   fetchVllmInstallStatus: vi.fn(),
   fetchDsparkInstallStatus: vi.fn(),
+  fetchLemonadeInstallStatus: vi.fn(),
+  fetchMlxInstallStatus: vi.fn(),
   saveInferencePreferences: vi.fn(),
   rescanInferenceHardware: vi.fn(),
   pinInferenceModel: vi.fn(),
@@ -46,6 +50,8 @@ vi.mock('@/lib/inference/inference-api', () => ({
   fetchOllamaInstallStatus,
   fetchVllmInstallStatus,
   fetchDsparkInstallStatus,
+  fetchLemonadeInstallStatus,
+  fetchMlxInstallStatus,
   saveInferencePreferences,
   rescanInferenceHardware,
   pinInferenceModel,
@@ -120,6 +126,8 @@ vi.mock('@/modules/onboarding/components/ai-setup/primitives', () => ({
 
 vi.mock('@/modules/onboarding/components/ai-setup/icons', () => ({
   ModelIcon: () => null,
+  LemonadeIcon: () => null,
+  MlxIcon: () => null,
 }));
 
 vi.mock('@/modules/onboarding/components/ai-setup/backend-selection-card', () => ({
@@ -231,6 +239,8 @@ describe('AiSettingsContainer', () => {
     fetchOllamaInstallStatus.mockResolvedValue({ ready: true, running: true, endpointUrl: 'http://localhost:11434' });
     fetchVllmInstallStatus.mockResolvedValue({ ready: true, running: true, endpointUrl: 'http://localhost:8000' });
     fetchDsparkInstallStatus.mockResolvedValue({ ready: false, running: false, endpointUrl: 'http://localhost:8080' });
+    fetchLemonadeInstallStatus.mockResolvedValue({ ready: true, running: true, endpointUrl: 'http://localhost:13305' });
+    fetchMlxInstallStatus.mockResolvedValue({ ready: false, running: false, endpointUrl: 'http://localhost:8080' });
     saveInferencePreferences.mockResolvedValue(undefined);
     rescanInferenceHardware.mockResolvedValue(undefined);
     ensurePullsStarted.mockResolvedValue(undefined);
@@ -280,6 +290,7 @@ describe('AiSettingsContainer', () => {
         vllmUrl: null,
         mtplxUrl: null,
         dsparkUrl: null,
+        mlxUrl: null,
       });
     });
   });

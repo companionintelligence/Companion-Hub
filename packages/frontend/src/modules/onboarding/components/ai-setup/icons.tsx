@@ -115,6 +115,16 @@ export function DsparkIcon({ className }: IconProps) {
   );
 }
 
+/** MLX-LM — native Apple Silicon matrix operations. */
+export function MlxIcon({ className }: IconProps) {
+  return (
+    <Glyph className={className}>
+      <path d="M5 5h5v5H5zM14 5h5v5h-5zM5 14h5v5H5zM14 14h5v5h-5z" />
+      <path d="M10 7.5h4M7.5 10v4M16.5 10v4M10 16.5h4" />
+    </Glyph>
+  );
+}
+
 /* ── Model labs without an official brand mark (custom marks) ────────────────────────────────── */
 // These labs don't have a sourced SVG in /public/brands (unlike the CREATOR_BRAND set below, which
 // are official marks). Rather than fetch third-party logo files we can't vet the provenance of, these

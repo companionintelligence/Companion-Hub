@@ -23,11 +23,11 @@ const amdProfile = {
 } as HardwareProfileResponse;
 
 describe('inference-backend-availability', () => {
-  // vLLM is a host-run/remote OpenAI-compatible endpoint; the endpoint probe is the gate,
-  // not the local GPU vendor. Only dark-launched Lemonade stays unavailable.
+  // vLLM, Lemonade, and MLX are selectable when their endpoint is reachable; the endpoint probe
+  // is the gate, not the local GPU vendor.
   it('keeps vLLM selectable regardless of GPU vendor', () => {
-    expect(unavailableInferenceBackends(nvidiaProfile)).toEqual(['lemonade']);
-    expect(unavailableInferenceBackends(amdProfile)).toEqual(['lemonade']);
+    expect(unavailableInferenceBackends(nvidiaProfile)).toEqual([]);
+    expect(unavailableInferenceBackends(amdProfile)).toEqual([]);
   });
 
   it('keeps embeddings on Ollama', () => {
@@ -35,13 +35,14 @@ describe('inference-backend-availability', () => {
   });
 
   describe('isHubLoadableBackend', () => {
-    // Deliberately NOT the complement of isHostServedBackend: mlx-dspark is both host-run (the Hub
-    // only holds a URL) and Hub-loadable (it accepts POST /admin/load). vLLM is only the former.
-    it('covers the backends the Hub can install into, which includes mlx-dspark', () => {
+    // Deliberately NOT the complement of isHostServedBackend: mlx-dspark and Lemonade are both
+    // host-run (the Hub only holds a URL) and Hub-loadable (they accept model lifecycle calls).
+    it('covers the backends the Hub can install into', () => {
       expect(isHubLoadableBackend('ollama')).toBe(true);
       expect(isHubLoadableBackend('dspark')).toBe(true);
+      expect(isHubLoadableBackend('lemonade')).toBe(true);
       expect(isHubLoadableBackend('vllm')).toBe(false);
-      expect(isHubLoadableBackend('lemonade')).toBe(false);
+      expect(isHubLoadableBackend('mlx')).toBe(false);
       expect(isHubLoadableBackend(undefined)).toBe(false);
     });
   });

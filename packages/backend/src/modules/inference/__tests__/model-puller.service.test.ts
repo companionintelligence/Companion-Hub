@@ -12,6 +12,7 @@ import { VllmBackend } from '../backends/vllm.backend';
 import { LemonadeBackend } from '../backends/lemonade.backend';
 import { MtplxBackend } from '../backends/mtplx.backend';
 import { DsparkBackend } from '../backends/dspark.backend';
+import { MlxBackend } from '../backends/mlx.backend';
 import type { CuratedModel, HardwareProfile } from '@ci-hub/common/types';
 
 const profile: HardwareProfile = {
@@ -98,6 +99,7 @@ describe('ModelPullerService.evaluatePull', () => {
         { provide: LemonadeBackend, useValue: mock<LemonadeBackend>() },
         { provide: MtplxBackend, useValue: mock<MtplxBackend>() },
         { provide: DsparkBackend, useValue: mock<DsparkBackend>() },
+        { provide: MlxBackend, useValue: mock<MlxBackend>() },
       ],
     }).compile();
 
@@ -226,6 +228,7 @@ describe('ModelPullerService.startPull', () => {
         { provide: LemonadeBackend, useValue: mock<LemonadeBackend>() },
         { provide: MtplxBackend, useValue: mock<MtplxBackend>() },
         { provide: DsparkBackend, useValue: mock<DsparkBackend>() },
+        { provide: MlxBackend, useValue: mock<MlxBackend>() },
       ],
     }).compile();
 

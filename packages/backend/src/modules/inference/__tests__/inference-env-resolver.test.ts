@@ -11,6 +11,7 @@ import { VllmBackend } from '../backends/vllm.backend';
 import { LemonadeBackend } from '../backends/lemonade.backend';
 import { MtplxBackend } from '../backends/mtplx.backend';
 import { DsparkBackend } from '../backends/dspark.backend';
+import { MlxBackend } from '../backends/mlx.backend';
 import { CloudFallbackService } from '../cloud-fallback.service';
 import type { CloudProviderConfig, CuratedModel, HardwareProfile } from '@ci-hub/common/types';
 
@@ -101,6 +102,7 @@ describe('InferenceEnvResolver', () => {
   let lemonadeBackend: MockProxy<LemonadeBackend>;
   let mtplxBackend: MockProxy<MtplxBackend>;
   let dsparkBackend: MockProxy<DsparkBackend>;
+  let mlxBackend: MockProxy<MlxBackend>;
   let cloudFallback: MockProxy<CloudFallbackService>;
 
   beforeEach(async () => {
@@ -113,6 +115,7 @@ describe('InferenceEnvResolver', () => {
     lemonadeBackend = mock<LemonadeBackend>();
     mtplxBackend = mock<MtplxBackend>();
     dsparkBackend = mock<DsparkBackend>();
+    mlxBackend = mock<MlxBackend>();
     cloudFallback = mock<CloudFallbackService>();
 
     config.getInferencePreferences.mockReturnValue({
@@ -149,6 +152,7 @@ describe('InferenceEnvResolver', () => {
         { provide: LemonadeBackend, useValue: lemonadeBackend },
         { provide: MtplxBackend, useValue: mtplxBackend },
         { provide: DsparkBackend, useValue: dsparkBackend },
+        { provide: MlxBackend, useValue: mlxBackend },
         { provide: CloudFallbackService, useValue: cloudFallback },
       ],
     }).compile();

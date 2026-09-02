@@ -5,6 +5,7 @@ import {
   ONBOARDING_BACKEND_DSPARK_HINT,
   ONBOARDING_BACKEND_LEMONADE_HINT,
   ONBOARDING_BACKEND_MTPLX_HINT,
+  ONBOARDING_BACKEND_MLX_HINT,
   ONBOARDING_BACKEND_OLLAMA_HINT,
   ONBOARDING_BACKEND_VLLM_HINT,
 } from '@/components/hub-status/hub-status-tooltips';
@@ -18,6 +19,7 @@ const BACKEND_HINT_KEYS: Record<InferenceBackendType, string> = {
   lemonade: ONBOARDING_BACKEND_LEMONADE_HINT,
   mtplx: ONBOARDING_BACKEND_MTPLX_HINT,
   dspark: ONBOARDING_BACKEND_DSPARK_HINT,
+  mlx: ONBOARDING_BACKEND_MLX_HINT,
 };
 
 const BACKEND_INFO: Record<InferenceBackendType, { label: string; descriptionKey: string }> = {
@@ -25,7 +27,8 @@ const BACKEND_INFO: Record<InferenceBackendType, { label: string; descriptionKey
   vllm: { label: 'vLLM', descriptionKey: 'ONBOARDING_BACKEND_VLLM_DESC' },
   lemonade: { label: 'Lemonade', descriptionKey: 'ONBOARDING_BACKEND_LEMONADE_DESC' },
   mtplx: { label: 'MTPLX', descriptionKey: 'ONBOARDING_BACKEND_MTPLX_DESC' },
-  dspark: { label: 'mlx-dspark', descriptionKey: 'ONBOARDING_BACKEND_DSPARK_DESC' },
+  dspark: { label: 'Speculative inference', descriptionKey: 'ONBOARDING_BACKEND_DSPARK_DESC' },
+  mlx: { label: 'MLX', descriptionKey: 'ONBOARDING_BACKEND_MLX_DESC' },
 };
 
 interface BackendSelectionCardProps {
@@ -118,9 +121,8 @@ export const BackendSelectionCard = ({
 };
 
 /**
- * Step 2 — Inference Backend (onboarding). Ollama is the only enabled backend for now and is
- * selected by default; vLLM and Lemonade are shown for context but disabled until they're supported
- * in onboarding. The orchestrator pins `selectedBackend` to 'ollama' to match.
+ * Legacy static backend card retained for older consumers. The live selector above is the source
+ * of truth and includes every backend returned by the profile.
  */
 export const BackendCard = () => {
   const { t } = useTranslation();

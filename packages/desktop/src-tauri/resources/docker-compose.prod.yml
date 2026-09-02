@@ -162,6 +162,7 @@ services:
       OLLAMA_URL: http://host.docker.internal:11434
       VLLM_URL: ${VLLM_URL:-http://host.docker.internal:8000}
       DSPARK_URL: ${DSPARK_URL:-http://host.docker.internal:8080}
+      MLX_URL: ${MLX_URL:-http://host.docker.internal:8080}
       VLLM_API_KEY: ${VLLM_API_KEY:-}
       LEMONADE_URL: ${LEMONADE_URL:-http://host.docker.internal:13305}
       API_PORT: 5002

@@ -24,6 +24,7 @@ import { VllmBackend } from '../backends/vllm.backend';
 import { LemonadeBackend } from '../backends/lemonade.backend';
 import { MtplxBackend } from '../backends/mtplx.backend';
 import { DsparkBackend } from '../backends/dspark.backend';
+import { MlxBackend } from '../backends/mlx.backend';
 import { HostMetricsService } from '@/modules/system/host-metrics.service';
 
 describe('InferenceController — preferences', () => {
@@ -51,6 +52,7 @@ describe('InferenceController — preferences', () => {
         { provide: LemonadeBackend, useValue: mock<LemonadeBackend>() },
         { provide: MtplxBackend, useValue: mock<MtplxBackend>() },
         { provide: DsparkBackend, useValue: mock<DsparkBackend>() },
+        { provide: MlxBackend, useValue: mock<MlxBackend>() },
         { provide: LoggerService, useValue: mock<LoggerService>() },
       ],
     }).compile();
@@ -115,6 +117,7 @@ describe('InferenceController — preferences', () => {
       undefined,
       undefined,
       undefined,
+      undefined,
     );
     expect(result).toEqual({
       preferredBackend: 'lemonade',
@@ -144,6 +147,7 @@ describe('InferenceController — preferences', () => {
       'hermes4-8b',
       'nomic-embed-text',
       'gemma4-27b',
+      undefined,
       undefined,
       undefined,
       undefined,
@@ -182,6 +186,7 @@ describe('InferenceController — preferences', () => {
       'http://192.168.1.50:8000',
       undefined,
       undefined,
+      undefined,
     );
   }, 30_000);
 
@@ -208,6 +213,7 @@ describe('InferenceController — preferences', () => {
       undefined,
       'http://192.168.1.50:8000',
       undefined,
+      undefined,
     );
   }, 30_000);
 
@@ -227,6 +233,34 @@ describe('InferenceController — preferences', () => {
 
     expect(configService.setInferencePreferences).toHaveBeenCalledWith(
       'dspark',
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      'http://192.168.1.50:8080',
+      undefined,
+    );
+  }, 30_000);
+
+  it('passes the MLX-LM endpoint URL through when provided', async () => {
+    configService.setInferencePreferences.mockResolvedValue({
+      preferredBackend: 'mlx',
+      preferredModel: null,
+      preferredEmbeddingModel: null,
+      preferredVisionModel: null,
+      preferredMlxUrl: 'http://192.168.1.50:8080',
+    } as never);
+
+    await controller.updatePreferences({
+      backend: 'mlx',
+      mlxUrl: 'http://192.168.1.50:8080',
+    });
+
+    expect(configService.setInferencePreferences).toHaveBeenCalledWith(
+      'mlx',
+      undefined,
       undefined,
       undefined,
       undefined,
