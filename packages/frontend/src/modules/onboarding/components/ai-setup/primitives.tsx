@@ -23,6 +23,11 @@ interface StepSectionProps {
   collapsible?: boolean;
   /** Initial disclosure state when {@link collapsible} is enabled. */
   defaultOpen?: boolean;
+  /** Make the complete section a single checkbox-like option. */
+  selected?: boolean;
+  onSelect?: () => void;
+  selectionDisabled?: boolean;
+  selectionTestId?: string;
   className?: string;
 }
 
@@ -54,12 +59,36 @@ export function StepSection({
   action,
   collapsible = false,
   defaultOpen = true,
+  selected = false,
+  onSelect,
+  selectionDisabled = false,
+  selectionTestId,
   className,
 }: StepSectionProps) {
   const [open, setOpen] = useState(defaultOpen);
+  const selectable = Boolean(onSelect);
 
-  return (
-    <section className={cn('rounded-lg border border-border bg-gradient-to-b from-card to-card/60 p-5 shadow-sm sm:p-6', className)}>
+  const section = (
+    <section
+      className={cn(
+        'rounded-lg border border-border bg-gradient-to-b from-card to-card/60 p-5 shadow-sm sm:p-6',
+        selectable && 'relative cursor-pointer transition-colors',
+        selectable && selected && 'border-primary ring-1 ring-primary/30',
+        selectable && selectionDisabled && 'cursor-not-allowed opacity-60',
+        className,
+      )}
+      data-testid={selectionTestId}
+    >
+      {selectable && (
+        <input
+          type="checkbox"
+          checked={selected}
+          disabled={selectionDisabled}
+          aria-label={title}
+          onChange={() => onSelect?.()}
+          className="absolute inset-0 z-10 h-full w-full cursor-pointer opacity-0 focus-visible:rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 disabled:cursor-not-allowed"
+        />
+      )}
       <div className={cn('flex items-start justify-between gap-3', !collapsible || open ? 'mb-4' : 'mb-0')}>
         {collapsible ? (
           <div className="flex min-w-0 flex-1 items-start gap-2">
@@ -119,6 +148,7 @@ export function StepSection({
       {(!collapsible || open) && children}
     </section>
   );
+  return section;
 }
 
 /** Circular selection marker — a filled cyan check when selected, an empty ring otherwise. */
@@ -221,6 +251,8 @@ interface ModelCardProps {
   installed?: boolean;
   /** Right-aligned resource footer (RAM / disk). */
   meta?: ReactNode;
+  /** Place the resource metadata beside the capability tags instead of in a separate footer row. */
+  metaInline?: boolean;
   /** Artificial Analysis benchmark scores (omitted fields are hidden). */
   scores?: { intelligence?: number; toolCalling?: number };
   testId?: string;
@@ -253,6 +285,7 @@ export function ModelCard({
   agentDefault,
   installed,
   meta,
+  metaInline = false,
   scores,
   testId,
   checkboxTestId,
@@ -289,16 +322,27 @@ export function ModelCard({
           {description && <span className="mt-0.5 block text-xs text-muted-foreground">{description}</span>}
         </span>
       </span>
-      {tags.length > 0 && (
-        <span className="flex flex-wrap gap-1.5">
-          {tags.map((tag) => (
-            <span
-              key={tag}
-              className="rounded-md border border-primary/40 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-primary"
-            >
-              {tag}
+      {(tags.length > 0 || (metaInline && meta)) && (
+        <span className="flex items-center justify-between gap-2">
+          {tags.length > 0 ? (
+            <span className="flex min-w-0 flex-wrap gap-1.5">
+              {tags.map((tag) => (
+                <span
+                  key={tag}
+                  className="rounded-md border border-primary/40 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-primary"
+                >
+                  {tag}
+                </span>
+              ))}
             </span>
-          ))}
+          ) : (
+            <span />
+          )}
+          {metaInline && meta && (
+            <span className="shrink-0 text-xs text-muted-foreground" data-testid="model-meta-inline">
+              {meta}
+            </span>
+          )}
         </span>
       )}
       {scores && (scores.intelligence != null || scores.toolCalling != null) && (
@@ -307,7 +351,7 @@ export function ModelCard({
           {scores.toolCalling != null && <ScoreBar label={t('ONBOARDING_TOOL_USE')} value={scores.toolCalling} testId="score-tools" />}
         </span>
       )}
-      {meta && <span className="block text-xs text-muted-foreground">{meta}</span>}
+      {meta && !metaInline && <span className="block text-xs text-muted-foreground">{meta}</span>}
     </label>
   );
 }

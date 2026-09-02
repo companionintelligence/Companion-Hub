@@ -65,14 +65,14 @@ export function modelTags(model: CuratedModel, t?: TranslateFn): string[] {
   return purpose ? [purpose.charAt(0).toUpperCase() + purpose.slice(1)] : [];
 }
 
-export function modelMeta(model: CuratedModel): ReactNode {
+export function modelMeta(model: CuratedModel, includeStorage = true): ReactNode {
   return (
     <span className="flex items-center gap-3">
       <span className="flex items-center gap-1">
         <MemoryStick className="h-3 w-3 flex-shrink-0" />
         {formatSize(model.runtime.memoryFootprintMb)}
       </span>
-      {model.requirements?.diskMb != null && (
+      {includeStorage && model.requirements?.diskMb != null && (
         <span className="flex items-center gap-1">
           <HardDrive className="h-3 w-3 flex-shrink-0" />
           {formatSize(model.requirements.diskMb)}
@@ -138,7 +138,8 @@ export const RecommendedModels = ({
               onToggle={() => onToggleModel(model.id)}
               agentDefault={model.id === preferredModelId}
               installed={installed.has(model.id)}
-              meta={modelMeta(model)}
+              meta={modelMeta(model, false)}
+              metaInline
               scores={modelScores(model)}
             />
           ))}

@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useState } from 'react';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
@@ -74,6 +74,10 @@ describe('CompanionAppsCard', () => {
     expect(onEmit).toHaveBeenLastCalledWith([
       expect.objectContaining({ appSlug: 'ci-memory', urn: 'urn:store:ci-memory', exposureMode: 'cloudflare' }),
     ]);
+    const memoryOption = screen.getByTestId('companion-app-ci-memory');
+    expect(within(memoryOption).getByRole('checkbox', { name: 'ONBOARDING_COMPANION_MEMORY_TITLE' })).toBeChecked();
+    expect(screen.getByText('ONBOARDING_COMPANION_MEMORY_DESC')).toBeInTheDocument();
+    expect(screen.queryByText('ONBOARDING_BUILT_BY_COMPANION')).not.toBeInTheDocument();
     expect(screen.queryByTestId('companion-app-ci-import-tools')).not.toBeInTheDocument();
   });
 
@@ -85,8 +89,10 @@ describe('CompanionAppsCard', () => {
     await waitFor(() => expect(onEmit).toHaveBeenCalled());
     onEmit.mockClear();
 
-    await user.click(screen.getByTestId('companion-app-ci-memory'));
+    const memoryOption = screen.getByTestId('companion-app-ci-memory');
+    await user.click(within(memoryOption).getByRole('checkbox', { name: 'ONBOARDING_COMPANION_MEMORY_TITLE' }));
     expect(onEmit).toHaveBeenLastCalledWith([]);
+    expect(within(memoryOption).getByRole('checkbox', { name: 'ONBOARDING_COMPANION_MEMORY_TITLE' })).not.toBeChecked();
   });
 
   it('marks unavailable apps as disabled without adding store-status copy', async () => {
@@ -97,7 +103,7 @@ describe('CompanionAppsCard', () => {
 
     await waitFor(() => expect(onEmit).toHaveBeenCalled());
     expect(onEmit).toHaveBeenLastCalledWith([]);
-    expect(screen.getByTestId('companion-app-ci-memory')).toBeDisabled();
+    expect(within(screen.getByTestId('companion-app-ci-memory')).getByRole('checkbox')).toBeDisabled();
     expect(screen.queryByText('ONBOARDING_COMPANION_APP_UNAVAILABLE')).not.toBeInTheDocument();
   });
 

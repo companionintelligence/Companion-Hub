@@ -46,6 +46,7 @@ import {
   hubLoadableSelection,
   hiddenInferenceBackends,
   isHostServedBackend,
+  recommendedInferenceBackend,
   unavailableInferenceBackends,
 } from '../helpers/inference-backend-availability';
 import { Skeleton } from '@/components/ui/Skeleton/Skeleton';
@@ -197,7 +198,7 @@ export const AiSetupStep = ({
       // selection to that backend's defaults.
       if (profileRequestId.current !== requestId) return;
       setProfile(data);
-      const requestedBackend = backendOverride ?? data.backends.recommended;
+      const requestedBackend = backendOverride ?? recommendedInferenceBackend(data);
       const hiddenBackends = hiddenInferenceBackends(data);
       const resolvedBackend = hiddenBackends.includes(requestedBackend)
         ? (data.backends.available.find(({ type }) => !hiddenBackends.includes(type))?.type ?? 'ollama')
@@ -668,7 +669,7 @@ export const AiSetupStep = ({
           <AgentFrameworkCard frameworks={agentFrameworks} onToggleFramework={toggleFramework} />
 
           <BackendSelectionCard
-            recommended={profile.backends.recommended}
+            recommended={recommendedInferenceBackend(profile)}
             available={profile.backends.available}
             selected={selectedBackend}
             onSelect={handleSelectBackend}

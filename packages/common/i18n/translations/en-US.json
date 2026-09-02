@@ -920,7 +920,7 @@
   "ONBOARDING_MODELS_TITLE": "Choose AI models",
   "ONBOARDING_MODELS_CALLOUT": "We pre-select a good default for your hardware. Each card shows download size and what the model is for. You can add more models anytime from Settings.",
   "ONBOARDING_MODELS_INSTALL_AFTER_DOWNLOAD": "Apps install after your selected models finish downloading.",
-  "ONBOARDING_COMPANION_MEMORY_TITLE": "CI Memory",
+  "ONBOARDING_COMPANION_MEMORY_TITLE": "Companion Memory",
   "ONBOARDING_COMPANION_MEMORY_SECTION_DESC": "Your personal knowledge base. Your AI can answer questions using your messages, email, documents, and notes, not just public knowledge.",
   "ONBOARDING_COMPANION_PRIVACY_CALLOUT": "Everything stays on your computer. Your data isn't uploaded to our servers. Your AI runs locally and your information remains yours.",
   "ONBOARDING_BUILT_BY_COMPANION": "Built by CI",

@@ -6,6 +6,7 @@ import {
   hubLoadableSelection,
   hiddenInferenceBackends,
   isHubLoadableBackend,
+  recommendedInferenceBackend,
   unavailableInferenceBackends,
 } from '@/modules/onboarding/helpers/inference-backend-availability';
 
@@ -31,6 +32,21 @@ const macProfile = {
   },
 } as HardwareProfileResponse;
 
+const appleMacProfile = {
+  hardware: {
+    gpu: { vendor: 'apple', runtimeAvailable: false, available: true, unifiedMemory: true },
+    cpu: { arch: 'arm64' },
+    os: { platform: 'darwin', name: 'macOS', version: '15.6' },
+  },
+  backends: {
+    recommended: 'mtplx',
+    available: [
+      { type: 'dspark', running: false, healthy: false },
+      { type: 'mtplx', running: false, healthy: false },
+    ],
+  },
+} as HardwareProfileResponse;
+
 describe('inference-backend-availability', () => {
   // vLLM, Lemonade, and mlx-dspark are selectable when their endpoint is reachable; the endpoint probe
   // is the gate, not the local GPU vendor.
@@ -42,6 +58,16 @@ describe('inference-backend-availability', () => {
   it('hides Lemonade on macOS while leaving other hosts unchanged', () => {
     expect(hiddenInferenceBackends(macProfile)).toEqual(['lemonade']);
     expect(hiddenInferenceBackends(nvidiaProfile)).toEqual([]);
+  });
+
+  it('defaults Apple Silicon Macs to mlx-dspark even when MTPLX is recommended', () => {
+    expect(recommendedInferenceBackend(appleMacProfile)).toBe('dspark');
+    expect(
+      recommendedInferenceBackend({
+        ...appleMacProfile,
+        hardware: { ...appleMacProfile.hardware, os: { platform: 'linux', name: 'Linux', version: '6.0' } },
+      } as HardwareProfileResponse),
+    ).toBe('mtplx');
   });
 
   it('keeps embeddings on Ollama', () => {

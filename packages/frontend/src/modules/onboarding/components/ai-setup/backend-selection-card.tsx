@@ -20,11 +20,11 @@ const BACKEND_HINT_KEYS: Record<InferenceBackendType, string> = {
   dspark: ONBOARDING_BACKEND_DSPARK_HINT,
 };
 
-const BACKEND_INFO: Record<InferenceBackendType, { label: string; descriptionKey: string }> = {
+const BACKEND_INFO: Record<InferenceBackendType, { label: string; descriptionKey?: string }> = {
   ollama: { label: 'Ollama', descriptionKey: 'ONBOARDING_BACKEND_OLLAMA_DESC' },
   vllm: { label: 'vLLM', descriptionKey: 'ONBOARDING_BACKEND_VLLM_DESC' },
   lemonade: { label: 'Lemonade', descriptionKey: 'ONBOARDING_BACKEND_LEMONADE_DESC' },
-  mtplx: { label: 'MTPLX', descriptionKey: 'ONBOARDING_BACKEND_MTPLX_DESC' },
+  mtplx: { label: 'MTPLX' },
   dspark: { label: 'Speculative inference', descriptionKey: 'ONBOARDING_BACKEND_DSPARK_DESC' },
 };
 
@@ -98,7 +98,7 @@ function BackendOption({ backend, recommended, selected, onSelect, disabled, una
             />
           )}
         </div>
-        <div className="text-xs text-muted-foreground">{t(info.descriptionKey)}</div>
+        {info.descriptionKey && <div className="text-xs text-muted-foreground">{t(info.descriptionKey)}</div>}
       </div>
     </label>
   );
