@@ -89,7 +89,7 @@ describe('CompanionAppsCard', () => {
     expect(onEmit).toHaveBeenLastCalledWith([]);
   });
 
-  it('marks unavailable apps as disabled when missing from the store', async () => {
+  it('marks unavailable apps as disabled without adding store-status copy', async () => {
     mockCatalogState.apps = [];
 
     const onEmit = vi.fn();
@@ -98,7 +98,7 @@ describe('CompanionAppsCard', () => {
     await waitFor(() => expect(onEmit).toHaveBeenCalled());
     expect(onEmit).toHaveBeenLastCalledWith([]);
     expect(screen.getByTestId('companion-app-ci-memory')).toBeDisabled();
-    expect(screen.getByText('ONBOARDING_COMPANION_APP_UNAVAILABLE')).toBeInTheDocument();
+    expect(screen.queryByText('ONBOARDING_COMPANION_APP_UNAVAILABLE')).not.toBeInTheDocument();
   });
 
   it('pre-selects CI Memory when the catalog arrives after an empty first response', async () => {

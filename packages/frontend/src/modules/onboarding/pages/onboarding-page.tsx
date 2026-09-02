@@ -93,7 +93,6 @@ function Shell({ children }: { children: React.ReactNode }) {
           />
           <div className="min-w-0 space-y-2">
             <h1 className="text-3xl font-bold tracking-tight text-foreground">{t('COMMON_SET_UP_YOUR_HUB')}</h1>
-            <p className="max-w-2xl text-base leading-relaxed text-muted-foreground">{t('ONBOARDING_CONFIGURE_PRIVATE_COMPANION')}</p>
           </div>
         </div>
         {children}

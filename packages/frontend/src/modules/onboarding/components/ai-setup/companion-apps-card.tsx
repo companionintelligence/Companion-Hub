@@ -28,7 +28,7 @@ interface CompanionAppsCardProps {
 
 export function CompanionAppsCard({ publicExposureMode, onChange }: CompanionAppsCardProps) {
   const { t } = useTranslation();
-  const { apps: storeApps, isLoading: isCatalogLoading, isCatalogSettled, isRetryingEmptyCatalog } = useMarketplaceCatalogApps();
+  const { apps: storeApps, isLoading: isCatalogLoading, isRetryingEmptyCatalog } = useMarketplaceCatalogApps();
 
   const catalogApps = useMemo(
     () =>
@@ -118,7 +118,6 @@ export function CompanionAppsCard({ publicExposureMode, onChange }: CompanionApp
   }, [selected, catalogApps, publicExposureMode, onChange, isCatalogLoading, isRetryingEmptyCatalog]);
 
   const showLoadingState = isCatalogLoading || isRetryingEmptyCatalog;
-  const showUnavailableCopy = isCatalogSettled && !isRetryingEmptyCatalog;
 
   return (
     <StepSection
@@ -173,9 +172,6 @@ export function CompanionAppsCard({ publicExposureMode, onChange }: CompanionApp
                       </span>
                     </span>
                     {description && <span className="mt-0.5 block text-sm leading-snug text-muted-foreground line-clamp-2">{description}</span>}
-                    {!app.available && showUnavailableCopy && (
-                      <span className="mt-1 block text-sm text-muted-foreground">{t('ONBOARDING_COMPANION_APP_UNAVAILABLE')}</span>
-                    )}
                   </span>
                   {app.available && (
                     <span className="absolute right-1.5 top-1.5">

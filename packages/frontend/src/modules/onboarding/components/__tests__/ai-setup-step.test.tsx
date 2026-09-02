@@ -472,6 +472,34 @@ describe('AiSetupStep', () => {
     expect(screen.getByTestId('backend-option-vllm')).toBeInTheDocument();
   });
 
+  it('puts speculative inference first, nests MTPLX beneath it, and hides Lemonade on macOS', async () => {
+    api.profile = {
+      ...highTierProfile,
+      hardware: {
+        ...highTierProfile.hardware,
+        os: { platform: 'darwin', name: 'macOS', version: '15.6' },
+      },
+      backends: {
+        recommended: 'dspark',
+        available: [
+          { type: 'ollama', running: true, healthy: true },
+          { type: 'vllm', running: false, healthy: false },
+          { type: 'lemonade', running: false, healthy: false },
+          { type: 'mtplx', running: false, healthy: false },
+          { type: 'dspark', running: false, healthy: false },
+        ],
+      },
+    };
+
+    renderStep();
+    await waitFor(() => expect(screen.getByTestId('backend-option-dspark')).toBeInTheDocument());
+
+    const optionIds = Array.from(screen.getByTestId('backend-options').querySelectorAll('label')).map((label) => label.dataset.testid);
+    expect(optionIds).toEqual(['backend-option-dspark', 'backend-option-mtplx', 'backend-option-ollama', 'backend-option-vllm']);
+    expect(screen.getByTestId('backend-option-dspark-group')).toContainElement(screen.getByTestId('backend-option-mtplx'));
+    expect(screen.queryByTestId('backend-option-lemonade')).not.toBeInTheDocument();
+  });
+
   it('does not block Continue on vLLM path when Ollama is down', async () => {
     api.profile = {
       ...highTierProfile,
@@ -767,6 +795,7 @@ describe('AiSetupStep', () => {
     api.profile = insufficientProfile;
     renderStep();
     await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
+    await userEvent.setup().click(screen.getByTestId('step-section-toggle-7'));
     expect(screen.getByTestId('cloud-inputs')).toBeInTheDocument();
     expect(screen.getByText(/can't run local AI models/)).toBeInTheDocument();
   });
@@ -1156,7 +1185,8 @@ describe('AiSetupStep', () => {
     renderStep();
     await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
 
-    // Advanced is now a numbered step with the Cloud API Keys shown inline (no accordion).
+    expect(screen.getByTestId('step-section-toggle-7')).toHaveAttribute('aria-expanded', 'false');
+    await user.click(screen.getByTestId('step-section-toggle-7'));
     await user.type(screen.getByTestId('cloud-key-openai'), 'invalid-key');
     expect(screen.getByTestId('cloud-error-openai')).toHaveTextContent('should start with "sk-"');
   });

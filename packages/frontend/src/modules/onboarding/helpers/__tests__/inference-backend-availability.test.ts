@@ -4,6 +4,7 @@ import type { InferenceBackendType } from '@ci-hub/common/types';
 import {
   EMBEDDING_INFERENCE_BACKEND,
   hubLoadableSelection,
+  hiddenInferenceBackends,
   isHubLoadableBackend,
   unavailableInferenceBackends,
 } from '@/modules/onboarding/helpers/inference-backend-availability';
@@ -22,12 +23,25 @@ const amdProfile = {
   },
 } as HardwareProfileResponse;
 
+const macProfile = {
+  ...amdProfile,
+  hardware: {
+    ...amdProfile.hardware,
+    os: { platform: 'darwin', name: 'macOS', version: '15.6' },
+  },
+} as HardwareProfileResponse;
+
 describe('inference-backend-availability', () => {
   // vLLM, Lemonade, and mlx-dspark are selectable when their endpoint is reachable; the endpoint probe
   // is the gate, not the local GPU vendor.
   it('keeps vLLM selectable regardless of GPU vendor', () => {
     expect(unavailableInferenceBackends(nvidiaProfile)).toEqual([]);
     expect(unavailableInferenceBackends(amdProfile)).toEqual([]);
+  });
+
+  it('hides Lemonade on macOS while leaving other hosts unchanged', () => {
+    expect(hiddenInferenceBackends(macProfile)).toEqual(['lemonade']);
+    expect(hiddenInferenceBackends(nvidiaProfile)).toEqual([]);
   });
 
   it('keeps embeddings on Ollama', () => {

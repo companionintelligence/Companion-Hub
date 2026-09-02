@@ -44,6 +44,7 @@ import { computeSelectionBudget } from '../helpers/onboarding-model-selection';
 import {
   EMBEDDING_INFERENCE_BACKEND,
   hubLoadableSelection,
+  hiddenInferenceBackends,
   isHostServedBackend,
   unavailableInferenceBackends,
 } from '../helpers/inference-backend-availability';
@@ -196,7 +197,11 @@ export const AiSetupStep = ({
       // selection to that backend's defaults.
       if (profileRequestId.current !== requestId) return;
       setProfile(data);
-      const resolvedBackend = backendOverride ?? data.backends.recommended;
+      const requestedBackend = backendOverride ?? data.backends.recommended;
+      const hiddenBackends = hiddenInferenceBackends(data);
+      const resolvedBackend = hiddenBackends.includes(requestedBackend)
+        ? (data.backends.available.find(({ type }) => !hiddenBackends.includes(type))?.type ?? 'ollama')
+        : requestedBackend;
       setSelectedBackend(resolvedBackend);
       const defaultSelected = getDefaultSelectedModelIds(data, resolvedBackend);
       setSelectedModelIds(defaultSelected);
@@ -668,6 +673,7 @@ export const AiSetupStep = ({
             selected={selectedBackend}
             onSelect={handleSelectBackend}
             unavailableTypes={unavailableInferenceBackends(profile)}
+            hiddenTypes={hiddenInferenceBackends(profile)}
           />
 
           {selectedBackend === 'vllm' ? (
@@ -693,7 +699,7 @@ export const AiSetupStep = ({
               />
             </StepSection>
           ) : selectedBackend === 'dspark' ? (
-            <StepSection number={3} badge="required" title={t('ONBOARDING_DSPARK_SECTION_TITLE')} description={t('ONBOARDING_DSPARK_SECTION_DESC')}>
+            <StepSection number={3} badge="required" title={t('ONBOARDING_DSPARK_SECTION_TITLE')}>
               <DsparkSetupCard
                 status={dsparkStatus}
                 checking={checkingDspark}
@@ -722,9 +728,7 @@ export const AiSetupStep = ({
               number={3}
               badge="recommended"
               title={t('ONBOARDING_EMBEDDINGS_OLLAMA_SECTION_TITLE')}
-              description={t(
-                selectedBackend === 'dspark' ? 'ONBOARDING_EMBEDDINGS_DSPARK_SECTION_DESC' : 'ONBOARDING_EMBEDDINGS_OLLAMA_SECTION_DESC',
-              )}
+              description={selectedBackend === 'dspark' ? undefined : t('ONBOARDING_EMBEDDINGS_OLLAMA_SECTION_DESC')}
             >
               {ollamaEmbeddingsWarning && (
                 <div

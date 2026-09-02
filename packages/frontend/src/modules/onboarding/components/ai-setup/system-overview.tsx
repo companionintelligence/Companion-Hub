@@ -78,7 +78,6 @@ export const SystemOverview = ({ hardware, tier, onRescan, rescanning = false, a
   // steps for both, so a Windows WSL2-engine user is never told to "open Docker Desktop".
   const isWslEngineHost = hardware.gpu.containerHostKind === 'wsl-engine';
   const showLinuxRuntimeSteps = isLinuxClient() || isWslEngineHost;
-  const ready = tier !== 'insufficient';
 
   return (
     <section className="rounded-lg border border-border bg-linear-to-b from-card to-card/60 p-5 shadow-sm sm:p-6">
@@ -88,9 +87,6 @@ export const SystemOverview = ({ hardware, tier, onRescan, rescanning = false, a
           <h2 className="text-base font-bold uppercase tracking-wide sm:text-lg" data-testid="hw-card-title">
             {t('ONBOARDING_SYSTEM_OVERVIEW_TITLE')}
           </h2>
-          <span className="hidden text-sm text-muted-foreground sm:inline">
-            {ready ? t('ONBOARDING_SYSTEM_OVERVIEW_READY') : t('ONBOARDING_SYSTEM_OVERVIEW_INSUFFICIENT')}
-          </span>
         </div>
         <div className="flex items-center gap-2">
           <span className={cn('rounded-full px-2.5 py-0.5 text-xs font-medium', badge.color)} data-testid="tier-badge">

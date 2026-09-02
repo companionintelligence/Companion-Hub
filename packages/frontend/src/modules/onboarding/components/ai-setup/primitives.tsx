@@ -1,7 +1,8 @@
 import { cn } from '@/lib/utils';
 import { HintText } from '@/components/ui/field-hint/field-hint';
-import { Check } from 'lucide-react';
+import { Check, ChevronRight } from 'lucide-react';
 import type { ReactNode } from 'react';
+import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { LEVEL_BG, LEVEL_TEXT, scoreColor } from './levels';
 
@@ -18,6 +19,10 @@ interface StepSectionProps {
   children: ReactNode;
   /** Optional content rendered on the right of the section header (e.g. a tier badge). */
   action?: ReactNode;
+  /** Render the section body behind a keyboard-accessible disclosure control. */
+  collapsible?: boolean;
+  /** Initial disclosure state when {@link collapsible} is enabled. */
+  defaultOpen?: boolean;
   className?: string;
 }
 
@@ -39,33 +44,79 @@ function StepSectionBadge({ badge }: { badge: 'required' | 'recommended' | 'opti
 }
 
 /** A numbered panel: cyan step badge + uppercase title + description, wrapping its content. */
-export function StepSection({ number, title, description, titleHint, badge, children, action, className }: StepSectionProps) {
+export function StepSection({
+  number,
+  title,
+  description,
+  titleHint,
+  badge,
+  children,
+  action,
+  collapsible = false,
+  defaultOpen = true,
+  className,
+}: StepSectionProps) {
+  const [open, setOpen] = useState(defaultOpen);
+
   return (
     <section className={cn('rounded-lg border border-border bg-gradient-to-b from-card to-card/60 p-5 shadow-sm sm:p-6', className)}>
-      <div className="mb-4 flex items-start justify-between gap-3">
-        <div className="flex items-start gap-3">
-          <span className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full border border-primary/40 bg-primary/10 text-sm font-semibold text-primary">
-            {number}
-          </span>
-          <div>
-            <div className="flex flex-wrap items-center gap-2">
-              <h2 className="text-base font-bold uppercase tracking-wide sm:text-lg">
-                {titleHint ? (
-                  <HintText id={`step-${number}-title`} hint={titleHint}>
-                    {title}
-                  </HintText>
-                ) : (
-                  title
-                )}
-              </h2>
-              {badge && <StepSectionBadge badge={badge} />}
+      <div className={cn('flex items-start justify-between gap-3', !collapsible || open ? 'mb-4' : 'mb-0')}>
+        {collapsible ? (
+          <div className="flex min-w-0 flex-1 items-start gap-2">
+            <button
+              type="button"
+              aria-expanded={open}
+              aria-label={title}
+              data-testid={`step-section-toggle-${number}`}
+              onClick={() => setOpen((current) => !current)}
+              className="mt-1 shrink-0 rounded-sm text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            >
+              <ChevronRight className={cn('h-4 w-4 transition-transform', open && 'rotate-90')} aria-hidden="true" />
+            </button>
+            <span className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full border border-primary/40 bg-primary/10 text-sm font-semibold text-primary">
+              {number}
+            </span>
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <h2 className="text-base font-bold uppercase tracking-wide sm:text-lg">
+                  {titleHint ? (
+                    <HintText id={`step-${number}-title`} hint={titleHint}>
+                      {title}
+                    </HintText>
+                  ) : (
+                    title
+                  )}
+                </h2>
+                {badge && <StepSectionBadge badge={badge} />}
+              </div>
+              {description && <p className="mt-1 text-sm text-muted-foreground sm:text-base">{description}</p>}
             </div>
-            {description && <p className="mt-1 text-sm text-muted-foreground sm:text-base">{description}</p>}
           </div>
-        </div>
+        ) : (
+          <div className="flex items-start gap-3">
+            <span className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full border border-primary/40 bg-primary/10 text-sm font-semibold text-primary">
+              {number}
+            </span>
+            <div>
+              <div className="flex flex-wrap items-center gap-2">
+                <h2 className="text-base font-bold uppercase tracking-wide sm:text-lg">
+                  {titleHint ? (
+                    <HintText id={`step-${number}-title`} hint={titleHint}>
+                      {title}
+                    </HintText>
+                  ) : (
+                    title
+                  )}
+                </h2>
+                {badge && <StepSectionBadge badge={badge} />}
+              </div>
+              {description && <p className="mt-1 text-sm text-muted-foreground sm:text-base">{description}</p>}
+            </div>
+          </div>
+        )}
         {action && <div className="flex-shrink-0">{action}</div>}
       </div>
-      {children}
+      {(!collapsible || open) && children}
     </section>
   );
 }

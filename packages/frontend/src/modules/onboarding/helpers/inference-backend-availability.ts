@@ -18,6 +18,14 @@ export function unavailableInferenceBackends(_profile: HardwareProfileResponse):
 }
 
 /**
+ * Backends that should be omitted from the picker for the detected host. The profile's OS is the
+ * source of truth here — the browser may be connected from a different machine than the Hub.
+ */
+export function hiddenInferenceBackends(profile: HardwareProfileResponse): InferenceBackendType[] {
+  return profile.hardware.os?.platform?.toLowerCase() === 'darwin' ? ['lemonade'] : [];
+}
+
+/**
  * Backends served by a process the operator runs, rather than pulled into a Hub-managed registry.
  * The Hub cannot download a model for these — the model has to be present on the serving host — so
  * the UI links out to Hugging Face instead of offering a pull, and "installed" means "the server
