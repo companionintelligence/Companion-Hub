@@ -15,7 +15,7 @@ interface RecommendedModelsProps {
   selectedModelIds: string[];
   onToggleModel: (modelId: string) => void;
   preferredModelId?: string;
-  /** Chat backend — vLLM models open Hugging Face when not yet served. */
+  /** Chat backend — host-managed models are configured and loaded outside the Hub. */
   chatBackend?: InferenceBackendType;
   /** Rendered at the bottom of the section (e.g. the collapsible Other Models drawer). */
   children?: ReactNode;
@@ -109,7 +109,12 @@ export const RecommendedModels = ({
     .filter((m) => recommendedIds.has(m.id))
     .sort((a, b) => Number(b.id === preferredModelId) - Number(a.id === preferredModelId));
 
-  const installHint = chatBackend === 'vllm' ? t('ONBOARDING_MODELS_VLLM_INSTALL_HINT') : t('ONBOARDING_MODELS_INSTALL_AFTER_DOWNLOAD');
+  const installHint =
+    chatBackend === 'vllm'
+      ? t('ONBOARDING_MODELS_VLLM_INSTALL_HINT')
+      : chatBackend === 'lucebox'
+        ? t('ONBOARDING_MODELS_SPECULATIVE_INSTALL_HINT')
+        : t('ONBOARDING_MODELS_INSTALL_AFTER_DOWNLOAD');
 
   return (
     <StepSection number={4} badge="recommended" title={t('ONBOARDING_MODELS_TITLE')} description={t('ONBOARDING_RECOMMENDED_MODELS_DESC')}>

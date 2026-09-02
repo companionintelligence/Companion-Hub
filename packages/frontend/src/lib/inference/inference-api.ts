@@ -6,6 +6,7 @@ import {
   getRuntimeModels,
   getTrackedModels,
   getOllamaStatus,
+  getLuceboxStatus,
   getVllmStatus,
   pinModel,
   rescanHardware,
@@ -127,6 +128,10 @@ export async function fetchVllmInstallStatus(url?: string, apiKey?: string) {
   const query = url?.trim() ? { url: url.trim() } : undefined;
   const headers = apiKey?.trim() ? { [VLLM_PROBE_API_KEY_HEADER]: apiKey.trim() } : undefined;
   return unwrap(getVllmStatus({ query, headers } as Parameters<typeof getVllmStatus>[0]));
+}
+
+export async function fetchSpeculativeInferenceStatus() {
+  return unwrap(getLuceboxStatus());
 }
 
 export async function saveCloudProviderConfig(body: { provider: CloudProviderType; apiKey?: string; enabled: boolean }): Promise<void> {

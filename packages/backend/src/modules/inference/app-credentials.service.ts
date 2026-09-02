@@ -8,6 +8,7 @@ import { CloudFallbackService } from './cloud-fallback.service';
 import { OllamaBackend } from './backends/ollama.backend';
 import { VllmBackend } from './backends/vllm.backend';
 import { LemonadeBackend } from './backends/lemonade.backend';
+import { LuceboxBackend } from './backends/lucebox.backend';
 import type { InferenceBackend } from './backends/backend.interface';
 import type { CuratedModel, HardwareTier, InferenceBackendType } from '@ci-hub/common/types';
 import { isCatalogModelInstalled, isServedModelForCatalog } from './model-availability.util';
@@ -91,6 +92,7 @@ export class AppCredentialsService {
     private readonly ollamaBackend: OllamaBackend,
     private readonly vllmBackend: VllmBackend,
     private readonly lemonadeBackend: LemonadeBackend,
+    private readonly luceboxBackend: LuceboxBackend,
     private readonly configurationService: ConfigurationService,
   ) {}
 
@@ -102,6 +104,8 @@ export class AppCredentialsService {
         return this.vllmBackend;
       case 'lemonade':
         return this.lemonadeBackend;
+      case 'lucebox':
+        return this.luceboxBackend;
     }
   }
 
@@ -180,7 +184,12 @@ export class AppCredentialsService {
     const cloudProviders = this.cloudFallback.getEnabledProviders();
     const cloudProvider = endpointReady ? undefined : cloudProviders[0];
 
-    const chatModelReady = recommendedLlm ? this.isModelPulled(recommendedLlm.id, endpointHealth.modelsLoaded, backendType) : false;
+    // Host-managed servers can expose an operator-chosen model that is not in the Hub catalog.
+    // A healthy endpoint with at least one served model is therefore ready even when there is no
+    // curated `recommendedLlm` to match (the speculative inference model alias is configured at server startup).
+    const chatModelReady =
+      (recommendedLlm ? this.isModelPulled(recommendedLlm.id, endpointHealth.modelsLoaded, backendType) : false) ||
+      ((backendType === 'vllm' || backendType === 'lucebox') && endpointReady && endpointHealth.modelsLoaded.length > 0);
     if (!cloudProvider && recommendedLlm && !chatModelReady && endpointReady && backendType === 'ollama') {
       void this.maybeFirePrePull(recommendedLlm.id);
     }
@@ -202,7 +211,7 @@ export class AppCredentialsService {
       }
     }
     let chatModelId = availableLlm?.backendModelId ?? null;
-    if (!chatModelId && backendType === 'vllm' && endpointHealth.modelsLoaded.length > 0) {
+    if (!chatModelId && (backendType === 'vllm' || backendType === 'lucebox') && endpointHealth.modelsLoaded.length > 0) {
       chatModelId = endpointHealth.modelsLoaded[0] ?? null;
     }
     const embeddingsModelId = embeddings?.backendModelId ?? null;
@@ -354,7 +363,7 @@ export class AppCredentialsService {
 
   private isCuratedModelAvailable(model: CuratedModel, modelsLoaded: string[], backendType: InferenceBackendType): boolean {
     if (this.isModelPulled(model.id, modelsLoaded, backendType)) return true;
-    if (backendType === 'vllm') {
+    if (backendType === 'vllm' || backendType === 'lucebox') {
       return isServedModelForCatalog(model, modelsLoaded);
     }
     return isCatalogModelInstalled(model, modelsLoaded);
@@ -362,7 +371,7 @@ export class AppCredentialsService {
 
   private isModelPulled(catalogId: string, modelsLoaded: string[], backendType: InferenceBackendType): boolean {
     const curated = this.modelRegistry.getCuratedModel(catalogId);
-    if (backendType === 'vllm') {
+    if (backendType === 'vllm' || backendType === 'lucebox') {
       return curated ? isServedModelForCatalog(curated, modelsLoaded) : modelsLoaded.includes(catalogId);
     }
 

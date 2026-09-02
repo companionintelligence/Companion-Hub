@@ -94,6 +94,15 @@ export interface VllmStatus {
   error?: string;
 }
 
+export interface SpeculativeInferenceStatus {
+  ready: boolean;
+  running: boolean;
+  endpointUrl: string;
+  displayEndpoint?: string;
+  hint?: string;
+  error?: string;
+}
+
 export interface InferencePreferencesResponse {
   preferredBackend: InferenceBackendType | null;
   preferredModel: string | null;

@@ -64,6 +64,7 @@ describe('bridge-diagnostics-cli', () => {
         { label: 'Ollama', port: 11434 },
         { label: 'vLLM', port: 8000 },
         { label: 'Lemonade', port: 13305 },
+        { label: 'Speculative inference', port: 8000 },
       ]);
     });
 

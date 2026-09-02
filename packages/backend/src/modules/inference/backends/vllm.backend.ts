@@ -5,6 +5,7 @@ import { LoggerService } from '@/core/logger/logger.service';
 import type { InferenceBackend } from './backend.interface';
 import type { BackendHealthStatus, BackendModelInfo, PullProgress } from '@ci-hub/common/types';
 import axios from 'axios';
+import { OpenAiCompatibleClient } from './openai-compatible.client';
 
 /** Candidate API key for a Re-check probe — header, not query, so it stays out of access logs. */
 export const VLLM_PROBE_API_KEY_HEADER = 'x-ci-vllm-api-key';
@@ -47,6 +48,7 @@ export function resolveVllmProbeUrl(url: string, inContainer: boolean = detectHu
 @Injectable()
 export class VllmBackend implements InferenceBackend {
   readonly type = 'vllm' as const;
+  private readonly api = new OpenAiCompatibleClient();
 
   constructor(
     private readonly logger: LoggerService,
@@ -63,25 +65,22 @@ export class VllmBackend implements InferenceBackend {
     return resolveVllmProbeUrl(configured || process.env.VLLM_URL || 'http://ci-hub-vllm:8000');
   }
 
-  private vllmAuthHeaders(apiKeyOverride?: string): Record<string, string> | undefined {
-    const apiKey =
-      apiKeyOverride?.trim() || this.configuration.getInferencePreferences().preferredVllmApiKey?.trim() || process.env.VLLM_API_KEY?.trim();
-    return apiKey ? { Authorization: `Bearer ${apiKey}` } : undefined;
+  private vllmAuthKey(apiKeyOverride?: string): string | undefined {
+    return apiKeyOverride?.trim() || this.configuration.getInferencePreferences().preferredVllmApiKey?.trim() || process.env.VLLM_API_KEY?.trim();
   }
 
   /** Overrides let status + onboarding probe unsaved Settings input without persisting it. */
   async healthCheck(baseUrlOverride?: string, apiKeyOverride?: string): Promise<BackendHealthStatus> {
     const baseUrl = baseUrlOverride ? resolveVllmProbeUrl(baseUrlOverride) : this.getBaseUrl();
     try {
-      const response = await axios.get(`${baseUrl}/v1/models`, {
+      const models = await this.api.listModelIds(baseUrl, {
         timeout: 5000,
-        headers: this.vllmAuthHeaders(apiKeyOverride),
+        apiKey: this.vllmAuthKey(apiKeyOverride),
       });
-      const models = response.data?.data ?? [];
       return {
         running: true,
         healthy: true,
-        modelsLoaded: models.map((m: { id: string }) => m.id),
+        modelsLoaded: models,
       };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -98,17 +97,10 @@ export class VllmBackend implements InferenceBackend {
 
   async listModels(): Promise<BackendModelInfo[]> {
     try {
-      const response = await axios.get(`${this.getBaseUrl()}/v1/models`, {
+      return await this.api.listModels(this.getBaseUrl(), {
         timeout: 10000,
-        headers: this.vllmAuthHeaders(),
+        apiKey: this.vllmAuthKey(),
       });
-      const models = response.data?.data ?? [];
-      return models.map((m: { id: string; owned_by?: string }) => ({
-        id: m.id,
-        name: m.id,
-        size: 0,
-        loaded: true,
-      }));
     } catch {
       return [];
     }

@@ -4,8 +4,15 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { AiSetupStep } from '../ai-setup-step';
 import type { HardwareProfileResponse } from '../../helpers/ai-setup-types';
 
-const { fetchInferenceOnboardingProfile, fetchOllamaInstallStatus, fetchVllmInstallStatus, rescanInferenceHardware } = vi.hoisted(() => ({
+const {
+  fetchInferenceOnboardingProfile,
+  fetchSpeculativeInferenceStatus,
+  fetchOllamaInstallStatus,
+  fetchVllmInstallStatus,
+  rescanInferenceHardware,
+} = vi.hoisted(() => ({
   fetchInferenceOnboardingProfile: vi.fn(),
+  fetchSpeculativeInferenceStatus: vi.fn(),
   fetchOllamaInstallStatus: vi.fn(),
   fetchVllmInstallStatus: vi.fn(),
   rescanInferenceHardware: vi.fn(),
@@ -13,6 +20,7 @@ const { fetchInferenceOnboardingProfile, fetchOllamaInstallStatus, fetchVllmInst
 
 vi.mock('@/lib/inference/inference-api', () => ({
   fetchInferenceOnboardingProfile,
+  fetchSpeculativeInferenceStatus,
   fetchOllamaInstallStatus,
   fetchVllmInstallStatus,
   rescanInferenceHardware,
@@ -163,6 +171,7 @@ const vllmReady = {
   displayEndpoint: 'http://host.docker.internal:8000/v1',
 };
 const vllmMissing = { ready: false, running: false, endpointUrl: 'http://host.docker.internal:8000' };
+const speculativeInferenceMissing = { ready: false, running: false, endpointUrl: 'http://host.docker.internal:8000' };
 
 // A model the Hub cannot pull — it only ever appears as installed while the host vLLM serves it.
 const vllmModel = {
@@ -208,6 +217,12 @@ let api: {
     endpointUrl: string;
     displayEndpoint?: string;
   };
+  speculativeInference: {
+    ready: boolean;
+    running: boolean;
+    endpointUrl: string;
+    displayEndpoint?: string;
+  };
   rescanOk: boolean;
 };
 
@@ -229,6 +244,7 @@ describe('AiSetupStep', () => {
       profileReject: false,
       ollama: ollamaReady,
       vllm: vllmMissing,
+      speculativeInference: speculativeInferenceMissing,
       rescanOk: true,
     };
 
@@ -239,6 +255,7 @@ describe('AiSetupStep', () => {
     });
     fetchOllamaInstallStatus.mockImplementation(() => Promise.resolve(api.ollama));
     fetchVllmInstallStatus.mockImplementation(() => Promise.resolve(api.vllm));
+    fetchSpeculativeInferenceStatus.mockImplementation(() => Promise.resolve(api.speculativeInference));
     rescanInferenceHardware.mockImplementation(async () => {
       if (!api.rescanOk) throw new Error('HTTP 503');
     });

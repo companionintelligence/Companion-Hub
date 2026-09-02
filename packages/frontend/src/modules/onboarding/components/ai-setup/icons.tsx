@@ -91,6 +91,16 @@ export function LemonadeIcon({ className }: IconProps) {
   );
 }
 
+/** A small spark for speculative decoding. */
+export function SpeculativeInferenceIcon({ className }: IconProps) {
+  return (
+    <Glyph className={className}>
+      <path d="M12 3.5c.8 4.2 2.3 5.7 6.5 6.5-4.2.8-5.7 2.3-6.5 6.5-.8-4.2-2.3-5.7-6.5-6.5 4.2-.8 5.7-2.3 6.5-6.5Z" />
+      <path d="M19 17v4M17 19h4M5 3v4M3 5h4" />
+    </Glyph>
+  );
+}
+
 /* ── Model labs without an official brand mark (custom marks) ────────────────────────────────── */
 // These labs don't have a sourced SVG in /public/brands (unlike the CREATOR_BRAND set below, which
 // are official marks). Rather than fetch third-party logo files we can't vet the provenance of, these

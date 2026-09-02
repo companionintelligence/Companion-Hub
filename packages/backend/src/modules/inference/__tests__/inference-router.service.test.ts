@@ -7,6 +7,7 @@ import { CloudFallbackService } from '../cloud-fallback.service';
 import { OllamaBackend } from '../backends/ollama.backend';
 import { VllmBackend } from '../backends/vllm.backend';
 import { LemonadeBackend } from '../backends/lemonade.backend';
+import { LuceboxBackend } from '../backends/lucebox.backend';
 import { LoggerService } from '@/core/logger/logger.service';
 import { mock, type MockProxy } from 'vitest-mock-extended';
 import { describe, it, expect, beforeEach } from 'vitest';
@@ -22,6 +23,7 @@ describe('InferenceRouterService', () => {
   let ollamaBackend: MockProxy<OllamaBackend>;
   let vllmBackend: MockProxy<VllmBackend>;
   let lemonadeBackend: MockProxy<LemonadeBackend>;
+  let luceboxBackend: MockProxy<LuceboxBackend>;
 
   const defaultProfile: HardwareProfile = {
     gpu: { available: true, vendor: 'nvidia', model: 'RTX 4090', vramMb: 24576, unifiedMemory: false, driverVersion: '535', runtimeAvailable: true },
@@ -41,6 +43,7 @@ describe('InferenceRouterService', () => {
     ollamaBackend = mock<OllamaBackend>();
     vllmBackend = mock<VllmBackend>();
     lemonadeBackend = mock<LemonadeBackend>();
+    luceboxBackend = mock<LuceboxBackend>();
 
     hardwareInspector.getProfile.mockResolvedValue(defaultProfile);
     modelRegistry.getTrackedModels.mockReturnValue([]);
@@ -56,6 +59,8 @@ describe('InferenceRouterService', () => {
     vllmBackend.getBaseUrl.mockReturnValue('http://ci-hub-vllm:8000');
     lemonadeBackend.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [] });
     lemonadeBackend.getBaseUrl.mockReturnValue('http://ci-hub-lemonade:13305');
+    luceboxBackend.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [] });
+    luceboxBackend.getBaseUrl.mockReturnValue('http://ci-hub-lucebox:8080');
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -68,6 +73,7 @@ describe('InferenceRouterService', () => {
         { provide: OllamaBackend, useValue: ollamaBackend },
         { provide: VllmBackend, useValue: vllmBackend },
         { provide: LemonadeBackend, useValue: lemonadeBackend },
+        { provide: LuceboxBackend, useValue: luceboxBackend },
       ],
     }).compile();
 
@@ -149,7 +155,7 @@ describe('InferenceRouterService', () => {
       const status = await service.getStatus();
 
       expect(status.hardwareTier).toBe('high');
-      expect(status.backends).toHaveLength(3);
+      expect(status.backends).toHaveLength(4);
       expect(status.memoryBudget).toBeDefined();
     });
 

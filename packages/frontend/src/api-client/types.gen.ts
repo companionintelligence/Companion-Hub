@@ -74,12 +74,19 @@ export type AppContextDto = {
         ciHubOrganizationLabel?: string;
         ciHubDeviceSlug?: string;
         ciHubHubSubdomain?: string;
-        inferenceBackend?: 'ollama' | 'vllm' | 'lemonade';
+        inferenceBackend?: 'ollama' | 'vllm' | 'lemonade' | 'lucebox';
         inferenceModel?: string;
         inferenceEmbeddingModel?: string;
         inferenceVisionModel?: string;
         inferenceVllmApiKey?: string;
         inferenceVllmUrl?: string;
+        inferenceCloudProviders?: Array<{
+            provider: 'openai' | 'anthropic' | 'google' | 'github-copilot';
+            apiKey?: string;
+            baseUrl?: string;
+            defaultModel: string;
+            enabled: boolean;
+        }>;
     };
     appDataRootHostPath?: string;
     architecture: 'amd64' | 'arm64';
@@ -147,12 +154,19 @@ export type UserSettingsBody = {
     ciHubOrganizationLabel?: string;
     ciHubDeviceSlug?: string;
     ciHubHubSubdomain?: string;
-    inferenceBackend?: 'ollama' | 'vllm' | 'lemonade';
+    inferenceBackend?: 'ollama' | 'vllm' | 'lemonade' | 'lucebox';
     inferenceModel?: string;
     inferenceEmbeddingModel?: string;
     inferenceVisionModel?: string;
     inferenceVllmApiKey?: string;
     inferenceVllmUrl?: string;
+    inferenceCloudProviders?: Array<{
+        provider: 'openai' | 'anthropic' | 'google' | 'github-copilot';
+        apiKey?: string;
+        baseUrl?: string;
+        defaultModel: string;
+        enabled: boolean;
+    }>;
 };
 
 export type AcknowledgeWelcomeBody = {
@@ -1298,7 +1312,7 @@ export type UpdateAppStoreDto = {
 };
 
 export type UpdateInferencePreferencesBody = {
-    backend: 'ollama' | 'vllm' | 'lemonade';
+    backend: 'ollama' | 'vllm' | 'lemonade' | 'lucebox';
     model?: string;
     embeddingModel?: string;
     visionModel?: string;
@@ -1990,12 +2004,12 @@ export type StreamHubLogsQueryDto = {
 };
 
 export type OnboardingProfileQueryDto = {
-    backend?: 'ollama' | 'vllm' | 'lemonade';
+    backend?: 'ollama' | 'vllm' | 'lemonade' | 'lucebox';
     vllmUrl?: string;
 };
 
 export type RuntimeModelsQueryDto = {
-    backend: 'ollama' | 'vllm' | 'lemonade';
+    backend: 'ollama' | 'vllm' | 'lemonade' | 'lucebox';
 };
 
 export type MetadataDto = {
@@ -2957,7 +2971,9 @@ export type PortalCallbackResponses = {
 export type PortalSessionHintData = {
     body?: never;
     path?: never;
-    query?: never;
+    query: {
+        desktop: string;
+    };
     url: '/api/auth/portal/session-hint';
 };
 
@@ -3546,7 +3562,7 @@ export type GetRuntimeModelsData = {
     body?: never;
     path?: never;
     query: {
-        backend: 'ollama' | 'vllm' | 'lemonade';
+        backend: 'ollama' | 'vllm' | 'lemonade' | 'lucebox';
     };
     url: '/api/inference/models/runtime';
 };
@@ -3741,7 +3757,7 @@ export type GetOnboardingProfileData = {
     };
     path?: never;
     query?: {
-        backend?: 'ollama' | 'vllm' | 'lemonade';
+        backend?: 'ollama' | 'vllm' | 'lemonade' | 'lucebox';
         vllmUrl?: string;
     };
     url: '/api/inference/onboarding-profile';
@@ -3778,6 +3794,17 @@ export type GetVllmStatusData = {
 };
 
 export type GetVllmStatusResponses = {
+    200: unknown;
+};
+
+export type GetLuceboxStatusData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/inference/lucebox/status';
+};
+
+export type GetLuceboxStatusResponses = {
     200: unknown;
 };
 

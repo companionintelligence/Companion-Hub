@@ -18,6 +18,7 @@ import { ConfigurationService } from '@/core/config/configuration.service';
 import { OllamaBackend } from '../backends/ollama.backend';
 import { VllmBackend } from '../backends/vllm.backend';
 import { LemonadeBackend } from '../backends/lemonade.backend';
+import { LuceboxBackend } from '../backends/lucebox.backend';
 import { HostMetricsService } from '@/modules/system/host-metrics.service';
 
 describe('InferenceController — onboarding-profile', () => {
@@ -88,6 +89,7 @@ describe('InferenceController — onboarding-profile', () => {
         { provide: OllamaBackend, useValue: mock<OllamaBackend>() },
         { provide: VllmBackend, useValue: mock<VllmBackend>() },
         { provide: LemonadeBackend, useValue: mock<LemonadeBackend>() },
+        { provide: LuceboxBackend, useValue: mock<LuceboxBackend>() },
         { provide: LoggerService, useValue: mock<LoggerService>() },
       ],
     }).compile();

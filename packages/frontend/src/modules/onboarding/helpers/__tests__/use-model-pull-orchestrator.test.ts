@@ -2,7 +2,8 @@ import { act, renderHook, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { useModelPullOrchestrator } from '@/lib/hooks/use-model-pull-orchestrator';
 
-const { fetchOllamaInstallStatus } = vi.hoisted(() => ({
+const { fetchInferenceRuntimeModels, fetchOllamaInstallStatus } = vi.hoisted(() => ({
+  fetchInferenceRuntimeModels: vi.fn(),
   fetchOllamaInstallStatus: vi.fn(),
 }));
 
@@ -12,6 +13,7 @@ const { fetchTrackedModels, ensurePullStarted } = vi.hoisted(() => ({
 }));
 
 vi.mock('@/lib/inference/inference-api', () => ({
+  fetchInferenceRuntimeModels,
   fetchOllamaInstallStatus,
 }));
 

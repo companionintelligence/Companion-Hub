@@ -29,14 +29,15 @@ import {
 import { OllamaBackend } from './backends/ollama.backend';
 import { resolveVllmProbeUrl, VLLM_PROBE_API_KEY_HEADER, VllmBackend } from './backends/vllm.backend';
 import { LemonadeBackend } from './backends/lemonade.backend';
+import { LuceboxBackend } from './backends/lucebox.backend';
 import { resolveInstalledCatalogIds, resolveInstalledCatalogIdsFromServedModels } from './model-availability.util';
 
 /**
  * Inference controller — exposes Ollama/backend provisioning + management.
  *
  * The Hub does NOT proxy inference requests. Apps talk to the Ollama container
- * (its own OpenAI-compatible `/v1` or native protocol) or a cloud provider
- * directly. This controller provisions Ollama (install/pull/catalog/hardware),
+ * (its own OpenAI-compatible `/v1` or native protocol), a host-managed backend
+ * such as vLLM or speculative inference, or a cloud provider directly. This controller provisions Ollama (install/pull/catalog/hardware),
  * stores the operator's cloud-provider keys, and distributes connection info to
  * apps via the credentials endpoints below.
  */
@@ -58,6 +59,7 @@ export class InferenceController {
     private readonly ollamaBackend: OllamaBackend,
     private readonly vllmBackend: VllmBackend,
     private readonly lemonadeBackend: LemonadeBackend,
+    private readonly luceboxBackend: LuceboxBackend,
     private readonly moduleRef: ModuleRef,
     readonly _logger: LoggerService,
   ) {}
@@ -160,7 +162,14 @@ export class InferenceController {
   @Get('models/runtime')
   async getRuntimeModels(@Query() query: RuntimeModelsQueryDto) {
     const backend = query.backend;
-    const backendService = backend === 'ollama' ? this.ollamaBackend : backend === 'vllm' ? this.vllmBackend : this.lemonadeBackend;
+    const backendService =
+      backend === 'ollama'
+        ? this.ollamaBackend
+        : backend === 'vllm'
+          ? this.vllmBackend
+          : backend === 'lemonade'
+            ? this.lemonadeBackend
+            : this.luceboxBackend;
 
     const health = await backendService.healthCheck();
     if (!health.running || !health.healthy) {
@@ -387,18 +396,26 @@ export class InferenceController {
     const ollamaInstalled = resolveInstalledCatalogIds(catalog, ollamaHealth.modelsLoaded ?? [], getTrackedState);
 
     let installedCatalogIds: string[];
-    if (installBackend === 'vllm') {
-      const vllmHealth = await this.vllmBackend.healthCheck(query?.vllmUrl, vllmApiKey).catch(() => ({
-        running: false,
-        healthy: false,
-        modelsLoaded: [] as string[],
-      }));
-      const vllmInstalled = resolveInstalledCatalogIdsFromServedModels(catalog, vllmHealth.modelsLoaded ?? [], 'vllm', getTrackedState);
+    if (installBackend === 'vllm' || installBackend === 'lucebox') {
+      const hostBackend = installBackend === 'vllm' ? this.vllmBackend : this.luceboxBackend;
+      const hostHealth =
+        installBackend === 'vllm'
+          ? await this.vllmBackend.healthCheck(query?.vllmUrl, vllmApiKey).catch(() => ({
+              running: false,
+              healthy: false,
+              modelsLoaded: [] as string[],
+            }))
+          : await hostBackend.healthCheck().catch(() => ({
+              running: false,
+              healthy: false,
+              modelsLoaded: [] as string[],
+            }));
+      const hostInstalled = resolveInstalledCatalogIdsFromServedModels(catalog, hostHealth.modelsLoaded ?? [], installBackend, getTrackedState);
       const ollamaEmbeddingIds = ollamaInstalled.filter((id) => {
         const model = catalog.find((m) => m.id === id);
         return model?.modality === 'embedding';
       });
-      installedCatalogIds = [...new Set([...vllmInstalled, ...ollamaEmbeddingIds])];
+      installedCatalogIds = [...new Set([...hostInstalled, ...ollamaEmbeddingIds])];
     } else {
       installedCatalogIds = ollamaInstalled;
     }
@@ -461,6 +478,29 @@ export class InferenceController {
       hint: ready
         ? undefined
         : `Run vLLM on the host (not inside Docker). Hub probes from inside its container — use http://host.docker.internal:8000, not localhost. Currently probing ${probeUrl}.`,
+    };
+  }
+
+  @UseGuards(AuthGuard)
+  @Get('lucebox/status')
+  async getLuceboxStatus() {
+    const endpointUrl = this.luceboxBackend.getBaseUrl();
+    const health = await this.luceboxBackend.healthCheck().catch((err) => ({
+      running: false,
+      healthy: false,
+      modelsLoaded: [] as string[],
+      error: err instanceof Error ? err.message : String(err),
+    }));
+    const ready = !!(health.running && health.healthy);
+    return {
+      ready,
+      running: health.running,
+      endpointUrl,
+      displayEndpoint: ready ? `${endpointUrl}/v1` : undefined,
+      error: ready ? undefined : health.error,
+      hint: ready
+        ? undefined
+        : `Start the speculative inference server with a loaded target model, then re-check. Hub probes ${endpointUrl}; set SPECULATIVE_INFERENCE_URL if the server uses another address.`,
     };
   }
 

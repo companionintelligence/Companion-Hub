@@ -190,6 +190,7 @@ services:
       VLLM_URL: ${VLLM_URL:-http://host.docker.internal:8000}
       VLLM_API_KEY: ${VLLM_API_KEY:-}
       LEMONADE_URL: ${LEMONADE_URL:-http://host.docker.internal:13305}
+      SPECULATIVE_INFERENCE_URL: ${SPECULATIVE_INFERENCE_URL:-http://host.docker.internal:8000}
       API_PORT: 5002
       CI_HUB_ENVIRONMENT: ${CI_HUB_ENVIRONMENT:-production}
       LOCAL: ${LOCAL:-false}

@@ -3,10 +3,11 @@ import type { InferenceBackendType } from '@ci-hub/common/types';
 import { LabelWithHint } from '@/components/ui/field-hint/field-hint';
 import {
   ONBOARDING_BACKEND_LEMONADE_HINT,
+  ONBOARDING_BACKEND_SPECULATIVE_HINT,
   ONBOARDING_BACKEND_OLLAMA_HINT,
   ONBOARDING_BACKEND_VLLM_HINT,
 } from '@/components/hub-status/hub-status-tooltips';
-import { BrandLogo, LemonadeIcon, VllmIcon } from './icons';
+import { BrandLogo, LemonadeIcon, SpeculativeInferenceIcon, VllmIcon } from './icons';
 import { OptionCard, StepSection } from './primitives';
 import { useTranslation } from 'react-i18next';
 
@@ -14,12 +15,14 @@ const BACKEND_HINT_KEYS: Record<InferenceBackendType, string> = {
   ollama: ONBOARDING_BACKEND_OLLAMA_HINT,
   vllm: ONBOARDING_BACKEND_VLLM_HINT,
   lemonade: ONBOARDING_BACKEND_LEMONADE_HINT,
+  lucebox: ONBOARDING_BACKEND_SPECULATIVE_HINT,
 };
 
 const BACKEND_INFO: Record<InferenceBackendType, { label: string; descriptionKey: string }> = {
   ollama: { label: 'Ollama', descriptionKey: 'ONBOARDING_BACKEND_OLLAMA_DESC' },
   vllm: { label: 'vLLM', descriptionKey: 'ONBOARDING_BACKEND_VLLM_DESC' },
   lemonade: { label: 'Lemonade', descriptionKey: 'ONBOARDING_BACKEND_LEMONADE_DESC' },
+  lucebox: { label: 'Speculative inference', descriptionKey: 'ONBOARDING_BACKEND_SPECULATIVE_DESC' },
 };
 
 interface BackendSelectionCardProps {
@@ -33,8 +36,7 @@ interface BackendSelectionCardProps {
 }
 
 /**
- * Functional backend selector used by the Settings page (and reusable elsewhere). Onboarding uses
- * the simpler {@link BackendCard} instead.
+ * Functional backend selector used by the Settings page and onboarding.
  */
 export const BackendSelectionCard = ({
   recommended,
@@ -112,16 +114,14 @@ export const BackendSelectionCard = ({
 };
 
 /**
- * Step 2 — Inference Backend (onboarding). Ollama is the only enabled backend for now and is
- * selected by default; vLLM and Lemonade are shown for context but disabled until they're supported
- * in onboarding. The orchestrator pins `selectedBackend` to 'ollama' to match.
+ * Legacy static onboarding card retained for callers that do not have a live backend status.
  */
 export const BackendCard = () => {
   const { t } = useTranslation();
 
   return (
     <StepSection number={2} title={t('ONBOARDING_INFERENCE_BACKEND')} description={t('ONBOARDING_CHOOSE_BACKEND_MODELS')}>
-      <div className="grid gap-4 sm:grid-cols-3" data-testid="backend-card-title">
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4" data-testid="backend-card-title">
         <OptionCard
           testId="backend-option-ollama"
           title="Ollama"
@@ -148,6 +148,15 @@ export const BackendCard = () => {
           disabled
           badge={t('ONBOARDING_SOON')}
           hint={t(ONBOARDING_BACKEND_LEMONADE_HINT)}
+        />
+        <OptionCard
+          testId="backend-option-speculative-inference"
+          title="Speculative inference"
+          description={t('ONBOARDING_BACKEND_SPECULATIVE_OPTION_DESC')}
+          icon={<SpeculativeInferenceIcon />}
+          disabled
+          badge={t('ONBOARDING_SOON')}
+          hint={t(ONBOARDING_BACKEND_SPECULATIVE_HINT)}
         />
       </div>
     </StepSection>

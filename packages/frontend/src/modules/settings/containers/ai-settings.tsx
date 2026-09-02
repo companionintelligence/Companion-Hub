@@ -4,6 +4,7 @@ import {
   fetchInferencePreferences,
   fetchInferenceRuntimeModels,
   fetchInferenceTrackedModels,
+  fetchSpeculativeInferenceStatus,
   fetchOllamaInstallStatus,
   fetchVllmInstallStatus,
   pinInferenceModel,
@@ -21,7 +22,12 @@ import { RefreshCw, Loader2 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router';
 import toast from 'react-hot-toast';
-import type { CloudProviderInput, HardwareProfileResponse, RuntimeModelInfo } from '@/modules/onboarding/helpers/ai-setup-types';
+import type {
+  CloudProviderInput,
+  HardwareProfileResponse,
+  RuntimeModelInfo,
+  SpeculativeInferenceStatus,
+} from '@/modules/onboarding/helpers/ai-setup-types';
 import type { CuratedModel, InferenceBackendType, ModelState, TrackedModel } from '@ci-hub/common/types';
 import { SystemOverview } from '@/modules/onboarding/components/ai-setup/system-overview';
 import { BackendSelectionCard } from '@/modules/onboarding/components/ai-setup/backend-selection-card';
@@ -32,6 +38,7 @@ import { ModelIcon } from '@/modules/onboarding/components/ai-setup/icons';
 import { modelTags, modelMeta, modelScores } from '@/modules/onboarding/components/ai-setup/model-selection-card';
 import { OtherModelsSection } from '@/modules/onboarding/components/ai-setup/model-selection-card';
 import { VllmSetupCard } from '@/modules/onboarding/components/ai-setup/vllm-setup-card';
+import { SpeculativeInferenceSetupCard } from '@/modules/onboarding/components/ai-setup/speculative-inference-setup-card';
 import { OllamaSetupCard } from '@/modules/onboarding/components/ai-setup/ollama-setup-card';
 import type { OllamaStatus, VllmStatus } from '@/modules/onboarding/helpers/ai-setup-types';
 import { EMBEDDING_INFERENCE_BACKEND, unavailableInferenceBackends } from '@/modules/onboarding/helpers/inference-backend-availability';
@@ -111,8 +118,10 @@ export const AiSettingsContainer = () => {
   const [vllmUrl, setVllmUrl] = useState('');
   const [ollamaStatus, setOllamaStatus] = useState<OllamaStatus | null>(null);
   const [vllmStatus, setVllmStatus] = useState<VllmStatus | null>(null);
+  const [speculativeInferenceStatus, setSpeculativeInferenceStatus] = useState<SpeculativeInferenceStatus | null>(null);
   const [checkingOllama, setCheckingOllama] = useState(false);
   const [checkingVllm, setCheckingVllm] = useState(false);
+  const [checkingSpeculativeInference, setCheckingSpeculativeInference] = useState(false);
   // Backend the backend-switch effect has already refetched for (set by fetchProfile too, since it
   // fetches profile + runtime models itself); prevents a duplicate fetch right after mount.
   const lastHandledBackendRef = useRef<InferenceBackendType | null>(null);
@@ -213,6 +222,8 @@ export const AiSettingsContainer = () => {
       void checkOllamaStatus();
       if (preferredBackend === 'vllm') {
         void checkVllmStatus();
+      } else if (preferredBackend === 'lucebox') {
+        void checkSpeculativeInferenceStatus();
       }
 
       const configured = await fetchConfiguredCloudProviders();
@@ -270,6 +281,20 @@ export const AiSettingsContainer = () => {
     }
   }, []);
 
+  const checkSpeculativeInferenceStatus = useCallback(async () => {
+    setCheckingSpeculativeInference(true);
+    try {
+      const data = (await fetchSpeculativeInferenceStatus()) as SpeculativeInferenceStatus;
+      setSpeculativeInferenceStatus(data);
+      return data;
+    } catch {
+      setSpeculativeInferenceStatus({ ready: false, running: false, endpointUrl: '' });
+      return null;
+    } finally {
+      setCheckingSpeculativeInference(false);
+    }
+  }, []);
+
   // Re-check must also refresh the profile: `installedCatalogIds` is only recomputed server-side
   // in the onboarding-profile endpoint, so without this a model served after page load never
   // shows as Installed (#1105).
@@ -281,6 +306,15 @@ export const AiSettingsContainer = () => {
       seedSelectedModelIds(data, 'vllm', trackedModelsRef.current);
     }
   }, [checkVllmStatus, seedSelectedModelIds]);
+
+  const handleRecheckSpeculativeInference = useCallback(async () => {
+    const status = await checkSpeculativeInferenceStatus();
+    if (status?.ready) {
+      const data = await fetchInferenceOnboardingProfile('lucebox');
+      setProfile(data);
+      seedSelectedModelIds(data, 'lucebox', trackedModelsRef.current);
+    }
+  }, [checkSpeculativeInferenceStatus, seedSelectedModelIds]);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: only on mount
   useEffect(() => {
@@ -331,8 +365,10 @@ export const AiSettingsContainer = () => {
     fetchRuntimeModels(selectedBackend);
     if (selectedBackend === 'vllm') {
       void checkVllmStatus();
+    } else if (selectedBackend === 'lucebox') {
+      void checkSpeculativeInferenceStatus();
     }
-  }, [selectedBackend, fetchRuntimeModels, checkVllmStatus, seedSelectedModelIds]);
+  }, [selectedBackend, fetchRuntimeModels, checkVllmStatus, checkSpeculativeInferenceStatus, seedSelectedModelIds]);
 
   const hasActiveTransfers = Object.values(trackedModels).some((model) => ['pulling', 'loading', 'unloading'].includes(model.state));
 
@@ -631,7 +667,7 @@ export const AiSettingsContainer = () => {
             available={profile.backends.available}
             selected={selectedBackend}
             onSelect={setSelectedBackend}
-            unavailableTypes={profile ? unavailableInferenceBackends(profile) : ['vllm', 'lemonade']}
+            unavailableTypes={profile ? unavailableInferenceBackends(profile) : ['vllm', 'lemonade', 'lucebox']}
           />
 
           {selectedBackend === 'vllm' && (
@@ -648,6 +684,25 @@ export const AiSettingsContainer = () => {
                 onApiKeyChange={setVllmApiKey}
                 endpointUrl={vllmUrl}
                 onEndpointUrlChange={setVllmUrl}
+              />
+              <div>
+                <h3 className="text-sm font-semibold">{t('ONBOARDING_EMBEDDINGS_OLLAMA_SECTION_TITLE')}</h3>
+                <p className="text-xs text-muted-foreground mt-0.5 mb-3">{t('ONBOARDING_EMBEDDINGS_OLLAMA_SECTION_DESC')}</p>
+                <OllamaSetupCard status={ollamaStatus} checking={checkingOllama} onRecheck={handleRecheckOllama} />
+              </div>
+            </section>
+          )}
+
+          {selectedBackend === 'lucebox' && (
+            <section className="rounded-lg border border-border bg-gradient-to-b from-card to-card/60 p-5 shadow-sm sm:p-6 space-y-4">
+              <div>
+                <h2 className="text-base font-bold uppercase tracking-wide">{t('ONBOARDING_SPECULATIVE_SECTION_TITLE')}</h2>
+                <p className="text-xs sm:text-sm text-muted-foreground mt-0.5">{t('ONBOARDING_SPECULATIVE_SECTION_DESC')}</p>
+              </div>
+              <SpeculativeInferenceSetupCard
+                status={speculativeInferenceStatus}
+                checking={checkingSpeculativeInference}
+                onRecheck={handleRecheckSpeculativeInference}
               />
               <div>
                 <h3 className="text-sm font-semibold">{t('ONBOARDING_EMBEDDINGS_OLLAMA_SECTION_TITLE')}</h3>

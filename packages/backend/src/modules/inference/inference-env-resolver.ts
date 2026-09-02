@@ -6,10 +6,11 @@ import { HardwareInspectorService } from './hardware-inspector.service';
 import { OllamaBackend } from './backends/ollama.backend';
 import { VllmBackend } from './backends/vllm.backend';
 import { LemonadeBackend } from './backends/lemonade.backend';
+import { LuceboxBackend } from './backends/lucebox.backend';
 import type { InferenceBackend } from './backends/backend.interface';
 import { CloudFallbackService } from './cloud-fallback.service';
 import { recommendContextLength } from './context-length.util';
-import { isCatalogModelInstalled } from './model-availability.util';
+import { isCatalogModelInstalled, isServedModelForCatalog } from './model-availability.util';
 import type { CuratedModel, InferenceBackendType } from '@ci-hub/common/types';
 
 /** Non-secret placeholder API key each backend's OpenAI-compatible surface accepts (none validate it). */
@@ -17,6 +18,7 @@ export const BACKEND_API_KEY: Record<InferenceBackendType, string> = {
   ollama: 'ollama',
   vllm: 'vllm',
   lemonade: 'lemonade',
+  lucebox: 'lucebox',
 };
 
 /**
@@ -53,7 +55,7 @@ export interface StandardizedAiEnv {
    * window so apps don't inherit Ollama's oversized memory-based default.
    */
   CI_LLM_NUM_CTX?: string;
-  /** Active inference backend (`ollama` | `vllm` | `lemonade` | `cloud`). */
+  /** Active inference backend (`ollama` | `vllm` | `lemonade` | `lucebox` | `cloud`). */
   CI_INFERENCE_BACKEND?: string;
   /** Every enabled cloud provider (CI_CLOUD_* + conventional aliases). Additive. */
   cloudProviderEnv?: Record<string, string>;
@@ -79,6 +81,7 @@ export class InferenceEnvResolver {
     private readonly ollamaBackend: OllamaBackend,
     private readonly vllmBackend: VllmBackend,
     private readonly lemonadeBackend: LemonadeBackend,
+    private readonly luceboxBackend: LuceboxBackend,
     private readonly cloudFallback: CloudFallbackService,
   ) {}
 
@@ -90,6 +93,8 @@ export class InferenceEnvResolver {
         return this.vllmBackend;
       case 'lemonade':
         return this.lemonadeBackend;
+      case 'lucebox':
+        return this.luceboxBackend;
     }
   }
 
@@ -273,6 +278,9 @@ export class InferenceEnvResolver {
   private isInstalled(model: CuratedModel, modelsLoaded: string[]): boolean {
     const tracked = this.modelRegistry.getTrackedModel(model.id);
     const trackedPulled = tracked?.state === 'pulled' || tracked?.state === 'loaded' || tracked?.state === 'pinned';
+    if (model.backend === 'vllm' || model.backend === 'lucebox') {
+      return trackedPulled || isServedModelForCatalog(model, modelsLoaded);
+    }
     return isCatalogModelInstalled(model, modelsLoaded, trackedPulled);
   }
 }

@@ -10,6 +10,7 @@ import { CloudFallbackService } from '../cloud-fallback.service';
 import { OllamaBackend } from '../backends/ollama.backend';
 import { VllmBackend } from '../backends/vllm.backend';
 import { LemonadeBackend } from '../backends/lemonade.backend';
+import { LuceboxBackend } from '../backends/lucebox.backend';
 import { LoggerService } from '@/core/logger/logger.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import type { CloudProviderConfig, CuratedModel, HardwareProfile } from '@ci-hub/common/types';
@@ -97,6 +98,7 @@ describe('AppCredentialsService', () => {
   let ollamaBackend: MockProxy<OllamaBackend>;
   let vllmBackend: MockProxy<VllmBackend>;
   let lemonadeBackend: MockProxy<LemonadeBackend>;
+  let luceboxBackend: MockProxy<LuceboxBackend>;
   let configurationService: MockProxy<ConfigurationService>;
 
   beforeEach(async () => {
@@ -108,6 +110,7 @@ describe('AppCredentialsService', () => {
     ollamaBackend = mock<OllamaBackend>();
     vllmBackend = mock<VllmBackend>();
     lemonadeBackend = mock<LemonadeBackend>();
+    luceboxBackend = mock<LuceboxBackend>();
     configurationService = mock<ConfigurationService>();
 
     configurationService.getInferencePreferences.mockReturnValue({
@@ -155,6 +158,7 @@ describe('AppCredentialsService', () => {
         { provide: OllamaBackend, useValue: ollamaBackend },
         { provide: VllmBackend, useValue: vllmBackend },
         { provide: LemonadeBackend, useValue: lemonadeBackend },
+        { provide: LuceboxBackend, useValue: luceboxBackend },
         { provide: ConfigurationService, useValue: configurationService },
       ],
     }).compile();
@@ -367,6 +371,36 @@ describe('AppCredentialsService', () => {
       await service.getCredentials('openclaw');
       await new Promise((resolve) => setImmediate(resolve));
       expect(modelPuller.startPull).not.toHaveBeenCalledWith('qwen-vllm', expect.anything());
+    });
+  });
+
+  describe('getCredentials — Lucebox backend', () => {
+    it('uses the discovered startup-configured model when Lucebox has no catalog row', async () => {
+      configurationService.getInferencePreferences.mockReturnValue({
+        preferredBackend: 'lucebox',
+        preferredModel: null,
+        preferredEmbeddingModel: null,
+        preferredVisionModel: null,
+      });
+      luceboxBackend.getBaseUrl.mockReturnValue('http://host.docker.internal:8080');
+      luceboxBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['dflash'] });
+      modelRegistry.getRecommendedModelsForHardware.mockReturnValue([]);
+      modelRegistry.getCuratedModel.mockReturnValue(undefined);
+      modelRegistry.getModelsForTier.mockReturnValue([]);
+      service.invalidateCache();
+
+      const config = await service.getCredentials('openclaw');
+
+      expect(config.provider).toBe('lucebox');
+      expect(config.endpointUrl).toBe('http://host.docker.internal:8080/v1');
+      expect(config.chatModelId).toBe('dflash');
+      expect(config.chatModelReady).toBe(true);
+      expect(config.env).toMatchObject({
+        OPENAI_API_BASE: 'http://host.docker.internal:8080/v1',
+        OPENAI_API_KEY: 'lucebox',
+        DEFAULT_MODEL: 'dflash',
+        CI_INFERENCE_BACKEND: 'lucebox',
+      });
     });
   });
 

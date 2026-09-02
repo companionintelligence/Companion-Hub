@@ -1,7 +1,7 @@
 import { createZodDto } from '@/common/zod-dto';
 import { z } from 'zod';
 
-const inferenceBackendSchema = z.enum(['ollama', 'vllm', 'lemonade']);
+const inferenceBackendSchema = z.enum(['ollama', 'vllm', 'lemonade', 'lucebox']);
 
 export const inferencePreferencesSchema = z.object({
   backend: inferenceBackendSchema,

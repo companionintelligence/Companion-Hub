@@ -1,5 +1,6 @@
 import {
   fetchInferenceOnboardingProfile,
+  fetchSpeculativeInferenceStatus,
   fetchOllamaInstallStatus,
   fetchVllmInstallStatus,
   rescanInferenceHardware,
@@ -14,6 +15,7 @@ import {
   type CloudProviderInput,
   type ExposureMode,
   type HardwareProfileResponse,
+  type SpeculativeInferenceStatus,
   type OllamaStatus,
   type VllmStatus,
   type RemoteAccessMode,
@@ -30,6 +32,7 @@ import { SystemOverview } from './ai-setup/system-overview';
 import { ResourceSummaryBar } from './ai-setup/resource-summary-bar';
 import { OllamaSetupCard } from './ai-setup/ollama-setup-card';
 import { VllmSetupCard } from './ai-setup/vllm-setup-card';
+import { SpeculativeInferenceSetupCard } from './ai-setup/speculative-inference-setup-card';
 import { TailscaleSetupStep } from './tailscale-setup-step';
 import { computeSelectionBudget } from '../helpers/onboarding-model-selection';
 import { EMBEDDING_INFERENCE_BACKEND, unavailableInferenceBackends } from '../helpers/inference-backend-availability';
@@ -43,6 +46,7 @@ import { useTranslation } from 'react-i18next';
 const isAgentModel = (model: CuratedModel) => model.modality === 'llm';
 const isEmbeddingModel = (model: CuratedModel) => model.modality === 'embedding';
 const isVisionModel = (model: CuratedModel) => model.modality === 'llm' && model.metadata?.capabilities?.vision === true;
+const isHostManagedBackend = (backend: InferenceBackendType) => backend === 'vllm' || backend === 'lucebox';
 
 interface AiSetupStepProps {
   onComplete?: (config: AiSetupConfig) => void;
@@ -100,8 +104,10 @@ export const AiSetupStep = ({
   const [cloudProviders, setCloudProviders] = useState<CloudProviderInput[]>([]);
   const [ollamaStatus, setOllamaStatus] = useState<OllamaStatus | null>(null);
   const [vllmStatus, setVllmStatus] = useState<VllmStatus | null>(null);
+  const [speculativeInferenceStatus, setSpeculativeInferenceStatus] = useState<SpeculativeInferenceStatus | null>(null);
   const [checkingOllama, setCheckingOllama] = useState(false);
   const [checkingVllm, setCheckingVllm] = useState(false);
+  const [checkingSpeculativeInference, setCheckingSpeculativeInference] = useState(false);
   const [vllmApiKey, setVllmApiKey] = useState('');
   const [vllmUrl, setVllmUrl] = useState('');
   const [selectedBackend, setSelectedBackend] = useState<InferenceBackendType>('ollama');
@@ -249,10 +255,13 @@ export const AiSetupStep = ({
       const nextInstalled = new Set(data.installedCatalogIds ?? []);
       // Adopt only models that appeared since the last look, so an earlier opt-out survives.
       const newlySelectable = getDefaultSelectedModelIds(data, backend).filter((id) => !previouslyInstalled.has(id));
-      // The Hub cannot pull a vLLM model, so `handleToggleModel` only lets one be ticked while the
+      // The Hub cannot pull a host-managed model, so `handleToggleModel` only lets one be ticked while the
       // host is serving it. Drop the ones it stopped serving to keep that invariant: left ticked,
       // `computeSelectionBudget` bills them as pending downloads and can block Continue on disk.
-      const isStillSelectable = (id: string) => data.availableModels.find((m) => m.id === id)?.backend !== 'vllm' || nextInstalled.has(id);
+      const isStillSelectable = (id: string) => {
+        const modelBackend = data.availableModels.find((m) => m.id === id)?.backend;
+        return !modelBackend || !isHostManagedBackend(modelBackend) || nextInstalled.has(id);
+      };
       const nextSelected = [...new Set([...selectedModelIdsRef.current, ...newlySelectable])].filter(isStillSelectable);
       setSelectedModelIds(nextSelected);
 
@@ -297,11 +306,28 @@ export const AiSetupStep = ({
   const handleVllmRecheck = () => handleRecheck(checkVllmStatus, setCheckingVllm);
   const handleOllamaRecheck = () => handleRecheck(checkOllamaStatus, setCheckingOllama);
 
+  const checkSpeculativeInferenceStatus = async (): Promise<SpeculativeInferenceStatus> => {
+    setCheckingSpeculativeInference(true);
+    try {
+      const data = (await fetchSpeculativeInferenceStatus()) as SpeculativeInferenceStatus;
+      setSpeculativeInferenceStatus(data);
+      return data;
+    } catch (_e) {
+      const unreachable: SpeculativeInferenceStatus = { ready: false, running: false, endpointUrl: '' };
+      setSpeculativeInferenceStatus(unreachable);
+      return unreachable;
+    } finally {
+      setCheckingSpeculativeInference(false);
+    }
+  };
+
+  const handleSpeculativeInferenceRecheck = () => handleRecheck(checkSpeculativeInferenceStatus, setCheckingSpeculativeInference);
+
   // biome-ignore lint/correctness/useExhaustiveDependencies: only on mount
   useEffect(() => {
     void (async () => {
       await fetchProfile(false);
-      await Promise.all([checkOllamaStatus(), checkVllmStatus()]);
+      await Promise.all([checkOllamaStatus(), checkVllmStatus(), checkSpeculativeInferenceStatus()]);
     })();
   }, []);
 
@@ -339,13 +365,15 @@ export const AiSetupStep = ({
     }
     if (backend === 'vllm') {
       void checkVllmStatus();
+    } else if (backend === 'lucebox') {
+      void checkSpeculativeInferenceStatus();
     }
   };
 
   const handleToggleModel = (modelId: string) => {
     const model = profile?.availableModels.find((m) => m.id === modelId);
     const installed = new Set(profile?.installedCatalogIds ?? []);
-    if (model?.backend === 'vllm' && !installed.has(modelId) && !selectedModelIds.includes(modelId)) {
+    if (model && isHostManagedBackend(model.backend) && !installed.has(modelId) && !selectedModelIds.includes(modelId)) {
       openExternal(`https://huggingface.co/${model.backendModelId}`);
       return;
     }
@@ -536,7 +564,9 @@ export const AiSetupStep = ({
   const availableMemoryMb = profile.resourceEstimate.availableMemoryMb;
   const needsOllamaForContinue = selectedBackend === 'ollama' && (ollamaStatus === null || !ollamaStatus.ready);
   const needsVllmForContinue = selectedBackend === 'vllm' && (vllmStatus === null || !vllmStatus.ready);
-  const ollamaEmbeddingsWarning = selectedBackend === 'vllm' && ollamaStatus !== null && !ollamaStatus.ready && !checkingOllama;
+  const needsSpeculativeInferenceForContinue =
+    selectedBackend === 'lucebox' && (speculativeInferenceStatus === null || !speculativeInferenceStatus.ready);
+  const ollamaEmbeddingsWarning = isHostManagedBackend(selectedBackend) && ollamaStatus !== null && !ollamaStatus.ready && !checkingOllama;
   const showTailscaleSetup = remoteAccess.includes('tailscale');
 
   return (
@@ -582,13 +612,26 @@ export const AiSetupStep = ({
                 onEndpointUrlChange={setVllmUrl}
               />
             </StepSection>
+          ) : selectedBackend === 'lucebox' ? (
+            <StepSection
+              number={3}
+              badge="required"
+              title={t('ONBOARDING_SPECULATIVE_SECTION_TITLE')}
+              description={t('ONBOARDING_SPECULATIVE_SECTION_DESC')}
+            >
+              <SpeculativeInferenceSetupCard
+                status={speculativeInferenceStatus}
+                checking={checkingSpeculativeInference}
+                onRecheck={handleSpeculativeInferenceRecheck}
+              />
+            </StepSection>
           ) : (
             <StepSection number={3} badge="required" title={t('ONBOARDING_OLLAMA_SECTION_TITLE')} description={t('ONBOARDING_OLLAMA_SECTION_DESC')}>
               <OllamaSetupCard status={ollamaStatus} checking={checkingOllama} onRecheck={handleOllamaRecheck} />
             </StepSection>
           )}
 
-          {selectedBackend === 'vllm' && (
+          {isHostManagedBackend(selectedBackend) && (
             <StepSection
               number={3}
               badge="recommended"
@@ -656,10 +699,11 @@ export const AiSetupStep = ({
               onClick={handleContinue}
               data-testid="ai-continue-btn"
               disabled={
-                (needsOllamaForContinue || needsVllmForContinue) &&
+                (needsOllamaForContinue || needsVllmForContinue || needsSpeculativeInferenceForContinue) &&
                 !isInsufficient &&
                 ((needsOllamaForContinue && (checkingOllama || !ollamaStatus?.ready)) ||
-                  (needsVllmForContinue && (checkingVllm || !vllmStatus?.ready)))
+                  (needsVllmForContinue && (checkingVllm || !vllmStatus?.ready)) ||
+                  (needsSpeculativeInferenceForContinue && (checkingSpeculativeInference || !speculativeInferenceStatus?.ready)))
               }
             >
               {isInsufficient && cloudProviders.filter((p) => p.apiKey.trim()).length === 0

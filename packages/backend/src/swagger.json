@@ -2504,7 +2504,8 @@
               "enum": [
                 "ollama",
                 "vllm",
-                "lemonade"
+                "lemonade",
+                "lucebox"
               ]
             }
           }
@@ -2804,7 +2805,8 @@
               "enum": [
                 "ollama",
                 "vllm",
-                "lemonade"
+                "lemonade",
+                "lucebox"
               ]
             }
           },
@@ -2874,6 +2876,20 @@
             }
           }
         ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Inference"
+        ]
+      }
+    },
+    "/api/inference/lucebox/status": {
+      "get": {
+        "operationId": "getLuceboxStatus",
+        "parameters": [],
         "responses": {
           "200": {
             "description": ""
@@ -5536,7 +5552,8 @@
                 "enum": [
                   "ollama",
                   "vllm",
-                  "lemonade"
+                  "lemonade",
+                  "lucebox"
                 ]
               },
               "inferenceModel": {
@@ -5922,7 +5939,8 @@
             "enum": [
               "ollama",
               "vllm",
-              "lemonade"
+              "lemonade",
+              "lucebox"
             ]
           },
           "inferenceModel": {
@@ -10702,7 +10720,8 @@
             "enum": [
               "ollama",
               "vllm",
-              "lemonade"
+              "lemonade",
+              "lucebox"
             ]
           },
           "model": {
@@ -13930,7 +13949,8 @@
             "enum": [
               "ollama",
               "vllm",
-              "lemonade"
+              "lemonade",
+              "lucebox"
             ]
           },
           "vllmUrl": {
@@ -13948,7 +13968,8 @@
             "enum": [
               "ollama",
               "vllm",
-              "lemonade"
+              "lemonade",
+              "lucebox"
             ]
           }
         },

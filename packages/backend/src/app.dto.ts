@@ -44,7 +44,7 @@ export const settingsSchema = z.object({
   ciHubOrganizationLabel: z.string().trim().optional(),
   ciHubDeviceSlug: z.string().trim().optional(),
   ciHubHubSubdomain: z.string().trim().optional(),
-  inferenceBackend: z.enum(['ollama', 'vllm', 'lemonade']).optional(),
+  inferenceBackend: z.enum(['ollama', 'vllm', 'lemonade', 'lucebox']).optional(),
   inferenceModel: z.string().trim().optional(),
   inferenceEmbeddingModel: z.string().trim().optional(),
   inferenceVisionModel: z.string().trim().optional(),

@@ -1,4 +1,4 @@
-import { fetchOllamaInstallStatus, fetchVllmInstallStatus } from '@/lib/inference/inference-api';
+import { fetchInferenceRuntimeModels, fetchOllamaInstallStatus, fetchVllmInstallStatus } from '@/lib/inference/inference-api';
 import {
   ensurePullStarted,
   ensurePullsStarted,
@@ -26,7 +26,7 @@ interface UseModelPullOrchestratorOptions {
   /** When false, no pulls are started and polling is paused. */
   enabled: boolean;
   bestEffort?: boolean;
-  /** Chat inference backend — gates readiness on Ollama or vLLM health. */
+  /** Chat inference backend — gates readiness on the selected backend's health. */
   inferenceBackend?: InferenceBackendType;
   /** Only these selected ids are pulled (Ollama-backed models when chat uses vLLM). */
   pullableModelIds?: string[];
@@ -81,6 +81,11 @@ export function useModelPullOrchestrator({
         if (inferenceBackend === 'vllm') {
           const data = (await fetchVllmInstallStatus()) as { ready?: boolean; running?: boolean };
           if (!cancelled) setBackendReady(!!(data.ready ?? data.running));
+          return;
+        }
+        if (inferenceBackend === 'lucebox') {
+          const data = await fetchInferenceRuntimeModels('lucebox');
+          if (!cancelled) setBackendReady(!data.discoveryUnavailable);
           return;
         }
         const data = (await fetchOllamaInstallStatus()) as { ready?: boolean; running?: boolean };
