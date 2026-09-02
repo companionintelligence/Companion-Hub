@@ -5,6 +5,7 @@ import { openExternal } from '@/lib/helpers/open-external';
 import type { MtplxStatus } from '@/modules/onboarding/helpers/ai-setup-types';
 import { AlertCircle, CheckCircle2, Download, Loader2, RefreshCw } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import { AutoInstallRunnerButton } from './auto-install-runner-button';
 
 const MTPLX_DOCS_URL = 'https://github.com/youssofal/MTPLX';
 
@@ -33,6 +34,7 @@ interface MtplxSetupCardProps {
   /** Operator-configured MTPLX base URL; empty string means "use the Hub default". */
   endpointUrl?: string;
   onEndpointUrlChange?: (value: string) => void;
+  onAutoInstall?: () => Promise<void>;
 }
 
 /** Endpoint URL field shared by the ready and not-ready branches. MTPLX has no API key concept —
@@ -72,7 +74,7 @@ const MtplxConnectionFields = ({
   );
 };
 
-export const MtplxSetupCard = ({ status, checking, onRecheck, endpointUrl, onEndpointUrlChange }: MtplxSetupCardProps) => {
+export const MtplxSetupCard = ({ status, checking, onRecheck, endpointUrl, onEndpointUrlChange, onAutoInstall }: MtplxSetupCardProps) => {
   const { t } = useTranslation();
 
   if (!status) {
@@ -158,6 +160,7 @@ export const MtplxSetupCard = ({ status, checking, onRecheck, endpointUrl, onEnd
               />
             </div>
             <div className="flex gap-2 flex-wrap">
+              {onAutoInstall && <AutoInstallRunnerButton onRun={onAutoInstall} />}
               <Button size="sm" variant="ghost" onClick={() => openExternal(MTPLX_DOCS_URL)}>
                 {t('ONBOARDING_MTPLX_DOCS')}
               </Button>

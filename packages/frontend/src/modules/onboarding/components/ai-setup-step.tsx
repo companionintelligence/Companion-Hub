@@ -8,6 +8,8 @@ import {
   rescanInferenceHardware,
 } from '@/lib/inference/inference-api';
 import { openExternal } from '@/lib/helpers/open-external';
+import { getTauriInvoke } from '@/lib/helpers/tauri-invoke';
+import { installAndStartInferenceRunners, type AutomaticInferenceRunner } from '@/lib/inference/auto-inference-runners';
 import { Button } from '@/components/ui/Button';
 import { useEffect, useRef, useState } from 'react';
 import {
@@ -308,11 +310,17 @@ export const AiSetupStep = ({
   // must not discard model choices already made, must not reset a hand-picked backend, and must not
   // replace the whole step with the error screen when the refresh fails — the status probe is the
   // signal the operator asked for, and their in-progress setup outweighs a stale model list.
-  const refreshInstalledModels = async (backend: InferenceBackendType) => {
+  const refreshInstalledModels = async (backend: InferenceBackendType, endpointUrlOverride?: string) => {
     const requestId = ++profileRequestId.current;
     try {
       const previouslyInstalled = new Set(profile?.installedCatalogIds ?? []);
-      const data = await fetchInferenceOnboardingProfile(backend, vllmUrl, backend === 'vllm' ? vllmApiKey : undefined, mtplxUrl, dsparkUrl);
+      const data = await fetchInferenceOnboardingProfile(
+        backend,
+        backend === 'vllm' && endpointUrlOverride ? endpointUrlOverride : vllmUrl,
+        backend === 'vllm' ? vllmApiKey : undefined,
+        backend === 'mtplx' && endpointUrlOverride ? endpointUrlOverride : mtplxUrl,
+        backend === 'dspark' && endpointUrlOverride ? endpointUrlOverride : dsparkUrl,
+      );
       // Drop a superseded answer. Rescan and the backend selector write the same `profile`, so a
       // refresh that started first but landed last would reinstate pre-rescan hardware figures, or
       // leave `profile` scoped to a backend the operator has already switched away from.
@@ -375,6 +383,38 @@ export const AiSetupStep = ({
   const handleOllamaRecheck = () => handleRecheck(checkOllamaStatus, setCheckingOllama);
   const handleMtplxRecheck = () => handleRecheck(checkMtplxStatus, setCheckingMtplx);
   const handleLemonadeRecheck = () => handleRecheck(checkLemonadeStatus, setCheckingLemonade);
+
+  const handleAutoInstallRunner = async (runner: Extract<AutomaticInferenceRunner, 'dspark' | 'mtplx' | 'vllm'>) => {
+    const results = await installAndStartInferenceRunners([runner]);
+    const result = results.find((candidate) => candidate.runner === runner);
+    if (!result || result.state === 'failed' || result.state === 'skipped') {
+      throw new Error('The local runner could not be installed on this machine.');
+    }
+
+    const endpoint = result.endpointUrl;
+    if (!endpoint) {
+      throw new Error('The local runner did not return a reachable endpoint.');
+    }
+
+    if (runner === 'vllm') {
+      setVllmUrl(endpoint);
+      const status = (await fetchVllmInstallStatus(endpoint, vllmApiKey)) as VllmStatus;
+      setVllmStatus(status);
+      if (!status.ready) throw new Error('The local runner is still starting.');
+    } else if (runner === 'mtplx') {
+      setMtplxUrl(endpoint);
+      const status = (await fetchMtplxInstallStatus(endpoint)) as MtplxStatus;
+      setMtplxStatus(status);
+      if (!status.ready) throw new Error('The local runner is still starting.');
+    } else {
+      setDsparkUrl(endpoint);
+      const status = await fetchDsparkInstallStatus(endpoint);
+      setDsparkStatus(status);
+      if (!status.ready) throw new Error('The local runner is still starting.');
+    }
+
+    await refreshInstalledModels(runner, endpoint);
+  };
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: only on mount
   useEffect(() => {
@@ -641,6 +681,7 @@ export const AiSetupStep = ({
   const needsMtplxForContinue = selectedBackend === 'mtplx' && (mtplxStatus === null || !mtplxStatus.ready);
   const needsDsparkForContinue = selectedBackend === 'dspark' && (dsparkStatus === null || !dsparkStatus.ready);
   const needsLemonadeForContinue = selectedBackend === 'lemonade' && (lemonadeStatus === null || !lemonadeStatus.ready);
+  const canAutoInstallRunners = getTauriInvoke() !== null;
   // Host-run backends leave embeddings on Ollama, so the co-install warning covers all of them.
   const ollamaEmbeddingsWarning = isHostServedBackend(selectedBackend) && ollamaStatus !== null && !ollamaStatus.ready && !checkingOllama;
   const showTailscaleSetup = remoteAccess.includes('tailscale');
@@ -687,6 +728,7 @@ export const AiSetupStep = ({
                 onApiKeyChange={setVllmApiKey}
                 endpointUrl={vllmUrl}
                 onEndpointUrlChange={setVllmUrl}
+                onAutoInstall={canAutoInstallRunners ? () => handleAutoInstallRunner('vllm') : undefined}
               />
             </StepSection>
           ) : selectedBackend === 'mtplx' ? (
@@ -697,6 +739,7 @@ export const AiSetupStep = ({
                 onRecheck={handleMtplxRecheck}
                 endpointUrl={mtplxUrl}
                 onEndpointUrlChange={setMtplxUrl}
+                onAutoInstall={canAutoInstallRunners ? () => handleAutoInstallRunner('mtplx') : undefined}
               />
             </StepSection>
           ) : selectedBackend === 'dspark' ? (
@@ -707,6 +750,7 @@ export const AiSetupStep = ({
                 onRecheck={handleDsparkRecheck}
                 endpointUrl={dsparkUrl}
                 onEndpointUrlChange={setDsparkUrl}
+                onAutoInstall={canAutoInstallRunners ? () => handleAutoInstallRunner('dspark') : undefined}
               />
             </StepSection>
           ) : selectedBackend === 'lemonade' ? (
@@ -792,6 +836,7 @@ export const AiSetupStep = ({
               onClick={handleContinue}
               data-testid="ai-continue-btn"
               disabled={
+                !canAutoInstallRunners &&
                 (needsOllamaForContinue || needsVllmForContinue || needsMtplxForContinue || needsDsparkForContinue || needsLemonadeForContinue) &&
                 !isInsufficient &&
                 ((needsOllamaForContinue && (checkingOllama || !ollamaStatus?.ready)) ||

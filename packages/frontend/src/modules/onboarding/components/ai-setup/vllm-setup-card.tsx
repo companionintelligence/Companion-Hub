@@ -5,6 +5,7 @@ import { openExternal } from '@/lib/helpers/open-external';
 import type { VllmStatus } from '@/modules/onboarding/helpers/ai-setup-types';
 import { AlertCircle, CheckCircle2, Download, Loader2, RefreshCw } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import { AutoInstallRunnerButton } from './auto-install-runner-button';
 
 const VLLM_DOCS_URL = 'https://docs.vllm.ai/en/latest/getting_started/quickstart.html';
 
@@ -43,6 +44,7 @@ interface VllmSetupCardProps {
   /** Operator-configured vLLM base URL; empty string means "use the Hub default". */
   endpointUrl?: string;
   onEndpointUrlChange?: (value: string) => void;
+  onAutoInstall?: () => Promise<void>;
 }
 
 /** Endpoint URL + API key fields shared by the ready and not-ready branches. */
@@ -102,7 +104,16 @@ const VllmConnectionFields = ({
   );
 };
 
-export const VllmSetupCard = ({ status, checking, onRecheck, apiKey, onApiKeyChange, endpointUrl, onEndpointUrlChange }: VllmSetupCardProps) => {
+export const VllmSetupCard = ({
+  status,
+  checking,
+  onRecheck,
+  apiKey,
+  onApiKeyChange,
+  endpointUrl,
+  onEndpointUrlChange,
+  onAutoInstall,
+}: VllmSetupCardProps) => {
   const { t } = useTranslation();
 
   if (!status) {
@@ -192,6 +203,7 @@ export const VllmSetupCard = ({ status, checking, onRecheck, apiKey, onApiKeyCha
               />
             </div>
             <div className="flex gap-2 flex-wrap">
+              {onAutoInstall && <AutoInstallRunnerButton onRun={onAutoInstall} />}
               <Button size="sm" variant="ghost" onClick={() => openExternal(VLLM_DOCS_URL)}>
                 {t('ONBOARDING_VLLM_DOCS')}
               </Button>

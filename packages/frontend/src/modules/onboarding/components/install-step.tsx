@@ -1,5 +1,11 @@
 import { getInstalledApps, installApp } from '@/api-client/sdk.gen';
 import { pinInferenceModel, saveCloudProviderConfig, saveInferencePreferences } from '@/lib/inference/inference-api';
+import {
+  DEFAULT_AUTOMATIC_INFERENCE_RUNNERS,
+  installAndStartInferenceRunners,
+  type AutomaticInferenceRunnerResult,
+} from '@/lib/inference/auto-inference-runners';
+import { getTauriInvoke } from '@/lib/helpers/tauri-invoke';
 import { sdkResult } from '@/lib/sdk-unwrap';
 import { fetchTrackedModels, parsePullProgress } from '@/lib/inference/tracked-models';
 import { Button } from '@/components/ui/Button';
@@ -47,7 +53,7 @@ function buildSummary(states: AppInstallState[], continuedInBackground = false):
   };
 }
 
-type AiPhaseStatus = 'pending' | 'configuring-cloud' | 'pulling-models' | 'pinning-models' | 'done' | 'skipped';
+type AiPhaseStatus = 'pending' | 'installing-runners' | 'configuring-cloud' | 'pulling-models' | 'pinning-models' | 'done' | 'skipped';
 
 interface AiPhaseState {
   status: AiPhaseStatus;
@@ -55,6 +61,7 @@ interface AiPhaseState {
   modelProgress: Record<string, number>; // modelId -> 0-100
   modelErrors: Record<string, string>;
   modelsDone: boolean;
+  runnerResults: AutomaticInferenceRunnerResult[];
   error?: string;
 }
 
@@ -75,11 +82,13 @@ export const InstallStep = ({
     modelProgress: {},
     modelErrors: {},
     modelsDone: false,
+    runnerResults: [],
   });
   const started = useRef(false);
   const onCompleteRef = useRef(onComplete);
   onCompleteRef.current = onComplete;
   const queryClient = useQueryClient();
+  const canAutoInstallRunners = getTauriInvoke() !== null;
 
   const buildInstallBody = (app: OnboardingApp) => {
     const mode = app.exposureMode ?? defaultExposureMode;
@@ -115,6 +124,34 @@ export const InstallStep = ({
 
       // ─── AI Setup Phase ───────────────────────────────────────────────
       if (aiSetupConfig && !aiSetupConfig.skipped) {
+        let automaticRunnerUrls = new Map<string, string>();
+
+        // Native runner setup belongs in the desktop shell. It is deliberately
+        // best-effort: unsupported hardware or one failed install must not
+        // prevent cloud configuration, model pulls, or app installation.
+        if (canAutoInstallRunners) {
+          setAiPhase((prev) => ({ ...prev, status: 'installing-runners' }));
+          try {
+            const runnerResults = await installAndStartInferenceRunners(DEFAULT_AUTOMATIC_INFERENCE_RUNNERS);
+            setAiPhase((prev) => ({ ...prev, runnerResults }));
+            automaticRunnerUrls = new Map(
+              runnerResults.filter((result) => result.endpointUrl).map((result) => [result.runner, result.endpointUrl as string]),
+            );
+            const unavailableCount = runnerResults.filter((result) => result.state === 'failed' || result.state === 'skipped').length;
+            if (unavailableCount > 0) {
+              setAiPhase((prev) => ({
+                ...prev,
+                error: t('ONBOARDING_INFERENCE_RUNNERS_UNAVAILABLE', { count: unavailableCount }),
+              }));
+            }
+          } catch {
+            setAiPhase((prev) => ({
+              ...prev,
+              error: t('ONBOARDING_INFERENCE_RUNNERS_FAILED'),
+            }));
+          }
+        }
+
         // Configure cloud providers
         if (aiSetupConfig.cloudProviders.length > 0) {
           setAiPhase((prev) => ({ ...prev, status: 'configuring-cloud' }));
@@ -199,6 +236,8 @@ export const InstallStep = ({
         const resolvedModelPreference = aiSetupConfig.preferredModelId;
         const resolvedEmbeddingPreference = aiSetupConfig.preferredEmbeddingModelId;
         const resolvedVisionPreference = aiSetupConfig.preferredVisionModelId;
+        const configuredOrAutomaticUrl = (configured: string | undefined, runner: string) =>
+          configured?.trim() || automaticRunnerUrls.get(runner) || null;
 
         try {
           await saveInferencePreferences({
@@ -208,9 +247,9 @@ export const InstallStep = ({
               resolvedEmbeddingPreference && availablePreferenceModelIds.has(resolvedEmbeddingPreference) ? resolvedEmbeddingPreference : null,
             visionModel: resolvedVisionPreference && availablePreferenceModelIds.has(resolvedVisionPreference) ? resolvedVisionPreference : null,
             vllmApiKey: aiSetupConfig.vllmApiKey ?? null,
-            vllmUrl: aiSetupConfig.vllmUrl ?? null,
-            mtplxUrl: aiSetupConfig.mtplxUrl ?? null,
-            dsparkUrl: aiSetupConfig.dsparkUrl ?? null,
+            vllmUrl: configuredOrAutomaticUrl(aiSetupConfig.vllmUrl, 'vllm'),
+            mtplxUrl: configuredOrAutomaticUrl(aiSetupConfig.mtplxUrl, 'mtplx'),
+            dsparkUrl: configuredOrAutomaticUrl(aiSetupConfig.dsparkUrl, 'dspark'),
           });
         } catch {
           setAiPhase((prev) => ({ ...prev, error: t('ONBOARDING_INSTALL_FAILED_SAVE_PREFERRED_BACKEND', { status: 0 }) }));
@@ -421,6 +460,7 @@ export const InstallStep = ({
   const progress = apps.length > 0 ? Math.round((processedCount / apps.length) * 100) : 0;
   const hasAiWork = aiPhase.status !== 'skipped';
   const aiInProgress = hasAiWork && aiPhase.status !== 'done';
+  const unavailableRunnerCount = aiPhase.runnerResults.filter((result) => result.state === 'failed' || result.state === 'skipped').length;
 
   const summaryParts: string[] = [];
   if (runningCount > 0) summaryParts.push(t('ONBOARDING_COMPLETE_RUNNING_COUNT', { count: runningCount }));
@@ -490,6 +530,25 @@ export const InstallStep = ({
       {start && aiPhase.status !== 'skipped' && (
         <div className="mb-4 space-y-1" data-testid="ai-phase-section">
           <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide mb-2">{t('ONBOARDING_AI_SETUP')}</div>
+          {canAutoInstallRunners && (
+            <div className="flex items-center gap-2 px-3 py-1.5 text-sm" data-testid="inference-runners-phase">
+              <span className="w-4 text-center">
+                {aiPhase.runnerResults.length > 0
+                  ? aiPhase.runnerResults.some((result) => result.state === 'failed')
+                    ? '✕'
+                    : '✓'
+                  : aiPhase.status === 'installing-runners'
+                    ? '●'
+                    : '○'}
+              </span>
+              <span className="flex-1">{t('ONBOARDING_INFERENCE_RUNNERS')}</span>
+              {unavailableRunnerCount > 0 && (
+                <span className="text-xs text-yellow-600 dark:text-yellow-500">
+                  {t('ONBOARDING_INFERENCE_RUNNERS_UNAVAILABLE', { count: unavailableRunnerCount })}
+                </span>
+              )}
+            </div>
+          )}
           {aiSetupConfig?.cloudProviders && aiSetupConfig.cloudProviders.length > 0 && (
             <div className="flex items-center gap-2 px-3 py-1.5 text-sm">
               <span className="w-4 text-center">{aiPhase.cloudConfigured ? '✓' : aiPhase.status === 'configuring-cloud' ? '●' : '○'}</span>
