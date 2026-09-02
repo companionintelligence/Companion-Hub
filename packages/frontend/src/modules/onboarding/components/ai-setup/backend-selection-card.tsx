@@ -5,7 +5,6 @@ import {
   ONBOARDING_BACKEND_DSPARK_HINT,
   ONBOARDING_BACKEND_LEMONADE_HINT,
   ONBOARDING_BACKEND_MTPLX_HINT,
-  ONBOARDING_BACKEND_MLX_HINT,
   ONBOARDING_BACKEND_OLLAMA_HINT,
   ONBOARDING_BACKEND_VLLM_HINT,
 } from '@/components/hub-status/hub-status-tooltips';
@@ -19,7 +18,6 @@ const BACKEND_HINT_KEYS: Record<InferenceBackendType, string> = {
   lemonade: ONBOARDING_BACKEND_LEMONADE_HINT,
   mtplx: ONBOARDING_BACKEND_MTPLX_HINT,
   dspark: ONBOARDING_BACKEND_DSPARK_HINT,
-  mlx: ONBOARDING_BACKEND_MLX_HINT,
 };
 
 const BACKEND_INFO: Record<InferenceBackendType, { label: string; descriptionKey: string }> = {
@@ -28,7 +26,6 @@ const BACKEND_INFO: Record<InferenceBackendType, { label: string; descriptionKey
   lemonade: { label: 'Lemonade', descriptionKey: 'ONBOARDING_BACKEND_LEMONADE_DESC' },
   mtplx: { label: 'MTPLX', descriptionKey: 'ONBOARDING_BACKEND_MTPLX_DESC' },
   dspark: { label: 'Speculative inference', descriptionKey: 'ONBOARDING_BACKEND_DSPARK_DESC' },
-  mlx: { label: 'MLX', descriptionKey: 'ONBOARDING_BACKEND_MLX_DESC' },
 };
 
 interface BackendSelectionCardProps {

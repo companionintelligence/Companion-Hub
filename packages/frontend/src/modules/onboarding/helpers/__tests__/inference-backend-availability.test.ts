@@ -23,7 +23,7 @@ const amdProfile = {
 } as HardwareProfileResponse;
 
 describe('inference-backend-availability', () => {
-  // vLLM, Lemonade, and MLX are selectable when their endpoint is reachable; the endpoint probe
+  // vLLM, Lemonade, and mlx-dspark are selectable when their endpoint is reachable; the endpoint probe
   // is the gate, not the local GPU vendor.
   it('keeps vLLM selectable regardless of GPU vendor', () => {
     expect(unavailableInferenceBackends(nvidiaProfile)).toEqual([]);
@@ -42,7 +42,6 @@ describe('inference-backend-availability', () => {
       expect(isHubLoadableBackend('dspark')).toBe(true);
       expect(isHubLoadableBackend('lemonade')).toBe(true);
       expect(isHubLoadableBackend('vllm')).toBe(false);
-      expect(isHubLoadableBackend('mlx')).toBe(false);
       expect(isHubLoadableBackend(undefined)).toBe(false);
     });
   });

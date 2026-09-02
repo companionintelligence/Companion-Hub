@@ -57,8 +57,6 @@ export interface AiSetupConfig {
    * API-key sibling: mlx-dspark's /health probe is auth-exempt, so none is needed to detect it.
    */
   dsparkUrl?: string;
-  /** Optional custom mlx-lm base URL (persisted to Hub settings as inferenceMlxUrl). */
-  mlxUrl?: string;
   /** When true, onboarding install must not proceed (budget or missing agent model). */
   installBlocked?: boolean;
   installBlockReason?: string;
@@ -118,11 +116,6 @@ export interface DsparkStatus extends VllmStatus {
   loadedModels?: string[];
 }
 
-/** Same status shape as VllmStatus; generic MLX-LM reports its served model through /v1/models. */
-export interface MlxStatus extends VllmStatus {
-  loadedModels?: string[];
-}
-
 /** Lemonade's health card uses the same connection shape and also reports cached model ids. */
 export interface LemonadeStatus extends VllmStatus {
   loadedModels?: string[];
@@ -137,7 +130,6 @@ export interface InferencePreferencesResponse {
   preferredVllmUrl?: string | null;
   preferredMtplxUrl?: string | null;
   preferredDsparkUrl?: string | null;
-  preferredMlxUrl?: string | null;
 }
 
 export interface RuntimeModelInfo {

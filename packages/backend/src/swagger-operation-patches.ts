@@ -4,7 +4,6 @@ import { SearchAppsQueryDto } from '@/modules/marketplace/dto/marketplace.dto';
 import { GetAppBackupsQueryDto } from '@/modules/backups/dto/backups.dto';
 import {
   DsparkStatusQueryDto,
-  MlxStatusQueryDto,
   MtplxStatusQueryDto,
   OnboardingProfileQueryDto,
   RuntimeModelsQueryDto,
@@ -86,7 +85,6 @@ export const OPERATION_QUERY_DTOS: Record<string, ZodDto> = {
   getVllmStatus: VllmStatusQueryDto,
   getMtplxStatus: MtplxStatusQueryDto,
   getDsparkStatus: DsparkStatusQueryDto,
-  getMlxStatus: MlxStatusQueryDto,
   getAppBackups: GetAppBackupsQueryDto,
   appLogsEvents: StreamAppLogsQueryDto,
   hubLogsEvents: StreamHubLogsQueryDto,

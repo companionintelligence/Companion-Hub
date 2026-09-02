@@ -573,40 +573,6 @@ llms[64|]{id,backendModelId,name,purpose,params,gb,tier,ctxK,creator,intel,agent
 
 const vllmMlxLlms: CuratedModel[] = decodeToonTable(VLLM_MLX_LLM_TOON, 'llms').map((row) => buildLlmModel(row, 'vllm', { gpuVendors: ['apple'] }));
 
-// ─── Generic MLX-LM catalog ─────────────────────────────────────────────────
-// MLX-LM and vLLM-Metal both consume MLX checkpoints, but they are different server
-// implementations and must remain distinct backends in the catalog. Keep this list to the
-// well-supported, general-purpose MLX-LM families rather than claiming every vLLM-Metal row is
-// loadable by plain mlx_lm.server. The backendModelId stays the exact Hugging Face repo id that
-// `mlx_lm.server --model` accepts; the catalog id gets a suffix so the vLLM-Metal and MLX-LM
-// choices can coexist without making model selection ambiguous.
-const MLX_LM_CATALOG_IDS = new Set([
-  'llama3-2-1b-mlx',
-  'llama3-2-3b-mlx',
-  'llama3-1-8b-mlx',
-  'qwen3-1-7b-mlx',
-  'qwen3-4b-mlx',
-  'qwen3-8b-mlx',
-  'qwen3-14b-mlx',
-  'qwen3-32b-mlx',
-  'deepseek-r1-7b-mlx',
-  'mistral-7b-mlx',
-  'mistral-nemo-12b-mlx',
-  'gemma4-e4b-mlx',
-  'phi4-mini-3-8b-mlx',
-  'gpt-oss-20b-mlx',
-]);
-
-const mlxLlms: CuratedModel[] = vllmMlxLlms
-  .filter((model) => MLX_LM_CATALOG_IDS.has(model.id))
-  .map((model) => ({
-    ...model,
-    id: `${model.id}-mlx-lm`,
-    backend: 'mlx',
-    displayName: `${model.displayName} (MLX-LM)`,
-    description: `${model.displayName} — native MLX-LM server on Apple Silicon.`,
-  }));
-
 // ─── MTPLX LLM catalog (TOON) ─────────────────────────────────────────────────
 // Chat models for the `mtplx` backend — github.com/youssofal/MTPLX, a native macOS app/CLI (Apple
 // Silicon, macOS 14+, no Docker or Linux path at all) that speeds up decoding ~1.6-2.9x via native
@@ -791,7 +757,6 @@ export const CURATED_MODELS: CuratedModel[] = [
   ...lemonadeLlms,
   ...vllmLlms,
   ...vllmMlxLlms,
-  ...mlxLlms,
   ...mtplxLlms,
   ...dsparkLlms,
   ...extraModels,

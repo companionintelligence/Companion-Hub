@@ -5,7 +5,6 @@ import {
   fetchInferenceRuntimeModels,
   fetchInferenceTrackedModels,
   fetchLemonadeInstallStatus,
-  fetchMlxInstallStatus,
   fetchMtplxInstallStatus,
   fetchOllamaInstallStatus,
   fetchDsparkInstallStatus,
@@ -39,9 +38,8 @@ import { VllmSetupCard } from '@/modules/onboarding/components/ai-setup/vllm-set
 import { MtplxSetupCard } from '@/modules/onboarding/components/ai-setup/mtplx-setup-card';
 import { DsparkSetupCard } from '@/modules/onboarding/components/ai-setup/dspark-setup-card';
 import { LemonadeSetupCard } from '@/modules/onboarding/components/ai-setup/lemonade-setup-card';
-import { MlxSetupCard } from '@/modules/onboarding/components/ai-setup/mlx-setup-card';
 import { OllamaSetupCard } from '@/modules/onboarding/components/ai-setup/ollama-setup-card';
-import type { LemonadeStatus, MlxStatus, MtplxStatus, DsparkStatus, OllamaStatus, VllmStatus } from '@/modules/onboarding/helpers/ai-setup-types';
+import type { LemonadeStatus, MtplxStatus, DsparkStatus, OllamaStatus, VllmStatus } from '@/modules/onboarding/helpers/ai-setup-types';
 import {
   EMBEDDING_INFERENCE_BACKEND,
   hubLoadableSelection,
@@ -124,19 +122,16 @@ export const AiSettingsContainer = () => {
   const [vllmUrl, setVllmUrl] = useState('');
   const [mtplxUrl, setMtplxUrl] = useState('');
   const [dsparkUrl, setDsparkUrl] = useState('');
-  const [mlxUrl, setMlxUrl] = useState('');
   const [ollamaStatus, setOllamaStatus] = useState<OllamaStatus | null>(null);
   const [vllmStatus, setVllmStatus] = useState<VllmStatus | null>(null);
   const [mtplxStatus, setMtplxStatus] = useState<MtplxStatus | null>(null);
   const [dsparkStatus, setDsparkStatus] = useState<DsparkStatus | null>(null);
   const [lemonadeStatus, setLemonadeStatus] = useState<LemonadeStatus | null>(null);
-  const [mlxStatus, setMlxStatus] = useState<MlxStatus | null>(null);
   const [checkingOllama, setCheckingOllama] = useState(false);
   const [checkingVllm, setCheckingVllm] = useState(false);
   const [checkingMtplx, setCheckingMtplx] = useState(false);
   const [checkingDspark, setCheckingDspark] = useState(false);
   const [checkingLemonade, setCheckingLemonade] = useState(false);
-  const [checkingMlx, setCheckingMlx] = useState(false);
   // Backend the backend-switch effect has already refetched for (set by fetchProfile too, since it
   // fetches profile + runtime models itself); prevents a duplicate fetch right after mount.
   const lastHandledBackendRef = useRef<InferenceBackendType | null>(null);
@@ -149,8 +144,6 @@ export const AiSettingsContainer = () => {
   mtplxUrlRef.current = mtplxUrl;
   const dsparkUrlRef = useRef('');
   dsparkUrlRef.current = dsparkUrl;
-  const mlxUrlRef = useRef('');
-  mlxUrlRef.current = mlxUrl;
   const trackedModelsRef = useRef<TrackedModel[]>([]);
   // One index of the tier catalog per profile, shared by the save and by the confirmation copy so
   // they cannot disagree — and so neither rebuilds it, the save on every press and the copy on
@@ -234,9 +227,6 @@ export const AiSettingsContainer = () => {
       if (prefData?.preferredMtplxUrl) {
         setMtplxUrl(prefData.preferredMtplxUrl);
       }
-      if (prefData?.preferredMlxUrl) {
-        setMlxUrl(prefData.preferredMlxUrl);
-      }
       const requestedBackend = backendOverride ?? prefData?.preferredBackend ?? undefined;
       const data = await fetchInferenceOnboardingProfile(requestedBackend);
       setProfile(data);
@@ -259,8 +249,6 @@ export const AiSettingsContainer = () => {
         void checkMtplxStatus();
       } else if (preferredBackend === 'lemonade') {
         void checkLemonadeStatus();
-      } else if (preferredBackend === 'mlx') {
-        void checkMlxStatus();
       }
 
       const configured = await fetchConfiguredCloudProviders();
@@ -300,7 +288,6 @@ export const AiSettingsContainer = () => {
         selectedBackend === 'vllm' ? vllmApiKeyRef.current : undefined,
         selectedBackend === 'mtplx' ? mtplxUrlRef.current : undefined,
         selectedBackend === 'dspark' ? dsparkUrlRef.current : undefined,
-        selectedBackend === 'mlx' ? mlxUrlRef.current : undefined,
       );
       setProfile(data);
       seedSelectedModelIds(data, selectedBackend, trackedModelsRef.current);
@@ -374,7 +361,7 @@ export const AiSettingsContainer = () => {
   const handleRecheckDspark = useCallback(async () => {
     const status = await checkDsparkStatus();
     if (status?.ready) {
-      const data = await fetchInferenceOnboardingProfile('dspark', undefined, undefined, undefined, dsparkUrlRef.current, undefined);
+      const data = await fetchInferenceOnboardingProfile('dspark', undefined, undefined, undefined, dsparkUrlRef.current);
       setProfile(data);
       seedSelectedModelIds(data, 'dspark', trackedModelsRef.current);
     }
@@ -402,29 +389,6 @@ export const AiSettingsContainer = () => {
       seedSelectedModelIds(data, 'lemonade', trackedModelsRef.current);
     }
   }, [checkLemonadeStatus, seedSelectedModelIds]);
-
-  const checkMlxStatus = useCallback(async () => {
-    setCheckingMlx(true);
-    try {
-      const data = await fetchMlxInstallStatus(mlxUrlRef.current);
-      setMlxStatus(data);
-      return data;
-    } catch {
-      setMlxStatus({ ready: false, running: false, endpointUrl: '' });
-      return null;
-    } finally {
-      setCheckingMlx(false);
-    }
-  }, []);
-
-  const handleRecheckMlx = useCallback(async () => {
-    const status = await checkMlxStatus();
-    if (status?.ready) {
-      const data = await fetchInferenceOnboardingProfile('mlx', undefined, undefined, undefined, undefined, mlxUrlRef.current);
-      setProfile(data);
-      seedSelectedModelIds(data, 'mlx', trackedModelsRef.current);
-    }
-  }, [checkMlxStatus, seedSelectedModelIds]);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: only on mount
   useEffect(() => {
@@ -469,7 +433,6 @@ export const AiSettingsContainer = () => {
       selectedBackend === 'vllm' ? vllmApiKeyRef.current : undefined,
       selectedBackend === 'mtplx' ? mtplxUrlRef.current : undefined,
       selectedBackend === 'dspark' ? dsparkUrlRef.current : undefined,
-      selectedBackend === 'mlx' ? mlxUrlRef.current : undefined,
     ).then((data) => {
       setProfile(data);
       // Re-seed the checkboxes for the new backend from server truth (see seedSelectedModelIds).
@@ -482,22 +445,11 @@ export const AiSettingsContainer = () => {
       void checkMtplxStatus();
     } else if (selectedBackend === 'lemonade') {
       void checkLemonadeStatus();
-    } else if (selectedBackend === 'mlx') {
-      void checkMlxStatus();
     }
     if (selectedBackend === 'dspark') {
       void checkDsparkStatus();
     }
-  }, [
-    selectedBackend,
-    fetchRuntimeModels,
-    checkVllmStatus,
-    checkMtplxStatus,
-    checkDsparkStatus,
-    checkLemonadeStatus,
-    checkMlxStatus,
-    seedSelectedModelIds,
-  ]);
+  }, [selectedBackend, fetchRuntimeModels, checkVllmStatus, checkMtplxStatus, checkDsparkStatus, checkLemonadeStatus, seedSelectedModelIds]);
 
   const hasActiveTransfers = Object.values(trackedModels).some((model) => ['pulling', 'loading', 'unloading'].includes(model.state));
 
@@ -548,7 +500,6 @@ export const AiSettingsContainer = () => {
         vllmUrl: selectedBackend === 'vllm' ? vllmUrl.trim() || null : null,
         mtplxUrl: selectedBackend === 'mtplx' ? mtplxUrl.trim() || null : null,
         dsparkUrl: selectedBackend === 'dspark' ? dsparkUrl.trim() || null : null,
-        mlxUrl: selectedBackend === 'mlx' ? mlxUrl.trim() || null : null,
       });
 
       // Everything the Hub can install into itself — Ollama rows plus the one mlx-dspark row that
@@ -884,27 +835,6 @@ export const AiSettingsContainer = () => {
                 <p className="mt-0.5 text-xs text-muted-foreground sm:text-sm">{t('ONBOARDING_LEMONADE_SECTION_DESC')}</p>
               </div>
               <LemonadeSetupCard status={lemonadeStatus} checking={checkingLemonade} onRecheck={handleRecheckLemonade} />
-            </section>
-          )}
-
-          {selectedBackend === 'mlx' && (
-            <section className="space-y-4 rounded-lg border border-border bg-gradient-to-b from-card to-card/60 p-5 shadow-sm sm:p-6">
-              <div>
-                <h2 className="text-base font-bold uppercase tracking-wide">{t('ONBOARDING_MLX_SECTION_TITLE')}</h2>
-                <p className="mt-0.5 text-xs text-muted-foreground sm:text-sm">{t('ONBOARDING_MLX_SECTION_DESC')}</p>
-              </div>
-              <MlxSetupCard
-                status={mlxStatus}
-                checking={checkingMlx}
-                onRecheck={handleRecheckMlx}
-                endpointUrl={mlxUrl}
-                onEndpointUrlChange={setMlxUrl}
-              />
-              <div>
-                <h3 className="text-sm font-semibold">{t('ONBOARDING_EMBEDDINGS_OLLAMA_SECTION_TITLE')}</h3>
-                <p className="mb-3 mt-0.5 text-xs text-muted-foreground">{t('ONBOARDING_EMBEDDINGS_MLX_SECTION_DESC')}</p>
-                <OllamaSetupCard status={ollamaStatus} checking={checkingOllama} onRecheck={handleRecheckOllama} />
-              </div>
             </section>
           )}
 

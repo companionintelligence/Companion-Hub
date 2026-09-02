@@ -27,14 +27,12 @@ import {
   VllmStatusQueryDto,
   MtplxStatusQueryDto,
   DsparkStatusQueryDto,
-  MlxStatusQueryDto,
 } from './inference.dto';
 import { OllamaBackend } from './backends/ollama.backend';
 import { buildVllmRemediation, resolveVllmProbeUrl, VLLM_PROBE_API_KEY_HEADER, VllmBackend } from './backends/vllm.backend';
 import { LemonadeBackend } from './backends/lemonade.backend';
 import { buildMtplxRemediation, resolveMtplxProbeUrl, MtplxBackend } from './backends/mtplx.backend';
 import { buildDsparkRemediation, DsparkBackend, resolveDsparkProbeUrl } from './backends/dspark.backend';
-import { buildMlxRemediation, MlxBackend, resolveMlxProbeUrl } from './backends/mlx.backend';
 import { resolveInstalledCatalogIds, resolveInstalledCatalogIdsFromServedModels } from './model-availability.util';
 import type { InferenceBackend } from './backends/backend.interface';
 
@@ -67,7 +65,6 @@ export class InferenceController {
     private readonly lemonadeBackend: LemonadeBackend,
     private readonly mtplxBackend: MtplxBackend,
     private readonly dsparkBackend: DsparkBackend,
-    private readonly mlxBackend: MlxBackend,
     private readonly moduleRef: ModuleRef,
     readonly _logger: LoggerService,
   ) {}
@@ -90,8 +87,6 @@ export class InferenceController {
         return this.mtplxBackend;
       case 'dspark':
         return this.dsparkBackend;
-      case 'mlx':
-        return this.mlxBackend;
     }
   }
 
@@ -201,7 +196,6 @@ export class InferenceController {
       body.vllmUrl,
       body.mtplxUrl,
       body.dsparkUrl,
-      body.mlxUrl,
     );
 
     this.scheduleAiAppRestart();
@@ -440,8 +434,8 @@ export class InferenceController {
     const ollamaInstalled = resolveInstalledCatalogIds(catalog, ollamaHealth.modelsLoaded ?? [], getTrackedState);
 
     let installedCatalogIds: string[];
-    // Lemonade exposes the same model registry surface as its load/pull API, while vLLM, MTPLX,
-    // mlx-dspark, and generic MLX-LM are host-run servers with no Hub-side pull registry. Read each
+    // Lemonade exposes the same model registry surface as its load/pull API, while vLLM, MTPLX, and
+    // mlx-dspark are host-run servers with no Hub-side pull registry. Read each
     // backend's live model ids so the model picker reflects what the selected endpoint can actually
     // serve. Ollama's embedding rows are merged for host-served chat backends because embeddings
     // stay on Ollama there. vLLM's probe takes an optional API key override; the other probes only
@@ -453,7 +447,7 @@ export class InferenceController {
         modelsLoaded: [] as string[],
       }));
       installedCatalogIds = resolveInstalledCatalogIdsFromServedModels(catalog, lemonadeHealth.modelsLoaded ?? [], 'lemonade', getTrackedState);
-    } else if (installBackend === 'vllm' || installBackend === 'mtplx' || installBackend === 'dspark' || installBackend === 'mlx') {
+    } else if (installBackend === 'vllm' || installBackend === 'mtplx' || installBackend === 'dspark') {
       const servedHealth =
         installBackend === 'dspark'
           ? await this.dsparkBackend.healthCheck(query?.dsparkUrl).catch(() => ({
@@ -467,17 +461,11 @@ export class InferenceController {
                 healthy: false,
                 modelsLoaded: [] as string[],
               }))
-            : installBackend === 'mlx'
-              ? await this.mlxBackend.healthCheck(query?.mlxUrl).catch(() => ({
-                  running: false,
-                  healthy: false,
-                  modelsLoaded: [] as string[],
-                }))
-              : await this.vllmBackend.healthCheck(query?.vllmUrl, vllmApiKey).catch(() => ({
-                  running: false,
-                  healthy: false,
-                  modelsLoaded: [] as string[],
-                }));
+            : await this.vllmBackend.healthCheck(query?.vllmUrl, vllmApiKey).catch(() => ({
+                running: false,
+                healthy: false,
+                modelsLoaded: [] as string[],
+              }));
       const servedInstalled = resolveInstalledCatalogIdsFromServedModels(catalog, servedHealth.modelsLoaded ?? [], installBackend, getTrackedState);
       const ollamaEmbeddingIds = ollamaInstalled.filter((id) => {
         const model = catalog.find((m) => m.id === id);
@@ -634,35 +622,6 @@ export class InferenceController {
       error: ready ? undefined : health.error,
       hint: remediation
         ? `${remediation.hint} Hub probes from inside its container — use http://host.docker.internal:8000, not localhost. Currently probing ${probeUrl}.`
-        : undefined,
-    };
-  }
-
-  /** Probe the operator's native mlx-lm OpenAI-compatible server. */
-  @UseGuards(AuthGuard)
-  @Get('mlx/status')
-  async getMlxStatus(@Query() query?: MlxStatusQueryDto) {
-    const requestedUrl = query?.url?.trim() || this.mlxBackend.getBaseUrl();
-    const probeUrl = resolveMlxProbeUrl(requestedUrl);
-    const health = await this.mlxBackend.healthCheck(requestedUrl).catch((err) => ({
-      running: false,
-      healthy: false,
-      modelsLoaded: [] as string[],
-      error: err instanceof Error ? err.message : String(err),
-    }));
-    const ready = !!(health.running && health.healthy);
-    const displayEndpoint = ready ? `${probeUrl}/v1` : undefined;
-    const remediation = ready ? undefined : buildMlxRemediation();
-    return {
-      ready,
-      running: health.running,
-      endpointUrl: probeUrl,
-      displayEndpoint,
-      loadedModels: health.modelsLoaded,
-      remediationCommand: remediation?.command,
-      error: ready ? undefined : health.error,
-      hint: remediation
-        ? `${remediation.hint} Hub probes from inside its container — use http://host.docker.internal:8080, not localhost. Currently probing ${probeUrl}.`
         : undefined,
     };
   }

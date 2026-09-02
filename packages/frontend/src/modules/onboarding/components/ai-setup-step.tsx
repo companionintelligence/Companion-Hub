@@ -1,7 +1,6 @@
 import {
   fetchInferenceOnboardingProfile,
   fetchLemonadeInstallStatus,
-  fetchMlxInstallStatus,
   fetchMtplxInstallStatus,
   fetchOllamaInstallStatus,
   fetchDsparkInstallStatus,
@@ -20,7 +19,6 @@ import {
   type HardwareProfileResponse,
   type MtplxStatus,
   type LemonadeStatus,
-  type MlxStatus,
   type OllamaStatus,
   type VllmStatus,
   type DsparkStatus,
@@ -41,7 +39,6 @@ import { VllmSetupCard } from './ai-setup/vllm-setup-card';
 import { MtplxSetupCard } from './ai-setup/mtplx-setup-card';
 import { DsparkSetupCard } from './ai-setup/dspark-setup-card';
 import { LemonadeSetupCard } from './ai-setup/lemonade-setup-card';
-import { MlxSetupCard } from './ai-setup/mlx-setup-card';
 import { TailscaleSetupStep } from './tailscale-setup-step';
 import { computeSelectionBudget } from '../helpers/onboarding-model-selection';
 import {
@@ -120,18 +117,15 @@ export const AiSetupStep = ({
   const [mtplxStatus, setMtplxStatus] = useState<MtplxStatus | null>(null);
   const [dsparkStatus, setDsparkStatus] = useState<DsparkStatus | null>(null);
   const [lemonadeStatus, setLemonadeStatus] = useState<LemonadeStatus | null>(null);
-  const [mlxStatus, setMlxStatus] = useState<MlxStatus | null>(null);
   const [checkingOllama, setCheckingOllama] = useState(false);
   const [checkingVllm, setCheckingVllm] = useState(false);
   const [checkingMtplx, setCheckingMtplx] = useState(false);
   const [checkingDspark, setCheckingDspark] = useState(false);
   const [checkingLemonade, setCheckingLemonade] = useState(false);
-  const [checkingMlx, setCheckingMlx] = useState(false);
   const [vllmApiKey, setVllmApiKey] = useState('');
   const [vllmUrl, setVllmUrl] = useState('');
   const [mtplxUrl, setMtplxUrl] = useState('');
   const [dsparkUrl, setDsparkUrl] = useState('');
-  const [mlxUrl, setMlxUrl] = useState('');
   const [selectedBackend, setSelectedBackend] = useState<InferenceBackendType>('ollama');
 
   // Three code paths fetch the same profile endpoint concurrently (mount/Rescan, backend switch,
@@ -196,7 +190,7 @@ export const AiSetupStep = ({
     const requestId = ++profileRequestId.current;
     try {
       const backend = backendOverride ?? selectedBackend;
-      const data = await fetchInferenceOnboardingProfile(backend, vllmUrl, backend === 'vllm' ? vllmApiKey : undefined, mtplxUrl, dsparkUrl, mlxUrl);
+      const data = await fetchInferenceOnboardingProfile(backend, vllmUrl, backend === 'vllm' ? vllmApiKey : undefined, mtplxUrl, dsparkUrl);
       // Superseded: a rescan that started before a backend switch but answers after it would push
       // `backends.recommended` back over the backend the operator just picked, and reset their
       // selection to that backend's defaults.
@@ -251,21 +245,6 @@ export const AiSetupStep = ({
       return unreachable;
     } finally {
       setCheckingLemonade(false);
-    }
-  };
-
-  const checkMlxStatus = async (): Promise<MlxStatus> => {
-    setCheckingMlx(true);
-    try {
-      const data = await fetchMlxInstallStatus(mlxUrl);
-      setMlxStatus(data);
-      return data;
-    } catch {
-      const unreachable: MlxStatus = { ready: false, running: false, endpointUrl: '' };
-      setMlxStatus(unreachable);
-      return unreachable;
-    } finally {
-      setCheckingMlx(false);
     }
   };
 
@@ -327,7 +306,7 @@ export const AiSetupStep = ({
     const requestId = ++profileRequestId.current;
     try {
       const previouslyInstalled = new Set(profile?.installedCatalogIds ?? []);
-      const data = await fetchInferenceOnboardingProfile(backend, vllmUrl, backend === 'vllm' ? vllmApiKey : undefined, mtplxUrl, dsparkUrl, mlxUrl);
+      const data = await fetchInferenceOnboardingProfile(backend, vllmUrl, backend === 'vllm' ? vllmApiKey : undefined, mtplxUrl, dsparkUrl);
       // Drop a superseded answer. Rescan and the backend selector write the same `profile`, so a
       // refresh that started first but landed last would reinstate pre-rescan hardware figures, or
       // leave `profile` scoped to a backend the operator has already switched away from.
@@ -390,13 +369,12 @@ export const AiSetupStep = ({
   const handleOllamaRecheck = () => handleRecheck(checkOllamaStatus, setCheckingOllama);
   const handleMtplxRecheck = () => handleRecheck(checkMtplxStatus, setCheckingMtplx);
   const handleLemonadeRecheck = () => handleRecheck(checkLemonadeStatus, setCheckingLemonade);
-  const handleMlxRecheck = () => handleRecheck(checkMlxStatus, setCheckingMlx);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: only on mount
   useEffect(() => {
     void (async () => {
       await fetchProfile(false);
-      await Promise.all([checkOllamaStatus(), checkVllmStatus(), checkMtplxStatus(), checkDsparkStatus(), checkLemonadeStatus(), checkMlxStatus()]);
+      await Promise.all([checkOllamaStatus(), checkVllmStatus(), checkMtplxStatus(), checkDsparkStatus(), checkLemonadeStatus()]);
     })();
   }, []);
 
@@ -419,7 +397,7 @@ export const AiSetupStep = ({
     setSelectedBackend(backend);
     const requestId = ++profileRequestId.current;
     try {
-      const data = await fetchInferenceOnboardingProfile(backend, vllmUrl, backend === 'vllm' ? vllmApiKey : undefined, mtplxUrl, dsparkUrl, mlxUrl);
+      const data = await fetchInferenceOnboardingProfile(backend, vllmUrl, backend === 'vllm' ? vllmApiKey : undefined, mtplxUrl, dsparkUrl);
       // `setSelectedBackend` above is synchronous, so two quick switches already end on the right
       // backend — but the slower fetch can still answer last and leave `profile` (and the selection
       // derived from it) describing the backend the operator switched away from.
@@ -438,8 +416,6 @@ export const AiSetupStep = ({
       void checkMtplxStatus();
     } else if (backend === 'lemonade') {
       void checkLemonadeStatus();
-    } else if (backend === 'mlx') {
-      void checkMlxStatus();
     }
     if (backend === 'dspark') {
       void checkDsparkStatus();
@@ -452,7 +428,7 @@ export const AiSetupStep = ({
     const installed = new Set(profile?.installedCatalogIds ?? []);
     // Host-served backends cannot hot-swap a running server, so selecting an uninstalled model
     // sends the operator to its model page. Lemonade and mlx-dspark are Hub-loadable and tick like
-    // Ollama; generic MLX-LM is host-served and must be restarted with a new --model value.
+    // Ollama.
     if (isHostServedBackend(model?.backend) && !installed.has(modelId) && !selectedModelIds.includes(modelId)) {
       openExternal(`https://huggingface.co/${model.backendModelId}`);
       return;
@@ -549,7 +525,6 @@ export const AiSetupStep = ({
       ...(selectedBackend === 'vllm' && vllmUrl.trim() ? { vllmUrl: vllmUrl.trim() } : {}),
       ...(selectedBackend === 'mtplx' && mtplxUrl.trim() ? { mtplxUrl: mtplxUrl.trim() } : {}),
       ...(selectedBackend === 'dspark' && dsparkUrl.trim() ? { dsparkUrl: dsparkUrl.trim() } : {}),
-      ...(selectedBackend === 'mlx' && mlxUrl.trim() ? { mlxUrl: mlxUrl.trim() } : {}),
     };
   };
 
@@ -582,7 +557,6 @@ export const AiSetupStep = ({
     vllmUrl,
     mtplxUrl,
     dsparkUrl,
-    mlxUrl,
     onConfigChange,
   ]);
 
@@ -661,7 +635,6 @@ export const AiSetupStep = ({
   const needsMtplxForContinue = selectedBackend === 'mtplx' && (mtplxStatus === null || !mtplxStatus.ready);
   const needsDsparkForContinue = selectedBackend === 'dspark' && (dsparkStatus === null || !dsparkStatus.ready);
   const needsLemonadeForContinue = selectedBackend === 'lemonade' && (lemonadeStatus === null || !lemonadeStatus.ready);
-  const needsMlxForContinue = selectedBackend === 'mlx' && (mlxStatus === null || !mlxStatus.ready);
   // Host-run backends leave embeddings on Ollama, so the co-install warning covers all of them.
   const ollamaEmbeddingsWarning = isHostServedBackend(selectedBackend) && ollamaStatus !== null && !ollamaStatus.ready && !checkingOllama;
   const showTailscaleSetup = remoteAccess.includes('tailscale');
@@ -737,16 +710,6 @@ export const AiSetupStep = ({
               description={t('ONBOARDING_LEMONADE_SECTION_DESC')}
             >
               <LemonadeSetupCard status={lemonadeStatus} checking={checkingLemonade} onRecheck={handleLemonadeRecheck} />
-            </StepSection>
-          ) : selectedBackend === 'mlx' ? (
-            <StepSection number={3} badge="required" title={t('ONBOARDING_MLX_SECTION_TITLE')} description={t('ONBOARDING_MLX_SECTION_DESC')}>
-              <MlxSetupCard
-                status={mlxStatus}
-                checking={checkingMlx}
-                onRecheck={handleMlxRecheck}
-                endpointUrl={mlxUrl}
-                onEndpointUrlChange={setMlxUrl}
-              />
             </StepSection>
           ) : (
             <StepSection number={3} badge="required" title={t('ONBOARDING_OLLAMA_SECTION_TITLE')} description={t('ONBOARDING_OLLAMA_SECTION_DESC')}>
@@ -824,19 +787,13 @@ export const AiSetupStep = ({
               onClick={handleContinue}
               data-testid="ai-continue-btn"
               disabled={
-                (needsOllamaForContinue ||
-                  needsVllmForContinue ||
-                  needsMtplxForContinue ||
-                  needsDsparkForContinue ||
-                  needsLemonadeForContinue ||
-                  needsMlxForContinue) &&
+                (needsOllamaForContinue || needsVllmForContinue || needsMtplxForContinue || needsDsparkForContinue || needsLemonadeForContinue) &&
                 !isInsufficient &&
                 ((needsOllamaForContinue && (checkingOllama || !ollamaStatus?.ready)) ||
                   (needsVllmForContinue && (checkingVllm || !vllmStatus?.ready)) ||
                   (needsMtplxForContinue && (checkingMtplx || !mtplxStatus?.ready)) ||
                   (needsDsparkForContinue && (checkingDspark || !dsparkStatus?.ready)) ||
-                  (needsLemonadeForContinue && (checkingLemonade || !lemonadeStatus?.ready)) ||
-                  (needsMlxForContinue && (checkingMlx || !mlxStatus?.ready)))
+                  (needsLemonadeForContinue && (checkingLemonade || !lemonadeStatus?.ready)))
               }
             >
               {isInsufficient && cloudProviders.filter((p) => p.apiKey.trim()).length === 0

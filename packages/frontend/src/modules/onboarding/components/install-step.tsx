@@ -211,7 +211,6 @@ export const InstallStep = ({
             vllmUrl: aiSetupConfig.vllmUrl ?? null,
             mtplxUrl: aiSetupConfig.mtplxUrl ?? null,
             dsparkUrl: aiSetupConfig.dsparkUrl ?? null,
-            mlxUrl: aiSetupConfig.mlxUrl ?? null,
           });
         } catch {
           setAiPhase((prev) => ({ ...prev, error: t('ONBOARDING_INSTALL_FAILED_SAVE_PREFERRED_BACKEND', { status: 0 }) }));

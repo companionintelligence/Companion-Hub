@@ -13,7 +13,7 @@
 # Environment variables consumed:
 #   OLLAMA_HOST                — native Ollama URL (injected by Hub, e.g. http://host.docker.internal:11434)
 #   OPENAI_API_BASE            — OpenAI-compatible /v1 URL (from bootstrap.env or app.env)
-#   CI_INFERENCE_BACKEND       — active Hub backend: ollama | vllm | lemonade | mtplx | dspark | mlx | cloud
+#   CI_INFERENCE_BACKEND       — active Hub backend: ollama | vllm | lemonade | mtplx | dspark | cloud
 #   HUB_INFERENCE_URL          — legacy Hub-proxied inference URL (optional)
 #   HUB_URL                    — Hub base URL fallback (default: http://ci-os-hub:5002)
 #   OPENCLAW_DATA_DIR          — state directory (default: /data/.openclaw)

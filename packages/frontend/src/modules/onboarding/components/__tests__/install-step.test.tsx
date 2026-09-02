@@ -205,7 +205,6 @@ describe('InstallStep', () => {
         vllmUrl: null,
         mtplxUrl: null,
         dsparkUrl: null,
-        mlxUrl: null,
       });
     });
   });
@@ -245,7 +244,6 @@ describe('InstallStep', () => {
           vllmUrl: null,
           mtplxUrl: null,
           dsparkUrl: null,
-          mlxUrl: null,
         });
       },
       { timeout: 5000 },
@@ -296,7 +294,6 @@ describe('InstallStep', () => {
           vllmUrl: null,
           mtplxUrl: null,
           dsparkUrl: null,
-          mlxUrl: null,
         });
       },
       { timeout: 5000 },

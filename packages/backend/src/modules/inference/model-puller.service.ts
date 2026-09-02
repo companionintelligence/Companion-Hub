@@ -10,7 +10,6 @@ import { VllmBackend } from './backends/vllm.backend';
 import { LemonadeBackend } from './backends/lemonade.backend';
 import { MtplxBackend } from './backends/mtplx.backend';
 import { DsparkBackend } from './backends/dspark.backend';
-import { MlxBackend } from './backends/mlx.backend';
 import type { InferenceBackend } from './backends/backend.interface';
 import { isCatalogModelInstalled } from './model-availability.util';
 import type { PullEvaluation, PullStartResult } from './pull-evaluation.types';
@@ -32,7 +31,6 @@ export class ModelPullerService {
     private readonly lemonadeBackend: LemonadeBackend,
     private readonly mtplxBackend: MtplxBackend,
     private readonly dsparkBackend: DsparkBackend,
-    private readonly mlxBackend: MlxBackend,
   ) {}
 
   private getBackend(type: InferenceBackendType): InferenceBackend {
@@ -47,8 +45,6 @@ export class ModelPullerService {
         return this.mtplxBackend;
       case 'dspark':
         return this.dsparkBackend;
-      case 'mlx':
-        return this.mlxBackend;
     }
   }
 

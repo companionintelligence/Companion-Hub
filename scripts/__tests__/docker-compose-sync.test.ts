@@ -49,7 +49,6 @@ describe('docker-compose.prod.yml sync', () => {
     const content = readCompose(rootCompose);
     expect(extractEnvDefault(content, 'VLLM_URL')).toBe('http://host.docker.internal:8000');
     expect(extractEnvDefault(content, 'DSPARK_URL')).toBe('http://host.docker.internal:8080');
-    expect(extractEnvDefault(content, 'MLX_URL')).toBe('http://host.docker.internal:8080');
     expect(extractEnvDefault(content, 'LEMONADE_URL')).toBe('http://host.docker.internal:13305');
   });
 

@@ -10,14 +10,13 @@ describe('curated-models (TOON catalog)', () => {
   const byId = new Map(CURATED_MODELS.map((m) => [m.id, m]));
   const llms = CURATED_MODELS.filter((m) => m.modality === 'llm');
 
-  it('decodes the full catalog (87 Ollama LLMs + 4 Lemonade LLMs + 72 vLLM LLMs [8 CUDA + 64 MLX] + 14 MLX-LM LLMs + 8 MTPLX LLMs + 11 mlx-dspark LLMs + voice + embeddings) with unique ids', () => {
+  it('decodes the full catalog (87 Ollama LLMs + 4 Lemonade LLMs + 72 vLLM LLMs [8 CUDA + 64 MLX] + 8 MTPLX LLMs + 11 mlx-dspark LLMs + voice + embeddings) with unique ids', () => {
     expect(llms.filter((m) => m.backend === 'ollama').length).toBe(87);
     expect(llms.filter((m) => m.backend === 'lemonade').length).toBe(4);
     expect(llms.filter((m) => m.backend === 'vllm').length).toBe(72);
-    expect(llms.filter((m) => m.backend === 'mlx').length).toBe(14);
     expect(llms.filter((m) => m.backend === 'mtplx').length).toBe(8);
     expect(llms.filter((m) => m.backend === 'dspark').length).toBe(11);
-    expect(llms.length).toBe(196);
+    expect(llms.length).toBe(182);
     // 4 Ollama embeddings + 1 Lemonade embedding (nomic-embed-text-v1-lemonade).
     expect(CURATED_MODELS.filter((m) => m.modality === 'embedding').length).toBe(5);
     expect(CURATED_MODELS.filter((m) => m.modality === 'tts' || m.modality === 'stt').length).toBe(3);

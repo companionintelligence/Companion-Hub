@@ -1,7 +1,7 @@
 import { createZodDto } from '@/common/zod-dto';
 import { z } from 'zod';
 
-const inferenceBackendSchema = z.enum(['ollama', 'vllm', 'lemonade', 'mtplx', 'dspark', 'mlx']);
+const inferenceBackendSchema = z.enum(['ollama', 'vllm', 'lemonade', 'mtplx', 'dspark']);
 
 export const inferencePreferencesSchema = z.object({
   backend: inferenceBackendSchema,
@@ -23,9 +23,6 @@ export const inferencePreferencesSchema = z.object({
   // Base URL of the operator's mlx-dspark server (e.g. http://host.docker.internal:8080).
   // `null` clears the stored preference and falls back to the DSPARK_URL env default.
   dsparkUrl: z.string().trim().url().nullable().optional(),
-  // Base URL of the operator's mlx-lm server (e.g. http://host.docker.internal:8080).
-  // `null` clears the stored preference and falls back to the MLX_URL env default.
-  mlxUrl: z.string().trim().url().nullable().optional(),
 });
 
 export class UpdateInferencePreferencesBody extends createZodDto(inferencePreferencesSchema) {}
@@ -45,8 +42,6 @@ const onboardingProfileQuerySchema = z.object({
   mtplxUrl: z.string().trim().url().optional(),
   // Same candidate-URL semantics, for the mlx-dspark backend.
   dsparkUrl: z.string().trim().url().optional(),
-  // Same candidate-URL semantics, for the generic mlx-lm backend.
-  mlxUrl: z.string().trim().url().optional(),
 });
 
 export class OnboardingProfileQueryDto extends createZodDto(onboardingProfileQuerySchema) {}
@@ -71,13 +66,6 @@ const dsparkStatusQuerySchema = z.object({
 });
 
 export class DsparkStatusQueryDto extends createZodDto(dsparkStatusQuerySchema) {}
-
-const mlxStatusQuerySchema = z.object({
-  // Same candidate-URL semantics as onboardingProfileQuerySchema.mlxUrl.
-  url: z.string().trim().url().optional(),
-});
-
-export class MlxStatusQueryDto extends createZodDto(mlxStatusQuerySchema) {}
 
 export const rocmInstallPhaseSchema = z.enum(['idle', 'downloading', 'installing', 'reboot_required', 'failed', 'completed']);
 

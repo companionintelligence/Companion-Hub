@@ -7,7 +7,6 @@ import {
   getTrackedModels,
   getDsparkStatus,
   getLemonadeStatus,
-  getMlxStatus,
   getOllamaStatus,
   getVllmStatus,
   getMtplxStatus,
@@ -24,7 +23,6 @@ import type {
   CloudProviderInput,
   DsparkStatus,
   LemonadeStatus,
-  MlxStatus,
   HardwareProfileResponse,
   InferencePreferencesResponse,
   RuntimeModelsResponse,
@@ -43,16 +41,14 @@ export async function fetchInferenceOnboardingProfile(
   vllmApiKey?: string,
   mtplxUrl?: string,
   dsparkUrl?: string,
-  mlxUrl?: string,
 ): Promise<HardwareProfileResponse> {
   const query: Record<string, string> = {};
   if (backend) query.backend = backend;
-  // Candidate vLLM/MTPLX/mlx-dspark/MLX URL the operator typed but hasn't saved yet — keeps the
+  // Candidate vLLM/MTPLX/mlx-dspark URL the operator typed but hasn't saved yet — keeps the
   // profile's installed-model resolution probing the same server the status card reports on.
   if (backend === 'vllm' && vllmUrl?.trim()) query.vllmUrl = vllmUrl.trim();
   if (backend === 'mtplx' && mtplxUrl?.trim()) query.mtplxUrl = mtplxUrl.trim();
   if (backend === 'dspark' && dsparkUrl?.trim()) query.dsparkUrl = dsparkUrl.trim();
-  if (backend === 'mlx' && mlxUrl?.trim()) query.mlxUrl = mlxUrl.trim();
   const headers = backend === 'vllm' && vllmApiKey?.trim() ? { [VLLM_PROBE_API_KEY_HEADER]: vllmApiKey.trim() } : undefined;
   return unwrap(
     getOnboardingProfile({
@@ -123,7 +119,6 @@ export async function saveInferencePreferences(body: {
   vllmUrl?: string | null;
   mtplxUrl?: string | null;
   dsparkUrl?: string | null;
-  mlxUrl?: string | null;
 }): Promise<void> {
   await unwrap(
     updatePreferences({
@@ -136,7 +131,6 @@ export async function saveInferencePreferences(body: {
         vllmUrl: body.vllmUrl ?? undefined,
         mtplxUrl: body.mtplxUrl ?? undefined,
         dsparkUrl: body.dsparkUrl ?? undefined,
-        mlxUrl: body.mlxUrl ?? undefined,
       },
     } as Parameters<typeof updatePreferences>[0]),
   );
@@ -160,12 +154,6 @@ export async function fetchDsparkInstallStatus(url?: string): Promise<DsparkStat
 /** Probe the configured Lemonade server through its standard /v1/health endpoint. */
 export async function fetchLemonadeInstallStatus(): Promise<LemonadeStatus> {
   return unwrap(getLemonadeStatus()) as Promise<LemonadeStatus>;
-}
-
-/** Probe a native mlx-lm server, optionally using an unsaved Settings URL. */
-export async function fetchMlxInstallStatus(url?: string): Promise<MlxStatus> {
-  const query = url?.trim() ? { url: url.trim() } : undefined;
-  return unwrap(getMlxStatus({ query })) as Promise<MlxStatus>;
 }
 
 export async function saveCloudProviderConfig(body: { provider: CloudProviderType; apiKey?: string; enabled: boolean }): Promise<void> {

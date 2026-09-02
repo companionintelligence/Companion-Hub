@@ -2,15 +2,12 @@ import { act, renderHook, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { useModelPullOrchestrator } from '@/lib/hooks/use-model-pull-orchestrator';
 
-const { fetchOllamaInstallStatus, fetchVllmInstallStatus, fetchDsparkInstallStatus, fetchLemonadeInstallStatus, fetchMlxInstallStatus } = vi.hoisted(
-  () => ({
-    fetchOllamaInstallStatus: vi.fn(),
-    fetchVllmInstallStatus: vi.fn(),
-    fetchDsparkInstallStatus: vi.fn(),
-    fetchLemonadeInstallStatus: vi.fn(),
-    fetchMlxInstallStatus: vi.fn(),
-  }),
-);
+const { fetchOllamaInstallStatus, fetchVllmInstallStatus, fetchDsparkInstallStatus, fetchLemonadeInstallStatus } = vi.hoisted(() => ({
+  fetchOllamaInstallStatus: vi.fn(),
+  fetchVllmInstallStatus: vi.fn(),
+  fetchDsparkInstallStatus: vi.fn(),
+  fetchLemonadeInstallStatus: vi.fn(),
+}));
 
 const { fetchTrackedModels, ensurePullStarted } = vi.hoisted(() => ({
   fetchTrackedModels: vi.fn(),
@@ -22,7 +19,6 @@ vi.mock('@/lib/inference/inference-api', () => ({
   fetchVllmInstallStatus,
   fetchDsparkInstallStatus,
   fetchLemonadeInstallStatus,
-  fetchMlxInstallStatus,
 }));
 
 vi.mock('@/lib/inference/tracked-models', async (importOriginal) => {
@@ -41,7 +37,6 @@ describe('useModelPullOrchestrator', () => {
     fetchVllmInstallStatus.mockResolvedValue({ ready: false, running: false });
     fetchDsparkInstallStatus.mockResolvedValue({ ready: true, running: true });
     fetchLemonadeInstallStatus.mockResolvedValue({ ready: true, running: true });
-    fetchMlxInstallStatus.mockResolvedValue({ ready: true, running: true });
     ensurePullStarted.mockResolvedValue(undefined);
     fetchTrackedModels.mockResolvedValue([{ catalogId: 'phi-4-mini', state: 'pulling', pullProgress: 42 }] as never);
   });

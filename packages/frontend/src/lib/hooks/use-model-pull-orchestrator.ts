@@ -1,7 +1,6 @@
 import {
   fetchDsparkInstallStatus,
   fetchLemonadeInstallStatus,
-  fetchMlxInstallStatus,
   fetchMtplxInstallStatus,
   fetchOllamaInstallStatus,
   fetchVllmInstallStatus,
@@ -109,11 +108,6 @@ export function useModelPullOrchestrator({
         }
         if (inferenceBackend === 'lemonade') {
           const data = (await fetchLemonadeInstallStatus()) as { ready?: boolean; running?: boolean };
-          if (!cancelled) setBackendReady(!!(data.ready ?? data.running));
-          return;
-        }
-        if (inferenceBackend === 'mlx') {
-          const data = (await fetchMlxInstallStatus(backendUrl)) as { ready?: boolean; running?: boolean };
           if (!cancelled) setBackendReady(!!(data.ready ?? data.running));
           return;
         }

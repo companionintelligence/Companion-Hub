@@ -15,7 +15,6 @@ const {
   fetchVllmInstallStatus,
   fetchDsparkInstallStatus,
   fetchLemonadeInstallStatus,
-  fetchMlxInstallStatus,
   saveInferencePreferences,
   rescanInferenceHardware,
   pinInferenceModel,
@@ -32,7 +31,6 @@ const {
   fetchVllmInstallStatus: vi.fn(),
   fetchDsparkInstallStatus: vi.fn(),
   fetchLemonadeInstallStatus: vi.fn(),
-  fetchMlxInstallStatus: vi.fn(),
   saveInferencePreferences: vi.fn(),
   rescanInferenceHardware: vi.fn(),
   pinInferenceModel: vi.fn(),
@@ -51,7 +49,6 @@ vi.mock('@/lib/inference/inference-api', () => ({
   fetchVllmInstallStatus,
   fetchDsparkInstallStatus,
   fetchLemonadeInstallStatus,
-  fetchMlxInstallStatus,
   saveInferencePreferences,
   rescanInferenceHardware,
   pinInferenceModel,
@@ -127,7 +124,6 @@ vi.mock('@/modules/onboarding/components/ai-setup/primitives', () => ({
 vi.mock('@/modules/onboarding/components/ai-setup/icons', () => ({
   ModelIcon: () => null,
   LemonadeIcon: () => null,
-  MlxIcon: () => null,
 }));
 
 vi.mock('@/modules/onboarding/components/ai-setup/backend-selection-card', () => ({
@@ -240,7 +236,6 @@ describe('AiSettingsContainer', () => {
     fetchVllmInstallStatus.mockResolvedValue({ ready: true, running: true, endpointUrl: 'http://localhost:8000' });
     fetchDsparkInstallStatus.mockResolvedValue({ ready: false, running: false, endpointUrl: 'http://localhost:8080' });
     fetchLemonadeInstallStatus.mockResolvedValue({ ready: true, running: true, endpointUrl: 'http://localhost:13305' });
-    fetchMlxInstallStatus.mockResolvedValue({ ready: false, running: false, endpointUrl: 'http://localhost:8080' });
     saveInferencePreferences.mockResolvedValue(undefined);
     rescanInferenceHardware.mockResolvedValue(undefined);
     ensurePullsStarted.mockResolvedValue(undefined);
@@ -290,7 +285,6 @@ describe('AiSettingsContainer', () => {
         vllmUrl: null,
         mtplxUrl: null,
         dsparkUrl: null,
-        mlxUrl: null,
       });
     });
   });
