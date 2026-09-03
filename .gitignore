@@ -110,3 +110,7 @@ tunnel.stale-*
 /scripts/fleet-qa-server.ts
 /scripts/setup-docker-auth.sh
 .sentrux/
+
+# Internal agent scratch (not for public tip)
+.github/memory-bank/
+docs/agent/screenshots/

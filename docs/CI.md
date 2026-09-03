@@ -42,14 +42,6 @@ pnpm run build
 gh workflow run agent-gates.yml --repo companionintelligence/CI-Hub --ref dev
 ```
 
-**App Catalog Fleet Tests** — `app-catalog-fleet.yml`
-
-```bash
-gh workflow run app-catalog-fleet.yml --repo companionintelligence/CI-Hub --ref dev -f mode=full -f batch=0 -f server=lab-1
-```
-
-Required inputs: `mode` (Test mode)
-
 **Build and Push Container** — `build-container.yml`
 
 ```bash
@@ -93,14 +85,6 @@ gh workflow run desktop-tests.yml --repo companionintelligence/CI-Hub --ref dev
 ```bash
 gh workflow run e2e-extended.yml --repo companionintelligence/CI-Hub --ref dev
 ```
-
-**Fleet E2E Tests** — `e2e-fleet.yml`
-
-```bash
-gh workflow run e2e-fleet.yml --repo companionintelligence/CI-Hub --ref dev -f server=lab-1 -f test_suite=all
-```
-
-Required inputs: `server` (Target server), `test_suite` (Test suite to run)
 
 **E2E MCP** — `e2e-mcp.yml`
 

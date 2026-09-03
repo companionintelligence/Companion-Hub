@@ -2,7 +2,7 @@
 
 ## Context
 
-**CI-Hub** — **Appliance** layer of the Companion Intelligence platform (Lifescope Inc).
+**CI-Hub** — **Appliance** layer of the Companion Intelligence platform (Companion Intelligence).
 
 Architecture: `CI-Engineering/architecture/architecture.md`
 Roadmap: `CI-Engineering/architecture/roadmap.md`

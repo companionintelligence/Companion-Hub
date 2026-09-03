@@ -12,6 +12,10 @@ Companion Hub is licensed under the PolyForm Noncommercial License 1.0.0. Please
 
 Required Notice: Copyright LifeScope INC, DBA Companion Intelligence (https://ci.computer)
 
+## Security (Hub and Portal)
+
+Open-source Hub is an untrusted client of Companion Portal. See [`docs/security/hub-portal-trust.md`](docs/security/hub-portal-trust.md).
+
 ## Quick start
 
 ```bash
