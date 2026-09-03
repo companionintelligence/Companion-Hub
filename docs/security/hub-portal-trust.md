@@ -66,7 +66,7 @@ Traefik `forwardauth` calls Hub `/api/auth/traefik`. On a valid Hub session, Hub
 ## Review checklist for publication
 
 - [x] Registry-token: Portal rejects a missing or invalid `x-device-key` (`MintRegistryToken` + `deviceAuthMiddleware`; covered by Portal tests).
-- [ ] GET install bundle: Portal must reject a missing or invalid `x-device-key` (today it does not). [CI-Portal#633](https://github.com/companionintelligence/CI-Portal/issues/633)
+- [ ] GET install bundle: Portal must reject a missing or invalid `x-device-key`. Implemented in [CI-Portal#634](https://github.com/companionintelligence/CI-Portal/pull/634); tick after merge.
 - [x] Portal does not treat Hub-reported entitlement claims as authoritative on POST install (session + membership + payment/transaction).
 - [x] Forward-auth documentation states Hub-signed headers apply only to apps on that appliance (this page + architecture).
 - [x] Memory and Portal remain closed-source; the Hub license does not relicense them ([License FAQ](../License-FAQ.md)).
