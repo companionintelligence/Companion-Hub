@@ -14,7 +14,7 @@ vi.mock('@/context/user-context', () => ({
 }));
 
 vi.mock('@/context/app-context', () => ({
-  useAppContext: () => ({ userSettings: { ciHubDeviceSlug: 'core-2' } }),
+  useAppContext: () => ({ userSettings: { ciHubDeviceSlug: 'hub-device' } }),
 }));
 
 vi.mock('@/components/providers/theme/theme-provider', () => ({
