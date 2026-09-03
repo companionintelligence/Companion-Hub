@@ -63,8 +63,8 @@ const createMockService = () => {
       installed: true,
       connected: true,
       hostname: 'hub-tailscale-1',
-      nodeFqdn: 'hub-tailscale-1.capybara-ulmer.ts.net',
-      tailnet: 'capybara-ulmer.ts.net',
+      nodeFqdn: 'hub-tailscale-1.example.ts.net',
+      tailnet: 'example.ts.net',
       supportsServices: true,
     }),
   };
@@ -304,7 +304,7 @@ describe('AppsService.checkAppAvailability', () => {
 
     expect(ctx.tailscaleService.getStatus).toHaveBeenCalled();
     expect(result.available).toBe(true);
-    expect(result.appUrl).toBe('https://hub-tailscale-1.capybara-ulmer.ts.net:8080');
+    expect(result.appUrl).toBe('https://hub-tailscale-1.example.ts.net:8080');
   });
 
   // Test 10: connection refused = CONNECTION_REFUSED

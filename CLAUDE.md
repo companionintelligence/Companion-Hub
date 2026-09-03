@@ -1,6 +1,5 @@
 # CLAUDE.md — CI-Hub
 
-> **Private & Confidential — Property of Lifescope Inc. Do not distribute.**
 
 ## Platform role
 
@@ -49,7 +48,7 @@ pnpm build
 
 - Pulls app manifests from CI-Marketplace (via CI-Portal distribution edge)
 - Routes installed apps through CI-Gateway (Traefik) on *.ci.localhost
-- Will add entitlement pre-flight against CI-Portal before installs (issue #32)
+- Entitlement pre-flight against CI-Portal before installs: companionintelligence/CI-Hub#722
 - Installs CI-Server alongside marketplace apps
 
 ## Desktop app
@@ -64,6 +63,3 @@ Tauri 2 in `packages/desktop/`. Run `pnpm run local:desktop` to launch against t
 
 Multiple AI agents work these repos in parallel. Never use `git reset --hard`, `git clean -f`, or any destructive git command without explicit confirmation from the user.
 
-## Confidentiality
-
-Private & Confidential — Property of Lifescope Inc. Do not distribute.

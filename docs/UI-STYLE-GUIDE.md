@@ -1,6 +1,5 @@
 # Companion Intelligence — Canonical UI Style Guide
 
-> **Private & Confidential — Property of Lifescope Inc. Do not distribute.**
 >
 > **Repo:** CI-Hub · **Surface:** `packages/frontend` (React web + Tauri desktop)
 > **Last audited:** 2026-06-13

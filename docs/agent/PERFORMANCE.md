@@ -36,7 +36,7 @@ git add e2e/results/benchmarks/baseline.json
 
 ## Fleet QA
 
-For multi-node profiling across the fleet, see [scripts/FLEET_QA.md](../../scripts/FLEET_QA.md) and `.claude/skills/run-fleet-qa/`.
+Multi-node fleet profiling is private ops (not in this tree). See companionintelligence/CI-Engineering#211.
 
 ## When agents must run benchmarks
 

@@ -2,7 +2,6 @@
 
 > **Start here.** This file routes you to skills, docs, tools, and workflows. Do not duplicate content from linked files — follow the links.
 
-Private & Confidential — Property of Lifescope Inc.
 
 ---
 
@@ -91,9 +90,8 @@ Git tag after merge: `agent-session/<worksheet-slug>`
 | Agent sweep | `.cursor/skills/agent-sweep/SKILL.md` | Scan recent commits for gotchas |
 | Test audit | `.cursor/skills/test-audit/SKILL.md` | Find false-confidence tests |
 | Visual regression | `.cursor/skills/visual-regression/SKILL.md` | Screenshot baselines |
-| Fleet QA | `.claude/skills/run-fleet-qa/SKILL.md` | Marketplace app QA across fleet |
 
-Claude mirrors live under `.claude/skills/` (same content as `.cursor/skills/` where present).
+Claude mirrors live under `.claude/skills/` (same content as `.cursor/skills/` where present). Fleet QA tooling lives outside this public tree (see companionintelligence/CI-Engineering#211).
 
 ---
 

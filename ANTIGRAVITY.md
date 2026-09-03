@@ -32,4 +32,4 @@ pnpm test
 - Package manager: do not switch or mix.
 - Destructive git operations (`reset --hard`, `clean -f`) require explicit user confirmation.
 - Commits reference CI-Engineering issues.
-- All content is **private and confidential** — Property of Lifescope Inc.
+- Content in this repository is governed by the project license.

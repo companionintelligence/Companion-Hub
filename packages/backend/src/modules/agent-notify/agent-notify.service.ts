@@ -54,7 +54,7 @@ export interface WebhookTarget {
  * that proxy used to overwrite `Authorization` with the OpenClaw *gateway* token before
  * forwarding. The hook then compared the gateway token against `hooks.token`, and every wake
  * 401'd — including ones sent in `X-OpenClaw-Token`, because the injected Bearer shadowed it.
- * Measured on core-2: through the proxy → 401; the identical request straight to the gateway →
+ * Verified in integration: through the proxy → 401; the identical request straight to the gateway →
  * 200 `{"ok":true,"mode":"now"}`. CI-OpenClaw now leaves `Authorization` alone on `/hooks/*`
  * (proxy-headers.cjs), which is what makes either header work.
  *

@@ -12,4 +12,3 @@ alpha-channel output (`hyperframes render --format webm|mov`) — see
 |---|---|
 | [`ci-tutorial-video/`](ci-tutorial-video/) | Static editorial reference (storyboard, narration audio, screenshots) for a full FTUE platform walkthrough (Portal → Hub → Marketplace). Originally a Remotion project; the Remotion install has been removed — see its README. |
 
-> **Private & Confidential — Property of Lifescope Inc. Do not distribute.**

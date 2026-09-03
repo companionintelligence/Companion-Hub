@@ -184,7 +184,7 @@ describe('AuthController', () => {
       });
       vi.mocked(verifyPortalIdToken).mockResolvedValue({
         sub: 'portal-sub',
-        email: 'support@lifescope.io',
+        email: 'support@example.com',
         name: 'Support',
       });
       forwardAuthSecrets.resolveForHost.mockResolvedValue({
@@ -215,9 +215,9 @@ describe('AuthController', () => {
       expect(res.redirect).not.toHaveBeenCalled();
       expect(res.status).toHaveBeenCalledWith(200);
       const headers = Object.fromEntries(setHeader.mock.calls);
-      expect(headers['X-CI-Hub-User']).toBe('support@lifescope.io');
+      expect(headers['X-CI-Hub-User']).toBe('support@example.com');
       const timestamp = Number(headers['X-CI-Hub-User-Timestamp']);
-      expect(headers['X-CI-Hub-User-Signature']).toBe(signForwardAuthUser('per-app-secret', 'support@lifescope.io', timestamp));
+      expect(headers['X-CI-Hub-User-Signature']).toBe(signForwardAuthUser('per-app-secret', 'support@example.com', timestamp));
     });
 
     it('lets Memory login and API-key traffic through without a Hub session', async () => {

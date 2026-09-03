@@ -1,5 +1,12 @@
 # Legacy CIHub migration scripts
 
+> Companion Hub was renamed through Tipi → Runtipi → CIHub / RunCIHub → CI-Hub.
+> Runtime code still accepts `RUNCIHUB_*` env aliases and `runcihub` Docker project
+> names so upgraded appliances uninstall cleanly. Git history that contained Tipi-era
+> and fleet material is being squashed before public release
+> (companionintelligence/CI-Hub#1210) — do not reintroduce Tipi strings or private
+> Tailscale inventories into the tip.
+
 These shell scripts remain for **historical in-place upgrades** from the CIHub-era CLI (`runcihub-cli`). New installs should use `cihub` / `pnpm run dev` / the desktop app.
 
 | Script | Purpose |

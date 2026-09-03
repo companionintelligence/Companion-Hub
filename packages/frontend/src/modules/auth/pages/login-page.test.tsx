@@ -239,7 +239,7 @@ describe('LoginPage', () => {
     mockIsMobile.mockReturnValue(true);
     mockHubUrl.mockReturnValue('https://hub-core3-bc.companionintelligence.com');
     mockResolveHint.mockResolvedValue({
-      email: 'chamberlain.bennett@gmail.com',
+      email: 'user@example.com',
       portalBaseUrl: 'https://hub.ci.computer',
       source: 'remembered',
     });
@@ -249,7 +249,7 @@ describe('LoginPage', () => {
     await vi.waitFor(() => {
       expect(mockLoginForm).toHaveBeenCalledWith(
         expect.objectContaining({
-          portalAccountEmail: 'chamberlain.bennett@gmail.com',
+          portalAccountEmail: 'user@example.com',
         }),
       );
     });

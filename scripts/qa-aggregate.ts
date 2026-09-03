@@ -15,14 +15,14 @@ import { join } from 'node:path';
 /**
  * Fleet server config is loaded from the FLEET_CONFIG_JSON environment variable.
  * Set it before running, e.g.:
- *   export FLEET_CONFIG_JSON='[{"name":"core-1","ip":"100.x.x.x","batch":0},...]'
+ *   export FLEET_CONFIG_JSON='[{"name":"lab-1","ip":"100.64.0.1","batch":0},...]'
  *
  * IPs are Tailscale addresses — keep them out of source control.
  */
 const FLEET_CONFIG_JSON = process.env.FLEET_CONFIG_JSON;
 if (!FLEET_CONFIG_JSON) {
   console.error('ERROR: FLEET_CONFIG_JSON environment variable is not set.');
-  console.error('  export FLEET_CONFIG_JSON=\'[{"name":"core-1","ip":"100.x.x.x","batch":0},...]\' ');
+  console.error('  export FLEET_CONFIG_JSON=\'[{"name":"lab-1","ip":"100.64.0.1","batch":0},...]\' ');
   process.exit(1);
 }
 const FLEET: { name: string; ip: string; batch: number }[] = JSON.parse(FLEET_CONFIG_JSON);

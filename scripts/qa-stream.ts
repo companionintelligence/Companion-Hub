@@ -3,7 +3,7 @@
  * QA Stream Runner
  *
  * Runs per-app Docker tests and emits newline-delimited JSON events to stdout.
- * Designed to be SCP'd to fleet nodes and invoked by fleet-qa-server.ts.
+ * Designed to be copied to remote QA nodes and invoked by a private fleet runner.
  *
  * Usage:
  *   tsx scripts/qa-stream.ts nextcloud jellyfin uptime-kuma

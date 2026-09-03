@@ -1,6 +1,5 @@
 # CI Tutorial Video — editorial reference (static archive, no Remotion install)
 
-> **Private & Confidential — Property of Lifescope Inc. Do not distribute.**
 
 Editorial source material for a first-time-user-experience tutorial covering
 **Portal → Hub → App Store / Marketplace** and back to the fleet view. Originally built

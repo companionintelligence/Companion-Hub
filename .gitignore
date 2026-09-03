@@ -100,4 +100,13 @@ tunnel.stale-*
 # only the dated per-run reports written by the fleet QA runner are ignored).
 /e2e/results/fleet-report-*.json
 /e2e/results/fleet-report-*.md
+# Built CLI binaries — do not commit (historical blobs embedded Tipi-era strings).
+/bin/cihub
+/packages/desktop/src-tauri/resources/cihub
+/packages/desktop/src-tauri/resources/cihub.exe
+# Private fleet inventories and skills must never re-enter the tip.
+/.claude/skills/run-fleet-qa/
+/scripts/FLEET_QA.md
+/scripts/fleet-qa-server.ts
+/scripts/setup-docker-auth.sh
 .sentrux/

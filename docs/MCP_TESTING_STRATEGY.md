@@ -188,8 +188,8 @@ if (config.no_gui) {
 `qaMcpApp` (in `scripts/qa-mcp.ts`) returns the `result` record — it does **not** emit its own
 `app_result`, so the existing `qaApp` retry/watchdog/teardown wrap it for free. Because it reuses
 the `qa-stream-${appId}` container name, the per-app watchdog and `forceTeardown` already cover the
-MCP container. **Shipping:** `fleet-qa-server.ts` `scpScript()` copies *both* `qa-stream.ts` and
-`qa-mcp.ts` to each node's `/tmp/` (both import only Node built-ins). Work-stealing dispatch and the
+MCP container. **Shipping:** private fleet runners copy *both* `qa-stream.ts` and
+`qa-mcp.ts` to each node's workdir (both import only Node built-ins). Work-stealing dispatch and the
 fleet runner need **no** changes — an MCP app is just another id off the shared queue.
 
 **Surfacing:** the catalog (`generate-catalog-tests.ts` → `catalog.json`) carries an `mcp` flag;

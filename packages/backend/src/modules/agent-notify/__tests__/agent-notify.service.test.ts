@@ -60,7 +60,7 @@ describe('AgentNotifyService', () => {
     // finds a non-empty token — it never falls back to X-OpenClaw-Token. So Authorization is
     // not a harmless extra; whatever lands in it decides the request. Sending the same secret
     // in both means the wake authenticates whichever way it is routed: through CI-OpenClaw's
-    // setup-server proxy, or straight to a gateway. Verified on core-2.
+    // setup-server proxy, or straight to a gateway. Verified in integration.
     it('sends the wake secret in X-OpenClaw-Token', async () => {
       await service.notify('app.crashed', { appUrn: 'test:ci-store' }, 'high');
 

@@ -1,4 +1,6 @@
 name: App Catalog Fleet Tests
+# OSS NOTE (companionintelligence/CI-Hub#1210): private lab hostnames + org
+# Tailscale secrets. Exclude from the public tree before history squash.
 on:
   workflow_dispatch:
     inputs:

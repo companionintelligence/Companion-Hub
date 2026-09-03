@@ -1,11 +1,11 @@
 # Agent QA System — CI-Hub
 
-> **Purpose:** Marketplace app exploration, diagnose/fix loop, fleet QA — separate from general dev workflow.
-> **Scope:** `agent/`, `e2e/app-explorer.spec.ts`, `docs/FLYWHEEL.md`, `.claude/skills/run-fleet-qa/`
+> **Purpose:** Marketplace app exploration, diagnose/fix loop — separate from general dev workflow.
+> **Scope:** `agent/`, `e2e/app-explorer.spec.ts`, `docs/FLYWHEEL.md`
 > **Key paths:** `agent/fix-agent.ts`, `agent/lib/diagnostics.ts`, `docs/FLYWHEEL.md`
-> **Commands:** `agent/scripts/run-explorer.sh`, fleet QA skill
+> **Commands:** `agent/scripts/run-explorer.sh`
 > **Owner persona:** domain (marketplace/apps)
-> **Last updated:** 2026-07-12
+> **Last updated:** 2026-09-03
 > **Related:** docs/system/e2e.md, docs/agent/AGENT_WORKFLOW.md (general work)
 
 ---
@@ -32,9 +32,9 @@ Full guide: [docs/FLYWHEEL.md](../FLYWHEEL.md)
 
 ## Fleet QA
 
-Claude skill: `.claude/skills/run-fleet-qa/SKILL.md`
-
-Distributes Hub to Tailscale nodes, runs e2e dashboard, triages failures, fans out fix PRs.
+Multi-node Tailscale fleet runners and host inventories are **not published** in this repository
+(companionintelligence/CI-Hub#1210 / companionintelligence/CI-Engineering#211). Use local
+`scripts/qa-stream.ts` against a single machine, or the private ops mirror for fleet orchestration.
 
 ## Agent notes
 

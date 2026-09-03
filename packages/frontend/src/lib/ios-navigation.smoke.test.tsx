@@ -34,7 +34,7 @@ vi.mock('@/context/user-context', () => ({
 vi.mock('@/context/app-context', () => ({
   useAppContext: () => ({
     user: { hasCompletedOnboarding: true },
-    userSettings: { ciHubDeviceSlug: 'core-3', allowAutoThemes: false },
+    userSettings: { ciHubDeviceSlug: 'hub-device', allowAutoThemes: false },
   }),
 }));
 

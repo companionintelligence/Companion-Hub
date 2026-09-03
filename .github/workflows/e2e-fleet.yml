@@ -1,4 +1,9 @@
 name: Fleet E2E Tests
+# OSS NOTE (companionintelligence/CI-Hub#1210): this workflow names private lab
+# hosts and pulls Tailscale IPs from org secrets. Keep it on the private org
+# mirror; do not publish a public Hub history that still contains these refs.
+# Before open-source publish: move to a private ops repo or delete from the
+# public tree (history squash is the final gate).
 # >>> ci-local:gated original triggers below, restore with `ci-local restore`
 # on:
 #   schedule:

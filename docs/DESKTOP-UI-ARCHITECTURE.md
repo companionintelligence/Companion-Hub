@@ -1,6 +1,5 @@
 # Desktop UI Architecture — One Hub, One UI
 
-> **Private & Confidential — Property of Lifescope Inc. Do not distribute.**
 
 ## Status
 

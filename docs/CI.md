@@ -45,7 +45,7 @@ gh workflow run agent-gates.yml --repo companionintelligence/CI-Hub --ref dev
 **App Catalog Fleet Tests** — `app-catalog-fleet.yml`
 
 ```bash
-gh workflow run app-catalog-fleet.yml --repo companionintelligence/CI-Hub --ref dev -f mode=full -f batch=0 -f server=core-1
+gh workflow run app-catalog-fleet.yml --repo companionintelligence/CI-Hub --ref dev -f mode=full -f batch=0 -f server=lab-1
 ```
 
 Required inputs: `mode` (Test mode)
@@ -97,7 +97,7 @@ gh workflow run e2e-extended.yml --repo companionintelligence/CI-Hub --ref dev
 **Fleet E2E Tests** — `e2e-fleet.yml`
 
 ```bash
-gh workflow run e2e-fleet.yml --repo companionintelligence/CI-Hub --ref dev -f server=core-6 -f test_suite=all
+gh workflow run e2e-fleet.yml --repo companionintelligence/CI-Hub --ref dev -f server=lab-1 -f test_suite=all
 ```
 
 Required inputs: `server` (Target server), `test_suite` (Test suite to run)

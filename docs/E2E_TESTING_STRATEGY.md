@@ -13,7 +13,7 @@ that**, at the scale of the whole marketplace (≈170 apps), on real hardware.
 
 | Layer | Code | What it proves | Scale |
 |-------|------|----------------|-------|
-| **1. Fleet Docker QA** (primary) | `scripts/qa-stream.ts` + `scripts/fleet-qa-server.ts` | Each app's full `docker-compose` stack comes up, the **backend is healthy**, and the UI renders | All ≈170 apps across the Tailscale node fleet |
+| **1. Docker compose QA** (primary) | `scripts/qa-stream.ts` (+ private fleet orchestrator) | Each app's full `docker-compose` stack comes up, the **backend is healthy**, and the UI renders | Marketplace apps on lab hardware |
 | **2. Hub-install regression** | `e2e/app-regression.spec.ts` + `e2e/generated/catalog-batch-*.spec.ts` | An app installs **through the real Hub** under one account (install → access → uninstall) and **serves** (HTTP `< 500`, no gateway/error page) | Playwright, per-batch |
 
 Layer 1 is the fast, broad signal run continuously across the fleet. Layer 2 is the
@@ -66,53 +66,33 @@ These are baked into `qa-stream` so the test deploys an app the same way product
   the bind-mount-UID crash class (non-root images over an empty harness-owned mount) and
   stale-volume DB-password mismatches. The Hub itself heals these at startup
   (`scripts/heal-hub-bind-mounts.ts`).
-- **Prepull + registry cache** (core-1:5050) and a 900s pull timeout to kill cold-pull
+- **Prepull + registry cache** on lab hardware and a 900s pull timeout to kill cold-pull
   flakiness on heavy images.
 
 ## Environment gotchas (reusable)
 
-- **MongoDB vs new kernels:** the nodes (and Ubuntu-26.04 prod Hubs) run kernel ≥ 6.19.
-  `mongo:8.0.17+` **refuses to start** there (SERVER-121912); `mongo:8.0.16` only runs
-  because it predates the guard and is below CVE fixes. Use **`mongo:8.2.x`** — it carries
-  the real fix and is CVE-current. Any app pinned to `mongo:8.0` should move to `8.2.x`.
-- **Playwright on Ubuntu 26.04:** `playwright install chromium` has no CDN build; screenshot
-  drives a cached Chromium binary directly. Nodes provisioned by repo-sync lack
-  `~/.cache/ms-playwright` → their apps `warn` (no screenshot) though the backend is fine.
-- **Tailscale SSH ACL:** nodes serve SSH via tailscaled; `ssh ci@<ip>` returning
-  "tailnet policy does not permit you to SSH to this node" is an **ACL denial**, not a
-  network fault — fix the tailnet ACL.
-- **Dashboard durability:** a full 10-node run takes hours; do **not** run the dashboard as
-  a preview server (it gets reaped). Launch it as a background process and poll `/api/status`.
+- **MongoDB vs new kernels:** Ubuntu 26.04 / kernel ≥ 6.19: `mongo:8.0.17+` **refuses to start**
+  (SERVER-121912); prefer **`mongo:8.2.x`**. Any app pinned to `mongo:8.0` should move to `8.2.x`.
+- **Playwright on Ubuntu 26.04:** `playwright install chromium` may lack a CDN build; screenshot
+  paths need a cached Chromium binary under `~/.cache/ms-playwright` or apps score `warn`
+  (no screenshot) even when the backend is fine.
 
 ## Operating
 
-```bash
-# Dashboard (durable): from CI-Hub on the control machine
-QA_PORT=4242 ./node_modules/.bin/tsx scripts/fleet-qa-server.ts &
+Layer 1 on a single lab machine:
 
-# Drive it
-curl -s -X POST http://127.0.0.1:4242/api/preflight -d '{}'          # check the fleet
-curl -s -X POST http://127.0.0.1:4242/api/start -d '{"mode":"full"}' # run all apps
-curl -s http://127.0.0.1:4242/api/status                             # poll results
+```bash
+# Run compose QA for one app (see scripts/qa-stream.ts --help)
+pnpm exec tsx scripts/qa-stream.ts <app-id>
 
 # Regenerate the catalog after marketplace changes
 APP_STORE_PATH=/path/to/CI-Marketplace/apps ./node_modules/.bin/tsx scripts/generate-catalog-tests.ts
 ```
 
-The dashboard SCPs `qa-stream.ts` to each node per run, so editing it locally propagates
-fleet-wide without a push. Results + screenshots land on each node under `~/qa-results-fleet/`.
+Multi-node fleet orchestration (dashboard, SCP fan-out, Tailscale inventories) is **private
+ops** and is not checked into this repository. See companionintelligence/CI-Hub#1210.
 
 ## Roadmap / open items
 
-- **Still failing** (genuine app bugs, not harness): `n8n` (crashes ~3s after start),
-  `appflowy` (compose mount dir-vs-file).
-- **Chromium** on the repo-synced nodes (core-8/9/10/14/17, beta-ms-a2) — sync the build
-  from core-1 for clean `pass` vs `warn`.
-- **Marketplace branches worth merging** (surfaced by QA, currently unmerged):
-  `fix/adventurelog-anythingllm-images` (fixes `anythingllm:v1.11.2`→`1.11.2` and gives
-  adventurelog a backend + postgis), `codex/add-postiz`, `codex/add-safeos`, and
-  `feat/e2e-app-definitions` (#311 — per-app e2e metadata that should feed catalog generation).
-- **Make in-app login a hard assertion.** Today `app-regression.spec.ts` records
-  `attemptAppAuth()` as `warn`-only and the generated catalog specs don't attempt it, so a
-  broken app login leaves the run green. Promote it to an `expect()` (at least for apps
-  Layer 1 marks healthy) so a broken login fails the run.
+- Promote in-app login from advisory `warn` to a hard assertion where product requires it.
+- Keep Layer 2 (Hub-install regression) as the source of truth when Layer 1 and product disagree.
