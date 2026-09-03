@@ -1,0 +1,24 @@
+#!/bin/sh
+# Ensure common tool locations are in PATH for git hook context (minimal PATH)
+export PATH="$HOME/.bun/bin:$HOME/.asdf/shims:$HOME/.asdf/bin:$HOME/.local/bin:$PATH"
+
+# This repo's lint-staged tasks run pnpm scripts, so prefer pnpm/corepack.
+if command -v pnpm >/dev/null 2>&1; then
+  pnpm exec lint-staged
+elif command -v corepack >/dev/null 2>&1; then
+  corepack pnpm exec lint-staged
+elif command -v bun >/dev/null 2>&1; then
+  echo "pre-commit: bun is installed, but this repo requires pnpm/corepack because lint-staged runs pnpm scripts." >&2
+  exit 127
+elif [ -x "./node_modules/.bin/lint-staged" ]; then
+  echo "pre-commit: local lint-staged exists, but pnpm/corepack is required to run configured pnpm scripts." >&2
+  exit 127
+else
+  echo "pre-commit: pnpm/corepack not found in PATH. Install pnpm (recommended) or enable corepack." >&2
+  exit 127
+fi
+
+# Optional: agent precommit-fix with LLM remediation hints (CURSOR_AGENT_FIX=1)
+if [ "${AGENT_PRECOMMIT_FIX:-}" = "1" ]; then
+  pnpm exec tsx scripts/agent/precommit-fix.ts
+fi

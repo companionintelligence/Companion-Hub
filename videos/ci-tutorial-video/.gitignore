@@ -1,0 +1,7 @@
+# local capture stage: dev servers, credentials, cookies, pids, logs, hub data
+# (never commit — regenerate locally; see README "Capture stage")
+stage/
+stage-notes.md
+
+# tooling / os
+.DS_Store

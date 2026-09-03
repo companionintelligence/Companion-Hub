@@ -1,0 +1,60 @@
+name: Hub CI
+# TEMPORARY (Actions credit): automatic PR/push triggers disabled.
+# Re-enable pull_request/push when credits recover. Manual: gh workflow run ci.yml
+on:
+  workflow_call:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+
+      - name: Install dependencies
+        uses: "./.github/actions/install-dependencies"
+        with:
+          node-auth-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Run biome tests
+        run: pnpm run lint:ci
+
+      - name: Run knip (unused files/deps)
+        run: pnpm run knip:ci
+
+      - name: Run tsc
+        run: pnpm run tsc
+
+      - name: Check OpenAPI drift
+        run: pnpm run check:openapi
+
+      - name: Run tests
+        run: pnpm run test
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install dependencies
+        uses: "./.github/actions/install-dependencies"
+        with:
+          node-auth-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build client
+        run: pnpm run bundle

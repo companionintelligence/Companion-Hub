@@ -1,0 +1,123 @@
+name: E2E MCP
+
+# On-demand only. This lane guards the externally-documented connect recipe (Streamable HTTP on
+# /api/mcp with a Bearer key from the hashed key store) — the thing whose absence let our published
+# docs drift to a transport the server no longer speaks. It is deliberately NOT wired to pull_request
+# or schedule: it boots a full backend and is worth minutes of runner time only when the MCP surface,
+# its auth, or the connect docs actually change. Run it from the Actions tab, or:
+#
+#   gh workflow run e2e-mcp.yml --ref <branch>
+#
+# Runs `pnpm e2e:mcp:ci` (12 tests: protocol handshake + app env injection). The "Full OpenClaw
+# install" layer is excluded — it needs a Docker daemon and pulls images to install a real app, which
+# is slow and flake-prone unattended. That full 18-test lane stays available locally as `pnpm e2e:mcp`.
+# Refs companionintelligence/CI-Engineering#79.
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: e2e-mcp-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  mcp:
+    timeout-minutes: 45
+    runs-on: ubuntu-latest
+    env:
+      E2E_USE_REAL_PORTAL: 'false'
+      MOCK_PORTAL_PORT: '4444'
+      CI: true
+      E2E_CLEANUP_PORTS: 'true'
+      # Must match the spec's own default — it calls the API directly, not through baseURL.
+      BACKEND_PORT: '3000'
+      # Not a credential: SEC-MCP-8 removed the guard's env fallback. This is the raw value the spec
+      # inserts into the hashed key store itself (see seedMcpApiKey) and then presents as a Bearer.
+      MCP_API_KEY: test-mcp-api-key-e2e
+
+    services:
+      postgres:
+        image: postgres:14
+        env:
+          POSTGRES_USER: companion
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: companiondb
+        ports:
+          - 6543:5432
+        options: >-
+          --health-cmd "pg_isready -U companion"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      rabbitmq:
+        image: rabbitmq:4-alpine
+        env:
+          RABBITMQ_DEFAULT_USER: companion
+          RABBITMQ_DEFAULT_PASS: admin
+        ports:
+          - 5672:5672
+        options: >-
+          --health-cmd "rabbitmq-diagnostics -q ping"
+          --health-interval 10s
+          --health-timeout 10s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+
+      - uses: pnpm/action-setup@v6
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Create data directories
+        run: |
+          mkdir -p /tmp/ci-hub-e2e/{apps,app-data,state,repos,logs,backups,user-config,media}
+          mkdir -p /tmp/ci-hub-e2e/state/traefik/{config,dynamic,tls}
+          touch /tmp/ci-hub-e2e/state/traefik/acme_storage.json
+          echo "# E2E test env" > /tmp/ci-hub-e2e/.env
+
+      - name: Verify services
+        run: |
+          timeout 10 bash -c 'until echo > /dev/tcp/localhost/6543; do sleep 1; done' && echo "Postgres port open"
+          timeout 60 bash -c 'until echo > /dev/tcp/localhost/5672; do sleep 2; done' && echo "RabbitMQ AMQP port open"
+
+      - name: Cache Playwright
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ hashFiles('pnpm-lock.yaml') }}
+
+      - run: pnpm exec playwright install --with-deps chromium
+
+      - name: Run MCP E2E
+        run: pnpm e2e:mcp:ci
+        env:
+          SERVER_IP: localhost
+          POSTGRES_HOST: localhost
+          POSTGRES_PORT: 6543
+          POSTGRES_USERNAME: companion
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DBNAME: companiondb
+          RABBITMQ_HOST: localhost
+          RABBITMQ_PORT: 5672
+          RABBITMQ_USERNAME: companion
+          RABBITMQ_PASSWORD: admin
+          JWT_SECRET: e2e-test-secret
+          DOMAIN: ci.computer
+          LOCAL_DOMAIN: ci.lan
+          ROOT_FOLDER_HOST: /tmp/ci-hub-e2e
+          CI_HUB_APP_DATA_PATH: /tmp/ci-hub-e2e
+          CI_HUB_DATA_DIR: /tmp/ci-hub-e2e
+          CI_HUB_APP_DATA_DIR: /tmp/ci-hub-e2e/app-data
+          CI_HUB_APP_DIR: ${{ github.workspace }}
+          DEVICE_ID: test-device-e2e
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: playwright-report-mcp
+          path: playwright-report/
+          retention-days: 7

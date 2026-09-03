@@ -1,0 +1,45 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Companion Hub",
+  "mainBinaryName": "companion-hub",
+  "version": "0.1.0",
+  "identifier": "computer.ci.app.hub",
+  "build": {
+    "beforeDevCommand": "",
+    "devUrl": "http://lvh.me:5005",
+    "beforeBuildCommand": "",
+    "frontendDist": "../../../packages/frontend/dist/client"
+  },
+  "bundle": {
+    "active": true,
+    "createUpdaterArtifacts": false,
+    "targets": "all",
+    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.icns", "icons/icon.png"],
+    "iOS": {
+      "minimumSystemVersion": "16.0"
+    },
+    "android": {
+      "minSdkVersion": 24
+    }
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "url": "/connect",
+        "title": "Companion Hub"
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; connect-src 'self' ipc: http://ipc.localhost https://hub.ci.computer https://*.ci.computer wss://*.ci.computer https://hub.companionintelligence.com https://*.companionintelligence.com wss://*.companionintelligence.com http://127.0.0.1:* http://localhost:* http://lvh.me:* http://*.localhost:* https://localhost:* ws://127.0.0.1:* ws://localhost:* ws://lvh.me:* ws://*.localhost:* wss://localhost:*; img-src 'self' data: blob: https:; font-src 'self' data: https://fonts.gstatic.com"
+    }
+  },
+  "plugins": {
+    "deep-link": {
+      "mobile": [{ "scheme": ["cihub"] }],
+      "desktop": {
+        "schemes": ["cihub"]
+      }
+    }
+  }
+}

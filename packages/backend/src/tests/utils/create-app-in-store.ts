@@ -1,0 +1,63 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import { DATA_DIR } from '@/common/constants';
+import { faker } from '@faker-js/faker';
+import type { AppInfo } from '@ci-hub/common/schemas';
+import { appInfoSchema } from '@ci-hub/common/schemas';
+import type { AppUrn } from '@ci-hub/common/types';
+
+export const createAppInStore = async (storeId: string, app: Partial<AppInfo> = {}): Promise<AppInfo> => {
+  const id = app.id ?? faker.lorem.words(3).split(' ').join('-').toLowerCase();
+
+  const appInfo = appInfoSchema.parse({
+    id,
+    urn: `${id}:${storeId}` as AppUrn,
+    name: faker.lorem.words(2),
+    port: faker.number.int({ min: 1000, max: 9999 }),
+    https: false,
+    author: faker.internet.username(),
+    no_gui: false,
+    available: true,
+    exposable: true,
+    dynamic_config: true,
+    source: faker.internet.url(),
+    version: faker.system.semver(),
+    categories: ['utilities'],
+    description: faker.lorem.sentence(),
+    short_desc: faker.lorem.sentence(),
+    website: faker.internet.url(),
+    supported_architectures: [],
+    created_at: 0,
+    updated_at: 0,
+    deprecated: false,
+    cihub_app_version: 1,
+    force_expose: false,
+    generate_vapid_keys: false,
+    form_fields: [],
+    ...app,
+  });
+
+  const composeJson = {
+    schemaVersion: 2,
+    services: [
+      {
+        name: appInfo.id,
+        image: 'nginx:latest',
+        isMain: true,
+        internalPort: 80,
+        environment: [{ key: 'TEST', value: 'test' }],
+      },
+    ],
+  };
+
+  const appStorePath = `${DATA_DIR}/repos/${storeId}/apps/${appInfo.id}`;
+
+  await fs.promises.mkdir(`${DATA_DIR}/repos/${storeId}/apps/${appInfo.id}/data`, { recursive: true });
+  await fs.promises.mkdir(`${DATA_DIR}/repos/${storeId}/apps/${appInfo.id}/metadata`, { recursive: true });
+
+  await fs.promises.writeFile(path.join(appStorePath, 'config.json'), JSON.stringify(appInfo, null, 2));
+  await fs.promises.writeFile(path.join(appStorePath, 'docker-compose.json'), JSON.stringify(composeJson, null, 2));
+  await fs.promises.writeFile(path.join(appStorePath, 'metadata', 'description.md'), 'test');
+
+  return appInfo;
+};

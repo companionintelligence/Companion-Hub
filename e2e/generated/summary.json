@@ -1,0 +1,31 @@
+{
+  "generated": "2026-08-19T00:34:24.590Z",
+  "totalApps": 745,
+  "batches": 10,
+  "appsPerBatch": 75,
+  "byPriority": {
+    "high": 11,
+    "medium": 205,
+    "low": 529
+  },
+  "byCategory": {
+    "development": 111,
+    "featured": 40,
+    "utilities": 372,
+    "network": 67,
+    "automation": 31,
+    "data": 122,
+    "media": 100,
+    "photography": 13,
+    "ai": 109,
+    "security": 37,
+    "books": 11,
+    "music": 7,
+    "gaming": 9,
+    "companion-intelligence": 16,
+    "agents": 15,
+    "mcp": 27,
+    "finance": 49,
+    "social": 52
+  }
+}

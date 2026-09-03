@@ -1,0 +1,553 @@
+import path from 'node:path';
+import { extractAppUrn } from '@/common/helpers/app-helpers';
+import { execAsync } from '@/common/helpers/exec-helpers';
+import type { ConfigurationService } from '@/core/config/configuration.service';
+import type { AppStore } from '@/core/database/drizzle/types';
+import type { FilesystemService } from '@/core/filesystem/filesystem.service';
+import type { LoggerService } from '@/core/logger/logger.service';
+import { APP_CATEGORIES, appInfoSchema } from '@ci-hub/common/schemas';
+import type { AppUrn } from '@ci-hub/common/types';
+
+const KNOWN_APP_CATEGORIES = new Set<string>(APP_CATEGORIES);
+
+/** An on-disk demo video, described but not read. Bytes are streamed by the HTTP layer. */
+export type DemoVideoFile = {
+  path: string;
+  size: number;
+  etag: string;
+  contentType: string;
+};
+
+/** Drop unknown marketplace categories so newer catalog tags do not fail Zod parse. */
+function normalizeAppConfigCategories(config: Record<string, unknown>): Record<string, unknown> {
+  if (!Array.isArray(config.categories)) {
+    return config;
+  }
+  const filtered = config.categories.filter((category): category is string => typeof category === 'string' && KNOWN_APP_CATEGORIES.has(category));
+  return { ...config, categories: filtered.length > 0 ? filtered : ['utilities'] };
+}
+
+export class AppStoreFilesManager {
+  constructor(
+    private readonly configuration: ConfigurationService,
+    private readonly filesystem: FilesystemService,
+    private readonly logger: LoggerService,
+    public readonly storeConfig: AppStore,
+  ) {}
+
+  private getInstalledAppsFolder() {
+    const { directories } = this.configuration.getConfig();
+
+    return path.join(directories.dataDir, 'apps');
+  }
+
+  private getAppStoreFolder() {
+    const { directories } = this.configuration.getConfig();
+    return path.join(directories.dataDir, 'repos', this.storeConfig.slug, 'apps');
+  }
+
+  public getAppPaths(appUrn: AppUrn) {
+    const { appStoreId, appName } = extractAppUrn(appUrn);
+
+    const { directories } = this.configuration.getConfig();
+
+    return {
+      appDataDir: path.join(directories.appDataDir, appStoreId, appName),
+      appRepoDir: path.join(this.getAppStoreFolder(), appName),
+      appInstalledDir: path.join(this.getInstalledAppsFolder(), appStoreId, appName),
+    };
+  }
+
+  /** Prefer installed copy, then synced repo metadata/description.md when present. */
+  public async readDescriptionMarkdown(appUrn: AppUrn): Promise<string | null> {
+    const { appRepoDir, appInstalledDir } = this.getAppPaths(appUrn);
+
+    for (const baseDir of [appInstalledDir, appRepoDir]) {
+      const descriptionPath = path.join(baseDir, 'metadata', 'description.md');
+      try {
+        if (await this.filesystem.pathExists(descriptionPath)) {
+          const content = await this.filesystem.readTextFile(descriptionPath);
+          if (content?.trim()) {
+            return content;
+          }
+        }
+      } catch {
+        // Try the next location.
+      }
+    }
+
+    return null;
+  }
+
+  /**
+   * Get the app info from the app store (config.json only — no description.md).
+   */
+  public async getAppInfoFromAppStoreLite(appUrn: AppUrn) {
+    try {
+      const { appRepoDir } = this.getAppPaths(appUrn);
+
+      if (await this.filesystem.pathExists(path.join(appRepoDir, 'config.json'))) {
+        const configFile = await this.filesystem.readTextFile(path.join(appRepoDir, 'config.json'));
+
+        const config = normalizeAppConfigCategories(JSON.parse(configFile ?? '{}') as Record<string, unknown>);
+        const parsedConfig = appInfoSchema.safeParse({ ...config, urn: appUrn });
+
+        if (!parsedConfig.success) {
+          this.logger.debug(`App ${appUrn} config error:`);
+          this.logger.debug(parsedConfig.error.message);
+          return null;
+        }
+
+        if (parsedConfig.data.available) {
+          return parsedConfig.data;
+        }
+      }
+    } catch (error) {
+      this.logger.error(`Error getting lite app info from app store for ${appUrn}:`, error);
+    }
+
+    return null;
+  }
+
+  /**
+   * Get the app info from the app store
+   * @param appUrn - The app id
+   */
+  public async getAppInfoFromAppStore(appUrn: AppUrn) {
+    try {
+      const { appRepoDir } = this.getAppPaths(appUrn);
+
+      if (await this.filesystem.pathExists(path.join(appRepoDir, 'config.json'))) {
+        const configFile = await this.filesystem.readTextFile(path.join(appRepoDir, 'config.json'));
+
+        const config = normalizeAppConfigCategories(JSON.parse(configFile ?? '{}') as Record<string, unknown>);
+        const parsedConfig = appInfoSchema.safeParse({ ...config, urn: appUrn });
+
+        if (!parsedConfig.success) {
+          this.logger.debug(`App ${appUrn} config error:`);
+          this.logger.debug(parsedConfig.error.message);
+          return null;
+        }
+
+        if (parsedConfig.data.available) {
+          const descriptionPath = path.join(appRepoDir, 'metadata', 'description.md');
+          let description = '';
+          if (await this.filesystem.pathExists(descriptionPath)) {
+            const fileDesc = await this.filesystem.readTextFile(descriptionPath);
+            if (fileDesc) description = fileDesc;
+          }
+          return { ...parsedConfig.data, description };
+        }
+      } else {
+        this.logger.debug(`config.json not found for ${appUrn} at ${appRepoDir}`);
+      }
+    } catch (error) {
+      this.logger.error(`Error getting app info from app store for ${appUrn}:`, error);
+    }
+  }
+
+  public async getAppInfoFromAppStoreOrInstalled(appUrn: AppUrn) {
+    const appInfo = await this.getAppInfoFromAppStore(appUrn);
+    if (appInfo) {
+      return appInfo;
+    }
+
+    const { appInstalledDir } = this.getAppPaths(appUrn);
+
+    if (await this.filesystem.pathExists(path.join(appInstalledDir, 'config.json'))) {
+      const configFile = await this.filesystem.readTextFile(path.join(appInstalledDir, 'config.json'));
+
+      const config = normalizeAppConfigCategories(JSON.parse(configFile ?? '{}') as Record<string, unknown>);
+      const parsedConfig = appInfoSchema.safeParse({ ...config, urn: appUrn });
+
+      if (!parsedConfig.success) {
+        this.logger.debug(`App ${appUrn} installed config error:`);
+        this.logger.debug(parsedConfig.error);
+      }
+
+      if (parsedConfig.success && parsedConfig.data.available) {
+        const descriptionPath = path.join(appInstalledDir, 'metadata', 'description.md');
+        let description = '';
+        if (await this.filesystem.pathExists(descriptionPath)) {
+          const fileDesc = await this.filesystem.readTextFile(descriptionPath);
+          if (fileDesc) description = fileDesc;
+        }
+        return { ...parsedConfig.data, description };
+      }
+    }
+  }
+
+  public async getDockerComposeJson(appUrn: AppUrn) {
+    const { appRepoDir } = this.getAppPaths(appUrn);
+
+    const dockerComposePath = path.join(appRepoDir, 'docker-compose.json');
+
+    let content = null;
+    try {
+      if (await this.filesystem.pathExists(dockerComposePath)) {
+        content = await this.filesystem.readJsonFile(dockerComposePath);
+      }
+    } catch (error) {
+      this.logger.error(`Error getting docker-compose.json for app ${appUrn} from repo ${this.storeConfig.slug}:`, error);
+    }
+
+    return { path: dockerComposePath, content };
+  }
+
+  /**
+   * Copy the app from the repo to the installed apps folder
+   * @param appUrn - The app id
+   */
+  public async copyAppFromRepoToInstalled(appUrn: AppUrn) {
+    const { appRepoDir, appDataDir, appInstalledDir } = this.getAppPaths(appUrn);
+
+    if (!(await this.filesystem.pathExists(appRepoDir))) {
+      if (await this.filesystem.pathExists(appInstalledDir)) {
+        this.logger.warn(`App ${appUrn} already installed, but not found in repo ${this.storeConfig.slug}. Using installed version.`);
+        return;
+      }
+
+      this.logger.warn(`App ${appUrn} not found in repo ${this.storeConfig.slug}`);
+      throw new Error(`App ${appUrn} not found in repo ${this.storeConfig.slug}`);
+    }
+
+    // delete eventual app folder if exists
+    this.logger.info(`Deleting app ${appUrn} folder if exists`);
+    await this.filesystem.removeDirectory(appInstalledDir);
+
+    // Create app folder
+    this.logger.info(`Creating app ${appUrn} folder`);
+    await this.filesystem.createDirectory(appInstalledDir);
+
+    // Create app data folder
+    this.logger.info(`Creating app ${appUrn} data folder`);
+    await this.filesystem.createDirectory(appDataDir);
+
+    // Copy app folder from repo
+    this.logger.info(`Copying app ${appUrn} from repo ${this.storeConfig.slug}`);
+    await this.filesystem.copyDirectory(appRepoDir, appInstalledDir);
+
+    // Patch cloudflared for Linux/Docker environment (add host.docker.internal)
+    const { appName } = extractAppUrn(appUrn);
+    if (appName === 'cloudflared') {
+      this.logger.info('[Patch] Injecting extra_hosts helper for cloudflared...');
+      const composePath = path.join(appInstalledDir, 'docker-compose.yml');
+      if (await this.filesystem.pathExists(composePath)) {
+        let content = await this.filesystem.readTextFile(composePath);
+        if (content && !content.includes('extra_hosts')) {
+          content = content.replace(
+            'restart: unless-stopped',
+            'restart: unless-stopped\n    extra_hosts:\n      - "host.docker.internal:host-gateway"',
+          );
+          await this.filesystem.writeTextFile(composePath, content);
+        }
+      }
+    }
+  }
+
+  /**
+   *  This function returns an object containing information about the updates available for the app with the provided id.
+   *  It checks if the app is installed or not and looks for the config.json file in the appropriate directory.
+   *  If the config.json file is invalid, it returns null.
+   *  If the app is not found, it returns null.
+   *
+   *  @param {string} appUrn - The app id.
+   */
+  public async getAppUpdateInfo(appUrn: AppUrn) {
+    const config = await this.getAppInfoFromAppStore(appUrn);
+    const paths = this.getAppPaths(appUrn);
+
+    if (config) {
+      return {
+        ...paths,
+        latestVersion: config.cihub_app_version,
+        minHubVersion: config.min_hub_version ?? null,
+        latestDockerVersion: config.version,
+      };
+    }
+
+    return {
+      latestVersion: 0,
+      latestDockerVersion: '0.0.0',
+      minHubVersion: null,
+      ...paths,
+    };
+  }
+
+  /**
+   * Get the list of available app ids
+   * @returns The list of app ids
+   */
+  public async getAvailableAppUrns() {
+    const appsRepoFolder = this.getAppStoreFolder();
+
+    if (!(await this.filesystem.pathExists(appsRepoFolder))) {
+      this.logger.error(`Apps repo ${this.storeConfig.slug} not found. Make sure your repo is configured correctly.`);
+      return [];
+    }
+
+    const appsDir = await this.filesystem.listFiles(appsRepoFolder);
+    const skippedFiles = ['__tests__', 'docker-compose.common.yml', 'schema.json', '.DS_Store'];
+
+    return appsDir.filter((app) => !skippedFiles.includes(app)).map((app) => `${app}:${this.storeConfig.slug}` as AppUrn);
+  }
+
+  /**
+   * Given a template and a map of variables, this function replaces all instances of the variables in the template with their values.
+   *
+   * @param {string} template - The template to be rendered.
+   * @param {Map<string, string>} envMap - The map of variables and their values.
+   */
+  private renderTemplate(template: string, envMap: Map<string, string>) {
+    let renderedTemplate = template;
+
+    envMap.forEach((value, key) => {
+      const safeKey = key.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&');
+      renderedTemplate = renderedTemplate.replace(new RegExp(`{{${safeKey}}}`, 'g'), value);
+    });
+
+    return renderedTemplate;
+  }
+
+  public async copyDataDir(appUrn: AppUrn, envMap: Map<string, string>) {
+    const { appInstalledDir, appDataDir } = this.getAppPaths(appUrn);
+
+    // return if app does not have a data directory
+    if (!(await this.filesystem.pathExists(path.join(appInstalledDir, 'data')))) {
+      return;
+    }
+
+    // Return if app has already a data directory
+    if (await this.filesystem.pathExists(path.join(appDataDir, 'data'))) {
+      return;
+    }
+
+    // Create app-data folder
+    await this.filesystem.createDirectory(path.join(appDataDir, 'data'));
+
+    const dataDir = await this.filesystem.listFiles(path.join(appInstalledDir, 'data'));
+
+    const processFile = async (file: string) => {
+      if (file.endsWith('.template')) {
+        const template = await this.filesystem.readTextFile(path.join(appInstalledDir, 'data', file));
+        if (template) {
+          const renderedTemplate = this.renderTemplate(template, envMap);
+
+          await this.filesystem.writeTextFile(path.join(appDataDir, 'data', file.replace('.template', '')), renderedTemplate);
+        }
+      } else {
+        await this.filesystem.copyFile(path.join(appInstalledDir, 'data', file), path.join(appDataDir, 'data', file));
+      }
+    };
+
+    const processDir = async (p: string) => {
+      await this.filesystem.createDirectory(path.join(appDataDir, 'data', p));
+
+      const files = await this.filesystem.listFiles(path.join(appInstalledDir, 'data', p));
+
+      await Promise.all(
+        files.map(async (file) => {
+          const fullPath = path.join(appInstalledDir, 'data', p, file);
+
+          if (await this.filesystem.isDirectory(fullPath)) {
+            await processDir(path.join(p, file));
+          } else {
+            await processFile(path.join(p, file));
+          }
+        }),
+      );
+    };
+
+    await Promise.all(
+      dataDir.map(async (file) => {
+        const fullPath = path.join(appInstalledDir, 'data', file);
+
+        if (await this.filesystem.isDirectory(fullPath)) {
+          await processDir(file);
+        } else {
+          await processFile(file);
+        }
+      }),
+    );
+
+    // Remove any .gitkeep files from the app-data folder at any level
+    if (await this.filesystem.pathExists(path.join(appDataDir, 'data'))) {
+      await execAsync(`find ${appDataDir}/data -name .gitkeep -delete`).catch(() => {
+        this.logger.error(`Error removing .gitkeep files from ${appDataDir}/data`);
+      });
+    }
+  }
+
+  public async findAppLogoPath(appUrn: AppUrn): Promise<string | null> {
+    const { appInstalledDir, appRepoDir } = this.getAppPaths(appUrn);
+    const extensions = ['jpg', 'jpeg', 'png', 'svg', 'webp'];
+
+    for (const dir of [appInstalledDir, appRepoDir]) {
+      for (const ext of extensions) {
+        const logoPath = path.join(dir, 'metadata', `logo.${ext}`);
+        if (await this.filesystem.pathExists(logoPath)) {
+          return logoPath;
+        }
+      }
+    }
+
+    return null;
+  }
+
+  public async hasAppLogo(appUrn: AppUrn): Promise<boolean> {
+    return (await this.findAppLogoPath(appUrn)) != null;
+  }
+
+  public async getAppImage(appUrn: AppUrn) {
+    const { appDir } = this.configuration.get('directories');
+    const filePath = (await this.findAppLogoPath(appUrn)) ?? path.join(appDir, 'assets', 'default-app-logo.jpg');
+    const file = await this.filesystem.readBinaryFile(filePath);
+    const etag = await this.filesystem.getFileEtag(filePath);
+    const ext = path.extname(filePath).toLowerCase().substring(1);
+
+    let contentType = 'image/jpeg';
+    if (ext === 'png') contentType = 'image/png';
+    else if (ext === 'svg') contentType = 'image/svg+xml';
+    else if (ext === 'webp') contentType = 'image/webp';
+
+    return { image: file, etag, contentType };
+  }
+
+  public async listLocalScreenshotFilenames(appUrn: AppUrn): Promise<string[]> {
+    const { appInstalledDir, appRepoDir } = this.getAppPaths(appUrn);
+    const seen = new Set<string>();
+    const filenames: string[] = [];
+
+    for (const dir of [appInstalledDir, appRepoDir]) {
+      const screenshotsDir = path.join(dir, 'metadata', 'screenshots');
+      try {
+        if (!(await this.filesystem.pathExists(screenshotsDir))) {
+          continue;
+        }
+
+        const entries = await this.filesystem.listFiles(screenshotsDir);
+        for (const entry of entries) {
+          if (seen.has(entry)) {
+            continue;
+          }
+
+          seen.add(entry);
+          filenames.push(entry);
+        }
+      } catch {
+        // Try the next location.
+      }
+    }
+
+    return filenames;
+  }
+
+  public async getScreenshot(appUrn: AppUrn, filename: string) {
+    const { appInstalledDir, appRepoDir } = this.getAppPaths(appUrn);
+
+    for (const dir of [appInstalledDir, appRepoDir]) {
+      const filePath = path.join(dir, 'metadata', 'screenshots', filename);
+      try {
+        if (await this.filesystem.pathExists(filePath)) {
+          const image = await this.filesystem.readBinaryFile(filePath);
+          const etag = await this.filesystem.getFileEtag(filePath);
+          const ext = path.extname(filePath).toLowerCase().substring(1);
+
+          let contentType = 'image/jpeg';
+          if (ext === 'png') contentType = 'image/png';
+          else if (ext === 'svg') contentType = 'image/svg+xml';
+          else if (ext === 'webp') contentType = 'image/webp';
+          else if (ext === 'gif') contentType = 'image/gif';
+
+          return { image, etag, contentType };
+        }
+      } catch {
+        // Try the next location.
+      }
+    }
+
+    return { image: null, etag: '', contentType: 'image/jpeg' };
+  }
+
+  public async findDemoVideoPath(appUrn: AppUrn, demoVideoRef: string): Promise<string | null> {
+    const normalized = demoVideoRef.trim().replace(/^\.\//, '');
+    if (!normalized || /^https?:\/\//i.test(normalized) || normalized.includes('..')) {
+      return null;
+    }
+
+    const { appInstalledDir, appRepoDir } = this.getAppPaths(appUrn);
+
+    for (const dir of [appInstalledDir, appRepoDir]) {
+      const candidate = path.join(dir, normalized);
+      try {
+        if (await this.filesystem.pathExists(candidate)) {
+          return candidate;
+        }
+      } catch {
+        // Try the next location.
+      }
+
+      const metadataCandidate = path.join(dir, 'metadata', path.basename(normalized));
+      try {
+        if (await this.filesystem.pathExists(metadataCandidate)) {
+          return metadataCandidate;
+        }
+      } catch {
+        // Try the next location.
+      }
+    }
+
+    return null;
+  }
+
+  /**
+   * Resolve a demo-video ref to an on-disk file descriptor.
+   *
+   * Deliberately returns metadata rather than bytes: demo videos run to tens of megabytes, so the
+   * HTTP layer streams them (with Range support) instead of buffering the whole file.
+   */
+  public async getDemoVideoFile(appUrn: AppUrn, demoVideoRef: string): Promise<DemoVideoFile | null> {
+    const filePath = await this.findDemoVideoPath(appUrn, demoVideoRef);
+    if (!filePath) {
+      return null;
+    }
+
+    let size: number;
+    try {
+      const stats = await this.filesystem.getStats(filePath);
+      if (!stats.isFile()) {
+        return null;
+      }
+      size = stats.size;
+    } catch (error) {
+      this.logger.warn(`Error stating demo video for app ${appUrn} from repo ${this.storeConfig.slug}:`, error);
+      return null;
+    }
+
+    const etag = await this.filesystem.getFileEtag(filePath);
+    const ext = path.extname(filePath).toLowerCase().substring(1);
+
+    let contentType = 'video/mp4';
+    if (ext === 'webm') contentType = 'video/webm';
+    else if (ext === 'mov') contentType = 'video/quicktime';
+
+    return { path: filePath, size, etag: etag ?? '', contentType };
+  }
+
+  public async getConfigJson(appUrn: AppUrn) {
+    const { appRepoDir } = this.getAppPaths(appUrn);
+
+    const configPath = path.join(appRepoDir, 'config.json');
+
+    let content = null;
+    try {
+      if (await this.filesystem.pathExists(configPath)) {
+        content = await this.filesystem.readJsonFile(configPath);
+      }
+    } catch (error) {
+      this.logger.error(`Error getting config.json for app ${appUrn} from repo ${this.storeConfig.slug}:`, error);
+    }
+
+    return { path: configPath, content };
+  }
+}

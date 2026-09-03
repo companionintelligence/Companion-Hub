@@ -1,0 +1,79 @@
+name: Publish package managers
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag (e.g. v0.2.28)
+        required: true
+        type: string
+  workflow_call:
+    inputs:
+      tag:
+        required: true
+        type: string
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          # workflow_call inherits the parent run's SHA (hours old after a desktop
+          # release). Land the bookkeeping commit on the live branch tip instead.
+          ref: ${{ github.ref_name }}
+
+      - name: Update manifests
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ./distribution/scripts/update-package-manifests.sh "${{ inputs.tag }}"
+
+      - name: Publish Homebrew tap and Scoop bucket
+        env:
+          # PAT in production environment secrets; must have Contents: Write on
+          # companionintelligence/homebrew-tap and companionintelligence/scoop-bucket.
+          GH_TOKEN: ${{ secrets.CI_PACKAGE_MANAGERS_TOKEN }}
+        run: |
+          chmod +x ./distribution/scripts/publish-package-managers.sh
+          ./distribution/scripts/publish-package-managers.sh "companion-hub ${{ inputs.tag }}"
+
+      - name: Commit manifest updates to CI-Hub
+        env:
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add distribution/homebrew distribution/scoop distribution/publish
+          if git diff --staged --quiet; then
+            echo "No CI-Hub manifest changes to commit"
+            exit 0
+          fi
+          git commit -m "chore(distribution): update package manifests for ${{ inputs.tag }}"
+
+          # Other commits land on this branch while Homebrew/Scoop publish runs.
+          # Rebase and retry instead of a bare push that fails on a stale tip.
+          for attempt in 1 2 3 4 5; do
+            git fetch origin "$BRANCH"
+            if ! git rebase "origin/$BRANCH"; then
+              echo "Rebase conflict landing manifest updates on ${BRANCH}; re-run after resolving." >&2
+              git rebase --abort
+              exit 1
+            fi
+            if git push origin "HEAD:$BRANCH"; then
+              exit 0
+            fi
+            echo "Push rejected (attempt ${attempt}/5); fetching and retrying..."
+            sleep $((attempt * 2))
+          done
+          echo "Failed to push manifest commit after 5 attempts" >&2
+          exit 1

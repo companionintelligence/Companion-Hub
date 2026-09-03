@@ -1,0 +1,97 @@
+import { changeUsernameMutation } from '@/api-client/@tanstack/react-query.gen';
+import { Button } from '@/components/ui/Button';
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/Dialog';
+import { Input } from '@/components/ui/Input';
+import { PasswordInput } from '@/components/ui/PasswordInput/PasswordInput';
+import { clearClientHubState } from '@/lib/clear-client-hub-state';
+import { useDisclosure } from '@/lib/hooks/use-disclosure';
+import { SIGNED_OUT_PARAM } from '@/lib/signed-out-reasons';
+import type { TranslatableError } from '@/types/error.types';
+import { zodResolver } from '@hookform/resolvers/zod';
+import { useMutation } from '@tanstack/react-query';
+import { useId } from 'react';
+import { useForm } from 'react-hook-form';
+import toast from 'react-hot-toast';
+import { useTranslation } from 'react-i18next';
+import { z } from 'zod';
+
+type Props = {
+  username?: string;
+};
+
+export const ChangeUsernameForm = ({ username }: Props) => {
+  const changeUsernameDisclosure = useDisclosure();
+  const { t } = useTranslation();
+  const schema = z.object({
+    newUsername: z.string().email(t('SETTINGS_SECURITY_CHANGE_USERNAME_FORM_INVALID_USERNAME')),
+    password: z.string().min(1),
+  });
+  const formId = useId();
+  type FormValues = z.infer<typeof schema>;
+
+  const changeUsername = useMutation({
+    ...changeUsernameMutation(),
+    onSuccess: () => {
+      changeUsernameDisclosure.close();
+      // Same as the password form: the username change revokes every session for this
+      // user and the endpoint clears the cookie, so finish the sign-out here instead of
+      // leaving the UI to hit a 401 later. The new username is what you sign back in
+      // with, and the confirmation rides the URL because the navigation would destroy a
+      // toast raised here.
+      clearClientHubState({ keepPortalEmail: true });
+      window.location.assign(`/login?${SIGNED_OUT_PARAM}=username_changed`);
+    },
+    onError: (e: TranslatableError) => {
+      toast.error(t(e.message, e.intlParams));
+    },
+  });
+
+  const { register, handleSubmit, formState } = useForm({
+    resolver: zodResolver(schema),
+  });
+
+  const onSubmit = (body: FormValues) => {
+    changeUsername.mutate({ body });
+  };
+
+  return (
+    <div className="mb-4">
+      <Input disabled type="email" value={username} />
+      <Button className="mt-3" onClick={() => changeUsernameDisclosure.open()}>
+        {t('COMMON_CHANGE_USERNAME')}
+      </Button>
+      <Dialog open={changeUsernameDisclosure.isOpen} onOpenChange={changeUsernameDisclosure.toggle}>
+        <DialogContent size="sm">
+          <DialogHeader>
+            <DialogTitle>{t('COMMON_PASSWORD')}</DialogTitle>
+          </DialogHeader>
+          <DialogDescription className="flex flex-col">
+            <form onSubmit={handleSubmit(onSubmit)} className="w-full" id={formId}>
+              <p className="text-muted-foreground">{t('SETTINGS_SECURITY_CHANGE_USERNAME_FORM_PASSWORD_NEEDED_HINT')}</p>
+              <Input
+                error={formState.errors.newUsername?.message}
+                disabled={changeUsername.isPending}
+                type="email"
+                placeholder={t('SETTINGS_SECURITY_CHANGE_USERNAME_FORM_NEW_USERNAME')}
+                {...register('newUsername')}
+              />
+              <PasswordInput
+                className="mt-2"
+                error={formState.errors.password?.message}
+                disabled={changeUsername.isPending}
+                autoComplete="current-password"
+                placeholder={t('COMMON_PASSWORD')}
+                {...register('password')}
+              />
+            </form>
+          </DialogDescription>
+          <DialogFooter>
+            <Button loading={changeUsername.isPending} type="submit" form={formId}>
+              {t('COMMON_CHANGE_USERNAME')}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+};

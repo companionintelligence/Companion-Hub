@@ -1,0 +1,82 @@
+.rt-Skeleton {
+  --skeleton-radius: var(--skeleton-radius-override);
+  --skeleton-height: var(--skeleton-height-override);
+  border-radius: var(--radius-sm);
+  /* biome-ignore lint/complexity/noImportantStyles: Override */
+  animation: rt-skeleton-pulse 1000ms infinite alternate-reverse !important;
+  /* biome-ignore lint/complexity/noImportantStyles: Override */
+  background-image: none !important;
+  /* biome-ignore lint/complexity/noImportantStyles: Override */
+  background-clip: border-box !important;
+  /* biome-ignore lint/complexity/noImportantStyles: Override */
+  border: none !important;
+  /* biome-ignore lint/complexity/noImportantStyles: Override */
+  box-shadow: none !important;
+  /* biome-ignore lint/complexity/noImportantStyles: Override */
+  box-decoration-break: clone !important;
+  /* biome-ignore lint/complexity/noImportantStyles: Override */
+  color: transparent !important;
+  /* biome-ignore lint/complexity/noImportantStyles: Override */
+  outline: none !important;
+  /* biome-ignore lint/complexity/noImportantStyles: Override */
+  pointer-events: none !important;
+  /* biome-ignore lint/complexity/noImportantStyles: Override */
+  user-select: none !important;
+  /* biome-ignore lint/complexity/noImportantStyles: Override */
+  cursor: default !important;
+}
+
+/*
+ * Take font differences out of equation for inline Skeletons that just wrap text.
+ * This makes the dimensions consistent between the following non-Skeleton and Skeleton text:
+ * ```
+ * <Text>Example text</Text>
+ *
+ * <Text>
+ *   <Skeleton>Example text</Skeleton>
+ * </Text>
+ * ```
+ *
+ * Will NOT collapse Skeletons as the browsers use line-height on inline elements just for alignment.
+ */
+.rt-Skeleton:where([data-inline-skeleton]) {
+  line-height: 0;
+  /* Font metrics on Arial yield much nicer height for the text background bounding box */
+  /* biome-ignore lint/complexity/noImportantStyles: Override */
+  font-family: Arial, sans-serif !important;
+}
+
+/*
+ * Empty skeletons (no children — the `<Skeleton className="h-72 …" />` form) need a box of their
+ * own. This file is unlayered, so it outranks Tailwind's `utilities` layer no matter the
+ * specificity: a `height` here silently beat every `h-*` class on the element. Worse, `--space-3`
+ * is not defined in this app, so the declaration was invalid at computed-value time and fell back
+ * to `auto` — every empty skeleton rendered 0px tall, which is why loading placeholders looked
+ * like blank cards. Use min-height (with a real fallback) so the utility class sets the size.
+ */
+:where(.rt-Skeleton:empty) {
+  display: block;
+  min-height: var(--space-3, 0.75rem);
+}
+
+.rt-Skeleton > *,
+.rt-Skeleton::after,
+.rt-Skeleton::before {
+  /* biome-ignore lint/complexity/noImportantStyles: Override */
+  visibility: hidden !important;
+}
+
+/*
+ * Tint from the theme's foreground rather than fixed light greys — the same idiom as the
+ * `bg-foreground/10` surfaces elsewhere. The hardcoded #d0d0d0/#e0e0e0 read as a white slab on the
+ * dark theme.
+ */
+@keyframes rt-skeleton-pulse {
+  from {
+    background-color: color-mix(in oklab, var(--color-foreground, #808080) 8%, transparent);
+  }
+
+  to {
+    background-color: color-mix(in oklab, var(--color-foreground, #808080) 16%, transparent);
+  }
+}

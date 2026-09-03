@@ -1,0 +1,96 @@
+import { changePasswordMutation } from '@/api-client/@tanstack/react-query.gen';
+import { Button } from '@/components/ui/Button';
+import { PasswordInput } from '@/components/ui/PasswordInput/PasswordInput';
+import { clearClientHubState } from '@/lib/clear-client-hub-state';
+import { SIGNED_OUT_PARAM } from '@/lib/signed-out-reasons';
+import type { TranslatableError } from '@/types/error.types';
+import { zodResolver } from '@hookform/resolvers/zod';
+import { useMutation } from '@tanstack/react-query';
+import { useForm } from 'react-hook-form';
+import { toast } from 'react-hot-toast';
+import { useTranslation } from 'react-i18next';
+import { z } from 'zod';
+
+export const ChangePasswordForm = () => {
+  const { t } = useTranslation();
+
+  const schema = z
+    .object({
+      currentPassword: z.string().min(1),
+      newPassword: z.string().min(8, t('COMMON_PASSWORD_MIN_LENGTH')),
+      newPasswordConfirm: z.string().min(8, t('COMMON_PASSWORD_MIN_LENGTH')),
+    })
+    .superRefine((data, ctx) => {
+      if (data.newPassword !== data.newPasswordConfirm) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: t('COMMON_PASSWORDS_DO_NOT_MATCH'),
+          path: ['newPasswordConfirm'],
+        });
+      }
+    });
+
+  type FormValues = z.infer<typeof schema>;
+
+  const changePassword = useMutation({
+    ...changePasswordMutation(),
+    onError: (e: TranslatableError) => {
+      toast.error(t(e.message, e.intlParams));
+    },
+    onSuccess: () => {
+      // Changing the password revokes every session for this user server-side, and the
+      // endpoint clears the session cookie to match. Finish the sign-out on the client
+      // rather than leaving a logged-in-looking UI to discover it on its next poll —
+      // the desktop app authenticates with a localStorage session that `clearCookie`
+      // cannot reach, so without this it sits there and then snaps to /login mid-task.
+      //
+      // The confirmation travels in the URL because a toast raised here would be
+      // destroyed by the navigation before anyone could read it.
+      clearClientHubState({ keepPortalEmail: true });
+      window.location.assign(`/login?${SIGNED_OUT_PARAM}=password_changed`);
+    },
+  });
+
+  const {
+    register,
+    handleSubmit,
+    formState: { errors },
+  } = useForm({
+    resolver: zodResolver(schema),
+  });
+
+  const onSubmit = (values: FormValues) => {
+    changePassword.mutate({ body: values });
+  };
+
+  return (
+    <form onSubmit={handleSubmit(onSubmit)} className="mb-4 w-full">
+      <PasswordInput
+        disabled={changePassword.isPending}
+        {...register('currentPassword')}
+        error={errors.currentPassword?.message}
+        autoComplete="current-password"
+        placeholder={t('SETTINGS_SECURITY_FORM_CURRENT_PASSWORD')}
+      />
+      <PasswordInput
+        disabled={changePassword.isPending}
+        {...register('newPassword')}
+        error={errors.newPassword?.message}
+        className="mt-2"
+        autoComplete="new-password"
+        placeholder={t('SETTINGS_SECURITY_FORM_NEW_PASSWORD')}
+      />
+      <PasswordInput
+        disabled={changePassword.isPending}
+        {...register('newPasswordConfirm')}
+        error={errors.newPasswordConfirm?.message}
+        className="mt-2"
+        autoComplete="new-password"
+        placeholder={t('SETTINGS_SECURITY_FORM_CONFIRM_PASSWORD')}
+      />
+      <Button disabled={changePassword.isPending} className="mt-3" type="submit">
+        {t('COMMON_CHANGE_PASSWORD')}
+      </Button>
+    </form>
+  );
+};

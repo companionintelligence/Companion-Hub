@@ -1,0 +1,225 @@
+name: Desktop Build
+# TEMPORARY (Actions credit): automatic push triggers disabled.
+# Re-enable when credits recover. Manual: gh workflow run desktop-build.yml
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: desktop-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-desktop:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Apple Silicon: native aarch64 on GitHub's arm64 macOS runners.
+          - platform: macos-latest
+            target: aarch64-apple-darwin
+            label: macOS (Apple Silicon)
+          # Intel: cross-compile x86_64 on the same arm64 runner (macos-13 was retired Dec 2025).
+          # See https://v2.tauri.app/distribute/pipelines/github/
+          - platform: macos-latest
+            target: x86_64-apple-darwin
+            label: macOS (Intel)
+          - platform: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            label: Linux (x64)
+          - platform: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
+            label: Linux (ARM64)
+          - platform: windows-latest
+            target: x86_64-pc-windows-msvc
+            label: Windows (x64)
+          - platform: windows-11-arm
+            target: aarch64-pc-windows-msvc
+            label: Windows (ARM64)
+
+    name: Build — ${{ matrix.label }}
+    runs-on: ${{ matrix.platform }}
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          submodules: false
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: packages/desktop/src-tauri -> target
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            pkg-config \
+            curl \
+            wget \
+            file \
+            libssl-dev \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libxdo-dev \
+            patchelf \
+            libfuse2 \
+            rpm \
+            xdg-utils
+
+      - name: Install pnpm
+        if: runner.os == 'Linux' || true
+        uses: pnpm/action-setup@v6
+
+      - name: Install Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+          registry-url: 'https://npm.pkg.github.com'
+          scope: '@companionintelligence'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Release desktop embeds bootstrap only — product UI is served by the stack container.
+      # See docs/DESKTOP-UI-ARCHITECTURE.md and packages/desktop/bootstrap/.
+
+      - name: Install create-dmg
+        if: runner.os == 'macOS'
+        run: brew install create-dmg
+
+      # Use the published CLI via npx (avoids `cargo install` and bogus CARGO_NET_RETRY_LIMIT → `net.retry` errors).
+      # PR/CI has no TAURI_SIGNING_PRIVATE_KEY; merge off createUpdaterArtifacts so .app/.dmg still build.
+      # Release jobs that set TAURI_SIGNING_PRIVATE_KEY can omit `-c` to emit .tar.gz + .sig for the updater.
+      # Linux merge-target (tauri.linux.conf.json): deb + rpm only by default so local builds do not require linuxdeploy / librsvg2-dev for AppImage. CI passes -b deb,rpm,appimage on Ubuntu runners where deps are installed.
+      - name: Build Tauri app
+        env:
+          RUSTFLAGS: ${{ runner.os == 'macOS' && '-D dead_code' || '' }}
+          # Force the styled DMG layout (background + icon positions) on macOS. CI=true
+          # would otherwise make tauri-bundler skip the Finder AppleScript layout
+          # (tauri#592). That step can time out on macos-latest (tauri-action#1091), so
+          # macOS builds are wrapped in retry_build below.
+          TAURI_BUNDLER_DMG_IGNORE_CI: ${{ runner.os == 'macOS' && 'true' || '' }}
+        shell: bash
+        run: |
+          cd packages/desktop
+          args=(--target "${{ matrix.target }}" -c '{"bundle":{"createUpdaterArtifacts":false}}')
+          if [[ "${{ runner.os }}" == "Linux" ]]; then
+            args+=(-b "deb,rpm,appimage")
+          fi
+
+          retry_build() {
+            local attempts=5 attempt backoff
+            for attempt in $(seq 1 "$attempts"); do
+              if npx --yes @tauri-apps/cli@2 build "$@"; then
+                return 0
+              fi
+              if [[ "$attempt" -eq "$attempts" ]]; then
+                echo "::error::tauri build failed after ${attempts} attempts: $*" >&2
+                return 1
+              fi
+              backoff=$((attempt * 20))
+              echo "::warning::tauri build failed (attempt ${attempt}/${attempts}); retrying in ${backoff}s" >&2
+              sleep "$backoff"
+            done
+          }
+
+          if [[ "${{ runner.os }}" == "macOS" ]]; then
+            retry_build "${args[@]}"
+          else
+            npx --yes @tauri-apps/cli@2 build "${args[@]}"
+          fi
+
+      - name: Patch Linux deb maintainer scripts
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          cd packages/desktop
+          sh scripts/patch-deb-maintainer-scripts.sh
+
+      - name: List artifacts
+        shell: bash
+        run: |
+          echo "=== Release binary ==="
+          ls -lh packages/desktop/src-tauri/target/${{ matrix.target }}/release/ci-os-hub-desktop* 2>/dev/null || true
+          echo "=== Bundles ==="
+          find packages/desktop/src-tauri/target/${{ matrix.target }}/release/bundle \( -name "*.dmg" -o -name "*.app" -o -name "*.deb" -o -name "*.rpm" -o -name "*.AppImage" -o -name "*.msi" -o -name "*-setup.exe" \) -exec ls -lhd {} \; 2>/dev/null || true
+
+      - name: Upload macOS DMG
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v7
+        with:
+          retention-days: 7
+          name: companion-hub-${{ matrix.target }}-dmg
+          path: packages/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg
+          if-no-files-found: error
+
+      - name: Upload macOS app
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v7
+        with:
+          retention-days: 7
+          name: companion-hub-${{ matrix.target }}-app
+          path: packages/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/macos/*.app
+          if-no-files-found: error
+
+      - name: Upload Linux deb
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v7
+        with:
+          retention-days: 7
+          name: companion-hub-${{ matrix.target }}-deb
+          path: packages/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/deb/*.deb
+          if-no-files-found: error
+
+      - name: Upload Linux rpm
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v7
+        with:
+          retention-days: 7
+          name: companion-hub-${{ matrix.target }}-rpm
+          path: packages/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/rpm/*.rpm
+          if-no-files-found: error
+
+      - name: Upload Linux AppImage
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v7
+        with:
+          retention-days: 7
+          name: companion-hub-${{ matrix.target }}-appimage
+          path: packages/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/appimage/*.AppImage
+          if-no-files-found: error
+
+      # --- Windows artifacts ---
+      - name: Upload Windows MSI
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v7
+        with:
+          retention-days: 7
+          name: companion-hub-${{ matrix.target }}-msi
+          path: packages/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/msi/*.msi
+          if-no-files-found: error
+
+      - name: Upload Windows NSIS installer
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v7
+        with:
+          retention-days: 7
+          name: companion-hub-${{ matrix.target }}-setup
+          path: packages/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/nsis/*-setup.exe
+          if-no-files-found: error

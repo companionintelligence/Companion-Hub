@@ -1,0 +1,72 @@
+{
+  "name": "@ci-hub/common",
+  "version": "1.0.0",
+  "description": "",
+  "type": "module",
+  "files": [
+    "dist",
+    "i18n",
+    "package.json",
+    "README.md"
+  ],
+  "exports": {
+    "./schemas": {
+      "import": "./dist/schemas/index.js",
+      "types": "./dist/schemas/index.d.ts",
+      "default": "./dist/schemas/index.js"
+    },
+    "./types": {
+      "import": "./dist/types/index.js",
+      "types": "./dist/types/index.d.ts",
+      "default": "./dist/types/index.js"
+    },
+    "./validation": {
+      "import": "./dist/validation/index.js",
+      "types": "./dist/validation/index.d.ts",
+      "default": "./dist/validation/index.js"
+    },
+    "./i18n/translations/*": "./i18n/translations/*"
+  },
+  "typesVersions": {
+    "*": {
+      "schemas": [
+        "dist/schemas/index.d.ts"
+      ],
+      "types": [
+        "dist/types/index.d.ts"
+      ],
+      "validation": [
+        "dist/validation/index.d.ts"
+      ]
+    }
+  },
+  "scripts": {
+    "prepublishOnly": "npm run ci",
+    "dev": "tsc --watch --preserveWatchOutput",
+    "build": "node -e \"const fs=require('fs');fs.rmSync('dist',{recursive:true,force:true})\" && tsc && node -e \"const fs=require('fs');fs.copyFileSync('package.json','dist/package.json')\"",
+    "bundle": "node -e \"process.exit(0)\"",
+    "build:schemas": "tsx ./script/gen-json-schema.ts",
+    "ci": "npm run build && npm run check-exports",
+    "check-exports": "attw --pack . --ignore-rules=cjs-resolves-to-esm",
+    "local-release": "changeset version && changeset publish",
+    "tsc": "tsc",
+    "test": "vitest run --coverage"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "PolyForm-Noncommercial-1.0.0",
+  "devDependencies": {
+    "@arethetypeswrong/cli": "^0.18.1",
+    "@changesets/cli": "^2.29.3",
+    "@types/node": "^24.12.2",
+    "@types/validator": "^13.15.2",
+    "vitest": "^4.0.4"
+  },
+  "dependencies": {
+    "validator": "^13.15.20"
+  },
+  "peerDependencies": {
+    "typescript": ">=5",
+    "zod": ">=4"
+  }
+}

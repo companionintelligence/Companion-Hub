@@ -1,0 +1,97 @@
+import { updateAppConfigMutation } from '@/api-client/@tanstack/react-query.gen';
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/Dialog';
+import type { AppInfo, AppStatus } from '@/types/app.types';
+import type { TranslatableError } from '@/types/error.types';
+import { useMutation } from '@tanstack/react-query';
+import type React from 'react';
+import { useEffect, useId, useState } from 'react';
+import toast from 'react-hot-toast';
+import { useTranslation } from 'react-i18next';
+import { HubAccess } from '../../hub-access/hub-access';
+import { InstallFormButtons } from '../../install-form-buttons/install-form-buttons';
+import { type FormValues, InstallForm } from '../../install-form/install-form';
+
+interface IProps {
+  info: AppInfo;
+  config: Record<string, unknown>;
+  isOpen: boolean;
+  onClose: () => void;
+  status?: AppStatus;
+}
+
+const RUNNING_STATUSES: AppStatus[] = ['running', 'starting', 'restarting'];
+
+export const UpdateSettingsDialog: React.FC<IProps> = ({ info, config, isOpen, onClose, status }) => {
+  const { t } = useTranslation();
+  const formId = useId();
+  const [hasChanges, setHasChanges] = useState(false);
+
+  const isRunning = status != null && RUNNING_STATUSES.includes(status);
+
+  useEffect(() => {
+    if (!isOpen) {
+      setHasChanges(false);
+    }
+  }, [isOpen]);
+
+  const updateConfig = useMutation({
+    ...updateAppConfigMutation(),
+    onError: (e: TranslatableError) => {
+      toast.error(t(e.message, e.intlParams));
+    },
+    onMutate: () => {
+      onClose();
+    },
+    onSuccess: () => {
+      toast.success(isRunning ? t('APP_UPDATE_CONFIG_SUCCESS') : t('APP_UPDATE_CONFIG_SUCCESS_STOPPED'));
+    },
+  });
+
+  const normalizeFormValues = (values: FormValues) => {
+    return {
+      ...values,
+      port: values.port ? Number(values.port) : undefined,
+      localSubdomain: values.localSubdomain || undefined,
+      maxBackups: values.maxBackups !== undefined && Number.isNaN(values.maxBackups) ? undefined : values.maxBackups,
+    };
+  };
+
+  return (
+    <Dialog open={isOpen} onOpenChange={onClose}>
+      <DialogContent className="max-h-[85vh] flex flex-col">
+        <DialogHeader>
+          <DialogTitle>{t('APP_UPDATE_SETTINGS_FORM_TITLE', { name: info.id })}</DialogTitle>
+          {hasChanges && (
+            <div
+              className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2.5 text-sm text-amber-400 mt-2"
+              data-testid="update-settings-restart-hint"
+            >
+              {isRunning ? t('APP_UPDATE_SETTINGS_RESTART_HINT') : t('APP_UPDATE_SETTINGS_STOPPED_HINT')}
+            </div>
+          )}
+        </DialogHeader>
+        <div className="flex-1 overflow-y-auto">
+          <InstallForm
+            onSubmit={(values: FormValues) => updateConfig.mutate({ path: { urn: info.urn }, body: normalizeFormValues(values) })}
+            formFields={info.form_fields}
+            info={info}
+            initialValues={{ ...config }}
+            formId={formId}
+            appStatus={status}
+            scrollable
+            editingAppUrn={info.urn}
+            onDirtyChange={setHasChanges}
+          />
+
+          {/* Outside the <form>: the Hub-provisioned trust material (app key + identity secret) is
+              app state, not a config field, and Rotate acts immediately rather than on save. The
+              component renders nothing for apps holding no Hub access, which is most of them. */}
+          <HubAccess appUrn={info.urn} hasUnsavedChanges={hasChanges} />
+        </div>
+        <DialogFooter>
+          <InstallFormButtons loading={updateConfig.isPending} isEdit formId={formId} disabled={!hasChanges} />
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+};

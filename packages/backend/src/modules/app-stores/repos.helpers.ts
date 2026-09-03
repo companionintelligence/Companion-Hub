@@ -1,0 +1,629 @@
+import { execFileSync } from 'node:child_process';
+import crypto from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
+import { pLimit } from '@/common/helpers/file-helpers';
+import { ConfigurationService } from '@/core/config/configuration.service';
+import { FilesystemService } from '@/core/filesystem/filesystem.service';
+import { LoggerService } from '@/core/logger/logger.service';
+import { Injectable, Inject, forwardRef } from '@nestjs/common';
+import axios, { type AxiosHeaderValue, type AxiosRequestConfig } from 'axios';
+import git from 'isomorphic-git';
+import http from 'isomorphic-git/http/node';
+import { RegistrationService } from '../registration/registration.service';
+
+@Injectable()
+export class ReposHelpers {
+  constructor(
+    private readonly logger: LoggerService,
+    private readonly configuration: ConfigurationService,
+    private readonly filesystem: FilesystemService,
+    @Inject(forwardRef(() => RegistrationService)) private readonly registrationService: RegistrationService,
+  ) {}
+
+  /**
+   * Given a repo url, return a hash of it to be used as a folder name
+   *
+   * @param {string} repoUrl
+   */
+  public getRepoHash(repoUrl: string) {
+    const hash = crypto.createHash('sha256');
+    hash.update(repoUrl);
+    return hash.digest('hex');
+  }
+
+  /**
+   * Extracts the base URL and branch from a repository URL.
+   * @param repoUrl The repository URL.
+   * @returns An array containing the base URL and branch, or just the base URL if no branch is found.
+   */
+  private getRepoBaseUrlAndBranch(repoUrl: string) {
+    const treeIndex = repoUrl.indexOf('/tree/');
+
+    if (treeIndex !== -1) {
+      const baseUrl = repoUrl.substring(0, treeIndex);
+      const branch = repoUrl.substring(treeIndex + '/tree/'.length);
+      return [baseUrl, branch];
+    }
+
+    return [repoUrl, undefined];
+  }
+
+  /**
+   * Error handler for repo operations
+   * @param {unknown} err
+   */
+  private handleRepoError(err: unknown) {
+    if (err instanceof Error) {
+      this.logger.error(err);
+      return { success: false, message: err.message };
+    }
+
+    return { success: false, message: `An error occurred: ${String(err)}` };
+  }
+
+  /**
+   * Ensure directory exists and has correct permissions
+   * @param {string} dirPath
+   */
+  private async ensureDirectoryWithPermissions(dirPath: string): Promise<void> {
+    if (!(await this.filesystem.pathExists(dirPath))) {
+      await fs.promises.mkdir(dirPath, { recursive: true });
+    }
+
+    if (process.platform !== 'win32') {
+      await fs.promises.chmod(dirPath, 0o755);
+    }
+
+    // Only mark real git repositories as safe directories.
+    // Companion Portal marketplace app folders are plain directories and adding each
+    // one to global git config can stall startup under lock contention.
+    const isGitRepo = await this.filesystem.pathExists(path.join(dirPath, '.git'));
+    if (!isGitRepo) {
+      return;
+    }
+
+    try {
+      execFileSync('git', ['config', '--global', '--add', 'safe.directory', dirPath], {
+        stdio: 'ignore',
+        timeout: 2000,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+
+      if (message.includes('could not lock config file') || message.includes('.gitconfig.lock')) {
+        this.logger.warn(`Skipping git safe.directory registration for "${dirPath}" because global git config is locked: ${message}`);
+        return;
+      }
+
+      this.logger.warn(`Failed to add "${dirPath}" as a git safe.directory. Git may not be installed or available in PATH: ${message}`);
+    }
+  }
+
+  private async requestCiCloud<T>(config: AxiosRequestConfig, retries = 2): Promise<T> {
+    let attempt = 0;
+    let lastError: unknown;
+
+    while (attempt <= retries) {
+      try {
+        const response = await axios.request<T>({
+          timeout: 15_000,
+          responseType: 'json',
+          validateStatus: () => true,
+          ...config,
+        });
+
+        if (response.status >= 200 && response.status < 300) {
+          return response.data;
+        }
+
+        const shouldRetryStatus = response.status === 408 || response.status === 429 || response.status >= 500;
+        const message = `CI Cloud request failed: ${config.method ?? 'GET'} ${config.url} -> ${response.status} ${response.statusText}`;
+        if (!shouldRetryStatus) {
+          throw new Error(message);
+        }
+        const retryableError = new Error(message) as Error & { retryable?: boolean };
+        retryableError.retryable = true;
+        throw retryableError;
+      } catch (error) {
+        lastError = error;
+        const retryableTransportError = axios.isAxiosError(error) && !error.response;
+        const retryableHttpError = error instanceof Error && 'retryable' in error && error.retryable === true;
+        if (!retryableTransportError && !retryableHttpError) {
+          throw error;
+        }
+        if (attempt >= retries) {
+          throw error;
+        }
+        this.logger.warn(
+          `Retrying CI Cloud request (${attempt + 1}/${retries + 1}): ${config.method ?? 'GET'} ${config.url} — ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+      attempt++;
+    }
+
+    throw lastError instanceof Error ? lastError : new Error(String(lastError));
+  }
+
+  private getHeaderValue(value: AxiosHeaderValue | undefined): string {
+    if (Array.isArray(value)) {
+      const first = value[0];
+      return typeof first === 'string' ? first : typeof first === 'number' || typeof first === 'boolean' ? String(first) : '';
+    }
+
+    return typeof value === 'string' ? value : typeof value === 'number' || typeof value === 'boolean' ? String(value) : '';
+  }
+
+  private isAcceptedDescriptionContentType(contentTypeHeader: AxiosHeaderValue | undefined): boolean {
+    const contentType = this.getHeaderValue(contentTypeHeader).split(';')[0]?.trim().toLowerCase() ?? '';
+
+    if (!contentType) {
+      return true;
+    }
+
+    if (contentType === 'text/markdown' || contentType === 'text/x-markdown' || contentType === 'text/plain') {
+      return true;
+    }
+
+    if (contentType === 'text/html' || contentType.startsWith('image/')) {
+      return false;
+    }
+
+    return false;
+  }
+
+  /**
+   * Given a repo url, clone it to the repos folder if it doesn't exist
+   *
+   * @param {string} url
+   */
+  public async cloneRepo(url: string, id: string, type = 'git') {
+    try {
+      const { dataDir } = this.configuration.get('directories');
+      const repoPath = path.join(dataDir, 'repos', id);
+
+      if (await this.filesystem.pathExists(repoPath)) {
+        await this.ensureDirectoryWithPermissions(path.dirname(repoPath));
+        this.logger.debug(`Repo ${url} already exists`);
+        return { success: true, message: '' };
+      }
+
+      if (type === 'ci_cloud_api') {
+        return this.fetchCiCloudRepo(url, id, repoPath);
+      }
+
+      // Validate URL before attempting to clone
+      // Skip invalid URLs (like "migrated" from old migrations) gracefully
+      if (!url || url.trim() === '' || (!url.startsWith('http://') && !url.startsWith('https://') && !url.startsWith('git@'))) {
+        this.logger.warn(`Skipping invalid repo URL for ${id}: ${url || '(empty)'}`);
+        return { success: false, message: `Invalid repo URL: ${url || '(empty)'}` };
+      }
+
+      const [repoUrl, branch] = this.getRepoBaseUrlAndBranch(url);
+
+      if (!repoUrl) {
+        this.logger.warn(`Invalid repo URL format for ${id}: ${url}`);
+        return { success: false, message: `Invalid repo URL: ${url}` };
+      }
+
+      this.logger.debug(`Cloning repo ${repoUrl}${branch ? ` on branch ${branch}` : ''} to ${repoPath}`);
+
+      await this.ensureDirectoryWithPermissions(path.dirname(repoPath));
+      await git.clone({
+        fs,
+        http,
+        dir: repoPath,
+        url: repoUrl,
+        singleBranch: true,
+        depth: 1,
+        ref: branch || undefined,
+      });
+
+      this.logger.info(`Cloned repo ${repoUrl} to ${repoPath}`);
+      return { success: true, message: '' };
+    } catch (err) {
+      return this.handleRepoError(err);
+    }
+  }
+
+  /**
+   * True when the locally synced catalog copy already reflects the published
+   * store entry, so the periodic sync can skip re-downloading description/icon.
+   *
+   * Version + availability alone are not enough: marketplace edits often change
+   * compose/config (architectures, runtime_platform, form fields, etc.) while
+   * leaving `version` / `cihub_app_version` unchanged. Also compare `updated_at`,
+   * compose body, and a few config fields that affect install/runtime.
+   */
+  private async isCiCloudAppUpToDate(appDir: string, app: { [key: string]: unknown }): Promise<boolean> {
+    try {
+      const raw = await fs.promises.readFile(path.join(appDir, 'config.json'), 'utf-8');
+      const existing = JSON.parse(raw) as {
+        cihub_app_version?: unknown;
+        version?: unknown;
+        available?: unknown;
+        updated_at?: unknown;
+        supported_architectures?: unknown;
+        runtime_platform?: unknown;
+        hub_integration?: unknown;
+        form_fields?: unknown;
+        exposable?: unknown;
+        port?: unknown;
+      };
+
+      const incomingAppVersion =
+        typeof app.cihub_app_version === 'number' ? app.cihub_app_version : typeof app.cihub_version === 'number' ? app.cihub_version : 1;
+      const incomingDockerVersion = typeof app.version === 'string' ? app.version : '0.0.1';
+      const incomingAvailable = typeof app.available === 'boolean' ? app.available : true;
+
+      if (
+        existing.cihub_app_version !== incomingAppVersion ||
+        existing.version !== incomingDockerVersion ||
+        existing.available !== incomingAvailable
+      ) {
+        return false;
+      }
+
+      const incomingUpdatedAt = typeof app.updated_at === 'number' ? app.updated_at : undefined;
+      if (incomingUpdatedAt !== undefined && existing.updated_at !== incomingUpdatedAt) {
+        return false;
+      }
+
+      if (JSON.stringify(existing.supported_architectures ?? null) !== JSON.stringify(app.supported_architectures ?? null)) {
+        return false;
+      }
+      if ((existing.runtime_platform ?? null) !== (app.runtime_platform ?? null)) {
+        return false;
+      }
+      if (JSON.stringify(existing.hub_integration ?? null) !== JSON.stringify(app.hub_integration ?? null)) {
+        return false;
+      }
+      if (JSON.stringify(existing.form_fields ?? null) !== JSON.stringify(app.form_fields ?? null)) {
+        return false;
+      }
+      if (typeof app.exposable === 'boolean' && existing.exposable !== app.exposable) {
+        return false;
+      }
+      if (typeof app.port === 'number' && existing.port !== app.port) {
+        return false;
+      }
+
+      if (typeof app.compose === 'string') {
+        try {
+          const localCompose = await fs.promises.readFile(path.join(appDir, 'docker-compose.json'), 'utf-8');
+          if (localCompose !== app.compose) {
+            return false;
+          }
+        } catch {
+          return false;
+        }
+      }
+
+      return true;
+    } catch {
+      // Missing or unreadable local config — do a full sync for this app.
+      return false;
+    }
+  }
+
+  private async fetchCiCloudRepo(url: string, _id: string, repoPath: string) {
+    try {
+      this.logger.debug(`Fetching CI Cloud Repo from ${url} to ${repoPath}`);
+
+      if (!(await this.filesystem.pathExists(repoPath))) {
+        await this.ensureDirectoryWithPermissions(repoPath);
+      }
+
+      const appsPath = path.join(repoPath, 'apps');
+      await this.ensureDirectoryWithPermissions(appsPath);
+
+      // Fetch metadata list
+      const storeUrl = `${url}/store`;
+      this.logger.debug(`Fetching store metadata from ${storeUrl}`);
+      const apps = await this.requestCiCloud<Array<{ id: string; slug?: string; [key: string]: unknown }>>({
+        method: 'GET',
+        url: storeUrl,
+        params: { _ts: String(Date.now()) },
+        headers: { 'Cache-Control': 'no-cache', Pragma: 'no-cache' },
+      });
+
+      const limit = pLimit(12);
+      await Promise.all(
+        apps.map((app) =>
+          limit(async () => {
+            const appSlug = app.slug || app.id;
+            const appDir = path.join(appsPath, appSlug);
+
+            // Incremental sync: this runs on a 15-minute cron, so skip apps whose
+            // local config already matches the published version instead of
+            // re-downloading every description and icon on each pass.
+            if (await this.isCiCloudAppUpToDate(appDir, app)) {
+              return;
+            }
+
+            await this.ensureDirectoryWithPermissions(appDir);
+
+            let markdownDescription: string | null = null;
+            try {
+              const descriptionUrl = `${url}/store/${appSlug}/metadata/description.md`;
+              const descriptionRes = await axios.get<string>(descriptionUrl, {
+                timeout: 15_000,
+                responseType: 'text',
+                validateStatus: () => true,
+              });
+              if (descriptionRes.status >= 200 && descriptionRes.status < 300) {
+                const contentTypeHeader = descriptionRes.headers['content-type'];
+
+                if (this.isAcceptedDescriptionContentType(contentTypeHeader)) {
+                  const descriptionText = typeof descriptionRes.data === 'string' ? descriptionRes.data : '';
+                  if (descriptionText.trim().length > 0) {
+                    markdownDescription = descriptionText;
+                    const metadataDir = path.join(appDir, 'metadata');
+                    await this.ensureDirectoryWithPermissions(metadataDir);
+                    await fs.promises.writeFile(path.join(metadataDir, 'description.md'), descriptionText);
+                  }
+                } else {
+                  this.logger.warn(
+                    `Skipping marketplace description for ${appSlug}: unsupported content-type ${this.getHeaderValue(contentTypeHeader) || '(missing)'}`,
+                  );
+                }
+              }
+            } catch {
+              // Non-fatal: description will fall back to API payload/config.
+            }
+
+            // Enrich app metadata with default required fields if missing
+            const enrichedApp = {
+              ...app,
+              urn: `urn:app:${appSlug}`,
+              name: typeof app.name === 'string' ? app.name : typeof app.title === 'string' ? app.title : appSlug,
+              author: typeof app.author === 'string' ? app.author : 'Unknown Author',
+              available: typeof app.available === 'boolean' ? app.available : true,
+              short_desc:
+                typeof app.short_desc === 'string'
+                  ? app.short_desc
+                  : (typeof app.shortDescription === 'string' ? app.shortDescription : null) ||
+                    (app.description as string) ||
+                    'No description provided',
+              title: typeof app.title === 'string' ? app.title : (app.name as string) || appSlug,
+              description: markdownDescription ?? (typeof app.description === 'string' ? app.description : 'No full description.'),
+              categories: (() => {
+                const cats = new Set<string>();
+                if (Array.isArray(app.categories)) {
+                  for (const c of app.categories) {
+                    if (typeof c === 'string') cats.add(c);
+                  }
+                }
+                if (Array.isArray(app.tags)) {
+                  for (const t of app.tags) {
+                    if (typeof t === 'string') cats.add(t);
+                  }
+                }
+                return cats.size > 0 ? [...cats] : ['utilities'];
+              })(),
+              port: typeof app.port === 'number' ? app.port : 8080,
+              version: typeof app.version === 'string' ? app.version : '0.0.1',
+              cihub_app_version:
+                typeof app.cihub_app_version === 'number' ? app.cihub_app_version : typeof app.cihub_version === 'number' ? app.cihub_version : 1,
+              source: typeof app.source === 'string' ? app.source : 'https://github.com/example/repo',
+              supported_architectures: Array.isArray(app.supported_architectures) ? app.supported_architectures : ['amd64', 'arm64'],
+            };
+
+            await fs.promises.writeFile(path.join(appDir, 'config.json'), JSON.stringify(enrichedApp, null, 2));
+
+            // Write docker-compose.json if available
+            if (typeof app.compose === 'string') {
+              await fs.promises.writeFile(path.join(appDir, 'docker-compose.json'), app.compose);
+            }
+
+            // Download app icon so getAppImage can serve it from metadata/logo.*
+            const iconUrl = typeof app.icon === 'string' ? app.icon : null;
+            if (iconUrl) {
+              try {
+                const fullIconUrl = iconUrl.startsWith('http') ? iconUrl : `${url}${iconUrl}`;
+                const iconRes = await axios.get<ArrayBuffer>(fullIconUrl, {
+                  timeout: 15_000,
+                  responseType: 'arraybuffer',
+                  validateStatus: () => true,
+                });
+                if (iconRes.status >= 200 && iconRes.status < 300) {
+                  const contentTypeHeader = iconRes.headers['content-type'];
+                  const contentType = typeof contentTypeHeader === 'string' ? contentTypeHeader : 'image/png';
+                  const extMap: Record<string, string> = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp', 'image/svg+xml': 'svg' };
+                  const ext = extMap[contentType.split(';')[0]?.trim() ?? ''] ?? 'png';
+                  const metadataDir = path.join(appDir, 'metadata');
+                  await this.ensureDirectoryWithPermissions(metadataDir);
+                  const buffer = Buffer.from(iconRes.data);
+                  await fs.promises.writeFile(path.join(metadataDir, `logo.${ext}`), buffer);
+                }
+              } catch {
+                // Non-fatal: logo will fall back to generic thumbnail
+              }
+            }
+          }),
+        ),
+      );
+
+      // Also write a repo.json or config.json so Hub sees it as a valid repo?
+      // CI Hub expects `repo.json` in root of repo?
+      // Existing `downloadZipRepo` unzips a file.
+      // Let's check `downloadZipRepo` implementation to see what files are expected.
+
+      return { success: true, message: 'CI Cloud Repo updated' };
+    } catch (err) {
+      return this.handleRepoError(err);
+    }
+  }
+
+  public async downloadAppFiles(repoUrl: string, repoSlug: string, appSlug: string) {
+    try {
+      const { dataDir } = this.configuration.get('directories');
+      const repoPath = path.join(dataDir, 'repos', repoSlug);
+      const appPath = path.join(repoPath, 'apps', appSlug);
+
+      this.logger.debug(`Downloading app files for ${appSlug} from ${repoUrl}`);
+
+      // Fetch full install data
+      const deviceId = await this.registrationService.getDeviceId();
+      const ciHubApiKey = this.configuration.getConfig().ciHubApiKey;
+      const headers: Record<string, string> = {
+        'x-device-id': deviceId,
+      };
+      if (typeof ciHubApiKey === 'string' && ciHubApiKey) {
+        headers.Authorization = `Bearer ${ciHubApiKey}`;
+        headers['x-device-key'] = ciHubApiKey;
+      }
+      const response = await axios.get<{ files?: Record<string, string> }>(`${repoUrl}/store/${appSlug}/install`, {
+        timeout: 20_000,
+        validateStatus: () => true,
+        headers,
+      });
+      if (response.status < 200 || response.status >= 300) {
+        if (response.status === 402) {
+          return { success: false, message: 'APP_INSTALL_PORTAL_DOWNLOAD_PAYMENT_REQUIRED' };
+        }
+        if (response.status === 401) {
+          return { success: false, message: 'APP_INSTALL_PORTAL_DOWNLOAD_UNAUTHORIZED' };
+        }
+        if (response.status === 403) {
+          return { success: false, message: 'APP_INSTALL_PORTAL_DOWNLOAD_FORBIDDEN' };
+        }
+        throw new Error(`Failed to fetch app files: ${response.status} ${response.statusText}`);
+      }
+
+      const data = response.data;
+
+      await this.ensureDirectoryWithPermissions(appPath);
+
+      const files = data.files || {};
+
+      if (Object.keys(files).length > 0) {
+        for (const [filename, content] of Object.entries(files)) {
+          const filePath = path.join(appPath, filename);
+          await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
+          await fs.promises.writeFile(filePath, typeof content === 'string' ? content : JSON.stringify(content, null, 2));
+        }
+      } else {
+        this.logger.warn(`No app files found in response for ${appSlug}`);
+      }
+
+      return { success: true, message: 'App files downloaded' };
+    } catch (err) {
+      return this.handleRepoError(err);
+    }
+  }
+
+  /**
+   * Given a repo url, pull it to the repos folder if it exists
+   *
+   * @param {string} repoUrl
+   */
+  public async pullRepo(repoUrl: string, slug: string, type = 'git') {
+    try {
+      if (type === 'ci_cloud_api') {
+        const { dataDir } = this.configuration.get('directories');
+        const repoPath = path.join(dataDir, 'repos', slug);
+        return this.fetchCiCloudRepo(repoUrl, slug, repoPath);
+      }
+
+      await this.cloneRepo(repoUrl, slug, type);
+
+      const [remoteUrl] = this.getRepoBaseUrlAndBranch(repoUrl);
+
+      const { dataDir } = this.configuration.get('directories');
+      const repoPath = path.join(dataDir, 'repos', slug);
+
+      if (!(await this.filesystem.pathExists(repoPath))) {
+        this.logger.info(`Repo ${repoUrl} does not exist`);
+        return { success: false, message: `Repo ${repoUrl} does not exist` };
+      }
+
+      this.logger.debug(`Pulling repo ${repoUrl} to ${repoPath}`);
+
+      const currentBranch = await git.currentBranch({
+        fs,
+        dir: repoPath,
+        fullname: false,
+      });
+      if (!currentBranch) {
+        this.logger.warn(`No current branch found for repo ${repoUrl}. Deleting and re-cloning.`);
+        await this.deleteRepo(slug);
+        return this.cloneRepo(repoUrl, slug);
+      }
+      const remoteBranchRef = `origin/${currentBranch}`;
+
+      const fetchResult = await git.fetch({
+        fs,
+        http,
+        dir: repoPath,
+        url: remoteUrl,
+        ref: currentBranch,
+        depth: 1,
+        singleBranch: true,
+        tags: false,
+      });
+      this.logger.debug('Fetch result:', fetchResult, 'Current branch:', currentBranch);
+      const targetSha = await git.resolveRef({
+        fs,
+        dir: repoPath,
+        ref: remoteBranchRef,
+      });
+      this.logger.debug('Target SHA:', targetSha);
+      await git.branch({
+        fs,
+        dir: repoPath,
+        ref: currentBranch,
+        object: targetSha,
+        force: true,
+      });
+      await git.checkout({
+        fs,
+        dir: repoPath,
+        ref: currentBranch,
+        force: true,
+      });
+
+      this.logger.debug(`Pulled repo ${repoUrl} to ${repoPath}`);
+      return { success: true, message: '' };
+    } catch (_) {
+      if (this.configuration.get('__prod__')) {
+        await this.deleteRepo(slug);
+      }
+      return this.cloneRepo(repoUrl, slug);
+    }
+  }
+
+  /**
+   * Given a repo id, delete it from the repos folder
+   */
+  public async deleteRepo(id: string) {
+    try {
+      const { dataDir } = this.configuration.get('directories');
+      const repoPath = path.join(dataDir, 'repos', id);
+
+      if (!(await this.filesystem.pathExists(repoPath))) {
+        this.logger.info(`Repo ${id} does not exist`);
+        return { success: false, message: `Repo ${id} does not exist` };
+      }
+
+      this.logger.info(`Deleting repo ${id} from ${repoPath}`);
+      await this.filesystem.removeDirectory(repoPath);
+
+      this.logger.info(`Deleted repo ${id} from ${repoPath}`);
+      return { success: true, message: '' };
+    } catch (err) {
+      return this.handleRepoError(err);
+    }
+  }
+
+  public async deleteAllRepos() {
+    const { dataDir } = this.configuration.get('directories');
+    const repos = await this.filesystem.listFiles(path.join(dataDir, 'repos'));
+
+    for (const repo of repos) {
+      await this.deleteRepo(repo);
+    }
+
+    return { success: true, message: '' };
+  }
+}

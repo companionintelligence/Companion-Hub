@@ -1,0 +1,29 @@
+import clsx from 'clsx';
+import { useId } from 'react';
+import type React from 'react';
+import { getMarketplaceAppImageUrl } from '@/lib/marketplace-image-url';
+import './app-logo.css';
+
+export const AppLogo: React.FC<{
+  urn?: string;
+  url?: string;
+  size?: number;
+  className?: string;
+  alt?: string;
+  placeholder?: boolean;
+}> = ({ urn, url, size = 80, className = '', alt = '' }) => {
+  const logoUrl = getMarketplaceAppImageUrl(urn);
+  const maskId = useId();
+
+  return (
+    <div aria-description={alt} className={clsx('drop-shadow', className)} style={{ width: size, height: size, minWidth: size }}>
+      {/* biome-ignore lint/a11y/noSvgWithoutTitle: Svg has no alt attibute */}
+      <svg width={size} height={size} viewBox="0 0 200 200" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <mask id={maskId} maskUnits="userSpaceOnUse" x="0" y="0" width="200" height="200">
+          <path fillRule="evenodd" clipRule="evenodd" d="M-1 100C0 0 0 0 100 0S200 0 200 100 200 200 100 200 0 200 0 100" fill="white" />
+        </mask>
+        <image className="logo-image" href={url || logoUrl} mask={`url(#${maskId})`} width="200" height="200" />
+      </svg>
+    </div>
+  );
+};

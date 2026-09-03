@@ -1,0 +1,845 @@
+import fs from 'node:fs';
+import { APP_DATA_DIR, APP_DIR, DATA_DIR } from '@/common/constants';
+import { ConfigurationService } from '@/core/config/configuration.service';
+import { DATABASE } from '@/core/database/database.module';
+import { DatabaseService } from '@/core/database/database.service';
+import { appStore, deviceRegistration as deviceRegistrationTable } from '@/core/database/drizzle/schema';
+import { app as appTable } from '@/core/database/drizzle/schema';
+import { FilesystemService } from '@/core/filesystem/filesystem.service';
+import { LoggerService } from '@/core/logger/logger.service';
+// Import RegistrationService and ReposHelpers BEFORE AppStoreService to avoid circular dependency issues
+import { RegistrationService } from '@/modules/registration/registration.service';
+import { CloudflareClientService } from '@/modules/cloudflare/cloudflare-client.service';
+import { BackupManager } from '@/modules/backups/backup.manager';
+import { SSEService } from '@/core/sse/sse.service';
+import { ReposHelpers } from '@/modules/app-stores/repos.helpers';
+import { AppLifecycleCommandFactory } from '@/modules/app-lifecycle/app-lifecycle-command.factory';
+import { AppLifecycleService } from '@/modules/app-lifecycle/app-lifecycle.service';
+import { ExposureSyncService } from '@/modules/app-lifecycle/exposure-sync.service';
+import { AppStoreRepository } from '@/modules/app-stores/app-store.repository';
+import { AppStoreService } from '@/modules/app-stores/app-store.service';
+import { AppFilesManager } from '@/modules/apps/app-files-manager';
+import { AppHelpers } from '@/modules/apps/app.helpers';
+import { AppsRepository } from '@/modules/apps/apps.repository';
+import { AppsReadService } from '@/modules/apps/apps-read.service';
+import { AppsService } from '@/modules/apps/apps.service';
+import { AppRuntimeMonitorService } from '@/modules/apps/app-runtime-monitor.service';
+import { InstallPipelineTracker } from '@/modules/apps/install-pipeline.tracker';
+import { AppOperationRegistry } from '@/modules/app-lifecycle/app-operation-registry';
+import { PortAllocationRepository } from '@/modules/network/port-allocation.repository';
+import { DOCKERODE } from '@/modules/docker/constants';
+import { DockerReadFacade } from '@/modules/docker/docker-read.facade';
+import { DockerService } from '@/modules/docker/docker.service';
+import { TraefikConfigService } from '@/modules/docker/traefik-config.service';
+import { EnvUtils } from '@/modules/env/env.utils';
+import { MarketplaceService } from '@/modules/marketplace/marketplace.service';
+import { MarketplaceCacheBus } from '@/modules/marketplace/marketplace-cache.bus';
+import { ImageSizeService } from '@/modules/marketplace/image-size.service';
+import { SubnetManagerService } from '@/modules/network/subnet-manager.service';
+import { AppEventsQueue, appEventSchema } from '@/modules/queue/entities/app-events';
+import { RepoEventsQueue } from '@/modules/queue/entities/repo-events';
+import { QueueFactory } from '@/modules/queue/queue.factory';
+import { DeviceRegistrationRepository } from '@/modules/registration/device-registration.repository';
+import { faker } from '@faker-js/faker';
+import { Test } from '@nestjs/testing';
+import { fromPartial } from '@total-typescript/shoehorn';
+import { eq } from 'drizzle-orm';
+import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { mock } from 'vitest-mock-extended';
+import waitFor from 'wait-for-expect';
+import { extractAppUrn } from '@/common/helpers/app-helpers';
+import type { FsMock } from '../__mocks__/fs';
+import { createAppInStore } from '../utils/create-app-in-store';
+import { type TestDatabase, cleanTestData, createTestDatabase } from '../utils/create-test-database';
+import { APP_ASYNC_MUTEX } from '@/utils/mutex/mutex.module';
+import { AsyncMutex } from '@/utils/mutex/async-mutex';
+import { InferenceEnvResolver } from '@/modules/inference/inference-env-resolver';
+import { CloudFallbackService } from '@/modules/inference/cloud-fallback.service';
+import { ApiKeyService } from '@/modules/api-keys/api-key.service';
+import { MemoryConnectionService } from '@/modules/memory-connect/memory-connection.service';
+import { PortalCatalogService } from '@/core/portal/portal-catalog.service';
+import { PortalClientService } from '@/core/portal/portal-client.service';
+
+let db: TestDatabase;
+const DB_NAME = 'applifecycletest';
+
+function cleanTree(tree: Record<string, string | null>) {
+  const newTree: Record<string, string | null> = {};
+  for (const [key, value] of Object.entries(tree)) {
+    if (value && (key.endsWith('config.json') || key.endsWith('app-data.json'))) {
+      try {
+        const json = JSON.parse(value);
+        if (json.created_at !== undefined) json.created_at = 1769810550000;
+        if (json.updated_at !== undefined) json.updated_at = 1769810550000;
+        newTree[key] = JSON.stringify(json, null, 2);
+      } catch (_e) {
+        newTree[key] = value;
+      }
+    } else if (value && (key.endsWith('docker-compose.yml') || key.endsWith('docker-compose.json'))) {
+      // Sanitize subnet to avoid non-determinism in parallel updates
+      newTree[key] = value.replace(/subnet: 10\.128\.\d+\.0\/24/g, 'subnet: 10.128.X.0/24');
+    } else {
+      newTree[key] = value;
+    }
+  }
+  return newTree;
+}
+
+describe('App lifecycle', () => {
+  let appLifecycleService: AppLifecycleService;
+  let marketplaceService: MarketplaceService;
+  let appsRepository: AppsRepository;
+  let appFilesManager: AppFilesManager;
+  let deviceRegistrationRepository: DeviceRegistrationRepository;
+  const configurationService = mock<ConfigurationService>();
+  let databaseService = mock<DatabaseService>();
+  const dockerService = mock<DockerService>();
+  const dockerReadFacade = mock<DockerReadFacade>();
+  const loggerService = mock<LoggerService>();
+  const reposHelpers = mock<ReposHelpers>();
+  const repoEventsQueue = mock<RepoEventsQueue>();
+  const sseService = mock<SSEService>();
+  const backupManager = mock<BackupManager>();
+  const cloudflareClientService = mock<CloudflareClientService>();
+  const traefikConfigService = mock<TraefikConfigService>();
+  const registrationService = mock<RegistrationService>();
+  const imageSizeService = mock<ImageSizeService>();
+  const appRuntimeMonitorService = mock<AppRuntimeMonitorService>();
+  const portalCatalogService = mock<PortalCatalogService>();
+  const portalClientService = mock<PortalClientService>();
+
+  // Create AppStoreRepository manually to ensure we use the real implementation with the correct databaseService reference
+  const appStoreRepository = new AppStoreRepository(databaseService, reposHelpers);
+
+  configurationService.get.calledWith('queue').mockReturnValue({
+    host: 'localhost',
+    password: 'guest',
+    username: 'guest',
+    port: Number(process.env.RABBITMQ_PORT) || 5672,
+  });
+  configurationService.get.calledWith('domain').mockReturnValue('ci.test');
+  configurationService.get.calledWith('localDomain').mockReturnValue('ci.lan');
+  configurationService.get.calledWith('userSettings').mockReturnValue({
+    appDataPath: '/opt/ci-hub',
+    domain: 'ci.test',
+    localDomain: 'ci.lan',
+  });
+  dockerService.composeApp.mockResolvedValue({ success: true, stdout: '', stderr: '' });
+  dockerService.removeAppNetworks.mockResolvedValue(undefined);
+  dockerService.pullImages.mockResolvedValue(undefined);
+  dockerService.waitForManagedAppContainersReady.mockResolvedValue({
+    ok: true,
+    appStatus: 'running',
+    summary: { total: 1, running: 1, exitZero: 0 },
+    message: 'All containers are running',
+  });
+  dockerReadFacade.diagnoseAppContainers.mockResolvedValue({ unhealthy: [], healthy: [] });
+
+  const queueFactory = new QueueFactory(loggerService, configurationService);
+  let appEventsQueue: AppEventsQueue;
+
+  beforeAll(async () => {
+    faker.seed(123);
+    db = await createTestDatabase(DB_NAME);
+    appEventsQueue = await queueFactory.createQueue({
+      queueName: 'app-events-queue',
+      workers: 1,
+      eventSchema: appEventSchema,
+    });
+  });
+
+  beforeEach(async () => {
+    await cleanTestData(db);
+    portalCatalogService.warmCacheInBackground.mockReturnValue(undefined);
+    portalCatalogService.invalidateCache.mockReturnValue(undefined);
+    portalCatalogService.getAppInfoForUrn.mockResolvedValue(null);
+    portalCatalogService.fetchDescriptionMarkdown.mockResolvedValue(null);
+    portalCatalogService.isCiMarketplaceUrn.mockReturnValue(false);
+    portalCatalogService.searchCatalog.mockResolvedValue(null);
+    portalClientService.fetchStoreAlternatives.mockResolvedValue([]);
+    portalClientService.fetchStoreListings.mockResolvedValue([]);
+    // Best-effort arch check: null = registry unreachable, do not block install in tests.
+    imageSizeService.verifyAppArchitecture.mockResolvedValue(null);
+    appRuntimeMonitorService.getAppRuntimeHealth.mockResolvedValue({
+      appUrn: 'test:test',
+      appName: 'test',
+      status: 'running',
+      cpuPercent: 0,
+      memoryUsageBytes: 0,
+      memoryLimitBytes: 0,
+      highCpu: false,
+      sustainedHighCpu: false,
+      responsive: true,
+      degraded: false,
+      forceStopEligible: false,
+      reason: null,
+      cpuLimit: null,
+      usesDefaultCpuLimit: false,
+      sampledAt: new Date().toISOString(),
+      containers: [],
+    } as any);
+
+    const moduleRef = await Test.createTestingModule({
+      providers: [
+        AppLifecycleService,
+        ExposureSyncService,
+        MarketplaceService,
+        MarketplaceCacheBus,
+        {
+          provide: ImageSizeService,
+          useValue: imageSizeService,
+        },
+        AppStoreService,
+        {
+          provide: AppStoreRepository,
+          useValue: appStoreRepository,
+        },
+        FilesystemService,
+        QueueFactory,
+        AppLifecycleCommandFactory,
+        AppFilesManager,
+        AppsRepository,
+        PortAllocationRepository,
+        EnvUtils,
+        AppHelpers,
+        AppsReadService,
+        AppsService,
+        {
+          provide: AppRuntimeMonitorService,
+          useValue: appRuntimeMonitorService,
+        },
+        InstallPipelineTracker,
+        AppOperationRegistry,
+        {
+          provide: SubnetManagerService,
+          useFactory: (appsRepository: AppsRepository, loggerService: LoggerService, docker: typeof DOCKERODE) =>
+            new SubnetManagerService(appsRepository, loggerService, docker as never),
+          inject: [AppsRepository, LoggerService, DOCKERODE],
+        },
+        {
+          provide: ReposHelpers,
+          useValue: reposHelpers,
+        },
+        {
+          provide: RepoEventsQueue,
+          useValue: repoEventsQueue,
+        },
+        {
+          provide: SSEService,
+          useValue: sseService,
+        },
+        {
+          provide: BackupManager,
+          useValue: backupManager,
+        },
+        {
+          provide: CloudflareClientService,
+          useValue: cloudflareClientService,
+        },
+        {
+          provide: TraefikConfigService,
+          useValue: traefikConfigService,
+        },
+        {
+          provide: RegistrationService,
+          useValue: registrationService,
+        },
+        {
+          provide: DeviceRegistrationRepository,
+          useClass: DeviceRegistrationRepository,
+        },
+        {
+          provide: APP_ASYNC_MUTEX,
+          useValue: new AsyncMutex(),
+        },
+        {
+          provide: DockerService,
+          useValue: dockerService,
+        },
+        {
+          provide: DockerReadFacade,
+          useValue: dockerReadFacade,
+        },
+        {
+          provide: DatabaseService,
+          useValue: databaseService,
+        },
+        {
+          provide: DATABASE,
+          useValue: db,
+        },
+        {
+          provide: DOCKERODE,
+          useValue: {
+            pruneContainers: vi.fn().mockRejectedValue(null),
+            pruneNetworks: vi.fn().mockRejectedValue(null),
+            listNetworks: vi.fn().mockResolvedValue([]),
+          },
+        },
+        {
+          provide: AppEventsQueue,
+          useValue: appEventsQueue,
+        },
+        {
+          provide: ConfigurationService,
+          useValue: configurationService,
+        },
+        {
+          provide: LoggerService,
+          useValue: loggerService,
+        },
+        {
+          provide: InferenceEnvResolver,
+          useValue: mock<InferenceEnvResolver>(),
+        },
+        {
+          provide: CloudFallbackService,
+          useValue: mock<CloudFallbackService>({
+            getEnabledProviders: vi.fn().mockReturnValue([]),
+          }),
+        },
+        {
+          provide: ApiKeyService,
+          useValue: mock<ApiKeyService>({
+            provisionManagedKey: vi.fn().mockResolvedValue('test-managed-mcp-key'),
+            revokeManagedByApp: vi.fn().mockResolvedValue(undefined),
+          }),
+        },
+        {
+          provide: MemoryConnectionService,
+          useValue: mock<MemoryConnectionService>({
+            getInjectableCreds: vi.fn().mockResolvedValue(null),
+          }),
+        },
+        {
+          provide: PortalCatalogService,
+          useValue: portalCatalogService,
+        },
+        {
+          provide: PortalClientService,
+          useValue: portalClientService,
+        },
+      ],
+    }).compile();
+
+    appLifecycleService = moduleRef.get(AppLifecycleService);
+    databaseService = moduleRef.get(DatabaseService);
+    marketplaceService = moduleRef.get(MarketplaceService);
+    appsRepository = moduleRef.get(AppsRepository);
+    appFilesManager = moduleRef.get(AppFilesManager);
+    deviceRegistrationRepository = moduleRef.get(DeviceRegistrationRepository);
+
+    databaseService.db = db;
+
+    configurationService.getConfig.mockReturnValue(
+      fromPartial({
+        demoMode: false,
+        architecture: 'amd64',
+        domain: 'ci.test',
+        localDomain: 'ci.lan',
+        directories: { dataDir: DATA_DIR, appDir: APP_DIR, appDataDir: APP_DATA_DIR },
+        internalIp: '127.0.0.1',
+        envFilePath: '/data/.env',
+        rootFolderHost: '/opt/ci-hub',
+        userSettings: {
+          appDataPath: '/opt/ci-hub',
+          domain: 'ci.test',
+          localDomain: 'ci.lan',
+        },
+      }),
+    );
+
+    await db.insert(appStore).values({ slug: 'test', url: 'https://appstore.example.com', hash: 'test', name: 'test', enabled: true }).execute();
+    await marketplaceService.initialize();
+  });
+
+  describe('install app', () => {
+    it('should successfully install app and create expected directory structure', async () => {
+      // arrange
+      const appInfo = await createAppInStore('test', { id: 'test' });
+
+      // act
+      await appLifecycleService.installApp({ appUrn: appInfo.urn, form: {} });
+
+      await waitFor(async () => {
+        const app = await appsRepository.getAppByUrn(appInfo.urn);
+        expect(app?.status).toBe('running');
+      });
+
+      // assert
+      expect(cleanTree((fs as unknown as FsMock).tree())).toMatchSnapshot();
+    });
+
+    it('should not delete an existing app-data folder even if the app is reinstalled', async () => {
+      // arrange
+      const appInfo = await createAppInStore('test', { id: 'test2' });
+
+      await fs.promises.mkdir(`${APP_DATA_DIR}/test/test2/data`, { recursive: true });
+      await fs.promises.writeFile(`${APP_DATA_DIR}/test/test2/data/test.txt`, 'test');
+
+      await appLifecycleService.installApp({ appUrn: appInfo.urn, form: {} });
+
+      await waitFor(async () => {
+        const app = await appsRepository.getAppByUrn(appInfo.urn);
+        expect(app?.status).toBe('running');
+      });
+
+      // assert
+      expect(cleanTree((fs as unknown as FsMock).tree())).toMatchSnapshot();
+    });
+  });
+
+  describe('update app', () => {
+    it('should successfully update an app to a newer version', async () => {
+      // arrange
+      const appInfo = await createAppInStore('test', { cihub_app_version: 1 });
+
+      await appLifecycleService.installApp({ appUrn: appInfo.urn, form: {} });
+
+      await waitFor(async () => {
+        const app = await appsRepository.getAppByUrn(appInfo.urn);
+        expect(app?.status).toBe('running');
+        expect(app?.version).toBe(1);
+      });
+
+      await createAppInStore('test', { id: appInfo.id, cihub_app_version: 2 });
+
+      await fs.promises.mkdir(`${APP_DATA_DIR}/test/${appInfo.id}/data`, { recursive: true });
+      await fs.promises.writeFile(`${APP_DATA_DIR}/test/${appInfo.id}/data/preserved.txt`, 'data to preserve');
+
+      // act
+      await appLifecycleService.updateApp({ appUrn: appInfo.urn, performBackup: false });
+
+      await waitFor(async () => {
+        const app = await appsRepository.getAppByUrn(appInfo.urn);
+        expect(app?.status).toBe('running');
+        expect(app?.version).toBe(2);
+      });
+
+      const dataFileExists = await fs.promises
+        .access(`${APP_DATA_DIR}/test/${appInfo.id}/data/preserved.txt`)
+        .then(() => true)
+        .catch(() => false);
+      expect(dataFileExists).toBe(true);
+    });
+  });
+
+  describe('update all apps', () => {
+    it('should update multiple apps that have newer versions available', async () => {
+      // arrange
+      const app1Info = await createAppInStore('test', { id: 'app1', cihub_app_version: 1 });
+      const app2Info = await createAppInStore('test', { id: 'app2', cihub_app_version: 2 });
+      const app3Info = await createAppInStore('test', { id: 'app3', cihub_app_version: 3 });
+
+      await appLifecycleService.installApp({ appUrn: app1Info.urn, form: {} });
+      await appLifecycleService.installApp({ appUrn: app2Info.urn, form: {} });
+      await appLifecycleService.installApp({ appUrn: app3Info.urn, form: {} });
+
+      await waitFor(async () => {
+        const app1 = await appsRepository.getAppByUrn(app1Info.urn);
+        const app2 = await appsRepository.getAppByUrn(app2Info.urn);
+        const app3 = await appsRepository.getAppByUrn(app3Info.urn);
+        expect(app1?.status).toBe('running');
+        expect(app2?.status).toBe('running');
+        expect(app3?.status).toBe('running');
+      });
+
+      await createAppInStore('test', { id: 'app1', cihub_app_version: 2 });
+      await createAppInStore('test', { id: 'app3', cihub_app_version: 4 });
+
+      // act
+      await appLifecycleService.updateAllApps();
+
+      await waitFor(async () => {
+        const app1 = await appsRepository.getAppByUrn(app1Info.urn);
+        expect(app1?.status).toBe('running');
+        expect(app1?.version).toBe(2);
+      });
+
+      await waitFor(async () => {
+        const app3 = await appsRepository.getAppByUrn(app3Info.urn);
+        expect(app3?.status).toBe('running');
+        expect(app3?.version).toBe(4);
+      });
+
+      // assert
+      const app1 = await appsRepository.getAppByUrn(app1Info.urn);
+      const app2 = await appsRepository.getAppByUrn(app2Info.urn);
+      const app3 = await appsRepository.getAppByUrn(app3Info.urn);
+
+      expect(app1?.version).toBe(2);
+      expect(app2?.version).toBe(2);
+      expect(app3?.version).toBe(4);
+
+      expect(app1?.status).toBe('running');
+      expect(app2?.status).toBe('running');
+      expect(app3?.status).toBe('running');
+      expect(cleanTree((fs as unknown as FsMock).tree())).toMatchSnapshot();
+    });
+  });
+
+  describe('uninstall app', () => {
+    it('should preserve app-data when deleteAllData is false', async () => {
+      // arrange
+      const appInfo = await createAppInStore('test', { id: 'preserve-data' });
+      const { appStoreId, appName } = extractAppUrn(appInfo.urn);
+
+      await appLifecycleService.installApp({ appUrn: appInfo.urn, form: {} });
+      await waitFor(async () => {
+        const app = await appsRepository.getAppByUrn(appInfo.urn);
+        expect(app?.status).toBe('running');
+      });
+
+      await fs.promises.mkdir(`${APP_DATA_DIR}/${appStoreId}/${appName}/data`, { recursive: true });
+      await fs.promises.writeFile(`${APP_DATA_DIR}/${appStoreId}/${appName}/data/preserved.txt`, 'keep-me');
+
+      // act
+      await appLifecycleService.uninstallApp({ appUrn: appInfo.urn, deleteAllData: false });
+
+      // assert
+      await waitFor(async () => {
+        const app = await appsRepository.getAppByUrn(appInfo.urn);
+        expect(app).toBeUndefined();
+      });
+
+      const appDataStillExists = await fs.promises
+        .access(`${APP_DATA_DIR}/${appStoreId}/${appName}/data/preserved.txt`)
+        .then(() => true)
+        .catch(() => false);
+      expect(appDataStillExists).toBe(true);
+    });
+
+    it('should remove app-data when deleteAllData is true', async () => {
+      // arrange
+      const appInfo = await createAppInStore('test', { id: 'delete-data' });
+      const { appStoreId, appName } = extractAppUrn(appInfo.urn);
+
+      await appLifecycleService.installApp({ appUrn: appInfo.urn, form: {} });
+      await waitFor(async () => {
+        const app = await appsRepository.getAppByUrn(appInfo.urn);
+        expect(app?.status).toBe('running');
+      });
+
+      await fs.promises.mkdir(`${APP_DATA_DIR}/${appStoreId}/${appName}/data`, { recursive: true });
+      await fs.promises.writeFile(`${APP_DATA_DIR}/${appStoreId}/${appName}/data/delete-me.txt`, 'remove-me');
+
+      // act
+      await appLifecycleService.uninstallApp({ appUrn: appInfo.urn, deleteAllData: true });
+
+      // assert
+      await waitFor(async () => {
+        const app = await appsRepository.getAppByUrn(appInfo.urn);
+        expect(app).toBeUndefined();
+      });
+
+      const appDataStillExists = await fs.promises
+        .access(`${APP_DATA_DIR}/${appStoreId}/${appName}/data/delete-me.txt`)
+        .then(() => true)
+        .catch(() => false);
+      expect(appDataStillExists).toBe(false);
+    });
+  });
+
+  describe('app subnet assignment', () => {
+    it('should assign a subnet to an app when started if it has none', async () => {
+      // arrange
+      const appInfo = await createAppInStore('test', { id: 'subnet-test' });
+
+      await appLifecycleService.installApp({ appUrn: appInfo.urn, form: {} });
+
+      await waitFor(async () => {
+        const app = await appsRepository.getAppByUrn(appInfo.urn);
+        expect(app?.status).toBe('running');
+      });
+
+      // Remove subnet value to simulate an app without a subnet
+      await db.update(appTable).set({ subnet: null }).where(eq(appTable.appName, appInfo.id)).execute();
+
+      let app = await appsRepository.getAppByUrn(appInfo.urn);
+      expect(app?.subnet).toBeNull();
+
+      // act
+      await appLifecycleService.startApp({ appUrn: appInfo.urn });
+
+      // assert
+      await waitFor(async () => {
+        const app = await appsRepository.getAppByUrn(appInfo.urn);
+        expect(app?.status).toBe('running');
+      });
+
+      app = await appsRepository.getAppByUrn(appInfo.urn);
+      expect(app?.subnet).not.toBeNull();
+      expect(app?.subnet).toMatch(/^10\.128\.\d+\.0\/24$/);
+    });
+  });
+
+  describe('architecture-specific overrides', () => {
+    it('should apply architecture-specific overrides when generating docker-compose file', async () => {
+      // arrange
+      configurationService.get.calledWith('architecture').mockReturnValue('arm64');
+      const appInfo = await createAppInStore('test', { id: 'arch-test' });
+      const composeJson = {
+        schemaVersion: 2,
+        services: [
+          {
+            name: 'app',
+            image: 'app:latest',
+            isMain: true,
+            internalPort: 80,
+          },
+        ],
+        overrides: [
+          {
+            architecture: 'arm64',
+            services: [
+              {
+                name: 'app',
+                image: 'app:arm64-latest',
+              },
+            ],
+          },
+        ],
+      };
+
+      await fs.promises.mkdir(`${DATA_DIR}/repos/test/apps/arch-test`, { recursive: true });
+      await fs.promises.writeFile(`${DATA_DIR}/repos/test/apps/arch-test/docker-compose.json`, JSON.stringify(composeJson));
+
+      // act
+      await appLifecycleService.installApp({ appUrn: appInfo.urn, form: {} });
+
+      await waitFor(async () => {
+        const app = await appsRepository.getAppByUrn(appInfo.urn);
+        expect(app?.status).toBe('running');
+      });
+
+      // assert
+      const composeFileContent = await fs.promises.readFile(`${DATA_DIR}/apps/test/arch-test/docker-compose.yml`, 'utf8');
+      expect(composeFileContent).toContain('app:arm64-latest');
+      expect(composeFileContent).not.toContain('app:latest');
+    });
+  });
+
+  /*
+   * The whole custom-domain path, against a real database and the real
+   * migrations: Companion Portal reports a wired hostname → it lands on the app row →
+   * a restart regenerates the env with it → dropping it reverts the app.
+   *
+   * The unit tests cover each link; this covers the seams, and is the only test
+   * that proves the new column actually exists after `migrate`.
+   */
+  describe('custom domains', () => {
+    const ORG = { id: 'org-1', slug: 'acme', name: 'Acme', hubSubdomain: 'core2-acme', tunnelId: 'tunnel-1' };
+
+    const exposedForm = { exposureMode: 'cloudflare' as const, exposedLocal: true, openPort: false };
+
+    /** The env actually written for the app, parsed. */
+    const readEnv = async (urn: AppUrn) => {
+      const env = await appFilesManager.getAppEnv(urn);
+
+      return new EnvUtils().envStringToMap(env.content ?? '');
+    };
+
+    const installExposed = async (id: string) => {
+      const appInfo = await createAppInStore('test', { id });
+
+      await appLifecycleService.installApp({ appUrn: appInfo.urn, form: exposedForm });
+      await waitFor(async () => {
+        expect((await appsRepository.getAppByUrn(appInfo.urn))?.status).toBe('running');
+      });
+
+      return appInfo;
+    };
+
+    const syncReporting = async (customDomains: unknown) => {
+      cloudflareClientService.syncState.mockResolvedValue({ ok: true, failed: [], failures: [], synced: 1, customDomains } as never);
+      await appLifecycleService.triggerCloudflareSync();
+    };
+
+    beforeEach(async () => {
+      await db.delete(deviceRegistrationTable);
+      await deviceRegistrationRepository.createDeviceRegistration(ORG);
+      registrationService.getDeviceRegistrationInfo.mockResolvedValue(fromPartial(ORG));
+      registrationService.getDeviceId.mockResolvedValue('device-1');
+    });
+
+    it('binds a wired hostname, publishes it on restart, and reverts when it is dropped', async () => {
+      const appInfo = await installExposed('cdomain');
+      const platformHostname = 'cdomain-test-core2-acme.ci.test';
+
+      // Installed on the platform hostname — Companion Portal cannot have wired a domain
+      // to an app it had not been told about yet.
+      expect((await readEnv(appInfo.urn)).get('APP_PUBLIC_URL')).toBe(`https://${platformHostname}`);
+
+      // Companion Portal reports the alias it actually produced an ingress rule for.
+      await syncReporting([{ id: 'cd_1', domain: 'comfy.acme.com', targetHostname: platformHostname }]);
+
+      const bound = await appsRepository.getAppByUrn(appInfo.urn);
+      expect(bound?.customDomain).toBe('comfy.acme.com');
+      // Flagged, not recreated: the running container is left alone.
+      expect(bound?.pendingRestart).toBe(true);
+      expect((await readEnv(appInfo.urn)).get('APP_PUBLIC_URL')).toBe(`https://${platformHostname}`);
+
+      await appLifecycleService.restartApp({ appUrn: appInfo.urn, skipPull: true });
+      await waitFor(async () => {
+        expect((await appsRepository.getAppByUrn(appInfo.urn))?.status).toBe('running');
+      });
+
+      const boundEnv = await readEnv(appInfo.urn);
+      expect(boundEnv.get('APP_PUBLIC_URL')).toBe('https://comfy.acme.com');
+      expect(boundEnv.get('APP_PUBLIC_HOSTNAME')).toBe('comfy.acme.com');
+      expect(boundEnv.get('APP_BASE_URL')).toBe('https://comfy.acme.com');
+      expect(await appsRepository.getAppByUrn(appInfo.urn).then((row) => row?.pendingRestart)).toBe(false);
+
+      // Released in Companion Portal: the array is now empty, which is an instruction to unbind.
+      await syncReporting([]);
+      expect((await appsRepository.getAppByUrn(appInfo.urn))?.customDomain).toBeNull();
+
+      await appLifecycleService.restartApp({ appUrn: appInfo.urn, skipPull: true });
+      await waitFor(async () => {
+        expect((await appsRepository.getAppByUrn(appInfo.urn))?.status).toBe('running');
+      });
+
+      const revertedEnv = await readEnv(appInfo.urn);
+      expect(revertedEnv.get('APP_PUBLIC_URL')).toBe(`https://${platformHostname}`);
+      expect(revertedEnv.get('APP_BASE_URL')).toBe(`https://${platformHostname}`);
+    });
+
+    it('carries an install-time choice through to a bind, and only then to the env', async () => {
+      /*
+       * The whole install-time path, seam by seam — and the only test that proves
+       * `custom_domain_intent` exists after `migrate`.
+       *
+       * The choice cannot be honoured at install time: Companion Portal derives a
+       * domain's routing target from an `application` row, and at that moment it
+       * has never heard of this app. So it is recorded, asked for after the sync
+       * that registers the app, and reaches the env only once Companion Portal reports
+       * the hostname actually wired.
+       */
+      cloudflareClientService.fetchOrganizationCustomDomains.mockResolvedValue([
+        {
+          id: 'cd_1',
+          domain: 'comfy.acme.com',
+          state: 'parked',
+          bindable: true,
+          targetHostname: null,
+          boundAppSlug: null,
+          boundElsewhere: false,
+        },
+      ]);
+      cloudflareClientService.bindCustomDomain.mockResolvedValue({ ok: true });
+
+      const appInfo = await createAppInStore('test', { id: 'cdomain-intent' });
+
+      await appLifecycleService.installApp({ appUrn: appInfo.urn, form: { ...exposedForm, customDomain: 'comfy.acme.com' } });
+      await waitFor(async () => {
+        expect((await appsRepository.getAppByUrn(appInfo.urn))?.status).toBe('running');
+      });
+
+      const platformHostname = 'cdomain-intent-test-core2-acme.ci.test';
+      const installed = await appsRepository.getAppByUrn(appInfo.urn);
+
+      // Recorded as the choice — and NOT as the binding. The app is installed at
+      // its platform address, because that is the only address anyone has
+      // confirmed answers for it.
+      expect(installed?.customDomainIntent).toBe('comfy.acme.com');
+      expect(installed?.customDomain).toBeNull();
+      expect((await readEnv(appInfo.urn)).get('APP_PUBLIC_URL')).toBe(`https://${platformHostname}`);
+
+      // The sync registers the app with Companion Portal, and the bind pass then asks for
+      // the domain — by the app's subdomain, never by a hostname.
+      await syncReporting([]);
+
+      // The SAME subdomain the tunnel-state payload carries — `cdomain-intent-test`,
+      // not the app's name — because that is the string Companion Portal canonicalized
+      // into the `application` row it will resolve the target from.
+      expect(cloudflareClientService.bindCustomDomain).toHaveBeenCalledWith('cd_1', 'cdomain-intent-test', ORG.id);
+      // Still nothing in the env: a bind is Companion Portal moving the alias, not proof
+      // that the tunnel answers for it.
+      expect((await appsRepository.getAppByUrn(appInfo.urn))?.customDomain).toBeNull();
+
+      // The next sync reports it delivered, which is what binds the row.
+      await syncReporting([{ id: 'cd_1', domain: 'comfy.acme.com', targetHostname: platformHostname }]);
+
+      const bound = await appsRepository.getAppByUrn(appInfo.urn);
+      expect(bound?.customDomain).toBe('comfy.acme.com');
+      expect(bound?.pendingRestart).toBe(true);
+
+      await appLifecycleService.restartApp({ appUrn: appInfo.urn, skipPull: true });
+      await waitFor(async () => {
+        expect((await appsRepository.getAppByUrn(appInfo.urn))?.status).toBe('running');
+      });
+
+      expect((await readEnv(appInfo.urn)).get('APP_PUBLIC_URL')).toBe('https://comfy.acme.com');
+    });
+
+    it('takes a choice off the app that held it when another app claims it', async () => {
+      /*
+       * Against the real database, because the rule is enforced by a raw
+       * `lower(...)` comparison a mocked repository would happily pretend to run.
+       *
+       * A domain serves ONE app. Two rows naming it makes every sync a tug of
+       * war: whichever binds last takes it, the delivery reconcile unbinds the
+       * loser, the loser becomes a candidate again, and both apps carry a restart
+       * badge forever. The picker deliberately offers a domain that is already
+       * serving something, so the exclusivity has to be enforced where the choice
+       * is written.
+       */
+      /*
+       * The listing has to contain the domain being chosen. It always does in
+       * production — the picker is populated from this same endpoint — but the
+       * mock carries over from the case above, and a successful listing that
+       * omits a domain is (correctly) read as "the organization no longer holds
+       * it", which clears the choice.
+       */
+      cloudflareClientService.fetchOrganizationCustomDomains.mockResolvedValue([
+        {
+          id: 'cd_shared',
+          domain: 'shared.acme.com',
+          state: 'parked',
+          bindable: true,
+          targetHostname: null,
+          boundAppSlug: null,
+          boundElsewhere: false,
+        },
+      ]);
+      cloudflareClientService.bindCustomDomain.mockResolvedValue({ ok: true });
+
+      const first = await createAppInStore('test', { id: 'cdomain-first' });
+      const second = await createAppInStore('test', { id: 'cdomain-second' });
+
+      await appLifecycleService.installApp({ appUrn: first.urn, form: { ...exposedForm, customDomain: 'shared.acme.com' } });
+      await waitFor(async () => {
+        expect((await appsRepository.getAppByUrn(first.urn))?.status).toBe('running');
+      });
+
+      expect((await appsRepository.getAppByUrn(first.urn))?.customDomainIntent).toBe('shared.acme.com');
+
+      // Mixed case on the way in: DNS is case-insensitive, so the rule cannot be
+      // escaped by spelling the same name differently.
+      await appLifecycleService.installApp({ appUrn: second.urn, form: { ...exposedForm, customDomain: 'Shared.Acme.Com' } });
+      await waitFor(async () => {
+        expect((await appsRepository.getAppByUrn(second.urn))?.status).toBe('running');
+      });
+
+      // Normalized on the way in — DNS is case-insensitive, and every reader of
+      // the column (the exclusivity check, the bind pass, the picker's options)
+      // already is, so the row must be too.
+      expect((await appsRepository.getAppByUrn(second.urn))?.customDomainIntent).toBe('shared.acme.com');
+      expect((await appsRepository.getAppByUrn(first.urn))?.customDomainIntent).toBeNull();
+    });
+
+    it('leaves a bound app untouched when CI-Cloud predates custom domains', async () => {
+      const appInfo = await installExposed('cdomain-old');
+      const platformHostname = 'cdomain-old-test-core2-acme.ci.test';
+
+      await syncReporting([{ id: 'cd_1', domain: 'comfy.acme.com', targetHostname: platformHostname }]);
+      expect((await appsRepository.getAppByUrn(appInfo.urn))?.customDomain).toBe('comfy.acme.com');
+
+      // An older Portal sends no `customDomains` key at all. Reading that as
+      // "none" would take a live customer domain off the air.
+      await syncReporting(undefined);
+
+      expect((await appsRepository.getAppByUrn(appInfo.urn))?.customDomain).toBe('comfy.acme.com');
+    });
+  });
+});

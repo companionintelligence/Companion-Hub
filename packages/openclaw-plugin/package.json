@@ -1,0 +1,16 @@
+{
+  "name": "@ci-hub/openclaw-plugin",
+  "version": "1.0.0",
+  "description": "OpenClaw plugin for controlling CI-Hub via MCP",
+  "type": "module",
+  "main": "src/index.ts",
+  "scripts": {
+    "bundle": "node scripts/bundle-to-openclaw.mjs",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0",
+    "vitest": "^4.0.0"
+  }
+}

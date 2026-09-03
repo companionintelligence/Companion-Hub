@@ -1,0 +1,391 @@
+{
+  "version": "7",
+  "dialect": "postgresql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1731334056989,
+      "tag": "0000_sleepy_earthquake",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1731335935965,
+      "tag": "0001_crazy_vanisher",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1732529309886,
+      "tag": "0002_add-app-version",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1732529344918,
+      "tag": "0003_add-status-updating",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1732529372297,
+      "tag": "0004_add-exposed-domain-fields",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1732529416112,
+      "tag": "0005_add-user-operator",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1732529440403,
+      "tag": "0006_add-totp-user-fields",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1732529494219,
+      "tag": "0007_merge-config-with-domain-and-exposed",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1732529539686,
+      "tag": "0008_add-guest-dashboard",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1732529564105,
+      "tag": "0009_add-status-resetting",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1732529654682,
+      "tag": "0010_link-table-description",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1732529678975,
+      "tag": "0011_app-local-exposed",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1732529705065,
+      "tag": "0012_restarting-state",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1732529725697,
+      "tag": "0013_backingup-state",
+      "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1739029385015,
+      "tag": "0014_curly_jigsaw",
+      "breakpoints": true
+    },
+    {
+      "idx": 15,
+      "version": "7",
+      "when": 1739115204898,
+      "tag": "0015_first_gabe_jones",
+      "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1739115230952,
+      "tag": "0016_closed_enchantress",
+      "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1739115248605,
+      "tag": "0017_stale_maverick",
+      "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1739116677048,
+      "tag": "0018_low_sentinels",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1746211634455,
+      "tag": "0019_slow_loa",
+      "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1746346222904,
+      "tag": "0020_flimsy_orphan",
+      "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1746547130244,
+      "tag": "0021_mighty_molecule_man",
+      "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1746630488087,
+      "tag": "0022_unusual_redwing",
+      "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1746804095231,
+      "tag": "0023_petite_marauders",
+      "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1746894385320,
+      "tag": "0024_lovely_wolfsbane",
+      "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1750518801267,
+      "tag": "0025_stiff_devos",
+      "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1754571237126,
+      "tag": "0026_fair_lord_hawal",
+      "breakpoints": true
+    },
+    {
+      "idx": 27,
+      "version": "7",
+      "when": 1758128400070,
+      "tag": "0027_petite_dexter_bennett",
+      "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "7",
+      "when": 1760463258294,
+      "tag": "0028_eminent_tony_stark",
+      "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1762023575529,
+      "tag": "0029_lumpy_zeigeist",
+      "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "7",
+      "when": 1767004579154,
+      "tag": "0030_silly_colonel_america",
+      "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "7",
+      "when": 1767328130729,
+      "tag": "0031_majestic_nico_minoru",
+      "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1767953381937,
+      "tag": "0032_cloudy_tyrannus",
+      "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1768516908692,
+      "tag": "0033_known_quasar",
+      "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1768955590498,
+      "tag": "0034_tiresome_energizer",
+      "breakpoints": true
+    },
+    {
+      "idx": 35,
+      "version": "7",
+      "when": 1769477709720,
+      "tag": "0035_typical_lucky_pierre",
+      "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1771413000000,
+      "tag": "0036_add_exposure_mode",
+      "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "7",
+      "when": 1771534800000,
+      "tag": "0037_add_port_allocation",
+      "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1771862400000,
+      "tag": "0038_add_advanced_mode",
+      "breakpoints": true
+    },
+    {
+      "idx": 39,
+      "version": "7",
+      "when": 1772000000000,
+      "tag": "0039_add_onboarding",
+      "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "7",
+      "when": 1772200000000,
+      "tag": "0040_add_hub_subdomain",
+      "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "7",
+      "when": 1776595200000,
+      "tag": "0041_add_provisioning_phase",
+      "breakpoints": true
+    },
+    {
+      "idx": 42,
+      "version": "7",
+      "when": 1778800000000,
+      "tag": "0042_add_public_domain",
+      "breakpoints": true
+    },
+    {
+      "idx": 43,
+      "version": "7",
+      "when": 1780300000000,
+      "tag": "0043_install-failed-state",
+      "breakpoints": true
+    },
+    {
+      "idx": 44,
+      "version": "7",
+      "when": 1780400000000,
+      "tag": "0044_add_federated_identity",
+      "breakpoints": true
+    },
+    {
+      "idx": 45,
+      "version": "7",
+      "when": 1780500000000,
+      "tag": "0045_add_api_keys",
+      "breakpoints": true
+    },
+    {
+      "idx": 46,
+      "version": "7",
+      "when": 1780510000000,
+      "tag": "0046_api_key_audience_scoped_index",
+      "breakpoints": true
+    },
+    {
+      "idx": 47,
+      "version": "7",
+      "when": 1780520000000,
+      "tag": "0047_add_memory_connection",
+      "breakpoints": true
+    },
+    {
+      "idx": 48,
+      "version": "7",
+      "when": 1780530000000,
+      "tag": "0048_api_key_scopes",
+      "breakpoints": true
+    },
+    {
+      "idx": 49,
+      "version": "7",
+      "when": 1780540000000,
+      "tag": "0049_api_key_capability",
+      "breakpoints": true
+    },
+    {
+      "idx": 50,
+      "version": "7",
+      "when": 1780550000000,
+      "tag": "0050_api_key_capability_check",
+      "breakpoints": true
+    },
+    {
+      "idx": 51,
+      "version": "7",
+      "when": 1780560000000,
+      "tag": "0051_app_name_store_unique",
+      "breakpoints": true
+    },
+    {
+      "idx": 52,
+      "version": "7",
+      "when": 1780570000000,
+      "tag": "0052_host_telemetry",
+      "breakpoints": true
+    },
+    {
+      "idx": 53,
+      "version": "7",
+      "when": 1780580000000,
+      "tag": "0053_app_custom_domain",
+      "breakpoints": true
+    },
+    {
+      "idx": 54,
+      "version": "7",
+      "when": 1780590000000,
+      "tag": "0054_app_custom_domain_intent",
+      "breakpoints": true
+    }
+  ]
+}

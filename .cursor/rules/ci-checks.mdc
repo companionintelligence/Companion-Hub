@@ -1,0 +1,64 @@
+---
+description: Run CI checks before finishing CI-Hub changes
+alwaysApply: true
+---
+
+# CI-Hub verification
+
+Before marking work complete, run the **end-of-shift gate** (same checks as CI plus optional agent gates):
+
+```bash
+bin/agent-validate-shift
+# or: pnpm run agent:validate
+```
+
+## Required checks (full change)
+
+The validate script runs:
+
+```bash
+pnpm run lint:ci
+pnpm run tsc
+pnpm run test
+pnpm run check:openapi   # skip with --skip-openapi for docs-only
+```
+
+Do not skip these after editing TypeScript, React, backend, or shared packages.
+
+## Scoped checks (when appropriate)
+
+When the diff is limited to one package, run that package's checks first, then the full suite if anything shared changed:
+
+```bash
+# frontend only
+pnpm --filter frontend run test
+
+# backend only
+pnpm --filter backend run test
+```
+
+## When to run
+
+- After implementing a feature or bug fix
+- After refactoring that touches types, imports, or test mocks
+- Before telling the user the task is done
+
+## On failure
+
+1. Read the full error output (including Vitest "Unhandled Errors")
+2. Fix the root cause — do not silence errors without fixing behavior
+3. Re-run the failing command until it passes
+4. Report which commands were run and that they passed
+
+## Common pitfalls
+
+- Test mocks for callbacks must match real component signatures (e.g. `InstallStep.onComplete` receives an `InstallSummary`, not zero args)
+- Vitest can report 256 passed tests but still exit 1 due to unhandled promise rejections — treat `Errors: 1 error` as a failure
+- Use `vi.hoisted` + `vi.mock` for module mocks — not `vi.spyOn` on already-imported modules
+- No non-null assertions (`!`) — Biome `noNonNullAssertion` fails CI
+- See [docs/agent/CODING_CONVENTIONS.md](../../docs/agent/CODING_CONVENTIONS.md)
+
+## Agent workflow
+
+- Start: [AGENTS.md](../../AGENTS.md) → [docs/agent/AGENT_WORKFLOW.md](../../docs/agent/AGENT_WORKFLOW.md)
+- Review before PR: `bin/agent-review --phase wrap --persona security`

@@ -1,0 +1,66 @@
+[package]
+name = "ci-os-hub-desktop"
+version = "0.2.61"
+description = "Desktop app for managing and accessing the Companion Intelligence Hub"
+authors = ["Companion Intelligence"]
+edition = "2021"
+license-file = "../../../LICENSE.md"
+readme = "../README.md"
+homepage = "https://ci.computer"
+repository = "https://github.com/companionintelligence"
+
+[lib]
+name = "ci_os_hub_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon", "image-png", "devtools"] }
+tauri-plugin-notification = "2"
+tauri-plugin-store = "2"
+chrono = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+reqwest = { version = "0.12", features = ["json", "blocking"] }
+sha2 = "0.10"
+tokio = { version = "1", features = ["full"] }
+mdns-sd = "0.11"
+log = "0.4"
+env_logger = "0.11"
+dirs = "5"
+rand = "0.8"
+sentry = { version = "0.36", default-features = false, features = ["backtrace", "contexts", "panic", "reqwest", "rustls"] }
+# Already in the tree transitively; promoted to a direct dependency so the
+# Sentry payload scrubber can share the JS twins' patterns verbatim.
+regex = "1"
+tauri-plugin-os = "2.3.2"
+tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
+tauri-plugin-deep-link = "2"
+tempfile = "3"
+tauri-plugin-opener = "2"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+# tauri-plugin-updater removed — full installers from dl.ci.computer via updater.rs
+
+# `panic = "unwind"` (the Rust default) is deliberate: background work runs in
+# `tokio::task::spawn_blocking` and tray/menu callbacks, and the recovery code
+# in main.rs / tray.rs relies on panics unwinding so a panic in one operation is
+# caught and logged instead of aborting the whole desktop app. `panic = "abort"`
+# would turn any stray panic into an instant process kill and make that
+# recovery code dead. Keep the size optimizations below.
+[profile.release]
+panic = "unwind"
+codegen-units = 1
+lto = true
+opt-level = "s"
+strip = true
+
+# Tauri 2 Linux is pinned to GTK3 / glib 0.18.5. Upstream only patched glib
+# 0.20+ (GHSA-wrw7-89jp-8q8g). See third_party/glib-0.18.5/PROVENANCE.md.
+[patch.crates-io]
+glib = { path = "../../../third_party/glib-0.18.5" }

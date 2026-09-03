@@ -1,0 +1,250 @@
+import fs from 'node:fs';
+import os, { EOL } from 'node:os';
+import path from 'node:path';
+import { APP_DATA_DIR, APP_DIR, DATA_DIR } from '@/common/constants';
+import { resolveContainerDataPath } from '@/common/helpers/container-paths';
+import { LoggerService } from '@/core/logger/logger.service';
+import { Injectable } from '@nestjs/common';
+import type { z } from 'zod';
+
+@Injectable()
+export class FilesystemService {
+  constructor(private readonly logger: LoggerService) {}
+
+  public getSafeFilePath(filePath: string): string {
+    // Define allowed directories as absolute paths
+    const allowedDirs = [path.resolve(APP_DIR), path.resolve(APP_DATA_DIR), path.resolve(DATA_DIR), os.tmpdir()];
+    // /host/proc is Linux-only (Docker host /proc mount)
+    if (process.platform !== 'win32') {
+      allowedDirs.push(path.resolve('/host/proc/'));
+      allowedDirs.push(path.resolve('/dev/kfd'));
+      allowedDirs.push(path.resolve('/dev/dri'));
+    }
+
+    // Resolve container `/data/...` paths to DATA_DIR when running outside Docker.
+    const resolvedPath = resolveContainerDataPath(filePath);
+
+    for (const dir of allowedDirs) {
+      const rel = path.relative(dir, resolvedPath);
+      // On Windows, path.relative across drive letters returns an absolute path (e.g. "D:\...")
+      // which doesn't start with ".." but is clearly not contained. Check that the relative path
+      // is not absolute and doesn't escape with "..".
+      if (path.isAbsolute(rel) || rel.startsWith('..')) {
+        continue;
+      }
+
+      return resolvedPath;
+    }
+
+    this.logger.error(`File path "${filePath}" is not allowed. Resolved: "${resolvedPath}"`);
+    throw new Error('File path is not allowed');
+  }
+
+  async readJsonFile<T extends object>(filePath: string, schema?: z.ZodType<T>): Promise<T | null> {
+    try {
+      const fileContent = await fs.promises.readFile(this.getSafeFilePath(filePath), 'utf8');
+      const parsedContent = JSON.parse(fileContent);
+
+      if (schema) {
+        const validatedContent = schema.safeParse(parsedContent);
+        if (!validatedContent.success) {
+          this.logger.debug(`File ${filePath} validation error:`, validatedContent.error);
+          return null;
+        }
+        return validatedContent.data;
+      }
+
+      return parsedContent;
+    } catch (error) {
+      this.logger.debug(`Error reading file ${filePath}:`, error);
+      return null;
+    }
+  }
+
+  async readTextFile(filePath: string): Promise<string | null> {
+    try {
+      return await fs.promises.readFile(this.getSafeFilePath(filePath), 'utf8');
+    } catch (error) {
+      this.logger.debug(`Error reading file ${filePath}:`, error);
+      return null;
+    }
+  }
+
+  async readBinaryFile(filePath: string): Promise<Buffer | null> {
+    try {
+      return await fs.promises.readFile(this.getSafeFilePath(filePath));
+    } catch (error) {
+      this.logger.debug(`Error reading file ${filePath}:`, error);
+      return null;
+    }
+  }
+
+  async writeJsonFile<T>(filePath: string, data: T): Promise<boolean> {
+    try {
+      await fs.promises.writeFile(this.getSafeFilePath(filePath), `${JSON.stringify(data, null, 2)}${EOL}`, 'utf8');
+      return true;
+    } catch (error) {
+      this.logger.error(`Error writing file ${filePath}:`, error);
+      return false;
+    }
+  }
+
+  async writeTextFile(filePath: string, content: string): Promise<boolean> {
+    try {
+      await fs.promises.mkdir(this.getSafeFilePath(path.dirname(filePath)), { recursive: true });
+      await fs.promises.writeFile(this.getSafeFilePath(filePath), `${content}${EOL}`, 'utf8');
+      return true;
+    } catch (error) {
+      this.logger.error(`Error writing file ${filePath}:`, error);
+      return false;
+    }
+  }
+
+  async writeBinaryFile(filePath: string, data: Buffer): Promise<boolean> {
+    try {
+      await fs.promises.mkdir(this.getSafeFilePath(path.dirname(filePath)), { recursive: true });
+      await fs.promises.writeFile(this.getSafeFilePath(filePath), data);
+      return true;
+    } catch (error) {
+      this.logger.error(`Error writing binary file ${filePath}:`, error);
+      return false;
+    }
+  }
+
+  async pathExists(filePath: string): Promise<boolean> {
+    return fs.promises
+      .access(this.getSafeFilePath(filePath))
+      .then(() => true)
+      .catch(() => false);
+  }
+
+  async copyFile(src: string, dest: string): Promise<boolean> {
+    try {
+      await fs.promises.copyFile(this.getSafeFilePath(src), this.getSafeFilePath(dest));
+      return true;
+    } catch (error) {
+      this.logger.error(`Error copying file from ${src} to ${dest}:`, error);
+      return false;
+    }
+  }
+
+  async createDirectory(dirPath: string): Promise<boolean> {
+    try {
+      // Always validate the path for safety
+      const safePath = this.getSafeFilePath(dirPath);
+      await fs.promises.mkdir(safePath, { recursive: true });
+      return true;
+    } catch (error) {
+      this.logger.error(`Error creating directory ${dirPath}:`, error);
+      return false;
+    }
+  }
+
+  async createDirectories(dirPaths: string[]): Promise<boolean> {
+    try {
+      // Create directories in parallel for better performance
+      const createPromises = dirPaths.map(async (dirPath, index) => {
+        try {
+          const safePath = this.getSafeFilePath(dirPath);
+          this.logger.debug(`Creating directory ${index + 1}/${dirPaths.length}: ${safePath}`);
+          await fs.promises.mkdir(safePath, { recursive: true });
+          this.logger.debug(`Successfully created directory: ${safePath}`);
+          return true;
+        } catch (error) {
+          this.logger.error(`Failed to create directory ${dirPath}:`, error);
+          return false;
+        }
+      });
+
+      this.logger.debug(`Starting creation of ${dirPaths.length} directories in parallel`);
+      const results = await Promise.all(createPromises);
+      const successCount = results.filter((r) => r === true).length;
+      this.logger.debug(`Created ${successCount}/${dirPaths.length} directories successfully`);
+      return results.every((result) => result === true);
+    } catch (error) {
+      this.logger.error(`Error in createDirectories: ${error}`);
+      return false;
+    }
+  }
+
+  async copyDirectory(src: string, dest: string, options: fs.CopyOptions = {}): Promise<boolean> {
+    try {
+      await fs.promises.cp(this.getSafeFilePath(src), this.getSafeFilePath(dest), { recursive: true, ...options });
+      return true;
+    } catch (error) {
+      this.logger.error(`Error copying directory from ${src} to ${dest}:`, error);
+      return false;
+    }
+  }
+
+  async removeDirectory(dirPath: string): Promise<boolean> {
+    return (await this.removeDirectoryDetailed(dirPath)).removed;
+  }
+
+  /**
+   * Like {@link removeDirectory}, but tells the caller WHY a delete failed so it can
+   * escalate. `permissionDenied` (EACCES/EPERM/EBUSY) is the signature of a path a
+   * container created as root that the non-root Hub process cannot remove (e.g.
+   * MinIO's `.minio.sys`); the uninstall path uses it to fall back to a privileged
+   * cleanup. `force: true` means a missing dir is still a success (`removed: true`).
+   */
+  async removeDirectoryDetailed(dirPath: string): Promise<{ removed: boolean; permissionDenied: boolean }> {
+    try {
+      await fs.promises.rm(this.getSafeFilePath(dirPath), { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+      return { removed: true, permissionDenied: false };
+    } catch (error) {
+      this.logger.error(`Error removing directory ${dirPath}:`, error);
+      const code = (error as NodeJS.ErrnoException | undefined)?.code;
+      return { removed: false, permissionDenied: code === 'EACCES' || code === 'EPERM' || code === 'EBUSY' };
+    }
+  }
+
+  async removeFile(filePath: string): Promise<boolean> {
+    try {
+      await fs.promises.unlink(this.getSafeFilePath(filePath));
+      return true;
+    } catch (error) {
+      this.logger.error(`Error removing file ${filePath}:`, error);
+      return false;
+    }
+  }
+
+  async listFiles(dirPath: string): Promise<string[]> {
+    try {
+      return await fs.promises.readdir(this.getSafeFilePath(dirPath));
+    } catch (error) {
+      this.logger.error(`Error listing files in ${dirPath}:`, error);
+      return [];
+    }
+  }
+
+  async isDirectory(dirPath: string): Promise<boolean> {
+    return (await fs.promises.lstat(this.getSafeFilePath(dirPath))).isDirectory();
+  }
+
+  async createTempDirectory(prefix: string): Promise<string | null> {
+    return fs.promises.mkdtemp(prefix);
+  }
+
+  async getStats(filePath: string) {
+    return await fs.promises.stat(this.getSafeFilePath(filePath));
+  }
+
+  /**
+   * Open a read stream over an allowed path, optionally for a byte range.
+   * Prefer this over `readBinaryFile` for anything large enough to matter (media, archives) so the
+   * whole payload never has to sit in the appliance's heap.
+   */
+  public createReadStream(filePath: string, options?: { start?: number; end?: number }): fs.ReadStream {
+    return fs.createReadStream(this.getSafeFilePath(filePath), options);
+  }
+
+  async getFileEtag(filePath: string): Promise<string | null> {
+    try {
+      const stats = await this.getStats(filePath);
+      return `"${stats.size.toString(16)}-${stats.mtime.getTime().toString(16)}"`;
+    } catch {
+      return null;
+    }
+  }
+}

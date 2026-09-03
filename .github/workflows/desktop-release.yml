@@ -1,0 +1,680 @@
+name: Desktop Release
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (e.g. v0.2.27)'
+        required: true
+        type: string
+      prerelease:
+        description: 'Mark as pre-release'
+        required: false
+        default: true
+        type: boolean
+      environment:
+        description: 'Cloud target'
+        required: false
+        default: 'dev'
+        type: choice
+        options:
+          - dev
+          - production
+      platforms:
+        description: 'Platforms to build'
+        required: false
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - macos-only
+concurrency:
+  group: desktop-release
+  cancel-in-progress: false
+jobs:
+  build-container:
+    name: Build Hub Container
+    uses: ./.github/workflows/build-container.yml
+    with:
+      environment: ${{ inputs.environment }}
+      # Thread the release tag so a production release publishes a versioned image at the
+      # exact reference these desktop bundles compile in via CI_HUB_BUILD_VERSION. Without
+      # this the bundles pinned a tag no workflow ever pushed and could not start (#920).
+      # build-container publishes a versioned tag for production only.
+      tag: ${{ inputs.tag }}
+    secrets: inherit
+
+  build:
+    needs: build-container
+    permissions:
+      contents: read
+      id-token: write
+      packages: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest
+            target: aarch64-apple-darwin
+            label: macOS (Apple Silicon)
+          - platform: macos-latest
+            target: x86_64-apple-darwin
+            label: macOS (Intel)
+          - platform: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            label: Linux (x64)
+          - platform: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
+            label: Linux (ARM64)
+          - platform: windows-latest
+            target: x86_64-pc-windows-msvc
+            label: Windows (x64)
+          - platform: windows-11-arm
+            target: aarch64-pc-windows-msvc
+            label: Windows (ARM64)
+    name: Build — ${{ matrix.label }}
+    runs-on: ${{ matrix.platform }}
+    # Signing secrets + Azure OIDC federated credentials live on the `production`
+    # GitHub Environment only. Cloud targeting (Portal URL, image channel, CDN) still
+    # comes from `inputs.environment` below — do not conflate the two. Selecting
+    # environment=dev previously pulled the incomplete/stale `dev` Environment
+    # secrets (no Azure Artifact Signing; bad APPLE_PASSWORD) and failed notarization
+    # / Windows signing while production releases succeeded with the same workflow.
+    environment: production
+    timeout-minutes: 45
+    env:
+      APPLE_SIGNING_CONFIGURED: ${{ secrets.APPLE_CERTIFICATE != '' && 'true' || '' }}
+      # Notarization is a separate post-build step (notarytool on the DMG). Do not pass
+      # APPLE_ID/PASSWORD/TEAM_ID to `tauri build` — Tauri would notarize inline and
+      # fail the whole bundle when credentials are wrong.
+      APPLE_NOTARIZATION_CONFIGURED: ${{ secrets.APPLE_ID != '' && secrets.APPLE_PASSWORD != '' && secrets.APPLE_TEAM_ID != '' && 'true' || '' }}
+      # Sentry symbol/sourcemap upload runs only when SENTRY_AUTH_TOKEN is set, and
+      # also needs repo/org variables SENTRY_ORG, SENTRY_FRONTEND_PROJECT and
+      # SENTRY_DESKTOP_PROJECT. Uploads are best-effort (continue-on-error) and
+      # never fail a release.
+      SENTRY_SYMBOLS_ENABLED: ${{ secrets.SENTRY_AUTH_TOKEN != '' && 'true' || '' }}
+      # Windows signing uses GitHub OIDC + Azure login + Azure Artifact Signing.
+      # Required secrets on the production Environment: AZURE_TENANT_ID, AZURE_CLIENT_ID,
+      # AZURE_SUBSCRIPTION_ID, AZURE_SIGNING_ENDPOINT, AZURE_SIGNING_ACCOUNT,
+      # AZURE_CERTIFICATE_PROFILE. OIDC subject: environment:production.
+      WINDOWS_SIGNING_CONFIGURED: ${{ secrets.AZURE_TENANT_ID != '' && secrets.AZURE_CLIENT_ID != '' && secrets.AZURE_SUBSCRIPTION_ID != '' && secrets.AZURE_SIGNING_ENDPOINT != '' && secrets.AZURE_SIGNING_ACCOUNT != '' && secrets.AZURE_CERTIFICATE_PROFILE != '' && 'true' || '' }}
+      BUILD_ENABLED: ${{ (inputs.platforms == 'all' || startsWith(matrix.label, 'macOS')) && 'true' || '' }}
+    steps:
+      - name: Checkout
+        if: env.BUILD_ENABLED
+        uses: actions/checkout@v6
+        with:
+          submodules: false
+      - name: Install Rust (stable)
+        if: env.BUILD_ENABLED
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Rust cache
+        if: env.BUILD_ENABLED
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: packages/desktop/src-tauri -> target
+      - name: Install Linux dependencies
+        if: env.BUILD_ENABLED && runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            pkg-config \
+            curl \
+            wget \
+            file \
+            libssl-dev \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libxdo-dev \
+            patchelf \
+            libfuse2 \
+            rpm \
+            xdg-utils
+      - name: Install pnpm
+        if: env.BUILD_ENABLED
+        uses: pnpm/action-setup@v6
+
+      - name: Install Node.js
+        if: env.BUILD_ENABLED
+        uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+          registry-url: 'https://npm.pkg.github.com'
+          scope: '@companionintelligence'
+      - name: Install Bun
+        if: env.BUILD_ENABLED
+        uses: oven-sh/setup-bun@v2
+      - name: Install dependencies
+        if: env.BUILD_ENABLED
+        run: pnpm install --frozen-lockfile
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Set environment config
+        if: env.BUILD_ENABLED
+        shell: bash
+        run: |
+          # Bake Portal/cloud URLs into the desktop binary (hub_env.rs). Product UI is
+          # served from the Hub stack container — see packages/desktop/bootstrap/.
+          if [ "${{ inputs.environment }}" = "production" ]; then
+            {
+              echo "CI_CLOUD_URL=https://hub.ci.computer"
+              echo "CI_HUB_CLOUD_URL=https://hub.ci.computer"
+              echo "CI_HUB_DOMAIN=companionintelligence.com"
+            } >> "$GITHUB_ENV"
+          else
+            {
+              echo "CI_CLOUD_URL=https://hub.companionintelligence.com"
+              echo "CI_HUB_CLOUD_URL=https://hub.companionintelligence.com"
+              echo "CI_HUB_DOMAIN=companionintelligence.com"
+            } >> "$GITHUB_ENV"
+          fi
+          {
+            echo "CI_HUB_ENVIRONMENT=${{ inputs.environment }}"
+            echo "CI_HUB_BUILD_VERSION=${{ inputs.tag }}"
+          } >> "$GITHUB_ENV"
+          echo "Cloud target: ${{ inputs.environment }} (CI_CLOUD_URL will be baked from GITHUB_ENV)"
+      - name: Build standalone Companion Hub CLI
+        if: env.BUILD_ENABLED
+        shell: bash
+        run: |
+          CLI_OUT="packages/desktop/src-tauri/resources/cihub"
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            CLI_OUT="${CLI_OUT}.exe"
+          fi
+          node scripts/build-standalone-cli.cjs --target "${{ matrix.target }}" --outfile "$CLI_OUT" --bundle-resource
+          ls -lh "$CLI_OUT"
+      - name: Bump Tauri version to match release tag
+        if: env.BUILD_ENABLED
+        shell: bash
+        run: |
+          SEMVER="${{ inputs.tag }}"
+          SEMVER="${SEMVER#v}"
+          echo "Setting Tauri version to $SEMVER"
+          # Update tauri.conf.json
+          cd packages/desktop
+          node -e "
+            const fs = require('fs');
+            const conf = JSON.parse(fs.readFileSync('src-tauri/tauri.conf.json', 'utf8'));
+            conf.version = '$SEMVER';
+            fs.writeFileSync('src-tauri/tauri.conf.json', JSON.stringify(conf, null, 2) + '\n');
+          "
+          # Update Cargo.toml
+          sed -i'' -e 's/^version = ".*"/version = "'"$SEMVER"'"/' src-tauri/Cargo.toml
+          echo "tauri.conf.json: $(node -e "console.log(JSON.parse(require('fs').readFileSync('src-tauri/tauri.conf.json','utf8')).version)")"
+          echo "Cargo.toml: $(grep '^version' src-tauri/Cargo.toml | head -1)"
+      # ── macOS Code Signing ──────────────────────────────────────────
+      # A green macOS release must mean a Developer ID signed AND notarized DMG.
+      # Fail fast (before building) if either the signing or notarization secrets
+      # are missing for this environment, instead of silently shipping an ad-hoc
+      # signed / unnotarized DMG that Gatekeeper refuses to open.
+      - name: Require macOS signing + notarization secrets
+        if: env.BUILD_ENABLED && runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          missing=()
+          [ -n "${APPLE_SIGNING_CONFIGURED:-}" ] || missing+=("APPLE_CERTIFICATE + APPLE_CERTIFICATE_PASSWORD")
+          [ -n "${APPLE_NOTARIZATION_CONFIGURED:-}" ] || missing+=("APPLE_ID + APPLE_PASSWORD + APPLE_TEAM_ID")
+          if [ "${#missing[@]}" -gt 0 ]; then
+            echo "::error::macOS release requires Developer ID signing and notarization secrets on the 'production' GitHub Environment (signing is not tied to the cloud target). Missing: ${missing[*]}"
+            echo "::error::A green macOS release guarantees a signed + notarized DMG, so this build is failing instead of shipping an unsigned/unnotarized artifact."
+            exit 1
+          fi
+          echo "macOS signing + notarization secrets are present (production Environment)."
+      # ── Windows Code Signing preflight ───────────────────────────────
+      # Fail before the long Tauri compile if Azure Artifact Signing secrets are
+      # missing from the production Environment. Actual signing still runs after
+      # the bundle exists (Prepare / Azure login / Sign steps below).
+      - name: Require Windows signing secrets
+        if: env.BUILD_ENABLED && runner.os == 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${WINDOWS_SIGNING_CONFIGURED:-}" ]; then
+            echo "::error::Windows release requires all six Azure Artifact Signing secrets on the 'production' GitHub Environment (OIDC subject environment:production): AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_SUBSCRIPTION_ID, AZURE_SIGNING_ENDPOINT, AZURE_SIGNING_ACCOUNT, AZURE_CERTIFICATE_PROFILE."
+            echo "::error::A green Windows release guarantees Authenticode-signed installers, so this build is failing instead of shipping unsigned artifacts."
+            exit 1
+          fi
+          echo "Windows signing secrets are present (production Environment)."
+      - name: Import Apple certificate
+        if: env.BUILD_ENABLED && runner.os == 'macOS' && env.APPLE_SIGNING_CONFIGURED
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          echo "$APPLE_CERTIFICATE" | base64 --decode > certificate.p12
+          KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
+          KEYCHAIN_PASSWORD=$(openssl rand -hex 24)
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import certificate.p12 -k "$KEYCHAIN_PATH" -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH" login.keychain-db
+          rm certificate.p12
+          echo "APPLE_KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
+          echo "APPLE_KEYCHAIN_PASSWORD=$KEYCHAIN_PASSWORD" >> "$GITHUB_ENV"
+      - name: Resolve Apple signing identity
+        if: env.BUILD_ENABLED && runner.os == 'macOS' && env.APPLE_SIGNING_CONFIGURED
+        shell: bash
+        env:
+          APPLE_SIGNING_IDENTITY_SECRET: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: |
+          set -euo pipefail
+          KEYCHAIN_PATH="${APPLE_KEYCHAIN_PATH:-$RUNNER_TEMP/app-signing.keychain-db}"
+          security unlock-keychain -p "$APPLE_KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+          identities=()
+          while IFS= read -r line; do
+            identities+=("$line")
+          done < <(
+            security find-identity -v -p codesigning "$KEYCHAIN_PATH" \
+              | sed -En 's/^[[:space:]]*[0-9]+\) [A-Fa-f0-9]{40} "(.*)"$/\1/p'
+          )
+
+          if [ ${#identities[@]} -eq 0 ]; then
+            echo "::error::No codesigning identities found in $KEYCHAIN_PATH"
+            security find-identity -v -p codesigning "$KEYCHAIN_PATH" || true
+            exit 1
+          fi
+
+          chosen=""
+          if [ -n "${APPLE_SIGNING_IDENTITY_SECRET:-}" ]; then
+            for id in "${identities[@]}"; do
+              if [ "$id" = "$APPLE_SIGNING_IDENTITY_SECRET" ]; then
+                chosen="$id"
+                break
+              fi
+            done
+            if [ -z "$chosen" ]; then
+              echo "::warning::APPLE_SIGNING_IDENTITY secret does not match any imported identity; using best match from keychain"
+            fi
+          fi
+
+          if [ -z "$chosen" ]; then
+            for id in "${identities[@]}"; do
+              if [[ "$id" == Developer\ ID\ Application:* ]]; then
+                chosen="$id"
+                break
+              fi
+            done
+          fi
+
+          if [ -z "$chosen" ]; then
+            chosen="${identities[0]}"
+          fi
+
+          echo "Using Apple signing identity: $chosen"
+          echo "APPLE_SIGNING_IDENTITY=$chosen" >> "$GITHUB_ENV"
+      - name: Sign bundled macOS CLI resource
+        if: env.BUILD_ENABLED && runner.os == 'macOS' && env.APPLE_SIGNING_CONFIGURED
+        shell: bash
+        run: |
+          security unlock-keychain -p "$APPLE_KEYCHAIN_PASSWORD" "$APPLE_KEYCHAIN_PATH"
+          CLI_OUT="packages/desktop/src-tauri/resources/cihub"
+          chmod 755 "$CLI_OUT"
+          codesign --force --sign "$APPLE_SIGNING_IDENTITY" --timestamp --options runtime "$CLI_OUT"
+          codesign --verify --verbose=2 "$CLI_OUT"
+      - name: Install create-dmg
+        if: env.BUILD_ENABLED && runner.os == 'macOS'
+        run: brew install create-dmg
+      - name: Build Tauri app (signed)
+        if: env.BUILD_ENABLED && runner.os == 'macOS' && env.APPLE_SIGNING_CONFIGURED
+        env:
+          # Fail the release if platform-gated helpers regress to dead_code on macOS.
+          RUSTFLAGS: '-D dead_code'
+          # Force the styled DMG layout (background image + drag-to-Applications icon
+          # positions). Without this, CI=true makes tauri-bundler skip the Finder
+          # AppleScript layout and ship a plain DMG (tauri#592). That AppleScript step can
+          # transiently time out on macos-latest (tauri-action#1091), so the build is
+          # wrapped in retry_build below to re-attempt the bundle.
+          TAURI_BUNDLER_DMG_IGNORE_CI: 'true'
+          # macOS codesign only — Tauri reads APPLE_SIGNING_IDENTITY automatically.
+          # Notarization runs later via notarytool on the DMG (see Notarize macOS DMG).
+          APPLE_SIGNING_IDENTITY: ${{ env.APPLE_SIGNING_IDENTITY }}
+          SENTRY_DESKTOP_DSN: ${{ secrets.SENTRY_DESKTOP_DSN }}
+        shell: bash
+        run: |
+          cd packages/desktop
+          base_args=(--target "${{ matrix.target }}" -c '{"bundle":{"createUpdaterArtifacts":false}}')
+
+          retry_build() {
+            local attempts=5 attempt backoff
+            for attempt in $(seq 1 "$attempts"); do
+              if npx --yes @tauri-apps/cli@2 build "$@"; then
+                return 0
+              fi
+              if [[ "$attempt" -eq "$attempts" ]]; then
+                echo "::error::tauri build failed after ${attempts} attempts: $*" >&2
+                return 1
+              fi
+              backoff=$((attempt * 20))
+              echo "::warning::tauri build failed (attempt ${attempt}/${attempts}); retrying in ${backoff}s" >&2
+              sleep "$backoff"
+            done
+          }
+
+          retry_build "${base_args[@]}"
+
+      - name: Build Tauri app
+        if: env.BUILD_ENABLED && (runner.os != 'macOS' || env.APPLE_SIGNING_CONFIGURED != 'true')
+        env:
+          RUSTFLAGS: ${{ runner.os == 'macOS' && '-D dead_code' || '' }}
+          # Force the styled DMG layout on macOS (see signed macOS build step). Retried below.
+          TAURI_BUNDLER_DMG_IGNORE_CI: ${{ runner.os == 'macOS' && 'true' || '' }}
+          # Ad-hoc sign on macOS when no Apple certificate is configured
+          APPLE_SIGNING_IDENTITY: ${{ runner.os == 'macOS' && '-' || '' }}
+          SENTRY_DESKTOP_DSN: ${{ secrets.SENTRY_DESKTOP_DSN }}
+        shell: bash
+        run: |
+          cd packages/desktop
+          base_args=(--target "${{ matrix.target }}" -c '{"bundle":{"createUpdaterArtifacts":false}}')
+
+          # Tauri downloads external bundling tools from GitHub at bundle time
+          # (linuxdeploy/AppRun for the Linux AppImage, the WiX toolset for the
+          # Windows MSI) and routinely hits transient HTTP 5xx (e.g. 504), which
+          # previously failed the whole release. Retry the bundle step; the Rust
+          # compile is already cached, so each retry only re-attempts the
+          # download/bundle, and a genuine outage still fails after retries.
+          retry_build() {
+            local attempts=5 attempt backoff
+            for attempt in $(seq 1 "$attempts"); do
+              if npx --yes @tauri-apps/cli@2 build "$@"; then
+                return 0
+              fi
+              if [[ "$attempt" -eq "$attempts" ]]; then
+                echo "::error::tauri build failed after ${attempts} attempts: $*" >&2
+                return 1
+              fi
+              backoff=$((attempt * 20))
+              echo "::warning::tauri build failed (attempt ${attempt}/${attempts}); retrying in ${backoff}s" >&2
+              sleep "$backoff"
+            done
+          }
+
+          if [[ "${{ runner.os }}" == "Linux" ]]; then
+            # The required Linux desktop release artifacts are deb/rpm only.
+            # AppImage is excluded here because linuxdeploy on GitHub ARM runners
+            # is flaky enough to break otherwise successful ARM64 releases.
+            npx --yes @tauri-apps/cli@2 build "${base_args[@]}" -b deb,rpm
+            sh scripts/patch-deb-maintainer-scripts.sh
+          else
+            retry_build "${base_args[@]}"
+          fi
+      # ── macOS Notarization ──────────────────────────────────────────
+      # Always fatal on failure (no continue-on-error), for every environment.
+      # A notarization failure means the DMG would not open off the internet, so
+      # the release must go red rather than green.
+      - name: Notarize macOS DMG
+        if: env.BUILD_ENABLED && runner.os == 'macOS' && env.APPLE_NOTARIZATION_CONFIGURED
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          DMG_PATH=$(find packages/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/dmg -name "*.dmg" | head -1)
+          if [ -z "$DMG_PATH" ]; then
+            echo "::error::No DMG found to notarize"
+            exit 1
+          fi
+          echo "Notarizing $DMG_PATH..."
+          if ! xcrun notarytool submit "$DMG_PATH" \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
+            --wait --timeout 600; then
+            echo "::error::Apple notarization failed (check APPLE_ID, app-specific APPLE_PASSWORD, and APPLE_TEAM_ID on the production GitHub Environment)"
+            exit 1
+          fi
+          xcrun stapler staple "$DMG_PATH"
+          echo "✅ Notarization complete"
+      # Encode "green == properly signed" as an explicit gate: the DMG must be
+      # accepted by Gatekeeper as a Notarized Developer ID artifact and carry a
+      # stapled ticket. This catches ad-hoc signing, missed stapling, or a
+      # notarytool "success" that did not actually produce an openable DMG.
+      - name: Verify macOS DMG is signed & notarized
+        if: env.BUILD_ENABLED && runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          DMG_PATH=$(find packages/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/dmg -name "*.dmg" | head -1)
+          if [ -z "$DMG_PATH" ]; then
+            echo "::error::No DMG found to verify"
+            exit 1
+          fi
+          echo "Verifying $DMG_PATH"
+          if ! spctl -a -vvv -t open --context context:primary-signature "$DMG_PATH" 2>&1 | tee /tmp/spctl-dmg.txt; then
+            echo "::error::Gatekeeper rejected the DMG — it is not properly signed/notarized"
+            exit 1
+          fi
+          if ! grep -q "source=Notarized Developer ID" /tmp/spctl-dmg.txt; then
+            echo "::error::DMG is not a Notarized Developer ID artifact"
+            exit 1
+          fi
+          xcrun stapler validate "$DMG_PATH"
+          echo "✅ DMG is Developer ID signed, notarized, and stapled"
+      # ── Windows Code Signing (Azure Artifact Signing via GitHub OIDC) ──
+      # See docs/DESKTOP-RELEASE-SIGNING.md. Secrets were already gated by
+      # "Require Windows signing secrets" before the Tauri build.
+      - name: Prepare Windows signing paths
+        if: env.BUILD_ENABLED && runner.os == 'Windows' && env.WINDOWS_SIGNING_CONFIGURED == 'true'
+        shell: pwsh
+        run: |
+          $bundleDir = (Resolve-Path "packages/desktop/src-tauri/target/${{ matrix.target }}/release/bundle").Path
+          "WINDOWS_BUNDLE_DIR=$bundleDir" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Azure login for Artifact Signing
+        if: env.BUILD_ENABLED && runner.os == 'Windows' && env.WINDOWS_SIGNING_CONFIGURED == 'true'
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Sign Windows artifacts
+        if: env.BUILD_ENABLED && runner.os == 'Windows' && env.WINDOWS_SIGNING_CONFIGURED == 'true'
+        uses: azure/artifact-signing-action@v1
+        with:
+          endpoint: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ secrets.AZURE_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ secrets.AZURE_CERTIFICATE_PROFILE }}
+          files-folder: ${{ env.WINDOWS_BUNDLE_DIR }}
+          files-folder-filter: exe,msi
+          files-folder-recurse: true
+          files-folder-depth: 3
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+          exclude-environment-credential: true
+          exclude-workload-identity-credential: true
+          exclude-managed-identity-credential: true
+          exclude-shared-token-cache-credential: true
+          exclude-visual-studio-credential: true
+          exclude-visual-studio-code-credential: true
+          exclude-azure-cli-credential: false
+          exclude-azure-powershell-credential: true
+          exclude-azure-developer-cli-credential: true
+          exclude-interactive-browser-credential: true
+      # Encode "green == properly signed" for Windows: every shipped installer must
+      # carry a Valid Authenticode signature. Catches a signing step that ran but
+      # left an artifact unsigned or with a broken/unstrusted chain.
+      - name: Verify Windows artifacts are signed
+        if: env.BUILD_ENABLED && runner.os == 'Windows' && env.WINDOWS_SIGNING_CONFIGURED == 'true'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $files = Get-ChildItem -Path $env:WINDOWS_BUNDLE_DIR -Recurse -Include *.msi,*-setup.exe -File
+          if (-not $files) {
+            Write-Host "::error::No Windows installers (.msi / -setup.exe) found to verify under $env:WINDOWS_BUNDLE_DIR"
+            exit 1
+          }
+          $failed = $false
+          foreach ($f in $files) {
+            $sig = Get-AuthenticodeSignature -FilePath $f.FullName
+            Write-Host "$($f.Name): $($sig.Status)"
+            if ($sig.Status -ne 'Valid') {
+              Write-Host "::error::$($f.Name) is not validly signed (status: $($sig.Status))"
+              $failed = $true
+            }
+          }
+          if ($failed) {
+            Write-Host "::error::One or more Windows installers are not properly signed"
+            exit 1
+          }
+          Write-Host "All Windows installers are Authenticode-signed and valid"
+      - name: Upload desktop debug symbols to Sentry
+        if: env.BUILD_ENABLED && env.SENTRY_SYMBOLS_ENABLED
+        continue-on-error: true
+        shell: bash
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: ${{ vars.SENTRY_ORG }}
+          SENTRY_PROJECT: ${{ vars.SENTRY_DESKTOP_PROJECT }}
+        run: |
+          # Upload native debug info so Rust panics/crashes symbolicate in Sentry.
+          # Captures Windows PDBs plus any dSYM/DWARF present. NOTE: the release
+          # profile sets strip=true, so macOS/Linux symbol coverage is limited;
+          # set split-debuginfo or relax strip for full native symbolication.
+          npx --yes @sentry/cli@2 debug-files upload --include-sources \
+            "packages/desktop/src-tauri/target/${{ matrix.target }}/release" || true
+      - name: Collect release artifacts
+        if: env.BUILD_ENABLED
+        id: artifacts
+        shell: bash
+        run: |
+          BUNDLE_DIR="packages/desktop/src-tauri/target/${{ matrix.target }}/release/bundle"
+          mkdir -p release-artifacts
+          # macOS
+          if [ -d "$BUNDLE_DIR/dmg" ]; then
+            cp "$BUNDLE_DIR"/dmg/*.dmg release-artifacts/ 2>/dev/null || true
+          fi
+          # Linux
+          if [ -d "$BUNDLE_DIR/deb" ]; then
+            cp "$BUNDLE_DIR"/deb/*.deb release-artifacts/ 2>/dev/null || true
+          fi
+          if [ -d "$BUNDLE_DIR/rpm" ]; then
+            cp "$BUNDLE_DIR"/rpm/*.rpm release-artifacts/ 2>/dev/null || true
+          fi
+          if [ -d "$BUNDLE_DIR/appimage" ]; then
+            cp "$BUNDLE_DIR"/appimage/*.AppImage release-artifacts/ 2>/dev/null || true
+          fi
+          # Windows
+          if [ -d "$BUNDLE_DIR/msi" ]; then
+            cp "$BUNDLE_DIR"/msi/*.msi release-artifacts/ 2>/dev/null || true
+          fi
+          if [ -d "$BUNDLE_DIR/nsis" ]; then
+            cp "$BUNDLE_DIR"/nsis/*-setup.exe release-artifacts/ 2>/dev/null || true
+          fi
+          echo "=== Release artifacts ==="
+          ls -lh release-artifacts/
+      - name: Upload release artifacts
+        if: env.BUILD_ENABLED
+        uses: actions/upload-artifact@v7
+        with:
+          retention-days: 7
+          name: release-${{ matrix.target }}
+          path: release-artifacts/*
+          if-no-files-found: error
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Download all artifacts
+        uses: actions/download-artifact@v8
+        with:
+          pattern: release-*
+          path: artifacts
+          merge-multiple: false
+      - name: Collect all files
+        run: |
+          mkdir -p release-files
+          find artifacts -type f \( -name "*.dmg" -o -name "*.deb" -o -name "*.rpm" -o -name "*.msi" -o -name "*-setup.exe" \) -exec cp {} release-files/ \;
+          echo "=== All release files ==="
+          ls -lh release-files/
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag }}
+          target_commitish: ${{ github.sha }}
+          name: "Companion Hub Desktop ${{ inputs.tag }}${{ inputs.environment != 'production' && format(' ({0})', inputs.environment) || '' }}"
+          prerelease: ${{ inputs.prerelease }}
+          generate_release_notes: true
+          files: release-files/*
+          body: |
+            ## Companion Hub Desktop ${{ inputs.tag }}
+            ### Downloads
+            | Platform | Installer | Notes |
+            |---|---|---|
+            | **Windows (x64)** | `.msi` or `-setup.exe` | Recommended for most Windows users |
+            | **Windows (ARM64)** | `.msi` or `-setup.exe` | Windows on ARM (Snapdragon and other ARM64 PCs) |
+            | **macOS (Apple Silicon)** | `.dmg` | M1/M2/M3/M4 Macs |
+            | **macOS (Intel)** | `.dmg` | Older Intel-based Macs |
+            | **Linux (x64)** | `.deb` or `.rpm` | Ubuntu/Debian or Fedora/RHEL |
+            | **Linux (ARM64)** | `.deb` or `.rpm` | Raspberry Pi, ARM servers |
+            ### Requirements
+            - Docker must be installed and running
+            - Windows: Windows 10+ with WebView2 (ships with Windows 11)
+            - macOS: macOS 11.0+
+            - Linux: WebKitGTK 4.1
+            ${{ inputs.environment != 'production' && format('### Dev CDN — https://dl-dev.ci.computer/{0}/', inputs.tag) || '' }}
+
+  upload-r2:
+    needs: release
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v8
+        with:
+          pattern: release-*
+          path: artifacts
+          merge-multiple: false
+
+      - name: Install wrangler
+        run: npm install -g wrangler
+
+      - name: Upload artifacts to R2
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_R2_DL_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          R2_BUCKET: ${{ inputs.environment == 'production' && 'dl-prod' || 'dl-dev' }}
+          DOWNLOAD_BASE_URL: ${{ inputs.environment == 'production' && 'https://dl.ci.computer' || 'https://dl-dev.ci.computer' }}
+        run: ./.github/scripts/upload-desktop-r2.sh
+
+  finalize-release-page:
+    if: inputs.environment == 'production' && !inputs.prerelease
+    needs: [release, upload-r2]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Finalize GitHub release page
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: ./.github/scripts/finalize-desktop-release.sh
+
+  publish-package-managers:
+    if: inputs.environment == 'production' && !inputs.prerelease
+    needs: [release]
+    uses: ./.github/workflows/publish-package-managers.yml
+    secrets: inherit
+    with:
+      tag: ${{ inputs.tag }}

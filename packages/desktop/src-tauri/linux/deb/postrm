@@ -1,0 +1,149 @@
+#!/bin/sh
+set -eu
+
+log() {
+  level="$1"
+  shift
+  printf '[cleanup][%s] %s\n' "$level" "$*"
+}
+
+list_home_dirs() {
+  getent passwd | awk -F: '($3 == 0 || $3 >= 1000) && $6 ~ /^\// { print $6 }' | awk '!seen[$0]++'
+}
+
+cleanup_user_home() {
+  home_dir="$1"
+  [ -d "$home_dir" ] || return 0
+
+  xdg_data_home="$home_dir/.local/share"
+  xdg_config_home="$home_dir/.config"
+  xdg_cache_home="$home_dir/.cache"
+
+  for name in "Companion Hub" "companion-hub" "ci-hub" "CI-Hub" "computer.ci.app.hub"; do
+    rm -rf "$xdg_data_home/$name" >/dev/null 2>&1 || true
+    rm -rf "$xdg_config_home/$name" >/dev/null 2>&1 || true
+    rm -rf "$xdg_cache_home/$name" >/dev/null 2>&1 || true
+  done
+}
+
+# Echo the unique image IDs used by a compose project: the images its containers
+# run (pulled or built) plus any compose-labeled built images. MUST be called
+# before the containers are removed — image refs can't be recovered afterwards.
+snapshot_project_images() {
+  project="$1"
+  {
+    docker ps -a --filter "label=com.docker.compose.project=$project" -q 2>/dev/null |
+      while IFS= read -r cid; do [ -n "$cid" ] && docker inspect --format '{{.Image}}' "$cid" 2>/dev/null; done
+    docker images --filter "label=com.docker.compose.project=$project" -q 2>/dev/null
+  } | awk 'NF && !seen[$0]++'
+}
+
+# Best-effort force-remove image IDs read from stdin. Images still referenced by
+# a surviving (non-Hub) container fail removal and are skipped.
+remove_images() {
+  while IFS= read -r img; do
+    [ -n "$img" ] && docker image rm -f "$img" >/dev/null 2>&1 || true
+  done
+}
+
+cleanup_docker() {
+  command -v docker >/dev/null 2>&1 || return 0
+
+  hub_images="$({ snapshot_project_images "ci-os-hub"; snapshot_project_images "ci-hub"; } | awk 'NF && !seen[$0]++')"
+
+  {
+    docker ps -a --filter "label=com.docker.compose.project=ci-os-hub" --format '{{.Names}}' 2>/dev/null
+    docker ps -a --filter "label=com.docker.compose.project=ci-hub" --format '{{.Names}}' 2>/dev/null
+    docker ps -a --filter "network=ci_os_hub_network" --format '{{.Names}}' 2>/dev/null
+    docker ps -a --filter "network=ci-os-hub_network" --format '{{.Names}}' 2>/dev/null
+  } | awk 'NF && !seen[$0]++' | while IFS= read -r name; do
+    docker rm -f "$name" >/dev/null 2>&1 || true
+  done
+
+  docker volume ls --format '{{.Name}}' 2>/dev/null | while IFS= read -r volume; do
+    case "$volume" in
+      *ci_os_hub*|*ci-os-hub*|*ci_hub_pgdata*|*ci_hub_app_data*|*hub_tailscale_state*)
+        docker volume rm "$volume" >/dev/null 2>&1 || true
+        ;;
+    esac
+  done
+
+  docker network rm ci_os_hub_network >/dev/null 2>&1 || true
+  docker network rm ci-os-hub_network >/dev/null 2>&1 || true
+
+  printf '%s\n' "$hub_images" | remove_images
+}
+
+# Marketplace apps installed by Hub run as their own compose projects
+# (<app>_<store>), not part of the Hub stack, so the teardown above misses them.
+# Hub stamps every managed app container with `ci-os-hub.managed=true`
+# (see packages/backend/.../builders/compose.builder.ts), which is store-agnostic.
+# Discover the project set from those containers, then remove each project's
+# containers, networks (except the shared Hub network), and volumes.
+cleanup_marketplace_apps() {
+  command -v docker >/dev/null 2>&1 || return 0
+
+  managed_projects="$(docker ps -a --filter "label=ci-os-hub.managed=true" \
+    --format '{{.Label "com.docker.compose.project"}}' 2>/dev/null | awk 'NF && !seen[$0]++')"
+  [ -n "$managed_projects" ] || return 0
+
+  echo "$managed_projects" | while IFS= read -r project; do
+    [ -n "$project" ] || continue
+    # Defense-in-depth: skip anything outside Docker's compose-project charset before
+    # interpolating it into command strings.
+    case "$project" in *[!A-Za-z0-9_.-]*) continue ;; esac
+    # The Hub's own compose services also carry ci-os-hub.managed=true; the dedicated
+    # cleanup_docker below is the single source of truth for the Hub stack, so skip it here.
+    case "$project" in ci-os-hub|ci-hub) continue ;; esac
+
+    project_images="$(snapshot_project_images "$project")"
+
+    docker ps -a --filter "label=com.docker.compose.project=$project" --format '{{.ID}}' 2>/dev/null |
+      while IFS= read -r cid; do
+        [ -n "$cid" ] && docker rm -f "$cid" >/dev/null 2>&1 || true
+      done
+
+    docker network ls --filter "label=com.docker.compose.project=$project" --format '{{.Name}}' 2>/dev/null |
+      while IFS= read -r net; do
+        case "$net" in
+          ''|bridge|host|none|ci_os_hub_network|ci-os-hub_network) ;;
+          *) docker network rm "$net" >/dev/null 2>&1 || true ;;
+        esac
+      done
+
+    docker volume ls --filter "label=com.docker.compose.project=$project" --format '{{.Name}}' 2>/dev/null |
+      while IFS= read -r vol; do
+        [ -n "$vol" ] && docker volume rm "$vol" >/dev/null 2>&1 || true
+      done
+
+    printf '%s\n' "$project_images" | remove_images
+  done
+}
+
+case "${1:-remove}" in
+  upgrade|failed-upgrade|abort-install|abort-upgrade|disappear)
+    log INFO "Skipping uninstall cleanup during package lifecycle: $1"
+    exit 0
+    ;;
+esac
+
+# Remove the /usr/bin/cihub symlink installed by postinst, but only if it
+# still points into this package's resource tree (never a user-managed cihub).
+cleanup_cli_symlink() {
+  [ -L /usr/bin/cihub ] || return 0
+  target="$(readlink /usr/bin/cihub 2>/dev/null || true)"
+  case "$target" in
+    "/usr/lib/Companion Hub/resources/cihub"|/usr/lib/companion-hub/resources/cihub)
+      rm -f /usr/bin/cihub || true
+      ;;
+  esac
+}
+
+log INFO 'Running Companion Hub Debian postrm cleanup (best effort)'
+cleanup_cli_symlink
+cleanup_marketplace_apps
+cleanup_docker
+list_home_dirs | while IFS= read -r home_dir; do
+  cleanup_user_home "$home_dir"
+done
+log INFO 'Companion Hub Debian postrm cleanup complete'

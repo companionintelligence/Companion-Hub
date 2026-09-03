@@ -1,0 +1,83 @@
+import { Button } from '@/components/ui/Button';
+import { Input } from '@/components/ui/Input';
+import { PasswordInput } from '@/components/ui/PasswordInput/PasswordInput';
+import { zodResolver } from '@hookform/resolvers/zod';
+import type React from 'react';
+import { useForm } from 'react-hook-form';
+import { useTranslation } from 'react-i18next';
+import { z } from 'zod';
+
+interface IProps {
+  onSubmit: (values: FormValues) => void;
+  loading: boolean;
+}
+
+type FormValues = { email: string; password: string; passwordConfirm: string };
+
+export const RegisterForm: React.FC<IProps> = ({ onSubmit, loading }) => {
+  const { t } = useTranslation();
+  const schema = z
+    .object({
+      email: z.string().email(),
+      password: z.string().min(8, t('AUTH_ERROR_INVALID_PASSWORD_LENGTH')),
+      passwordConfirm: z.string().min(8, t('AUTH_ERROR_INVALID_PASSWORD_LENGTH')),
+    })
+    .superRefine((data, ctx) => {
+      if (data.password !== data.passwordConfirm) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: t('COMMON_PASSWORDS_DO_NOT_MATCH'),
+          path: ['passwordConfirm'],
+        });
+      }
+    });
+  const {
+    register,
+    handleSubmit,
+    formState: { errors },
+  } = useForm({
+    resolver: zodResolver(schema),
+  });
+
+  return (
+    <>
+      <div className="mb-4 text-center">
+        <h2 className="text-xl font-semibold">{t('AUTH_REGISTER_TITLE')}</h2>
+        <p className="mt-2 text-sm text-muted-foreground">{t('AUTH_REGISTER_NOTE')}</p>
+        <p className="mt-2 text-sm text-muted-foreground font-bold">{t('AUTH_REGISTER_NOTE_2')}</p>
+      </div>
+      <form onSubmit={handleSubmit(onSubmit)}>
+        <Input
+          {...register('email')}
+          label={t('AUTH_FORM_EMAIL')}
+          error={errors.email?.message}
+          disabled={loading}
+          type="email"
+          className="mb-3"
+          placeholder={t('AUTH_FORM_EMAIL_PLACEHOLDER')}
+        />
+        <PasswordInput
+          {...register('password')}
+          label={t('COMMON_PASSWORD')}
+          error={errors.password?.message}
+          disabled={loading}
+          className="mb-3"
+          placeholder={t('AUTH_FORM_PASSWORD_PLACEHOLDER')}
+        />
+        <PasswordInput
+          {...register('passwordConfirm')}
+          label={t('AUTH_FORM_PASSWORD_CONFIRMATION')}
+          error={errors.passwordConfirm?.message}
+          disabled={loading}
+          className="mb-3"
+          placeholder={t('AUTH_FORM_PASSWORD_CONFIRMATION_PLACEHOLDER')}
+        />
+        <div className="mt-4">
+          <Button loading={loading} type="submit" intent="primary" className="w-full">
+            {t('AUTH_REGISTER_SUBMIT')}
+          </Button>
+        </div>
+      </form>
+    </>
+  );
+};

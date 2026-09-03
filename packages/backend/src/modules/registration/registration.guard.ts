@@ -1,0 +1,39 @@
+import { TranslatableError } from '@/common/error/translatable-error';
+import { ConfigurationService } from '@/core/config/configuration.service';
+import { LoggerService } from '@/core/logger/logger.service';
+import { type CanActivate, type ExecutionContext, HttpStatus, Injectable } from '@nestjs/common';
+import type { Request } from 'express';
+import { RegistrationService } from './registration.service';
+import { isOperational } from './registration-state';
+
+@Injectable()
+export class RegistrationGuard implements CanActivate {
+  constructor(
+    private readonly logger: LoggerService,
+    private readonly config: ConfigurationService,
+    private readonly registrationService: RegistrationService,
+  ) {}
+
+  async canActivate(context: ExecutionContext) {
+    const request = context.switchToHttp().getRequest() as Request;
+
+    const { ciCloudUrl } = this.config.getConfig();
+
+    // If Companion Portal URL is not configured, allow access (backward compatibility)
+    // This means Companion Portal integration is not enabled
+    if (!ciCloudUrl) {
+      this.logger.debug('CI Cloud integration not configured, allowing access without registration check');
+      return true;
+    }
+
+    // Refresh from DB/disk before making access decisions so we do not gate on stale cached state.
+    const status = await this.registrationService.getLiveRegistrationStatus();
+
+    if (!isOperational(status.phase)) {
+      this.logger.warn(`Access denied to ${request.url} - device not operational (phase: ${status.phase})`);
+      throw new TranslatableError('REGISTRATION_DEVICE_NOT_OPERATIONAL', { phase: status.phase }, HttpStatus.FORBIDDEN);
+    }
+
+    return true;
+  }
+}

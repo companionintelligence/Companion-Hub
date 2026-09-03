@@ -1,0 +1,188 @@
+import { TranslatableError } from '@/common/error/translatable-error';
+import { ConfigurationService } from '@/core/config/configuration.service';
+import { LoggerService } from '@/core/logger/logger.service';
+import { SSEService } from '@/core/sse/sse.service';
+import { Injectable, Optional } from '@nestjs/common';
+import type { AppUrn } from '@ci-hub/common/types';
+import { AppLifecycleService } from '../app-lifecycle/app-lifecycle.service';
+import { AppOperationRegistry } from '../app-lifecycle/app-operation-registry';
+import { AppFilesManager } from '../apps/app-files-manager';
+import { AppsRepository } from '../apps/apps.repository';
+import { AppEventsQueue } from '../queue/entities/app-events';
+import { BackupManager } from './backup.manager';
+import { createAppUrn } from '@/common/helpers/app-helpers';
+import { AgentNotifyService } from '../agent-notify/agent-notify.service';
+
+@Injectable()
+export class BackupsService {
+  constructor(
+    private appsRepository: AppsRepository,
+    private logger: LoggerService,
+    private config: ConfigurationService,
+    private appEventsQueue: AppEventsQueue,
+    private appLifecycle: AppLifecycleService,
+    private appFilesManager: AppFilesManager,
+    private backupManager: BackupManager,
+    private readonly sseService: SSEService,
+    private readonly operationRegistry: AppOperationRegistry,
+    @Optional() private readonly agentNotifyService?: AgentNotifyService,
+  ) {}
+
+  public async backupApp(params: { appUrn: AppUrn }) {
+    if (this.config.get('demoMode')) {
+      throw new TranslatableError('SERVER_ERROR_NOT_ALLOWED_IN_DEMO');
+    }
+
+    const { appUrn } = params;
+    const app = await this.appsRepository.getAppByUrn(appUrn);
+
+    if (!app) {
+      throw new TranslatableError('APP_ERROR_APP_NOT_FOUND', { id: appUrn });
+    }
+
+    const appStatusBeforeUpdate = app.status;
+
+    // Run script
+    await this.appsRepository.updateAppById(app.id, { status: 'backing_up' });
+    this.sseService.emit('app', { event: 'status_change', appUrn, appStatus: 'backing_up' });
+
+    const requestId = crypto.randomUUID();
+    this.operationRegistry.register(appUrn, { requestId, command: 'backup', tier: 'non_cancellable' });
+
+    this.appEventsQueue.publish({ appUrn, command: 'backup', requestId, form: app.config }).then(async ({ success, message }) => {
+      if (success) {
+        if (!this.operationRegistry.claimCompletion(appUrn, requestId)) {
+          return;
+        }
+
+        if (appStatusBeforeUpdate === 'running') {
+          await this.appLifecycle.startApp({ appUrn });
+        } else {
+          await this.appsRepository.updateAppById(app.id, { status: appStatusBeforeUpdate });
+          this.sseService.emit('app', { event: 'backup_success', appUrn, appStatus: appStatusBeforeUpdate });
+        }
+      } else {
+        this.logger.error(`Failed to backup app ${appUrn}: ${message}`);
+        if (this.operationRegistry.claimCompletion(appUrn, requestId)) {
+          await this.appsRepository.updateAppById(app.id, { status: 'stopped' });
+          this.agentNotifyService?.notify('backup_error', { appUrn }, 'high');
+        }
+      }
+    });
+
+    return { requestId };
+  }
+
+  public async restoreApp(params: { appUrn: AppUrn; filename: string }) {
+    const { appUrn, filename } = params;
+    const app = await this.appsRepository.getAppByUrn(appUrn);
+
+    if (!app) {
+      throw new TranslatableError('APP_ERROR_APP_NOT_FOUND', { id: appUrn });
+    }
+
+    const appStatusBeforeUpdate = app.status;
+
+    // Run script
+    await this.appsRepository.updateAppById(app.id, { status: 'restoring' });
+    this.sseService.emit('app', { event: 'status_change', appUrn, appStatus: 'restoring' });
+
+    const requestId = crypto.randomUUID();
+    this.operationRegistry.register(appUrn, { requestId, command: 'restore', tier: 'non_cancellable' });
+
+    this.appEventsQueue.publish({ appUrn, command: 'restore', requestId, filename, form: app.config }).then(async ({ success, message }) => {
+      if (success) {
+        if (!this.operationRegistry.claimCompletion(appUrn, requestId)) {
+          return;
+        }
+
+        const restoredAppConfig = await this.appFilesManager.getInstalledAppInfo(appUrn);
+
+        if (typeof restoredAppConfig?.cihub_app_version === 'number') {
+          await this.appsRepository.updateAppById(app.id, { version: restoredAppConfig.cihub_app_version });
+        }
+
+        if (appStatusBeforeUpdate === 'running') {
+          await this.appLifecycle.startApp({ appUrn });
+        } else {
+          await this.appsRepository.updateAppById(app.id, { status: appStatusBeforeUpdate });
+          this.sseService.emit('app', { event: 'restore_success', appUrn, appStatus: appStatusBeforeUpdate });
+        }
+      } else {
+        this.logger.error(`Failed to restore app ${appUrn}: ${message}`);
+        if (this.operationRegistry.claimCompletion(appUrn, requestId)) {
+          await this.appsRepository.updateAppById(app.id, { status: 'stopped' });
+          this.agentNotifyService?.notify('restore_error', { appUrn }, 'high');
+        }
+      }
+    });
+
+    return { requestId };
+  }
+
+  public async getAppBackups(params: { appUrn: AppUrn; page: number; pageSize: number }) {
+    const { appUrn, page, pageSize } = params;
+    const backups = await this.backupManager.listBackupsByAppId(appUrn);
+
+    backups.sort((a, b) => b.date - a.date);
+
+    const start = (page - 1) * pageSize;
+    const end = start + pageSize;
+    const data = backups.slice(start, end);
+
+    return {
+      data,
+      total: backups.length,
+      currentPage: Math.floor(start / pageSize) + 1,
+      lastPage: Math.ceil(backups.length / pageSize),
+    };
+  }
+
+  public async deleteAppBackup(params: { appUrn: AppUrn; filename: string }): Promise<void> {
+    const { appUrn, filename } = params;
+
+    await this.backupManager.deleteBackup(appUrn, filename);
+  }
+
+  async backupAllApps() {
+    const apps = await this.appsRepository.getApps();
+    const runningApps = apps.filter((app) => app.status === 'running');
+
+    (async () => {
+      for (const app of runningApps) {
+        try {
+          const appUrn = createAppUrn(app.appName, app.appStoreSlug);
+          this.backupApp({ appUrn });
+        } catch (e) {
+          this.logger.error(`Failed to backup app ${app.id}`, e);
+        }
+      }
+    })();
+  }
+
+  public async getBackupFilePath(params: { appUrn: AppUrn; filename: string }): Promise<string> {
+    const { appUrn, filename } = params;
+    const app = await this.appsRepository.getAppByUrn(appUrn);
+
+    if (!app) {
+      throw new TranslatableError('APP_ERROR_APP_NOT_FOUND', { id: appUrn });
+    }
+
+    return this.backupManager.getBackupPath(appUrn, filename);
+  }
+
+  public async uploadBackup(params: { appUrn: AppUrn; filename: string; fileBuffer: Buffer }): Promise<void> {
+    if (this.config.get('demoMode')) {
+      throw new TranslatableError('SERVER_ERROR_NOT_ALLOWED_IN_DEMO');
+    }
+
+    const { appUrn, filename, fileBuffer } = params;
+    const app = await this.appsRepository.getAppByUrn(appUrn);
+
+    if (!app) {
+      throw new TranslatableError('APP_ERROR_APP_NOT_FOUND', { id: appUrn });
+    }
+
+    await this.backupManager.uploadBackup(appUrn, filename, fileBuffer);
+  }
+}

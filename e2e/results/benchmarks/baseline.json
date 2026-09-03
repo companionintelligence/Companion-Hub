@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "capturedAt": "2026-07-12T00:00:00.000Z",
+  "description": "Placeholder baseline for agent benchmark gate. Update after running scripts/benchmark-app.ts on representative apps.",
+  "entries": [
+    {
+      "appId": "placeholder",
+      "installMs": 60000,
+      "healthMs": 5000,
+      "memoryMb": 512,
+      "cpuPercent": 25
+    }
+  ]
+}

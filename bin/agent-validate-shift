@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+# End-of-shift validation gate for CI-Hub agents.
+# Usage: bin/agent-validate-shift [--skip-openapi] [--skip-visual] [--skip-benchmark]
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$ROOT"
+
+SKIP_OPENAPI=0
+SKIP_VISUAL=0
+SKIP_BENCHMARK=0
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --skip-openapi) SKIP_OPENAPI=1; shift ;;
+    --skip-visual) SKIP_VISUAL=1; shift ;;
+    --skip-benchmark) SKIP_BENCHMARK=1; shift ;;
+    -h|--help)
+      echo "Usage: bin/agent-validate-shift [--skip-openapi] [--skip-visual] [--skip-benchmark]"
+      exit 0
+      ;;
+    *) echo "Unknown arg: $1" >&2; exit 1 ;;
+  esac
+done
+
+run_step() {
+  local name="$1"
+  shift
+  echo ""
+  echo "▶ $name"
+  if "$@"; then
+    echo "✓ $name"
+  else
+    echo "✗ $name FAILED" >&2
+    exit 1
+  fi
+}
+
+echo "=== CI-Hub End-of-Shift Validation ==="
+
+run_step "lint:ci" pnpm run lint:ci
+run_step "tsc" pnpm run tsc
+run_step "test" pnpm run test
+
+if [[ "$SKIP_OPENAPI" -eq 0 ]]; then
+  run_step "check:openapi" pnpm run check:openapi
+else
+  echo "⊘ skipping check:openapi"
+fi
+
+if [[ "$SKIP_VISUAL" -eq 0 ]]; then
+  if [[ -d "$ROOT/e2e/screenshots/baselines" ]] && [[ -n "$(ls -A "$ROOT/e2e/screenshots/baselines" 2>/dev/null || true)" ]]; then
+    run_step "test:visual" pnpm run test:visual
+  else
+    echo "⊘ skipping test:visual (no baselines yet)"
+  fi
+else
+  echo "⊘ skipping test:visual"
+fi
+
+if [[ "$SKIP_BENCHMARK" -eq 0 ]]; then
+  if [[ -f "$ROOT/e2e/results/benchmarks/baseline.json" ]]; then
+    run_step "benchmark:gate" pnpm run benchmark:gate
+  else
+    echo "⊘ skipping benchmark:gate (no baseline.json yet)"
+  fi
+else
+  echo "⊘ skipping benchmark:gate"
+fi
+
+echo ""
+echo "=== All validation steps passed ==="
+echo "Reminder: complete manual checklist in docs/agent/END_OF_SHIFT.md"
+echo "Reminder: run bin/agent-review --phase wrap before opening PR"

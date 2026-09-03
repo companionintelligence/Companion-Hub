@@ -1,0 +1,296 @@
+import { describe, expect, it } from 'vitest';
+import { CURATED_MODELS } from '../catalog/curated-models';
+
+/**
+ * The LLM catalog is authored as a pipe-delimited TOON table and decoded at module load. These tests
+ * exercise the decoder + derivation: counts, derived requirements, real context windows, and the
+ * Artificial Analysis metadata (creator / intelligence index / capabilities / perf).
+ */
+describe('curated-models (TOON catalog)', () => {
+  const byId = new Map(CURATED_MODELS.map((m) => [m.id, m]));
+  const llms = CURATED_MODELS.filter((m) => m.modality === 'llm');
+
+  it('decodes the full catalog (87 Ollama LLMs + 4 Lemonade LLMs + 72 vLLM LLMs [8 CUDA + 64 MLX] + 8 MTPLX LLMs + 11 mlx-dspark LLMs + voice + embeddings) with unique ids', () => {
+    expect(llms.filter((m) => m.backend === 'ollama').length).toBe(87);
+    expect(llms.filter((m) => m.backend === 'lemonade').length).toBe(4);
+    expect(llms.filter((m) => m.backend === 'vllm').length).toBe(72);
+    expect(llms.filter((m) => m.backend === 'mtplx').length).toBe(8);
+    expect(llms.filter((m) => m.backend === 'dspark').length).toBe(11);
+    expect(llms.length).toBe(182);
+    // 4 Ollama embeddings + 1 Lemonade embedding (nomic-embed-text-v1-lemonade).
+    expect(CURATED_MODELS.filter((m) => m.modality === 'embedding').length).toBe(5);
+    expect(CURATED_MODELS.filter((m) => m.modality === 'tts' || m.modality === 'stt').length).toBe(3);
+    expect(new Set(CURATED_MODELS.map((m) => m.id)).size).toBe(CURATED_MODELS.length);
+  });
+
+  it('declares the native host platform matrix for every curated backend', () => {
+    const expectedByBackend = {
+      ollama: ['darwin', 'linux', 'win32'],
+      lemonade: ['darwin', 'linux', 'win32'],
+      vllm: ['linux', 'win32'],
+      mtplx: ['darwin'],
+      dspark: ['darwin'],
+    } as const;
+
+    for (const model of CURATED_MODELS) {
+      const expected = model.backend === 'vllm' && model.id.endsWith('-mlx') ? ['darwin'] : expectedByBackend[model.backend];
+      expect(model.requirements.supportedPlatforms, `${model.id} platform matrix`).toEqual(expected);
+    }
+
+    // vLLM's Apple-native MLX rows are a separate serving path from its CUDA rows.
+    expect(
+      llms.filter((m) => m.backend === 'vllm' && m.id.endsWith('-mlx')).every((m) => m.requirements.supportedPlatforms?.includes('darwin')),
+    ).toBe(true);
+    expect(
+      llms.filter((m) => m.backend === 'vllm' && !m.id.endsWith('-mlx')).every((m) => !m.requirements.supportedPlatforms?.includes('darwin')),
+    ).toBe(true);
+  });
+
+  describe('mlx-dspark rows', () => {
+    const dspark = llms.filter((m) => m.backend === 'dspark');
+
+    it('are Apple-Silicon-gated MLX repos with a speculative-decoding quant tag', () => {
+      expect(dspark.length).toBe(11);
+      for (const m of dspark) {
+        expect(m.id, `${m.id} id suffix`).toMatch(/-dspark$/);
+        // `gpuVendors: ['apple']` is the entire gating story — the CPU/RAM fallback path reports
+        // vendor 'cpu', so an apple-only row can never be resurrected onto non-Apple hardware.
+        expect(m.requirements.gpuVendors, `${m.id} vendors`).toEqual(['apple']);
+        // backendModelId is the TARGET repo — what POST /admin/load takes and what
+        // GET /health.target reports back, so DsparkBackend.isModelLoaded matches it exactly.
+        expect(m.backendModelId, `${m.id} target repo`).toMatch(/^[\w.-]+\/[\w.-]+$/);
+        expect(m.runtime.quantization, `${m.id} quant`).toMatch(/\+(dspark|dflash2)$/);
+      }
+    });
+
+    it('budget resident RAM from the measured ramGb column, not disk x 1.1', () => {
+      for (const m of dspark) {
+        // A dspark row downloads a target AND a drafter, and the drafter is quantized to 4-bit at
+        // load — so neither `diskMb` nor `diskMb * 1.1` describes what is actually resident.
+        expect(m.runtime.memoryFootprintMb, `${m.id} footprint`).not.toBe(Math.round(m.requirements.diskMb * 1.1));
+        expect(m.requirements.minVramMb, `${m.id} minVram`).toBe(m.runtime.memoryFootprintMb);
+      }
+    });
+
+    it('carry MoE active-parameter counts so unified-memory ranking is right', () => {
+      expect(byId.get('qwen3-6-35b-dspark')?.activeParameterScale).toBe(3);
+      expect(byId.get('nemotron-3-5-lightning-30b-dspark')?.activeParameterScale).toBe(3);
+    });
+  });
+
+  it('leaves every row without a ramGb column on the historical diskMb x 1.1 footprint', () => {
+    // Regression guard for the optional `ramGb` column added for mlx-dspark: adding it must not
+    // have shifted a single pre-existing row's memory numbers.
+    for (const m of CURATED_MODELS.filter((m) => m.modality === 'llm' && m.backend !== 'dspark')) {
+      expect(m.runtime.memoryFootprintMb, `${m.id} footprint`).toBe(Math.round(m.requirements.diskMb * 1.1));
+      expect(m.requirements.minVramMb, `${m.id} minVram`).toBe(m.requirements.diskMb);
+      expect(m.requirements.recommendedVramMb, `${m.id} recVram`).toBe(Math.round(m.requirements.diskMb * 1.1 + 1024));
+      expect(m.requirements.minRamMb, `${m.id} minRam`).toBe(Math.round(m.requirements.diskMb * 1.15));
+    }
+  });
+
+  it('gives every model a real, pullable backend tag and sane derived requirements', () => {
+    for (const m of CURATED_MODELS) {
+      expect(m.backendModelId, `${m.id} backendModelId`).toBeTruthy();
+      expect(m.requirements.diskMb, `${m.id} diskMb`).toBeGreaterThan(0);
+      expect(m.runtime.memoryFootprintMb, `${m.id} footprint`).toBeGreaterThan(0);
+    }
+    // Ollama LLM tags are the bare `family:size` default (the q4_K_M build ollama pulls by default).
+    for (const m of llms.filter((m) => m.backend === 'ollama')) {
+      expect(m.backendModelId, `${m.id} tag`).toContain(':');
+      expect(m.runtime.quantization).toBe('q4_K_M');
+    }
+    // Lemonade LLM tags are the exact registry key from server_models.json (no colon-tag convention).
+    for (const m of llms.filter((m) => m.backend === 'lemonade')) {
+      expect(m.backendModelId, `${m.id} tag`).not.toContain(':');
+    }
+    // vLLM LLM tags are HuggingFace repo ids (`org/model`) served as-is by `vllm serve`,
+    // and their quantization reflects the served precision, never Ollama's q4_K_M default.
+    // ('mlx-4bit'/'mlx-8bit'/'mlx-2.4bit'/'mxfp4' cover the vLLM-Metal/MLX rows — mlx-community
+    // repos, served on Apple Silicon instead of the CUDA image the plain 'bf16'/'mxfp4' rows target.)
+    for (const m of llms.filter((m) => m.backend === 'vllm')) {
+      expect(m.backendModelId, `${m.id} tag`).toMatch(/^[\w.-]+\/[\w.-]+$/);
+      expect(['bf16', 'mxfp4', 'mlx-4bit', 'mlx-8bit', 'mlx-2.4bit'], `${m.id} quantization`).toContain(m.runtime.quantization);
+    }
+  });
+
+  it('gates vLLM-Metal (MLX) rows to Apple Silicon only, never an NVIDIA VRAM budget', () => {
+    const mlxRows = llms.filter((m) => m.id.endsWith('-mlx'));
+    expect(mlxRows.length).toBe(64);
+    for (const m of mlxRows) {
+      expect(m.backend, `${m.id} backend`).toBe('vllm');
+      expect(m.backendModelId, `${m.id} tag`).toMatch(/^mlx-community\//);
+      expect(m.requirements.gpuVendors, `${m.id} gpuVendors`).toEqual(['apple']);
+    }
+    // The plain (CUDA) vLLM rows are unaffected — still NVIDIA-only.
+    const cudaRows = llms.filter((m) => m.backend === 'vllm' && !m.id.endsWith('-mlx'));
+    for (const m of cudaRows) {
+      expect(m.requirements.gpuVendors, `${m.id} gpuVendors`).toEqual(['nvidia']);
+    }
+    // Spans low/medium/high like the CUDA table, so Macs of different unified-memory sizes get a fit.
+    expect(mlxRows.some((m) => m.requirements.minTier === 'low')).toBe(true);
+    expect(mlxRows.some((m) => m.requirements.minTier === 'medium')).toBe(true);
+    expect(mlxRows.some((m) => m.requirements.minTier === 'high')).toBe(true);
+    // MoE row carries active-params so hardware-fit ranking doesn't treat it as dense.
+    expect(byId.get('qwen3-30b-a3b-mlx')?.activeParameterScale).toBe(3);
+  });
+
+  it('gates MTPLX rows to Apple Silicon only, with real Youssofal HF repo ids and dynamic-precision quant', () => {
+    const mtplxRows = llms.filter((m) => m.backend === 'mtplx');
+    expect(mtplxRows.length).toBe(8);
+    for (const m of mtplxRows) {
+      expect(m.id, `${m.id} id`).toMatch(/-mtplx/);
+      expect(m.backendModelId, `${m.id} tag`).toMatch(/^Youssofal\//);
+      expect(m.requirements.gpuVendors, `${m.id} gpuVendors`).toEqual(['apple']);
+      expect(m.runtime.quantization, `${m.id} quantization`).toBe('mtplx-dynamic');
+    }
+    // Spans cpu-only/low/medium/high, so Macs of different unified-memory sizes get a fit — even
+    // MTPLX's smallest curated model (Qwen 3.5 4B) is cpu-only-class small.
+    expect(mtplxRows.some((m) => m.requirements.minTier === 'cpu-only')).toBe(true);
+    expect(mtplxRows.some((m) => m.requirements.minTier === 'low')).toBe(true);
+    expect(mtplxRows.some((m) => m.requirements.minTier === 'medium')).toBe(true);
+    expect(mtplxRows.some((m) => m.requirements.minTier === 'high')).toBe(true);
+    // MoE rows carry active-params so hardware-fit ranking doesn't treat them as dense.
+    expect(byId.get('qwen3-6-35b-mtplx-speed')?.activeParameterScale).toBe(3);
+    expect(byId.get('qwen3-6-35b-mtplx-balance')?.activeParameterScale).toBe(3);
+  });
+
+  it('surfaces vLLM chat models so selecting the vLLM backend yields usable recommendations', () => {
+    const vllm = llms.filter((m) => m.backend === 'vllm');
+    // At least one per hardware tier the backend realistically serves (GPU boxes).
+    expect(vllm.some((m) => m.requirements.minTier === 'low')).toBe(true);
+    expect(vllm.some((m) => m.requirements.minTier === 'medium')).toBe(true);
+    expect(vllm.some((m) => m.requirements.minTier === 'high')).toBe(true);
+    // MoE rows carry active-params so the hardware-fit ranking doesn't treat them as dense.
+    const coder = byId.get('qwen3-coder-30b-vllm');
+    expect(coder?.activeParameterScale).toBe(3);
+  });
+
+  it('derives requirements + context from the TOON row (gemma4-31b)', () => {
+    const g = byId.get('gemma4-31b');
+    expect(g).toBeDefined();
+    expect(g?.backendModelId).toBe('gemma4:31b');
+    expect(g?.parameterScale).toBe(31);
+    // gb=20 → diskMb 20*1024, footprint ~1.1x.
+    expect(g?.requirements.diskMb).toBe(20480);
+    expect(g?.runtime.memoryFootprintMb).toBe(Math.round(20480 * 1.1));
+    // ctxK=256 → 256000 (not the 131072 default).
+    expect(g?.runtime.contextWindow).toBe(256000);
+  });
+
+  it('carries Artificial Analysis metadata for leaderboard models', () => {
+    const llama = byId.get('llama3-3-70b');
+    expect(llama?.metadata?.creator).toBe('Meta');
+    expect(llama?.metadata?.intelligenceIndex).toBe(9);
+    expect(llama?.metadata?.perf?.tokensPerSec).toBe(85.1);
+
+    const gemma = byId.get('gemma4-31b');
+    expect(gemma?.metadata?.creator).toBe('Google');
+    expect(gemma?.metadata?.capabilities?.vision).toBe(true);
+  });
+
+  it('sets creator + capabilities on every LLM, even those off the leaderboard', () => {
+    for (const m of llms) {
+      expect(m.metadata?.creator, `${m.id} creator`).toBeTruthy();
+      expect(m.metadata?.capabilities, `${m.id} capabilities`).toBeDefined();
+      // Reasoning capability mirrors the runtime flag.
+      expect(m.metadata?.capabilities?.reasoning).toBe(m.runtime.reasoning);
+    }
+  });
+
+  it('includes GLM 5.2 in the large-models browse group', () => {
+    const glm = byId.get('glm-5-2');
+    expect(glm).toBeDefined();
+    expect(glm?.backendModelId).toBe('hf.co/unsloth/GLM-5.2-GGUF:UD-Q4_K_XL');
+    expect(glm?.parameterScale).toBeGreaterThan(70);
+    expect(glm?.tiers.high).toBe('recommended');
+  });
+
+  it('derives requirements + metadata for Muse Glimmer', () => {
+    const muse = byId.get('muse-glimmer-30b');
+    expect(muse).toBeDefined();
+    expect(muse?.backendModelId).toBe('muse-glimmer:30b');
+    expect(muse?.metadata?.creator).toBe('Meta');
+    expect(muse?.metadata?.capabilities?.vision).toBe(true);
+    expect(muse?.metadata?.capabilities?.tools).toBe(true);
+    expect(muse?.metadata?.capabilities?.reasoning).toBe(true);
+    expect(muse?.requirements.diskMb).toBe(18 * 1024);
+    expect(muse?.tiers.medium).toBe('recommended');
+  });
+
+  it('derives requirements + metadata for Nemotron 3.5 Lightning', () => {
+    const nemotron = byId.get('nemotron-3-5-lightning-30b');
+    expect(nemotron).toBeDefined();
+    expect(nemotron?.backendModelId).toBe('nemotron-3.5-lightning:30b');
+    expect(nemotron?.metadata?.creator).toBe('NVIDIA');
+    expect(nemotron?.activeParameterScale).toBe(3);
+    expect(nemotron?.requirements.diskMb).toBe(25 * 1024);
+    expect(nemotron?.tiers.medium).toBe('recommended');
+  });
+
+  it('never surfaces a cloud-proxy (`:cloud`-tagged) model — this catalog is local-only', () => {
+    // Checked across every modality, not just LLMs — the rule is about the whole catalog.
+    for (const m of CURATED_MODELS) {
+      expect(m.backendModelId.endsWith(':cloud'), `${m.id} must not be a :cloud proxy`).toBe(false);
+    }
+  });
+
+  it('contains no fabricated families/sizes (only ollama.com-verified entries)', () => {
+    // Checked against BOTH the catalog `id` and the actual `backendModelId` pull tag — a fake family
+    // slipped back into the catalog once (2026-08) under a dashed `id` (`mistral-medium-3-5-128b`) that
+    // dodged an id-only check, while its `backendModelId` (`mistral-medium-3.5:128b`) was still exactly
+    // the banned string. Never check id alone again.
+    const ids = new Set(CURATED_MODELS.map((m) => m.id));
+    const backendModelIds = CURATED_MODELS.map((m) => m.backendModelId);
+    for (const fake of [
+      'gemma4-300b',
+      'gemma4-800b',
+      'gemma4-3t',
+      'qwen3-6-200b',
+      'kimi-k2-6',
+      'deepseek-v4-pro',
+      'mistral-medium-3.5',
+      'hermes-4',
+      'seed-oss',
+      'ernie-4.5',
+    ]) {
+      expect(ids.has(fake), `fabricated model ${fake} must not exist as an id`).toBe(false);
+      const backendHit = backendModelIds.find((tag) => tag === fake || tag.startsWith(`${fake}:`));
+      expect(backendHit, `fabricated model ${fake} must not exist as a backendModelId (found: ${backendHit})`).toBeUndefined();
+    }
+  });
+
+  // 2026-07-27 audit: these were added on 2026-07-27 from the agent's own "any other modern model" web
+  // research (not a direct user request), then removed the same day after a follow-up audit caught this
+  // session's web tools fabricating convincing, internally-consistent pages for known-fake models (see the
+  // fabrication guard above) and, separately, found one of these rows' fetched description self-referencing
+  // an Anthropic-internal codename it had no legitimate way to know. None of them were confirmed to exist
+  // through a channel independent of this session's own fetch tooling. Do not re-add without that
+  // independent confirmation (a real browser, or an actual successful `ollama pull`).
+  it('does not re-add the 2026-07-27 unverified/likely-fabricated batch', () => {
+    const ids = new Set(CURATED_MODELS.map((m) => m.id));
+    for (const unverified of [
+      'kimi-k3-cloud',
+      'granite4-1-3b',
+      'granite4-1-8b',
+      'granite4-1-30b',
+      'glm-5-1-cloud',
+      'minimax-m3-cloud',
+      'lfm2-24b',
+      'qwen3-fable-4b',
+      'qwen3-fable-8b',
+    ]) {
+      expect(ids.has(unverified), `unverified model ${unverified} must not be re-added without independent confirmation`).toBe(false);
+    }
+  });
+
+  // 2026-08-12: mirrors the 2026-07-27 guard above for a second, independently-caught fabrication —
+  // kept as its own list (rather than folded into the generic fabrication guard) so a future audit that
+  // re-verifies one of these out-of-band has a single, obvious place to remove it from.
+  it('does not re-add the 2026-08-12 unverified/fabricated Mistral Medium 3.5 row', () => {
+    const ids = new Set(CURATED_MODELS.map((m) => m.id));
+    for (const unverified of ['mistral-medium-3-5-128b']) {
+      expect(ids.has(unverified), `unverified model ${unverified} must not be re-added without independent confirmation`).toBe(false);
+    }
+  });
+});

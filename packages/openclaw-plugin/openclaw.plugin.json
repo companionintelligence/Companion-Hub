@@ -1,0 +1,47 @@
+{
+  "id": "ci-hub",
+  "name": "CI Hub",
+  "version": "1.0.0",
+  "description": "OpenClaw plugin for controlling CI-Hub via MCP. Provides tool access, wake notifications, and SSE event streaming.",
+  "author": "Companion Intelligence",
+  "configSchema": {
+    "type": "object",
+    "required": ["hubUrl", "hubApiKey"],
+    "properties": {
+      "hubUrl": {
+        "type": "string",
+        "format": "uri",
+        "description": "CI-Hub base URL (e.g. http://127.0.0.1:5002)"
+      },
+      "hubApiKey": {
+        "type": "string",
+        "description": "API key for Hub MCP authentication"
+      },
+      "wakeSecret": {
+        "type": "string",
+        "description": "Shared secret for validating inbound wake webhooks"
+      },
+      "sseEnabled": {
+        "type": "boolean",
+        "default": false,
+        "description": "Subscribe to Hub SSE stream for real-time events"
+      },
+      "wakeFilter": {
+        "type": "object",
+        "properties": {
+          "minUrgency": {
+            "type": "string",
+            "enum": ["info", "low", "medium", "high"],
+            "default": "medium"
+          },
+          "events": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Allowlist of event names to wake on (empty = all)"
+          }
+        }
+      }
+    }
+  },
+  "entrypoint": "src/index.ts"
+}

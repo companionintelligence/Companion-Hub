@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# Scan recent commits for cross-commit gotchas.
+# Usage: bin/agent-sweep [--since 1.day] [--count 20]
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$ROOT"
+
+SINCE="1.day"
+COUNT=20
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --since) SINCE="$2"; shift 2 ;;
+    --count) COUNT="$2"; shift 2 ;;
+    -h|--help)
+      echo "Usage: bin/agent-sweep [--since 1.day] [--count 20]"
+      exit 0
+      ;;
+    *) echo "Unknown arg: $1" >&2; exit 1 ;;
+  esac
+done
+
+echo "=== Agent Sweep: last $COUNT commits since $SINCE ==="
+echo ""
+
+git log --since="$SINCE" -n "$COUNT" --oneline --no-decorate
+
+echo ""
+echo "=== Sweep prompt (paste into agent session) ==="
+cat <<EOF
+
+Review the last $COUNT commits (since $SINCE) on this branch for cross-commit gotchas:
+
+1. Inconsistent patterns introduced across commits
+2. Partial fixes that leave dead code or stale docs
+3. Missing test updates for behavior changes
+4. docs/system/*.md drift vs actual code
+5. Security or perf regressions spanning multiple commits
+
+Run: git log --since=$SINCE -p -n $COUNT
+Read: docs/agent/CODING_CONVENTIONS.md, docs/system/
+
+Report findings by severity. Suggest fixes but do not implement unless asked.
+
+EOF

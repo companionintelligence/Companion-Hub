@@ -1,0 +1,34 @@
+{
+  "$schema": "https://schemas.companionintelligence.com/v2/app-info.json",
+  "id": "ci-e2e-test-app",
+  "name": "CI E2E Test App",
+  "version": "1.0.0",
+  "cihub_version": 1,
+  "short_desc": "Purpose-built test app for Hub platform E2E validation",
+  "author": "Companion Intelligence",
+  "source": "https://github.com/companionintelligence/CI-Hub",
+  "port": 7100,
+  "categories": ["development"],
+  "available": true,
+  "exposable": true,
+  "dynamic_config": true,
+  "supported_architectures": ["arm64", "amd64"],
+  "form_fields": [
+    { "type": "text", "label": "Test Text Field", "env_variable": "E2E_TEXT_FIELD", "default": "hello-e2e", "required": true },
+    { "type": "password", "label": "Test Password", "env_variable": "E2E_PASSWORD", "default": "secret123", "required": true },
+    { "type": "email", "label": "Test Email", "env_variable": "E2E_EMAIL", "default": "e2e@test.com", "required": true },
+    { "type": "number", "label": "Test Number", "env_variable": "E2E_NUMBER", "default": 42, "required": true },
+    { "type": "url", "label": "Test URL", "env_variable": "E2E_URL", "default": "https://example.com", "required": false },
+    { "type": "boolean", "label": "Test Boolean", "env_variable": "E2E_BOOLEAN", "default": true, "required": false },
+    { "type": "random", "label": "Random Hex Key", "env_variable": "E2E_RANDOM_HEX", "min": 32, "max": 32, "encoding": "hex", "required": false },
+    {
+      "type": "random",
+      "label": "Random Base64 Key",
+      "env_variable": "E2E_RANDOM_B64",
+      "min": 24,
+      "max": 24,
+      "encoding": "base64",
+      "required": false
+    }
+  ]
+}

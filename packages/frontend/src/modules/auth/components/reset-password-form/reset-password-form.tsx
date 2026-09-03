@@ -1,0 +1,75 @@
+import { Button } from '@/components/ui/Button';
+import { PasswordInput } from '@/components/ui/PasswordInput/PasswordInput';
+import { zodResolver } from '@hookform/resolvers/zod';
+import type React from 'react';
+import { useForm } from 'react-hook-form';
+import { useTranslation } from 'react-i18next';
+import { z } from 'zod';
+
+interface IProps {
+  onSubmit: (values: FormValues) => void;
+  onCancel: () => void;
+  loading: boolean;
+}
+
+type FormValues = { password: string; passwordConfirm: string };
+
+export const ResetPasswordForm: React.FC<IProps> = ({ onSubmit, loading, onCancel }) => {
+  const { t } = useTranslation();
+  const schema = z
+    .object({
+      password: z.string().min(8, t('COMMON_PASSWORD_MIN_LENGTH')),
+      passwordConfirm: z.string().min(8, t('AUTH_FORM_ERROR_PASSWORD_CONFIRMATION_LENGTH')),
+    })
+    .superRefine((data, ctx) => {
+      if (data.password !== data.passwordConfirm) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: t('COMMON_PASSWORDS_DO_NOT_MATCH'),
+          path: ['passwordConfirm'],
+        });
+      }
+    });
+
+  const {
+    register,
+    handleSubmit,
+    formState: { errors },
+  } = useForm({
+    resolver: zodResolver(schema),
+  });
+
+  return (
+    <>
+      <h2 className="text-xl font-semibold text-center mb-4">{t('AUTH_RESET_PASSWORD_TITLE')}</h2>
+      <form onSubmit={handleSubmit(onSubmit)}>
+        <PasswordInput
+          {...register('password')}
+          label={t('COMMON_PASSWORD')}
+          error={errors.password?.message}
+          disabled={loading}
+          autoComplete="new-password"
+          className="mb-3"
+          placeholder={t('AUTH_FORM_NEW_PASSWORD_PLACEHOLDER')}
+        />
+        <PasswordInput
+          {...register('passwordConfirm')}
+          label={t('AUTH_FORM_PASSWORD_CONFIRMATION')}
+          error={errors.passwordConfirm?.message}
+          disabled={loading}
+          autoComplete="new-password"
+          className="mb-3"
+          placeholder={t('AUTH_FORM_NEW_PASSWORD_CONFIRMATION_PLACEHOLDER')}
+        />
+        <div className="mt-4">
+          <Button loading={loading} type="submit" intent="primary" className="w-full mb-3">
+            {t('AUTH_RESET_PASSWORD_SUBMIT')}
+          </Button>
+          <Button onClick={onCancel} type="button" variant="outline" className="w-full">
+            {t('AUTH_RESET_PASSWORD_CANCEL')}
+          </Button>
+        </div>
+      </form>
+    </>
+  );
+};

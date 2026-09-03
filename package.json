@@ -1,0 +1,104 @@
+{
+  "name": "ci-hub",
+  "version": "0.2.61",
+  "description": "Companion Intelligence Hub CLI and self-hosted app platform runtime.",
+  "packageManager": "pnpm@11.5.1",
+  "engines": {
+    "node": ">=22",
+    "pnpm": ">=11"
+  },
+  "scripts": {
+    "start": "pnpm exec tsx scripts/start.ts up",
+    "dev": "pnpm exec tsx scripts/start.ts up dev --detached",
+    "local": "pnpm exec tsx scripts/start.ts up local",
+    "dev:app": "dotenv -e .env.dev -e .internal/.env -e .env.local -- env POSTGRES_HOST=localhost RABBITMQ_HOST=localhost NODE_ENV=development turbo run local",
+    "bundle": "turbo bundle",
+    "build": "turbo run build",
+    "tsc": "turbo run tsc",
+    "test": "turbo test && pnpm run test:cli",
+    "test:integration": "turbo run test:integration",
+    "test:e2e": "bash e2e/pre-test-cleanup.sh && pnpm exec tsx scripts/run-e2e.ts",
+    "test:e2e:ci": "pnpm exec playwright test",
+    "test:e2e:ui": "NODE_ENV=test dotenv -e .env -e .env.e2e -- playwright test --ui",
+    "e2e:cross-domain": "bash e2e/pre-test-cleanup.sh && E2E_SUITE=cross-domain pnpm exec playwright test --config playwright.cross-domain.config.ts",
+    "e2e:future:onboarding": "bash e2e/pre-test-cleanup.sh && E2E_SUITE=future-onboarding pnpm exec playwright test --config playwright.future-onboarding.config.ts",
+    "e2e:mcp": "bash e2e/pre-test-cleanup.sh && E2E_SUITE=mcp pnpm exec playwright test --config playwright.mcp.config.ts",
+    "e2e:mcp:ci": "bash e2e/pre-test-cleanup.sh && E2E_SUITE=mcp pnpm exec playwright test --config playwright.mcp.config.ts --grep-invert \"Full OpenClaw install\"",
+    "check": "pnpm run lint && turbo run tsc && turbo run build && turbo run test",
+    "gen:api-client": "pnpm --filter frontend exec openapi-ts -f openapi-ts.config.ts",
+    "gen:swagger": "pnpm --filter backend run gen:swagger",
+    "check:openapi": "node scripts/check-openapi-drift.cjs",
+    "check:pr": "pnpm run lint:ci && pnpm run knip:ci && pnpm run tsc && pnpm run check:openapi && pnpm run test && cargo test --manifest-path packages/desktop/src-tauri/Cargo.toml --bin ci-os-hub-desktop",
+    "lint:ci": "biome ci . --error-on-warnings --no-errors-on-unmatched",
+    "lint": "biome check",
+    "lint:fix": "biome check --write --no-errors-on-unmatched",
+    "knip": "knip",
+    "knip:ci": "knip",
+    "prepare": "husky",
+    "version": "echo $npm_package_version",
+    "dev:desktop": "pnpm exec tsx scripts/launch-tauri-desktop.ts --stack-dev",
+    "local:desktop": "pnpm exec tsx scripts/launch-tauri-desktop.ts",
+    "build:cli": "node scripts/build-standalone-cli.cjs",
+    "build:desktop": "node -e \"const { execSync } = require('node:child_process'); const command = process.platform === 'win32' ? 'cargo tauri build' : 'pnpm run build'; execSync(command, { cwd: 'packages/desktop', stdio: 'inherit', shell: true });\"",
+    "build:mobile:android": "pnpm --filter frontend build && pnpm --filter mobile android:build",
+    "build:mobile:ios": "pnpm --filter frontend build && pnpm --filter mobile ios:build",
+    "test:cli": "pnpm exec vitest run --config scripts/vitest.config.ts",
+    "agent:test-inventory": "pnpm exec tsx scripts/agent/generate-test-inventory.ts",
+    "agent:precommit-fix": "pnpm exec tsx scripts/agent/precommit-fix.ts",
+    "agent:review": "bin/agent-review",
+    "agent:sweep": "bin/agent-sweep",
+    "test:visual": "pnpm exec playwright test e2e/visual/",
+    "test:visual:update": "UPDATE_VISUAL_BASELINES=1 pnpm run test:visual",
+    "benchmark:gate": "pnpm exec tsx scripts/agent/benchmark-gate.ts",
+    "agent:validate": "bin/agent-validate-shift"
+  },
+  "lint-staged": {
+    "*": [
+      "pnpm run lint:fix",
+      "git add"
+    ]
+  },
+  "keywords": [
+    "cihub",
+    "companion-intelligence",
+    "cli",
+    "docker",
+    "self-hosted",
+    "mcp"
+  ],
+  "author": "",
+  "license": "PolyForm-Noncommercial-1.0.0",
+  "devDependencies": {
+    "@biomejs/biome": "^2.0.4",
+    "@hey-api/openapi-ts": "^0.97.3",
+    "@playwright/test": "^1.52.0",
+    "cloudflare": "^7.0.0",
+    "dotenv-cli": "^10.0.0",
+    "drizzle-orm": "^0.45.2",
+    "husky": "^9.1.7",
+    "knip": "^6.29.0",
+    "lint-staged": "^16.2.7",
+    "openai": "^6.49.0",
+    "pg": "^8.20.0",
+    "pixelmatch": "^7.1.0",
+    "pngjs": "^7.0.0",
+    "systeminformation": "^5.31.11",
+    "turbo": "^2.9.14",
+    "vitest": "^4.1.4",
+    "zod": "^4.3.6"
+  },
+  "private": false,
+  "peerDependencies": {
+    "typescript": "^5"
+  },
+  "preferGlobal": true,
+  "bin": {
+    "cihub": "./bin/cihub.cjs"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "dependencies": {
+    "tsx": "^4.19.2"
+  }
+}

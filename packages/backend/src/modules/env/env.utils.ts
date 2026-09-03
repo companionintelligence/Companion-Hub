@@ -1,0 +1,150 @@
+import crypto from 'node:crypto';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { DATA_DIR } from '@/common/constants';
+import { Injectable } from '@nestjs/common';
+import webpush from 'web-push';
+
+type RandomFieldEncoding = 'hex' | 'base64';
+
+@Injectable()
+export class EnvUtils {
+  public generateVapidKeys = () => {
+    const vapidKeys = webpush.generateVAPIDKeys();
+    return {
+      publicKey: vapidKeys.publicKey,
+      privateKey: vapidKeys.privateKey,
+    };
+  };
+
+  private getSeed = (): string => {
+    const seedFilePath = path.join(DATA_DIR, 'state', 'seed');
+    if (!fs.existsSync(seedFilePath)) {
+      throw new Error('Seed file not found');
+    }
+    return fs.readFileSync(seedFilePath, 'utf-8');
+  };
+
+  public getArchitecture = () => {
+    // Keep in step with env-helpers: host probe wins over container os.arch().
+    const probePaths = [path.join(DATA_DIR, 'state', 'hardware', 'host_metrics.json'), path.join(DATA_DIR, 'state', 'hardware', 'host_system.json')];
+    for (const filePath of probePaths) {
+      try {
+        if (!fs.existsSync(filePath)) continue;
+        const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8')) as { cpuArch?: string };
+        if (parsed.cpuArch === 'arm64') return 'arm64';
+        if (parsed.cpuArch === 'x86_64' || parsed.cpuArch === 'amd64') return 'amd64';
+      } catch {
+        // ignore and fall through
+      }
+    }
+
+    const arch = os.arch();
+
+    if (arch === 'arm64') return 'arm64';
+    if (arch === 'x64') return 'amd64';
+
+    throw new Error(`Unsupported architecture: ${arch}`);
+  };
+
+  /**
+   *  This function generates a random string of the provided length by using the SHA-256 hash algorithm.
+   *  It takes the provided name and a seed value, concatenates them, and uses them as input for the hash algorithm.
+   *  It then returns a substring of the resulting hash of the provided length.
+   *
+   *  @param {string} name - A name used as input for the hash algorithm.
+   *  @param {number} length - The desired length of the random string.
+   */
+  public createRandomString = (name: string, length: number, encoding: RandomFieldEncoding = 'hex') => {
+    const seed = this.getSeed();
+    const hash = crypto.createHash('sha256');
+
+    hash.update(name + seed.toString());
+
+    if (encoding === 'base64') {
+      // Generate the hash and slice the buffer to get the exact number of bytes
+      const randomBytes = hash.digest().slice(0, length);
+      return randomBytes.toString('base64');
+    }
+
+    return hash.digest('hex').substring(0, length);
+  };
+
+  /**
+   * Derives a new entropy value from the provided entropy and the seed
+   * @param {string} entropy - The entropy value to derive from
+   */
+  public deriveEntropy = (entropy: string): string => {
+    const seed = this.getSeed();
+    const hmac = crypto.createHmac('sha256', seed);
+    hmac.update(entropy);
+    return hmac.digest('hex');
+  };
+
+  /**
+   * Convert a Map of environment variables to a valid string of environment variables
+   * that can be used in a .env file
+   *
+   * @param {Map<string, string>} envMap - Map of environment variables
+   */
+  public envMapToString = (envMap: Map<string, string>) => {
+    const envArray = Array.from(envMap).map(([key, value]) => {
+      if (typeof value !== 'string') {
+        // Backstop, not a code path — every writer is supposed to String() its values. Coercing
+        // keeps boot alive, but doing it silently would let `KEY=[object Object]` ship into a
+        // container env with no trace, so name the key (never the value: env values are secrets).
+        console.warn(
+          `Env value for '${key}' is ${value === null || value === undefined ? String(value) : typeof value}, not a string — coercing. Fix the writer that produced it.`,
+        );
+      }
+      return `${key}=${this.sanitizeEnvValue(value)}`;
+    });
+    return envArray.join('\n');
+  };
+
+  /**
+   * Strip CR/LF from a value before it is written as a `KEY=value` line. The
+   * .env format is one variable per line, so a newline in a value can never be
+   * represented faithfully — and left unescaped it would forge additional env
+   * lines (env injection). Stripping it is both correct for the format and a
+   * defense-in-depth guard for any value derived from external input.
+   *
+   * `value` is typed `string`, but the Map it comes from is populated from resolvers,
+   * manifests and form data — any of which can hand back a non-string and make this a
+   * type lie. `.replace` on one throws a TypeError that takes down boot with a stack
+   * trace naming no variable. String() the value instead: a stringified value is
+   * recoverable, a crashed bootstrap is not. Note `?? ''` alone is NOT enough — it
+   * rescues null/undefined but a number or boolean still has no `.replace`.
+   */
+  private sanitizeEnvValue = (value: string | undefined) => String(value ?? '').replace(/[\r\n]+/g, ' ');
+
+  /**
+   * Convert a string of environment variables to a Map
+   *
+   * @param {string} envString - String of environment variables
+   */
+  public envStringToMap = (envString: string) => {
+    const envMap = new Map<string, string>();
+    const envArray = envString.split('\n');
+
+    for (const env of envArray) {
+      // Skip empty lines and comments
+      const trimmed = env.trim();
+      if (!trimmed || trimmed.startsWith('#')) continue;
+
+      const [key, ...rest] = trimmed.split('=');
+
+      // Trim the key to handle any whitespace, and only set if we have both key and value
+      if (key && rest.length) {
+        const trimmedKey = key.trim();
+        const value = rest.join('=').trim();
+        if (trimmedKey && value) {
+          envMap.set(trimmedKey, value);
+        }
+      }
+    }
+
+    return envMap;
+  };
+}
