@@ -11,7 +11,7 @@ import { LemonadeBackend } from './backends/lemonade.backend';
 import { MtplxBackend } from './backends/mtplx.backend';
 import { DsparkBackend } from './backends/dspark.backend';
 import type { InferenceBackend } from './backends/backend.interface';
-import type { CuratedModel, HardwareTier, InferenceBackendType } from '@ci-hub/common/types';
+import type { CuratedModel, HardwareProfile, HardwareTier, InferenceBackendType } from '@ci-hub/common/types';
 import { isCatalogModelInstalled, isServedModelForCatalog } from './model-availability.util';
 import { appMinContextLength, recommendContextLength } from './context-length.util';
 import { BACKEND_API_KEY } from './inference-env-resolver';
@@ -189,11 +189,11 @@ export class AppCredentialsService {
 
     const candidates = this.modelRegistry.getRecommendedModelsForHardware(profile.tier, profile).filter((m) => m.backend === backendType);
     const preferredModelId = preferences.preferredModel;
-    const recommendedLlm = this.resolveRecommendedLlm(candidates, preferredModelId, profile.tier);
-    const availableLlm = this.resolveAvailableLlm(candidates, preferredModelId, profile.tier, endpointHealth.modelsLoaded, backendType);
+    const recommendedLlm = this.resolveRecommendedLlm(candidates, preferredModelId, profile.tier, profile);
+    const availableLlm = this.resolveAvailableLlm(candidates, preferredModelId, profile.tier, profile, endpointHealth.modelsLoaded, backendType);
     const embeddings =
       (preferences.preferredEmbeddingModel ? this.modelRegistry.getCuratedModel(preferences.preferredEmbeddingModel) : null) ??
-      this.modelRegistry.getRecommendedEmbeddingModel(profile.tier, 'ollama');
+      this.modelRegistry.getRecommendedEmbeddingModel(profile.tier, 'ollama', profile);
 
     const cloudProviders = this.cloudFallback.getEnabledProviders();
     const cloudProvider = endpointReady ? undefined : cloudProviders[0];
@@ -326,15 +326,24 @@ export class AppCredentialsService {
    * top hardware-recommended model (candidates[0], biggest that fits at q4+). This is what makes the
    * onboarding "preferred model" selection actually drive what Hermes/OpenClaw default to.
    */
-  private resolveRecommendedLlm(candidates: CuratedModel[], preferredId: string | null, tier: HardwareTier): CuratedModel | null {
+  private resolveRecommendedLlm(
+    candidates: CuratedModel[],
+    preferredId: string | null,
+    tier: HardwareTier,
+    profile: HardwareProfile,
+  ): CuratedModel | null {
     if (preferredId) {
       const fromCandidates = candidates.find((m) => m.id === preferredId);
       if (fromCandidates) return fromCandidates;
       const curated = this.modelRegistry.getCuratedModel(preferredId);
-      if (curated && curated.modality === 'llm' && this.modelRegistry.getModelsForTier(tier).some((m) => m.id === preferredId)) {
+      const hardwareModels =
+        this.modelRegistry.getModelsForHardware(tier, profile, { includeRemoteHostBackends: true }) ?? this.modelRegistry.getModelsForTier(tier);
+      if (curated && curated.modality === 'llm' && hardwareModels.some((m) => m.id === preferredId)) {
         return curated;
       }
-      this.logger.warn(`[AppBootstrap] preferred model ${preferredId} is not runnable on tier=${tier}; falling back to recommended.`);
+      this.logger.warn(
+        `[AppBootstrap] preferred model ${preferredId} is not runnable on tier=${tier}/platform=${profile.os?.platform ?? 'unknown'}; falling back to recommended.`,
+      );
     }
     return candidates[0] ?? null;
   }
@@ -343,6 +352,7 @@ export class AppCredentialsService {
     candidates: CuratedModel[],
     preferredId: string | null,
     tier: HardwareTier,
+    profile: HardwareProfile,
     modelsLoaded: string[],
     backendType: InferenceBackendType,
   ): CuratedModel | null {
@@ -357,7 +367,9 @@ export class AppCredentialsService {
       if (preferred) return preferred;
 
       const curated = this.modelRegistry.getCuratedModel(preferredId);
-      if (curated && curated.modality === 'llm' && this.modelRegistry.getModelsForTier(tier).some((m) => m.id === preferredId)) {
+      const hardwareModels =
+        this.modelRegistry.getModelsForHardware(tier, profile, { includeRemoteHostBackends: true }) ?? this.modelRegistry.getModelsForTier(tier);
+      if (curated && curated.modality === 'llm' && hardwareModels.some((m) => m.id === preferredId)) {
         const preferredCurated = pickIfAvailable(curated);
         if (preferredCurated) return preferredCurated;
       }

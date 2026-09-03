@@ -6,6 +6,7 @@ import {
   getRuntimeModels,
   getTrackedModels,
   getDsparkStatus,
+  getLemonadeStatus,
   getOllamaStatus,
   getVllmStatus,
   getMtplxStatus,
@@ -21,6 +22,7 @@ import type { CloudProviderType, InferenceBackendType, TrackedModel } from '@ci-
 import type {
   CloudProviderInput,
   DsparkStatus,
+  LemonadeStatus,
   HardwareProfileResponse,
   InferencePreferencesResponse,
   RuntimeModelsResponse,
@@ -147,6 +149,11 @@ export async function fetchVllmInstallStatus(url?: string, apiKey?: string) {
 export async function fetchDsparkInstallStatus(url?: string): Promise<DsparkStatus> {
   const query = url?.trim() ? { url: url.trim() } : undefined;
   return unwrap(getDsparkStatus({ query })) as Promise<DsparkStatus>;
+}
+
+/** Probe the configured Lemonade server through its standard /v1/health endpoint. */
+export async function fetchLemonadeInstallStatus(): Promise<LemonadeStatus> {
+  return unwrap(getLemonadeStatus()) as Promise<LemonadeStatus>;
 }
 
 export async function saveCloudProviderConfig(body: { provider: CloudProviderType; apiKey?: string; enabled: boolean }): Promise<void> {

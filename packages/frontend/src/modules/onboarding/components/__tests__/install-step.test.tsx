@@ -203,6 +203,7 @@ describe('InstallStep', () => {
         visionModel: null,
         vllmApiKey: null,
         vllmUrl: null,
+        mtplxUrl: null,
         dsparkUrl: null,
       });
     });
@@ -241,6 +242,7 @@ describe('InstallStep', () => {
           visionModel: null,
           vllmApiKey: null,
           vllmUrl: null,
+          mtplxUrl: null,
           dsparkUrl: null,
         });
       },
@@ -290,6 +292,7 @@ describe('InstallStep', () => {
           visionModel: null,
           vllmApiKey: null,
           vllmUrl: null,
+          mtplxUrl: null,
           dsparkUrl: null,
         });
       },

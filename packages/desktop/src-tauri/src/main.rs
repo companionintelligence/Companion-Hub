@@ -7,6 +7,7 @@ pub mod docker_engine;
 mod error_reporting;
 pub mod hub_env;
 pub mod hub_manager;
+mod inference_runners;
 pub mod port_manager;
 mod sentry_scrubber;
 mod tray;
@@ -170,6 +171,22 @@ async fn install_ollama_command() -> Result<hub_manager::OllamaInstallResult, St
     tokio::task::spawn_blocking(hub_manager::install_ollama)
         .await
         .map_err(|e| format!("Ollama install task failed: {e}"))?
+}
+
+/// Install and start the host/container inference runners selected by onboarding.
+#[tauri::command]
+async fn install_and_start_inference_runners_command(
+    state: tauri::State<'_, hub_manager::HubPaths>,
+    backends: Vec<String>,
+) -> Result<Vec<inference_runners::InferenceRunnerResult>, String> {
+    let data_dir = state.data_dir.clone();
+    tokio::task::spawn_blocking(move || {
+        Ok(inference_runners::install_and_start_inference_runners(
+            &data_dir, &backends,
+        ))
+    })
+    .await
+    .map_err(|error| format!("Inference runner setup task failed: {error}"))?
 }
 
 /// Install ROCm on Ubuntu via pkexec-elevated AMDGPU installer.
@@ -489,6 +506,7 @@ pub fn run() {
             is_user_stopped_command,
             install_docker_command,
             install_ollama_command,
+            install_and_start_inference_runners_command,
             install_rocm_command,
             verify_rocm_command,
             install_docker_engine_alternative_command,

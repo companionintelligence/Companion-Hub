@@ -2936,6 +2936,20 @@
         ]
       }
     },
+    "/api/inference/lemonade/status": {
+      "get": {
+        "operationId": "getLemonadeStatus",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Inference"
+        ]
+      }
+    },
     "/api/inference/vllm/status": {
       "get": {
         "operationId": "getVllmStatus",

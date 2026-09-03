@@ -4,6 +4,7 @@ import {
   fetchInferencePreferences,
   fetchInferenceRuntimeModels,
   fetchInferenceTrackedModels,
+  fetchLemonadeInstallStatus,
   fetchMtplxInstallStatus,
   fetchOllamaInstallStatus,
   fetchDsparkInstallStatus,
@@ -36,8 +37,9 @@ import { OtherModelsSection } from '@/modules/onboarding/components/ai-setup/mod
 import { VllmSetupCard } from '@/modules/onboarding/components/ai-setup/vllm-setup-card';
 import { MtplxSetupCard } from '@/modules/onboarding/components/ai-setup/mtplx-setup-card';
 import { DsparkSetupCard } from '@/modules/onboarding/components/ai-setup/dspark-setup-card';
+import { LemonadeSetupCard } from '@/modules/onboarding/components/ai-setup/lemonade-setup-card';
 import { OllamaSetupCard } from '@/modules/onboarding/components/ai-setup/ollama-setup-card';
-import type { MtplxStatus, DsparkStatus, OllamaStatus, VllmStatus } from '@/modules/onboarding/helpers/ai-setup-types';
+import type { LemonadeStatus, MtplxStatus, DsparkStatus, OllamaStatus, VllmStatus } from '@/modules/onboarding/helpers/ai-setup-types';
 import {
   EMBEDDING_INFERENCE_BACKEND,
   hubLoadableSelection,
@@ -124,10 +126,12 @@ export const AiSettingsContainer = () => {
   const [vllmStatus, setVllmStatus] = useState<VllmStatus | null>(null);
   const [mtplxStatus, setMtplxStatus] = useState<MtplxStatus | null>(null);
   const [dsparkStatus, setDsparkStatus] = useState<DsparkStatus | null>(null);
+  const [lemonadeStatus, setLemonadeStatus] = useState<LemonadeStatus | null>(null);
   const [checkingOllama, setCheckingOllama] = useState(false);
   const [checkingVllm, setCheckingVllm] = useState(false);
   const [checkingMtplx, setCheckingMtplx] = useState(false);
   const [checkingDspark, setCheckingDspark] = useState(false);
+  const [checkingLemonade, setCheckingLemonade] = useState(false);
   // Backend the backend-switch effect has already refetched for (set by fetchProfile too, since it
   // fetches profile + runtime models itself); prevents a duplicate fetch right after mount.
   const lastHandledBackendRef = useRef<InferenceBackendType | null>(null);
@@ -243,6 +247,8 @@ export const AiSettingsContainer = () => {
         void checkVllmStatus();
       } else if (preferredBackend === 'mtplx') {
         void checkMtplxStatus();
+      } else if (preferredBackend === 'lemonade') {
+        void checkLemonadeStatus();
       }
 
       const configured = await fetchConfiguredCloudProviders();
@@ -361,6 +367,29 @@ export const AiSettingsContainer = () => {
     }
   }, [checkDsparkStatus, seedSelectedModelIds]);
 
+  const checkLemonadeStatus = useCallback(async () => {
+    setCheckingLemonade(true);
+    try {
+      const data = await fetchLemonadeInstallStatus();
+      setLemonadeStatus(data);
+      return data;
+    } catch {
+      setLemonadeStatus({ ready: false, running: false, endpointUrl: '' });
+      return null;
+    } finally {
+      setCheckingLemonade(false);
+    }
+  }, []);
+
+  const handleRecheckLemonade = useCallback(async () => {
+    const status = await checkLemonadeStatus();
+    if (status?.ready) {
+      const data = await fetchInferenceOnboardingProfile('lemonade');
+      setProfile(data);
+      seedSelectedModelIds(data, 'lemonade', trackedModelsRef.current);
+    }
+  }, [checkLemonadeStatus, seedSelectedModelIds]);
+
   // biome-ignore lint/correctness/useExhaustiveDependencies: only on mount
   useEffect(() => {
     fetchProfile();
@@ -414,11 +443,13 @@ export const AiSettingsContainer = () => {
       void checkVllmStatus();
     } else if (selectedBackend === 'mtplx') {
       void checkMtplxStatus();
+    } else if (selectedBackend === 'lemonade') {
+      void checkLemonadeStatus();
     }
     if (selectedBackend === 'dspark') {
       void checkDsparkStatus();
     }
-  }, [selectedBackend, fetchRuntimeModels, checkVllmStatus, checkMtplxStatus, checkDsparkStatus, seedSelectedModelIds]);
+  }, [selectedBackend, fetchRuntimeModels, checkVllmStatus, checkMtplxStatus, checkDsparkStatus, checkLemonadeStatus, seedSelectedModelIds]);
 
   const hasActiveTransfers = Object.values(trackedModels).some((model) => ['pulling', 'loading', 'unloading'].includes(model.state));
 
@@ -446,7 +477,8 @@ export const AiSettingsContainer = () => {
       const compatibleSelectedModelIds = compatibleSelection(availableModelById, selectedBackend, selectedModelIds);
 
       const preferredModel = resolvePreferredModelId(profile, selectedBackend, isAgentModel, compatibleSelectedModelIds);
-      const preferredEmbeddingModel = resolvePreferredModelId(profile, EMBEDDING_INFERENCE_BACKEND, isEmbeddingModel, compatibleSelectedModelIds);
+      const embeddingBackend = selectedBackend === 'lemonade' ? selectedBackend : EMBEDDING_INFERENCE_BACKEND;
+      const preferredEmbeddingModel = resolvePreferredModelId(profile, embeddingBackend, isEmbeddingModel, compatibleSelectedModelIds);
       const preferredVisionModel = resolvePreferredModelId(profile, selectedBackend, isVisionModel, compatibleSelectedModelIds);
 
       // Cloud keys first so the debounced AI-app restart (from preferences) sees them.
@@ -726,7 +758,7 @@ export const AiSettingsContainer = () => {
             available={profile.backends.available}
             selected={selectedBackend}
             onSelect={setSelectedBackend}
-            unavailableTypes={profile ? unavailableInferenceBackends(profile) : ['vllm', 'lemonade']}
+            unavailableTypes={profile ? unavailableInferenceBackends(profile) : []}
           />
 
           {selectedBackend === 'vllm' && (
@@ -793,6 +825,16 @@ export const AiSettingsContainer = () => {
                 <p className="text-xs text-muted-foreground mt-0.5 mb-3">{t('ONBOARDING_EMBEDDINGS_DSPARK_SECTION_DESC')}</p>
                 <OllamaSetupCard status={ollamaStatus} checking={checkingOllama} onRecheck={handleRecheckOllama} />
               </div>
+            </section>
+          )}
+
+          {selectedBackend === 'lemonade' && (
+            <section className="space-y-4 rounded-lg border border-border bg-gradient-to-b from-card to-card/60 p-5 shadow-sm sm:p-6">
+              <div>
+                <h2 className="text-base font-bold uppercase tracking-wide">{t('ONBOARDING_LEMONADE_SECTION_TITLE')}</h2>
+                <p className="mt-0.5 text-xs text-muted-foreground sm:text-sm">{t('ONBOARDING_LEMONADE_SECTION_DESC')}</p>
+              </div>
+              <LemonadeSetupCard status={lemonadeStatus} checking={checkingLemonade} onRecheck={handleRecheckLemonade} />
             </section>
           )}
 

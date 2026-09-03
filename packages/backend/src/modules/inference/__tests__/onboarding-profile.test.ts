@@ -33,6 +33,7 @@ describe('InferenceController — onboarding-profile', () => {
   let vllmBackend: MockProxy<VllmBackend>;
   let mtplxBackend: MockProxy<MtplxBackend>;
   let dsparkBackend: MockProxy<DsparkBackend>;
+  let lemonadeBackend: MockProxy<LemonadeBackend>;
 
   const fakeProfile: HardwareProfile = {
     gpu: {
@@ -106,13 +107,16 @@ describe('InferenceController — onboarding-profile', () => {
     hostMetrics = moduleRef.get(HostMetricsService);
     ollamaBackend = moduleRef.get(OllamaBackend);
     vllmBackend = moduleRef.get(VllmBackend);
+    lemonadeBackend = moduleRef.get(LemonadeBackend);
     mtplxBackend = moduleRef.get(MtplxBackend);
     dsparkBackend = moduleRef.get(DsparkBackend);
     ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['phi4-mini'] });
     vllmBackend.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [] });
     mtplxBackend.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [] });
     dsparkBackend.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [] });
+    lemonadeBackend.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [] });
     modelRegistry.getCatalog.mockReturnValue([{ id: 'phi-4-mini', backendModelId: 'phi4-mini', backend: 'ollama' }] as any);
+    modelRegistry.getModelsForHardware.mockImplementation((tier) => modelRegistry.getModelsForTier(tier));
     modelRegistry.getTrackedModel.mockReturnValue(undefined);
     hostMetrics.readHostSection.mockResolvedValue(null);
     hostMetrics.getDisplayLoad.mockResolvedValue({
@@ -186,6 +190,23 @@ describe('InferenceController — onboarding-profile', () => {
     const result = await controller.getOnboardingProfile({ backend: 'mtplx' });
 
     expect(result.installedCatalogIds).toEqual(expect.arrayContaining(['qwen3-8-27b-mtplx-speed', 'nomic-embed-text']));
+  });
+
+  it('maps Lemonade models served through its Hub-managed API when backend=lemonade', async () => {
+    hardwareInspector.getProfile.mockResolvedValue(fakeProfile);
+    modelRegistry.getRecommendedModelsForHardware.mockReturnValue([]);
+    modelRegistry.getModelsForTier.mockReturnValue([]);
+    memoryManager.calculateBudget.mockReturnValue(fakeStatus.memoryBudget);
+    router.getStatus.mockResolvedValue(fakeStatus);
+    lemonadeBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['Qwen3-8B-GGUF'] });
+    modelRegistry.getCatalog.mockReturnValue([
+      { id: 'nomic-embed-text', backendModelId: 'nomic-embed-text', backend: 'ollama', modality: 'embedding' },
+      { id: 'qwen3-8b-lemonade', backendModelId: 'Qwen3-8B-GGUF', backend: 'lemonade', modality: 'llm' },
+    ] as any);
+
+    const result = await controller.getOnboardingProfile({ backend: 'lemonade' });
+
+    expect(result.installedCatalogIds).toEqual(['qwen3-8b-lemonade']);
   });
 
   it('should recommend ollama (not vllm) for AMD GPU with runtime — vLLM has no maintained ROCm image', async () => {

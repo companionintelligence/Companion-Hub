@@ -3749,6 +3749,17 @@ export type GetOllamaStatusResponses = {
     200: unknown;
 };
 
+export type GetLemonadeStatusData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/inference/lemonade/status';
+};
+
+export type GetLemonadeStatusResponses = {
+    200: unknown;
+};
+
 export type GetVllmStatusData = {
     body?: never;
     headers?: {

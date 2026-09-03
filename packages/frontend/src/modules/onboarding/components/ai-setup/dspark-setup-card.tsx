@@ -6,6 +6,7 @@ import type { DsparkStatus } from '@/modules/onboarding/helpers/ai-setup-types';
 import { AlertCircle, CheckCircle2, Download, Loader2, RefreshCw } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { DsparkIcon } from './icons';
+import { AutoInstallRunnerButton } from './auto-install-runner-button';
 
 const DSPARK_DOCS_URL = 'https://github.com/ARahim3/mlx-dspark#install';
 
@@ -34,6 +35,7 @@ interface DsparkSetupCardProps {
   /** Operator-configured mlx-dspark base URL; empty string means "use the Hub default". */
   endpointUrl?: string;
   onEndpointUrlChange?: (value: string) => void;
+  onAutoInstall?: () => Promise<void>;
 }
 
 /**
@@ -76,7 +78,7 @@ const DsparkConnectionFields = ({
   );
 };
 
-export const DsparkSetupCard = ({ status, checking, onRecheck, endpointUrl, onEndpointUrlChange }: DsparkSetupCardProps) => {
+export const DsparkSetupCard = ({ status, checking, onRecheck, endpointUrl, onEndpointUrlChange, onAutoInstall }: DsparkSetupCardProps) => {
   const { t } = useTranslation();
 
   if (!status) {
@@ -171,6 +173,7 @@ export const DsparkSetupCard = ({ status, checking, onRecheck, endpointUrl, onEn
               />
             </div>
             <div className="flex gap-2 flex-wrap">
+              {onAutoInstall && <AutoInstallRunnerButton onRun={onAutoInstall} />}
               <Button size="sm" variant="ghost" onClick={() => openExternal(DSPARK_DOCS_URL)}>
                 {t('ONBOARDING_DSPARK_DOCS')}
               </Button>

@@ -1,4 +1,12 @@
-import type { CuratedModel, HardwareTier, InferenceBackendType, ModelModality, ModelPurpose, TierRecommendation } from '@ci-hub/common/types';
+import type {
+  CuratedModel,
+  HardwareTier,
+  HostPlatform,
+  InferenceBackendType,
+  ModelModality,
+  ModelPurpose,
+  TierRecommendation,
+} from '@ci-hub/common/types';
 
 // ─── LLM catalog (TOON) ──────────────────────────────────────────────────────
 // The LLM catalog is authored as a TOON table (https://toonformat.dev) — one compact, pipe-delimited
@@ -199,6 +207,29 @@ llms[87|]{id,backendModelId,name,purpose,params,gb,tier,ctxK,creator,intel,agent
 /** A decoded TOON row: every column mapped to its raw string cell (empty string when blank). */
 type ToonRow = Record<string, string>;
 
+const ALL_HOST_PLATFORMS: HostPlatform[] = ['darwin', 'linux', 'win32'];
+
+/**
+ * Native host platforms supported by the serving implementation behind each catalog table. These
+ * are deliberately separate from `gpuVendors`: a model can fit an Apple unified-memory budget but
+ * still be impossible to serve through a Linux-only backend (and vice versa). Host-served backends
+ * may still be pointed at a remote machine; the platform gate is for automatic local recommendations.
+ */
+function defaultSupportedPlatforms(backend: InferenceBackendType): HostPlatform[] {
+  switch (backend) {
+    case 'vllm':
+      // Plain vLLM rows use the CUDA host/image path in VllmBackend. Apple Silicon has its own
+      // vLLM-Metal table below; neither path is a Hub-supported native macOS CUDA deployment.
+      return ['linux', 'win32'];
+    case 'mtplx':
+    case 'dspark':
+      return ['darwin'];
+    case 'ollama':
+    case 'lemonade':
+      return [...ALL_HOST_PLATFORMS];
+  }
+}
+
 /**
  * Minimal decoder for the pipe-delimited tabular TOON subset this catalog uses:
  * a `name[N|]{col,col,...}:` header followed by N indented rows of `|`-separated values.
@@ -316,7 +347,10 @@ const MOE_ACTIVE_PARAMS_B: Record<string, number> = {
 function buildLlmModel(
   row: ToonRow,
   backend: InferenceBackendType,
-  overrides?: { gpuVendors?: CuratedModel['requirements']['gpuVendors'] },
+  overrides?: {
+    gpuVendors?: CuratedModel['requirements']['gpuVendors'];
+    supportedPlatforms?: HostPlatform[];
+  },
 ): CuratedModel {
   // Per-row `quant` column (vLLM table) wins; otherwise Ollama/Lemonade rows are
   // the q4_K_M default build, and vLLM serves the raw bf16 safetensors.
@@ -382,6 +416,7 @@ function buildLlmModel(
       // `overrides.gpuVendors` (VLLM_MLX_LLM_TOON) replaces this default for rows that run through
       // vLLM-Metal instead — see the comment above that table for why those are 'apple'-only.
       gpuVendors: overrides?.gpuVendors ?? (backend === 'vllm' ? ['nvidia'] : ['nvidia', 'amd', 'apple', 'cpu']),
+      supportedPlatforms: overrides?.supportedPlatforms ?? defaultSupportedPlatforms(backend),
       npuRequired: false,
       minTier: tier,
     },
@@ -571,7 +606,9 @@ llms[64|]{id,backendModelId,name,purpose,params,gb,tier,ctxK,creator,intel,agent
   minimax-m2-mlx|mlx-community/MiniMax-M2-4bit|MiniMax M2 (MLX)|general|230|128.7|high|205|MiniMax|||1|0|1|0||||mlx-4bit
 `;
 
-const vllmMlxLlms: CuratedModel[] = decodeToonTable(VLLM_MLX_LLM_TOON, 'llms').map((row) => buildLlmModel(row, 'vllm', { gpuVendors: ['apple'] }));
+const vllmMlxLlms: CuratedModel[] = decodeToonTable(VLLM_MLX_LLM_TOON, 'llms').map((row) =>
+  buildLlmModel(row, 'vllm', { gpuVendors: ['apple'], supportedPlatforms: ['darwin'] }),
+);
 
 // ─── MTPLX LLM catalog (TOON) ─────────────────────────────────────────────────
 // Chat models for the `mtplx` backend — github.com/youssofal/MTPLX, a native macOS app/CLI (Apple
@@ -628,7 +665,9 @@ llms[8|]{id,backendModelId,name,purpose,params,gb,tier,ctxK,creator,intel,agenti
   qwen3-5-9b-mtplx-speed|Youssofal/Qwen3.5-9B-MTPLX-Optimized-Speed|Qwen 3.5 9B MTPLX Optimized Speed|reasoning|9|8.7|low|262|Alibaba|||1|1|1|0||||mtplx-dynamic
 `;
 
-const mtplxLlms: CuratedModel[] = decodeToonTable(MTPLX_LLM_TOON, 'llms').map((row) => buildLlmModel(row, 'mtplx', { gpuVendors: ['apple'] }));
+const mtplxLlms: CuratedModel[] = decodeToonTable(MTPLX_LLM_TOON, 'llms').map((row) =>
+  buildLlmModel(row, 'mtplx', { gpuVendors: ['apple'], supportedPlatforms: ['darwin'] }),
+);
 
 // ─── mlx-dspark (speculative decoding / Apple Silicon) LLM catalog (TOON) ────
 // Chat models for mlx-dspark (github.com/ARahim3/mlx-dspark), which runs two EAGLE-family
@@ -697,7 +736,9 @@ llms[11|]{id,backendModelId,name,purpose,params,gb,ramGb,tier,ctxK,creator,intel
 // `gpuVendors: ['apple']` is the whole gating story (enforced in ModelRegistryService): mlx-dspark
 // is Metal-only, and because the system-RAM fallback path reports vendor 'cpu', an 'apple'-only row
 // can never be resurrected onto non-Apple hardware.
-const dsparkLlms: CuratedModel[] = decodeToonTable(DSPARK_LLM_TOON, 'llms').map((row) => buildLlmModel(row, 'dspark', { gpuVendors: ['apple'] }));
+const dsparkLlms: CuratedModel[] = decodeToonTable(DSPARK_LLM_TOON, 'llms').map((row) =>
+  buildLlmModel(row, 'dspark', { gpuVendors: ['apple'], supportedPlatforms: ['darwin'] }),
+);
 
 // Non-LLM models (voice + embedding) in TOON. Unlike the LLM table these carry explicit requirements
 // (they aren't derived from a parameter count); purpose and input modality are derived from `modality`.
@@ -736,6 +777,7 @@ const extraModels: CuratedModel[] = decodeToonTable(EXTRAS_TOON, 'extras').map((
       minRamMb: Number(row.minRamMb),
       diskMb: Number(row.diskMb),
       gpuVendors,
+      supportedPlatforms: defaultSupportedPlatforms((row.backend ?? 'ollama') as InferenceBackendType),
       npuRequired: false,
       minTier: (row.minTier ?? 'cpu-only') as HardwareTier,
     },

@@ -29,7 +29,7 @@ describe('OllamaSetupCard auto-install', () => {
   it('hides the auto-install button outside the desktop app (no Tauri)', () => {
     render(<OllamaSetupCard status={ollamaMissing} checking={false} onRecheck={vi.fn()} />);
 
-    expect(screen.queryByRole('button', { name: /Auto-Install Ollama/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Run this automatically/i })).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Get Ollama/i })).toBeInTheDocument();
   });
 
@@ -48,7 +48,7 @@ describe('OllamaSetupCard auto-install', () => {
     installTauriMock(vi.fn());
     render(<OllamaSetupCard status={{ ...ollamaMissing, bridgeUnreachable: true, failureMode: 'filtered' }} checking={false} onRecheck={vi.fn()} />);
 
-    expect(screen.queryByRole('button', { name: /Auto-Install Ollama/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Run this automatically/i })).not.toBeInTheDocument();
   });
 
   // Guards the test above: with the same Tauri mock but a non-filtered failure the
@@ -57,7 +57,7 @@ describe('OllamaSetupCard auto-install', () => {
     installTauriMock(vi.fn());
     render(<OllamaSetupCard status={{ ...ollamaMissing, failureMode: 'refused' }} checking={false} onRecheck={vi.fn()} />);
 
-    expect(screen.getByRole('button', { name: /Auto-Install Ollama/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Run this automatically/i })).toBeInTheDocument();
   });
 
   it('renders the remediation command for a filtered bridge', () => {
@@ -86,7 +86,7 @@ describe('OllamaSetupCard auto-install', () => {
     const user = userEvent.setup();
     render(<OllamaSetupCard status={ollamaMissing} checking={false} onRecheck={onRecheck} />);
 
-    await user.click(screen.getByRole('button', { name: /Auto-Install Ollama/i }));
+    await user.click(screen.getByRole('button', { name: /Run this automatically/i }));
 
     expect(invoke).toHaveBeenCalledWith('install_ollama_command');
     await waitFor(() => expect(screen.getByText(/Ollama installed/i)).toBeInTheDocument());
@@ -104,9 +104,9 @@ describe('OllamaSetupCard auto-install', () => {
     const user = userEvent.setup();
     render(<OllamaSetupCard status={ollamaMissing} checking={false} onRecheck={vi.fn()} />);
 
-    await user.click(screen.getByRole('button', { name: /Auto-Install Ollama/i }));
+    await user.click(screen.getByRole('button', { name: /Run this automatically/i }));
     expect(screen.getByText(/Installing Ollama/i)).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /Auto-Install Ollama/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Run this automatically/i })).not.toBeInTheDocument();
 
     resolveInstall({ state: 'completed', detail: null });
     await waitFor(() => expect(screen.getByText(/Ollama installed/i)).toBeInTheDocument());
@@ -118,11 +118,11 @@ describe('OllamaSetupCard auto-install', () => {
     const user = userEvent.setup();
     render(<OllamaSetupCard status={ollamaMissing} checking={false} onRecheck={vi.fn()} />);
 
-    await user.click(screen.getByRole('button', { name: /Auto-Install Ollama/i }));
+    await user.click(screen.getByRole('button', { name: /Run this automatically/i }));
 
     await waitFor(() => expect(screen.getByText(/Authorization was cancelled or denied/i)).toBeInTheDocument());
     // The button returns for a retry.
-    expect(screen.getByRole('button', { name: /Auto-Install Ollama/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Run this automatically/i })).toBeInTheDocument();
   });
 
   it('still offers auto-install when Ollama is installed but the bridge is unreachable', () => {
@@ -135,7 +135,7 @@ describe('OllamaSetupCard auto-install', () => {
       />,
     );
 
-    expect(screen.getByRole('button', { name: /Auto-Install Ollama/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Run this automatically/i })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /Get Ollama/i })).not.toBeInTheDocument();
   });
 });

@@ -65,14 +65,14 @@ export function modelTags(model: CuratedModel, t?: TranslateFn): string[] {
   return purpose ? [purpose.charAt(0).toUpperCase() + purpose.slice(1)] : [];
 }
 
-export function modelMeta(model: CuratedModel): ReactNode {
+export function modelMeta(model: CuratedModel, includeStorage = true): ReactNode {
   return (
     <span className="flex items-center gap-3">
       <span className="flex items-center gap-1">
         <MemoryStick className="h-3 w-3 flex-shrink-0" />
         {formatSize(model.runtime.memoryFootprintMb)}
       </span>
-      {model.requirements?.diskMb != null && (
+      {includeStorage && model.requirements?.diskMb != null && (
         <span className="flex items-center gap-1">
           <HardDrive className="h-3 w-3 flex-shrink-0" />
           {formatSize(model.requirements.diskMb)}
@@ -110,18 +110,20 @@ export const RecommendedModels = ({
     .sort((a, b) => Number(b.id === preferredModelId) - Number(a.id === preferredModelId));
 
   const installHint =
-    chatBackend === 'vllm'
-      ? t('ONBOARDING_MODELS_VLLM_INSTALL_HINT')
-      : chatBackend === 'mtplx'
-        ? t('ONBOARDING_MODELS_MTPLX_INSTALL_HINT')
-        : chatBackend === 'dspark'
-          ? t('ONBOARDING_MODELS_DSPARK_INSTALL_HINT')
-          : t('ONBOARDING_MODELS_INSTALL_AFTER_DOWNLOAD');
+    chatBackend === 'dspark'
+      ? undefined
+      : chatBackend === 'vllm'
+        ? t('ONBOARDING_MODELS_VLLM_INSTALL_HINT')
+        : chatBackend === 'mtplx'
+          ? t('ONBOARDING_MODELS_MTPLX_INSTALL_HINT')
+          : chatBackend === 'lemonade'
+            ? t('ONBOARDING_MODELS_LEMONADE_INSTALL_HINT')
+            : t('ONBOARDING_MODELS_INSTALL_AFTER_DOWNLOAD');
 
   return (
-    <StepSection number={4} badge="recommended" title={t('ONBOARDING_MODELS_TITLE')} description={t('ONBOARDING_RECOMMENDED_MODELS_DESC')}>
+    <StepSection number={4} badge="recommended" title={t('ONBOARDING_MODELS_TITLE')}>
       <p className="mb-3 text-sm text-muted-foreground">{t('ONBOARDING_MODELS_CALLOUT')}</p>
-      <p className="mb-4 text-xs text-muted-foreground">{installHint}</p>
+      {installHint && <p className="mb-4 text-xs text-muted-foreground">{installHint}</p>}
       {models.length > 0 ? (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3" data-testid="model-card-title">
           {models.map((model) => (
@@ -136,7 +138,8 @@ export const RecommendedModels = ({
               onToggle={() => onToggleModel(model.id)}
               agentDefault={model.id === preferredModelId}
               installed={installed.has(model.id)}
-              meta={modelMeta(model)}
+              meta={modelMeta(model, false)}
+              metaInline
               scores={modelScores(model)}
             />
           ))}

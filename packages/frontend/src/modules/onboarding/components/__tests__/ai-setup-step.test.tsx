@@ -4,20 +4,28 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { AiSetupStep } from '../ai-setup-step';
 import type { HardwareProfileResponse } from '../../helpers/ai-setup-types';
 
-const { fetchInferenceOnboardingProfile, fetchOllamaInstallStatus, fetchVllmInstallStatus, fetchDsparkInstallStatus, rescanInferenceHardware } =
-  vi.hoisted(() => ({
-    fetchInferenceOnboardingProfile: vi.fn(),
-    fetchOllamaInstallStatus: vi.fn(),
-    fetchVllmInstallStatus: vi.fn(),
-    fetchDsparkInstallStatus: vi.fn(),
-    rescanInferenceHardware: vi.fn(),
-  }));
+const {
+  fetchInferenceOnboardingProfile,
+  fetchOllamaInstallStatus,
+  fetchVllmInstallStatus,
+  fetchDsparkInstallStatus,
+  fetchLemonadeInstallStatus,
+  rescanInferenceHardware,
+} = vi.hoisted(() => ({
+  fetchInferenceOnboardingProfile: vi.fn(),
+  fetchOllamaInstallStatus: vi.fn(),
+  fetchVllmInstallStatus: vi.fn(),
+  fetchDsparkInstallStatus: vi.fn(),
+  fetchLemonadeInstallStatus: vi.fn(),
+  rescanInferenceHardware: vi.fn(),
+}));
 
 vi.mock('@/lib/inference/inference-api', () => ({
   fetchInferenceOnboardingProfile,
   fetchOllamaInstallStatus,
   fetchVllmInstallStatus,
   fetchDsparkInstallStatus,
+  fetchLemonadeInstallStatus,
   rescanInferenceHardware,
 }));
 
@@ -243,6 +251,7 @@ describe('AiSetupStep', () => {
     fetchOllamaInstallStatus.mockImplementation(() => Promise.resolve(api.ollama));
     fetchVllmInstallStatus.mockImplementation(() => Promise.resolve(api.vllm));
     fetchDsparkInstallStatus.mockImplementation(() => Promise.resolve({ ready: false, running: false, endpointUrl: 'http://127.0.0.1:8080' }));
+    fetchLemonadeInstallStatus.mockImplementation(() => Promise.resolve({ ready: false, running: false, endpointUrl: 'http://127.0.0.1:13305' }));
     rescanInferenceHardware.mockImplementation(async () => {
       if (!api.rescanOk) throw new Error('HTTP 503');
     });
@@ -461,6 +470,62 @@ describe('AiSetupStep', () => {
     await waitFor(() => expect(screen.getByTestId('backend-card-title')).toBeInTheDocument());
     expect(screen.getByTestId('backend-option-ollama')).toBeInTheDocument();
     expect(screen.getByTestId('backend-option-vllm')).toBeInTheDocument();
+  });
+
+  it('puts speculative inference first, nests MTPLX beneath it, and hides Lemonade on macOS', async () => {
+    api.profile = {
+      ...highTierProfile,
+      hardware: {
+        ...highTierProfile.hardware,
+        gpu: { ...highTierProfile.hardware.gpu, vendor: 'apple', model: 'Apple M2 Max', unifiedMemory: true },
+        cpu: { ...highTierProfile.hardware.cpu, arch: 'arm64', model: 'Apple M2 Max' },
+        os: { platform: 'darwin', name: 'macOS', version: '15.6' },
+      },
+      backends: {
+        recommended: 'mtplx',
+        available: [
+          { type: 'ollama', running: true, healthy: true },
+          { type: 'vllm', running: false, healthy: false },
+          { type: 'lemonade', running: false, healthy: false },
+          { type: 'mtplx', running: false, healthy: false },
+          { type: 'dspark', running: false, healthy: false },
+        ],
+      },
+    };
+
+    renderStep();
+    await waitFor(() => expect(screen.getByTestId('backend-option-dspark')).toBeInTheDocument());
+
+    const optionIds = Array.from(screen.getByTestId('backend-options').querySelectorAll('label')).map((label) => label.dataset.testid);
+    expect(optionIds).toEqual(['backend-option-dspark', 'backend-option-mtplx', 'backend-option-ollama', 'backend-option-vllm']);
+    expect(screen.getByTestId('backend-option-dspark-group')).toContainElement(screen.getByTestId('backend-option-mtplx'));
+    expect(screen.queryByTestId('backend-option-lemonade')).not.toBeInTheDocument();
+    expect(screen.getByTestId('backend-option-dspark').querySelector('input') as HTMLInputElement).toBeChecked();
+    expect(screen.getByTestId('backend-option-dspark')).toHaveTextContent('Recommended');
+    expect(screen.getByTestId('backend-option-mtplx')).not.toHaveTextContent('ONBOARDING_BACKEND_MTPLX_DESC');
+  });
+
+  it('shows only inference memory beside capabilities on recommended model cards', async () => {
+    const sourceModel = highTierProfile.recommendedModels[0];
+    if (!sourceModel) throw new Error('Test fixture is missing a recommended model');
+    const model = {
+      ...sourceModel,
+      runtime: { ...sourceModel.runtime, memoryFootprintMb: 23552 },
+      requirements: { diskMb: 24064 },
+    };
+    api.profile = {
+      ...highTierProfile,
+      recommendedModels: [model] as any,
+      availableModels: [model] as any,
+    };
+
+    renderStep();
+    await waitFor(() => expect(screen.getByTestId('model-row-phi-4-mini')).toBeInTheDocument());
+
+    const modelCard = screen.getByTestId('model-row-phi-4-mini');
+    expect(modelCard).toHaveTextContent('23.0 GB');
+    expect(modelCard).not.toHaveTextContent('23.5 GB');
+    expect(modelCard.querySelector('[data-testid="model-meta-inline"]')).toBeInTheDocument();
   });
 
   it('does not block Continue on vLLM path when Ollama is down', async () => {
@@ -758,6 +823,7 @@ describe('AiSetupStep', () => {
     api.profile = insufficientProfile;
     renderStep();
     await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
+    await userEvent.setup().click(screen.getByTestId('step-section-toggle-7'));
     expect(screen.getByTestId('cloud-inputs')).toBeInTheDocument();
     expect(screen.getByText(/can't run local AI models/)).toBeInTheDocument();
   });
@@ -1147,7 +1213,8 @@ describe('AiSetupStep', () => {
     renderStep();
     await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
 
-    // Advanced is now a numbered step with the Cloud API Keys shown inline (no accordion).
+    expect(screen.getByTestId('step-section-toggle-7')).toHaveAttribute('aria-expanded', 'false');
+    await user.click(screen.getByTestId('step-section-toggle-7'));
     await user.type(screen.getByTestId('cloud-key-openai'), 'invalid-key');
     expect(screen.getByTestId('cloud-error-openai')).toHaveTextContent('should start with "sk-"');
   });

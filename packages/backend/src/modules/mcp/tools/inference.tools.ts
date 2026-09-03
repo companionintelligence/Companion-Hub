@@ -74,8 +74,8 @@ export class InferenceTools implements OnModuleInit {
     });
 
     // ─── hub_start_inference_backend ────────────────────────────────
-    // ISSUE-MCP-3: inference backends (Ollama/vLLM/Lemonade) are managed by the Hub runtime (its
-    // compose stack / host services), not started on demand by the Hub. The previous handler
+    // ISSUE-MCP-3: inference backends (Ollama/vLLM/Lemonade) are configured through the Hub
+    // runtime and host services, not started on demand by the Hub. The previous handler
     // returned a "start requested" message but did nothing — misleading an agent into believing a
     // backend was started. This now honestly reports live status and states that lifecycle is not
     // performed here. (Real on-demand start/stop would need a public compose-orchestration path in

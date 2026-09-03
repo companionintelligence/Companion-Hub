@@ -1,4 +1,10 @@
-import { fetchDsparkInstallStatus, fetchMtplxInstallStatus, fetchOllamaInstallStatus, fetchVllmInstallStatus } from '@/lib/inference/inference-api';
+import {
+  fetchDsparkInstallStatus,
+  fetchLemonadeInstallStatus,
+  fetchMtplxInstallStatus,
+  fetchOllamaInstallStatus,
+  fetchVllmInstallStatus,
+} from '@/lib/inference/inference-api';
 import {
   ensurePullStarted,
   ensurePullsStarted,
@@ -97,6 +103,11 @@ export function useModelPullOrchestrator({
         }
         if (inferenceBackend === 'mtplx') {
           const data = (await fetchMtplxInstallStatus()) as { ready?: boolean; running?: boolean };
+          if (!cancelled) setBackendReady(!!(data.ready ?? data.running));
+          return;
+        }
+        if (inferenceBackend === 'lemonade') {
+          const data = (await fetchLemonadeInstallStatus()) as { ready?: boolean; running?: boolean };
           if (!cancelled) setBackendReady(!!(data.ready ?? data.running));
           return;
         }

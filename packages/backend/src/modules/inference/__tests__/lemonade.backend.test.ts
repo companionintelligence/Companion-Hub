@@ -70,6 +70,26 @@ describe('LemonadeBackend', () => {
     });
   });
 
+  describe('Model lifecycle', () => {
+    it('loads through Lemonade’s documented /v1/load endpoint', async () => {
+      const post = vi.fn().mockResolvedValue({ data: { status: 'ok' } });
+      (axios.post as never) = post;
+
+      await backend.loadModel('Qwen3-8B-GGUF');
+
+      expect(post).toHaveBeenCalledWith('http://ci-hub-lemonade:13305/v1/load', { model_name: 'Qwen3-8B-GGUF' }, { timeout: 120000 });
+    });
+
+    it('unloads through Lemonade’s documented /v1/unload endpoint', async () => {
+      const post = vi.fn().mockResolvedValue({ data: { status: 'ok' } });
+      (axios.post as never) = post;
+
+      await backend.unloadModel('Qwen3-8B-GGUF');
+
+      expect(post).toHaveBeenCalledWith('http://ci-hub-lemonade:13305/v1/unload', { model_name: 'Qwen3-8B-GGUF' }, { timeout: 30000 });
+    });
+  });
+
   describe('Compose config', () => {
     it('should include AMD devices', () => {
       const config = backend.getComposeConfig('amd');

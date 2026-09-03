@@ -3,18 +3,38 @@ import type { InferenceBackendType } from '@ci-hub/common/types';
 import type { HardwareProfileResponse } from './ai-setup-types';
 
 /**
- * Backends grayed out in the backend picker. Only Lemonade is held back (dark-launched pending
- * NPU detection — see CI-Hub#1104).
+ * Backends grayed out in the backend picker. All registered local backends are selectable; their
+ * setup cards are responsible for showing whether the operator's endpoint is reachable.
  *
- * vLLM, MTPLX, and mlx-dspark are always selectable: all three are host-run (or remote)
+ * vLLM, MTPLX, and mlx-dspark are always selectable: all are host-run (or remote)
  * OpenAI-compatible endpoints, so the real gate is the live endpoint probe in their setup cards —
  * not the local GPU or, for MTPLX/mlx-dspark, whether the Mac is Apple Silicon. Hardware still
  * drives which backend is *recommended* (server-side `getRecommendedBackend`), and the catalog only
- * recommends vLLM models that fit an NVIDIA VRAM budget, and MTPLX/mlx-dspark models that fit an
- * Apple-Silicon unified-memory budget (their rows are `gpuVendors: ['apple']`).
+ * recommends vLLM models that fit an NVIDIA VRAM budget, and MTPLX/mlx-dspark models that
+ * fit an Apple-Silicon unified-memory budget (their rows are `gpuVendors: ['apple']`).
  */
 export function unavailableInferenceBackends(_profile: HardwareProfileResponse): InferenceBackendType[] {
-  return ['lemonade'];
+  return [];
+}
+
+/**
+ * Backends that should be omitted from the picker for the detected host. The profile's OS is the
+ * source of truth here — the browser may be connected from a different machine than the Hub.
+ */
+export function hiddenInferenceBackends(profile: HardwareProfileResponse): InferenceBackendType[] {
+  return profile.hardware.os?.platform?.toLowerCase() === 'darwin' ? ['lemonade'] : [];
+}
+
+/**
+ * The default local backend for a host. Apple Silicon Macs should open on mlx-dspark even if an
+ * older profile or a remote probe reports MTPLX as its recommendation; the backend remains an
+ * explicit opt-in alternative directly beneath it.
+ */
+export function recommendedInferenceBackend(profile: HardwareProfileResponse): InferenceBackendType {
+  const platform = profile.hardware.os?.platform?.toLowerCase();
+  const isAppleSiliconMac = platform === 'darwin' && (profile.hardware.gpu.vendor === 'apple' || profile.hardware.cpu.arch === 'arm64');
+  const dsparkAvailable = profile.backends.available.some(({ type }) => type === 'dspark');
+  return isAppleSiliconMac && dsparkAvailable ? 'dspark' : profile.backends.recommended;
 }
 
 /**
@@ -32,11 +52,12 @@ export function isHostServedBackend(backend: InferenceBackendType | undefined): 
  *
  * Note this is not the complement of {@link isHostServedBackend} — mlx-dspark is both. It is
  * host-run (the Hub only holds a URL for it), yet it accepts `POST /admin/load` over HTTP, so the
- * Hub can put a model into it. vLLM cannot: there is no way to load a model into a running host
- * vLLM server, which is why its rows link out to Hugging Face instead of offering a pull.
+ * Hub can put a model into it. Lemonade accepts pull/load requests through its API even though the
+ * server itself runs separately. vLLM cannot hot-swap a running server, which is why
+ * their rows link out to Hugging Face instead of offering a pull.
  */
 export function isHubLoadableBackend(backend: InferenceBackendType | undefined): boolean {
-  return backend === 'ollama' || backend === 'dspark';
+  return backend === 'ollama' || backend === 'lemonade' || backend === 'dspark';
 }
 
 /**
@@ -48,7 +69,7 @@ export function isHubLoadableBackend(backend: InferenceBackendType | undefined):
  * finished last actually served, while the registry recorded all of them as loaded. Install just
  * the one the operator picked as their default (falling back to the first ticked row).
  *
- * vLLM and Lemonade rows are dropped: the Hub has no way to install into them.
+ * vLLM rows are dropped: that server must be restarted with a new model.
  */
 export function hubLoadableSelection(
   selectedIds: string[],
@@ -56,12 +77,13 @@ export function hubLoadableSelection(
   preferredModelId?: string | null,
 ): string[] {
   const ollamaIds = selectedIds.filter((id) => backendOf(id) === 'ollama');
+  const lemonadeIds = selectedIds.filter((id) => backendOf(id) === 'lemonade');
   const dsparkIds = selectedIds.filter((id) => backendOf(id) === 'dspark');
   if (dsparkIds.length === 0) {
-    return ollamaIds;
+    return [...ollamaIds, ...lemonadeIds];
   }
   const resident = preferredModelId && dsparkIds.includes(preferredModelId) ? preferredModelId : dsparkIds[0];
-  return resident ? [...ollamaIds, resident] : ollamaIds;
+  return resident ? [...ollamaIds, ...lemonadeIds, resident] : [...ollamaIds, ...lemonadeIds];
 }
 
 /** Embeddings always resolve against Ollama, even when chat runs on vLLM or mlx-dspark. */

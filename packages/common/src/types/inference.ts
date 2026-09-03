@@ -1,3 +1,5 @@
+import type { HostPlatform } from './host-metrics.js';
+
 // ─── Hardware Detection ─────────────────────────────────────────────────────
 
 export interface HardwareProfile {
@@ -106,6 +108,8 @@ export interface CuratedModel {
     minRamMb: number;
     diskMb: number;
     gpuVendors: ('nvidia' | 'amd' | 'intel' | 'apple' | 'cpu')[];
+    /** Host platforms on which this backend/model combination is runnable locally. */
+    supportedPlatforms?: HostPlatform[];
     npuRequired: boolean;
     minTier: HardwareTier;
   };

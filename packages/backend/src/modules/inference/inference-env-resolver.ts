@@ -57,7 +57,7 @@ export interface StandardizedAiEnv {
    * window so apps don't inherit Ollama's oversized memory-based default.
    */
   CI_LLM_NUM_CTX?: string;
-  /** Active inference backend (`ollama` | `vllm` | `lemonade` | `mtplx` | `cloud`). */
+  /** Active inference backend (`ollama` | `vllm` | `lemonade` | `mtplx` | `dspark` | `cloud`). */
   CI_INFERENCE_BACKEND?: string;
   /** Every enabled cloud provider (CI_CLOUD_* + conventional aliases). Additive. */
   cloudProviderEnv?: Record<string, string>;
@@ -209,7 +209,7 @@ export class InferenceEnvResolver {
         const curated = this.modelRegistry.getCuratedModel(preferences.preferredEmbeddingModel);
         if (curated?.backend === type) return curated.backendModelId;
       }
-      return this.modelRegistry.getRecommendedEmbeddingModel(profile.tier, type)?.backendModelId;
+      return this.modelRegistry.getRecommendedEmbeddingModel(profile.tier, type, profile)?.backendModelId;
     };
 
     let embeddingModel = resolveEmbedding(backendType);
@@ -235,7 +235,7 @@ export class InferenceEnvResolver {
       }
     }
     if (!visionModel) {
-      const recommended = this.modelRegistry.getRecommendedVisionModel(profile.tier, backendType);
+      const recommended = this.modelRegistry.getRecommendedVisionModel(profile.tier, backendType, profile);
       visionModel = recommended?.backendModelId;
     }
 

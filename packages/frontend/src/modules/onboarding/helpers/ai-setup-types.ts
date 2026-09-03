@@ -116,6 +116,11 @@ export interface DsparkStatus extends VllmStatus {
   loadedModels?: string[];
 }
 
+/** Lemonade's health card uses the same connection shape and also reports cached model ids. */
+export interface LemonadeStatus extends VllmStatus {
+  loadedModels?: string[];
+}
+
 export interface InferencePreferencesResponse {
   preferredBackend: InferenceBackendType | null;
   preferredModel: string | null;
