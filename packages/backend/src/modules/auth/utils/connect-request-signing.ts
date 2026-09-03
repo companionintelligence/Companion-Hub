@@ -96,3 +96,42 @@ export function buildSignedConnectHeaders(
     [CONNECT_SIGNATURE_HEADER]: signature,
   };
 }
+
+export type ConnectVerifyResult = { ok: true } | { ok: false; reason: 'missing_headers' | 'bad_timestamp' | 'expired' | 'bad_signature' };
+
+const DEFAULT_MAX_SKEW_MS = 60_000;
+
+/** Verify a Memory → Hub signed request. Same message as {@link buildSignedConnectHeaders}. */
+export function verifyConnectRequest(
+  secret: string,
+  parts: { method: string; path: string; timestamp?: string | null; nonce?: string | null; signature?: string | null; body: unknown },
+  opts: { now?: number; maxSkewMs?: number } = {},
+): ConnectVerifyResult {
+  const { method, path, timestamp, nonce, signature, body } = parts;
+  if (!secret || !timestamp || !nonce || !signature) {
+    return { ok: false, reason: 'missing_headers' };
+  }
+
+  const timestampMs = Number(timestamp);
+  if (!Number.isFinite(timestampMs) || !Number.isInteger(timestampMs)) {
+    return { ok: false, reason: 'bad_timestamp' };
+  }
+
+  const now = opts.now ?? Date.now();
+  const maxSkewMs = opts.maxSkewMs ?? DEFAULT_MAX_SKEW_MS;
+  if (Math.abs(now - timestampMs) > maxSkewMs) {
+    return { ok: false, reason: 'expired' };
+  }
+
+  const expected = crypto
+    .createHmac('sha256', secret)
+    .update(buildConnectMessage(method, path, timestampMs, nonce, body))
+    .digest('hex');
+  const a = Buffer.from(signature, 'utf8');
+  const b = Buffer.from(expected, 'utf8');
+  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
+    return { ok: false, reason: 'bad_signature' };
+  }
+
+  return { ok: true };
+}
