@@ -106,8 +106,11 @@ tunnel.stale-*
 /packages/desktop/src-tauri/resources/cihub.exe
 # Private fleet inventories and skills must never re-enter the tip.
 /.claude/skills/run-fleet-qa/
+/.cursor/skills/run-fleet-qa/
 /scripts/FLEET_QA.md
 /scripts/fleet-qa-server.ts
+/scripts/run-fleet-tests.ts
+/scripts/qa-aggregate.ts
 /scripts/setup-docker-auth.sh
 .sentrux/
 

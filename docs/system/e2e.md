@@ -56,7 +56,7 @@ pnpm run benchmark:gate
 
 Baselines: `e2e/results/benchmarks/baseline.json`
 
-Fleet QA orchestration (private ops) is tracked under companionintelligence/CI-Engineering#211 — inventories and runners are not in this tree.
+Fleet QA orchestration (private ops) lives in companionintelligence/CI-Engineering `tools/fleet-qa/` (issue #211) — inventories and multi-node runners are not in this tree.
 
 ## Agent notes
 

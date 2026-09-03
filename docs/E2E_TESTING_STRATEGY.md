@@ -91,8 +91,9 @@ APP_STORE_PATH=/path/to/CI-Marketplace/apps ./node_modules/.bin/tsx scripts/gene
 ```
 
 Private operations handle multi-node fleet orchestration, including the dashboard, SCP
-fan-out, and Tailscale inventories. This repository does not include that tooling. See
-companionintelligence/CI-Hub#1210.
+fan-out, and Tailscale inventories. That toolkit lives in the private
+**CI-Engineering** repo (`tools/fleet-qa/`, skill `run-fleet-qa`) — not in this
+open-source tip. See companionintelligence/CI-Engineering#211.
 
 ## Roadmap and open items
 

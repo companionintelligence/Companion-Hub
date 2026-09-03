@@ -92,7 +92,7 @@ Git tag after merge: `agent-session/<worksheet-slug>`
 | Test audit | `.cursor/skills/test-audit/SKILL.md` | Find false-confidence tests |
 | Visual regression | `.cursor/skills/visual-regression/SKILL.md` | Screenshot baselines |
 
-Claude mirrors live under `.claude/skills/` (same content as `.cursor/skills/` where present). Fleet QA tooling lives outside this public tree (see companionintelligence/CI-Engineering#211).
+Claude mirrors live under `.claude/skills/` (same content as `.cursor/skills/` where present). Multi-node fleet QA (dashboard, SSH orchestrators, `fleet.json`) lives in private **CI-Engineering** `tools/fleet-qa/` — see companionintelligence/CI-Engineering#211. This tip keeps single-node `scripts/qa-stream.ts` only.
 
 ---
 
