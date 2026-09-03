@@ -11,27 +11,13 @@ import { buildWakeText, DEFAULT_MIN_URGENCY, isUrgency, passesUrgency, type Urge
 
 export type { Urgency };
 
-/**
- * OpenClaw's own wake hook. The agent listens here natively — there is no plugin involved.
- */
+/** Avoids dependency on plugin routing by using OpenClaw's native wake hook. */
 const DEFAULT_WAKE_ENDPOINT = '/hooks/wake';
 
 /**
- * The path the ci-hub OpenClaw plugin tried, and failed, to serve.
- *
- * It never worked: the plugin registered the route without the `auth` field OpenClaw
- * requires, so the route was rejected and every wake 404'd for the life of the feature
- * (CI-Hub#897). It is nonetheless frozen into the on-disk `config.json` of every app
- * already installed, because that file is a snapshot of the marketplace manifest taken at
- * install time.
- *
- * So we rewrite it rather than honour it. Honouring it would mean an installed app kept
- * POSTing into a 404 until someone bumped the manifest AND ran an app update — and it would
- * make the rollout order load-bearing, where shipping the manifest before the image would
- * break every wake. Treating the legacy path as "the default" makes wake start working on
- * the next Hub restart, for apps that are already installed, with no manifest change at all.
- *
- * There is nothing to preserve: no deployment has ever served this path successfully.
+ * Treat this persisted endpoint as an obsolete default. The plugin route never registered
+ * successfully, and rewriting it lets installed apps use the native hook without an app
+ * update (CI-Hub#897).
  */
 const LEGACY_PLUGIN_WAKE_ENDPOINT = '/hooks/hub-wake';
 
@@ -42,24 +28,8 @@ export interface WebhookTarget {
 }
 
 /**
- * The wake secret is sent in BOTH `Authorization: Bearer` and this header. They carry the same
- * value, so whichever OpenClaw reads, it matches.
- *
- * That redundancy is deliberate, and the reasoning is not obvious. OpenClaw's hook auth
- * (`extractHookToken`) reads `Authorization: Bearer` FIRST and returns as soon as it finds a
- * non-empty token — it never falls back to `X-OpenClaw-Token`. So `Authorization` is not a
- * harmless extra: whatever ends up in it DECIDES the request.
- *
- * The Hub POSTs to the app's published port, which for CI-OpenClaw is its setup server, and
- * that proxy used to overwrite `Authorization` with the OpenClaw *gateway* token before
- * forwarding. The hook then compared the gateway token against `hooks.token`, and every wake
- * 401'd — including ones sent in `X-OpenClaw-Token`, because the injected Bearer shadowed it.
- * Measured on core-2: through the proxy → 401; the identical request straight to the gateway →
- * 200 `{"ok":true,"mode":"now"}`. CI-OpenClaw now leaves `Authorization` alone on `/hooks/*`
- * (proxy-headers.cjs), which is what makes either header work.
- *
- * Sending both means a wake survives whichever way it is routed: through the setup-server
- * proxy, or straight to a gateway.
+ * Send the same secret in both supported headers. OpenClaw prioritizes `Authorization`, so
+ * mismatched values would reject an otherwise valid request through either route.
  */
 const WAKE_TOKEN_HEADER = 'X-OpenClaw-Token';
 
@@ -78,25 +48,16 @@ export class AgentNotifyService implements OnApplicationBootstrap, OnModuleDestr
   }
 
   /**
-   * Rebuild the webhook registry from the apps already installed on disk.
-   *
-   * The registry is in-memory, and until now `registerWebhook()` was only ever called from
-   * the install path. So every Hub restart silently emptied it: an app installed yesterday
-   * received no wakes today, and nothing said why. Rehydrating here makes the registry a
-   * function of what is installed rather than of what happened to be installed *during this
-   * process's lifetime*.
-   *
-   * Never throws. A single unreadable app must not stop the others from registering, and it
-   * certainly must not take down Hub startup.
+   * Rebuilds the in-memory webhook registry after a restart. Per-app failures remain
+   * isolated so one unreadable app cannot block Hub startup or other registrations.
    */
   async onApplicationBootstrap(): Promise<void> {
     try {
       const appsRepository = this.moduleRef.get(AppsRepository, { strict: false });
       const apps = await appsRepository.getApps();
 
-      // Resolved concurrently: each app costs three independent disk reads, and this sits on
-      // the Hub's startup path. Errors stay isolated per app — one unreadable app must not cost
-      // the others their webhook.
+      // Resolve apps concurrently because startup requires three independent reads per app.
+      // Keep failures isolated so one app cannot block other registrations.
       const resolved = await Promise.all(
         apps.map(async (app) => {
           const appUrn = createAppUrn(app.appName, app.appStoreSlug);
@@ -111,7 +72,7 @@ export class AgentNotifyService implements OnApplicationBootstrap, OnModuleDestr
 
       let registered = 0;
       for (const { appUrn, target } of resolved) {
-        if (!target) continue; // cannot be woken; nothing to register
+        if (!target) continue;
         this.registerWebhook(appUrn, target.url, target.token);
         registered += 1;
       }
@@ -123,13 +84,9 @@ export class AgentNotifyService implements OnApplicationBootstrap, OnModuleDestr
   }
 
   /**
-   * Where an app's agent listens, and the secret to talk to it — derived from what is on
-   * disk, so it is reproducible after a restart rather than captured once at install time.
-   *
-   * Returns null for an app that does not run an agent (`hub_integration.mcp_client` unset).
-   *
-   * The host is the compose *service* name, not `{appName}-{storeId}`: on the shared
-   * ci-os-hub network that is the name Docker DNS actually resolves.
+   * Reconstructs an app's wake URL and secret from installed files. Returns null when the
+   * app declares no wake capability. Docker DNS requires the Compose service name rather
+   * than the app URN name.
    */
   async resolveWebhookTarget(appUrn: string): Promise<{ url: string; token?: string } | null> {
     const appFilesManager = this.moduleRef.get(AppFilesManager, { strict: false });
@@ -140,20 +97,9 @@ export class AgentNotifyService implements OnApplicationBootstrap, OnModuleDestr
       return null;
     }
 
-    // `mcp_client` says the app CONSUMES Hub MCP tools. It does not say the app can be woken,
-    // and the two are not the same set: CI-Hermes sets `mcp_client: true` and serves no hook at
-    // all. An app declares wake capability by naming an endpoint or a port — with neither, there
-    // is nothing to POST to, and registering it anyway would fan every Hub event out into a 404
-    // (once at install before, and now on every boot, since the registry is rehydrated).
-    //
-    // `wake_endpoint` cannot be tested for absence directly: appInfoSchema back-fills it with
-    // LEGACY_PLUGIN_WAKE_ENDPOINT (its Zod .default), so by the time getInstalledAppInfo returns,
-    // an app that declared NOTHING is indistinguishable from one that declared the dead legacy
-    // path — and both mean the same thing, because that path never served a wake anywhere. So the
-    // real signal for "can be woken" is: a wake_port, or a wake_endpoint that is something OTHER
-    // than the legacy default. (A plain absence check here is dead code — the exact bug CI-Hub#897
-    // is about: it read as working while Hermes got 404-flooded, and the unit mock hid it by
-    // bypassing the schema default.)
+    // `mcp_client` declares tool consumption, not wake support. The schema supplies the dead
+    // legacy endpoint when none is declared, so only a port or a different endpoint proves
+    // wake support; otherwise Hub events would be sent to a 404 (CI-Hub#897).
     const declaresEndpoint = Boolean(hubIntegration.wake_endpoint) && hubIntegration.wake_endpoint !== LEGACY_PLUGIN_WAKE_ENDPOINT;
     if (!declaresEndpoint && !hubIntegration.wake_port) {
       this.logger.debug(`No wake endpoint declared for ${appUrn}; it uses Hub tools but cannot be woken`);
@@ -164,8 +110,7 @@ export class AgentNotifyService implements OnApplicationBootstrap, OnModuleDestr
     const wakeEndpoint = !configured || configured === LEGACY_PLUGIN_WAKE_ENDPOINT ? DEFAULT_WAKE_ENDPOINT : configured;
     const wakePort = hubIntegration.wake_port || appInfo?.port || 3000;
 
-    // An AppUrn is `${appName}:${appStoreSlug}` — parse it with the shared helper rather than
-    // re-deriving it, which is how wake-text came to read the store slug as the app name.
+    // Use the shared URN parser so the store slug cannot be mistaken for the app name.
     let serviceName: string = extractAppUrn(appUrn as AppUrn).appName;
     try {
       const composeJson = await appFilesManager.getDockerComposeJson(appUrn as AppUrn);
@@ -211,15 +156,8 @@ export class AgentNotifyService implements OnApplicationBootstrap, OnModuleDestr
   }
 
   private getAllTargets(): Array<{ url: string; token?: string }> {
-    // Deduped by URL. The env AGENT_WEBHOOK_URL (back-compat) can name the very app that
-    // onApplicationBootstrap auto-registers; without this, one event would POST to the same
-    // /hooks/wake twice — a wasted round-trip and a duplicate queued system event.
-    //
-    // On a URL collision the REGISTERED entry wins: its token is that app's own HUB_WAKE_SECRET
-    // read from disk, which is authoritative for that URL. The env token is a single global
-    // fallback that may be stale; letting it shadow the per-app secret would 401 a wake that
-    // would otherwise succeed. So the env target seeds the map and any registered webhook for the
-    // same URL overwrites it.
+    // Deduplicate because the compatibility environment target can name an auto-registered
+    // app. Registered entries overwrite it because each app's on-disk secret is authoritative.
     const byUrl = new Map<string, { url: string; token?: string }>();
 
     const envUrl = process.env.AGENT_WEBHOOK_URL;
@@ -235,8 +173,8 @@ export class AgentNotifyService implements OnApplicationBootstrap, OnModuleDestr
   }
 
   /**
-   * Targeted doorbell for one app. No fan-out, no urgency floor, no debounce.
-   * The body is a job id only — OpenClaw fetches the packet from Memory.
+   * Wakes one app without fan-out, urgency filtering, or debounce. Memory dispatches use
+   * this targeted path so unrelated agents do not run.
    */
   async wakeApp(appUrn: string, data: { jobId: string }): Promise<boolean> {
     let target = this.webhooks.get(appUrn);
@@ -262,19 +200,9 @@ export class AgentNotifyService implements OnApplicationBootstrap, OnModuleDestr
   }
 
   /**
-   * Wake the agent for a Hub event.
-   *
-   * The target is OpenClaw's NATIVE wake hook (`POST /hooks/wake`), which takes
-   * `{ text, mode }` and answers it by queueing a system event and running an immediate
-   * heartbeat turn. We therefore translate the event to text here, in the Hub, which is
-   * where the event vocabulary lives. (This replaces a hand-rolled wake route in the
-   * ci-hub OpenClaw plugin that 404'd for its entire life — CI-Hub#897.)
-   *
-   * Three filters stand between an event and an agent turn, and they compose:
-   *   - urgency floor (here) — is this worth a turn at all?
-   *   - the 30s debounce (here) — the same event for the same app, again
-   *   - OpenClaw's own 250ms heartbeat coalescing — a burst becomes ONE turn that sees
-   *     every queued event, which is also the better outcome for the user.
+   * Wakes agents for a Hub event after applying the urgency floor and debounce. The Hub
+   * converts its event vocabulary to text for OpenClaw's native hook, which can coalesce
+   * bursts during its heartbeat window (CI-Hub#897).
    */
   async notify(event: string, data: Record<string, unknown>, urgency: Urgency): Promise<void> {
     const enabled = process.env.AGENT_WEBHOOK_ENABLED !== 'false';
@@ -299,8 +227,7 @@ export class AgentNotifyService implements OnApplicationBootstrap, OnModuleDestr
     }
     this.debounceMap.set(debounceKey, Date.now());
 
-    // `mode: "now"` is what makes OpenClaw run the turn immediately. The alternative,
-    // "next-heartbeat", defers it to the next scheduled slot — up to 30 minutes away.
+    // `now` avoids waiting up to 30 minutes for the next scheduled heartbeat.
     const body = JSON.stringify({ text: buildWakeText(event, data, urgency), mode: 'now' });
 
     await Promise.allSettled(targets.map((target) => this.postWake(target, buildWakeText(event, data, urgency))));
@@ -341,14 +268,8 @@ export class AgentNotifyService implements OnApplicationBootstrap, OnModuleDestr
   }
 
   /**
-   * How urgent an event must be to be worth an agent turn.
-   *
-   * Read per call rather than cached, so it can be changed without a Hub restart — and,
-   * more to the point, so it is *actually settable*. Alongside AGENT_WEBHOOK_ENABLED /
-   * _URL / _TOKEN, which is where this module's other knobs already live.
-   *
-   * An unrecognized value falls back to the default rather than silently disabling every
-   * wake, which is what a typo would otherwise do.
+   * Reads the minimum urgency per call so configuration changes apply without a restart.
+   * Invalid values fall back to the default to avoid suppressing all wakes.
    */
   private resolveMinUrgency(): Urgency {
     const configured = process.env.AGENT_WEBHOOK_MIN_URGENCY;
@@ -382,7 +303,6 @@ export class AgentNotifyService implements OnApplicationBootstrap, OnModuleDestr
     }
   }
 
-  /** Exposed for testing */
   _getDebounceMap(): Map<string, number> {
     return this.debounceMap;
   }

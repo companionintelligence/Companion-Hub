@@ -47,7 +47,7 @@ export class CloudflareController {
   /**
    * The organization's connected custom domains, for the install dialog's picker.
    *
-   * `supported: false` is NOT "none connected". It is "this CI-Cloud cannot be
+   * `supported: false` is NOT "none connected". It is "this Companion Portal cannot be
    * asked" — a deployment predating the feature, or one that did not answer — and
    * the dialog says something different for each: an empty list invites you to
    * connect one in the portal, an unanswerable question must not. Gap 3 of

@@ -79,8 +79,8 @@ describe('AppsService', () => {
             installed: true,
             connected: true,
             hostname: 'hub-tailscale-1',
-            nodeFqdn: 'hub-tailscale-1.capybara-ulmer.ts.net',
-            tailnet: 'capybara-ulmer.ts.net',
+            nodeFqdn: 'hub-tailscale-1.example.ts.net',
+            tailnet: 'example.ts.net',
             supportsServices: true,
           }),
         } as any;
@@ -531,8 +531,8 @@ describe('AppsService', () => {
               installed: true,
               connected: true,
               hostname: 'hub-tailscale-1',
-              nodeFqdn: 'hub-tailscale-1.capybara-ulmer.ts.net',
-              tailnet: 'capybara-ulmer.ts.net',
+              nodeFqdn: 'hub-tailscale-1.example.ts.net',
+              tailnet: 'example.ts.net',
               supportsServices: true,
             }),
           };

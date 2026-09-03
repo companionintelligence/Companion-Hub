@@ -129,7 +129,7 @@ const SelectItem = React.forwardRef<
     /**
      * Status text shown beside the option IN THE LIST ONLY.
      *
-     * ⚠ DELIBERATELY OUTSIDE {@link SelectPrimitive.ItemText}. Radix portals an
+     * Deliberately outside {@link SelectPrimitive.ItemText}. Radix portals an
      * item's `ItemText` into the trigger to render the current selection, so
      * anything put in `children` to annotate an option — "still verifying",
      * "currently serving foo" — follows it there and the closed control shows a

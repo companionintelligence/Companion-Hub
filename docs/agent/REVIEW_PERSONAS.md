@@ -1,4 +1,4 @@
-# Review Personas — CI-Hub
+# Review personas
 
 > **Purpose:** Persona definitions for cross-agent review; each owns system docs.
 > **Scope:** Security, performance, maintainability, code quality, AI smells, domain.

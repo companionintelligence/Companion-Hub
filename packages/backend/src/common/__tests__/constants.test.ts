@@ -29,7 +29,7 @@ describe('constants environment defaults', () => {
 
     expect(constants.DEFAULT_CI_CLOUD_URL).toBe('https://hub.ci.computer');
     // Dev and prod share the same canonical public-domain default; per-env
-    // working domain comes from CI-Cloud registration / sync validation.
+    // working domain comes from Companion Portal registration / sync validation.
     expect(constants.DEFAULT_PUBLIC_DOMAIN).toBe('companionintelligence.com');
     expect(constants.DEFAULT_DEV_PUBLIC_DOMAIN).toBe(constants.DEFAULT_PROD_PUBLIC_DOMAIN);
   });

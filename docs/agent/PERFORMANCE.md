@@ -1,4 +1,4 @@
-# Performance Profiling — CI-Hub (Agents)
+# Performance profiling
 
 > **Purpose:** Commands and workflow for agents to profile Hub and app performance.
 > **Scope:** Per-app benchmarks, benchmark gate, fleet QA profiling.
@@ -16,7 +16,7 @@
 pnpm exec tsx scripts/benchmark-app.ts <app-id>
 ```
 
-Measures install time, health check latency, memory, CPU, and disk. Results under `e2e/results/benchmarks/`.
+The script measures install time, health check latency, memory, CPU, and disk use. It writes results to `e2e/results/benchmarks/`.
 
 Copy latest results for gate comparison:
 
@@ -36,7 +36,7 @@ git add e2e/results/benchmarks/baseline.json
 
 ## Fleet QA
 
-For multi-node profiling across the fleet, see [scripts/FLEET_QA.md](../../scripts/FLEET_QA.md) and `.claude/skills/run-fleet-qa/`.
+Multi-node fleet profiling is private ops (not in this tree). See companionintelligence/CI-Engineering#211.
 
 ## When agents must run benchmarks
 

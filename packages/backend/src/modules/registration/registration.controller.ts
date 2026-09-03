@@ -100,14 +100,14 @@ export class RegistrationController {
     const deviceId = await this.registrationService.getDeviceId();
     const { ciCloudUrl } = this.config.getConfig();
 
-    // Build callback URL (where CI Cloud should redirect back to)
-    // Use the request origin to construct the callback URL
+    // Build the Companion Portal callback from the request origin so registration
+    // returns to the same Hub address the browser used.
     const protocol = req.protocol || 'http';
     const host = req.get('host') || 'localhost:3000';
     const callbackUrl = `${protocol}://${host}/device-registration`;
 
-    // Build registration URL — Portal /device/register entry route (auth + Add Device flow).
-    // Handle empty string as well as null/undefined
+    // Use Companion Portal's `/device/register` entry route for authentication
+    // and Add Device. Treat blank configuration like a missing value.
     const registrationUrl = ciCloudUrl?.trim()
       ? `${ciCloudUrl.trim()}/device/register?device_id=${encodeURIComponent(deviceId)}&callback_url=${encodeURIComponent(callbackUrl)}`
       : null;
@@ -116,7 +116,7 @@ export class RegistrationController {
       device_id: deviceId,
       registration_url: registrationUrl,
       callback_url: callbackUrl,
-      ci_cloud_url: ciCloudUrl || null, // For debugging
+      ci_cloud_url: ciCloudUrl || null, // Expose the configured Portal origin for diagnostics.
     };
   }
 
@@ -128,7 +128,7 @@ export class RegistrationController {
     return this.completeRegistrationCallback(body);
   }
 
-  /** Legacy CI Cloud browser redirect — prefer POST so secrets are not in query strings. */
+  /** Supports the legacy Portal redirect; POST keeps secrets out of query strings. */
   @Get('callback')
   @ApiOperation({ summary: 'Handle registration callback from CI Cloud (legacy GET redirect)' })
   @ApiResponse({ status: 200, description: 'Registration completed successfully' })
@@ -201,7 +201,8 @@ export class RegistrationController {
     const fs = await import('node:fs');
     const _path = await import('node:path');
 
-    // Try to read the .env file directly to debug
+    // Read the environment file directly so diagnostics can compare persisted
+    // and process values.
     let envFileContent = null;
     let envFileLines: string[] = [];
     try {
@@ -211,7 +212,7 @@ export class RegistrationController {
         envFileLines = envFileContent.split('\n').filter((line) => line.includes('CI_CLOUD') && !line.trim().startsWith('#'));
       }
     } catch (_e) {
-      // Ignore errors reading file
+      // Return the remaining diagnostics when the environment file is unreadable.
     }
 
     return {
@@ -219,9 +220,9 @@ export class RegistrationController {
       ciHubApiKey: config.ciHubApiKey ? '***configured***' : null,
       ciHubOrganizationId: config.ciHubOrganizationId || null,
       envFilePath: config.envFilePath,
-      // Debug: show what's in the .env file
+      // Include only the filtered Portal configuration lines.
       envFileLines: envFileLines.length > 0 ? envFileLines : null,
-      // Also check process.env directly
+      // Include the effective process value for comparison.
       processEnv: {
         CI_CLOUD_URL: process.env.CI_CLOUD_URL || DEFAULT_CI_CLOUD_URL,
       },
@@ -232,8 +233,8 @@ export class RegistrationController {
   @ApiOperation({ summary: 'Validate organization name/subdomain availability' })
   @ApiResponse({ status: 200, description: 'Returns validation result' })
   async validateOrganizationName(@Query('name') name: string) {
-    // This used to check locally against Cloudflare but now that logic is centralized in CI-Cloud.
-    // We should ideally proxy this request to CI-Cloud, but for now we'll do basic local validation.
+    // Companion Portal owns Cloudflare availability checks. Until this endpoint
+    // proxies an authenticated Portal request, validate only the local name format.
 
     if (!name?.trim()) {
       return {
@@ -244,7 +245,7 @@ export class RegistrationController {
       };
     }
 
-    // Sanitize the name
+    // Normalize the name to the slug format used during registration.
     const sanitizedName = name
       .trim()
       .toLowerCase()
@@ -261,8 +262,9 @@ export class RegistrationController {
       };
     }
 
-    // Since we can't easily check remote availability without an authenticated API call to CI-Cloud (which requires an org token we don't have yet),
-    // we'll optimistically return true for valid formats. The real check happens during registration.
+    // The Hub has no organization credential before registration, so it cannot
+    // make the authenticated Portal availability request. Registration performs
+    // the authoritative check.
     return {
       available: true,
       dnsAvailable: true,
@@ -339,13 +341,13 @@ export class RegistrationController {
         signal: AbortSignal.timeout(10000),
       });
 
-      // Any non-2xx status means the tunnel/DNS is not healthy yet.
+      // Any non-2xx response means tunnel or DNS setup is not ready.
       if (!res.ok) {
         return { ready: false };
       }
 
       const body = await res.text();
-      // Cloudflare error pages when tunnel is not connected
+      // Detect known Cloudflare pages that indicate an unavailable tunnel.
       if (
         body.includes('Error 1033') ||
         body.includes('Error 1003') ||
@@ -360,7 +362,7 @@ export class RegistrationController {
       ) {
         return { ready: false };
       }
-      // Catch-all for Cloudflare error pages we haven't listed explicitly.
+      // Catch unlisted Cloudflare error pages through their common markers.
       if (body.includes('cloudflare') && body.includes('error code')) {
         return { ready: false };
       }

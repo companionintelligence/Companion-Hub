@@ -27,10 +27,10 @@ export const appFormSchema = z
     /*
      * A custom domain the installer picked from the organization's connected
      * ones. Recorded as an INTENT (`app.custom_domain_intent`) and asked of
-     * CI-Cloud after the app registers — never written into the app's env, which
-     * only ever carries a hostname CI-Cloud confirmed it wired.
+     * Companion Portal after the app registers — never written into the app's env, which
+     * only ever carries a hostname Companion Portal confirmed it wired.
      *
-     * ⚠ ABSENT AND EMPTY ARE DIFFERENT INSTRUCTIONS. `undefined` is "the caller
+     * Absent and empty are different instructions. `undefined` is "the caller
      * said nothing about this", which must leave an existing choice alone — a
      * client that predates custom domains, or one patching a single setting,
      * must not silently unbind a domain the customer is being served on. `''` is
@@ -56,7 +56,7 @@ export const appFormSchema = z
        * STORED NORMALIZED, because DNS is case-insensitive and every reader of
        * this value already is: the exclusivity check lowercases, the bind pass
        * runs it through `normalizeStoredHostname`, and the picker's options are
-       * the normalized hostnames CI-Cloud listed. A row left holding
+       * the normalized hostnames Companion Portal listed. A row left holding
        * `Comfy.Acme.Com` matches no option, so the settings dialog would show no
        * custom domain for an app that has one.
        *

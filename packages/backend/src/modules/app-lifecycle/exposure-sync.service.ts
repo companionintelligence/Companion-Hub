@@ -40,12 +40,14 @@ function buildPublicHostname(params: { appSubdomain: string; hubSubdomain?: stri
   }).hostname;
 }
 
-/** An app that failed public-DNS sync, plus why, so the toast can say which. */
+/** Identifies an app whose public DNS sync failed and the reason for its toast. */
 type PublicDnsToastTarget = { appUrn: AppUrn; hostname: string; reason?: PublicDnsFailureReason };
 
 /**
- * Index entries by a string key, first occurrence winning — the same entry a
- * linear `find` would have returned, but O(1) per lookup instead of O(n).
+ * Indexes entries by a string key and retains the first occurrence.
+ *
+ * This ordering matches a linear `find` while reducing each lookup from O(n)
+ * to O(1).
  */
 function indexByFirst<T>(entries: readonly T[], key: (entry: T) => string): Map<string, T> {
   const index = new Map<string, T>();
@@ -59,12 +61,12 @@ function indexByFirst<T>(entries: readonly T[], key: (entry: T) => string): Map<
 }
 
 /**
- * Turn CI-Cloud's per-app failure detail into an operator-facing explanation.
+ * Converts Companion Portal's per-app failure details into an operator-facing
+ * explanation.
  *
- * Without it every failure read as a domain/zone problem, which is what sent the
- * investigation in CI-Portal#403 down the wrong path: the real cause was a DNS
- * record CI-Cloud refused to overwrite. Falls back to the old wording when the
- * Portal is older and sends no detail.
+ * Distinguishing a DNS conflict from a domain or zone problem prevents operators
+ * from investigating the wrong cause (CI-Portal#403). The generic wording remains
+ * available when an older Portal sends no details.
  */
 function describePublicDnsFailures(failures: PublicDnsFailure[]): string {
   if (failures.length === 0) {
@@ -97,14 +99,14 @@ export class ExposureSyncService {
   private static readonly TAILSCALE_SERVE_FAILURE_COOLDOWN_MS = 5 * 60_000;
 
   /**
-   * HTTPS port the Hub itself is served on over the tailnet — 443, so the
-   * resulting origin is a bare `https://<nodeFqdn>` (what
-   * `buildHubTailnetOrigin` advertises). App serve ports are the apps' own
-   * high ports, so a clash is a misconfiguration — resolved in the Hub's
-   * favour: the tailnet origin is load-bearing for the whole connect
-   * ceremony and is advertised without knowledge of serve state, so leaving
-   * it unserved would hand every VPN caller a dead launcher, while the
-   * evicted app just needs its port changed.
+   * Reserves HTTPS port 443 for the Hub on the tailnet.
+   *
+   * The resulting origin is the bare `https://<nodeFqdn>` advertised by
+   * `buildHubTailnetOrigin`. Apps normally use their own high ports, so a clash
+   * indicates a misconfiguration. The Hub wins because the tailnet origin
+   * supports the entire connect flow and is advertised without serve-state
+   * awareness. Leaving it unserved would give every VPN caller a dead launcher,
+   * while the conflicting app can move to another port.
    */
   private static readonly HUB_VPN_PORT = 443;
 
@@ -121,16 +123,21 @@ export class ExposureSyncService {
   ) {}
 
   /**
-   * Sync exposure state for all apps — Cloudflare + Tailscale in parallel
+   * Synchronizes Cloudflare and Tailscale exposure for all apps in parallel.
+   *
+   * `Promise.allSettled` keeps one control plane available when the other fails;
+   * each trigger owns its own diagnostics and recovery behavior.
    */
   private async syncExposure(options?: { excludeAppUrns?: AppUrn[] }) {
     await Promise.allSettled([this.triggerCloudflareSync(options), this.triggerTailscaleSync()]);
   }
 
   /**
-   * When public routing identity changes, CI-Cloud only deletes stale DNS when the
-   * app's previous slug disappears from the sync payload. Sync once without the
-   * reconfigured app so the old record is released, then sync the full state.
+   * Synchronizes exposure after an app's public routing identity changes.
+   *
+   * Companion Portal deletes stale DNS only after the app's previous slug
+   * disappears from the sync payload. A first sync without the reconfigured app
+   * releases the old record, and a full sync applies the new identity.
    */
   async syncExposureAfterRoutingChange(appUrn: AppUrn, routingChanged: boolean) {
     if (routingChanged) {
@@ -141,19 +148,30 @@ export class ExposureSyncService {
   }
 
   /**
-   * Public wrapper for syncExposure — used by AppsService.resolveAppAvailability
+   * Exposes full synchronization to `AppsService.resolveAppAvailability`.
+   *
+   * Keep this wrapper aligned with `syncExposure` so availability remediation can
+   * release stale routes through the same exclusion option.
    */
   public async syncExposurePublic(options?: { excludeAppUrns?: AppUrn[] }) {
     return this.syncExposure(options);
   }
 
-  /** Reconcile Tailscale Serve for all Private VPN apps (no Cloudflare sync). */
+  /**
+   * Reconciles Tailscale Serve for all Private VPN apps without contacting
+   * Companion Portal.
+   *
+   * Callers use this path when only local VPN state changed.
+   */
   public async syncTailscaleExposurePublic() {
     return this.triggerTailscaleSync();
   }
 
   /**
-   * Sync Tailscale Serve state for apps with exposureMode='tailscale'
+   * Synchronizes Tailscale Serve for apps in `tailscale` exposure mode.
+   *
+   * A disconnected tailnet has no desired Serve state to apply, so this pass
+   * returns without changing the last configuration.
    */
   private async triggerTailscaleSync() {
     try {
@@ -165,7 +183,9 @@ export class ExposureSyncService {
 
       const apps = await this.appRepository.getApps();
 
-      // Apps that should be Tailscale-served
+      // Publish only apps whose lifecycle state can accept traffic. Stopped apps
+      // remain absent from the desired map so the cleanup loop removes their
+      // obsolete Serve entries.
       const shouldServe = apps.filter(
         (app) => (app as Record<string, unknown>).exposureMode === 'tailscale' && ['running', 'starting', 'restarting'].includes(app.status),
       );
@@ -176,7 +196,7 @@ export class ExposureSyncService {
         number,
         {
           appName: string;
-          /** Absent for the Hub's own entry — failures then log instead of raising a per-app toast. */
+          /** Omitted for the Hub entry so failures log without raising an app toast. */
           appUrn?: AppUrn;
           port: number;
           upstreamUrl: string;
@@ -213,14 +233,13 @@ export class ExposureSyncService {
         });
       }
 
-      // The Hub itself is published at `https://<nodeFqdn>/` (port 443) whenever
-      // the VPN is up — without this, the Private VPN exposes apps but not the
-      // Hub, and the memory-connect/login ceremony has no tailnet origin to land
-      // on (CI-Engineering#78). Registered like any other desired port so the
-      // reconcile loop below keeps it alive and never garbage-collects it. An
-      // app configured on 443 is evicted (see HUB_VPN_PORT for why the Hub
-      // wins) — loudly, with the remedy, since its Private VPN URL stays dead
-      // until its port changes.
+      // Publish the Hub at `https://<nodeFqdn>/` on port 443 whenever the VPN is
+      // connected. Otherwise, the Private VPN exposes apps without exposing the
+      // Hub, leaving the Companion Memory connect and sign-in flow without a
+      // tailnet return origin (CI-Engineering#78). Register the Hub like any
+      // desired port so reconciliation keeps it alive. An app configured on 443
+      // is evicted with a diagnostic because its Private VPN URL remains
+      // unavailable until its port changes. See `HUB_VPN_PORT` for precedence.
       const clashingApp = desiredPorts.get(ExposureSyncService.HUB_VPN_PORT);
       if (clashingApp) {
         this.logger.error(
@@ -278,10 +297,11 @@ export class ExposureSyncService {
   }
 
   /**
-   * Surface a public-DNS sync failure so it is never silent: always logs an
-   * error, reports to Sentry, and emits a per-app SSE event the frontend turns
-   * into a toast. Sentry and toasts are cooldown-guarded to avoid flooding when
-   * availability remediation re-triggers the sync for a still-broken app.
+   * Reports a public DNS sync failure through logs, Sentry, and per-app SSE.
+   *
+   * The frontend converts the SSE event into a toast. Cooldowns prevent Sentry
+   * and toast floods when availability remediation repeats the sync for an app
+   * that remains unavailable.
    */
   private surfacePublicDnsFailure(message: string, failedAppNames: string[], toastTargets: PublicDnsToastTarget[] = []): void {
     this.logger.error(message);
@@ -298,8 +318,8 @@ export class ExposureSyncService {
         continue;
       }
       this.lastPublicDnsToastAt.set(target.appUrn, now);
-      // `errorCode` carries the failure class so the frontend can say what is
-      // actually wrong rather than always blaming the domain (CI-Portal#403).
+      // `errorCode` lets the frontend describe the actual failure class instead
+      // of attributing every failure to the domain (CI-Portal#403).
       this.sseService.emit(
         'app',
         { event: 'public_dns_error', appUrn: target.appUrn, error: target.hostname, errorCode: target.reason },
@@ -309,18 +329,19 @@ export class ExposureSyncService {
   }
 
   /**
-   * Surface a Tailscale Serve failure so Private VPN publishing is never silent.
-   * Always logs the error; when the failure is because HTTPS/Serve is not enabled
-   * on the tailnet (an account-wide setting the Hub cannot toggle), it also emits
-   * a per-app SSE event the frontend turns into a toast with the enable link.
-   * Cooldown-guarded so repeated syncs for a still-broken app don't flood toasts.
+   * Reports a Tailscale Serve failure for Private VPN publishing.
+   *
+   * Every failure reaches the log. If the tailnet has not enabled HTTPS or Serve,
+   * an account-wide setting the Hub cannot change, a per-app SSE event also gives
+   * the frontend enough context to show an enable link. A cooldown prevents
+   * repeated syncs from flooding toasts while the app remains unavailable.
    */
   private surfaceTailscaleServeFailure(appUrn: AppUrn, error: unknown): void {
     const message = error instanceof Error ? error.message : String(error);
     this.logger.error(`[Tailscale] Failed to serve ${appUrn}: ${message}`);
 
-    // Tailscale returns this when HTTPS Certificates / Serve are not enabled for
-    // the tailnet. This is the only serve failure the user can fix themselves.
+    // Tailscale returns these messages when the tailnet has not enabled HTTPS
+    // certificates or Serve. Users can resolve this class of Serve failure.
     const serveNotEnabled = /serve is not enabled|not enabled on your tailnet|HTTPS.*not enabled/i.test(message);
     if (!serveNotEnabled) {
       return;
@@ -332,9 +353,9 @@ export class ExposureSyncService {
       return;
     }
     this.lastTailscaleServeToastAt.set(appUrn, now);
-    // No `appUrn` third argument: that publishes to the `app:<urn>` topic, which
-    // nothing subscribes to (`sse.controller.ts` opens `getTopicObservable('app')`
-    // with no urn), so the toast this exists for never reached the browser.
+    // Omit the third `appUrn` argument because it publishes to `app:<urn>`, while
+    // `sse.controller.ts` subscribes only to `getTopicObservable('app')`. Using
+    // the per-app topic would prevent the browser from receiving the toast.
     this.sseService.emit('app', { event: 'tailscale_serve_error', appUrn });
   }
 
@@ -379,14 +400,14 @@ export class ExposureSyncService {
       });
 
       /*
-       * Which apps this payload actually asks CI-Cloud about, keyed by URN.
+       * Track the apps this payload asks Companion Portal about, keyed by URN.
        *
-       * ⚠ NOT BY `appName`. `app` is unique on (app_name, app_store_slug), so two
-       * stores can both ship an app called `comfyui`, and the sync entries below
-       * carry only the name. Keyed by name, a running `comfyui` would vouch for a
-       * stopped one from another store — which the custom-domain reconcile reads
-       * as "CI-Cloud was asked about it and reported nothing", and unbinds a
-       * domain that is merely waiting for its app to start again.
+       * Do not key this set by `appName`. The `app` table is unique on
+       * `(app_name, app_store_slug)`, so two stores can ship an app named
+       * `comfyui`, while the sync entries below carry only the name. A name-keyed
+       * set would let a running app represent a stopped app from another store.
+       * Custom-domain reconciliation would then treat the stopped app as queried
+       * but absent from the response and incorrectly remove its binding.
        */
       const syncedAppUrns = new Set(syncedDbApps.map((app: AppFromDb) => createAppUrn(app.appName, app.appStoreSlug)));
 
@@ -408,11 +429,10 @@ export class ExposureSyncService {
         };
       });
 
-      // Include the Hub in every sync so CI-Cloud preserves its tunnel route.
-      // `hubSubdomain` (from device_registration) is the canonical source for Hub route identity.
-      // Do NOT use `DOMAIN` / `userSettings.domain` to derive the Hub subdomain — DOMAIN is the
-      // root domain for app hostname construction, not the Hub prefix.
-      // When hubSubdomain is null (e.g. pre-migration records), the Hub entry is omitted from sync.
+      // Include the Hub in every sync so Companion Portal preserves its tunnel
+      // route. `device_registration.hubSubdomain` is the canonical route identity.
+      // `DOMAIN` and `userSettings.domain` provide the app-hostname root, not the
+      // Hub prefix. Omit the Hub entry when older records have no `hubSubdomain`.
       const hubSub = orgInfo.hubSubdomain;
       if (hubSub && defaultPublicDomain) {
         const orgSlug = orgInfo.slug;
@@ -438,15 +458,13 @@ export class ExposureSyncService {
 
       const appEntries = exposedApps.filter((entry) => entry.privilegedKind !== 'hub');
 
-      // Both failure branches below map app names back to their DB row (and, in the
-      // partial-failure branch, to their exposed entry and failure reason). Doing
-      // that with `find` is a full scan per failed app; a Hub can run dozens of
-      // apps, so index once and look up in O(1).
+      // Both failure branches map app names to database rows. The partial-failure
+      // branch also needs each exposed entry and failure reason. Index once to
+      // avoid a full scan for every failure on Hubs that run many apps.
       const dbAppByName = indexByFirst(apps, (candidate: AppFromDb) => candidate.appName);
 
-      // The DB row is all that is needed to name an app's public record. Both failure
-      // branches and the failure log derive the hostname from here, so none of them
-      // can drift on how a public record is named.
+      // Derive each public record name from its database row in one place so both
+      // failure branches and the failure log remain consistent.
       const toPublicHostname = (dbApp: AppFromDb): string =>
         buildPublicHostname({
           appSubdomain: dbApp.localSubdomain || `${dbApp.appName}-${dbApp.appStoreSlug}`,
@@ -461,12 +479,10 @@ export class ExposureSyncService {
       });
 
       if (!result.ok) {
-        // A full sync failure means none of the exposed apps were updated, so
-        // raise a per-app toast for every exposed app — not only the partial
-        // per-app failures handled below. Without this, full failures (e.g.
-        // CI-Cloud unreachable / non-success response) would be silent in the
-        // UI. Cooldowns in surfacePublicDnsFailure prevent flooding on repeated
-        // syncs.
+        // A full sync failure updates none of the exposed apps, so raise a toast
+        // for each one instead of limiting notifications to the partial failures
+        // below. Portal outages and unsuccessful responses must remain visible in
+        // the UI. `surfacePublicDnsFailure` applies cooldowns to repeated syncs.
         const toastTargets = appEntries
           .map((entry) => {
             const dbApp = dbAppByName.get(entry.name);
@@ -485,9 +501,9 @@ export class ExposureSyncService {
           toastTargets,
         );
       } else if (result.failed.length > 0) {
-        // Map CI-Cloud's failed app names back to their URN + hostname so the
-        // frontend can raise a per-app toast (privileged Hub entry excluded — it is
-        // absent from appEntries, so an unmatched name is skipped).
+        // Map Companion Portal's failed app names to URNs and hostnames so the
+        // frontend can raise per-app toasts. The privileged Hub entry is absent
+        // from `appEntries`, so unmatched names are skipped.
         const exposedByName = indexByFirst(appEntries, (entry) => entry.name);
         const failureByApp = indexByFirst(result.failures, (failure) => failure.app);
 
@@ -499,20 +515,18 @@ export class ExposureSyncService {
             }
             return {
               ...toToastTarget(dbApp),
-              // Absent when CI-Cloud predates structured failures; the frontend
-              // then falls back to the generic message.
+              // Older Companion Portal versions omit structured failures, so the
+              // frontend falls back to a generic message.
               reason: failureByApp.get(name)?.reason,
             };
           })
           .filter((target): target is PublicDnsToastTarget => target !== null);
 
-        // Name EVERY failed app: its hostname where we could rebuild one, else the
-        // raw name CI-Cloud sent. Listing only the mapped hostnames dropped any app
-        // that has no toast target — one with no DB row, or the privileged Hub entry,
-        // which is deliberately absent from appEntries — so the log claimed N apps and
-        // then named fewer, and the missing ones were exactly the ones an operator had
-        // no other way to find. A message that hides which app broke is the failure
-        // this PR exists to fix.
+        // Name every failed app by its reconstructed hostname or the raw name from
+        // Companion Portal. Apps without a toast target include entries with no
+        // database row and the privileged Hub entry, which `appEntries` excludes.
+        // Listing only mapped hostnames would make the log count more failures
+        // than it names and hide the entries operators cannot identify elsewhere.
         const failedLabels = result.failed.map((name) => {
           const dbApp = dbAppByName.get(name);
 
@@ -526,8 +540,8 @@ export class ExposureSyncService {
           toastTargets,
         );
       } else if (appEntries.length > 0) {
-        // Only log success once the sync fully completed (ok and no per-app
-        // failures); otherwise the failure branches above own the messaging.
+        // Log success only after the request and every per-app operation complete.
+        // The failure branches own all other messaging.
         this.logger.info(
           `[Cloudflare] Public hostnames synced: ${appEntries
             .map(
@@ -544,19 +558,18 @@ export class ExposureSyncService {
       }
 
       /*
-       * Bindings are reconciled LAST, and in their own try/catch.
+       * Reconcile bindings last and isolate the operation in its own try/catch.
        *
-       * Last, because everything above is the sync's own reporting: a DB error
-       * in here must not unwind past the per-app failure toasts and relabel a
-       * partial sync as a total one — misreporting the blast radius is exactly
-       * the failure this file exists to prevent.
+       * The preceding code reports the sync result. A database error during
+       * reconciliation must not unwind through the per-app toasts and relabel a
+       * partial sync as a total failure, because that would overstate the impact.
        *
-       * Only when the sync completed, because a failed one delivered nothing and
-       * reading that as "no domains" would unbind every app that is serving on
-       * one. (`ok` with a non-empty `failed` is fine: CI-Cloud builds
-       * `customDomains` from the ingress rules it produced, before the per-app
-       * DNS writes that populate `failed`, so an app whose DNS record failed is
-       * still reported as wired — and its customer hostname is still serving.)
+       * Reconcile only after the request completes. A failed sync delivers no
+       * domain state, and interpreting that absence as an empty set would unbind
+       * every app using a custom hostname. An `ok` result with nonempty `failed`
+       * remains valid: Companion Portal builds `customDomains` from generated
+       * ingress rules before the DNS writes that populate `failed`. An app can
+       * therefore retain a serving custom hostname even when its DNS write fails.
        */
       if (result.ok) {
         try {
@@ -571,19 +584,20 @@ export class ExposureSyncService {
         }
 
         /*
-         * And only THEN are unfulfilled install-time choices asked of CI-Cloud.
+         * Ask Companion Portal about unfulfilled install-time choices only after
+         * reconciliation.
          *
-         * After the reconcile, so an intent CI-Cloud has already delivered is
-         * seen as satisfied and costs no request. After the sync, because
-         * CI-Cloud cannot wire a domain to an app it has never heard of — the
-         * sync above is what registers it — which is the entire reason the
-         * choice is recorded at install time rather than acted on there.
+         * Reconciliation first recognizes intents the Portal has already
+         * delivered and avoids redundant requests. Synchronization must also
+         * precede binding because Companion Portal cannot wire a domain to an app
+         * it has not learned about. The Hub records the choice during installation
+         * and acts on it only after the sync registers the app.
          */
         try {
           await this.bindCustomDomainIntents({
-            // Re-read: `reconcileCustomDomains` has just written `custom_domain`
-            // on these rows, and a stale snapshot would ask CI-Cloud to wire a
-            // domain it reported delivered seconds ago.
+            // Re-read because `reconcileCustomDomains` has updated `custom_domain`
+            // on these rows. A stale snapshot would ask Companion Portal to wire
+            // a domain it reported as delivered moments earlier.
             apps: await this.appRepository.getApps(),
             syncedAppUrns,
             organizationId: orgInfo.id,
@@ -603,52 +617,49 @@ export class ExposureSyncService {
   }
 
   /**
-   * Ask CI-Cloud to wire the custom domain somebody CHOSE when they installed an
-   * app, once there is an app for it to be wired to.
+   * Asks Companion Portal to wire an install-time custom-domain choice after the
+   * app is available as a routing target.
    *
-   * ── WHY THIS IS NOT DONE AT INSTALL TIME ────────────────────────────────────
+   * Why binding does not happen during installation
    *
-   * The install dialog is where the choice is made and the only place it can be:
-   * it is the moment a person knows which app is meant to live at
-   * `comfy.acme.com`. But CI-Cloud derives a domain's routing target from an
-   * `application` row it holds, and at that moment it has never heard of this app
-   * — the tunnel sync that registers it has not run yet, because the app does not
-   * exist yet. Binding there would mean CI-Cloud accepting a hostname the CALLER
-   * named, which is the hole the whole design closed.
+   * The install dialog is where a person chooses which app should use a hostname
+   * such as `comfy.acme.com`. At that point, Companion Portal has no `application`
+   * row for the app because the tunnel sync cannot register an app that does not
+   * exist yet. Binding immediately would require the Portal to trust a routing
+   * target supplied by the caller rather than one established through sync.
    *
-   * So the choice is recorded (`app.custom_domain_intent`) and acted on here,
-   * after a sync has told CI-Cloud what this device runs. The path from a click
-   * to a serving domain is: intent → sync registers the app → this bind → the
-   * NEXT sync reports the hostname in `customDomains` → `reconcileCustomDomains`
-   * writes `custom_domain` and raises `pendingRestart` → the user's restart
-   * regenerates the env. Every step is one CI-Cloud has confirmed, which is why
-   * an app is never told about a hostname on the strength of a form field.
+   * The Hub therefore records `app.custom_domain_intent` and acts on it after a
+   * sync reports the apps on this device. The sequence is: record intent, sync the
+   * app, request the binding, receive `customDomains` on the next sync, persist
+   * `custom_domain` in `reconcileCustomDomains`, mark `pendingRestart`, and
+   * regenerate the environment when the user restarts. Companion Portal confirms
+   * each routing step before the app receives the hostname.
    *
-   * ⚠ THE INTENT IS NOT THE BINDING. Nothing in this method writes
-   * `custom_domain`, and nothing may: this Hub cannot tell whether a hostname
-   * resolves to its own tunnel, and an app emitting `APP_PUBLIC_URL` for one that
-   * does not signs OAuth redirects for an address nothing answers on.
+   * The intent is not the binding. This method must not write `custom_domain`.
+   * The Hub cannot prove that a hostname resolves to its tunnel, and setting
+   * `APP_PUBLIC_URL` from an unconfirmed intent would create OAuth redirects to
+   * an unreachable address.
    */
   private async bindCustomDomainIntents(params: {
     apps: Awaited<ReturnType<AppsRepository['getApps']>>;
-    /** URNs of the apps THIS sync's payload asked about — see the skip rule below. */
+    /** URNs of the apps included in this sync payload. See the skip rule below. */
     syncedAppUrns: Set<AppUrn>;
     /**
-     * The organization this Hub syncs as, named on both CI-Cloud calls.
+     * Identifies the organization this Hub represents in both Portal calls.
      *
-     * CI-Cloud verifies it against a `device_registration` row rather than
-     * believing it, so this is disambiguation and not trust: a device registered
-     * to more than one organization — what a half-completed cross-org move leaves
-     * behind — is refused rather than answered with an arbitrary tenant's domains.
+     * Companion Portal verifies this value against `device_registration`, so it
+     * disambiguates rather than establishes trust. If an incomplete organization
+     * transfer leaves a device registered to multiple organizations, the Portal
+     * refuses the request instead of returning an arbitrary tenant's domains.
      */
     organizationId: string;
     toPublicHostname: (app: Awaited<ReturnType<AppsRepository['getApps']>>[number]) => string;
   }): Promise<void> {
     /*
-     * Resolved ONCE, into the shape both loops below need. Re-deriving the intent
-     * per loop meant `!intent` guards that the filter had already made
-     * unreachable — branches no test can cover, and one more place for the three
-     * spellings to drift apart.
+     * Resolve candidates once into the shape both loops need. Re-deriving intent
+     * in each loop would duplicate normalization and allow the supported
+     * representations to drift. It would also require `!intent` guards after the
+     * filter had already made that branch unreachable.
      */
     const candidates = params.apps.flatMap((app) => {
       const intent = normalizeStoredHostname(app.customDomainIntent);
@@ -658,20 +669,19 @@ export class ExposureSyncService {
       }
 
       /*
-       * SATISFIED INTENTS COST NOTHING. `custom_domain` is written only from what
-       * CI-Cloud reported delivered, so an intent that equals it is a choice that
-       * has already come true — and the common case, on every heartbeat for the
-       * life of the app.
+       * Skip satisfied intents. `custom_domain` contains only values that
+       * Companion Portal reported as delivered, so an equal intent is already
+       * fulfilled. This is the common state on every later heartbeat.
        */
       if (normalizeStoredHostname(app.customDomain) === intent) {
         return [];
       }
 
       /*
-       * Same two gates the delivery reconcile applies: an app that emits no
-       * public identity has nothing for a domain to alias, and an app absent from
-       * this sync's payload is one CI-Cloud was not told about — asking it to
-       * wire a domain to that app can only be refused.
+       * Apply the same two gates as delivery reconciliation. An app without a
+       * public identity gives a domain nothing to alias. An app absent from this
+       * sync payload was not reported to Companion Portal, so a binding request
+       * for that app can only be refused.
        */
       const appUrn = createAppUrn(app.appName, app.appStoreSlug);
 
@@ -687,20 +697,18 @@ export class ExposureSyncService {
     }
 
     /*
-     * ⚠ ONE APP PER DOMAIN, ENFORCED AGAIN HERE.
+     * Enforce one app per domain again at this boundary.
      *
-     * `claimCustomDomainIntent` makes a choice exclusive when it is written, so
-     * two apps naming one domain should be unreachable. Should be: a row written
-     * before that rule, a hand-edited database, or a failed clear can still
-     * produce it — and acting on both is not a small error. Each pass would bind
-     * the domain to whichever app came last, the delivery reconcile would unbind
-     * the other, that one becomes a candidate again, and both apps carry a
-     * restart badge on every heartbeat, forever.
+     * `claimCustomDomainIntent` makes each choice exclusive when written, but
+     * older rows, manual database changes, or a failed clear can still create
+     * duplicates. Acting on both would bind the domain to the last app in each
+     * pass. Delivery reconciliation would then unbind the other app, make it a
+     * candidate again, and leave both apps with recurring restart badges.
      *
-     * So a domain is acted on ONCE per pass, and always for the same app: the
-     * lowest app id, which is stable across syncs and independent of row order,
-     * so the binding settles instead of oscillating. The rest are logged and left
-     * — a stale choice that does nothing is strictly better than a flap.
+     * Act on a domain once per pass and always choose the lowest app ID. This
+     * choice remains stable across syncs and independent of row order, allowing
+     * the binding to settle. Log and retain the duplicate intent because an
+     * inactive stale choice is safer than an oscillating route.
      */
     const byIntent = new Map<string, (typeof candidates)[number]>();
 
@@ -726,11 +734,10 @@ export class ExposureSyncService {
     const available = await this.cloudflareClientService.fetchOrganizationCustomDomains(params.organizationId);
 
     /*
-     * ⚠ COULD NOT ASK IS NOT "NOT CONNECTED". An older CI-Cloud, an unreachable
-     * one, or a payload that would not parse all arrive here as `undefined`, and
-     * every intent is KEPT — clearing on a failed read would throw away a
-     * person's choice because a request failed, silently and with nothing left to
-     * retry from.
+     * Treat "could not ask" differently from "not connected." An older or
+     * unreachable Companion Portal, or an invalid payload, produces `undefined`.
+     * Retain every intent in that case. Clearing after a failed read would discard
+     * the person's choice and remove the state needed for a later retry.
      */
     if (!available) {
       this.logger.debug(`[Cloudflare] ${candidates.length} custom-domain choice(s) still pending; CI-Cloud did not answer the listing`);
@@ -745,11 +752,11 @@ export class ExposureSyncService {
         const entry = byDomain.get(intent);
 
         /*
-         * The organization no longer holds this domain — disconnected in the
-         * portal, or released. The listing IS the org's full set, so this is a
-         * fact rather than a gap, and a choice naming a domain that no longer
-         * exists can only fail forever. Cleared, loudly: the app stays on its
-         * platform hostname, which works, and the log says why.
+         * The organization no longer holds this domain because it was disconnected
+         * or released in Companion Portal. The listing is the organization's
+         * complete set, so this absence is authoritative rather than a data gap.
+         * Clear the nonviable choice, keep the app on its working platform
+         * hostname, and log the reason.
          */
         if (!entry) {
           await this.appRepository.updateAppById(app.id, { customDomainIntent: null });
@@ -763,31 +770,30 @@ export class ExposureSyncService {
         const target = normalizeHostname(params.toPublicHostname(app));
 
         /*
-         * CI-Cloud already points it here and simply has not reported it
-         * delivered yet — the ingress clone lands on the next sync. Asking again
-         * would spend a Cloudflare call per heartbeat to assert what is already
-         * asserted.
+         * Companion Portal already points the domain here but has not reported it
+         * as delivered. The ingress clone arrives on the next sync. Repeating the
+         * request would spend a Cloudflare call on every heartbeat without
+         * changing the asserted target.
          */
         if (normalizeStoredHostname(entry.targetHostname) === target) {
           continue;
         }
 
         /*
-         * Connected but not proved yet. Nothing to do here and nothing wrong:
-         * verification is a person finishing a DNS change in their own zone, and
-         * the intent waits for them. Debug rather than warn — this is a normal
-         * state that can last for hours, and warning about it every heartbeat
-         * would train people to ignore the log.
+         * A connected but unverified domain requires no Hub action. Verification
+         * waits for a person to complete a DNS change in their own zone, and the
+         * intent remains pending. Use debug instead of warning because this normal
+         * state can last for hours, and a warning on every heartbeat would create
+         * noise.
          */
         if (!entry.bindable) {
           /*
-           * `pending` IS that person: verification is a DNS change in their own
-           * zone, it clears itself, and warning every sync would train people to
-           * ignore the log. Any OTHER state that CI-Cloud still will not bind is
-           * not self-clearing — the domain belongs to another Hub, the zone left
-           * the account, an entitlement lapsed — and reporting it at debug leaves
-           * the operator with a choice that silently never happens and nothing on
-           * screen or in the log to explain why.
+           * `pending` represents that user-controlled verification. The state
+           * clears after the DNS change, so warning on each sync would add noise.
+           * Other states that Companion Portal cannot bind do not necessarily
+           * clear themselves: another Hub can hold the domain, the zone can leave
+           * the account, or an entitlement can lapse. Report those states as
+           * warnings so operators can explain a choice that never takes effect.
            */
           if (entry.state === 'pending') {
             this.logger.debug(`[Cloudflare] ${appUrn} is waiting for ${intent} to finish verifying before it can be bound`);
@@ -800,14 +806,13 @@ export class ExposureSyncService {
           continue;
         }
 
-        // The SUBDOMAIN this device syncs under, not a hostname and not a local
-        // guess at CI-Cloud's slug: CI-Cloud canonicalizes it with the same
-        // function it used when it created the row.
+        // Send the subdomain this device synchronizes, not a hostname or a local
+        // guess at Companion Portal's slug. The Portal canonicalizes it with the
+        // same function that created the row.
         //
-        // Through `resolveRoutingSubdomain` rather than inline, so it cannot drift
-        // from the string the tunnel-state payload carried: the helper TRIMS and a
-        // hand-rolled `||` does not, so a `localSubdomain` of `" comfy "` would be
-        // sent verbatim as a slug no `application` row holds and every bind refused.
+        // Use `resolveRoutingSubdomain` to match the tunnel-state payload. The
+        // helper trims whitespace, while an inline `||` would send a value such
+        // as `" comfy "` verbatim and fail to match any `application` row.
         const appSubdomain = resolveRoutingSubdomain(app.localSubdomain, app.appName, app.appStoreSlug);
         const bound = await this.cloudflareClientService.bindCustomDomain(entry.id, appSubdomain, params.organizationId);
 
@@ -820,12 +825,11 @@ export class ExposureSyncService {
         }
 
         /*
-         * A refusal that can clear itself keeps the intent and retries on the
-         * next sync: the app may not be registered yet (its first sync can land
-         * after this pass), and a domain mid-verification becomes bindable
-         * without anyone touching the Hub. Only "that domain is not yours / does
-         * not exist" is terminal, and that is the same conclusion the missing
-         * entry above reaches.
+         * Retain the intent after a refusal that can clear itself and retry on the
+         * next sync. The app's first registration sync can land after this pass,
+         * and a domain under verification can become bindable without another Hub
+         * action. Only a missing or unowned domain is terminal, matching the
+         * missing-entry case above.
          */
         if (bound.code === 'DOMAIN_NOT_FOUND') {
           await this.appRepository.updateAppById(app.id, { customDomainIntent: null });
@@ -838,41 +842,39 @@ export class ExposureSyncService {
           `[Cloudflare] Could not wire ${intent} to ${appUrn}: ${bound.message}${bound.code ? ` (${bound.code})` : ''}. Retrying on the next sync.`,
         );
       } catch (error) {
-        // One app's failure must not abandon the rest of the pass.
+        // Isolate each app so one failure does not abandon the remaining pass.
         this.logger.error(`[Cloudflare] Custom-domain bind failed for ${appUrn}: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
   }
 
   /**
-   * Mirror the custom hostnames CI-Cloud actually wired onto the app rows they
-   * belong to, so env generation can emit the hostname the browser really
-   * arrives on instead of the platform one.
+   * Mirrors custom hostnames that Companion Portal wired onto their app rows so
+   * environment generation emits the hostname used by the browser.
    *
-   * The join key is the app's own platform hostname: CI-Cloud composes
-   * `targetHostname` with the same `<app>-<hub>-<org>.<root>` convention
-   * `buildPublicWebIdentity` does, so no new identifier is needed on either side.
+   * The app's platform hostname is the join key. Companion Portal composes
+   * `targetHostname` with the same `<app>-<hub>-<org>.<root>` convention as
+   * `buildPublicWebIdentity`, so neither side needs another identifier.
    *
-   * ⚠ WHAT THIS DELIBERATELY DOES NOT DO IS RESTART ANYTHING. The bound hostname
-   * is an env var, so the app's compose env is stale the moment it changes — but
-   * recreating a running container underneath a user because a background
-   * heartbeat came back is not an acceptable way to deliver that. The row is
-   * flagged `pendingRestart` instead, which is the same badge a settings change
-   * raises, and the restart the user chooses regenerates the env.
+   * This method deliberately does not restart apps. A hostname change immediately
+   * makes the Compose environment stale, but a background heartbeat must not
+   * recreate a running container without user action. Instead, set
+   * `pendingRestart`, matching the badge for a settings change. The user-selected
+   * restart then regenerates the environment.
    */
   private async reconcileCustomDomains(params: {
     apps: Awaited<ReturnType<AppsRepository['getApps']>>;
-    /** URNs of the apps THIS sync's payload asked about — see the skip rule below. */
+    /** URNs of the apps included in this sync payload. See the skip rule below. */
     syncedAppUrns: Set<AppUrn>;
     customDomains: TunnelCustomDomain[] | undefined;
     toPublicHostname: (app: Awaited<ReturnType<AppsRepository['getApps']>>[number]) => string;
   }): Promise<void> {
     /*
-     * ABSENT IS NOT EMPTY. A CI-Cloud predating custom domains sends no
-     * `customDomains` field at all; treating that as "none delivered" would
-     * unbind every app that is serving happily on a custom hostname the moment a
-     * Hub talks to an older Portal. Only an array that was actually sent — even
-     * an empty one — is allowed to change anything.
+     * Treat an absent field differently from an empty array. A Companion Portal
+     * version that predates custom domains sends no `customDomains` field.
+     * Interpreting that as "none delivered" would unbind every app using a custom
+     * hostname as soon as the Hub contacts an older Portal. Only a received array,
+     * including an empty one, can change bindings.
      */
     if (params.customDomains === undefined) {
       return;
@@ -884,23 +886,23 @@ export class ExposureSyncService {
 
     for (const app of params.apps) {
       const appUrn = createAppUrn(app.appName, app.appStoreSlug);
-      // Normalized on the way in and on the way out, so a value that ever landed
-      // with different casing settles instead of re-flagging every sync.
+      // Normalize reads and writes so a value stored with different casing settles
+      // instead of triggering another change on every sync.
       const current = normalizeStoredHostname(app.customDomain);
       let next: string | null;
 
       /*
-       * Attribute the delivered target to this app BEFORE deciding what to do
-       * with it. The unmatched warning below means "CI-Cloud wired a hostname no
-       * app on this Hub answers for", and an app that is here but declines the
-       * binding — stopped, excluded from this pass, on an open host port — is not
-       * that. Recording the match only inside the branch that binds made the
-       * warning fire on every release pass and for every stopped app, telling the
-       * operator to check settings that are perfectly correct.
+       * Attribute the delivered target before deciding whether to apply it. The
+       * unmatched warning below means Companion Portal wired a hostname that no
+       * app on this Hub answers. A stopped app, an app excluded from this pass, or
+       * an app using an open host port still has a matching identity even though
+       * it declines the binding. Recording matches only in the binding branch
+       * would warn on every release pass and for every stopped app despite valid
+       * settings.
        *
-       * Lowercased on both sides: DNS is case-insensitive, but the Hub composes
-       * its hostname from an organization slug it stores verbatim, which a rename
-       * can leave with uppercase in it.
+       * Lowercase both sides because DNS is case-insensitive. The Hub composes
+       * hostnames from organization slugs stored verbatim, and a rename can leave
+       * uppercase characters in that value.
        */
       const target = normalizeHostname(params.toPublicHostname(app));
       if (byTarget.has(target)) {
@@ -908,22 +910,22 @@ export class ExposureSyncService {
       }
 
       if (!canServeOnCustomDomain(app as AppPublicRoutingSnapshot)) {
-        // Not publicly routed at all any more — or routed by an open host port,
-        // which `generateEnvFile` treats as "not exposed" and so never emits a
-        // public identity for. Either way its binding cannot be delivered, so
-        // drop it: durable configuration, not a transient absence from a payload.
+        // The app is no longer publicly routed or uses an open host port, which
+        // `generateEnvFile` treats as unexposed and gives no public identity.
+        // Either state makes the binding undeliverable, so clear this durable
+        // configuration rather than treating it as a transient payload absence.
         next = null;
       } else if (params.syncedAppUrns.has(appUrn)) {
         /*
-         * The hostname this app is serving on is mid-rebind — CI-Cloud reported
-         * it against more than one target, so `indexCustomDomainsByTarget` drops
-         * it from both and this app's target has no delivered domain at all.
+         * The app's current hostname is mid-rebind. Companion Portal reported it
+         * against multiple targets, so `indexCustomDomainsByTarget` removes it
+         * from both and leaves this app without a delivered-domain match.
          *
-         * That is NOT an instruction to unbind. Unbinding here would take a live
-         * customer hostname off the app on its next restart because a SIBLING app
-         * briefly claimed the same name, and the drop already means neither side
-         * can be trusted. Hold the current binding and let the next sync, once
-         * CI-Cloud has settled on one target, decide.
+         * Do not interpret ambiguity as an instruction to unbind. That would
+         * remove a live customer hostname on the app's next restart because a
+         * sibling app briefly claimed the same name. Since neither target is
+         * authoritative, retain the current binding and let a later sync decide
+         * after Companion Portal settles on one target.
          */
         if (current && ambiguousDomains.has(current)) {
           this.logger.warn(`[Cloudflare] CI-Cloud reports ${current} wired to more than one app; keeping ${appUrn} on it until that resolves.`);
@@ -932,15 +934,15 @@ export class ExposureSyncService {
         next = selectCustomDomain(byTarget.get(target), current);
       } else {
         /*
-         * Published, but absent from this payload — it is stopped, or was
-         * deliberately excluded for a release pass. CI-Cloud only reports a
-         * domain as delivered when it produced an ingress rule, and it cannot
-         * produce one for an app it was not told about, so "not in the array"
-         * here means "not asked about", NOT "unbound".
+         * The app is published but absent from this payload because it is stopped
+         * or deliberately excluded during a release pass. Companion Portal
+         * reports a domain as delivered only after producing an ingress rule, and
+         * it cannot produce one for an omitted app. Absence therefore means "not
+         * queried," not "unbound."
          *
-         * Clearing on that would flap: stopping an app would unbind it, starting
-         * it would generate its env without the custom hostname, and the sync
-         * that follows the start would rebind and demand a second restart.
+         * Clearing here would cause a flap: stopping would remove the binding,
+         * starting would generate an environment without the custom hostname, and
+         * the following sync would restore the binding and require another restart.
          */
         continue;
       }
@@ -950,40 +952,39 @@ export class ExposureSyncService {
       }
 
       /*
-       * A lifecycle command is mid-flight on this app, and it has ALREADY
-       * regenerated the env — start and restart both do that before the
-       * container comes up, and this sync runs from inside the same command.
-       * Writing the binding now would be silently undone: `settleCommandOutcome`
-       * clears `pendingRestart` when the command lands, so the row would end up
-       * bound with the badge cleared and the env still on the old hostname, and
-       * the `next === current` check above would never raise it again.
+       * A lifecycle command is active and has already regenerated the environment.
+       * Start and restart both do that before the container becomes available, and
+       * this sync runs within the same command. Persisting the binding now would
+       * be lost when `settleCommandOutcome` clears `pendingRestart`: the row would
+       * hold the new binding, the environment would retain the old hostname, and
+       * `next === current` would prevent another restart badge.
        *
-       * Deferring to the next sync costs one cycle and leaves the row unchanged,
-       * so the binding is re-derived from scratch with the badge intact.
+       * Deferring by one sync leaves the row unchanged, allowing the next pass to
+       * derive the binding again while preserving the badge.
        */
       if (app.status === 'starting' || app.status === 'restarting') {
         continue;
       }
 
       /*
-       * ⚠ THE STATUS ABOVE IS A SNAPSHOT, SO THE CHECK ALONE IS NOT ENOUGH.
+       * The status above is a snapshot, so the check alone cannot prevent races.
        *
-       * `apps` is read once at the top of the sync, BEFORE the CI-Cloud round
-       * trip (which retries with backoff and can take seconds). A restart begun
-       * inside that window is still `running` in this array, sails past the
-       * guard, and lands the write that `settleCommandOutcome` then clears —
-       * exactly the state the guard exists to prevent, and one the `next ===
-       * current` check above guarantees is never raised again.
+       * The sync reads `apps` before the Companion Portal request, whose retries
+       * and backoff can take several seconds. A restart that begins during that
+       * window still appears as `running` in this array and can pass the guard.
+       * `settleCommandOutcome` would then clear the resulting write, creating the
+       * stale environment state that the guard prevents. The `next === current`
+       * check would ensure that no later pass raises the badge again.
        *
-       * So the write is conditional on the status not having moved since the
-       * snapshot. If a command claimed the app in the meantime the update simply
-       * does not apply, and the next sync re-derives the binding from scratch.
+       * Make the write conditional on an unchanged status. If a command claims
+       * the app after the snapshot, the update does not apply, and the next sync
+       * derives the binding again from current state.
        */
       let persisted: boolean;
       try {
         persisted = await this.appRepository.updateAppByIdIfStatus(app.id, app.status, { customDomain: next, pendingRestart: true });
       } catch (error) {
-        // One row's write must not abandon the rest of the reconcile.
+        // Isolate each row so one write failure does not abandon reconciliation.
         this.logger.error(`[Cloudflare] Failed to persist custom domain for ${appUrn}: ${error instanceof Error ? error.message : String(error)}`);
         continue;
       }
@@ -998,22 +999,21 @@ export class ExposureSyncService {
           ? `[Cloudflare] ${appUrn} is now served on custom domain ${next}; restart it to publish that hostname to the app.`
           : `[Cloudflare] Custom domain ${current} is no longer wired for ${appUrn}; restart it to revert to its platform hostname.`,
       );
-      // No `appUrn` third argument: that would publish to the `app:<urn>` topic,
-      // which nothing subscribes to — the frontend opens `/api/sse/app` only, so
-      // the event would never reach the cache invalidation it exists for.
+      // Omit the third `appUrn` argument because it would publish to `app:<urn>`.
+      // The frontend opens only `/api/sse/app`, so a per-app topic would not
+      // trigger the required cache invalidation.
       this.sseService.emit('app', { event: 'custom_domain_changed', appUrn });
     }
 
     /*
-     * CI-Cloud wired a hostname the Hub could not attribute to any app.
+     * Report hostnames that Companion Portal wired but the Hub cannot attribute.
      *
-     * The join is on a string both sides compose independently, so it can miss:
-     * CI-Cloud falls back to its own root domain when an app's requested
-     * `publicDomain` is unapproved, unentitled or in an unreachable zone, and an
-     * operator renaming a subdomain moves the Hub's side out from under a target
-     * CI-Cloud has already stored. Every one of those is a customer domain that
-     * IS serving and that the Hub is quietly declining to tell its app about, so
-     * say so — without this the feature simply appears not to work.
+     * The join can miss because each side composes its key independently.
+     * Companion Portal falls back to its own root domain when an app's requested
+     * `publicDomain` lacks approval, entitlement, or a reachable zone. Renaming a
+     * subdomain can also move the Hub identity away from a target already stored
+     * by the Portal. In each case, a customer domain is serving while the Hub
+     * withholds it from the app, so operators need a direct warning.
      */
     const unmatched = [...byTarget.keys()].filter((target) => !matchedTargets.has(target));
     if (unmatched.length > 0) {

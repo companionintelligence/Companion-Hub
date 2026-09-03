@@ -17,9 +17,9 @@ import { TailscaleService } from '../tailscale.service';
 const runningStatusJson = JSON.stringify({
   Version: '1.82.0',
   BackendState: 'Running',
-  Self: { HostName: 'hub', DNSName: 'hub-1.capybara-ulmer.ts.net.', TailscaleIPs: ['100.1.1.1'] },
-  MagicDNSSuffix: 'capybara-ulmer.ts.net',
-  CurrentTailnet: { Name: 'liam.broza@gmail.com', MagicDNSSuffix: 'capybara-ulmer.ts.net' },
+  Self: { HostName: 'hub', DNSName: 'hub-1.example.ts.net.', TailscaleIPs: ['100.1.1.1'] },
+  MagicDNSSuffix: 'example.ts.net',
+  CurrentTailnet: { Name: 'operator@example.com', MagicDNSSuffix: 'example.ts.net' },
 });
 
 describe('TailscaleService', () => {
@@ -52,8 +52,8 @@ describe('TailscaleService', () => {
     expect(status.installed).toBe(true);
     expect(status.connected).toBe(true);
     expect(status.ip).toBe('100.1.1.1');
-    expect(status.nodeFqdn).toBe('hub-1.capybara-ulmer.ts.net');
-    expect(status.tailnet).toBe('capybara-ulmer.ts.net');
+    expect(status.nodeFqdn).toBe('hub-1.example.ts.net');
+    expect(status.tailnet).toBe('example.ts.net');
     expect(execFileMock).toHaveBeenCalledWith(
       'docker',
       ['exec', 'hub-tailscale', 'tailscale', 'status', '--json'],
@@ -604,7 +604,7 @@ describe('TailscaleService', () => {
   it('getServeStatus parses direct-port and service entries', async () => {
     const serveStatusJson = JSON.stringify({
       Web: {
-        'hub-tailscale-1.capybara-ulmer.ts.net:3001': {
+        'hub-tailscale-1.example.ts.net:3001': {
           '/': { Proxy: 'http://172.18.0.10:3001' },
         },
       },

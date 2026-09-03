@@ -1,4 +1,4 @@
-# Agent Review — CI-Hub
+# Agent review
 
 > **Purpose:** Cross-agent review protocol at research, plan, implementation, and wrap-up phases.
 > **Scope:** All non-trivial changes; use different models per phase.
@@ -33,7 +33,7 @@ bin/agent-review --phase wrap --persona security
 bin/agent-review --phase impl --persona code-quality --cursor
 ```
 
-The script outputs a structured prompt. Paste into a **different** agent session or use `--cursor` to invoke subagents.
+The script outputs a structured prompt. Paste the prompt into a **different** agent session, or use `--cursor` to invoke subagents.
 
 ---
 

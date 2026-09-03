@@ -1,20 +1,20 @@
-# Architecture
+# Companion Hub architecture
 
-> **Purpose:** Deep dive into every major CI-Hub subsystem and how they connect.
-> **Scope:** Full platform — backend, frontend, desktop, Docker runtime, Portal integration.
+> **Purpose:** Describe the major Companion Hub subsystems and how they connect.
+> **Scope:** Companion Hub backend, frontend, desktop shell, Docker runtime, and Portal integration.
 > **Key paths:** `packages/backend/`, `packages/frontend/`, `packages/desktop/`, `docs/system/`
 > **Commands:** `pnpm run local`, `pnpm run local:desktop`, see docs/system/*.md per area
 > **Owner persona:** maintainability (see docs/agent/REVIEW_PERSONAS.md)
 > **Last updated:** 2026-07-12
 > **Related:** docs/system/README.md, PLATFORM_ARCHITECTURE.md, AUTO_HEALING.md
 
-> **Agents:** Prefer [docs/system/](system/) for greppable per-subsystem docs. Update those when you change code; update this file only for cross-cutting architecture changes.
+> **Agents:** Use [docs/system/](system/) for searchable subsystem documentation. Update those files when you change code; update this file only for cross-cutting architecture changes.
 
 Companion Hub is a self-hosted Docker app platform that lets users install, manage, and expose containerized applications through a web dashboard or native desktop app. This document describes every major subsystem, how they connect, and the design decisions behind them.
 
 ---
 
-## High-Level Overview
+## High-level overview
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
@@ -33,25 +33,27 @@ Companion Hub is a self-hosted Docker app platform that lets users install, mana
 ┌──────────┐ ┌──────┐ ┌──────────────────────────────────────────────┐
 │PostgreSQL│ │Rabbit│ │              Docker Engine                    │
 │   14     │ │ MQ 4 │ │  Compose v2 · Traefik v3 · cloudflared      │
-│ Drizzle  │ │      │ │  Headscale · hub-tailscale · user apps       │
+│ Drizzle  │ │      │ │  Tailscale · hub-tailscale · user apps       │
 └──────────┘ └──────┘ └──────────────────────────────────────────────┘
                                    │
                                    ▼
                         ┌─────────────────────┐
-                        │   CI Cloud Portal   │
+                        │  Companion Portal   │
                         │  Device registration│
                         │  Tunnel provisioning│
                         │  Marketplace API    │
                         └─────────────────────┘
 ```
 
+Tailscale is the current private VPN plane. Headscale is a legacy option in older deployments.
+
 ---
 
-## Monorepo Structure
+## Monorepo structure
 
 The project uses **pnpm workspaces** with **Turborepo** for task orchestration.
 
-| Package | Purpose | Key Technology |
+| Package | Purpose | Key technology |
 |---------|---------|----------------|
 | `packages/backend` | REST API, app lifecycle, Docker control, queue workers | NestJS 11, Drizzle ORM, Dockerode |
 | `packages/frontend` | Single-page dashboard and app store UI | React 19, React Router 7, Vite 7 |
@@ -64,7 +66,7 @@ Build dependencies flow `common → backend`, `common → frontend`. Turborepo c
 
 ## Backend
 
-### Framework and Bootstrap
+### Framework and bootstrap
 
 The backend is a **NestJS 11** application on **Express**. `main.ts` bootstraps the app with:
 
@@ -77,11 +79,11 @@ The backend is a **NestJS 11** application on **Express**. `main.ts` bootstraps 
 - CORS configured for Tauri WebView origins and localhost
 - In production, the built frontend SPA is served as static files from `/assets/frontend`
 
-### Module Organization
+### Module organization
 
 The backend has ~30 NestJS modules organized into **core infrastructure** and **feature modules**.
 
-#### Core Modules
+#### Core modules
 
 | Module | Class | Responsibility |
 |--------|-------|----------------|
@@ -94,20 +96,20 @@ The backend has ~30 NestJS modules organized into **core infrastructure** and **
 | **Encryption** | `EncryptionService` | Symmetric encryption for sensitive config values stored in the database (e.g., TOTP secrets). |
 | **Password** | `PasswordService` | Argon2id password hashing with individual salts per user. |
 
-#### Feature Modules
+#### Feature modules
 
-| Module | Key Classes | What It Does |
+| Module | Key classes | What it does |
 |--------|-------------|--------------|
-| **Auth** | `AuthService`, `SessionManager`, `AuthGuard`, `AuthMiddleware` | **Portal-first operator auth:** human credentials are validated against CI Portal (email/password proxy and OIDC PKCE). The Hub stores an opaque **session ID** in an HTTP-only cookie (not a JWT payload exposed to the client). Device↔Portal automation uses `ciHubApiKey` (`Authorization` + `x-device-key`). Tauri sends `X-Session-Id` instead of cookies. `AuthGuard` protects routes unless `@Public()`. |
+| **Auth** | `AuthService`, `SessionManager`, `AuthGuard`, `AuthMiddleware` | **Portal-first operator auth:** human credentials are validated against Companion Portal (email/password proxy and OIDC PKCE). The Hub stores an opaque **session ID** in an HTTP-only cookie (not a JWT payload exposed to the client). Device↔Portal automation uses `ciHubApiKey` (`Authorization` + `x-device-key`). Tauri sends `X-Session-Id` instead of cookies. `AuthGuard` protects routes unless `@Public()`. |
 | **User** | `UserService`, `UserRepository` | CRUD for user accounts. Supports operator (admin) and regular user roles. Locale and timezone preferences per user. |
 | **Apps** | `AppsService`, `AppRepository`, `AppFilesManager` | Reads installed app metadata from the database and filesystem. `AppFilesManager` handles path resolution for each app's compose file, environment file, config, and user overrides. Path layout: `$DATA_DIR/apps/{storeId}/{appName}/` for definitions, `$APP_DATA_DIR/{storeId}/{appName}/` for persistent data, `$DATA_DIR/user-config/{storeId}/{appName}/` for user overrides (`docker-compose.user.yml`, `.env.user`). |
 | **App Lifecycle** | `AppLifecycleService`, `AppLifecycleController`, `AppLifecycleCommandFactory`, `InstallPipelineTracker` | Orchestrates all app state transitions: install, start, stop, restart, uninstall, reset, update, update-config, backup, restore. Uses the **command pattern** — `AppLifecycleCommandFactory` creates a handler for each operation type. Every operation acquires an **async mutex** keyed by app URN to prevent concurrent modifications. **Install** commands additionally acquire a global pipeline mutex (`INSTALL_PIPELINE_MUTEX_KEY`) so only one Docker image pull / `compose up` runs at a time; other queue workers may still process start/stop/update for different apps. Failed installs keep the app record with status `install_failed` (library entry retained). Long-running operations (install, update) are published to RabbitMQ and processed asynchronously. Status changes broadcast via SSE (`status_change` with optional progress, `install_queue`, lifecycle success/error events). After any exposure change, Cloudflare DNS is synced automatically. Supports bulk operations: `updateAllApps`, `startAllApps`, `stopAllApps`, `restartAllApps`. |
 | **Docker** | `DockerService` | Wraps Docker operations. Core method `composeApp(appUrn, command)` spawns `docker compose` processes—tries the plugin form (`docker compose`) first, falls back to the standalone `docker-compose` binary. Collects compose files and environment files, resolves relative paths from the app directory. Handles image pulls, container lifecycle, log streaming, port detection (parses compose files and resolves `${VAR}` references), container diagnostics (crash-loop detection from exit codes + captured logs), and Docker network management. |
 | **Queue** | `QueueFactory`, `AppEventsQueue`, `RepoEventsQueue`, `SystemEventsQueue` | Generic `Queue<EventSchema, ResultSchema>` abstraction over `rabbitmq-client`. Implements an **RPC pattern**: publish a command → worker processes it → reply is correlated back to the caller. `AppEventsQueue` runs 3 concurrent workers for install/start/stop/update operations (installs serialized at the pipeline mutex, not by worker count). `RepoEventsQueue` runs 3 workers for git clone/pull. `SystemEventsQueue` runs 1 worker for status reconciliation. All messages validated with Zod schemas. App-events RPC timeout is `max(userSettings.eventsTimeout, DEFAULT_APP_IMAGE_PULL_TIMEOUT_MINUTES)` (45 minutes minimum for large image pulls). Supports cron scheduling for repeatable tasks. Includes exponential backoff on reconnection failures. |
-| **Marketplace** | `MarketplaceService`, `PortalCatalogService`, `PortalClientService` | **Portal-first catalog:** featured/listings/alternatives/search proxy CI Portal via `PortalClientService` with a 15-minute in-memory cache. Per-app install still fetches fresh compose/config from Portal at install time. Legacy git store clones remain for power users but are not on the appliance boot path. |
+| **Marketplace** | `MarketplaceService`, `PortalCatalogService`, `PortalClientService` | **Portal-first catalog:** featured, listings, alternatives, and search requests proxy Companion Portal through `PortalClientService` with a 15-minute in-memory cache. Per-app install still fetches fresh compose/config from Portal at install time. Legacy git store clones remain for power users but are not on the appliance boot path. |
 | **App Stores** | `AppStoreService`, `AppStoreRepository` | Registers the built-in `ci-marketplace` (`ci_cloud_api`) store. Git-typed stores are deprecated in product UI until Add Store returns. |
-| **Cloudflare** | `CloudflareClientService` | Manages the Cloudflare Tunnel integration. Syncs local app exposure state to the CI Cloud Portal API, which in turn configures Cloudflare DNS ingress rules. Maintains the tunnel token on disk (`tunnel/token`) and in memory. Constructs `AppInfo` payloads (name, subdomain, localPort, protocol) with a `privilegedKind` field for special services (`hub` for the Hub itself). Token overwrites on initialization to recover from invalid state. |
-| **Registration** | `RegistrationService` | Handles the device registration flow with CI Cloud. On first run, the Hub displays a pairing code or redirect URL. The user completes registration on the Portal, which calls back with organization ID, tunnel credentials, and subdomain mapping. Stores everything in the `device_registration` table. On startup, recovers tunnel state from the database and reinitializes the Cloudflare tunnel if needed. Polls every 5 seconds when unregistered. Writes a Traefik dynamic YAML route for the Hub's public FQDN. |
+| **Cloudflare** | `CloudflareClientService` | Manages the Cloudflare Tunnel integration. Syncs local app exposure state to the Companion Portal API, which in turn configures Cloudflare DNS ingress rules. Maintains the tunnel token on disk (`tunnel/token`) and in memory. Constructs `AppInfo` payloads (name, subdomain, localPort, protocol) with a `privilegedKind` field for special services (`hub` for the Hub itself). Token overwrites on initialization to recover from invalid state. |
+| **Registration** | `RegistrationService` | Handles the device registration flow with Companion Portal. On first run, the Hub displays a pairing code or redirect URL. The user completes registration on the Portal, which calls back with organization ID, tunnel credentials, and subdomain mapping. Stores everything in the `device_registration` table. On startup, recovers tunnel state from the database and reinitializes the Cloudflare tunnel if needed. Polls every 5 seconds when unregistered. Writes a Traefik dynamic YAML route for the Hub's public FQDN. |
 | **Tailscale** | `TailscaleService` | When the host has the Tailscale CLI and socket, manages `tailscale` commands and `tailscale serve`. Can fall back to `docker exec` into an optional sidecar named by `TAILSCALE_SIDECAR_CONTAINER` (legacy stacks used `hub-tailscale`). |
 | **Backups** | `BackupsService` | Creates, lists, restores, deletes, and uploads per-app backups. Backups are tar.gz archives of the app's data directory. Flow: set app status to `backing_up` → stop containers → archive → restart. Restore reverses the process. Respects `app.maxBackups` for automatic retention. Tracks `cihub_app_version` in backup metadata for version compatibility. |
 | **Custom Apps** | `CustomAppService` | Lets users define their own Docker Compose apps without an app store. Files are created under the reserved `_user` store slug. Generates `docker-compose.json`, `config.json`, and metadata files (description.md, logo). Validates metadata via the shared frontmatter schema from `@ci-hub/common`. |
@@ -117,7 +119,7 @@ The backend has ~30 NestJS modules organized into **core infrastructure** and **
 | **Links** | `LinksService` | CRUD for dashboard shortcut links (title, URL, icon, visibility). |
 | **I18n** | `I18nModule` | Multi-language support using `i18next` with `i18next-fs-backend`. Translation files live in `assets/translations/`. |
 
-### Database Schema
+### Database schema
 
 PostgreSQL 14 with **Drizzle ORM**. Five core tables:
 
@@ -167,11 +169,11 @@ PostgreSQL 14 with **Drizzle ORM**. Five core tables:
                                 └───────────────────────────────┘
 ```
 
-**App Status States:** `running`, `stopped`, `installing`, `install_failed`, `uninstalling`, `stopping`, `starting`, `missing`, `updating`, `resetting`, `restarting`, `backing_up`, `restoring`
+**App status states:** `running`, `stopped`, `installing`, `install_failed`, `uninstalling`, `stopping`, `starting`, `missing`, `updating`, `resetting`, `restarting`, `backing_up`, `restoring`
 
 Migrations are managed by Drizzle Kit and run automatically on startup.
 
-### Message Queue
+### Message queue
 
 RabbitMQ 4 provides asynchronous task processing. The queue system uses a generic `Queue<EventSchema, ResultSchema>` class with **RPC semantics** — the caller publishes a command and awaits a correlated reply.
 
@@ -208,7 +210,7 @@ Frontend                    Backend API                    RabbitMQ             
 
 All messages are validated with Zod schemas before processing. The `QueueFactory` handles connection pooling with exponential backoff reconnection. Cron scheduling is available for repeatable tasks like periodic app status reconciliation.
 
-### API Endpoints
+### API endpoints
 
 All routes are prefixed with `/api`. Key endpoint groups:
 
@@ -278,7 +280,7 @@ Links
   DELETE /links/:id                         Delete a link
 
 Registration
-  POST /registration/register               Register device with CI Cloud
+  POST /registration/register               Register device with Companion Portal
   GET  /registration/status                 Registration status
 
 Settings
@@ -286,7 +288,7 @@ Settings
   PATCH /settings                           Update settings
 ```
 
-### Authentication Flow
+### Authentication flow
 
 ```
 ┌────────┐                    ┌──────────┐                ┌──────────────┐
@@ -323,13 +325,13 @@ Settings
 - TOTP 2FA uses `@otplib/core` with encrypted secret storage
 - The `AuthMiddleware` extracts the session from cookie or header on every request
 - The `AuthGuard` rejects unauthenticated requests unless the route has the `@Public()` decorator
-- Traefik uses `/api/auth/traefik` as a forward-auth endpoint so that installed apps can be protected behind Hub authentication
+- Traefik uses `/api/auth/traefik` as a forward-auth endpoint so that installed apps can be protected behind Hub authentication. HMAC-signed `X-CI-Hub-User` headers apply only to apps on that appliance; they are not a Portal session (see [`security/hub-portal-trust.md`](security/hub-portal-trust.md)).
 
 ---
 
 ## Frontend
 
-### Framework Stack
+### Framework stack
 
 The frontend is a **React 19 SPA** built with **React Router 7** (file-convention routing in SPA mode, no SSR) and bundled by **Vite 7**.
 
@@ -349,9 +351,9 @@ The frontend is a **React 19 SPA** built with **React Router 7** (file-conventio
 | i18n | i18next + react-i18next |
 | QR codes | qrcode.react |
 
-### API Client Generation
+### API client generation
 
-The API client is **fully auto-generated** from the backend's Swagger JSON specification using `@hey-api/openapi-ts`:
+The API client is generated from the backend's Swagger JSON specification using `@hey-api/openapi-ts`:
 
 ```
 openapi-ts.config.ts
@@ -394,7 +396,7 @@ Authenticated Layout (sidebar + titlebar)
 
 Route guards check authentication state and redirect to `/login` or `/onboarding` as needed.
 
-### State Management
+### State management
 
 **Server state** is handled entirely by TanStack React Query. The auto-generated hooks handle caching, refetching, and optimistic updates. Cache is invalidated on mutations automatically.
 
@@ -403,7 +405,7 @@ Route guards check authentication state and redirect to `/login` or `/onboarding
 - `ui-store.ts` — Sidebar open/closed, modal visibility, theme toggles.
 - `multiServiceStore.ts` — Multi-service form coordination state.
 
-### Real-Time Updates
+### Real-time updates
 
 The frontend subscribes to **Server-Sent Events** for live status and log streaming:
 
@@ -415,7 +417,7 @@ The frontend subscribes to **Server-Sent Events** for live status and log stream
 
 The SSE client is auto-generated from the OpenAPI spec and uses the native `EventSource` API.
 
-### Key UI Features
+### UI features
 
 - **Dashboard** — System resource gauges (CPU, RAM, disk), list of running apps with status indicators
 - **App Store** — Full-text search with fuzzy matching, category filters, architecture-aware (only shows apps that support the host CPU)
@@ -427,7 +429,7 @@ The SSE client is auto-generated from the OpenAPI spec and uses the native `Even
 
 ---
 
-## Common Package
+## Common package
 
 `@ci-hub/common` provides shared code consumed by both backend and frontend:
 
@@ -453,7 +455,7 @@ The package tracks `CURRENT_SCHEMA_VERSION` and `MIN_SCHEMA_VERSION` for app com
 
 ---
 
-## Desktop App
+## Desktop app
 
 The desktop app wraps the Hub's web UI in a **Tauri 2** native shell (Rust + system WebView).
 
@@ -470,7 +472,7 @@ The desktop app wraps the Hub's web UI in a **Tauri 2** native shell (Rust + sys
 | **Notifications** | Native OS notifications for hub status changes |
 | **Persistent storage** | `tauri-plugin-store` for local preferences |
 
-### Tauri Commands (Rust → JavaScript)
+### Tauri commands (Rust → JavaScript)
 
 ```rust
 check_hub_status(url: String) -> bool           // HTTP health probe
@@ -482,7 +484,7 @@ install_docker_command() -> DockerInstallResult
 get_hub_status_command() -> HubStatus            // Combined: Docker + container + health
 ```
 
-### Session Handling
+### Session handling
 
 Tauri's WebView2 blocks cross-origin cookie access. The desktop app detects it's running in Tauri via `@tauri-apps/api` and sends the JWT session token via an `X-Session-Id` request header instead of relying on cookies. The backend's `AuthMiddleware` checks both locations.
 
@@ -500,7 +502,7 @@ Tauri's WebView2 blocks cross-origin cookie access. The desktop app detects it's
 
 ## Infrastructure
 
-### Docker Compose Services
+### Docker Compose services
 
 The Hub orchestrates its infrastructure and all user-installed apps via Docker Compose.
 
@@ -522,7 +524,7 @@ The Hub orchestrates its infrastructure and all user-installed apps via Docker C
 
 **User-installed apps** run as separate Docker Compose stacks managed by the backend's `DockerService`. Each app gets its own compose file, network, and data directory.
 
-### Reverse Proxy (Traefik v3)
+### Reverse proxy (Traefik v3)
 
 Traefik provides automatic routing and TLS for all services:
 
@@ -544,7 +546,7 @@ Internet → Cloudflare → cloudflared → Traefik (443/80)
 
 **TLS:** Let's Encrypt via ACME (stored in `$DATA_DIR/state/traefik/acme_storage.json`). Local development uses self-signed certificates generated by `scripts/generate-tunnel-certs.sh`.
 
-### Networking and App Exposure
+### Networking and app exposure
 
 Apps can be exposed through three modes:
 
@@ -554,15 +556,15 @@ Apps can be exposed through three modes:
 - Port allocation tracked in `portAllocation` table to prevent conflicts
 
 **2. Cloudflare Tunnel**
-- Device must be registered with CI Cloud
-- Backend publishes app info (subdomain, port, protocol) to the CI Portal API
+- Device must be registered with Companion Portal
+- Backend publishes app info (subdomain, port, protocol) to the Companion Portal API
 - Portal configures Cloudflare DNS ingress rules
 - `cloudflared` container bridges traffic from the Cloudflare edge to Traefik
 - Public URL: `{app}.{org_slug}.{domain}` (e.g., `nextcloud.myorg.ci.computer`)
 
 **3. Tailscale sidecar (`hub-tailscale`)** — optional `private-vpn` profile: joins [Tailscale](https://tailscale.com) using a pre-auth key and can advertise the Docker bridge so tailnet devices reach Hub services. Not a self-hosted coordination server; see **docs/private-vpn.md**.
 
-### Filesystem Layout
+### Filesystem layout
 
 ```
 $ROOT_FOLDER_HOST/
@@ -606,11 +608,11 @@ $ROOT_FOLDER_HOST/
 
 ---
 
-## App Lifecycle
+## App lifecycle
 
-An app's journey through the system:
+The app lifecycle follows these steps:
 
-> The Hub also reconciles and repairs this lifecycle automatically — desktop
+> The Hub reconciles and repairs this lifecycle through desktop
 > hash-based reconciliation, `start_hub` self-heal/retry, the 5-minute backend
 > status sync, and compose restart policies. See **[AUTO_HEALING.md](AUTO_HEALING.md)**.
 
@@ -661,9 +663,9 @@ An app's journey through the system:
 
 ---
 
-## Build and Deployment
+## Build and deployment
 
-### Docker Build (Production)
+### Docker build for production
 
 The `Dockerfile` is a multi-stage build:
 
@@ -686,11 +688,11 @@ Stage 3: runner
   - Exposes port 3000 (mapped to 5002 in compose)
 ```
 
-### Development Build
+### Development build
 
 `Dockerfile.dev` is a single-stage build that installs all dependencies and runs `turbo dev` with hot reload. Source directories are bind-mounted for instant feedback.
 
-### CI/CD Pipeline
+### CI/CD pipeline
 
 GitHub Actions workflow per branch:
 
@@ -721,7 +723,7 @@ secrets.
 
 A **Cloudflare Workers** deployment (`wrangler.toml`) defines a Durable Object (`AppContainer`) for future container orchestration at the edge, with separate Workers environments for dev, staging, and production.
 
-### Self-Update
+### Self-update
 
 Users can update their Hub in-place:
 1. `SystemUpdateService.check()` compares `CI_HUB_VERSION` against the latest tag on GHCR
@@ -732,11 +734,11 @@ Users can update their Hub in-place:
 
 ## Testing
 
-### Unit Tests
+### Unit tests
 
 Vitest runs unit tests in backend and frontend packages. Tests are co-located with source files or in `__tests__/` directories. Coverage is reported to Codecov (informational, non-blocking).
 
-### End-to-End Tests
+### End-to-end tests
 
 **Playwright** runs browser automation tests against a full stack:
 
@@ -749,7 +751,7 @@ Vitest runs unit tests in backend and frontend packages. Tests are co-located wi
 
 **Test infrastructure:** Playwright auto-starts three services for the **default lane** (`pnpm test:e2e:ci`):
 
-1. **CI Portal mock** (port 4444) — lightweight HTTP stub ([`e2e/mock-portal/server.ts`](../e2e/mock-portal/server.ts))
+1. **Companion Portal mock** (port 4444) — lightweight HTTP stub ([`e2e/mock-portal/server.ts`](../e2e/mock-portal/server.ts))
 2. **Backend** (port 3000) — Full NestJS app with real PostgreSQL and RabbitMQ
 3. **Frontend** (port 9091) — Vite dev server (preview build in CI)
 
@@ -789,7 +791,7 @@ See [`e2e/README.md`](../e2e/README.md) for full lane documentation.
 
 ---
 
-## Tooling and Code Quality
+## Tooling and code quality
 
 | Tool | Purpose |
 |------|---------|
@@ -805,7 +807,7 @@ See [`e2e/README.md`](../e2e/README.md) for full lane documentation.
 
 ---
 
-## Environment Variables Reference
+## Environment variable reference
 
 ### Required
 
@@ -824,7 +826,7 @@ See [`e2e/README.md`](../e2e/README.md) for full lane documentation.
 | `POSTGRES_PASSWORD` | `postgres` | Database password |
 | `POSTGRES_DBNAME` | `companiondb` | Database name |
 
-### Message Queue
+### Message queue
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -837,7 +839,7 @@ See [`e2e/README.md`](../e2e/README.md) for full lane documentation.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `CI_CLOUD_URL` | `https://hub.companionintelligence.com` | CI Cloud Portal URL |
+| `CI_CLOUD_URL` | `https://hub.companionintelligence.com` | Companion Portal URL |
 | `DOMAIN` | — | Public domain for Cloudflare exposure |
 | `LOCAL_DOMAIN` | `ci.lan` | Local domain for Traefik routing |
 | `INTERNAL_IP` | `127.0.0.1` | Host internal IP address |
@@ -855,7 +857,7 @@ See [`e2e/README.md`](../e2e/README.md) for full lane documentation.
 | `QUEUE_TIMEOUT_IN_MINUTES` | `5` | Max time for async queue jobs |
 | `ARCHITECTURE` | auto-detected | CPU architecture (amd64/arm64) |
 
-### Feature Flags
+### Feature flags
 
 | Variable | Default | Description |
 |----------|---------|-------------|

@@ -246,7 +246,7 @@ describe('AppHelpers', () => {
     });
 
     describe('custom domain binding', () => {
-      /** What `buildPublicWebIdentity` composes for this app, and CI-Cloud's join key. */
+      /** What `buildPublicWebIdentity` composes for this app, and Companion Portal's join key. */
       const PLATFORM_HOSTNAME = 'test-app-test-store-core2-acme.example.com';
       const PLATFORM_URL = `https://${PLATFORM_HOSTNAME}`;
       const CUSTOM_URL = 'https://comfy.acme.com';

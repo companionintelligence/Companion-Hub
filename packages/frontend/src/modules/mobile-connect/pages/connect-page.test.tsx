@@ -175,7 +175,7 @@ describe('ConnectPage', () => {
   });
 
   it('OIDC sign-in remembers the Portal email from the id_token', async () => {
-    const payload = btoa(JSON.stringify({ email: 'chamberlain.bennett@gmail.com' }))
+    const payload = btoa(JSON.stringify({ email: 'user@example.com' }))
       .replace(/\+/g, '-')
       .replace(/\//g, '_')
       .replace(/=+$/, '');
@@ -191,7 +191,7 @@ describe('ConnectPage', () => {
     await user.click(screen.getByTestId('oidc-login-btn'));
 
     expect(await screen.findByText('Apple Hub')).toBeInTheDocument();
-    expect(localStorage.getItem('ci-hub.portalAccountEmail')).toBe('chamberlain.bennett@gmail.com');
+    expect(localStorage.getItem('ci-hub.portalAccountEmail')).toBe('user@example.com');
   });
 
   it('OIDC sign-in success loads the Hub picker', async () => {

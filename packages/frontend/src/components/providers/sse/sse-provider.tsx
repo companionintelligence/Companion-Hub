@@ -11,8 +11,8 @@ import { Link, useNavigate } from 'react-router';
 const logsPageHref = '/settings?tab=logs';
 
 /**
- * Map CI-Cloud's public-DNS failure class onto the message the user sees. An
- * unknown or absent code (older CI-Cloud) falls back to the generic copy.
+ * Map Companion Portal's public-DNS failure class onto the message the user sees. An
+ * unknown or absent code (older Companion Portal) falls back to the generic copy.
  */
 const PUBLIC_DNS_ERROR_KEYS: Record<string, string> = {
   conflict: 'APP_ERROR_PUBLIC_DNS_CONFLICT',
@@ -192,7 +192,7 @@ export const SSEProvider = ({ children }: PropsWithChildren) => {
           toast.error(renderLogsErrorToast('APP_RESTORE_ERROR_TOAST', appName));
           break;
         case 'public_dns_error':
-          // errorCode carries CI-Cloud's failure class. A conflict and an
+          // errorCode carries Companion Portal's failure class. A conflict and an
           // unprovisioned domain need different actions from the user, so they
           // must not share the same message.
           toast.error(t(PUBLIC_DNS_ERROR_KEYS[errorCode ?? ''] ?? 'APP_ERROR_PUBLIC_DNS_FAILED', { id: appName }));

@@ -5,49 +5,51 @@ import axios from 'axios';
 import { buildHubPublicOrigin, isLocalDevDomain } from '@/common/helpers/hub-origin';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { DeviceRegistrationRepository } from '../registration/device-registration.repository';
-// DockerReadFacade is loaded dynamically at its single use site so this module
-// does not pull docker.service (and its AppsService edge) into the static graph.
+// Load `DockerReadFacade` at its only use site to keep `docker.service` and its
+// `AppsService` dependency out of this module's static graph.
 import { CloudflareClientService } from './cloudflare-client.service';
 
 /**
- * Liveness of the Hub's own public route.
+ * Describes the liveness of the Companion Hub public route.
  *
- *  - `up`       — the public origin answered; a browser sent there will arrive.
- *  - `down`     — confirmed unreachable: cloudflared is not running, the tunnel
- *                 token is missing on a provisioned Hub, or the origin failed
- *                 {@link FAILURE_THRESHOLD} consecutive probes.
- *  - `disabled` — this appliance has no public route by design: it is not
- *                 registered, or it runs the local/E2E domain. Not a fault, and
- *                 NOT the same as `down` — a local-dev Hub still serves its own
- *                 origin through Traefik.
- *  - `unknown`  — no conclusive reading yet. Callers MUST treat this as "carry on
- *                 as before", never as a failure.
+ * - `up`: The public origin answered, so a browser can reach it.
+ * - `down`: The route is confirmed unreachable. `cloudflared` is not running,
+ *   a provisioned Hub has no tunnel token, or the origin failed
+ *   {@link FAILURE_THRESHOLD} consecutive probes.
+ * - `disabled`: This appliance has no public route by design because it is
+ *   unregistered or uses the local or E2E domain. This state differs from `down`;
+ *   a local-development Hub still serves its origin through Traefik.
+ * - `unknown`: No probe has produced a conclusive result. Callers must preserve
+ *   their previous behavior instead of treating this state as a failure.
  */
 export type TunnelHealth = 'up' | 'down' | 'disabled' | 'unknown';
 
-/** How long a reading is served before a background refresh is triggered. */
+/** Duration a cached reading remains fresh before triggering a background probe. */
 const CACHE_TTL_MS = 60_000;
 /**
- * Consecutive probe failures required before reporting `down`. A single failure
- * is not enough: this probe hairpins out through Cloudflare and back in through
- * the tunnel, a path that can blip for reasons unrelated to the tunnel's health,
- * and reporting `down` changes what every connect surface offers.
+ * Number of consecutive probe failures required before reporting `down`.
+ *
+ * The probe hairpins through Cloudflare and back through the tunnel, so a single
+ * transient failure does not prove that the tunnel is unhealthy. A `down` result
+ * changes the route offered by every connect surface.
  */
 const FAILURE_THRESHOLD = 2;
-/** Per-probe timeout. Short: this runs behind a hot endpoint and never blocks it. */
+/** Bounds each background probe because a frequently used endpoint triggers it. */
 const PROBE_TIMEOUT_MS = 5_000;
 
 /**
- * HTTP statuses Cloudflare returns when it cannot reach (or route to) the origin.
- * 530 is Cloudflare's "origin DNS/tunnel error" family, 52x its origin-connection
- * failures — all mean a browser would land on an error page, not on the Hub.
+ * HTTP statuses Cloudflare returns when it cannot reach or route to the origin.
+ *
+ * Status 530 represents the origin DNS and tunnel error family, while 52x
+ * statuses represent origin connection failures. Each status means the browser
+ * reaches an error page instead of the Hub.
  */
 const CLOUDFLARE_FAILURE_STATUSES = new Set([502, 503, 504, 520, 521, 522, 523, 524, 525, 526, 530]);
 
-/** Markers present in a Cloudflare-generated error interstitial. */
+/** Identifies markers in a Cloudflare-generated error interstitial. */
 const CLOUDFLARE_ERROR_MARKERS = ['Cloudflare Ray ID', 'cf-error-details'];
 
-/** A cached liveness reading plus the consecutive-failure run that produced it. */
+/** Stores a liveness result and the consecutive failures that produced it. */
 interface HealthReading {
   health: TunnelHealth;
   sampledAtMs: number;
@@ -55,54 +57,51 @@ interface HealthReading {
 }
 
 /**
- * Answers one question for the memory-connect surfaces: *can a browser we redirect
- * to the Hub's public origin actually get there right now?*
+ * Determines whether a browser can reach the Companion Hub public origin.
  *
- * This exists because `buildHubPublicOrigin` is a pure config read — it says what
- * the public origin **is**, never whether it **works**. Handing that URL out as a
- * clickable action when the tunnel is down is what strands a user on a Cloudflare
- * error page with no way back to the app they started from (CI-Engineering#75).
+ * `buildHubPublicOrigin` reads configuration and identifies the public origin,
+ * but it does not verify reachability. Offering an unavailable origin can strand
+ * users on a Cloudflare error page without a return path to the originating app
+ * (CI-Engineering#75).
  *
- * ## Layering
+ * Layering
  *
- * The signal is built cheapest-first, because the cheap checks are also the most
- * certain:
+ * The service evaluates the cheapest and most authoritative signals first:
  *
- *  1. Local-dev domain, or no public origin at all → `disabled`. Nothing to
- *     probe, and this is not a fault.
- *  2. A provisioned public hostname with no tunnel token, or a `cloudflared`
- *     container that is not running → `down`. Local, authoritative negatives that
- *     cost at most one `docker inspect` and cannot produce a false `down`, so
- *     they bypass {@link FAILURE_THRESHOLD} and apply immediately.
- *  3. Otherwise probe the public origin itself. This is the only check that can
- *     catch a running cloudflared whose *route* is broken (stale DNS, a tunnel
- *     the edge has forgotten), and the only one that can be wrong — hence
- *     {@link FAILURE_THRESHOLD}.
+ * 1. A local-development domain or missing public origin returns `disabled`.
+ *    Neither state indicates a fault.
+ * 2. A provisioned hostname without a tunnel token, or a stopped `cloudflared`
+ *    container, returns `down`. These local checks cost at most one
+ *    `docker inspect` and cannot produce a false network failure, so they bypass
+ *    {@link FAILURE_THRESHOLD}.
+ * 3. Otherwise, the service probes the public origin. This probe detects a
+ *    running `cloudflared` process with a broken route, such as stale DNS or a
+ *    missing edge route. Because network probes can fail transiently,
+ *    {@link FAILURE_THRESHOLD} applies.
  *
- * ## Freshness
+ * Freshness
  *
- * Readings are served **stale-while-revalidate**: `getHealth()` always returns
- * immediately from cache and schedules a refresh when the entry is older than
- * {@link CACHE_TTL_MS}. With no reading at all it returns `unknown` and warms the
- * cache in the background. This is deliberate — `GET /api/memory-connect/apps/:urn/state`
- * is hit on every top-level navigation of every memory-consumer app, so a
- * blocking probe would put {@link PROBE_TIMEOUT_MS} on that path exactly when the
- * network is already unhealthy.
+ * `getHealth()` uses stale-while-revalidate semantics. It immediately returns the
+ * cached value and schedules a refresh after {@link CACHE_TTL_MS}. Before the
+ * first result, it returns `unknown` and warms the cache in the background.
+ * `GET /api/memory-connect/apps/:urn/state` runs during each top-level navigation
+ * in a Companion Memory consumer, so a blocking probe would add up to
+ * {@link PROBE_TIMEOUT_MS} when the network is least responsive.
  */
 @Injectable()
 export class TunnelHealthService {
   private readonly logger = new Logger(TunnelHealthService.name);
 
-  /** Last reading; null until the first probe completes. */
+  /** Holds the latest reading, or `null` until the first probe completes. */
   private reading: HealthReading | null = null;
-  /** In-flight refresh, so concurrent callers trigger at most one probe. */
+  /** Deduplicates concurrent refresh requests into one probe. */
   private inFlight: Promise<void> | null = null;
   /**
-   * Bumped by {@link invalidate}. A refresh that started before the bump is
-   * describing the world as it was BEFORE the repair that triggered it, so its
-   * result is dropped rather than written back — otherwise an in-flight probe
-   * lands a stale `down` immediately after the cache was cleared, which is the
-   * exact staleness `invalidate` was called to prevent.
+   * Tracks invalidations so probes that began before a repair cannot update the
+   * cache afterward.
+   *
+   * Without this generation check, an in-flight probe could restore a stale
+   * `down` result immediately after {@link invalidate} cleared it.
    */
   private generation = 0;
 
@@ -114,11 +113,11 @@ export class TunnelHealthService {
   ) {}
 
   /**
-   * Current tunnel liveness, served from cache and never blocking.
+   * Returns cached tunnel liveness without blocking.
    *
-   * Returns `unknown` on the very first call (and until the first probe lands),
-   * which every caller is required to treat as "no opinion" rather than a
-   * failure — a cold Hub must not suppress the connect flow.
+   * The first call and subsequent calls before the initial probe completes return
+   * `unknown`. Callers must treat that state as no opinion because a cold Hub must
+   * not suppress the connect flow.
    */
   getHealth(): TunnelHealth {
     const cached = this.reading;
@@ -137,12 +136,11 @@ export class TunnelHealthService {
   }
 
   /**
-   * Probe now and return the fresh reading, bypassing the cache.
+   * Probes immediately and returns a fresh reading.
    *
-   * Nothing on a request path may use this — every such caller wants
-   * {@link getHealth}, which never blocks. It exists for callers that are already
-   * off the hot path and want certainty, and it is the seam the unit tests drive
-   * the layered check through.
+   * Request handlers must use {@link getHealth} to avoid blocking. This method
+   * serves off-path callers that need a current result and gives unit tests an
+   * entry point to the layered checks.
    */
   async getHealthNow(): Promise<TunnelHealth> {
     await this.refresh();
@@ -151,15 +149,14 @@ export class TunnelHealthService {
   }
 
   /**
-   * Drop the cached reading. Called after a tunnel repair (DNS re-sync,
-   * cloudflared restart) so the next read reflects the change immediately
-   * instead of serving up to {@link CACHE_TTL_MS} of stale pessimism.
+   * Clears cached health after a tunnel repair, such as a DNS resync or
+   * `cloudflared` restart.
    *
-   * Also detaches any refresh already in flight. That probe was measuring the
-   * pre-repair world, so its result is dropped (via {@link generation}) AND its
-   * promise is cleared here — otherwise the next {@link getHealth} would collapse
-   * onto the doomed probe and keep serving `unknown` until it timed out, rather
-   * than starting a fresh probe against the repaired tunnel immediately.
+   * The next read can then observe the repair instead of returning a stale result
+   * for up to {@link CACHE_TTL_MS}. Detach any in-flight refresh because it
+   * measures the pre-repair state. {@link generation} discards that result, and
+   * clearing its promise lets the next {@link getHealth} start a new probe
+   * immediately instead of waiting for the obsolete probe to time out.
    */
   invalidate(): void {
     this.reading = null;
@@ -168,19 +165,19 @@ export class TunnelHealthService {
   }
 
   /**
-   * Trigger a background refresh, collapsing concurrent callers onto one probe.
-   * Never rejects: a probe failure is recorded as a reading, not raised, because
-   * every caller is on a path where an exception would break something unrelated.
+   * Starts one background refresh for all concurrent callers.
+   *
+   * The promise does not reject because probe failures become health readings;
+   * propagating an exception would break an unrelated caller path.
    */
   private scheduleRefresh(): Promise<void> {
     if (this.inFlight) {
       return this.inFlight;
     }
 
-    // Capture the promise so the cleanup only clears `inFlight` if it is still
-    // THIS probe. Without the identity check, a probe detached by invalidate()
-    // (which nulls inFlight so a fresh probe can start) would, on landing, null
-    // out the newer probe that replaced it — collapsing the dedup.
+    // Capture the promise so cleanup clears `inFlight` only for this probe.
+    // Otherwise, a probe detached by `invalidate()` could finish later and clear
+    // the newer probe that replaced it, breaking deduplication.
     const refresh = this.refresh()
       .catch((err) => {
         this.logger.warn(`Tunnel health refresh failed unexpectedly: ${err instanceof Error ? err.message : String(err)}`);
@@ -196,24 +193,22 @@ export class TunnelHealthService {
     return this.inFlight;
   }
 
-  /** Run the layered check and store the resulting reading. */
+  /** Runs the layered checks and stores the resulting reading. */
   private async refresh(): Promise<void> {
     const startedAt = this.generation;
     const { health, definite } = await this.evaluate();
 
-    // Someone repaired the tunnel while this probe was in flight, so what it just
-    // measured is already history. Drop it and leave the cache cold; the next
-    // read schedules a probe against the world as it now is.
+    // A repair occurred while this probe was active, so its result describes stale
+    // state. Leave the cache empty and let the next read probe the repaired route.
     if (startedAt !== this.generation) {
       this.logger.debug('Discarding a tunnel health reading that was superseded by an invalidate');
 
       return;
     }
 
-    // Deterministic negatives (no tunnel token, cloudflared not running) are
-    // local facts that cannot be flaky, so they take effect immediately. Only the
-    // network probe — which hairpins out through Cloudflare and back — is
-    // threshold-gated.
+    // Apply deterministic local failures, such as a missing token or stopped
+    // `cloudflared`, immediately. Only the network probe hairpins through
+    // Cloudflare and needs the failure threshold.
     if (health === 'down' && definite) {
       if (this.reading?.health !== 'down') {
         this.logger.warn('Hub public origin is unreachable (local check); connect surfaces will offer the LAN route');
@@ -224,9 +219,9 @@ export class TunnelHealthService {
       return;
     }
 
-    // A probe failure only counts once it has happened FAILURE_THRESHOLD times in
-    // a row; until then the previous reading stands. Any non-failure resets the
-    // run, so an intermittent blip can never accumulate its way to `down`.
+    // Keep the previous reading until `FAILURE_THRESHOLD` consecutive probe
+    // failures occur. Any successful or disabled result resets the sequence, so
+    // intermittent failures cannot accumulate into a `down` state.
     if (health === 'down') {
       const consecutiveFailures = (this.reading?.consecutiveFailures ?? 0) + 1;
 
@@ -260,18 +255,18 @@ export class TunnelHealthService {
   }
 
   /**
-   * The layered check itself (see the class docstring).
+   * Evaluates the layered checks described in the class documentation.
    *
-   * `definite` marks a verdict that comes from a local fact rather than from the
-   * network, so {@link refresh} can apply it immediately instead of waiting for
-   * the anti-flap threshold that only the probe needs.
+   * `definite` marks a result based on a local fact rather than the network.
+   * {@link refresh} applies that result immediately instead of using the
+   * anti-flap threshold required by the public probe.
    */
   private async evaluate(): Promise<{ health: TunnelHealth; definite: boolean }> {
     const domain = this.configService.getConfig().domain;
 
-    // Layer 1 — is there supposed to be a public route at all? Both of these are
-    // "no public route by design", NOT a fault: the local/E2E stack serves its own
-    // origin through Traefik, and an unregistered appliance simply has none.
+    // Layer 1 checks whether this appliance should have a public route. A local or
+    // E2E stack serves its own origin through Traefik, while an unregistered
+    // appliance has no public origin by design. Neither state indicates a fault.
     if (isLocalDevDomain(domain)) {
       return { health: 'disabled', definite: true };
     }
@@ -283,18 +278,18 @@ export class TunnelHealthService {
       return { health: 'disabled', definite: true };
     }
 
-    // A registered appliance with a public hostname but no tunnel token is broken,
-    // not unconfigured: nothing can be routing to that hostname. Checked AFTER the
-    // origin so a plain unregistered Hub still reports `disabled`.
+    // A registered appliance with a public hostname but no tunnel token is
+    // unavailable, not unconfigured. Check the origin first so an unregistered
+    // Hub still reports `disabled`.
     if (!this.cloudflareClient.getTunnelToken()) {
       this.logger.debug('No tunnel token in memory despite a provisioned public hostname — reporting the tunnel down');
 
       return { health: 'down', definite: true };
     }
 
-    // Layer 2 — cheap, certain local negative. Resolved lazily via DockerReadFacade
-    // (read-only; no AppsService edge). A docker probe that itself fails must not
-    // read as "tunnel down".
+    // Layer 2 checks an authoritative local signal. Resolve the read-only
+    // `DockerReadFacade` lazily to avoid an `AppsService` dependency. Failure to
+    // inspect Docker does not prove that the tunnel is down.
     try {
       const { DockerReadFacade } = await import('../docker/docker-read.facade');
       const dockerReadFacade = this.moduleRef.get(DockerReadFacade, { strict: false });
@@ -308,27 +303,27 @@ export class TunnelHealthService {
       this.logger.debug(`Could not inspect the cloudflared container, falling through to the origin probe: ${String(err)}`);
     }
 
-    // Layer 3 — does the edge actually route to us? The only fallible check, so
-    // its failures are the ones the threshold guards.
+    // Layer 3 verifies edge routing. Because this check can fail transiently, only
+    // its failures use the threshold.
     return { health: await this.probePublicOrigin(publicOrigin), definite: false };
   }
 
   /**
-   * Fetch the Hub's own public origin and classify the answer.
+   * Fetches the Hub's public origin and classifies the response.
    *
-   * Not routed through `assertSafeOutboundUrl`: the URL is built from this
-   * appliance's own registration record, never from caller input, and the SSRF
-   * guard's private-address rejection would be actively wrong here.
+   * Do not use `assertSafeOutboundUrl` here. The appliance registration record,
+   * not caller input, produces the URL, and the SSRF guard would incorrectly
+   * reject a private origin.
    *
-   * Any ordinary HTTP answer counts as `up` — including a 401/404, which still
-   * proves the browser reached the Hub rather than a Cloudflare error page.
+   * Any ordinary HTTP response, including 401 or 404, counts as `up` because it
+   * proves that the request reached the Hub instead of a Cloudflare error page.
    */
   private async probePublicOrigin(publicOrigin: string): Promise<TunnelHealth> {
     try {
       const response = await axios.get(publicOrigin, {
         timeout: PROBE_TIMEOUT_MS,
         validateStatus: () => true,
-        // The Hub's own route; a redirect to /login is a perfectly good "up".
+        // A redirect to `/login` still proves that the Hub route is reachable.
         maxRedirects: 0,
       });
 

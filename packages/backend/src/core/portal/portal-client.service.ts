@@ -197,12 +197,12 @@ export class PortalClientService {
   async postTunnelState(payload: { organizationId: string; tunnelId: string; apps: unknown[] }): Promise<{
     success?: boolean;
     failed?: string[];
-    /** Per-app failure detail; absent on CI-Cloud versions that predate it. */
+    /** Per-app failure detail; absent on Companion Portal versions that predate it. */
     failures?: PublicDnsFailure[];
     synced?: number;
     /**
-     * Custom hostnames CI-Cloud actually wired into this device's tunnel ingress
-     * on this sync. Absent on CI-Cloud versions that predate custom domains —
+     * Custom hostnames Companion Portal actually wired into this device's tunnel ingress
+     * on this sync. Absent on Companion Portal versions that predate custom domains —
      * which is NOT the same as an empty array, and the consumer must keep the
      * two apart (see `parseTunnelCustomDomains`).
      */
@@ -217,7 +217,7 @@ export class PortalClientService {
    * `fetchJson` / `postJson` collapse every non-2xx into one `PORTAL_REQUEST_FAILED`
    * carrying a status string and nothing else, which is right for the calls whose
    * only question is "did it work". The custom-domain routes are not those: a 404
-   * means this CI-Cloud predates the feature (a supported deployment, not a
+   * means this Companion Portal predates the feature (a supported deployment, not a
    * fault), a 422 means the domain is still verifying and the caller should try
    * again later, and a 404 on the bind distinguishes "the app has not registered
    * yet" from "that domain is gone" by its `code`. Throwing all of that away and
@@ -242,21 +242,21 @@ export class PortalClientService {
   /**
    * The organization's connected custom domains, with the bind state of each.
    *
-   * ⚠ NOT THE SAME THING AS `customDomains` ON THE TUNNEL-STATE RESPONSE. That
-   * one is what CI-Cloud has WIRED — the hostnames the tunnel answers for, and
+   * This is not the same thing as `customDomains` on the tunnel-state response. That
+   * one is what Companion Portal has wired — the hostnames the tunnel answers for, and
    * the only source an app's public identity may be built from. This is what the
    * organization OWNS: the catalogue an install dialog offers, including domains
    * pointing at nothing and domains not yet proved.
    *
-   * 404 on a CI-Cloud that predates the route, which the caller reports as
+   * 404 on a Companion Portal that predates the route, which the caller reports as
    * "nothing offerable" rather than as an error.
    */
   async fetchDeviceCustomDomains(organizationId?: string): Promise<{ status: number; data: { domains?: unknown } }> {
     /*
-     * The organization is VERIFIED by CI-Cloud against a `device_registration`
+     * The organization is VERIFIED by Companion Portal against a `device_registration`
      * row, never believed — so sending it is not a trust boundary, it is a
      * disambiguation. A device CAN be registered to more than one organization
-     * (a half-completed cross-org move leaves exactly that), and CI-Cloud refuses
+     * (a half-completed cross-org move leaves exactly that), and Companion Portal refuses
      * to guess rather than answering with an arbitrary tenant's domains.
      */
     const query = organizationId ? `?organizationId=${encodeURIComponent(organizationId)}` : '';
@@ -265,11 +265,11 @@ export class PortalClientService {
   }
 
   /**
-   * Ask CI-Cloud to point one of those domains at an app on THIS device.
+   * Ask Companion Portal to point one of those domains at an app on THIS device.
    *
    * The body names the domain's id and the app's SUBDOMAIN — the same string the
    * tunnel-state payload carries — never a hostname: the target is composed on
-   * the CI-Cloud side from rows it owns, which is the invariant that stops a
+   * the Companion Portal side from rows it owns, which is the invariant that stops a
    * device pointing a domain into another organization's tunnel. The Hub could
    * not honestly supply one anyway, since it cannot know whether a name really
    * resolves here.

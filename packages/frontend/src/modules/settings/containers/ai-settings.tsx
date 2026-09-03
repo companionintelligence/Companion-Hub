@@ -58,9 +58,8 @@ const isVisionModel = (model: CuratedModel) => model.modality === 'llm' && model
 // union so a state added to `ModelState` has to be considered here rather than silently excluded.
 const TRACKED_SELECTED_STATES: ModelState[] = ['pulling', 'pulled', 'loading', 'loaded', 'pinned'];
 
-// The models a save for `backend` actually acts on: same-backend models, plus Ollama embeddings
-// (chat on vLLM still embeds through Ollama). Shared by the save itself and by the confirmation
-// copy, so the dialog can never describe a different outcome than the one that will happen.
+// Share backend compatibility between saving and confirmation so the dialog cannot
+// describe a different outcome. vLLM chat continues to use Ollama embeddings.
 const isCompatibleWithBackend = (model: CuratedModel, backend: InferenceBackendType) =>
   model.backend === backend || (model.backend === EMBEDDING_INFERENCE_BACKEND && isEmbeddingModel(model));
 
@@ -74,20 +73,13 @@ const compatibleSelection = (availableModelById: ModelIndex, backend: InferenceB
     return model ? isCompatibleWithBackend(model, backend) : false;
   });
 
-// The pins a save actually acts on. The unpin loop walks exactly this set, so the confirmation copy
-// has to gate on it too — gating on every tracked pin would promise to unpin models the save leaves
-// alone (a pin outside the tier's model list, or on a backend the Hub does not pin through).
+// Limit confirmation and unpinning to Hub-loadable models so the dialog does not
+// promise to remove pins that Save leaves untouched.
 const unpinnablePins = (availableModelById: ModelIndex, pinnedIds: Iterable<string>): string[] =>
   [...pinnedIds].filter((modelId) => isHubLoadableBackend(availableModelById.get(modelId)?.backend));
 
-// Pick the preferred model for a role from the user's selection, preferring a recommended model.
-// Returns null when no selected model fits the role.
-//
-// That null does NOT clear the stored preference, despite reading like it should and despite the
-// backend documenting `null` as the clear signal: `saveInferencePreferences` maps it to `undefined`,
-// `JSON.stringify` drops undefined keys from the body, and the controller only writes a field it
-// received. So a role that resolves to nothing leaves the stored default in place. Tracked
-// separately — do not build UI that promises a clear until the wire actually carries one.
+// A null match does not clear the stored preference because serialization drops the
+// undefined field. Preference-clearing UI must wait until the API carries explicit null.
 const resolvePreferredModelId = (
   profile: HardwareProfileResponse,
   backend: InferenceBackendType,
@@ -145,9 +137,8 @@ export const AiSettingsContainer = () => {
   const dsparkUrlRef = useRef('');
   dsparkUrlRef.current = dsparkUrl;
   const trackedModelsRef = useRef<TrackedModel[]>([]);
-  // One index of the tier catalog per profile, shared by the save and by the confirmation copy so
-  // they cannot disagree — and so neither rebuilds it, the save on every press and the copy on
-  // every render.
+  // Share one catalog index between Save and confirmation so they cannot disagree or
+  // rebuild it independently.
   const availableModelById = useMemo<ModelIndex>(() => (profile ? indexAvailableModels(profile) : new Map()), [profile]);
 
   const applyTrackedModels = useCallback((tracked: TrackedModel[]) => {
@@ -166,11 +157,8 @@ export const AiSettingsContainer = () => {
   }, []);
 
   /**
-   * Seed the model checkboxes from what is actually installed on the backend (the same
-   * `installedCatalogIds` source onboarding uses) unioned with models this process is actively
-   * tracking. Seeding only from the in-memory tracked registry — which empties on every Hub
-   * restart and never sees externally-loaded vLLM models — showed installed models as unselected
-   * and made Save clear preferences and unpin models (#1106).
+   * Seeds model selection from backend-installed and actively tracked models. The tracked
+   * registry is process-local and misses externally loaded models (#1106).
    */
   const seedSelectedModelIds = useCallback((data: HardwareProfileResponse, backend: InferenceBackendType, tracked: TrackedModel[]) => {
     const installed = new Set(data.installedCatalogIds ?? []);
@@ -209,11 +197,8 @@ export const AiSettingsContainer = () => {
     if (!isRescan) setLoading(true);
     setError(null);
     try {
-      // Preferences first. The profile endpoint computes `installedCatalogIds` for whichever backend
-      // it is asked about and falls back to the *hardware recommendation* when asked about none —
-      // so fetching before the operator's stored backend is known returns the installed set for a
-      // backend this panel may not be showing. That is what left the model checkboxes describing one
-      // backend while the rest of the screen acted on another. Never throws; returns null instead.
+      // Load preferences first because the profile's hardware fallback can compute installed
+      // models for a backend other than the one shown in settings.
       const prefData = await fetchInferencePreferences();
       if (prefData?.preferredVllmApiKey) {
         setVllmApiKey(prefData.preferredVllmApiKey);
@@ -308,9 +293,8 @@ export const AiSettingsContainer = () => {
     }
   }, []);
 
-  // Re-check must also refresh the profile: `installedCatalogIds` is only recomputed server-side
-  // in the onboarding-profile endpoint, so without this a model served after page load never
-  // shows as Installed (#1105).
+  // Refresh the profile because only its endpoint recomputes `installedCatalogIds`; a
+  // status probe alone misses models served after page load (#1105).
   const handleRecheckVllm = useCallback(async () => {
     const status = await checkVllmStatus();
     if (status?.ready) {
@@ -415,10 +399,8 @@ export const AiSettingsContainer = () => {
     setSelectedModelIds((prev) => (prev.includes(modelId) ? prev.filter((id) => id !== modelId) : [...prev, modelId]));
   };
 
-  // The effect below reads profile only as a "loaded yet" guard; carrying it through a ref keeps
-  // it out of the dependency array. Listing `profile` there while the effect writes it via
-  // setProfile (a fresh object every fetch) retriggered the effect it just ran — an unbounded
-  // onboarding-profile refetch loop, ~165 requests in 400ms per backend switch (#1109).
+  // Keep `profile` out of the dependency list because the effect replaces it with a fresh
+  // object; adding it causes an unbounded refetch loop (#1109).
   const hasProfileRef = useRef(false);
   hasProfileRef.current = profile !== null;
 
@@ -502,9 +484,8 @@ export const AiSettingsContainer = () => {
         dsparkUrl: selectedBackend === 'dspark' ? dsparkUrl.trim() || null : null,
       });
 
-      // Everything the Hub can install into itself — Ollama rows plus the one mlx-dspark row that
-      // will be resident. Filtering to 'ollama' here (as this did) made a ticked mlx-dspark model
-      // saveable but never actually loaded, while the preference still pointed apps at it.
+      // Include every Hub-loadable backend so a saved preference cannot point to a selected
+      // model that was never loaded.
       const pullableSelectedModelIds = hubLoadableSelection(
         compatibleSelectedModelIds,
         (modelId) => availableModelById.get(modelId)?.backend,
@@ -606,20 +587,8 @@ export const AiSettingsContainer = () => {
   const availableMemoryMb = profile.resourceEstimate.availableMemoryMb ?? 0;
   const installedCatalogIds = profile.installedCatalogIds ?? [];
 
-  // Saving with nothing selected for the active backend unpins every pinned model: the unpin loop
-  // walks each pin that is no longer in the selection. Legitimate when meant — it is how you unpin
-  // everything — but the generic "this will restart your apps" copy gives no hint of it.
-  //
-  // Scoped to unpinning, and nothing else. `resolvePreferredModelId` returning null for every role
-  // reads like it also clears the stored chat/embedding/vision defaults, and it does not:
-  // `saveInferencePreferences` maps each null to undefined, `JSON.stringify` drops undefined keys
-  // from the body, and the controller only writes a field it actually received. Warning about a
-  // clear that cannot happen would teach the operator to click through the one dialog that means
-  // something. The dead null-clear channel is tracked separately.
-  //
-  // Counts only the pins the unpin loop walks — `unpinnablePins`, the same call the save makes.
-  // Counting every tracked pin would promise to unpin models the save never touches: one outside
-  // the tier's model list, or on a backend the Hub does not pin through.
+  // The warning applies only when Save will unpin every managed model. A null
+  // preferred-model result does not clear defaults, and unmanaged pins remain untouched.
   const saveUnpinsEveryModel =
     compatibleSelection(availableModelById, selectedBackend, selectedModelIds).length === 0 &&
     unpinnablePins(availableModelById, pinnedModelIds).length > 0;

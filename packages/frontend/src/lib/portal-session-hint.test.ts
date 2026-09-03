@@ -93,11 +93,11 @@ describe('portal-session-hint', () => {
 
   it('on a phone, prefers the remembered Portal user over the Hub operator', async () => {
     mockIsMobile.mockReturnValue(true);
-    rememberPortalAccountEmail('chamberlain.bennett@gmail.com');
+    rememberPortalAccountEmail('user@example.com');
 
     vi.mocked(portalSessionHint).mockResolvedValue({
       data: {
-        email: 'support@lifescope.io',
+        email: 'support@example.com',
         portalBaseUrl: 'https://hub.ci.computer',
         source: 'hub_operator',
       },
@@ -107,11 +107,11 @@ describe('portal-session-hint', () => {
     });
 
     await expect(resolvePortalSessionHint()).resolves.toEqual({
-      email: 'chamberlain.bennett@gmail.com',
+      email: 'user@example.com',
       portalBaseUrl: 'https://hub.ci.computer',
       source: 'remembered',
     });
-    expect(readRememberedPortalAccountEmail()).toBe('chamberlain.bennett@gmail.com');
+    expect(readRememberedPortalAccountEmail()).toBe('user@example.com');
   });
 
   it('parses direct portal session responses', async () => {

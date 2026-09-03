@@ -38,9 +38,6 @@ import {
 import { quarantineStalePath } from './bind-mount-helpers';
 import { canonicalTimeZone, getHostTimeZone } from './timezone-helpers';
 
-/**
- * Generates a random seed if it does not exist yet
- */
 const generateSeed = async () => {
   const seedFilePath = path.join(DATA_DIR, 'state', 'seed');
   if (!fs.existsSync(seedFilePath)) {
@@ -51,11 +48,8 @@ const generateSeed = async () => {
 };
 
 /**
- * Prefer the physical host CPU arch from init-host-probe over the container's
- * `os.arch()`. On Docker Desktop (esp. Apple Silicon) the Hub image may be
- * amd64-emulated while Docker pulls/runs for arm64 — using the container arch
- * lets amd64-only apps install, then fail mid-pull with
- * "no matching manifest for linux/arm64/v8".
+ * Prefers host-probe architecture because emulated containers can report an
+ * architecture that does not match the images Docker runs.
  */
 const readHostProbeArchitecture = (): 'arm64' | 'amd64' | null => {
   const candidates = [path.join(DATA_DIR, 'state', 'hardware', 'host_metrics.json'), path.join(DATA_DIR, 'state', 'hardware', 'host_system.json')];
@@ -67,16 +61,13 @@ const readHostProbeArchitecture = (): 'arm64' | 'amd64' | null => {
       if (parsed.cpuArch === 'arm64') return 'arm64';
       if (parsed.cpuArch === 'x86_64' || parsed.cpuArch === 'amd64') return 'amd64';
     } catch {
-      // Best-effort: fall through to os.arch().
+      // Fall back to the container architecture when probe files are unreadable.
     }
   }
 
   return null;
 };
 
-/**
- * Returns the architecture apps should target on this Hub.
- */
 const getArchitecture = () => {
   const fromHost = readHostProbeArchitecture();
   if (fromHost) return fromHost;
@@ -90,25 +81,15 @@ const getArchitecture = () => {
 };
 
 /**
- * Host paths may be POSIX (/foo/bar), Windows drive-letter (C:/foo), or UNC
- * (\\server\share). The backend often runs in a Linux container, so use both
- * path.isAbsolute and path.win32.isAbsolute.
+ * Accepts Windows host paths even when the backend runs in a Linux container.
  */
 const isAbsoluteHostPath = (value: string) => path.isAbsolute(value) || path.win32.isAbsolute(value);
 
 /**
- * Resolve a configuration value using the standard priority chain:
- *
- *   1. process.env (from .env.local or system environment — deployment intent)
- *   2. settings.json value (user preference from UI)
- *   3. data .env (previously persisted value)
- *   4. hardcoded default
- *
- * For boolean settings, pass the settings value through `settingsVal`
- * (which may be undefined if not set). For string settings, omit
- * `settingsVal` if there is no corresponding settings.json field.
+ * Resolves configuration from the process environment, settings, persisted
+ * environment, then the default. New variable names take precedence over legacy aliases.
  */
-// Map of new env var names to their legacy equivalents for backward compatibility
+// Keep legacy names readable while existing installations migrate.
 const LEGACY_ENV_MAP: Record<string, string> = {
   CI_HUB_STATE_PATH: 'RUNCIHUB_STATE_PATH',
   CI_HUB_APP_DATA_PATH: 'RUNCIHUB_APP_DATA_PATH',
@@ -133,7 +114,6 @@ function resolve(
     fallback: string;
   },
 ): string {
-  // 1. process.env (.env.local / system) always wins — check new name first, then legacy
   if (process.env[key] !== undefined && process.env[key] !== '') {
     return process.env[key] as string;
   }
@@ -141,11 +121,9 @@ function resolve(
   if (legacyKey && process.env[legacyKey] !== undefined && process.env[legacyKey] !== '') {
     return process.env[legacyKey] as string;
   }
-  // 2. settings.json value (if provided and non-empty)
   if (opts.settingsVal !== undefined && opts.settingsVal !== '') {
     return opts.settingsVal;
   }
-  // 3. Previously persisted value in data .env — check new name first, then legacy
   const persisted = opts.envMap.get(key);
   if (persisted !== undefined && persisted !== '') {
     return persisted;
@@ -156,11 +134,9 @@ function resolve(
       return legacyPersisted;
     }
   }
-  // 4. Hardcoded default
   return opts.fallback;
 }
 
-/** True when process.env already has a non-empty value (including legacy alias). */
 function processEnvHasValue(key: string): boolean {
   if (process.env[key] !== undefined && process.env[key] !== '') {
     return true;
@@ -169,25 +145,14 @@ function processEnvHasValue(key: string): boolean {
   return Boolean(legacyKey && process.env[legacyKey] !== undefined && process.env[legacyKey] !== '');
 }
 
-/** Coerce a settings boolean to string, or return undefined if not set */
 function boolStr(val: boolean | undefined): string | undefined {
   return typeof val === 'boolean' ? String(val) : undefined;
 }
 
 /**
- * Resolve the RabbitMQ broker password, fail-closed in production.
- *
- * SECURITY: `DEFAULT_RABBITMQ_PASSWORD` ('admin') is a weak dev-only credential.
- * The core bug this closes is the *silent* fallback: a production Hub whose
- * environment omits RABBITMQ_PASSWORD would previously boot on 'admin' with no
- * signal. In production we now refuse to invent the weak default — an
- * explicit value is required, otherwise we throw.
- *
- * When production *explicitly* configures 'admin' (today the shipped prod
- * compose still hardcodes it on both broker and Hub, so we cannot hard-fail
- * without breaking boot) we return it but flag a `warning` for the caller to
- * log loudly. Local dev, e2e and tests (NODE_ENV !== 'production') keep the
- * fixed dev default so nothing breaks.
+ * Resolves the RabbitMQ password without silently using the development default in
+ * production. Production requires an explicit value; an explicit `admin` remains
+ * compatible but returns a migration warning.
  */
 export function resolveRabbitmqPassword(envMap: Map<string, string>): { password: string; warning?: string } {
   const isProduction = process.env.NODE_ENV === 'production';
@@ -221,13 +186,13 @@ function isFsErrorWithCode(error: unknown, code: string): boolean {
 
 const SETTINGS_JSON_MODE = 0o666;
 
-/** Ensure bind-mounted state/ exists; Hub container UID should match the host user (see CI_HUB_CONTAINER_UID). */
+/** Repairs bind-mounted state permissions for the Hub process. */
 export async function ensureHubStateDirWritable(stateDir: string): Promise<void> {
   await fs.promises.mkdir(stateDir, { recursive: true, mode: 0o775 });
   try {
     await fs.promises.chmod(stateDir, 0o775);
   } catch {
-    // chmod may fail on some mounts; write retry logic still applies.
+    // Some mounts reject chmod; later writes still provide the authoritative check.
   }
 }
 
@@ -235,7 +200,7 @@ async function retrySettingsJsonPermissions(settingsFilePath: string, stateDir: 
   try {
     await fs.promises.chmod(stateDir, 0o777);
   } catch {
-    // Host user may not own the directory (e.g. prior root-owned Hub container).
+    // A previous root-owned container can leave the host user without ownership.
   }
   if (fs.existsSync(settingsFilePath)) {
     try {
@@ -244,7 +209,7 @@ async function retrySettingsJsonPermissions(settingsFilePath: string, stateDir: 
     } catch {
       try {
         await fs.promises.access(settingsFilePath, fs.constants.R_OK);
-        // Readable but not writable — preserve in place for manual ownership repair.
+        // Preserve readable files for manual ownership repair.
         return;
       } catch {
         quarantineStalePath(settingsFilePath);
@@ -260,7 +225,7 @@ function settingsJsonPermissionError(settingsFilePath: string, cause: unknown): 
   );
 }
 
-/** Ensure settings.json exists and is readable/writable by the Hub process. */
+/** Ensures settings.json exists and is readable and writable by the Hub process. */
 export async function ensureSettingsJsonReady(settingsFilePath: string): Promise<void> {
   const stateDir = path.dirname(settingsFilePath);
   await ensureHubStateDirWritable(stateDir);
@@ -299,7 +264,7 @@ export async function ensureSettingsJsonReady(settingsFilePath: string): Promise
   }
 }
 
-/** Write settings.json with permission recovery for stale root-owned bind mounts. */
+/** Writes settings.json with permission recovery for stale root-owned bind mounts. */
 export async function writeSettingsJsonFile(settingsFilePath: string, content: string): Promise<void> {
   await ensureSettingsJsonReady(settingsFilePath);
 
@@ -318,7 +283,7 @@ export async function writeSettingsJsonFile(settingsFilePath: string, content: s
   }
 }
 
-/** Best-effort persistence of resolved env; returns false when the mount blocks writes. */
+/** Persists resolved environment when the mount permits writes. Returns false otherwise. */
 export async function writeResolvedEnvFile(targetPath: string, content: string): Promise<boolean> {
   const stateDir = path.dirname(targetPath);
   await ensureHubStateDirWritable(stateDir);
@@ -343,7 +308,7 @@ export async function writeResolvedEnvFile(targetPath: string, content: string):
     try {
       await fs.promises.chmod(targetPath, 0o664);
     } catch {
-      // ignore
+      // Some mounts do not support chmod.
     }
     try {
       await attemptWrite();
@@ -357,14 +322,11 @@ export async function writeResolvedEnvFile(targetPath: string, content: string):
   }
 }
 
-/** Apply resolved env to process.env without clobbering runtime / .env.local values. */
+/** Applies resolved environment without replacing runtime or .env.local values. */
 function applyEnvMapToProcess(envMap: Map<string, string>) {
   for (const [key, value] of envMap.entries()) {
-    // The Map is typed `string`, but a resolver returning an undefined default can still land
-    // one here — that is the type lie this module exists to survive. Assigning it would store
-    // the literal string "undefined" (process.env stringifies), which is TRUTHY: it would win
-    // priority 1 in every later resolve() and, for TZ, make ICU report undefined for the rest
-    // of the process. Skip instead — an absent key still falls back, a poisoned one never does.
+    // Assigning undefined to process.env creates the truthy string `undefined`, which would
+    // override later fallbacks and poison time zone detection.
     if (typeof value !== 'string') continue;
 
     if (!processEnvHasValue(key)) {
@@ -386,7 +348,7 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
   const envFilePath = path.join(DATA_DIR, '.env');
   const resolvedEnvFilePath = path.join(DATA_DIR, 'state', '.env.resolved');
 
-  // Read the source .env (read-only — never written back to)
+  // Preserve the source environment; resolved values are written to state/.env.resolved.
   let envFile = '';
   if (fs.existsSync(envFilePath)) {
     envFile = await fs.promises.readFile(envFilePath, 'utf-8');
@@ -410,13 +372,8 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
 
   await generateSeed();
 
-  // --- Resolve all values using the standard priority chain ---
-
   const jwtSecret = resolve('JWT_SECRET', { envMap, fallback: '' }) || envUtils.deriveEntropy('jwt_secret');
-  // Dedicated Hub<->consumer forward-auth secret (Traefik identity header + the
-  // memory-connect server-to-server calls). Derived from its OWN entropy label —
-  // NEVER JWT_SECRET — so injecting it into a consumer container (e.g. ci-memory)
-  // can never leak the Hub's master JWT/encryption key.
+  // Derive forward-auth independently so consumer access cannot expose the Hub JWT secret.
   const forwardAuthSecret = resolve('CI_HUB_FORWARD_AUTH_SECRET', { envMap, fallback: '' }) || envUtils.deriveEntropy('forward_auth_secret');
 
   const rootFolderHost = resolve('ROOT_FOLDER_HOST', { envMap, fallback: '' });
@@ -434,7 +391,6 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
     );
   }
 
-  // Ensure that the app data path does not contain the /app-data suffix
   let appDataPath = settingsData.appDataPath || resolve('CI_HUB_APP_DATA_PATH', { envMap, fallback: '' });
   const appDataSegment = '/app-data';
 
@@ -443,7 +399,6 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
     appDataPath = appDataPath.slice(0, -appDataSegment.length);
   }
 
-  // Ensure CI_HUB_APP_DATA_PATH is always absolute (host path)
   if (appDataPath && !isAbsoluteHostPath(appDataPath)) {
     appDataPath = path.resolve(rootFolderHost, appDataPath);
     logger.debug(`Resolved relative CI_HUB_APP_DATA_PATH against ROOT_FOLDER_HOST to: ${appDataPath}`);
@@ -465,54 +420,36 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
     );
   }
 
-  // --- Write resolved values into envMap ---
-  // Every value uses resolve() for consistent priority:
-  //   process.env > settingsData.json > data .env > default
-
   envMap.set('ROOT_FOLDER_HOST', rootFolderHost);
   envMap.set('ARCHITECTURE', getArchitecture());
   envMap.set('JWT_SECRET', jwtSecret);
-  // SEC-MCP-8: MCP_API_KEY is not a credential and is no longer derived. The guard has no env
-  // fallback and nothing seeds the key store, so every value this used to mint authenticated
-  // nothing while reading as a secret in the env file, the config box, and our own docs. Deleted
-  // rather than merely not-set: an appliance upgraded from an older build still carries the derived
-  // value in its .env, and republishing it into state/.env.resolved would keep the fiction alive.
-  // MCP keys live in the hashed store — `cihub api-key create` or Settings → Security.
+  // `MCP_API_KEY` no longer authenticates requests. Remove persisted values; MCP keys live
+  // in the hashed key store (SEC-MCP-8).
   envMap.delete('MCP_API_KEY');
   envMap.set('CI_HUB_FORWARD_AUTH_SECRET', forwardAuthSecret);
-  // ISSUE-MCP-2's destructive gate is no longer an env value: it is each key's `capability` column
-  // (see api-key.capabilities.ts). Drop any MCP_ALLOW_DESTRUCTIVE left in a data .env written by an
-  // older Hub, so a stale 'true' can't read as if it still granted anything.
+  // Destructive access now comes from each key's capability column. Discard obsolete
+  // environment grants (ISSUE-MCP-2).
   envMap.delete('MCP_ALLOW_DESTRUCTIVE');
   envMap.set('CI_HUB_APP_DATA_PATH', finalAppDataPath);
 
-  // Core infrastructure
   envMap.set('INTERNAL_IP', resolve('INTERNAL_IP', { envMap, settingsVal: settingsData.listenIp, fallback: '127.0.0.1' }));
-  // Canonicalize the *resolved* zone, not just the default. getHostTimeZone() only fills resolve()'s
-  // priority-4 slot, so a bad TZ from process.env, settings.json or a stale data .env outranks it
-  // and would otherwise be written through unchecked.
+  // Validate the winning time zone from every source, not only the fallback.
   const hostTimeZone = getHostTimeZone();
   const requestedTz = resolve('TZ', { envMap, settingsVal: settingsData.timeZone, fallback: hostTimeZone ?? DEFAULT_TZ });
   const canonicalTz = canonicalTimeZone(requestedTz);
-  // Degrade to the host zone before the last-resort constant: a typo in Settings should not move a
-  // correctly-configured appliance to UTC when we know perfectly well what zone the host is in.
+  // Preserve the detected host zone when a configured value is invalid.
   const timeZone = canonicalTz ?? hostTimeZone ?? DEFAULT_TZ;
 
   if (!canonicalTz) {
-    // JSON.stringify, not raw interpolation: this is the one branch where the value is guaranteed to
-    // be garbage, settingsSchema does not strip interior newlines, and a CR/LF would forge log lines.
+    // JSON encoding prevents malformed settings values from forging log lines.
     logger.warn(`TZ ${JSON.stringify(requestedTz)} is not a valid IANA time zone. Falling back to ${timeZone}.`);
   } else if (!hostTimeZone && !process.env.TZ && !settingsData.timeZone && !envMap.get('TZ')) {
-    // Only when nothing configured a zone at all — otherwise this fires at someone who deliberately
-    // chose UTC and sends them hunting a tzdata bug they do not have.
+    // Warn only when no source selected a time zone.
     logger.warn(`Could not determine the host time zone — is tzdata missing from the image? Using ${timeZone}.`);
   }
 
   envMap.set('TZ', timeZone);
-  // applyEnvMapToProcess deliberately never clobbers an existing process.env value, so an invalid or
-  // non-canonical inherited TZ would survive in-process: ICU would keep reporting the host zone as
-  // undefined, and ConfigurationService — which merges `{ ...envMap, ...process.env }`, letting
-  // process.env win — would serve the garbage zone to every browser. Normalize it at the source.
+  // Keep inherited TZ consistent because ConfigurationService lets process.env win.
   process.env.TZ = timeZone;
   envMap.set('DNS_IP', resolve('DNS_IP', { envMap, settingsVal: settingsData.dnsIp, fallback: DEFAULT_DNS_IP }));
   envMap.set('DOMAIN', resolve('DOMAIN', { envMap, fallback: DEFAULT_PUBLIC_DOMAIN }));
@@ -529,13 +466,12 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
     resolve('CI_HUB_FORWARD_AUTH_URL', { envMap, settingsVal: settingsData.forwardAuthUrl, fallback: DEFAULT_FORWARD_AUTH_URL }),
   );
 
-  // Database — these are internal Docker service names/creds; hardcoded defaults from constants
   envMap.set('POSTGRES_HOST', resolve('POSTGRES_HOST', { envMap, fallback: DEFAULT_POSTGRES_HOST }));
   envMap.set('POSTGRES_DBNAME', resolve('POSTGRES_DBNAME', { envMap, fallback: DEFAULT_POSTGRES_DBNAME }));
   envMap.set('POSTGRES_USERNAME', resolve('POSTGRES_USERNAME', { envMap, fallback: DEFAULT_POSTGRES_USERNAME }));
   envMap.set('POSTGRES_PORT', resolve('POSTGRES_PORT', { envMap, fallback: DEFAULT_POSTGRES_PORT }));
 
-  // Message queue — handle legacy hostname migration (runcihub-queue was the original CIHub hostname)
+  // Normalize legacy queue service names retained in persisted environments.
   let rabbitmqHost = resolve('RABBITMQ_HOST', { envMap, fallback: DEFAULT_RABBITMQ_HOST });
   if (rabbitmqHost === 'runcihub-queue' || rabbitmqHost === 'ci-hub-queue') {
     rabbitmqHost = DEFAULT_RABBITMQ_HOST;
@@ -548,7 +484,6 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
   }
   envMap.set('RABBITMQ_PASSWORD', rabbitmqPassword.password);
 
-  // Feature flags / user preferences (settingsData.json booleans)
   envMap.set('DEMO_MODE', resolve('DEMO_MODE', { envMap, settingsVal: boolStr(settingsData.demoMode), fallback: DEFAULT_DEMO_MODE }));
   envMap.set(
     'DISABLE_PASSWORD_RESET',
@@ -600,20 +535,15 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
     }),
   );
 
-  // Theming
   envMap.set('THEME_BASE', resolve('THEME_BASE', { envMap, settingsVal: settingsData.themeBase, fallback: DEFAULT_THEME_BASE }));
   envMap.set('THEME_COLOR', resolve('THEME_COLOR', { envMap, settingsVal: settingsData.themeColor, fallback: DEFAULT_THEME_COLOR }));
 
-  // CI Cloud integration — REQUIRED, no fallback.
-  // Prefer mounted /data/.env over process.env: Docker Compose `environment:` can bake
-  // stale host-shell CI_CLOUD_URL values that override env_file at container create time.
+  // Prefer mounted data because Docker Compose can retain stale host-shell values.
   const ciCloudUrl = envMap.get('CI_CLOUD_URL')?.trim() || resolve('CI_CLOUD_URL', { envMap, fallback: '' });
   if (!ciCloudUrl) {
     throw new Error(`CI_CLOUD_URL is required. Please set it in your .env file (e.g. CI_CLOUD_URL=${DEFAULT_CI_CLOUD_URL})`);
   }
   envMap.set('CI_CLOUD_URL', ciCloudUrl);
-
-  // --- Write resolved env to state dir (never back to source .env) ---
 
   const newEnvContent = envUtils.envMapToString(envMap);
 
@@ -622,7 +552,7 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
   const wroteResolved = await writeResolvedEnvFile(resolvedEnvFilePath, newEnvContent);
   if (wroteResolved) {
     logger.debug('Resolved environment written to state/.env.resolved');
-    // Disk snapshot for other processes; override: false preserves runtime / .env.local on process.env.
+    // Preserve runtime and .env.local values while exposing the snapshot to other processes.
     dotenv.config({ path: resolvedEnvFilePath, override: false, quiet: true });
   } else {
     logger.warn('Could not write state/.env.resolved (permission denied on bind mount). Using in-memory resolved environment for this process.');

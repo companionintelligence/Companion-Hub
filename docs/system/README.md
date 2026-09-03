@@ -1,4 +1,4 @@
-# System Docs Index — CI-Hub
+# Companion Hub system documentation
 
 > **Purpose:** Index of living system docs agents must keep updated when changing code.
 > **Scope:** Backend, frontend, desktop, e2e, agent-qa subsystems.
@@ -24,7 +24,7 @@ Every `docs/system/*.md` file **must** begin with exactly this block (fill in va
 > **Related:** Other docs to read.
 ```
 
-Agents: **update `Last updated` and relevant body sections** when you change that system.
+When you change a system, update the `Last updated` field and the relevant sections.
 
 ---
 
@@ -38,4 +38,4 @@ Agents: **update `Last updated` and relevant body sections** when you change tha
 | [e2e.md](e2e.md) | Playwright tests, visual regression, benchmarks |
 | [agent-qa.md](agent-qa.md) | Marketplace QA flywheel (FLYWHEEL) |
 
-Deep dive: [docs/ARCHITECTURE.md](../ARCHITECTURE.md)
+For more detail, see [Companion Hub architecture](../ARCHITECTURE.md).

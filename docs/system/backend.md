@@ -1,4 +1,4 @@
-# Backend System — CI-Hub
+# Backend system — Companion Hub
 
 > **Purpose:** NestJS API server — app lifecycle, Docker management, auth, queues, MCP.
 > **Scope:** `packages/backend/` — modules, Drizzle schema, RabbitMQ workers, SSE.

@@ -1,20 +1,20 @@
-# CI Platform Architecture
+# Companion Intelligence platform architecture
 
-This document describes how the three core components of the Companion Intelligence platform — the **Portal**, the **Hub**, and the **App Store** — work together to provide a self-hosted app platform with cloud-managed identity, tunnel networking, and a marketplace.
+This document explains how **Companion Hub**, **Companion Portal**, and **Companion Memory** divide platform responsibilities. The app store and Cloudflare edge support the self-hosted app platform with marketplace and network services.
 
 ---
 
-## Platform Overview
+## Platform overview
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────────┐
-│                              End Users                                          │
+│                                 Users                                           │
 │   Browser · Tauri Desktop · Mobile                                              │
 └──────┬──────────────────────────┬──────────────────────────┬────────────────────┘
        │                          │                          │
        ▼                          ▼                          ▼
 ┌──────────────────┐   ┌──────────────────────┐   ┌──────────────────────────────┐
-│   CI Portal      │   │   CI Hub             │   │   Cloudflare Edge            │
+│ Companion Portal │   │    Companion Hub     │   │   Cloudflare Edge            │
 │                  │   │                      │   │                              │
 │  Cloudflare      │   │  Self-hosted on      │   │  DNS · Tunnel Ingress        │
 │  Workers + D1    │   │  user hardware       │   │  Zero Trust Access · TLS     │
@@ -25,7 +25,7 @@ This document describes how the three core components of the Companion Intellige
 │  Tunnel Mgmt     │   │  Traefik Proxy       │   │                              │
 │  App Store API   │   │  App Lifecycle       │   │                              │
 │  Docker Registry │   │  RabbitMQ Workers    │   │                              │
-│  OAuth Proxy     │   │  Headscale VPN       │   │                              │
+│  OAuth Proxy     │   │  Tailscale VPN       │   │                              │
 └──────────────────┘   └──────────────────────┘   └──────────────────────────────┘
        │                          │                          ▲
        │                          │                          │
@@ -44,18 +44,23 @@ This document describes how the three core components of the Companion Intellige
 └──────────────────┘
 ```
 
-### Component Roles
+Tailscale is the current private VPN plane. Headscale is a legacy option in older deployments.
 
-| Component | Runtime | Primary Role |
+### Component roles
+
+| Component | Runtime | Primary role |
 |-----------|---------|-------------|
-| **CI Portal** | Cloudflare Workers (Hono), D1, R2 | Cloud control plane — identity, organizations, device registration, tunnel provisioning, app marketplace, Docker registry, OAuth proxy |
-| **CI Hub** | Docker on user hardware (NestJS, PostgreSQL, RabbitMQ) | On-premise data plane — installs/runs Docker apps, manages local Traefik routing, connects to Portal for tunnels and marketplace |
+| **Companion Portal** | Cloudflare Workers (Hono), D1, R2 | Cloud control plane — entitlements, identity, organizations, device registration, tunnel provisioning, app marketplace, Docker registry, and OAuth proxy |
+| **Companion Hub** | Docker on user hardware (NestJS, PostgreSQL, RabbitMQ) | Appliance runtime — installs and supervises marketplace apps, manages local Traefik routing, and connects to Portal for tunnels and marketplace services |
+| **Companion Memory** (`ci-memory`) | Docker on user hardware | Personal memory brain — stores and processes personal memory on the appliance |
 | **CI App Store** | Git repository | App catalog — contains app definitions (metadata, Docker Compose specs, form schemas) consumed by Hubs via git clone |
 | **Cloudflare Edge** | Cloudflare infrastructure | Network plane — terminates TLS, routes public traffic through tunnels to Hubs, enforces Zero Trust access policies |
 
+Hub supervises applications on the appliance. Portal provides cloud control-plane services. Memory stores and processes personal memory on the appliance. This repository contains Hub; Portal and Memory are separate products.
+
 ---
 
-## Identity and Organizations
+## Identity and organizations
 
 The Portal is the **single source of truth for identity**. Users create accounts on the Portal and organize access through organizations.
 
@@ -95,13 +100,14 @@ Organization
 
 ---
 
-## Device Registration and Pairing
+## Device registration and pairing
 
 The pairing flow connects a physical Hub to an organization on the Portal and provisions all necessary infrastructure (tunnel, DNS, access policies).
 
 ```
 ┌──────────┐                ┌──────────────┐                ┌──────────────────┐
-│  CI Hub  │                │   Browser    │                │   CI Portal      │
+│ Companion│                │   Browser    │                │   Companion      │
+│   Hub    │                │              │                │    Portal        │
 └────┬─────┘                └──────┬───────┘                └────────┬─────────┘
      │                             │                                 │
      │  1. Display pairing URL     │                                 │
@@ -147,9 +153,9 @@ The pairing flow connects a physical Hub to an organization on the Portal and pr
      │     hub-{device-slug}-{org-slug}.{domain}                    │
 ```
 
-### What Gets Provisioned
+### What gets provisioned
 
-| Resource | Created By | Details |
+| Resource | Created by | Details |
 |----------|------------|---------|
 | **Cloudflare Tunnel** | Portal → Cloudflare API | Named `hub-{device_id}`, one per device |
 | **DNS CNAME** | Portal → Cloudflare API | `hub-{device-slug}-{org-slug}.{domain}` → `{tunnelId}.cfargotunnel.com` |
@@ -163,15 +169,16 @@ The pairing code is a 6-character alphanumeric string, single-use — once consu
 
 ---
 
-## Tunnel Networking and App Exposure
+## Tunnel networking and app exposure
 
 Once a Hub is paired, it can expose installed apps to the internet through the Cloudflare tunnel.
 
-### App Exposure Flow
+### App exposure flow
 
 ```
 ┌──────────┐           ┌──────────────┐           ┌──────────────┐
-│  CI Hub  │           │  CI Portal   │           │  Cloudflare  │
+│ Companion│           │ Companion    │           │  Cloudflare  │
+│   Hub    │           │   Portal     │           │              │
 └────┬─────┘           └──────┬───────┘           └──────┬───────┘
      │                        │                          │
      │  POST /api/tunnels/    │                          │
@@ -199,7 +206,7 @@ Once a Hub is paired, it can expose installed apps to the internet through the C
      │ ◄──────────────────────│                          │
 ```
 
-### How It Works
+### How it works
 
 1. **Hub syncs state** — Whenever an app's exposure changes (install, update-config, uninstall), the Hub's `CloudflareClientService` calls `POST /api/tunnels/state` with the full list of currently exposed apps.
 
@@ -213,7 +220,7 @@ Once a Hub is paired, it can expose installed apps to the internet through the C
 
 4. **Cloudflare routes traffic** — The `cloudflared` daemon on the Hub maintains a persistent encrypted connection to Cloudflare's edge. Incoming HTTPS requests are matched against ingress rules and proxied to the local service.
 
-### Ingress Rule Generation
+### Ingress rule generation
 
 ```yaml
 # Generated by Portal, applied to Cloudflare tunnel
@@ -236,23 +243,23 @@ ingress:
 
 The `httpHostHeader` is set so that Traefik on the Hub can use hostname-based routing to reach the correct app container, even though the tunnel delivers all traffic to `host.docker.internal`.
 
-### Three Exposure Modes
+### Three exposure modes
 
-| Mode | Routing | Auth | Use Case |
+| Mode | Routing | Auth | Use case |
 |------|---------|------|----------|
 | **Local only** | `http://127.0.0.1:{port}` (ADR 001); Traefik `*.{LOCAL_DOMAIN}` is tunnel origin only | Direct / host-only session | This computer |
 | **Cloudflare Tunnel** | Sibling `{app}-{device}-{org}.{domain}` via Cloudflare edge | Hub forward-auth + **edge ticket SSO** (ADR 002) when Hub/app cookies cannot span siblings | Public internet access |
-| **Tailscale VPN** | Tailscale IP via Headscale coordination | End-to-end encrypted | Private remote access without public DNS |
+| **Tailscale VPN** | Tailscale IP through Tailscale coordination | End-to-end encrypted | Private remote access without public DNS |
 
 ---
 
-## App Store and Marketplace
+## App store and marketplace
 
 Apps flow through the platform via two channels: the **git-based app catalog** (free, open-source) and the **Portal marketplace API** (supports paid apps, reviews, and a Docker registry).
 
-### Git-Based App Catalog (CI App Store)
+### Git-based app catalog (CI App Store)
 
-The simplest path. The CI App Store is a **git repository** containing app definitions:
+The CI App Store is a **git repository** containing app definitions:
 
 ```
 CI-App-Store/
@@ -277,7 +284,8 @@ CI-App-Store/
 
 ```
 ┌──────────┐         git clone/pull        ┌──────────────────┐
-│ CI Hub   │ ────────────────────────────── │ CI App Store     │
+│Companion │ ────────────────────────────── │ CI App Store     │
+│ Hub      │                                │                  │
 │          │                                │ (GitHub repo)    │
 │ repos/   │ ◄──────────────────────────── │ apps/{name}/     │
 │          │        app definitions         │   config.json    │
@@ -285,13 +293,13 @@ CI-App-Store/
                                             └──────────────────┘
 ```
 
-### Portal Marketplace API
+### Portal marketplace API
 
 For published apps (including paid apps), the Portal provides a REST API and Docker registry:
 
 ```
 ┌──────────────┐    GET /api/store         ┌──────────────────┐
-│  CI Hub      │ ─────────────────────────►│  CI Portal       │
+│ Companion Hub│ ─────────────────────────►│ Companion Portal │
 │  (frontend)  │    browse apps            │  (Hono API)      │
 │              │ ◄─────────────────────────│                  │
 │              │    app metadata + compose  │  D1: store_app   │
@@ -331,7 +339,7 @@ For published apps (including paid apps), the Portal provides a REST API and Doc
 
 **Pricing models:** Free, Paid (fixed), Pay-What-You-Want (min/suggested price), Subscription (monthly/yearly).
 
-### Docker Registry
+### Docker registry
 
 The Portal implements the **OCI Distribution Spec** (Docker V2 Registry) backed by Cloudflare R2:
 
@@ -359,14 +367,15 @@ Docker Client                   Portal /v2/*                   R2 Storage
 
 ---
 
-## OAuth Proxy
+## OAuth proxy
 
 The Portal acts as an **OAuth proxy** so that Hub-installed apps can integrate with third-party services (GitHub, Google, etc.) without each Hub needing its own OAuth client credentials.
 
 ```
 ┌──────────┐         ┌──────────────┐         ┌──────────────┐
-│  CI Hub  │         │  CI Portal   │         │  OAuth       │
-│  (app)   │         │  (proxy)     │         │  Provider    │
+│ Companion│         │ Companion    │         │  OAuth       │
+│   Hub    │         │   Portal     │         │  provider    │
+│  (app)   │         │  (proxy)     │         │              │
 └────┬─────┘         └──────┬───────┘         └──────┬───────┘
      │                      │                        │
      │  POST /oauth/        │                        │
@@ -411,7 +420,7 @@ The Portal acts as an **OAuth proxy** so that Hub-installed apps can integrate w
 
 ---
 
-## Hub ↔ Portal Communication
+## Hub ↔ Portal communication
 
 All communication between a Hub and the Portal is authenticated via the device's **API key** (a UUID generated during pairing).
 
@@ -419,9 +428,9 @@ All communication between a Hub and the Portal is authenticated via the device's
 
 The Hub sends its credentials in the `x-device-key` header. The Portal's `deviceAuthMiddleware` validates the key against the `device` table and injects the device context into the request.
 
-### API Calls Made by Hub
+### API calls made by Hub
 
-| Hub Action | Portal Endpoint | Purpose |
+| Hub action | Portal endpoint | Purpose |
 |------------|----------------|---------|
 | Registration check | `GET /api/devices/pair?pairing_code=...` | Check if device is ready for pairing |
 | Complete pairing | `POST /api/devices/pair` | Finish registration, get credentials |
@@ -434,7 +443,7 @@ The Hub sends its credentials in the `x-device-key` header. The Portal's `device
 | Token refresh | `POST /api/oauth/token/refresh` | Rotate OAuth access tokens |
 | Token revocation | `POST /api/oauth/token/revoke` | Revoke OAuth tokens |
 
-### Data That Lives Where
+### Data locations
 
 | Data | Location | Why |
 |------|----------|-----|
@@ -446,15 +455,16 @@ The Hub sends its credentials in the `x-device-key` header. The Portal's `device
 | Docker images | Portal (R2) | Centralized registry |
 | Installed app state, config | Hub (PostgreSQL) | Local data sovereignty |
 | App data volumes | Hub (Docker volumes) | User data stays on their hardware |
+| Personal memory data | Companion Memory (`ci-memory`) on the appliance | Personal memory stays on the user's hardware |
 | Traefik routes | Hub (filesystem) | Local reverse proxy config |
 | App backups | Hub (filesystem) | Local backup archives |
 | Hub user accounts | Hub (PostgreSQL) | Local auth (separate from Portal identity) |
 
 ---
 
-## App Installation End-to-End
+## App installation end to end
 
-Here is the complete journey of installing an app, from browsing to running:
+The following sequence shows how an app moves from browsing to running:
 
 ```
 1. USER BROWSES APP STORE
@@ -490,7 +500,7 @@ Here is the complete journey of installing an app, from browsing to running:
      g. Write Traefik dynamic config for local routing
 
 4. HUB SYNCS EXPOSURE (if app is exposed)
-   Hub Backend ──POST /api/tunnels/state──► CI Portal
+   Hub Backend ──POST /api/tunnels/state──► Companion Portal
                  { apps: [{ name, subdomain,     │
                    localPort, protocol }] }       │
                                                   │
@@ -508,7 +518,7 @@ Here is the complete journey of installing an app, from browsing to running:
 
 ---
 
-## Security Boundaries
+## Security boundaries
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -524,7 +534,7 @@ Here is the complete journey of installing an app, from browsing to running:
 │  │ TRUST BOUNDARY: User  │ Network                      │    │
 │  │                       ▼                              │    │
 │  │  ┌─────────────────────────────────────────────┐    │    │
-│  │  │ CI Hub (Docker)                              │    │    │
+│  │  │ Companion Hub (Docker)                       │    │    │
 │  │  │  Traefik (forward-auth → Hub JWT check)      │    │    │
 │  │  │  Hub API (Argon2 passwords, JWT sessions)    │    │    │
 │  │  │  App containers (network-isolated)           │    │    │
@@ -534,7 +544,7 @@ Here is the complete journey of installing an app, from browsing to running:
 │  └─────────────────────────────────────────────────────┘    │
 │                                                              │
 │  ┌─────────────────────────────────────────────────────┐    │
-│  │ CI Portal (Cloudflare Workers)                       │    │
+│  │ Companion Portal (Cloudflare Workers)                │    │
 │  │  Better-Auth (sessions, passkeys, 2FA)               │    │
 │  │  Organization-scoped data isolation                  │    │
 │  │  Device API key authentication                       │    │
@@ -545,7 +555,7 @@ Here is the complete journey of installing an app, from browsing to running:
 └─────────────────────────────────────────────────────────────┘
 ```
 
-### Authentication Layers
+### Authentication layers
 
 | Boundary | Mechanism |
 |----------|-----------|
@@ -557,22 +567,22 @@ Here is the complete journey of installing an app, from browsing to running:
 | Docker → Portal (registry) | Basic Auth or Bearer JWT |
 | Portal → Cloudflare (API) | Cloudflare API token (per-environment secret) |
 
-### Data Sovereignty
+### Data sovereignty
 
-User data never leaves the Hub. The Portal stores only:
+Application and personal memory data remain on the appliance. Portal stores only:
 - User identity and organization structure
 - Device metadata and API keys
 - Tunnel configuration
 - App marketplace listings
 - OAuth proxy tokens (encrypted)
 
-App data, configuration files, Docker volumes, database contents, and backups all remain on the user's hardware.
+App data, configuration files, Docker volumes, database contents, backups, and Companion Memory data remain on the user's hardware.
 
 ---
 
-## Environment Matrix
+## Environment matrix
 
-| Environment | Portal Domain | Hub Compose | Portal D1 | Portal R2 | Registry |
+| Environment | Portal domain | Hub Compose | Portal D1 | Portal R2 | Registry |
 |-------------|--------------|-------------|-----------|-----------|----------|
 | Local dev | `localhost:8415` | `docker-compose.local.yml` | `ci-cloud-db-local` | `ci-registry-local` | local /v2 |
 | Dev | `hub.companionintelligence.com` | `.env.dev` | `ci-cloud-db-dev` | `ci-registry-dev` | dev /v2 |

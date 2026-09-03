@@ -4,7 +4,7 @@
   "description": "",
   "author": "",
   "private": true,
-  "license": "CI-Commercial-1.0",
+  "license": "PolyForm-Noncommercial-1.0.0",
   "scripts": {
     "dev": "nest start --watch --preserveWatchOutput",
     "local": "pnpm run dev",

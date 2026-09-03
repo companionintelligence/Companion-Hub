@@ -57,7 +57,7 @@ export type FormValues = {
   publicDomain?: string;
   /**
    * A connected custom domain to serve this app on, or `''` for the platform
-   * address. Recorded as an intent and wired by CI-Cloud after the app registers
+   * address. Recorded as an intent and wired by Companion Portal after the app registers
    * — never written into the app's env directly.
    */
   customDomain?: string;

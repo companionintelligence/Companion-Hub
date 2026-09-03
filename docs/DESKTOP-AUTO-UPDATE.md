@@ -1,6 +1,5 @@
 # Desktop Auto-Update
 
-> **Private & Confidential — Property of Lifescope Inc. Do not distribute.**
 
 How the Companion Hub desktop app updates itself, and how to QA it.
 

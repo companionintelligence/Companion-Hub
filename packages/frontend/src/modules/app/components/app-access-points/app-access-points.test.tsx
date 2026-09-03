@@ -30,7 +30,7 @@ vi.mock('@/context/app-context', () => ({
     },
     cloudflareAvailable: true,
     tailscaleAvailable: true,
-    tailscaleNodeFqdn: 'hub-tailscale-1.capybara-ulmer.ts.net',
+    tailscaleNodeFqdn: 'hub-tailscale-1.example.ts.net',
     tailscaleHttpsEnabled: true,
   }),
 }));
@@ -69,7 +69,7 @@ describe('buildAppAccessPoints', () => {
       publicDomain: 'companionintelligence.com',
       cloudflareAvailable: true,
       tailscaleAvailable: true,
-      tailscaleNodeFqdn: 'hub-tailscale-1.capybara-ulmer.ts.net',
+      tailscaleNodeFqdn: 'hub-tailscale-1.example.ts.net',
       tailscaleHttpsEnabled: true,
       tailscaleServedPorts: new Set([3000]),
       organizationSlug: 'companion',
@@ -84,8 +84,8 @@ describe('buildAppAccessPoints', () => {
     });
     expect(accessPoints[1]).toMatchObject({
       key: 'vpn',
-      url: 'https://hub-tailscale-1.capybara-ulmer.ts.net:3000/login',
-      host: 'hub-tailscale-1.capybara-ulmer.ts.net:3000',
+      url: 'https://hub-tailscale-1.example.ts.net:3000/login',
+      host: 'hub-tailscale-1.example.ts.net:3000',
     });
     expect(accessPoints[2]).toMatchObject({
       key: 'local',
@@ -106,12 +106,12 @@ describe('buildAppAccessPoints', () => {
       internalIp: '0.0.0.0',
       cloudflareAvailable: true,
       tailscaleAvailable: true,
-      tailscaleNodeFqdn: 'hub-tailscale-1.capybara-ulmer.ts.net',
+      tailscaleNodeFqdn: 'hub-tailscale-1.example.ts.net',
     });
 
     expect(accessPoints[1]).toMatchObject({
       key: 'vpn',
-      url: 'https://hub-tailscale-1.capybara-ulmer.ts.net:3000/login',
+      url: 'https://hub-tailscale-1.example.ts.net:3000/login',
     });
   });
 
@@ -133,7 +133,7 @@ describe('buildAppAccessPoints', () => {
       publicDomain: 'companionintelligence.com',
       cloudflareAvailable: true,
       tailscaleAvailable: true,
-      tailscaleNodeFqdn: 'hub-tailscale-1.capybara-ulmer.ts.net',
+      tailscaleNodeFqdn: 'hub-tailscale-1.example.ts.net',
       tailscaleHttpsEnabled: true,
       tailscaleServedPorts: new Set([18789]),
       organizationSlug: 'companion',
@@ -194,14 +194,14 @@ describe('buildAppAccessPoints', () => {
       internalIp: '0.0.0.0',
       cloudflareAvailable: true,
       tailscaleAvailable: true,
-      tailscaleNodeFqdn: 'hub-tailscale-1.capybara-ulmer.ts.net',
+      tailscaleNodeFqdn: 'hub-tailscale-1.example.ts.net',
       tailscaleHttpsEnabled: true,
       tailscaleServedPorts: new Set([8311]),
     });
 
     expect(accessPoints[1]).toMatchObject({
       key: 'vpn',
-      url: 'https://hub-tailscale-1.capybara-ulmer.ts.net:8311/login',
+      url: 'https://hub-tailscale-1.example.ts.net:8311/login',
       state: 'active',
     });
     expect(accessPoints[2]).toMatchObject({
@@ -282,7 +282,7 @@ describe('buildAppAccessPoints', () => {
       internalIp: '0.0.0.0',
       cloudflareAvailable: true,
       tailscaleAvailable: true,
-      tailscaleNodeFqdn: 'hub-tailscale-1.capybara-ulmer.ts.net',
+      tailscaleNodeFqdn: 'hub-tailscale-1.example.ts.net',
       tailscaleHttpsEnabled: true,
       tailscaleServedPorts: new Set(),
     });
@@ -375,7 +375,7 @@ describe('AppAccessPoints', () => {
     expect(screen.getByText('APP_DETAILS_ACCESS_TITLE')).toBeInTheDocument();
     expect(screen.getAllByText('APP_ACTION_OPEN')).toHaveLength(3);
     expect(screen.queryByText('COMMON_HOSTNAME')).not.toBeInTheDocument();
-    expect(screen.getByText('https://hub-tailscale-1.capybara-ulmer.ts.net:3000/login')).toBeInTheDocument();
+    expect(screen.getByText('https://hub-tailscale-1.example.ts.net:3000/login')).toBeInTheDocument();
     expect(screen.getByText('http://127.0.0.1:3000/login')).toBeInTheDocument();
   });
 
@@ -472,7 +472,7 @@ describe('isLoopbackAccessUrl', () => {
   it.each([
     'https://openwebui.example.com/login',
     'http://192.168.1.5:3000',
-    'https://hub-tailscale-1.capybara-ulmer.ts.net:3000',
+    'https://hub-tailscale-1.example.ts.net:3000',
   ])('treats %s as routable', (url) => {
     expect(isLoopbackAccessUrl(url)).toBe(false);
   });

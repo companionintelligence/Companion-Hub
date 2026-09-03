@@ -1,5 +1,5 @@
 {
-  "$schema": "https://schemas.runcihub.io/v2/app-info.json",
+  "$schema": "https://schemas.companionintelligence.com/v2/app-info.json",
   "id": "ci-e2e-test-app",
   "name": "CI E2E Test App",
   "version": "1.0.0",

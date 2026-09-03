@@ -2,10 +2,10 @@
 
 > **Purpose:** Marketplace QA flywheel — explore, diagnose, fix ci-marketplace apps via automated PRs.
 > **Scope:** `e2e/app-explorer.spec.ts`, `agent/`, fleet QA — **not** general Hub feature development.
-> **Key paths:** `agent/fix-agent.ts`, `e2e/app-explorer.spec.ts`, `.claude/skills/run-fleet-qa/`
-> **Commands:** `agent/scripts/run-explorer.sh`, fleet QA skill
+> **Key paths:** `agent/fix-agent.ts`, `e2e/app-explorer.spec.ts`
+> **Commands:** `agent/scripts/run-explorer.sh`
 > **Owner persona:** domain (marketplace/apps) — see docs/agent/REVIEW_PERSONAS.md
-> **Last updated:** 2026-07-12
+> **Last updated:** 2026-09-03
 > **Related:** docs/system/agent-qa.md, docs/agent/AGENT_WORKFLOW.md (general work)
 
 > **Who this is for:** Any agent or engineer picking this up on a new machine to run the App Explorer Test, triage failures, and submit fixes to ci-marketplace via automated PRs.
@@ -99,21 +99,23 @@ npm install          # openai, ts-node, typescript, @types/node
 
 ### 3. Environment variables
 
+Local lab placeholders only — do not use these values in production, and do not commit real passwords or keys.
+
 Create `~/Development/companion/ci-hub/.env.explorer`:
 
 ```bash
 # Hub credentials
 HUB_URL=http://localhost:9091
-TEST_EMAIL=test@ci.computer
+TEST_EMAIL=test@example.com
 TEST_PASSWORD=testpassword123
 
 # App account credentials (used when sign-up form is detected)
-APP_TEST_EMAIL=explorer@ci.computer
+APP_TEST_EMAIL=explorer@example.com
 APP_TEST_PASSWORD=Explorer123!
 APP_TEST_NAME=CI Explorer
 
 # Base domain for app subdomains
-APP_DOMAIN=ci.computer
+APP_DOMAIN=example.com
 
 # Timing
 EXPLORE_MINUTES=5
@@ -327,7 +329,7 @@ That's the full App Explorer loop. Iterate until green.
 → Normal for newly installed apps. DNS propagation for new subdomains can take 2–15 min. Re-run with `DNS_TIMEOUT_MINUTES=15`.
 
 **Auth fails on every app**
-→ Check `APP_TEST_EMAIL` / `APP_TEST_PASSWORD` env vars. Some apps reject weak passwords — try `APP_TEST_PASSWORD=Explorer123!@#`.
+→ Check `APP_TEST_EMAIL` / `APP_TEST_PASSWORD` env vars. Some apps reject weak passwords — use a stronger local placeholder such as `APP_TEST_PASSWORD=Explorer123!@#` (lab only; do not commit real credentials).
 
 **Fix agent opens PR but bun verify:app fails**
 → The patch was too aggressive. Check `logs/fix-agent.log` for the verify output. Set `DRY_RUN=true` and inspect the patched file manually.

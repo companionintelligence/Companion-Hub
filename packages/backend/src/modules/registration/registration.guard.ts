@@ -19,8 +19,8 @@ export class RegistrationGuard implements CanActivate {
 
     const { ciCloudUrl } = this.config.getConfig();
 
-    // If CI Cloud URL is not configured, allow access (backward compatibility)
-    // This means CI Cloud integration is not enabled
+    // If Companion Portal URL is not configured, allow access (backward compatibility)
+    // This means Companion Portal integration is not enabled
     if (!ciCloudUrl) {
       this.logger.debug('CI Cloud integration not configured, allowing access without registration check');
       return true;

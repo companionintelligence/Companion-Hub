@@ -22,7 +22,7 @@ export interface PublicWebDiagnosticEntry {
   envHostname: string | null;
   envMismatch: boolean;
   action: 'ok' | 'repair';
-  /** Custom hostname CI-Cloud has wired for this app, when it has one. */
+  /** Custom hostname Companion Portal has wired for this app, when it has one. */
   customDomain: string | null;
   /**
    * The app is already flagged for a restart that will regenerate this env, so
@@ -120,7 +120,7 @@ export class PublicWebService {
        * The mismatch is still reported (it is real, and it is what the badge is
        * about); only the verdict waits for the restart the user was asked for.
        *
-       * ⚠ NARROWED TO THAT ONE WINDOW ON PURPOSE. `pendingRestart` is raised for
+       * This suppression is deliberately narrowed to that one window. `pendingRestart` is raised for
        * ANY settings change (`updateAppConfig`), and it survives when the app is
        * not running to be auto-restarted. Suppressing on the flag alone would
        * hide genuine hostname drift on any app that happens to carry it — the
