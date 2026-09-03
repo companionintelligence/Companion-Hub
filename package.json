@@ -67,7 +67,7 @@
     "mcp"
   ],
   "author": "",
-  "license": "CI-Commercial-1.0",
+  "license": "PolyForm-Noncommercial-1.0.0",
   "devDependencies": {
     "@biomejs/biome": "^2.0.4",
     "@hey-api/openapi-ts": "^0.97.3",
