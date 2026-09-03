@@ -118,7 +118,9 @@ export class RegistryService {
    * Mint a pull-only Portal registry JWT from the paired device key.
    *
    * Unpaired Hubs have no `ciHubApiKey`, so this returns null and callers fall
-   * back to an empty tag list (and `dl.ci.computer` for the Hub stack).
+   * back to an empty tag list (and `dl.ci.computer` for the Hub stack). That
+   * looks like a slow or empty catalog, not a pairing error — pair first
+   * (CI-Portal#634).
    */
   private async getDeviceRegistryToken(base: string): Promise<string | null> {
     const deviceKey = this.configuration.get('ciHubApiKey');

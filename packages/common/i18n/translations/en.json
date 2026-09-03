@@ -1247,7 +1247,7 @@
   "SYSTEM_ERROR_YOU_MUST_BE_LOGGED_IN": "You must be logged in to perform this action",
   "SYSTEM_ERROR_FORBIDDEN": "You don't have permission to perform this action",
   "REGISTRATION_DEVICE_NOT_OPERATIONAL": "This Hub is not fully set up yet ({{phase}}). Complete device registration to continue.",
-  "APP_INSTALL_PORTAL_DOWNLOAD_UNAUTHORIZED": "Could not download this app from the marketplace. Your session may have expired. Sign in again, or re-pair your device in Settings → Network.",
+  "APP_INSTALL_PORTAL_DOWNLOAD_UNAUTHORIZED": "Could not download this app from the marketplace. Installs need a Portal device key from pairing this Hub. If pairing never finished, or this machine could not store the key, install fails and the catalog can look slow or empty. Sign in again, or re-pair in Settings → Network.",
   "APP_INSTALL_PORTAL_DOWNLOAD_FORBIDDEN": "Your device is not authorized to install this app. Check your CI Account subscription or device registration.",
   "APP_INSTALL_PORTAL_DOWNLOAD_PAYMENT_REQUIRED": "This app requires an active subscription or payment. Check your CI Account before installing.",
   "TIMEZONE_SELECTOR_LABEL": "Timezone",

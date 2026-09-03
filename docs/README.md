@@ -36,7 +36,7 @@ Follow the [Google developer documentation style guide](https://developers.googl
 |-----|----------|
 | [`../README.md`](../README.md) | Anyone cloning the repo |
 | [`License-FAQ.md`](License-FAQ.md) | License questions |
-| [`security/hub-portal-trust.md`](security/hub-portal-trust.md) | Hub ↔ Portal trust boundaries |
+| [`security/hub-portal-trust.md`](security/hub-portal-trust.md) | Hub ↔ Portal trust; marketplace needs a paired device key |
 | [`CLI.md`](CLI.md) | `cihub` CLI |
 | [`private-vpn.md`](private-vpn.md) | Tailscale private VPN |
 | [`ci-cd-pipeline.md`](ci-cd-pipeline.md) | Historical multi-env deploy notes |

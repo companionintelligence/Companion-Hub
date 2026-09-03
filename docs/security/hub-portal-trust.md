@@ -4,7 +4,7 @@ Companion Hub uses the PolyForm Noncommercial License. **Companion Portal** and 
 
 Use this page to review the trust boundaries between these products. It is not a penetration test report.
 
-Reviewed against CI-Portal `origin/dev` @ `b5d539b8` (2026-09-03) and this Hub branch. Remaining GET-install gap: [CI-Portal#633](https://github.com/companionintelligence/CI-Portal/issues/633).
+Reviewed against CI-Portal `origin/dev` @ `b5d539b8` (2026-09-03) and this Hub branch. GET install requires `x-device-key` in [CI-Portal#634](https://github.com/companionintelligence/CI-Portal/pull/634).
 
 ## Trust boundaries
 
@@ -26,16 +26,18 @@ Portal `deviceAuthMiddleware` refuses a missing or unknown `x-device-key` with `
 
 Two different routes share the `/api/store/:id/install` path:
 
-| Method | Caller | Auth today | Role |
+| Method | Caller | Auth | Role |
 |---|---|---|---|
 | `POST` | Portal session (person in the store UI) | `sessionMiddleware` plus organization membership over the named device | Portal **pushes** an install command to that Hub |
-| `GET` | Hub (`downloadAppFiles`) | **Not** `deviceAuthMiddleware`. Free apps return compose with no credential. Paid apps require `x-device-id` and a completed transaction, not the device key | Hub **pulls** the install bundle |
+| `GET` | Hub (`downloadAppFiles`) | `deviceAuthMiddleware` (`x-device-key`) — [CI-Portal#634](https://github.com/companionintelligence/CI-Portal/pull/634) | Hub **pulls** the install bundle |
 
-Hub already sends `x-device-key` on the GET. Portal does not require it. A modified open-source Hub can therefore fetch **free** marketplace compose without a paired key. Paid bundles still need a completed purchase for that `x-device-id`; the header is spoofable, so the real gate is the transaction row, not possession of the device key.
-
-Until GET install is bound to `deviceAuthMiddleware` (same as registry-token), **do not describe Portal as fail-closed for catalog downloads**. Registry JWTs (`POST /api/devices/registry-token`) already fail closed.
+After pairing, Hub stores `ciHubApiKey` and **always tries** to send it as `x-device-key` (and `Authorization: Bearer`) on GET install and on `POST /api/devices/registry-token`. Portal must reject a missing or unknown key with `401`. Paid GET bundles still require a completed transaction for the device bound from that key, not a client-supplied `x-device-id`.
 
 A modified Hub can still compose and run **local or unsigned** apps. That must not unlock paid Portal artifacts, registry pulls, or other users' Portal sessions.
+
+### If this machine cannot pair
+
+Hub still attempts those Portal calls. Without a stored device key, Portal returns `401`. Marketplace installs do not finish. Registry listing falls back to an empty tag list (`RegistryService.getDeviceRegistryToken`), so the catalog can look **slow or empty** rather than obviously unauthorized. Complete pairing (`cihub register` or the onboarding UI) before you expect store installs to work.
 
 ## Capabilities of a modified open-source Hub
 
@@ -43,8 +45,8 @@ A modified Hub can still compose and run **local or unsigned** apps. That must n
 |---|---|---|
 | Impersonate another paired device at Portal | No, on routes that use `deviceAuthMiddleware` | Needs that device's Portal-issued key |
 | Impersonate a Portal end-user (OIDC) | No | Hub verifies Portal JWTs via JWKS; forging needs Portal keys |
-| Download a **free** store install bundle | Yes today | `GET /api/store/:id/install` is unauthenticated for `priceModel === 'free'` |
-| Download a **paid** store install bundle | Only with a completed transaction for the claimed `x-device-id` | Header is not the device key; bind GET install to `x-device-key` |
+| Download a **free** store install bundle | No, once [CI-Portal#634](https://github.com/companionintelligence/CI-Portal/pull/634) is deployed | Needs a Portal-issued device key |
+| Download a **paid** store install bundle | No | Key plus a completed transaction for **that** device |
 | Skip Portal entitlement for registry pulls | No | Minted JWT is pull-only for `ci-hub`; caller `access`/`repo` ignored |
 | Run arbitrary local Docker apps | Yes | Appliance control plane is local |
 | Forge Traefik forward-auth identity for apps that trust Hub HMAC | Yes | Whoever controls Hub and `CI_HUB_FORWARD_AUTH_SECRET` (or the per-app secret) can mint `X-CI-Hub-User` headers. That trust is **appliance-local**, not Portal authority |
@@ -61,7 +63,7 @@ Traefik `forwardauth` calls Hub `/api/auth/traefik`. On a valid Hub session, Hub
 
 ## Entitlements follow-up
 
-[Issue #722](https://github.com/companionintelligence/CI-Hub/issues/722) tracks Hub-side entitlement checks before install, start, and update operations. Until those checks ship **and** GET install requires the device key, **Portal's authenticated routes** (pairing, POST install, registry-token, tunnels) are the commercial gate — not the unauthenticated GET bundle.
+[Issue #722](https://github.com/companionintelligence/CI-Hub/issues/722) tracks Hub-side entitlement checks before install, start, and update operations. Until those checks ship, **Portal's fail-closed device-key routes** (pairing, GET/POST install, registry-token, tunnels) are the commercial gate.
 
 ## Review checklist for publication
 
