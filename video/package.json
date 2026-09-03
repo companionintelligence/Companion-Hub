@@ -1,0 +1,19 @@
+{
+  "name": "ci-hub-video",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "doctor": "ci-video doctor",
+    "capture": "ci-video capture",
+    "build": "ci-video build",
+    "check": "ci-video check",
+    "render": "ci-video render",
+    "narrate": "ci-video narrate",
+    "status": "ci-video status",
+    "all": "ci-video all"
+  },
+  "devDependencies": {
+    "@companionintelligence/video-kit": "^0.1.0",
+    "playwright": "1.62.1"
+  }
+}

@@ -1,0 +1,1153 @@
+import crypto from 'node:crypto';
+import net from 'node:net';
+import { SESSION_COOKIE_MAX_AGE, SESSION_COOKIE_NAME } from '@/common/constants';
+import { buildHubPublicOrigin } from '@/common/helpers/hub-origin';
+import { TranslatableError } from '@/common/error/translatable-error';
+import { CacheService } from '@/core/cache/cache.service';
+import { ConfigurationService } from '@/core/config/configuration.service';
+import { LoggerService } from '@/core/logger/logger.service';
+import { BadRequestException, Body, Controller, Delete, Get, HttpStatus, Patch, Post, Query, Req, Res, UseGuards } from '@nestjs/common';
+import type { Request, Response } from 'express';
+import { AuthGuard } from './auth.guard';
+import { AuthService } from './auth.service';
+import { buildSignedForwardAuthHeaders } from './utils/forward-auth-signing';
+import { normalizeForwardedHost, rawForwardedHost } from './utils/forward-auth-host';
+import { ForwardAuthSecretResolver } from './forward-auth-secret.resolver';
+import { UserRepository } from '@/modules/user/user.repository';
+import { RegistrationService } from '@/modules/registration/registration.service';
+import { DeviceRegistrationRepository } from '@/modules/registration/device-registration.repository';
+import { SessionManager } from './session.manager';
+import {
+  BrowserHandoffMintBody,
+  BrowserHandoffMintDto,
+  ChangePasswordBody,
+  ChangeUsernameBody,
+  CheckResetPasswordRequestDto,
+  DisableTotpBody,
+  GetTotpUriBody,
+  GetTotpUriDto,
+  LoginBody,
+  LoginDto,
+  PasswordResetCompleteBody,
+  PasswordResetCompleteDto,
+  PasswordResetRequestBody,
+  PasswordResetRequestDto,
+  PasswordResetVerifyResponseDto,
+  PortalDesktopExchangeDto,
+  PortalSessionHintDto,
+  RegisterBody,
+  RegisterDto,
+  ResetPasswordBody,
+  ResetPasswordDto,
+  SessionRefreshDto,
+  SetupTotpBody,
+  VerifyTotpBody,
+} from './dto/auth.dto';
+import { ApiResponse } from '@nestjs/swagger';
+import {
+  buildPortalDesktopDeepLink,
+  buildPortalDesktopHandoffHtml,
+  buildPortalSsoErrorRedirectUrl,
+  PORTAL_DESKTOP_PRESENCE_CACHE_KEY,
+  PORTAL_DESKTOP_PRESENCE_TTL_SECONDS,
+  shouldHandoffPortalLoginToDesktop,
+  exchangePortalAuthorizationCode,
+  fetchPortalSessionEmail,
+  type PortalDesktopExchange,
+  type PortalSsoErrorCode,
+  type PortalSsoState,
+  resolveHubRequestOrigin,
+  resolvePortalCallbackUrl,
+  resolveRequestOriginFallback,
+  resolveSameOriginRedirectUrl,
+  resolveTrustedReturnOrigin,
+  toDesktopRedirectPath,
+} from './portal-sso';
+import { extractBearerToken, portalClaimsIdentity, verifyPortalIdToken } from './portal-token';
+import { sessionIdsFromRequest } from './auth.middleware';
+
+/** Query param carrying the single-use edge-SSO ticket between the Hub and an app host (#77). */
+const EDGE_SSO_TICKET_PARAM = 'cihub_sso';
+const EDGE_SSO_CACHE_PREFIX = 'edge_sso:';
+const EDGE_SSO_COUNTER_PREFIX = 'edge_sso_mints:';
+/** Caps the redirect loop for browsers that refuse the planted cookie. */
+const EDGE_SSO_MAX_MINTS_PER_MINUTE = 3;
+/** Width of the loop-guard window, in seconds. Fixed, not sliding — see the mint counter below. */
+const EDGE_SSO_MINT_WINDOW_SECONDS = 60;
+/** One redirect hop needs little time, so a short lifetime limits replay exposure. */
+const EDGE_SSO_TICKET_TTL_SECONDS = 60;
+
+/**
+ * Phone Memory returns to a Capacitor webview without the Hub cookie, so its API routes must reach Nest for app-level authentication.
+ * Browser HTML remains on cookie SSO.
+ */
+const FORWARD_AUTH_APP_PUBLIC_PREFIXES = ['/api/authenticate', '/api/health', '/api/keys'] as const;
+
+function isForwardAuthAppPublicPath(uri: string): boolean {
+  const path = (uri.split('?')[0] || '/').replace(/\/+$/, '') || '/';
+  return FORWARD_AUTH_APP_PUBLIC_PREFIXES.some((prefix) => path === prefix || path.startsWith(`${prefix}/`));
+}
+
+function requestHasApiKey(req: Request): boolean {
+  const raw = req.headers['x-api-key'];
+  const value = Array.isArray(raw) ? raw[0] : raw;
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
+@Controller('auth')
+export class AuthController {
+  constructor(
+    private readonly authService: AuthService,
+    private readonly forwardAuthSecrets: ForwardAuthSecretResolver,
+    private readonly logger: LoggerService,
+    private readonly config: ConfigurationService,
+    private readonly cache: CacheService,
+    private readonly userRepository: UserRepository,
+    private readonly sessionManager: SessionManager,
+    private readonly registrationService: RegistrationService,
+    private readonly deviceRegistration: DeviceRegistrationRepository,
+  ) {}
+
+  private sessionCookieOptions(req: Request, scope?: { host?: string; proto?: string }) {
+    // Normalize ports and repeated headers before `getCookieDomain` applies its FQDN check.
+    const host = normalizeForwardedHost(scope?.host ?? req.headers['x-forwarded-host']);
+    const proto = (scope?.proto ?? (req.headers['x-forwarded-proto'] as string | undefined))?.split(',')[0]?.trim();
+    const domain = this.authService.getCookieDomain(host);
+    const secure = proto === 'https';
+    return { host, proto, domain, secure };
+  }
+
+  /**
+   * Edge SSO overrides cookie scope because the tunnel-rewritten host and protocol differ from the browser's public origin.
+   * Using forwarded values would violate RFC 6265 domain matching and cause a redirect loop.
+   */
+  private async setSessionCookie(res: Response, sessionId: string, req: Request, scope?: { host?: string; proto?: string }) {
+    const options = this.sessionCookieOptions(req, scope);
+    this.logger.debug('Setting session cookie', { host: options.host, domain: options.domain, proto: options.proto, secure: options.secure });
+
+    if (this.config.get('userSettings').experimental.insecureCookie) {
+      this.logger.warn('WARNING: Using insecure cookies. This is not recommended for production environments.');
+      res.cookie(SESSION_COOKIE_NAME, sessionId, { httpOnly: true, secure: false, sameSite: 'lax', maxAge: SESSION_COOKIE_MAX_AGE });
+      return;
+    }
+
+    res.cookie(SESSION_COOKIE_NAME, sessionId, {
+      httpOnly: true,
+      secure: options.secure,
+      sameSite: 'lax',
+      maxAge: SESSION_COOKIE_MAX_AGE,
+      domain: options.domain,
+    });
+  }
+
+  /** Must pass the same Domain/Secure flags as Set-Cookie or the browser keeps the stale session. */
+  private async clearSessionCookie(res: Response, req: Request, scope?: { host?: string; proto?: string }) {
+    const options = this.sessionCookieOptions(req, scope);
+    if (this.config.get('userSettings').experimental.insecureCookie) {
+      res.clearCookie(SESSION_COOKIE_NAME, { httpOnly: true, secure: false, sameSite: 'lax' });
+      return;
+    }
+    res.clearCookie(SESSION_COOKIE_NAME, {
+      httpOnly: true,
+      secure: options.secure,
+      sameSite: 'lax',
+      domain: options.domain,
+    });
+  }
+
+  /**
+   * Desktop handoff needs the browser-reachable Hub origin so its cookie covers Hub routes.
+   * The organization slug limits sibling redirect targets to this appliance.
+   */
+  private async resolvePublicHub(): Promise<{ origin: string; orgSlug: string } | null> {
+    // A transient registration query failure must not turn every forward-auth request into a hard outage.
+    // Callers already handle a missing result through LAN or login fallbacks.
+    let org: Awaited<ReturnType<DeviceRegistrationRepository['getFirstDeviceRegistration']>>;
+    try {
+      org = await this.deviceRegistration.getFirstDeviceRegistration();
+    } catch (error) {
+      this.logger.warn('Failed to load device registration while resolving public Hub origin', error);
+      return null;
+    }
+
+    // Share provisioning rules with memory-connect through the origin helper.
+    const origin = buildHubPublicOrigin({ hubSubdomain: org?.hubSubdomain, domain: this.publicDomainRoot() });
+
+    if (!origin) {
+      return null;
+    }
+
+    return { origin, orgSlug: org?.slug ?? '' };
+  }
+
+  /**
+   * Match exposure-sync precedence so authentication redirects use the domain the tunnel published.
+   * An operator override remains authoritative until environment regeneration folds it into `DOMAIN`.
+   */
+  private publicDomainRoot(): string {
+    const cfg = this.config.getConfig();
+    return cfg.userSettings?.domain || cfg.domain;
+  }
+
+  /** The local root the appliance's LAN hostnames are built with — same precedence as above. */
+  private localDomainRoot(): string {
+    const cfg = this.config.getConfig();
+    return cfg.userSettings?.localDomain || cfg.localDomain;
+  }
+
+  /**
+   * Restrict handoff redirects to the Hub or HTTPS sibling hosts under this appliance's domain and organization label.
+   * The organization boundary excludes co-tenant hosts and closes the open redirect in raw `next`.
+   */
+  private isSafeHandoffNext(next: string, hubOrigin: string, orgSlug: string): boolean {
+    let url: URL;
+    try {
+      url = new URL(next);
+    } catch {
+      return false;
+    }
+
+    if (url.origin === hubOrigin) {
+      return true;
+    }
+
+    if (url.protocol !== 'https:' || !orgSlug) {
+      return false;
+    }
+
+    // Use published-domain precedence so operator-configured sibling hosts remain valid.
+    const domain = this.publicDomainRoot();
+    const localDomain = this.localDomainRoot();
+    const host = url.hostname.toLowerCase();
+    const slugLabel = `-${orgSlug.toLowerCase()}`;
+
+    return [domain, localDomain]
+      .filter((root): root is string => Boolean(root) && root !== 'example.com')
+      .some((root) => {
+        const suffix = `.${root.toLowerCase()}`;
+        if (host === root.toLowerCase() || !host.endsWith(suffix)) {
+          return false;
+        }
+        // Require an app label before the organization suffix.
+        const label = host.slice(0, -suffix.length);
+        return label.length > slugLabel.length && label.endsWith(slugLabel);
+      });
+  }
+
+  @Post('/login')
+  @ApiResponse({ type: LoginDto })
+  async login(@Body() body: LoginBody, @Res({ passthrough: true }) res: Response, @Req() req: Request) {
+    const { sessionId, totpSessionId } = await this.authService.login(body);
+
+    if (totpSessionId) {
+      return { success: true, totpSessionId };
+    }
+
+    await this.setSessionCookie(res, sessionId, req);
+
+    // WebView2 over HTTP cannot rely on cross-origin cookies, so the desktop app also receives the ID.
+    return LoginDto.parse({ success: true, sessionId }, { reportOnly: true });
+  }
+
+  @Post('/verify-totp')
+  @ApiResponse({ type: LoginDto })
+  async verifyTotp(@Body() body: VerifyTotpBody, @Res({ passthrough: true }) res: Response, @Req() req: Request) {
+    const { sessionId } = await this.authService.verifyTotp(body);
+
+    await this.setSessionCookie(res, sessionId, req);
+
+    return LoginDto.parse({ success: true, sessionId }, { reportOnly: true });
+  }
+
+  @Post('/register')
+  @ApiResponse({ type: RegisterDto })
+  async register(@Body() body: RegisterBody, @Res({ passthrough: true }) res: Response, @Req() req: Request) {
+    const result = await this.authService.register(body);
+
+    if (result.requiresEmailVerification) {
+      return RegisterDto.parse({ success: true, requiresEmailVerification: true }, { reportOnly: true });
+    }
+
+    if (result.sessionId) {
+      await this.setSessionCookie(res, result.sessionId, req);
+    }
+
+    return RegisterDto.parse({ success: true }, { reportOnly: true });
+  }
+
+  @Post('/logout')
+  async logout(@Res() res: Response, @Req() req: Request) {
+    await this.clearSessionCookie(res, req);
+    // Cookie and header can name different sessions after a login race. Destroy every
+    // id the client presented so a stale cookie cannot leave the live header session
+    // (or vice versa) authenticated after "log out".
+    const sessionIds = new Set(sessionIdsFromRequest(req));
+    if (req.hubSessionId) {
+      sessionIds.add(req.hubSessionId);
+    }
+    for (const sessionId of sessionIds) {
+      await this.authService.logout(sessionId);
+    }
+
+    return res.status(204).send();
+  }
+
+  /** Desktop clients refresh before expiry because they persist the returned session ID outside browser cookies. */
+  @Post('/session/refresh')
+  @UseGuards(AuthGuard)
+  @ApiResponse({ type: SessionRefreshDto })
+  async refreshSession(@Req() req: Request, @Res({ passthrough: true }) res: Response) {
+    const sessionId = req.hubSessionId ?? req.cookies[SESSION_COOKIE_NAME] ?? req.get('x-ci-hub-session');
+    if (!sessionId) {
+      throw new TranslatableError('SYSTEM_ERROR_YOU_MUST_BE_LOGGED_IN', undefined, HttpStatus.UNAUTHORIZED);
+    }
+
+    const nextSessionId = await this.authService.refreshSession(sessionId);
+    await this.setSessionCookie(res, nextSessionId, req);
+
+    return SessionRefreshDto.parse({ sessionId: nextSessionId, issuedAt: Date.now() }, { reportOnly: true });
+  }
+
+  /**
+   * The desktop's header session cannot cross into a system-browser navigation, so a short-lived ticket delegates a browser session without a second login.
+   * A missing public Hub origin returns no handoff URL so the caller can fall back to a plain external open.
+   */
+  @Post('/browser-handoff/mint')
+  @UseGuards(AuthGuard)
+  @ApiResponse({ type: BrowserHandoffMintDto })
+  async mintBrowserHandoff(@Body() body: BrowserHandoffMintBody, @Req() req: Request) {
+    const sessionId = req.hubSessionId ?? req.cookies[SESSION_COOKIE_NAME] ?? req.get('x-ci-hub-session');
+    if (!sessionId) {
+      throw new TranslatableError('SYSTEM_ERROR_YOU_MUST_BE_LOGGED_IN', undefined, HttpStatus.UNAUTHORIZED);
+    }
+
+    const hub = await this.resolvePublicHub();
+    if (!hub) {
+      return BrowserHandoffMintDto.parse({ url: null }, { reportOnly: true });
+    }
+
+    if (!this.isSafeHandoffNext(body.next, hub.origin, hub.orgSlug)) {
+      throw new BadRequestException('Unsupported handoff target');
+    }
+
+    const ticket = crypto.randomUUID();
+    // Keeping the target server-side prevents the consume URL from carrying an open-redirect target.
+    this.cache.set(`browser_handoff:${ticket}`, JSON.stringify({ sessionId, next: body.next }), 60);
+
+    return BrowserHandoffMintDto.parse({ url: `${hub.origin}/api/auth/browser-handoff?ticket=${encodeURIComponent(ticket)}` }, { reportOnly: true });
+  }
+
+  /**
+   * The single-use ticket acts as the credential for a delegated browser session, so missing or stale tickets fail without setting a cookie.
+   * Only fresh user-initiated navigation may consume it, preventing login CSRF from page-initiated requests.
+   * Rejections stay silent because this unauthenticated endpoint would otherwise amplify log floods.
+   */
+  @Get('/browser-handoff')
+  async consumeBrowserHandoff(@Query('ticket') ticket: string | undefined, @Req() req: Request, @Res() res: Response) {
+    const fetchSite = req.get('sec-fetch-site');
+    if (fetchSite !== undefined && fetchSite !== 'none') {
+      return res.redirect('/');
+    }
+
+    if (!ticket) {
+      return res.redirect('/');
+    }
+
+    const cacheKey = `browser_handoff:${ticket}`;
+    const cached = this.cache.get(cacheKey);
+    if (!cached) {
+      // Avoid a synchronous store write for every unauthenticated ticket miss.
+      return res.redirect('/');
+    }
+    this.cache.del(cacheKey); // single-use — burn the real hit before acting on it.
+
+    let sessionId: string;
+    let next: string;
+    try {
+      const parsed = JSON.parse(cached) as { sessionId: string; next: string };
+      sessionId = parsed.sessionId;
+      next = parsed.next;
+    } catch {
+      return res.redirect('/');
+    }
+
+    // Revalidate in case registration changed after the ticket was minted.
+    const hub = await this.resolvePublicHub();
+    if (!sessionId || !next || !hub || !this.isSafeHandoffNext(next, hub.origin, hub.orgSlug)) {
+      return res.redirect('/');
+    }
+
+    // Give the browser its own session because browser rotation deletes the replaced ID and would log out the desktop (#944).
+    // Independent session lifecycles prevent the two contexts from invalidating each other.
+    const userId = this.sessionManager.resolveSessionUserId(sessionId);
+    if (userId === null) {
+      // Do not plant a session that died during the ticket window.
+      return res.redirect('/');
+    }
+
+    // Reuse a live same-user session to avoid leaving week-long sessions behind.
+    // `touchSession` rejects rotation-grace IDs and extends a session that must survive the round trip.
+    const existingSessionId = req.cookies[SESSION_COOKIE_NAME];
+    const reusableSessionId =
+      typeof existingSessionId === 'string' && existingSessionId && this.sessionManager.resolveSessionUserId(existingSessionId) === userId
+        ? existingSessionId
+        : null;
+
+    if (reusableSessionId && this.sessionManager.touchSession(reusableSessionId)) {
+      // Reissue the cookie because extending only server expiry can still let the browser cookie die mid-flow (#944).
+      await this.setSessionCookie(res, reusableSessionId, req);
+      return res.redirect(next);
+    }
+
+    const browserSessionId = await this.sessionManager.createSession(userId);
+    await this.setSessionCookie(res, browserSessionId, req);
+    return res.redirect(next);
+  }
+
+  /** Desktop login returns through its deep link, while browser login returns to the initiating Hub origin. */
+  @Get('/portal/start')
+  async startPortalLogin(@Req() req: Request, @Res() res: Response, @Query('redirect_url') redirectUrl?: string, @Query('desktop') desktop?: string) {
+    const isDesktop = desktop === '1' || desktop === 'true' || this.cache.get(PORTAL_DESKTOP_PRESENCE_CACHE_KEY) === '1';
+    const fallbackOrigin = resolveRequestOriginFallback(req);
+    const redirectStartError = (errorCode: PortalSsoErrorCode, hubOrigin?: string | null) =>
+      res.redirect(
+        buildPortalSsoErrorRedirectUrl({
+          hubOrigin: hubOrigin ?? null,
+          desktop: isDesktop,
+          errorCode,
+          fallbackOrigin,
+        }),
+      );
+
+    let hubOrigin: string;
+    try {
+      hubOrigin = resolveHubRequestOrigin(req);
+    } catch {
+      return redirectStartError('callback_error');
+    }
+
+    const callbackUrl = resolvePortalCallbackUrl(hubOrigin);
+
+    const portalBaseUrl = (this.config.get('ciCloudUrl') || '').replace(/\/+$/, '');
+    if (!portalBaseUrl) {
+      return redirectStartError('not_configured', hubOrigin);
+    }
+
+    const state = crypto.randomUUID();
+    const codeVerifier = crypto.randomBytes(32).toString('base64url');
+    const codeChallenge = crypto.createHash('sha256').update(codeVerifier).digest('base64url');
+    // A short callback window limits stale PKCE state.
+    const portalState: PortalSsoState = { codeVerifier, redirectUrl: redirectUrl || null, hubOrigin, desktop: isDesktop };
+    this.cache.set(`portal_sso:${state}`, JSON.stringify(portalState), 10 * 60);
+
+    const authorizeUrl = new URL('/api/auth/oauth2/authorize', portalBaseUrl);
+    authorizeUrl.searchParams.set('client_id', 'ci-hub');
+    authorizeUrl.searchParams.set('redirect_uri', callbackUrl);
+    authorizeUrl.searchParams.set('response_type', 'code');
+    authorizeUrl.searchParams.set('scope', 'openid email profile');
+    authorizeUrl.searchParams.set('code_challenge', codeChallenge);
+    authorizeUrl.searchParams.set('code_challenge_method', 'S256');
+    authorizeUrl.searchParams.set('state', state);
+
+    return res.redirect(authorizeUrl.toString());
+  }
+
+  @Get('/portal/callback')
+  async portalCallback(@Req() req: Request, @Res({ passthrough: true }) res: Response, @Query('code') code?: string, @Query('state') state?: string) {
+    const fallbackOrigin = resolveRequestOriginFallback(req);
+    let desktop = false;
+    const redirectError = (hubOrigin: string | null, errorCode: PortalSsoErrorCode) => {
+      // Returning the Express response under passthrough would serialize its circular socket and fail.
+      res.redirect(
+        buildPortalSsoErrorRedirectUrl({
+          hubOrigin,
+          desktop,
+          errorCode,
+          fallbackOrigin,
+        }),
+      );
+    };
+
+    try {
+      if (!code || !state) {
+        return redirectError(null, 'callback_error');
+      }
+
+      const publicPortalBaseUrl = (this.config.get('ciCloudUrl') || '').replace(/\/+$/, '');
+      if (!publicPortalBaseUrl) {
+        return redirectError(null, 'callback_error');
+      }
+
+      const cached = this.cache.get(`portal_sso:${state}`);
+      this.cache.del(`portal_sso:${state}`);
+
+      if (!cached) {
+        return redirectError(null, 'state_expired');
+      }
+
+      let codeVerifier: string;
+      let redirectUrl: string | null;
+      let hubOrigin: string;
+
+      try {
+        const parsed = JSON.parse(cached) as PortalSsoState;
+        codeVerifier = parsed.codeVerifier;
+        redirectUrl = parsed.redirectUrl;
+        hubOrigin = parsed.hubOrigin;
+        desktop = parsed.desktop;
+      } catch {
+        return redirectError(null, 'callback_error');
+      }
+
+      const callbackUrl = resolvePortalCallbackUrl(hubOrigin);
+      const exchange = await exchangePortalAuthorizationCode({
+        publicPortalBaseUrl,
+        callbackUrl,
+        code,
+        codeVerifier,
+      });
+
+      if (!exchange.ok) {
+        this.logger.warn('Portal OAuth callback failed', {
+          reason: exchange.reason,
+          status: exchange.status,
+          hubOrigin,
+          portalBaseUrl: publicPortalBaseUrl,
+        });
+        return redirectError(hubOrigin, 'callback_error');
+      }
+
+      const email = exchange.email;
+      let operator = await this.userRepository.getFirstOperator();
+
+      if (!operator) {
+        try {
+          operator = await this.authService.bootstrapOperatorFromPortalEmail(email);
+        } catch (error) {
+          this.logger.warn('Portal OAuth callback failed to bootstrap local operator', { error });
+          return redirectError(hubOrigin, 'callback_error');
+        }
+      } else if (operator.username.trim().toLowerCase() !== email.trim().toLowerCase()) {
+        const operators = await this.userRepository.getOperators();
+
+        if (operators.length === 1) {
+          // A verified Portal identity is authoritative for the sole operator on a single-user appliance.
+          this.logger.warn('Portal login email differs from local operator; syncing from verified Portal identity', {
+            portalEmail: email,
+            operatorEmail: operator.username,
+          });
+          const normalizedEmail = email.trim().toLowerCase();
+          await this.userRepository.updateUser(operator.id, { username: normalizedEmail });
+          operator = { ...operator, username: normalizedEmail };
+        } else {
+          this.logger.warn('Portal login blocked: email mismatch', { portalEmail: email, operatorEmail: operator.username });
+          return redirectError(hubOrigin, 'account_mismatch');
+        }
+      }
+
+      const sessionId = await this.sessionManager.createSession(operator.id);
+      await this.setSessionCookie(res, sessionId, req);
+
+      const handoffToDesktop = shouldHandoffPortalLoginToDesktop({
+        desktop,
+        hubOrigin,
+        desktopAppPresent: this.cache.get(PORTAL_DESKTOP_PRESENCE_CACHE_KEY) === '1',
+      });
+
+      if (handoffToDesktop) {
+        const desktopToken = crypto.randomUUID();
+        const exchangePayload: PortalDesktopExchange = {
+          sessionId,
+          redirectPath: toDesktopRedirectPath(redirectUrl, hubOrigin),
+          userId: operator.id,
+        };
+        this.cache.set(`portal_sso_desktop:${desktopToken}`, JSON.stringify(exchangePayload), 60);
+        const deepLink = buildPortalDesktopDeepLink(desktopToken, hubOrigin);
+        this.logger.info('Portal desktop handoff issued one-time token', { hubOrigin, redirectPath: exchangePayload.redirectPath });
+        // Some browsers drop redirects to the desktop scheme, so serve a navigation page.
+        // Do not return the Express response because passthrough would serialize it.
+        res.status(200);
+        res.setHeader('Content-Type', 'text/html; charset=utf-8');
+        res.send(buildPortalDesktopHandoffHtml(deepLink));
+        return;
+      }
+
+      // Redirect back to the requested URL if it's same-origin; otherwise go home.
+      const safeRedirect = resolveSameOriginRedirectUrl(redirectUrl, hubOrigin);
+      if (safeRedirect) {
+        res.redirect(safeRedirect);
+        return;
+      }
+
+      res.redirect(new URL('/home', hubOrigin).toString());
+      return;
+    } catch (error) {
+      this.logger.error('Portal OAuth callback crashed', error);
+      return redirectError(null, 'callback_error');
+    }
+  }
+
+  @Get('/portal/session-hint')
+  @ApiResponse({ type: PortalSessionHintDto })
+  async portalSessionHint(@Req() req: Request, @Query('desktop') desktop?: string) {
+    if (desktop === '1' || desktop === 'true') {
+      this.cache.set(PORTAL_DESKTOP_PRESENCE_CACHE_KEY, '1', PORTAL_DESKTOP_PRESENCE_TTL_SECONDS);
+    }
+    const portalBaseUrl = (this.config.get('ciCloudUrl') || '').replace(/\/+$/, '') || null;
+
+    if (!portalBaseUrl) {
+      return PortalSessionHintDto.parse({ email: null, portalBaseUrl: null, source: null }, { reportOnly: true });
+    }
+
+    const operator = await this.userRepository.getFirstOperator();
+    if (operator?.username?.trim()) {
+      return PortalSessionHintDto.parse(
+        {
+          email: operator.username.trim(),
+          portalBaseUrl,
+          source: 'hub_operator',
+        },
+        { reportOnly: true },
+      );
+    }
+
+    const cookieHeader = typeof req.headers.cookie === 'string' ? req.headers.cookie : undefined;
+    const portalEmail = await fetchPortalSessionEmail({
+      publicPortalBaseUrl: portalBaseUrl,
+      cookieHeader,
+    });
+
+    if (portalEmail) {
+      return PortalSessionHintDto.parse(
+        {
+          email: portalEmail,
+          portalBaseUrl,
+          source: 'portal_session',
+        },
+        { reportOnly: true },
+      );
+    }
+
+    return PortalSessionHintDto.parse({ email: null, portalBaseUrl, source: null }, { reportOnly: true });
+  }
+
+  @Get('/portal/desktop-exchange')
+  @ApiResponse({ type: PortalDesktopExchangeDto })
+  async exchangePortalDesktopLogin(@Req() req: Request, @Res({ passthrough: true }) res: Response, @Query('token') token?: string) {
+    if (!token) {
+      throw new BadRequestException('Missing desktop exchange token');
+    }
+
+    const cacheKey = `portal_sso_desktop:${token}`;
+    const cached = this.cache.get(cacheKey);
+
+    if (!cached) {
+      throw new BadRequestException('Invalid or expired desktop exchange token');
+    }
+
+    let parsed: PortalDesktopExchange;
+    try {
+      parsed = JSON.parse(cached) as PortalDesktopExchange;
+    } catch {
+      this.cache.del(cacheKey);
+      throw new BadRequestException('Malformed desktop exchange payload');
+    }
+
+    let sessionId = parsed.sessionId;
+    if (!this.sessionManager.resolveSessionUserId(sessionId)) {
+      if (!parsed.userId) {
+        this.cache.del(cacheKey);
+        throw new BadRequestException('Invalid or expired desktop exchange token');
+      }
+      sessionId = await this.sessionManager.createSession(parsed.userId);
+    }
+
+    this.cache.del(cacheKey);
+    await this.setSessionCookie(res, sessionId, req);
+    this.logger.info('Portal desktop exchange planted a session cookie', { redirectPath: parsed.redirectPath });
+    return PortalDesktopExchangeDto.parse({ sessionId, redirectPath: parsed.redirectPath }, { reportOnly: true });
+  }
+
+  @Patch('/username')
+  @UseGuards(AuthGuard)
+  async changeUsername(@Body() body: ChangeUsernameBody, @Req() req: Request, @Res() res: Response) {
+    const userId = req.user?.id;
+
+    if (!userId) {
+      throw new TranslatableError('SYSTEM_ERROR_YOU_MUST_BE_LOGGED_IN');
+    }
+
+    await this.authService.changeUsername({ userId, ...body });
+
+    await this.clearSessionCookie(res, req);
+    return res.status(204).send();
+  }
+
+  @Patch('/password')
+  @UseGuards(AuthGuard)
+  async changePassword(@Body() body: ChangePasswordBody, @Req() req: Request, @Res() res: Response) {
+    const userId = req.user?.id;
+
+    if (!userId) {
+      throw new TranslatableError('SYSTEM_ERROR_YOU_MUST_BE_LOGGED_IN');
+    }
+
+    await this.authService.changePassword({ userId, ...body });
+
+    await this.clearSessionCookie(res, req);
+    return res.status(204).send();
+  }
+
+  @Patch('/totp/get-uri')
+  @UseGuards(AuthGuard)
+  @ApiResponse({ type: GetTotpUriDto })
+  async getTotpUri(@Body() body: GetTotpUriBody, @Req() req: Request) {
+    const userId = req.user?.id;
+
+    if (!userId) {
+      throw new TranslatableError('SYSTEM_ERROR_YOU_MUST_BE_LOGGED_IN');
+    }
+
+    const res = await this.authService.getTotpUri({ userId, ...body });
+    return GetTotpUriDto.parse(res, { reportOnly: true });
+  }
+
+  @Patch('/totp/setup')
+  @UseGuards(AuthGuard)
+  async setupTotp(@Body() body: SetupTotpBody, @Req() req: Request) {
+    const userId = req.user?.id;
+
+    if (!userId) {
+      throw new TranslatableError('SYSTEM_ERROR_YOU_MUST_BE_LOGGED_IN');
+    }
+
+    await this.authService.setupTotp({ userId, totpCode: body.code });
+  }
+
+  @Patch('/totp/disable')
+  @UseGuards(AuthGuard)
+  async disableTotp(@Body() body: DisableTotpBody, @Req() req: Request) {
+    const userId = req.user?.id;
+
+    if (!userId) {
+      throw new TranslatableError('SYSTEM_ERROR_YOU_MUST_BE_LOGGED_IN');
+    }
+
+    await this.authService.disableTotp({ userId, ...body });
+  }
+
+  @Post('/reset-password')
+  @ApiResponse({ type: ResetPasswordDto })
+  async resetPassword(@Body() body: ResetPasswordBody) {
+    const { email } = await this.authService.changeOperatorPassword(body);
+
+    return ResetPasswordDto.parse({ success: true, email }, { reportOnly: true });
+  }
+
+  @Delete('/reset-password')
+  async cancelResetPassword() {
+    await this.authService.cancelPasswordChangeRequest();
+  }
+
+  @Get('/reset-password')
+  @ApiResponse({ type: CheckResetPasswordRequestDto })
+  async checkResetPasswordRequest() {
+    const isPending = await this.authService.checkPasswordChangeRequest();
+
+    return CheckResetPasswordRequestDto.parse({ isRequestPending: isPending }, { reportOnly: true });
+  }
+
+  @Post('/password-reset/request')
+  @ApiResponse({ type: PasswordResetRequestDto })
+  async requestPasswordReset(@Body() body: PasswordResetRequestBody, @Req() req: Request) {
+    const { domain, localDomain } = this.config.getConfig();
+    const hubOrigin = resolveTrustedReturnOrigin(req, { domain, localDomain });
+
+    let deviceId = body.deviceId;
+    if (!deviceId) {
+      try {
+        deviceId = (await this.registrationService.getDeviceId()) || undefined;
+      } catch {
+        deviceId = undefined;
+      }
+    }
+
+    await this.authService.requestPasswordReset({
+      email: body.email,
+      returnOrigin: hubOrigin,
+      deviceId,
+      ipAddress: req.ip,
+    });
+
+    return PasswordResetRequestDto.parse(
+      { success: true, message: 'If this email is registered, you will receive reset instructions shortly.' },
+      { reportOnly: true },
+    );
+  }
+
+  @Get('/password-reset/verify/:token')
+  @ApiResponse({ type: PasswordResetVerifyResponseDto })
+  async verifyPasswordResetToken(@Req() req: Request) {
+    const token = String(req.params.token ?? '');
+    const result = await this.authService.verifyPasswordResetToken(token);
+    return PasswordResetVerifyResponseDto.parse(result, { reportOnly: true });
+  }
+
+  @Post('/password-reset/complete')
+  @ApiResponse({ type: PasswordResetCompleteDto })
+  async completePasswordReset(@Body() body: PasswordResetCompleteBody, @Req() req: Request) {
+    await this.authService.completePasswordReset({ token: body.token, newPassword: body.newPassword, ipAddress: req.ip });
+
+    return PasswordResetCompleteDto.parse(
+      { success: true, message: 'Password updated. You can now log in with your new password.' },
+      { reportOnly: true },
+    );
+  }
+
+  /**
+   * Remove every edge-SSO ticket after its consume hop so credentials do not remain in logs, the address bar, or a remint target.
+   * Preserve all other query segments byte-for-byte because URLSearchParams re-encoding can corrupt signed or strictly parsed requests.
+   */
+  private parseForwardedUri(uri: string): { ticket: string | null; cleanUri: string } {
+    const queryStart = uri.indexOf('?');
+    if (queryStart === -1 || !uri.includes(`${EDGE_SSO_TICKET_PARAM}=`)) {
+      return { ticket: null, cleanUri: uri || '/' };
+    }
+
+    // Split manually so non-ticket segments retain their original encoding.
+    const path = uri.slice(0, queryStart) || '/';
+    const segments = uri.slice(queryStart + 1).split('&');
+    const kept: string[] = [];
+    let ticket: string | null = null;
+
+    for (const segment of segments) {
+      const eq = segment.indexOf('=');
+      // Exact name matching prevents lookalike parameters from causing a self-redirect.
+      if (eq !== -1 && segment.slice(0, eq) === EDGE_SSO_TICKET_PARAM) {
+        // Drop duplicates because a stale first ticket would shadow every newly appended ticket.
+        // Only the first value is consumed.
+        if (ticket === null) {
+          const raw = segment.slice(eq + 1);
+          try {
+            ticket = decodeURIComponent(raw);
+          } catch {
+            // Preserve malformed input so lookup misses instead of throwing from forward auth.
+            ticket = raw;
+          }
+        }
+        continue;
+      }
+      kept.push(segment);
+    }
+
+    if (ticket === null) {
+      return { ticket: null, cleanUri: uri };
+    }
+    return { ticket: ticket || null, cleanUri: kept.length ? `${path}?${kept.join('&')}` : path };
+  }
+
+  /**
+   * The tunnel rewrites remote and LAN hosts identically, so `cf-ray` is the signal that distinguishes them.
+   * Both halves of edge SSO must use the same classification.
+   */
+  private viaCloudflareTunnel(req: Request): boolean {
+    return Boolean(req.headers['cf-ray']);
+  }
+
+  /**
+   * Traefik resolves relative forward-auth locations against the auth server, so redirects must be absolute and use a browser-reachable host.
+   * A tunnel caller needs its mapped public host; when none is known, staying put is safer than redirecting to an internal address.
+   * Pinning one leading slash prevents a client path from becoming a protocol-relative redirect.
+   */
+  private async buildReturnUrl(input: {
+    forwardedHost: string;
+    rawHost: string;
+    proto: string;
+    viaTunnel: boolean;
+    path: string;
+  }): Promise<string | null> {
+    const safePath = `/${input.path.replace(/^[/\\]+/, '')}`;
+
+    if (input.viaTunnel) {
+      const publicHost = await this.forwardAuthSecrets.resolvePublicHostForHost(input.forwardedHost);
+      return publicHost ? `https://${publicHost}${safePath}` : null;
+    }
+
+    return input.rawHost ? `${input.proto}://${input.rawHost}${safePath}` : null;
+  }
+
+  /**
+   * The resolver host map provides an exact allowlist of installed app routers, including unregistered LAN appliances.
+   * HTTP is limited to this appliance's local domain so public siblings cannot be downgraded.
+   * Loopback is rejected because local open bypasses ticket SSO under ADR 001 and ADR 002.
+   */
+  private async validateEdgeSsoTarget(redirect: string | undefined): Promise<URL | null> {
+    // Repeated query keys arrive as arrays, which URL would stringify into a corrupted allowed target.
+    if (typeof redirect !== 'string' || !redirect) {
+      return null;
+    }
+    let url: URL;
+    try {
+      url = new URL(redirect);
+    } catch {
+      return null;
+    }
+    if (url.protocol !== 'https:' && url.protocol !== 'http:') {
+      return null;
+    }
+    // ADR 002: ticket SSO is for hostname-routed siblings (public / LAN Traefik), never loopback.
+    const host = url.hostname.toLowerCase();
+    if (host === 'localhost' || host === '127.0.0.1' || host === '::1' || host === '[::1]') {
+      return null;
+    }
+    if (url.protocol === 'http:') {
+      const localDomain = this.localDomainRoot();
+      if (!localDomain || localDomain === 'example.com' || !url.hostname.endsWith(`.${localDomain.toLowerCase()}`)) {
+        return null;
+      }
+    }
+    const appUrn = await this.forwardAuthSecrets.resolveAppUrnForHost(url.hostname);
+    return appUrn ? url : null;
+  }
+
+  @Get('/traefik')
+  async traefik(@Req() req: Request, @Res() res: Response) {
+    const forwardedHost = normalizeForwardedHost(req.headers['x-forwarded-host']);
+    const rawHost = rawForwardedHost(req.headers['x-forwarded-host']);
+    // Do not comma-split the URI because commas are valid in paths and queries.
+    const uri = (req.headers['x-forwarded-uri'] as string | undefined) || '/';
+    // Use only the first protocol because repeated headers arrive comma-joined and are not a valid URL scheme.
+    const proto = (req.headers['x-forwarded-proto'] as string | undefined)?.split(',')[0]?.trim() || 'http';
+    const viaTunnel = this.viaCloudflareTunnel(req);
+    const { ticket, cleanUri } = this.parseForwardedUri(uri);
+
+    // Phone Memory returns to a cookie-less webview, so its API authentication must reach the app.
+    // Browser HTML remains on cookie or edge SSO.
+    if (!req.user && (isForwardAuthAppPublicPath(cleanUri) || requestHasApiKey(req))) {
+      return res.status(200).send();
+    }
+
+    // Machine clients use Portal bearer tokens, so valid tokens bypass browser SSO.
+    // Invalid tokens return 401 instead of login HTML.
+    if (!req.user) {
+      const bearer = extractBearerToken(typeof req.headers.authorization === 'string' ? req.headers.authorization : undefined);
+      if (bearer) {
+        const portalBase = (this.config.get('ciCloudUrl') || '').replace(/\/+$/, '');
+        const claims = await verifyPortalIdToken(bearer, { publicCiCloudUrl: portalBase });
+        if (!claims) {
+          this.logger.debug('Traefik forward auth rejected Portal Bearer token');
+          return res.status(401).send();
+        }
+        const username = portalClaimsIdentity(claims);
+        const resolved = await this.forwardAuthSecrets.resolveForHost(forwardedHost);
+        this.logger.debug('Portal Bearer accepted for Traefik forward auth', {
+          username,
+          secretSource: resolved.source,
+          targetApp: resolved.appUrn,
+        });
+        const signed = buildSignedForwardAuthHeaders(resolved.secret, username);
+        for (const [header, value] of Object.entries(signed)) {
+          res.setHeader(header, value);
+        }
+        return res.status(200).send();
+      }
+    }
+
+    if (req.user) {
+      // A ticket on an authenticated request was bypassed by a domain cookie, so burn it and remove it from the URL.
+      // Leaving it valid would preserve a replayable session-planting credential.
+      if (ticket) {
+        // Check before deleting so junk parameters cannot force synchronous store writes on every app request.
+        const lingeringKey = `${EDGE_SSO_CACHE_PREFIX}${ticket}`;
+        if (this.cache.get(lingeringKey)) {
+          this.cache.del(lingeringKey);
+        }
+        // Use an absolute, trusted return URL because Traefik rewrites relative locations against the auth server.
+        // If no browser-reachable address is known, keep the working page after burning the ticket.
+        const returnUrl = await this.buildReturnUrl({ forwardedHost, rawHost, proto, viaTunnel, path: cleanUri });
+        if (returnUrl) {
+          return res.status(302).redirect(returnUrl);
+        }
+      }
+
+      // Per-app signing prevents one container from forging identity headers accepted by a sibling (CI-Engineering#74).
+      // Unknown hosts retain the Hub-global fallback.
+      const resolved = await this.forwardAuthSecrets.resolveForHost(forwardedHost);
+      this.logger.debug('User authenticated for Traefik forward auth', {
+        username: req.user.username,
+        secretSource: resolved.source,
+        targetApp: resolved.appUrn,
+      });
+      const signed = buildSignedForwardAuthHeaders(resolved.secret, req.user.username);
+      for (const [header, value] of Object.entries(signed)) {
+        res.setHeader(header, value);
+      }
+
+      return res.status(200).send();
+    }
+
+    // Without a forwarded host, refuse instead of constructing an invalid return route.
+    if (!forwardedHost) {
+      return res.status(401).send();
+    }
+
+    // Cache the host-map result because a failed consume falls directly through to mint.
+    let cachedPublicHost: string | null | undefined;
+    const resolvePublicHostOnce = async (): Promise<string | null> => {
+      if (cachedPublicHost === undefined) {
+        cachedPublicHost = await this.forwardAuthSecrets.resolvePublicHostForHost(forwardedHost);
+      }
+      return cachedPublicHost;
+    };
+
+    // Never log the raw URI because its ticket is a session-planting credential.
+    this.logger.debug('Unauthenticated Traefik forward auth request', { uri: cleanUri, proto, host: forwardedHost });
+
+    // Public Hub and app hosts are cookie-scope siblings, so a single-use ticket plants the app-host cookie (CI-Engineering#77).
+    // Consume failures fall through to login and a fresh ticket instead of dead-ending.
+    if (ticket) {
+      const cacheKey = `${EDGE_SSO_CACHE_PREFIX}${ticket}`;
+      const cached = this.cache.get(cacheKey);
+      // Avoid synchronous deletes for unauthenticated ticket misses.
+      if (cached) {
+        this.cache.del(cacheKey); // single-use — burn the real hit before acting on it.
+        let sessionId = '';
+        let targetHost = '';
+        let targetUrl = '';
+        try {
+          ({ sessionId, targetHost, targetUrl } = JSON.parse(cached) as { sessionId: string; targetHost: string; targetUrl: string });
+        } catch {
+          // fall through to the login redirect
+        }
+
+        // Host binding prevents a ticket for one app from planting a sibling's cookie.
+        // Tunnel requests compare against the exact public host mapped from their rewritten host.
+        const publicForHost = targetHost && targetHost !== forwardedHost ? await resolvePublicHostOnce() : null;
+        const hostMatches = Boolean(targetHost) && (targetHost === forwardedHost || targetHost === publicForHost);
+
+        // Parse again so malformed cached data falls through to login instead of returning 500.
+        let ticketTarget: URL | null = null;
+        try {
+          ticketTarget = targetUrl ? new URL(targetUrl) : null;
+        } catch {
+          ticketTarget = null;
+        }
+
+        // The session must still resolve — a ticket outliving its session plants nothing.
+        if (sessionId && ticketTarget && hostMatches && this.sessionManager.resolveSessionUserId(sessionId)) {
+          // Scope to the minted browser target because the tunnel-rewritten host is neither cookie-valid nor remotely resolvable.
+          await this.setSessionCookie(res, sessionId, req, {
+            host: ticketTarget.hostname,
+            proto: ticketTarget.protocol.replace(':', ''),
+          });
+          return res.status(302).redirect(ticketTarget.toString());
+        }
+      }
+    }
+
+    // The rewritten forwarded host identifies the app but not whether its caller is remote.
+    // A `cf-ray` caller must use mapped public Hub and app hosts; other callers retain the LAN route.
+    const publicHub = viaTunnel ? await this.resolvePublicHub() : null;
+    const publicAppHost = publicHub ? await resolvePublicHostOnce() : null;
+
+    let hubOrigin: string;
+    let target: string;
+    if (publicHub && publicAppHost) {
+      hubOrigin = publicHub.origin;
+      target = `https://${publicAppHost}${cleanUri}`;
+    } else if (publicHub) {
+      // A remote caller with no mapped public app host must not receive an unresolvable LAN return address.
+      // Log at debug because this unauthenticated path could amplify warning floods.
+      this.logger.debug(`[edge-sso] no public hostname for forwarded host ${forwardedHost}; sending the visitor to the Hub login`);
+      return res.status(302).redirect(new URL('/login', publicHub.origin).toString());
+    } else {
+      // Preserve the raw host so LAN and tailnet callers keep nonstandard ports.
+      // IP literals have no parent domain, so reject them before malformed derivation can return the wrong host or throw.
+      const rootDomain = net.isIP(forwardedHost.replace(/^\[|]$/g, '')) ? '' : rawHost.split('.').slice(1).join('.');
+      // A single-label host also has no safe Hub origin to derive.
+      if (!rootDomain) {
+        return res.status(401).send();
+      }
+      hubOrigin = `${proto}://${rootDomain}`;
+      target = `${proto}://${rawHost}${cleanUri}`;
+
+      // Unknown LAN routers use direct login because edge SSO would reject their unallowlisted target.
+      // The domain-scoped LAN cookie already makes the ticket exchange unnecessary.
+      if (!(await this.forwardAuthSecrets.resolveAppUrnForHost(forwardedHost))) {
+        const loginUrl = new URL('/login', hubOrigin);
+        loginUrl.searchParams.set('redirect_url', target);
+        loginUrl.searchParams.set('app', rawHost.split('.')[0] ?? '');
+        return res.status(302).redirect(loginUrl.toString());
+      }
+    }
+
+    const ssoUrl = new URL('/api/auth/edge-sso', hubOrigin);
+    ssoUrl.searchParams.set('redirect', target);
+
+    this.logger.debug('Redirecting to edge SSO', { ssoUrl: ssoUrl.toString(), target, viaTunnel });
+
+    return res.status(302).redirect(ssoUrl.toString());
+  }
+
+  /**
+   * Public sibling hosts cannot share the Hub cookie, so edge SSO uses a short-lived, single-use, host-bound ticket (CI-Engineering#77, ADR 002).
+   * Browser navigation must redirect through login instead of returning AuthGuard JSON, while loopback open bypasses this flow under ADR 001.
+   * Fetch Metadata cannot gate a redirect chain, so host binding, one-use, short TTL, and authenticated minting mitigate login CSRF.
+   */
+  @Get('/edge-sso')
+  async edgeSso(@Query('redirect') redirect: string | undefined, @Req() req: Request, @Res() res: Response) {
+    const target = await this.validateEdgeSsoTarget(redirect);
+    if (!target) {
+      throw new BadRequestException('Unsupported edge SSO target');
+    }
+
+    const sessionId = req.user ? (req.hubSessionId ?? req.cookies[SESSION_COOKIE_NAME] ?? req.get('x-ci-hub-session')) : undefined;
+    if (!sessionId) {
+      // Return unauthenticated navigation through normal login with the absolute same-origin URL Portal expects.
+      // Force tunnel requests to HTTPS because their internal hop reports HTTP while the browser uses HTTPS.
+      // Match the scheme case-insensitively as required by RFC 3986.
+      const requestOrigin = resolveRequestOriginFallback(req);
+      const origin = this.viaCloudflareTunnel(req) ? requestOrigin.replace(/^http:/i, 'https:') : requestOrigin;
+      const selfUrl = new URL('/api/auth/edge-sso', origin);
+      selfUrl.searchParams.set('redirect', target.toString());
+      const loginUrl = new URL('/login', origin);
+      loginUrl.searchParams.set('redirect_url', selfUrl.toString());
+      loginUrl.searchParams.set('app', target.hostname.split('.')[0] ?? '');
+      return res.status(302).redirect(loginUrl.toString());
+    }
+
+    // Cap mints per session and app so a browser that rejects cookies cannot redirect forever.
+    const counterKey = `${EDGE_SSO_COUNTER_PREFIX}${sessionId}:${target.hostname}`;
+    const mints = Number.parseInt(this.cache.get(counterKey) ?? '0', 10) || 0;
+    if (mints >= EDGE_SSO_MAX_MINTS_PER_MINUTE) {
+      return res
+        .status(409)
+        .type('html')
+        .send(
+          '<!doctype html><html><body style="font-family:sans-serif;max-width:32rem;margin:4rem auto">' +
+            '<h1>Cookies required</h1><p>Signing in to this app requires cookies, and your browser ' +
+            'does not appear to be accepting them. Enable cookies for this site and try again.</p>' +
+            '</body></html>',
+        );
+    }
+    // A fixed window prevents legitimate spaced sign-ins from extending themselves into the cap.
+    const windowEndsAt = this.cache.getExpirationAt(counterKey);
+    const windowTtl = windowEndsAt ? Math.max(1, Math.ceil((windowEndsAt - Date.now()) / 1000)) : EDGE_SSO_MINT_WINDOW_SECONDS;
+    this.cache.set(counterKey, String(mints + 1), windowTtl);
+
+    const ticket = crypto.randomUUID();
+    // Keep the session server-side and bind it to one hostname.
+    // Store the full browser target because the tunnel-rewritten forwarded host may be remotely unreachable.
+    const targetUrl = target.toString();
+    this.cache.set(
+      `${EDGE_SSO_CACHE_PREFIX}${ticket}`,
+      JSON.stringify({ sessionId, targetHost: target.hostname, targetUrl }),
+      EDGE_SSO_TICKET_TTL_SECONDS,
+    );
+
+    // Append the ticket raw because URLSearchParams would re-encode unrelated query segments.
+    const ticketParam = `${EDGE_SSO_TICKET_PARAM}=${encodeURIComponent(ticket)}`;
+    target.search = target.search ? `${target.search}&${ticketParam}` : `?${ticketParam}`;
+    return res.status(302).redirect(target.toString());
+  }
+}

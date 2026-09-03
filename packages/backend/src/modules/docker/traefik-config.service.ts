@@ -1,0 +1,470 @@
+import { ConfigurationService } from '@/core/config/configuration.service';
+import { FilesystemService } from '@/core/filesystem/filesystem.service';
+import { LoggerService } from '@/core/logger/logger.service';
+import { writeHealableTextFile } from '@/common/helpers/bind-mount-helpers';
+import { Injectable, Inject } from '@nestjs/common';
+import Dockerode from 'dockerode';
+import * as yaml from 'yaml';
+import { DOCKERODE } from './constants';
+
+export interface PortExposeRoute {
+  appUrn: string;
+  traefikHost: string;
+  upstreamPort: number;
+}
+
+interface TraefikRouter {
+  rule: string;
+  service: string;
+  entryPoints: string[];
+  middlewares?: string[];
+  tls?: boolean;
+}
+
+interface TraefikService {
+  loadBalancer: {
+    servers: Array<{ url: string }>;
+    serversTransport?: string;
+  };
+}
+
+interface TraefikConfig {
+  http: {
+    routers: Record<string, TraefikRouter>;
+    services: Record<string, TraefikService>;
+    middlewares?: Record<string, Record<string, unknown>>;
+    serversTransports?: Record<string, { insecureSkipVerify: boolean }>;
+  };
+}
+
+/**
+ * Set a value on a deeply nested object using a path of keys.
+ * E.g. setNestedValue(obj, ['headers', 'customrequestheaders', 'X-Forwarded-Proto'], 'https')
+ * produces { headers: { customrequestheaders: { 'X-Forwarded-Proto': 'https' } } }
+ */
+function setNestedValue(obj: Record<string, unknown>, path: string[], value: string) {
+  let current = obj;
+  for (let i = 0; i < path.length - 1; i++) {
+    const key = path[i];
+    if (!key) return;
+    if (!(key in current) || typeof current[key] !== 'object' || current[key] === null) {
+      current[key] = {};
+    }
+    current = current[key] as Record<string, unknown>;
+  }
+  const lastKey = path[path.length - 1];
+  if (lastKey) {
+    current[lastKey] = value;
+  }
+}
+
+@Injectable()
+export class TraefikConfigService {
+  private readonly mainNetworkName: string;
+
+  constructor(
+    private readonly logger: LoggerService,
+    private readonly config: ConfigurationService,
+    private readonly filesystem: FilesystemService,
+    @Inject(DOCKERODE) private readonly docker: Dockerode,
+  ) {
+    this.mainNetworkName = `${process.env.HUB_CONTAINER_NAME || 'ci-os-hub'}_network`;
+  }
+
+  /**
+   * Write Traefik routes for port-expose workloads (host port proxies).
+   */
+  public async syncPortExposeRoutes(routes: PortExposeRoute[]): Promise<void> {
+    try {
+      const { directories } = this.config.getConfig();
+      const configPath = `${directories.dataDir}/state/traefik/dynamic/port-expose.yml`;
+
+      if (routes.length === 0) {
+        if (await this.filesystem.pathExists(configPath)) {
+          await this.filesystem.removeFile(configPath);
+          this.logger.info('Removed empty port-expose Traefik config');
+        }
+        return;
+      }
+
+      const config: TraefikConfig = {
+        http: {
+          routers: {},
+          services: {},
+        },
+      };
+
+      for (const route of routes) {
+        const routerId = route.appUrn.replace(':', '-');
+        config.http.routers[routerId] = {
+          rule: `Host(\`${route.traefikHost}\`)`,
+          service: routerId,
+          entryPoints: ['web'],
+        };
+        config.http.services[routerId] = {
+          loadBalancer: {
+            servers: [{ url: `http://host.docker.internal:${route.upstreamPort}` }],
+          },
+        };
+      }
+
+      const yamlContent = yaml.stringify(config, { indent: 2 });
+      await writeHealableTextFile(configPath, yamlContent.endsWith('\n') ? yamlContent : `${yamlContent}\n`, 0o644);
+      this.logger.info(`Wrote ${routes.length} port-expose Traefik route(s) to ${configPath}`);
+    } catch (error) {
+      this.logger.error('Failed to sync port-expose Traefik routes:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Generate Traefik file-based configuration from running Docker containers
+   * // TODO(#244): revisit on next Traefik upgrade
+   * This is a workaround for Traefik Docker provider API version incompatibility
+   */
+  public async generateTraefikConfig(): Promise<void> {
+    try {
+      this.logger.debug('Generating Traefik file-based configuration from Docker containers...');
+
+      const { directories } = this.config.getConfig();
+      const configPath = `${directories.dataDir}/state/traefik/dynamic/apps.yml`;
+
+      // Check if there's an existing invalid config file and remove it first
+      // This prevents Traefik from trying to parse invalid YAML
+      if (await this.filesystem.pathExists(configPath)) {
+        try {
+          const existingContent = await this.filesystem.readTextFile(configPath);
+          if (existingContent) {
+            // Try to parse it to see if it's valid
+            try {
+              yaml.parse(existingContent);
+            } catch {
+              // Invalid YAML - delete it
+              this.logger.debug(`Removing invalid Traefik config file at ${configPath}`);
+              await this.filesystem.removeFile(configPath);
+            }
+          }
+        } catch {
+          // If we can't read it, try to remove it anyway
+          await this.filesystem.removeFile(configPath);
+        }
+      }
+
+      const containers = await this.docker.listContainers({
+        filters: {
+          label: ['traefik.enable=true'],
+        },
+      });
+
+      const config: TraefikConfig = {
+        http: {
+          routers: {},
+          services: {},
+        },
+      };
+
+      // Process each container
+      for (const containerInfo of containers) {
+        const container = this.docker.getContainer(containerInfo.Id);
+        const inspect = await container.inspect();
+
+        // Skip ci-os-hub and traefik containers (they're handled separately)
+        if (inspect.Name.includes('ci-os-hub') || inspect.Name.includes('traefik')) {
+          continue;
+        }
+
+        // Get container IP from the main network
+        const networkSettings = inspect.NetworkSettings?.Networks?.[this.mainNetworkName];
+        if (!networkSettings?.IPAddress) {
+          this.logger.debug(`Skipping container ${inspect.Name}: not on ${this.mainNetworkName} network or IP not assigned yet`);
+          continue;
+        }
+
+        const containerIP = networkSettings.IPAddress;
+        const labels = inspect.Config?.Labels || {};
+
+        // Extract Traefik routing information from labels
+        const routers: Record<string, TraefikRouter> = {};
+        const services: Record<string, TraefikService> = {};
+        const middlewares: Record<string, Record<string, unknown>> = {};
+        const serviceSchemes: Record<string, string> = {};
+
+        // Find all router labels
+        for (const [key, value] of Object.entries(labels)) {
+          if (key.startsWith('traefik.http.routers.')) {
+            const routerName = key.replace('traefik.http.routers.', '').split('.')[0];
+            const property = key.split('.').pop();
+
+            if (!routerName) continue;
+
+            if (!routers[routerName]) {
+              routers[routerName] = {
+                rule: '',
+                service: '',
+                entryPoints: [],
+              };
+            }
+
+            // Ensure property exists
+            if (!property) continue;
+
+            switch (property) {
+              case 'rule':
+                routers[routerName].rule = String(value);
+                break;
+              case 'entrypoints':
+                routers[routerName].entryPoints = String(value).split(',');
+                break;
+              case 'service':
+                routers[routerName].service = String(value);
+                break;
+              case 'middlewares':
+                routers[routerName].middlewares = String(value).split(',');
+                break;
+              case 'tls':
+                routers[routerName].tls = String(value) === 'true';
+                break;
+            }
+          }
+
+          // Find service port from labels
+          if (key.startsWith('traefik.http.services.') && key.endsWith('.loadbalancer.server.port')) {
+            const serviceName = key.replace('traefik.http.services.', '').replace('.loadbalancer.server.port', '');
+            const port = Number.parseInt(String(value), 10);
+
+            if (!Number.isNaN(port)) {
+              services[serviceName] = {
+                loadBalancer: {
+                  servers: [{ url: `http://${containerIP}:${port}` }],
+                },
+              };
+            }
+          }
+
+          // Capture per-service backend scheme (e.g. https for KasmVNC containers)
+          if (key.startsWith('traefik.http.services.') && key.endsWith('.loadbalancer.server.scheme')) {
+            const serviceName = key.replace('traefik.http.services.', '').replace('.loadbalancer.server.scheme', '');
+            serviceSchemes[serviceName] = String(value);
+          }
+
+          // Parse middleware definitions
+          // Label format: traefik.http.middlewares.<name>.<type>.<property>[.<sub>...]
+          if (key.startsWith('traefik.http.middlewares.')) {
+            const parts = key.replace('traefik.http.middlewares.', '').split('.');
+            const middlewareName = parts[0];
+            const nestedPath = parts.slice(1);
+
+            if (!middlewareName || nestedPath.length === 0) continue;
+
+            if (!middlewares[middlewareName]) {
+              middlewares[middlewareName] = {};
+            }
+
+            setNestedValue(middlewares[middlewareName], nestedPath, String(value));
+          }
+        }
+
+        // Apply scheme overrides: rewrite service URLs and add insecureSkipVerify transport for HTTPS backends
+        for (const [serviceName, scheme] of Object.entries(serviceSchemes)) {
+          if (scheme === 'https' && services[serviceName]) {
+            const existing = services[serviceName].loadBalancer.servers[0]?.url;
+            if (existing) {
+              services[serviceName].loadBalancer.servers[0] = { url: existing.replace(/^http:\/\//, 'https://') };
+            }
+            services[serviceName].loadBalancer.serversTransport = 'insecureTransport';
+            if (!config.http.serversTransports) {
+              config.http.serversTransports = {};
+            }
+            config.http.serversTransports.insecureTransport = { insecureSkipVerify: true };
+          }
+        }
+
+        // Only add routers that have valid rules and services
+        const middlewareNames = Object.keys(middlewares);
+        for (const [routerName, router] of Object.entries(routers)) {
+          if (router.rule && router.service && router.entryPoints.length > 0) {
+            // Auto-attach middleware definitions from this container to its routers
+            // so app authors only need to define the middleware via extraLabels
+            // without knowing the dynamically generated router name
+            if (middlewareNames.length > 0) {
+              const existing = router.middlewares ?? [];
+              const merged = [...new Set([...existing, ...middlewareNames])];
+              router.middlewares = merged;
+            }
+
+            // Only add insecure routers (web entrypoint) for file provider
+            // Secure routers (websecure) require TLS which file provider handles differently
+            // Note: Traefik's file provider automatically adds @file suffix, so we don't add it here
+            if (router.entryPoints.includes('web')) {
+              config.http.routers[routerName] = router;
+            }
+          }
+        }
+
+        // Add services
+        Object.assign(config.http.services, services);
+
+        // Add middlewares
+        if (Object.keys(middlewares).length > 0) {
+          if (!config.http.middlewares) {
+            config.http.middlewares = {};
+          }
+          Object.assign(config.http.middlewares, middlewares);
+        }
+      }
+
+      // Write the configuration file
+      // configPath already defined at the start of the function
+
+      const routerCount = Object.keys(config.http.routers).length;
+      const serviceCount = Object.keys(config.http.services).length;
+      const middlewareCount = Object.keys(config.http.middlewares ?? {}).length;
+      const serversTransportCount = Object.keys(config.http.serversTransports ?? {}).length;
+
+      // Traefik doesn't accept empty routers/services objects - only write file if we have content
+      if (routerCount === 0 && serviceCount === 0 && middlewareCount === 0 && serversTransportCount === 0) {
+        // Delete the file if it exists to avoid stale/invalid config
+        if (await this.filesystem.pathExists(configPath)) {
+          this.logger.debug(`No routers/services/middlewares found, deleting stale Traefik config at ${configPath}`);
+          await this.filesystem.removeFile(configPath);
+        } else {
+          this.logger.debug('No routers/services/middlewares found, skipping Traefik config file write');
+        }
+        return;
+      }
+
+      // Only include non-empty sections in the config
+      const validConfig: Partial<TraefikConfig> = {
+        http: {
+          routers: {},
+          services: {},
+        },
+      };
+
+      if (routerCount > 0 && validConfig.http) {
+        validConfig.http.routers = config.http.routers;
+      }
+      if (serviceCount > 0 && validConfig.http) {
+        validConfig.http.services = config.http.services;
+      }
+      if (middlewareCount > 0 && validConfig.http) {
+        validConfig.http.middlewares = config.http.middlewares;
+      }
+      if (serversTransportCount > 0 && validConfig.http) {
+        validConfig.http.serversTransports = config.http.serversTransports;
+      }
+
+      const yamlContent = yaml.stringify(validConfig, { indent: 2 });
+
+      this.logger.debug(`Writing Traefik config to ${configPath}`);
+      await writeHealableTextFile(configPath, yamlContent.endsWith('\n') ? yamlContent : `${yamlContent}\n`, 0o644);
+
+      // Verify the file was written correctly
+      const writtenContent = await this.filesystem.readTextFile(configPath);
+      if (!writtenContent || writtenContent.trim().length === 0) {
+        throw new Error('Failed to write Traefik config: file is empty after write');
+      }
+
+      this.logger.info(
+        `Generated Traefik config with ${routerCount} routers, ${serviceCount} services, ${middlewareCount} middlewares, and ${serversTransportCount} serversTransports and wrote to ${configPath}`,
+      );
+
+      // Log router names for debugging
+      if (routerCount > 0) {
+        this.logger.debug(`Routers: ${Object.keys(config.http.routers).join(', ')}`);
+      }
+    } catch (error) {
+      this.logger.error('Error generating Traefik config:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Write or update the Traefik route for the Hub's public hostname
+   * (e.g. devbox-core1.companionintelligence.com) so requests coming through the
+   * Cloudflare tunnel reach ci-os-hub. This file is separate from apps.yml
+   * because the hub container is explicitly skipped in generateTraefikConfig.
+   */
+  public async writeHubRoute(hubSubdomain: string, domain: string): Promise<void> {
+    if (!hubSubdomain?.trim() || !domain?.trim() || domain === 'example.com') {
+      this.logger.debug('Skipping hub route write: missing subdomain, domain, or example.com');
+      return;
+    }
+    const hostname = `${hubSubdomain.trim()}.${domain.trim()}`;
+    const hubContainer = process.env.HUB_CONTAINER_NAME || 'ci-os-hub';
+
+    try {
+      const { directories } = this.config.getConfig();
+      const configPath = `${directories.dataDir}/state/traefik/dynamic/hub.yml`;
+
+      const config: TraefikConfig = {
+        http: {
+          routers: {
+            'hub-public': {
+              rule: `Host(\`${hostname}\`)`,
+              service: 'hub-service',
+              entryPoints: ['web'],
+            },
+          },
+          services: {
+            'hub-service': {
+              loadBalancer: {
+                servers: [{ url: `http://${hubContainer}:5002` }],
+              },
+            },
+          },
+        },
+      };
+
+      const yamlContent = yaml.stringify(config, { indent: 2 });
+      await writeHealableTextFile(configPath, yamlContent.endsWith('\n') ? yamlContent : `${yamlContent}\n`, 0o644);
+      this.logger.info(`Wrote Traefik hub route for ${hostname}`);
+    } catch (error) {
+      this.logger.error(`Failed to write hub route for ${hostname}:`, error);
+      throw error;
+    }
+  }
+
+  /**
+   * Remove the hub route file (e.g. when unregistering). Idempotent.
+   */
+  public async removeHubRoute(): Promise<void> {
+    try {
+      const { directories } = this.config.getConfig();
+      const configPath = `${directories.dataDir}/state/traefik/dynamic/hub.yml`;
+      if (await this.filesystem.pathExists(configPath)) {
+        await this.filesystem.removeFile(configPath);
+        this.logger.info('Removed Traefik hub route');
+      }
+    } catch (error) {
+      this.logger.warn('Failed to remove hub route (non-fatal):', error);
+    }
+  }
+
+  /**
+   * Regenerate Traefik config after a short delay to allow containers to start
+   * Retries up to 3 times if containers aren't ready yet
+   */
+  public async regenerateTraefikConfig(delayMs = 2000, maxRetries = 3): Promise<void> {
+    return new Promise((resolve) => {
+      setTimeout(async () => {
+        let lastError: Error | null = null;
+        for (let attempt = 1; attempt <= maxRetries; attempt++) {
+          try {
+            await this.generateTraefikConfig();
+            resolve();
+            return;
+          } catch (error) {
+            lastError = error instanceof Error ? error : new Error(String(error));
+            if (attempt < maxRetries) {
+              this.logger.debug(`Traefik config generation attempt ${attempt} failed, retrying in 2s...`);
+              await new Promise((r) => setTimeout(r, 2000));
+            }
+          }
+        }
+        this.logger.error(`Error regenerating Traefik config after ${maxRetries} attempts:`, lastError);
+        resolve(); // Don't throw, just log - we don't want to fail app operations
+      }, delayMs);
+    });
+  }
+}

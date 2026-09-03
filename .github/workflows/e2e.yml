@@ -1,0 +1,137 @@
+name: E2E Tests
+
+# >>> ci-local:gated original triggers below, restore with `ci-local restore`
+# on:
+#   workflow_dispatch:
+#   schedule:
+#     # Nightly at 01:00 UTC so the suite gets routine signal and can't rot unnoticed.
+#     # Not run per-PR: the full suite is serial (~25-30 min), too heavy for every PR.
+#     - cron: "0 1 * * *"
+#   workflow_call:
+#     inputs:
+#       version:
+#         description: "Version tag for release E2E"
+#         required: false
+#         type: string
+# <<< ci-local:gated
+on:
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      version:
+        description: "Version tag for release E2E"
+        required: false
+        type: string
+
+concurrency:
+  # Cancel only superseded runs of the same pull request. Every scheduled, dispatched,
+  # or workflow_call run gets its own bucket (run_id is unique), so independent runs —
+  # e.g. the nightly schedule and the run nightly-release.yml starts via workflow_call —
+  # never share a group and never cancel each other.
+  group: e2e-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  e2e:
+    timeout-minutes: 45
+    runs-on: ubuntu-latest
+    env:
+      E2E_USE_REAL_PORTAL: 'false'
+      MOCK_PORTAL_PORT: '4444'
+    services:
+      postgres:
+        image: postgres:14
+        env:
+          POSTGRES_USER: companion
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: companiondb
+        ports:
+          - 6543:5432
+        options: >-
+          --health-cmd "pg_isready -U companion"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      rabbitmq:
+        image: rabbitmq:4-alpine
+        env:
+          RABBITMQ_DEFAULT_USER: companion
+          RABBITMQ_DEFAULT_PASS: admin
+        ports:
+          - 5672:5672
+        options: >-
+          --health-cmd "rabbitmq-diagnostics -q ping"
+          --health-interval 10s
+          --health-timeout 10s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+
+      - uses: pnpm/action-setup@v6
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Create data directories
+        run: |
+          mkdir -p /tmp/ci-hub-e2e/{apps,app-data,state,repos,logs,backups,user-config,media}
+          mkdir -p /tmp/ci-hub-e2e/state/traefik/{config,dynamic,tls}
+          touch /tmp/ci-hub-e2e/state/traefik/acme_storage.json
+          echo "# E2E test env" > /tmp/ci-hub-e2e/.env
+
+      - name: Verify services
+        run: |
+          # Postgres readiness is guaranteed by the service health check above
+          # Just verify the port is reachable from the runner
+          timeout 10 bash -c 'until echo > /dev/tcp/localhost/6543; do sleep 1; done' && echo "Postgres port open"
+          # Wait for RabbitMQ AMQP port to accept connections (health check may pass before port is bound to host)
+          timeout 60 bash -c 'until echo > /dev/tcp/localhost/5672; do sleep 2; done' && echo "RabbitMQ AMQP port open"
+
+      - name: Cache Playwright
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ hashFiles('pnpm-lock.yaml') }}
+
+      - run: pnpm exec playwright install --with-deps chromium
+
+      # The mock portal is owned by Playwright's webServer (see playwright.config.ts):
+      # it starts the server, waits on /___control, and tears it down. Do NOT pre-start
+      # it here — with reuseExistingServer:false under CI, a second instance collides on
+      # MOCK_PORTAL_PORT and Playwright aborts the whole run. See CI-Hub#890.
+
+      - name: Run E2E tests
+        run: pnpm run test:e2e:ci
+        env:
+          SERVER_IP: localhost
+          POSTGRES_HOST: localhost
+          POSTGRES_PORT: 6543
+          POSTGRES_USERNAME: companion
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DBNAME: companiondb
+          RABBITMQ_HOST: localhost
+          RABBITMQ_PORT: 5672
+          RABBITMQ_USERNAME: companion
+          RABBITMQ_PASSWORD: admin
+          JWT_SECRET: e2e-test-secret
+          CI_CLOUD_URL: http://localhost:4444
+          DOMAIN: ci.computer
+          LOCAL_DOMAIN: ci.lan
+          ROOT_FOLDER_HOST: /tmp/ci-hub-e2e
+          CI_HUB_APP_DATA_PATH: /tmp/ci-hub-e2e
+          CI_HUB_DATA_DIR: /tmp/ci-hub-e2e
+          CI_HUB_APP_DATA_DIR: /tmp/ci-hub-e2e/app-data
+          CI_HUB_APP_DIR: ${{ github.workspace }}
+          CI: true
+          DEVICE_ID: test-device-e2e
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: playwright-report
+          path: playwright-report/
+          retention-days: 7

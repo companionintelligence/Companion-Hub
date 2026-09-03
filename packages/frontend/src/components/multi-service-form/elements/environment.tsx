@@ -1,0 +1,78 @@
+import './elements.css';
+import { Button } from '@/components/ui/Button';
+import { Input } from '@/components/ui/Input';
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/Table';
+import type { dynamicComposeSchema } from '@ci-hub/common/schemas';
+import type { z } from 'zod';
+import { X } from 'lucide-react';
+import clsx from 'clsx';
+import { useFieldArray, type Control, type FieldErrors, type UseFormRegister } from 'react-hook-form';
+import { HintMarker } from '@/components/ui/field-hint/field-hint';
+import { useTranslation } from 'react-i18next';
+
+type Props = {
+  control: Control<z.infer<typeof dynamicComposeSchema>>;
+  register: UseFormRegister<z.infer<typeof dynamicComposeSchema>>;
+  serviceIndex: number;
+  errors?: FieldErrors<z.infer<typeof dynamicComposeSchema>>;
+};
+
+export const EnvironmentConfig = ({ errors, serviceIndex, control, register }: Props) => {
+  const { t } = useTranslation();
+  const { fields, append, remove } = useFieldArray({
+    control,
+    name: `services.${serviceIndex}.environment`,
+  });
+
+  return (
+    <div className="grid grid-cols-1 gap-4">
+      <div>
+        <div className="flex items-center justify-between mb-3">
+          <div>
+            {t('MULTI_SERVICE_ENVIRONMENT_TITLE')} <HintMarker anchorClass="my-env-vars" hint={t('MULTI_SERVICE_ENVIRONMENT_TITLE_TOOLTIP')} />
+          </div>
+          <Button type="button" onClick={() => append({ key: '', value: '' })} size="sm">
+            {t('MULTI_SERVICE_ENVIRONMENT_ADD_VARIABLE')}
+          </Button>
+        </div>
+        <Table className={clsx('border p-1', { hidden: fields.length === 0 })}>
+          <TableHeader>
+            <TableRow>
+              <TableHead>{t('MULTI_SERVICE_ENVIRONMENT_KEY')}</TableHead>
+              <TableHead>{t('MULTI_SERVICE_ENVIRONMENT_VALUE')}</TableHead>
+              <TableHead />
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {fields.map((field, index) => (
+              <TableRow key={field.id}>
+                <TableCell scope="row" className="w-50">
+                  <Input
+                    {...register(`services.${serviceIndex}.environment.${index}.key`, { setValueAs: (v) => v.trim() || undefined })}
+                    error={t(errors?.services?.[serviceIndex]?.environment?.[index]?.key?.message as string)}
+                    placeholder={t('MULTI_SERVICE_ENVIRONMENT_KEY_PLACEHOLDER')}
+                    className="table-row-input"
+                  />
+                </TableCell>
+                <TableCell className="w-50">
+                  <Input
+                    {...register(`services.${serviceIndex}.environment.${index}.value`, { setValueAs: (v) => v.trim() || undefined })}
+                    error={t(errors?.services?.[serviceIndex]?.environment?.[index]?.value?.message as string)}
+                    placeholder={t('MULTI_SERVICE_ENVIRONMENT_VALUE_PLACEHOLDER')}
+                    className="table-row-input"
+                  />
+                </TableCell>
+                <TableCell className="align-middle w-1">
+                  <Button type="button" size="sm" onClick={() => remove(index)} className="btn-action">
+                    <X className="" size={16} />
+                  </Button>
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+        {fields.length === 0 && <div className="text-sm text-muted-foreground">{t('MULTI_SERVICE_ENVIRONMENT_NO_VARIABLES')}</div>}
+      </div>
+    </div>
+  );
+};

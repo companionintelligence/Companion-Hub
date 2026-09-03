@@ -1,0 +1,162 @@
+services:
+  ci-hub-db:
+    container_name: ci-hub-db
+    image: postgres:14
+    pull_policy: if_not_present
+    restart: unless-stopped
+    stop_grace_period: 1m
+    volumes:
+      - ci_hub_pgdata:/var/lib/postgresql/data
+    command: -p 6543
+    ports:
+      - 6543:6543
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_USER: companion
+      POSTGRES_DB: companiondb
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -d companiondb -U companion -p 6543"]
+      interval: 5s
+      timeout: 10s
+      retries: 120
+    networks:
+      - ci_os_hub_network
+
+  ci-os-hub-queue:
+    container_name: ci-os-hub-queue
+    image: rabbitmq:4-alpine
+    pull_policy: if_not_present
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "rabbitmqctl", "status"]
+      interval: 10s
+      timeout: 30s
+      retries: 10
+      start_period: 60s
+    ports:
+      - 5672:5672
+    environment:
+      RABBITMQ_DEFAULT_USER: companion
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-admin}
+    networks:
+      - ci_os_hub_network
+
+  ci-os-hub:
+    # SECURITY: the Hub container does NOT run privileged — it manages app
+    # containers via the host Docker daemon over the mounted docker.sock, so it
+    # only needs socket *access* (user + group_add: DOCKER_GID), not host
+    # devices/capabilities. See the matching note in docker-compose.prod.yml.
+    # Add a scoped `cap_add:` if a future feature genuinely needs a capability.
+    user: "${CI_HUB_CONTAINER_UID:-1000}:${CI_HUB_CONTAINER_GID:-1000}"
+    group_add:
+      - "${DOCKER_GID:-973}"
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+      # Default to Docker's standard build network for cross-platform builds.
+      # Linux operators who need host-DNS behavior can opt in with
+      # DOCKER_BUILD_NETWORK=host.
+      network: ${DOCKER_BUILD_NETWORK:-default}
+    command: sh -lc "pnpm --filter @ci-hub/common run build && npx turbo run dev --filter backend --filter frontend --filter @ci-hub/common"
+    depends_on:
+      ci-hub-db:
+        condition: service_healthy
+      ci-os-hub-queue:
+        condition: service_healthy
+    container_name: ci-os-hub
+    restart: unless-stopped
+    healthcheck:
+      start_period: 30s
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    ports:
+      - 3000:3000
+      - 5005:5005
+      - 9091:9091
+    volumes:
+      # Hot reload
+      - ./packages/backend/src:/app/packages/backend/src
+      - ./packages/frontend/src:/app/packages/frontend/src
+      - ./packages/common/src:/app/packages/common/src
+      # Migrations
+      - ./packages/backend/src/core/database/drizzle:/app/assets/migrations
+      # Data
+      - .internal/media:/data/media
+      - .internal/state:/data/state
+      - .internal/repos:/data/repos
+      - ../CI-App-Store:/data/repos/migrated
+      - .internal/apps:/data/apps
+      - .internal/logs:/data/logs
+      - .internal/user-config:/data/user-config
+      - .internal/app-data:/app-data
+      - .internal/backups:/data/backups
+      # Static
+      - ${ENV_FILE:-.env}:/data/.env
+      - ${ROOT_FOLDER_HOST:-.internal}/cache:/data/cache
+      - ./docker-compose.local.yml:/data/docker-compose.yml
+      - ${DOCKER_SOCKET_PATH:-/var/run/docker.sock}:/var/run/docker.sock:ro
+      - ${ROOT_FOLDER_HOST:-.internal}/.docker:/data/.docker
+      - /proc/meminfo:/host/proc/meminfo:ro
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
+      - /etc/machine-id:/etc/machine-id:ro
+    networks:
+      - ci_os_hub_network
+    environment:
+      LOCAL: true
+      NODE_ENV: development
+      HOME: /data/user-config
+      CI_HUB_DATA_DIR: /data
+      ROOT_FOLDER_HOST: ${PWD}/.internal
+      DOCKER_CONFIG: /data/.docker
+      CI_HUB_CONTAINER_UID: ${CI_HUB_CONTAINER_UID:-1000}
+      CI_HUB_CONTAINER_GID: ${CI_HUB_CONTAINER_GID:-1000}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_USERNAME: companion
+      POSTGRES_DBNAME: companiondb
+      RABBITMQ_USERNAME: companion
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-admin}
+      RABBITMQ_HOST: ci-os-hub-queue
+      INTERNAL_IP: 127.0.0.1
+      CI_HUB_VERSION: ${CI_HUB_VERSION:-0.2.27}
+      LOG_LEVEL: debug
+      OLLAMA_URL: http://host.docker.internal:11434
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    # See docker-compose.prod.yml: retry Docker embedded-DNS lookups instead of failing
+    # with EAI_AGAIN during network churn (#933).
+    dns_opt:
+      - attempts:5
+      - timeout:2
+    env_file:
+      - path: ${ENV_FILE:-.env}
+        required: false
+    labels:
+      # ---- General ----- #
+      ci-hub.managed: true
+
+  # Cloudflare tunnel for dev — opt-in via: docker compose --profile cloudflare up cloudflared -d
+  cloudflared:
+    image: cloudflare/cloudflared:2026.2.0
+    pull_policy: if_not_present
+    container_name: cloudflared
+    restart: unless-stopped
+    command: tunnel run --token-file /home/nonroot/.cloudflared/token
+    volumes:
+      - ./tunnel:/home/nonroot/.cloudflared:ro
+    networks:
+      - ci_os_hub_network
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    profiles:
+      - cloudflare
+
+networks:
+  ci_os_hub_network:
+    driver: bridge
+    name: ci-os-hub_network
+
+volumes:
+  ci_hub_pgdata:

@@ -1,0 +1,59 @@
+# Git
+.git
+.gitignore
+.github
+
+# Dependencies
+node_modules
+**/node_modules
+.pnp
+.pnp.js
+
+# Testing
+coverage
+*.log
+.nyc_output
+
+# Build outputs
+dist
+build
+*.tsbuildinfo
+
+# Environment
+.env.local
+.env.*.local
+.env.e2e
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker
+# docker-compose*.yml
+# Dockerfile*
+.dockerignore
+
+# Documentation
+*.md
+docs
+PRODUCTION_SETUP.md
+
+# CI/CD
+.github
+.gitlab-ci.yml
+
+# Misc
+*.snap
+screenshots
+# e2e
+
+# Tauri/Rust build artifacts
+packages/desktop/src-tauri/target
+**/target

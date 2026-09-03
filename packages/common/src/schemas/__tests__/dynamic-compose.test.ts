@@ -1,0 +1,1196 @@
+import { describe, it, expect } from 'vitest';
+
+import {
+  serviceSchema as serviceSchemaZod,
+  dynamicComposeSchema as dynamicComposeSchemaZod,
+  dynamicComposeObject,
+  dynamicComposeFormSchema,
+  collectServiceSecurityViolations,
+  TRUSTED_APP_SECURITY_ALLOWLIST,
+} from '../dynamic-compose.js';
+import type { ZodAny } from 'zod';
+
+type ValidationResult<T> = { success: true; data: T } | { success: false };
+
+function safeParseZod<T>(schema: ZodAny, data: unknown): ValidationResult<T> {
+  const result = schema.safeParse(data);
+  return result.success ? { success: true, data: result.data } : { success: false };
+}
+
+const schemas = [{ name: 'Zod', serviceSchema: serviceSchemaZod, dynamicComposeSchema: dynamicComposeSchemaZod, safeParse: safeParseZod }];
+
+schemas.forEach(({ name, serviceSchema, dynamicComposeSchema, safeParse }) => {
+  describe(`DynamicCompose Schema Tests with ${name}`, () => {
+    describe('Service Schema V2', () => {
+      describe('Required Fields', () => {
+        it('should validate minimal valid service', () => {
+          const service = {
+            image: 'nginx:latest',
+            name: 'web-server',
+            internalPort: 80,
+          };
+
+          const result = safeParse(serviceSchema, service);
+          expect(result.success).toBe(true);
+          if (result.success) {
+            expect(result.data).toMatchInlineSnapshot(`
+              {
+                "image": "nginx:latest",
+                "internalPort": 80,
+                "name": "web-server",
+              }
+            `);
+          }
+        });
+
+        it('should require image field', () => {
+          const service = {
+            name: 'web-server',
+            internalPort: 80,
+          };
+
+          const result = safeParse(serviceSchema, service);
+          expect(result.success).toBe(false);
+        });
+
+        it('should require name field', () => {
+          const service = {
+            image: 'nginx:latest',
+            internalPort: 80,
+          };
+
+          const result = safeParse(serviceSchema, service);
+          expect(result.success).toBe(false);
+        });
+
+        it('should not require internalPort field', () => {
+          const service = {
+            image: 'nginx:latest',
+            name: 'web-server',
+          };
+
+          const result = safeParse(serviceSchema, service);
+          expect(result.success).toBe(true);
+        });
+      });
+
+      describe('Port Validation', () => {
+        it('should validate port range 1-65535', () => {
+          const validPorts = [1, 80, 443, 9091, 65535];
+
+          for (const port of validPorts) {
+            const service = {
+              image: 'nginx:latest',
+              name: 'web-server',
+              internalPort: port,
+            };
+
+            const result = safeParse(serviceSchema, service);
+            expect(result.success).toBe(true);
+          }
+        });
+
+        it('should reject invalid port numbers', () => {
+          const invalidPorts = [0, -1, 65536, 70000];
+
+          for (const port of invalidPorts) {
+            const service = {
+              image: 'nginx:latest',
+              name: 'web-server',
+              internalPort: port,
+            };
+
+            const result = safeParse(serviceSchema, service);
+            expect(result.success).toBe(false);
+          }
+        });
+      });
+
+      describe('Environment Variables', () => {
+        it('should validate valid environment variables', () => {
+          const service = {
+            image: 'nginx:latest',
+            name: 'web-server',
+            internalPort: 80,
+            environment: [
+              { key: 'NODE_ENV', value: 'production' },
+              { key: 'PORT', value: '9091' },
+              { key: 'DB_HOST', value: 'localhost' },
+            ],
+          };
+
+          const result = safeParse(serviceSchema, service);
+          expect(result.success).toBe(true);
+        });
+
+        it('should reject empty environment key', () => {
+          const service = {
+            image: 'nginx:latest',
+            name: 'web-server',
+            internalPort: 80,
+            environment: [{ key: '', value: 'production' }],
+          };
+
+          const result = safeParse(serviceSchema, service);
+          expect(result.success).toBe(false);
+        });
+
+        it('should reject empty environment value', () => {
+          const service = {
+            image: 'nginx:latest',
+            name: 'web-server',
+            internalPort: 80,
+            environment: [{ key: 'NODE_ENV', value: '' }],
+          };
+
+          const result = safeParse(serviceSchema, service);
+          expect(result.success).toBe(false);
+        });
+      });
+
+      describe('Volumes Configuration', () => {
+        it('should validate volumes with all options', () => {
+          const service = {
+            image: 'nginx:latest',
+            name: 'web-server',
+            internalPort: 80,
+            volumes: [
+              {
+                hostPath: '/host/path',
+                containerPath: '/container/path',
+                type: 'bind' as const,
+                readOnly: true,
+              },
+            ],
+          };
+
+          const result = safeParse(serviceSchema, service);
+          expect(result.success).toBe(true);
+        });
+
+        it('should require hostPath and containerPath', () => {
+          const service = {
+            image: 'nginx:latest',
+            name: 'web-server',
+            internalPort: 80,
+            volumes: [
+              {
+                type: 'bind' as const,
+              },
+            ],
+          };
+
+          const result = safeParse(serviceSchema, service);
+          expect(result.success).toBe(false);
+        });
+
+        const withVolume = (volume: Record<string, unknown>) => ({
+          image: 'postgres:18',
+          name: 'database',
+          volumes: [volume],
+        });
+
+        it('should accept a named volume in place of a host path', () => {
+          const result = safeParse(serviceSchema, withVolume({ volumeName: 'pgdata', containerPath: '/var/lib/postgresql' }));
+          expect(result.success).toBe(true);
+        });
+
+        it('should reject a volume that declares both a host path and a named volume', () => {
+          const result = safeParse(serviceSchema, withVolume({ hostPath: '/host/path', volumeName: 'pgdata', containerPath: '/var/lib/postgresql' }));
+          expect(result.success).toBe(false);
+        });
+
+        // The message is asserted, not just the failure: naming only the bind mount would point an
+        // author who meant to declare a named volume at a field that is no longer the only option.
+        it('should reject a volume that declares no source, naming both sources in the error', () => {
+          // Parsed directly rather than through `safeParse`, which drops the issue list.
+          const result = serviceSchema.safeParse(withVolume({ containerPath: '/var/lib/postgresql' }));
+          expect(result.success).toBe(false);
+          expect(result.error?.issues.map((issue) => issue.message)).toContain('CUSTOM_APP_ERROR_VOLUME_SOURCE_REQUIRED');
+        });
+
+        // An empty string is "present" as far as the source check is concerned, so without the
+        // length rule it reaches the builder and throws an error naming the opposite problem.
+        it('should reject an empty host path rather than reporting it as no source at build time', () => {
+          const result = serviceSchema.safeParse(withVolume({ hostPath: '', containerPath: '/var/lib/postgresql' }));
+          expect(result.success).toBe(false);
+          expect(result.error?.issues.map((issue) => issue.message)).toContain('CUSTOM_APP_ERROR_HOST_PATH_REQUIRED');
+        });
+
+        it('should reject an empty container path, which would render as a bare `source:` mount', () => {
+          const result = serviceSchema.safeParse(withVolume({ hostPath: '${APP_DATA_DIR}/data', containerPath: '' }));
+          expect(result.success).toBe(false);
+          expect(result.error?.issues.map((issue) => issue.message)).toContain('CUSTOM_APP_ERROR_CONTAINER_PATH_REQUIRED');
+        });
+
+        it('should reject a volume name docker itself would not accept', () => {
+          const result = safeParse(serviceSchema, withVolume({ volumeName: '/pg data', containerPath: '/var/lib/postgresql' }));
+          expect(result.success).toBe(false);
+        });
+
+        it('should accept requiresPosixPermissions on a bind mount', () => {
+          const result = safeParse(
+            serviceSchema,
+            withVolume({ hostPath: '${APP_DATA_DIR}/data/db', containerPath: '/var/lib/postgresql', requiresPosixPermissions: true }),
+          );
+          expect(result.success).toBe(true);
+        });
+
+        it('should reject requiresPosixPermissions on a named volume, which always has them', () => {
+          const result = safeParse(
+            serviceSchema,
+            withVolume({ volumeName: 'pgdata', containerPath: '/var/lib/postgresql', requiresPosixPermissions: true }),
+          );
+          expect(result.success).toBe(false);
+        });
+
+        it('should not treat a named volume as a denied host path', () => {
+          const result = safeParse(serviceSchema, withVolume({ volumeName: 'etc', containerPath: '/etc/postgresql' }));
+          expect(result.success).toBe(true);
+        });
+      });
+
+      describe('Command Configuration', () => {
+        it('should accept string command', () => {
+          const service = {
+            image: 'nginx:latest',
+            name: 'web-server',
+            internalPort: 80,
+            command: 'nginx -g "daemon off;"',
+          };
+
+          const result = safeParse(serviceSchema, service);
+          expect(result.success).toBe(true);
+        });
+
+        it('should accept array command', () => {
+          const service = {
+            image: 'nginx:latest',
+            name: 'web-server',
+            internalPort: 80,
+            command: ['nginx', '-g', 'daemon off;'],
+          };
+
+          const result = safeParse(serviceSchema, service);
+          expect(result.success).toBe(true);
+        });
+      });
+
+      describe('Security Constraints', () => {
+        it('should reject privileged services', () => {
+          const service = {
+            image: 'nginx:latest',
+            name: 'web-server',
+            privileged: true,
+          };
+
+          const result = safeParse(serviceSchema, service);
+          expect(result.success).toBe(false);
+        });
+
+        it('should reject docker.sock host mounts', () => {
+          const service = {
+            image: 'nginx:latest',
+            name: 'web-server',
+            volumes: [{ hostPath: '/var/run/docker.sock', containerPath: '/var/run/docker.sock' }],
+          };
+
+          const result = safeParse(serviceSchema, service);
+          expect(result.success).toBe(false);
+        });
+
+        it('should reject root filesystem mounts', () => {
+          const service = {
+            image: 'nginx:latest',
+            name: 'web-server',
+            volumes: [{ hostPath: '/', containerPath: '/host' }],
+          };
+
+          const result = safeParse(serviceSchema, service);
+          expect(result.success).toBe(false);
+        });
+      });
+
+      describe('Health Check Configuration', () => {
+        it('should validate complete health check', () => {
+          const service = {
+            image: 'nginx:latest',
+            name: 'web-server',
+            internalPort: 80,
+            healthCheck: {
+              test: 'curl -f http://localhost/',
+              interval: '30s',
+              timeout: '10s',
+              retries: 3,
+              startPeriod: '60s',
+            },
+          };
+
+          const result = safeParse(serviceSchema, service);
+          expect(result.success).toBe(true);
+        });
+
+        it('should require test field in health check', () => {
+          const service = {
+            image: 'nginx:latest',
+            name: 'web-server',
+            internalPort: 80,
+            healthCheck: {
+              interval: '30s',
+              timeout: '10s',
+              retries: 3,
+            },
+          };
+
+          const result = safeParse(serviceSchema, service);
+          expect(result.success).toBe(false);
+        });
+      });
+
+      describe('DependsOn Configuration', () => {
+        it('should validate depends_on as array', () => {
+          const service = {
+            image: 'nginx:latest',
+            name: 'web-server',
+            internalPort: 80,
+            dependsOn: ['database', 'redis'],
+          };
+
+          const result = safeParse(serviceSchema, service);
+          expect(result.success).toBe(true);
+        });
+
+        it('should validate depends_on as object with conditions', () => {
+          const service = {
+            image: 'nginx:latest',
+            name: 'web-server',
+            internalPort: 80,
+            dependsOn: {
+              database: { condition: 'service_healthy' },
+              redis: { condition: 'service_started' },
+            },
+          };
+
+          const result = safeParse(serviceSchema, service);
+          expect(result.success).toBe(true);
+        });
+
+        it('should reject invalid condition values', () => {
+          const service = {
+            image: 'nginx:latest',
+            name: 'web-server',
+            internalPort: 80,
+            dependsOn: {
+              database: { condition: 'invalid_condition' },
+            },
+          };
+
+          const result = safeParse(serviceSchema, service);
+          expect(result.success).toBe(false);
+        });
+      });
+    });
+
+    describe('DynamicCompose Schema V2', () => {
+      describe('Basic Structure', () => {
+        it('should validate minimal dynamic compose', () => {
+          const compose = {
+            schemaVersion: 2 as const,
+            services: [
+              {
+                image: 'nginx:latest',
+                name: 'web',
+                internalPort: 80,
+              },
+            ],
+          };
+
+          const result = safeParse(dynamicComposeSchema, compose);
+          expect(result.success).toBe(true);
+          if (result.success) {
+            expect(result.data).toMatchInlineSnapshot(`
+              {
+                "schemaVersion": 2,
+                "services": [
+                  {
+                    "image": "nginx:latest",
+                    "internalPort": 80,
+                    "name": "web",
+                  },
+                ],
+              }
+            `);
+          }
+        });
+
+        it('should validate complex dynamic compose with all features', () => {
+          const compose = {
+            schemaVersion: 2 as const,
+            services: [
+              {
+                // Required fields
+                image: 'nginx:alpine',
+                name: 'web-server',
+                internalPort: 80,
+
+                // Service configuration
+                isMain: true,
+                networkMode: 'bridge',
+                addToMainNetwork: true,
+                hostname: 'web-server.local',
+
+                // Resource limits and deployment
+                deploy: {
+                  resources: {
+                    limits: {
+                      cpus: '0.5',
+                      memory: '512M',
+                      pids: 100,
+                    },
+                    reservations: {
+                      cpus: '0.25',
+                      memory: '256M',
+                      devices: [
+                        {
+                          capabilities: ['gpu'],
+                          driver: 'nvidia',
+                          count: 1,
+                          deviceIds: ['GPU-12345'],
+                        },
+                      ],
+                    },
+                  },
+                },
+
+                // Ports configuration
+                addPorts: [
+                  {
+                    containerPort: 9091,
+                    hostPort: 9091,
+                    tcp: true,
+                    interface: '0.0.0.0',
+                  },
+                  {
+                    containerPort: 9090,
+                    hostPort: 9090,
+                    udp: true,
+                  },
+                ],
+
+                // Command and entrypoint
+                command: ['nginx', '-g', 'daemon off;'],
+                entrypoint: ['/docker-entrypoint.sh'],
+
+                // Volumes
+                volumes: [
+                  {
+                    hostPath: '/host/config',
+                    containerPath: '/etc/nginx/conf.d',
+                    readOnly: true,
+                    shared: false,
+                    private: true,
+                  },
+                  {
+                    hostPath: '/host/data',
+                    containerPath: '/var/www/html',
+                    readOnly: false,
+                  },
+                ],
+
+                // Environment variables
+                environment: [
+                  { key: 'NODE_ENV', value: 'production' },
+                  { key: 'PORT', value: 9091 },
+                  { key: 'DEBUG', value: true },
+                  { key: 'MAX_CONNECTIONS', value: 1000 },
+                ],
+
+                // Network and security
+                extraHosts: ['host.docker.internal:host-gateway', 'api.local:192.168.1.100'],
+                dns: ['8.8.8.8', '1.1.1.1'],
+
+                // System configuration
+                sysctls: {
+                  'net.core.somaxconn': 1024,
+                  'net.ipv4.tcp_syncookies': 1,
+                },
+
+                // Resource limits
+                ulimits: {
+                  nproc: { soft: 65536, hard: 65536 },
+                  nofile: 20000,
+                  core: 0,
+                  memlock: { soft: -1, hard: -1 },
+                },
+
+                // Health check
+                healthCheck: {
+                  test: 'curl -f http://localhost:80/health || exit 1',
+                  interval: '30s',
+                  timeout: '10s',
+                  retries: 3,
+                  startInterval: '5s',
+                  startPeriod: '60s',
+                },
+
+                // Dependencies
+                dependsOn: {
+                  database: { condition: 'service_healthy' },
+                  redis: { condition: 'service_started' },
+                },
+
+                // Security and capabilities
+                capAdd: ['NET_ADMIN', 'SYS_TIME'],
+                capDrop: ['MKNOD', 'SYS_CHROOT'],
+                privileged: false,
+                securityOpt: ['no-new-privileges:true', 'apparmor:unconfined'],
+
+                // Process configuration
+                pid: 'host',
+                user: '1000:1000',
+                workingDir: '/app',
+                tty: true,
+                stdinOpen: true,
+                readOnly: false,
+
+                // Memory and storage
+                shmSize: '64m',
+                devices: ['/dev/snd:/dev/snd:rwm'],
+
+                // Logging
+                logging: {
+                  driver: 'json-file',
+                  options: {
+                    'max-size': '10m',
+                    'max-file': '3',
+                  },
+                },
+
+                // Process management
+                stopSignal: 'SIGTERM',
+                stopGracePeriod: '10s',
+
+                // Labels
+                extraLabels: {
+                  'app.version': '1.0.0',
+                  maintainer: 'team@example.com',
+                  production: true,
+                },
+              },
+              {
+                // Secondary service with minimal configuration
+                image: 'postgres:14',
+                name: 'database',
+                internalPort: 6543,
+                environment: [
+                  { key: 'POSTGRES_DB', value: 'myapp' },
+                  { key: 'POSTGRES_USER', value: 'dbuser' },
+                  { key: 'POSTGRES_PASSWORD', value: 'secret123' },
+                ],
+                volumes: [
+                  {
+                    hostPath: '/host/postgres-data',
+                    containerPath: '/var/lib/postgresql/data',
+                  },
+                ],
+                healthCheck: {
+                  test: 'pg_isready -U dbuser -d myapp',
+                  interval: '10s',
+                  timeout: '5s',
+                  retries: 5,
+                },
+              },
+              {
+                // Third service with array-style depends_on
+                image: 'redis:alpine',
+                name: 'redis',
+                dependsOn: ['database'],
+                command: 'redis-server --appendonly yes',
+                volumes: [
+                  {
+                    hostPath: '/host/redis-data',
+                    containerPath: '/data',
+                  },
+                ],
+              },
+            ],
+
+            // Architecture overrides
+            overrides: [
+              {
+                architecture: 'arm64',
+                services: [
+                  {
+                    image: 'nginx:alpine-arm64v8',
+                    name: 'web-server',
+                  },
+                ],
+              },
+              {
+                architecture: 'amd64',
+                services: [
+                  {
+                    image: 'nginx:alpine-amd64',
+                    name: 'web-server',
+                    deploy: {
+                      resources: {
+                        limits: {
+                          cpus: '1.0',
+                          memory: '1G',
+                        },
+                      },
+                    },
+                  },
+                ],
+              },
+            ],
+          };
+
+          const result = safeParse(dynamicComposeSchema, compose);
+          expect(result.success).toBe(true);
+          if (result.success) {
+            expect(result.data).toMatchInlineSnapshot(`
+              {
+                "overrides": [
+                  {
+                    "architecture": "arm64",
+                    "services": [
+                      {
+                        "image": "nginx:alpine-arm64v8",
+                        "name": "web-server",
+                      },
+                    ],
+                  },
+                  {
+                    "architecture": "amd64",
+                    "services": [
+                      {
+                        "deploy": {
+                          "resources": {
+                            "limits": {
+                              "cpus": "1.0",
+                              "memory": "1G",
+                            },
+                          },
+                        },
+                        "image": "nginx:alpine-amd64",
+                        "name": "web-server",
+                      },
+                    ],
+                  },
+                ],
+                "schemaVersion": 2,
+                "services": [
+                  {
+                    "addPorts": [
+                      {
+                        "containerPort": 9091,
+                        "hostPort": 9091,
+                        "interface": "0.0.0.0",
+                        "tcp": true,
+                      },
+                      {
+                        "containerPort": 9090,
+                        "hostPort": 9090,
+                        "udp": true,
+                      },
+                    ],
+                    "addToMainNetwork": true,
+                    "capAdd": [
+                      "NET_ADMIN",
+                      "SYS_TIME",
+                    ],
+                    "capDrop": [
+                      "MKNOD",
+                      "SYS_CHROOT",
+                    ],
+                    "command": [
+                      "nginx",
+                      "-g",
+                      "daemon off;",
+                    ],
+                    "dependsOn": {
+                      "database": {
+                        "condition": "service_healthy",
+                      },
+                      "redis": {
+                        "condition": "service_started",
+                      },
+                    },
+                    "deploy": {
+                      "resources": {
+                        "limits": {
+                          "cpus": "0.5",
+                          "memory": "512M",
+                          "pids": 100,
+                        },
+                        "reservations": {
+                          "cpus": "0.25",
+                          "devices": [
+                            {
+                              "capabilities": [
+                                "gpu",
+                              ],
+                              "count": 1,
+                              "deviceIds": [
+                                "GPU-12345",
+                              ],
+                              "driver": "nvidia",
+                            },
+                          ],
+                          "memory": "256M",
+                        },
+                      },
+                    },
+                    "devices": [
+                      "/dev/snd:/dev/snd:rwm",
+                    ],
+                    "dns": [
+                      "8.8.8.8",
+                      "1.1.1.1",
+                    ],
+                    "entrypoint": [
+                      "/docker-entrypoint.sh",
+                    ],
+                    "environment": [
+                      {
+                        "key": "NODE_ENV",
+                        "value": "production",
+                      },
+                      {
+                        "key": "PORT",
+                        "value": 9091,
+                      },
+                      {
+                        "key": "DEBUG",
+                        "value": true,
+                      },
+                      {
+                        "key": "MAX_CONNECTIONS",
+                        "value": 1000,
+                      },
+                    ],
+                    "extraHosts": [
+                      "host.docker.internal:host-gateway",
+                      "api.local:192.168.1.100",
+                    ],
+                    "extraLabels": {
+                      "app.version": "1.0.0",
+                      "maintainer": "team@example.com",
+                      "production": true,
+                    },
+                    "healthCheck": {
+                      "interval": "30s",
+                      "retries": 3,
+                      "startInterval": "5s",
+                      "startPeriod": "60s",
+                      "test": "curl -f http://localhost:80/health || exit 1",
+                      "timeout": "10s",
+                    },
+                    "hostname": "web-server.local",
+                    "image": "nginx:alpine",
+                    "internalPort": 80,
+                    "isMain": true,
+                    "logging": {
+                      "driver": "json-file",
+                      "options": {
+                        "max-file": "3",
+                        "max-size": "10m",
+                      },
+                    },
+                    "name": "web-server",
+                    "networkMode": "bridge",
+                    "pid": "host",
+                    "privileged": false,
+                    "readOnly": false,
+                    "securityOpt": [
+                      "no-new-privileges:true",
+                      "apparmor:unconfined",
+                    ],
+                    "shmSize": "64m",
+                    "stdinOpen": true,
+                    "stopGracePeriod": "10s",
+                    "stopSignal": "SIGTERM",
+                    "sysctls": {
+                      "net.core.somaxconn": 1024,
+                      "net.ipv4.tcp_syncookies": 1,
+                    },
+                    "tty": true,
+                    "ulimits": {
+                      "core": 0,
+                      "memlock": {
+                        "hard": -1,
+                        "soft": -1,
+                      },
+                      "nofile": 20000,
+                      "nproc": {
+                        "hard": 65536,
+                        "soft": 65536,
+                      },
+                    },
+                    "user": "1000:1000",
+                    "volumes": [
+                      {
+                        "containerPath": "/etc/nginx/conf.d",
+                        "hostPath": "/host/config",
+                        "private": true,
+                        "readOnly": true,
+                        "shared": false,
+                      },
+                      {
+                        "containerPath": "/var/www/html",
+                        "hostPath": "/host/data",
+                        "readOnly": false,
+                      },
+                    ],
+                    "workingDir": "/app",
+                  },
+                  {
+                    "environment": [
+                      {
+                        "key": "POSTGRES_DB",
+                        "value": "myapp",
+                      },
+                      {
+                        "key": "POSTGRES_USER",
+                        "value": "dbuser",
+                      },
+                      {
+                        "key": "POSTGRES_PASSWORD",
+                        "value": "secret123",
+                      },
+                    ],
+                    "healthCheck": {
+                      "interval": "10s",
+                      "retries": 5,
+                      "test": "pg_isready -U dbuser -d myapp",
+                      "timeout": "5s",
+                    },
+                    "image": "postgres:14",
+                    "internalPort": 6543,
+                    "name": "database",
+                    "volumes": [
+                      {
+                        "containerPath": "/var/lib/postgresql/data",
+                        "hostPath": "/host/postgres-data",
+                      },
+                    ],
+                  },
+                  {
+                    "command": "redis-server --appendonly yes",
+                    "dependsOn": [
+                      "database",
+                    ],
+                    "image": "redis:alpine",
+                    "name": "redis",
+                    "volumes": [
+                      {
+                        "containerPath": "/data",
+                        "hostPath": "/host/redis-data",
+                      },
+                    ],
+                  },
+                ],
+              }
+            `);
+          }
+        });
+
+        it('should require schemaVersion 2', () => {
+          const compose = {
+            schemaVersion: 1,
+            services: [
+              {
+                image: 'nginx:latest',
+                name: 'web',
+                internalPort: 80,
+              },
+            ],
+          };
+
+          const result = safeParse(dynamicComposeSchema, compose);
+          expect(result.success).toBe(false);
+        });
+
+        it('should require at least one service', () => {
+          const compose = {
+            schemaVersion: 2 as const,
+            services: [],
+          };
+
+          const result = safeParse(dynamicComposeSchema, compose);
+          expect(result.success).toBe(false);
+        });
+
+        it('should validate multiple services', () => {
+          const compose = {
+            schemaVersion: 2 as const,
+            services: [
+              {
+                image: 'nginx:latest',
+                name: 'web',
+                internalPort: 80,
+              },
+              {
+                image: 'postgres:14',
+                name: 'database',
+                internalPort: 6543,
+              },
+            ],
+          };
+
+          const result = safeParse(dynamicComposeSchema, compose);
+          expect(result.success).toBe(true);
+        });
+      });
+
+      describe('Overrides Configuration', () => {
+        it('should validate overrides with architecture', () => {
+          const compose = {
+            schemaVersion: 2 as const,
+            services: [
+              {
+                image: 'nginx:latest',
+                name: 'web',
+                internalPort: 80,
+              },
+            ],
+            overrides: [
+              {
+                architecture: 'arm64',
+                services: [
+                  {
+                    image: 'nginx:latest-arm64',
+                    name: 'web',
+                    internalPort: 80,
+                  },
+                ],
+              },
+            ],
+          };
+
+          const result = safeParse(dynamicComposeSchema, compose);
+          expect(result.success).toBe(true);
+        });
+
+        it('should validate overrides without architecture', () => {
+          const compose = {
+            schemaVersion: 2 as const,
+            services: [
+              {
+                image: 'nginx:latest',
+                name: 'web',
+                internalPort: 80,
+              },
+            ],
+            overrides: [
+              {
+                services: [
+                  {
+                    image: 'nginx:alpine',
+                    name: 'web',
+                    internalPort: 80,
+                  },
+                ],
+              },
+            ],
+          };
+
+          const result = safeParse(dynamicComposeSchema, compose);
+          expect(result.success).toBe(true);
+        });
+
+        it('should reject invalid override structure', () => {
+          const compose = {
+            schemaVersion: 2 as const,
+            services: [
+              {
+                image: 'nginx:latest',
+                name: 'web',
+                internalPort: 80,
+              },
+            ],
+            overrides: [
+              {
+                architecture: 'x86', // invalid architecture value
+                services: [{}], // incomplete service
+              },
+            ],
+          };
+
+          const result = safeParse(dynamicComposeSchema, compose);
+          expect(result.success).toBe(false);
+        });
+      });
+    });
+
+    describe('Edge Cases and Error Conditions', () => {
+      it('should handle null and undefined values appropriately', () => {
+        const testCases = [
+          null,
+          undefined,
+          { schemaVersion: 2, services: null },
+          { schemaVersion: 2, services: undefined },
+          { schemaVersion: null, services: [] },
+        ];
+
+        for (const testCase of testCases) {
+          const result = safeParse(dynamicComposeSchema, testCase);
+          expect(result.success).toBe(false);
+        }
+      });
+
+      it('should handle malformed data structures', () => {
+        const testCases = [
+          'string',
+          123,
+          [],
+          { schemaVersion: '2', services: 'not-array' },
+          { schemaVersion: 2, services: [{ invalid: 'service' }] },
+        ];
+
+        for (const testCase of testCases) {
+          const result = safeParse(dynamicComposeSchema, testCase);
+          expect(result.success).toBe(false);
+        }
+      });
+    });
+
+    describe('Schema Transformation and Version Migration', () => {
+      it('should handle V1 to V2 transformation edge cases', () => {
+        const edgeCases = [
+          // Missing required fields after transformation
+          { services: [{ image: 'nginx' }] },
+          // Invalid port after transformation
+          { services: [{ image: 'nginx', name: 'web', internalPort: 0 }] },
+          // Invalid environment after transformation
+          { services: [{ image: 'nginx', name: 'web', internalPort: 80, environment: 'invalid' }] },
+        ];
+
+        for (const testCase of edgeCases) {
+          const result = safeParse(dynamicComposeSchema, testCase);
+          expect(result.success).toBe(false);
+        }
+      });
+    });
+  });
+});
+
+describe('collectServiceSecurityViolations (install-sink app sandbox)', () => {
+  it('flags privileged services without a grant', () => {
+    const violations = collectServiceSecurityViolations({ privileged: true });
+    expect(violations.map((v) => v.message)).toContain('CUSTOM_APP_ERROR_PRIVILEGED_NOT_ALLOWED');
+  });
+
+  it('allows privileged services when granted', () => {
+    expect(collectServiceSecurityViolations({ privileged: true }, { privileged: true })).toHaveLength(0);
+  });
+
+  it('flags host network and host pid namespaces', () => {
+    expect(collectServiceSecurityViolations({ networkMode: 'host' }).map((v) => v.message)).toContain(
+      'CUSTOM_APP_ERROR_NETWORK_MODE_HOST_NOT_ALLOWED',
+    );
+    expect(collectServiceSecurityViolations({ pid: 'host' }).map((v) => v.message)).toContain('CUSTOM_APP_ERROR_PID_HOST_NOT_ALLOWED');
+    expect(collectServiceSecurityViolations({ networkMode: 'host' }, { networkModeHost: true })).toHaveLength(0);
+    expect(collectServiceSecurityViolations({ pid: 'host' }, { pidHost: true })).toHaveLength(0);
+  });
+
+  it('flags denied host-path binds and honors per-path grants', () => {
+    const svc = { volumes: [{ hostPath: '/var/run/docker.sock' }] };
+    expect(collectServiceSecurityViolations(svc).map((v) => v.message)).toContain('CUSTOM_APP_ERROR_HOST_PATH_DENIED');
+    expect(collectServiceSecurityViolations(svc, { hostPaths: ['/var/run/docker.sock'] })).toHaveLength(0);
+    // a granted path does not whitelist a different denied path
+    expect(collectServiceSecurityViolations({ volumes: [{ hostPath: '/root/.ssh' }] }, { hostPaths: ['/var/run/docker.sock'] })).toHaveLength(1);
+  });
+
+  it('never flags the benign /etc/localtime and /etc/timezone binds', () => {
+    expect(collectServiceSecurityViolations({ volumes: [{ hostPath: '/etc/localtime' }, { hostPath: '/etc/timezone' }] })).toHaveLength(0);
+  });
+
+  it('does not flag a genuine named volume, which exposes no host path', () => {
+    expect(collectServiceSecurityViolations({ volumes: [{ volumeName: 'pgdata' }] })).toHaveLength(0);
+  });
+
+  // Compose reads `/var/run/docker.sock` in the source slot as a BIND, whatever field it arrived in,
+  // so volumeName must not become an unchecked route to a host path.
+  it('flags a volumeName that is really a host path', () => {
+    for (const volumeName of ['/var/run/docker.sock', './host-dir', '../escape', '/', '~/secrets']) {
+      expect(collectServiceSecurityViolations({ volumes: [{ volumeName }] }).map((v) => v.message)).toContain('CUSTOM_APP_ERROR_VOLUME_NAME_INVALID');
+    }
+  });
+
+  it('flags a path-shaped volumeName even for an app granted that exact host path', () => {
+    // The grant covers binds the app declares honestly via hostPath; it must not turn the
+    // volumeName field into a second, unvalidated way to ask for the same access.
+    const violations = collectServiceSecurityViolations(
+      { volumes: [{ volumeName: '/var/run/docker.sock' }] },
+      { hostPaths: ['/var/run/docker.sock'] },
+    );
+    expect(violations.map((v) => v.message)).toContain('CUSTOM_APP_ERROR_VOLUME_NAME_INVALID');
+  });
+
+  it('keeps the trusted allowlist tight and self-consistent', () => {
+    // Guard against accidental broadening: every allowlisted app must resolve to zero
+    // violations for exactly the access it is granted, and nothing else.
+    expect(Object.keys(TRUSTED_APP_SECURITY_ALLOWLIST).sort()).toEqual([
+      'coder',
+      'coolify',
+      'duix-avatar',
+      'falco',
+      'filebrowser-quantum',
+      'home-assistant',
+      'netdata',
+      'refly',
+      'steam-headless',
+      'torollo',
+    ]);
+    expect(
+      collectServiceSecurityViolations({ privileged: true, networkMode: 'host' }, TRUSTED_APP_SECURITY_ALLOWLIST['home-assistant']),
+    ).toHaveLength(0);
+    expect(
+      collectServiceSecurityViolations(
+        { volumes: [{ hostPath: '/proc' }, { hostPath: '/sys' }, { hostPath: '/var/run/docker.sock' }] },
+        TRUSTED_APP_SECURITY_ALLOWLIST.netdata,
+      ),
+    ).toHaveLength(0);
+    expect(
+      collectServiceSecurityViolations({ volumes: [{ hostPath: '/var/run/docker.sock' }] }, TRUSTED_APP_SECURITY_ALLOWLIST.torollo),
+    ).toHaveLength(0);
+    expect(collectServiceSecurityViolations({ volumes: [{ hostPath: '/' }] }, TRUSTED_APP_SECURITY_ALLOWLIST['filebrowser-quantum'])).toHaveLength(0);
+    // torollo's grant is per-path: privileged and other denied paths stay rejected
+    expect(
+      collectServiceSecurityViolations({ privileged: true, volumes: [{ hostPath: '/proc' }] }, TRUSTED_APP_SECURITY_ALLOWLIST.torollo),
+    ).toHaveLength(2);
+  });
+});
+
+describe('dynamicComposeFormSchema', () => {
+  // Regression: the custom-app builder form derived its resolver with
+  // `dynamicComposeSchema.omit({ schemaVersion: true })`. Zod 4 throws
+  // "`.omit()` cannot be used on object schemas containing refinements" at
+  // module-evaluation time, which took the whole /apps/create route down.
+  it('is derivable without throwing, and omits schemaVersion', () => {
+    expect(() => dynamicComposeObject.omit({ schemaVersion: true })).not.toThrow();
+    expect(Object.keys(dynamicComposeFormSchema.shape)).not.toContain('schemaVersion');
+    expect(Object.keys(dynamicComposeFormSchema.shape)).toContain('services');
+  });
+
+  it('rejects .omit() on the refined schema, so callers must use the form schema', () => {
+    expect(() => (dynamicComposeSchemaZod as unknown as { omit: (m: object) => unknown }).omit({ schemaVersion: true })).toThrow(/refinements/);
+  });
+
+  it('accepts a service list with no schemaVersion supplied', () => {
+    const result = dynamicComposeFormSchema.safeParse({
+      services: [{ image: 'nginx:latest', name: 'web', internalPort: 80 }],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('still enforces the override security refinement', () => {
+    const result = dynamicComposeFormSchema.safeParse({
+      services: [{ image: 'nginx:latest', name: 'web', internalPort: 80 }],
+      overrides: [{ architecture: 'arm64', services: [{ privileged: true }] }],
+    });
+    expect(result.success).toBe(false);
+  });
+});

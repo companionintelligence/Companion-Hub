@@ -1,0 +1,69 @@
+version: '3.8'
+
+services:
+  db:
+    image: postgres:14
+    command: -p 6543
+    ports:
+      - "6543:6543"
+    environment:
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_USER: companion
+      POSTGRES_DB: companiondb
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -d companiondb -U companion -p 6543"]
+      interval: 5s
+      timeout: 10s
+      retries: 120
+
+  queue:
+    image: rabbitmq:4-alpine
+    environment:
+      RABBITMQ_DEFAULT_USER: companion
+      RABBITMQ_DEFAULT_PASS: admin
+    ports:
+      - "5672:5672"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 10s
+      retries: 120
+
+  app:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    depends_on:
+      db:
+        condition: service_healthy
+      queue:
+        condition: service_healthy
+    ports:
+      - 9091
+      - 3000
+    environment:
+      NODE_ENV: production
+      POSTGRES_HOST: db
+      POSTGRES_PORT: 6543
+      POSTGRES_USERNAME: companion
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DBNAME: companiondb
+      RABBITMQ_HOST: queue
+      RABBITMQ_PORT: 5672
+      RABBITMQ_USERNAME: companion
+      RABBITMQ_PASSWORD: admin
+      CI_HUB_DATA_DIR: /data
+      ROOT_FOLDER_HOST: /tmp/ci-hub-e2e
+      JWT_SECRET: test-secret
+      CI_CLOUD_URL: http://non-existent-service:3000
+      APPS_REPO_URL: https://github.com/companionintelligence/CI-App-Store
+      APPS_REPO_ID: repo-id
+      DOMAIN: ci.computer
+      LOCAL_DOMAIN: ci.lan
+      CI_HUB_VERSION: 9.9.9
+      E2E_TEST: true
+      PRIVATE_VPN_USER_DISABLED: "true"
+      DEVICE_ID: test-device-e2e
+    volumes:
+      - /data
+      - /var/run/docker.sock:/var/run/docker.sock

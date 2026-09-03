@@ -1,0 +1,494 @@
+{
+  "_": "Written by `ci-video narrate`. Records which line each mp3 is a read of, in which voice, on which engine, at what prosody — so a later edit to any of those can be detected instead of silently keeping the old recording. Commit this with the mp3s.",
+  "engine": "edge",
+  "voice": "en-GB-SoniaNeural",
+  "scenes": {
+    "app-privacy": {
+      "text": "Every app page carries an App Privacy card, and where nobody has declared anything, it says so.",
+      "seconds": 6.12
+    },
+    "open": {
+      "text": "Four hundred and ninety apps, each one running on hardware you own.",
+      "seconds": 4.416
+    },
+    "sign-in": {
+      "text": "It opens on a local login. Signing in anywhere else is optional.",
+      "seconds": 5.112,
+      "adopted": true
+    },
+    "pair-the-hub": {
+      "text": "A new Hub asks for one pairing code from Companion Portal.",
+      "seconds": 4.08,
+      "adopted": true
+    },
+    "first-boot": {
+      "text": "First boot is one pass. Local models, network, apps.",
+      "seconds": 5.304,
+      "adopted": true
+    },
+    "home-dashboard": {
+      "text": "This is home. Disk, CPU and memory, read off hardware you own.",
+      "seconds": 5.568,
+      "adopted": true
+    },
+    "browse-the-store": {
+      "text": "The store is fed by the open Hub market. Search, or browse.",
+      "seconds": 5.088,
+      "adopted": true
+    },
+    "open-alternatives": {
+      "text": "For the software you rent, the store names the open replacement you can own.",
+      "seconds": 4.704,
+      "adopted": true
+    },
+    "configure-install": {
+      "text": "Secrets generate themselves. Everything else an app asks for, you see before it runs.",
+      "seconds": 6.312,
+      "adopted": true
+    },
+    "install-and-run": {
+      "text": "When the badge turns green it is running on hardware you own, not rented from anyone.",
+      "seconds": 5.417,
+      "prosody": {
+        "rate": "-3%",
+        "pitch": "+0Hz",
+        "volume": "+0%"
+      }
+    },
+    "bring-your-own-app": {
+      "text": "Your own containers become a first class app, with a name and an address.",
+      "seconds": 4.752,
+      "adopted": true
+    },
+    "expose-a-port": {
+      "text": "Anything already running here gets a name, a certificate, and a door you choose.",
+      "seconds": 5.376,
+      "adopted": true
+    },
+    "local-models": {
+      "text": "The Hub reads your hardware and picks models it can actually run at home.",
+      "seconds": 4.32,
+      "adopted": true
+    },
+    "own-your-agents": {
+      "text": "Agents drive your Hub through tools you can read, scoped by keys you issue.",
+      "seconds": 4.728,
+      "adopted": true
+    },
+    "every-dial": {
+      "text": "Want the dials? They are all here. Reading your own logs costs nothing.",
+      "seconds": 5.616,
+      "adopted": true
+    },
+    "recap": {
+      "text": "Your hardware, your domain, your data. Nothing to cancel.",
+      "seconds": 4.92,
+      "adopted": true
+    },
+    "close": {
+      "text": "Your machine. Your models. Your agents. At ci dot computer slash download. UnCloud your life.",
+      "seconds": 8.654,
+      "prosody": {
+        "rate": "-8%",
+        "pitch": "-2Hz",
+        "volume": "+0%"
+      }
+    },
+    "second-job": {
+      "text": "Turn the computer you already own into a private AI server.",
+      "seconds": 4.346,
+      "prosody": {
+        "rate": "-5%",
+        "pitch": "-1Hz",
+        "volume": "+0%"
+      }
+    },
+    "the-list": {
+      "text": "Start with the desktop, mini PC or laptop already in the room.",
+      "seconds": 4.958,
+      "prosody": {
+        "rate": "-5%",
+        "pitch": "-1Hz",
+        "volume": "+0%"
+      }
+    },
+    "the-longer-list": {
+      "text": "Download Hub, run one installer, and finish one setup wizard.",
+      "seconds": 4.837,
+      "prosody": {
+        "rate": "-5%",
+        "pitch": "-1Hz",
+        "volume": "+0%"
+      }
+    },
+    "most-people-quit": {
+      "text": "Hub reads your hardware and knows what can run here.",
+      "seconds": 3.392,
+      "prosody": {
+        "rate": "-5%",
+        "pitch": "-1Hz",
+        "volume": "+0%"
+      }
+    },
+    "title": {
+      "text": "Until now. Companion Hub turns a computer you already own into a private AI server.",
+      "seconds": 6.47,
+      "prosody": {
+        "rate": "-6%",
+        "pitch": "-2Hz",
+        "volume": "+0%"
+      }
+    },
+    "any-computer": {
+      "text": "Install private apps in one click, with settings shown before anything runs.",
+      "seconds": 5.346,
+      "prosody": {
+        "rate": "-5%",
+        "pitch": "-1Hz",
+        "volume": "+0%"
+      }
+    },
+    "one-wizard": {
+      "text": "Download Hub, run one installer, and finish one setup wizard.",
+      "seconds": 4.754,
+      "prosody": {
+        "rate": "-3%",
+        "pitch": "+0Hz",
+        "volume": "+0%"
+      }
+    },
+    "reads-the-machine": {
+      "text": "Hub reads it first — processor, memory, graphics and storage — and works out what this machine can run.",
+      "seconds": 6.945,
+      "prosody": {
+        "rate": "-3%",
+        "pitch": "+0Hz",
+        "volume": "+0%"
+      }
+    },
+    "picks-the-models": {
+      "text": "Then it picks the models that fit, each one priced in the memory it needs.",
+      "seconds": 4.746,
+      "prosody": {
+        "rate": "-3%",
+        "pitch": "+0Hz",
+        "volume": "+0%"
+      }
+    },
+    "apps-arrive": {
+      "text": "A guided install shows the network exposure and requested settings before the app starts.",
+      "seconds": 5.84,
+      "prosody": {
+        "rate": "-3%",
+        "pitch": "+0Hz",
+        "volume": "+0%"
+      }
+    },
+    "from-a-phone": {
+      "text": "You decide what each service can reach — this machine only, your private network, or the open web.",
+      "seconds": 6.493,
+      "prosody": {
+        "rate": "-3%",
+        "pitch": "+0Hz",
+        "volume": "+0%"
+      }
+    },
+    "hermes-openclaw": {
+      "text": "Add agents like Hermes and OpenClaw through their separate app backends, on the hardware you choose.",
+      "seconds": 6.155,
+      "prosody": {
+        "rate": "-3%",
+        "pitch": "+0Hz",
+        "volume": "+0%"
+      }
+    },
+    "alternatives": {
+      "text": "And the rest of the shelf is open-source replacements for the subscriptions you are tired of paying.",
+      "seconds": 5.548,
+      "prosody": {
+        "rate": "-3%",
+        "pitch": "+0Hz",
+        "volume": "+0%"
+      }
+    },
+    "the-things-stay": {
+      "text": "Your files, apps, and work stay on hardware you own.",
+      "seconds": 4.071,
+      "prosody": {
+        "rate": "-3%",
+        "pitch": "+0Hz",
+        "volume": "+0%"
+      }
+    },
+    "the-uncloud": {
+      "text": "No datacenter. No subscription. You are not renting any of it.",
+      "seconds": 5.103,
+      "prosody": {
+        "rate": "-5%",
+        "pitch": "-1Hz",
+        "volume": "+0%"
+      }
+    },
+    "ci-hub-30-second-job": {
+      "text": "You wanted a home server. You got a second job.",
+      "seconds": 3.51,
+      "prosody": {
+        "rate": "-5%",
+        "pitch": "-1Hz",
+        "volume": "+0%"
+      }
+    },
+    "ci-hub-30-the-longer-list": {
+      "text": "Open a port. Build a VPN. Learn what a reverse proxy is.",
+      "seconds": 5.188,
+      "prosody": {
+        "rate": "-5%",
+        "pitch": "-1Hz",
+        "volume": "+0%"
+      }
+    },
+    "ci-hub-30-reads-the-machine": {
+      "text": "Companion Hub reads the machine you already own.",
+      "seconds": 3.334,
+      "prosody": {
+        "rate": "-3%",
+        "pitch": "+0Hz",
+        "volume": "+0%"
+      }
+    },
+    "ci-hub-30-the-things-stay": {
+      "text": "Your files and apps stay on the machine you own.",
+      "seconds": 3.175,
+      "prosody": {
+        "rate": "-3%",
+        "pitch": "+0Hz",
+        "volume": "+0%"
+      }
+    },
+    "ci-hub-bumper-laptop-line": {
+      "text": "Old laptop? Private AI.",
+      "seconds": 2.87,
+      "prosody": {
+        "rate": "-5%",
+        "pitch": "-1Hz",
+        "volume": "+0%"
+      }
+    },
+    "ci-hub-bumper-laptop-close": {
+      "text": "ci.computer slash download.",
+      "seconds": 3.018,
+      "prosody": {
+        "rate": "-8%",
+        "pitch": "-2Hz",
+        "volume": "+0%"
+      }
+    },
+    "ci-hub-bumper-renting-line": {
+      "text": "Run it at home.",
+      "seconds": 1.578,
+      "prosody": {
+        "rate": "-5%",
+        "pitch": "-1Hz",
+        "volume": "+0%"
+      }
+    },
+    "ci-hub-bumper-renting-close": {
+      "text": "ci.computer slash download.",
+      "seconds": 3.018,
+      "prosody": {
+        "rate": "-8%",
+        "pitch": "-2Hz",
+        "volume": "+0%"
+      }
+    },
+    "ci-hub-bumper-landlord-line": {
+      "text": "Private AI. No cloud account.",
+      "seconds": 3.115,
+      "prosody": {
+        "rate": "-5%",
+        "pitch": "-1Hz",
+        "volume": "+0%"
+      }
+    },
+    "ci-hub-bumper-landlord-close": {
+      "text": "ci.computer slash download.",
+      "seconds": 3.018,
+      "prosody": {
+        "rate": "-8%",
+        "pitch": "-2Hz",
+        "volume": "+0%"
+      }
+    },
+    "ci-hub-30-title": {
+      "text": "There is a much shorter way. One installer, one wizard.",
+      "seconds": 4.336,
+      "prosody": {
+        "rate": "-6%",
+        "pitch": "-2Hz",
+        "volume": "+0%"
+      }
+    },
+    "ci-hub-30-the-list": {
+      "text": "Start with the desktop, mini PC, or laptop you already own. Hub checks what it can run.",
+      "seconds": 6.715,
+      "prosody": {
+        "rate": "-5%",
+        "pitch": "-1Hz",
+        "volume": "+0%"
+      }
+    },
+    "ci-hub-30-picks-the-models": {
+      "text": "Then picks the local models that fit it.",
+      "seconds": 2.86,
+      "prosody": {
+        "rate": "-3%",
+        "pitch": "+0Hz",
+        "volume": "+0%"
+      }
+    },
+    "ci-hub-30-apps-arrive": {
+      "text": "A guided install shows network exposure and settings before anything starts.",
+      "seconds": 5.373,
+      "prosody": {
+        "rate": "-3%",
+        "pitch": "+0Hz",
+        "volume": "+0%"
+      }
+    },
+    "ci-hub-30-install-and-run": {
+      "text": "Running on your hardware, rented from nobody.",
+      "seconds": 3.229,
+      "prosody": {
+        "rate": "-3%",
+        "pitch": "+0Hz",
+        "volume": "+0%"
+      }
+    },
+    "ci-hub-30-hermes-openclaw": {
+      "text": "Add Hermes and OpenClaw through their separate app backends.",
+      "seconds": 4.007,
+      "prosody": {
+        "rate": "-3%",
+        "pitch": "+0Hz",
+        "volume": "+0%"
+      }
+    },
+    "ci-hub-30-close": {
+      "text": "Your machine. Your AI. Get Hub at ci dot computer slash download.",
+      "seconds": 6.108,
+      "prosody": {
+        "rate": "-8%",
+        "pitch": "-2Hz",
+        "volume": "+0%"
+      }
+    },
+    "ci-hub-bumper-laptop-the-list": {
+      "text": "Old computer. New AI home. Get Companion Hub.",
+      "seconds": 4.706,
+      "prosody": {
+        "rate": "-5%",
+        "pitch": "-1Hz",
+        "volume": "+0%"
+      }
+    },
+    "ci-hub-bumper-renting-install-and-run": {
+      "text": "Your apps. Your machine. Stop renting the stack.",
+      "seconds": 4.117,
+      "prosody": {
+        "rate": "-3%",
+        "pitch": "+0Hz",
+        "volume": "+0%"
+      }
+    },
+    "ci-hub-bumper-landlord-from-a-phone": {
+      "text": "Your apps. Your AI. Your machine.",
+      "seconds": 3.446,
+      "prosody": {
+        "rate": "-3%",
+        "pitch": "+0Hz",
+        "volume": "+0%"
+      }
+    },
+    "the-tenant": {
+      "text": "Right now you rent. The storage, the models, the apps, the backups — all billed monthly, on somebody else's computer.",
+      "seconds": 8.55,
+      "prosody": {
+        "rate": "-5%",
+        "pitch": "-1Hz",
+        "volume": "+0%"
+      }
+    },
+    "the-bill": {
+      "text": "A full subscription stack runs about seven thousand dollars a year, for services you are not allowed to look inside.",
+      "seconds": 7.128,
+      "prosody": {
+        "rate": "-5%",
+        "pitch": "-1Hz",
+        "volume": "+0%"
+      }
+    },
+    "the-hard-way": {
+      "text": "Owning it instead meant drivers, containers, quantised models and certificates. Most people quit right about here.",
+      "seconds": 8.378,
+      "prosody": {
+        "rate": "-5%",
+        "pitch": "-1Hz",
+        "volume": "+0%"
+      }
+    },
+    "the-frameworks": {
+      "text": "Then bring the agents you already like. OpenClaw, Hermes, Claude Code, OpenCode — one click each, on your own machine.",
+      "seconds": 8.829,
+      "prosody": {
+        "rate": "-5%",
+        "pitch": "-1Hz",
+        "volume": "+0%"
+      }
+    },
+    "ci-hub-30-the-tenant": {
+      "text": "You rent the storage, the models and the apps. All of it on somebody else's computer.",
+      "seconds": 6.282,
+      "prosody": {
+        "rate": "-5%",
+        "pitch": "-1Hz",
+        "volume": "+0%"
+      }
+    },
+    "ci-hub-30-the-frameworks": {
+      "text": "Add OpenClaw, Hermes and the rest of the shelf in one click each.",
+      "seconds": 4.741,
+      "prosody": {
+        "rate": "-5%",
+        "pitch": "-1Hz",
+        "volume": "+0%"
+      }
+    },
+    "ci-hub-bumper-tenant-the-tenant": {
+      "text": "You are a renting tenant. You do not have to be.",
+      "seconds": 3.562,
+      "prosody": {
+        "rate": "-5%",
+        "pitch": "-1Hz",
+        "volume": "+0%"
+      }
+    },
+    "ci-hub-bumper-models-picks-the-models": {
+      "text": "It reads your hardware, then picks the models that fit it.",
+      "seconds": 3.801,
+      "prosody": {
+        "rate": "-3%",
+        "pitch": "+0Hz",
+        "volume": "+0%"
+      }
+    },
+    "ci-hub-bumper-agents-the-frameworks": {
+      "text": "Bring your own agents. One click each, on hardware you own.",
+      "seconds": 4.598,
+      "prosody": {
+        "rate": "-5%",
+        "pitch": "-1Hz",
+        "volume": "+0%"
+      }
+    }
+  }
+}

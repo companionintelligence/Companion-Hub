@@ -1,0 +1,22 @@
+.service-group {
+  padding-top: 1rem;
+  padding-bottom: 1rem;
+}
+
+/*
+ * The tab bar and the service list used to be styled here with Tabler/Bootstrap
+ * selectors (.nav-item-c .nav-link, .nav-link-title-c, [data-bs-theme="dark"] …).
+ * None of it could work: the base .nav/.nav-link classes have no stylesheet in
+ * this app, --tblr-primary is undefined so the active tab took no colour, and
+ * the app themes via `class="dark"` rather than [data-bs-theme], so those two
+ * rules never matched a single element. Both are now styled with the app's own
+ * Tailwind tokens in multi-service-form.tsx. See issue #1071.
+ */
+
+.cm-editor {
+  border-radius: 0 var(--radius-md) 0 0;
+}
+
+.cm-scroller {
+  border-radius: var(--radius-md) 0 0 0;
+}

@@ -1,0 +1,95 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Companion Hub",
+  "mainBinaryName": "companion-hub",
+  "version": "0.2.61",
+  "identifier": "computer.ci.app.hub",
+  "build": {
+    "beforeDevCommand": "",
+    "devUrl": "http://localhost:5005",
+    "beforeBuildCommand": "",
+    "frontendDist": "../bootstrap"
+  },
+  "bundle": {
+    "active": true,
+    "createUpdaterArtifacts": false,
+    "targets": "all",
+    "icon": [
+      "icons/32x32.png",
+      "icons/64x64.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "resources": {
+      "resources/*": "resources/",
+      "../../../distribution/scripts/uninstall-cleanup.ps1": "resources/uninstall-cleanup.ps1"
+    },
+    "windows": {
+      "nsis": {
+        "installerHooks": "windows/installer-hooks.nsh"
+      },
+      "wix": {
+        "fragmentPaths": ["windows/cleanup-on-uninstall.wxs"],
+        "componentGroupRefs": ["CompanionHubCleanupGroup"]
+      }
+    },
+    "linux": {
+      "deb": {
+        "desktopTemplate": "deep-link.desktop"
+      },
+      "rpm": {
+        "desktopTemplate": "deep-link.desktop",
+        "postRemoveScript": "linux/rpm/postun"
+      }
+    },
+    "macOS": {
+      "minimumSystemVersion": "11.0",
+      "dmg": {
+        "background": "dmg/dmg-background.png",
+        "windowSize": {
+          "width": 660,
+          "height": 400
+        },
+        "appPosition": {
+          "x": 180,
+          "y": 202
+        },
+        "applicationFolderPosition": {
+          "x": 480,
+          "y": 202
+        }
+      }
+    }
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Companion Hub",
+        "width": 1280,
+        "height": 800,
+        "minWidth": 800,
+        "minHeight": 600,
+        "resizable": true,
+        "center": true,
+        "decorations": true,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
+        "backgroundColor": "#041620"
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' ipc: http://ipc.localhost http://127.0.0.1:* http://localhost:* https://localhost:* ws://127.0.0.1:* ws://localhost:* wss://localhost:*; img-src 'self' data: blob: http://127.0.0.1:* http://localhost:* https:; font-src 'self' data:"
+    }
+  },
+  "plugins": {
+    "deep-link": {
+      "mobile": [],
+      "desktop": {
+        "schemes": ["cihub", "cihub-dev"]
+      }
+    }
+  }
+}

@@ -1,0 +1,32 @@
+name: Integraton tests
+# TEMPORARY (Actions credit): automatic PR/push triggers disabled.
+# Re-enable when credits recover. Manual: gh workflow run integration-tests.yml
+on:
+  workflow_call:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  integration-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install dependencies
+        uses: "./.github/actions/install-dependencies"
+        with:
+          node-auth-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Run integration tests
+        env:
+          POSTGRES_TEST_IMAGE: public.ecr.aws/docker/library/postgres:14
+          RABBITMQ_TEST_IMAGE: public.ecr.aws/docker/library/rabbitmq:4-alpine
+        run: pnpm run test:integration

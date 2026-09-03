@@ -1,0 +1,246 @@
+import { Injectable } from '@nestjs/common';
+import type { AppInfo } from '@ci-hub/common/schemas';
+import type { AppUrn } from '@ci-hub/common/types';
+import type { AppStatus } from '@/core/database/drizzle/types';
+import { LoggerService } from '@/core/logger/logger.service';
+import { AppsReadService } from '@/modules/apps/apps-read.service';
+import { AppsService } from '@/modules/apps/apps.service';
+import { isMemoryProviderApp } from './memory-provider.predicate';
+
+/** Fallbacks when ci-memory's manifest omits an explicit provider descriptor. */
+const DEFAULT_PROVIDER_SERVICE = 'gateway';
+const DEFAULT_PROVIDER_PORT = 8642;
+
+/** Where the Hub can reach an installed Companion Memory, both internally and for the browser. */
+export interface ResolvedMemoryProvider {
+  /** URN of the installed ci-memory app. */
+  appUrn: AppUrn;
+  /** Internal address on the shared docker network (server-to-server exchange). */
+  internalUrl: string;
+  /** Browser-reachable public URL (base of the consent flow), when resolvable. */
+  publicUrl?: string;
+}
+
+/** The env-var names a consumer app reads its memory URL + token from. */
+export interface MemoryConsumerEnv {
+  urlEnv: string;
+  tokenEnv: string;
+}
+
+/**
+ * Coarse readiness of the installed Companion Memory provider, derived from the
+ * ci-memory app's lifecycle status — what the Hub UI and the wrapper connect gates
+ * key on to decide whether a connect can actually succeed:
+ *   `ready`    — running; a connect will work now.
+ *   `starting` — installing / booting / mid-maintenance; it's on its way up, so hold off.
+ *   `offline`  — installed but down (stopped, install_failed, …); a connect can't work.
+ *   `absent`   — not installed at all.
+ *
+ * The distinction matters because a mere DB row exists from the moment an install
+ * BEGINS — long before ci-memory is reachable — so "installed" must not read as "ready".
+ */
+export type MemoryProviderRuntimeStatus = 'ready' | 'starting' | 'offline' | 'absent';
+
+/**
+ * App statuses in which ci-memory is booting / coming up (not reachable yet, but on
+ * its way). Typed against `AppStatus` — like the sibling `DOWN_APP_STATUSES` — so a
+ * typo or a value newly added to the enum is a compile error here rather than a
+ * silent fall-through to "offline".
+ */
+const PROVIDER_STARTING_STATUSES: ReadonlySet<AppStatus> = new Set<AppStatus>([
+  'installing',
+  'starting',
+  'restarting',
+  'updating',
+  'restoring',
+  'backing_up',
+  'resetting',
+]);
+
+/**
+ * Resolves the installed Companion Memory provider and classifies memory
+ * consumer apps, from the `hub_integration.memory` manifest declarations.
+ *
+ * This is the one piece the earlier plan under-specified: the Hub has no
+ * generic "internal address of installed app X" helper, so ci-memory's manifest
+ * carries `provider: { service, port }` and we build the shared-network URL from
+ * it (falling back to the historical `gateway:8642`).
+ */
+@Injectable()
+export class MemoryProviderResolver {
+  constructor(
+    private readonly appsReadService: AppsReadService,
+    private readonly appsService: AppsService,
+    private readonly logger: LoggerService,
+  ) {}
+
+  /** Whether an app is a memory consumer (declares both url + token env names). */
+  isConsumer(info: AppInfo): boolean {
+    return this.consumerEnv(info) !== null;
+  }
+
+  /**
+   * The browser-reachable public URL of an installed app, or undefined when it
+   * can't be resolved (not running / no public route). Used to allowlist the
+   * post-connect redirect destination.
+   */
+  async getAppPublicUrl(appUrn: AppUrn): Promise<string | undefined> {
+    return (await this.getAppAccessUrls(appUrn)).publicUrl;
+  }
+
+  /**
+   * Every browser-reachable URL for an installed app: its primary route
+   * (`publicUrl` — the public tunnel address, or the LAN address for a
+   * locally-exposed app) and its direct LAN address (`localUrl`) when one exists.
+   *
+   * Both are needed because the post-connect landing allowlist has to accept the
+   * origin the user actually started on. Allowlisting only the primary route is
+   * what silently relocated a LAN user of a Cloudflare-exposed app onto the public
+   * origin at the end of the flow (CI-Engineering#75, Problem 5).
+   *
+   * Fails soft: an unresolvable app yields empty fields rather than throwing, so a
+   * transient availability failure degrades the allowlist instead of breaking the
+   * connect flow outright.
+   */
+  async getAppAccessUrls(appUrn: AppUrn): Promise<{ publicUrl?: string; localUrl?: string; primaryAvailable?: boolean }> {
+    try {
+      const availability = await this.appsService.checkAppAvailability(appUrn);
+
+      return { publicUrl: availability.appUrl, localUrl: availability.localUrl, primaryAvailable: availability.available };
+    } catch (err) {
+      this.logger.warn(`[MemoryConnect] could not resolve access URLs for ${appUrn}: ${err instanceof Error ? err.message : String(err)}`);
+
+      return {};
+    }
+  }
+
+  /**
+   * The display name of an installed app (for the consent page's friendly
+   * label), or undefined when it can't be resolved.
+   */
+  async getAppName(appUrn: AppUrn): Promise<string | undefined> {
+    try {
+      const { info } = await this.appsReadService.getApp(appUrn);
+
+      return info.name;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * Whether the installed app at `appUrn` is a memory consumer. Resolves the
+   * app's info; returns false if the app can't be found.
+   */
+  async isConsumerApp(appUrn: AppUrn): Promise<boolean> {
+    try {
+      const { info } = await this.appsReadService.getApp(appUrn);
+
+      return this.isConsumer(info);
+    } catch {
+      return false;
+    }
+  }
+
+  /** The consumer env-var mapping for an app, or null if it is not a consumer. */
+  consumerEnv(info: AppInfo): MemoryConsumerEnv | null {
+    const mem = info.hub_integration?.memory;
+
+    if (mem?.url_env && mem?.token_env) {
+      return { urlEnv: mem.url_env, tokenEnv: mem.token_env };
+    }
+
+    return null;
+  }
+
+  /**
+   * Coarse runtime status of Companion Memory. Uses the DB-only lite listing (no
+   * per-app manifest/compose fan-out that {@link findProvider} pays via
+   * `getInstalledApps`), so the frequently-polled callers — the wrapper connect
+   * gate and the app-detail badge — don't do filesystem work per installed app.
+   *
+   * Keyed on the ci-memory row's lifecycle `status`, because connecting only works
+   * once it is actually `running`: a row in `installing` / `stopped` must resolve to
+   * a not-`ready` value so those surfaces don't offer a connect that dead-ends on
+   * startConnect's "not reachable yet" 400. Reconstructs the urn from the DB row
+   * (`<appName>:<appStoreSlug>`).
+   */
+  async getProviderRuntimeStatus(): Promise<MemoryProviderRuntimeStatus> {
+    return (await this.getProviderRuntimeInfo()).status;
+  }
+
+  /**
+   * {@link getProviderRuntimeStatus} plus whether ci-memory is reachable ONLY on
+   * the local network.
+   *
+   * A provider that is not publicly tunnelled publishes its consent page at an
+   * address a public browser cannot reach — `http://<ip>:<port>` for a
+   * LAN-exposed provider, a tailnet-only MagicDNS name for a Tailscale one — so an
+   * off-network caller cannot complete the ceremony no matter which Hub launcher
+   * it starts from. Read from the app row's `exposureMode` — the same DB-only
+   * listing the status check already loads, so this costs nothing extra and never
+   * triggers the heavy availability probe.
+   *
+   * "Local-only" is therefore anything that is NOT `cloudflare`: `local`,
+   * `tailscale`, and a missing/empty value (pre-`exposureMode` installs, treated
+   * as local to match the conservative fallback used everywhere else). Only a
+   * Cloudflare-tunnelled provider is reachable by an arbitrary public browser.
+   */
+  async getProviderRuntimeInfo(): Promise<{ status: MemoryProviderRuntimeStatus; localOnly: boolean }> {
+    const installed = await this.appsReadService.getInstalledAppsLite();
+
+    const row = installed.find((r) => isMemoryProviderApp({ urn: `${r.appName}:${r.appStoreSlug}` as AppUrn }));
+
+    if (!row) {
+      return { status: 'absent', localOnly: false };
+    }
+
+    const localOnly = (row.exposureMode || 'local') !== 'cloudflare';
+
+    if (row.status === 'running') {
+      return { status: 'ready', localOnly };
+    }
+
+    return { status: PROVIDER_STARTING_STATUSES.has(row.status) ? 'starting' : 'offline', localOnly };
+  }
+
+  /**
+   * Find the installed Companion Memory provider, or null when ci-memory is not
+   * installed (in which case connecting is not offered).
+   *
+   * `withPublicUrl` resolves the browser-reachable URL via a `checkAppAvailability`
+   * probe — a heavy multi-I/O call. Only the browser leg (`startConnect`) needs
+   * it; every other caller (rotation sweep, disconnect, uninstall, status polls)
+   * uses only the internal S2S URL, so the probe is skipped by default.
+   */
+  async findProvider(opts: { withPublicUrl?: boolean } = {}): Promise<ResolvedMemoryProvider | null> {
+    const installed = await this.appsReadService.getInstalledApps();
+
+    // Trust is pinned to the reserved ci-memory id — NOT to a manifest-declared
+    // provider role, which any app could set to be selected here.
+    const provider = installed.find(({ info }) => isMemoryProviderApp(info));
+
+    if (!provider) {
+      return null;
+    }
+
+    const descriptor = provider.info.hub_integration?.memory?.provider;
+    const service = descriptor?.service ?? DEFAULT_PROVIDER_SERVICE;
+    const port = descriptor?.port ?? provider.info.port ?? DEFAULT_PROVIDER_PORT;
+    const appUrn = provider.info.urn as AppUrn;
+
+    // Public URL is best-effort — the browser leg needs it, but the internal
+    // exchange does not, so a provider is still "found" without it.
+    let publicUrl: string | undefined;
+    if (opts.withPublicUrl) {
+      try {
+        const availability = await this.appsService.checkAppAvailability(appUrn);
+        publicUrl = availability.appUrl;
+      } catch (err) {
+        this.logger.warn(`[MemoryConnect] could not resolve ci-memory public URL: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+
+    return { appUrn, internalUrl: `http://${service}:${port}`, publicUrl };
+  }
+}

@@ -1,0 +1,298 @@
+import { Injectable } from '@nestjs/common';
+import { LoggerService } from '@/core/logger/logger.service';
+import type { InferenceBackend } from './backend.interface';
+import type { BackendHealthStatus, BackendModelInfo, PullProgress } from '@ci-hub/common/types';
+import axios from 'axios';
+
+/** Candidate Ollama URLs ordered by likelihood inside a Docker container. */
+const OLLAMA_FALLBACK_URLS = [
+  'http://host.docker.internal:11434',
+  'http://172.17.0.1:11434', // default Docker bridge gateway (Linux)
+  'http://localhost:11434',
+];
+
+@Injectable()
+export class OllamaBackend implements InferenceBackend {
+  readonly type = 'ollama' as const;
+  private configuredUrl: string;
+  /** Resolved URL after probing — updated once on first successful contact. */
+  private resolvedUrl: string;
+  private urlResolved = false;
+
+  constructor(private readonly logger: LoggerService) {
+    // OLLAMA_URL is injected by docker-compose as http://host.docker.internal:11434 (the Hub
+    // container reaches the host's native Ollama over the host-gateway bridge). When the backend
+    // runs directly on the host (`pnpm dev`), there is no compose env and no ci-hub-ollama
+    // container, so default to the loopback address where a host Ollama listens.
+    this.configuredUrl = process.env.OLLAMA_URL || 'http://localhost:11434';
+    this.resolvedUrl = this.configuredUrl;
+  }
+
+  /**
+   * Probe the configured URL and, on failure, try well-known fallback addresses.
+   * Once a reachable URL is found it is cached for the lifetime of the process.
+   */
+  private async resolveUrl(): Promise<string> {
+    if (this.urlResolved) return this.resolvedUrl;
+
+    // Try configured URL first
+    if (await this.probe(this.configuredUrl)) {
+      this.urlResolved = true;
+      return this.resolvedUrl;
+    }
+
+    // Try fallbacks (skip the configured one since we already tried it)
+    for (const candidate of OLLAMA_FALLBACK_URLS) {
+      if (candidate === this.configuredUrl) continue;
+      if (await this.probe(candidate)) {
+        this.logger.info(`[Ollama] Configured URL ${this.configuredUrl} unreachable — discovered Ollama at ${candidate}`);
+        this.resolvedUrl = candidate;
+        this.urlResolved = true;
+        return this.resolvedUrl;
+      }
+    }
+
+    // Nothing reachable — keep using configuredUrl so callers get meaningful errors
+    this.logger.warn(`[Ollama] Could not reach Ollama at ${this.configuredUrl} or any fallback address`);
+    return this.resolvedUrl;
+  }
+
+  private async probe(url: string): Promise<boolean> {
+    try {
+      await axios.get(`${url}/api/version`, { timeout: 3000 });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /** Reset resolved URL so the next call re-probes. Called when a request fails with a network error. */
+  private invalidateResolvedUrl(): void {
+    this.urlResolved = false;
+    this.resolvedUrl = this.configuredUrl;
+  }
+
+  /** URL exposed to app containers and external callers (compose / env contract). */
+  getBaseUrl(): string {
+    // Return the resolved URL if we've found one, otherwise the configured one.
+    return this.resolvedUrl;
+  }
+
+  async healthCheck(): Promise<BackendHealthStatus> {
+    try {
+      const url = await this.resolveUrl();
+      const response = await axios.get(`${url}/api/tags`, { timeout: 5000 });
+      const models = response.data?.models ?? [];
+      return {
+        running: true,
+        healthy: true,
+        modelsLoaded: models.map((m: { name: string }) => m.name),
+      };
+    } catch (err) {
+      this.invalidateResolvedUrl();
+      return {
+        running: false,
+        healthy: false,
+        modelsLoaded: [],
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
+  }
+
+  async listModels(): Promise<BackendModelInfo[]> {
+    try {
+      const url = await this.resolveUrl();
+      const response = await axios.get(`${url}/api/tags`, { timeout: 10000 });
+      const models = response.data?.models ?? [];
+      return models.map((m: { name: string; size: number; details?: { family?: string } }) => ({
+        id: m.name,
+        name: m.name,
+        size: m.size || 0,
+        loaded: true,
+      }));
+    } catch {
+      this.invalidateResolvedUrl();
+      return [];
+    }
+  }
+
+  async pullModel(modelId: string, onProgress?: (progress: PullProgress) => void): Promise<void> {
+    this.logger.info(`[Ollama] Pulling model: ${modelId}`);
+
+    try {
+      const url = await this.resolveUrl();
+      const response = await axios.post(`${url}/api/pull`, { name: modelId, stream: true }, { responseType: 'stream', timeout: 0 });
+
+      await new Promise<void>((resolve, reject) => {
+        // Ollama's /api/pull streams NDJSON with HTTP 200 even on failure: a failed pull is
+        // delivered as a line like {"error":"pull model manifest: 412: ..."} rather than an HTTP
+        // error, and a successful pull terminates with {"status":"success"}. We must inspect the
+        // stream — resolving purely on 'end' reports a failed pull as success.
+        let streamError: string | null = null;
+        let sawSuccess = false;
+
+        const handleLine = (line: string) => {
+          let data: { status?: string; error?: string; digest?: string; total?: number; completed?: number };
+          try {
+            data = JSON.parse(line);
+          } catch {
+            return; // Ignore parse errors in stream
+          }
+
+          if (typeof data.error === 'string' && data.error.length > 0) {
+            streamError = data.error;
+            return;
+          }
+
+          if (data.status === 'success') {
+            sawSuccess = true;
+          }
+
+          const total = data.total || 0;
+          const completed = data.completed || 0;
+          const percent = total > 0 ? Math.round((completed / total) * 100) : 0;
+          onProgress?.({
+            status: data.status || 'pulling',
+            digest: data.digest,
+            total,
+            completed,
+            percent,
+          });
+        };
+
+        // A single JSON object can be split across chunk boundaries, so buffer partial lines
+        // and only parse complete (newline-terminated) ones — otherwise a split `success`/`error`
+        // line would be dropped and silently flip the resolve/reject decision.
+        let buffer = '';
+        response.data.on('data', (chunk: Buffer) => {
+          buffer += chunk.toString();
+          const segments = buffer.split('\n');
+          // The last segment may be an incomplete line — keep it buffered for the next chunk.
+          buffer = segments.pop() ?? '';
+          for (const segment of segments) {
+            const line = segment.trim();
+            if (line) handleLine(line);
+          }
+        });
+        response.data.on('end', () => {
+          const remaining = buffer.trim();
+          if (remaining) handleLine(remaining);
+          if (streamError) {
+            reject(new Error(streamError));
+            return;
+          }
+          if (!sawSuccess) {
+            reject(new Error(`Ollama pull stream ended without a success status for ${modelId}`));
+            return;
+          }
+          this.logger.info(`[Ollama] Model pulled: ${modelId}`);
+          resolve();
+        });
+        response.data.on('error', (streamErr: Error) => {
+          this.logger.error(`[Ollama] Pull stream failed for ${modelId}: ${streamErr.message}`);
+          reject(streamErr);
+        });
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.logger.error(`[Ollama] Pull failed for ${modelId}: ${msg}`);
+      this.invalidateResolvedUrl();
+      throw err;
+    }
+  }
+
+  async loadModel(modelId: string, options?: { embedding?: boolean }): Promise<void> {
+    this.logger.info(`[Ollama] Loading model: ${modelId}`);
+    try {
+      const url = await this.resolveUrl();
+      if (options?.embedding) {
+        await axios.post(`${url}/api/embed`, { model: modelId, input: '', keep_alive: -1 }, { timeout: 120000 });
+      } else {
+        await axios.post(`${url}/api/generate`, { model: modelId, prompt: '', keep_alive: -1 }, { timeout: 120000 });
+      }
+      this.logger.info(`[Ollama] Model loaded and pinned: ${modelId}`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.logger.error(`[Ollama] Failed to load model ${modelId}: ${msg}`);
+      this.invalidateResolvedUrl();
+      throw err;
+    }
+  }
+
+  async unloadModel(modelId: string, options?: { embedding?: boolean }): Promise<void> {
+    this.logger.info(`[Ollama] Unloading model: ${modelId}`);
+    try {
+      const url = await this.resolveUrl();
+      if (options?.embedding) {
+        await axios.post(`${url}/api/embed`, { model: modelId, input: '', keep_alive: 0 }, { timeout: 30000 });
+      } else {
+        await axios.post(`${url}/api/generate`, { model: modelId, prompt: '', keep_alive: 0 }, { timeout: 30000 });
+      }
+      this.logger.info(`[Ollama] Model unloaded: ${modelId}`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.logger.error(`[Ollama] Failed to unload model ${modelId}: ${msg}`);
+      this.invalidateResolvedUrl();
+      throw err;
+    }
+  }
+
+  async isModelLoaded(modelId: string): Promise<boolean> {
+    try {
+      const url = await this.resolveUrl();
+      const response = await axios.get(`${url}/api/ps`, { timeout: 5000 });
+      const models = response.data?.models ?? [];
+      return models.some((m: { name: string }) => m.name === modelId || m.name.startsWith(modelId));
+    } catch {
+      this.invalidateResolvedUrl();
+      return false;
+    }
+  }
+
+  /**
+   * `options.rocmReady` selects the AMD GPU-runtime variant: the `:rocm` tag when /dev/kfd
+   * passthrough is confirmed working, otherwise the default tag. The default tag isn't CPU-only
+   * on AMD — Ollama bundles a Vulkan (RADV/Mesa) ggml backend in it that auto-activates whenever
+   * GPU devices are passed through (no separate "vulkan" tag exists), so it's the correct choice
+   * for AMD hosts where ROCm isn't ready yet. See https://docs.ollama.com/docker#vulkan-support.
+   */
+  getDockerImage(options?: { rocmReady?: boolean }): string {
+    return options?.rocmReady ? 'ollama/ollama:rocm' : 'ollama/ollama:latest';
+  }
+
+  /**
+   * `options.rocmReady` mirrors HardwareProfile.gpu.hostRocmKfdAvailable — pass it through so the
+   * `amd` branch below picks the matching image (see getDockerImage). `options.unifiedMemory`
+   * mirrors HardwareProfile.gpu.unifiedMemory (true for the Strix Halo APU): when set alongside a
+   * not-ready rocmReady, it forces llama.cpp's Vulkan backend to allocate from GTT/system RAM
+   * instead of the small carved-out VRAM window unified-memory APUs expose by default — mirroring
+   * the community amd-strix-halo-toolboxes / llama-vulkan-strix setups. Discrete AMD GPUs have
+   * real dedicated VRAM, so this must NOT be set for them.
+   */
+  getComposeConfig(gpuVendor: string, options?: { rocmReady?: boolean; unifiedMemory?: boolean }): Record<string, unknown> {
+    const base: Record<string, unknown> = {
+      image: this.getDockerImage(options),
+      container_name: 'ci-hub-ollama',
+      restart: 'unless-stopped',
+      ports: ['11434:11434'],
+      volumes: ['ollama-data:/root/.ollama'],
+    };
+
+    if (gpuVendor === 'nvidia') {
+      base.deploy = {
+        resources: {
+          reservations: { devices: [{ capabilities: ['gpu'], count: 'all' }] },
+        },
+      };
+      base.runtime = 'nvidia';
+    } else if (gpuVendor === 'amd') {
+      base.devices = ['/dev/kfd', '/dev/dri'];
+      base.group_add = ['video', 'render'];
+      if (!options?.rocmReady && options?.unifiedMemory) {
+        base.environment = { GGML_VK_PREFER_HOST_MEMORY: '1' };
+      }
+    }
+
+    return base;
+  }
+}

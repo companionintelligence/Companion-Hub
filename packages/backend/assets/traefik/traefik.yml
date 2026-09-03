@@ -1,0 +1,53 @@
+api:
+  dashboard: true
+  # SECURITY: keep the insecure API/dashboard OFF by default. When `insecure` is
+  # true, Traefik serves the unauthenticated dashboard + API on :8080, which the
+  # prod compose publishes to the host — an unauthenticated control-plane leak.
+  # It is only re-enabled for local development at config-copy time (see
+  # AppService.copyAssets); production/staging/test all keep it disabled.
+  insecure: false
+
+providers:
+  docker:
+    endpoint: "unix:///var/run/docker.sock"
+    watch: true
+    exposedByDefault: false
+    # Disable host information retrieval to avoid Docker API version errors
+    useBindPortIP: false
+  file:
+    directory: /etc/traefik/dynamic
+    watch: true
+
+entryPoints:
+  web:
+    address: ":80"
+    # Allow plain HTTP - no automatic redirect to HTTPS
+    # Cloudflare Tunnel connects via plain HTTP
+    transport:
+      respondingTimeouts:
+        readTimeout: 300s
+        writeTimeout: 300s
+        idleTimeout: 300s
+  websecure:
+    address: ":443"
+    http:
+      tls:
+        certResolver: myresolver
+    transport:
+      respondingTimeouts:
+        readTimeout: 300s
+        writeTimeout: 300s
+        idleTimeout: 300s
+
+certificatesResolvers:
+  myresolver:
+    acme:
+      email: {{ACME_EMAIL}}
+      storage: /etc/traefik/acme.json
+      httpChallenge:
+        entryPoint: web
+
+log:
+  level: INFO
+  # Suppress Docker provider errors about host information retrieval
+  format: json

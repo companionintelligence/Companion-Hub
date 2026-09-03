@@ -1,0 +1,202 @@
+{
+  "meta": {
+    "viewportDefault": "1920x1080",
+    "themeDefault": "dark",
+    "routeSources": {
+      "portal": "CI-Portal/apps/web-app/src/routes/ (TanStack Router createFileRoute paths, verified)",
+      "hub": "CI-Hub/packages/frontend/src/routes.ts (React Router 7 RouteConfig, verified)"
+    },
+    "captureNotes": "Portal dev: pnpm dev in CI-Portal (Worker + SPA). Hub dev: pnpm dev in CI-Hub (frontend on :3000, backend API). Hub default theme is dark. Portal shots get a browser frame in Remotion; capture them clean (no OS chrome)."
+  },
+  "shots": [
+    {
+      "id": "portal-signup",
+      "app": "portal",
+      "route": "/signup",
+      "authRequired": false,
+      "theme": "dark",
+      "viewport": "1920x1080",
+      "description": "Sign-up form (AuthPage with defaultIsSignUp). Empty fields, no validation errors. Meta title 'Create account | Companion Hub'."
+    },
+    {
+      "id": "portal-login",
+      "app": "portal",
+      "route": "/login",
+      "authRequired": false,
+      "theme": "dark",
+      "viewport": "1920x1080",
+      "description": "Login form, clean state. Alternate take for scene s03 if the signup capture is weak."
+    },
+    {
+      "id": "portal-home",
+      "app": "portal",
+      "route": "/home",
+      "authRequired": true,
+      "theme": "dark",
+      "viewport": "1920x1080",
+      "description": "Authenticated workspace: WorkspaceHeader with org name + device/app counts, AppLauncherGrid with a few hosted apps, DevicesSidebar on the right with at least one device. Use the QA test org so the grid is not empty."
+    },
+    {
+      "id": "portal-add-device-dialog",
+      "app": "portal",
+      "route": "/home",
+      "authRequired": true,
+      "theme": "dark",
+      "viewport": "1920x1080",
+      "description": "'Name your device' dialog open over /home. Device Name field contains 'Living Room Server' with the slug preview ('living-room-server') visible below the input."
+    },
+    {
+      "id": "portal-pairing-code-dialog",
+      "app": "portal",
+      "route": "/home",
+      "authRequired": true,
+      "theme": "dark",
+      "viewport": "1920x1080",
+      "description": "'Device Pairing Code' dialog open: large monospace 6-character code in the teal-bordered card, copy button visible. Capture immediately after creating a device."
+    },
+    {
+      "id": "portal-home-with-device",
+      "app": "portal",
+      "route": "/home",
+      "authRequired": true,
+      "theme": "dark",
+      "viewport": "1920x1080",
+      "description": "Same /home view after pairing: device shows online status in DevicesSidebar and the launcher grid includes the freshly installed app with its store logo. NEEDS REVIEW: requires a really-paired device (fleet/test box)."
+    },
+    {
+      "id": "portal-store-public",
+      "app": "portal",
+      "route": "/store",
+      "authRequired": false,
+      "theme": "dark",
+      "viewport": "1920x1080",
+      "description": "OPTIONAL B-roll: public 'Companion Intelligence App Store' on the Portal with the Featured section. Unauthenticated visitors to / are redirected here, so it doubles as the public face of the catalog."
+    },
+    {
+      "id": "hub-device-registration-empty",
+      "app": "hub",
+      "route": "/device-registration",
+      "authRequired": false,
+      "theme": "dark",
+      "viewport": "1920x1080",
+      "description": "Unregistered phase: pairing-code input focused and empty (the page auto-focuses it). Status card shows the unregistered/idle state."
+    },
+    {
+      "id": "hub-device-registration-provisioning",
+      "app": "hub",
+      "route": "/device-registration",
+      "authRequired": false,
+      "theme": "dark",
+      "viewport": "1920x1080",
+      "description": "Mid-registration: status card showing 'Provisioning your domain' (or 'Setting up Hub') with progress indicator. Capture during a live pairing; timing-sensitive. NEEDS REVIEW."
+    },
+    {
+      "id": "hub-device-registration-complete",
+      "app": "hub",
+      "route": "/device-registration",
+      "authRequired": false,
+      "theme": "dark",
+      "viewport": "1920x1080",
+      "description": "Registration complete phase ('pairing accepted' success state) just before redirect to /. Timing-sensitive. NEEDS REVIEW."
+    },
+    {
+      "id": "hub-register",
+      "app": "hub",
+      "route": "/register",
+      "authRequired": false,
+      "theme": "dark",
+      "viewport": "1920x1080",
+      "description": "OPTIONAL B-roll: first-boot admin account creation form (root clientLoader redirects here when the Hub is unconfigured)."
+    },
+    {
+      "id": "hub-onboarding-form",
+      "app": "hub",
+      "route": "/onboarding",
+      "authRequired": true,
+      "theme": "dark",
+      "viewport": "1920x1080",
+      "description": "'Set up your Hub' wizard, form phase: AI setup steps (models/Ollama backend, remote access) visible plus Step 4 'Recommended Apps' with a few apps selected. Sticky 'Install & Finish' footer enabled. Requires a logged-in user with hasCompletedOnboarding=false."
+    },
+    {
+      "id": "hub-onboarding-installing",
+      "app": "hub",
+      "route": "/onboarding",
+      "authRequired": true,
+      "theme": "dark",
+      "viewport": "1920x1080",
+      "description": "Installing phase of onboarding: InstallStep progress list actively installing the selected apps. Timing-sensitive. NEEDS REVIEW."
+    },
+    {
+      "id": "hub-home-dashboard",
+      "app": "hub",
+      "route": "/home",
+      "authRequired": true,
+      "theme": "dark",
+      "viewport": "1920x1080",
+      "description": "Dashboard: Disk Space / CPU / Memory stat cards with believable utilization, installed-apps horizontal list populated with 4-6 apps. Avoid the queued-installs indicator unless intentional."
+    },
+    {
+      "id": "hub-store-grid",
+      "app": "hub",
+      "route": "/store",
+      "authRequired": true,
+      "theme": "dark",
+      "viewport": "1920x1080",
+      "description": "App Store index: search bar, category sidebar, app-card grid populated from the marketplace (run the store pull first so logos load). Frame so Immich, Jellyfin, Home Assistant, Nextcloud, n8n, Open WebUI, Vaultwarden, and Pi-hole cards are visible or one scroll away."
+    },
+    {
+      "id": "hub-store-ci-category",
+      "app": "hub",
+      "route": "/store?category=companion-intelligence",
+      "authRequired": true,
+      "theme": "dark",
+      "viewport": "1920x1080",
+      "description": "App Store filtered to the companion-intelligence category (select it in the sidebar; filter state lives in the app-store zustand store, query param best-effort): Companion Earth, Photo Time Machine, Hermes, Just In Case, Spellbook, Companion Planning, Spatial Time Machine, OpenClaw WebCLI cards."
+    },
+    {
+      "id": "hub-app-details-immich",
+      "app": "hub",
+      "route": "/store/:storeId/immich",
+      "authRequired": true,
+      "theme": "dark",
+      "viewport": "1920x1080",
+      "description": "Immich app-details page, not installed: logo, short description 'Self-hosted photo and video management solution', About panel (Provider, Categories, Download size), App Privacy card ('No data collected'), Install button prominent. Replace :storeId with the enabled store's id at capture time (visible in the URL after navigating from /store)."
+    },
+    {
+      "id": "hub-install-dialog-immich",
+      "app": "hub",
+      "route": "/store/:storeId/immich",
+      "authRequired": true,
+      "theme": "dark",
+      "viewport": "1920x1080",
+      "description": "Install dialog open over the details page ('Install Immich' form): generated/random secret fields and the Upload Location text field visible, submit button enabled."
+    },
+    {
+      "id": "hub-app-installing-immich",
+      "app": "hub",
+      "route": "/apps/:storeId/immich",
+      "authRequired": true,
+      "theme": "dark",
+      "viewport": "1920x1080",
+      "description": "Installed-app details page with status badge 'installing' (optimistic state right after submit). Timing-sensitive — capture within the first seconds of install. NEEDS REVIEW."
+    },
+    {
+      "id": "hub-app-running-immich",
+      "app": "hub",
+      "route": "/apps/:storeId/immich",
+      "authRequired": true,
+      "theme": "dark",
+      "viewport": "1920x1080",
+      "description": "Same page with status 'running': green status badge, action buttons (Open / Stop / Restart) visible."
+    },
+    {
+      "id": "app-immich-live",
+      "app": "website",
+      "route": "https://immich-<device>-<org>.ci.computer/ (or http://immich.ci.localhost/ in dev)",
+      "authRequired": true,
+      "theme": "dark",
+      "viewport": "1920x1080",
+      "description": "Immich's own UI showing a populated photo timeline. Seed with a demo photo library first. The URL bar matters — it proves the app is served from the user's own domain. NEEDS REVIEW: requires a live install with seeded data."
+    }
+  ]
+}

@@ -1,0 +1,11 @@
+-- A key's `scopes` say which surfaces it opens; `capability` says what it may do there
+-- ('read' | 'write' | 'full'). Two orthogonal axes, replacing the appliance-wide
+-- MCP_ALLOW_DESTRUCTIVE gate — which could only be on or off for every key at once, so granting
+-- destructive access to one agent granted it to all of them.
+--
+-- Existing rows default to 'write': read + mutating tools, no destructive ones. That is exactly
+-- what every key could already do on an appliance with the destructive gate off (its default), so
+-- no key silently loses access. On an appliance where an operator had switched the gate ON, the
+-- keys that inherited destructive access from it now need promoting to 'full' individually — the
+-- point of the change, and a one-click promotion in Settings → Security.
+ALTER TABLE "api_key" ADD COLUMN IF NOT EXISTS "capability" varchar DEFAULT 'write' NOT NULL;

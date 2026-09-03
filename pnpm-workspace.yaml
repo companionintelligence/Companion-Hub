@@ -1,0 +1,56 @@
+packages:
+  - 'packages/*'
+
+# Security overrides — pin vulnerable transitive deps to patched versions
+# (Dependabot alerts on CI-Hub@dev). Direct deps are also bumped in their package.json.
+overrides:
+  '@babel/core': 7.29.6
+  '@grpc/grpc-js': 1.14.4
+  '@hono/node-server': 1.19.15
+  '@opentelemetry/core': 2.8.0
+  '@protobufjs/utf8': 1.1.1
+  axios: 1.18.0
+  body-parser: 2.3.0
+  brace-expansion: 5.0.9
+  dompurify: 3.4.13
+  drizzle-orm: 0.45.2
+  esbuild: 0.25.0
+  fast-uri: 3.1.5
+  file-type: 21.3.2
+  follow-redirects: 1.16.0
+  form-data: 4.0.6
+  handlebars: 4.7.9
+  hono: 4.12.34
+  i18next-fs-backend: 2.6.6
+  i18next-http-backend: 3.0.5
+  ip-address: 10.3.1
+  'js-yaml@^3': 3.15.1
+  'js-yaml@^4': 4.3.1
+  multer: 2.2.0
+  'nanoid@^3': 3.3.18
+  piscina: 4.9.3
+  postcss: 8.5.23
+  protobufjs: 7.6.5
+  qs: 6.15.2
+  react-router: 7.18.2
+  systeminformation: companionintelligence/systeminformation#master
+  turbo: 2.9.14
+  uuid: 11.1.1
+  valibot: 1.4.2
+  vite: 7.3.5
+  ws: 8.21.0
+
+allowBuilds:
+  '@nestjs/core': true
+  '@scarf/scarf': true
+  '@sentry/cli': true
+  '@swc/core': true
+  argon2: true
+  cpu-features: true
+  esbuild: true
+  msw: true
+  protobufjs: true
+  ssh2: true
+
+minimumReleaseAgeExclude:
+  - '@companionintelligence/tokens'

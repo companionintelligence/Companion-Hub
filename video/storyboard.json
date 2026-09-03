@@ -1,0 +1,1024 @@
+{
+  "$schema": "https://raw.githubusercontent.com/companionintelligence/CI-Common/main/packages/video-kit/schema/storyboard.schema.json",
+  "app": {
+    "id": "ci-hub",
+    "name": "Companion Hub",
+    "repo": "companionintelligence/CI-Hub",
+    "marketplaceId": "ci-hub",
+    "website": "ci.computer"
+  },
+  "meta": {
+    "fps": 30,
+    "transitionSeconds": 0.5,
+    "pacing": "fit",
+    "pacingTail": 0.15
+  },
+  "chapters": {
+    "job": "Start with what you have",
+    "boot": "The machine you have",
+    "tune": "Tuned to it",
+    "run": "Day to day"
+  },
+  "media": {
+    "music": "assets/media/ci-campaign-bed-110.mp3",
+    "musicLufs": -22
+  },
+  "master": [
+    {
+      "ref": "the-tenant",
+      "caption": "The storage, the models, the apps, the backups.",
+      "narration": "Right now you rent. The storage, the models, the apps, the backups — all billed monthly, on somebody else's computer."
+    },
+    {
+      "ref": "the-bill",
+      "caption": "For services you are not allowed to look inside.",
+      "narration": "A full subscription stack runs about seven thousand dollars a year, for services you are not allowed to look inside."
+    },
+    {
+      "ref": "the-hard-way",
+      "caption": "Most people quit right about here.",
+      "narration": "Owning it instead meant drivers, containers, quantised models and certificates. Most people quit right about here."
+    },
+    {
+      "ref": "title",
+      "caption": "Until now.",
+      "narration": "Until now. Companion Hub turns a computer you already own into a private AI server."
+    },
+    {
+      "ref": "the-list",
+      "chapter": "boot",
+      "caption": "Start with the machine already in the room.",
+      "narration": "Start with the desktop, mini PC or laptop already in the room."
+    },
+    {
+      "ref": "reads-the-machine",
+      "caption": "It reads the machine before you choose anything.",
+      "narration": "Hub reads it first — processor, memory, graphics and storage — and works out what this machine can run."
+    },
+    {
+      "ref": "picks-the-models",
+      "caption": "Then it picks the models that machine can run.",
+      "narration": "Then it picks the models that fit, each one priced in the memory it needs."
+    },
+    {
+      "ref": "the-frameworks",
+      "caption": "OpenClaw, Hermes, and the rest of the shelf.",
+      "narration": "Then bring the agents you already like. OpenClaw, Hermes, Claude Code, OpenCode — one click each, on your own machine."
+    },
+    {
+      "ref": "install-and-run",
+      "caption": "Installed. Running. Yours.",
+      "narration": "When the badge turns green it is running on hardware you own, not rented from anyone."
+    },
+    {
+      "ref": "from-a-phone",
+      "caption": "This machine, your private network, or the web.",
+      "narration": "You decide what each service can reach — this machine only, your private network, or the open web."
+    },
+    {
+      "ref": "alternatives",
+      "caption": "Open-source replacements for the things you rent.",
+      "narration": "And the rest of the shelf is open-source replacements for the subscriptions you are tired of paying."
+    },
+    {
+      "ref": "the-uncloud",
+      "caption": "No datacenter. No subscription. No landlord.",
+      "narration": "No datacenter. No subscription. You are not renting any of it."
+    },
+    {
+      "ref": "close",
+      "caption": "ci.computer/download",
+      "cta": "Get Companion Hub",
+      "tagline": "UnCloud your life.",
+      "url": "ci.computer/download",
+      "narration": "Your machine. Your models. Your agents. At ci dot computer slash download. UnCloud your life."
+    }
+  ],
+  "scenes": [
+    {
+      "id": "the-tenant",
+      "kind": "feature",
+      "chapter": "job",
+      "reveal": "paced",
+      "seconds": 8,
+      "minSeconds": 6,
+      "title": "You are a renting tenant.",
+      "caption": "The storage, the models, the apps, the backups.",
+      "narration": "Right now you rent. The storage, the models, the apps, the backups — all billed monthly, on somebody else's computer.",
+      "items": [
+        {
+          "label": "Storage",
+          "value": "monthly"
+        },
+        {
+          "label": "Models",
+          "value": "monthly"
+        },
+        {
+          "label": "Apps",
+          "value": "monthly"
+        },
+        {
+          "label": "Backups",
+          "value": "monthly"
+        }
+      ]
+    },
+    {
+      "id": "the-bill",
+      "kind": "feature",
+      "chapter": "job",
+      "transition": "cut",
+      "reveal": "paced",
+      "seconds": 8,
+      "minSeconds": 6,
+      "title": "About seven thousand a year.",
+      "caption": "For services you are not allowed to look inside.",
+      "narration": "A full subscription stack runs about seven thousand dollars a year, for services you are not allowed to look inside.",
+      "items": [
+        {
+          "label": "Your data",
+          "value": "on their hardware"
+        },
+        {
+          "label": "The terms",
+          "value": "theirs to change"
+        },
+        {
+          "label": "The off switch",
+          "value": "theirs"
+        }
+      ]
+    },
+    {
+      "id": "the-hard-way",
+      "kind": "feature",
+      "chapter": "job",
+      "transition": "cut",
+      "reveal": "paced",
+      "seconds": 8,
+      "minSeconds": 6,
+      "title": "Owning it was the harder option.",
+      "caption": "Most people quit right about here.",
+      "narration": "Owning it instead meant drivers, containers, quantised models and certificates. Most people quit right about here.",
+      "items": [
+        {
+          "label": "GPU drivers"
+        },
+        {
+          "label": "Containers"
+        },
+        {
+          "label": "Quantised models"
+        },
+        {
+          "label": "Reverse proxy, TLS"
+        }
+      ]
+    },
+    {
+      "id": "second-job",
+      "kind": "feature",
+      "chapter": "job",
+      "seconds": 4.5,
+      "title": "Turn any computer into a private AI server.",
+      "caption": "Start with the machine you already own.",
+      "narration": "Turn the computer you already own into a private AI server."
+    },
+    {
+      "id": "the-list",
+      "kind": "feature",
+      "chapter": "job",
+      "seconds": 5.5,
+      "caption": "Mac, Windows, Linux. Start with what you have.",
+      "narration": "That old desktop, mini PC, or laptop can run it.",
+      "reveal": "paced",
+      "columns": {
+        "landscape": 4,
+        "portrait": 3
+      },
+      "items": [
+        {
+          "image": "assets/hardware/01-acer-gaming-desktop.png",
+          "alt": "A glass-sided Acer gaming desktop tower with RGB fans."
+        },
+        {
+          "image": "assets/hardware/02-all-in-one.png",
+          "alt": "A Dell all-in-one desktop computer with keyboard and mouse."
+        },
+        {
+          "image": "assets/hardware/03-mac-mini-m4.png",
+          "alt": "A silver Apple Mac mini M4 desktop computer."
+        },
+        {
+          "image": "assets/hardware/04-dell-desktop.png",
+          "alt": "A black Dell desktop tower."
+        },
+        {
+          "image": "assets/hardware/05-mac-mini.png",
+          "alt": "A compact silver Mac mini desktop computer."
+        },
+        {
+          "image": "assets/hardware/06-dell-pc-tower.png",
+          "alt": "A tall black Dell OptiPlex desktop tower."
+        },
+        {
+          "image": "assets/hardware/07-desktop-tower.png",
+          "alt": "A plain black desktop computer tower."
+        },
+        {
+          "image": "assets/hardware/08-mac-studio.png",
+          "alt": "A silver Apple Mac Studio desktop computer, shown close up."
+        },
+        {
+          "image": "assets/hardware/09-asus-nuc.png",
+          "alt": "A small black ASUS NUC mini PC."
+        },
+        {
+          "image": "assets/hardware/10-macbook-stand.png",
+          "alt": "A silver MacBook standing upright in a small wooden stand."
+        }
+      ]
+    },
+    {
+      "id": "the-longer-list",
+      "kind": "feature",
+      "chapter": "job",
+      "seconds": 4.5,
+      "title": "Download. Install. Finish.",
+      "caption": "One setup wizard.",
+      "narration": "Download Hub, run one installer, and finish one setup wizard.",
+      "reveal": "paced",
+      "items": [
+        {
+          "label": "Download Hub"
+        },
+        {
+          "label": "Run one installer"
+        },
+        {
+          "label": "Finish the wizard"
+        }
+      ]
+    },
+    {
+      "id": "most-people-quit",
+      "kind": "feature",
+      "chapter": "job",
+      "seconds": 3,
+      "title": "It reads the machine.",
+      "caption": "CPU, GPU, memory, storage.",
+      "narration": "Hub reads your hardware and knows what can run here.",
+      "transition": "cut"
+    },
+    {
+      "id": "title",
+      "kind": "intro",
+      "seconds": 6,
+      "minSeconds": 5,
+      "title": "Companion Hub",
+      "caption": "Until now.",
+      "narration": "Until now. Companion Hub turns a computer you already own into a private AI server.",
+      "mark": "brand:logo.mark",
+      "reveal": "paced",
+      "transition": "hold"
+    },
+    {
+      "id": "any-computer",
+      "kind": "feature",
+      "chapter": "boot",
+      "seconds": 3.5,
+      "title": "Private apps. One click.",
+      "caption": "Settings shown before anything runs.",
+      "narration": "Install private apps in one click, with settings shown before anything runs.",
+      "transition": "cut"
+    },
+    {
+      "id": "one-wizard",
+      "kind": "screen",
+      "chapter": "boot",
+      "seconds": 3,
+      "caption": "Download Hub. Run one wizard. Finish.",
+      "narration": "Download Hub, run one installer, and finish one setup wizard.",
+      "shots": [
+        {
+          "id": "onboarding-wizard",
+          "url": "hub-living-room-server-acme.ci.computer/onboarding",
+          "alt": "The Set Up Your Hub wizard with its sticky Install and Finish footer.",
+          "motion": "drift-down",
+          "pointer": {
+            "landscape": {
+              "x": 0.876,
+              "y": 0.899
+            },
+            "portrait": {
+              "x": 0.269,
+              "y": 0.888
+            }
+          },
+          "capture": {
+            "path": "/onboarding",
+            "waitUntil": "domcontentloaded",
+            "waitFor": "input[placeholder='you@example.com']",
+            "before": [
+              {
+                "fill": ["input[placeholder='you@example.com']", "owner@acme.com"]
+              },
+              {
+                "fill": ["input[placeholder='Enter your password']", "password"]
+              },
+              {
+                "click": "button[type='submit']"
+              },
+              {
+                "waitFor": "[data-testid='finish-setup-btn']"
+              },
+              {
+                "wait": 1500
+              }
+            ],
+            "settle": 1200
+          }
+        }
+      ]
+    },
+    {
+      "id": "reads-the-machine",
+      "kind": "screen",
+      "chapter": "tune",
+      "seconds": 5,
+      "caption": "Reads your CPU, GPU, memory, and storage.",
+      "narration": "Hub reads your hardware so it knows what can run here.",
+      "transition": "cut",
+      "shots": [
+        {
+          "id": "ai-hardware",
+          "url": "hub-living-room-server-acme.ci.computer/settings?tab=ai",
+          "alt": "The AI tab's System Overview card: OS, CPU, RAM, GPU, VRAM and storage, with an Apple Silicon capability badge.",
+          "motion": "push-in",
+          "capture": {
+            "path": "/settings?tab=ai",
+            "waitUntil": "domcontentloaded",
+            "waitFor": "[data-testid='hw-card-title'], input[placeholder='you@example.com']",
+            "before": [
+              {
+                "eval": "async () => { await fetch('/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify({ username: 'owner@acme.com', password: 'password' }) }).catch(() => {}); setTimeout(() => window.location.assign('/settings?tab=ai'), 0); }"
+              },
+              {
+                "wait": 2500
+              },
+              {
+                "waitFor": "[data-testid='hw-card-title']"
+              },
+              {
+                "waitFor": "[data-testid='tier-badge']"
+              },
+              {
+                "wait": 800
+              }
+            ],
+            "settle": 1500
+          },
+          "focus": {
+            "landscape": {
+              "x": 0.06,
+              "y": 0.003,
+              "w": 0.68,
+              "h": 0.538
+            },
+            "portrait": {
+              "x": 0.03,
+              "y": 0.03,
+              "w": 0.94,
+              "h": 0.94
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "picks-the-models",
+      "kind": "screen",
+      "chapter": "tune",
+      "seconds": 9,
+      "caption": "Models recommended for the machine you own.",
+      "narration": "Then it recommends models that fit your machine, instead of melting it.",
+      "transition": "cut",
+      "shots": [
+        {
+          "id": "ai-models",
+          "url": "hub-living-room-server-acme.ci.computer/settings?tab=ai",
+          "alt": "The AI tab's Recommended Models card: each model tagged reasoning, vision, tools or embedding, with the RAM and VRAM it needs.",
+          "motion": "pull-back",
+          "capture": {
+            "path": "/settings?tab=ai",
+            "waitUntil": "domcontentloaded",
+            "waitFor": "[data-testid='hw-card-title'], input[placeholder='you@example.com']",
+            "before": [
+              {
+                "eval": "async () => { await fetch('/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify({ username: 'owner@acme.com', password: 'password' }) }).catch(() => {}); setTimeout(() => window.location.assign('/settings?tab=ai'), 0); }"
+              },
+              {
+                "wait": 2500
+              },
+              {
+                "waitFor": "[data-testid='hw-card-title']"
+              },
+              {
+                "waitFor": "[data-testid='tier-badge']"
+              },
+              {
+                "wait": 800
+              },
+              {
+                "eval": "() => { const h = [...document.querySelectorAll('*')].find((e) => e.children.length === 0 && /RECOMMENDED MODELS/i.test(e.textContent || '')); if (!h) throw new Error('RECOMMENDED MODELS heading not found — the AI tab moved'); h.scrollIntoView({ block: 'start' }); let p = h.parentElement; while (p && p !== document.body) { const cs = getComputedStyle(p); if ((cs.overflowY === 'auto' || cs.overflowY === 'scroll') && p.scrollHeight > p.clientHeight + 20) { p.scrollTop = Math.max(0, p.scrollTop - 120); return; } p = p.parentElement; } window.scrollBy(0, -120); }"
+              },
+              {
+                "wait": 1000
+              }
+            ],
+            "settle": 1500
+          },
+          "focus": {
+            "landscape": {
+              "x": 0.048,
+              "y": 0.027,
+              "w": 0.704,
+              "h": 0.538
+            },
+            "portrait": {
+              "x": 0.03,
+              "y": 0.03,
+              "w": 0.94,
+              "h": 0.94
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "apps-arrive",
+      "kind": "screen",
+      "chapter": "run",
+      "seconds": 3.5,
+      "caption": "Private apps. One click. Your stack.",
+      "narration": "Install private apps like Hermes and OpenClaw in one click, with settings shown before anything runs.",
+      "transition": "cut",
+      "shots": [
+        {
+          "id": "install-dialog",
+          "url": "hub-living-room-server-acme.ci.computer/store/ci-marketplace/immich",
+          "alt": "The Install Immich dialog with Exposure mode set to This Machine Only, above the hostname and settings the app is asking for.",
+          "motion": "push-in",
+          "capture": {
+            "path": "/store/ci-marketplace/immich",
+            "waitUntil": "domcontentloaded",
+            "waitFor": "[data-testid='action-install'], input[placeholder='you@example.com']",
+            "before": [
+              {
+                "eval": "async () => { await fetch('/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify({ username: 'owner@acme.com', password: 'password' }) }).catch(() => {}); setTimeout(() => window.location.assign('/store/ci-marketplace/immich'), 0); }"
+              },
+              {
+                "waitFor": "[data-testid='action-install']"
+              },
+              {
+                "click": "[data-testid='action-install']"
+              },
+              {
+                "waitFor": "[role='dialog']"
+              },
+              {
+                "wait": 1200
+              },
+              {
+                "click": "[role='dialog'] button:has-text('This Machine Only')"
+              },
+              {
+                "wait": 800
+              }
+            ],
+            "settle": 1200
+          },
+          "focus": {
+            "landscape": {
+              "x": 0.125,
+              "y": 0.153,
+              "w": 0.75,
+              "h": 0.75
+            },
+            "portrait": {
+              "x": 0.03,
+              "y": 0.06,
+              "w": 0.94,
+              "h": 0.94
+            }
+          },
+          "pointer": {
+            "landscape": {
+              "x": 0.5,
+              "y": 0.738
+            },
+            "portrait": {
+              "x": 0.5,
+              "y": 0.793
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "the-frameworks",
+      "kind": "feature",
+      "chapter": "run",
+      "transition": "cut",
+      "reveal": "paced",
+      "seconds": 8,
+      "minSeconds": 6,
+      "title": "Bring the agents you already like.",
+      "caption": "OpenClaw, Hermes, and the rest of the shelf.",
+      "narration": "Then bring the agents you already like. OpenClaw, Hermes, Claude Code, OpenCode — one click each, on your own machine.",
+      "columns": {
+        "landscape": 4,
+        "portrait": 3
+      },
+      "items": [
+        {
+          "image": "./assets/agents/01-openclaw.png",
+          "alt": "The OpenClaw app icon."
+        },
+        {
+          "image": "./assets/agents/02-hermes.png",
+          "alt": "The Hermes Agent app icon."
+        },
+        {
+          "image": "./assets/agents/03-claude-code.png",
+          "alt": "The Claude Code app icon."
+        },
+        {
+          "image": "./assets/agents/04-opencode.png",
+          "alt": "The OpenCode app icon."
+        },
+        {
+          "image": "./assets/agents/05-agent-zero.png",
+          "alt": "The Agent Zero app icon."
+        },
+        {
+          "image": "./assets/agents/06-deerflow.png",
+          "alt": "The DeerFlow app icon."
+        },
+        {
+          "image": "./assets/agents/07-n8n.png",
+          "alt": "The n8n app icon."
+        },
+        {
+          "image": "./assets/agents/08-dify.png",
+          "alt": "The Dify app icon."
+        }
+      ]
+    },
+    {
+      "id": "from-a-phone",
+      "kind": "screen",
+      "chapter": "run",
+      "seconds": 5,
+      "caption": "Reach it from your phone — your choice.",
+      "narration": "Use it from your phone over your private network, without putting it on the open internet.",
+      "transition": "cut",
+      "shots": [
+        {
+          "id": "port-expose",
+          "url": "hub-living-room-server-acme.ci.computer/apps/expose",
+          "alt": "The Expose a port form with the three exposure modes — this device, private VPN, public web — and This Machine Only selected.",
+          "motion": "pull-back",
+          "capture": {
+            "path": "/apps/expose",
+            "waitUntil": "domcontentloaded",
+            "waitFor": "input[placeholder='Enter a unique name for your app'], input[placeholder='you@example.com']",
+            "settle": 1200,
+            "before": [
+              {
+                "eval": "async () => { await fetch('/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify({ username: 'owner@acme.com', password: 'password' }) }).catch(() => {}); setTimeout(() => window.location.assign('/apps/expose'), 0); }"
+              },
+              {
+                "waitFor": "input[placeholder='Enter a unique name for your app']"
+              },
+              {
+                "waitFor": "text=Publish a service already running on this Hub"
+              },
+              {
+                "click": "button:has-text('This Machine Only')"
+              },
+              {
+                "wait": 800
+              }
+            ]
+          },
+          "focus": {
+            "landscape": {
+              "x": 0.231,
+              "y": 0.234,
+              "w": 0.538,
+              "h": 0.538
+            },
+            "portrait": {
+              "x": 0.03,
+              "y": 0.06,
+              "w": 0.94,
+              "h": 0.94
+            }
+          },
+          "pointer": {
+            "landscape": {
+              "x": 0.34,
+              "y": 0.503
+            },
+            "portrait": {
+              "x": 0.5,
+              "y": 0.635
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "hermes-openclaw",
+      "kind": "screen",
+      "chapter": "run",
+      "seconds": 5,
+      "caption": "The agents reporting only to you.",
+      "narration": "Add Hermes and OpenClaw to the stack. Their apps run locally, on hardware you own.",
+      "transition": "cut",
+      "shots": [
+        {
+          "id": "app-hermes",
+          "url": "hub-living-room-server-acme.ci.computer/store/ci-marketplace/ci-hermes",
+          "alt": "Hermes' page in the Hub store — a messaging AI assistant with a web terminal and dashboard.",
+          "capture": {
+            "path": "/store/ci-marketplace/ci-hermes",
+            "waitUntil": "domcontentloaded",
+            "waitFor": "[data-testid='app-header-actions-row'], input[placeholder='you@example.com']",
+            "before": [
+              {
+                "eval": "async () => { await fetch('/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify({ username: 'owner@acme.com', password: 'password' }) }).catch(() => {}); setTimeout(() => window.location.assign('/store/ci-marketplace/ci-hermes'), 0); }"
+              },
+              {
+                "waitFor": "[data-testid='app-header-actions-row']"
+              },
+              {
+                "wait": 1500
+              }
+            ],
+            "settle": 1200
+          },
+          "motion": "push-in",
+          "focus": {
+            "landscape": {
+              "x": 0.212,
+              "y": 0.0,
+              "w": 0.761,
+              "h": 0.761
+            },
+            "portrait": {
+              "x": 0.03,
+              "y": 0.03,
+              "w": 0.94,
+              "h": 0.94
+            }
+          }
+        },
+        {
+          "id": "app-openclaw",
+          "url": "hub-living-room-server-acme.ci.computer/store/ci-marketplace/ci-openclaw",
+          "alt": "OpenClaw's page in the Hub store — a self-hosted personal AI assistant with browser automation and tool use.",
+          "capture": {
+            "path": "/store/ci-marketplace/ci-openclaw",
+            "waitUntil": "domcontentloaded",
+            "waitFor": "[data-testid='app-header-actions-row'], input[placeholder='you@example.com']",
+            "before": [
+              {
+                "eval": "async () => { await fetch('/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify({ username: 'owner@acme.com', password: 'password' }) }).catch(() => {}); setTimeout(() => window.location.assign('/store/ci-marketplace/ci-openclaw'), 0); }"
+              },
+              {
+                "waitFor": "[data-testid='app-header-actions-row']"
+              },
+              {
+                "wait": 1500
+              }
+            ],
+            "settle": 1200
+          },
+          "motion": "drift-down"
+        }
+      ]
+    },
+    {
+      "id": "alternatives",
+      "kind": "screen",
+      "chapter": "run",
+      "seconds": 4.5,
+      "caption": "Open-source alternatives, ready to install.",
+      "narration": "Find open-source alternatives to the services you are tired of renting.",
+      "transition": "cut",
+      "shots": [
+        {
+          "id": "store-alternatives",
+          "url": "hub-living-room-server-acme.ci.computer/store?category=alternatives",
+          "alt": "The store's Alternatives view: a table pairing proprietary products with the open source apps that replace them.",
+          "motion": "pull-back",
+          "capture": {
+            "path": "/store?category=alternatives",
+            "waitUntil": "domcontentloaded",
+            "waitFor": "table tbody tr, input[placeholder='you@example.com']",
+            "before": [
+              {
+                "eval": "async () => { await fetch('/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify({ username: 'owner@acme.com', password: 'password' }) }).catch(() => {}); setTimeout(() => window.location.assign('/store?category=alternatives'), 0); }"
+              },
+              {
+                "waitFor": "table tbody tr"
+              },
+              {
+                "waitFor": "text=Open source replacements for proprietary software"
+              },
+              {
+                "wait": 800
+              }
+            ],
+            "settle": 1200
+          },
+          "focus": {
+            "landscape": {
+              "x": 0.216,
+              "y": 0.24,
+              "w": 0.56,
+              "h": 0.56
+            },
+            "portrait": {
+              "x": 0.03,
+              "y": 0.05,
+              "w": 0.94,
+              "h": 0.94
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "install-and-run",
+      "kind": "screen",
+      "chapter": "run",
+      "seconds": 5,
+      "caption": "Installed. Running. Yours.",
+      "narration": "When the badge turns green, the app is running on your Hub.",
+      "transition": "cut",
+      "shots": [
+        {
+          "id": "running-app",
+          "url": "hub-living-room-server-acme.ci.computer/apps/ci-marketplace/immich",
+          "alt": "An installed app in Companion Hub with a green Running status badge and controls to open or manage it.",
+          "motion": "push-in",
+          "capture": {
+            "path": "/apps/ci-marketplace/immich",
+            "waitUntil": "domcontentloaded",
+            "waitFor": "[data-testid='app-status-pill'], input[placeholder='you@example.com']",
+            "before": [
+              {
+                "eval": "async () => { await fetch('/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify({ username: 'owner@acme.com', password: 'password' }) }).catch(() => {}); setTimeout(() => window.location.assign('/apps/ci-marketplace/immich'), 0); }"
+              },
+              {
+                "waitFor": "[data-testid='app-status-pill']"
+              },
+              {
+                "wait": 2000
+              }
+            ],
+            "settle": 1200
+          },
+          "focus": {
+            "landscape": {
+              "x": 0.02,
+              "y": 0.07,
+              "w": 0.6,
+              "h": 0.6
+            },
+            "portrait": {
+              "x": 0.03,
+              "y": 0.04,
+              "w": 0.94,
+              "h": 0.94
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "the-things-stay",
+      "kind": "screen",
+      "chapter": "run",
+      "seconds": 9,
+      "caption": "Your files and apps stay on your machine.",
+      "narration": "Your files, apps, and work stay on hardware you own.",
+      "transition": "cut",
+      "shots": [
+        {
+          "id": "hub-home",
+          "url": "hub-living-room-server-acme.ci.computer/home",
+          "alt": "The Hub dashboard: disk, CPU and memory above the row of installed apps — Home Assistant, Jellyfin and Nextcloud.",
+          "motion": "push-in",
+          "capture": {
+            "path": "/home",
+            "waitUntil": "domcontentloaded",
+            "waitFor": "input[placeholder='you@example.com'], a[href='/store']",
+            "before": [
+              {
+                "eval": "async () => { await fetch('/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify({ username: 'owner@acme.com', password: 'password' }) }).catch(() => {}); setTimeout(() => window.location.assign('/home'), 0); }"
+              },
+              {
+                "waitFor": "text=Disk space"
+              },
+              {
+                "wait": 1500
+              }
+            ],
+            "settle": 1200
+          },
+          "focus": {
+            "landscape": {
+              "x": 0.0,
+              "y": 0.0,
+              "w": 0.63,
+              "h": 0.63
+            },
+            "portrait": {
+              "x": 0.03,
+              "y": 0.06,
+              "w": 0.94,
+              "h": 0.94
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "the-uncloud",
+      "kind": "feature",
+      "seconds": 5,
+      "title": "You are in control.",
+      "caption": "No datacenter. No subscription. No landlord.",
+      "narration": "No datacenter. No subscription. You are not renting any of it.",
+      "transition": "cut"
+    },
+    {
+      "id": "close",
+      "kind": "outro",
+      "seconds": 3.5,
+      "caption": "ci.computer/download",
+      "cta": "Download Hub free",
+      "tagline": "UnCloud your life.",
+      "url": "ci.computer/download",
+      "narration": "Download Companion Hub free at ci.computer slash download. UnCloud your life.",
+      "transition": "hold"
+    }
+  ],
+  "deliverables": [
+    {
+      "id": "ci-hub-30",
+      "kind": "short",
+      "name": "Companion Hub 30",
+      "meta": {
+        "pacingTail": 0.16
+      },
+      "media": {
+        "music": "assets/media/ci-campaign-bed-110.mp3",
+        "musicLufs": -22
+      },
+      "scenes": [
+        {
+          "ref": "the-tenant",
+          "caption": "You rent the storage, the models, the apps.",
+          "narration": "You rent the storage, the models and the apps. All of it on somebody else's computer.",
+          "seconds": 6
+        },
+        {
+          "ref": "reads-the-machine",
+          "caption": "Hub reads the machine you already own.",
+          "narration": "Companion Hub reads the machine you already own.",
+          "seconds": 4.5
+        },
+        {
+          "ref": "picks-the-models",
+          "caption": "Then picks models that fit it.",
+          "narration": "Then picks the local models that fit it.",
+          "seconds": 4.5
+        },
+        {
+          "ref": "the-frameworks",
+          "caption": "OpenClaw, Hermes, and the rest.",
+          "narration": "Add OpenClaw, Hermes and the rest of the shelf in one click each.",
+          "seconds": 5.5
+        },
+        {
+          "ref": "install-and-run",
+          "caption": "Installed. Running. Yours.",
+          "narration": "Running on your hardware, rented from nobody.",
+          "seconds": 4.5
+        },
+        {
+          "ref": "close",
+          "caption": "ci.computer/download",
+          "cta": "Get Companion Hub",
+          "tagline": "UnCloud your life.",
+          "url": "ci.computer/download",
+          "narration": "Your machine. Your AI. Get Hub at ci dot computer slash download.",
+          "seconds": 5.5
+        }
+      ]
+    },
+    {
+      "id": "ci-hub-bumper-tenant",
+      "kind": "bumper",
+      "name": "Companion Hub: Renting tenant",
+      "meta": {
+        "pacing": "fit",
+        "pacingTail": 0.12
+      },
+      "media": {
+        "music": "assets/media/ci-campaign-bed-110.mp3",
+        "musicLufs": -22
+      },
+      "scenes": [
+        {
+          "ref": "the-tenant",
+          "title": "Stop renting your stack.",
+          "caption": "ci.computer/download",
+          "narration": "You are a renting tenant. You do not have to be.",
+          "minSeconds": 3
+        }
+      ]
+    },
+    {
+      "id": "ci-hub-bumper-laptop",
+      "kind": "bumper",
+      "name": "Companion Hub: Old computer, new AI home",
+      "meta": {
+        "pacing": "fit",
+        "pacingTail": 0.12
+      },
+      "media": {
+        "music": "assets/media/ci-campaign-bed-110.mp3",
+        "musicLufs": -22
+      },
+      "scenes": [
+        {
+          "ref": "the-list",
+          "title": "Old computer. New AI home.",
+          "caption": "Get Hub · ci.computer/download",
+          "narration": "Old computer. New AI home. Get Companion Hub.",
+          "minSeconds": 3
+        }
+      ]
+    },
+    {
+      "id": "ci-hub-bumper-models",
+      "kind": "bumper",
+      "name": "Companion Hub: Models that fit",
+      "meta": {
+        "pacing": "fit",
+        "pacingTail": 0.12
+      },
+      "media": {
+        "music": "assets/media/ci-campaign-bed-110.mp3",
+        "musicLufs": -22
+      },
+      "scenes": [
+        {
+          "ref": "picks-the-models",
+          "caption": "Models chosen for your hardware · ci.computer/download",
+          "narration": "It reads your hardware, then picks the models that fit it.",
+          "minSeconds": 3
+        }
+      ]
+    },
+    {
+      "id": "ci-hub-bumper-agents",
+      "kind": "bumper",
+      "name": "Companion Hub: Bring your agents",
+      "meta": {
+        "pacing": "fit",
+        "pacingTail": 0.12
+      },
+      "media": {
+        "music": "assets/media/ci-campaign-bed-110.mp3",
+        "musicLufs": -22
+      },
+      "scenes": [
+        {
+          "ref": "the-frameworks",
+          "title": "Bring your own agents.",
+          "caption": "OpenClaw · Hermes · Claude Code · OpenCode · ci.computer/download",
+          "narration": "Bring your own agents. One click each, on hardware you own.",
+          "minSeconds": 3
+        }
+      ]
+    }
+  ]
+}

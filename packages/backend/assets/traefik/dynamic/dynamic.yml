@@ -1,0 +1,27 @@
+# Transport security floor for every TLS router Traefik serves (Hub itself and
+# every app behind it, CI Memory included). Go's crypto/tls already defaults to
+# this and has no SSLv2/SSLv3 at all, but the floor is pinned here so it is a
+# stated configuration rather than an inherited default, and so an upgrade of
+# Traefik or Go can never lower it silently.
+tls:
+  options:
+    default:
+      minVersion: VersionTLS12
+
+http:
+  serversTransports:
+    insecuretransport:
+      insecureSkipVerify: true
+
+  middlewares:
+    ci-hub:
+      forwardAuth:
+        address: "http://ci-os-hub:5002/api/auth/traefik"
+        trustForwardHeader: true
+        # All three signed identity headers must ride through — Traefik copies ONLY the
+        # headers listed here, and consumers verifying the signature fail closed on a
+        # missing timestamp/signature (CI-Engineering#74).
+        authResponseHeaders:
+          - "X-CI-Hub-User"
+          - "X-CI-Hub-User-Timestamp"
+          - "X-CI-Hub-User-Signature"

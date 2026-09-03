@@ -1,0 +1,25 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "frontend",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": ["--filter", "frontend", "dev"],
+      "port": 9091,
+      "autoPort": false
+    },
+    {
+      "name": "backend",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": ["--filter", "backend", "dev"],
+      "port": 3000
+    },
+    {
+      "name": "local",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": ["run", "local"],
+      "port": 5005,
+      "autoPort": false
+    }
+  ]
+}

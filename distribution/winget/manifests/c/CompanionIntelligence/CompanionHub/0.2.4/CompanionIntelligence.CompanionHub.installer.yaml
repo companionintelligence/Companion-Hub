@@ -1,0 +1,15 @@
+PackageIdentifier: CompanionIntelligence.CompanionHub
+PackageVersion: 0.2.4
+InstallerLocale: en-US
+InstallerType: msi
+Scope: machine
+ManifestType: installer
+ManifestVersion: 1.6.0
+Installers:
+  - Architecture: x64
+    InstallerType: nullsoft
+    InstallerUrl: https://github.com/companionintelligence/CI-Hub/releases/download/v0.2.4/Companion.Hub_0.2.4_x64-setup.exe
+    InstallerSha256: PLACEHOLDER_SHA256_EXE
+    InstallerSwitches:
+      Silent: /S
+      SilentWithProgress: /S

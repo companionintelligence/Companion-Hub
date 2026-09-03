@@ -1,0 +1,763 @@
+import { LanguageSelector } from '@/components/language-selector/language-selector';
+import { Button } from '@/components/ui/Button';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
+import { Input } from '@/components/ui/Input';
+import { Switch } from '@/components/ui/Switch';
+import { useDisclosure } from '@/lib/hooks/use-disclosure';
+import type { Locale } from '@/lib/i18n/locales';
+import { SlidersHorizontal, Sliders, Info, User, Copy } from 'lucide-react';
+import clsx from 'clsx';
+import type React from 'react';
+import { Suspense, lazy, useEffect } from 'react';
+import { Controller, useForm } from 'react-hook-form';
+import { useTranslation } from 'react-i18next';
+import toast from 'react-hot-toast';
+import { Tooltip } from 'react-tooltip';
+import validator from 'validator';
+import { z } from 'zod';
+import { AdvancedSettingsModal } from '../advanced-settings-modal/advanced-settings-modal';
+import './user-settings-form.css';
+import { Alert, AlertDescription, AlertHeading, AlertIcon } from '@/components/ui/Alert/Alert';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/Select';
+import { THEME_COLOR_ENUM } from '../color-selector/color-selector';
+import { THEME_BASE_ENUM, type ThemeBase, ThemeBaseSelector } from '../theme-base-selector/theme-base-selector';
+import { TimeZoneSuspense } from '@/components/timezone-selector/timezone.suspense';
+
+const TimeZoneSelector = lazy(() =>
+  import('@/components/timezone-selector/timezone-selector').then((module) => ({
+    default: module.TimeZoneSelector,
+  })),
+);
+
+const LOG_LEVEL_ENUM = {
+  debug: 'debug',
+  info: 'info',
+  warn: 'warn',
+  error: 'error',
+} as const;
+type LogLevel = (typeof LOG_LEVEL_ENUM)[keyof typeof LOG_LEVEL_ENUM];
+
+const settingsSchema = z.object({
+  appsRepoUrl: z.string().optional(),
+  localDomain: z.string().optional(),
+  guestDashboard: z.boolean().optional(),
+  allowAutoThemes: z.boolean().optional(),
+  allowErrorMonitoring: z.boolean().optional(),
+  defaultAppCpuLimit: z.string().optional(),
+  timeZone: z.string().optional(),
+  advancedSettings: z.boolean().optional(),
+  internalIp: z.ipv4().optional(),
+  listenIp: z.ipv4().optional(),
+  port: z.number().min(1).max(65535).optional(),
+  sslPort: z.number().min(1).max(65535).optional(),
+  eventsTimeout: z.coerce.number().int().min(1).optional(),
+  maxBackups: z.coerce.number().int().min(0).max(100).optional(),
+  persistTraefikConfig: z.boolean().optional(),
+  domain: z.string().optional(),
+  appDataPath: z.string().optional(),
+  forwardAuthUrl: z.url().optional(),
+  logLevel: z.enum(LOG_LEVEL_ENUM).optional(),
+  themeColor: z.enum(THEME_COLOR_ENUM).optional(),
+  themeBase: z.enum(THEME_BASE_ENUM).optional(),
+});
+
+export type SettingsFormValues = {
+  appsRepoUrl?: string;
+  localDomain?: string;
+  guestDashboard?: boolean;
+  allowAutoThemes?: boolean;
+  allowErrorMonitoring?: boolean;
+  defaultAppCpuLimit?: string;
+  timeZone?: string;
+  advancedSettings?: boolean;
+  internalIp?: string;
+  listenIp?: string;
+  port?: number;
+  sslPort?: number;
+  eventsTimeout?: number;
+  maxBackups?: number;
+  persistTraefikConfig?: boolean;
+  domain?: string;
+  appDataPath?: string;
+  forwardAuthUrl?: string;
+  logLevel?: LogLevel;
+  themeColor?: string;
+  themeBase?: string;
+};
+
+interface IProps {
+  currentLocale?: Locale;
+  currentBaseTheme?: ThemeBase;
+  onSubmit: (values: SettingsFormValues) => void;
+  initialValues?: Partial<SettingsFormValues>;
+  loading?: boolean;
+  submitErrors?: Record<string, string>;
+  /** Read-only hub-{device}-{org}.{domain} from app context */
+  publicHubHostname?: string;
+}
+
+export const UserSettingsForm = (props: IProps) => {
+  const { onSubmit, initialValues, loading, currentLocale = 'en-US', submitErrors, publicHubHostname } = props;
+  const { t } = useTranslation();
+  const advancedSettingsDisclosure = useDisclosure();
+
+  const validateFields = (values: SettingsFormValues) => {
+    const errors: { [K in keyof SettingsFormValues]?: string } = {};
+
+    if (values.localDomain && !validator.isFQDN(values.localDomain)) {
+      errors.localDomain = t('SETTINGS_GENERAL_INVALID_DOMAIN');
+    }
+
+    if (values.appsRepoUrl && !validator.isURL(values.appsRepoUrl)) {
+      errors.appsRepoUrl = t('SETTINGS_GENERAL_INVALID_URL');
+    }
+
+    return errors;
+  };
+
+  const {
+    register,
+    handleSubmit,
+    setError,
+    control,
+    watch,
+    formState: { errors, isDirty },
+  } = useForm<SettingsFormValues>({ values: initialValues });
+
+  useEffect(() => {
+    if (submitErrors) {
+      for (const [key, value] of Object.entries(submitErrors)) {
+        setError(key as keyof SettingsFormValues, { message: value });
+      }
+    }
+  }, [submitErrors, setError]);
+
+  const validate = (values: SettingsFormValues) => {
+    const validationErrors = validateFields(values);
+
+    for (const [key, value] of Object.entries(validationErrors)) {
+      if (value) {
+        setError(key as keyof SettingsFormValues, { message: value });
+      }
+    }
+
+    if (Object.keys(validationErrors).length === 0) {
+      onSubmit(settingsSchema.parse(values));
+    }
+  };
+
+  const downloadCertificate = (e: React.MouseEvent<HTMLButtonElement>) => {
+    e.preventDefault();
+    window.open('/api/system/certificate');
+  };
+
+  const localDomainValue = watch('localDomain') ?? '';
+
+  const copyToClipboard = async (text: string) => {
+    const v = text.trim();
+    if (!v) return;
+    try {
+      await navigator.clipboard.writeText(v);
+      toast.success(t('SETTINGS_NETWORK_COPIED'));
+    } catch {
+      toast.error(t('SETTINGS_GENERAL_COPY_FAILED'));
+    }
+  };
+
+  return (
+    <div className="space-y-6">
+      {isDirty && (
+        <Alert variant="info" className="fade-in">
+          <AlertIcon>
+            <Info strokeWidth={2} />
+          </AlertIcon>
+          <div>
+            <AlertHeading>{t('SETTINGS_GENERAL_SAVE_ALERT_TITLE')}</AlertHeading>
+            <AlertDescription>{t('SETTINGS_GENERAL_SAVE_ALERT_SUBTITLE')}</AlertDescription>
+          </div>
+        </Alert>
+      )}
+      <Card>
+        <CardHeader>
+          <div className="flex items-center gap-2">
+            <User className="h-5 w-5 shrink-0 text-muted-foreground" />
+            <CardTitle className="text-xl">{t('SETTINGS_GENERAL_USER_SETTINGS')}</CardTitle>
+          </div>
+        </CardHeader>
+        <CardContent>
+          <LanguageSelector showLabel locale={currentLocale} />
+          <Controller
+            control={control}
+            name="themeBase"
+            render={({ field: { onChange, value } }) => <ThemeBaseSelector value={value as ThemeBase} onChange={onChange} />}
+          />
+          {/* ColorSelector hidden — theme colors don't apply yet */}
+        </CardContent>
+      </Card>
+      <Card>
+        <CardHeader>
+          <div className="flex items-center gap-2">
+            <SlidersHorizontal className="h-5 w-5 shrink-0 text-muted-foreground" />
+            <CardTitle className="text-xl">{t('SETTINGS_GENERAL_TITLE')}</CardTitle>
+          </div>
+          <p className="text-sm text-muted-foreground">{t('SETTINGS_GENERAL_SUBTITLE')}</p>
+        </CardHeader>
+        <CardContent>
+          <form className="flex flex-col mt-2" onSubmit={handleSubmit(validate)}>
+            <div className="mb-3">
+              <Controller
+                control={control}
+                name="guestDashboard"
+                defaultValue={false}
+                render={({ field: { onChange, value, ref, ...rest } }) => (
+                  <Switch
+                    className="mb-3"
+                    ref={ref}
+                    checked={value}
+                    onCheckedChange={onChange}
+                    {...rest}
+                    label={
+                      <>
+                        {t('SETTINGS_GENERAL_GUEST_DASHBOARD')}
+                        <Tooltip className="tooltip" anchorSelect=".guest-dashboard-hint">
+                          {t('SETTINGS_GENERAL_GUEST_DASHBOARD_HINT')}
+                        </Tooltip>
+                        <span
+                          className={clsx(
+                            'ml-1 inline-flex items-center justify-center size-4 text-xs rounded-full border border-muted-foreground/40 text-muted-foreground cursor-help guest-dashboard-hint',
+                          )}
+                        >
+                          ?
+                        </span>
+                      </>
+                    }
+                  />
+                )}
+              />
+            </div>
+            <div className="mb-3">
+              <Controller
+                control={control}
+                name="allowErrorMonitoring"
+                defaultValue={false}
+                render={({ field: { onChange, value, ref, ...rest } }) => (
+                  <Switch
+                    className="mb-3"
+                    ref={ref}
+                    checked={value}
+                    onCheckedChange={onChange}
+                    {...rest}
+                    label={
+                      <>
+                        {t('SETTINGS_GENERAL_ALLOW_ERROR_MONITORING')}
+                        <Tooltip className="tooltip" anchorSelect=".allow-errors-hint">
+                          {t('SETTINGS_GENERAL_ALLOW_ERROR_MONITORING_HINT')}
+                        </Tooltip>
+                        <span
+                          className={clsx(
+                            'ml-1 inline-flex items-center justify-center size-4 text-xs rounded-full border border-muted-foreground/40 text-muted-foreground cursor-help allow-errors-hint',
+                          )}
+                        >
+                          ?
+                        </span>
+                      </>
+                    }
+                  />
+                )}
+              />
+            </div>
+            <div className="mb-3">
+              <Input
+                type="number"
+                step="0.1"
+                min="0.1"
+                {...register('defaultAppCpuLimit', {
+                  setValueAs: (value) => (value === '' || value === null ? undefined : String(value)),
+                })}
+                label={t('SETTINGS_GENERAL_DEFAULT_APP_CPU_LIMIT')}
+                error={errors.defaultAppCpuLimit?.message}
+                placeholder="1.0"
+              />
+              <span className="text-sm text-muted-foreground">{t('SETTINGS_GENERAL_DEFAULT_APP_CPU_LIMIT_HINT')}</span>
+            </div>
+            <div className="mb-3">
+              <Controller
+                control={control}
+                name="allowAutoThemes"
+                defaultValue={false}
+                render={({ field: { onChange, value, ref, ...rest } }) => (
+                  <Switch
+                    className="mb-3"
+                    ref={ref}
+                    checked={value}
+                    onCheckedChange={onChange}
+                    {...rest}
+                    label={
+                      <>
+                        {t('SETTINGS_GENERAL_ALLOW_AUTO_THEMES')}
+                        <Tooltip className="tooltip" anchorSelect=".allow-auto-themes-hint">
+                          {t('SETTINGS_GENERAL_ALLOW_AUTO_THEMES_HINT')}
+                        </Tooltip>
+                        <span
+                          className={clsx(
+                            'ml-1 inline-flex items-center justify-center size-4 text-xs rounded-full border border-muted-foreground/40 text-muted-foreground cursor-help allow-auto-themes-hint',
+                          )}
+                        >
+                          ?
+                        </span>
+                      </>
+                    }
+                  />
+                )}
+              />
+            </div>
+            <div className="mb-3">
+              <Controller
+                control={control}
+                name="advancedSettings"
+                defaultValue={false}
+                render={({ field: { onChange, value, ref, ...rest } }) => (
+                  <div>
+                    <AdvancedSettingsModal
+                      onEnable={() => {
+                        advancedSettingsDisclosure.close();
+                        onChange(true);
+                      }}
+                      advancedSettingsDisclosure={advancedSettingsDisclosure}
+                    />
+                    <Switch
+                      className="mb-3"
+                      ref={ref}
+                      checked={value}
+                      onCheckedChange={(checked) => {
+                        if (checked) {
+                          advancedSettingsDisclosure.open();
+                        } else {
+                          onChange(false);
+                        }
+                      }}
+                      {...rest}
+                      label={
+                        <>
+                          {t('SETTINGS_GENERAL_ADVANCED_SETTINGS_TITLE')}
+                          <Tooltip className="tooltip" anchorSelect=".advanced-settings-hint">
+                            {t('SETTINGS_GENERAL_ADVANCED_SETTINGS_SUBTITLE')}
+                          </Tooltip>
+                          <span
+                            className={clsx(
+                              'ml-1 inline-flex items-center justify-center size-4 text-xs rounded-full border border-muted-foreground/40 text-muted-foreground cursor-help advanced-settings-hint',
+                            )}
+                          >
+                            ?
+                          </span>
+                        </>
+                      }
+                    />
+                  </div>
+                )}
+              />
+            </div>
+            {/* <div className="mb-3">
+          <Input
+            {...register('appsRepoUrl')}
+            label={
+              <>
+                {t('SETTINGS_GENERAL_APPS_REPO')}
+                <Tooltip className="tooltip" anchorSelect=".apps-repo-hint">
+                  {t('SETTINGS_GENERAL_APPS_REPO_HINT')}
+                </Tooltip>
+                <span className={clsx('ml-1 inline-flex items-center justify-center size-4 text-xs rounded-full border border-muted-foreground/40 text-muted-foreground cursor-help apps-repo-hint')}>?</span>
+              </>
+            }
+            error={errors.appsRepoUrl?.message}
+            placeholder="https://github.com/companionintelligence/ci-hub-appstore"
+          />
+        </div> */}
+            <div>
+              <Controller
+                control={control}
+                name="timeZone"
+                defaultValue="Etc/GMT"
+                render={({ field: { onChange, value } }) => (
+                  <Suspense fallback={<TimeZoneSuspense />}>
+                    <TimeZoneSelector onChange={onChange} timeZone={value} />
+                  </Suspense>
+                )}
+              />
+            </div>
+            <div className="mb-3 space-y-4">
+              <div className="space-y-2">
+                <div className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70">
+                  <label htmlFor="settings-local-domain" className="inline">
+                    {t('SETTINGS_GENERAL_LOCAL_DOMAIN')}
+                    <Tooltip className="tooltip" anchorSelect=".local-domain-hint">
+                      {t('SETTINGS_GENERAL_LOCAL_DOMAIN_HINT')}
+                    </Tooltip>
+                    <span
+                      className={clsx(
+                        'ml-1 inline-flex items-center justify-center size-4 text-xs rounded-full border border-muted-foreground/40 text-muted-foreground cursor-help local-domain-hint align-middle',
+                      )}
+                    >
+                      ?
+                    </span>
+                  </label>
+                </div>
+                <div className="flex gap-2 items-start">
+                  <div className="flex-1 min-w-0">
+                    <Input
+                      id="settings-local-domain"
+                      {...register('localDomain')}
+                      error={errors.localDomain?.message}
+                      placeholder={t('SETTINGS_GENERAL_LOCAL_DOMAIN_PLACEHOLDER')}
+                      readOnly={initialValues?.advancedSettings === false}
+                      className={initialValues?.advancedSettings === false ? '[&_input]:cursor-default [&_input]:bg-muted/50' : undefined}
+                    />
+                  </div>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="h-9 w-9 shrink-0 p-0"
+                    disabled={!localDomainValue.trim()}
+                    onClick={() => copyToClipboard(localDomainValue)}
+                    title={t('SETTINGS_GENERAL_COPY')}
+                    aria-label={t('SETTINGS_GENERAL_COPY')}
+                  >
+                    <Copy className="h-4 w-4" />
+                  </Button>
+                </div>
+              </div>
+              <div className="space-y-2">
+                <div className="text-sm font-medium leading-none">
+                  <label htmlFor="public-hub-hostname" className="inline">
+                    {t('COMMON_PUBLIC_DOMAIN')}
+                    <Tooltip className="tooltip" anchorSelect=".public-domain-hint">
+                      {t('SETTINGS_GENERAL_PUBLIC_DOMAIN_HINT')}
+                    </Tooltip>
+                    <span
+                      className={clsx(
+                        'ml-1 inline-flex items-center justify-center size-4 text-xs rounded-full border border-muted-foreground/40 text-muted-foreground cursor-help public-domain-hint align-middle',
+                      )}
+                    >
+                      ?
+                    </span>
+                  </label>
+                </div>
+                <div className="flex gap-2 items-start">
+                  <div className="flex-1 min-w-0">
+                    <Input
+                      id="public-hub-hostname"
+                      name="public-hub-hostname"
+                      value={publicHubHostname ?? ''}
+                      placeholder={t('SETTINGS_GENERAL_PUBLIC_DOMAIN_PENDING')}
+                      readOnly
+                      className="[&_input]:cursor-default [&_input]:bg-muted/50"
+                      onChange={() => {
+                        /* display-only; value is derived from app context */
+                      }}
+                    />
+                  </div>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="h-9 w-9 shrink-0 p-0"
+                    disabled={!publicHubHostname?.trim()}
+                    onClick={() => copyToClipboard(publicHubHostname ?? '')}
+                    title={t('SETTINGS_GENERAL_COPY')}
+                    aria-label={t('SETTINGS_GENERAL_COPY')}
+                  >
+                    <Copy className="h-4 w-4" />
+                  </Button>
+                </div>
+              </div>
+              <Button className="mt-2 mb-2" onClick={downloadCertificate}>
+                {t('SETTINGS_GENERAL_DOWNLOAD_CERTIFICATE')}
+              </Button>
+            </div>
+            {initialValues?.advancedSettings && (
+              <div>
+                <div className="flex items-center mb-2">
+                  <Sliders className="mr-2" />
+                  <h2 className="text-2xl font-bold">{t('SETTINGS_GENERAL_ADVANCED_SETTINGS_TITLE')}</h2>
+                </div>
+                <p className="mb-4">{t('SETTINGS_GENERAL_ADVANCED_SETTINGS_SUBTITLE')}</p>
+                <div className="mb-3">
+                  <Controller
+                    control={control}
+                    name="persistTraefikConfig"
+                    defaultValue={false}
+                    render={({ field: { onChange, value, ref, ...rest } }) => (
+                      <Switch
+                        className="mb-3"
+                        ref={ref}
+                        checked={value}
+                        onCheckedChange={onChange}
+                        {...rest}
+                        label={
+                          <>
+                            {t('SETTINGS_GENERAL_PERSIST_TRAEFIK_CONFIG')}
+                            <Tooltip className="tooltip" anchorSelect=".persist-traefik-config-hint">
+                              {t('SETTINGS_GENERAL_PERSIST_TRAEFIK_CONFIG_HINT')}
+                            </Tooltip>
+                            <span
+                              className={clsx(
+                                'ml-1 inline-flex items-center justify-center size-4 text-xs rounded-full border border-muted-foreground/40 text-muted-foreground cursor-help persist-traefik-config-hint',
+                              )}
+                            >
+                              ?
+                            </span>
+                          </>
+                        }
+                      />
+                    )}
+                  />
+                </div>
+                <div className="mb-3">
+                  <Input
+                    {...register('domain')}
+                    label={
+                      <>
+                        {t('COMMON_DOMAIN_NAME')}
+                        <Tooltip className="tooltip" anchorSelect=".domain-hint">
+                          {t('SETTINGS_GENERAL_DOMAIN_HINT')}
+                        </Tooltip>
+                        <span
+                          className={clsx(
+                            'ml-1 inline-flex items-center justify-center size-4 text-xs rounded-full border border-muted-foreground/40 text-muted-foreground cursor-help domain-hint',
+                          )}
+                        >
+                          ?
+                        </span>
+                      </>
+                    }
+                    error={errors.domain?.message}
+                    placeholder={t('SETTINGS_GENERAL_DOMAIN_PLACEHOLDER')}
+                  />
+                </div>
+                <div className="mb-3">
+                  <Input
+                    {...register('internalIp')}
+                    label={
+                      <>
+                        {t('SETTINGS_GENERAL_INTERNAL_IP')}
+                        <Tooltip className="tooltip" anchorSelect=".internal-ip-hint">
+                          {t('SETTINGS_GENERAL_INTERNAL_IP_HINT')}
+                        </Tooltip>
+                        <span
+                          className={clsx(
+                            'ml-1 inline-flex items-center justify-center size-4 text-xs rounded-full border border-muted-foreground/40 text-muted-foreground cursor-help internal-ip-hint',
+                          )}
+                        >
+                          ?
+                        </span>
+                      </>
+                    }
+                    error={errors.internalIp?.message}
+                    placeholder="192.168.1.1"
+                  />
+                </div>
+                <div className="mb-3">
+                  <Input
+                    {...register('listenIp')}
+                    label={
+                      <>
+                        {t('SETTINGS_GENERAL_LISTEN_IP')}
+                        <Tooltip className="tooltip" anchorSelect=".listen-ip-hint">
+                          {t('SETTINGS_GENERAL_LISTEN_IP_HINT')}
+                        </Tooltip>
+                        <span
+                          className={clsx(
+                            'ml-1 inline-flex items-center justify-center size-4 text-xs rounded-full border border-muted-foreground/40 text-muted-foreground cursor-help listen-ip-hint',
+                          )}
+                        >
+                          ?
+                        </span>
+                      </>
+                    }
+                    error={errors.listenIp?.message}
+                    placeholder="0.0.0.0"
+                  />
+                </div>
+                <div className="mb-3">
+                  <Input
+                    {...register('port', {
+                      valueAsNumber: true,
+                    })}
+                    label={
+                      <>
+                        {t('COMMON_PORT')}
+                        <Tooltip className="tooltip" anchorSelect=".port-hint">
+                          {t('SETTINGS_GENERAL_PORT_HINT')}
+                        </Tooltip>
+                        <span
+                          className={clsx(
+                            'ml-1 inline-flex items-center justify-center size-4 text-xs rounded-full border border-muted-foreground/40 text-muted-foreground cursor-help port-hint',
+                          )}
+                        >
+                          ?
+                        </span>
+                      </>
+                    }
+                    error={errors.port?.message}
+                    placeholder="80"
+                    type="number"
+                    max={65535}
+                  />
+                </div>
+                <div className="mb-3">
+                  <Input
+                    {...register('sslPort', {
+                      valueAsNumber: true,
+                    })}
+                    label={
+                      <>
+                        {t('SETTINGS_GENERAL_SSL_PORT')}
+                        <Tooltip className="tooltip" anchorSelect=".sslPort-hint">
+                          {t('SETTINGS_GENERAL_SSL_PORT_HINT')}
+                        </Tooltip>
+                        <span
+                          className={clsx(
+                            'ml-1 inline-flex items-center justify-center size-4 text-xs rounded-full border border-muted-foreground/40 text-muted-foreground cursor-help sslPort-hint',
+                          )}
+                        >
+                          ?
+                        </span>
+                      </>
+                    }
+                    error={errors.sslPort?.message}
+                    placeholder="443"
+                    type="number"
+                    max={65535}
+                  />
+                </div>
+                <div className="mb-3">
+                  <Input
+                    {...register('eventsTimeout', {
+                      valueAsNumber: true,
+                      required: true,
+                    })}
+                    label={
+                      <>
+                        {t('SETTINGS_GENERAL_EVENTS_TIMEOUT')}
+                        <Tooltip className="tooltip" anchorSelect=".events-timeout-hint">
+                          {t('SETTINGS_GENERAL_EVENTS_TIMEOUT_HINT')}
+                        </Tooltip>
+                        <span
+                          className={clsx(
+                            'ml-1 inline-flex items-center justify-center size-4 text-xs rounded-full border border-muted-foreground/40 text-muted-foreground cursor-help events-timeout-hint',
+                          )}
+                        >
+                          ?
+                        </span>
+                      </>
+                    }
+                    error={errors.eventsTimeout?.message}
+                    placeholder="5"
+                    type="number"
+                  />
+                </div>
+                <div className="mb-3">
+                  <Input
+                    {...register('maxBackups', {
+                      valueAsNumber: true,
+                      required: true,
+                    })}
+                    label={
+                      <>
+                        {t('SETTINGS_GENERAL_MAX_BACKUPS')}
+                        <Tooltip className="tooltip" anchorSelect=".max-backups-hint">
+                          {t('SETTINGS_GENERAL_MAX_BACKUPS_HINT')}
+                        </Tooltip>
+                        <span
+                          className={clsx(
+                            'ml-1 inline-flex items-center justify-center size-4 text-xs rounded-full border border-muted-foreground/40 text-muted-foreground cursor-help max-backups-hint',
+                          )}
+                        >
+                          ?
+                        </span>
+                      </>
+                    }
+                    error={errors.maxBackups?.message}
+                    placeholder="5"
+                    type="number"
+                    min={0}
+                    max={100}
+                  />
+                </div>
+                <div className="mb-3">
+                  <Input
+                    {...register('appDataPath')}
+                    label={
+                      <>
+                        {t('SETTINGS_GENERAL_APP_DATA_PATH')}
+                        <Tooltip className="tooltip" anchorSelect=".app-data-path-hint">
+                          {t('SETTINGS_GENERAL_APP_DATA_PATH_HINT')}
+                        </Tooltip>
+                        <span
+                          className={clsx(
+                            'ml-1 inline-flex items-center justify-center size-4 text-xs rounded-full border border-muted-foreground/40 text-muted-foreground cursor-help app-data-path-hint',
+                          )}
+                        >
+                          ?
+                        </span>
+                      </>
+                    }
+                    error={errors.appDataPath?.message}
+                    placeholder="/path/to/app/data"
+                  />
+                </div>
+                <div className="mb-3">
+                  <Input
+                    {...register('forwardAuthUrl')}
+                    label={
+                      <>
+                        {t('SETTINGS_GENERAL_FORWARD_AUTH_URL')}
+                        <Tooltip className="tooltip" anchorSelect=".forward-auth-url-hint">
+                          {t('SETTINGS_GENERAL_FORWARD_AUTH_URL_HINT')}
+                        </Tooltip>
+                        <span
+                          className={clsx(
+                            'ml-1 inline-flex items-center justify-center size-4 text-xs rounded-full border border-muted-foreground/40 text-muted-foreground cursor-help forward-auth-url-hint',
+                          )}
+                        >
+                          ?
+                        </span>
+                      </>
+                    }
+                    error={errors.forwardAuthUrl?.message}
+                    placeholder={t('SETTINGS_GENERAL_FORWARD_AUTH_URL_PLACEHOLDER')}
+                  />
+                </div>
+                <div className="mb-3">
+                  <Controller
+                    control={control}
+                    name="logLevel"
+                    defaultValue="info"
+                    render={({ field: { onChange, value } }) => (
+                      <Select value={value} defaultValue="info" onValueChange={onChange}>
+                        <SelectTrigger className="mb-3" name="logLevel" label={t('SETTINGS_GENERAL_LOG_LEVEL')}>
+                          <SelectValue placeholder={t('SETTINGS_GENERAL_LOG_LEVEL')} />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {Object.values(LOG_LEVEL_ENUM).map((level) => (
+                            <SelectItem key={level} value={level}>
+                              {level}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    )}
+                  />
+                </div>
+              </div>
+            )}
+            <div className="flex justify-center pt-2">
+              <Button loading={loading} type="submit" className="px-12">
+                {t('SETTINGS_GENERAL_SUBMIT')}
+              </Button>
+            </div>
+          </form>
+        </CardContent>
+      </Card>
+    </div>
+  );
+};

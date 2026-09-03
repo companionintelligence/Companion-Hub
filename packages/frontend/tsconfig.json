@@ -1,0 +1,16 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "jsx": "react-jsx",
+    "resolveJsonModule": true,
+    "lib": ["ESNext", "DOM", "DOM.Iterable"],
+    "paths": {
+      "@/*": ["./src/*"]
+    },
+    "types": ["@testing-library/jest-dom"],
+    "rootDirs": [".", "./.react-router/types"]
+  },
+  "exclude": ["./src/api-client/**/*", "vite.config.ts", "dist"]
+}

@@ -1,0 +1,12 @@
+ignore:
+  - 'public'
+  - 'scripts'
+  - 'templates'
+  - 'screenshots'
+  - '**/*.json'
+  - '**/tests/**'
+coverage:
+  status:
+    project:
+      default:
+        informational: true

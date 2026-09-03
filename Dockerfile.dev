@@ -1,0 +1,72 @@
+ARG NODE_VERSION="22"
+ARG ALPINE_VERSION="3.21"
+
+FROM node:${NODE_VERSION}-alpine${ALPINE_VERSION} AS node_base
+
+# tzdata must match the prod runner: docker-compose.local.yml bind-mounts the host's
+# /etc/localtime into this image too, so without a zoneinfo db ICU cannot resolve a zone
+# and dev would silently run on the UTC fallback while prod runs the host zone.
+RUN set -eux; \
+    apk add --no-cache g++ make curl python3 openssl git docker-cli dmidecode tzdata || { \
+      echo "Primary Alpine mirror failed, retrying with mirrors.edge.kernel.org"; \
+      sed -i 's|https\?://dl-cdn.alpinelinux.org/alpine|https://mirrors.edge.kernel.org/alpine|g' /etc/apk/repositories; \
+      apk add --no-cache g++ make curl python3 openssl git docker-cli dmidecode tzdata; \
+    }
+
+ARG TARGETARCH
+ARG DOCKER_COMPOSE_VERSION="v2.39.2"
+ENV TARGETARCH=${TARGETARCH}
+ENV NODE_ENV="development"
+
+WORKDIR /app
+
+RUN echo "Building for ${TARGETARCH}"
+RUN if [ "${TARGETARCH}" = "arm64" ]; then \
+      curl -fL --retry 3 --retry-delay 5 -o docker-binary "https://github.com/docker/compose/releases/download/$DOCKER_COMPOSE_VERSION/docker-compose-linux-aarch64"; \
+    elif [ "${TARGETARCH}" = "amd64" ]; then \
+      curl -fL --retry 3 --retry-delay 5 -o docker-binary "https://github.com/docker/compose/releases/download/$DOCKER_COMPOSE_VERSION/docker-compose-linux-x86_64"; \
+    else \
+      echo "ERROR: Unsupported TARGETARCH: ${TARGETARCH}" && exit 1; \
+    fi
+
+RUN chmod +x docker-binary && \
+    ./docker-binary version && \
+    mv docker-binary /usr/local/bin/docker-compose
+
+COPY ./package.json ./package.json
+COPY ./pnpm-lock.yaml ./
+COPY ./pnpm-workspace.yaml ./
+COPY ./packages/backend/package.json ./packages/backend/package.json
+COPY ./packages/frontend/package.json ./packages/frontend/package.json
+COPY ./packages/common/package.json ./packages/common/package.json
+COPY ./packages/desktop/package.json ./packages/desktop/package.json
+COPY ./packages/openclaw-plugin/package.json ./packages/openclaw-plugin/package.json
+COPY ./packages/frontend/scripts ./packages/frontend/scripts
+COPY ./packages/frontend/public ./packages/frontend/public
+
+RUN corepack enable && \
+    package_manager="$(node -p "require('./package.json').packageManager")" && \
+    attempt=1 && \
+    max_attempts=5 && \
+    until corepack prepare "$package_manager" --activate; do \
+      if [ "$attempt" -ge "$max_attempts" ]; then \
+        echo "corepack prepare failed after ${max_attempts} attempts for ${package_manager}" >&2; \
+        exit 1; \
+      fi; \
+      echo "corepack prepare failed (attempt ${attempt}/${max_attempts}) for ${package_manager}; retrying..." >&2; \
+      sleep $((attempt * 5)); \
+      attempt=$((attempt + 1)); \
+    done
+
+RUN pnpm install --frozen-lockfile
+
+COPY ./turbo.json ./turbo.json
+COPY ./tsconfig.json ./tsconfig.json
+COPY ./packages ./packages
+COPY ./packages/backend/assets ./assets
+COPY ./packages/backend/src/core/database/drizzle ./assets/migrations
+RUN mkdir -p /app/.turbo/cache && chown -R 1000:1000 /app
+
+EXPOSE 3000
+
+CMD ["npm", "run", "dev"]

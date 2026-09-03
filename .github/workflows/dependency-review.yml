@@ -1,0 +1,63 @@
+name: 'Dependency Review'
+
+# Scans dependency manifests changed in a PR for known-vulnerable
+# packages and blocks the merge when a high-or-worse advisory is found.
+# CASA Tier 2 / SOC 2 evidence: recurring dependency vulnerability scanning.
+#
+# Requires GitHub Advanced Security (dependency graph + dependency review).
+# Probes the dependency-graph API first so the job skips cleanly when GHAS
+# is unavailable, but still blocks merges on real high+ advisories once enabled.
+
+# TEMPORARY (Actions credit): automatic PR triggers disabled.
+# Re-enable pull_request when credits recover. Manual: gh workflow run dependency-review.yml
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  dependency-review:
+    name: Dependency Review
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Detect dependency review availability
+        id: ghas
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          http_code=$(curl -sS -o /tmp/dg-response.json -w "%{http_code}" \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/dependency-graph/compare/${BASE_SHA}...${HEAD_SHA}")
+
+          if [ "$http_code" = "200" ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          elif [ "$http_code" = "403" ]; then
+            # Private repos without GHAS return 403 from the dependency-graph API.
+            echo "available=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Unexpected dependency-graph API response (HTTP ${http_code}):" >&2
+            cat /tmp/dg-response.json >&2
+            exit 1
+          fi
+
+      - name: Dependency Review
+        if: steps.ghas.outputs.available == 'true'
+        uses: actions/dependency-review-action@v4
+        with:
+          fail-on-severity: high
+
+      - name: Skip dependency review (GHAS not enabled)
+        if: steps.ghas.outputs.available != 'true'
+        run: |
+          echo "::warning::Dependency review skipped — GitHub Advanced Security (dependency graph + dependency review) is not enabled. Enable it under Settings → Code security and analysis. This check will block high+ advisories once GHAS is active."
