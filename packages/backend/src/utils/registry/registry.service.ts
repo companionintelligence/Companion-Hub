@@ -7,12 +7,12 @@ import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import * as semver from 'semver';
 
-/** How long successful tag lists are reused (avoids hammering CI Cloud on every UI version check). */
+/** How long successful tag lists are reused (avoids hammering Companion Portal on every UI version check). */
 const TAGS_CACHE_TTL_MS = 10 * 60 * 1000;
 /** After a failed fetch, wait before retrying (reduces log + network noise when the registry rejects unauthenticated clients). */
 const TAGS_FAILURE_COOLDOWN_MS = 5 * 60 * 1000;
 const HUB_RELEASE_FEED_URL = 'https://dl.ci.computer/latest.json';
-/** Bound OCI + release-feed lookups so Settings cannot hang when CI Cloud is slow. */
+/** Bound OCI + release-feed lookups so Settings cannot hang when Companion Portal is slow. */
 export const REGISTRY_HTTP_TIMEOUT_MS = 1_500;
 
 type LatestHubReleaseFeed = {

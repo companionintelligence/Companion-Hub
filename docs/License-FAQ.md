@@ -1,31 +1,31 @@
 # License FAQ
 
-### Can you summarize what is allowed with Companion Hub's license?
+### Can you summarize what Companion Hub's license allows?
 
-Our license allows the free right to use, modify, and redistribute Companion Hub's source code for any personal or nonprofit purposes. Our goal with this license is to be as permissive as possible, while protecting Companion Intelligence against abuse.
+The license grants free rights to use, modify, and redistribute Companion Hub source code for personal or nonprofit purposes. The intent is to stay permissive for those uses while limiting commercial abuse of Companion Intelligence products.
 
-Companion Hub is licensed under the [PolyForm Noncommercial License 1.0.0](https://polyformproject.org/licenses/noncommercial/1.0.0). The full text is in [`LICENSE.md`](../LICENSE.md) in this repository.
+Companion Hub uses the [PolyForm Noncommercial License 1.0.0](https://polyformproject.org/licenses/noncommercial/1.0.0). The full text is in [`LICENSE.md`](../LICENSE.md).
 
-### What are my freedoms as a Companion Hub user under this license?
+### What freedoms do you have as a Companion Hub user?
 
-If you're using Companion Hub for personal or nonprofit purposes, you enjoy nearly all freedoms that come with an open source license, including the ability to view, modify, and redistribute Companion Hub's source code.
+If you use Companion Hub for personal or nonprofit purposes, you can view, modify, and redistribute the source under the same license terms, subject to the PolyForm Noncommercial restrictions.
 
 ### Can I fork Companion Hub?
 
-Yes, as long as your intended use is noncommercial, you're free to fork, modify, and redistribute Companion Hub under the same license terms.
+Yes. For noncommercial use, you can fork, modify, and redistribute Companion Hub under the same license.
 
 ### Can I contribute to Companion Hub?
 
-Sure! We love and appreciate contributions received from the community.
+Yes. See [`CONTRIBUTING.md`](../CONTRIBUTING.md).
 
 ### Can I sell Companion Hub?
 
-No. Selling Companion Hub, including selling cloud-hosted instances with Companion Hub or its derivatives, home server or appliance hardware with Companion Hub or its derivatives, support services for Companion Hub or its derivatives, and similar commercial offerings is not permitted under our license. If you're interested in any of these use cases, feel free to reach out to us at partner@companionintelligence.com.
+No. Selling Companion Hub—including cloud-hosted instances, home-server or appliance hardware that ships Companion Hub or its derivatives, paid support for those products, and similar commercial offerings—is not permitted. For commercial partnership questions, email partner@companionintelligence.com.
 
-### Does this license apply to Companion Memory or the Companion Portal?
+### Does this license apply to Companion Memory or Companion Portal?
 
-No. Companion Hub's PolyForm Noncommercial license covers this Hub repository. Companion Memory, Companion Portal, and other Companion Intelligence products remain separately licensed and are not open-sourced under these terms.
+No. The PolyForm Noncommercial terms cover this Hub repository only. Companion Memory, Companion Portal, and other Companion Intelligence products use separate licenses and are not open-sourced under these terms.
 
-### Unsure if your use case is allowed?
+### Unsure whether your use case is allowed?
 
-Feel free to reach out to us at support@companionintelligence.com.
+Email support@companionintelligence.com.

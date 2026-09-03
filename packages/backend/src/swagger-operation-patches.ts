@@ -23,27 +23,25 @@ export const availableDomainsResponseSchema = z.object({
 });
 
 /**
- * A custom domain the organization has connected, as the install dialog sees it.
+ * Describes a connected custom domain as shown in the install dialog.
  *
- * ⚠ `supported` IS NOT `domains.length > 0`. It answers whether CI-Cloud could be
- * asked at all — a deployment predating the route, or one that did not answer —
- * and the dialog owes those two states different sentences. "You have none, add
- * one in the portal" is wrong and misleading when the truth is "we could not
- * check". See CI-Hub#1181.
+ * `supported` does not mean `domains.length > 0`. It indicates whether Companion
+ * Portal could answer the request. The dialog must distinguish an empty domain
+ * list from an older or unavailable Portal, which cannot provide a list. See
+ * CI-Hub#1181.
  */
 const availableCustomDomainSchema = z.object({
   id: z.string(),
   domain: z.string(),
   /*
-   * ⚠ WIDER THAN IT LOOKS, AND DELIBERATELY OPEN AT THE EDGES. CI-Cloud reports
-   * `securing` (proved, certificate still issuing — Cloudflare gates the two
-   * independently) and `drifted` (the customer's records changed under it), and
-   * will add more. `unknown` is what this Hub calls a state newer than itself:
-   * the parser keeps such a row rather than dropping it, because a Hub is older
-   * than the Portal it talks to for most of its life and a vanished domain reads
-   * as "the Hub cannot see my domain".
+   * Keep this state set broader than the initial domain lifecycle. Companion
+   * Portal reports `securing` when verification succeeds before certificate
+   * issuance and `drifted` when customer DNS changes later. Cloudflare evaluates
+   * those conditions independently, and the Portal can add more states.
    *
-   * The state is a LABEL. `bindable` is the gate.
+   * Map states unknown to this Hub to `unknown` and retain the row. Hub versions
+   * often lag behind the Portal, and dropping a newer state would make a connected
+   * domain disappear. Treat `state` as a display label and `bindable` as the gate.
    */
   state: z.enum(['live', 'parked', 'pending', 'securing', 'drifted', 'unknown']),
   bindable: z.boolean(),
@@ -77,7 +75,7 @@ export const featuredStoreBundleSchema = z.object({
   newest: z.array(z.unknown()),
 });
 
-/** Query DTOs Nest does not reflect into OpenAPI for @Query() Zod classes. */
+/** Adds query DTOs that Nest cannot reflect from `@Query()` Zod classes. */
 export const OPERATION_QUERY_DTOS: Record<string, ZodDto> = {
   searchApps: SearchAppsQueryDto,
   getRuntimeModels: RuntimeModelsQueryDto,
@@ -90,7 +88,7 @@ export const OPERATION_QUERY_DTOS: Record<string, ZodDto> = {
   hubLogsEvents: StreamHubLogsQueryDto,
 };
 
-/** Inline @Body() types and missing request bodies. */
+/** Adds inline `@Body()` types and request bodies missing from reflection. */
 export const OPERATION_REQUEST_BODIES: Record<string, { schemaName: string; schema: z.ZodType }> = {
   updateAdvancedMode: { schemaName: 'UpdateAdvancedModeBody', schema: updateAdvancedModeBodySchema },
   setAutoUpdates: { schemaName: 'SetAutoUpdatesBody', schema: setAutoUpdatesBodySchema },
@@ -115,12 +113,12 @@ export const OPERATION_REQUEST_BODIES: Record<string, { schemaName: string; sche
   performUpdate: { schemaName: 'PerformUpdateBody', schema: z.object({ targetVersion: z.string().optional() }) },
 };
 
-/** Path params missing from Nest Zod DTO reflection. */
+/** Adds path parameters missing from Nest Zod DTO reflection. */
 export const OPERATION_PATH_PARAMS: Record<string, Array<Record<string, unknown>>> = {
   verifyPasswordResetToken: [{ name: 'token', in: 'path', required: true, schema: { type: 'string' } }],
 };
 
-/** @ApiResponse({ type: Object }) placeholders → concrete response schemas. */
+/** Replaces `@ApiResponse({ type: Object })` placeholders with concrete schemas. */
 export const OPERATION_RESPONSE_SCHEMAS: Record<string, { schemaName: string; schema: z.ZodType }> = {
   getDomains: { schemaName: 'AvailableDomainsResponseDto', schema: availableDomainsResponseSchema },
   getCustomDomains: { schemaName: 'AvailableCustomDomainsResponseDto', schema: availableCustomDomainsResponseSchema },

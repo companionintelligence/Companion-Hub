@@ -4,17 +4,20 @@ Local app runtime for the Companion Intelligence appliance. Installs and supervi
 
 ## License
 
-Companion Hub is licensed under the PolyForm Noncommercial License 1.0.0. Please refer to our [License FAQ](https://github.com/companionintelligence/CI-Hub/wiki/License-FAQ) if you have any questions or reach out to us directly at support@companionintelligence.com.
+Companion Hub uses the [PolyForm Noncommercial License 1.0.0](https://polyformproject.org/licenses/noncommercial/1.0.0). For common questions, see the [License FAQ](docs/License-FAQ.md) or email support@companionintelligence.com.
 
 - License text: [`LICENSE.md`](LICENSE.md)
-- License FAQ (wiki): https://github.com/companionintelligence/CI-Hub/wiki/License-FAQ
-- License FAQ (in-repo copy): [`docs/License-FAQ.md`](docs/License-FAQ.md)
+- License FAQ: [`docs/License-FAQ.md`](docs/License-FAQ.md)
 
 Required Notice: Copyright LifeScope INC, DBA Companion Intelligence (https://ci.computer)
 
 ## Security (Hub and Portal)
 
 Open-source Hub is an untrusted client of Companion Portal. See [`docs/security/hub-portal-trust.md`](docs/security/hub-portal-trust.md).
+
+## Documentation
+
+Start with [`docs/README.md`](docs/README.md) for the doc map, product glossary, tip scrub policy, and writing style.
 
 ## Quick start
 
@@ -23,4 +26,4 @@ pnpm install
 pnpm run local
 ```
 
-See [`CLAUDE.md`](CLAUDE.md) and [`docs/`](docs/) for development details.
+See [`CLAUDE.md`](CLAUDE.md) for day-to-day development commands.

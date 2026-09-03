@@ -65,7 +65,7 @@ export const app = pgTable(
     localSubdomain: varchar('local_subdomain'),
     publicDomain: varchar('public_domain'),
     /**
-     * Customer-owned hostname CI-Cloud has actually wired to this app's platform
+     * Customer-owned hostname Companion Portal has actually wired to this app's platform
      * hostname, mirrored from the `customDomains[]` of the last successful tunnel
      * sync. NOT user input: the Hub cannot tell whether a hostname is really
      * routed, so only a delivered binding may land here.
@@ -79,7 +79,7 @@ export const app = pgTable(
      * The custom domain the person installing this app ASKED for — the choice,
      * not the outcome.
      *
-     * ⚠ NEVER READ BY ENV GENERATION. {@link customDomain} is what CI-Cloud
+     * Env generation never reads this. {@link customDomain} is what Companion Portal
      * confirmed it wired and is the only value an app may be told to emit; this
      * is user input, and the Hub cannot tell whether a hostname really resolves
      * to this tunnel. Emitting a public URL for one that does not is worse than
@@ -87,7 +87,7 @@ export const app = pgTable(
      * an address nothing answers on.
      *
      * It exists because the two cannot happen at the same moment: at install
-     * time CI-Cloud has never heard of the app, so there is nothing to bind a
+     * time Companion Portal has never heard of the app, so there is nothing to bind a
      * domain to yet. The intent is recorded here, the tunnel sync registers the
      * app, the bind follows, and the delivered binding then lands in
      * `custom_domain` like any other. `null` means "serve on the platform
@@ -221,7 +221,7 @@ export const apiKey = pgTable(
 );
 
 export const deviceRegistration = pgTable('device_registration', {
-  id: varchar().notNull().primaryKey(), // organization_id from CI Cloud
+  id: varchar().notNull().primaryKey(), // organization_id from Companion Portal
   slug: varchar().notNull(), // organization slug for subdomain
   name: varchar().notNull(), // organization label for display
   /**

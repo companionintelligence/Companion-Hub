@@ -1,3 +1,3 @@
 # Session notes
 
-Internal agent session write-ups are not published in this tree.
+This tree does not publish internal agent session notes.

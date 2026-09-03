@@ -1,4 +1,4 @@
-# Frontend System — CI-Hub
+# Frontend system — Companion Hub
 
 > **Purpose:** React SPA — dashboard, app store, settings, hub startup gate, real-time logs.
 > **Scope:** `packages/frontend/` — React Router 7, TanStack Query, hub-status, API client.

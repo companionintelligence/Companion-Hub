@@ -1,23 +1,24 @@
-# DNS Cache Issue Analysis: `DNS_PROBE_FINISHED_NXDOMAIN`
+# DNS cache analysis: `DNS_PROBE_FINISHED_NXDOMAIN`
 
-## Problem Statement
-When clicking "Open" button in the CI-Hub Tauri app to launch a newly created public domain, the browser shows `DNS_PROBE_FINISHED_NXDOMAIN` error. However, manually opening the same URL in the browser works correctly.
+## Problem statement
 
-## Root Cause Analysis
+When you select **Open** in the Companion Hub desktop app to launch a newly created public domain, the browser shows `DNS_PROBE_FINISHED_NXDOMAIN`. Opening the same URL manually in the browser works.
 
-### Why This Happens
+## Root cause
 
-The issue is **NOT a propagation problem** but rather a **system-level DNS cache vs. browser DNS cache** discrepancy:
+### Why this happens
 
-1. **Tauri's `openUrl()` flow**:
+The issue comes from a difference between the system DNS cache and the browser DNS cache, rather than from DNS propagation:
+
+1. **Tauri's `openUrl()` flow:**
    - `@tauri-apps/plugin-opener` → Rust backend → System shell → Default browser launch
    - This path uses the **OS-level DNS resolver** (not the browser's DNS cache)
 
-2. **Manual browser navigation**:
+2. **Manual browser navigation:**
    - Browser → Browser's internal DNS cache/DoH/resolver
    - Modern browsers (Chrome/Firefox) often use their own DNS resolution (DoH, browser cache)
 
-3. **The timing issue (pre-fix)**:
+3. **Timing before the fix:**
    ```
    Time 0: App creates new DNS record via Cloudflare API
    Time 1: App immediately calls openUrl(newDomain) 
@@ -25,27 +26,27 @@ The issue is **NOT a propagation problem** but rather a **system-level DNS cache
    Time 3: Browser launches with stale system DNS resolution
    ```
 
-4. **The fix (post-fix)**:
+4. **Flow after the fix:**
    ```
    Time 0: App creates new DNS record via Cloudflare API
    Time 1: App flushes system DNS cache
    Time 2: App pre-warms DNS via fetch() HEAD request
-   Time 3: System + browser DNS caches now populated
+   Time 3: System and browser DNS caches now populated
    Time 4: openUrl(newDomain) → Browser launches successfully
    ```
 
-### Key Differences
+### Key differences
 
-| Aspect | Tauri `openUrl()` | Manual Browser Entry |
+| Aspect | Tauri `openUrl()` | Manual browser navigation |
 |--------|------------------|---------------------|
-| DNS Resolver | System (`systemd-resolved`, `dnsmasq`, etc.) | Browser (DoH, internal cache) |
+| DNS resolver | System (`systemd-resolved`, `dnsmasq`, etc.) | Browser (DoH, internal cache) |
 | Cache TTL | System-wide (often 60s+) | Browser-controlled (can be 0s) |
-| Resolution Path | OS → ISP/configured DNS | Browser → DoH provider (1.1.1.1, 8.8.8.8) |
-| Refresh Trigger | System TTL expiry | Browser refresh, new tab |
+| Resolution path | OS → ISP or configured DNS | Browser → DoH provider (1.1.1.1, 8.8.8.8) |
+| Refresh trigger | System TTL expiry | Browser refresh or new tab |
 
-## Evidence in Code (Pre-Fix Behavior)
+## Evidence in code before the fix
 
-### 1. URL Construction (`app-access-points.tsx:68-108`)
+### URL construction (`app-access-points.tsx:68-108`)
 ```typescript
 const derivedPublicIdentity = !configuredPublicDomain && cleanSubdomain && resolvedPublicDomain
   ? buildPublicWebIdentity({
@@ -59,41 +60,42 @@ const derivedPublicIdentity = !configuredPublicDomain && cleanSubdomain && resol
 const publicHost = configuredPublicDomain || derivedPublicIdentity?.hostname || null;
 const publicUrl = publicHost ? buildHttpsUrl(publicHost, sslPort, urlSuffix) : null;
 ```
-- ✅ URL is constructed correctly
-- ❌ **[Pre-fix]** No DNS warmup or verification before opening
+- The code constructs the URL correctly.
+- Before the fix, the code didn't warm or verify DNS before opening the URL.
 
-### 2. Launch Mechanism (`open-external.ts:19-29` - original)
+### Launch mechanism (`open-external.ts:19-29`, original)
 ```typescript
 if (typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window) {
   const { openUrl } = await import('@tauri-apps/plugin-opener');
   await openUrl(normalizedUrl);  // ← Delegates to system shell
 }
 ```
-- ❌ **[Pre-fix]** No DNS pre-check
-- ❌ **[Pre-fix]** No retry logic
-- ❌ **[Pre-fix]** Relies entirely on system DNS resolution
+- Before the fix, the code didn't check DNS.
+- Before the fix, the code didn't retry.
+- The code relied entirely on system DNS resolution.
 
-**[Post-fix]** This PR now implements DNS cache flush + warmup before calling `openUrl()`.
+After the fix, the code flushes and warms the DNS cache before it calls `openUrl()`.
 
-### 3. Tauri Opener Plugin (`Cargo.toml:27`)
+### Tauri opener plugin (`Cargo.toml:27`)
 ```toml
 tauri-plugin-opener = "2"
 ```
-- This plugin calls the system's default URL handler (e.g., `xdg-open`, `start`, `open`)
-- System handler uses **system DNS resolver**, not browser DNS
+- This plugin calls the system's default URL handler, such as `xdg-open`, `start`, or `open`.
+- The system handler uses the **system DNS resolver**, not browser DNS.
 
-## Why It Works Manually
+## Why manual navigation works
 
 When you paste the URL into your browser:
-1. Browser may use **DNS-over-HTTPS** (bypasses system cache)
-2. Browser's DNS cache TTL is often **much shorter**
-3. Browser can **fallback to multiple resolvers**
-4. Recent browser tab/refresh clears stale entries
+1. The browser might use **DNS over HTTPS**, which bypasses the system cache.
+2. The browser's DNS cache TTL is often **shorter**.
+3. The browser can **fall back to multiple resolvers**.
+4. A new tab or browser refresh can clear stale entries.
 
-## Solutions (Ranked by Impact)
+## Solutions ranked by impact
 
-### Solution 1: DNS Pre-Warm (Recommended) ⭐
-**Add a DNS verification step before opening URLs**
+### DNS prewarming (recommended)
+
+Add a DNS verification step before you open URLs.
 
 ```typescript
 // packages/frontend/src/lib/helpers/open-external.ts
@@ -144,18 +146,19 @@ export const openExternal = async (url: string): Promise<void> => {
 };
 ```
 
-**Pros:**
-- ✅ Warms system DNS cache via fetch
-- ✅ Works cross-platform
-- ✅ Non-blocking (user sees URL open even if DNS pending)
-- ✅ Minimal code change
+**Advantages:**
+- Warms the system DNS cache through `fetch`.
+- Works across platforms.
+- Opens the URL even when DNS is pending.
+- Requires a small code change.
 
-**Cons:**
-- ⚠️ Adds 100-500ms latency to "Open" button
-- ⚠️ Requires network call before launch
+**Limitations:**
+- Adds 100–500 ms of latency to the **Open** action.
+- Requires a network call before launch.
 
-### Solution 2: Add Retry Logic with Toast
-**Provide user feedback and retry option**
+### Add retry logic with a notification
+
+Provide feedback and a retry option.
 
 ```typescript
 export const openExternalWithRetry = async (url: string, maxRetries = 2): Promise<void> => {
@@ -183,16 +186,17 @@ export const openExternalWithRetry = async (url: string, maxRetries = 2): Promis
 };
 ```
 
-**Pros:**
-- ✅ Handles transient DNS issues
-- ✅ User-friendly feedback
+**Advantages:**
+- Handles transient DNS issues.
+- Explains the delay to the user.
 
-**Cons:**
-- ⚠️ Adds UI complexity
-- ⚠️ Slower UX (3-5s delay possible)
+**Limitations:**
+- Adds UI complexity.
+- Can delay the action by 3–5 seconds.
 
-### Solution 3: Cloudflare DNS Verification Before Exposing
-**Wait for DNS to propagate before showing "Open" button**
+### Verify Cloudflare DNS before exposure
+
+Wait for DNS to propagate before showing the **Open** button.
 
 Modify `packages/backend/src/modules/cloudflare/cloudflare-hostname.service.ts`:
 
@@ -217,16 +221,17 @@ await cfClient.createCustomHostname(hostname, originServer);
 await waitForDnsPropagation(hostname); // ← Add this
 ```
 
-**Pros:**
-- ✅ Guarantees DNS is ready before user sees URL
-- ✅ Zero UX friction once button appears
+**Advantages:**
+- Verifies DNS before the user sees the URL.
+- Avoids a delay after the button appears.
 
-**Cons:**
-- ❌ Slows down app installation/exposure flow
-- ❌ Cloudflare propagation can be instant but system cache still stale
+**Limitations:**
+- Slows the app installation and exposure flow.
+- Doesn't clear a stale system cache, even if Cloudflare propagation is complete.
 
-### Solution 4: Force System DNS Flush (Tauri Command)
-**Add a Rust command to flush OS DNS cache before opening**
+### Flush the system DNS cache with a Tauri command
+
+Add a Rust command that flushes the OS DNS cache before opening the URL.
 
 ```rust
 // packages/desktop/src-tauri/src/commands/dns.rs
@@ -297,22 +302,22 @@ export const openExternal = async (url: string): Promise<void> => {
 };
 ```
 
-**Pros:**
-- ✅ Directly solves system DNS cache issue
-- ✅ Fast (10-50ms)
+**Advantages:**
+- Directly addresses the system DNS cache.
+- Usually takes 10–50 ms.
 
-**Cons:**
-- ❌ Requires elevated permissions on some systems
-- ❌ May fail silently on restricted systems
-- ❌ Platform-specific code complexity
+**Limitations:**
+- Requires elevated permissions on some systems.
+- Can fail silently on restricted systems.
+- Adds platform-specific code.
 
 ## Recommendation
 
-**Implement Solution 1 (DNS Pre-Warm) + Solution 4 (Optional Flush)**
+Use DNS prewarming with an optional system cache flush.
 
-**Implementation Plan:**
-1. Add `verifyDnsResolution()` helper to pre-warm DNS via fetch
-2. Add optional `flush_dns_cache` Tauri command (best-effort)
+**Implementation plan:**
+1. Add a `verifyDnsResolution()` helper that prewarms DNS through `fetch`.
+2. Add an optional, best-effort `flush_dns_cache` Tauri command.
 3. Combine both in `openExternal()`:
    ```typescript
    await invoke('flush_dns_cache').catch(() => {});
@@ -320,25 +325,25 @@ export const openExternal = async (url: string): Promise<void> => {
    await openUrl(normalizedUrl);
    ```
 
-**Why This Combo:**
-- ✅ Covers both system-level (flush) and application-level (pre-warm) caching
-- ✅ Graceful degradation (if flush fails, pre-warm still helps)
-- ✅ Cross-platform compatible
-- ✅ Minimal UX impact (<500ms delay)
+**Why use both:**
+- Covers system-level cache flushing and application-level prewarming.
+- Continues to prewarm DNS if the cache flush fails.
+- Works across platforms.
+- Adds less than 500 ms of delay.
 
-## Testing Plan
+## Test plan
 
-1. **Create fresh DNS record** via Cloudflare
-2. **Immediately click "Open"** in Tauri app
-3. **Verify**: Browser opens correctly (no NXDOMAIN)
-4. **Test on all platforms**: Linux (systemd-resolved), macOS (mDNSResponder), Windows (DNS Client)
-5. **Test edge cases**:
-   - Offline mode (DNS check should timeout gracefully)
-   - Invalid domains (should open browser anyway, let browser handle)
-   - Slow DNS servers (should not block indefinitely)
+1. Create a DNS record through Cloudflare.
+2. Immediately select **Open** in the Tauri app.
+3. Verify that the browser opens without an NXDOMAIN error.
+4. Test on Linux (`systemd-resolved`), macOS (`mDNSResponder`), and Windows (DNS Client).
+5. Test these edge cases:
+   - In offline mode, verify that the DNS check times out.
+   - For invalid domains, verify that the browser still opens and handles the error.
+   - With slow DNS servers, verify that the request doesn't block indefinitely.
 
-## Additional Notes
+## Additional notes
 
-- **Why not use Tauri's built-in DNS APIs?** Tauri v2 doesn't expose low-level DNS control
-- **Why browsers work manually?** They often use DNS-over-HTTPS (bypasses system cache) and aggressive cache invalidation
-- **Cloudflare propagation**: Typically <5 seconds globally, but system caches can hold stale data for 60s+
+- **Tauri DNS APIs:** Tauri v2 doesn't expose low-level DNS control.
+- **Manual browser behavior:** Browsers often use DNS over HTTPS, which bypasses the system cache, and invalidate their caches more aggressively.
+- **Cloudflare propagation:** Propagation typically takes less than 5 seconds globally, but system caches can hold stale data for more than 60 seconds.

@@ -1,50 +1,28 @@
-# React + TypeScript + Vite
+# Frontend package
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+React Router SPA for Companion Hub. Operators manage marketplace apps, onboarding, settings, and device connectivity from this UI.
 
-Currently, two official plugins are available:
+## Stack
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react/README.md) uses [Babel](https://babeljs.io/) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+- React 19 + TypeScript
+- React Router 7
+- Vite
+- Biome (lint/format)
+- Vitest + Testing Library
 
-## Expanding the ESLint configuration
+## Commands
 
-If you are developing a production application, we recommend updating the configuration to enable type aware lint rules:
+From the repo root:
 
-- Configure the top-level `parserOptions` property like this:
-
-```js
-export default tseslint.config({
-  languageOptions: {
-    // other options...
-    parserOptions: {
-      project: ['./tsconfig.node.json', './tsconfig.app.json'],
-      tsconfigRootDir: import.meta.dirname,
-    },
-  },
-})
+```bash
+pnpm install
+pnpm --filter @ci-hub/frontend dev
+pnpm --filter @ci-hub/frontend test
+pnpm --filter @ci-hub/frontend typecheck
 ```
 
-- Replace `tseslint.configs.recommended` to `tseslint.configs.recommendedTypeChecked` or `tseslint.configs.strictTypeChecked`
-- Optionally add `...tseslint.configs.stylisticTypeChecked`
-- Install [eslint-plugin-react](https://github.com/jsx-eslint/eslint-plugin-react) and update the config:
+## Docs
 
-```js
-// eslint.config.js
-import react from 'eslint-plugin-react'
-
-export default tseslint.config({
-  // Set the react version
-  settings: { react: { version: '18.3' } },
-  plugins: {
-    // Add the react plugin
-    react,
-  },
-  rules: {
-    // other rules...
-    // Enable its recommended rules
-    ...react.configs.recommended.rules,
-    ...react.configs['jsx-runtime'].rules,
-  },
-})
-```
+- Living notes: [`docs/system/frontend.md`](../../docs/system/frontend.md)
+- UI tokens and patterns: [`docs/UI-STYLE-GUIDE.md`](../../docs/UI-STYLE-GUIDE.md)
+- Doc map and writing style: [`docs/README.md`](../../docs/README.md)

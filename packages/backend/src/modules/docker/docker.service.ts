@@ -27,25 +27,26 @@ export type { AppContainerRuntimeStats, AppNetworkTarget, ManagedAppContainerVer
 const MANAGED_APP_STARTUP_MAX_ATTEMPTS = 6;
 const MANAGED_APP_STARTUP_DELAY_MS = 2_000;
 
-/** Grace period after SIGTERM before a cancelled `docker compose` child is force-killed with SIGKILL. */
+/** Grace period between SIGTERM and SIGKILL for a canceled Compose child process. */
 const COMPOSE_CANCEL_SIGKILL_GRACE_MS = 5_000;
-// Upper bound for the privileged uninstall-remnant cleanup helper (image pull + delete).
+// Bound privileged uninstall cleanup, including the helper image pull and deletion.
 const PRIVILEGED_CLEANUP_TIMEOUT_MS = 120_000;
 
 /**
- * Time-box for `docker compose up <service>`. Generous because `up` pulls the
- * image on demand (compose `pull_policy`) on a fresh host, so this bound must
- * cover a cold pull; a wedged/cold pull is killed and retried within it rather
- * than hanging provisioning forever. When the image is already cached, `up`
- * starts in seconds — far under this bound and with no registry round-trip.
+ * Bounds `docker compose up <service>`.
+ *
+ * Compose can pull an image on demand according to `pull_policy`, so the limit
+ * must accommodate a cold pull on a new host. Kill and retry a stalled pull
+ * instead of blocking provisioning indefinitely. Cached images start without a
+ * registry request and remain well below this limit.
  */
 const COMPOSE_UP_TIMEOUT_MS = 300_000;
-/** Attempts for the bounded `up`: a wedged first attempt is killed, then retried. */
+/** Allows one retry after the bounded `up` process stalls or fails. */
 const COMPOSE_OP_MAX_ATTEMPTS = 2;
-/** After the SIGKILL grace, unblock the caller even if the child never exits. */
+/** Unblocks the caller if a child remains after the SIGKILL grace period. */
 const PROCESS_EXIT_BACKSTOP_MS = 5_000;
 
-/** True when compose/docker failed because the container's network endpoint is gone. */
+/** Returns whether Docker failed because the container network endpoint is stale. */
 function isStaleContainerNetworkError(error: unknown): boolean {
   const msg = error instanceof Error ? error.message : String(error);
   return /network .+ not found/i.test(msg) || /failed to set up container networking/i.test(msg);
@@ -90,20 +91,19 @@ export class DockerService {
   ) {}
 
   /**
-   * Derive the Docker Compose project name used by CI-Hub for a given app URN.
+   * Derives the Docker Compose project name for an app URN.
    *
-   * @param appUrn - App URN (for example, "my-app:store")
-   * @returns Compose project name used for labels and docker compose --project-name
+   * @param appUrn App URN, such as `my-app:store`.
+   * @returns Project name used for labels and `docker compose --project-name`.
    */
   private getComposeProjectName(appUrn: AppUrn): string {
     return this.dockerReadFacade.getComposeProjectName(appUrn);
   }
 
   /**
-   * Check if a Docker API error indicates the target resource no longer exists.
+   * Returns whether a Docker API error indicates a missing resource.
    *
-   * @param error - Error thrown by Dockerode or command execution
-   * @returns True when the error represents a missing resource (404/not found)
+   * @param error Error from Dockerode or command execution.
    */
   private isResourceMissingError(error: unknown): boolean {
     if (!(error instanceof Error)) {
@@ -115,10 +115,9 @@ export class DockerService {
   }
 
   /**
-   * Check if a Docker API error indicates the resource is currently in use.
+   * Returns whether a Docker API error indicates active resource references.
    *
-   * @param error - Error thrown by Dockerode or command execution
-   * @returns True when the resource cannot be removed due to active references
+   * @param error Error from Dockerode or command execution.
    */
   private isResourceInUseError(error: unknown): boolean {
     if (!(error instanceof Error)) {
@@ -154,20 +153,20 @@ export class DockerService {
   }
 
   /**
-   * Snapshot image IDs from all containers belonging to an app compose project.
+   * Captures image IDs from all containers in an app's Compose project.
    *
-   * This is collected before compose down so cleanup can still remove pulled
-   * images by immutable ID even if tag/ref resolution changes later.
+   * Capture these immutable IDs before `compose down` so cleanup can remove
+   * pulled images even if tag or reference resolution changes later.
    *
-   * @param appUrn - App URN to inspect
-   * @returns Unique list of Docker image IDs referenced by project containers
+   * @param appUrn App URN to inspect.
+   * @returns Unique Docker image IDs referenced by project containers.
    */
   public async snapshotAppImageIds(appUrn: AppUrn): Promise<string[]> {
     const projectName = this.getComposeProjectName(appUrn);
 
     try {
-      // Snapshot concrete image IDs from project containers before teardown so we
-      // can still remove pulled images even if compose ref resolution changes.
+      // Capture concrete IDs before teardown because Compose references can resolve
+      // differently after the containers are removed.
       const containers = await this.docker.listContainers({
         all: true,
         filters: { label: [`com.docker.compose.project=${projectName}`] },
@@ -214,17 +213,14 @@ export class DockerService {
   }
 
   /**
-   * Remove Docker images associated with an app after uninstall.
+   * Removes Docker images associated with an uninstalled app.
    *
-   * Image candidates come from both:
-   * - pre-down container image snapshot IDs, and
-   * - compose-labeled images (for locally built artifacts).
+   * Candidates include image IDs captured before teardown and Compose-labeled
+   * images for local builds. Missing or in-use images do not fail the uninstall,
+   * allowing application-level cleanup to finish.
    *
-   * Missing/in-use image errors are intentionally non-fatal so uninstall can
-   * continue and finish application-level cleanup.
-   *
-   * @param appUrn - App URN being uninstalled
-   * @param snapshotImageIds - Optional pre-down image IDs collected from containers
+   * @param appUrn App URN being uninstalled.
+   * @param snapshotImageIds Image IDs captured before container teardown.
    */
   public async removeAppImages(appUrn: AppUrn, snapshotImageIds: string[] = []): Promise<void> {
     const projectName = this.getComposeProjectName(appUrn);
@@ -234,15 +230,15 @@ export class DockerService {
       return [];
     });
 
-    // Merge container-derived IDs with compose-labeled built images for
-    // best-effort cleanup across partial/failure states.
+    // Combine container IDs with Compose-labeled builds so cleanup covers partial
+    // installation and teardown states.
     const imageIds = new Set<string>([...snapshotImageIds, ...labeledImages.map((image) => image.Id)].filter(Boolean));
 
     for (const imageId of imageIds) {
       try {
         await this.docker.getImage(imageId).remove({ force: true });
       } catch (error) {
-        // Missing/in-use resources are non-fatal during uninstall cleanup.
+        // Missing or in-use images must not block the remaining uninstall cleanup.
         if (this.isResourceMissingError(error) || this.isResourceInUseError(error)) {
           this.logger.warn(`Skipping image removal for ${imageId} (${appUrn}): ${error}`);
           continue;
@@ -254,13 +250,13 @@ export class DockerService {
   }
 
   /**
-   * Remove app-owned Docker networks that remain after compose teardown.
+   * Removes app-owned Docker networks that remain after Compose teardown.
    *
-   * The shared CI-Hub network and external compose networks are skipped to
-   * avoid deleting infrastructure or user-managed resources.
-   * Missing/in-use network errors are intentionally non-fatal.
+   * Preserve the shared Companion Hub network and external Compose networks to
+   * protect infrastructure and user-managed resources. Missing or in-use network
+   * errors remain nonfatal.
    *
-   * @param appUrn - App URN being uninstalled
+   * @param appUrn App URN being uninstalled.
    */
   public async removeAppNetworks(appUrn: AppUrn): Promise<void> {
     const projectName = this.getComposeProjectName(appUrn);
@@ -272,13 +268,13 @@ export class DockerService {
 
     for (const network of networks) {
       const networkName = network.Name;
-      // Never remove the shared hub network during app-specific teardown.
+      // Preserve the shared Hub network during app-specific teardown.
       if (!networkName || networkName === DEFAULT_NETWORK_NAME) {
         continue;
       }
 
       const isExternal = network.Labels?.['com.docker.compose.network.external'] === 'true';
-      // External networks are user/host managed and should be left untouched.
+      // Preserve external networks because users or the host manage them.
       if (isExternal) {
         continue;
       }
@@ -297,22 +293,24 @@ export class DockerService {
   }
 
   /**
-   * Empty an app's data directory using a short-lived ROOT helper container, for the
-   * one case the non-root Hub process cannot handle itself: files a container created
-   * as root (e.g. MinIO's `.minio.sys`). The Docker daemon runs as root, so a throwaway
-   * container can delete them; the Hub then removes the now-empty dir normally.
+   * Empties an app data directory through a short-lived root helper container.
    *
-   * Security (this is a root-privileged delete, so it is deliberately paranoid):
-   *  - The target is recomputed from `appUrn` via {@link getAppDataHostPath} — NEVER a
-   *    caller-supplied path — and validated to be exactly `{app-data-root}/{store}/{app}`
-   *    with safe path segments; anything else is refused.
-   *  - The container bind-mounts ONLY that one app's data dir (never a parent that holds
-   *    sibling apps) and only empties it (`find -mindepth 1 -delete`).
-   *  - `--rm` (no residue), `--network none` (no egress), `--user 0:0`, array args (no
-   *    shell → no injection), and a hard timeout.
+   * The non-root Hub process cannot delete files that an app created as root,
+   * such as MinIO's `.minio.sys`. The root Docker daemon can remove those files
+   * through a temporary container, after which the Hub removes the empty directory.
    *
-   * Returns whether the helper reported success. Best-effort: any failure returns false
-   * so the caller falls back to warning the user with a manual command.
+   * The privileged deletion uses these safeguards:
+   *
+   * - Recompute the target from `appUrn` with {@link getAppDataHostPath}; never
+   *   accept a caller-supplied path. Require the exact
+   *   `{app-data-root}/{store}/{app}` structure with safe path segments.
+   * - Bind-mount only that app's directory, never a parent containing sibling
+   *   apps, and remove only its contents with `find -mindepth 1 -delete`.
+   * - Use `--rm`, `--network none`, `--user 0:0`, argument arrays without a
+   *   shell, and a hard timeout.
+   *
+   * @returns Whether the helper succeeded. A failure returns `false` so the
+   * caller can provide a manual cleanup command.
    */
   public async removeAppDataDirAsRoot(appUrn: AppUrn): Promise<boolean> {
     const config = this.config.getConfig();
@@ -337,8 +335,8 @@ export class DockerService {
     const isSafeSegment = (segment: string) => /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(segment);
     const expected = p.join(appDataRoot, appStoreId, appName);
 
-    // Refuse anything that is not EXACTLY {app-data-root}/{store}/{app}. This is what
-    // bounds the root-privileged delete to a single app's own data directory.
+    // Require the exact `{app-data-root}/{store}/{app}` path to confine the
+    // privileged deletion to one app directory.
     if (
       !isSafeSegment(appStoreId) ||
       !isSafeSegment(appName) ||
@@ -353,7 +351,7 @@ export class DockerService {
     }
 
     const image = process.env.CI_HUB_CLEANUP_IMAGE || 'alpine:3.20';
-    // Mount ONLY this app's data dir and empty it (never delete the mountpoint itself).
+    // Mount only this app directory and preserve the mount point itself.
     const args = [
       'run',
       '--rm',
@@ -382,8 +380,10 @@ export class DockerService {
   }
 
   /**
-   * Run a one-off `docker <args>` CLI command (no shell), rejecting on non-zero exit or
-   * timeout. Args MUST be a pre-split array so no value is shell-interpreted.
+   * Runs a one-time `docker <args>` command without a shell.
+   *
+   * Arguments must already be split so no value receives shell interpretation.
+   * The promise rejects on a nonzero exit or timeout.
    */
   private runDockerCliCommand(args: string[], timeoutMs: number): Promise<void> {
     return new Promise((resolve, reject) => {
@@ -409,9 +409,9 @@ export class DockerService {
   }
 
   /**
-   * Get the base compose args for an app
-
-   * @param {string} appUrn - App name
+   * Builds the base Docker Compose arguments for an app.
+   *
+   * @param appUrn App URN.
    */
   public getBaseComposeArgsApp = async (appUrn: AppUrn) => {
     let isCustomConfig = false;
@@ -419,11 +419,12 @@ export class DockerService {
     const appEnv = await this.appFilesManager.getAppEnv(appUrn);
     const args: string[] = ['--env-file', appEnv.path];
 
-    // DB-only — avoid AppsReadService/Marketplace (closes Docker↔Marketplace import cycle).
+    // Read the database directly to avoid a Docker-to-Marketplace import cycle
+    // through `AppsReadService`.
     const app = await this.appsRepository.getAppByUrn(appUrn);
     const userConfigEnabled = app?.userConfigEnabled ?? true;
 
-    // User custom env file
+    // Include user environment overrides only when custom configuration is enabled.
     const userEnvFile = await this.appFilesManager.getUserEnv(appUrn);
     if (userEnvFile.content && userConfigEnabled) {
       isCustomConfig = true;
@@ -435,7 +436,7 @@ export class DockerService {
     const composeFile = await this.appFilesManager.getDockerComposeYaml(appUrn);
     args.push('-f', composeFile.path);
 
-    // User defined overrides
+    // Include user Compose overrides only when custom configuration is enabled.
     const userComposeFile = await this.appFilesManager.getUserComposeFile(appUrn);
     if (userComposeFile.content && userConfigEnabled) {
       isCustomConfig = true;
@@ -455,7 +456,7 @@ export class DockerService {
     const composeFile = path.join(dataDir, 'docker-compose.yml');
     args.push('-f', composeFile);
 
-    // User defined overrides (support both new and legacy filenames)
+    // Support the current and legacy filenames for user Compose overrides.
     const hubComposeFile = path.join(dataDir, 'user-config', 'hub-compose.yml');
     const legacyComposeFile = path.join(dataDir, 'user-config', 'cihub-compose.yml');
     const userComposeFile = (await this.filesystem.pathExists(hubComposeFile)) ? hubComposeFile : legacyComposeFile;
@@ -467,39 +468,40 @@ export class DockerService {
   };
 
   /**
-   * Run a `docker compose` subcommand for an app. When `signal` is provided, an abort kills the
-   * spawned compose process (SIGTERM then SIGKILL) and rejects with an `AbortError`.
+   * Runs a Docker Compose subcommand for an app.
    *
-   * @param appUrn - App URN
-   * @param command - The compose subcommand to execute (e.g. `up --detach`, `down --remove-orphans`)
-   * @param signal - Optional abort signal to cancel the running compose process
+   * When `signal` aborts, terminate the child with SIGTERM, escalate to SIGKILL
+   * after the grace period, and reject with an `AbortError`.
+   *
+   * @param appUrn App URN.
+   * @param command Compose subcommand, such as `up --detach`.
+   * @param signal Optional signal that cancels the Compose process.
    */
   public async composeApp(appUrn: AppUrn, command: string, signal?: AbortSignal) {
     let { args, isCustomConfig } = await this.getBaseComposeArgsApp(appUrn);
     args.push(...command.split(' '));
     args = args.filter(Boolean);
 
-    // Get the compose file path to set as working directory
-    // This ensures docker-compose resolves relative paths correctly
+    // Run from the Compose file directory so relative paths resolve correctly.
     const composeFile = await this.appFilesManager.getDockerComposeYaml(appUrn);
     const composeDir = path.dirname(composeFile.path);
 
     this.logger.info(`Running docker compose with args ${args.join(' ')} from directory ${composeDir}`);
 
-    // Prefer docker compose (v2 plugin) over docker-compose (v1 binary) for better compatibility
-    // Try docker compose first, fallback to docker-compose binary if needed
+    // Prefer the Docker Compose v2 plugin and fall back to the v1 binary for
+    // compatibility with hosts that do not provide the plugin.
     try {
       await this.assertComposePluginAvailable();
 
       this.logger.debug('docker compose plugin is available, using it');
-      // Use docker compose plugin (docker-cli is installed in the container)
+      // The bundled container includes the Docker CLI required by the v2 plugin.
       return this.runDockerCompose(['docker', 'compose', ...args], composeDir, isCustomConfig, signal);
     } catch (_error) {
-      // A cancellation during the plugin probe must not be swallowed by the binary fallback.
+      // Propagate cancellation instead of starting the fallback binary.
       if (isAbortError(_error)) {
         throw _error;
       }
-      // Fallback to docker-compose binary if docker compose plugin is not available
+      // Use the v1 binary when the v2 plugin is unavailable.
       this.logger.warn('docker compose plugin not available, falling back to docker-compose binary');
       return this.runDockerCompose(['docker-compose', ...args], composeDir, isCustomConfig, signal).catch((fallbackError: unknown) => {
         if (isAbortError(fallbackError)) {
@@ -575,7 +577,8 @@ export class DockerService {
 
     throwIfAborted(signal);
 
-    // Timeouts must throw a normal Error (not AbortError) so install treats them as failure, not cancel.
+    // Report timeouts as ordinary errors so installation records a failure rather
+    // than a user cancellation.
     const controller = new AbortController();
     type PullTimeoutReason = 'inactivity' | 'overall';
     let timeoutReason: PullTimeoutReason | null = null;
@@ -753,8 +756,8 @@ export class DockerService {
     }
   }
 
-  // Plugin availability doesn't change at runtime; probe once and reuse so
-  // every compose operation doesn't pay for an extra process spawn.
+  // Cache plugin availability because it does not change during the process, and
+  // avoid spawning a probe for every Compose operation.
   private composePluginAvailable?: Promise<void>;
 
   private assertComposePluginAvailable(): Promise<void> {
@@ -770,7 +773,7 @@ export class DockerService {
         });
         testCmd.on('error', reject);
       });
-      // A failed probe should not be cached forever — allow retry on the next call
+      // Clear failed probes so a later call can detect a recovered plugin.
       this.composePluginAvailable.catch(() => {
         this.composePluginAvailable = undefined;
       });
@@ -779,21 +782,21 @@ export class DockerService {
   }
 
   private async runDockerCompose(command: string[], cwd: string, isCustomConfig: boolean, signal?: AbortSignal) {
-    // Log the full command for debugging
+    // Include the complete command in diagnostics.
     this.logger.debug(`Executing: ${command[0]} ${command.slice(1).join(' ')}`);
 
     if (!command[0]) {
       throw new Error('Command is empty');
     }
 
-    // Bail out before spawning if the operation was already cancelled.
+    // Avoid spawning a child for an operation that is already canceled.
     throwIfAborted(signal);
 
-    // The process is spawned against an internal signal (not the caller's directly) so a hung compose
-    // command (unresponsive daemon, stuck volume/network) can be aborted on its own timeout without
-    // that abort being misread as a user cancel — see the timeoutReason check below. Without this a
-    // wedged `up`/`down` never resolves, holding the app in a transitional status (and, for install,
-    // INSTALL_PIPELINE_MUTEX_KEY) forever — see DEFAULT_APP_COMPOSE_TIMEOUT_MINUTES.
+    // Use an internal signal so a stalled Compose command can time out without
+    // being misclassified as a user cancellation. Otherwise, an unresponsive
+    // daemon or stuck volume or network operation can leave the app in a
+    // transitional state and hold `INSTALL_PIPELINE_MUTEX_KEY` indefinitely.
+    // See `DEFAULT_APP_COMPOSE_TIMEOUT_MINUTES`.
     const controller = new AbortController();
     type ComposeTimeoutReason = 'inactivity' | 'overall';
     let timeoutReason: ComposeTimeoutReason | null = null;
@@ -839,9 +842,9 @@ export class DockerService {
 
     const composeSignal = controller.signal;
 
-    // Passing `signal` makes Node send SIGTERM to the child on abort. `docker compose` can spawn its
-    // own child (the compose plugin) that survives a SIGTERM to the wrapper, so we layer an explicit
-    // SIGTERM->SIGKILL escalation on top to guarantee the process tree is torn down on cancel/timeout.
+    // Passing `signal` makes Node send SIGTERM to the child on abort. The Compose
+    // plugin can outlive its Docker CLI wrapper, so add explicit SIGKILL
+    // escalation to terminate the process tree after cancellation or timeout.
     const cmd = spawn(command[0], command.slice(1), {
       cwd, // Set working directory to compose file's directory
       signal: composeSignal,
@@ -849,19 +852,20 @@ export class DockerService {
     const stdout: string[] = [];
     const stderr: string[] = [];
 
-    // Tracks actual process termination (the 'close' event). `cmd.killed` only reflects that a signal
-    // was *sent* (it is true right after Node's `{ signal }` SIGTERM), so it cannot gate the escalation.
+    // Track the `close` event because `cmd.killed` indicates only that Node sent a
+    // signal. It becomes true before the process exits and cannot gate escalation.
     let closed = false;
     let abortHandled = false;
     let sigkillTimer: ReturnType<typeof setTimeout> | undefined;
     const onAbort = () => {
-      // Idempotent: may be invoked by the 'abort' event or by the immediate post-registration check.
+      // Keep this idempotent because the abort event and post-registration check
+      // can both invoke it.
       if (abortHandled) {
         return;
       }
       abortHandled = true;
-      // Node's `{ signal }` already sent SIGTERM. Escalate to SIGKILL if the process tree (the compose
-      // plugin can outlive a SIGTERM to the wrapper) hasn't actually exited within the grace period.
+      // Node has already sent SIGTERM through `{ signal }`. Escalate if the
+      // Compose process tree remains after the grace period.
       this.logger.warn(
         `[compose-cancel] aborting '${command.join(' ')}' (pid=${cmd.pid}); SIGTERM sent, escalating to SIGKILL in ${COMPOSE_CANCEL_SIGKILL_GRACE_MS}ms if needed`,
       );
@@ -873,22 +877,22 @@ export class DockerService {
       }, COMPOSE_CANCEL_SIGKILL_GRACE_MS);
     };
     composeSignal.addEventListener('abort', onAbort, { once: true });
-    // Cover the race where the signal aborts between spawn() and listener registration: the 'abort'
-    // event has already fired, so schedule the escalation now instead of missing it.
+    // If the signal aborts between `spawn()` and listener registration, the event
+    // has already fired. Start escalation explicitly to close that race.
     if (composeSignal.aborted) {
       onAbort();
     }
 
     try {
-      // `code` is null when the process is terminated by a signal — keep it nullable rather than
-      // coercing, so a signal-kill is treated as a non-zero (failed) exit below, not a success.
+      // Preserve a `null` exit code for signal termination so the process cannot
+      // be mistaken for a successful zero exit.
       const exitCode = await new Promise<number | null>((resolve, reject) => {
         cmd.on('error', (error: NodeJS.ErrnoException) => {
-          // Ignore ONLY the AbortError that `spawn({ signal })` emits on cancel — the 'close' handler
-          // then settles the promise (with the SIGKILL backstop), and rejecting here would let the
-          // `finally` cancel the escalation prematurely. Any other error (ENOENT/ENOEXEC/…) must still
-          // reject, even during an abort: if the process never started there is no 'close' event, so
-          // swallowing it would leave the promise pending forever.
+          // Ignore only the `AbortError` emitted by `spawn({ signal })`. The
+          // `close` handler settles cancellation with the SIGKILL backstop;
+          // rejecting here would let `finally` cancel escalation too early. Reject
+          // every other error, including during abort, because a process that
+          // never started emits no `close` event and would leave the promise pending.
           if (isAbortError(error)) {
             return;
           }
@@ -915,8 +919,9 @@ export class DockerService {
       });
 
       if (composeSignal.aborted) {
-        // Our own stall/budget timeout fired: surface a plain failure, not a cancellation, so install
-        // treats it as `install_failed` (and releases the pipeline mutex) rather than as a user cancel.
+        // Report internal stall and budget timeouts as failures so installation
+        // records `install_failed` and releases the pipeline mutex instead of
+        // treating them as user cancellations.
         if (timeoutReason === 'inactivity') {
           throw new Error(
             `'${command.join(' ')}' produced no output for ${Math.round(inactivityTimeoutMs / 60000)} minutes and was aborted. Check Docker daemon/network connectivity and retry.`,
@@ -927,8 +932,8 @@ export class DockerService {
             `'${command.join(' ')}' exceeded the ${Math.round(overallTimeoutMs / 60000)}-minute budget and was aborted. Check Docker daemon/network connectivity and retry.`,
           );
         }
-        // A non-zero exit caused by our own SIGTERM/SIGKILL (relayed from the caller's signal) is a
-        // cancellation, not a config failure.
+        // A nonzero exit caused by the caller's relayed SIGTERM or SIGKILL is a
+        // cancellation, not a configuration failure.
         throw abortError();
       }
 
@@ -937,8 +942,8 @@ export class DockerService {
         if (isCustomConfig) {
           this.logger.warn('User-config detected, please make sure your configuration is correct before opening an issue');
         }
-        // stderr can be empty (signal terminations, stdout-only tools) — fall back to a message that
-        // still identifies the command and exit code instead of throwing `new Error(undefined)`.
+        // Signal termination and stdout-only tools can leave stderr empty. Fall
+        // back to the command and exit code instead of throwing an empty error.
         const stderrMessage = stderr.pop();
         throw new Error(stderrMessage || `${command.join(' ')} exited with code ${exitCode}`);
       }
@@ -1058,22 +1063,21 @@ export class DockerService {
   };
 
   /**
-   * Get all exposed host ports for an app's containers
-   * Uses docker compose port command to get actual mapped host ports
-   * @param appUrn - The app URN
-   * @returns Array of host port numbers that are exposed
+   * Returns exposed host ports for an app's containers.
+   *
+   * Docker Compose resolves dynamically assigned port mappings when the manifest
+   * or app environment does not provide a concrete host port.
+   *
+   * @param appUrn App URN.
    */
   public async getExposedPorts(appUrn: AppUrn): Promise<number[]> {
     try {
-      // args is not used here but required to destructure if getBaseComposeArgsApp returns it
-      // However, check what getBaseComposeArgsApp does. If it's just getting args, maybe we don't need to call it if we don't use args.
-      // But maybe it has side effects or validates something?
-      // Assuming we can just ignore it for now.
+      // Preserve the existing app configuration read before inspecting its Compose file.
       await this.getBaseComposeArgsApp(appUrn);
       const composeFile = await this.appFilesManager.getDockerComposeYaml(appUrn);
       const _composeDir = path.dirname(composeFile.path);
 
-      // Get all services from compose file
+      // Read service declarations to discover their port mappings.
       const composeJson = await this.appFilesManager.getDockerComposeJson(appUrn);
       if (!composeJson.content) {
         this.logger.warn(`No compose JSON found for ${appUrn}`);
@@ -1085,30 +1089,30 @@ export class DockerService {
 
       const exposedPorts: number[] = [];
 
-      // For each service, get its exposed ports
+      // Resolve each declared mapping to a concrete host port.
       for (const [serviceName, serviceConfig] of Object.entries(services)) {
         if (!serviceConfig.ports || serviceConfig.ports.length === 0) {
           continue;
         }
 
-        // Parse port mappings (format: "hostPort:containerPort" or "${VAR}:containerPort")
+        // Port mappings use `hostPort:containerPort` or `${VAR}:containerPort`.
         for (const portMapping of serviceConfig.ports) {
           const [hostPortStr, containerPort] = portMapping.split(':');
 
-          // Skip if hostPortStr is undefined or empty
+          // Ignore mappings without an explicit host-side segment.
           if (!hostPortStr) {
             continue;
           }
 
-          // Try to resolve host port (might be a variable like ${APP_PORT})
+          // Resolve either a numeric port or an environment reference.
           let hostPort: number | null = null;
 
-          // If it's a number, use it directly
+          // Numeric host ports need no environment lookup.
           const parsedPort = Number.parseInt(hostPortStr, 10);
           if (!Number.isNaN(parsedPort)) {
             hostPort = parsedPort;
           } else if (hostPortStr.startsWith('${') && hostPortStr.endsWith('}')) {
-            // It's a variable, try to resolve from env
+            // Resolve variable mappings, such as `${APP_PORT}`, from `app.env`.
             const varName = hostPortStr.slice(2, -1);
             const appEnv = await this.appFilesManager.getAppEnv(appUrn);
             const envLines = appEnv.content?.split('\n') || [];
@@ -1126,14 +1130,14 @@ export class DockerService {
             }
           }
 
-          // If we still don't have a port, try docker compose port command
+          // Ask Compose for the runtime mapping when static resolution is insufficient.
           if (hostPort === null && containerPort) {
             try {
-              // Use docker compose port command to get actual mapped port
+              // Compose reports the host address and dynamically assigned port.
               const portResult = await this.composeApp(appUrn, `port ${serviceName} ${containerPort}`);
               const portOutput = portResult.stdout.trim();
 
-              // Parse output format: "0.0.0.0:32768" or "::1:32768"
+              // Parse address formats such as `0.0.0.0:32768` and `::1:32768`.
               if (portOutput) {
                 const parts = portOutput.split(':');
                 if (parts.length > 0) {
@@ -1147,7 +1151,7 @@ export class DockerService {
                 }
               }
             } catch (error) {
-              // Port command might fail if container isn't running yet - that's okay
+              // A container that has not started yet has no runtime port mapping.
               this.logger.debug(`Could not get port for service ${serviceName} (container may not be running): ${error}`);
             }
           }
@@ -1165,16 +1169,13 @@ export class DockerService {
     }
   }
 
-  /**
-   * Restart a specific container by name using system docker command
-   */
+  /** Restarts a named container through the system Docker CLI. */
   public async restartContainer(containerName: string): Promise<void> {
     this.logger.info(`Restarting container: ${containerName}`);
-    // NOT time-boxed: `docker restart` honors each container's stop_grace_period
-    // (some apps configure 60-120s), and callers such as the app self-heal path
-    // (apps.service.resolveAppAvailability) restart arbitrary containers. A short
-    // bound would spuriously reject a slow-but-healthy restart while the daemon
-    // completes it server-side. `docker restart` does not hang in practice.
+    // Do not time-box `docker restart`. It honors each container's
+    // `stop_grace_period`, which some apps set to 60–120 seconds, and callers such
+    // as `AppsService.resolveAppAvailability` restart arbitrary containers. A
+    // short limit would reject healthy restarts while the daemon completes them.
     return new Promise((resolve, reject) => {
       const cmd = spawn('docker', ['restart', containerName]);
 
@@ -1196,19 +1197,19 @@ export class DockerService {
   }
 
   /**
-   * Ensure a container is running, starting it via docker compose if needed.
-   * Tries `docker restart` first; if the container doesn't exist or cannot start
-   * (e.g. stale network after a stack recreate), falls back to compose up and,
-   * when that still fails, removes the container and force-recreates it.
+   * Ensures that a container is running, using Docker Compose when necessary.
+   *
+   * Try `docker restart` first. If the container is missing or cannot start, such
+   * as after a stack recreates its network, use `compose up`. If stale networking
+   * still blocks startup, remove and force-create the container.
    */
   public async ensureContainerRunning(containerName: string, opts: { composeFile: string; profile?: string }): Promise<void> {
     try {
       await this.restartContainer(containerName);
       return;
     } catch (error) {
-      // restart fails when the container does not exist (the common case) but also
-      // on a genuine restart error — surface the reason rather than always claiming
-      // "not found", then fall back to bringing the service up via compose.
+      // Restart can fail because the container is missing or because of a runtime
+      // error. Preserve the actual reason before falling back to Compose.
       this.logger.info(
         `Restart of ${containerName} failed (${error instanceof Error ? error.message : String(error)}); creating via docker compose...`,
       );
@@ -1217,9 +1218,9 @@ export class DockerService {
     try {
       await this.composeUpService(containerName, opts);
     } catch (upError) {
-      // After `compose down` / network recreate, an exited container can retain a
-      // deleted NetworkID. Plain `compose up` then tries to start it and fails with
-      // "network … not found". Remove and force-recreate so the tunnel self-heals.
+      // After `compose down` recreates a network, an exited container can retain
+      // the deleted network ID. Remove and force-create that container when plain
+      // `compose up` fails with a stale-network error.
       if (!isStaleContainerNetworkError(upError)) {
         throw upError;
       }
@@ -1231,7 +1232,7 @@ export class DockerService {
     }
   }
 
-  /** Best-effort `docker rm -f` so a stale exited container cannot block recreate. */
+  /** Removes a stale container without letting cleanup failure block recreation. */
   private async removeContainerBestEffort(containerName: string): Promise<void> {
     try {
       await this.runProcessBounded('docker', ['rm', '-f', containerName], {}, 30_000, `docker rm -f ${containerName}`);
@@ -1242,21 +1243,19 @@ export class DockerService {
   }
 
   /**
-   * Spawn a process and reject if it does not finish within `timeoutMs`. On timeout
-   * the child is sent SIGTERM, then SIGKILL after a short grace, so a wedged
-   * `docker` / `docker compose` invocation (e.g. a stalled image pull) can never
-   * hang the caller indefinitely.
+   * Spawns a process and rejects if it exceeds `timeoutMs`.
    *
-   * On timeout the rejection is normally deferred until the child exits (its
-   * `close`), so a retry does not spawn a second process while the first is still
-   * shutting down. A hard backstop guarantees the caller unblocks even if the
-   * child never exits; in that near-impossible case a retry may briefly overlap
-   * the still-alive child, but docker serializes the underlying daemon-side work
-   * by image/container name, so the overlap is harmless.
+   * On timeout, send SIGTERM and then SIGKILL after a grace period so a stalled
+   * `docker` or `docker compose` process cannot block its caller indefinitely.
    *
-   * Note: like `runDockerCompose`, this kills only the `docker` CLI, not a
-   * process group — the actual pull/create runs in dockerd and continues (and is
-   * de-duplicated by the daemon), which is why a retry safely re-attaches to it.
+   * Normally, wait for the child's `close` event before rejecting so a retry does
+   * not overlap a process that is still shutting down. A hard backstop unblocks
+   * the caller if the child never exits. In that rare case, Docker serializes
+   * overlapping daemon work by image or container name.
+   *
+   * Like `runDockerCompose`, this method kills only the Docker CLI, not its
+   * process group. Pull and create work can continue in `dockerd`, where the
+   * daemon deduplicates it and lets a retry attach safely.
    */
   private runProcessBounded(
     command: string,
@@ -1266,8 +1265,8 @@ export class DockerService {
     label: string,
   ): Promise<void> {
     return new Promise((resolve, reject) => {
-      // Default stdio is 'pipe'; both streams are drained below so a chatty child
-      // cannot block on a full pipe buffer and stall until the timeout.
+      // Drain both default pipe streams so a verbose child cannot block on a full
+      // buffer until the timeout.
       const cmd = spawn(command, commandArgs, spawnOptions);
 
       let stderr = '';
@@ -1311,8 +1310,8 @@ export class DockerService {
         }
       };
 
-      // Drain stdout (unused) and capture stderr so a full pipe cannot stall the child.
-      // A 'data' listener puts the stream in flowing mode (equivalent to resume()).
+      // A `data` listener puts stdout in flowing mode. Capture stderr while also
+      // draining it so neither pipe can stall the child.
       cmd.stdout?.on('data', () => undefined);
       cmd.stderr?.on('data', (data: Buffer) => {
         stderr += data.toString();
@@ -1325,9 +1324,9 @@ export class DockerService {
         }
         settled = true;
         if (code === 0) {
-          // A clean exit is a success even if the timeout had just fired and we
-          // sent SIGTERM: the process finished on its own, so honor it rather than
-          // reporting a spurious timeout (and triggering an unnecessary retry).
+          // Honor a clean exit even if the timeout just sent SIGTERM. The process
+          // completed successfully, so reporting a timeout would cause an
+          // unnecessary retry.
           resolve();
         } else if (timedOut) {
           reject(new Error(`${label} timed out after ${timeoutMs}ms`));
@@ -1347,7 +1346,7 @@ export class DockerService {
     });
   }
 
-  /** Run `fn` up to `attempts` times (at least once), logging each failure; rejects with the last error. */
+  /** Runs `fn` at least once and rejects with the final error after all attempts. */
   private async retryAsync(fn: () => Promise<void>, attempts: number, label: string): Promise<void> {
     const total = Math.max(1, attempts);
     let lastError: unknown;
@@ -1371,23 +1370,22 @@ export class DockerService {
     if (opts.composeFile === runtimeComposeFile) {
       const envFilePath = this.config.get('envFilePath');
       baseArgs.push('--env-file', envFilePath);
-      // Match the project name used by start.ts / package.json scripts so
-      // compose attaches to the running stack instead of creating a new one.
+      // Match the project name used by `start.ts` and package scripts so Compose
+      // attaches to the running stack instead of creating another stack.
       const composeProjectName = process.env.CI_HUB_COMPOSE_PROJECT_NAME || 'ci-hub';
       baseArgs.push('--project-name', composeProjectName);
 
-      // When running inside the Hub container, docker compose resolves relative
-      // binds (e.g. ./tunnel) against /data. The host daemon then interprets
-      // those as /data/* on the host, which is not the real Hub data dir.
-      // Point compose at the host project directory so relative binds resolve
-      // to ROOT_FOLDER_HOST (for example /home/.../.local/share/companion-hub).
+      // Inside the Hub container, Compose resolves relative bindings such as
+      // `./tunnel` against `/data`. The host daemon would then interpret `/data`
+      // on the host, not the Hub data directory. Set the host project directory
+      // so bindings resolve below `ROOT_FOLDER_HOST`.
       const hostProjectDir = process.env.ROOT_FOLDER_HOST?.trim();
       if (hostProjectDir) {
         baseArgs.push('--project-directory', hostProjectDir);
       }
 
-      // Override ENV_FILE to just the filename so compose's env_file
-      // directive resolves correctly inside the container.
+      // Use only the filename in `ENV_FILE` so Compose resolves `env_file`
+      // correctly inside the container.
       spawnOptions.env = { ...process.env, ENV_FILE: path.basename(envFilePath) };
     }
 
@@ -1397,12 +1395,10 @@ export class DockerService {
       baseArgs.push('--profile', opts.profile);
     }
 
-    // Bring the service up on a bounded, retried path. `up` pulls the image on
-    // demand per the compose `pull_policy` (only when it is not already present),
-    // so a cached/baked-in image starts instantly with no registry round-trip,
-    // while a fresh host's cold pull runs inside COMPOSE_UP_TIMEOUT_MS. A wedged
-    // pull/up no longer hangs forever: it is killed at the deadline and retried,
-    // and completed image layers persist across attempts.
+    // Bound and retry service startup. Compose `pull_policy` downloads only an
+    // image that is not already present, so cached images need no registry request
+    // while cold pulls run within `COMPOSE_UP_TIMEOUT_MS`. Kill and retry a
+    // stalled operation; completed image layers remain available across attempts.
     const upArgs = [...baseArgs, 'up', serviceName, '-d', '--no-build', '--no-deps'];
     if (opts.forceRecreate) {
       upArgs.push('--force-recreate');
@@ -1417,8 +1413,8 @@ export class DockerService {
   }
 
   /**
-   * Poll after compose up until labeled containers reach a stable running state,
-   * or return the last failed verification.
+   * Polls after `compose up` until labeled containers reach a stable running
+   * state, or returns the final failed verification.
    */
   public async waitForManagedAppContainersReady(
     appUrn: AppUrn,

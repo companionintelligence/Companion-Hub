@@ -1,4 +1,4 @@
-> Companion Hub is licensed under the PolyForm Noncommercial License 1.0.0. Please refer to our [License FAQ](https://github.com/companionintelligence/CI-Hub/wiki/License-FAQ) if you have any questions or reach out to us directly at support@companionintelligence.com.
+> Companion Hub uses the [PolyForm Noncommercial License 1.0.0](https://polyformproject.org/licenses/noncommercial/1.0.0). For common questions, see the [License FAQ](docs/License-FAQ.md) or email support@companionintelligence.com.
 >
 > Required Notice: Copyright LifeScope INC, DBA Companion Intelligence (https://ci.computer)
 

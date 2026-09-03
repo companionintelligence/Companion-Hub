@@ -6,26 +6,23 @@ import { Controller } from 'react-hook-form';
 type AvailableCustomDomain = AvailableCustomDomainsResponseDto['domains'][number];
 
 /**
- * The select's value for "no custom domain".
+ * Represents "no custom domain" inside the Select component.
  *
- * A radix Select cannot hold `''` as an item value, and the API's own "clear it"
- * signal IS the empty string — so the two are kept apart here and converted at
- * the edge, rather than letting a UI constraint decide a wire contract.
+ * Radix Select does not allow an empty item value, while the API uses `''` to
+ * clear a domain. Keep the UI sentinel separate and convert it at the API
+ * boundary so the component constraint does not change the wire contract.
  */
 const PLATFORM_ADDRESS = '__platform__';
 
 /**
- * The one-line status shown beside a domain in the list, or `null` when there is
- * nothing worth saying.
+ * Returns the status shown beside a domain, or `null` when no status is useful.
  *
- * Derived in one place rather than as a ladder of conditional JSX suffixes: the
- * states are mutually exclusive, and spelling that by hand meant `parked` — a
- * real state, and bindable — silently got no label at all.
+ * Centralizing the mutually exclusive states keeps bindable states such as
+ * `parked` from disappearing through inconsistent JSX conditions.
  *
- * `currentAppSlug` is why "currently serving" is not simply `boundAppSlug`. A
- * domain already bound to the app being configured is the NORMAL case in the
- * settings dialog, and announcing that choosing it would take the domain from
- * that app — when that app is this one — warns about nothing.
+ * Compare `boundAppSlug` with `currentAppSlug` before displaying an in-use
+ * warning. A domain already serving the app being configured is the expected
+ * settings state and does not represent a transfer.
  */
 function describeEntry(entry: AvailableCustomDomain, currentAppSlug: string | undefined, t: (key: string) => string): string | null {
   if (entry.state === 'pending') return t('APP_INSTALL_FORM_CUSTOM_DOMAIN_VERIFYING');
@@ -33,9 +30,8 @@ function describeEntry(entry: AvailableCustomDomain, currentAppSlug: string | un
   if (entry.state === 'drifted') return t('APP_INSTALL_FORM_CUSTOM_DOMAIN_DRIFTED');
   if (entry.state !== 'live') return null;
   /*
-   * Named, so moving a live domain is a decision rather than a surprise:
-   * choosing it takes it off whatever it is serving now, and the person doing it
-   * is entitled to know that before they click rather than after.
+   * Name the current binding before selection because choosing this live domain
+   * moves it away from the app or device it serves.
    */
   if (entry.boundAppSlug) {
     return entry.boundAppSlug === currentAppSlug ? null : `${t('APP_INSTALL_FORM_CUSTOM_DOMAIN_IN_USE')} ${entry.boundAppSlug}`;
@@ -48,17 +44,19 @@ interface CustomDomainFieldProps<TFormValues extends FieldValues> {
   control: Control<TFormValues>;
   domains: AvailableCustomDomain[];
   /**
-   * Whether CI-Cloud could be ASKED. False means an older CI-Cloud, or one that
-   * did not answer — not "the organization has none".
+   * Indicates whether Companion Portal could return an authoritative list.
+   *
+   * `false` represents an older or unavailable Portal, not an organization with
+   * no domains.
    */
   supported: boolean;
-  /** The platform hostname this app gets regardless — what the domain aliases. */
+  /** Identifies the platform hostname that the custom domain aliases. */
   platformHostname?: string;
   /**
-   * The app being configured, as CI-Cloud names it in `boundAppSlug`. Lets a
-   * domain already serving THIS app drop the "currently serving" warning, which
-   * otherwise tells the operator they are about to take the domain from the very
-   * app whose settings they have open.
+   * Identifies the configured app by its Companion Portal `boundAppSlug`.
+   *
+   * Suppress the in-use warning when the domain already serves this app; no
+   * transfer occurs in that case.
    */
   currentAppSlug?: string;
   loading?: boolean;
@@ -66,22 +64,21 @@ interface CustomDomainFieldProps<TFormValues extends FieldValues> {
 }
 
 /**
- * Pick one of the organization's connected custom domains for this app.
+ * Lets the user select a connected custom domain for an app.
  *
- * ── WHAT THIS FIELD IS AND IS NOT ────────────────────────────────────────────
+ * Additive behavior
  *
- * It is ADDITIVE. The app still gets its platform hostname — that is the name
- * the custom domain aliases, and the one the tunnel actually routes — so this
- * does not replace the subdomain field above it. Choosing a domain records a
- * request, which the Hub asks CI-Cloud to honour once the app has registered;
- * the app is told about the hostname only after CI-Cloud confirms it is wired.
+ * The app retains its platform hostname because the custom domain aliases that
+ * routed identity. This field does not replace the subdomain field. Selection
+ * records an intent that the Hub sends to Companion Portal after app
+ * registration. The app receives the custom hostname only after the Portal
+ * confirms the binding.
  *
- * ── WHY DOMAINS THAT CANNOT BE CHOSEN ARE STILL LISTED ───────────────────────
+ * Unavailable domains
  *
- * A domain connected ten minutes ago and still verifying is the single most
- * likely thing a person is looking for here. Omitting it reads as "the Hub
- * cannot see my domain" — the exact silence this feature exists to end — so it
- * is shown, disabled, saying what it is waiting for.
+ * Keep connected domains visible while they are verifying. Users often open
+ * this field to find a newly connected domain, so omitting it would imply that
+ * the Hub cannot see it. Disable the option and display its current state.
  */
 export function CustomDomainField<TFormValues extends FieldValues>({
   control,
@@ -93,11 +90,9 @@ export function CustomDomainField<TFormValues extends FieldValues>({
   t,
 }: CustomDomainFieldProps<TFormValues>) {
   /*
-   * ⚠ RENDERS NOTHING WHEN THERE IS NOTHING TO SAY. An organization with no
-   * custom domains — and every deployment whose CI-Cloud predates them — must not
-   * be shown an empty dropdown advertising a feature it is not using. The place
-   * that teaches people custom domains exist is the portal, where they can
-   * actually connect one.
+   * Hide the field when no connected domains are available or the Portal cannot
+   * list them. An empty dropdown would advertise an unusable feature; Companion
+   * Portal is where users can connect a domain.
    */
   if (!supported || domains.length === 0) {
     return null;
@@ -111,13 +106,11 @@ export function CustomDomainField<TFormValues extends FieldValues>({
         render={({ field: { onChange, value } }) => {
           const selected = (value as string | undefined) || PLATFORM_ADDRESS;
           /*
-           * ⚠ A VALUE WITH NO MATCHING ITEM RENDERS A BLANK TRIGGER, not the
-           * placeholder — radix only falls back for `''`/undefined. An app can
-           * legitimately hold a choice this listing does not contain (the domain
-           * was disconnected and the Hub has not cleared the intent yet), and
-           * showing an empty control for an app that HAS a custom domain is the
-           * same silence this feature exists to end. Listed, disabled, saying what
-           * it is: the component already does exactly that for one still verifying.
+           * Radix renders a blank trigger when the value matches no item; its
+           * placeholder appears only for `''` or `undefined`. A disconnected
+           * domain can remain selected until the Hub clears its intent. Represent
+           * that value as a disabled item so the control explains the current
+           * state instead of appearing empty.
            */
           const unlisted = selected !== PLATFORM_ADDRESS && !domains.some((entry) => entry.domain === selected);
 
@@ -126,16 +119,13 @@ export function CustomDomainField<TFormValues extends FieldValues>({
               <Select
                 value={selected}
                 disabled={loading}
-                // `''`, never `undefined`: absent means "the caller said nothing",
-                // which deliberately leaves an existing choice alone, while the
-                // empty string is the instruction to go back to the platform name.
+                // Send `''`, not `undefined`, because absence preserves the current
+                // choice while an empty string restores the platform hostname.
                 onValueChange={(next) => onChange(next === PLATFORM_ADDRESS ? '' : next)}
               >
                 {/*
-                 * `label` rather than a hand-rolled <label>: SelectTrigger owns
-                 * the label markup every other select in this dialog renders,
-                 * including the peer-disabled treatment that dims it in step with
-                 * the control. Spelling it locally drifted on both.
+                 * Let `SelectTrigger` render the label so this field shares the
+                 * dialog's markup and peer-disabled styling.
                  */}
                 <SelectTrigger
                   id="install-custom-domain"
@@ -162,11 +152,9 @@ export function CustomDomainField<TFormValues extends FieldValues>({
                 {selected === PLATFORM_ADDRESS
                   ? t('APP_INSTALL_FORM_CUSTOM_DOMAIN_HINT')
                   : /*
-                     * Says the restart out loud. The env vars an app builds its
-                     * OAuth redirects from are written when its container is
-                     * created, so a binding that arrives afterwards cannot reach
-                     * a running app without one — and being asked for a restart
-                     * you were not warned about reads as a bug.
+                     * Warn about the restart because the app receives OAuth base
+                     * URL variables when its container is created. A later domain
+                     * binding cannot update a running container.
                      */
                     `${t('APP_INSTALL_FORM_CUSTOM_DOMAIN_PENDING_HINT')}${platformHostname ? ` (${platformHostname})` : ''}`}
               </p>

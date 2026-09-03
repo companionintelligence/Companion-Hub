@@ -1,4 +1,4 @@
-# Coding Conventions — CI-Hub (Agents)
+# Coding conventions
 
 > **Purpose:** Conventions for review agents — beyond what Biome enforces automatically.
 > **Scope:** TypeScript, Rust, tests, NestJS, React, Tauri patterns.
@@ -9,9 +9,9 @@
 
 ---
 
-## TypeScript / JavaScript
+## TypeScript and JavaScript
 
-### Biome-enforced (do not fight)
+### Enforced by Biome
 
 - No non-null assertions (`!`) — use explicit types or guards (`noNonNullAssertion`)
 - 2-space indent, 150-char line width
@@ -22,11 +22,11 @@
 - **Vitest module mocks:** Use `vi.hoisted` + `vi.mock` at file top — `vi.spyOn` on imported modules does not intercept bindings already captured by the importing file
 - **Mock typing:** Explicitly type stubs, e.g. `(configureClient?: boolean) => Promise<number | null>` — do not rely on `async () => null` inference
 - **Fake timers:** Prefer `getByText` after `flushAsyncWork`; `findByText` hangs under `vi.useFakeTimers()`
-- **Minimal scope:** Smallest correct diff; no drive-by refactors
+- **Minimal scope:** Keep the diff as small as possible, and avoid unrelated refactoring
 
 ---
 
-## React / Frontend
+## React and frontend
 
 - Hub status gate: API probe (`/api/health/live`) is UI truth — not Docker state alone
 - Optional sidecars must not block steady-state UI or `all_ready`
@@ -35,7 +35,7 @@
 
 ---
 
-## NestJS / Backend
+## NestJS and backend
 
 - New endpoints need Swagger decorators (OpenAPI drift CI)
 - Health: `/api/health/live` for liveness probes — match Docker healthcheck
@@ -43,7 +43,7 @@
 
 ---
 
-## Rust / Desktop
+## Rust and desktop
 
 - Optional sidecars: only `Ready` or `Unavailable` — never `Starting`/`Failed` for optional services
 - Optional sidecars must not block `all_ready`
@@ -60,7 +60,7 @@
 
 ---
 
-## Git / PR
+## Git and pull requests
 
 - Imperative commit messages, ≤ 72 chars
 - One logical change per PR

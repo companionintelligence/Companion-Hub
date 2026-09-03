@@ -210,7 +210,7 @@ export function buildAppAccessPoints(input: {
           publicDomainRoot: resolvedPublicDomain,
         })
       : null;
-  // A custom hostname CI-Cloud has actually wired for this app is the address the
+  // A custom hostname Companion Portal has actually wired for this app is the address the
   // user visits, so it is the one this card links to and shows in its QR code.
   const syncedCustomDomain = normalizeStoredHostname(record.customDomain);
   const publicHost = syncedCustomDomain || configuredPublicDomain || derivedPublicIdentity?.hostname || null;

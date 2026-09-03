@@ -1,9 +1,10 @@
-# CLAUDE.md — CI-Hub
+# CLAUDE.md — Companion Hub
 
+Doc map, tip scrub policy, and writing style: [`docs/README.md`](docs/README.md), [`docs/writing-style.md`](docs/writing-style.md).
 
 ## Platform role
 
-**CI-Hub** sits in the **Appliance** layer of the Companion Intelligence platform.
+**Companion Hub** sits in the **Appliance** layer of the Companion Intelligence platform.
 
 Architecture: `CI-Engineering/architecture/architecture.md`
 Roadmap: `CI-Engineering/architecture/roadmap.md`
@@ -46,10 +47,10 @@ pnpm build
 
 ## Cross-repo connections
 
-- Pulls app manifests from CI-Marketplace (via CI-Portal distribution edge)
+- Pulls app manifests from CI-Marketplace through the Portal distribution edge
 - Routes installed apps through CI-Gateway (Traefik) on *.ci.localhost
-- Entitlement pre-flight against CI-Portal before installs: companionintelligence/CI-Hub#722
-- Installs CI-Server alongside marketplace apps
+- Checks entitlements with Portal before installs: companionintelligence/CI-Hub#722
+- Installs Memory alongside marketplace apps
 
 ## Desktop app
 

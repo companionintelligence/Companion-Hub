@@ -1,4 +1,4 @@
-# E2E & Testing System — CI-Hub
+# End-to-end testing — Companion Hub
 
 > **Purpose:** Playwright e2e, visual regression, fleet QA, performance benchmarks.
 > **Scope:** `e2e/`, `playwright*.config.ts`, `scripts/benchmark-app.ts`, `scripts/run-e2e.ts`

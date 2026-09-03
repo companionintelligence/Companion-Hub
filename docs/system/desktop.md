@@ -1,4 +1,4 @@
-# Desktop System — CI-Hub
+# Desktop system — Companion Hub
 
 > **Purpose:** Tauri 2 native shell — system tray, hub lifecycle, Docker checks, deep linking.
 > **Scope:** `packages/desktop/` — Rust hub_manager, compose resources, Tauri commands.

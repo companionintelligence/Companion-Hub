@@ -1,7 +1,7 @@
-# GitHub Actions in this repository
+# GitHub Actions workflows
 
-Workflows here are meant to run without private Tailscale fleet inventories.
+These workflows run without private Tailscale fleet inventories.
 
-Multi-node fleet QA (`e2e-fleet`, `app-catalog-fleet`) lived in this repo historically and named private lab hosts plus org Tailscale secrets. Those workflow files are **removed from the tip** for open-source readiness (companionintelligence/CI-Hub#1210). Keep copies on the private org mirror or a private ops repo if you still need them.
+This repository no longer includes the multi-node fleet QA workflows (`e2e-fleet` and `app-catalog-fleet`) because they referenced private lab hosts and organization Tailscale secrets. [Issue #1210](https://github.com/companionintelligence/CI-Hub/issues/1210) tracks their removal for open-source publication. If you still need these workflows, store them in the private organization mirror or a private operations repository.
 
-Signing, Cloudflare, and Apple/Azure secrets remain org-side for release workflows that stay private until publish.
+Keep signing, Cloudflare, Apple, and Azure secrets at the organization level. Keep release workflows that use these secrets private until publication.

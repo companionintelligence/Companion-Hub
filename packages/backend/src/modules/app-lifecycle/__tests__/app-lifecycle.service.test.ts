@@ -341,7 +341,7 @@ describe('AppLifecycleService', () => {
     });
 
     it('surfaces the DNS failure class instead of always blaming zone provisioning', async () => {
-      // A stale record CI-Cloud refuses to overwrite is not a domain problem, and
+      // A stale record Companion Portal refuses to overwrite is not a domain problem, and
       // saying so sent the CI-Portal#403 investigation down the wrong path.
       registrationService.getDeviceRegistrationInfo.mockResolvedValue({
         id: 'org-id',
@@ -430,7 +430,7 @@ describe('AppLifecycleService', () => {
       await service.triggerCloudflareSync();
 
       // Both apps are named: the one we could resolve, by hostname; the one we could
-      // not, by the name CI-Cloud sent.
+      // not, by the name Companion Portal sent.
       expect(logger.error).toHaveBeenCalledWith(expect.stringContaining('anything-llm-laptop-cid.companionintelligence.com'));
       expect(logger.error).toHaveBeenCalledWith(expect.stringContaining('OS Hub'));
       // The count and the list agree.
@@ -496,7 +496,7 @@ describe('AppLifecycleService', () => {
         userSettings: { domain: 'companionintelligence.com', localDomain: 'lan' },
         domain: 'companionintelligence.com',
       } as any);
-      // A full sync failure (e.g. CI-Cloud unreachable / non-success response),
+      // A full sync failure (e.g. Companion Portal unreachable / non-success response),
       // distinct from a partial per-app failure.
       cloudflareClientService.syncState.mockResolvedValue({ ok: false, failed: [], failures: [], synced: 0 });
 
@@ -904,7 +904,7 @@ describe('AppLifecycleService', () => {
       domain: 'companionintelligence.com',
     };
 
-    /** The platform hostname CI-Cloud composes for the app below. */
+    /** The platform hostname Companion Portal composes for the app below. */
     const TARGET = 'comfyui-core2-acme.companionintelligence.com';
 
     const runningComfy = (overrides: Record<string, unknown> = {}) => ({
@@ -982,7 +982,7 @@ describe('AppLifecycleService', () => {
     });
 
     it('leaves a stopped app bound rather than flapping it off and back on', async () => {
-      // A stopped app is not in the sync payload, so CI-Cloud produced no ingress
+      // A stopped app is not in the sync payload, so Companion Portal produced no ingress
       // rule for it and cannot report its domain as delivered. Reading that as
       // "unbound" would unbind on stop, regenerate its env without the custom
       // hostname on start, and demand a second restart right after.
@@ -1048,7 +1048,7 @@ describe('AppLifecycleService', () => {
 
     it('matches the target hostname case-insensitively', async () => {
       // The Hub composes its side of the join from slugs it stores VERBATIM, and
-      // a rename can leave uppercase in them; CI-Cloud's side is already
+      // a rename can leave uppercase in them; Companion Portal's side is already
       // lowercased by the wire parser. Without normalization the two never match
       // and the whole feature is a silent no-op for that org.
       registrationService.getDeviceRegistrationInfo.mockResolvedValue({ ...REGISTRATION, slug: 'ACME', hubSubdomain: 'Core2-ACME' } as any);
@@ -1068,7 +1068,7 @@ describe('AppLifecycleService', () => {
 
     it('leaves a bound app alone when the payload could not be parsed', async () => {
       appsRepository.getApps.mockResolvedValue([runningComfy({ customDomain: 'comfy.acme.com' })] as any);
-      // Every row unusable — a CI-Cloud whose wire shape drifted. Reading that as
+      // Every row unusable — a Companion Portal whose wire shape drifted. Reading that as
       // "none delivered" would unbind every app on a custom hostname fleet-wide.
       cloudflareClientService.syncState.mockResolvedValue({ ok: true, failed: [], failures: [], synced: 1, customDomains: undefined });
 
@@ -1183,7 +1183,7 @@ describe('AppLifecycleService', () => {
     });
 
     it('does not warn that a delivered domain matches no app when the app is merely stopped', async () => {
-      // The warning means "CI-Cloud wired a hostname no app on this Hub answers
+      // The warning means "Companion Portal wired a hostname no app on this Hub answers
       // for". An app that is here but absent from this payload — stopped, or
       // excluded for a release pass — is not that, and telling the operator to
       // check settings that are correct is how a working feature looks broken.
@@ -1260,18 +1260,18 @@ describe('AppLifecycleService', () => {
 
       await service.triggerCloudflareSync();
 
-      // The domain's id and the app's SUBDOMAIN — never a hostname. CI-Cloud
+      // The domain's id and the app's SUBDOMAIN — never a hostname. Companion Portal
       // composes the target from rows it owns; a Hub that named one would be
       // asserting something it cannot know. The organization is named too: a
-      // device can be registered to more than one, and CI-Cloud refuses to guess.
+      // device can be registered to more than one, and Companion Portal refuses to guess.
       expect(cloudflareClientService.bindCustomDomain).toHaveBeenCalledWith('cd_1', 'comfyui', 'org-1');
       expect(cloudflareClientService.fetchOrganizationCustomDomains).toHaveBeenCalledWith('org-1');
     });
 
     it('never writes the binding itself — only a delivered sync may do that', async () => {
       /*
-       * ⚠ THE SAFETY PROPERTY OF THE WHOLE FEATURE. A successful bind means
-       * CI-Cloud moved the alias; whether the tunnel answers for it is reported
+       * This is the safety property of the whole feature. A successful bind means
+       * Companion Portal moved the alias; whether the tunnel answers for it is reported
        * by the NEXT sync. Writing `custom_domain` here would have the app emit
        * APP_PUBLIC_URL — and sign OAuth redirects — for a name that may not
        * resolve to this tunnel at all.
@@ -1326,7 +1326,7 @@ describe('AppLifecycleService', () => {
     });
 
     it('keeps the choice when CI-Cloud could not be asked at all', async () => {
-      // An older CI-Cloud, an unreachable one, or a payload that would not parse.
+      // An older Companion Portal, an unreachable one, or a payload that would not parse.
       // Clearing here would throw away a person's choice because a request failed.
       appsRepository.getApps.mockResolvedValue([wantsComfy()] as any);
       cloudflareClientService.fetchOrganizationCustomDomains.mockResolvedValue(undefined as any);
@@ -1365,7 +1365,7 @@ describe('AppLifecycleService', () => {
     });
 
     it('retries a refusal that can clear itself rather than discarding the choice', async () => {
-      // The app's first sync can land after this pass, so CI-Cloud legitimately
+      // The app's first sync can land after this pass, so Companion Portal legitimately
       // does not know it yet. Next heartbeat it will.
       appsRepository.getApps.mockResolvedValue([wantsComfy()] as any);
       cloudflareClientService.fetchOrganizationCustomDomains.mockResolvedValue([parked()] as any);
@@ -1383,7 +1383,7 @@ describe('AppLifecycleService', () => {
 
     it('never lets two apps chase the same domain', async () => {
       /*
-       * ⚠ THE FLAP THIS RULE EXISTS TO PREVENT.
+       * This rule prevents a synchronization flap.
        *
        * A domain can serve exactly one app. Two apps both naming it as their
        * choice makes every sync a tug of war: whichever binds last takes it, the
@@ -1406,7 +1406,7 @@ describe('AppLifecycleService', () => {
     });
 
     it('does not ask for an app CI-Cloud was never told about', async () => {
-      // Stopped, so it is not in this sync's payload — CI-Cloud cannot wire a
+      // Stopped, so it is not in this sync's payload — Companion Portal cannot wire a
       // domain to an app it was not asked about, and the choice waits.
       appsRepository.getApps.mockResolvedValue([wantsComfy({ status: 'stopped' })] as any);
 
@@ -1482,7 +1482,7 @@ describe('AppLifecycleService', () => {
 
     it('takes a custom-domain choice off whatever app held it before', async () => {
       /*
-       * ⚠ THE INVARIANT, ENFORCED WHERE THE CHOICE IS MADE. A domain serves one
+       * This invariant is enforced where the choice is made. A domain serves one
        * app. The picker deliberately offers one that is already serving something
        * — naming that app beside it — because moving a domain is legitimate; this
        * is what makes it a move rather than two apps fighting over it on every
@@ -1504,7 +1504,7 @@ describe('AppLifecycleService', () => {
 
     it('ignores a choice on an app that could never be served on it', async () => {
       /*
-       * ⚠ AN UNMOUNTED PICKER STILL SUBMITS ITS VALUE. The field only renders under
+       * An unmounted picker still submits its value. The field only renders under
        * Cloudflare exposure, but react-hook-form keeps an unmounted field's value —
        * so switching an app to Local after picking a domain sends the choice anyway.
        * Acting on it would take that domain off the app actually serving on it and
@@ -1543,7 +1543,7 @@ describe('AppLifecycleService', () => {
 
     it('re-records a choice the Hub cleared, even though the saved snapshot still names it', async () => {
       /*
-       * ⚠ THE CHOICE IS COMPARED AGAINST THE ROW, NOT THE SNAPSHOT. The Hub clears
+       * The choice is compared against the row, not the snapshot. The Hub clears
        * `custom_domain_intent` on its own — when the organization disconnects the
        * domain, or when another app claims it — so a person re-picking it submits a
        * form identical to the one last saved. Compared against the snapshot alone
@@ -1589,7 +1589,7 @@ describe('AppLifecycleService', () => {
 
     it('leaves an existing choice alone when the form says nothing about it', async () => {
       /*
-       * ⚠ ABSENT IS NOT "CLEAR IT". Every other field here is rewritten from the
+       * Absent does not mean "clear it". Every other field here is rewritten from the
        * form on every save because the dialog sends them all; `customDomain` is
        * sent only by a client that knows about custom domains, so an omitted
        * field must not unbind a domain the customer is being served on.

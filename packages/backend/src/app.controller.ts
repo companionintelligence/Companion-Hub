@@ -100,7 +100,7 @@ export class AppController {
       const domain = userSettings?.domain?.trim() || configuredDomain;
       const sslPort = userSettings?.sslPort ?? defaults.sslPort;
 
-      // Version latest is refreshed in the background — never block bootstrap on CI Cloud.
+      // Version latest is refreshed in the background — never block bootstrap on Companion Portal.
       const version = this.appService.peekLocalVersion();
       this.appService.refreshVersionInBackground();
 

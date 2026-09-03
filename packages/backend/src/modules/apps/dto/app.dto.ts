@@ -24,7 +24,7 @@ const appSchema = z.object({
   localSubdomain: z.string().nullable().optional(),
   exposureMode: z.enum(['local', 'cloudflare', 'tailscale']).optional(),
   publicDomain: z.string().nullable().optional(),
-  /** Custom hostname CI-Cloud has wired for this app; null when it serves on the platform hostname. */
+  /** Custom hostname Companion Portal has wired for this app; null when it serves on the platform hostname. */
   customDomain: z.string().nullable().optional(),
   /**
    * The custom domain this app was set up to use — the CHOICE, not the outcome.
@@ -54,7 +54,7 @@ const myAppsSchema = z.object({
  * `GET /apps/guest`), so its payload is the set of app facts anyone on the
  * network may read.
  *
- * ⚠ THE CHOICE IS NOT ONE OF THEM. `custom_domain` is a hostname CI-Cloud has
+ * The choice is not one of them. `custom_domain` is a hostname Companion Portal has
  * already WIRED — live and publicly resolvable, so naming it discloses nothing.
  * `custom_domain_intent` can name a domain the organization owns but has not
  * published: parked, or still verifying, and not discoverable any other way.

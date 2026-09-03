@@ -68,7 +68,7 @@ export class AppsRepository {
    * Make a custom-domain choice exclusive: clear this intent from every OTHER
    * app.
    *
-   * ⚠ A DOMAIN SERVES EXACTLY ONE APP, and two rows naming it turns every sync
+   * A domain serves exactly one app, and two rows naming it turns every sync
    * into a tug of war — whichever binds last takes it, the delivery reconcile
    * unbinds the loser, the loser becomes a candidate again, and both apps are
    * asked to restart, forever. Enforced HERE, where the choice is written,
@@ -76,9 +76,9 @@ export class AppsRepository {
    * the newest choice wins, which is what a person picking a domain already
    * serving another app plainly means (the picker names that app beside it).
    *
-   * Deliberately does NOT touch `custom_domain`. That column is what CI-Cloud
+   * Deliberately does NOT touch `custom_domain`. That column is what Companion Portal
    * reported delivered, and the app losing the choice keeps serving on the
-   * hostname it was actually wired to until CI-Cloud says otherwise — which it
+   * hostname it was actually wired to until Companion Portal says otherwise — which it
    * will, on the sync after the new binding lands.
    *
    * Matching is case-insensitive because DNS is: the value is stored normalized,

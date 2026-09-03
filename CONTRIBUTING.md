@@ -1,99 +1,81 @@
-# Contributing to CI-Hub
+# Contributing to Companion Hub
 
-Thank you for contributing to CI-Hub! This guide covers the conventions and requirements you should follow when submitting issues and pull requests.
+This guide covers conventions for issues and pull requests.
 
-## Table of Contents
+## Contents
 
-- [AI Agents](#ai-agents)
-- [Screenshot Requirements](#screenshot-requirements)
-- [Issue Templates](#issue-templates)
-- [Pull Requests](#pull-requests)
+- [Writing style](#writing-style)
+- [AI agents](#ai-agents)
+- [Screenshot requirements](#screenshot-requirements)
+- [Issue templates](#issue-templates)
+- [Pull requests](#pull-requests)
 
----
+## Writing style
 
-## AI Agents
+English docs and human-facing comments follow the [Google developer documentation style guide](https://developers.google.com/style). See [`docs/writing-style.md`](docs/writing-style.md) and the doc map in [`docs/README.md`](docs/README.md).
 
-If you are a coding agent working in this repo, read **[AGENTS.md](AGENTS.md)** first, then tag **[docs/agent/AGENT_WORKFLOW.md](docs/agent/AGENT_WORKFLOW.md)** in your session.
+## AI agents
+
+If you are a coding agent in this repo, read [`AGENTS.md`](AGENTS.md) first, then follow [`docs/agent/AGENT_WORKFLOW.md`](docs/agent/AGENT_WORKFLOW.md).
 
 ### Session worksheet
 
-Commit a filled **[SESSION_WORKSHEET.template.md](docs/agent/SESSION_WORKSHEET.template.md)** to `docs/agent/sessions/` with your changes. After merge, tag: `agent-session/<worksheet-slug>`.
+Commit a filled [`SESSION_WORKSHEET.template.md`](docs/agent/SESSION_WORKSHEET.template.md) under `docs/agent/sessions/` with your changes. After merge, tag `agent-session/<worksheet-slug>`.
 
 ### Validation
 
-Run **`bin/agent-validate-shift`** (or `pnpm run agent:validate`) before marking agent work done. See [docs/agent/END_OF_SHIFT.md](docs/agent/END_OF_SHIFT.md).
+Run `bin/agent-validate-shift` (or `pnpm run agent:validate`) before marking agent work done. See [`docs/agent/END_OF_SHIFT.md`](docs/agent/END_OF_SHIFT.md).
 
----
+## Screenshot requirements
 
-## Screenshot Requirements
-
-To improve cross-team visibility, speed up reviews, and support marketing and documentation efforts, **screenshots must be included in tickets as part of the acceptance criteria** for all UI/UX work.
+For UI and UX work, include screenshots in the issue or pull request as part of acceptance criteria.
 
 ### When screenshots are required
 
 | Change type | Requirement |
 |---|---|
-| UI/UX change | **Required** — include before/after screenshots |
-| New UI feature | **Required** — include screenshots of key screens |
-| Bug with visible symptom | **Required** — include a screenshot showing the issue |
+| UI/UX change | Required — before/after screenshots |
+| New UI feature | Required — key screens |
+| Bug with a visible symptom | Required — screenshot of the issue |
 | Backend-only change | Optional |
 | Documentation-only change | Optional |
 
-### Where to upload screenshots
+### Where to put screenshots
 
-Upload screenshots to the shared team Google Drive folder:
+Attach screenshots to the GitHub issue or pull request. That is the primary place reviewers look.
 
-> **[CI-Hub Screenshots — Google Drive](https://drive.google.com/drive/folders/ci-hub-screenshots)**
-
-Organize files by issue number or feature name, for example:
+Organize filenames by issue number or feature name, for example:
 
 ```
-ci-hub-screenshots/
-  issue-123-login-redesign/
-    before.png
-    after.png
-  issue-456-dashboard-widget/
-    home-screen.png
-    widget-expanded.png
+issue-123-login-redesign-before.png
+issue-123-login-redesign-after.png
 ```
-
-You may also attach screenshots directly to the GitHub issue or pull request.
 
 ### Taking screenshots with Playwright
 
-For automated or reproducible screenshots of UI flows, use Playwright:
-
 ```ts
-// In your Playwright test or script
 await page.screenshot({ path: 'screenshots/my-feature.png', fullPage: true });
 ```
-
-Run Playwright tests with:
 
 ```bash
 pnpm run test:e2e
 ```
 
-See the [e2e test directory](packages/e2e/) for examples of existing screenshot usage.
+See [`e2e/`](e2e/) for existing examples.
 
 ### Screenshot checklist for pull requests
 
-Before marking a PR as ready for review, confirm:
+Before marking a PR ready for review:
 
-- [ ] Screenshots attached or linked for all UI/UX changes
-- [ ] Before/after screenshots provided for changes to existing UI
-- [ ] Screenshots uploaded to the [shared Google Drive folder](https://drive.google.com/drive/folders/ci-hub-screenshots) when relevant to marketing or documentation
+- [ ] Screenshots attached for all UI/UX changes
+- [ ] Before/after screenshots for changes to existing UI
 
----
+## Issue templates
 
-## Issue Templates
+Use the provided bug and feature templates. They include a Screenshots section that states what each ticket type needs.
 
-When opening a bug report or feature request, use the provided issue templates. They include a **Screenshots** section that clarifies what is required for each type of ticket.
+## Pull requests
 
----
-
-## Pull Requests
-
-- Reference the related issue number in the PR description (e.g. `Closes #123`).
-- Keep changes focused — one logical change per PR.
-- Ensure the CI checks pass before requesting review.
+- Reference the related issue (`Closes #123`).
+- Keep one logical change per PR.
+- Ensure CI checks pass before requesting review.

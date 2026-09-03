@@ -1,4 +1,4 @@
-# Agent QA System — CI-Hub
+# Agent QA system — Companion Hub
 
 > **Purpose:** Marketplace app exploration, diagnose/fix loop — separate from general dev workflow.
 > **Scope:** `agent/`, `e2e/app-explorer.spec.ts`, `docs/FLYWHEEL.md`

@@ -168,7 +168,7 @@ describe('CloudflareClientService', () => {
 
       const result = await service.syncState('org-id', [], 'tun-id');
 
-      // No `failures` from an older CI-Cloud: `failed` still tells us which apps
+      // No `failures` from an older Companion Portal: `failed` still tells us which apps
       // broke, and callers fall back to generic messaging.
       expect(result).toEqual({ ok: true, failed: ['anything-llm'], failures: [], synced: 1 });
     });
@@ -437,7 +437,7 @@ describe('CloudflareClientService', () => {
 
     it('reports a CI-Cloud without the route as unanswered, not as none', async () => {
       /*
-       * ⚠ NOT `[]`. A Hub talking to an older Portal is a supported deployment,
+       * This is not `[]`. A Hub talking to an older Portal is a supported deployment,
        * and the install dialog owes it a different sentence than an organization
        * that genuinely owns no domains — offering "you have none, add one" for a
        * question that was never answered is the failure this feature fixes.

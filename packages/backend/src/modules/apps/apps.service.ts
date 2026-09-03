@@ -274,7 +274,7 @@ export class AppsService {
         orgSlug: organizationSlug,
         publicDomainRoot: resolvedDomain,
       });
-      // A custom hostname CI-Cloud has wired for this app is the one a user
+      // A custom hostname Companion Portal has wired for this app is the one a user
       // actually visits, so it is the one to link to and to probe — probing the
       // platform hostname would report an app as reachable at an address the
       // user is not being sent to.
@@ -448,7 +448,7 @@ export class AppsService {
     const actions: string[] = [];
 
     try {
-      // For Cloudflare errors: re-sync state with CI-Cloud
+      // For Cloudflare errors: re-sync state with Companion Portal
       if (
         check.errorCode === 'DNS_NOT_FOUND' ||
         check.errorCode === 'CF_TUNNEL_NOT_FOUND' ||

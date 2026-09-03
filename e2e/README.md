@@ -1,8 +1,8 @@
-# E2E Tests
+# E2E tests
 
 > **Agent docs:** [docs/agent/TESTING.md](../docs/agent/TESTING.md) · [docs/agent/TEST_INVENTORY.md](../docs/agent/TEST_INVENTORY.md) (run `pnpm run agent:test-inventory` to regenerate)
 
-CI-Hub has multiple Playwright lanes. The default config ([`playwright.config.ts`](../playwright.config.ts)) ignores `future/`, `cross-domain/`, and `platform/` to keep PR/release CI fast.
+Companion Hub has multiple Playwright lanes. The default config ([`playwright.config.ts`](../playwright.config.ts)) ignores `future/`, `cross-domain/`, and `platform/` to keep PR/release CI fast.
 
 ## CI lanes
 
@@ -12,7 +12,7 @@ CI-Hub has multiple Playwright lanes. The default config ([`playwright.config.ts
 | **Cross-domain** | `pnpm e2e:cross-domain` | [`e2e-extended.yml`](../.github/workflows/e2e-extended.yml) | Real Portal (wrangler **8012**) + Hub Docker; device registration, Traefik |
 | **Future onboarding** | `pnpm e2e:future:onboarding` | `e2e-extended.yml` | Onboarding AI setup wizard (`e2e/future/onboarding-ai-setup.spec.ts`) |
 | **Platform** | `npx playwright test e2e/platform/` | [`e2e-platform.yml`](../.github/workflows/e2e-platform.yml) | Self-hosted Hub + seeded test app (networking, lifecycle) |
-| **Fleet** | — | [`e2e-fleet.yml`](../.github/workflows/e2e-fleet.yml) | Tailscale-connected hardware; Cloudflare/Tailscale specs in `e2e/future/` |
+| **Multi-node fleet** | — | Private ops mirror | Tailscale lab hardware; not published on this tip (see companionintelligence/CI-Hub#1210) |
 
 ### Running extended lanes locally
 
@@ -91,18 +91,18 @@ ollama pull qwen3:8b
 
 ### 4. Explorer environment
 
-Create `.env.explorer` in the repository root:
+Create `.env.explorer` in the repository root. Use local placeholders only — do not commit real passwords or API keys.
 
 ```bash
 HUB_URL=http://localhost:9091
-TEST_EMAIL=test@ci.computer
+TEST_EMAIL=test@example.com
 TEST_PASSWORD=testpassword123
 
-APP_TEST_EMAIL=explorer@ci.computer
+APP_TEST_EMAIL=explorer@example.com
 APP_TEST_PASSWORD=Explorer123!
 APP_TEST_NAME=CI Explorer
 
-APP_DOMAIN=ci.computer
+APP_DOMAIN=example.com
 EXPLORE_MINUTES=5
 DNS_TIMEOUT_MINUTES=10
 
@@ -110,12 +110,12 @@ MARKETPLACE_DIR=~/Development/companion/ci-marketplace
 REPORT_DIR=~/Development/companion/reports
 SCREENSHOT_DIR=~/Development/companion/screenshots
 
-OPENAI_API_KEY=sk-...
+OPENAI_API_KEY= # optional; set locally, never commit
 ```
 
 `OPENAI_API_KEY` enables the current AI-guided auth, exploration, and diagnosis paths. Without it, the App Explorer falls back to basic heuristics.
 
-## Running the App Explorer Test
+## Running the App Explorer test
 
 Single app:
 

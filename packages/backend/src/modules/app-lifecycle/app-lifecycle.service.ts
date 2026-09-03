@@ -62,9 +62,9 @@ function uniqueRoutingLocalSubdomain(parsedForm: AppFormForSubdomain): string | 
 }
 
 /**
- * Ignore a custom-domain CHOICE that this app could never be served on.
+ * Ignore a custom-domain choice that this app could never be served on.
  *
- * ⚠ AN UNMOUNTED PICKER STILL SUBMITS ITS VALUE. The field only renders under
+ * An unmounted picker can still submit its value. The field only renders under
  * Cloudflare exposure, but react-hook-form keeps the value of a field it has
  * unmounted, so a domain picked before the operator switched to Local or Private
  * VPN is still in the payload — and acting on it takes that domain off the app
@@ -75,8 +75,8 @@ function uniqueRoutingLocalSubdomain(parsedForm: AppFormForSubdomain): string | 
  * Exactly {@link canServeOnCustomDomain}, the gate the bind pass itself applies,
  * so the two cannot disagree about which apps a domain may be recorded for.
  *
- * Only a NON-EMPTY choice is dropped: `''` says "serve on the platform address",
- * which is honourable for any app and is what a caller turning exposure off
+ * Only a non-empty choice is dropped: `''` says "serve on the platform address",
+ * which is valid for any app and is what a caller turning exposure off
  * plainly means. `undefined` is "the caller said nothing", which leaves whatever
  * choice the row already holds alone.
  */
@@ -97,11 +97,11 @@ function normalizeLocalOpenPort(parsedForm: ParsedAppForm): ParsedAppForm {
 /**
  * The row patch a re-install writes, from a parsed install form.
  *
- * ⚠ `customDomain` MUST NOT REACH THE ROW UNDER THAT NAME. `appFormSchema` is
+ * `customDomain` must not reach the row under that name. `appFormSchema` is
  * `.passthrough()`, `updateAppById` takes `Partial<NewApp>`, and drizzle's
  * `buildUpdateSet` applies every set key that names a real column — so spreading
  * the form wholesale wrote the picker's choice straight into `app.custom_domain`,
- * the column that carries what CI-Cloud CONFIRMED it wired and the one env
+ * the column that carries what Companion Portal confirmed it wired and the one env
  * generation builds `APP_PUBLIC_URL` from. An app told to emit a hostname nobody
  * verified signs OAuth redirects for an address that may resolve nowhere, which
  * is the single invariant the intent/binding split exists to hold.
@@ -120,14 +120,14 @@ function buildInstallRowPatch(parsedForm: ParsedAppForm): Record<string, unknown
 }
 
 /**
- * The install form as it is STORED in `app.config` — without the custom-domain
+ * The install form as it is stored in `app.config` — without the custom-domain
  * choice.
  *
- * ⚠ THE CHOICE HAS ONE HOME, AND IT IS THE ROW. `custom_domain_intent` is
+ * The choice has one home: the row. `custom_domain_intent` is
  * cleared by the Hub itself — when the organization disconnects the domain, or
  * when another app claims it — while `config` is a snapshot of whatever was last
  * saved. A second copy there gives the two different answers, and every path that
- * REPLAYS the snapshot resurrects a choice that had already been given up: a
+ * replays the snapshot resurrects a choice that had already been given up: a
  * version bump re-submits `app.config` verbatim, which would rewrite this app's
  * intent and strip the domain off whichever app legitimately holds it now. It
  * would also make re-picking a domain the Hub had cleared compare equal to the
@@ -732,7 +732,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     const { appUrn, form, skipRun } = params;
     const { demoMode, architecture } = this.config.getConfig();
 
-    // Check if we need to download files from CI Cloud
+    // Check if we need to download files from Companion Portal
     const { appStoreId, appName } = extractAppUrn(appUrn);
     const store = await this.appStoreService.getAppStoreBySlug(appStoreId);
 
@@ -916,8 +916,8 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
           localSubdomain: parsedForm.localSubdomain ?? null,
           publicDomain: parsedForm.publicDomain ?? null,
           // The custom domain the installer picked, recorded as an intent. It is
-          // asked of CI-Cloud once the app registers — see `custom_domain_intent`
-          // — and never reaches this app's env until CI-Cloud reports it wired.
+          // asked of Companion Portal once the app registers — see `custom_domain_intent`
+          // — and never reaches this app's env until Portal reports it wired.
           customDomainIntent: parsedForm.customDomain || null,
           openPort: openPort ?? false,
           exposedLocal: exposedLocal ?? !!appInfo.exposable,
@@ -969,8 +969,8 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
         localSubdomain: parsedForm.localSubdomain ?? null,
         publicDomain: parsedForm.publicDomain ?? null,
         /*
-         * ⚠ ABSENT IS NOT NULL HERE EITHER — this branch rewrites a row that
-         * ALREADY EXISTS (a reinstall, or an install retried after a failure), so
+         * Absent is not clear here either — this branch rewrites a row that
+         * already exists (a reinstall, or an install retried after a failure), so
          * the same rule `updateAppConfig` applies holds: a caller that says
          * nothing about custom domains must not unbind one the customer is being
          * served on. The device-restore form never sends the field, and it would
@@ -1771,9 +1771,9 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     dropUnservableCustomDomain(parsedForm, appInfo.exposable);
 
     /*
-     * ⚠ THE CUSTOM-DOMAIN CHOICE IS COMPARED AGAINST THE ROW, NOT THE SNAPSHOT.
+     * Compare the custom-domain choice against the row, not the snapshot.
      *
-     * `config` is what was last SAVED; `custom_domain_intent` is what the app
+     * `config` is what was last saved; `custom_domain_intent` is what the app
      * currently asks for, and the Hub changes it on its own — clearing it when
      * the organization disconnects the domain, or when another app claims it.
      * Deciding "nothing changed" from the snapshot alone means a person who
@@ -1874,12 +1874,12 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       localSubdomain: parsedForm.localSubdomain ?? null,
       publicDomain: parsedForm.publicDomain ?? null,
       /*
-       * ⚠ ABSENT IS NOT NULL HERE. Every field beside this one is rewritten from
+       * Absent is not clear here. Every field beside this one is rewritten from
        * the form on every save, because the settings dialog sends all of them.
        * `customDomain` is sent only by a client that knows about custom domains,
        * so treating an omitted field as "clear it" would let an older client — or
        * any caller that patches one setting — silently unbind a domain the
-       * customer is being served on. The empty string IS a real instruction: it
+       * customer is being served on. The empty string is a real instruction: it
        * is what the picker sends for "use the platform address".
        */
       ...(parsedForm.customDomain === undefined ? {} : { customDomainIntent: parsedForm.customDomain || null }),
@@ -1898,7 +1898,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       await this.appRepository.updateAppById(app.id, { pendingRestart: settingsChanged });
     }
 
-    // Sync tunnel/DNS state with CI-Cloud. When subdomain or public domain changed,
+    // Sync tunnel/DNS state with Companion Portal. When subdomain or public domain changed,
     // run a release pass first so the old hostname is removed from Cloudflare DNS.
     this.logger.info(`[Cloudflare] Config updated for ${appUrn}. Triggering state sync.`);
     await this.syncExposureAfterRoutingChange(appUrn, routingChanged);
@@ -1923,7 +1923,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
   }
 
   /**
-   * When public routing identity changes, CI-Cloud only deletes stale DNS when the
+   * When public routing identity changes, Companion Portal only deletes stale DNS when the
    * app's previous slug disappears from the sync payload. Sync once without the
    * reconfigured app so the old record is released, then sync the full state.
    */
@@ -2247,15 +2247,15 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
   /**
    * Record a custom-domain choice, and take it off any app that held it before.
    *
-   * ⚠ A DOMAIN SERVES EXACTLY ONE APP. Two rows naming the same one turns every
+   * A domain serves exactly one app. Two rows naming the same one turns every
    * sync into a tug of war — whichever binds last takes it, the delivery
    * reconcile unbinds the loser, the loser becomes a candidate again, and both
-   * apps carry a restart badge forever. The picker deliberately OFFERS a domain
+   * apps carry a restart badge forever. The picker deliberately offers a domain
    * that is already serving something (naming the app beside it), because moving
    * one is legitimate; this is what makes the move a move rather than a fight.
    *
    * Only `custom_domain_intent` moves. The app that lost the choice keeps
-   * serving on the hostname CI-Cloud actually wired until CI-Cloud says
+   * serving on the hostname Companion Portal actually wired until Portal says
    * otherwise, which it does on the sync after the new binding lands.
    *
    * Best-effort: a failure here leaves a duplicate choice, which the bind pass

@@ -1,4 +1,4 @@
-# Companion Intelligence — Canonical UI Style Guide
+# Companion Intelligence UI style guide
 
 >
 > **Repo:** CI-Hub · **Surface:** `packages/frontend` (React web + Tauri desktop)
@@ -17,7 +17,7 @@ This document has three parts:
 
 ---
 
-# Part I — Canonical design system (shared)
+# Part I — canonical design system (shared)
 
 > Identical across CI-Hub, CI-Portal, and CI-Marketplace. Do not edit one copy in isolation.
 
@@ -241,7 +241,7 @@ Standard shadcn primitives. Use the shared implementations; theme strictly throu
 
 ---
 
-# Part II — This repo (CI-Hub)
+# Part II — this repository (Hub)
 
 **Surface:** `packages/frontend` — React 19 + React Router 7 + TanStack Query, bundled with Vite,
 also packaged as a Tauri 2 desktop app.
@@ -285,7 +285,7 @@ also packaged as a Tauri 2 desktop app.
 
 ---
 
-# Part III — Drift & remediation (CI-Hub)
+# Part III — drift and remediation (Hub)
 
 Concrete deltas from Part I. Severity: 🔴 fix · 🟡 align when convenient · ⚪ informational.
 

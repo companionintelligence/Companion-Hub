@@ -1,45 +1,45 @@
-# CI/CD Pipeline Setup
+# CI/CD pipeline setup
 
-This document describes the multi-environment CI/CD pipeline for CI-OS-Hub.
+Historical notes for Companion Hub multi-environment container and desktop releases. For day-to-day workflow dispatch, see [`CI.md`](CI.md) and [`.github/workflows/README.md`](../.github/workflows/README.md).
 
 ## Overview
 
-The CI-OS-Hub project has a multi-environment deployment pipeline that automatically deploys to three environments based on branch activity:
+Companion Hub deploys from branch activity into three environments:
 
-- **Development (dev)**: Triggered by pushes to `dev` branch
-- **Staging**: Triggered by pushes to `staging` branch  
-- **Production**: Triggered by pushes to `main` branch
+- **Development (`dev`)**: pushes to `dev`
+- **Staging**: pushes to `staging`
+- **Production**: pushes to `main`
 
-## Branch Strategy
+## Branch strategy
 
 ```
-dev      →  dev environment (ci-os-hub-dev)
-staging  →  staging environment (ci-os-hub-staging)
-main     →  production environment (ci-os-hub-production)
+dev      →  dev environment
+staging  →  staging environment
+main     →  production environment
 ```
 
-## Docker Image Tags
+## Docker image tags
 
 - `dev` branch → `ghcr.io/companionintelligence/ci-hub:dev`
 - `staging` branch → `ghcr.io/companionintelligence/ci-hub:staging`
 - `main` branch → `ghcr.io/companionintelligence/ci-hub:latest`
-- Desktop Release (production only) → `ghcr.io/companionintelligence/ci-hub:<version>`, unprefixed
+- Desktop release (production only) → `ghcr.io/companionintelligence/ci-hub:<version>`, unprefixed
   (e.g. `0.2.45`) — the exact reference a shipped desktop bundle pins
 
-The package must stay **public**: the desktop shells out to `docker compose` with no registry
-credentials. `build-container.yml`'s `verify-anonymous-pull` job proves this unauthenticated on
-every run, before any desktop bundle is built. If that job goes red, the package visibility flipped
-or the versioned tag was never pushed — fix the release rather than shipping the bundles.
+Keep the package **public** because the desktop runs `docker compose` without registry
+credentials. Before building a desktop bundle, the `verify-anonymous-pull` job in
+`build-container.yml` verifies anonymous access. If that job fails, restore public package
+visibility or push the missing versioned tag before you ship the bundle.
 
-## GitHub Environments Setup
+## Configure GitHub environments
 
-### Required Environments
+### Required environments
 
-Create three GitHub Environments in repository settings:
+Create three GitHub environments in the repository settings:
 
 1. **dev**
    - Secrets: `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`
-   - Protection: None (auto-deploy)
+   - Protection: None (automatic deployment)
 
 2. **staging**
    - Secrets: `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`
@@ -49,58 +49,56 @@ Create three GitHub Environments in repository settings:
    - Secrets: `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`
    - Protection: Required manual approval
 
-### Setup Steps
+### Set up the environments
 
 1. Go to **Settings** → **Environments** → **New environment**
 2. Create `dev`, `staging`, and `production` environments
 3. Add required secrets to each environment:
-   - `CLOUDFLARE_API_TOKEN`: Create at https://dash.cloudflare.com/profile/api-tokens
-   - `CLOUDFLARE_ACCOUNT_ID`: Find at https://dash.cloudflare.com/ sidebar
-4. Configure protection rules (especially for production)
+   - `CLOUDFLARE_API_TOKEN`: Create a token in the [Cloudflare dashboard](https://dash.cloudflare.com/profile/api-tokens).
+   - `CLOUDFLARE_ACCOUNT_ID`: Copy the account ID from the Cloudflare dashboard sidebar.
+4. Configure the protection rules. Require manual approval for production.
 
-## Workflow Features
+## Deployments
 
-### Automatic Deployments
+### Automatic deployments
 
-- Push to `main` → Production (requires approval)
-- Push to `staging` → Staging
-- Push to `dev` → Dev
+- Push to `main` → production (requires approval)
+- Push to `staging` → staging
+- Push to `dev` → development
 
-### Manual Deployments
+### Manual deployments
 
 1. Go to **Actions** → **Build and Push Container**
-2. Click **Run workflow**
-3. Select environment (dev, staging, production)
-4. Click **Run workflow**
+2. Select **Run workflow**.
+3. Select an environment: `dev`, `staging`, or `production`.
+4. Select **Run workflow**.
 
 ## Files
 
-- `.github/workflows/build-container.yml` - Main CI/CD workflow
-- `wrangler.toml` - Cloudflare Workers configuration
-- `worker.ts` - Durable Object implementation
+- `.github/workflows/build-container.yml` — Main CI/CD workflow
+- `wrangler.toml` — Cloudflare Workers configuration
+- `worker.ts` — Durable Object implementation
 
-## Local Development
+## Local development
 
 ```bash
-# Install Wrangler
+# Install Wrangler.
 npm install -g wrangler
 
-# Login to Cloudflare
+# Log in to Cloudflare.
 wrangler login
 
-# Run locally
+# Run locally.
 wrangler dev --env dev
 
-# Deploy manually
+# Deploy manually.
 wrangler deploy --env dev
 ```
 
 ## Troubleshooting
 
-**"Secret not found" error**: Ensure GitHub Environment is created with required secrets
+- **"Secret not found" error:** Verify that the GitHub environment contains the required secrets.
+- **Deployment requires approval:** Configure reviewers in the environment protection rules.
+- **Build failure:** Check the Dockerfile and workflow logs for errors.
 
-**Deployment requires approval**: Configure reviewers in environment protection rules
-
-**Build fails**: Check Dockerfile and workflow logs for errors
-
-For more details, see the workflow file at `.github/workflows/build-container.yml`.
+For more information, see [`.github/workflows/build-container.yml`](../.github/workflows/build-container.yml).

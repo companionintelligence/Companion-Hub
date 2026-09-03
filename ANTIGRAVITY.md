@@ -1,8 +1,10 @@
-# ANTIGRAVITY.md — CI-Hub
+# ANTIGRAVITY.md — Companion Hub
+
+Documentation map, tip scrub policy, and writing style: [`docs/README.md`](docs/README.md), [`docs/writing-style.md`](docs/writing-style.md).
 
 ## Context
 
-**CI-Hub** — **Appliance** layer of the Companion Intelligence platform (Companion Intelligence).
+**Companion Hub** is part of the **Appliance** layer of the Companion Intelligence platform.
 
 Architecture: `CI-Engineering/architecture/architecture.md`
 Roadmap: `CI-Engineering/architecture/roadmap.md`

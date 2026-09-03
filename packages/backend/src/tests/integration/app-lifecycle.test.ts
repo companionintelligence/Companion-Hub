@@ -621,7 +621,7 @@ describe('App lifecycle', () => {
 
   /*
    * The whole custom-domain path, against a real database and the real
-   * migrations: CI-Cloud reports a wired hostname → it lands on the app row →
+   * migrations: Companion Portal reports a wired hostname → it lands on the app row →
    * a restart regenerates the env with it → dropping it reverts the app.
    *
    * The unit tests cover each link; this covers the seams, and is the only test
@@ -666,11 +666,11 @@ describe('App lifecycle', () => {
       const appInfo = await installExposed('cdomain');
       const platformHostname = 'cdomain-test-core2-acme.ci.test';
 
-      // Installed on the platform hostname — CI-Cloud cannot have wired a domain
+      // Installed on the platform hostname — Companion Portal cannot have wired a domain
       // to an app it had not been told about yet.
       expect((await readEnv(appInfo.urn)).get('APP_PUBLIC_URL')).toBe(`https://${platformHostname}`);
 
-      // CI-Cloud reports the alias it actually produced an ingress rule for.
+      // Companion Portal reports the alias it actually produced an ingress rule for.
       await syncReporting([{ id: 'cd_1', domain: 'comfy.acme.com', targetHostname: platformHostname }]);
 
       const bound = await appsRepository.getAppByUrn(appInfo.urn);
@@ -690,7 +690,7 @@ describe('App lifecycle', () => {
       expect(boundEnv.get('APP_BASE_URL')).toBe('https://comfy.acme.com');
       expect(await appsRepository.getAppByUrn(appInfo.urn).then((row) => row?.pendingRestart)).toBe(false);
 
-      // Released in CI-Cloud: the array is now empty, which is an instruction to unbind.
+      // Released in Companion Portal: the array is now empty, which is an instruction to unbind.
       await syncReporting([]);
       expect((await appsRepository.getAppByUrn(appInfo.urn))?.customDomain).toBeNull();
 
@@ -709,10 +709,10 @@ describe('App lifecycle', () => {
        * The whole install-time path, seam by seam — and the only test that proves
        * `custom_domain_intent` exists after `migrate`.
        *
-       * The choice cannot be honoured at install time: CI-Cloud derives a
+       * The choice cannot be honoured at install time: Companion Portal derives a
        * domain's routing target from an `application` row, and at that moment it
        * has never heard of this app. So it is recorded, asked for after the sync
-       * that registers the app, and reaches the env only once CI-Cloud reports
+       * that registers the app, and reaches the env only once Companion Portal reports
        * the hostname actually wired.
        */
       cloudflareClientService.fetchOrganizationCustomDomains.mockResolvedValue([
@@ -745,15 +745,15 @@ describe('App lifecycle', () => {
       expect(installed?.customDomain).toBeNull();
       expect((await readEnv(appInfo.urn)).get('APP_PUBLIC_URL')).toBe(`https://${platformHostname}`);
 
-      // The sync registers the app with CI-Cloud, and the bind pass then asks for
+      // The sync registers the app with Companion Portal, and the bind pass then asks for
       // the domain — by the app's subdomain, never by a hostname.
       await syncReporting([]);
 
       // The SAME subdomain the tunnel-state payload carries — `cdomain-intent-test`,
-      // not the app's name — because that is the string CI-Cloud canonicalized
+      // not the app's name — because that is the string Companion Portal canonicalized
       // into the `application` row it will resolve the target from.
       expect(cloudflareClientService.bindCustomDomain).toHaveBeenCalledWith('cd_1', 'cdomain-intent-test', ORG.id);
-      // Still nothing in the env: a bind is CI-Cloud moving the alias, not proof
+      // Still nothing in the env: a bind is Companion Portal moving the alias, not proof
       // that the tunnel answers for it.
       expect((await appsRepository.getAppByUrn(appInfo.urn))?.customDomain).toBeNull();
 

@@ -1,9 +1,10 @@
-# videos/
+# Archived video references
 
-Editorial reference material for Companion Intelligence marketing & tutorial videos.
+This directory contains archived editorial reference material. The active Companion Hub HyperFrames build is in [`../video/`](../video/).
+
 Live video generation across the platform runs on **HyperFrames**
 (`CI-Engineering/projects/product-video-pipeline`), not Remotion — see `../video/` in
-this repo for CI-Hub's actual HyperFrames product video build. HyperFrames natively
+this repository for the current Companion Hub product video build. HyperFrames natively
 covers everything this folder previously used Remotion for, including transparent
 alpha-channel output (`hyperframes render --format webm|mov`) — see
 [`ci-tutorial-video/README.md`](ci-tutorial-video/README.md#rebuilding-this-natively-in-hyperframes).

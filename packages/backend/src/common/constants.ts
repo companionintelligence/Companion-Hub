@@ -93,14 +93,14 @@ function isProductionEnvironmentDefault() {
   return process.env.CI_HUB_ENVIRONMENT === 'production';
 }
 
-// CI Cloud
+// Companion Portal
 export const DEFAULT_DEV_CI_CLOUD_URL = 'https://hub.companionintelligence.com';
 export const DEFAULT_PROD_CI_CLOUD_URL = 'https://hub.ci.computer';
 export const DEFAULT_CI_CLOUD_URL = isProductionEnvironmentDefault() ? DEFAULT_PROD_CI_CLOUD_URL : DEFAULT_DEV_CI_CLOUD_URL;
 
 // Public app host domain. Dev and prod default to the SAME canonical domain so
 // the offered domain subset is consistent across environments; the actual
-// per-environment working domain is set from CI-Cloud at device registration
+// per-environment working domain is set from Companion Portal at device registration
 // (PairDevice returns CLOUDFLARE_DOMAIN) and validated server-side on sync.
 export const DEFAULT_DEV_PUBLIC_DOMAIN = 'companionintelligence.com';
 export const DEFAULT_PROD_PUBLIC_DOMAIN = 'companionintelligence.com';
@@ -137,7 +137,7 @@ export const DEFAULT_EXPERIMENTAL_INSECURE_COOKIE = 'false';
 // Hub stack container. Same package name (`ci-hub`) on two registries; do not
 // point either at the retired `ci-os-hub` GHCR package (#920).
 //
-// - HUB_STACK_REGISTRY_REPO is the path on the CI Cloud/Portal registry, used only to LIST
+// - HUB_STACK_REGISTRY_REPO is the path on the Companion Portal registry, used only to LIST
 //   available versions (`{ciCloudUrl}/v2/ci-hub/tags/list`). Portal receives a crane copy
 //   of every production build under this name.
 // - HUB_STACK_IMAGE_REPO is the GHCR repo Docker actually PULLS from. It is the package

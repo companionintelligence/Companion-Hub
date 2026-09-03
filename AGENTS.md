@@ -1,7 +1,8 @@
-# AGENTS.md — CI-Hub Router
+# AGENTS.md — Companion Hub router
 
 > **Start here.** This file routes you to skills, docs, tools, and workflows. Do not duplicate content from linked files — follow the links.
 
+Doc map, product names, tip scrub policy, and writing style: [`docs/README.md`](docs/README.md) and [`docs/writing-style.md`](docs/writing-style.md).
 
 ---
 

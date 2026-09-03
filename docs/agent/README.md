@@ -1,7 +1,7 @@
 # Agent docs
 
-These files describe internal multi-agent development workflow for Companion Hub contributors (session worksheets, review personas, end-of-shift gates).
+These files define the internal multi-agent development workflow for Companion Hub contributors, including session worksheets, review personas, and end-of-shift gates.
 
-They are not end-user product documentation. Prefer [`../License-FAQ.md`](../License-FAQ.md), [`../security/hub-portal-trust.md`](../security/hub-portal-trust.md), and [`../system/`](../system/) for public-facing topics.
+For public product documentation, see [`../License-FAQ.md`](../License-FAQ.md), [`../security/hub-portal-trust.md`](../security/hub-portal-trust.md), and [`../system/`](../system/).
 
-Live appliance audits and dated session dumps are not kept in this tree.
+This tree does not contain live appliance audits or dated session dumps.

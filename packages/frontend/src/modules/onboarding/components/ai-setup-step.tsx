@@ -55,9 +55,8 @@ import { Skeleton } from '@/components/ui/Skeleton/Skeleton';
 import { Loader2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
-// Models a chat agent (Hermes, OpenClaw) can use as its default.
-// Only LLMs qualify here; embeddings / speech models may share a generic
-// purpose label but must never become the default chat model.
+// Only LLMs qualify as agent defaults; generic purpose labels can also include
+// embedding and speech models.
 const isAgentModel = (model: CuratedModel) => model.modality === 'llm';
 const isEmbeddingModel = (model: CuratedModel) => model.modality === 'embedding';
 const isVisionModel = (model: CuratedModel) => model.modality === 'llm' && model.metadata?.capabilities?.vision === true;
@@ -71,8 +70,8 @@ interface AiSetupStepProps {
   /** Whether Tailscale is connected — seeds the default agent remote-access choice. */
   tailscaleAvailable?: boolean;
   /**
-   * Section mode for the single-page FTUE form: hides the step navigation, drops the internal
-   * scroll, and emits the live config via {@link onConfigChange} instead of waiting for a Continue.
+   * Enables single-page FTUE behavior by hiding navigation and emitting live
+   * configuration through {@link onConfigChange}.
    */
   embedded?: boolean;
   onConfigChange?: (config: AiSetupConfig) => void;
@@ -132,22 +131,16 @@ export const AiSetupStep = ({
   const [dsparkUrl, setDsparkUrl] = useState('');
   const [selectedBackend, setSelectedBackend] = useState<InferenceBackendType>('ollama');
 
-  // Three code paths fetch the same profile endpoint concurrently (mount/Rescan, backend switch,
-  // and the Re-check refresh below). Each stamps its request, so a slow answer can be recognised as
-  // superseded and dropped instead of reverting the state the operator is actually looking at.
+  // Stamp profile requests so slower responses cannot overwrite newer operator choices.
   const profileRequestId = useRef(0);
-  // Mirrors of the selection state, read by the refresh *after* its await: the render closure still
-  // holds the values from the moment of the click, so writing back from it would silently revert
-  // anything the operator changed while the fetch was in flight.
+  // Refs preserve edits made while a profile refresh is awaiting its response.
   const selectedModelIdsRef = useRef(selectedModelIds);
   selectedModelIdsRef.current = selectedModelIds;
   const preferredModelIdRef = useRef(preferredModelId);
   preferredModelIdRef.current = preferredModelId;
 
-  // The default model Companion agents (Hermes, OpenClaw) use: the BEST-FIT agent LLM. recommendedModels
-  // is ordered best-first (index 0 is the largest model that fits the hardware budget), so we walk it
-  // in order and take the top installable agent LLM — not whatever happens to come first in the catalog.
-  // Both agents read this single model from the Hub's bootstrap.env, so it must be the best-fit pick.
+  // Both agent frameworks share one default, so use the highest-ranked selected or
+  // installable LLM instead of catalog order.
   const getDefaultPreferredModelId = (data: HardwareProfileResponse, backend: InferenceBackendType, selectedIds?: string[]): string | undefined => {
     const installed = new Set(data.installedCatalogIds ?? []);
     const selected = selectedIds ?? data.availableModels.filter((m) => m.backend === backend && installed.has(m.id)).map((m) => m.id);
@@ -195,9 +188,7 @@ export const AiSetupStep = ({
     try {
       const backend = backendOverride ?? selectedBackend;
       const data = await fetchInferenceOnboardingProfile(backend, vllmUrl, backend === 'vllm' ? vllmApiKey : undefined, mtplxUrl, dsparkUrl);
-      // Superseded: a rescan that started before a backend switch but answers after it would push
-      // `backends.recommended` back over the backend the operator just picked, and reset their
-      // selection to that backend's defaults.
+      // Ignore superseded rescans so they cannot restore an earlier backend and its defaults.
       if (profileRequestId.current !== requestId) return;
       setProfile(data);
       const requestedBackend = backendOverride ?? recommendedInferenceBackend(data);
@@ -215,9 +206,8 @@ export const AiSetupStep = ({
       if (profileRequestId.current !== requestId) return;
       setError((e as Error).message);
     } finally {
-      // Deliberately unguarded: `handleSelectBackend` bumps the request id without owning these
-      // flags, so skipping the clear when superseded would strand the spinner with nothing left to
-      // stop it. Clearing a beat early is cosmetic; a spinner that never stops is not.
+      // Clear flags even for superseded requests because backend selection does not own them;
+      // otherwise its request ID change can strand the spinner.
       if (!isRescan) setLoading(false);
       setRescanning(false);
     }
@@ -301,15 +291,9 @@ export const AiSetupStep = ({
     }
   };
 
-  // "Re-check" is the documented last step of both backend flows ("start it, then re-check" /
-  // "load a model in your host vLLM server, then Re-check"), so it must also refresh what the
-  // backend reports as installed: `installedCatalogIds` is what decides whether a model card reads
-  // as installed and selectable, and a status probe alone leaves it at the value fetched on mount.
-  //
-  // Deliberately narrower than `fetchProfile`, which exists to (re)establish defaults. Re-checking
-  // must not discard model choices already made, must not reset a hand-picked backend, and must not
-  // replace the whole step with the error screen when the refresh fails — the status probe is the
-  // signal the operator asked for, and their in-progress setup outweighs a stale model list.
+  // Re-check refreshes installed models without resetting in-progress choices. A status probe
+  // alone leaves `installedCatalogIds` stale; unlike `fetchProfile`, this best-effort refresh
+  // does not replace the step with an error.
   const refreshInstalledModels = async (backend: InferenceBackendType, endpointUrlOverride?: string) => {
     const requestId = ++profileRequestId.current;
     try {
@@ -321,18 +305,15 @@ export const AiSetupStep = ({
         backend === 'mtplx' && endpointUrlOverride ? endpointUrlOverride : mtplxUrl,
         backend === 'dspark' && endpointUrlOverride ? endpointUrlOverride : dsparkUrl,
       );
-      // Drop a superseded answer. Rescan and the backend selector write the same `profile`, so a
-      // refresh that started first but landed last would reinstate pre-rescan hardware figures, or
-      // leave `profile` scoped to a backend the operator has already switched away from.
+      // Drop superseded responses so refreshes cannot restore stale hardware or backend state.
       if (profileRequestId.current !== requestId) return;
       setProfile(data);
 
       const nextInstalled = new Set(data.installedCatalogIds ?? []);
-      // Adopt only models that appeared since the last look, so an earlier opt-out survives.
+      // Preserve earlier opt-outs while selecting newly detected models.
       const newlySelectable = getDefaultSelectedModelIds(data, backend).filter((id) => !previouslyInstalled.has(id));
-      // The Hub cannot pull a vLLM or MTPLX model, so `handleToggleModel` only lets one be ticked
-      // while the host is serving it. Drop the ones it stopped serving to keep that invariant: left
-      // ticked, `computeSelectionBudget` bills them as pending downloads and can block Continue on disk.
+      // Remove unavailable host-served models because selection budgeting would treat them
+      // as pending downloads and could block Continue.
       const isStillSelectable = (id: string) => {
         const modelBackend = data.availableModels.find((m) => m.id === id)?.backend;
         return !isHostServedBackend(modelBackend) || nextInstalled.has(id);
@@ -340,10 +321,8 @@ export const AiSetupStep = ({
       const nextSelected = [...new Set([...selectedModelIdsRef.current, ...newlySelectable])].filter(isStillSelectable);
       setSelectedModelIds(nextSelected);
 
-      // `fetchProfile` seeds the agent default from the catalog before anything is installed, so
-      // that placeholder must give way once the backend reports what it is really serving —
-      // otherwise the "agent default" badge sits on a model the host does not have. A model the
-      // operator picked (installed, or ticked for download) is never overridden.
+      // Replace a catalog-seeded default when the backend does not serve it, but preserve an
+      // installed or explicitly selected default.
       const preferred = preferredModelIdRef.current;
       setPreferredModelId(
         preferred && (nextInstalled.has(preferred) || nextSelected.includes(preferred))
@@ -351,25 +330,18 @@ export const AiSetupStep = ({
           : getDefaultPreferredModelId(data, backend, nextSelected),
       );
     } catch (e) {
-      // Best-effort refresh: the status probe already reported reachability, and taking the whole
-      // step down over a secondary fetch would discard an in-progress setup. Leave a trace though —
-      // a silent no-op here is indistinguishable from the bug this function exists to fix.
+      // Keep the in-progress setup after a secondary refresh fails, but retain a diagnostic.
       console.warn('Re-check could not refresh the installed model list', e);
     }
   };
 
-  // Kept separate from the probe helpers because those also run on mount, where `selectedBackend`
-  // is still the initial value and a refresh would read the wrong backend.
+  // Mount probes cannot refresh because `selectedBackend` still has its initial value.
   const handleRecheck = async (probe: () => Promise<{ ready: boolean }>, setChecking: (checking: boolean) => void) => {
     const status = await probe();
-    // The profile endpoint swallows its own backend health-check failure and answers 200 with
-    // nothing served, so refreshing against a backend that is down does not reveal a new model —
-    // it erases the ones already there, dropping every card back into the "open Hugging Face"
-    // branch this fix exists to leave. The probe is the gate.
+    // Refresh only after a successful probe; a failed backend health check returns an empty
+    // installed set and would erase valid selections.
     if (!status.ready) return;
-    // The probe clears its own `checking` flag the moment it returns, and `Button` is only disabled
-    // while `loading`. Hold the control busy for the slower half too, so the operator is not invited
-    // to click again — a second refresh racing the first is how the stale answer wins.
+    // Keep the control busy through the profile refresh to prevent racing requests.
     setChecking(true);
     try {
       await refreshInstalledModels(selectedBackend);
@@ -444,9 +416,7 @@ export const AiSetupStep = ({
     const requestId = ++profileRequestId.current;
     try {
       const data = await fetchInferenceOnboardingProfile(backend, vllmUrl, backend === 'vllm' ? vllmApiKey : undefined, mtplxUrl, dsparkUrl);
-      // `setSelectedBackend` above is synchronous, so two quick switches already end on the right
-      // backend — but the slower fetch can still answer last and leave `profile` (and the selection
-      // derived from it) describing the backend the operator switched away from.
+      // Ignore a slower response from an earlier backend choice.
       if (profileRequestId.current === requestId) {
         setProfile(data);
         const defaultSelected = getDefaultSelectedModelIds(data, backend);
@@ -472,9 +442,8 @@ export const AiSetupStep = ({
     const model = profile?.availableModels.find((m) => m.id === modelId);
     if (!model) return;
     const installed = new Set(profile?.installedCatalogIds ?? []);
-    // Host-served backends cannot hot-swap a running server, so selecting an uninstalled model
-    // sends the operator to its model page. Lemonade and mlx-dspark are Hub-loadable and tick like
-    // Ollama.
+    // Host-served backends cannot hot-swap, so uninstalled models open their model page.
+    // Hub-loadable backends remain selectable.
     if (isHostServedBackend(model?.backend) && !installed.has(modelId) && !selectedModelIds.includes(modelId)) {
       openExternal(`https://huggingface.co/${model.backendModelId}`);
       return;
@@ -548,9 +517,8 @@ export const AiSetupStep = ({
     return {
       agentFrameworks,
       selectedModels,
-      // Everything the Hub itself can install: Ollama/Lemonade rows, plus the single mlx-dspark row
-      // that will be resident (see hubLoadableSelection — that server holds one model, not a list).
-      // The field name is historical; it is the pull/pin list, not an Ollama-only list.
+      // The historical field name represents every Hub-loadable model, including the one
+      // resident mlx-dspark model.
       ollamaSelectedModelIds: hubLoadableSelection(
         selectedModels,
         (id) => profile.availableModels.find((m) => m.id === id)?.backend,
@@ -621,11 +589,8 @@ export const AiSetupStep = ({
   }
 
   if (error || !profile) {
-    // The profile endpoint bundles hardware detection with live probes of the
-    // inference backends, so a blocked host service fails the whole call. Naming
-    // hardware here sent operators after the one component that was working —
-    // report the probe diagnosis instead, but only when the probe actually found
-    // a bridge failure, so an unrelated profile error is not blamed on Ollama.
+    // Show bridge guidance only when the probe identifies that failure; profile requests
+    // can fail for unrelated reasons.
     return (
       <div className="py-8" data-testid="ai-setup-error">
         <p className="text-destructive mb-4 text-center">

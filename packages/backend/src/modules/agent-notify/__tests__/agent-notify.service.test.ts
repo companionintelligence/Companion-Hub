@@ -40,8 +40,7 @@ describe('AgentNotifyService', () => {
   });
 
   describe('notify', () => {
-    // The target is OpenClaw's NATIVE wake hook, which takes { text, mode } — not the
-    // { event, data, urgency, timestamp } envelope the old (404ing) plugin route expected.
+    // The native hook accepts text and timing mode, not the retired plugin envelope.
     it('POSTs the native wake payload: { text, mode: "now" }', async () => {
       await service.notify('app.crashed', { appUrn: 'test:ci-store' }, 'high');
 
@@ -50,17 +49,12 @@ describe('AgentNotifyService', () => {
       expect(Object.keys(body).sort()).toEqual(['mode', 'text']);
       expect(body.text).toContain('app.crashed');
       expect(body.text).toContain('test:ci-store');
-      // "next-heartbeat" would defer the turn to the next scheduled slot — up to 30 minutes.
+      // `now` avoids waiting for the next scheduled heartbeat.
       expect(body.mode).toBe('now');
     });
 
-    // The secret goes in BOTH headers, carrying the same value.
-    //
-    // OpenClaw's extractHookToken reads `Authorization: Bearer` first and returns as soon as it
-    // finds a non-empty token — it never falls back to X-OpenClaw-Token. So Authorization is
-    // not a harmless extra; whatever lands in it decides the request. Sending the same secret
-    // in both means the wake authenticates whichever way it is routed: through CI-OpenClaw's
-    // setup-server proxy, or straight to a gateway. Verified in integration.
+    // OpenClaw reads `Authorization` before `X-OpenClaw-Token`. Matching values keep
+    // authentication consistent through either the setup proxy or the gateway.
     it('sends the wake secret in X-OpenClaw-Token', async () => {
       await service.notify('app.crashed', { appUrn: 'test:ci-store' }, 'high');
 
@@ -73,12 +67,11 @@ describe('AgentNotifyService', () => {
 
       const headers = vi.mocked(fetch).mock.calls[0]?.[1]?.headers as Record<string, string>;
       expect(headers.Authorization).toBe('Bearer test-token');
-      // The two must never disagree: Bearer wins, so a mismatch would 401 while looking correct.
+      // Mismatched values fail because the bearer token takes precedence.
       expect(headers.Authorization).toBe(`Bearer ${headers['X-OpenClaw-Token']}`);
     });
 
-    // OpenClaw sheds load with 429 + Retry-After. Nothing is lost — the system events it
-    // already queued still reach the next heartbeat — so this is a warning, not an error.
+    // Queued system events survive a 429, so throttling warrants a warning rather than an error.
     it('treats a 429 as throttling, not failure', async () => {
       vi.mocked(fetch).mockResolvedValue(new Response('Too Many Requests', { status: 429, headers: { 'Retry-After': '7' } }));
 
@@ -148,8 +141,7 @@ describe('AgentNotifyService', () => {
     });
   });
 
-  // Every wake costs a full agent turn, so the routine `info` tier (update_success,
-  // system.mcp_ready) is dropped: it tells the user nothing they did not already expect.
+  // Routine info events do not justify a full agent turn.
   describe('urgency floor', () => {
     it.each(['high', 'medium', 'low'] as const)('wakes the agent for %s', async (urgency) => {
       await service.notify('app.crashed', { appUrn: 'test:ci-store' }, urgency);
@@ -164,8 +156,7 @@ describe('AgentNotifyService', () => {
       expect(fetch).not.toHaveBeenCalled();
     });
 
-    // The floor is a real, settable knob — not decorative config. It sits alongside the
-    // module's existing AGENT_WEBHOOK_* env vars.
+    // The environment override must affect filtering at runtime.
     it('honours AGENT_WEBHOOK_MIN_URGENCY', async () => {
       process.env.AGENT_WEBHOOK_MIN_URGENCY = 'high';
 
@@ -182,7 +173,7 @@ describe('AgentNotifyService', () => {
       expect(fetch).toHaveBeenCalledTimes(1);
     });
 
-    // A typo must not silently mute every wake — the failure mode would be invisible.
+    // Invalid configuration must not suppress every wake.
     it('falls back to the default on an unrecognized value, and says so', async () => {
       process.env.AGENT_WEBHOOK_MIN_URGENCY = 'urgent';
 
@@ -192,9 +183,8 @@ describe('AgentNotifyService', () => {
       expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('AGENT_WEBHOOK_MIN_URGENCY'));
     });
 
-    // ...and a value that an `in` check would have waved through. "constructor" is a key on
-    // Object.prototype, so `'constructor' in URGENCY_TIERS` is true; the floor then compares as
-    // NaN and drops EVERY wake, silently. Validation is Object.hasOwn for exactly this reason.
+    // Inherited keys such as `constructor` must fail validation; accepting one makes the
+    // tier comparison `NaN` and suppresses every wake.
     it('rejects an inherited Object.prototype key as a floor', async () => {
       process.env.AGENT_WEBHOOK_MIN_URGENCY = 'constructor';
 
@@ -205,10 +195,7 @@ describe('AgentNotifyService', () => {
     });
   });
 
-  // The registry is in-memory, and until now it was only ever populated by the install
-  // path. So every Hub restart silently emptied it: an app installed yesterday received no
-  // wakes today, and nothing said why. This is the fix, and the reason wake could not have
-  // been verified working for more than one Hub lifetime.
+  // Startup must restore the in-memory registry so wakes survive Hub restarts.
   describe('rehydration on startup', () => {
     const APPS = [
       { appName: 'openclaw', appStoreSlug: 'ci-store' },
@@ -251,19 +238,12 @@ describe('AgentNotifyService', () => {
     });
   });
 
-  // Every app installed to date has `wake_endpoint: "/hooks/hub-wake"` frozen into its
-  // on-disk config.json — a path the ci-hub plugin never managed to serve. Honouring it
-  // would keep those apps POSTing into a 404 until someone bumped the marketplace manifest
-  // AND ran an app update. Rewriting it means wake works on the next Hub restart instead,
-  // and the manifest/image rollout order stops being load-bearing.
+  // Rewrite the persisted plugin path so existing apps use the native hook without an
+  // app update (CI-Hub#897).
   describe('resolveWebhookTarget: legacy endpoint migration', () => {
-    // The mock feeds hub_integration through the REAL hubIntegrationSchema, because that is what
-    // getInstalledAppInfo does in production — and the schema back-fills wake_endpoint with its
-    // Zod .default('/hooks/hub-wake'). A raw hand-built object skips that default and makes the
-    // Hermes case look absent when production sees the legacy path; that divergence is exactly how
-    // the dead-gate bug (CI-Hub#897) hid behind a green test. `composeContent` defaults to null
-    // (service name falls back to the URN's appName); pass real compose JSON to exercise the
-    // service-name branch that is otherwise never executed.
+    // Parse fixtures through the production schema because it supplies the legacy endpoint
+    // default. Bypassing that default concealed the no-wake gate regression (CI-Hub#897).
+    // Optional Compose JSON exercises Docker service-name resolution.
     const withAppInfo = (hubIntegration: Record<string, unknown>, composeContent: unknown = null) => {
       vi.spyOn(service as unknown as { moduleRef: { get: (t: unknown, o: unknown) => unknown } }, 'moduleRef', 'get').mockReturnValue({
         get: (token: { name?: string }) =>
@@ -302,29 +282,18 @@ describe('AgentNotifyService', () => {
       expect(target?.url).toBe('http://openclaw:9000/custom/wake');
     });
 
-    // The real CI-Hermes manifest: `mcp_client: true`, and no wake endpoint or port anywhere.
-    // It consumes Hub MCP tools; it is not an agent and serves no hook. Gating on mcp_client
-    // alone would register it and fan every Hub event into a 404 — on every boot, now that the
-    // registry is rehydrated. The two capabilities are not the same set.
-    //
-    // This only bites in production because the schema defaults wake_endpoint to the legacy path,
-    // so the gate cannot test for its absence — it must treat the legacy default as "not declared".
-    // The mock now applies that same default (via hubIntegrationSchema.parse), so reverting the
-    // gate to a plain `!wake_endpoint` check makes THIS test fail, where before it stayed green.
+    // MCP tool consumption does not imply wake support. Because the schema supplies the
+    // legacy endpoint by default, the gate must treat that value as undeclared (CI-Hub#897).
     it('does not register an MCP-tool consumer that declares no wake endpoint (CI-Hermes)', async () => {
       withAppInfo({ mcp_client: true, sse_events: false, memory: { url_env: 'CI_SERVER_URL' } });
 
       expect(await service.resolveWebhookTarget('hermes:ci-store')).toBeNull();
     });
 
-    // The host is the compose SERVICE name, not the URN's appName — that is the entire reason
-    // resolveWebhookTarget parses docker-compose. Every other fixture stubs compose to null, so
-    // this branch is otherwise never executed and a regression to the wrong host (every wake 404s)
-    // would not be caught. Here the main service is named `openclaw-app`, deliberately unequal to
-    // the appName `openclaw`, so the assertion can only pass if the service name is actually used.
+    // Docker DNS resolves the Compose service name, which intentionally differs from
+    // `appName` in this fixture.
     it('resolves the Docker host from the main compose service, not the appName', async () => {
-      // getDockerComposeJson returns already-parsed JSON (readJsonFile), so `content` is an
-      // object, not a string — pass it as one, the way parseComposeJson receives it in production.
+      // Production returns parsed JSON rather than a serialized Compose document.
       withAppInfo(
         { mcp_client: true, wake_endpoint: '/hooks/wake', wake_port: 18789 },
         {
@@ -379,7 +348,6 @@ describe('AgentNotifyService', () => {
 
       await service.notify('app.crashed', { appUrn: 'test:ci-store' }, 'high');
 
-      // Should call both env webhook and registered webhook
       expect(fetch).toHaveBeenCalledTimes(2);
 
       const urls = vi.mocked(fetch).mock.calls.map((c) => c[0]);
@@ -413,10 +381,8 @@ describe('AgentNotifyService', () => {
       expect(fetch).toHaveBeenCalledTimes(2);
     });
 
-    // When AGENT_WEBHOOK_URL names the same URL a registered app already owns, the app's own
-    // secret must win — it is authoritative for that URL, whereas the env token is a single
-    // global fallback that may be stale. Sending the stale env token would 401 an otherwise-good
-    // wake, and sending both would POST the same URL twice.
+    // On collisions, use the per-app secret and send once because the global fallback may
+    // be stale.
     it('R-MW-4: on a URL collision the registered per-app token wins, and fires once', async () => {
       process.env.AGENT_WEBHOOK_URL = 'http://openclaw:18789/hooks/wake';
       process.env.AGENT_WEBHOOK_TOKEN = 'stale-global-token';

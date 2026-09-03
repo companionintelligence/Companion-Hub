@@ -36,7 +36,7 @@ const DEFAULT_PORTAL_URL = (
   (import.meta.env.CI_HUB_ENVIRONMENT === 'production' ? 'https://hub.ci.computer' : 'https://hub.companionintelligence.com')
 ).replace(/\/+$/, '');
 const STATUS_POLL_INTERVAL_MS = 3000;
-const HEADLESS_POLL_INTERVAL_MS = 5000; // slower poll when idle, waiting for external registration
+const HEADLESS_POLL_INTERVAL_MS = 5000; // Poll less often while waiting for external registration.
 const DOMAIN_PROBE_INTERVAL_MS = 5000;
 const MAX_DOMAIN_PROBE_ATTEMPTS = 60;
 const REQUIRED_CONSECUTIVE_PROBES = 2;
@@ -64,10 +64,11 @@ function sleep(ms: number) {
 }
 
 /**
- * Headless appliances (and SSH sessions) have no browser for the Sign in /
- * Create account links. Keep the QR + fallback URL off the default two-column
- * layout — those plates were stretching Step 1 while Step 2 sat empty — and
- * reveal them from a "Scan QR" disclosure instead.
+ * Provides a QR code for headless appliances and SSH sessions that cannot open
+ * the sign-in or account-creation links locally.
+ *
+ * Keep the code and fallback URL behind a disclosure so they do not stretch the
+ * first panel beyond the otherwise balanced two-column layout.
  */
 function ScanQrDisclosure({ value, label, summaryLabel }: { value: string; label: string; summaryLabel: string }) {
   const [open, setOpen] = useState(false);
@@ -87,10 +88,9 @@ function ScanQrDisclosure({ value, label, summaryLabel }: { value: string; label
       {open ? (
         <div className="mt-4 flex w-full justify-center">
           {/*
-            No `mark`: these URLs are long enough that level `H` plus the logo
-            pushes the version up, and this is the one screen where a failed scan
-            leaves the user with no way forward. Size is pinned at 200px so the
-            module pitch is scannable (160px gave ~3px/module on the signup URL).
+            Omit `mark` because the logo and level-H correction increase the QR
+            version for these long URLs. Pin the code at 200 px to keep each
+            module large enough to scan on a headless setup screen.
           */}
           <QrCode value={value} fallback={value} size={200} bare />
         </div>
@@ -192,7 +192,8 @@ export default function DeviceRegistrationPage() {
       if (base) {
         setPortalBaseUrl(base.replace(/\/+$/, ''));
       }
-      // Portal entry URL (device_id + callback_url) opens login/signup and the Add Device flow.
+      // The device ID and callback URL send Companion Portal into authentication
+      // and the Add Device flow.
       setRegistrationUrl(deviceData.registration_url?.trim() || null);
       setDeviceInfoError(null);
     } catch (error) {
@@ -268,11 +269,10 @@ export default function DeviceRegistrationPage() {
 
       if (isRegistrationOperational(status)) {
         cacheRegistrationStatus(status);
-        // A registered Hub whose public tunnel is degraded (tunnel_token_missing)
-        // renders the re-pair form. Load the device info it needs — the device ID
-        // and the device-scoped Portal Add-Device URL — just like the unregistered
-        // path, otherwise the form is stuck on "Loading device ID..." and its login
-        // link falls back to the generic Portal URL.
+        // A registered Hub with `tunnel_token_missing` uses the pairing form to
+        // restore its public tunnel. Load the device ID and device-scoped Portal
+        // Add Device URL as the unregistered path does. Without this data, the
+        // form cannot resolve its device ID and uses a generic Portal link.
         if (requiresPortalRePairing(status)) {
           await loadDeviceInfo();
         }
@@ -298,7 +298,7 @@ export default function DeviceRegistrationPage() {
           return null;
         }
 
-        // Avoid acting on stale operational status while the API is unreachable.
+        // Do not act on a cached operational phase while the status API is unreachable.
         if (isRegistrationOperational(previous) && !requiresDeviceRegistration(previous)) {
           return null;
         }
@@ -350,10 +350,10 @@ export default function DeviceRegistrationPage() {
               continue;
             }
           } catch {
-            // Keep retrying while the tunnel and DNS settle.
+            // Continue probing while tunnel and DNS changes converge.
           }
 
-          // Any failure resets the streak.
+          // Require consecutive successes by resetting the streak after any failure.
           consecutiveSuccesses = 0;
 
           if (attempt >= 12) {
@@ -385,9 +385,9 @@ export default function DeviceRegistrationPage() {
   }, [refreshRegistrationStatus]);
 
   useEffect(() => {
-    // Keep polling while:
-    // - phase is in-progress (paired/provisioning)
-    // - phase is unregistered — poll at a slower rate to detect headless setup completing externally
+    // Poll active provisioning phases at the standard interval. Poll an
+    // unregistered appliance less often so externally completed headless setup
+    // still appears without creating unnecessary requests.
     const isUnregistered = registrationStatus?.phase === 'unregistered';
     const shouldPoll = !statusError && ((registrationStatus && isRegistrationPending(registrationStatus)) || isUnregistered);
 
@@ -421,16 +421,16 @@ export default function DeviceRegistrationPage() {
 
     const target = pendingPairTargetRef.current;
     if (target) {
-      // Phase is operational (locally_ready, publicly_ready, or degraded) — proceed immediately.
+      // Continue immediately after pairing reaches any operational phase.
       completionStartedRef.current = true;
       void finishRegistrationFlow(registrationStatus);
       return;
     }
 
-    // Registered Hub with a degraded public tunnel (tunnel_token_missing) and no
-    // pairing in flight: the user navigated here to re-pair (e.g. from the
-    // dashboard banner). Keep them on the pairing form instead of bouncing back
-    // to the local app.
+    // Keep a registered Hub with `tunnel_token_missing` on the pairing form when
+    // no pairing is active. The user can arrive here from the dashboard recovery
+    // banner and must not be redirected back to the local app before recovering
+    // the tunnel.
     if (requiresPortalRePairing(registrationStatus)) {
       return;
     }
@@ -501,7 +501,7 @@ export default function DeviceRegistrationPage() {
           setPendingDeepLinkCode(code);
         });
       } catch {
-        // Tauri event bridge unavailable in non-desktop contexts.
+        // Non-desktop contexts do not provide the Tauri event bridge.
       }
     })();
 
@@ -603,12 +603,10 @@ export default function DeviceRegistrationPage() {
   };
 
   const portalUrl = portalBaseUrl || DEFAULT_PORTAL_URL;
-  // When restoring an existing device, the user already has a device in Portal
-  // and just needs to grab/regenerate its pairing code — so send them straight
-  // to their Portal home instead of the device-scoped registration (Add Device)
-  // intent URL, which kicks off the "create a new device" flow. For a fresh or
-  // brand-new device, prefer the device-scoped registration URL so Portal can
-  // route into Add Device pairing.
+  // Restoration uses an existing Companion Portal device, so link to Portal Home
+  // where the user can retrieve or regenerate its pairing code. The device-scoped
+  // registration URL starts Add Device and would create another device. Fresh
+  // setup uses that scoped URL intentionally.
   const loginUrl = driftChoice === 'restore' ? `${portalUrl}/home` : (registrationUrl ?? portalUrl);
   const signupUrl = buildPortalSignupUrl(portalUrl, deviceId);
   const redirectStatus = t(redirectStatusKey);
@@ -748,11 +746,9 @@ export default function DeviceRegistrationPage() {
           </div>
           <div className="mt-6 space-y-2">
             {/*
-              Invisible, matching Step 2's "Current Device ID:" label line
-              in height. Step 2's first row is a label-then-box pair; this
-              row is just a button. Without this spacer the two panels'
-              first rows start at different heights and everything below
-              them drifts out of alignment between the columns.
+              Match the height of Step 2's device-ID label with an invisible
+              spacer. Step 1 starts with a button, so omitting this line would
+              misalign every following row between the two columns.
             */}
             <div className="text-sm text-muted-foreground invisible select-none" aria-hidden="true">
               &nbsp;
@@ -821,8 +817,8 @@ export default function DeviceRegistrationPage() {
                 </HintText>
               </label>
               {/*
-                Stack below `sm`: the fixed `w-40` button left the code field ~62px wide
-                inside the two-column card, so the 6-char placeholder rendered as "AB".
+                Stack below `sm` because the fixed-width button otherwise leaves
+                too little room for the six-character code field in this card.
               */}
               <div className="flex flex-col gap-2 sm:flex-row">
                 <input

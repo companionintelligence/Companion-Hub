@@ -100,7 +100,7 @@ const MOCK_AVAILABLE_DOMAINS = { domains: [] as Array<{ id: string; domain: stri
 /**
  * The organization's connected custom domains, as `GET /cloudflare/custom-domains`
  * reports them. `supported: false` is the default because it is the default
- * DEPLOYMENT: an older CI-Cloud, or one that did not answer — and the picker must
+ * DEPLOYMENT: an older Companion Portal, or one that did not answer — and the picker must
  * render nothing there rather than an empty dropdown advertising the feature.
  */
 const MOCK_CUSTOM_DOMAINS = {
@@ -612,7 +612,7 @@ describe('InstallForm', () => {
 
     it('renders nothing when CI-Cloud could not be asked', () => {
       /*
-       * ⚠ NOT AN EMPTY DROPDOWN. An older CI-Cloud, or one that did not answer,
+       * This is not an empty dropdown. An older Companion Portal, or one that did not answer,
        * must not have the Hub advertise a feature it cannot offer — and must not
        * be mistaken for "this organization owns no domains", which is a different
        * sentence with a different next step.
@@ -659,7 +659,7 @@ describe('InstallForm', () => {
 
     it('offers a domain whose certificate is still issuing, and says so', () => {
       /*
-       * CI-Cloud reports `securing` as BINDABLE — Cloudflare gates ownership and
+       * Companion Portal reports `securing` as BINDABLE — Cloudflare gates ownership and
        * TLS independently, so a proved domain routinely has minutes of issuance
        * left, and it finishes on its own. Choosing it is fine; being surprised
        * by it afterwards is not.
@@ -696,7 +696,7 @@ describe('InstallForm', () => {
 
     it('shows the closed control the hostname alone, never an option status', () => {
       /*
-       * ⚠ THE ASSERTION IS `toHaveTextContent(/^…$/)`, NOT A SUBSTRING. Radix
+       * The assertion is `toHaveTextContent(/^…$/)`, not a substring. Radix
        * portals an item's `ItemText` into the trigger, so a status put inside the
        * option followed it there and the collapsed control read
        * "comfy.acme.com — in use by comfyui" where every other select in the

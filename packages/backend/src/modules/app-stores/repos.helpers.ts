@@ -76,7 +76,7 @@ export class ReposHelpers {
     }
 
     // Only mark real git repositories as safe directories.
-    // CI Cloud marketplace app folders are plain directories and adding each
+    // Companion Portal marketplace app folders are plain directories and adding each
     // one to global git config can stall startup under lock contention.
     const isGitRepo = await this.filesystem.pathExists(path.join(dirPath, '.git'));
     if (!isGitRepo) {
