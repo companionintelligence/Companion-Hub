@@ -325,7 +325,7 @@ Settings
 - TOTP 2FA uses `@otplib/core` with encrypted secret storage
 - The `AuthMiddleware` extracts the session from cookie or header on every request
 - The `AuthGuard` rejects unauthenticated requests unless the route has the `@Public()` decorator
-- Traefik uses `/api/auth/traefik` as a forward-auth endpoint so that installed apps can be protected behind Hub authentication
+- Traefik uses `/api/auth/traefik` as a forward-auth endpoint so that installed apps can be protected behind Hub authentication. HMAC-signed `X-CI-Hub-User` headers apply only to apps on that appliance; they are not a Portal session (see [`security/hub-portal-trust.md`](security/hub-portal-trust.md)).
 
 ---
 
