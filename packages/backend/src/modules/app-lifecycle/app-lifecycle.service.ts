@@ -158,7 +158,19 @@ function normalizeConfigForCompare(raw: Record<string, unknown>): Record<string,
 export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDestroy {
   private static readonly TAILSCALE_READINESS_POLL_MS = 45_000;
 
+  /**
+   * How often exposure is re-synced with CI-Cloud on an idle Hub.
+   *
+   * Bounds how long a custom domain connected in the Portal can be live while the
+   * app is still presenting its platform hostname. Five minutes keeps that window
+   * short enough that a customer watching their new domain come up sees it settle,
+   * at the cost of one sync request the Hub already issues on every app start.
+   */
+  private static readonly EXPOSURE_SYNC_POLL_MS = 5 * 60_000;
+
   private tailscaleReadinessInterval: ReturnType<typeof setInterval> | null = null;
+  private exposureSyncInterval: ReturnType<typeof setInterval> | null = null;
+  private periodicExposureSyncInFlight = false;
   private tailscaleReadinessInitialized = false;
   private lastTailscaleConnected = false;
   private lastTailscaleHttpsAvailable = false;
@@ -225,6 +237,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     }, 20_000);
 
     this.startTailscaleReadinessWatcher();
+    this.startPeriodicExposureSync();
   }
 
   private async syncInferenceAppsAfterHubUpgrade(): Promise<void> {
@@ -261,6 +274,50 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       clearInterval(this.tailscaleReadinessInterval);
       this.tailscaleReadinessInterval = null;
     }
+    if (this.exposureSyncInterval) {
+      clearInterval(this.exposureSyncInterval);
+      this.exposureSyncInterval = null;
+    }
+  }
+
+  /**
+   * Re-syncs exposure on a timer so state that only ever changes in CI-Cloud
+   * reaches the Hub without an operator-initiated event.
+   *
+   * A custom domain is connected and disconnected from the Portal, and CI-Cloud
+   * wires the tunnel at bind time, so traffic reaches the app straight away. The
+   * Hub learns of it only from `customDomains` on a sync response — and every
+   * sync was edge-triggered: boot, an app's routing change, or a manual repair.
+   * A Hub that is simply sitting there serving never asked again, so a newly
+   * connected domain reached the app while the app kept emitting its platform
+   * hostname in every redirect, and `docker restart ci-os-hub` was the only cure
+   * (CI-Hub#1209). The registration-validation timer next door does not help:
+   * it is hourly and checks in against a different endpoint that carries no
+   * exposure state.
+   *
+   * This is the same pass every other trigger runs, so it is idempotent, and it
+   * is inert when there is nothing to talk to — `triggerCloudflareSync` returns
+   * early, at debug level, for an unregistered device and during a restore.
+   */
+  private startPeriodicExposureSync() {
+    this.exposureSyncInterval = setInterval(() => {
+      /*
+       * Portal requests retry with backoff, so one pass can outlive the interval
+       * on a slow link. Overlapping passes would duplicate every DNS write and
+       * let two custom-domain reconciliations race for the same row.
+       */
+      if (this.periodicExposureSyncInFlight) {
+        this.logger.debug('[Cloudflare] Skipping periodic exposure sync: the previous pass is still running');
+        return;
+      }
+
+      this.periodicExposureSyncInFlight = true;
+      void this.syncExposure()
+        .catch((e) => this.logger.error(`Periodic exposure sync failed: ${e instanceof Error ? e.message : String(e)}`))
+        .finally(() => {
+          this.periodicExposureSyncInFlight = false;
+        });
+    }, AppLifecycleService.EXPOSURE_SYNC_POLL_MS);
   }
 
   private startTailscaleReadinessWatcher() {
