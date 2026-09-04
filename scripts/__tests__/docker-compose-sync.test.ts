@@ -1,6 +1,6 @@
 /**
  * Ensures desktop bundled compose is derived from root docker-compose.prod.yml
- * with the ci-os-hub service switched to prebuilt image pulls (no local build).
+ * with the ci-hub service switched to prebuilt image pulls (no local build).
  */
 import { execSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -22,7 +22,7 @@ function extractEnvDefault(content: string, key: string) {
 }
 
 describe('docker-compose.prod.yml sync', () => {
-  it('sync script patches ci-os-hub to pull CI_HUB_IMAGE instead of building', () => {
+  it('sync script patches ci-hub to pull CI_HUB_IMAGE instead of building', () => {
     execSync('node scripts/sync-docker-compose-prod.cjs', { cwd: repoRoot, stdio: 'pipe' });
     const root = readCompose(rootCompose);
     const desktop = readCompose(desktopCompose);
@@ -36,13 +36,33 @@ describe('docker-compose.prod.yml sync', () => {
 
   // The bundled fallback must name the public GHCR package. Pointing it at the private
   // ci-os-hub package is what made a missing CI_HUB_IMAGE fail with 403 instead of
-  // starting (#920). The `ci-os-hub` service/container name is unaffected and must remain.
+  // starting (#920). The compose service/container is now `ci-hub`.
   it('desktop compose falls back to the public ci-hub image, never ci-os-hub', () => {
     execSync('node scripts/sync-docker-compose-prod.cjs', { cwd: repoRoot, stdio: 'pipe' });
     const desktop = readCompose(desktopCompose);
 
     expect(desktop).not.toMatch(/image:.*ci-os-hub/);
-    expect(desktop).toContain('  ci-os-hub:');
+    expect(desktop).toContain('  ci-hub:');
+    expect(desktop).toContain('container_name: ci-hub');
+  });
+
+  it('keeps legacy DNS aliases while routing Hub traffic on the canonical network and port', () => {
+    const content = readCompose(rootCompose);
+
+    expect(content).toContain('name: ci-hub_network');
+    expect(content).toContain('name: ci-os-hub_network');
+    expect(content).toContain('- ci-os-hub');
+    expect(content).toContain('- ci-os-hub-queue');
+    expect(content.match(/host\.docker\.internal/g)?.length).toBeGreaterThanOrEqual(2);
+    expect(content).toContain('HUB_CONTAINER_NAME: ci-hub');
+    expect(content).toContain('traefik.docker.network: "ci-hub_network"');
+    expect(content).toContain('traefik.http.services.ci-hub.loadbalancer.server.port: "5002"');
+  });
+
+  it('advertises both Hub bridges over Tailscale during the network migration', () => {
+    const content = readCompose(rootCompose);
+
+    expect(content).toContain('--advertise-routes=172.18.0.0/16,172.19.0.0/16');
   });
 
   it('inference URLs default to host.docker.internal', () => {

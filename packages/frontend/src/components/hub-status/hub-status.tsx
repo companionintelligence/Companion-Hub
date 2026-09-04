@@ -335,7 +335,7 @@ function EngineAlternativePanel({ platform }: { platform: 'windows' | 'macos' })
         )}
 
         {(installState === 'completed' || installState === 'needs_restart') && (
-          <div className="flex items-start gap-3 rounded-md border border-green-500/30 bg-green-500/10 px-4 py-3 text-sm text-green-700 dark:text-green-400">
+          <div className="flex items-start gap-3 rounded-md border border-success/30 bg-success/10 px-4 py-3 text-sm text-success">
             <CheckCircle className="h-4 w-4 shrink-0 mt-0.5" aria-hidden />
             <span>{installState === 'needs_restart' ? t('HUB_STATUS_DOCKER_ALT_NEEDS_RESTART') : t('HUB_STATUS_DOCKER_ALT_SUCCESS')}</span>
           </div>
@@ -416,7 +416,7 @@ function LinuxDockerGuide() {
           )}
 
           {(installState === 'completed' || installState === 'needs_restart') && (
-            <div className="flex items-start gap-3 rounded-md border border-green-500/30 bg-green-500/10 px-4 py-3 text-sm text-green-700 dark:text-green-400">
+            <div className="flex items-start gap-3 rounded-md border border-success/30 bg-success/10 px-4 py-3 text-sm text-success">
               <CheckCircle className="h-4 w-4 shrink-0 mt-0.5" aria-hidden />
               <span>{installState === 'needs_restart' ? t('HUB_STATUS_LINUX_INSTALL_NEEDS_RESTART') : t('HUB_STATUS_LINUX_INSTALL_SUCCESS')}</span>
             </div>
@@ -809,9 +809,9 @@ export function HubStatus({ children }: HubStatusProps) {
             return;
           }
 
-          // Docker may report Starting while ci-os-hub is already serving HTTP (healthcheck
+          // Docker may report Starting while ci-hub is already serving HTTP (healthcheck
           // lag, sidecar churn). The local API probe is the UI gate — not container health alone.
-          // Match Docker's ci-os-hub healthcheck (`/api/health/live` only).
+          // Match Docker's ci-hub healthcheck (`/api/health/live` only).
           if (result === 'Running' || result === 'Starting') {
             const alivePort = await probeHealthyHubApiPort();
             if (alivePort !== null) {

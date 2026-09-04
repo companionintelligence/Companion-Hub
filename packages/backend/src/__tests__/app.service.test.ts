@@ -157,7 +157,8 @@ describe('AppService', () => {
 
       (fs as unknown as FsMock).__applyMockFiles({
         [path.join(APP_DIR, 'assets', 'traefik', 'traefik.yml')]: 'certificatesResolvers:\n  letsencrypt:\n    acme:\n      email: {{ACME_EMAIL}}',
-        [path.join(APP_DIR, 'assets', 'traefik', 'dynamic', 'dynamic.yml')]: 'http:\n  middlewares: {}',
+        [path.join(APP_DIR, 'assets', 'traefik', 'dynamic', 'dynamic.yml')]:
+          'http:\n  middlewares:\n    ci-hub:\n      forwardAuth:\n        address: http://{{HUB_CONTAINER_NAME}}:5002/api/auth/traefik',
       });
 
       const traefikConfigPath = path.join(DATA_DIR, 'state', 'traefik', 'config', 'traefik.yml');
@@ -166,15 +167,25 @@ describe('AppService', () => {
       await fs.promises.mkdir(dynamicConfigPath, { recursive: true });
 
       const cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(APP_DIR);
+      const previousHubContainerName = process.env.HUB_CONTAINER_NAME;
+      const previousRabbitmqHost = process.env.RABBITMQ_HOST;
+      delete process.env.HUB_CONTAINER_NAME;
+      process.env.RABBITMQ_HOST = 'ci-os-hub-queue';
 
-      await appService.copyAssets();
-
-      cwdSpy.mockRestore();
+      try {
+        await appService.copyAssets();
+      } finally {
+        cwdSpy.mockRestore();
+        if (previousHubContainerName === undefined) delete process.env.HUB_CONTAINER_NAME;
+        else process.env.HUB_CONTAINER_NAME = previousHubContainerName;
+        if (previousRabbitmqHost === undefined) delete process.env.RABBITMQ_HOST;
+        else process.env.RABBITMQ_HOST = previousRabbitmqHost;
+      }
 
       expect((await fs.promises.stat(traefikConfigPath)).isFile()).toBe(true);
       expect((await fs.promises.readFile(traefikConfigPath, 'utf8')).trim()).toContain('admin@localhost');
       expect((await fs.promises.stat(dynamicConfigPath)).isFile()).toBe(true);
-      expect((await fs.promises.readFile(dynamicConfigPath, 'utf8')).trim()).toBe('http:\n  middlewares: {}');
+      expect((await fs.promises.readFile(dynamicConfigPath, 'utf8')).trim()).toContain('address: http://ci-os-hub:5002/api/auth/traefik');
     });
   });
 

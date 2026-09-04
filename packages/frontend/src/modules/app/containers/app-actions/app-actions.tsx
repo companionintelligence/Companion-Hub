@@ -582,7 +582,7 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
               disabled={isResolving}
             />
           )}
-          {statusMessage && <span className="text-xs text-amber-600">{statusMessage}</span>}
+          {statusMessage && <span className="text-xs text-warning">{statusMessage}</span>}
           {openAnywayLink}
         </div>
       );

@@ -104,11 +104,7 @@ export const HubAccess = ({ appUrn, hasUnsavedChanges = false }: HubAccessProps)
             </div>
           )}
           <p className="flex items-center gap-2 text-xs text-muted-foreground">
-            {status.identityVerification ? (
-              <ShieldCheck className="h-4 w-4 text-emerald-600 dark:text-emerald-400" />
-            ) : (
-              <ShieldOff className="h-4 w-4" />
-            )}
+            {status.identityVerification ? <ShieldCheck className="h-4 w-4 text-success" /> : <ShieldOff className="h-4 w-4" />}
             {status.identityVerification ? t('APP_SETTINGS_HUB_ACCESS_IDENTITY_ON') : t('APP_SETTINGS_HUB_ACCESS_IDENTITY_OFF')}
           </p>
         </div>
@@ -137,8 +133,8 @@ export const HubAccess = ({ appUrn, hasUnsavedChanges = false }: HubAccessProps)
 
       {/* Confirmation gate: rotating restarts the app, so it must not fire on a single click. */}
       {confirming && (
-        <div className="mt-3 rounded-md border border-amber-500/30 bg-amber-500/10 p-3" data-testid="hub-access-confirm">
-          <p className="text-xs text-amber-500 dark:text-amber-400">{t('APP_SETTINGS_HUB_ACCESS_ROTATE_CONFIRM')}</p>
+        <div className="mt-3 rounded-md border border-warning/30 bg-warning/10 p-3" data-testid="hub-access-confirm">
+          <p className="text-xs text-warning">{t('APP_SETTINGS_HUB_ACCESS_ROTATE_CONFIRM')}</p>
           <div className="mt-3 flex justify-end gap-2">
             <Button type="button" variant="outline" size="sm" onClick={() => setConfirming(false)}>
               {t('COMMON_CANCEL')}

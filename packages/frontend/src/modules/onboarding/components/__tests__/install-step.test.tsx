@@ -1,5 +1,5 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { afterEach, describe, it, expect, vi, beforeEach } from 'vitest';
 import { InstallStep } from '../install-step';
 import type { OnboardingApp } from '../../helpers/types';
 import { sdkOk, sdkFail } from '@/tests/sdk-mock-helpers';
@@ -15,6 +15,10 @@ const { installApp, getInstalledApps, saveInferencePreferences, pinInferenceMode
   saveCloudProviderConfig: vi.fn(),
   fetchTrackedModels: vi.fn(),
 }));
+
+type TauriWindow = Window & {
+  __TAURI_INTERNALS__?: { invoke: (command: string, args?: Record<string, unknown>) => Promise<unknown> };
+};
 
 vi.mock('@/api-client/sdk.gen', () => ({
   installApp,
@@ -62,6 +66,7 @@ describe('InstallStep', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    delete (window as TauriWindow).__TAURI_INTERNALS__;
     installApp.mockResolvedValue(sdkOk({}));
     getInstalledApps.mockResolvedValue(sdkOk({ installed: [] }));
     saveInferencePreferences.mockResolvedValue(undefined);
@@ -69,6 +74,10 @@ describe('InstallStep', () => {
     saveCloudProviderConfig.mockResolvedValue(undefined);
     fetchTrackedModels.mockResolvedValue([]);
     mockInvalidateQueries.mockResolvedValue(undefined);
+  });
+
+  afterEach(() => {
+    delete (window as TauriWindow).__TAURI_INTERNALS__;
   });
 
   it('renders all apps in queued state initially', () => {
@@ -205,6 +214,33 @@ describe('InstallStep', () => {
         vllmUrl: null,
         mtplxUrl: null,
         dsparkUrl: null,
+      });
+    });
+  });
+
+  it('installs only mlx-dspark and Ollama for the Mac speculative-inference FTUE', async () => {
+    const invoke = vi.fn().mockResolvedValue([]);
+    (window as TauriWindow).__TAURI_INTERNALS__ = { invoke };
+
+    render(
+      <InstallStep
+        apps={[]}
+        onComplete={onComplete}
+        aiSetupConfig={{
+          agentFrameworks: ['openclaw'],
+          remoteAccess: [],
+          selectedModels: [],
+          installedCatalogIds: [],
+          backend: 'dspark',
+          cloudProviders: [],
+          skipped: false,
+        }}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(invoke).toHaveBeenCalledWith('install_and_start_inference_runners_command', {
+        backends: ['dspark', 'ollama'],
       });
     });
   });

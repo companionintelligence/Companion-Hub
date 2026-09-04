@@ -127,7 +127,7 @@ export class MemoryConnectController {
    * Wrapper-facing state. `clientHost` is the `Host` the WRAPPER itself was
    * reached on, forwarded by the app because this request is server-to-server:
    * it arrives over the internal docker network, so `req.headers.host` here is
-   * `ci-os-hub:5002` and says nothing about where the user's browser is. Without
+   * `ci-hub:5002` and says nothing about where the user's browser is. Without
    * it the Hub could never tell a LAN visitor from a remote one, and would never
    * offer the LAN launcher to the callers that need it most.
    *

@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { Injectable, type OnModuleDestroy } from '@nestjs/common';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import { HUB_CONTAINER_NAMES, hubContainerName } from '@/common/constants';
 import { LoggerService } from '@/core/logger/logger.service';
 import { McpServerFactory } from './mcp-server.factory';
 
@@ -138,7 +139,7 @@ export class McpSessionRegistry implements OnModuleDestroy {
         hosts.add(`${host}:${port}`);
       }
     };
-    for (const base of ['localhost', '127.0.0.1', process.env.HUB_CONTAINER_NAME || 'ci-os-hub']) {
+    for (const base of new Set(['localhost', '127.0.0.1', hubContainerName(), ...HUB_CONTAINER_NAMES])) {
       addWithPortVariant(base);
     }
     let operatorHostConfigured = false;

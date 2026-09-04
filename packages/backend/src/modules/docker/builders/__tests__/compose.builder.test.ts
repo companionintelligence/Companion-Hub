@@ -30,6 +30,46 @@ describe('DockerComposeBuilder', () => {
     expect(compose).toMatchSnapshot();
   });
 
+  it('attaches main services to both Hub networks during canonical migration', async () => {
+    const previousHubContainerName = process.env.HUB_CONTAINER_NAME;
+    process.env.HUB_CONTAINER_NAME = 'ci-hub';
+    try {
+      const compose = await composeBuilder.getDockerCompose([{ name: 'service', image: 'image', isMain: true }], {}, urn, subnet);
+      const parsed = yaml.parse(compose);
+
+      expect(parsed.services.service.networks).toMatchObject({
+        'ci-hub_network': { gw_priority: 1 },
+        'ci-os-hub_network': { gw_priority: 0 },
+      });
+      expect(parsed.networks['ci-hub_network']).toEqual({ name: 'ci-hub_network', external: true });
+      expect(parsed.networks['ci-os-hub_network']).toEqual({ name: 'ci-os-hub_network', external: true });
+    } finally {
+      if (previousHubContainerName === undefined) delete process.env.HUB_CONTAINER_NAME;
+      else process.env.HUB_CONTAINER_NAME = previousHubContainerName;
+    }
+  });
+
+  it('writes only the existing legacy Hub network during an image-only update', async () => {
+    const previousHubContainerName = process.env.HUB_CONTAINER_NAME;
+    const previousRabbitmqHost = process.env.RABBITMQ_HOST;
+    delete process.env.HUB_CONTAINER_NAME;
+    process.env.RABBITMQ_HOST = 'ci-os-hub-queue';
+    try {
+      const compose = await composeBuilder.getDockerCompose([{ name: 'service', image: 'image', isMain: true }], {}, urn, subnet);
+      const parsed = yaml.parse(compose);
+
+      expect(parsed.services.service.networks['ci-os-hub_network']).toEqual({ gw_priority: 1 });
+      expect(parsed.services.service.networks).not.toHaveProperty('ci-hub_network');
+      expect(parsed.networks['ci-os-hub_network']).toEqual({ name: 'ci-os-hub_network', external: true });
+      expect(parsed.networks).not.toHaveProperty('ci-hub_network');
+    } finally {
+      if (previousHubContainerName === undefined) delete process.env.HUB_CONTAINER_NAME;
+      else process.env.HUB_CONTAINER_NAME = previousHubContainerName;
+      if (previousRabbitmqHost === undefined) delete process.env.RABBITMQ_HOST;
+      else process.env.RABBITMQ_HOST = previousRabbitmqHost;
+    }
+  });
+
   it('should correctly format deploy resources', async () => {
     const service: ServiceInput = {
       name: 'service',
@@ -536,7 +576,12 @@ describe('DockerComposeBuilder', () => {
     const compose = await composeBuilder.getDockerCompose([service], { exposed: false, exposedLocal: false }, urn, subnet);
     const yamlObject = yaml.parse(compose);
 
-    expect(yamlObject.services.service.labels).toEqual({ 'ci-os-hub.managed': true, 'ci-os-hub.appurn': urn });
+    expect(yamlObject.services.service.labels).toEqual({
+      'ci-hub.managed': true,
+      'ci-hub.appurn': urn,
+      'ci-os-hub.managed': true,
+      'ci-os-hub.appurn': urn,
+    });
   });
 
   it('should publish host port for local exposure mode even when openPort is false', async () => {

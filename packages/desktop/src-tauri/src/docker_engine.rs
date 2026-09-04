@@ -13,14 +13,15 @@ use std::time::{SystemTime, UNIX_EPOCH};
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
 
+use crate::hub_names::{HUB_CONTAINER, HUB_NETWORK_NAMES, LEGACY_HUB_CONTAINER};
+
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 pub const DOCKER_CONTEXT_WSL_ENGINE: &str = "wsl-engine";
 pub const DOCKER_ENGINE_STATE_FILENAME: &str = "docker-engine.json";
 
-const HUB_IDENTITY_CONTAINERS: &[&str] = &["ci-hub-db", "ci-os-hub"];
-const HUB_IDENTITY_NETWORK: &str = "ci-os-hub_network";
+const HUB_IDENTITY_CONTAINERS: &[&str] = &["ci-hub-db", HUB_CONTAINER, LEGACY_HUB_CONTAINER];
 const HUB_IDENTITY_VOLUME: &str = "ci_hub_pgdata";
 
 /// Host ports the appliance publishes; colliding ownership across engines is split-brain.
@@ -231,7 +232,10 @@ pub fn probe_docker_host_reachable(docker_host: &str) -> bool {
 }
 
 fn docker_output(docker_host: &str, args: &[&str]) -> Option<String> {
-    let output = docker_command_for_host(docker_host).args(args).output().ok()?;
+    let output = docker_command_for_host(docker_host)
+        .args(args)
+        .output()
+        .ok()?;
     if !output.status.success() {
         return None;
     }
@@ -249,18 +253,20 @@ pub fn engine_has_hub_identity(docker_host: &str) -> bool {
             }
         }
     }
-    if let Some(raw) = docker_output(
-        docker_host,
-        &[
-            "network",
-            "ls",
-            "-q",
-            "--filter",
-            &format!("name=^{HUB_IDENTITY_NETWORK}$"),
-        ],
-    ) {
-        if !raw.trim().is_empty() {
-            return true;
+    for network in HUB_NETWORK_NAMES {
+        if let Some(raw) = docker_output(
+            docker_host,
+            &[
+                "network",
+                "ls",
+                "-q",
+                "--filter",
+                &format!("name=^{network}$"),
+            ],
+        ) {
+            if !raw.trim().is_empty() {
+                return true;
+            }
         }
     }
     if let Some(raw) = docker_output(
@@ -284,13 +290,7 @@ pub fn engine_has_hub_identity(docker_host: &str) -> bool {
 pub fn engine_hub_host_ports(docker_host: &str) -> Vec<String> {
     let Some(raw) = docker_output(
         docker_host,
-        &[
-            "ps",
-            "--format",
-            "{{.Ports}}",
-            "--filter",
-            "status=running",
-        ],
+        &["ps", "--format", "{{.Ports}}", "--filter", "status=running"],
     ) else {
         return Vec::new();
     };
@@ -303,7 +303,10 @@ pub fn engine_hub_host_ports(docker_host: &str) -> Vec<String> {
             format!("*:{port}->"),
             format!("127.0.0.1:{port}->"),
         ];
-        if raw.lines().any(|line| patterns.iter().any(|p| line.contains(p))) {
+        if raw
+            .lines()
+            .any(|line| patterns.iter().any(|p| line.contains(p)))
+        {
             owned.push((*port).to_string());
         }
     }
@@ -496,9 +499,11 @@ fn enumerate_macos_candidates(host_docker_dir: Option<&Path>) -> Vec<DockerEngin
 
     if let Some(home) = dirs::home_dir() {
         let desktop_sock = home.join(".docker").join("run").join("docker.sock");
-        if let Some(candidate) =
-            candidate_from_unix_socket(desktop_sock, DockerEngineKind::Desktop, Some("desktop-linux"))
-        {
+        if let Some(candidate) = candidate_from_unix_socket(
+            desktop_sock,
+            DockerEngineKind::Desktop,
+            Some("desktop-linux"),
+        ) {
             push_unique_candidate(&mut out, candidate);
         }
     }
@@ -532,10 +537,7 @@ fn enumerate_macos_candidates(host_docker_dir: Option<&Path>) -> Vec<DockerEngin
             if name == "default" {
                 continue;
             }
-            if out
-                .iter()
-                .any(|c| c.context_name.as_deref() == Some(name))
-            {
+            if out.iter().any(|c| c.context_name.as_deref() == Some(name)) {
                 continue;
             }
             if let Some(host) = inspect_context_host(name) {
@@ -582,9 +584,7 @@ pub fn enumerate_docker_engine_candidates(
     }
 }
 
-pub fn probe_reachable_engines(
-    candidates: &[DockerEngineCandidate],
-) -> Vec<ReachableEngine> {
+pub fn probe_reachable_engines(candidates: &[DockerEngineCandidate]) -> Vec<ReachableEngine> {
     let mut reachable = Vec::new();
     for candidate in candidates {
         if !probe_docker_host_reachable(&candidate.docker_host) {
@@ -612,10 +612,7 @@ pub fn select_docker_engine(
     explicit_host: Option<&str>,
 ) -> Result<(DockerEngineCandidate, String), String> {
     if let Some(host) = explicit_host {
-        if let Some(engine) = reachable
-            .iter()
-            .find(|e| e.candidate.docker_host == host)
-        {
+        if let Some(engine) = reachable.iter().find(|e| e.candidate.docker_host == host) {
             return Ok((
                 engine.candidate.clone(),
                 format!("explicit override DOCKER_HOST/CI_HUB_DOCKER_HOST={host}"),
@@ -640,10 +637,8 @@ pub fn select_docker_engine(
         );
     }
 
-    let with_stack: Vec<&ReachableEngine> = reachable
-        .iter()
-        .filter(|e| e.has_hub_identity)
-        .collect();
+    let with_stack: Vec<&ReachableEngine> =
+        reachable.iter().filter(|e| e.has_hub_identity).collect();
 
     if with_stack.len() == 1 {
         let engine = with_stack[0];
@@ -1092,6 +1087,10 @@ mod tests {
         );
         assert_eq!(
             classify_postgres_probe_output("", "network ci-os-hub_network not found"),
+            PostgresProbeFailureKind::Network
+        );
+        assert_eq!(
+            classify_postgres_probe_output("", "network ci-hub_network not found"),
             PostgresProbeFailureKind::Network
         );
     }

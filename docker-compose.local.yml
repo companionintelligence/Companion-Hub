@@ -20,10 +20,11 @@ services:
       timeout: 10s
       retries: 120
     networks:
+      - ci_hub_network
       - ci_os_hub_network
 
-  ci-os-hub-queue:
-    container_name: ci-os-hub-queue
+  ci-hub-queue:
+    container_name: ci-hub-queue
     image: rabbitmq:4-alpine
     pull_policy: if_not_present
     restart: unless-stopped
@@ -39,9 +40,14 @@ services:
       RABBITMQ_DEFAULT_USER: companion
       RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-admin}
     networks:
-      - ci_os_hub_network
+      ci_hub_network:
+        aliases:
+          - ci-os-hub-queue
+      ci_os_hub_network:
+        aliases:
+          - ci-os-hub-queue
 
-  ci-os-hub:
+  ci-hub:
     # SECURITY: the Hub container does NOT run privileged — it manages app
     # containers via the host Docker daemon over the mounted docker.sock, so it
     # only needs socket *access* (user + group_add: DOCKER_GID), not host
@@ -61,9 +67,9 @@ services:
     depends_on:
       ci-hub-db:
         condition: service_healthy
-      ci-os-hub-queue:
+      ci-hub-queue:
         condition: service_healthy
-    container_name: ci-os-hub
+    container_name: ci-hub
     restart: unless-stopped
     healthcheck:
       start_period: 30s
@@ -103,8 +109,14 @@ services:
       - /etc/timezone:/etc/timezone:ro
       - /etc/machine-id:/etc/machine-id:ro
     networks:
-      - ci_os_hub_network
+      ci_hub_network:
+        aliases:
+          - ci-os-hub
+      ci_os_hub_network:
+        aliases:
+          - ci-os-hub
     environment:
+      HUB_CONTAINER_NAME: ci-hub
       LOCAL: true
       NODE_ENV: development
       HOME: /data/user-config
@@ -118,7 +130,7 @@ services:
       POSTGRES_DBNAME: companiondb
       RABBITMQ_USERNAME: companion
       RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-admin}
-      RABBITMQ_HOST: ci-os-hub-queue
+      RABBITMQ_HOST: ci-hub-queue
       INTERNAL_IP: 127.0.0.1
       CI_HUB_VERSION: ${CI_HUB_VERSION:-0.2.27}
       LOG_LEVEL: debug
@@ -136,6 +148,7 @@ services:
     labels:
       # ---- General ----- #
       ci-hub.managed: true
+      ci-os-hub.managed: true
 
   # Cloudflare tunnel for dev — opt-in via: docker compose --profile cloudflare up cloudflared -d
   cloudflared:
@@ -147,6 +160,7 @@ services:
     volumes:
       - ./tunnel:/home/nonroot/.cloudflared:ro
     networks:
+      - ci_hub_network
       - ci_os_hub_network
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -154,6 +168,9 @@ services:
       - cloudflare
 
 networks:
+  ci_hub_network:
+    driver: bridge
+    name: ci-hub_network
   ci_os_hub_network:
     driver: bridge
     name: ci-os-hub_network

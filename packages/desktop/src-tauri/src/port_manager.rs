@@ -3,6 +3,8 @@ use std::collections::HashSet;
 use std::net::TcpListener;
 use std::path::Path;
 
+use crate::hub_names::{HUB_CONTAINER, HUB_QUEUE, LEGACY_HUB_CONTAINER, LEGACY_HUB_QUEUE};
+
 /// Default host bindings for Traefik HTTP/HTTPS. Cloudflare Public Web routes to
 /// `traefik:80` / `traefik:443` on the Docker network, so host ports can be
 /// reassigned when 80/443 are occupied by another process.
@@ -22,9 +24,11 @@ const DYNAMIC_PORTS: &[(u16, &str)] = &[
 
 /// Container names managed by our compose stack (used as docker ps filters).
 const OUR_CONTAINERS: &[&str] = &[
-    "ci-os-hub",
+    HUB_CONTAINER,
+    LEGACY_HUB_CONTAINER,
     "ci-hub-db",
-    "ci-os-hub-queue",
+    HUB_QUEUE,
+    LEGACY_HUB_QUEUE,
     "traefik",
     "cloudflared",
     "hub-tailscale",

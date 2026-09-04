@@ -25,16 +25,20 @@ export function hiddenInferenceBackends(profile: HardwareProfileResponse): Infer
   return profile.hardware.os?.platform?.toLowerCase() === 'darwin' ? ['lemonade'] : [];
 }
 
+/** Whether the Hub is running on the Apple Silicon host that can run mlx-dspark natively. */
+export function isAppleSiliconMacProfile(profile: HardwareProfileResponse): boolean {
+  const platform = profile.hardware.os?.platform?.toLowerCase();
+  return platform === 'darwin' && (profile.hardware.gpu.vendor === 'apple' || profile.hardware.cpu.arch === 'arm64');
+}
+
 /**
  * The default local backend for a host. Apple Silicon Macs should open on mlx-dspark even if an
  * older profile or a remote probe reports MTPLX as its recommendation; the backend remains an
  * explicit opt-in alternative directly beneath it.
  */
 export function recommendedInferenceBackend(profile: HardwareProfileResponse): InferenceBackendType {
-  const platform = profile.hardware.os?.platform?.toLowerCase();
-  const isAppleSiliconMac = platform === 'darwin' && (profile.hardware.gpu.vendor === 'apple' || profile.hardware.cpu.arch === 'arm64');
   const dsparkAvailable = profile.backends.available.some(({ type }) => type === 'dspark');
-  return isAppleSiliconMac && dsparkAvailable ? 'dspark' : profile.backends.recommended;
+  return isAppleSiliconMacProfile(profile) && dsparkAvailable ? 'dspark' : profile.backends.recommended;
 }
 
 /**

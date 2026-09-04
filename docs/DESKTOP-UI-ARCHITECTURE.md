@@ -11,7 +11,7 @@ Companion Hub ships **two independent frontends** from the same release:
 
 | Artifact | Built by | Served from | Updates via |
 |----------|----------|-------------|-------------|
-| Container UI | `build-container.yml` | `ci-os-hub` → `:5002` | Stack pull / auto-update |
+| Container UI | `build-container.yml` | `ci-hub` → `:5002` | Stack pull / auto-update |
 | Desktop UI | `desktop-release.yml` (per-OS) | Embedded in Tauri binary | Full desktop reinstall |
 
 Both can report the same version while showing different UI. Update checks validate separate channels.

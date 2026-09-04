@@ -33,7 +33,7 @@ export function MemoryStatusBadge({ appUrn }: { appUrn: string }) {
   // rather than showing a green "connected" pill for a provider that is gone.
   if (connected && memoryInstalled) {
     return (
-      <span className={cn(pill, 'border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400')}>
+      <span className={cn(pill, 'border-success/30 bg-success/10 text-success')}>
         <CheckCircle2 className="mr-1 h-3.5 w-3.5" />
         {t('MEMORY_CONNECT_BADGE_CONNECTED')}
       </span>

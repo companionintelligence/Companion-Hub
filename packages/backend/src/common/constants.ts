@@ -63,16 +63,79 @@ export const DEFAULT_POSTGRES_USERNAME = 'companion';
 export const DEFAULT_POSTGRES_PORT = '6543';
 
 // Message queue
-export const DEFAULT_RABBITMQ_HOST = 'ci-os-hub-queue';
+export const DEFAULT_RABBITMQ_HOST = 'ci-hub-queue';
+export const LEGACY_RABBITMQ_HOST = 'ci-os-hub-queue';
 export const DEFAULT_RABBITMQ_USERNAME = 'companion';
 export const DEFAULT_RABBITMQ_PASSWORD = 'admin';
 
 // Networking / Docker
-export const DEFAULT_HUB_CONTAINER_NAME = 'ci-os-hub';
-export const DEFAULT_NETWORK_NAME = 'ci-os-hub_network';
+// Canonical appliance hostname is `ci-hub` (same stem as the image, compose
+// project, and @ci-hub/* packages). `ci-os-hub` remains a network alias and a
+// label/lookup fallback so already-installed apps keep resolving after upgrade.
+export const DEFAULT_HUB_CONTAINER_NAME = 'ci-hub';
+export const LEGACY_HUB_CONTAINER_NAME = 'ci-os-hub';
+export const HUB_CONTAINER_NAMES = [DEFAULT_HUB_CONTAINER_NAME, LEGACY_HUB_CONTAINER_NAME] as const;
+export const DEFAULT_NETWORK_NAME = 'ci-hub_network';
+export const LEGACY_NETWORK_NAME = 'ci-os-hub_network';
+export const HUB_NETWORK_NAMES = [DEFAULT_NETWORK_NAME, LEGACY_NETWORK_NAME] as const;
+
+export const HUB_MANAGED_LABEL = 'ci-hub.managed';
+export const HUB_APPURN_LABEL = 'ci-hub.appurn';
+export const LEGACY_HUB_MANAGED_LABEL = 'ci-os-hub.managed';
+export const LEGACY_HUB_APPURN_LABEL = 'ci-os-hub.appurn';
+
+export function hubContainerName(env: NodeJS.ProcessEnv = process.env): string {
+  if (env.HUB_CONTAINER_NAME) return env.HUB_CONTAINER_NAME;
+
+  // An image-only update can start this backend under the pre-rename compose
+  // file. That file has no HUB_CONTAINER_NAME marker, but does explicitly use
+  // the legacy queue host. Keep all generated DNS/network writes on the old
+  // topology until the desktop/updater installs the canonical compose file.
+  return env.RABBITMQ_HOST === LEGACY_RABBITMQ_HOST ? LEGACY_HUB_CONTAINER_NAME : DEFAULT_HUB_CONTAINER_NAME;
+}
+
+export function hubNetworkName(env: NodeJS.ProcessEnv = process.env): string {
+  return `${hubContainerName(env)}_network`;
+}
+
+export function hubQueueName(env: NodeJS.ProcessEnv = process.env): string {
+  return hubContainerName(env) === LEGACY_HUB_CONTAINER_NAME ? LEGACY_RABBITMQ_HOST : DEFAULT_RABBITMQ_HOST;
+}
+
+export function hubAppNetworkNames(env: NodeJS.ProcessEnv = process.env): string[] {
+  const primary = hubNetworkName(env);
+  return primary === LEGACY_NETWORK_NAME ? [primary] : [primary, LEGACY_NETWORK_NAME];
+}
+
+export function isHubApplianceContainerName(name: string): boolean {
+  const n = name.replace(/^\//, '');
+  return n === DEFAULT_HUB_CONTAINER_NAME || n === LEGACY_HUB_CONTAINER_NAME;
+}
+
+export function appUrnFromLabels(labels?: Record<string, string> | null): string | undefined {
+  return labels?.[HUB_APPURN_LABEL] || labels?.[LEGACY_HUB_APPURN_LABEL] || undefined;
+}
+
+export function managedAppLabels(appUrn: string): Record<string, string | boolean> {
+  return {
+    [HUB_MANAGED_LABEL]: true,
+    [HUB_APPURN_LABEL]: appUrn,
+    [LEGACY_HUB_MANAGED_LABEL]: true,
+    [LEGACY_HUB_APPURN_LABEL]: appUrn,
+  };
+}
+
+export function ipOnHubNetwork(networks?: Record<string, { IPAddress?: string } | undefined> | null): string | undefined {
+  if (!networks) return undefined;
+  for (const name of HUB_NETWORK_NAMES) {
+    const ip = networks[name]?.IPAddress;
+    if (ip) return ip;
+  }
+  return undefined;
+}
 
 // Traefik
-export const DEFAULT_FORWARD_AUTH_URL = 'http://ci-os-hub:3000/api/auth/traefik';
+export const DEFAULT_FORWARD_AUTH_URL = `http://${hubContainerName()}:${process.env.API_PORT || '3000'}/api/auth/traefik`;
 
 // DNS
 export const DEFAULT_DNS_IP = '9.9.9.9';

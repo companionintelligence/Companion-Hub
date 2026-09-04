@@ -16,6 +16,7 @@ use crate::hub_env::{
     default_ci_cloud_url, default_hub_image, default_public_domain, resolve_runtime_hub_image,
     runtime_hub_version_for_image,
 };
+use crate::hub_names::*;
 
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
@@ -84,8 +85,6 @@ pub const HUB_COMPOSE_FILENAME: &str = "docker-compose.prod.yml";
 const MAX_LOG_SIZE_BYTES: u64 = 5 * 1024 * 1024;
 /// Number of rotated log files to keep (desktop.log.1, desktop.log.2, ...).
 const MAX_LOG_ROTATIONS: usize = 3;
-const MANAGED_APP_CONTAINER_LABEL_FILTER: &str = "label=ci-os-hub.managed=true";
-const MANAGED_APP_CONTAINER_URN_FILTER: &str = "label=ci-os-hub.appurn";
 /// Local/dev ACME placeholder — never use example.com (LetsEncrypt rejects it).
 const DEFAULT_TRAEFIK_ACME_EMAIL: &str = "admin@localhost";
 const TRAEFIK_ACME_DEFAULT_CONTENT: &str = "{}";
@@ -1934,8 +1933,8 @@ fn startup_service_definitions(
 ) {
     let core = vec![
         ("ci-hub-db", "Database", true),
-        ("ci-os-hub-queue", "Message queue", true),
-        ("ci-os-hub", "Hub backend", true),
+        (HUB_QUEUE, "Message queue", true),
+        (HUB_CONTAINER, "Hub backend", true),
         ("traefik", "Router", true),
     ];
 
@@ -2034,17 +2033,20 @@ pub fn get_startup_progress() -> StartupProgress {
         .chain(optional.iter())
         .map(|(n, _, _)| *n)
         .collect();
-    let states = inspect_containers(&all_names);
+    let mut inspect_names = all_names.clone();
+    for extra in [LEGACY_HUB_CONTAINER, LEGACY_HUB_QUEUE] {
+        if !inspect_names.contains(&extra) {
+            inspect_names.push(extra);
+        }
+    }
+    let states = inspect_containers(&inspect_names);
 
     let mut services: Vec<ServiceStatus> = Vec::new();
     let mut ready_core: usize = 0;
     let mut core_score_sum: usize = 0;
 
     for (container, label, required) in core.iter().chain(optional.iter()) {
-        let (state_str, health_str) = states
-            .get(*container)
-            .map(|(s, h)| (s.as_str(), h.as_str()))
-            .unwrap_or(("", ""));
+        let (state_str, health_str) = service_inspect_state(&states, container);
         let svc_state = if *required {
             if state_str.is_empty() {
                 ServiceState::Pending
@@ -2130,17 +2132,9 @@ pub fn get_hub_status() -> HubStatus {
 
     let data_dir = get_hub_data_dir();
 
-    // Check ci-os-hub container specifically
-    let status = docker_command()
-        .args([
-            "inspect",
-            "--format",
-            "{{.State.Status}}:{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}",
-            "ci-os-hub",
-        ])
-        .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .unwrap_or_default();
+    // Check the Hub container (canonical name first, then the legacy alias).
+    let hub_name = hub_container_name();
+    let status = inspect_container_state_health(hub_name);
 
     if status.is_empty() || status.contains("No such object") || status.contains("Error") {
         if let Some(message) = read_start_failed(&data_dir) {
@@ -2185,7 +2179,7 @@ pub fn get_hub_status() -> HubStatus {
             } else {
                 // DB is healthy but Hub is still restarting — might be a real error
                 let restart_count = docker_command()
-                    .args(["inspect", "--format", "{{.RestartCount}}", "ci-os-hub"])
+                    .args(["inspect", "--format", "{{.RestartCount}}", hub_name])
                     .output()
                     .map(|o| {
                         String::from_utf8_lossy(&o.stdout)
@@ -2494,7 +2488,11 @@ fn replace_installed_cli(
     install_dir: &Path,
     installed_path: &Path,
 ) -> std::io::Result<()> {
-    let staged = install_dir.join(format!("{}.staging-{}", HOST_CLI_FILENAME, std::process::id()));
+    let staged = install_dir.join(format!(
+        "{}.staging-{}",
+        HOST_CLI_FILENAME,
+        std::process::id()
+    ));
     let result = (|| {
         std::fs::copy(source, &staged)?;
         #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -2527,7 +2525,11 @@ fn move_staged_cli_into_place(
     // Windows `rename` refuses to replace an existing destination, so move it
     // aside instead of deleting it — if the final rename fails, the previous
     // binary is restored rather than leaving no CLI at the install path.
-    let backup = install_dir.join(format!("{}.backup-{}", HOST_CLI_FILENAME, std::process::id()));
+    let backup = install_dir.join(format!(
+        "{}.backup-{}",
+        HOST_CLI_FILENAME,
+        std::process::id()
+    ));
     let had_existing = installed_path.symlink_metadata().is_ok();
     if had_existing {
         std::fs::rename(installed_path, &backup)?;
@@ -2901,7 +2903,7 @@ pub fn is_user_stopped(data_dir: &Path) -> bool {
 /// Consecutive failed tray health probes before a full `start_hub` is attempted
 /// when the Hub container is missing or hard-stopped.
 pub const HUB_WATCHDOG_FAILURE_THRESHOLD: u32 = 3;
-/// Longer threshold before bouncing a wedged-but-running `ci-os-hub` container.
+/// Longer threshold before bouncing a wedged-but-running `ci-hub` container.
 pub const HUB_WATCHDOG_WEDGE_FAILURE_THRESHOLD: u32 = 6;
 /// Minimum time between watchdog-triggered recovery attempts.
 pub const HUB_WATCHDOG_COOLDOWN_SECS: u64 = 300;
@@ -2912,7 +2914,7 @@ pub enum HubWatchdogAction {
     None,
     /// Containers missing / stopped — full compose `start_hub`.
     StartHub,
-    /// Docker reports Running/Starting but the API is unreachable — restart `ci-os-hub` only.
+    /// Docker reports Running/Starting but the API is unreachable — restart `ci-hub` only.
     RestartWedgedContainer,
 }
 
@@ -2990,19 +2992,20 @@ pub fn hub_needs_runtime_recovery() -> bool {
 
 /// Restart only the Hub API container after a wedged-API detection.
 pub fn restart_wedged_hub_container() -> Result<String, String> {
+    let name = hub_container_name();
     let _ = append_desktop_log(
         "tray.watchdog",
-        "Restarting wedged ci-os-hub container (API unreachable while Docker reports up).",
+        &format!("Restarting wedged {name} container (API unreachable while Docker reports up)."),
     );
     let output = docker_command()
-        .args(["restart", "ci-os-hub"])
+        .args(["restart", name])
         .output()
-        .map_err(|e| format!("Failed to restart ci-os-hub: {e}"))?;
+        .map_err(|e| format!("Failed to restart {name}: {e}"))?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("docker restart ci-os-hub failed: {stderr}"));
+        return Err(format!("docker restart {name} failed: {stderr}"));
     }
-    Ok("Restarted ci-os-hub".to_string())
+    Ok(format!("Restarted {name}"))
 }
 
 // ─── Desktop log reader ───────────────────────────────────────────────────────
@@ -3073,7 +3076,10 @@ fn legacy_tunnel_token_path_for(data_dir: &Path) -> PathBuf {
 
 /// True when a non-empty tunnel token exists at the canonical sibling path or the legacy nested path.
 fn tunnel_token_present_for_data_dir(data_dir: &Path) -> bool {
-    for path in [tunnel_token_path_for(data_dir), legacy_tunnel_token_path_for(data_dir)] {
+    for path in [
+        tunnel_token_path_for(data_dir),
+        legacy_tunnel_token_path_for(data_dir),
+    ] {
         if std::fs::metadata(&path)
             .map(|m| m.is_file() && m.len() > 0)
             .unwrap_or(false)
@@ -3107,11 +3113,7 @@ pub fn clear_tunnel_token(data_dir: &Path) -> Result<String, String> {
     for path in [&token_path, &legacy_token_path] {
         if path.exists() {
             std::fs::remove_file(path).map_err(|e| {
-                format!(
-                    "Failed to remove tunnel token at {}: {}",
-                    path.display(),
-                    e
-                )
+                format!("Failed to remove tunnel token at {}: {}", path.display(), e)
             })?;
             removed.push(path.display().to_string());
         }
@@ -3151,10 +3153,58 @@ pub(crate) fn managed_app_container_ps_args() -> [&'static str; 6] {
         "ps",
         "-q",
         "--filter",
-        MANAGED_APP_CONTAINER_LABEL_FILTER,
+        HUB_MANAGED_LABEL_FILTER,
         "--filter",
-        MANAGED_APP_CONTAINER_URN_FILTER,
+        HUB_APPURN_LABEL_FILTER,
     ]
+}
+
+pub(crate) fn legacy_managed_app_container_ps_args() -> [&'static str; 6] {
+    [
+        "ps",
+        "-q",
+        "--filter",
+        LEGACY_HUB_MANAGED_LABEL_FILTER,
+        "--filter",
+        LEGACY_HUB_APPURN_LABEL_FILTER,
+    ]
+}
+
+fn list_managed_app_container_ids() -> Result<Vec<String>, String> {
+    let mut seen = HashSet::new();
+    let mut ids = Vec::new();
+    for args in [
+        managed_app_container_ps_args(),
+        legacy_managed_app_container_ps_args(),
+    ] {
+        let output = docker_command()
+            .args(args)
+            .output()
+            .map_err(|error| format!("Failed to list running app containers: {}", error))?;
+
+        let combined_output = format_command_output(
+            &String::from_utf8_lossy(&output.stdout),
+            &String::from_utf8_lossy(&output.stderr),
+        );
+
+        if !output.status.success() {
+            return Err(if combined_output.is_empty() {
+                format!(
+                    "Listing running app containers failed with exit code {:?}.",
+                    output.status.code()
+                )
+            } else {
+                format!("Listing running app containers failed. {}", combined_output)
+            });
+        }
+
+        for id in parse_container_ids(&String::from_utf8_lossy(&output.stdout)) {
+            if seen.insert(id.clone()) {
+                ids.push(id);
+            }
+        }
+    }
+    Ok(ids)
 }
 
 fn parse_container_ids(output: &str) -> Vec<String> {
@@ -3476,18 +3526,8 @@ fn classify_docker_access_result(combined: &str, exit_code: Option<i32>) -> Dock
 
 /// Check if Hub containers exist (stopped or running)
 pub fn hub_containers_exist() -> bool {
-    docker_command()
-        .args([
-            "ps",
-            "-a",
-            "--filter",
-            "name=ci-os-hub",
-            "--format",
-            "{{.Names}}",
-        ])
-        .output()
-        .map(|o| !String::from_utf8_lossy(&o.stdout).trim().is_empty())
-        .unwrap_or(false)
+    first_existing_container(HUB_CONTAINER_NAMES).is_some()
+        || first_existing_container(HUB_QUEUE_NAMES).is_some()
 }
 
 fn traefik_recreate_marker_path(data_dir: &Path) -> PathBuf {
@@ -3565,7 +3605,8 @@ fn ensure_sibling_tunnel_dir(data_dir: &Path) -> Result<(), String> {
         )
     })?;
     #[cfg(unix)]
-    if let Err(error) = std::fs::set_permissions(&tunnel_dir, std::fs::Permissions::from_mode(0o775))
+    if let Err(error) =
+        std::fs::set_permissions(&tunnel_dir, std::fs::Permissions::from_mode(0o775))
     {
         eprintln!(
             "warning: could not chmod 775 {}: {}",
@@ -4498,9 +4539,11 @@ fn is_host_port_bind_conflict(output: &str) -> bool {
 }
 
 const HUB_STACK_CONTAINERS: &[&str] = &[
-    "ci-os-hub",
+    HUB_CONTAINER,
+    LEGACY_HUB_CONTAINER,
     "ci-hub-db",
-    "ci-os-hub-queue",
+    HUB_QUEUE,
+    LEGACY_HUB_QUEUE,
     "traefik",
     "cloudflared",
     "hub-tailscale",
@@ -4635,7 +4678,8 @@ fn heal_host_port_bind_conflict(
 
     let _ = ensure_traefik_container_released(data_dir);
     let _ = ensure_container_released_if_not_running(data_dir, "ci-hub-db", "6543");
-    let _ = ensure_container_released_if_not_running(data_dir, "ci-os-hub-queue", "5001");
+    let _ = ensure_container_released_if_not_running(data_dir, HUB_QUEUE, "5001");
+    let _ = ensure_container_released_if_not_running(data_dir, LEGACY_HUB_QUEUE, "5001");
     let _ = cleanup_stale_project_containers(compose_path, env_path, data_dir);
     let _ = release_orphaned_traefik_port_proxies(data_dir);
 
@@ -4829,8 +4873,141 @@ fn inspect_container_state_health(container_name: &str) -> String {
         .unwrap_or_default()
 }
 
+fn first_existing_container(names: &[&'static str]) -> Option<&'static str> {
+    first_preferred_container(names, |name| inspect_container_state_health(name))
+}
+
+fn container_inspect_state(status: &str) -> Option<&str> {
+    if !inspect_status_ok(status) {
+        return None;
+    }
+    status.split(':').next().filter(|state| !state.is_empty())
+}
+
+fn first_preferred_container<'a>(
+    names: &[&'a str],
+    inspect_status: impl Fn(&str) -> String,
+) -> Option<&'a str> {
+    let mut fallback = None;
+    for name in names {
+        let status = inspect_status(name);
+        let Some(state) = container_inspect_state(&status) else {
+            continue;
+        };
+        if fallback.is_none() {
+            fallback = Some(*name);
+        }
+        if state == "running" {
+            return Some(*name);
+        }
+    }
+    fallback
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum NamedContainerWaitDecision {
+    Ready,
+    KeepWaiting,
+    Failed(String),
+}
+
+fn named_container_wait_decision(
+    names: &[&str],
+    statuses: &[(&str, &str)],
+    display_name: &str,
+) -> NamedContainerWaitDecision {
+    let mut last_status = String::new();
+    let mut saw_existing = false;
+    let mut saw_live = false;
+
+    for name in names {
+        let Some((_, status)) = statuses.iter().find(|(candidate, _)| *candidate == *name) else {
+            continue;
+        };
+        let Some(state) = container_inspect_state(status) else {
+            continue;
+        };
+        saw_existing = true;
+        last_status = (*status).to_string();
+        if *status == "running:healthy" {
+            return NamedContainerWaitDecision::Ready;
+        }
+        if matches!(state, "exited" | "dead") {
+            continue;
+        }
+        saw_live = true;
+    }
+
+    if saw_existing && !saw_live {
+        return NamedContainerWaitDecision::Failed(format!(
+            "{} container exited during startup (status: {}).",
+            display_name, last_status
+        ));
+    }
+
+    NamedContainerWaitDecision::KeepWaiting
+}
+
+fn hub_container_name() -> &'static str {
+    first_existing_container(HUB_CONTAINER_NAMES).unwrap_or(HUB_CONTAINER)
+}
+
+fn hub_queue_name() -> &'static str {
+    first_existing_container(HUB_QUEUE_NAMES).unwrap_or(HUB_QUEUE)
+}
+
+fn docker_network_exists(name: &str) -> bool {
+    docker_command()
+        .args(["network", "inspect", name, "--format", "{{.Id}}"])
+        .output()
+        .map(|output| {
+            output.status.success() && !String::from_utf8_lossy(&output.stdout).trim().is_empty()
+        })
+        .unwrap_or(false)
+}
+
+fn postgres_docker_network() -> &'static str {
+    if docker_network_exists(HUB_NETWORK) {
+        HUB_NETWORK
+    } else {
+        LEGACY_HUB_NETWORK
+    }
+}
+
+fn inspect_status_ok(status: &str) -> bool {
+    !status.is_empty() && !status.contains("No such object") && !status.contains("Error")
+}
+
+fn service_inspect_state<'a>(
+    states: &'a std::collections::HashMap<String, (String, String)>,
+    container: &str,
+) -> (&'a str, &'a str) {
+    if let Some((state, health)) = states.get(container) {
+        return (state.as_str(), health.as_str());
+    }
+    let fallback = if container == HUB_CONTAINER {
+        Some(LEGACY_HUB_CONTAINER)
+    } else if container == HUB_QUEUE {
+        Some(LEGACY_HUB_QUEUE)
+    } else {
+        None
+    };
+    fallback
+        .and_then(|name| states.get(name))
+        .map(|(state, health)| (state.as_str(), health.as_str()))
+        .unwrap_or(("", ""))
+}
+
 fn wait_for_container_healthy(
     container_name: &str,
+    display_name: &str,
+    timeout_secs: u64,
+) -> Result<(), String> {
+    wait_for_named_container_healthy(&[container_name], display_name, timeout_secs)
+}
+
+fn wait_for_named_container_healthy(
+    names: &[&str],
     display_name: &str,
     timeout_secs: u64,
 ) -> Result<(), String> {
@@ -4838,21 +5015,26 @@ fn wait_for_container_healthy(
     let mut last_status = String::new();
 
     while Instant::now() < deadline {
-        let status = inspect_container_state_health(container_name);
-        if !status.is_empty() {
-            last_status = status.clone();
-        }
-
-        if status == "running:healthy" {
-            return Ok(());
-        }
-
-        let state = status.split(':').next().unwrap_or("");
-        if matches!(state, "exited" | "dead") {
-            return Err(format!(
-                "{} container exited during startup (status: {}).",
-                display_name, status
-            ));
+        let inspected: Vec<(&str, String)> = names
+            .iter()
+            .map(|name| (*name, inspect_container_state_health(name)))
+            .collect();
+        let statuses: Vec<(&str, &str)> = inspected
+            .iter()
+            .map(|(name, status)| (*name, status.as_str()))
+            .collect();
+        match named_container_wait_decision(names, &statuses, display_name) {
+            NamedContainerWaitDecision::Ready => return Ok(()),
+            NamedContainerWaitDecision::Failed(message) => return Err(message),
+            NamedContainerWaitDecision::KeepWaiting => {
+                if let Some((_, status)) = statuses
+                    .iter()
+                    .rev()
+                    .find(|(_, status)| inspect_status_ok(status))
+                {
+                    last_status = (*status).to_string();
+                }
+            }
         }
 
         std::thread::sleep(Duration::from_secs(1));
@@ -4870,7 +5052,15 @@ fn wait_for_container_healthy(
 }
 
 fn wait_for_hub_healthy() -> Result<(), String> {
-    wait_for_container_healthy("ci-os-hub", "Hub", HUB_START_HEALTHY_TIMEOUT_SECS)
+    wait_for_named_container_healthy(HUB_CONTAINER_NAMES, "Hub", HUB_START_HEALTHY_TIMEOUT_SECS)
+}
+
+fn wait_for_queue_healthy() -> Result<(), String> {
+    wait_for_named_container_healthy(
+        HUB_QUEUE_NAMES,
+        "Message queue",
+        DB_START_HEALTHY_TIMEOUT_SECS,
+    )
 }
 
 /// Log loudly when the Hub container's Node arch does not match this desktop binary.
@@ -4883,7 +5073,7 @@ fn warn_if_hub_node_arch_mismatches_host(data_dir: &Path) {
         "x64"
     };
     let output = match docker_command()
-        .args(["exec", "ci-os-hub", "node", "-p", "process.arch"])
+        .args(["exec", hub_container_name(), "node", "-p", "process.arch"])
         .output()
     {
         Ok(output) => output,
@@ -4926,7 +5116,6 @@ fn warn_if_hub_node_arch_mismatches_host(data_dir: &Path) {
 }
 
 const POSTGRES_DB_CONTAINER: &str = "ci-hub-db";
-const POSTGRES_DOCKER_NETWORK: &str = "ci-os-hub_network";
 const POSTGRES_TCP_PROBE_RETRIES: u32 = 5;
 const POSTGRES_TCP_PROBE_RETRY_DELAY_MS: u64 = 400;
 
@@ -4979,7 +5168,7 @@ fn postgres_tcp_auth_probe_via_network(password: &str) -> PostgresTcpProbeResult
             "run",
             "--rm",
             "--network",
-            POSTGRES_DOCKER_NETWORK,
+            postgres_docker_network(),
             "postgres:14",
             "bash",
             "-lc",
@@ -5006,10 +5195,8 @@ fn postgres_tcp_auth_works(password: &str) -> bool {
         return true;
     }
     // Fall back only when exec path looks like a container/exec issue, not auth.
-    let kind = crate::docker_engine::classify_postgres_probe_output(
-        &primary.stdout,
-        &primary.stderr,
-    );
+    let kind =
+        crate::docker_engine::classify_postgres_probe_output(&primary.stdout, &primary.stderr);
     if kind == crate::docker_engine::PostgresProbeFailureKind::Auth {
         return false;
     }
@@ -5031,10 +5218,7 @@ fn postgres_tcp_auth_works_with_retries(
         if last.ok {
             return Ok(());
         }
-        let kind = crate::docker_engine::classify_postgres_probe_output(
-            &last.stdout,
-            &last.stderr,
-        );
+        let kind = crate::docker_engine::classify_postgres_probe_output(&last.stdout, &last.stderr);
         if kind == crate::docker_engine::PostgresProbeFailureKind::Auth {
             break;
         }
@@ -5128,7 +5312,7 @@ fn rabbitmq_auth_works(password: &str) -> bool {
     docker_command()
         .args([
             "exec",
-            "ci-os-hub-queue",
+            hub_queue_name(),
             "rabbitmqctl",
             "authenticate_user",
             "companion",
@@ -5145,7 +5329,7 @@ fn sync_rabbitmq_password(password: &str, data_dir: &Path) -> Result<(), String>
     let output = docker_command()
         .args([
             "exec",
-            "ci-os-hub-queue",
+            hub_queue_name(),
             "rabbitmqctl",
             "change_password",
             "companion",
@@ -5175,7 +5359,9 @@ fn recreate_rabbitmq_queue(
     let _ = append_desktop_log_for(
         data_dir,
         "hub.start",
-        "Recreating ci-os-hub-queue so RABBITMQ_DEFAULT_PASS matches .env (no durable queue volume).",
+        &format!(
+            "Recreating {HUB_QUEUE} so RABBITMQ_DEFAULT_PASS matches .env (no durable queue volume)."
+        ),
     );
     let output = docker_command()
         .env("ENV_FILE", compose_env_file_var(env_path))
@@ -5190,24 +5376,20 @@ fn recreate_rabbitmq_queue(
             "up",
             "-d",
             "--force-recreate",
-            "ci-os-hub-queue",
+            HUB_QUEUE,
         ])
         .output()
         .map_err(|error| format!("Failed to recreate RabbitMQ queue: {error}"))?;
     if !output.status.success() {
         return Err(format!(
-            "Failed to recreate ci-os-hub-queue: {}",
+            "Failed to recreate {HUB_QUEUE}: {}",
             format_command_output(
                 &String::from_utf8_lossy(&output.stdout),
                 &String::from_utf8_lossy(&output.stderr),
             )
         ));
     }
-    wait_for_container_healthy(
-        "ci-os-hub-queue",
-        "Message queue",
-        DB_START_HEALTHY_TIMEOUT_SECS,
-    )
+    wait_for_queue_healthy()
 }
 
 fn ensure_rabbitmq_password_matches_env(
@@ -5221,7 +5403,7 @@ fn ensure_rabbitmq_password_matches_env(
     };
 
     let running = docker_command()
-        .args(["inspect", "-f", "{{.State.Running}}", "ci-os-hub-queue"])
+        .args(["inspect", "-f", "{{.State.Running}}", hub_queue_name()])
         .output()
         .map(|output| {
             output.status.success() && String::from_utf8_lossy(&output.stdout).trim() == "true"
@@ -5410,13 +5592,12 @@ fn start_hub_inner(
 
     // Re-resolve on every start/retry so affinity tracks the live Hub stack.
     crate::docker_engine::clear_process_pin();
-    let engine = crate::docker_engine::resolve_and_pin_hub_docker_engine(data_dir).map_err(
-        |error| {
+    let engine =
+        crate::docker_engine::resolve_and_pin_hub_docker_engine(data_dir).map_err(|error| {
             let message = format!("Docker engine selection failed: {error}");
             let _ = append_desktop_log_for(data_dir, "hub.start", &message);
             with_view_logs_hint(message)
-        },
-    )?;
+        })?;
     let _ = append_desktop_log_for(
         data_dir,
         "hub.start",
@@ -5623,14 +5804,11 @@ fn start_hub_inner(
             &compose_path.to_string_lossy(),
             "up",
             "-d",
-            "ci-os-hub-queue",
+            "--remove-orphans",
+            HUB_QUEUE,
         ])
         .output();
-    let _ = wait_for_container_healthy(
-        "ci-os-hub-queue",
-        "Message queue",
-        DB_START_HEALTHY_TIMEOUT_SECS,
-    );
+    let _ = wait_for_queue_healthy();
     ensure_rabbitmq_password_matches_env(compose_path, env_path, data_dir)?;
 
     ensure_traefik_container_released(data_dir).map_err(|error| {
@@ -5675,13 +5853,13 @@ fn start_hub_inner(
             compose_path.to_string_lossy().into_owned(),
             "up".to_string(),
             "-d".to_string(),
+            "--remove-orphans".to_string(),
         ];
         if should_refresh_stack {
             compose_up_args.extend([
                 "--pull".to_string(),
                 "always".to_string(),
                 "--force-recreate".to_string(),
-                "--remove-orphans".to_string(),
             ]);
         }
         let output = match docker_command()
@@ -5715,7 +5893,7 @@ fn start_hub_inner(
             let _ = append_desktop_log_for(
                 data_dir,
                 "hub.start",
-                "Waiting for ci-os-hub to report running:healthy.",
+                &format!("Waiting for {HUB_CONTAINER} to report running:healthy."),
             );
 
             match wait_for_hub_healthy() {
@@ -5954,6 +6132,7 @@ pub fn stop_hub_for_update(compose_path: &Path, env_path: &Path) -> Result<Strin
             "-f",
             &compose_path.to_string_lossy(),
             "down",
+            "--remove-orphans",
         ])
         .output()
         .map_err(|e| format!("Failed to run docker compose down: {}", e))?;
@@ -6020,6 +6199,7 @@ pub fn stop_hub(compose_path: &Path, env_path: &Path) -> Result<String, String> 
             "-f",
             &compose_path.to_string_lossy(),
             "down",
+            "--remove-orphans",
         ])
         .output()
         .map_err(|e| {
@@ -6060,28 +6240,7 @@ pub fn stop_managed_app_containers() -> Result<Option<String>, String> {
         return Ok(None);
     }
 
-    let output = docker_command()
-        .args(managed_app_container_ps_args())
-        .output()
-        .map_err(|error| format!("Failed to list running app containers: {}", error))?;
-
-    let combined_output = format_command_output(
-        &String::from_utf8_lossy(&output.stdout),
-        &String::from_utf8_lossy(&output.stderr),
-    );
-
-    if !output.status.success() {
-        return Err(if combined_output.is_empty() {
-            format!(
-                "Listing running app containers failed with exit code {:?}.",
-                output.status.code()
-            )
-        } else {
-            format!("Listing running app containers failed. {}", combined_output)
-        });
-    }
-
-    let ids = parse_container_ids(&String::from_utf8_lossy(&output.stdout));
+    let ids = list_managed_app_container_ids()?;
     if ids.is_empty() {
         return Ok(None);
     }
@@ -6865,7 +7024,11 @@ fn detect_windows_docker_host_style_via_daemon() -> WindowsDockerHostStyle {
 #[cfg(windows)]
 fn docker_server_os_and_kernel() -> Option<(String, String)> {
     let output = docker_command()
-        .args(["info", "--format", "{{.OperatingSystem}}\t{{.KernelVersion}}"])
+        .args([
+            "info",
+            "--format",
+            "{{.OperatingSystem}}\t{{.KernelVersion}}",
+        ])
         .output()
         .ok()?;
     if !output.status.success() {
@@ -6910,7 +7073,9 @@ fn docker_has_nvidia_runtime() -> bool {
     docker_command()
         .args(["info", "--format", "{{json .Runtimes}}"])
         .output()
-        .map(|output| output.status.success() && String::from_utf8_lossy(&output.stdout).contains("nvidia"))
+        .map(|output| {
+            output.status.success() && String::from_utf8_lossy(&output.stdout).contains("nvidia")
+        })
         .unwrap_or(false)
 }
 
@@ -8309,8 +8474,9 @@ exit 0
 /// root in the distro (no elevation prompt).
 #[cfg(target_os = "windows")]
 fn install_ollama_in_wsl_distro() -> Result<OllamaInstallResult, String> {
-    let distro = find_wsl_distro()
-        .ok_or_else(|| "No Ubuntu/Debian WSL distro was found to install Ollama into.".to_string())?;
+    let distro = find_wsl_distro().ok_or_else(|| {
+        "No Ubuntu/Debian WSL distro was found to install Ollama into.".to_string()
+    })?;
 
     // Download the installer to a file first (checking curl's exit) rather than
     // `curl | sh`: a POSIX `sh` pipeline reports only `sh`'s status, so a failed/partial
@@ -9554,6 +9720,54 @@ pub(crate) fn format_command_output(stdout: &str, stderr: &str) -> String {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn prefers_a_running_legacy_hub_over_an_exited_canonical_container() {
+        let names = ["ci-hub", "ci-os-hub"];
+        let chosen = super::first_preferred_container(&names, |name| match name {
+            "ci-hub" => "exited:none".to_string(),
+            "ci-os-hub" => "running:healthy".to_string(),
+            _ => String::new(),
+        });
+
+        assert_eq!(chosen, Some("ci-os-hub"));
+    }
+
+    #[test]
+    fn wait_decision_keeps_looking_when_the_new_name_exited() {
+        let decision = super::named_container_wait_decision(
+            &["ci-hub", "ci-os-hub"],
+            &[("ci-hub", "exited:none"), ("ci-os-hub", "running:starting")],
+            "Hub",
+        );
+
+        assert_eq!(decision, super::NamedContainerWaitDecision::KeepWaiting);
+    }
+
+    #[test]
+    fn wait_decision_succeeds_when_the_legacy_name_is_healthy() {
+        let decision = super::named_container_wait_decision(
+            &["ci-hub", "ci-os-hub"],
+            &[("ci-hub", "exited:none"), ("ci-os-hub", "running:healthy")],
+            "Hub",
+        );
+
+        assert_eq!(decision, super::NamedContainerWaitDecision::Ready);
+    }
+
+    #[test]
+    fn wait_decision_fails_only_when_every_known_name_has_exited() {
+        let decision = super::named_container_wait_decision(
+            &["ci-hub", "ci-os-hub"],
+            &[("ci-hub", "exited:none"), ("ci-os-hub", "dead:none")],
+            "Hub",
+        );
+
+        assert!(matches!(
+            decision,
+            super::NamedContainerWaitDecision::Failed(message) if message.contains("exited during startup")
+        ));
+    }
+
+    #[test]
     fn webview_cache_clear_needed_decision() {
         // Fresh install / first run with this logic → clear.
         assert!(super::webview_cache_clear_needed(None, "0.2.27"));
@@ -9595,8 +9809,18 @@ mod tests {
         assert!(super::should_trigger_hub_watchdog(3, None, false, false));
         assert!(!super::should_trigger_hub_watchdog(3, None, true, false));
         assert!(!super::should_trigger_hub_watchdog(3, None, false, true));
-        assert!(!super::should_trigger_hub_watchdog(3, Some(60), false, false));
-        assert!(super::should_trigger_hub_watchdog(3, Some(301), false, false));
+        assert!(!super::should_trigger_hub_watchdog(
+            3,
+            Some(60),
+            false,
+            false
+        ));
+        assert!(super::should_trigger_hub_watchdog(
+            3,
+            Some(301),
+            false,
+            false
+        ));
     }
 
     #[test]
@@ -9664,7 +9888,10 @@ mod tests {
         super::ensure_hub_compose_file(&compose_path, dir.path()).expect("write seed");
 
         let written = std::fs::read_to_string(&compose_path).expect("read compose");
-        assert!(written.contains("services:"), "seed should be a compose file");
+        assert!(
+            written.contains("services:"),
+            "seed should be a compose file"
+        );
         assert!(written.len() > 100);
     }
 
@@ -9692,6 +9919,8 @@ mod tests {
         assert!(!super::is_start_failed(dir.path()));
     }
 
+    #[cfg(target_os = "linux")]
+    use super::current_docker_context_name;
     #[cfg(any(test, target_os = "macos"))]
     use super::docker_desktop_macos_install_script;
     #[cfg(any(test, target_os = "windows"))]
@@ -9725,19 +9954,17 @@ mod tests {
         clear_tunnel_token, derive_optional_service_state, desktop_log_path_for, files_match,
         format_command_output, generate_container_docker_config, host_docker_socket_path,
         is_container_name_conflict, is_host_port_bind_conflict, is_oci_runtime_error,
-        is_traefik_recreate_required, logs_open_target_for, managed_app_container_ps_args,
-        mark_traefik_recreate_required, merge_compose_profiles, parse_container_ids,
-        paths_match_by_components, prepare_traefik_runtime_state, private_vpn_enabled_from_map,
-        seeded_traefik_config_contents, should_defer_docker_bind_mount_probe,
-        startup_service_definitions, truncate_command_output, tunnel_dir_for,
-        tunnel_token_path_for, tunnel_user_cleared_marker_path_for, DockerAccessState,
-        ServiceState, MAX_COMMAND_OUTPUT_CHARS, TRAEFIK_ACME_FILE, TRAEFIK_CONFIG_FILE,
-        TRAEFIK_DYNAMIC_CONFIG_SEED, TRAEFIK_DYNAMIC_FILE, TRAEFIK_TLS_DIR,
+        is_traefik_recreate_required, legacy_managed_app_container_ps_args, logs_open_target_for,
+        managed_app_container_ps_args, mark_traefik_recreate_required, merge_compose_profiles,
+        parse_container_ids, paths_match_by_components, prepare_traefik_runtime_state,
+        private_vpn_enabled_from_map, seeded_traefik_config_contents,
+        should_defer_docker_bind_mount_probe, startup_service_definitions, truncate_command_output,
+        tunnel_dir_for, tunnel_token_path_for, tunnel_user_cleared_marker_path_for,
+        DockerAccessState, ServiceState, MAX_COMMAND_OUTPUT_CHARS, TRAEFIK_ACME_FILE,
+        TRAEFIK_CONFIG_FILE, TRAEFIK_DYNAMIC_CONFIG_SEED, TRAEFIK_DYNAMIC_FILE, TRAEFIK_TLS_DIR,
     };
     #[cfg(any(test, target_os = "macos"))]
     use super::{colima_macos_binary_install_script, colima_macos_start_script};
-    #[cfg(target_os = "linux")]
-    use super::current_docker_context_name;
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     use std::os::unix::fs::PermissionsExt;
     use std::path::{Path, PathBuf};
@@ -9957,6 +10184,17 @@ mod tests {
                 "ps",
                 "-q",
                 "--filter",
+                "label=ci-hub.managed=true",
+                "--filter",
+                "label=ci-hub.appurn",
+            ]
+        );
+        assert_eq!(
+            legacy_managed_app_container_ps_args(),
+            [
+                "ps",
+                "-q",
+                "--filter",
                 "label=ci-os-hub.managed=true",
                 "--filter",
                 "label=ci-os-hub.appurn",
@@ -10013,6 +10251,14 @@ mod tests {
         let (core, optional) = startup_service_definitions(true);
 
         assert_eq!(core.len(), 4);
+        assert!(core
+            .iter()
+            .any(|(container, label, _)| *container == "ci-hub" && *label == "Hub backend"));
+        assert!(
+            core.iter()
+                .any(|(container, label, _)| *container == "ci-hub-queue"
+                    && *label == "Message queue")
+        );
         assert!(optional
             .iter()
             .any(|(container, label, required)| *container == "hub-tailscale"
@@ -10664,7 +10910,10 @@ Error response from daemon: CONFLICT. The container name "/ci-hub-app" IS ALREAD
 
         let metadata = installed.symlink_metadata().expect("installed metadata");
         assert!(metadata.file_type().is_file());
-        assert_eq!(std::fs::read(&installed).expect("read installed"), b"cli-bytes");
+        assert_eq!(
+            std::fs::read(&installed).expect("read installed"),
+            b"cli-bytes"
+        );
         let leftovers: Vec<_> = std::fs::read_dir(&install_dir)
             .expect("list install dir")
             .filter_map(|entry| entry.ok())
@@ -10696,7 +10945,10 @@ Error response from daemon: CONFLICT. The container name "/ci-hub-app" IS ALREAD
             .expect("installed metadata")
             .file_type()
             .is_file());
-        assert_eq!(std::fs::read(&installed).expect("read installed"), b"cli-bytes");
+        assert_eq!(
+            std::fs::read(&installed).expect("read installed"),
+            b"cli-bytes"
+        );
         assert_eq!(
             std::fs::read(&checkout_binary).expect("read checkout binary"),
             b"checkout-bytes"
@@ -10824,7 +11076,10 @@ Error response from daemon: CONFLICT. The container name "/ci-hub-app" IS ALREAD
 
         clear_tunnel_token(&data_dir).expect("clear_tunnel_token succeeds");
 
-        assert!(!legacy_token.exists(), "legacy nested token should be removed");
+        assert!(
+            !legacy_token.exists(),
+            "legacy nested token should be removed"
+        );
         assert!(
             tunnel_user_cleared_marker_path_for(&data_dir).exists(),
             "marker written to canonical sibling tunnel dir",
@@ -10937,7 +11192,10 @@ Error response from daemon: CONFLICT. The container name "/ci-hub-app" IS ALREAD
         ];
         let expectations = [
             (Drive, "/c/Users/hegem/AppData/Roaming/companion-hub/media"),
-            (WslMnt, "/mnt/c/Users/hegem/AppData/Roaming/companion-hub/media"),
+            (
+                WslMnt,
+                "/mnt/c/Users/hegem/AppData/Roaming/companion-hub/media",
+            ),
         ];
         for (style, expected) in expectations {
             for input in inputs {
@@ -10963,7 +11221,10 @@ Error response from daemon: CONFLICT. The container name "/ci-hub-app" IS ALREAD
             "/mnt/c/Users/x"
         );
         // Bare drive root.
-        assert_eq!(super::normalize_windows_docker_host_path(r"C:\", Drive), "/c");
+        assert_eq!(
+            super::normalize_windows_docker_host_path(r"C:\", Drive),
+            "/c"
+        );
         assert_eq!(
             super::normalize_windows_docker_host_path(r"C:\", WslMnt),
             "/mnt/c"
@@ -11002,8 +11263,12 @@ Error response from daemon: CONFLICT. The container name "/ci-hub-app" IS ALREAD
     #[test]
     fn rejects_placeholder_host_device_ids() {
         assert!(!super::is_usable_host_device_id("Not Specified"));
-        assert!(!super::is_usable_host_device_id("00000000-0000-0000-0000-000000000000"));
-        assert!(super::is_usable_host_device_id("06151E8B-A400-470C-B48C-67AE51D297A9"));
+        assert!(!super::is_usable_host_device_id(
+            "00000000-0000-0000-0000-000000000000"
+        ));
+        assert!(super::is_usable_host_device_id(
+            "06151E8B-A400-470C-B48C-67AE51D297A9"
+        ));
     }
 
     #[cfg(windows)]

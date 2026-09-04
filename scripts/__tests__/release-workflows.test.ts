@@ -20,6 +20,8 @@ function readWorkflow(name: string) {
 const buildContainer = readWorkflow('build-container.yml');
 const desktopRelease = readWorkflow('desktop-release.yml');
 const dockerfile = fs.readFileSync(path.join(repoRoot, 'Dockerfile'), 'utf-8');
+const updaterScript = fs.readFileSync(path.join(repoRoot, 'scripts/updater/update.sh'), 'utf-8');
+const desktopHubManager = fs.readFileSync(path.join(repoRoot, 'packages/desktop/src-tauri/src/hub_manager.rs'), 'utf-8');
 
 const GATE_JOB = 'verify-anonymous-pull:';
 
@@ -205,4 +207,55 @@ describe('no workflow publishes to the private ci-os-hub package', () => {
     const content = readWorkflow(file);
     expect(content).not.toMatch(/ghcr\.io\/companionintelligence\/ci-os-hub/);
   });
+});
+
+describe('uninstall cleanup supports both Hub identity generations', () => {
+  const cleanupFiles = [
+    'distribution/scripts/uninstall-cleanup.sh',
+    'distribution/scripts/uninstall-cleanup.ps1',
+    'distribution/scripts/update-package-manifests.sh',
+    'distribution/scoop/companion-hub.json',
+    'distribution/publish/scoop-bucket/companion-hub.json',
+  ];
+
+  it.each(cleanupFiles)('%s discovers canonical and legacy labels and networks', (file) => {
+    const content = fs.readFileSync(path.join(repoRoot, file), 'utf-8');
+
+    expect(content).toContain('ci-hub.managed=true');
+    expect(content).toContain('ci-os-hub.managed=true');
+    expect(content).toContain('ci-hub_network');
+    expect(content).toContain('ci-os-hub_network');
+  });
+});
+
+describe('Hub service rename upgrade compatibility', () => {
+  it('removes renamed service orphans during headless updates', () => {
+    expect(updaterScript).toContain('up -d --remove-orphans');
+  });
+
+  it('removes renamed service orphans on every desktop start and stop path', () => {
+    const startAt = desktopHubManager.indexOf('fn start_hub_inner');
+    const pullAt = desktopHubManager.indexOf('pub fn pull_hub_images', startAt);
+    const stopForUpdateAt = desktopHubManager.indexOf('pub fn stop_hub_for_update');
+    const stopAt = desktopHubManager.indexOf('pub fn stop_hub(', stopForUpdateAt);
+    const stopManagedAppsAt = desktopHubManager.indexOf('pub fn stop_managed_app_containers', stopAt);
+    const start = desktopHubManager.slice(startAt, pullAt);
+    const stopForUpdate = desktopHubManager.slice(stopForUpdateAt, stopAt);
+    const stop = desktopHubManager.slice(stopAt, stopManagedAppsAt);
+
+    expect(start).toMatch(/"up"\.to_string\(\),\s*"-d"\.to_string\(\),\s*"--remove-orphans"\.to_string\(\)/);
+    expect(start).toMatch(/"up",\s*"-d",\s*"--remove-orphans",\s*HUB_QUEUE/);
+    expect(stopForUpdate).toMatch(/"down",\s*"--remove-orphans"/);
+    expect(stop).toMatch(/"down",\s*"--remove-orphans"/);
+  });
+});
+
+it('bundled app entrypoints default to the canonical Hub DNS name', () => {
+  const openclawEntrypoint = fs.readFileSync(
+    path.join(repoRoot, 'packages/backend/src/modules/app-lifecycle/data/openclaw-ci-entrypoint.sh'),
+    'utf-8',
+  );
+
+  expect(openclawEntrypoint).toContain('HUB_URL:-http://ci-hub:5002');
+  expect(openclawEntrypoint).not.toContain('HUB_URL:-http://ci-os-hub:5002');
 });

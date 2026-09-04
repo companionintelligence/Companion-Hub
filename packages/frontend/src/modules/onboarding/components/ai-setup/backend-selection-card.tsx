@@ -25,7 +25,7 @@ const BACKEND_INFO: Record<InferenceBackendType, { label: string; descriptionKey
   vllm: { label: 'vLLM', descriptionKey: 'ONBOARDING_BACKEND_VLLM_DESC' },
   lemonade: { label: 'Lemonade', descriptionKey: 'ONBOARDING_BACKEND_LEMONADE_DESC' },
   mtplx: { label: 'MTPLX' },
-  dspark: { label: 'Speculative inference', descriptionKey: 'ONBOARDING_BACKEND_DSPARK_DESC' },
+  dspark: { label: 'mlx-dspark' },
 };
 
 /** Keep the Apple-Silicon speculative path prominent, with MTPLX as its variant. */
@@ -39,6 +39,8 @@ interface BackendSelectionCardProps {
   selected: InferenceBackendType;
   onSelect: (backend: InferenceBackendType) => void;
   disabled?: boolean;
+  /** Remove the outer card when the selector is embedded inside a numbered setup step. */
+  embedded?: boolean;
   /** Backend types that are known-unavailable and should be grayed out (unselectable). */
   unavailableTypes?: InferenceBackendType[];
   /** Backend types that do not apply to the detected host and should not be shown. */
@@ -93,7 +95,7 @@ function BackendOption({ backend, recommended, selected, onSelect, disabled, una
             </span>
           ) : (
             <span
-              className={`w-2 h-2 rounded-full ${healthy ? 'bg-green-500' : running ? 'bg-yellow-500' : 'bg-muted-foreground/30'}`}
+              className={`w-2 h-2 rounded-full ${healthy ? 'bg-success' : running ? 'bg-warning' : 'bg-muted-foreground/30'}`}
               title={healthy ? t('ONBOARDING_HEALTHY') : running ? t('COMMON_RUNNING') : t('ONBOARDING_NOT_RUNNING')}
             />
           )}
@@ -114,6 +116,7 @@ export const BackendSelectionCard = ({
   selected,
   onSelect,
   disabled = false,
+  embedded = false,
   unavailableTypes = [],
   hiddenTypes = [],
 }: BackendSelectionCardProps) => {
@@ -124,17 +127,25 @@ export const BackendSelectionCard = ({
   const mtplxBackend = backendsByType.get('mtplx');
   const orderedBackends = BACKEND_ORDER.filter((type) => backendsByType.has(type));
 
-  return (
-    <Card className={disabled ? 'opacity-60' : undefined}>
-      <CardContent className="p-4">
-        <h3 className="text-sm font-semibold mb-1" data-testid="backend-card-title">
-          {t('ONBOARDING_INFERENCE_BACKEND')}
-        </h3>
-        <p className="text-xs text-muted-foreground mb-3">{t('ONBOARDING_INFERENCE_BACKEND_DESC')}</p>
+  const content = (
+    <>
+      {!embedded && (
+        <>
+          <h3 className="mb-1 text-sm font-semibold" data-testid="backend-card-title">
+            {t('ONBOARDING_INFERENCE_BACKEND')}
+          </h3>
+          <p className="mb-3 text-xs text-muted-foreground">{t('ONBOARDING_INFERENCE_BACKEND_DESC')}</p>
+        </>
+      )}
 
-        <div className="space-y-1" data-testid="backend-options">
-          {speculativeBackend && (
-            <div className="space-y-1" data-testid="backend-option-dspark-group">
+      <div className="space-y-1" data-testid="backend-options">
+        {speculativeBackend && (
+          <div className="space-y-1" data-testid="backend-option-dspark-group">
+            <div className="px-3 pt-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+              {t('ONBOARDING_BACKEND_SPECULATIVE_GROUP')}
+            </div>
+            <p className="px-3 text-xs text-muted-foreground">{t('ONBOARDING_BACKEND_DSPARK_DESC')}</p>
+            <div className="space-y-1">
               <BackendOption
                 backend={speculativeBackend}
                 recommended={recommended}
@@ -142,6 +153,7 @@ export const BackendSelectionCard = ({
                 onSelect={onSelect}
                 disabled={disabled}
                 unavailableTypes={unavailableTypes}
+                nested
               />
               {mtplxBackend && (
                 <BackendOption
@@ -155,26 +167,36 @@ export const BackendSelectionCard = ({
                 />
               )}
             </div>
-          )}
-          {orderedBackends
-            .filter((type) => type !== 'dspark' && !(type === 'mtplx' && speculativeBackend))
-            .map((type) => {
-              const backend = backendsByType.get(type);
-              if (!backend) return null;
-              return (
-                <BackendOption
-                  key={type}
-                  backend={backend}
-                  recommended={recommended}
-                  selected={selected}
-                  onSelect={onSelect}
-                  disabled={disabled}
-                  unavailableTypes={unavailableTypes}
-                />
-              );
-            })}
-        </div>
-      </CardContent>
+          </div>
+        )}
+        {orderedBackends
+          .filter((type) => type !== 'dspark' && !(type === 'mtplx' && speculativeBackend))
+          .map((type) => {
+            const backend = backendsByType.get(type);
+            if (!backend) return null;
+            return (
+              <BackendOption
+                key={type}
+                backend={backend}
+                recommended={recommended}
+                selected={selected}
+                onSelect={onSelect}
+                disabled={disabled}
+                unavailableTypes={unavailableTypes}
+              />
+            );
+          })}
+      </div>
+    </>
+  );
+
+  if (embedded) {
+    return <div data-testid="backend-selection-embedded">{content}</div>;
+  }
+
+  return (
+    <Card className={disabled ? 'opacity-60' : undefined}>
+      <CardContent className="p-4">{content}</CardContent>
     </Card>
   );
 };

@@ -1,4 +1,5 @@
 import { randomBytes } from 'node:crypto';
+import { hubContainerName } from '@/common/constants';
 import { getAppDataHostPath } from '@/common/helpers/app-data-path.helper';
 import { extractAppUrn } from '@/common/helpers/app-helpers';
 import { resolveBrowserHost } from '@/common/helpers/browser-host';
@@ -656,9 +657,9 @@ export class AppHelpers {
     const isMcpClient = scopes.includes('mcp');
     const isFirstPartyConsumer = scopes.includes('app');
     if (scopes.length > 0) {
-      const hubContainerName = process.env.HUB_CONTAINER_NAME || 'ci-os-hub';
+      const hubContainer = hubContainerName();
       const hubPort = process.env.API_PORT || '3000';
-      const hubInternalUrl = `http://${hubContainerName}:${hubPort}`;
+      const hubInternalUrl = `http://${hubContainer}:${hubPort}`;
 
       envMap.set('HUB_URL', hubInternalUrl);
 

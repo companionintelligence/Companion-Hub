@@ -103,8 +103,6 @@ vi.mock('@/context/user-context', () => ({
   useUserContext: () => ({ isLoggedIn: true }),
 }));
 
-vi.mock('@/lib/theme/theme', () => ({ getLogo: () => '/logo.svg' }));
-
 vi.mock('@/lib/api-fetch', () => ({
   apiFetch: vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve({ services: [] }) }),
 }));
@@ -332,6 +330,8 @@ describe('OnboardingPage (single vertical form)', () => {
 
   it('renders config sections and step 4 (app picker) on the same page', () => {
     renderPage();
+    expect(screen.getByRole('img', { name: 'CI-Server e-brain logo' })).toHaveAttribute('src', '/brands/ci-server-e-brain.png');
+    expect(screen.getByRole('heading', { name: 'Set Up Companion Hub' })).toBeInTheDocument();
     expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument();
     expect(screen.getByTestId('recommendations-step')).toBeInTheDocument();
   });

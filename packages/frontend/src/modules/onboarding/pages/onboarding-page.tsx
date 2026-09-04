@@ -4,7 +4,6 @@ import { AppContextProvider, useAppContext } from '@/context/app-context';
 import { useUserContext } from '@/context/user-context';
 import { completeOnboarding, detectServices } from '@/api-client/sdk.gen';
 import { sdkResult, unwrapSdkOrNull } from '@/lib/sdk-unwrap';
-import { getLogo } from '@/lib/theme/theme';
 import { TranslatableError } from '@/types/error.types';
 import { Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { Navigate, useNavigate } from 'react-router';
@@ -29,6 +28,8 @@ const COMPLETE_ONBOARDING_RETRY_DELAY_MS = 500;
 
 /** Fixed id so repeat failures replace the notice instead of stacking, and success can clear it. */
 const COMPLETE_ONBOARDING_TOAST_ID = 'onboarding-complete-failed';
+
+const CI_SERVER_E_BRAIN_LOGO = '/brands/ci-server-e-brain.png';
 
 /**
  * Only transient failures are worth a second identical PATCH. A 4xx will not become a 2xx —
@@ -82,18 +83,20 @@ function Shell({ children }: { children: React.ReactNode }) {
   return (
     <div className="flex flex-col items-center overflow-y-auto px-4 py-8" style={{ height: 'calc(100vh - var(--titlebar-height, 0px))' }}>
       <div className="w-full max-w-[82.94rem]">
-        <div className="mb-10 flex items-start gap-4">
-          <img
-            alt={t('APP_NAME_LOGO_ALT')}
-            src={getLogo(true)}
-            height={48}
-            width={48}
-            className="mt-0.5 flex-shrink-0"
-            style={{ maxWidth: '100%', height: 'auto' }}
-          />
-          <div className="min-w-0 space-y-2">
-            <h1 className="text-3xl font-bold tracking-tight text-foreground">{t('COMMON_SET_UP_YOUR_HUB')}</h1>
+        <div className="mb-8 mt-[10vh] flex flex-col items-center text-center sm:mb-10">
+          <div
+            className="mb-3 flex h-14 w-14 items-center justify-center overflow-hidden rounded-[30%] border border-primary/30 bg-primary/10 p-2 shadow-sm"
+            data-testid="onboarding-brand-mark"
+          >
+            <img
+              alt={t('ONBOARDING_CI_SERVER_E_BRAIN_LOGO_ALT')}
+              src={CI_SERVER_E_BRAIN_LOGO}
+              height={40}
+              width={40}
+              className="h-10 w-10 object-contain"
+            />
           </div>
+          <h1 className="text-2xl font-bold tracking-tight text-foreground sm:text-3xl">{t('ONBOARDING_SET_UP_COMPANION_HUB')}</h1>
         </div>
         {children}
       </div>
@@ -323,7 +326,7 @@ function OnboardingWizard() {
           publicExposureMode={publicExposureMode}
           onCompanionAppsChange={setCompanionApps}
         >
-          <StepSection number={6} badge="optional" title={t('ONBOARDING_RECOMMENDED_APPS')} description={t('ONBOARDING_RECOMMENDED_APPS_DESC')}>
+          <StepSection number={6} badge="optional" title={t('ONBOARDING_RECOMMENDED_APPS')}>
             <RecommendationsStep embedded detectedServices={detectedServices} agentSlugs={agentSlugs} onChange={setSelectedApps} />
           </StepSection>
         </AiSetupStep>

@@ -16,7 +16,7 @@
  * work. The length/byte caps alone bound disk usage.
  *
  * NOTE: queue arguments are immutable once a queue exists; changing them
- * requires the ci-os-hub-queue broker to be recreated. That container has no
+ * requires the ci-hub-queue broker to be recreated. That container has no
  * volume, so any Compose recreate (e.g. when its service definition changes)
  * brings the queues up fresh with the current arguments.
  */

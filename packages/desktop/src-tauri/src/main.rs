@@ -7,6 +7,7 @@ pub mod docker_engine;
 mod error_reporting;
 pub mod hub_env;
 pub mod hub_manager;
+mod hub_names;
 mod inference_runners;
 pub mod port_manager;
 mod sentry_scrubber;

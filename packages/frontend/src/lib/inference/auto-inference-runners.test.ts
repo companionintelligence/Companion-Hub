@@ -1,5 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { DEFAULT_AUTOMATIC_INFERENCE_RUNNERS, installAndStartInferenceRunners } from './auto-inference-runners';
+import {
+  DEFAULT_AUTOMATIC_INFERENCE_RUNNERS,
+  DEFAULT_MACOS_AUTOMATIC_INFERENCE_RUNNERS,
+  installAndStartInferenceRunners,
+} from './auto-inference-runners';
 
 type TauriWindow = Window & {
   __TAURI_INTERNALS__?: { invoke: (command: string, args?: Record<string, unknown>) => Promise<unknown> };
@@ -10,6 +14,10 @@ afterEach(() => {
 });
 
 describe('installAndStartInferenceRunners', () => {
+  it('keeps the Apple Silicon FTUE set focused on mlx-dspark and Ollama', () => {
+    expect(DEFAULT_MACOS_AUTOMATIC_INFERENCE_RUNNERS).toEqual(['dspark', 'ollama']);
+  });
+
   it('is a no-op in a browser build', async () => {
     await expect(installAndStartInferenceRunners()).resolves.toEqual([]);
   });

@@ -1316,8 +1316,8 @@ describe('AppHelpers', () => {
 
         await appHelpers.generateEnvFile(testAppUrn, {});
 
-        expect(envMap.get('HUB_URL')).toBe('http://ci-os-hub:3000');
-        expect(envMap.get('HUB_MCP_URL')).toBe('http://ci-os-hub:3000/api/mcp');
+        expect(envMap.get('HUB_URL')).toBe('http://ci-hub:3000');
+        expect(envMap.get('HUB_MCP_URL')).toBe('http://ci-hub:3000/api/mcp');
         expect(envMap.has('HUB_MCP_MESSAGES_URL')).toBe(false);
       });
 
@@ -1337,6 +1337,28 @@ describe('AppHelpers', () => {
         }
       });
 
+      it('R-ENV-1: should retain the legacy Hub URL under a pre-rename compose file', async () => {
+        const envMap = new Map<string, string>();
+        envUtils.envStringToMap.mockReturnValue(envMap);
+        const agentApp = { ...mockAppInfo, hub_integration: { mcp_client: true, wake_endpoint: '/hooks/hub-wake', sse_events: false } };
+        appFilesManager.getInstalledAppInfo.mockResolvedValue(agentApp);
+
+        const previousHubContainerName = process.env.HUB_CONTAINER_NAME;
+        const previousRabbitmqHost = process.env.RABBITMQ_HOST;
+        delete process.env.HUB_CONTAINER_NAME;
+        process.env.RABBITMQ_HOST = 'ci-os-hub-queue';
+        try {
+          await appHelpers.generateEnvFile(testAppUrn, {});
+          expect(envMap.get('HUB_URL')).toBe('http://ci-os-hub:3000');
+          expect(envMap.get('HUB_MCP_URL')).toBe('http://ci-os-hub:3000/api/mcp');
+        } finally {
+          if (previousHubContainerName === undefined) delete process.env.HUB_CONTAINER_NAME;
+          else process.env.HUB_CONTAINER_NAME = previousHubContainerName;
+          if (previousRabbitmqHost === undefined) delete process.env.RABBITMQ_HOST;
+          else process.env.RABBITMQ_HOST = previousRabbitmqHost;
+        }
+      });
+
       it('R-ENV-1: should use API_PORT env var for Hub URL', async () => {
         const envMap = new Map<string, string>();
         envUtils.envStringToMap.mockReturnValue(envMap);
@@ -1346,8 +1368,8 @@ describe('AppHelpers', () => {
         process.env.API_PORT = '5002';
         try {
           await appHelpers.generateEnvFile(testAppUrn, {});
-          expect(envMap.get('HUB_URL')).toBe('http://ci-os-hub:5002');
-          expect(envMap.get('HUB_MCP_URL')).toBe('http://ci-os-hub:5002/api/mcp');
+          expect(envMap.get('HUB_URL')).toBe('http://ci-hub:5002');
+          expect(envMap.get('HUB_MCP_URL')).toBe('http://ci-hub:5002/api/mcp');
           expect(envMap.has('HUB_MCP_MESSAGES_URL')).toBe(false);
         } finally {
           delete process.env.API_PORT;

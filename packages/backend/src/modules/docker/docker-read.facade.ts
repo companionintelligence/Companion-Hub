@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
-import { DEFAULT_NETWORK_NAME } from '@/common/constants';
+import { ipOnHubNetwork } from '@/common/constants';
+import { appUrnLabelSets, listContainersMatchingAnyLabelSets, managedAppLabelSets } from './hub-container-query';
 import { pLimit } from '@/common/helpers/file-helpers';
 import { withTimeout } from '@/common/helpers/with-timeout';
 import { LoggerService } from '@/core/logger/logger.service';
@@ -191,12 +192,7 @@ export class DockerReadFacade {
   }
 
   public async getAppNetworkTarget(appUrn: AppUrn): Promise<AppNetworkTarget | null> {
-    const containers = await this.docker.listContainers({
-      all: false,
-      filters: {
-        label: [`ci-os-hub.appurn=${appUrn}`, 'traefik.enable=true'],
-      },
-    });
+    const containers = await listContainersMatchingAnyLabelSets(this.docker, appUrnLabelSets(appUrn, ['traefik.enable=true']), false);
 
     const limit = pLimit(5);
     const targets = await Promise.all(
@@ -204,8 +200,7 @@ export class DockerReadFacade {
         limit(async () => {
           const inspect = await this.docker.getContainer(containerInfo.Id).inspect();
           const labels = inspect.Config?.Labels || {};
-          const networkSettings = inspect.NetworkSettings?.Networks?.[DEFAULT_NETWORK_NAME];
-          const containerIP = networkSettings?.IPAddress;
+          const containerIP = ipOnHubNetwork(inspect.NetworkSettings?.Networks);
 
           if (!containerIP) {
             return null;
@@ -261,15 +256,10 @@ export class DockerReadFacade {
 
   /**
    * Verify Hub-labeled containers exist and match the same running/stopped/missing
-   * rules used by app status sync (ci-os-hub.managed + ci-os-hub.appurn labels).
+   * rules used by app status sync (ci-hub.managed + ci-hub.appurn labels, plus the retired ci-os-hub spellings).
    */
   public async getManagedAppContainerVerification(appUrn: AppUrn): Promise<ManagedAppContainerVerification> {
-    const containers = await this.docker.listContainers({
-      all: true,
-      filters: {
-        label: ['ci-os-hub.managed=true', `ci-os-hub.appurn=${appUrn}`],
-      },
-    });
+    const containers = await listContainersMatchingAnyLabelSets(this.docker, managedAppLabelSets(appUrn));
 
     const summary = summarizeManagedAppContainers(containers);
     const appStatus = managedAppStatusFromSummary(summary);

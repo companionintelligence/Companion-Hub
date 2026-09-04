@@ -1,8 +1,8 @@
 services:
-  ci-os-hub:
+  ci-hub:
     ports:
       - "3000:3000"
     environment:
       - CI_HUB_ENVIRONMENT=staging
-      - HUB_CONTAINER_NAME=${HUB_CONTAINER_NAME}
+      - HUB_CONTAINER_NAME=ci-hub
       - NODE_ENV=production
