@@ -535,7 +535,7 @@ export const InstallForm: React.FC<IProps> = ({
           </p>
         )}
         {watchExposureMode === 'tailscale' && tailscaleAvailable && !tailscaleHttpsEnabled && (
-          <p className="mt-2 text-xs text-amber-600 dark:text-amber-500">
+          <p className="mt-2 text-xs text-warning">
             <Trans
               i18nKey="APP_INSTALL_FORM_EXPOSURE_TAILSCALE_HTTPS_DISABLED"
               components={{
@@ -568,7 +568,7 @@ export const InstallForm: React.FC<IProps> = ({
     return (
       <>
         {publicWebExpectedUrl && (
-          <p className="mb-3 text-sm text-amber-700 dark:text-amber-400">
+          <p className="mb-3 text-sm text-warning">
             Public Web routing is out of sync. Expected URL: {publicWebExpectedUrl}. Save settings or run repair to update routing.
           </p>
         )}

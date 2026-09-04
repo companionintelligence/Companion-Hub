@@ -127,8 +127,8 @@ export function McpAccessCard({ app, info, mcpRuntime: initialRuntime }: Props) 
           <span
             className={clsx(
               'inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium',
-              badge.tone === 'ok' && 'border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400',
-              badge.tone === 'warn' && 'border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-400',
+              badge.tone === 'ok' && 'border-success/40 bg-success/10 text-success',
+              badge.tone === 'warn' && 'border-warning/40 bg-warning/10 text-warning',
               badge.tone === 'muted' && 'border-border/70 bg-muted/30 text-muted-foreground',
             )}
           >
@@ -155,9 +155,7 @@ export function McpAccessCard({ app, info, mcpRuntime: initialRuntime }: Props) 
         <p className="text-sm text-muted-foreground">{t('APP_MCP_CARD_SUBTITLE')}</p>
 
         {runtime?.lastError && installed ? (
-          <p className="rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-sm text-amber-800 dark:text-amber-300">
-            {runtime.lastError}
-          </p>
+          <p className="rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-sm text-warning">{runtime.lastError}</p>
         ) : null}
 
         {tools.length > 0 && (

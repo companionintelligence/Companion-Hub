@@ -140,7 +140,7 @@ function WorkloadResponsiveness({ app }: { app: AppRuntimeHealth }) {
   const { t } = useTranslation();
 
   return (
-    <div className={app.degraded ? 'text-destructive font-medium' : app.responsive ? 'text-emerald-600' : 'text-amber-600'}>
+    <div className={app.degraded ? 'text-destructive font-medium' : app.responsive ? 'text-success' : 'text-warning'}>
       {app.degraded ? t('RESOURCE_MONITOR_DEGRADED_BADGE') : app.responsive ? t('RESOURCE_MONITOR_RESPONSIVE') : t('RESOURCE_MONITOR_UNRESPONSIVE')}
       {app.reason ? <div className="text-xs text-muted-foreground">{app.reason}</div> : null}
     </div>
@@ -264,7 +264,7 @@ export default function ResourceMonitorPage() {
                   </div>
                   <div>
                     <div className="text-xs uppercase tracking-wide text-muted-foreground">{t('COMMON_CPU')}</div>
-                    <div className={app.highCpu ? 'mt-1 text-amber-600 font-medium' : 'mt-1'}>{app.cpuPercent.toFixed(1)}%</div>
+                    <div className={app.highCpu ? 'mt-1 text-warning font-medium' : 'mt-1'}>{app.cpuPercent.toFixed(1)}%</div>
                   </div>
                   <div>
                     <div className="text-xs uppercase tracking-wide text-muted-foreground">{t('COMMON_MEMORY')}</div>
@@ -358,7 +358,7 @@ export default function ResourceMonitorPage() {
                           </div>
                         </TableCell>
                         <TableCell className="align-top">{app.status}</TableCell>
-                        <TableCell className={app.highCpu ? 'align-top text-amber-600 font-medium' : 'align-top'}>
+                        <TableCell className={app.highCpu ? 'align-top text-warning font-medium' : 'align-top'}>
                           {app.cpuPercent.toFixed(1)}%
                         </TableCell>
                         <TableCell className="align-top">

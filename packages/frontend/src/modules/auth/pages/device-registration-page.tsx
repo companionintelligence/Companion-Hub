@@ -634,7 +634,7 @@ export default function DeviceRegistrationPage() {
     return (
       <div className="mx-auto flex max-w-md flex-col items-center gap-4 py-4 text-center">
         {showSuccessIcon ? (
-          <CheckCircle2 role="img" aria-label={t('COMMON_SUCCESS')} className="h-10 w-10 text-green-500" />
+          <CheckCircle2 role="img" aria-label={t('COMMON_SUCCESS')} className="h-10 w-10 text-success" />
         ) : (
           <Loader2 role="img" aria-label={t('COMMON_LOADING')} className="h-10 w-10 animate-spin text-primary" />
         )}
@@ -681,7 +681,7 @@ export default function DeviceRegistrationPage() {
   if (statusError && !registrationStatus) {
     return (
       <div className="mx-auto flex max-w-md flex-col items-center gap-4 py-4 text-center">
-        <AlertCircle role="img" aria-label={t('COMMON_ERROR')} className="h-12 w-12 text-amber-500" />
+        <AlertCircle role="img" aria-label={t('COMMON_ERROR')} className="h-12 w-12 text-destructive" />
         <div>
           <h2 className="text-xl font-semibold text-foreground">{t('DEVICE_REGISTRATION_STATUS_UNAVAILABLE')}</h2>
           <p className="mt-3 text-sm text-muted-foreground">{statusError}</p>
