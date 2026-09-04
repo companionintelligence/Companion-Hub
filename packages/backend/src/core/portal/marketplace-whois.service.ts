@@ -68,6 +68,26 @@ export class MarketplaceWhoIsService {
     }
   }
 
+  /**
+   * The apps in `appUrns` the operator may `action`, dropping the rest. For a caller
+   * that acts on a set it did not name — a sweep, a repair-all — where refusing the
+   * whole request over one ungranted app would put the remedy permanently out of
+   * reach. Callers acting on a NAMED set want `assertSessionActions` instead: there
+   * the operator chose the apps, so silently skipping one would be a lie.
+   *
+   * Fails CLOSED, unlike `filterSessionByView`: these callers mutate, so an app whose
+   * grant could not be resolved is dropped rather than swept along.
+   */
+  async filterSessionByAction(req: Request, appUrns: AppUrn[], action: HubAction, surface: GrantSurface = 'hub'): Promise<AppUrn[]> {
+    const userId = hubSessionOperatorUserId(req);
+    if (userId == null || appUrns.length === 0) {
+      return appUrns;
+    }
+
+    const map = await this.canMap(userId, appUrns, surface);
+    return appUrns.filter((appUrn) => map.get(appUrn)?.includes(action) === true);
+  }
+
   async filterSessionByView<T>(req: Request, items: T[], urnOf: (item: T) => string | undefined, surface: GrantSurface): Promise<T[]> {
     const userId = hubSessionOperatorUserId(req);
     if (userId == null || items.length === 0) {

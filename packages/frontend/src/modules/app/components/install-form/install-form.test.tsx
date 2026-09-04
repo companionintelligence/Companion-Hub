@@ -1435,6 +1435,44 @@ describe('InstallForm - Public Web routing drift', () => {
     expect(toast.success).toHaveBeenCalledWith('APP_PUBLIC_WEB_REPAIR_ALREADY_SYNCED');
   });
 
+  it('does not force a repair when the drift has resolved since the dialog opened', async () => {
+    /*
+     * The banner is drawn from a snapshot taken on open, and the server repairs a NAMED
+     * app on `envMismatch` alone — deliberately overriding the `action: 'ok'` window a
+     * freshly bound custom domain opens. Acting on the stale snapshot would force the
+     * very restart that bind deferred.
+     */
+    repairPublicWebRouting.mockResolvedValue([{ appUrn: 'n8n:store', success: true }]);
+    renderDrifted();
+    await screen.findByTestId('public-web-drift-banner');
+
+    fetchPublicWebDiagnostics.mockResolvedValue({
+      apps: [{ appUrn: 'n8n:store', envMismatch: true, action: 'ok', computedPublicUrl: 'https://n8n-blaptop-bc.companionintelligence.com' }],
+    });
+    fireEvent.click(screen.getByTestId('public-web-repair-button'));
+
+    await waitFor(() => {
+      expect(toast.success).toHaveBeenCalledWith('APP_PUBLIC_WEB_REPAIR_ALREADY_SYNCED');
+    });
+    expect(repairPublicWebRouting).not.toHaveBeenCalled();
+    expect(screen.queryByTestId('public-web-drift-banner')).not.toBeInTheDocument();
+  });
+
+  it('repairs nothing when the drift cannot be re-read', async () => {
+    // Unverified state is not a licence to restart the app; the operator can retry.
+    renderDrifted();
+    await screen.findByTestId('public-web-drift-banner');
+
+    fetchPublicWebDiagnostics.mockResolvedValue(null);
+    fireEvent.click(screen.getByTestId('public-web-repair-button'));
+
+    await waitFor(() => {
+      expect(toast.error).toHaveBeenCalledWith('APP_PUBLIC_WEB_REPAIR_ERROR');
+    });
+    expect(repairPublicWebRouting).not.toHaveBeenCalled();
+    expect(screen.getByTestId('public-web-drift-banner')).toBeInTheDocument();
+  });
+
   it('surfaces the reason when the operator holds no grant for the app', async () => {
     // The Hub answers a denied repair with APP_ACTION_GRANT_DENIED, and telling that
     // operator to "check the Hub logs" would send them hunting a fault that is not there.

@@ -46,6 +46,16 @@ export class PublicWebController {
     // must not reach the same effect through the routing banner. API-key callers
     // (the `cihub` CLI) hold no Hub session, so this is a no-op for them, exactly
     // as it is on every lifecycle route.
-    return this.publicWebService.repair(parsed.data, (appUrns) => this.whois.assertSessionActions(req, appUrns, 'configure'));
+    return this.publicWebService.repair(parsed.data, async (appUrns, named) => {
+      // Named apps are all-or-nothing: the operator chose them, so quietly skipping one
+      // would report a repair they did not get. A sweep is filtered instead — refusing
+      // it wholesale over one ungranted app would leave the operator's own drifted apps
+      // permanently unrepairable.
+      if (named) {
+        await this.whois.assertSessionActions(req, appUrns, 'configure');
+        return appUrns;
+      }
+      return this.whois.filterSessionByAction(req, appUrns, 'configure');
+    });
   }
 }

@@ -1,4 +1,5 @@
 import { fetchDnsAvailability, fetchPublicWebDiagnostics, repairPublicWebRouting } from '@/lib/cloudflare-api';
+import type { PublicWebDiagnosticsApp } from '@/lib/cloudflare-api';
 import { formatApiError } from '@/lib/format-api-error';
 import type { AvailableCustomDomainsResponseDto, GetRandomPortResponse } from '@/api-client';
 import { getRandomPortMutation, getDomainsOptions, getCustomDomainsOptions } from '@/api-client/@tanstack/react-query.gen';
@@ -30,6 +31,20 @@ import { CustomDomainField } from './custom-domain-field';
 import { HostnamePreviewCard } from './hostname-preview-card';
 import { InstallFormField } from './install-form-field';
 import { useDnsAvailability } from './use-dns-availability';
+
+/**
+ * The expected URL to warn about, or `null` when this app needs no repair.
+ *
+ * `action`, not `envMismatch`: a freshly bound custom domain deliberately leaves the
+ * env behind until the restart the user was asked for, and that window reports
+ * `envMismatch: true, action: 'ok'`. Warning on it told the operator a healthy app was
+ * broken and pointed them at a repair that (now correctly) declines to touch it.
+ */
+const publicWebDriftUrl = (entry?: PublicWebDiagnosticsApp): string | null => {
+  if (!entry) return null;
+  const needsRepair = entry.action ? entry.action === 'repair' : entry.envMismatch;
+  return needsRepair ? entry.computedPublicUrl : null;
+};
 
 const isHiddenFieldType = (type: FormField['type']) => HIDDEN_FIELD_TYPES.includes(type as (typeof HIDDEN_FIELD_TYPES)[number]);
 const typeFilter = (field: FormField) => !isHiddenFieldType(field.type);
@@ -226,9 +241,29 @@ export const InstallForm: React.FC<IProps> = ({
   const handleRepairPublicWeb = async () => {
     setIsRepairingPublicWeb(true);
     try {
+      /*
+       * Re-read the verdict before acting on it. The banner is drawn from a snapshot
+       * taken when the dialog opened, and the server repairs a NAMED app on
+       * `envMismatch` alone — deliberately overriding the `action: 'ok'` window that a
+       * freshly bound custom domain opens. That override is meant for an operator
+       * typing the app on a command line; a click on a banner that has since gone stale
+       * is not the same intent, and would force the very restart the bind deferred.
+       */
+      const current = await fetchPublicWebDiagnostics();
+      if (!current) {
+        toast.error(t('APP_PUBLIC_WEB_REPAIR_ERROR'));
+        return;
+      }
       // `info.urn`, not `editingAppUrn`: the banner is raised from the diagnostics entry
       // matched on `info.urn`, so targeting anything else could repair a different app
       // than the one the operator is being warned about.
+      const stillDrifted = publicWebDriftUrl(current.apps.find((app) => app.appUrn === info.urn));
+      if (!stillDrifted) {
+        setPublicWebExpectedUrl(null);
+        toast.success(t('APP_PUBLIC_WEB_REPAIR_ALREADY_SYNCED'));
+        return;
+      }
+
       const results = await repairPublicWebRouting(info.urn);
       const outcome = results.find((result) => result.appUrn === info.urn);
       if (outcome && !outcome.success) {
@@ -449,13 +484,7 @@ export const InstallForm: React.FC<IProps> = ({
         if (!data) return;
         const entry = data.apps.find((app) => app.appUrn === info.urn);
         if (cancelled) return;
-        // `action`, not `envMismatch`: a freshly bound custom domain deliberately
-        // leaves the env behind until the restart the user was asked for, and that
-        // window reports `envMismatch: true, action: 'ok'`. Warning on it told the
-        // operator a healthy app was broken and pointed them at a repair that (now
-        // correctly) declines to touch it.
-        const needsRepair = entry ? (entry.action ? entry.action === 'repair' : entry.envMismatch) : false;
-        setPublicWebExpectedUrl(needsRepair && entry ? entry.computedPublicUrl : null);
+        setPublicWebExpectedUrl(publicWebDriftUrl(entry));
       } catch {
         if (!cancelled) setPublicWebExpectedUrl(null);
       }
