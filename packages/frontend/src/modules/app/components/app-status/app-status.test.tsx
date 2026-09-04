@@ -144,6 +144,30 @@ describe('AppStatus', () => {
     expect(presentation.tone).toBe('success');
   });
 
+  it('uses Docker status text when an older runtime-health payload omits exitCode', () => {
+    const presentation = getAppStatusPresentation('running', {
+      ...healthyRuntime(),
+      appUrn: 'ci-memory:ci-marketplace',
+      appName: 'ci-memory',
+      containers: [
+        runningContainer,
+        {
+          containerId: 'setup',
+          name: 'ci-memory_ci-marketplace-setup-secrets-1',
+          state: 'exited',
+          status: 'Exited (0) 9 minutes ago',
+          health: null,
+          cpuPercent: 0,
+          memoryUsageBytes: 0,
+          memoryLimitBytes: 0,
+        },
+      ],
+    });
+
+    expect(presentation.labelKey).toBe('APP_STATUS_RUNNING');
+    expect(presentation.tone).toBe('success');
+  });
+
   it('folds a still-propagating public route into the pill instead of a plain green Running', () => {
     const presentation = getAppStatusPresentation('running', healthyRuntime(), { propagating: true, detail: 'DNS propagating...' });
 
@@ -301,5 +325,21 @@ describe('AppStatus', () => {
 
     expect(presentation.fallbackLabel).toBe('Needs attention');
     expect(presentation.tone).toBe('danger');
+  });
+
+  it('detects a failed one-shot job from Docker status text when exitCode is omitted', () => {
+    const failedSetup = {
+      containerId: 'migrate',
+      name: 'ci-memory-migrate-database',
+      state: 'exited',
+      status: 'Exited (1) 1 minute ago',
+      health: null,
+      cpuPercent: 0,
+      memoryUsageBytes: 0,
+      memoryLimitBytes: 0,
+    };
+
+    expect(isCompletedOneShotContainer(failedSetup)).toBe(false);
+    expect(isConcerningContainer(failedSetup)).toBe(true);
   });
 });
