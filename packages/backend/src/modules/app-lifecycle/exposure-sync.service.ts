@@ -31,6 +31,25 @@ import { TailscaleService } from '../tailscale/tailscale.service';
 import { createAppUrn } from '@/common/helpers/app-helpers';
 import { hasRestoreIntent, readRehydrationState } from './registration-recovery-state';
 
+/** Options shared by every entry point into an exposure sync. */
+export interface ExposureSyncOptions {
+  /**
+   * Apps to omit from this pass so Companion Portal releases their previous DNS.
+   */
+  excludeAppUrns?: AppUrn[];
+  /**
+   * Apps whose restart the caller has already taken responsibility for.
+   *
+   * `reconcileCustomDomains` recreates an app that lost its bound hostname,
+   * because nothing else would. A caller that is mid-save is the exception: it
+   * awaits this sync and then restarts the app itself, and a subdomain rename
+   * reads here as a lost hostname — CI-Cloud still reports the binding against
+   * the app's previous platform name. Without this the save would recreate the
+   * container twice.
+   */
+  skipAutoRestartAppUrns?: AppUrn[];
+}
+
 function buildPublicHostname(params: { appSubdomain: string; hubSubdomain?: string | null; orgSlug?: string | null; publicDomainRoot: string }) {
   return buildPublicWebIdentity({
     appSubdomain: params.appSubdomain,
@@ -141,7 +160,7 @@ export class ExposureSyncService {
    * `Promise.allSettled` keeps one control plane available when the other fails;
    * each trigger owns its own diagnostics and recovery behavior.
    */
-  private async syncExposure(options?: { excludeAppUrns?: AppUrn[] }) {
+  private async syncExposure(options?: ExposureSyncOptions) {
     await Promise.allSettled([this.triggerCloudflareSync(options), this.triggerTailscaleSync()]);
   }
 
@@ -153,11 +172,20 @@ export class ExposureSyncService {
    * releases the old record, and a full sync applies the new identity.
    */
   async syncExposureAfterRoutingChange(appUrn: AppUrn, routingChanged: boolean) {
+    /*
+     * The caller restarts this app itself once the save completes, so the
+     * custom-domain reconcile must not dispatch a second one. A rename moves the
+     * app's platform hostname out from under a binding CI-Cloud still reports
+     * against the old target, which reads there as "the hostname went away" —
+     * true, but owned by the save rather than by this sync.
+     */
+    const callerOwnsRestart: ExposureSyncOptions = { skipAutoRestartAppUrns: [appUrn] };
+
     if (routingChanged) {
       this.logger.info(`[Cloudflare] Public routing changed for ${appUrn} — releasing previous DNS before applying new hostname`);
-      await this.syncExposure({ excludeAppUrns: [appUrn] });
+      await this.syncExposure({ ...callerOwnsRestart, excludeAppUrns: [appUrn] });
     }
-    await this.syncExposure();
+    await this.syncExposure(callerOwnsRestart);
   }
 
   /**
@@ -166,7 +194,7 @@ export class ExposureSyncService {
    * Keep this wrapper aligned with `syncExposure` so availability remediation can
    * release stale routes through the same exclusion option.
    */
-  public async syncExposurePublic(options?: { excludeAppUrns?: AppUrn[] }) {
+  public async syncExposurePublic(options?: ExposureSyncOptions) {
     return this.syncExposure(options);
   }
 
@@ -372,7 +400,7 @@ export class ExposureSyncService {
     this.sseService.emit('app', { event: 'tailscale_serve_error', appUrn });
   }
 
-  public async triggerCloudflareSync(options?: { excludeAppUrns?: AppUrn[] }) {
+  public async triggerCloudflareSync(options?: ExposureSyncOptions) {
     try {
       if (await hasRestoreIntent()) {
         const rehydrationState = await readRehydrationState();
@@ -591,6 +619,7 @@ export class ExposureSyncService {
             syncedAppUrns,
             customDomains: result.customDomains,
             toPublicHostname,
+            skipAutoRestartAppUrns: new Set(options?.skipAutoRestartAppUrns ?? []),
           });
         } catch (error) {
           this.logger.error(`[Cloudflare] Custom-domain reconcile failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -881,6 +910,8 @@ export class ExposureSyncService {
     syncedAppUrns: Set<AppUrn>;
     customDomains: TunnelCustomDomain[] | undefined;
     toPublicHostname: (app: Awaited<ReturnType<AppsRepository['getApps']>>[number]) => string;
+    /** See {@link ExposureSyncOptions.skipAutoRestartAppUrns}. */
+    skipAutoRestartAppUrns: Set<AppUrn>;
   }): Promise<void> {
     /*
      * Treat an absent field differently from an empty array. A Companion Portal
@@ -923,6 +954,15 @@ export class ExposureSyncService {
         matchedTargets.add(target);
       }
 
+      /*
+       * Whether CI-Cloud drove this change, as opposed to the app's own settings.
+       *
+       * Only the former is unowned. A local exposure change already restarts the
+       * app itself, and dispatching a second restart from here would recreate the
+       * container twice for one save. See the restart below.
+       */
+      let cloudDrivenChange = false;
+
       if (!canServeOnCustomDomain(app as AppPublicRoutingSnapshot)) {
         // The app is no longer publicly routed or uses an open host port, which
         // `generateEnvFile` treats as unexposed and gives no public identity.
@@ -946,6 +986,7 @@ export class ExposureSyncService {
           continue;
         }
         next = selectCustomDomain(byTarget.get(target), current);
+        cloudDrivenChange = true;
       } else {
         /*
          * The app is published but absent from this payload because it is stopped
@@ -1030,8 +1071,14 @@ export class ExposureSyncService {
        * This covers a re-point as well as a disconnect: `current` non-null means
        * the app is publishing a hostname that is no longer the bound one, and
        * whether CI-Cloud replaced it or removed it, that hostname is gone.
+       *
+       * Restricted to cloud-driven changes because those are the ones nothing
+       * else owns. When the binding falls away because the app stopped being
+       * publicly routed, that came from a settings save, and `updateAppConfig`
+       * awaits this very sync before firing its own restart — so restarting here
+       * would recreate the container twice for one save.
        */
-      const restartingNow = current !== null && app.status === 'running';
+      const restartingNow = cloudDrivenChange && current !== null && app.status === 'running' && !params.skipAutoRestartAppUrns.has(appUrn);
       if (restartingNow) {
         revertedAppUrns.push(appUrn);
       }
@@ -1053,14 +1100,6 @@ export class ExposureSyncService {
     }
 
     /*
-     * Dispatch after the loop so one app's restart cannot delay reconciling the
-     * next, and so every row is settled before any container is recreated.
-     */
-    if (revertedAppUrns.length > 0) {
-      await this.restartRevertedApps(revertedAppUrns);
-    }
-
-    /*
      * Report hostnames that Companion Portal wired but the Hub cannot attribute.
      *
      * The join can miss because each side composes its key independently.
@@ -1076,6 +1115,15 @@ export class ExposureSyncService {
         `[Cloudflare] CI-Cloud reports custom domains wired to ${unmatched.length} hostname(s) that match no app on this Hub: ${unmatched.join(', ')}. ` +
           `Those domains are serving but their apps will keep emitting their platform hostname — check the apps' public domain and subdomain settings.`,
       );
+    }
+
+    /*
+     * Restart last: every row is settled and every diagnostic is out before a
+     * container is recreated, so a slow or failing restart cannot delay
+     * reconciling another app or swallow this pass's reporting.
+     */
+    if (revertedAppUrns.length > 0) {
+      await this.restartRevertedApps(revertedAppUrns);
     }
   }
 
@@ -1134,10 +1182,12 @@ export class ExposureSyncService {
       }
 
       try {
-        this.lastCustomDomainRestartAt.set(appUrn, now);
         // Skip the pull: nothing about the image changed, and a registry round
         // trip would extend the outage this restart exists to end.
         await lifecycleService.restartApp({ appUrn, skipPull: true });
+        // Recorded only once the command is queued. A dispatch that threw
+        // restarted nothing, so it must not spend the cooldown.
+        this.lastCustomDomainRestartAt.set(appUrn, now);
       } catch (error) {
         this.logger.error(
           `[Cloudflare] Failed to restart ${appUrn} after its custom domain was removed: ${error instanceof Error ? error.message : String(error)}`,

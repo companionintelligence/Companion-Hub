@@ -1029,6 +1029,42 @@ describe('AppLifecycleService', () => {
       expect(restartApp).toHaveBeenCalledTimes(1);
     });
 
+    it('does not restart an app that stopped being publicly routed', async () => {
+      // The binding falls away here because a settings save turned public
+      // exposure off — and `updateAppConfig` awaits this sync before firing its
+      // own restart. Restarting from here too would recreate the container twice
+      // for one save.
+      const restartApp = stubLifecycleForRevert();
+      appsRepository.getApps.mockResolvedValue([runningComfy({ exposedLocal: false, exposureMode: 'local', customDomain: 'comfy.acme.com' })] as any);
+      cloudflareClientService.syncState.mockResolvedValue({ ok: true, failed: [], failures: [], synced: 0, customDomains: [] });
+
+      await service.triggerCloudflareSync();
+
+      expect(appsRepository.updateAppByIdIfStatus).toHaveBeenCalledWith(7, 'running', { customDomain: null, pendingRestart: true });
+      expect(restartApp).not.toHaveBeenCalled();
+    });
+
+    it('leaves the restart to the caller when a config save drove the sync', async () => {
+      // A subdomain rename moves the app's platform hostname out from under a
+      // binding CI-Cloud still reports against the old target, so the reconcile
+      // sees a lost hostname. `updateAppConfig` awaits this sync and then
+      // restarts the app itself — recreating the container twice for one save.
+      const restartApp = stubLifecycleForRevert();
+      appsRepository.getApps.mockResolvedValue([runningComfy({ customDomain: 'comfy.acme.com' })] as any);
+      cloudflareClientService.syncState.mockResolvedValue({
+        ok: true,
+        failed: [],
+        failures: [],
+        synced: 1,
+        customDomains: [{ id: 'cd_1', domain: 'comfy.acme.com', targetHostname: 'comfyui-old-acme.companionintelligence.com' }],
+      });
+
+      await exposureSyncService.syncExposureAfterRoutingChange('comfyui:ci-marketplace' as AppUrn, true);
+
+      expect(appsRepository.updateAppByIdIfStatus).toHaveBeenCalledWith(7, 'running', { customDomain: null, pendingRestart: true });
+      expect(restartApp).not.toHaveBeenCalled();
+    });
+
     it('does not restart when a custom domain is newly bound', async () => {
       // The bind direction is asymmetric: the app still works on its platform
       // hostname, so a background heartbeat must not take it down for it.
@@ -1919,8 +1955,13 @@ describe('AppLifecycleService', () => {
       });
 
       expect(syncSpy).toHaveBeenCalledTimes(2);
-      expect(syncSpy).toHaveBeenNthCalledWith(1, { excludeAppUrns: ['myapp:ci-marketplace'] });
-      expect(syncSpy).toHaveBeenNthCalledWith(2, undefined);
+      // Both passes claim the restart: `updateAppConfig` fires its own below, and
+      // a rename reads inside the reconcile as a lost custom hostname.
+      expect(syncSpy).toHaveBeenNthCalledWith(1, {
+        excludeAppUrns: ['myapp:ci-marketplace'],
+        skipAutoRestartAppUrns: ['myapp:ci-marketplace'],
+      });
+      expect(syncSpy).toHaveBeenNthCalledWith(2, { skipAutoRestartAppUrns: ['myapp:ci-marketplace'] });
     });
   });
 

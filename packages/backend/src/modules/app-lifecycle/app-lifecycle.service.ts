@@ -18,7 +18,7 @@ import { AppsService } from '../apps/apps.service';
 import { InstallPipelineTracker } from '../apps/install-pipeline.tracker';
 import { BackupManager } from '../backups/backup.manager';
 import { TailscaleService } from '../tailscale/tailscale.service';
-import { ExposureSyncService } from './exposure-sync.service';
+import { ExposureSyncService, type ExposureSyncOptions } from './exposure-sync.service';
 import { MarketplaceService } from '../marketplace/marketplace.service';
 import { ImageSizeService } from '../marketplace/image-size.service';
 import { ReposHelpers } from '../app-stores/repos.helpers';
@@ -1977,7 +1977,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
   /**
    * Sync exposure state for all apps — Cloudflare + Tailscale in parallel
    */
-  private async syncExposure(options?: { excludeAppUrns?: AppUrn[] }) {
+  private async syncExposure(options?: ExposureSyncOptions) {
     await this.exposureSyncService.syncExposurePublic(options);
   }
 
@@ -1993,7 +1993,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
   /**
    * Public wrapper for syncExposure — used by AppsService.resolveAppAvailability
    */
-  public async syncExposurePublic(options?: { excludeAppUrns?: AppUrn[] }) {
+  public async syncExposurePublic(options?: ExposureSyncOptions) {
     return this.exposureSyncService.syncExposurePublic(options);
   }
 
@@ -2002,7 +2002,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     return this.exposureSyncService.syncTailscaleExposurePublic();
   }
 
-  public async triggerCloudflareSync(options?: { excludeAppUrns?: AppUrn[] }) {
+  public async triggerCloudflareSync(options?: ExposureSyncOptions) {
     return this.exposureSyncService.triggerCloudflareSync(options);
   }
 
