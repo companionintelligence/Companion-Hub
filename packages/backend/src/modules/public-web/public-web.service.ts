@@ -110,7 +110,7 @@ export class PublicWebService {
 
       /*
        * A binding that has landed on the row but not yet in the env is the state
-       * this feature DESIGNS for: the sync deliberately does not recreate a
+       * this feature DESIGNS for: on a FIRST bind the sync does not recreate a
        * running container, it raises `pendingRestart` and lets the user choose
        * when. Calling that "repair" would report a healthy, freshly bound app as
        * broken — and `repair()` with no `appUrns` restarts everything it finds,
@@ -134,6 +134,13 @@ export class PublicWebService {
        * gone the env holds a hostname that is indistinguishable from ordinary
        * drift, and repairing it is the right answer anyway — it regenerates the
        * platform identity and restarts, which is the pending restart itself.
+       *
+       * The reconcile now usually gets there first, restarting the app itself
+       * when it loses a bound hostname (CI-Hub#1207). Reporting `repair` during
+       * that window is still correct: it is the same verdict for the same real
+       * drift, `repair()` restarts only apps whose env is still wrong, and the
+       * reconcile declines in cases this cannot see — an identity move, a
+       * hostname the Hub is still asking for, a dispatch that failed.
        */
       const awaitingScheduledRestart = envMismatch && app.pendingRestart && customDomain !== null && envHostname === identity.hostname;
       const action: PublicWebDiagnosticEntry['action'] = envMismatch && !awaitingScheduledRestart ? 'repair' : 'ok';
