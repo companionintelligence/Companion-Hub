@@ -64,8 +64,6 @@ export const DEFAULT_POSTGRES_PORT = '6543';
 
 // Message queue
 export const DEFAULT_RABBITMQ_HOST = 'ci-hub-queue';
-/** Retired compose DNS name. Existing apps and env files may still resolve it via alias. */
-export const LEGACY_RABBITMQ_HOST = 'ci-os-hub-queue';
 export const DEFAULT_RABBITMQ_USERNAME = 'companion';
 export const DEFAULT_RABBITMQ_PASSWORD = 'admin';
 

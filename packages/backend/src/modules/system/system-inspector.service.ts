@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { appUrnFromLabels } from '@/common/constants';
 import { LoggerService } from '@/core/logger/logger.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { PortManagerService } from '@/modules/network/port-manager.service';
@@ -83,7 +84,7 @@ export class SystemInspectorService {
       const containers = await this.docker.listContainers({ all: true });
       return containers.map((c) => {
         const names = c.Names?.map((n) => n.replace(/^\//, '')) || [];
-        const appUrn = c.Labels?.['ci-hub.appurn'] || c.Labels?.['ci-os-hub.appurn'] || null;
+        const appUrn = appUrnFromLabels(c.Labels) ?? null;
         const ports = (c.Ports || []).map((p) => ({
           hostPort: p.PublicPort || null,
           containerPort: p.PrivatePort,

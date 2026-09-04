@@ -10,14 +10,6 @@ pub const HUB_QUEUE: &str = "ci-hub-queue";
 pub const LEGACY_HUB_QUEUE: &str = "ci-os-hub-queue";
 pub const HUB_NETWORK: &str = "ci-hub_network";
 pub const LEGACY_HUB_NETWORK: &str = "ci-os-hub_network";
-#[allow(dead_code)]
-pub const HUB_MANAGED_LABEL: &str = "ci-hub.managed";
-#[allow(dead_code)]
-pub const LEGACY_HUB_MANAGED_LABEL: &str = "ci-os-hub.managed";
-#[allow(dead_code)]
-pub const HUB_APPURN_LABEL: &str = "ci-hub.appurn";
-#[allow(dead_code)]
-pub const LEGACY_HUB_APPURN_LABEL: &str = "ci-os-hub.appurn";
 
 pub const HUB_CONTAINER_NAMES: &[&str] = &[HUB_CONTAINER, LEGACY_HUB_CONTAINER];
 pub const HUB_QUEUE_NAMES: &[&str] = &[HUB_QUEUE, LEGACY_HUB_QUEUE];

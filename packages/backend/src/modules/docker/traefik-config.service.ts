@@ -1,6 +1,7 @@
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { LoggerService } from '@/core/logger/logger.service';
+import { LEGACY_NETWORK_NAME, hubContainerName, hubNetworkName, isHubApplianceContainerName } from '@/common/constants';
 import { writeHealableTextFile } from '@/common/helpers/bind-mount-helpers';
 import { Injectable, Inject } from '@nestjs/common';
 import Dockerode from 'dockerode';
@@ -68,7 +69,7 @@ export class TraefikConfigService {
     private readonly filesystem: FilesystemService,
     @Inject(DOCKERODE) private readonly docker: Dockerode,
   ) {
-    this.mainNetworkName = `${process.env.HUB_CONTAINER_NAME || 'ci-hub'}_network`;
+    this.mainNetworkName = hubNetworkName();
   }
 
   /**
@@ -170,13 +171,13 @@ export class TraefikConfigService {
 
         // Skip the Hub appliance and traefik containers (they're handled separately)
         const containerName = inspect.Name.replace(/^\//, '');
-        if (containerName === 'ci-hub' || containerName === 'ci-os-hub' || containerName.includes('traefik')) {
+        if (isHubApplianceContainerName(containerName) || containerName.includes('traefik')) {
           continue;
         }
 
         // Get container IP from the main network
         const networks = inspect.NetworkSettings?.Networks;
-        const networkSettings = networks?.[this.mainNetworkName] ?? networks?.['ci-os-hub_network'];
+        const networkSettings = networks?.[this.mainNetworkName] ?? networks?.[LEGACY_NETWORK_NAME];
         if (!networkSettings?.IPAddress) {
           this.logger.debug(`Skipping container ${inspect.Name}: not on a Hub network or IP not assigned yet`);
           continue;
@@ -393,7 +394,7 @@ export class TraefikConfigService {
       return;
     }
     const hostname = `${hubSubdomain.trim()}.${domain.trim()}`;
-    const hubContainer = process.env.HUB_CONTAINER_NAME || 'ci-hub';
+    const hubContainer = hubContainerName();
 
     try {
       const { directories } = this.config.getConfig();
