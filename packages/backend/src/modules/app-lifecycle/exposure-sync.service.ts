@@ -131,6 +131,19 @@ export class ExposureSyncService {
   private static readonly CUSTOM_DOMAIN_RESTART_COOLDOWN_MS = 10 * 60_000;
 
   /**
+   * Reverts whose restart could not be dispatched, to retry on a later pass.
+   *
+   * The reconcile settles the row before it asks for the restart, so once a
+   * dispatch fails nothing else will ever notice that app: every later pass sees
+   * `next === current` and returns early, leaving the container forwarding a
+   * hostname the Hub has stopped serving.
+   */
+  private readonly failedCustomDomainReverts = new Set<AppUrn>();
+
+  /** Cloudflare passes currently running. See {@link isCloudflareSyncInFlight}. */
+  private cloudflareSyncDepth = 0;
+
+  /**
    * Reserves HTTPS port 443 for the Hub on the tailnet.
    *
    * The resulting origin is the bare `https://<nodeFqdn>` advertised by
@@ -400,7 +413,18 @@ export class ExposureSyncService {
     this.sseService.emit('app', { event: 'tailscale_serve_error', appUrn });
   }
 
+  /**
+   * Whether a Cloudflare pass — and so a custom-domain reconcile — is running.
+   *
+   * Lets the background poll stand down while any other trigger is mid-pass,
+   * rather than letting two reconciliations race for the same row.
+   */
+  public isCloudflareSyncInFlight(): boolean {
+    return this.cloudflareSyncDepth > 0;
+  }
+
   public async triggerCloudflareSync(options?: ExposureSyncOptions) {
+    this.cloudflareSyncDepth += 1;
     try {
       if (await hasRestoreIntent()) {
         const rehydrationState = await readRehydrationState();
@@ -613,8 +637,9 @@ export class ExposureSyncService {
        * therefore retain a serving custom hostname even when its DNS write fails.
        */
       if (result.ok) {
+        let deferredRevertAppUrns: AppUrn[] = [];
         try {
-          await this.reconcileCustomDomains({
+          deferredRevertAppUrns = await this.reconcileCustomDomains({
             apps,
             syncedAppUrns,
             customDomains: result.customDomains,
@@ -644,6 +669,7 @@ export class ExposureSyncService {
             syncedAppUrns,
             organizationId: orgInfo.id,
             toPublicHostname,
+            deferredRevertAppUrns: new Set(deferredRevertAppUrns),
           });
         } catch (error) {
           this.logger.error(`[Cloudflare] Custom-domain bind pass failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -655,6 +681,8 @@ export class ExposureSyncService {
       } else {
         this.logger.error(`[Cloudflare] Sync failed: ${String(error)}`);
       }
+    } finally {
+      this.cloudflareSyncDepth -= 1;
     }
   }
 
@@ -696,6 +724,17 @@ export class ExposureSyncService {
      */
     organizationId: string;
     toPublicHostname: (app: Awaited<ReturnType<AppsRepository['getApps']>>[number]) => string;
+    /**
+     * Apps that just lost a bound hostname this Hub is still asking for, whose
+     * revert `reconcileCustomDomains` deferred to this pass.
+     *
+     * They are still forwarding that hostname. If the request below puts them
+     * back on it, nothing needs recreating. If the choice turns out to be
+     * nonviable and this pass clears it, they are stranded on a name the Hub has
+     * stopped serving, and only recreating the container fixes that
+     * (CI-Hub#1207).
+     */
+    deferredRevertAppUrns: Set<AppUrn>;
   }): Promise<void> {
     /*
      * Resolve candidates once into the shape both loops need. Re-deriving intent
@@ -789,6 +828,13 @@ export class ExposureSyncService {
 
     const byDomain = new Map(available.map((entry) => [entry.domain, entry]));
 
+    /*
+     * Apps this pass gave up on that are still forwarding the hostname they gave
+     * up. Collected rather than restarted inline so one slow container cannot
+     * delay the remaining bind requests.
+     */
+    const strandedAppUrns: AppUrn[] = [];
+
     for (const { app, appUrn, intent } of claimed) {
       try {
         const entry = byDomain.get(intent);
@@ -805,6 +851,18 @@ export class ExposureSyncService {
           this.logger.warn(
             `[Cloudflare] ${appUrn} was set up to serve on ${intent}, but that domain is no longer connected to this organization; clearing the choice and leaving the app on its platform hostname.`,
           );
+
+          /*
+           * "Leaving the app on its platform hostname" is only true once the
+           * container is recreated. An app whose revert the reconcile deferred to
+           * this pass was serving on `intent` moments ago and is still injecting
+           * it as `X-Forwarded-Host`, so it is broken on the platform hostname
+           * until it restarts. Now that the choice is provably nonviable, take the
+           * revert the reconcile held back.
+           */
+          if (params.deferredRevertAppUrns.has(appUrn)) {
+            strandedAppUrns.push(appUrn);
+          }
 
           continue;
         }
@@ -877,6 +935,12 @@ export class ExposureSyncService {
           await this.appRepository.updateAppById(app.id, { customDomainIntent: null });
           this.logger.warn(`[Cloudflare] CI-Cloud does not recognise ${intent} for this organization; clearing the choice on ${appUrn}.`);
 
+          // Terminal in the same way as the missing-entry case above, so the
+          // deferred revert applies here too.
+          if (params.deferredRevertAppUrns.has(appUrn)) {
+            strandedAppUrns.push(appUrn);
+          }
+
           continue;
         }
 
@@ -888,6 +952,10 @@ export class ExposureSyncService {
         this.logger.error(`[Cloudflare] Custom-domain bind failed for ${appUrn}: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
+
+    if (strandedAppUrns.length > 0) {
+      await this.restartRevertedApps(strandedAppUrns);
+    }
   }
 
   /**
@@ -898,11 +966,16 @@ export class ExposureSyncService {
    * `targetHostname` with the same `<app>-<hub>-<org>.<root>` convention as
    * `buildPublicWebIdentity`, so neither side needs another identifier.
    *
-   * This method deliberately does not restart apps. A hostname change immediately
-   * makes the Compose environment stale, but a background heartbeat must not
-   * recreate a running container without user action. Instead, set
-   * `pendingRestart`, matching the badge for a settings change. The user-selected
-   * restart then regenerates the environment.
+   * Restarts are asymmetric. A *first* bind only raises `pendingRestart`, the
+   * same badge a settings change shows: the app still works on its platform
+   * hostname, so a background heartbeat has no reason to take a running
+   * container down for a hostname nothing depends on yet. *Losing* a bound
+   * hostname is different — the container keeps injecting it as
+   * `X-Forwarded-Host` until it is recreated — so that direction restarts the
+   * app itself. See the `restartingNow` predicate below for the exact rule.
+   *
+   * @returns the apps whose revert this pass handed to `bindCustomDomainIntents`
+   * because the Hub is still asking CI-Cloud for the hostname they just lost.
    */
   private async reconcileCustomDomains(params: {
     apps: Awaited<ReturnType<AppsRepository['getApps']>>;
@@ -912,7 +985,7 @@ export class ExposureSyncService {
     toPublicHostname: (app: Awaited<ReturnType<AppsRepository['getApps']>>[number]) => string;
     /** See {@link ExposureSyncOptions.skipAutoRestartAppUrns}. */
     skipAutoRestartAppUrns: Set<AppUrn>;
-  }): Promise<void> {
+  }): Promise<AppUrn[]> {
     /*
      * Treat an absent field differently from an empty array. A Companion Portal
      * version that predates custom domains sends no `customDomains` field.
@@ -921,13 +994,16 @@ export class ExposureSyncService {
      * including an empty one, can change bindings.
      */
     if (params.customDomains === undefined) {
-      return;
+      return [];
     }
 
     const byTarget = indexCustomDomainsByTarget(params.customDomains);
     const ambiguousDomains = collectAmbiguousCustomDomains(params.customDomains);
     const matchedTargets = new Set<string>();
-    const revertedAppUrns: AppUrn[] = [];
+    /** Reverts to dispatch, with the hostname each app lost. See the filter below. */
+    const revertedApps: { appUrn: AppUrn; lostHostname: string }[] = [];
+    /** Reverts the bind pass must decide on. See `stillPursuingCurrent` below. */
+    const deferredRevertAppUrns: AppUrn[] = [];
 
     for (const app of params.apps) {
       const appUrn = createAppUrn(app.appName, app.appStoreSlug);
@@ -1077,10 +1153,28 @@ export class ExposureSyncService {
        * publicly routed, that came from a settings save, and `updateAppConfig`
        * awaits this very sync before firing its own restart — so restarting here
        * would recreate the container twice for one save.
+       *
+       * A hostname this Hub is still asking for is not lost yet. The choice the
+       * user made lives in `custom_domain_intent`, which only `bindCustomDomainIntents`
+       * clears — and that pass runs immediately after this one, on the rows this
+       * loop just wrote. So when the intent still names the hostname that went
+       * away, the very next thing this sync does is ask CI-Cloud to wire it back
+       * (the ordinary case for a domain unbound from the app in the Portal while
+       * it stays connected to the organization). Recreating the container here
+       * would bounce an app that is about to be served on that exact hostname
+       * again, and leave it needing a second, manual restart to get back onto it.
+       * When the domain is genuinely gone the bind pass clears the intent and
+       * performs this revert from there instead.
        */
-      const restartingNow = cloudDrivenChange && current !== null && app.status === 'running' && !params.skipAutoRestartAppUrns.has(appUrn);
+      const revertIsOurs = cloudDrivenChange && current !== null && app.status === 'running' && !params.skipAutoRestartAppUrns.has(appUrn);
+      const stillPursuingCurrent = normalizeStoredHostname(app.customDomainIntent) === current;
+      const restartingNow = revertIsOurs && !stillPursuingCurrent;
       if (restartingNow) {
-        revertedAppUrns.push(appUrn);
+        revertedApps.push({ appUrn, lostHostname: current });
+      } else if (revertIsOurs) {
+        // Hand the revert to the bind pass, which is the only thing that can tell
+        // "CI-Cloud will wire this back" from "the domain is gone for good".
+        deferredRevertAppUrns.push(appUrn);
       }
 
       let message: string;
@@ -1118,13 +1212,58 @@ export class ExposureSyncService {
     }
 
     /*
+     * Tell a disconnect apart from this Hub's own identity moving.
+     *
+     * The join key is composed from `hubSubdomain`, the organization slug and the
+     * default public domain, so when any of those changes every app on a custom
+     * domain misses `byTarget` in the same pass and reads as unbound. Recreating
+     * every public container at once over that would be far more damaging than
+     * the drift it repairs.
+     *
+     * A count threshold cannot separate the two — disconnecting two domains in
+     * one five-minute window is ordinary — but the delivered payload can. CI-Cloud
+     * keeps reporting a domain whose target moved out from under it, just against
+     * a hostname no app here answers: the `unmatched` set above. A domain that was
+     * genuinely disconnected is not reported at all. So an app whose lost hostname
+     * is still being delivered against an unmatched target has not lost anything —
+     * the Hub stopped recognising it — and belongs on a badge, not in a restart.
+     *
+     * Deliberately NOT keyed on `unmatched` being non-empty on its own: a domain
+     * re-pointed to a sibling app on this Hub is delivered against that sibling's
+     * target, which is matched, so this app really is stranded and does restart.
+     */
+    const unmatchedTargets = new Set(unmatched);
+    const domainsOnMovedTargets = new Set(
+      params.customDomains.filter((entry) => unmatchedTargets.has(entry.targetHostname)).map((entry) => entry.domain),
+    );
+
+    const identityMoved = revertedApps.filter((entry) => domainsOnMovedTargets.has(entry.lostHostname));
+    if (identityMoved.length > 0) {
+      this.logger.warn(
+        `[Cloudflare] ${identityMoved.map((entry) => entry.appUrn).join(', ')} still have a custom domain wired, but to a hostname this Hub no longer composes. ` +
+          "That is this Hub's public identity changing rather than a disconnect, so they were left for a user-selected restart. " +
+          'Check the organization slug, Hub subdomain and default public domain.',
+      );
+    }
+
+    /*
      * Restart last: every row is settled and every diagnostic is out before a
      * container is recreated, so a slow or failing restart cannot delay
      * reconciling another app or swallow this pass's reporting.
      */
+    const revertedAppUrns = revertedApps.filter((entry) => !domainsOnMovedTargets.has(entry.lostHostname)).map((entry) => entry.appUrn);
     if (revertedAppUrns.length > 0) {
       await this.restartRevertedApps(revertedAppUrns);
     }
+
+    // Re-attempt reverts whose dispatch failed earlier. Their rows are already
+    // settled, so this is the only thing that will ever look at them again.
+    const retries = [...this.failedCustomDomainReverts].filter((appUrn) => !revertedAppUrns.includes(appUrn));
+    if (retries.length > 0) {
+      await this.restartRevertedApps(retries);
+    }
+
+    return deferredRevertAppUrns;
   }
 
   /**
@@ -1141,6 +1280,12 @@ export class ExposureSyncService {
    * `restartApp` resolves once the command is queued, so a slow container does
    * not hold the sync open, and the app event queue serializes the restart
    * against any lifecycle command that claims the app first.
+   *
+   * A dispatch that fails is remembered and retried on the next pass. The row was
+   * already written before the restart was asked for, so every later reconcile
+   * computes `next === current` and returns early — nothing would ever notice the
+   * app again, and it would sit forwarding a hostname the Hub has stopped serving
+   * until a person ran `cihub public-web repair`.
    */
   private async restartRevertedApps(appUrns: AppUrn[]): Promise<void> {
     /*
@@ -1163,9 +1308,13 @@ export class ExposureSyncService {
     }
 
     if (!lifecycleService) {
+      for (const appUrn of appUrns) {
+        this.failedCustomDomainReverts.add(appUrn);
+      }
       this.logger.warn(
         `[Cloudflare] Could not revert ${appUrns.join(', ')} to the platform hostname automatically. ` +
-          'Those apps are still forwarding a hostname that no longer resolves — run `cihub public-web repair` to apply it.',
+          'Those apps are still forwarding a hostname that no longer resolves — the next sync will try again, ' +
+          'or run `cihub public-web repair` to apply it now.',
       );
       return;
     }
@@ -1176,7 +1325,7 @@ export class ExposureSyncService {
       if (now - lastRestart < ExposureSyncService.CUSTOM_DOMAIN_RESTART_COOLDOWN_MS) {
         this.logger.warn(
           `[Cloudflare] ${appUrn} changed public hostname again within the restart cooldown — leaving it alone. ` +
-            'CI-Cloud is reporting an unstable custom-domain binding for this app.',
+            'Its restart badge is still raised, so it can be applied by hand.',
         );
         continue;
       }
@@ -1188,10 +1337,31 @@ export class ExposureSyncService {
         // Recorded only once the command is queued. A dispatch that threw
         // restarted nothing, so it must not spend the cooldown.
         this.lastCustomDomainRestartAt.set(appUrn, now);
+        this.failedCustomDomainReverts.delete(appUrn);
       } catch (error) {
+        // Retry on the next pass. The row was settled before this dispatch, so
+        // no later reconcile would ever look at this app again.
+        this.failedCustomDomainReverts.add(appUrn);
         this.logger.error(
-          `[Cloudflare] Failed to restart ${appUrn} after its custom domain was removed: ${error instanceof Error ? error.message : String(error)}`,
+          `[Cloudflare] Failed to restart ${appUrn} after its custom domain was removed: ${error instanceof Error ? error.message : String(error)}. Retrying on the next sync.`,
         );
+      }
+    }
+
+    this.pruneCustomDomainRestartHistory(now);
+  }
+
+  /**
+   * Drops cooldown entries that can no longer suppress anything.
+   *
+   * The map is keyed by app URN and written on every automatic revert, so without
+   * this it retains a row for every app the process has ever restarted, including
+   * apps that have since been uninstalled.
+   */
+  private pruneCustomDomainRestartHistory(now: number): void {
+    for (const [appUrn, at] of this.lastCustomDomainRestartAt) {
+      if (now - at >= ExposureSyncService.CUSTOM_DOMAIN_RESTART_COOLDOWN_MS) {
+        this.lastCustomDomainRestartAt.delete(appUrn);
       }
     }
   }

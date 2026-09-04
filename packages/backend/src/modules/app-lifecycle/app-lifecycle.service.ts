@@ -300,14 +300,25 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
    * early, at debug level, for an unregistered device and during a restore.
    */
   private startPeriodicExposureSync() {
+    // Never leak a previous timer if this is ever reached twice.
+    if (this.exposureSyncInterval) {
+      clearInterval(this.exposureSyncInterval);
+    }
+
     this.exposureSyncInterval = setInterval(() => {
       /*
        * Portal requests retry with backoff, so one pass can outlive the interval
        * on a slow link. Overlapping passes would duplicate every DNS write and
        * let two custom-domain reconciliations race for the same row.
+       *
+       * The second condition covers the passes this flag cannot see: the startup
+       * sync, a settings save, a port-expose change, availability remediation and
+       * `cihub public-web repair` all enter the same reconcile without going
+       * through this timer. Only the background poll ever yields — a
+       * user-initiated sync is never skipped.
        */
-      if (this.periodicExposureSyncInFlight) {
-        this.logger.debug('[Cloudflare] Skipping periodic exposure sync: the previous pass is still running');
+      if (this.periodicExposureSyncInFlight || this.exposureSyncService.isCloudflareSyncInFlight()) {
+        this.logger.debug('[Cloudflare] Skipping periodic exposure sync: another pass is still running');
         return;
       }
 
