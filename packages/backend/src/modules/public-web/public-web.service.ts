@@ -110,7 +110,7 @@ export class PublicWebService {
 
       /*
        * A binding that has landed on the row but not yet in the env is the state
-       * this feature DESIGNS for: the sync deliberately does not recreate a
+       * this feature DESIGNS for: on a FIRST bind the sync does not recreate a
        * running container, it raises `pendingRestart` and lets the user choose
        * when. Calling that "repair" would report a healthy, freshly bound app as
        * broken — and `repair()` with no `appUrns` restarts everything it finds,
@@ -134,6 +134,13 @@ export class PublicWebService {
        * gone the env holds a hostname that is indistinguishable from ordinary
        * drift, and repairing it is the right answer anyway — it regenerates the
        * platform identity and restarts, which is the pending restart itself.
+       *
+       * The reconcile now usually gets there first, restarting the app itself
+       * when it loses a bound hostname (CI-Hub#1207). Reporting `repair` during
+       * that window is still correct: it is the same verdict for the same real
+       * drift, `repair()` restarts only apps whose env is still wrong, and the
+       * reconcile declines in cases this cannot see — an identity move, a
+       * hostname the Hub is still asking for, a dispatch that failed.
        */
       const awaitingScheduledRestart = envMismatch && app.pendingRestart && customDomain !== null && envHostname === identity.hostname;
       const action: PublicWebDiagnosticEntry['action'] = envMismatch && !awaitingScheduledRestart ? 'repair' : 'ok';
@@ -160,17 +167,41 @@ export class PublicWebService {
     };
   }
 
-  public async repair(request: PublicWebRepairRequest = {}): Promise<PublicWebRepairResponse> {
+  /**
+   * @param authorize Resolves which of `appUrns` this run may touch, BEFORE any of
+   *   them is touched, so a refusal cannot leave half the fleet already repaired
+   *   behind a 403. `named` says whether the caller chose the apps: a named set is
+   *   all-or-nothing (silently skipping an app the operator asked for would be a
+   *   lie), while an unnamed sweep is filtered to what the caller may act on, so one
+   *   ungranted app cannot put the whole remedy out of reach.
+   */
+  public async repair(
+    request: PublicWebRepairRequest = {},
+    authorize?: (appUrns: AppUrn[], named: boolean) => Promise<AppUrn[]>,
+  ): Promise<PublicWebRepairResponse> {
     const diagnostics = await this.getDiagnostics();
     const targetUrns = new Set(request.appUrns ?? []);
-    const toRepair = diagnostics.apps.filter((entry) => {
-      if (targetUrns.size > 0) {
+    const named = targetUrns.size > 0;
+    const candidates = diagnostics.apps.filter((entry) => {
+      if (named) {
         // Explicitly named: repair it even if it is only awaiting its scheduled
         // restart — the operator asked for this app by name.
         return targetUrns.has(entry.appUrn) && entry.envMismatch;
       }
       return entry.action === 'repair';
     });
+
+    let toRepair = candidates;
+    if (authorize) {
+      /*
+       * Named apps are authorized even when they are not currently drifted. Checking
+       * only the drifted ones would let a caller with no grant on an app probe its
+       * drift state — 403 when it is drifted, 200 when it is not — and would silently
+       * accept a request the operator was never entitled to make.
+       */
+      const permitted = new Set(await authorize(named ? [...targetUrns] : candidates.map((entry) => entry.appUrn), named));
+      toRepair = candidates.filter((entry) => permitted.has(entry.appUrn));
+    }
 
     const results: PublicWebRepairResult[] = [];
 
@@ -200,8 +231,19 @@ export class PublicWebService {
         envMap.delete('APP_PUBLIC_DOMAIN');
         await this.appFilesManager.writeAppEnv(entry.appUrn, this.envUtils.envMapToString(envMap));
 
+        /*
+         * `restartAppAndWait`, not `restartApp`: the env rewrite above only reaches the
+         * running container through the restart, so reporting success the moment the
+         * restart is *queued* tells the operator a repair landed that may still fail —
+         * and the UI clears its drift banner on that word while the app serves the old
+         * hostname, or is left stopped.
+         */
         if (['running', 'starting', 'restarting'].includes(app.status)) {
-          await this.appLifecycleService.restartApp({ appUrn: entry.appUrn, skipPull: true });
+          const restarted = await this.appLifecycleService.restartAppAndWait({ appUrn: entry.appUrn, skipPull: true });
+          if (!restarted) {
+            results.push({ appUrn: entry.appUrn, success: false, message: 'Routing was rewritten but the app failed to restart' });
+            continue;
+          }
         }
 
         results.push({
@@ -217,8 +259,16 @@ export class PublicWebService {
     }
 
     let synced = false;
-    if (results.some((result) => result.success)) {
-      await this.appLifecycleService.triggerCloudflareSync();
+    const restarted = results.filter((result) => result.success).map((result) => result.appUrn);
+    if (restarted.length > 0) {
+      /*
+       * `skipAutoRestartAppUrns` for what this run just restarted. The reconcile
+       * recreates an app that lost its bound hostname (CI-Hub#1220), and a repair is
+       * the same caller shape that option exists for: it has already rewritten the env
+       * and restarted the app, so letting the reconcile dispatch its own restart on the
+       * way out would recreate the container twice for one repair.
+       */
+      await this.appLifecycleService.triggerCloudflareSync({ skipAutoRestartAppUrns: restarted });
       synced = true;
     }
 

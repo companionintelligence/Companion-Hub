@@ -84,6 +84,15 @@ describe('open-folder', () => {
     expect(mockToastError).toHaveBeenCalledWith('OPEN_FOLDER_ERROR');
   });
 
+  it('toasts the ACL message when Tauri rejects the command', async () => {
+    enterTauri();
+    mockInvoke.mockRejectedValue(new Error('Command open_path_command not allowed by ACL'));
+
+    await openPathInFileExplorer('/srv/hub/app-data/store/app');
+
+    expect(mockToastError).toHaveBeenCalledWith('OPEN_FOLDER_ACL_DENIED');
+  });
+
   it('openLogsFolder invokes open_logs_dir_command with no args', async () => {
     enterTauri();
     mockInvoke.mockResolvedValue(undefined);

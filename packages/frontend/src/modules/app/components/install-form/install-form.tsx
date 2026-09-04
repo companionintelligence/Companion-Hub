@@ -1,6 +1,9 @@
-import { fetchDnsAvailability, fetchPublicWebDiagnostics } from '@/lib/cloudflare-api';
+import { fetchDnsAvailability, fetchPublicWebDiagnostics, repairPublicWebRouting } from '@/lib/cloudflare-api';
+import type { PublicWebDiagnosticsApp } from '@/lib/cloudflare-api';
+import { formatApiError } from '@/lib/format-api-error';
 import type { AvailableCustomDomainsResponseDto, GetRandomPortResponse } from '@/api-client';
 import { getRandomPortMutation, getDomainsOptions, getCustomDomainsOptions } from '@/api-client/@tanstack/react-query.gen';
+import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
 import { ScrollArea } from '@/components/ui/ScrollArea';
 import { Switch } from '@/components/ui/Switch';
@@ -28,6 +31,20 @@ import { CustomDomainField } from './custom-domain-field';
 import { HostnamePreviewCard } from './hostname-preview-card';
 import { InstallFormField } from './install-form-field';
 import { useDnsAvailability } from './use-dns-availability';
+
+/**
+ * The expected URL to warn about, or `null` when this app needs no repair.
+ *
+ * `action`, not `envMismatch`: a freshly bound custom domain deliberately leaves the
+ * env behind until the restart the user was asked for, and that window reports
+ * `envMismatch: true, action: 'ok'`. Warning on it told the operator a healthy app was
+ * broken and pointed them at a repair that (now correctly) declines to touch it.
+ */
+const publicWebDriftUrl = (entry?: PublicWebDiagnosticsApp): string | null => {
+  if (!entry) return null;
+  const needsRepair = entry.action ? entry.action === 'repair' : entry.envMismatch;
+  return needsRepair ? entry.computedPublicUrl : null;
+};
 
 const isHiddenFieldType = (type: FormField['type']) => HIDDEN_FIELD_TYPES.includes(type as (typeof HIDDEN_FIELD_TYPES)[number]);
 const typeFilter = (field: FormField) => !isHiddenFieldType(field.type);
@@ -61,6 +78,11 @@ export type FormValues = {
    * — never written into the app's env directly.
    */
   customDomain?: string;
+  /**
+   * The operator confirmed that `customDomain` may be taken off whatever is
+   * serving it now. Set only by the picker, and only after it has asked.
+   */
+  customDomainTakeover?: boolean;
   isVisibleOnGuestDashboard?: boolean;
   enableAuth: boolean;
   maxBackups?: number;
@@ -112,6 +134,21 @@ export const InstallForm: React.FC<IProps> = ({
 
   const orgSlug = ciHubOrganizationSlug ? ciHubOrganizationSlug.toLowerCase().replace(/\s+/g, '-') : undefined;
   const defaultAppSubdomain = info.urn.split(':')[0] ?? info.urn;
+  /*
+   * The subdomain this app ROUTES on when the Local Subdomain field is empty —
+   * which is not `defaultAppSubdomain`, the field's placeholder.
+   *
+   * ⚠ THE TWO DIFFER, AND ONLY THIS ONE MAY BE COMPARED AGAINST CI-CLOUD.
+   * `resolveRoutingSubdomain` on the backend falls back to
+   * `<appName>-<appStoreSlug>`, and that is what the bind sends and what comes
+   * back as `boundAppSlug`. The placeholder is the bare app name. Comparing the
+   * placeholder against CI-Cloud's answer makes every app whose `localSubdomain`
+   * is null — an API, MCP or restore install — read as somebody else's: the
+   * picker asks the operator to confirm moving the app's own domain away from
+   * itself, and drops the hint that says the save will stop serving it.
+   */
+  const [urnAppName = info.urn, urnAppStoreSlug = ''] = info.urn.split(':');
+  const routingAppSubdomain = urnAppStoreSlug ? `${urnAppName}-${urnAppStoreSlug}` : urnAppName;
 
   const {
     register,
@@ -199,6 +236,7 @@ export const InstallForm: React.FC<IProps> = ({
   const prevUrnRef = useRef<string | undefined>(undefined);
   const lastAutoPrefilledAppBaseUrl = useRef<Partial<Record<string, string>>>({});
   const [publicWebExpectedUrl, setPublicWebExpectedUrl] = useState<string | null>(null);
+  const [isRepairingPublicWeb, setIsRepairingPublicWeb] = useState(false);
   const [showAdvancedSettings, setShowAdvancedSettings] = useState(() => isMcpOptionalOnlyInstall(info));
 
   const mcpOptionalOnly = useMemo(() => isMcpOptionalOnlyInstall(info), [info]);
@@ -213,6 +251,62 @@ export const InstallForm: React.FC<IProps> = ({
     },
     [editingAppUrn],
   );
+
+  /**
+   * Re-apply the app's Public Web routing without touching its configuration.
+   * The drift banner used to point at Save, but nothing on the form is dirty when
+   * routing alone is out of sync, so the Update button it named was greyed out and
+   * the only remedies left were the CLI or a throwaway config edit (#1208).
+   */
+  const handleRepairPublicWeb = async () => {
+    setIsRepairingPublicWeb(true);
+    try {
+      /*
+       * Re-read the verdict before acting on it. The banner is drawn from a snapshot
+       * taken when the dialog opened, and the server repairs a NAMED app on
+       * `envMismatch` alone — deliberately overriding the `action: 'ok'` window that a
+       * freshly bound custom domain opens. That override is meant for an operator
+       * typing the app on a command line; a click on a banner that has since gone stale
+       * is not the same intent, and would force the very restart the bind deferred.
+       */
+      const current = await fetchPublicWebDiagnostics();
+      if (!current) {
+        toast.error(t('APP_PUBLIC_WEB_REPAIR_ERROR'));
+        return;
+      }
+      // `info.urn`, not `editingAppUrn`: the banner is raised from the diagnostics entry
+      // matched on `info.urn`, so targeting anything else could repair a different app
+      // than the one the operator is being warned about.
+      const stillDrifted = publicWebDriftUrl(current.apps.find((app) => app.appUrn === info.urn));
+      if (!stillDrifted) {
+        setPublicWebExpectedUrl(null);
+        toast.success(t('APP_PUBLIC_WEB_REPAIR_ALREADY_SYNCED'));
+        return;
+      }
+
+      const results = await repairPublicWebRouting(info.urn);
+      const outcome = results.find((result) => result.appUrn === info.urn);
+      if (outcome && !outcome.success) {
+        toast.error(t('APP_PUBLIC_WEB_REPAIR_ERROR'));
+        return;
+      }
+      // No entry at all is NOT a failure: the Hub returns one per app it found drifted,
+      // so an empty result means this app is already in sync — someone else repaired it,
+      // or the diagnostics the banner was raised from went stale. Reporting that as an
+      // error would leave a banner up that is asserting something no longer true. It is
+      // not a repair either, though, so it does not get to claim one: nothing was
+      // rewritten and nothing restarted.
+      setPublicWebExpectedUrl(null);
+      toast.success(t(outcome ? 'APP_PUBLIC_WEB_REPAIR_SUCCESS' : 'APP_PUBLIC_WEB_REPAIR_ALREADY_SYNCED'));
+    } catch (error) {
+      // `formatApiError`, not a fixed string: a repair the operator has no grant for
+      // comes back as APP_ACTION_GRANT_DENIED, and "check the Hub logs" would send
+      // them looking for a fault that is not there.
+      toast.error(formatApiError(error, t));
+    } finally {
+      setIsRepairingPublicWeb(false);
+    }
+  };
 
   const copyToClipboard = async (text: string) => {
     const value = text.trim();
@@ -410,13 +504,7 @@ export const InstallForm: React.FC<IProps> = ({
         if (!data) return;
         const entry = data.apps.find((app) => app.appUrn === info.urn);
         if (cancelled) return;
-        // `action`, not `envMismatch`: a freshly bound custom domain deliberately
-        // leaves the env behind until the restart the user was asked for, and that
-        // window reports `envMismatch: true, action: 'ok'`. Warning on it told the
-        // operator a healthy app was broken and pointed them at a repair that (now
-        // correctly) declines to touch it.
-        const needsRepair = entry ? (entry.action ? entry.action === 'repair' : entry.envMismatch) : false;
-        setPublicWebExpectedUrl(needsRepair && entry ? entry.computedPublicUrl : null);
+        setPublicWebExpectedUrl(publicWebDriftUrl(entry));
       } catch {
         if (!cancelled) setPublicWebExpectedUrl(null);
       }
@@ -568,9 +656,24 @@ export const InstallForm: React.FC<IProps> = ({
     return (
       <>
         {publicWebExpectedUrl && (
-          <p className="mb-3 text-sm text-warning">
-            Public Web routing is out of sync. Expected URL: {publicWebExpectedUrl}. Save settings or run repair to update routing.
-          </p>
+          <div
+            className="mb-3 rounded-md border border-warning/30 bg-warning/10 px-3 py-2.5 text-sm text-warning"
+            data-testid="public-web-drift-banner"
+          >
+            <p className="mb-2">{t('APP_PUBLIC_WEB_DRIFT_HINT', { url: publicWebExpectedUrl })}</p>
+            {/* `type="button"`: this sits inside the config form, and a bare button
+                would submit it — the one thing the drifted app does not need. */}
+            <Button
+              type="button"
+              size="sm"
+              intent="warning"
+              loading={isRepairingPublicWeb}
+              onClick={handleRepairPublicWeb}
+              data-testid="public-web-repair-button"
+            >
+              {t('APP_PUBLIC_WEB_REPAIR_ACTION')}
+            </Button>
+          </div>
         )}
         {watchExposureMode === 'cloudflare' ? (
           <CloudflareSubdomainField
@@ -606,9 +709,20 @@ export const InstallForm: React.FC<IProps> = ({
             domains={customDomains}
             supported={customDomainsData?.supported === true}
             platformHostname={publicWebPreview?.hostname}
-            // The same value the bind sends as `appSlug`, so a domain already
-            // serving THIS app is recognised instead of warned about.
-            currentAppSlug={watchLocalSubdomain || defaultAppSubdomain}
+            /*
+             * The same value the bind sends as `appSlug`, so a domain already
+             * serving THIS app is recognised instead of warned about.
+             *
+             * ⚠ TRIMMED, because the value being compared against is. CI-Cloud's
+             * `boundAppSlug` mirrors the subdomain the Hub SYNCS, which is
+             * trimmed on the way out; the raw field value is not. While somebody
+             * is typing in the Local Subdomain box, an untrimmed value stops
+             * matching and the app's own domain briefly reads as another app's —
+             * warning about a move that is not one, and dropping the
+             * irreversible-release hint for a domain that is still being served.
+             */
+            currentAppSlug={watchLocalSubdomain?.trim() || routingAppSubdomain}
+            onTakeoverChange={(confirmed) => setValue('customDomainTakeover', confirmed)}
             loading={loading}
             t={t}
           />

@@ -279,9 +279,10 @@ fn validate_open_path(path: &Path) -> Result<(), String> {
 /// OS default file explorer. The single open/log/validate code path so the logs,
 /// per-app data, and root app-data buttons all behave identically.
 ///
-/// `create_if_missing` is `true` for the logs folder (preserving its prior
-/// behavior) and `false` for data folders, so a wrong or remote path surfaces as
-/// an error instead of silently creating a stray directory.
+/// `create_if_missing` is `true` for the logs folder and for an app data folder
+/// whose parent already exists (fresh install, volume not written yet). A path
+/// with no existing parent stays an error so a wrong or remote path does not
+/// silently create a stray directory tree.
 fn open_directory(
     app: &tauri::AppHandle,
     path: &Path,
@@ -309,29 +310,33 @@ fn open_directory(
         &format!("opening {}", path.display()),
     );
 
-    // Reveal in the OS file manager (Finder / Explorer / Nautilus). `open_path`
-    // goes through xdg-open / `open`, which on Linux often fails for directories
-    // even when they exist — that produced the "folder may not exist" toast.
-    if let Err(reveal_err) = app.opener().reveal_item_in_dir(path) {
+    // Prefer opening the directory itself. `reveal_item_in_dir` highlights an
+    // item in its *parent* (Finder/Explorer/FileManager1), which is wrong UX for
+    // "open this app's data folder" and on Linux needs a working D-Bus session
+    // (fails headless / some Wayland sessions). `open_path` maps to `open` /
+    // `explorer` / `xdg-open` and opens the folder directly on every desktop OS.
+    // Fall back to reveal only when open_path fails (rare; e.g. no handler).
+    if let Err(open_err) = app
+        .opener()
+        .open_path(path.to_string_lossy().to_string(), None::<&str>)
+    {
         let _ = hub_manager::append_desktop_log_for(
             &data_dir,
             "open_folder",
             &format!(
-                "reveal_item_in_dir failed for {}: {reveal_err}; falling back to open_path",
+                "open_path failed for {}: {open_err}; falling back to reveal_item_in_dir",
                 path.display()
             ),
         );
-        app.opener()
-            .open_path(path.to_string_lossy().to_string(), None::<&str>)
-            .map_err(|err| {
-                let message = err.to_string();
-                let _ = hub_manager::append_desktop_log_for(
-                    &data_dir,
-                    "open_folder",
-                    &format!("failed to open {}: {message}", path.display()),
-                );
-                message
-            })
+        app.opener().reveal_item_in_dir(path).map_err(|err| {
+            let message = err.to_string();
+            let _ = hub_manager::append_desktop_log_for(
+                &data_dir,
+                "open_folder",
+                &format!("failed to open {}: {message}", path.display()),
+            );
+            message
+        })
     } else {
         Ok(())
     }
@@ -347,7 +352,8 @@ async fn open_logs_dir_command(app: tauri::AppHandle) -> Result<(), String> {
 /// Open an absolute host directory in the OS default file explorer. The path is
 /// resolved by the backend (an app's data folder or the root app-data folder)
 /// and passed through here. The desktop app and the data must be on the same
-/// machine; a missing path returns an error so the UI can show a toast.
+/// machine. Creates the leaf directory when its parent already exists so a
+/// freshly installed app whose container has not written yet still opens.
 #[tauri::command]
 async fn open_path_command(app: tauri::AppHandle, path: String) -> Result<(), String> {
     // The backend resolves host paths from ROOT_FOLDER_HOST, which on Windows is
@@ -355,7 +361,9 @@ async fn open_path_command(app: tauri::AppHandle, path: String) -> Result<(), St
     // to a native host path (`C:\Users\...`) so the OS file explorer can open it;
     // otherwise `validate_open_path` rejects it as non-absolute. No-op on POSIX hosts.
     let native = hub_manager::host_path_from_docker_path(&path);
-    open_directory(&app, &native, false)
+    let path = std::path::PathBuf::from(native);
+    let create_if_missing = path.parent().is_some_and(|parent| parent.is_dir()) && !path.exists();
+    open_directory(&app, &path, create_if_missing)
 }
 
 #[tauri::command]

@@ -376,6 +376,7 @@ export type MyAppsDto = {
             publicDomain?: string;
             customDomain?: string;
             customDomainIntent?: string;
+            customDomainTakeover?: boolean;
             pendingRestart: boolean;
             ignoredVersion: number;
         };
@@ -895,6 +896,7 @@ export type GetAppDto = {
         publicDomain?: string;
         customDomain?: string;
         customDomainIntent?: string;
+        customDomainTakeover?: boolean;
         pendingRestart: boolean;
         ignoredVersion: number;
     };
@@ -1129,6 +1131,18 @@ export type GetAppDto = {
     };
 };
 
+export type AppDataListingDto = {
+    hostPath: string;
+    rootExists: boolean;
+    truncated: boolean;
+    entries: Array<{
+        name: string;
+        path: string;
+        kind: 'file' | 'directory';
+        sizeBytes: number;
+    }>;
+};
+
 export type GetComposeDiffDto = {
     current: string;
     new: string;
@@ -1260,6 +1274,7 @@ export type AppFormBody = {
     localSubdomain?: string;
     publicDomain?: string;
     customDomain?: string;
+    customDomainTakeover?: boolean;
     maxBackups?: number;
     cpuLimit?: string;
     memoryLimit?: string;
@@ -1354,6 +1369,10 @@ export type EditLinkBodyDto = {
     description?: string;
     iconUrl?: string | '';
     isVisibleOnGuestDashboard?: boolean;
+};
+
+export type PublicWebRepairBody = {
+    appUrns?: Array<string>;
 };
 
 export type GetUserConfigDto = {
@@ -2002,7 +2021,7 @@ export type AvailableCustomDomainsResponseDto = {
     domains: Array<{
         id: string;
         domain: string;
-        state: 'live' | 'parked' | 'pending' | 'securing' | 'drifted' | 'unknown';
+        state: 'live' | 'parked' | 'pending' | 'securing' | 'drifted' | 'failed' | 'unknown';
         bindable: boolean;
         targetHostname: string;
         boundAppSlug: string;
@@ -3229,6 +3248,21 @@ export type GetAppResponses = {
 };
 
 export type GetAppResponse = GetAppResponses[keyof GetAppResponses];
+
+export type GetAppDataListingData = {
+    body?: never;
+    path: {
+        urn: string;
+    };
+    query?: never;
+    url: '/api/apps/{urn}/data-files';
+};
+
+export type GetAppDataListingResponses = {
+    default: AppDataListingDto;
+};
+
+export type GetAppDataListingResponse = GetAppDataListingResponses[keyof GetAppDataListingResponses];
 
 export type GetAppComposeDiffData = {
     body?: never;
@@ -4573,7 +4607,7 @@ export type GetDiagnostics2Responses = {
 export type GetDiagnostics2Response = GetDiagnostics2Responses[keyof GetDiagnostics2Responses];
 
 export type RepairData = {
-    body?: never;
+    body?: PublicWebRepairBody;
     path?: never;
     query?: never;
     url: '/api/public-web/repair';
@@ -4788,6 +4822,17 @@ export type GetHostListenerTokenData = {
 
 export type GetHostListenerTokenResponses = {
     200: unknown;
+};
+
+export type WakeData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/agent-notify/wake';
+};
+
+export type WakeResponses = {
+    201: unknown;
 };
 
 export type StartData = {

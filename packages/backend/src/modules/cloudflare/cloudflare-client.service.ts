@@ -526,6 +526,52 @@ export class CloudflareClientService {
     }
   }
 
+  /**
+   * Ask CI-Cloud to stop serving a custom domain on this device.
+   *
+   * ⚠ THIS PARKS THE DOMAIN; IT DOES NOT GIVE IT UP. CI-Cloud clears the
+   * routing and the Cloudflare origin and leaves the row, the ownership proof
+   * and the certificate intact — the same shape connect-first/bind-later
+   * creates. The organization keeps the domain and can point it at another app
+   * with an ordinary bind; nothing here needs a person in the Entri modal.
+   *
+   * Disconnecting a domain is still a session-and-managing-role act in the
+   * portal, and no Hub path reaches it.
+   *
+   * `DOMAIN_NOT_FOUND` is reported as SUCCESS. A Hub that parks a domain and
+   * loses the response asks again and finds nothing to park — which is the state
+   * it asked for. Treating that as a failure would leave the operator's choice
+   * pending forever against a domain that has already stopped serving.
+   */
+  async unbindCustomDomain(
+    domainId: string,
+    appSlug: string,
+    organizationId?: string,
+  ): Promise<{ ok: true } | { ok: false; status?: number; code?: string; message: string }> {
+    try {
+      const { status, data } = await this.portalClient.postDeviceCustomDomainUnbind({ domainId, appSlug, organizationId });
+
+      if (status >= 200 && status < 300) {
+        return { ok: true };
+      }
+
+      const code = typeof data?.code === 'string' ? data.code : undefined;
+
+      if (code === 'DOMAIN_NOT_FOUND') {
+        return { ok: true };
+      }
+
+      return {
+        ok: false,
+        status,
+        code,
+        message: typeof data?.error === 'string' ? data.error : `CI-Cloud answered ${status}`,
+      };
+    } catch (error) {
+      return { ok: false, message: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
   async fetchAvailableDomains(): Promise<AvailableDomainsResponse> {
     try {
       const requestConfig = this.getRequestConfig();
