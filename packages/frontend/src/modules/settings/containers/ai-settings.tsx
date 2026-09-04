@@ -631,14 +631,14 @@ export const AiSettingsContainer = () => {
                     if (tracked.state === 'pulling' && typeof tracked.pullProgress === 'number')
                       return {
                         text: t('AI_SETTINGS_DOWNLOADING_PROGRESS', { progress: tracked.pullProgress }),
-                        cls: 'border-amber-500/30 bg-amber-500/10 text-amber-400',
+                        cls: 'border-warning/30 bg-warning/10 text-warning',
                       };
                     if (tracked.state === 'pinned')
                       return { text: t('AI_SETTINGS_PINNED_BADGE'), cls: 'border-primary/30 bg-primary/10 text-primary' };
                     if (tracked.state === 'pulled' || tracked.state === 'loaded')
                       return {
                         text: t('AI_SETTINGS_DOWNLOADED_BADGE'),
-                        cls: 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400',
+                        cls: 'border-success/30 bg-success/10 text-success',
                       };
                     return {
                       text: tracked.state.charAt(0).toUpperCase() + tracked.state.slice(1),
@@ -693,7 +693,7 @@ export const AiSettingsContainer = () => {
             {runtimeModelsLoading && <p className="text-sm text-muted-foreground">{t('SETTINGS_NETWORK_LOADING')}</p>}
 
             {!runtimeModelsLoading && runtimeDiscoveryUnavailable && (
-              <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2.5 text-xs text-amber-400">
+              <div className="rounded-md border border-warning/30 bg-warning/10 px-3 py-2.5 text-xs text-warning">
                 {t('AI_SETTINGS_RUNTIME_DISCOVERY_UNAVAILABLE')}
               </div>
             )}
@@ -713,7 +713,7 @@ export const AiSettingsContainer = () => {
                       <div className="text-sm font-medium truncate">{model.name}</div>
                       <div className="text-[11px] text-muted-foreground uppercase tracking-wide truncate">{model.id}</div>
                     </div>
-                    <span className="flex-shrink-0 text-[10px] px-1.5 py-0.5 rounded-md border border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 font-medium">
+                    <span className="flex-shrink-0 text-[10px] px-1.5 py-0.5 rounded-md border border-success/30 bg-success/10 text-success font-medium">
                       {t('AI_SETTINGS_DOWNLOADED_BADGE')}
                     </span>
                   </div>

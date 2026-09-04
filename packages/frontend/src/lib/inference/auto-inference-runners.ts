@@ -14,6 +14,13 @@ export interface AutomaticInferenceRunnerResult {
 export const DEFAULT_AUTOMATIC_INFERENCE_RUNNERS: AutomaticInferenceRunner[] = ['dspark', 'mtplx', 'lucebox', 'vllm', 'ollama'];
 
 /**
+ * The first-run set for Apple Silicon Macs. mlx-dspark handles chat while
+ * Ollama supplies embeddings, so both services need to be present before the
+ * default FTUE can finish with a useful local setup.
+ */
+export const DEFAULT_MACOS_AUTOMATIC_INFERENCE_RUNNERS: AutomaticInferenceRunner[] = ['dspark', 'ollama'];
+
+/**
  * Ask the desktop shell to install and launch host/container inference
  * runners. A browser build has no safe native process boundary, so it is a
  * no-op there and keeps the existing manual setup flow.

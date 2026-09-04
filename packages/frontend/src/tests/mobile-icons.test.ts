@@ -185,7 +185,7 @@ describe('getLogo() in-app logo', () => {
 
   // Both possible getLogo() branches (default + christmas) must have real assets,
   // independent of the current date.
-  it.each(['/hub.png', '/hub-christmas.png'])('logo asset %s exists in public/', (rel) => {
+  it.each(['/hub.png', '/hub-christmas.png', '/brands/ci-server-e-brain.png'])('logo asset %s exists in public/', (rel) => {
     const file = path.join(frontendPublic, rel.replace(/^\//, ''));
     expect(isNonEmptyFile(file), `logo asset missing/empty: ${rel}`).toBe(true);
   });

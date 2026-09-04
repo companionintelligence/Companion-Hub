@@ -74,9 +74,10 @@ describe('CompanionAppsCard', () => {
     expect(onEmit).toHaveBeenLastCalledWith([
       expect.objectContaining({ appSlug: 'ci-memory', urn: 'urn:store:ci-memory', exposureMode: 'cloudflare' }),
     ]);
+    expect(screen.getAllByRole('checkbox')).toHaveLength(1);
     const memoryOption = screen.getByTestId('companion-app-ci-memory');
     expect(within(memoryOption).getByRole('checkbox', { name: 'ONBOARDING_COMPANION_MEMORY_TITLE' })).toBeChecked();
-    expect(screen.getByText('ONBOARDING_COMPANION_MEMORY_DESC')).toBeInTheDocument();
+    expect(within(screen.getByTestId('companion-memory-option')).getByText('ONBOARDING_COMPANION_MEMORY_SECTION_DESC')).toBeInTheDocument();
     expect(screen.queryByText('ONBOARDING_BUILT_BY_COMPANION')).not.toBeInTheDocument();
     expect(screen.queryByTestId('companion-app-ci-import-tools')).not.toBeInTheDocument();
   });
@@ -95,15 +96,18 @@ describe('CompanionAppsCard', () => {
     expect(within(memoryOption).getByRole('checkbox', { name: 'ONBOARDING_COMPANION_MEMORY_TITLE' })).not.toBeChecked();
   });
 
-  it('marks unavailable apps as disabled without adding store-status copy', async () => {
+  it('keeps Companion Memory selectable with its canonical marketplace identity when the local catalog is empty', async () => {
     mockCatalogState.apps = [];
 
     const onEmit = vi.fn();
     render(<Harness onEmit={onEmit} />);
 
     await waitFor(() => expect(onEmit).toHaveBeenCalled());
-    expect(onEmit).toHaveBeenLastCalledWith([]);
-    expect(within(screen.getByTestId('companion-app-ci-memory')).getByRole('checkbox')).toBeDisabled();
+    expect(onEmit).toHaveBeenLastCalledWith([
+      expect.objectContaining({ appSlug: 'ci-memory', urn: 'ci-memory:ci-marketplace', exposureMode: 'cloudflare' }),
+    ]);
+    expect(within(screen.getByTestId('companion-app-ci-memory')).getByRole('checkbox')).toBeEnabled();
+    expect(within(screen.getByTestId('companion-memory-option')).getByText('ONBOARDING_COMPANION_MEMORY_TITLE')).toBeInTheDocument();
     expect(screen.queryByText('ONBOARDING_COMPANION_APP_UNAVAILABLE')).not.toBeInTheDocument();
   });
 
