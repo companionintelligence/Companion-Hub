@@ -1,3 +1,3 @@
 # Built CLI binary (not committed)
 
-Build with the desktop-release / standalone CLI pipeline. Do not commit the `cihub` binary into git.
+`desktop-release.yml` / `desktop-build.yml` compile the standalone CLI with `scripts/build-standalone-cli.cjs` and write it here (`cihub` or `cihub.exe`) so Tauri bundles it from `resources/`. Do not commit the binary into git.
