@@ -26,6 +26,7 @@ import { resolveRegistrationStatus } from './lib/registration-cache';
 import { captureHubException, loadHubSentryDeviceId } from './lib/sentry';
 import { configureHubApiPort, probeHealthyHubApiPort } from './lib/tauri-hub-probe';
 import { usesCrossOriginDesktopApi } from './lib/hub-runtime-mode';
+import { firstOf, HUB_BOOTSTRAP_FETCH_MS, subscribeHubResume } from './lib/hub-resume';
 import i18next from 'i18next';
 
 const safeI18nText = (key: string, fallback: string) => (i18next.isInitialized ? i18next.t(key) : fallback);
@@ -48,14 +49,26 @@ export function DesktopStartupFallback() {
     return <main id="root" className="safe-area-inset min-h-dvh bg-background" role="status" aria-busy="true" />;
   }
 
+  return <ConnectingToLocalApi />;
+}
+
+/** Shown under the chrome while bootstrap fetches sit on a dead keep-alive. */
+function ConnectingToLocalApi() {
+  const [showRetry, setShowRetry] = useState(false);
+
+  useEffect(() => {
+    const id = globalThis.setTimeout(() => setShowRetry(true), 4_000);
+    return () => globalThis.clearTimeout(id);
+  }, []);
+
   return (
-    <main
-      id="root"
-      className="safe-area-inset flex min-h-dvh flex-col items-center justify-center gap-4 bg-background px-6"
-      role="status"
-      aria-busy="true"
-    >
+    <main className="safe-area-inset flex min-h-[40vh] flex-col items-center justify-center gap-4 bg-background px-6" role="status" aria-busy="true">
       <p className="text-sm text-muted-foreground">{safeI18nText('ROOT_CONNECTING_TO_LOCAL_API', 'Connecting to local API...')}</p>
+      {showRetry && (
+        <button type="button" className="text-sm font-medium text-primary hover:underline" onClick={() => window.location.reload()}>
+          {safeI18nText('COMMON_RELOAD', 'Reload')}
+        </button>
+      )}
     </main>
   );
 }
@@ -169,7 +182,7 @@ type RegistrationLookup = { kind: 'ok'; status: RegistrationStatus } | { kind: '
 let rootBootstrapWarm = false;
 
 async function loadRegistrationLookup(): Promise<RegistrationLookup> {
-  const status = await resolveRegistrationStatus();
+  const status = await firstOf(resolveRegistrationStatus(), null, HUB_BOOTSTRAP_FETCH_MS);
   if (status) {
     return { kind: 'ok', status };
   }
@@ -336,7 +349,10 @@ async function runClientLoader(request: Request) {
   // containers are still booting; avoid throwing into the route ErrorBoundary.
   let userResult: Awaited<ReturnType<typeof userContext>> | null = null;
   try {
-    userResult = await userContext();
+    userResult = await firstOf(userContext(), null, HUB_BOOTSTRAP_FETCH_MS);
+    if (!userResult) {
+      throw new Error('hub-bootstrap-timeout');
+    }
     if (userResult.data?.isLoggedIn) {
       setServerSessionRefreshRecommendedAt(userResult.data.sessionRefreshRecommendedAt ?? null);
       await refreshHubSessionIfDue();
@@ -596,6 +612,14 @@ export default function App({ loaderData }: Route.ComponentProps) {
     }, 1500);
     return () => window.clearInterval(id);
   }, [onRootBootstrap, revalidate]);
+
+  // After a long idle the browser often keeps a half-open socket. Revalidate so
+  // we abandon the hung bootstrap fetch instead of sitting on the connecting copy.
+  useEffect(() => {
+    return subscribeHubResume(() => {
+      void revalidate();
+    });
+  }, [revalidate]);
 
   if (onRootBootstrap) {
     if (typeof document !== 'undefined' && usesCloudConnect()) {
