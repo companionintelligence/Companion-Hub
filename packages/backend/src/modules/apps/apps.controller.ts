@@ -6,6 +6,7 @@ import { AppRuntimeMonitorService } from './app-runtime-monitor.service';
 import { AppsReadService } from './apps-read.service';
 import { AppsService } from './apps.service';
 import {
+  AppDataListingDto,
   GetAppDto,
   GetComposeDiffDto,
   GetConfigDiffDto,
@@ -114,6 +115,15 @@ export class AppsController {
       mcpInstallSchema: buildMcpInstallSchema(info as Parameters<typeof buildMcpInstallSchema>[0]),
       mcpRuntime,
     };
+  }
+
+  /** Read-only file inventory for the web "Open data folder" dialog. */
+  @Get(':urn/data-files')
+  @UseGuards(AuthGuard)
+  @ApiResponse({ type: AppDataListingDto })
+  async getAppDataListing(@Param('urn') urn: string) {
+    const res = await this.appsReadService.getAppDataListing(castAppUrn(urn));
+    return AppDataListingDto.parse(res, { reportOnly: true });
   }
 
   @Get(':urn/compose-diff')
