@@ -236,6 +236,10 @@ services:
       traefik.enable: true
       ci-hub.managed: true
       ci-os-hub.managed: true
+      # The image exposes both the dev (3000) and prod (5002) API ports. Pin
+      # Traefik to the canonical network and prod port instead of letting its
+      # Docker provider choose an arbitrary network/first exposed port.
+      traefik.docker.network: "ci-hub_network"
       traefik.http.middlewares.ci-hub.forwardauth.address: "http://ci-hub:5002/api/auth/traefik"
       traefik.http.middlewares.ci-hub.forwardauth.trustForwardHeader: "true"
       # All three signed identity headers must ride through — Traefik copies ONLY the headers
@@ -245,8 +249,11 @@ services:
       # Prevent Traefik from creating a default router on websecure (which triggers ACME)
       traefik.http.routers.ci-hub.entrypoints: "web"
       traefik.http.routers.ci-hub.rule: "Host(`ci-hub.local`)"
+      traefik.http.routers.ci-hub.service: "ci-hub"
       traefik.http.routers.ci-os-hub.entrypoints: "web"
       traefik.http.routers.ci-os-hub.rule: "Host(`ci-os-hub.local`)"
+      traefik.http.routers.ci-os-hub.service: "ci-hub"
+      traefik.http.services.ci-hub.loadbalancer.server.port: "5002"
 
   traefik:
     image: traefik:v3.6.7
@@ -340,7 +347,10 @@ services:
       - SYS_MODULE
     environment:
       TAILSCALE_AUTHKEY: ${TAILSCALE_AUTHKEY:-${HEADSCALE_PREAUTH_KEY:-}}
-      TS_EXTRA_ARGS: ${HUB_TAILSCALE_EXTRA_ARGS:---login-server=https://controlplane.tailscale.com --accept-routes --advertise-routes=172.18.0.0/16}
+      # During the ci-os-hub → ci-hub transition, an upgraded appliance has
+      # the legacy bridge on 172.18/16 and the canonical bridge on 172.19/16.
+      # Fresh installs create the same two bridges in the opposite order.
+      TS_EXTRA_ARGS: ${HUB_TAILSCALE_EXTRA_ARGS:---login-server=https://controlplane.tailscale.com --accept-routes --advertise-routes=172.18.0.0/16,172.19.0.0/16}
       TS_STATE_DIR: /var/lib/tailscale
       TS_USERSPACE: "false"
       TS_SOCKET: /var/run/tailscale/tailscaled.sock

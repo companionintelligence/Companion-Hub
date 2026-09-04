@@ -46,6 +46,23 @@ describe('docker-compose.prod.yml sync', () => {
     expect(desktop).toContain('container_name: ci-hub');
   });
 
+  it('keeps legacy DNS aliases while routing Hub traffic on the canonical network and port', () => {
+    const content = readCompose(rootCompose);
+
+    expect(content).toContain('name: ci-hub_network');
+    expect(content).toContain('name: ci-os-hub_network');
+    expect(content).toContain('- ci-os-hub');
+    expect(content).toContain('- ci-os-hub-queue');
+    expect(content).toContain('traefik.docker.network: "ci-hub_network"');
+    expect(content).toContain('traefik.http.services.ci-hub.loadbalancer.server.port: "5002"');
+  });
+
+  it('advertises both Hub bridges over Tailscale during the network migration', () => {
+    const content = readCompose(rootCompose);
+
+    expect(content).toContain('--advertise-routes=172.18.0.0/16,172.19.0.0/16');
+  });
+
   it('inference URLs default to host.docker.internal', () => {
     const content = readCompose(rootCompose);
     expect(extractEnvDefault(content, 'VLLM_URL')).toBe('http://host.docker.internal:8000');

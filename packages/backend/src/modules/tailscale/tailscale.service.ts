@@ -43,7 +43,12 @@ interface ExecError extends Error {
 type ExecStrategy = 'host' | 'sidecar';
 
 const DEFAULT_TAILSCALE_LOGIN_SERVER = '--login-server=https://controlplane.tailscale.com';
-const DEFAULT_TAILSCALE_EXTRA_ARGS = [DEFAULT_TAILSCALE_LOGIN_SERVER, '--accept-routes', '--advertise-routes=172.18.0.0/16'];
+const DEFAULT_TAILSCALE_EXTRA_ARGS = [
+  DEFAULT_TAILSCALE_LOGIN_SERVER,
+  '--accept-routes',
+  // Upgrades keep the legacy bridge while apps move to ci-hub_network.
+  '--advertise-routes=172.18.0.0/16,172.19.0.0/16',
+];
 
 function normalizeDnsName(value: string | null | undefined): string | null {
   const trimmed = value?.trim();
