@@ -23,6 +23,7 @@ export const PasswordInput = ({ className, ...props }: Props) => {
   // at the call site and cannot drift from what the user sees.
   const fieldName = typeof props.label === 'string' ? props.label : props.placeholder;
   const toggleName = fieldName ? `${toggleLabel}: ${fieldName}` : toggleLabel;
+  const isSm = props.size === 'sm';
 
   return (
     <InputGroup
@@ -34,8 +35,22 @@ export const PasswordInput = ({ className, ...props }: Props) => {
       spellCheck={false}
       autoCapitalize="off"
       autoCorrect="off"
-      // `::-ms-reveal` is Edge's own reveal control, which this toggle replaces.
-      className={cn('[&_input::-ms-reveal]:hidden', className)}
+      className={cn(
+        // `::-ms-reveal` is Edge's own reveal control, which this toggle replaces.
+        '[&_input::-ms-reveal]:hidden',
+        // The toggle sits inside the field, so undo the `rounded-r-none` InputGroup applies
+        // to any suffixed input and reserve room on the right so the value never runs
+        // under it. Both have to reach the input as a descendant, since InputGroup puts
+        // `className` on an outer wrapper.
+        '[&_input]:rounded-r-md',
+        isSm ? '[&_input]:pr-8' : '[&_input]:pr-9',
+        className,
+      )}
+      // Taking the toggle out of the row's flex flow leaves the input spanning the full
+      // width, so the field lines up with the submit button below it instead of stopping
+      // a toggle short of it. `relative` is the anchor that overlay hangs off.
+      groupClassName={cn('relative', props.groupClassName)}
+      groupSuffixClassName={cn('absolute inset-y-0 right-1', props.groupSuffixClassName)}
       groupSuffix={
         <>
           <Tooltip className="tooltip" anchorSelect={`.${tooltipAnchorClass}`}>
@@ -43,7 +58,7 @@ export const PasswordInput = ({ className, ...props }: Props) => {
           </Tooltip>
           <Button
             size="icon"
-            variant="outline"
+            variant="ghost"
             onClick={() => setPasswordVisible(!passwordVisible)}
             // Keep focus and caret in the input instead of moving them to the button.
             onMouseDown={(e) => e.preventDefault()}
@@ -54,13 +69,13 @@ export const PasswordInput = ({ className, ...props }: Props) => {
             disabled={props.disabled}
             className={cn(
               tooltipAnchorClass,
-              'rounded-l-none border-l-0',
+              // Overlaid on the field, so it carries no fill or border of its own — only
+              // the icon reads, and the hover state supplies the affordance.
+              'text-muted-foreground hover:text-foreground',
               // `size-*` rather than `h-*`/`w-*` so tailwind-merge replaces the `size-8`
-              // that Button's icon variant sets instead of leaving both.
-              props.size === 'sm' ? 'size-8' : 'size-11',
-              // The toggle butts against the input, so it has to carry the error border
-              // too or the joined control ends up half red.
-              (props.error || props.isInvalid) && 'border-destructive',
+              // that Button's icon variant sets instead of leaving both. Inset inside the
+              // field, so it sits a step below the field height rather than matching it.
+              isSm ? 'size-6' : 'size-7',
             )}
           >
             {passwordVisible ? <EyeOff size={16} /> : <Eye size={16} />}

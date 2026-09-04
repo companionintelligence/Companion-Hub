@@ -45,7 +45,7 @@ export const LanguageSelector = (props: IProps) => {
 
   return (
     <Select value={locale} onValueChange={onChange}>
-      <SelectTrigger className="mb-3 pe-3" name="language" label={showLabel && <LanguageSelectorLabel />}>
+      <SelectTrigger className="mb-3" name="language" label={showLabel && <LanguageSelectorLabel />}>
         <SelectValue placeholder={t('SETTINGS_GENERAL_LANGUAGE')} />
       </SelectTrigger>
       <SelectContent>

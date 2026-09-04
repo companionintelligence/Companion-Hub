@@ -146,4 +146,22 @@ describe('Input', () => {
     // assert
     expect(input).toHaveAttribute('placeholder', 'Test Placeholder');
   });
+
+  it('should keep children overlaid on the field when an error is shown', () => {
+    render(
+      <Input name="test-input" error="Test Error">
+        <button type="button" className="absolute inset-y-0 right-1">
+          Copy
+        </button>
+      </Input>,
+    );
+
+    const field = screen.getByRole('textbox');
+    const overlay = screen.getByRole('button', { name: 'Copy' });
+    const error = screen.getByText('Test Error');
+
+    expect(overlay.parentElement).toContainElement(field);
+    expect(overlay.parentElement).not.toContainElement(error);
+    expect(overlay.parentElement).toHaveClass('relative');
+  });
 });
