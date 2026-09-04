@@ -262,4 +262,69 @@ describe('PublicWebService', () => {
     expect(result.synced).toBe(true);
     expect(result.results[0]?.success).toBe(true);
   });
+  /**
+   * The repair route rewrites an app's env and restarts it, so the controller hands
+   * `repair` the caller's grant check. It has to run BEFORE any app is touched:
+   * denying halfway would leave part of the fleet repaired behind a 403.
+   */
+  describe('authorization hook', () => {
+    const runningApp = {
+      id: 1,
+      appName: 'nextcloud',
+      appStoreSlug: 'store',
+      status: 'running',
+      exposureMode: 'cloudflare',
+      exposedLocal: true,
+      openPort: false,
+      localSubdomain: 'nextcloud',
+      publicDomain: 'example.com',
+      config: { exposureMode: 'cloudflare', exposedLocal: true },
+      enableAuth: true,
+    };
+
+    beforeEach(() => {
+      appsRepository.getApps.mockResolvedValue([runningApp] as any);
+      appsRepository.getAppByUrn.mockResolvedValue(runningApp as any);
+      appFilesManager.getAppEnv.mockResolvedValue({ path: '/tmp/env', content: 'APP_PUBLIC_HOSTNAME=stale.example.com\n' });
+      envUtils.envStringToMap.mockReturnValue(new Map([['APP_PUBLIC_HOSTNAME', 'stale.example.com']]));
+      envUtils.envMapToString.mockReturnValue('APP_PUBLIC_HOSTNAME=nextcloud-dev1-myorg.example.com\n');
+    });
+
+    it('asks the caller for permission on every app it is about to repair', async () => {
+      const authorize = vi.fn().mockResolvedValue(undefined);
+
+      const result = await service.repair({ appUrns: [appUrn] }, authorize);
+
+      expect(authorize).toHaveBeenCalledWith(appUrn);
+      expect(result.results[0]?.success).toBe(true);
+    });
+
+    it('touches nothing when permission is refused for any app in the batch', async () => {
+      // Two drifted apps, allowed then denied. Checking permission app-by-app inside
+      // the repair loop would already have rewritten and restarted the FIRST one by
+      // the time the second is refused, so the assertion that matters is that the
+      // allowed app is untouched too.
+      const secondUrn = createAppUrn('immich', 'store') as AppUrn;
+      appsRepository.getApps.mockResolvedValue([runningApp, { ...runningApp, id: 2, appName: 'immich', localSubdomain: 'immich' }] as any);
+
+      const authorize = vi.fn(async (urn: AppUrn) => {
+        if (urn === secondUrn) throw new Error('APP_ACTION_GRANT_DENIED');
+      });
+
+      await expect(service.repair({ appUrns: [appUrn, secondUrn] }, authorize)).rejects.toThrow('APP_ACTION_GRANT_DENIED');
+
+      expect(authorize).toHaveBeenCalledWith(appUrn);
+      expect(appHelpers.generateEnvFile).not.toHaveBeenCalled();
+      expect(appFilesManager.writeAppEnv).not.toHaveBeenCalled();
+      expect(appLifecycleService.restartApp).not.toHaveBeenCalled();
+      expect(appLifecycleService.triggerCloudflareSync).not.toHaveBeenCalled();
+    });
+
+    it('repairs as before when no hook is supplied, so the CLI is unaffected', async () => {
+      const result = await service.repair({ appUrns: [appUrn] });
+
+      expect(appLifecycleService.restartApp).toHaveBeenCalledWith({ appUrn, skipPull: true });
+      expect(result.results[0]?.success).toBe(true);
+    });
+  });
 });

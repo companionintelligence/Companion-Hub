@@ -59,7 +59,10 @@ export type PublicWebRepairResult = {
 export async function repairPublicWebRouting(appUrn: string): Promise<PublicWebRepairResult[]> {
   const result = await sdkResult(repairPublicWebSdk({ body: { appUrns: [appUrn] } }));
   if (!result.ok) {
-    throw new Error('PUBLIC_WEB_REPAIR_FAILED');
+    // An i18n key, not prose: callers hand this to `formatApiError`, which translates
+    // it. A 4xx never reaches here — the client's response interceptor throws its own
+    // TranslatableError first, so a denied grant keeps its own message.
+    throw new Error('APP_PUBLIC_WEB_REPAIR_ERROR');
   }
   return ((result.data ?? {}) as { results?: PublicWebRepairResult[] }).results ?? [];
 }

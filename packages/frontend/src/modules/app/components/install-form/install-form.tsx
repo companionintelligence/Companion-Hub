@@ -1,4 +1,5 @@
 import { fetchDnsAvailability, fetchPublicWebDiagnostics, repairPublicWebRouting } from '@/lib/cloudflare-api';
+import { formatApiError } from '@/lib/format-api-error';
 import type { AvailableCustomDomainsResponseDto, GetRandomPortResponse } from '@/api-client';
 import { getRandomPortMutation, getDomainsOptions, getCustomDomainsOptions } from '@/api-client/@tanstack/react-query.gen';
 import { Button } from '@/components/ui/Button';
@@ -223,20 +224,28 @@ export const InstallForm: React.FC<IProps> = ({
    * the only remedies left were the CLI or a throwaway config edit (#1208).
    */
   const handleRepairPublicWeb = async () => {
-    if (!editingAppUrn) return;
-
     setIsRepairingPublicWeb(true);
     try {
-      const results = await repairPublicWebRouting(editingAppUrn);
-      const outcome = results.find((result) => result.appUrn === editingAppUrn);
-      if (!outcome?.success) {
+      // `info.urn`, not `editingAppUrn`: the banner is raised from the diagnostics entry
+      // matched on `info.urn`, so targeting anything else could repair a different app
+      // than the one the operator is being warned about.
+      const results = await repairPublicWebRouting(info.urn);
+      const outcome = results.find((result) => result.appUrn === info.urn);
+      if (outcome && !outcome.success) {
         toast.error(t('APP_PUBLIC_WEB_REPAIR_ERROR'));
         return;
       }
+      // No entry at all is NOT a failure: the Hub returns one per app it found drifted,
+      // so an empty result means this app is already in sync — someone else repaired it,
+      // or the diagnostics the banner was raised from went stale. Reporting that as an
+      // error would leave a banner up that is asserting something no longer true.
       setPublicWebExpectedUrl(null);
       toast.success(t('APP_PUBLIC_WEB_REPAIR_SUCCESS'));
-    } catch {
-      toast.error(t('APP_PUBLIC_WEB_REPAIR_ERROR'));
+    } catch (error) {
+      // `formatApiError`, not a fixed string: a repair the operator has no grant for
+      // comes back as APP_ACTION_GRANT_DENIED, and "check the Hub logs" would send
+      // them looking for a fault that is not there.
+      toast.error(formatApiError(error, t));
     } finally {
       setIsRepairingPublicWeb(false);
     }

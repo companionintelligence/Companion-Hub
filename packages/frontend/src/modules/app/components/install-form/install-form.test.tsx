@@ -4,6 +4,7 @@ import { MemoryRouter } from 'react-router';
 import type { AppInfo } from '@/types/app.types';
 import { InstallForm } from './install-form';
 import { useAppContext } from '@/context/app-context';
+import { TranslatableError } from '@/types/error.types';
 
 // Polyfill ResizeObserver for Radix UI
 global.ResizeObserver = class ResizeObserver {
@@ -1354,8 +1355,12 @@ describe('InstallForm - Public Web routing drift', () => {
   });
 
   afterEach(() => {
+    // Restore the file-wide default so the drift stub cannot leak into other suites,
+    // and clear the toast spies these tests assert on call counts of.
     fetchPublicWebDiagnostics.mockResolvedValue(null);
     repairPublicWebRouting.mockReset();
+    toast.success.mockClear();
+    toast.error.mockClear();
   });
 
   it('offers a repair action on the drift banner', async () => {
@@ -1397,5 +1402,47 @@ describe('InstallForm - Public Web routing drift', () => {
     renderDrifted();
 
     expect(await screen.findByTestId('public-web-repair-button')).toHaveAttribute('type', 'button');
+  });
+
+  it('clears the banner when the Hub reports nothing left to repair', async () => {
+    // The Hub returns a result per drifted app, so an empty list means this one is
+    // already in sync — treating that as a failure would strand a stale banner.
+    repairPublicWebRouting.mockResolvedValue([]);
+    renderDrifted();
+
+    fireEvent.click(await screen.findByTestId('public-web-repair-button'));
+
+    await waitFor(() => {
+      expect(screen.queryByTestId('public-web-drift-banner')).not.toBeInTheDocument();
+    });
+    expect(toast.error).not.toHaveBeenCalled();
+  });
+
+  it('surfaces the reason when the operator holds no grant for the app', async () => {
+    // The Hub answers a denied repair with APP_ACTION_GRANT_DENIED, and telling that
+    // operator to "check the Hub logs" would send them hunting a fault that is not there.
+    repairPublicWebRouting.mockRejectedValue(new TranslatableError('APP_ACTION_GRANT_DENIED', { action: 'configure', app: 'n8n' }));
+    renderDrifted();
+
+    fireEvent.click(await screen.findByTestId('public-web-repair-button'));
+
+    await waitFor(() => {
+      expect(toast.error).toHaveBeenCalledWith('APP_ACTION_GRANT_DENIED');
+    });
+    expect(screen.getByTestId('public-web-drift-banner')).toBeInTheDocument();
+  });
+
+  it('re-enables the repair button after a failed attempt so it can be retried', async () => {
+    repairPublicWebRouting.mockRejectedValue(new Error('network down'));
+    renderDrifted();
+
+    fireEvent.click(await screen.findByTestId('public-web-repair-button'));
+
+    await waitFor(() => {
+      expect(toast.error).toHaveBeenCalled();
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('public-web-repair-button')).toBeEnabled();
+    });
   });
 });

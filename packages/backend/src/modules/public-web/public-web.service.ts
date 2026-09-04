@@ -167,7 +167,12 @@ export class PublicWebService {
     };
   }
 
-  public async repair(request: PublicWebRepairRequest = {}): Promise<PublicWebRepairResponse> {
+  /**
+   * @param authorize Called for every app this run would touch, BEFORE any of them is
+   *   touched, so a caller lacking permission on one app has the whole request refused
+   *   rather than finding half the fleet already repaired behind a 403.
+   */
+  public async repair(request: PublicWebRepairRequest = {}, authorize?: (appUrn: AppUrn) => Promise<void>): Promise<PublicWebRepairResponse> {
     const diagnostics = await this.getDiagnostics();
     const targetUrns = new Set(request.appUrns ?? []);
     const toRepair = diagnostics.apps.filter((entry) => {
@@ -178,6 +183,12 @@ export class PublicWebService {
       }
       return entry.action === 'repair';
     });
+
+    if (authorize) {
+      for (const entry of toRepair) {
+        await authorize(entry.appUrn);
+      }
+    }
 
     const results: PublicWebRepairResult[] = [];
 
