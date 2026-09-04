@@ -10,7 +10,11 @@ import { spawnSync } from 'node:child_process';
 import { isDirectScriptRun } from './lib/is-direct-run';
 import { parseEnvFile } from './env-file';
 
-const QUEUE_CONTAINER = 'ci-os-hub-queue';
+const QUEUE_CONTAINERS = ['ci-hub-queue', 'ci-os-hub-queue'] as const;
+
+function resolveQueueContainer(): string | undefined {
+  return QUEUE_CONTAINERS.find((name) => containerIsRunning(name));
+}
 const HEALTH_POLL_INTERVAL_MS = 1000;
 const HEALTH_WAIT_TIMEOUT_MS = 60_000;
 
@@ -47,7 +51,9 @@ async function waitForContainerHealthy(name: string): Promise<boolean> {
 }
 
 function rabbitmqAuthWorks(password: string): boolean {
-  const result = spawnSync('docker', ['exec', QUEUE_CONTAINER, 'rabbitmqctl', 'authenticate_user', 'companion', password], {
+  const queue = resolveQueueContainer();
+  if (!queue) return false;
+  const result = spawnSync('docker', ['exec', queue, 'rabbitmqctl', 'authenticate_user', 'companion', password], {
     encoding: 'utf-8',
     stdio: 'pipe',
   });
@@ -55,7 +61,9 @@ function rabbitmqAuthWorks(password: string): boolean {
 }
 
 function changeRabbitmqPassword(password: string): boolean {
-  const result = spawnSync('docker', ['exec', QUEUE_CONTAINER, 'rabbitmqctl', 'change_password', 'companion', password], {
+  const queue = resolveQueueContainer();
+  if (!queue) return false;
+  const result = spawnSync('docker', ['exec', queue, 'rabbitmqctl', 'change_password', 'companion', password], {
     encoding: 'utf-8',
     stdio: 'pipe',
   });
@@ -66,7 +74,7 @@ function recreateQueue(envFile: string): boolean {
   const compose = process.env.COMPOSE_FILE || 'docker-compose.prod.yml';
   const result = spawnSync(
     'docker',
-    ['compose', '--env-file', envFile, '--project-name', 'ci-hub', '-f', compose, 'up', '-d', '--force-recreate', 'ci-os-hub-queue'],
+    ['compose', '--env-file', envFile, '--project-name', 'ci-hub', '-f', compose, 'up', '-d', '--force-recreate', 'ci-hub-queue'],
     { encoding: 'utf-8', stdio: 'pipe' },
   );
   return result.status === 0;
@@ -81,13 +89,14 @@ export async function syncRabbitmqPasswordFromEnv(envFile = process.env.ENV_FILE
     return;
   }
 
-  if (!containerIsRunning(QUEUE_CONTAINER)) {
-    console.log(`sync-rabbitmq-password: ${QUEUE_CONTAINER} is not running, skipping`);
+  const queue = resolveQueueContainer();
+  if (!queue) {
+    console.log('sync-rabbitmq-password: ci-hub-queue is not running, skipping');
     return;
   }
 
-  if (!(await waitForContainerHealthy(QUEUE_CONTAINER))) {
-    throw new Error(`${QUEUE_CONTAINER} did not become healthy`);
+  if (!(await waitForContainerHealthy(queue))) {
+    throw new Error(`${queue} did not become healthy`);
   }
 
   if (rabbitmqAuthWorks(password)) {
@@ -103,10 +112,11 @@ export async function syncRabbitmqPasswordFromEnv(envFile = process.env.ENV_FILE
 
   console.log('sync-rabbitmq-password: recreating queue container (no durable volume)');
   if (!recreateQueue(envFile)) {
-    throw new Error('Failed to recreate ci-os-hub-queue');
+    throw new Error('Failed to recreate ci-hub-queue');
   }
-  if (!(await waitForContainerHealthy(QUEUE_CONTAINER))) {
-    throw new Error(`${QUEUE_CONTAINER} did not become healthy after recreate`);
+  const recreated = resolveQueueContainer();
+  if (!recreated || !(await waitForContainerHealthy(recreated))) {
+    throw new Error('ci-hub-queue did not become healthy after recreate');
   }
   if (!rabbitmqAuthWorks(password)) {
     throw new Error('RabbitMQ password still does not match after recreate');

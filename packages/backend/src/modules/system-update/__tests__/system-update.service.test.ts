@@ -84,7 +84,7 @@ describe('SystemUpdateService', () => {
   });
 
   describe('performUpdate', () => {
-    it('should pull the pinned Hub image and recreate ci-os-hub', async () => {
+    it('should pull the pinned Hub image and recreate ci-hub', async () => {
       vi.useFakeTimers();
       vi.stubEnv('ROOT_FOLDER_HOST', '/host/companion-hub');
       vi.stubEnv('CI_HUB_IMAGE', `${HUB_STACK_IMAGE_REPO}:old`);
@@ -136,7 +136,7 @@ describe('SystemUpdateService', () => {
       expect(upCall[1]).toContain('always');
       expect(upCall[1]).toContain('--force-recreate');
       expect(upCall[1]).toContain('--no-deps');
-      expect(upCall[1]).toContain('ci-os-hub');
+      expect(upCall[1]).toContain('ci-hub');
       expect(upCall[1]).toContain('--project-directory');
       expect(upCall[1]).toContain('/host/companion-hub');
       expect(upCall[2].env.CI_HUB_IMAGE).toBe(`${HUB_STACK_IMAGE_REPO}:1.1.0`);

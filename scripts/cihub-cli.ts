@@ -395,7 +395,7 @@ export function isFirstRun(envFile = '.env.local'): boolean {
 
 // --- hub lifecycle ---
 
-const POSTGRES_INFRA_SERVICES = ['ci-os-hub-queue', 'ci-hub-db'] as const;
+const POSTGRES_INFRA_SERVICES = ['ci-hub-queue', 'ci-hub-db'] as const;
 
 function buildComposeBaseArgs(envFileName: string, files: string[]): string[] {
   const args = ['compose', '--env-file', envFileName, '--project-name', 'ci-hub'];
@@ -836,7 +836,7 @@ function applianceDockerTeardown(removeVolumes: boolean): void {
       runBestEffort('docker', ['volume', 'rm', volume]);
     }
   }
-  for (const network of ['ci_os_hub_network', 'ci-os-hub_network']) {
+  for (const network of ['ci_hub_network', 'ci-hub_network', 'ci_os_hub_network', 'ci-os-hub_network']) {
     runBestEffort('docker', ['network', 'rm', network]);
   }
 }
@@ -1661,21 +1661,21 @@ export function appStatusColor(status: string): string {
 }
 
 function managedAppContainerIds(): string[] {
-  const { stdout, ok } = runCapture('docker', [
-    'ps',
-    '-a',
-    '--filter',
-    'label=ci-os-hub.managed=true',
-    '--filter',
-    'label=ci-os-hub.appurn',
-    '--format',
-    '{{.ID}}',
-  ]);
-  if (!ok || !stdout) return [];
-  return stdout
-    .split('\n')
-    .map((value) => value.trim())
-    .filter(Boolean);
+  const ids = new Set<string>();
+  for (const filters of [
+    ['label=ci-hub.managed=true', 'label=ci-hub.appurn'],
+    ['label=ci-os-hub.managed=true', 'label=ci-os-hub.appurn'],
+  ]) {
+    const { stdout, ok } = runCapture('docker', ['ps', '-a', '--filter', filters[0], '--filter', filters[1], '--format', '{{.ID}}']);
+    if (!ok || !stdout) continue;
+    for (const id of stdout
+      .split('\n')
+      .map((value) => value.trim())
+      .filter(Boolean)) {
+      ids.add(id);
+    }
+  }
+  return [...ids];
 }
 
 export function runAppCommand(args: string[]) {

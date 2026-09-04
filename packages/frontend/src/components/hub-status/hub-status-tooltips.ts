@@ -1,7 +1,9 @@
 /** Short, plain-language hints for Tauri startup service rows (keyed by Docker container name). */
 export const STARTUP_SERVICE_HINTS: Record<string, string> = {
   'ci-hub-db': 'STARTUP_SERVICE_HINT_DB',
+  'ci-hub-queue': 'STARTUP_SERVICE_HINT_QUEUE',
   'ci-os-hub-queue': 'STARTUP_SERVICE_HINT_QUEUE',
+  'ci-hub': 'STARTUP_SERVICE_HINT_HUB',
   'ci-os-hub': 'STARTUP_SERVICE_HINT_HUB',
   traefik: 'STARTUP_SERVICE_HINT_TRAEFIK',
   'hub-tailscale': 'STARTUP_SERVICE_HINT_TAILSCALE',

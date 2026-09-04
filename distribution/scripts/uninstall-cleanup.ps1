@@ -64,15 +64,18 @@ function Get-ProjectImageIds {
 }
 
 # Marketplace apps run as their own compose projects (<app>_<store>), separate from
-# the Hub stack. Hub stamps every managed app container with `ci-os-hub.managed=true`
-# (store-agnostic). Discover the project set from those containers, then remove each
-# project's containers, networks (except the shared Hub network), volumes, and images.
+# the Hub stack. New apps carry `ci-hub.managed=true`; pre-rename apps carry
+# `ci-os-hub.managed=true`. Discover the union, then remove each project's
+# containers, networks (except the shared Hub networks), volumes, and images.
 function Remove-MarketplaceApps {
     if (-not (Get-Command docker -ErrorAction SilentlyContinue)) { return }
 
     $managedProjects = @()
     try {
-        $managedProjects = docker ps -a --filter 'label=ci-os-hub.managed=true' --format '{{.Label "com.docker.compose.project"}}' 2>$null |
+        $managedProjects = @(
+            docker ps -a --filter 'label=ci-hub.managed=true' --format '{{.Label "com.docker.compose.project"}}' 2>$null
+            docker ps -a --filter 'label=ci-os-hub.managed=true' --format '{{.Label "com.docker.compose.project"}}' 2>$null
+        ) |
             Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique
     }
     catch {
@@ -85,7 +88,7 @@ function Remove-MarketplaceApps {
         # Defense-in-depth: only act on values matching Docker's compose-project charset
         # before interpolating them into Docker arguments.
         if ($project -notmatch '^[A-Za-z0-9][A-Za-z0-9_.-]*$') { continue }
-        # The Hub's own compose services also carry ci-os-hub.managed=true; the dedicated
+        # The Hub's own compose services also carry managed=true; the dedicated
         # Hub-stack cleanup below is the single source of truth, so skip it here.
         if ($project -in @('ci-os-hub', 'ci-hub')) { continue }
 
@@ -96,7 +99,7 @@ function Remove-MarketplaceApps {
 
         $appNetworks = docker network ls --filter "label=com.docker.compose.project=$project" --format '{{.Name}}' 2>$null
         foreach ($net in $appNetworks) {
-            if ($net -and $net -notin @('bridge', 'host', 'none', 'ci_os_hub_network', 'ci-os-hub_network')) {
+            if ($net -and $net -notin @('bridge', 'host', 'none', 'ci_hub_network', 'ci-hub_network', 'ci_os_hub_network', 'ci-os-hub_network')) {
                 Invoke-CleanupCommand "docker network rm $net"
             }
         }
@@ -117,6 +120,8 @@ if (Get-Command docker -ErrorAction SilentlyContinue) {
     $containerNames = @()
     $containerNames += Get-ContainerNamesByFilter 'label=com.docker.compose.project=ci-os-hub'
     $containerNames += Get-ContainerNamesByFilter 'label=com.docker.compose.project=ci-hub'
+    $containerNames += Get-ContainerNamesByFilter 'network=ci_hub_network'
+    $containerNames += Get-ContainerNamesByFilter 'network=ci-hub_network'
     $containerNames += Get-ContainerNamesByFilter 'network=ci_os_hub_network'
     $containerNames += Get-ContainerNamesByFilter 'network=ci-os-hub_network'
 
@@ -125,7 +130,7 @@ if (Get-Command docker -ErrorAction SilentlyContinue) {
         Invoke-CleanupCommand "docker rm -f $name"
     }
 
-    $networks = @('ci_os_hub_network', 'ci-os-hub_network')
+    $networks = @('ci_hub_network', 'ci-hub_network', 'ci_os_hub_network', 'ci-os-hub_network')
     foreach ($network in $networks) {
         Invoke-CleanupCommand "docker network rm $network"
     }

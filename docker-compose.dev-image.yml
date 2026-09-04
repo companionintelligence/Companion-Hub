@@ -1,7 +1,7 @@
 # Pull a prebuilt Hub image instead of building from source (no NODE_AUTH_TOKEN needed).
 # Used when CI_HUB_IMAGE is set in .env.dev — see getComposeFiles() in scripts/lib/cli-compose-env.ts.
 services:
-  ci-os-hub:
+  ci-hub:
     image: ${CI_HUB_IMAGE:-ghcr.io/companionintelligence/ci-hub:latest}
     pull_policy: if_not_present
     build: !reset null

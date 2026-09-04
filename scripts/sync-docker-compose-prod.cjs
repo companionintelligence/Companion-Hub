@@ -15,20 +15,19 @@ const target = path.join(repoRoot, 'packages/desktop/src-tauri/resources/docker-
 
 const rootCompose = fs.readFileSync(source, 'utf-8');
 
-const buildBlockRe = /(\n {2}ci-os-hub:[\s\S]*?\n)( {4}build:[\s\S]*?\n)( {4}depends_on:)/;
+const buildBlockRe = /(\n {2}ci-hub:[\s\S]*?\n)( {4}build:[\s\S]*?\n)( {4}depends_on:)/;
 
 // Fallback repo must be the public GHCR package (`ci-hub`), matching HUB_STACK_IMAGE_REPO
 // in the desktop's hub_env.rs and the backend's common/constants.ts. The desktop normally
 // writes an explicit CI_HUB_IMAGE into .env, so this default only applies when that is
-// missing — which is exactly when it must still be anonymously pullable. Note the service
-// key below stays `ci-os-hub`: that is the container name, not the image repo.
+// missing — which is exactly when it must still be anonymously pullable.
 const desktopHubService = `    image: \${CI_HUB_IMAGE:-ghcr.io/companionintelligence/ci-hub:latest}
     pull_policy: if_not_present
 `;
 
 const patched = rootCompose.replace(buildBlockRe, `$1${desktopHubService}$3`);
 if (patched === rootCompose) {
-  console.error('sync-docker-compose-prod: expected ci-os-hub build block in root compose; sync aborted');
+  console.error('sync-docker-compose-prod: expected ci-hub build block in root compose; sync aborted');
   process.exit(1);
 }
 

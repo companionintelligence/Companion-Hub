@@ -1,3 +1,5 @@
+import { hubNetworkName } from '@/common/constants';
+
 export type ExposureMode = 'local' | 'cloudflare' | 'tailscale';
 
 interface TraefikLabelsArgs {
@@ -18,7 +20,7 @@ export class TraefikLabelsBuilder {
   private effectiveMode: ExposureMode;
 
   constructor(private params: TraefikLabelsArgs) {
-    const mainNetworkName = `${process.env.HUB_CONTAINER_NAME || 'ci-os-hub'}_network`;
+    const mainNetworkName = hubNetworkName();
 
     this.effectiveMode = params.exposureMode || 'local';
 

@@ -1,4 +1,4 @@
-import { DEFAULT_LOCAL_DOMAIN } from '@/common/constants';
+import { DEFAULT_LOCAL_DOMAIN, hubNetworkName, managedAppLabels } from '@/common/constants';
 import { extractAppUrn } from '@/common/helpers/app-helpers';
 import type { AppEventFormInput } from '@/modules/queue/entities/app-events';
 import {
@@ -289,7 +289,7 @@ export class DockerComposeBuilder {
       service.setEnvFile([envFile]);
     }
 
-    const mainNetworkName = `${process.env.HUB_CONTAINER_NAME || 'ci-os-hub'}_network`;
+    const mainNetworkName = hubNetworkName();
     if (params.isMain || params.addToMainNetwork) {
       service.setNetwork(mainNetworkName, 1);
     }
@@ -306,10 +306,7 @@ export class DockerComposeBuilder {
       }
     }
 
-    const defaultLabels: Record<string, string | boolean> = {
-      'ci-os-hub.managed': true,
-      'ci-os-hub.appurn': appUrn,
-    };
+    const defaultLabels: Record<string, string | boolean> = managedAppLabels(appUrn);
 
     let traefikLabels: Record<string, string | boolean> = {};
 
@@ -383,7 +380,7 @@ export class DockerComposeBuilder {
 
     const myServices = fixedServices.map((service) => this.buildService(service, form, appUrn, envFile));
 
-    const mainNetworkName = `${process.env.HUB_CONTAINER_NAME || 'ci-os-hub'}_network`;
+    const mainNetworkName = hubNetworkName();
 
     const dockerCompose = this.addServices(myServices)
       .addNetwork({

@@ -43,7 +43,12 @@ interface ExecError extends Error {
 type ExecStrategy = 'host' | 'sidecar';
 
 const DEFAULT_TAILSCALE_LOGIN_SERVER = '--login-server=https://controlplane.tailscale.com';
-const DEFAULT_TAILSCALE_EXTRA_ARGS = [DEFAULT_TAILSCALE_LOGIN_SERVER, '--accept-routes', '--advertise-routes=172.18.0.0/16'];
+const DEFAULT_TAILSCALE_EXTRA_ARGS = [
+  DEFAULT_TAILSCALE_LOGIN_SERVER,
+  '--accept-routes',
+  // Upgrades keep the legacy bridge while apps move to ci-hub_network.
+  '--advertise-routes=172.18.0.0/16,172.19.0.0/16',
+];
 
 function normalizeDnsName(value: string | null | undefined): string | null {
   const trimmed = value?.trim();
@@ -589,7 +594,7 @@ export class TailscaleService {
   async getHubServeUpstream(): Promise<string> {
     const strategy = await this.resolveStrategy();
     if (strategy === 'sidecar') {
-      return process.env.TAILSCALE_HUB_UPSTREAM ?? 'http://ci-os-hub:5002';
+      return process.env.TAILSCALE_HUB_UPSTREAM ?? 'http://ci-hub:5002';
     }
     return `http://localhost:${process.env.API_PORT || 3000}`;
   }

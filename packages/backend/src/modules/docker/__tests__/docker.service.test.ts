@@ -173,7 +173,7 @@ describe('DockerService', () => {
       expect(child_process.spawn).toHaveBeenNthCalledWith(
         2,
         'docker',
-        ['compose', '--env-file', HUB_ENV_FILE, '--project-name', 'ci-hub', '-f', HUB_COMPOSE_FILE, 'logs', '--follow', '-n', '300', 'ci-os-hub'],
+        ['compose', '--env-file', HUB_ENV_FILE, '--project-name', 'ci-hub', '-f', HUB_COMPOSE_FILE, 'logs', '--follow', '-n', '300', 'ci-hub'],
         { stdio: 'pipe' },
       );
       expect(result.on).toBeTypeOf('function');
@@ -194,7 +194,7 @@ describe('DockerService', () => {
       expect(child_process.spawn).toHaveBeenNthCalledWith(
         2,
         'docker-compose',
-        ['--env-file', HUB_ENV_FILE, '--project-name', 'ci-hub', '-f', HUB_COMPOSE_FILE, 'logs', '--follow', '-n', '300', 'ci-os-hub'],
+        ['--env-file', HUB_ENV_FILE, '--project-name', 'ci-hub', '-f', HUB_COMPOSE_FILE, 'logs', '--follow', '-n', '300', 'ci-hub'],
         { stdio: 'pipe' },
       );
       expect(loggerService.warn).toHaveBeenCalledWith('docker compose plugin not available for logs, falling back to docker-compose binary');
@@ -216,7 +216,7 @@ describe('DockerService', () => {
       expect(child_process.spawn).toHaveBeenNthCalledWith(
         2,
         'docker',
-        ['compose', '--env-file', HUB_ENV_FILE, '--project-name', 'ci-hub', '-f', HUB_COMPOSE_FILE, 'logs', '--no-color', 'ci-os-hub'],
+        ['compose', '--env-file', HUB_ENV_FILE, '--project-name', 'ci-hub', '-f', HUB_COMPOSE_FILE, 'logs', '--no-color', 'ci-hub'],
         { stdio: 'pipe' },
       );
       expect(result.stdout).toBe(mockSpawnProcess.stdout);
@@ -238,7 +238,7 @@ describe('DockerService', () => {
       expect(child_process.spawn).toHaveBeenNthCalledWith(
         2,
         'docker-compose',
-        ['--env-file', HUB_ENV_FILE, '--project-name', 'ci-hub', '-f', HUB_COMPOSE_FILE, 'logs', '--no-color', 'ci-os-hub'],
+        ['--env-file', HUB_ENV_FILE, '--project-name', 'ci-hub', '-f', HUB_COMPOSE_FILE, 'logs', '--no-color', 'ci-hub'],
         { stdio: 'pipe' },
       );
       expect(loggerService.warn).toHaveBeenCalledWith('docker compose plugin not available for log download, falling back to docker-compose binary');
@@ -260,7 +260,7 @@ describe('DockerService', () => {
       expect(child_process.spawn).toHaveBeenNthCalledWith(
         2,
         'docker',
-        ['compose', '--env-file', HUB_ENV_FILE, '--project-name', 'ci-hub-log-download', '-f', HUB_COMPOSE_FILE, 'logs', '--no-color', 'ci-os-hub'],
+        ['compose', '--env-file', HUB_ENV_FILE, '--project-name', 'ci-hub-log-download', '-f', HUB_COMPOSE_FILE, 'logs', '--no-color', 'ci-hub'],
         { stdio: 'pipe' },
       );
     });
@@ -463,6 +463,12 @@ describe('DockerService', () => {
 
       const result = await service.getManagedAppContainerVerification('ghost:ci-marketplace' as any);
 
+      expect(dockerode.listContainers).toHaveBeenCalledWith({
+        all: true,
+        filters: {
+          label: ['ci-hub.managed=true', 'ci-hub.appurn=ghost:ci-marketplace'],
+        },
+      });
       expect(dockerode.listContainers).toHaveBeenCalledWith({
         all: true,
         filters: {
@@ -687,6 +693,12 @@ describe('DockerService', () => {
         internalPort: 3001,
       });
 
+      expect(dockerode.listContainers).toHaveBeenCalledWith({
+        all: false,
+        filters: {
+          label: ['ci-hub.appurn=anything-llm:ci-marketplace', 'traefik.enable=true'],
+        },
+      });
       expect(dockerode.listContainers).toHaveBeenCalledWith({
         all: false,
         filters: {
