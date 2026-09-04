@@ -129,11 +129,11 @@ export const TailscaleSetupStep = ({ onComplete, onSkip, onBack, embedded = fals
       ) : cliAvailable ? (
         isConnected ? (
           <div className="space-y-4">
-            <div className="flex items-start gap-3 rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-4">
-              <Check className="mt-0.5 h-5 w-5 flex-shrink-0 text-emerald-600 dark:text-emerald-400" />
+            <div className="flex items-start gap-3 rounded-lg border border-success/30 bg-success/10 p-4">
+              <Check className="mt-0.5 h-5 w-5 flex-shrink-0 text-success" />
               <div className="flex-1 space-y-1">
-                <p className="text-sm font-medium text-emerald-800 dark:text-emerald-300">{t('ONBOARDING_TAILSCALE_CONNECTED')}</p>
-                <p className="text-xs text-emerald-700 dark:text-emerald-200/80">{t('ONBOARDING_TAILSCALE_CONNECTED_DESC')}</p>
+                <p className="text-sm font-medium text-success">{t('ONBOARDING_TAILSCALE_CONNECTED')}</p>
+                <p className="text-xs text-success">{t('ONBOARDING_TAILSCALE_CONNECTED_DESC')}</p>
               </div>
             </div>
 
@@ -167,8 +167,8 @@ export const TailscaleSetupStep = ({ onComplete, onSkip, onBack, embedded = fals
             </div>
 
             {hasAttemptedConnection && (
-              <div className="flex items-start gap-2 rounded-lg border border-yellow-500/30 bg-yellow-500/10 p-3">
-                <div className="text-sm text-yellow-800 dark:text-yellow-200">{t('ONBOARDING_TAILSCALE_AUTH_WAITING')}</div>
+              <div className="flex items-start gap-2 rounded-lg border border-warning/30 bg-warning/10 p-3">
+                <div className="text-sm text-warning">{t('ONBOARDING_TAILSCALE_AUTH_WAITING')}</div>
               </div>
             )}
 
@@ -206,11 +206,11 @@ export const TailscaleSetupStep = ({ onComplete, onSkip, onBack, embedded = fals
         )
       ) : (
         <div className="space-y-4">
-          <div className="flex items-start gap-3 rounded-lg border border-yellow-500/30 bg-yellow-500/10 p-4">
-            <Shield className="mt-0.5 h-5 w-5 flex-shrink-0 text-yellow-400" />
+          <div className="flex items-start gap-3 rounded-lg border border-warning/30 bg-warning/10 p-4">
+            <Shield className="mt-0.5 h-5 w-5 flex-shrink-0 text-warning" />
             <div className="space-y-1">
-              <p className="text-sm font-medium text-yellow-900 dark:text-yellow-200">{t('ONBOARDING_TAILSCALE_NOT_AVAILABLE')}</p>
-              <p className="text-sm text-yellow-800/80 dark:text-yellow-200/80">{t('ONBOARDING_TAILSCALE_NOT_AVAILABLE_DESC')}</p>
+              <p className="text-sm font-medium text-warning">{t('ONBOARDING_TAILSCALE_NOT_AVAILABLE')}</p>
+              <p className="text-sm text-warning">{t('ONBOARDING_TAILSCALE_NOT_AVAILABLE_DESC')}</p>
             </div>
           </div>
           <p className="text-sm text-muted-foreground">{t('ONBOARDING_TAILSCALE_INSTALL_THEN_CONNECT')}</p>

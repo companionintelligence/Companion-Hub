@@ -69,7 +69,7 @@ export function McpSetupPanel({ info, installSchema }: Props) {
             <dd className="text-muted-foreground">{schema.requires.notes}</dd>
           </div>
         ) : null}
-        {!schema.bridgeable && schema.bridgeWarning ? <p className="text-xs text-amber-600 dark:text-amber-500">{schema.bridgeWarning}</p> : null}
+        {!schema.bridgeable && schema.bridgeWarning ? <p className="text-xs text-warning">{schema.bridgeWarning}</p> : null}
       </dl>
     </div>
   );

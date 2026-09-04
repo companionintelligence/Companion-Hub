@@ -28,6 +28,8 @@ interface StepSectionProps {
   onSelect?: () => void;
   selectionDisabled?: boolean;
   selectionTestId?: string;
+  /** Optional test id for the rendered section. */
+  testId?: string;
   className?: string;
 }
 
@@ -38,7 +40,7 @@ const BADGE_KEYS = {
 } as const;
 
 const BADGE_STYLES = {
-  required: 'border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-400',
+  required: 'border-warning/30 bg-warning/10 text-warning',
   recommended: 'border-primary/30 bg-primary/10 text-primary',
   optional: 'border-border bg-muted text-muted-foreground',
 } as const;
@@ -63,6 +65,7 @@ export function StepSection({
   onSelect,
   selectionDisabled = false,
   selectionTestId,
+  testId,
   className,
 }: StepSectionProps) {
   const [open, setOpen] = useState(defaultOpen);
@@ -77,7 +80,7 @@ export function StepSection({
         selectable && selectionDisabled && 'cursor-not-allowed opacity-60',
         className,
       )}
-      data-testid={selectionTestId}
+      data-testid={testId ?? selectionTestId}
     >
       {selectable && (
         <input
@@ -151,7 +154,7 @@ export function StepSection({
   return section;
 }
 
-/** Circular selection marker — a filled cyan check when selected, an empty ring otherwise. */
+/** Selection marker — a filled cyan check when selected, an empty border otherwise. */
 export function SelectIndicator({ selected, className }: { selected: boolean; className?: string }) {
   return (
     <span
@@ -316,7 +319,7 @@ export function ModelCard({
               </span>
             )}
             {installed && (
-              <span className="rounded bg-green-600/90 px-1.5 py-0.5 text-[10px] font-medium text-white">{t('ONBOARDING_INSTALLED')}</span>
+              <span className="rounded bg-success px-1.5 py-0.5 text-[10px] font-medium text-success-foreground">{t('ONBOARDING_INSTALLED')}</span>
             )}
           </span>
           {description && <span className="mt-0.5 block text-xs text-muted-foreground">{description}</span>}

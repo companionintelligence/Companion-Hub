@@ -90,9 +90,7 @@ export const AppCard: React.FC<AppCardProps> = ({ app, isLoading, isInstalled, i
             />
           )}
 
-          <span className="px-2 py-1 rounded-full bg-emerald-500/20 text-emerald-700 dark:text-emerald-400 text-xs font-semibold">
-            {t('APP_PRICE_FREE')}
-          </span>
+          <span className="px-2 py-1 rounded-full bg-success/20 text-success text-xs font-semibold">{t('APP_PRICE_FREE')}</span>
         </div>
 
         {/*
@@ -106,8 +104,8 @@ export const AppCard: React.FC<AppCardProps> = ({ app, isLoading, isInstalled, i
 
         <div className="flex items-center justify-end mt-auto">
           {isInstalled ? (
-            <div className="h-8 w-8 rounded-full flex items-center justify-center bg-emerald-500/20">
-              <Check className="w-4 h-4 text-emerald-600 dark:text-emerald-500" />
+            <div className="h-8 w-8 rounded-full flex items-center justify-center bg-success/20">
+              <Check className="w-4 h-4 text-success" />
             </div>
           ) : (
             <Button variant="ghost" size="sm" className="h-8 w-8 rounded-full p-0">

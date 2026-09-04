@@ -5,6 +5,7 @@ import {
   EMBEDDING_INFERENCE_BACKEND,
   hubLoadableSelection,
   hiddenInferenceBackends,
+  isAppleSiliconMacProfile,
   isHubLoadableBackend,
   recommendedInferenceBackend,
   unavailableInferenceBackends,
@@ -61,6 +62,7 @@ describe('inference-backend-availability', () => {
   });
 
   it('defaults Apple Silicon Macs to mlx-dspark even when MTPLX is recommended', () => {
+    expect(isAppleSiliconMacProfile(appleMacProfile)).toBe(true);
     expect(recommendedInferenceBackend(appleMacProfile)).toBe('dspark');
     expect(
       recommendedInferenceBackend({

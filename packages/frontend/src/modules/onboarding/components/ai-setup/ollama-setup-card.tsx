@@ -95,15 +95,15 @@ export const OllamaSetupCard = ({ status, checking, onRecheck }: OllamaSetupCard
     const endpoint = status.displayEndpoint ?? status.endpointUrl;
 
     return (
-      <Card className="border-green-200 dark:border-green-800 bg-green-50 dark:bg-green-950">
+      <Card className="border-success/30 bg-success/10">
         <CardContent className="p-4">
           <div className="flex items-center justify-between gap-3">
             <div className="flex min-w-0 items-center gap-3">
-              <CheckCircle2 className="h-5 w-5 shrink-0 text-green-600 dark:text-green-400" />
+              <CheckCircle2 className="h-5 w-5 shrink-0 text-success" />
               <div className="min-w-0">
-                <div className="text-sm font-medium text-green-900 dark:text-green-100">{t('ONBOARDING_OLLAMA_DETECTED')}</div>
-                <div className="text-xs text-green-700 dark:text-green-300">{endpoint}</div>
-                {status.hint && <div className="mt-1 text-xs text-green-700/90 dark:text-green-300/90">{status.hint}</div>}
+                <div className="text-sm font-medium text-success">{t('ONBOARDING_OLLAMA_DETECTED')}</div>
+                <div className="text-xs text-success">{endpoint}</div>
+                {status.hint && <div className="mt-1 text-xs text-success">{status.hint}</div>}
               </div>
             </div>
             <Button
@@ -131,12 +131,7 @@ export const OllamaSetupCard = ({ status, checking, onRecheck }: OllamaSetupCard
   ) : (
     <>
       {t('ONBOARDING_OLLAMA_NOT_INSTALLED_PREFIX')}{' '}
-      <a
-        href={OLLAMA_DOWNLOAD_URL}
-        target="_blank"
-        rel="noopener noreferrer"
-        className="font-medium underline underline-offset-2 hover:text-yellow-900 dark:hover:text-yellow-100"
-      >
+      <a href={OLLAMA_DOWNLOAD_URL} target="_blank" rel="noopener noreferrer" className="font-medium underline underline-offset-2 hover:text-warning">
         {t('ONBOARDING_OLLAMA_SITE')}
       </a>
       {t('ONBOARDING_OLLAMA_NOT_INSTALLED_SUFFIX')}
@@ -144,44 +139,44 @@ export const OllamaSetupCard = ({ status, checking, onRecheck }: OllamaSetupCard
   );
 
   return (
-    <Card className="border-yellow-200 dark:border-yellow-800 bg-yellow-50 dark:bg-yellow-950">
+    <Card className="border-warning/30 bg-warning/10">
       <CardContent className="p-4">
         <div className="flex items-start gap-3">
-          <Download className="h-5 w-5 text-yellow-600 dark:text-yellow-400 shrink-0 mt-0.5" />
+          <Download className="h-5 w-5 text-warning shrink-0 mt-0.5" />
           <div className="flex-1">
-            <div className="text-sm font-medium text-yellow-900 dark:text-yellow-100 mb-1">{title}</div>
-            <div className="text-xs text-yellow-700 dark:text-yellow-300 mb-3">{description}</div>
-            {status.error && <div className="mb-3 text-xs text-yellow-800 dark:text-yellow-200 font-mono">{status.error}</div>}
-            {status.hint && !bridgeUnreachable && <div className="mb-3 text-xs text-yellow-800 dark:text-yellow-200">{status.hint}</div>}
+            <div className="text-sm font-medium text-warning mb-1">{title}</div>
+            <div className="text-xs text-warning mb-3">{description}</div>
+            {status.error && <div className="mb-3 text-xs text-warning font-mono">{status.error}</div>}
+            {status.hint && !bridgeUnreachable && <div className="mb-3 text-xs text-warning">{status.hint}</div>}
             {status.remediationCommand && (
               <div className="mb-3" data-testid="ollama-remediation-command">
-                <div className="mb-1 text-xs font-medium text-yellow-900 dark:text-yellow-100">{t('ONBOARDING_OLLAMA_RUN_ON_HOST')}</div>
-                <code className="block overflow-x-auto whitespace-pre rounded bg-yellow-100 dark:bg-yellow-900 px-2 py-1.5 text-xs text-yellow-900 dark:text-yellow-100">
+                <div className="mb-1 text-xs font-medium text-warning">{t('ONBOARDING_OLLAMA_RUN_ON_HOST')}</div>
+                <code className="block overflow-x-auto whitespace-pre rounded bg-warning/10 px-2 py-1.5 text-xs text-warning">
                   {status.remediationCommand}
                 </code>
               </div>
             )}
             {installPhase === 'completed' && (
-              <div className="mb-3 flex items-center gap-2 text-xs text-yellow-800 dark:text-yellow-200">
+              <div className="mb-3 flex items-center gap-2 text-xs text-success">
                 <CheckCircle2 className="h-3.5 w-3.5 shrink-0" />
                 {t('ONBOARDING_OLLAMA_INSTALL_SUCCESS')}
               </div>
             )}
             {installPhase === 'error' && (
-              <div className="mb-3 flex items-start gap-2 text-xs text-yellow-800 dark:text-yellow-200">
+              <div className="mb-3 flex items-start gap-2 text-xs text-destructive">
                 <AlertCircle className="h-3.5 w-3.5 shrink-0 mt-0.5" />
                 <span>{installError || t('ONBOARDING_OLLAMA_INSTALL_ERROR')}</span>
               </div>
             )}
             {installPhase === 'installing' ? (
-              <div className="flex items-center gap-2 text-xs text-yellow-800 dark:text-yellow-200">
+              <div className="flex items-center gap-2 text-xs text-warning">
                 <Loader2 className="h-3.5 w-3.5 animate-spin shrink-0" />
                 {t('ONBOARDING_OLLAMA_INSTALLING')}
               </div>
             ) : (
               <div className="flex gap-2 flex-wrap">
                 {canAutoInstall && !firewallBlocked && (
-                  <Button size="sm" onClick={handleAutoInstall} className="bg-yellow-600 hover:bg-yellow-700 text-white">
+                  <Button size="sm" onClick={handleAutoInstall} className="bg-warning text-warning-foreground hover:bg-warning/90">
                     <Download className="h-3.5 w-3.5 mr-1.5" />
                     {t('ONBOARDING_OLLAMA_AUTO_INSTALL')}
                   </Button>
@@ -191,7 +186,7 @@ export const OllamaSetupCard = ({ status, checking, onRecheck }: OllamaSetupCard
                     size="sm"
                     variant={canAutoInstall ? 'ghost' : undefined}
                     onClick={() => openExternal(OLLAMA_DOWNLOAD_URL)}
-                    className={canAutoInstall ? undefined : 'bg-yellow-600 hover:bg-yellow-700 text-white'}
+                    className={canAutoInstall ? undefined : 'bg-warning text-warning-foreground hover:bg-warning/90'}
                   >
                     <Download className="h-3.5 w-3.5 mr-1.5" />
                     {t('ONBOARDING_OLLAMA_GET')}
