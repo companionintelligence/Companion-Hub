@@ -45,7 +45,7 @@ const Tile = ({ data, sslPort }: { data: GuestAppsDto['installed'][number]; sslP
         <DropdownMenuGroup>
           {app.exposed && app.domain && (
             <DropdownMenuItem onClick={() => handleOpen('domain')}>
-              <Lock className="text-green-500 mr-2" size={16} />
+              <Lock className="text-success mr-2" size={16} />
               {app.domain}
               {sslPort === 443 ? '' : `:${sslPort}`}
             </DropdownMenuItem>

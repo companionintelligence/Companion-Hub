@@ -138,10 +138,7 @@ export const RocmSetupCard = ({ hardware, onRescan, rescanning = false, id = 'ro
             </p>
 
             {rebootRequired && (
-              <div
-                className="mt-3 rounded-md border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-100"
-                data-testid="rocm-reboot-required"
-              >
+              <div className="mt-3 rounded-md border border-warning/30 bg-warning/10 p-3 text-xs text-warning" data-testid="rocm-reboot-required">
                 <p className="font-semibold">{t('AI_ROCM_REBOOT_REQUIRED_TITLE')}</p>
                 <p className="mt-1">{t('AI_ROCM_REBOOT_REQUIRED_BODY')}</p>
               </div>

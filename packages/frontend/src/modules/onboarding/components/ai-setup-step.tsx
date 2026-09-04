@@ -93,6 +93,16 @@ const defaultRemoteAccess = (_cloudflareAvailable: boolean, tailscaleAvailable: 
 const primaryExposureMode = (remoteAccess: RemoteAccessMode[]): ExposureMode =>
   remoteAccess.includes('cloudflare') ? 'cloudflare' : remoteAccess.includes('tailscale') ? 'tailscale' : 'local';
 
+const BackendSetupGroup = ({ title, description, children }: { title: string; description?: string; children: React.ReactNode }) => (
+  <div className="space-y-3" data-testid="selected-backend-setup">
+    <div>
+      <h3 className="text-sm font-semibold">{title}</h3>
+      {description && <p className="mt-1 text-xs text-muted-foreground">{description}</p>}
+    </div>
+    {children}
+  </div>
+);
+
 export const AiSetupStep = ({
   onComplete,
   onSkip,
@@ -597,12 +607,12 @@ export const AiSetupStep = ({
           {t('ONBOARDING_AI_SETUP_FAILED')}: {error}
         </p>
         {ollamaStatus?.bridgeUnreachable && ollamaStatus.hint && (
-          <div className="mx-auto mb-4 max-w-2xl rounded-lg border border-yellow-200 dark:border-yellow-800 bg-yellow-50 dark:bg-yellow-950 p-3">
-            <div className="text-xs text-yellow-800 dark:text-yellow-200">{ollamaStatus.hint}</div>
+          <div className="mx-auto mb-4 max-w-2xl rounded-lg border border-warning/30 bg-warning/10 p-3">
+            <div className="text-xs text-warning">{ollamaStatus.hint}</div>
             {ollamaStatus.remediationCommand && (
               <>
-                <div className="mt-2 mb-1 text-xs font-medium text-yellow-900 dark:text-yellow-100">{t('ONBOARDING_OLLAMA_RUN_ON_HOST')}</div>
-                <code className="block overflow-x-auto whitespace-pre rounded bg-yellow-100 dark:bg-yellow-900 px-2 py-1.5 text-xs text-yellow-900 dark:text-yellow-100">
+                <div className="mt-2 mb-1 text-xs font-medium text-warning">{t('ONBOARDING_OLLAMA_RUN_ON_HOST')}</div>
+                <code className="block overflow-x-auto whitespace-pre rounded bg-warning/10 px-2 py-1.5 text-xs text-warning">
                   {ollamaStatus.remediationCommand}
                 </code>
               </>
@@ -674,83 +684,95 @@ export const AiSetupStep = ({
 
           <AgentFrameworkCard frameworks={agentFrameworks} onToggleFramework={toggleFramework} />
 
-          <BackendSelectionCard
-            recommended={recommendedInferenceBackend(profile)}
-            available={profile.backends.available}
-            selected={selectedBackend}
-            onSelect={handleSelectBackend}
-            unavailableTypes={unavailableInferenceBackends(profile)}
-            hiddenTypes={hiddenInferenceBackends(profile)}
-          />
+          <StepSection
+            number={3}
+            badge="required"
+            title={t('ONBOARDING_INFERENCE_SETUP_TITLE')}
+            className="space-y-5"
+            testId="inference-setup-section"
+          >
+            <div className="border-b border-border pb-5">
+              <BackendSelectionCard
+                recommended={recommendedInferenceBackend(profile)}
+                available={profile.backends.available}
+                selected={selectedBackend}
+                onSelect={handleSelectBackend}
+                embedded
+                unavailableTypes={unavailableInferenceBackends(profile)}
+                hiddenTypes={hiddenInferenceBackends(profile)}
+              />
+            </div>
 
-          {selectedBackend === 'vllm' ? (
-            <StepSection number={3} badge="required" title={t('ONBOARDING_VLLM_SECTION_TITLE')} description={t('ONBOARDING_VLLM_SECTION_DESC')}>
-              <VllmSetupCard
-                status={vllmStatus}
-                checking={checkingVllm}
-                onRecheck={handleVllmRecheck}
-                apiKey={vllmApiKey}
-                onApiKeyChange={setVllmApiKey}
-                endpointUrl={vllmUrl}
-                onEndpointUrlChange={setVllmUrl}
-                onAutoInstall={canAutoInstallRunners ? () => handleAutoInstallRunner('vllm') : undefined}
-              />
-            </StepSection>
-          ) : selectedBackend === 'mtplx' ? (
-            <StepSection number={3} badge="required" title={t('ONBOARDING_MTPLX_SECTION_TITLE')} description={t('ONBOARDING_MTPLX_SECTION_DESC')}>
-              <MtplxSetupCard
-                status={mtplxStatus}
-                checking={checkingMtplx}
-                onRecheck={handleMtplxRecheck}
-                endpointUrl={mtplxUrl}
-                onEndpointUrlChange={setMtplxUrl}
-                onAutoInstall={canAutoInstallRunners ? () => handleAutoInstallRunner('mtplx') : undefined}
-              />
-            </StepSection>
-          ) : selectedBackend === 'dspark' ? (
-            <StepSection number={3} badge="required" title={t('ONBOARDING_DSPARK_SECTION_TITLE')}>
-              <DsparkSetupCard
-                status={dsparkStatus}
-                checking={checkingDspark}
-                onRecheck={handleDsparkRecheck}
-                endpointUrl={dsparkUrl}
-                onEndpointUrlChange={setDsparkUrl}
-                onAutoInstall={canAutoInstallRunners ? () => handleAutoInstallRunner('dspark') : undefined}
-              />
-            </StepSection>
-          ) : selectedBackend === 'lemonade' ? (
-            <StepSection
-              number={3}
-              badge="required"
-              title={t('ONBOARDING_LEMONADE_SECTION_TITLE')}
-              description={t('ONBOARDING_LEMONADE_SECTION_DESC')}
-            >
-              <LemonadeSetupCard status={lemonadeStatus} checking={checkingLemonade} onRecheck={handleLemonadeRecheck} />
-            </StepSection>
-          ) : (
-            <StepSection number={3} badge="required" title={t('ONBOARDING_OLLAMA_SECTION_TITLE')} description={t('ONBOARDING_OLLAMA_SECTION_DESC')}>
-              <OllamaSetupCard status={ollamaStatus} checking={checkingOllama} onRecheck={handleOllamaRecheck} />
-            </StepSection>
-          )}
+            {selectedBackend === 'vllm' ? (
+              <BackendSetupGroup title={t('ONBOARDING_VLLM_SECTION_TITLE')} description={t('ONBOARDING_VLLM_SECTION_DESC')}>
+                <VllmSetupCard
+                  status={vllmStatus}
+                  checking={checkingVllm}
+                  onRecheck={handleVllmRecheck}
+                  apiKey={vllmApiKey}
+                  onApiKeyChange={setVllmApiKey}
+                  endpointUrl={vllmUrl}
+                  onEndpointUrlChange={setVllmUrl}
+                  onAutoInstall={canAutoInstallRunners ? () => handleAutoInstallRunner('vllm') : undefined}
+                />
+              </BackendSetupGroup>
+            ) : selectedBackend === 'mtplx' ? (
+              <BackendSetupGroup title={t('ONBOARDING_MTPLX_SECTION_TITLE')} description={t('ONBOARDING_MTPLX_SECTION_DESC')}>
+                <MtplxSetupCard
+                  status={mtplxStatus}
+                  checking={checkingMtplx}
+                  onRecheck={handleMtplxRecheck}
+                  endpointUrl={mtplxUrl}
+                  onEndpointUrlChange={setMtplxUrl}
+                  onAutoInstall={canAutoInstallRunners ? () => handleAutoInstallRunner('mtplx') : undefined}
+                />
+              </BackendSetupGroup>
+            ) : selectedBackend === 'dspark' ? (
+              <BackendSetupGroup title={t('ONBOARDING_DSPARK_SECTION_TITLE')} description={t('ONBOARDING_DSPARK_SECTION_DESC')}>
+                <DsparkSetupCard
+                  status={dsparkStatus}
+                  checking={checkingDspark}
+                  onRecheck={handleDsparkRecheck}
+                  endpointUrl={dsparkUrl}
+                  onEndpointUrlChange={setDsparkUrl}
+                  onAutoInstall={canAutoInstallRunners ? () => handleAutoInstallRunner('dspark') : undefined}
+                />
+              </BackendSetupGroup>
+            ) : selectedBackend === 'lemonade' ? (
+              <BackendSetupGroup title={t('ONBOARDING_LEMONADE_SECTION_TITLE')} description={t('ONBOARDING_LEMONADE_SECTION_DESC')}>
+                <LemonadeSetupCard status={lemonadeStatus} checking={checkingLemonade} onRecheck={handleLemonadeRecheck} />
+              </BackendSetupGroup>
+            ) : (
+              <BackendSetupGroup title={t('ONBOARDING_OLLAMA_SECTION_TITLE')} description={t('ONBOARDING_OLLAMA_SECTION_DESC')}>
+                <OllamaSetupCard status={ollamaStatus} checking={checkingOllama} onRecheck={handleOllamaRecheck} />
+              </BackendSetupGroup>
+            )}
 
-          {isHostServedBackend(selectedBackend) && (
-            <StepSection
-              number={3}
-              badge="recommended"
-              title={t('ONBOARDING_EMBEDDINGS_OLLAMA_SECTION_TITLE')}
-              description={selectedBackend === 'dspark' ? undefined : t('ONBOARDING_EMBEDDINGS_OLLAMA_SECTION_DESC')}
-            >
-              {ollamaEmbeddingsWarning && (
-                <div
-                  className="mb-3 rounded-md border border-yellow-200 dark:border-yellow-800 bg-yellow-50 dark:bg-yellow-950 px-3 py-2 text-xs text-yellow-800 dark:text-yellow-200"
-                  data-testid="ollama-embeddings-warning"
-                >
-                  {t('ONBOARDING_EMBEDDINGS_OLLAMA_WARNING')}
+            {isHostServedBackend(selectedBackend) && (
+              <div className="space-y-3 border-t border-border pt-5" data-testid="embeddings-inference-setup">
+                <div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <h3 className="text-sm font-semibold">{t('ONBOARDING_EMBEDDINGS_OLLAMA_SECTION_TITLE')}</h3>
+                    <span className="rounded-full border border-primary/30 bg-primary/10 px-2.5 py-0.5 text-xs font-medium text-primary">
+                      {t('ONBOARDING_BADGE_RECOMMENDED')}
+                    </span>
+                  </div>
+                  {selectedBackend !== 'dspark' && (
+                    <p className="mt-1 text-xs text-muted-foreground">{t('ONBOARDING_EMBEDDINGS_OLLAMA_SECTION_DESC')}</p>
+                  )}
                 </div>
-              )}
-              <OllamaSetupCard status={ollamaStatus} checking={checkingOllama} onRecheck={handleOllamaRecheck} />
-            </StepSection>
-          )}
+                {ollamaEmbeddingsWarning && (
+                  <div
+                    className="rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning"
+                    data-testid="ollama-embeddings-warning"
+                  >
+                    {t('ONBOARDING_EMBEDDINGS_OLLAMA_WARNING')}
+                  </div>
+                )}
+                <OllamaSetupCard status={ollamaStatus} checking={checkingOllama} onRecheck={handleOllamaRecheck} />
+              </div>
+            )}
+          </StepSection>
 
           <ResourceSummaryBar
             selectedModels={selectedModels}

@@ -38,7 +38,7 @@ export const AutoInstallRunnerButton = ({ onRun }: AutoInstallRunnerButtonProps)
   return (
     <div className="flex flex-wrap items-center gap-2" data-testid="auto-install-runner">
       {phase === 'installing' ? (
-        <div className="flex items-center gap-2 text-xs text-yellow-800 dark:text-yellow-200" role="status">
+        <div className="flex items-center gap-2 text-xs text-warning" role="status">
           <Loader2 className="h-3.5 w-3.5 animate-spin shrink-0" />
           {t('ONBOARDING_INFERENCE_RUN_INSTALLING')}
         </div>
@@ -46,7 +46,7 @@ export const AutoInstallRunnerButton = ({ onRun }: AutoInstallRunnerButtonProps)
         <Button
           size="sm"
           onClick={() => void handleRun()}
-          className="bg-yellow-600 hover:bg-yellow-700 text-white"
+          className="bg-warning text-warning-foreground hover:bg-warning/90"
           data-testid="auto-install-runner-btn"
         >
           <Download className="h-3.5 w-3.5 mr-1.5" />
@@ -54,13 +54,13 @@ export const AutoInstallRunnerButton = ({ onRun }: AutoInstallRunnerButtonProps)
         </Button>
       )}
       {phase === 'completed' && (
-        <span className="flex items-center gap-1 text-xs text-yellow-800 dark:text-yellow-200" role="status">
+        <span className="flex items-center gap-1 text-xs text-success" role="status">
           <CheckCircle2 className="h-3.5 w-3.5 shrink-0" />
           {t('ONBOARDING_INFERENCE_RUN_COMPLETE')}
         </span>
       )}
       {phase === 'error' && (
-        <span className="flex items-center gap-1 text-xs text-yellow-800 dark:text-yellow-200" role="alert">
+        <span className="flex items-center gap-1 text-xs text-destructive" role="alert">
           <AlertCircle className="h-3.5 w-3.5 shrink-0" />
           {t('ONBOARDING_INFERENCE_RUN_ERROR')}
         </span>

@@ -285,7 +285,7 @@ export function buildAppAccessPoints(input: {
 }
 
 const stateClasses: Record<AccessPointState, string> = {
-  active: 'border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400',
+  active: 'border-success/30 bg-success/10 text-success',
   // `available`/`pending` describe a route you *could* turn on, not one that is
   // currently serving the app — render them neutral (not a positive amber) so
   // the badge can't be misread as "this URL is live".

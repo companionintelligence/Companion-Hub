@@ -137,9 +137,9 @@ export const SystemOverview = ({ hardware, tier, onRescan, rescanning = false, a
       </div>
 
       {noGpu && (
-        <div className="mt-4 flex items-start gap-2 rounded-md border border-yellow-200 bg-yellow-50 p-2.5 dark:border-yellow-800 dark:bg-yellow-950">
-          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-yellow-600 dark:text-yellow-400" />
-          <div className="text-xs text-yellow-800 dark:text-yellow-200">
+        <div className="mt-4 flex items-start gap-2 rounded-md border border-warning/30 bg-warning/10 p-2.5">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-warning" />
+          <div className="text-xs text-warning">
             <strong>{t('ONBOARDING_NO_GPU_DETECTED_STRONG')}</strong> {t('ONBOARDING_NO_GPU_DETECTED_DESC')}
           </div>
         </div>
@@ -148,10 +148,7 @@ export const SystemOverview = ({ hardware, tier, onRescan, rescanning = false, a
       {showRocmSetup && <RocmSetupCard hardware={hardware} onRescan={onRescan} rescanning={rescanning} />}
 
       {nvidiaRuntimeMissing && (
-        <div
-          className="mt-4 rounded-md border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900 dark:border-amber-800/60 dark:bg-amber-950/40 dark:text-amber-100"
-          data-testid="nvidia-runtime-warning"
-        >
+        <div className="mt-4 rounded-md border border-warning/30 bg-warning/10 p-3 text-xs text-warning" data-testid="nvidia-runtime-warning">
           <p className="mb-2">{t('ONBOARDING_NVIDIA_RUNTIME_MISSING_DESC_1')}</p>
           <p className="mb-2">{t('ONBOARDING_NVIDIA_RUNTIME_MISSING_DESC_2')}</p>
           <p className="font-semibold">{t('ONBOARDING_ACTION_ITEMS')}</p>
@@ -164,10 +161,10 @@ export const SystemOverview = ({ hardware, tier, onRescan, rescanning = false, a
               {showLinuxRuntimeSteps ? (
                 <>
                   <p className="font-semibold">2. {t('ONBOARDING_MANUAL_INSTALL_DISTRO_SPECIFIC')}</p>
-                  {isWslEngineHost && <p className="mt-1 text-amber-800 dark:text-amber-200/90">{t('ONBOARDING_WSL_ENGINE_MANUAL_NOTE')}</p>}
+                  {isWslEngineHost && <p className="mt-1 text-warning">{t('ONBOARDING_WSL_ENGINE_MANUAL_NOTE')}</p>}
                   <div className="mt-1.5 space-y-2">
-                    <div className="rounded bg-amber-100/70 p-2.5 font-mono text-[11px] leading-6 text-amber-950 dark:bg-black/30 dark:text-amber-100/90">
-                      <p className="font-semibold text-amber-950 dark:text-amber-100">{t('ONBOARDING_DISTRO_DEBIAN_UBUNTU')}</p>
+                    <div className="rounded bg-warning/10 p-2.5 font-mono text-[11px] leading-6 text-warning">
+                      <p className="font-semibold text-warning">{t('ONBOARDING_DISTRO_DEBIAN_UBUNTU')}</p>
                       <p>sudo mkdir -p /etc/apt/keyrings</p>
                       <p>
                         curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | sudo gpg --dearmor -o
@@ -180,16 +177,16 @@ export const SystemOverview = ({ hardware, tier, onRescan, rescanning = false, a
                       </p>
                       <p>sudo apt-get update && sudo apt-get install -y nvidia-container-toolkit</p>
                     </div>
-                    <div className="rounded bg-amber-100/70 p-2.5 font-mono text-[11px] leading-6 text-amber-950 dark:bg-black/30 dark:text-amber-100/90">
-                      <p className="font-semibold text-amber-950 dark:text-amber-100">{t('ONBOARDING_DISTRO_RHEL_FEDORA')}</p>
+                    <div className="rounded bg-warning/10 p-2.5 font-mono text-[11px] leading-6 text-warning">
+                      <p className="font-semibold text-warning">{t('ONBOARDING_DISTRO_RHEL_FEDORA')}</p>
                       <p>
                         curl -fsSL https://nvidia.github.io/libnvidia-container/stable/rpm/nvidia-container-toolkit.repo | sudo tee
                         /etc/yum.repos.d/nvidia-container-toolkit.repo
                       </p>
                       <p>sudo dnf install -y nvidia-container-toolkit</p>
                     </div>
-                    <div className="rounded bg-amber-100/70 p-2.5 font-mono text-[11px] leading-6 text-amber-950 dark:bg-black/30 dark:text-amber-100/90">
-                      <p className="font-semibold text-amber-950 dark:text-amber-100">{t('ONBOARDING_DISTRO_ARCH_MANJARO')}</p>
+                    <div className="rounded bg-warning/10 p-2.5 font-mono text-[11px] leading-6 text-warning">
+                      <p className="font-semibold text-warning">{t('ONBOARDING_DISTRO_ARCH_MANJARO')}</p>
                       <p>sudo pacman -Sy --noconfirm nvidia-container-toolkit</p>
                     </div>
                   </div>
@@ -197,7 +194,7 @@ export const SystemOverview = ({ hardware, tier, onRescan, rescanning = false, a
               ) : (
                 <>
                   <p className="font-semibold">2. {t('ONBOARDING_COMPLETE_GPU_SUPPORT_HOST')}</p>
-                  <div className="mt-1.5 rounded bg-amber-100/70 p-2.5 text-[11px] leading-6 text-amber-950 dark:bg-black/30 dark:text-amber-100/90">
+                  <div className="mt-1.5 rounded bg-warning/10 p-2.5 text-[11px] leading-6 text-warning">
                     {t('ONBOARDING_COMPLETE_GPU_SUPPORT_HOST_DESC')}
                   </div>
                 </>
@@ -206,7 +203,7 @@ export const SystemOverview = ({ hardware, tier, onRescan, rescanning = false, a
             {showLinuxRuntimeSteps && (
               <div>
                 <p className="font-semibold">3. {t('ONBOARDING_THEN_RUN')}</p>
-                <div className="mt-1.5 rounded bg-amber-100/70 p-2.5 font-mono text-[11px] leading-6 text-amber-950 dark:bg-black/30 dark:text-amber-100/90">
+                <div className="mt-1.5 rounded bg-warning/10 p-2.5 font-mono text-[11px] leading-6 text-warning">
                   <p>sudo nvidia-ctk runtime configure --runtime=docker</p>
                   <p>sudo systemctl restart docker</p>
                   <p>docker info | grep -i nvidia</p>
@@ -224,10 +221,7 @@ export const SystemOverview = ({ hardware, tier, onRescan, rescanning = false, a
       )}
 
       {nvidiaRuntimeReady && (
-        <div
-          className="mt-4 rounded-md border border-emerald-200 bg-emerald-50 p-3 text-xs text-emerald-900 dark:border-emerald-800 dark:bg-emerald-950 dark:text-emerald-100"
-          data-testid="nvidia-runtime-ready"
-        >
+        <div className="mt-4 rounded-md border border-success/30 bg-success/10 p-3 text-xs text-success" data-testid="nvidia-runtime-ready">
           {t('ONBOARDING_NVIDIA_RUNTIME_READY')}
         </div>
       )}
