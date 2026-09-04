@@ -656,7 +656,7 @@ export class AppHelpers {
     const isMcpClient = scopes.includes('mcp');
     const isFirstPartyConsumer = scopes.includes('app');
     if (scopes.length > 0) {
-      const hubContainerName = process.env.HUB_CONTAINER_NAME || 'ci-os-hub';
+      const hubContainerName = process.env.HUB_CONTAINER_NAME || 'ci-hub';
       const hubPort = process.env.API_PORT || '3000';
       const hubInternalUrl = `http://${hubContainerName}:${hubPort}`;
 

@@ -510,9 +510,9 @@ The Hub orchestrates its infrastructure and all user-installed apps via Docker C
 
 | Service | Image | Purpose | Port |
 |---------|-------|---------|------|
-| `ci-os-hub` | Built from `Dockerfile` | Backend API + static frontend | 5002 (prod), 3000 (dev) |
+| `ci-hub` | Built from `Dockerfile` | Backend API + static frontend | 5002 (prod), 3000 (dev) |
 | `ci-hub-db` | `postgres:14` | Primary data store | 6543 |
-| `ci-os-hub-queue` | `rabbitmq:4-alpine` | Message broker | 5672 |
+| `ci-hub-queue` | `rabbitmq:4-alpine` | Message broker | 5672 |
 | `traefik` | `traefik:v3.6.7` | Reverse proxy, TLS termination | 80, 443, 8080 (dashboard) |
 
 **Optional services** (Docker Compose profiles):
@@ -531,7 +531,7 @@ Traefik provides automatic routing and TLS for all services:
 ```
 Internet → Cloudflare → cloudflared → Traefik (443/80)
                                           │
-                                          ├── ci-os-hub (Hub UI/API)
+                                          ├── ci-hub (Hub UI/API)
                                           ├── app-a (user app)
                                           ├── app-b (user app)
                                           └── ...
@@ -708,11 +708,11 @@ reference a shipped desktop bundle pins via `CI_HUB_BUILD_VERSION`. Non-producti
 publish their channel tag alone, because they compile a different `CI_CLOUD_URL` and must
 never claim a production version tag.
 
-The repo name is `ci-hub` on GHCR and on the Portal listing path (`/v2/ci-hub`). Note that
-`ci-os-hub` appearing throughout the compose files is the **service/container name**
-(`container_name: ci-os-hub`, `ci-os-hub_network`, `ci-os-hub.managed` labels) — not the
-image or Portal package. Pointing the image at the retired private `ci-os-hub` GHCR package
-is what broke Hub 0.2.44 (#920).
+The repo name is `ci-hub` on GHCR and on the Portal listing path (`/v2/ci-hub`). The compose
+service, container, and Docker DNS name are also `ci-hub` (`ci-hub-queue`, `ci-hub_network`,
+`ci-hub.managed` labels). The retired `ci-os-hub` spellings remain network aliases and
+lookup fallbacks so already-installed apps keep resolving. Pointing the **image** at the
+retired private `ci-os-hub` GHCR package is what broke Hub 0.2.44 (#920).
 
 Images are pushed to **GitHub Container Registry** (ghcr.io). The package must remain
 **public**: the desktop shells out to `docker compose` with no registry credentials, so any
@@ -830,7 +830,7 @@ See [`e2e/README.md`](../e2e/README.md) for full lane documentation.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `RABBITMQ_HOST` | `ci-os-hub-queue` | RabbitMQ hostname |
+| `RABBITMQ_HOST` | `ci-hub-queue` | RabbitMQ hostname |
 | `RABBITMQ_PORT` | `5672` | RabbitMQ port |
 | `RABBITMQ_USERNAME` | `companion` | Queue user |
 | `RABBITMQ_PASSWORD` | `admin` | Queue password |

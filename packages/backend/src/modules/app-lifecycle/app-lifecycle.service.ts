@@ -345,7 +345,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
    * sync was edge-triggered: boot, an app's routing change, or a manual repair.
    * A Hub that is simply sitting there serving never asked again, so a newly
    * connected domain reached the app while the app kept emitting its platform
-   * hostname in every redirect, and `docker restart ci-os-hub` was the only cure
+   * hostname in every redirect, and `docker restart ci-hub` was the only cure
    * (CI-Hub#1209). The registration-validation timer next door does not help:
    * it is hourly and checks in against a different endpoint that carries no
    * exposure state.

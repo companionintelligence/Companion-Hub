@@ -9,7 +9,7 @@ import {
   DEFAULT_APP_IMAGE_PULL_INACTIVITY_TIMEOUT_MS,
   DEFAULT_APP_IMAGE_PULL_TIMEOUT_MINUTES,
   DEFAULT_HUB_CONTAINER_NAME,
-  DEFAULT_NETWORK_NAME,
+  HUB_NETWORK_NAMES,
 } from '@/common/constants';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
@@ -269,7 +269,7 @@ export class DockerService {
     for (const network of networks) {
       const networkName = network.Name;
       // Preserve the shared Hub network during app-specific teardown.
-      if (!networkName || networkName === DEFAULT_NETWORK_NAME) {
+      if (!networkName || HUB_NETWORK_NAMES.includes(networkName as (typeof HUB_NETWORK_NAMES)[number])) {
         continue;
       }
 

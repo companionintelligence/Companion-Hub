@@ -158,7 +158,7 @@ describe('TailscaleService', () => {
         'tskey-auth-testkey',
         '--login-server=https://controlplane.tailscale.com',
         '--accept-routes',
-        '--advertise-routes=172.18.0.0/16',
+        '--advertise-routes=172.18.0.0/16,172.19.0.0/16',
       ],
       expect.objectContaining({ timeout: 120_000 }),
       expect.any(Function),

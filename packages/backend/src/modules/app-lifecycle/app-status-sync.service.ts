@@ -9,7 +9,8 @@ import { AppsRepository } from '../apps/apps.repository';
 import { InstallPipelineTracker } from '../apps/install-pipeline.tracker';
 import type { AppStatus } from '@/core/database/drizzle/types';
 import { SystemEventsQueue } from '../queue/entities/system-events';
-import { DEFAULT_APP_IMAGE_PULL_TIMEOUT_MINUTES } from '@/common/constants';
+import { appUrnFromLabels, DEFAULT_APP_IMAGE_PULL_TIMEOUT_MINUTES } from '@/common/constants';
+import { listContainersMatchingAnyLabelSets, managedAppLabelSets } from '../docker/hub-container-query';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { AgentNotifyService } from '../agent-notify/agent-notify.service';
 import { ErrorReportingService } from '@/core/error-reporting/error-reporting.service';
@@ -83,15 +84,12 @@ export class AppStatusSyncService {
       this.logger.debug('Starting app status sync');
 
       const apps = await this.appRepository.getApps();
-      const containers = await this.docker.listContainers({
-        all: true,
-        filters: { label: ['ci-os-hub.managed=true'] },
-      });
+      const containers = await listContainersMatchingAnyLabelSets(this.docker, managedAppLabelSets());
 
       const dockerStatusMap = new Map<string, { running: number; exitZero: number; total: number }>();
 
       for (const container of containers) {
-        const appUrn = container.Labels?.['ci-os-hub.appurn'];
+        const appUrn = appUrnFromLabels(container.Labels);
         if (!appUrn) continue;
 
         if (!dockerStatusMap.has(appUrn)) {

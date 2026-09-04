@@ -1,4 +1,4 @@
-import { DEFAULT_NETWORK_NAME } from '@/common/constants';
+import { HUB_NETWORK_NAMES } from '@/common/constants';
 import { LoggerService } from '@/core/logger/logger.service';
 import { Inject, Injectable } from '@nestjs/common';
 import type { AppUrn } from '@ci-hub/common/types';
@@ -213,7 +213,7 @@ export class NetworkDiagnosticsService {
 
     for (const network of networks) {
       const networkName = network.Name;
-      if (!networkName || networkName === DEFAULT_NETWORK_NAME) {
+      if (!networkName || HUB_NETWORK_NAMES.includes(networkName as (typeof HUB_NETWORK_NAMES)[number])) {
         continue;
       }
 

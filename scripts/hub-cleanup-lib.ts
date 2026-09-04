@@ -270,6 +270,8 @@ export function runHubCleanup(options?: CleanupOptions): CleanupSummary {
 
   const containerNames = new Set<string>();
   const containerCommands = [
+    'docker ps -a --filter network=ci_hub_network --format "{{.Names}}"',
+    'docker ps -a --filter network=ci-hub_network --format "{{.Names}}"',
     'docker ps -a --filter network=ci_os_hub_network --format "{{.Names}}"',
     'docker ps -a --filter network=ci-os-hub_network --format "{{.Names}}"',
     'docker ps -a --filter label=com.docker.compose.project=ci-os-hub --format "{{.Names}}"',
@@ -296,7 +298,12 @@ export function runHubCleanup(options?: CleanupOptions): CleanupSummary {
   //
   // `{{.Labels}}` returns a comma-joined `key=value` list; parsing it here avoids a quoted
   // Go-template arg (`'{{.Label "..."}}'`), which cmd.exe mishandles on Windows.
-  const managedLabelLines = parseNames(runCommand('docker ps -a --filter label=ci-os-hub.managed=true --format "{{.Labels}}"', commandContext));
+  const managedLabelLines = parseNames(
+    [
+      runCommand('docker ps -a --filter label=ci-hub.managed=true --format "{{.Labels}}"', commandContext),
+      runCommand('docker ps -a --filter label=ci-os-hub.managed=true --format "{{.Labels}}"', commandContext),
+    ].join('\n'),
+  );
   const projectLabelPrefix = 'com.docker.compose.project=';
   // The Hub's own compose services in docker-compose.*.yml also carry `ci-os-hub.managed=true`,
   // so exclude the Hub stack projects here — they're handled by the dedicated Hub teardown
@@ -318,7 +325,7 @@ export function runHubCleanup(options?: CleanupOptions): CleanupSummary {
     }
   }
 
-  const sharedNetworks = new Set(['bridge', 'host', 'none', 'ci_os_hub_network', 'ci-os-hub_network']);
+  const sharedNetworks = new Set(['bridge', 'host', 'none', 'ci_hub_network', 'ci-hub_network', 'ci_os_hub_network', 'ci-os-hub_network']);
   for (const project of managedProjects) {
     const projectImages = snapshotProjectImages(project);
 
@@ -352,6 +359,8 @@ export function runHubCleanup(options?: CleanupOptions): CleanupSummary {
     runCommand(`docker volume rm ${volumeName}`, commandContext);
   }
 
+  runCommand('docker network rm ci_hub_network', commandContext);
+  runCommand('docker network rm ci-hub_network', commandContext);
   runCommand('docker network rm ci_os_hub_network', commandContext);
   runCommand('docker network rm ci-os-hub_network', commandContext);
 

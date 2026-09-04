@@ -15,7 +15,7 @@ import { isDirectScriptRun } from './lib/is-direct-run';
 import { parseEnvFile } from './env-file';
 
 const DB_CONTAINER = 'ci-hub-db';
-const DOCKER_NETWORK = 'ci-os-hub_network';
+const DOCKER_NETWORKS = ['ci-hub_network', 'ci-os-hub_network'] as const;
 const HEALTH_POLL_INTERVAL_MS = 1000;
 const HEALTH_WAIT_TIMEOUT_MS = 60_000;
 
@@ -73,21 +73,24 @@ async function waitForContainerHealthy(name: string): Promise<boolean> {
 }
 
 function postgresTcpAuthWorks(password: string): boolean {
-  const result = spawnSync(
-    'docker',
-    [
-      'run',
-      '--rm',
-      '--network',
-      DOCKER_NETWORK,
-      'postgres:14',
-      'bash',
-      '-lc',
-      `PGPASSWORD='${password.replace(/'/g, `'\\''`)}' psql -h ${DB_CONTAINER} -p 6543 -U companion -d companiondb -qt -c 'SELECT 1'`,
-    ],
-    { encoding: 'utf-8', stdio: 'pipe' },
-  );
-  return result.status === 0;
+  for (const network of DOCKER_NETWORKS) {
+    const result = spawnSync(
+      'docker',
+      [
+        'run',
+        '--rm',
+        '--network',
+        network,
+        'postgres:14',
+        'bash',
+        '-lc',
+        `PGPASSWORD='${password.replace(/'/g, `'\\''`)}' psql -h ${DB_CONTAINER} -p 6543 -U companion -d companiondb -qt -c 'SELECT 1'`,
+      ],
+      { encoding: 'utf-8', stdio: 'pipe' },
+    );
+    if (result.status === 0) return true;
+  }
+  return false;
 }
 
 function syncPostgresPassword(password: string): boolean {
