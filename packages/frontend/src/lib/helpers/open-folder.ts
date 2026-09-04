@@ -32,7 +32,10 @@ async function runOpenFolder(cmd: string, args?: Record<string, unknown>): Promi
     console.error(`Failed to open folder via "${cmd}":`, error);
     const detail = error instanceof Error ? error.message : String(error);
     const missingOnThisMachine = /does not exist|not on this (machine|computer)|not absolute/i.test(detail);
-    toast.error(i18next.t(missingOnThisMachine ? 'OPEN_FOLDER_NOT_ON_THIS_MACHINE' : 'OPEN_FOLDER_ERROR'));
+    // Surface ACL denials distinctly — they look like a generic failure but mean
+    // the desktop shell never received the capability grant for this command.
+    const aclDenied = /not allowed by ACL/i.test(detail);
+    toast.error(i18next.t(missingOnThisMachine ? 'OPEN_FOLDER_NOT_ON_THIS_MACHINE' : aclDenied ? 'OPEN_FOLDER_ACL_DENIED' : 'OPEN_FOLDER_ERROR'));
   }
 }
 
