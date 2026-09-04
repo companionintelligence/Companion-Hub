@@ -4,8 +4,11 @@ import {
   fetchInferencePreferences,
   fetchInferenceRuntimeModels,
   fetchInferenceTrackedModels,
-  fetchSpeculativeInferenceStatus,
+  fetchLemonadeInstallStatus,
+  fetchMtplxInstallStatus,
   fetchOllamaInstallStatus,
+  fetchDsparkInstallStatus,
+  fetchSpeculativeInferenceStatus,
   fetchVllmInstallStatus,
   pinInferenceModel,
   rescanInferenceHardware,
@@ -38,10 +41,18 @@ import { ModelIcon } from '@/modules/onboarding/components/ai-setup/icons';
 import { modelTags, modelMeta, modelScores } from '@/modules/onboarding/components/ai-setup/model-selection-card';
 import { OtherModelsSection } from '@/modules/onboarding/components/ai-setup/model-selection-card';
 import { VllmSetupCard } from '@/modules/onboarding/components/ai-setup/vllm-setup-card';
-import { SpeculativeInferenceSetupCard } from '@/modules/onboarding/components/ai-setup/speculative-inference-setup-card';
+import { MtplxSetupCard } from '@/modules/onboarding/components/ai-setup/mtplx-setup-card';
+import { DsparkSetupCard } from '@/modules/onboarding/components/ai-setup/dspark-setup-card';
+import { LemonadeSetupCard } from '@/modules/onboarding/components/ai-setup/lemonade-setup-card';
 import { OllamaSetupCard } from '@/modules/onboarding/components/ai-setup/ollama-setup-card';
-import type { OllamaStatus, VllmStatus } from '@/modules/onboarding/helpers/ai-setup-types';
-import { EMBEDDING_INFERENCE_BACKEND, unavailableInferenceBackends } from '@/modules/onboarding/helpers/inference-backend-availability';
+import { SpeculativeInferenceSetupCard } from '@/modules/onboarding/components/ai-setup/speculative-inference-setup-card';
+import type { LemonadeStatus, MtplxStatus, DsparkStatus, OllamaStatus, VllmStatus } from '@/modules/onboarding/helpers/ai-setup-types';
+import {
+  EMBEDDING_INFERENCE_BACKEND,
+  hubLoadableSelection,
+  isHubLoadableBackend,
+  unavailableInferenceBackends,
+} from '@/modules/onboarding/helpers/inference-backend-availability';
 import { useTranslation } from 'react-i18next';
 
 // Role classifiers — mirror the onboarding AI-setup step so settings resolves the same defaults.
@@ -54,9 +65,8 @@ const isVisionModel = (model: CuratedModel) => model.modality === 'llm' && model
 // union so a state added to `ModelState` has to be considered here rather than silently excluded.
 const TRACKED_SELECTED_STATES: ModelState[] = ['pulling', 'pulled', 'loading', 'loaded', 'pinned'];
 
-// The models a save for `backend` actually acts on: same-backend models, plus Ollama embeddings
-// (chat on vLLM still embeds through Ollama). Shared by the save itself and by the confirmation
-// copy, so the dialog can never describe a different outcome than the one that will happen.
+// Share backend compatibility between saving and confirmation so the dialog cannot
+// describe a different outcome. vLLM chat continues to use Ollama embeddings.
 const isCompatibleWithBackend = (model: CuratedModel, backend: InferenceBackendType) =>
   model.backend === backend || (model.backend === EMBEDDING_INFERENCE_BACKEND && isEmbeddingModel(model));
 
@@ -70,20 +80,13 @@ const compatibleSelection = (availableModelById: ModelIndex, backend: InferenceB
     return model ? isCompatibleWithBackend(model, backend) : false;
   });
 
-// The pins a save actually acts on. The unpin loop walks exactly this set, so the confirmation copy
-// has to gate on it too — gating on every tracked pin would promise to unpin models the save leaves
-// alone (a pin outside the tier's model list, or on a backend the Hub does not pin through).
+// Limit confirmation and unpinning to Hub-loadable models so the dialog does not
+// promise to remove pins that Save leaves untouched.
 const unpinnablePins = (availableModelById: ModelIndex, pinnedIds: Iterable<string>): string[] =>
-  [...pinnedIds].filter((modelId) => availableModelById.get(modelId)?.backend === 'ollama');
+  [...pinnedIds].filter((modelId) => isHubLoadableBackend(availableModelById.get(modelId)?.backend));
 
-// Pick the preferred model for a role from the user's selection, preferring a recommended model.
-// Returns null when no selected model fits the role.
-//
-// That null does NOT clear the stored preference, despite reading like it should and despite the
-// backend documenting `null` as the clear signal: `saveInferencePreferences` maps it to `undefined`,
-// `JSON.stringify` drops undefined keys from the body, and the controller only writes a field it
-// received. So a role that resolves to nothing leaves the stored default in place. Tracked
-// separately — do not build UI that promises a clear until the wire actually carries one.
+// A null match does not clear the stored preference because serialization drops the
+// undefined field. Preference-clearing UI must wait until the API carries explicit null.
 const resolvePreferredModelId = (
   profile: HardwareProfileResponse,
   backend: InferenceBackendType,
@@ -116,12 +119,20 @@ export const AiSettingsContainer = () => {
   const [runtimeDiscoveryUnavailable, setRuntimeDiscoveryUnavailable] = useState(false);
   const [vllmApiKey, setVllmApiKey] = useState('');
   const [vllmUrl, setVllmUrl] = useState('');
+  const [mtplxUrl, setMtplxUrl] = useState('');
+  const [dsparkUrl, setDsparkUrl] = useState('');
   const [ollamaStatus, setOllamaStatus] = useState<OllamaStatus | null>(null);
   const [vllmStatus, setVllmStatus] = useState<VllmStatus | null>(null);
+  const [mtplxStatus, setMtplxStatus] = useState<MtplxStatus | null>(null);
+  const [dsparkStatus, setDsparkStatus] = useState<DsparkStatus | null>(null);
   const [speculativeInferenceStatus, setSpeculativeInferenceStatus] = useState<SpeculativeInferenceStatus | null>(null);
+  const [lemonadeStatus, setLemonadeStatus] = useState<LemonadeStatus | null>(null);
   const [checkingOllama, setCheckingOllama] = useState(false);
   const [checkingVllm, setCheckingVllm] = useState(false);
+  const [checkingMtplx, setCheckingMtplx] = useState(false);
+  const [checkingDspark, setCheckingDspark] = useState(false);
   const [checkingSpeculativeInference, setCheckingSpeculativeInference] = useState(false);
+  const [checkingLemonade, setCheckingLemonade] = useState(false);
   // Backend the backend-switch effect has already refetched for (set by fetchProfile too, since it
   // fetches profile + runtime models itself); prevents a duplicate fetch right after mount.
   const lastHandledBackendRef = useRef<InferenceBackendType | null>(null);
@@ -130,10 +141,13 @@ export const AiSettingsContainer = () => {
   vllmUrlRef.current = vllmUrl;
   const vllmApiKeyRef = useRef('');
   vllmApiKeyRef.current = vllmApiKey;
+  const mtplxUrlRef = useRef('');
+  mtplxUrlRef.current = mtplxUrl;
+  const dsparkUrlRef = useRef('');
+  dsparkUrlRef.current = dsparkUrl;
   const trackedModelsRef = useRef<TrackedModel[]>([]);
-  // One index of the tier catalog per profile, shared by the save and by the confirmation copy so
-  // they cannot disagree — and so neither rebuilds it, the save on every press and the copy on
-  // every render.
+  // Share one catalog index between Save and confirmation so they cannot disagree or
+  // rebuild it independently.
   const availableModelById = useMemo<ModelIndex>(() => (profile ? indexAvailableModels(profile) : new Map()), [profile]);
 
   const applyTrackedModels = useCallback((tracked: TrackedModel[]) => {
@@ -152,11 +166,8 @@ export const AiSettingsContainer = () => {
   }, []);
 
   /**
-   * Seed the model checkboxes from what is actually installed on the backend (the same
-   * `installedCatalogIds` source onboarding uses) unioned with models this process is actively
-   * tracking. Seeding only from the in-memory tracked registry — which empties on every Hub
-   * restart and never sees externally-loaded vLLM models — showed installed models as unselected
-   * and made Save clear preferences and unpin models (#1106).
+   * Seeds model selection from backend-installed and actively tracked models. The tracked
+   * registry is process-local and misses externally loaded models (#1106).
    */
   const seedSelectedModelIds = useCallback((data: HardwareProfileResponse, backend: InferenceBackendType, tracked: TrackedModel[]) => {
     const installed = new Set(data.installedCatalogIds ?? []);
@@ -195,17 +206,20 @@ export const AiSettingsContainer = () => {
     if (!isRescan) setLoading(true);
     setError(null);
     try {
-      // Preferences first. The profile endpoint computes `installedCatalogIds` for whichever backend
-      // it is asked about and falls back to the *hardware recommendation* when asked about none —
-      // so fetching before the operator's stored backend is known returns the installed set for a
-      // backend this panel may not be showing. That is what left the model checkboxes describing one
-      // backend while the rest of the screen acted on another. Never throws; returns null instead.
+      // Load preferences first because the profile's hardware fallback can compute installed
+      // models for a backend other than the one shown in settings.
       const prefData = await fetchInferencePreferences();
       if (prefData?.preferredVllmApiKey) {
         setVllmApiKey(prefData.preferredVllmApiKey);
       }
+      if (prefData?.preferredDsparkUrl) {
+        setDsparkUrl(prefData.preferredDsparkUrl);
+      }
       if (prefData?.preferredVllmUrl) {
         setVllmUrl(prefData.preferredVllmUrl);
+      }
+      if (prefData?.preferredMtplxUrl) {
+        setMtplxUrl(prefData.preferredMtplxUrl);
       }
       const requestedBackend = backendOverride ?? prefData?.preferredBackend ?? undefined;
       const data = await fetchInferenceOnboardingProfile(requestedBackend);
@@ -220,8 +234,15 @@ export const AiSettingsContainer = () => {
       seedSelectedModelIds(data, preferredBackend, tracked);
       await fetchRuntimeModels(preferredBackend);
       void checkOllamaStatus();
+      if (preferredBackend === 'dspark') {
+        void checkDsparkStatus();
+      }
       if (preferredBackend === 'vllm') {
         void checkVllmStatus();
+      } else if (preferredBackend === 'mtplx') {
+        void checkMtplxStatus();
+      } else if (preferredBackend === 'lemonade') {
+        void checkLemonadeStatus();
       } else if (preferredBackend === 'lucebox') {
         void checkSpeculativeInferenceStatus();
       }
@@ -261,6 +282,8 @@ export const AiSettingsContainer = () => {
         selectedBackend,
         selectedBackend === 'vllm' ? vllmUrlRef.current : undefined,
         selectedBackend === 'vllm' ? vllmApiKeyRef.current : undefined,
+        selectedBackend === 'mtplx' ? mtplxUrlRef.current : undefined,
+        selectedBackend === 'dspark' ? dsparkUrlRef.current : undefined,
       );
       setProfile(data);
       seedSelectedModelIds(data, selectedBackend, trackedModelsRef.current);
@@ -281,23 +304,8 @@ export const AiSettingsContainer = () => {
     }
   }, []);
 
-  const checkSpeculativeInferenceStatus = useCallback(async () => {
-    setCheckingSpeculativeInference(true);
-    try {
-      const data = (await fetchSpeculativeInferenceStatus()) as SpeculativeInferenceStatus;
-      setSpeculativeInferenceStatus(data);
-      return data;
-    } catch {
-      setSpeculativeInferenceStatus({ ready: false, running: false, endpointUrl: '' });
-      return null;
-    } finally {
-      setCheckingSpeculativeInference(false);
-    }
-  }, []);
-
-  // Re-check must also refresh the profile: `installedCatalogIds` is only recomputed server-side
-  // in the onboarding-profile endpoint, so without this a model served after page load never
-  // shows as Installed (#1105).
+  // Refresh the profile because only its endpoint recomputes `installedCatalogIds`; a
+  // status probe alone misses models served after page load (#1105).
   const handleRecheckVllm = useCallback(async () => {
     const status = await checkVllmStatus();
     if (status?.ready) {
@@ -307,6 +315,68 @@ export const AiSettingsContainer = () => {
     }
   }, [checkVllmStatus, seedSelectedModelIds]);
 
+  const checkMtplxStatus = useCallback(async () => {
+    setCheckingMtplx(true);
+    try {
+      const data = (await fetchMtplxInstallStatus(mtplxUrlRef.current)) as MtplxStatus;
+      setMtplxStatus(data);
+      return data;
+    } catch {
+      setMtplxStatus({ ready: false, running: false, endpointUrl: '' });
+      return null;
+    } finally {
+      setCheckingMtplx(false);
+    }
+  }, []);
+
+  const handleRecheckMtplx = useCallback(async () => {
+    const status = await checkMtplxStatus();
+    if (status?.ready) {
+      const data = await fetchInferenceOnboardingProfile('mtplx', undefined, undefined, mtplxUrlRef.current);
+      setProfile(data);
+      seedSelectedModelIds(data, 'mtplx', trackedModelsRef.current);
+    }
+  }, [checkMtplxStatus, seedSelectedModelIds]);
+
+  const checkDsparkStatus = useCallback(async () => {
+    setCheckingDspark(true);
+    try {
+      const data = await fetchDsparkInstallStatus(dsparkUrlRef.current);
+      setDsparkStatus(data);
+      return data;
+    } catch {
+      setDsparkStatus({ ready: false, running: false, endpointUrl: '' });
+      return null;
+    } finally {
+      setCheckingDspark(false);
+    }
+  }, []);
+
+  // Same stale-profile reason as handleRecheckVllm above (#1105).
+  const handleRecheckDspark = useCallback(async () => {
+    const status = await checkDsparkStatus();
+    if (status?.ready) {
+      const data = await fetchInferenceOnboardingProfile('dspark', undefined, undefined, undefined, dsparkUrlRef.current);
+      setProfile(data);
+      seedSelectedModelIds(data, 'dspark', trackedModelsRef.current);
+    }
+  }, [checkDsparkStatus, seedSelectedModelIds]);
+
+  const checkSpeculativeInferenceStatus = useCallback(async () => {
+    setCheckingSpeculativeInference(true);
+    try {
+      const data = await fetchSpeculativeInferenceStatus();
+      setSpeculativeInferenceStatus(data);
+      return data;
+    } catch {
+      const unreachable: SpeculativeInferenceStatus = { ready: false, running: false, endpointUrl: '' };
+      setSpeculativeInferenceStatus(unreachable);
+      return null;
+    } finally {
+      setCheckingSpeculativeInference(false);
+    }
+  }, []);
+
   const handleRecheckSpeculativeInference = useCallback(async () => {
     const status = await checkSpeculativeInferenceStatus();
     if (status?.ready) {
@@ -315,6 +385,29 @@ export const AiSettingsContainer = () => {
       seedSelectedModelIds(data, 'lucebox', trackedModelsRef.current);
     }
   }, [checkSpeculativeInferenceStatus, seedSelectedModelIds]);
+
+  const checkLemonadeStatus = useCallback(async () => {
+    setCheckingLemonade(true);
+    try {
+      const data = await fetchLemonadeInstallStatus();
+      setLemonadeStatus(data);
+      return data;
+    } catch {
+      setLemonadeStatus({ ready: false, running: false, endpointUrl: '' });
+      return null;
+    } finally {
+      setCheckingLemonade(false);
+    }
+  }, []);
+
+  const handleRecheckLemonade = useCallback(async () => {
+    const status = await checkLemonadeStatus();
+    if (status?.ready) {
+      const data = await fetchInferenceOnboardingProfile('lemonade');
+      setProfile(data);
+      seedSelectedModelIds(data, 'lemonade', trackedModelsRef.current);
+    }
+  }, [checkLemonadeStatus, seedSelectedModelIds]);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: only on mount
   useEffect(() => {
@@ -341,10 +434,8 @@ export const AiSettingsContainer = () => {
     setSelectedModelIds((prev) => (prev.includes(modelId) ? prev.filter((id) => id !== modelId) : [...prev, modelId]));
   };
 
-  // The effect below reads profile only as a "loaded yet" guard; carrying it through a ref keeps
-  // it out of the dependency array. Listing `profile` there while the effect writes it via
-  // setProfile (a fresh object every fetch) retriggered the effect it just ran — an unbounded
-  // onboarding-profile refetch loop, ~165 requests in 400ms per backend switch (#1109).
+  // Keep `profile` out of the dependency list because the effect replaces it with a fresh
+  // object; adding it causes an unbounded refetch loop (#1109).
   const hasProfileRef = useRef(false);
   hasProfileRef.current = profile !== null;
 
@@ -357,6 +448,8 @@ export const AiSettingsContainer = () => {
       selectedBackend,
       selectedBackend === 'vllm' ? vllmUrlRef.current : undefined,
       selectedBackend === 'vllm' ? vllmApiKeyRef.current : undefined,
+      selectedBackend === 'mtplx' ? mtplxUrlRef.current : undefined,
+      selectedBackend === 'dspark' ? dsparkUrlRef.current : undefined,
     ).then((data) => {
       setProfile(data);
       // Re-seed the checkboxes for the new backend from server truth (see seedSelectedModelIds).
@@ -365,10 +458,26 @@ export const AiSettingsContainer = () => {
     fetchRuntimeModels(selectedBackend);
     if (selectedBackend === 'vllm') {
       void checkVllmStatus();
+    } else if (selectedBackend === 'mtplx') {
+      void checkMtplxStatus();
+    } else if (selectedBackend === 'lemonade') {
+      void checkLemonadeStatus();
     } else if (selectedBackend === 'lucebox') {
       void checkSpeculativeInferenceStatus();
     }
-  }, [selectedBackend, fetchRuntimeModels, checkVllmStatus, checkSpeculativeInferenceStatus, seedSelectedModelIds]);
+    if (selectedBackend === 'dspark') {
+      void checkDsparkStatus();
+    }
+  }, [
+    selectedBackend,
+    fetchRuntimeModels,
+    checkVllmStatus,
+    checkMtplxStatus,
+    checkDsparkStatus,
+    checkSpeculativeInferenceStatus,
+    checkLemonadeStatus,
+    seedSelectedModelIds,
+  ]);
 
   const hasActiveTransfers = Object.values(trackedModels).some((model) => ['pulling', 'loading', 'unloading'].includes(model.state));
 
@@ -396,7 +505,8 @@ export const AiSettingsContainer = () => {
       const compatibleSelectedModelIds = compatibleSelection(availableModelById, selectedBackend, selectedModelIds);
 
       const preferredModel = resolvePreferredModelId(profile, selectedBackend, isAgentModel, compatibleSelectedModelIds);
-      const preferredEmbeddingModel = resolvePreferredModelId(profile, EMBEDDING_INFERENCE_BACKEND, isEmbeddingModel, compatibleSelectedModelIds);
+      const embeddingBackend = selectedBackend === 'lemonade' ? selectedBackend : EMBEDDING_INFERENCE_BACKEND;
+      const preferredEmbeddingModel = resolvePreferredModelId(profile, embeddingBackend, isEmbeddingModel, compatibleSelectedModelIds);
       const preferredVisionModel = resolvePreferredModelId(profile, selectedBackend, isVisionModel, compatibleSelectedModelIds);
 
       // Cloud keys first so the debounced AI-app restart (from preferences) sees them.
@@ -416,12 +526,20 @@ export const AiSettingsContainer = () => {
         visionModel: preferredVisionModel,
         vllmApiKey: selectedBackend === 'vllm' ? vllmApiKey.trim() || null : null,
         vllmUrl: selectedBackend === 'vllm' ? vllmUrl.trim() || null : null,
+        mtplxUrl: selectedBackend === 'mtplx' ? mtplxUrl.trim() || null : null,
+        dsparkUrl: selectedBackend === 'dspark' ? dsparkUrl.trim() || null : null,
       });
 
-      const ollamaSelectedModelIds = compatibleSelectedModelIds.filter((modelId) => availableModelById.get(modelId)?.backend === 'ollama');
+      // Include every Hub-loadable backend so a saved preference cannot point to a selected
+      // model that was never loaded.
+      const pullableSelectedModelIds = hubLoadableSelection(
+        compatibleSelectedModelIds,
+        (modelId) => availableModelById.get(modelId)?.backend,
+        preferredModel,
+      );
       const compatiblePinnedModelIds = unpinnablePins(availableModelById, pinnedModelIds);
       const modelOperationErrors: string[] = [];
-      const modelsToPull = ollamaSelectedModelIds.filter((modelId) => !compatiblePinnedModelIds.includes(modelId));
+      const modelsToPull = pullableSelectedModelIds.filter((modelId) => !compatiblePinnedModelIds.includes(modelId));
 
       if (modelsToPull.length > 0) {
         await ensurePullsStarted(modelsToPull, false);
@@ -515,20 +633,8 @@ export const AiSettingsContainer = () => {
   const availableMemoryMb = profile.resourceEstimate.availableMemoryMb ?? 0;
   const installedCatalogIds = profile.installedCatalogIds ?? [];
 
-  // Saving with nothing selected for the active backend unpins every pinned model: the unpin loop
-  // walks each pin that is no longer in the selection. Legitimate when meant — it is how you unpin
-  // everything — but the generic "this will restart your apps" copy gives no hint of it.
-  //
-  // Scoped to unpinning, and nothing else. `resolvePreferredModelId` returning null for every role
-  // reads like it also clears the stored chat/embedding/vision defaults, and it does not:
-  // `saveInferencePreferences` maps each null to undefined, `JSON.stringify` drops undefined keys
-  // from the body, and the controller only writes a field it actually received. Warning about a
-  // clear that cannot happen would teach the operator to click through the one dialog that means
-  // something. The dead null-clear channel is tracked separately.
-  //
-  // Counts only the pins the unpin loop walks — `unpinnablePins`, the same call the save makes.
-  // Counting every tracked pin would promise to unpin models the save never touches: one outside
-  // the tier's model list, or on a backend the Hub does not pin through.
+  // The warning applies only when Save will unpin every managed model. A null
+  // preferred-model result does not clear defaults, and unmanaged pins remain untouched.
   const saveUnpinsEveryModel =
     compatibleSelection(availableModelById, selectedBackend, selectedModelIds).length === 0 &&
     unpinnablePins(availableModelById, pinnedModelIds).length > 0;
@@ -571,14 +677,14 @@ export const AiSettingsContainer = () => {
                     if (tracked.state === 'pulling' && typeof tracked.pullProgress === 'number')
                       return {
                         text: t('AI_SETTINGS_DOWNLOADING_PROGRESS', { progress: tracked.pullProgress }),
-                        cls: 'border-amber-500/30 bg-amber-500/10 text-amber-400',
+                        cls: 'border-warning/30 bg-warning/10 text-warning',
                       };
                     if (tracked.state === 'pinned')
                       return { text: t('AI_SETTINGS_PINNED_BADGE'), cls: 'border-primary/30 bg-primary/10 text-primary' };
                     if (tracked.state === 'pulled' || tracked.state === 'loaded')
                       return {
                         text: t('AI_SETTINGS_DOWNLOADED_BADGE'),
-                        cls: 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400',
+                        cls: 'border-success/30 bg-success/10 text-success',
                       };
                     return {
                       text: tracked.state.charAt(0).toUpperCase() + tracked.state.slice(1),
@@ -633,7 +739,7 @@ export const AiSettingsContainer = () => {
             {runtimeModelsLoading && <p className="text-sm text-muted-foreground">{t('SETTINGS_NETWORK_LOADING')}</p>}
 
             {!runtimeModelsLoading && runtimeDiscoveryUnavailable && (
-              <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2.5 text-xs text-amber-400">
+              <div className="rounded-md border border-warning/30 bg-warning/10 px-3 py-2.5 text-xs text-warning">
                 {t('AI_SETTINGS_RUNTIME_DISCOVERY_UNAVAILABLE')}
               </div>
             )}
@@ -653,7 +759,7 @@ export const AiSettingsContainer = () => {
                       <div className="text-sm font-medium truncate">{model.name}</div>
                       <div className="text-[11px] text-muted-foreground uppercase tracking-wide truncate">{model.id}</div>
                     </div>
-                    <span className="flex-shrink-0 text-[10px] px-1.5 py-0.5 rounded-md border border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 font-medium">
+                    <span className="flex-shrink-0 text-[10px] px-1.5 py-0.5 rounded-md border border-success/30 bg-success/10 text-success font-medium">
                       {t('AI_SETTINGS_DOWNLOADED_BADGE')}
                     </span>
                   </div>
@@ -667,8 +773,22 @@ export const AiSettingsContainer = () => {
             available={profile.backends.available}
             selected={selectedBackend}
             onSelect={setSelectedBackend}
-            unavailableTypes={profile ? unavailableInferenceBackends(profile) : ['vllm', 'lemonade', 'lucebox']}
+            unavailableTypes={profile ? unavailableInferenceBackends(profile) : []}
           />
+
+          {selectedBackend === 'lucebox' && (
+            <section className="rounded-lg border border-border bg-gradient-to-b from-card to-card/60 p-5 shadow-sm sm:p-6 space-y-4">
+              <div>
+                <h2 className="text-base font-bold uppercase tracking-wide">{t('ONBOARDING_SPECULATIVE_SECTION_TITLE')}</h2>
+                <p className="text-xs sm:text-sm text-muted-foreground mt-0.5">{t('ONBOARDING_SPECULATIVE_SECTION_DESC')}</p>
+              </div>
+              <SpeculativeInferenceSetupCard
+                status={speculativeInferenceStatus}
+                checking={checkingSpeculativeInference}
+                onRecheck={handleRecheckSpeculativeInference}
+              />
+            </section>
+          )}
 
           {selectedBackend === 'vllm' && (
             <section className="rounded-lg border border-border bg-gradient-to-b from-card to-card/60 p-5 shadow-sm sm:p-6 space-y-4">
@@ -693,22 +813,57 @@ export const AiSettingsContainer = () => {
             </section>
           )}
 
-          {selectedBackend === 'lucebox' && (
+          {selectedBackend === 'mtplx' && (
             <section className="rounded-lg border border-border bg-gradient-to-b from-card to-card/60 p-5 shadow-sm sm:p-6 space-y-4">
               <div>
-                <h2 className="text-base font-bold uppercase tracking-wide">{t('ONBOARDING_SPECULATIVE_SECTION_TITLE')}</h2>
-                <p className="text-xs sm:text-sm text-muted-foreground mt-0.5">{t('ONBOARDING_SPECULATIVE_SECTION_DESC')}</p>
+                <h2 className="text-base font-bold uppercase tracking-wide">{t('ONBOARDING_MTPLX_SECTION_TITLE')}</h2>
+                <p className="text-xs sm:text-sm text-muted-foreground mt-0.5">{t('ONBOARDING_MTPLX_SECTION_DESC')}</p>
               </div>
-              <SpeculativeInferenceSetupCard
-                status={speculativeInferenceStatus}
-                checking={checkingSpeculativeInference}
-                onRecheck={handleRecheckSpeculativeInference}
+              <MtplxSetupCard
+                status={mtplxStatus}
+                checking={checkingMtplx}
+                onRecheck={handleRecheckMtplx}
+                endpointUrl={mtplxUrl}
+                onEndpointUrlChange={setMtplxUrl}
               />
               <div>
                 <h3 className="text-sm font-semibold">{t('ONBOARDING_EMBEDDINGS_OLLAMA_SECTION_TITLE')}</h3>
                 <p className="text-xs text-muted-foreground mt-0.5 mb-3">{t('ONBOARDING_EMBEDDINGS_OLLAMA_SECTION_DESC')}</p>
                 <OllamaSetupCard status={ollamaStatus} checking={checkingOllama} onRecheck={handleRecheckOllama} />
               </div>
+            </section>
+          )}
+
+          {selectedBackend === 'dspark' && (
+            <section className="rounded-lg border border-border bg-gradient-to-b from-card to-card/60 p-5 shadow-sm sm:p-6 space-y-4">
+              <div>
+                <h2 className="text-base font-bold uppercase tracking-wide">{t('ONBOARDING_DSPARK_SECTION_TITLE')}</h2>
+                <p className="text-xs sm:text-sm text-muted-foreground mt-0.5">{t('ONBOARDING_DSPARK_SECTION_DESC')}</p>
+              </div>
+              <DsparkSetupCard
+                status={dsparkStatus}
+                checking={checkingDspark}
+                onRecheck={handleRecheckDspark}
+                endpointUrl={dsparkUrl}
+                onEndpointUrlChange={setDsparkUrl}
+              />
+              {/* Embeddings stay on Ollama regardless of the chat backend — mlx-dspark serves no
+                  /v1/embeddings route at all, so the co-install is required, not merely advised. */}
+              <div>
+                <h3 className="text-sm font-semibold">{t('ONBOARDING_EMBEDDINGS_OLLAMA_SECTION_TITLE')}</h3>
+                <p className="text-xs text-muted-foreground mt-0.5 mb-3">{t('ONBOARDING_EMBEDDINGS_DSPARK_SECTION_DESC')}</p>
+                <OllamaSetupCard status={ollamaStatus} checking={checkingOllama} onRecheck={handleRecheckOllama} />
+              </div>
+            </section>
+          )}
+
+          {selectedBackend === 'lemonade' && (
+            <section className="space-y-4 rounded-lg border border-border bg-gradient-to-b from-card to-card/60 p-5 shadow-sm sm:p-6">
+              <div>
+                <h2 className="text-base font-bold uppercase tracking-wide">{t('ONBOARDING_LEMONADE_SECTION_TITLE')}</h2>
+                <p className="mt-0.5 text-xs text-muted-foreground sm:text-sm">{t('ONBOARDING_LEMONADE_SECTION_DESC')}</p>
+              </div>
+              <LemonadeSetupCard status={lemonadeStatus} checking={checkingLemonade} onRecheck={handleRecheckLemonade} />
             </section>
           )}
 

@@ -44,3 +44,8 @@ codegen-units = 1
 lto = true
 opt-level = "s"
 strip = true
+
+# Tauri 2 Linux is pinned to GTK3 / glib 0.18.5. Upstream only patched glib
+# 0.20+ (GHSA-wrw7-89jp-8q8g). See third_party/glib-0.18.5/PROVENANCE.md.
+[patch.crates-io]
+glib = { path = "../../../third_party/glib-0.18.5" }

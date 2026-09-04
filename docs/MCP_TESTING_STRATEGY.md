@@ -1,25 +1,27 @@
-# MCP Testing Strategy
+# MCP testing strategy
 
-> How CI-Hub verifies that every **MCP server** app in the marketplace actually **speaks
-> the protocol and advertises the tools it claims** — not just that its container starts.
+> Hub verifies each marketplace MCP server after deployment. The checks confirm that the
+> server implements the protocol and advertises its declared tools, rather than only
+> confirming that its container starts.
 
 ## The gap
 
-The fleet-QA harness (`scripts/qa-stream.ts`) tests apps by booting their container and
-checking **HTTP** readiness. MCP servers have no HTTP surface — they speak JSON-RPC over
-**stdio** (or, rarely, SSE/streamable-HTTP). So qa-stream short-circuits them:
+The original fleet QA path in `scripts/qa-stream.ts` booted each app container and checked
+**HTTP** readiness. MCP servers usually expose JSON-RPC over **stdio** and no HTTP surface
+(some use SSE or streamable HTTP). Because that path could not probe the protocol, the
+original `no_gui` branch short-circuited them:
 
 ```ts
 if (config.no_gui) { result.score = 'skip'; result.notes = 'no_gui: stdio/CLI service…'; }
 ```
 
-Result (before this work): **24 MCP apps were scored `skip` and got zero verification.** A marketplace MCP
-entry can be completely broken — wrong package version, server crashes on launch, advertises
-no tools, or advertises tools that don't match its catalog manifest — and nothing catches it.
+Before this work, the harness scored **24 MCP apps as `skip` and did not verify them.** A
+marketplace MCP entry could use the wrong package version, crash on launch, advertise no
+tools, or advertise tools that did not match its catalog manifest without detection.
 
-This is the MCP analogue of the web-app failure mode the [E2E strategy](./E2E_TESTING_STRATEGY.md)
-exists to catch ("the page loads but the backend is dead"). Here it's **"the container starts
-but the server never speaks MCP / lists no tools."**
+The [E2E strategy](./E2E_TESTING_STRATEGY.md) addresses a similar web-app failure: the page
+loads while the backend remains unavailable. For MCP apps, the container can start while the
+server fails to implement MCP or advertise tools.
 
 ## What "working" means for an MCP server
 
@@ -35,7 +37,7 @@ Every marketplace MCP app declares its contract in `config.json`:
 }
 ```
 
-A working server, when launched, must:
+When the harness launches a working server, the server must:
 
 1. **Complete the MCP handshake** — respond to `initialize` with a `protocolVersion` +
    `serverInfo` (no JSON-RPC error), then accept `notifications/initialized`.
@@ -44,8 +46,8 @@ A working server, when launched, must:
    tools declared in `config.json .mcp.manifest.tools`. A live set that's missing declared
    tools (or empty) is drift — usually a version bump that renamed/removed tools.
 
-That third check is the high-value one: it's a real contract assertion, not just a liveness
-ping, and it's free because the marketplace already declares the expected tools.
+The third check validates the contract rather than only liveness. The marketplace already
+declares the expected tools, so the harness can compare the live and declared tool sets.
 
 ## Two layers (mirrors the web-app strategy)
 
@@ -54,13 +56,13 @@ ping, and it's free because the marketplace already declares the expected tools.
 | **1. Direct protocol smoke** (primary) | `scripts/qa-mcp.ts` | The server's own container boots, completes `initialize`, and advertises a `tools/list` matching its declared manifest | All MCP apps, per-node, fast |
 | **2. Hub-bridge regression** | drive the real bridge over the **Streamable HTTP** transport: `POST /api/mcp` `initialize` (captures the `Mcp-Session-Id`) → `tools/list` after a Hub install | The app installs **through the Hub**, the **MCP bridge** (`packages/backend/src/modules/mcp/agents/mcp-bridge.service.ts`) connects it (stdio via `docker exec`, or SSE/HTTP), and re-exposes its tools as `<appUrn>__<tool>` | Per-app, product-accurate |
 
-Layer 1 is the broad, fast signal. Layer 2 is the source of truth — it exercises the Hub's
-own bridge and the exact path a user/agent reaches the tools through, and is authoritative
-when Layer 1 and reality disagree.
+Layer 1 provides a broad, fast signal. Layer 2 exercises Hub's bridge and the exact path that
+users and agents take to reach the tools. Use Layer 2 as the source of truth when Layer 1
+and product behavior disagree.
 
-### ⚠ The marketplace↔bridge gap (measured 2026-06)
+### Marketplace-to-bridge gap (measured June 2026)
 
-**Today, installing a catalog MCP app does NOT expose it through the Hub bridge.** The two
+**Installing a catalog MCP app does not currently expose it through the Hub bridge.** The two
 layers test different runtime models:
 
 - **Layer 1 / the catalog model:** an app's MCP server *is* the container's main process. The
@@ -71,9 +73,9 @@ layers test different runtime models:
   `docker exec -i <container> <command>` into an **already-running** container, re-exposing tools
   as `<appUrn>__<tool>`.
 
-A grep of all 168 marketplace apps finds **zero** `agents.mcp` blocks. So the bridge has nothing
-to attach to, and even if an app declared one, the `docker exec` model doesn't fit a container
-whose main process is the MCP server. **`scripts/qa-mcp-bridge.ts` therefore regression-tests the
+A search of all 168 marketplace apps finds **no** `agents.mcp` blocks. The bridge therefore has
+nothing to attach to. Even if an app declared one, the `docker exec` model does not fit a
+container whose main process is the MCP server. **`scripts/qa-mcp-bridge.ts` therefore tests the
 bridge's protocol surface** (SSE endpoint → `initialize` → `tools/list` → namespacing) against the
 Hub's *own* tools; bridged-app namespacing is only asserted when such an app is present.
 
@@ -82,7 +84,7 @@ installer/bridge to launch a top-level-`.mcp` server (not only `docker exec`), s
 catalog MCP app wires its tools through the Hub's `/api/mcp` endpoint. Until then Layer 1 is the coverage signal
 for the catalog and Layer 2 guards the bridge itself.
 
-## Transport handling (Layer 1)
+## Transport handling (layer 1)
 
 | Transport | Count | How qa-mcp tests it |
 |-----------|------:|---------------------|
@@ -111,11 +113,11 @@ message per line, UTF-8, no `Content-Length` headers). Send `initialize\n`, then
 ```
 
 **Implemented:** after a successful handshake, qa-mcp optionally calls **one curated read-only
-tool** (`SAFE_PROBES` in `qa-mcp.ts`) to prove tools actually *execute*, not just advertise. The
-probe **self-guards** against the live tool's real `inputSchema.required`, so a wrong-args entry is
-skipped, never failed — and only an advertised-yet-broken tool (`method not found` / internal
-error) downgrades `pass→warn`. Disable with `QA_MCP_PROBE=0`; allow network probes with
-`QA_MCP_PROBE_NET=1`.
+tool** (`SAFE_PROBES` in `qa-mcp.ts`) to prove that tools *execute* rather than only advertise.
+The probe **self-guards** against the live tool's real `inputSchema.required`, so a
+wrong-args entry is skipped, never failed — and only an advertised-yet-broken tool
+(`method not found` / internal error) downgrades `pass→warn`. Disable with
+`QA_MCP_PROBE=0`; allow network probes with `QA_MCP_PROBE_NET=1`.
 
 The curated set, each **verified `→ok` against the live container** (2026-06-10):
 
@@ -131,7 +133,7 @@ The curated set, each **verified `→ok` against the live container** (2026-06-1
 > named `lookup_style`, **which the server doesn't expose** — so it silently self-skipped and
 > proved nothing. The unit tests now pin every probe's tool + args.
 
-## Credentials — the coverage unlock
+## Credentials and coverage
 
 8 of 24 apps declare a `required: true, secret: true` env (github, notion, obsidian,
 doordash, steam, postgres, miro, onlyoffice). **You do not need real credentials to test
@@ -186,11 +188,12 @@ if (config.no_gui) {
 ```
 
 `qaMcpApp` (in `scripts/qa-mcp.ts`) returns the `result` record — it does **not** emit its own
-`app_result`, so the existing `qaApp` retry/watchdog/teardown wrap it for free. Because it reuses
-the `qa-stream-${appId}` container name, the per-app watchdog and `forceTeardown` already cover the
-MCP container. **Shipping:** `fleet-qa-server.ts` `scpScript()` copies *both* `qa-stream.ts` and
-`qa-mcp.ts` to each node's `/tmp/` (both import only Node built-ins). Work-stealing dispatch and the
-fleet runner need **no** changes — an MCP app is just another id off the shared queue.
+`app_result`, so the existing `qaApp` wrapper provides retry, watchdog, and teardown handling.
+Because it reuses the `qa-stream-${appId}` container name, the per-app watchdog and
+`forceTeardown` already cover the MCP container. **Shipping:** private fleet runners copy
+*both* `qa-stream.ts` and
+`qa-mcp.ts` to each node's workdir (both import only Node built-ins). Work-stealing dispatch and the
+fleet runner need **no** changes. The shared queue treats an MCP app like any other app ID.
 
 **Surfacing:** the catalog (`generate-catalog-tests.ts` → `catalog.json`) carries an `mcp` flag;
 the dashboard renders an **MCP** badge per card and every MCP app already has an `mcp` category, so

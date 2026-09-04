@@ -1,13 +1,14 @@
 import { LoggerService } from '@/core/logger/logger.service';
 import { withTimeout } from '@/common/helpers/with-timeout';
 import { ConfigurationService } from '@/core/config/configuration.service';
-import { Injectable, NotFoundException, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
+import { Injectable, NotFoundException, OnModuleDestroy, OnModuleInit, Optional } from '@nestjs/common';
 import type { AppUrn } from '@ci-hub/common/types';
 import type { App } from '@/core/database/drizzle/types';
 import si from 'systeminformation';
 import { AppsRepository } from './apps.repository';
 import { AppsService } from './apps.service';
 import { DockerReadFacade, type AppContainerRuntimeStats } from '../docker/docker-read.facade';
+import { HostTelemetryService } from '../system/host-telemetry.service';
 
 const HIGH_CPU_THRESHOLD_PERCENT = 90;
 const HIGH_CPU_SAMPLE_COUNT = 3;
@@ -88,12 +89,15 @@ export class AppRuntimeMonitorService implements OnModuleInit, OnModuleDestroy {
     private readonly appsRepository: AppsRepository,
     private readonly appsService: AppsService,
     private readonly dockerReadFacade: DockerReadFacade,
+    @Optional() private readonly telemetry?: HostTelemetryService,
   ) {}
 
   onModuleInit() {
-    void this.collectRuntimeMonitorSnapshot(true).catch((error) => {
-      this.logger.warn(`App runtime monitor warmup failed: ${error instanceof Error ? error.message : String(error)}`);
-    });
+    void this.hydrateHistoryFromDatabase()
+      .then(() => this.collectRuntimeMonitorSnapshot(true))
+      .catch((error) => {
+        this.logger.warn(`App runtime monitor warmup failed: ${error instanceof Error ? error.message : String(error)}`);
+      });
 
     this.intervalHandle = setInterval(() => {
       if (this.summaryInFlight) {
@@ -115,6 +119,7 @@ export class AppRuntimeMonitorService implements OnModuleInit, OnModuleDestroy {
   }
 
   async getRuntimeMonitorSnapshot(): Promise<AppRuntimeMonitorSnapshot> {
+    await this.hydrateHistoryFromDatabase();
     return this.collectRuntimeMonitorSnapshot();
   }
 
@@ -170,6 +175,8 @@ export class AppRuntimeMonitorService implements OnModuleInit, OnModuleDestroy {
     while (this.history.length > MONITOR_HISTORY_LIMIT) {
       this.history.shift();
     }
+
+    void this.telemetry?.recordRuntimeApps(sampledAt, historySample.apps);
 
     this.latestSnapshot = {
       sampledAt,
@@ -378,6 +385,20 @@ export class AppRuntimeMonitorService implements OnModuleInit, OnModuleDestroy {
     };
   }
 
+  private async hydrateHistoryFromDatabase() {
+    if (!this.telemetry || this.history.length > 0) {
+      return;
+    }
+    try {
+      const stored = await this.telemetry.getRuntimeHistory(MONITOR_HISTORY_LIMIT);
+      for (const sample of stored) {
+        this.history.push({ sampledAt: sample.sampledAt, apps: sample.apps });
+      }
+    } catch (error) {
+      this.logger.warn(`App runtime monitor history hydrate failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
   private async logRuntimeSummary() {
     try {
       const { apps } = await this.collectRuntimeMonitorSnapshot();
@@ -397,6 +418,11 @@ export class AppRuntimeMonitorService implements OnModuleInit, OnModuleDestroy {
         this.logger.warn(
           `[AppMonitor] Hub degraded by ${degradedApp.appName} (${degradedApp.appUrn}): ${degradedApp.cpuPercent.toFixed(1)}% CPU, ${degradedApp.reason ?? 'app unresponsive'}`,
         );
+        void this.telemetry?.recordEvent('warn', 'app-monitor', `Hub degraded by ${degradedApp.appName}`, {
+          appUrn: degradedApp.appUrn,
+          cpuPercent: degradedApp.cpuPercent,
+          reason: degradedApp.reason,
+        });
       }
     } catch (error) {
       this.logger.warn(`App runtime monitor summary failed: ${error instanceof Error ? error.message : String(error)}`);

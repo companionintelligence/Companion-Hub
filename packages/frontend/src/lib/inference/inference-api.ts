@@ -5,9 +5,12 @@ import {
   getRocmStatus,
   getRuntimeModels,
   getTrackedModels,
-  getOllamaStatus,
+  getDsparkStatus,
   getLuceboxStatus,
+  getLemonadeStatus,
+  getOllamaStatus,
   getVllmStatus,
+  getMtplxStatus,
   pinModel,
   rescanHardware,
   setCloudProvider,
@@ -19,6 +22,9 @@ import {
 import type { CloudProviderType, InferenceBackendType, TrackedModel } from '@ci-hub/common/types';
 import type {
   CloudProviderInput,
+  DsparkStatus,
+  SpeculativeInferenceStatus,
+  LemonadeStatus,
   HardwareProfileResponse,
   InferencePreferencesResponse,
   RuntimeModelsResponse,
@@ -35,12 +41,16 @@ export async function fetchInferenceOnboardingProfile(
   backend?: InferenceBackendType,
   vllmUrl?: string,
   vllmApiKey?: string,
+  mtplxUrl?: string,
+  dsparkUrl?: string,
 ): Promise<HardwareProfileResponse> {
   const query: Record<string, string> = {};
   if (backend) query.backend = backend;
-  // Candidate vLLM URL the operator typed but hasn't saved yet — keeps the profile's
-  // installed-model resolution probing the same server the status card reports on.
+  // Candidate vLLM/MTPLX/mlx-dspark URL the operator typed but hasn't saved yet — keeps the
+  // profile's installed-model resolution probing the same server the status card reports on.
   if (backend === 'vllm' && vllmUrl?.trim()) query.vllmUrl = vllmUrl.trim();
+  if (backend === 'mtplx' && mtplxUrl?.trim()) query.mtplxUrl = mtplxUrl.trim();
+  if (backend === 'dspark' && dsparkUrl?.trim()) query.dsparkUrl = dsparkUrl.trim();
   const headers = backend === 'vllm' && vllmApiKey?.trim() ? { [VLLM_PROBE_API_KEY_HEADER]: vllmApiKey.trim() } : undefined;
   return unwrap(
     getOnboardingProfile({
@@ -109,6 +119,8 @@ export async function saveInferencePreferences(body: {
   visionModel: string | null;
   vllmApiKey?: string | null;
   vllmUrl?: string | null;
+  mtplxUrl?: string | null;
+  dsparkUrl?: string | null;
 }): Promise<void> {
   await unwrap(
     updatePreferences({
@@ -119,6 +131,8 @@ export async function saveInferencePreferences(body: {
         visionModel: body.visionModel ?? undefined,
         vllmApiKey: body.vllmApiKey ?? undefined,
         vllmUrl: body.vllmUrl ?? undefined,
+        mtplxUrl: body.mtplxUrl ?? undefined,
+        dsparkUrl: body.dsparkUrl ?? undefined,
       },
     } as Parameters<typeof updatePreferences>[0]),
   );
@@ -130,8 +144,23 @@ export async function fetchVllmInstallStatus(url?: string, apiKey?: string) {
   return unwrap(getVllmStatus({ query, headers } as Parameters<typeof getVllmStatus>[0]));
 }
 
-export async function fetchSpeculativeInferenceStatus() {
-  return unwrap(getLuceboxStatus());
+/**
+ * Probe the operator's mlx-dspark server. No API-key header, unlike fetchVllmInstallStatus:
+ * mlx-dspark's `/health` is auth-exempt, so detection works with or without a key configured.
+ */
+export async function fetchDsparkInstallStatus(url?: string): Promise<DsparkStatus> {
+  const query = url?.trim() ? { url: url.trim() } : undefined;
+  return unwrap(getDsparkStatus({ query })) as Promise<DsparkStatus>;
+}
+
+/** Probe the provider-neutral speculative inference server configured for the Hub runtime. */
+export async function fetchSpeculativeInferenceStatus(): Promise<SpeculativeInferenceStatus> {
+  return unwrap(getLuceboxStatus()) as Promise<SpeculativeInferenceStatus>;
+}
+
+/** Probe the configured Lemonade server through its standard /v1/health endpoint. */
+export async function fetchLemonadeInstallStatus(): Promise<LemonadeStatus> {
+  return unwrap(getLemonadeStatus()) as Promise<LemonadeStatus>;
 }
 
 export async function saveCloudProviderConfig(body: { provider: CloudProviderType; apiKey?: string; enabled: boolean }): Promise<void> {
@@ -148,4 +177,9 @@ export async function unpinInferenceModel(modelId: string): Promise<void> {
 
 export async function fetchOllamaInstallStatus() {
   return unwrap(getOllamaStatus());
+}
+
+export async function fetchMtplxInstallStatus(url?: string) {
+  const query = url?.trim() ? { url: url.trim() } : undefined;
+  return unwrap(getMtplxStatus({ query } as Parameters<typeof getMtplxStatus>[0]));
 }

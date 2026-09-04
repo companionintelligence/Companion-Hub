@@ -1,11 +1,11 @@
-# Frontend System — CI-Hub
+# Frontend system — Companion Hub
 
 > **Purpose:** React SPA — dashboard, app store, settings, hub startup gate, real-time logs.
 > **Scope:** `packages/frontend/` — React Router 7, TanStack Query, hub-status, API client.
 > **Key paths:** `packages/frontend/src/components/hub-status/`, `packages/frontend/src/modules/`, `packages/frontend/src/lib/`
 > **Commands:** `cd packages/frontend && pnpm test`, `pnpm run local` (root, port 5004/5005)
 > **Owner persona:** code-quality + maintainability
-> **Last updated:** 2026-08-15 (cloud connect flow terminology + SSO matrix)
+> **Last updated:** 2026-09-04 (compact FTUE rows and public-web drift repair action)
 > **Related:** docs/system/desktop.md, docs/DESKTOP-UI-ARCHITECTURE.md, docs/system/e2e.md
 
 ---
@@ -83,8 +83,68 @@ The iOS/Android thin client signs into the Portal with PKCE and a `cihub://auth/
 
 Tests: `packages/frontend/src/modules/mobile-connect/oidc.test.ts`, `connect-page.test.tsx`
 
+## Onboarding inference setup
+
+`AiSetupStep` owns Step 3 of the FTUE: one “Set up inference” panel contains the backend choice,
+the selected backend's readiness check, and the Ollama embeddings check when a host-served backend
+is selected. On Apple Silicon macOS it presents a Speculative inference group with `mlx-dspark`
+first, MTPLX nested beneath it, and Lucebox available as the provider-neutral option. When the
+operator confirms “Install & Finish”, `InstallStep` asks the desktop shell to install and start the
+selected speculative runner (`mlx-dspark` or MTPLX) alongside Ollama (embeddings); it persists the
+actual MTPLX endpoint when the runner has to move off port 8000. A plain browser build does not
+have a native process boundary, so it retains the manual setup and re-check flow.
+
+`RecommendationsStep` uses the Alternatives chart treatment for its optional app discovery section:
+it shows a curated 20-app shortlist across ten categories, grouped in compact paired comparison rows. Category
+counts, repeated column labels, and the agent-selection summary are intentionally omitted so this
+optional section stays focused and compact. Portal or synced catalog metadata supplies the app icon
+and display name, including tiny Portal/fallback marks for the private apps being replaced; canonical
+CI Marketplace URNs keep every curated row selectable even before a local catalog refresh completes.
+The page owns the only vertical scroll on the chart, and each compact row exposes a keyboard-accessible
+checkbox with a category-colored fallback icon on mobile and desktop. The FTUE shell centers the official
+CI-Server e-brain mark in a centered squircle above its title, with the title block set down from the
+top edge so the page header remains legible at phone widths.
+Step 5 keeps Companion Memory as one keyboard-accessible checkbox on its option card; the step panel
+itself is informational and does not add a second selection layer.
+
+## Semantic status colors
+
+Use the design-system `success` and `warning` tokens for status communication across the frontend:
+`border-success/30 bg-success/10 text-success` and `border-warning/30 bg-warning/10 text-warning`.
+Use `text-success-foreground` / `text-warning-foreground` on solid controls. Do not add component-local
+yellow, amber, green, or emerald ramps or dark-mode shade overrides for these roles; raw hues remain
+appropriate only for non-status meaning such as model score tiers, recommendation categories, ratings,
+and user-selectable theme colors.
+
+## Custom domains
+
+When CI-Cloud has wired a customer hostname to an app, `app.customDomain` carries it and that is the
+address the UI shows — the access-points card links and QR-codes it, and `resolveAppAvailability`
+probes it. It always resolves on 443: Cloudflare terminates the customer hostname there and nowhere
+else, so the Hub's local `sslPort` must never be appended to it.
+
+Binding raises `pendingRestart` rather than recreating the container, so there is a deliberate window
+where the row names the custom domain and the running container does not. `public-web/diagnostics`
+reports that window as `action: 'ok'` with `envMismatch: true` — **key UI off `action`, not
+`envMismatch`**, or a healthy app awaiting its restart is shown as broken.
+
+Genuine drift raises a banner in the app config dialog carrying its own **Repair routing** action
+(`repairPublicWebRouting` in `lib/cloudflare-api.ts` → `POST /api/public-web/repair`). It has to be a
+separate action: routing drift leaves the form clean, so the dialog's Update button — gated on
+`isDirty` — cannot be the remedy. Two things that path depends on:
+
+- The generated client **resolves** on a non-2xx unless `throwOnError` is passed, so an error from
+  the interceptor arrives as `result.error`, not as a rejection. Rethrow it or a denied grant loses
+  its `APP_ACTION_GRANT_DENIED` message.
+- An empty `results` array means the Hub found nothing drifted, which is not a repair — clear the
+  banner, but do not claim one.
+
+⚠ `SSEService.emit('app', data, appUrn)` publishes to `app:<urn>`, which nothing subscribes to: the
+client opens `/api/sse/app` only. Omit the third argument.
+
 ## Agent notes
 
 - Biome forbids non-null assertions (`!`) — use explicit types
 - Run scoped tests: `pnpm test -- src/path/to/file.test.tsx`
 - Always run `pnpm run local` or `local:desktop` for UI source changes. For appliance-parity SSO (browser or Tauri against `hub.companionintelligence.com`), use `pnpm run dev` / `dev:desktop` on `:5002` — never both stacks at once.
+- App-detail "Open data folder" is desktop Tauri only. Web / phone copy the Hub host path (`canOpenFolderInFileExplorer` in `lib/helpers/open-folder.ts`).

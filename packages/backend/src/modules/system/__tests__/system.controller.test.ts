@@ -1,10 +1,14 @@
 import { LoggerService } from '@/core/logger/logger.service';
 import { DockerService } from '@/modules/docker/docker.service';
+import { Get } from '@nestjs/common';
+import { METHOD_METADATA, PATH_METADATA } from '@nestjs/common/constants';
 import { Test } from '@nestjs/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
 import { pipeline } from 'node:stream/promises';
+import { AuthGuard } from '../../auth/auth.guard';
 import { ResourceAllocatorService } from '../resource-allocator.service';
+import { HostTelemetryService } from '../host-telemetry.service';
 import { SystemController } from '../system.controller';
 import { SystemService } from '../system.service';
 
@@ -16,6 +20,7 @@ describe('SystemController', () => {
   let controller: SystemController;
   let systemService: MockProxy<SystemService>;
   let dockerService: MockProxy<DockerService>;
+  let hostTelemetry: MockProxy<HostTelemetryService>;
 
   beforeEach(async () => {
     const moduleRef = await Test.createTestingModule({
@@ -24,6 +29,7 @@ describe('SystemController', () => {
         { provide: SystemService, useValue: mock<SystemService>() },
         { provide: DockerService, useValue: mock<DockerService>() },
         { provide: ResourceAllocatorService, useValue: mock<ResourceAllocatorService>() },
+        { provide: HostTelemetryService, useValue: mock<HostTelemetryService>() },
         { provide: LoggerService, useValue: mock<LoggerService>() },
       ],
     }).compile();
@@ -31,10 +37,68 @@ describe('SystemController', () => {
     controller = moduleRef.get(SystemController);
     systemService = moduleRef.get(SystemService);
     dockerService = moduleRef.get(DockerService);
+    hostTelemetry = moduleRef.get(HostTelemetryService);
   });
 
   it('should be defined', () => {
     expect(controller).toBeDefined();
+  });
+
+  describe('route guards', () => {
+    // There is no global APP_GUARD in this app: AuthGuard is applied per-method,
+    // so a route declared between two guarded ones inherits nothing. That is how
+    // GET /api/system/certificate — which serves the appliance's root CA trust
+    // anchor — ended up reachable without a session. Enumerating the prototype
+    // rather than a hand-written list means a newly added route fails here too.
+    //
+    // Enumerating it *unfiltered* would over-reach the other way: a private helper
+    // on the controller is not reachable over HTTP and has nothing to guard, so
+    // demanding AuthGuard on it would fail this suite for a change that is safe.
+    // Nest stamps PATH_METADATA and METHOD_METADATA onto exactly the methods its
+    // router will expose, which is the set this test means.
+    const isRouteHandler = (prototype: object, name: string): boolean => {
+      if (name === 'constructor') {
+        return false;
+      }
+
+      const handler = (prototype as Record<string, unknown>)[name];
+      if (typeof handler !== 'function') {
+        return false;
+      }
+
+      return Reflect.hasMetadata(PATH_METADATA, handler) && Reflect.hasMetadata(METHOD_METADATA, handler);
+    };
+
+    const routeHandlers = Object.getOwnPropertyNames(SystemController.prototype).filter((name) => isRouteHandler(SystemController.prototype, name));
+
+    it('covers every route on the controller', () => {
+      expect(routeHandlers.length).toBeGreaterThan(0);
+    });
+
+    it('counts routes only, so a future helper method cannot fail this suite', () => {
+      class Fixture {
+        @Get('/thing')
+        thing() {
+          return null;
+        }
+
+        // Not reachable over HTTP, so there is nothing here for AuthGuard to protect.
+        helper() {
+          return null;
+        }
+      }
+
+      expect(Object.getOwnPropertyNames(Fixture.prototype).filter((name) => isRouteHandler(Fixture.prototype, name))).toEqual(['thing']);
+    });
+
+    it.each(routeHandlers)('guards %s with AuthGuard', (name) => {
+      const handler = (SystemController.prototype as Record<string, unknown>)[name];
+      // Default to `[]` rather than asserting on the raw lookup: an unguarded route
+      // reads back as `undefined`, and `expect(undefined).toContain(...)` passes.
+      const guards = (Reflect.getMetadata('__guards__', handler as object) ?? []) as unknown[];
+
+      expect(guards).toContain(AuthGuard);
+    });
   });
 
   describe('systemLoad', () => {
@@ -159,6 +223,43 @@ describe('SystemController', () => {
 
       const result = await controller.detectServices();
       expect(result).toEqual(services);
+    });
+  });
+
+  describe('host telemetry', () => {
+    it('returns persisted samples and events', async () => {
+      hostTelemetry.getRecentSamples.mockResolvedValue([
+        {
+          sampledAt: '2026-08-18T12:00:00.000Z',
+          cpuLoad: 41,
+          cpuCores: 8,
+          memoryUsed: 20,
+          memoryTotal: 32,
+          diskUsed: 100,
+          diskTotal: 500,
+          percentUsedMemory: 62,
+          dockerAvailable: true,
+          dockerInfo: { ncpu: 8, serverVersion: '27.0.0' },
+          apps: null,
+          source: 'collector',
+        },
+      ]);
+      hostTelemetry.getRecentEvents.mockResolvedValue([
+        {
+          createdAt: '2026-08-18T12:00:01.000Z',
+          level: 'info',
+          source: 'hub.api',
+          message: 'Hub API started',
+          details: null,
+        },
+      ]);
+
+      await expect(controller.hostTelemetryHistory()).resolves.toEqual({
+        samples: [expect.objectContaining({ sampledAt: '2026-08-18T12:00:00.000Z', dockerAvailable: true, source: 'collector' })],
+      });
+      await expect(controller.hostEventLog()).resolves.toEqual({
+        events: [expect.objectContaining({ source: 'hub.api', message: 'Hub API started' })],
+      });
     });
   });
 });

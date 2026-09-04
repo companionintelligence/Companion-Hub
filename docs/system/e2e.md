@@ -1,4 +1,4 @@
-# E2E & Testing System — CI-Hub
+# End-to-end testing — Companion Hub
 
 > **Purpose:** Playwright e2e, visual regression, fleet QA, performance benchmarks.
 > **Scope:** `e2e/`, `playwright*.config.ts`, `scripts/benchmark-app.ts`, `scripts/run-e2e.ts`
@@ -56,7 +56,7 @@ pnpm run benchmark:gate
 
 Baselines: `e2e/results/benchmarks/baseline.json`
 
-Fleet QA: `scripts/FLEET_QA.md`, `.claude/skills/run-fleet-qa/`
+Fleet QA orchestration (private ops) lives in companionintelligence/CI-Engineering `tools/fleet-qa/` (issue #211) — inventories and multi-node runners are not in this tree.
 
 ## Agent notes
 

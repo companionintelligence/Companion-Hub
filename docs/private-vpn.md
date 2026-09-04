@@ -17,11 +17,11 @@ If the host already has Tailscale installed and the Hub can reach `tailscaled.so
 
 ### Option 1: Browser sign-in from the Hub UI
 
-This is the easiest option for non-technical users.
+Use this option when you set up Tailscale from the Hub UI.
 
 1. Start CI-Hub with the default `private-vpn` profile enabled.
 2. Open the Hub onboarding flow, or go to **Settings → Network** later.
-3. In the **Tailscale** section, click **Log In with Tailscale**.
+3. In the **Tailscale** section, select **Log In with Tailscale**.
 4. Complete the sign-in flow in the browser window that opens.
 5. Return to CI-Hub and confirm the Tailscale status shows as connected.
 

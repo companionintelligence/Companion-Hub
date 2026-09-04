@@ -1,9 +1,9 @@
 import { AppLogo } from '@/components/app-logo/app-logo';
 import { InstallRetryButton } from '@/modules/app/components/install-retry-button/install-retry-button';
-import { Loader2, X } from 'lucide-react';
+import { Loader2, PowerOff } from 'lucide-react';
 import type { AppStatus } from '@/types/app.types';
 
-const FAILED_STATUSES: AppStatus[] = ['stopped', 'missing'];
+const STOPPED_STATUSES: AppStatus[] = ['stopped', 'missing'];
 const INSTALL_FAILED_STATUS: AppStatus = 'install_failed';
 
 interface SimpleAppTileProps {
@@ -16,8 +16,8 @@ interface SimpleAppTileProps {
 
 export const SimpleAppTile = ({ name, urn, status, isInstalling, installConfig }: SimpleAppTileProps) => {
   const isInstallFailed = status === INSTALL_FAILED_STATUS;
-  const isFailed = status != null && FAILED_STATUSES.includes(status);
-  const hasOverlay = isInstalling || isFailed || isInstallFailed;
+  const isStopped = status != null && STOPPED_STATUSES.includes(status);
+  const hasOverlay = isInstalling || isInstallFailed;
   const [slug] = urn.split(':');
 
   return (
@@ -30,11 +30,14 @@ export const SimpleAppTile = ({ name, urn, status, isInstalling, installConfig }
           </div>
         )}
         {isInstallFailed && slug && <InstallRetryButton urn={urn} name={name} slug={slug} config={installConfig} />}
-        {isFailed && !isInstalling && !isInstallFailed && (
-          <div className="absolute inset-0 flex items-center justify-center">
-            <div className="flex items-center justify-center w-6 h-6 rounded-full bg-red-500/90">
-              <X className="w-4 h-4 text-white" strokeWidth={3} />
-            </div>
+        {isStopped && !isInstalling && !isInstallFailed && (
+          <div
+            className="absolute -top-1 -right-1 flex items-center justify-center w-5 h-5 rounded-full bg-red-500 shadow-sm"
+            data-testid="app-stopped-badge"
+            title="Stopped"
+          >
+            <PowerOff className="w-3 h-3 text-white" strokeWidth={2.5} aria-hidden />
+            <span className="sr-only">Stopped</span>
           </div>
         )}
       </div>

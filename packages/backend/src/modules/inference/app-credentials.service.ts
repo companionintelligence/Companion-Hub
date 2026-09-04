@@ -8,9 +8,11 @@ import { CloudFallbackService } from './cloud-fallback.service';
 import { OllamaBackend } from './backends/ollama.backend';
 import { VllmBackend } from './backends/vllm.backend';
 import { LemonadeBackend } from './backends/lemonade.backend';
+import { MtplxBackend } from './backends/mtplx.backend';
+import { DsparkBackend } from './backends/dspark.backend';
 import { LuceboxBackend } from './backends/lucebox.backend';
 import type { InferenceBackend } from './backends/backend.interface';
-import type { CuratedModel, HardwareTier, InferenceBackendType } from '@ci-hub/common/types';
+import type { CuratedModel, HardwareProfile, HardwareTier, InferenceBackendType } from '@ci-hub/common/types';
 import { isCatalogModelInstalled, isServedModelForCatalog } from './model-availability.util';
 import { appMinContextLength, recommendContextLength } from './context-length.util';
 import { BACKEND_API_KEY } from './inference-env-resolver';
@@ -78,6 +80,16 @@ interface CacheEntry {
  * base URL / API key / default model instead. Either way the Hub only hands out
  * the endpoint + key; it does not proxy requests.
  */
+/**
+ * Backends whose models are served by a process the operator runs, not pulled into a Hub-managed
+ * registry: vLLM (including vLLM-Metal), mlx-dspark, MTPLX, and Lucebox. For these, "is this model
+ * installed?" can only be answered from what the server reports it is serving, so catalog matching
+ * goes through `isServedModelForCatalog` rather than the Ollama-style pulled-tag comparison.
+ */
+function isHostServedBackend(backendType: InferenceBackendType): boolean {
+  return backendType === 'vllm' || backendType === 'dspark' || backendType === 'mtplx' || backendType === 'lucebox';
+}
+
 @Injectable()
 export class AppCredentialsService {
   /** In-memory credentials cache keyed by `${slug}:${apiVersion}`. */
@@ -92,6 +104,8 @@ export class AppCredentialsService {
     private readonly ollamaBackend: OllamaBackend,
     private readonly vllmBackend: VllmBackend,
     private readonly lemonadeBackend: LemonadeBackend,
+    private readonly mtplxBackend: MtplxBackend,
+    private readonly dsparkBackend: DsparkBackend,
     private readonly luceboxBackend: LuceboxBackend,
     private readonly configurationService: ConfigurationService,
   ) {}
@@ -104,6 +118,10 @@ export class AppCredentialsService {
         return this.vllmBackend;
       case 'lemonade':
         return this.lemonadeBackend;
+      case 'mtplx':
+        return this.mtplxBackend;
+      case 'dspark':
+        return this.dsparkBackend;
       case 'lucebox':
         return this.luceboxBackend;
     }
@@ -175,11 +193,11 @@ export class AppCredentialsService {
 
     const candidates = this.modelRegistry.getRecommendedModelsForHardware(profile.tier, profile).filter((m) => m.backend === backendType);
     const preferredModelId = preferences.preferredModel;
-    const recommendedLlm = this.resolveRecommendedLlm(candidates, preferredModelId, profile.tier);
-    const availableLlm = this.resolveAvailableLlm(candidates, preferredModelId, profile.tier, endpointHealth.modelsLoaded, backendType);
+    const recommendedLlm = this.resolveRecommendedLlm(candidates, preferredModelId, profile.tier, profile);
+    const availableLlm = this.resolveAvailableLlm(candidates, preferredModelId, profile.tier, profile, endpointHealth.modelsLoaded, backendType);
     const embeddings =
       (preferences.preferredEmbeddingModel ? this.modelRegistry.getCuratedModel(preferences.preferredEmbeddingModel) : null) ??
-      this.modelRegistry.getRecommendedEmbeddingModel(profile.tier, 'ollama');
+      this.modelRegistry.getRecommendedEmbeddingModel(profile.tier, 'ollama', profile);
 
     const cloudProviders = this.cloudFallback.getEnabledProviders();
     const cloudProvider = endpointReady ? undefined : cloudProviders[0];
@@ -189,7 +207,7 @@ export class AppCredentialsService {
     // curated `recommendedLlm` to match (the speculative inference model alias is configured at server startup).
     const chatModelReady =
       (recommendedLlm ? this.isModelPulled(recommendedLlm.id, endpointHealth.modelsLoaded, backendType) : false) ||
-      ((backendType === 'vllm' || backendType === 'lucebox') && endpointReady && endpointHealth.modelsLoaded.length > 0);
+      (isHostServedBackend(backendType) && endpointReady && endpointHealth.modelsLoaded.length > 0);
     if (!cloudProvider && recommendedLlm && !chatModelReady && endpointReady && backendType === 'ollama') {
       void this.maybeFirePrePull(recommendedLlm.id);
     }
@@ -211,7 +229,10 @@ export class AppCredentialsService {
       }
     }
     let chatModelId = availableLlm?.backendModelId ?? null;
-    if (!chatModelId && (backendType === 'vllm' || backendType === 'lucebox') && endpointHealth.modelsLoaded.length > 0) {
+    // vLLM, MTPLX, and mlx-dspark are all host-managed servers with no Hub pull registry — an
+    // operator can serve a model outside the catalog, so fall back to whatever it reports rather
+    // than leaving chatModelId empty.
+    if (!chatModelId && isHostServedBackend(backendType) && endpointHealth.modelsLoaded.length > 0) {
       chatModelId = endpointHealth.modelsLoaded[0] ?? null;
     }
     const embeddingsModelId = embeddings?.backendModelId ?? null;
@@ -314,15 +335,24 @@ export class AppCredentialsService {
    * top hardware-recommended model (candidates[0], biggest that fits at q4+). This is what makes the
    * onboarding "preferred model" selection actually drive what Hermes/OpenClaw default to.
    */
-  private resolveRecommendedLlm(candidates: CuratedModel[], preferredId: string | null, tier: HardwareTier): CuratedModel | null {
+  private resolveRecommendedLlm(
+    candidates: CuratedModel[],
+    preferredId: string | null,
+    tier: HardwareTier,
+    profile: HardwareProfile,
+  ): CuratedModel | null {
     if (preferredId) {
       const fromCandidates = candidates.find((m) => m.id === preferredId);
       if (fromCandidates) return fromCandidates;
       const curated = this.modelRegistry.getCuratedModel(preferredId);
-      if (curated && curated.modality === 'llm' && this.modelRegistry.getModelsForTier(tier).some((m) => m.id === preferredId)) {
+      const hardwareModels =
+        this.modelRegistry.getModelsForHardware(tier, profile, { includeRemoteHostBackends: true }) ?? this.modelRegistry.getModelsForTier(tier);
+      if (curated && curated.modality === 'llm' && hardwareModels.some((m) => m.id === preferredId)) {
         return curated;
       }
-      this.logger.warn(`[AppBootstrap] preferred model ${preferredId} is not runnable on tier=${tier}; falling back to recommended.`);
+      this.logger.warn(
+        `[AppBootstrap] preferred model ${preferredId} is not runnable on tier=${tier}/platform=${profile.os?.platform ?? 'unknown'}; falling back to recommended.`,
+      );
     }
     return candidates[0] ?? null;
   }
@@ -331,6 +361,7 @@ export class AppCredentialsService {
     candidates: CuratedModel[],
     preferredId: string | null,
     tier: HardwareTier,
+    profile: HardwareProfile,
     modelsLoaded: string[],
     backendType: InferenceBackendType,
   ): CuratedModel | null {
@@ -345,7 +376,9 @@ export class AppCredentialsService {
       if (preferred) return preferred;
 
       const curated = this.modelRegistry.getCuratedModel(preferredId);
-      if (curated && curated.modality === 'llm' && this.modelRegistry.getModelsForTier(tier).some((m) => m.id === preferredId)) {
+      const hardwareModels =
+        this.modelRegistry.getModelsForHardware(tier, profile, { includeRemoteHostBackends: true }) ?? this.modelRegistry.getModelsForTier(tier);
+      if (curated && curated.modality === 'llm' && hardwareModels.some((m) => m.id === preferredId)) {
         const preferredCurated = pickIfAvailable(curated);
         if (preferredCurated) return preferredCurated;
       }
@@ -363,7 +396,9 @@ export class AppCredentialsService {
 
   private isCuratedModelAvailable(model: CuratedModel, modelsLoaded: string[], backendType: InferenceBackendType): boolean {
     if (this.isModelPulled(model.id, modelsLoaded, backendType)) return true;
-    if (backendType === 'vllm' || backendType === 'lucebox') {
+    // vLLM, MTPLX, and mlx-dspark have no Hub pull registry — "available" means the operator's
+    // server is actually reporting this exact id, not that the Hub tracked a pull for it.
+    if (isHostServedBackend(backendType)) {
       return isServedModelForCatalog(model, modelsLoaded);
     }
     return isCatalogModelInstalled(model, modelsLoaded);
@@ -371,7 +406,7 @@ export class AppCredentialsService {
 
   private isModelPulled(catalogId: string, modelsLoaded: string[], backendType: InferenceBackendType): boolean {
     const curated = this.modelRegistry.getCuratedModel(catalogId);
-    if (backendType === 'vllm' || backendType === 'lucebox') {
+    if (isHostServedBackend(backendType)) {
       return curated ? isServedModelForCatalog(curated, modelsLoaded) : modelsLoaded.includes(catalogId);
     }
 

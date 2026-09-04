@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useState } from 'react';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
@@ -10,10 +10,12 @@ const { mockCatalogState } = vi.hoisted(() => ({
     isLoading: false,
     isRetryingEmptyCatalog: false,
     isCatalogSettled: true,
-    apps: [
-      { id: 'ci-memory', name: 'CI Memory', urn: 'urn:store:ci-memory', short_desc: 'Memory server' },
-      { id: 'ci-import-tools', name: 'Import Tools', urn: 'urn:store:ci-import-tools', short_desc: 'Import data' },
-    ] as Array<{ id: string; name: string; urn: string; short_desc: string }>,
+    apps: [{ id: 'ci-memory', name: 'CI Memory', urn: 'urn:store:ci-memory', short_desc: 'Memory server' }] as Array<{
+      id?: string;
+      name: string;
+      urn: string;
+      short_desc: string;
+    }>,
   },
 }));
 
@@ -58,13 +60,10 @@ describe('CompanionAppsCard', () => {
     mockCatalogState.isLoading = false;
     mockCatalogState.isRetryingEmptyCatalog = false;
     mockCatalogState.isCatalogSettled = true;
-    mockCatalogState.apps = [
-      { id: 'ci-memory', name: 'CI Memory', urn: 'urn:store:ci-memory', short_desc: 'Memory server' },
-      { id: 'ci-import-tools', name: 'Import Tools', urn: 'urn:store:ci-import-tools', short_desc: 'Import data' },
-    ];
+    mockCatalogState.apps = [{ id: 'ci-memory', name: 'CI Memory', urn: 'urn:store:ci-memory', short_desc: 'Memory server' }];
   });
 
-  it('pre-selects both companion apps and emits them with public exposure', async () => {
+  it('pre-selects CI Memory and emits it with public exposure', async () => {
     const onEmit = vi.fn();
     render(<Harness onEmit={onEmit} />);
 
@@ -74,11 +73,16 @@ describe('CompanionAppsCard', () => {
 
     expect(onEmit).toHaveBeenLastCalledWith([
       expect.objectContaining({ appSlug: 'ci-memory', urn: 'urn:store:ci-memory', exposureMode: 'cloudflare' }),
-      expect.objectContaining({ appSlug: 'ci-import-tools', urn: 'urn:store:ci-import-tools', exposureMode: 'cloudflare' }),
     ]);
+    expect(screen.getAllByRole('checkbox')).toHaveLength(1);
+    const memoryOption = screen.getByTestId('companion-app-ci-memory');
+    expect(within(memoryOption).getByRole('checkbox', { name: 'ONBOARDING_COMPANION_MEMORY_TITLE' })).toBeChecked();
+    expect(within(screen.getByTestId('companion-memory-option')).getByText('ONBOARDING_COMPANION_MEMORY_SECTION_DESC')).toBeInTheDocument();
+    expect(screen.queryByText('ONBOARDING_BUILT_BY_COMPANION')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('companion-app-ci-import-tools')).not.toBeInTheDocument();
   });
 
-  it('allows deselecting a companion app', async () => {
+  it('allows deselecting CI Memory', async () => {
     const user = userEvent.setup();
     const onEmit = vi.fn();
     render(<Harness onEmit={onEmit} />);
@@ -86,23 +90,28 @@ describe('CompanionAppsCard', () => {
     await waitFor(() => expect(onEmit).toHaveBeenCalled());
     onEmit.mockClear();
 
-    await user.click(screen.getByTestId('companion-app-ci-memory'));
-    expect(onEmit).toHaveBeenLastCalledWith([expect.objectContaining({ appSlug: 'ci-import-tools', exposureMode: 'cloudflare' })]);
+    const memoryOption = screen.getByTestId('companion-app-ci-memory');
+    await user.click(within(memoryOption).getByRole('checkbox', { name: 'ONBOARDING_COMPANION_MEMORY_TITLE' }));
+    expect(onEmit).toHaveBeenLastCalledWith([]);
+    expect(within(memoryOption).getByRole('checkbox', { name: 'ONBOARDING_COMPANION_MEMORY_TITLE' })).not.toBeChecked();
   });
 
-  it('marks unavailable apps as disabled when missing from the store', async () => {
-    mockCatalogState.apps = [{ id: 'ci-import-tools', name: 'Import Tools', urn: 'urn:store:ci-import-tools', short_desc: 'Import data' }];
+  it('keeps Companion Memory selectable with its canonical marketplace identity when the local catalog is empty', async () => {
+    mockCatalogState.apps = [];
 
     const onEmit = vi.fn();
     render(<Harness onEmit={onEmit} />);
 
     await waitFor(() => expect(onEmit).toHaveBeenCalled());
-    expect(onEmit).toHaveBeenLastCalledWith([expect.objectContaining({ appSlug: 'ci-import-tools' })]);
-    expect(screen.getByTestId('companion-app-ci-memory')).toBeDisabled();
-    expect(screen.getByText('ONBOARDING_COMPANION_APP_UNAVAILABLE')).toBeInTheDocument();
+    expect(onEmit).toHaveBeenLastCalledWith([
+      expect.objectContaining({ appSlug: 'ci-memory', urn: 'ci-memory:ci-marketplace', exposureMode: 'cloudflare' }),
+    ]);
+    expect(within(screen.getByTestId('companion-app-ci-memory')).getByRole('checkbox')).toBeEnabled();
+    expect(within(screen.getByTestId('companion-memory-option')).getByText('ONBOARDING_COMPANION_MEMORY_TITLE')).toBeInTheDocument();
+    expect(screen.queryByText('ONBOARDING_COMPANION_APP_UNAVAILABLE')).not.toBeInTheDocument();
   });
 
-  it('pre-selects companion apps when the catalog arrives after an empty first response', async () => {
+  it('pre-selects CI Memory when the catalog arrives after an empty first response', async () => {
     mockCatalogState.isLoading = true;
     mockCatalogState.isRetryingEmptyCatalog = false;
     mockCatalogState.isCatalogSettled = false;
@@ -110,46 +119,34 @@ describe('CompanionAppsCard', () => {
 
     const onEmit = vi.fn();
     const { rerender } = render(<Harness onEmit={onEmit} />);
-    expect(screen.getAllByTestId('companion-app-skeleton')).toHaveLength(2);
+    expect(screen.getAllByTestId('companion-app-skeleton')).toHaveLength(1);
 
     mockCatalogState.isLoading = false;
     mockCatalogState.isRetryingEmptyCatalog = false;
     mockCatalogState.isCatalogSettled = true;
-    mockCatalogState.apps = [
-      { id: 'ci-memory', name: 'CI Memory', urn: 'urn:store:ci-memory', short_desc: 'Memory server' },
-      { id: 'ci-import-tools', name: 'Import Tools', urn: 'urn:store:ci-import-tools', short_desc: 'Import data' },
-    ];
+    mockCatalogState.apps = [{ id: 'ci-memory', name: 'CI Memory', urn: 'urn:store:ci-memory', short_desc: 'Memory server' }];
     rerender(<Harness onEmit={onEmit} />);
 
     await waitFor(() => {
-      expect(onEmit).toHaveBeenLastCalledWith([
-        expect.objectContaining({ appSlug: 'ci-memory', exposureMode: 'cloudflare' }),
-        expect.objectContaining({ appSlug: 'ci-import-tools', exposureMode: 'cloudflare' }),
-      ]);
+      expect(onEmit).toHaveBeenLastCalledWith([expect.objectContaining({ appSlug: 'ci-memory', exposureMode: 'cloudflare' })]);
     });
   });
 
-  it('matches companion apps by urn when portal entries omit id', async () => {
-    mockCatalogState.apps = [
-      { name: 'CI Memory', urn: 'ci-memory:ci-marketplace', short_desc: 'Memory server' },
-      { name: 'Import Tools', urn: 'ci-import-tools:ci-marketplace', short_desc: 'Import data' },
-    ] as typeof mockCatalogState.apps;
+  it('matches CI Memory by urn when portal entries omit id', async () => {
+    mockCatalogState.apps = [{ name: 'CI Memory', urn: 'ci-memory:ci-marketplace', short_desc: 'Memory server' }];
 
     const onEmit = vi.fn();
     render(<Harness onEmit={onEmit} />);
 
     await waitFor(() => expect(onEmit).toHaveBeenCalled());
-    expect(onEmit).toHaveBeenLastCalledWith([
-      expect.objectContaining({ appSlug: 'ci-memory', urn: 'ci-memory:ci-marketplace' }),
-      expect.objectContaining({ appSlug: 'ci-import-tools', urn: 'ci-import-tools:ci-marketplace' }),
-    ]);
+    expect(onEmit).toHaveBeenLastCalledWith([expect.objectContaining({ appSlug: 'ci-memory', urn: 'ci-memory:ci-marketplace' })]);
   });
 
   it('shows skeletons while the catalog is loading', () => {
     mockCatalogState.isLoading = true;
     mockCatalogState.isCatalogSettled = false;
     render(<CompanionAppsCard publicExposureMode="cloudflare" onChange={vi.fn()} />);
-    expect(screen.getAllByTestId('companion-app-skeleton')).toHaveLength(2);
+    expect(screen.getAllByTestId('companion-app-skeleton')).toHaveLength(1);
   });
 
   it('shows the privacy callout', () => {

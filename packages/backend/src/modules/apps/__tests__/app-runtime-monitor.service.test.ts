@@ -7,6 +7,7 @@ import { ConfigurationService } from '@/core/config/configuration.service';
 import { AppsRepository } from '../apps.repository';
 import { AppsService } from '../apps.service';
 import { DockerReadFacade } from '@/modules/docker/docker-read.facade';
+import { HostTelemetryService } from '@/modules/system/host-telemetry.service';
 import si from 'systeminformation';
 
 vi.mock('systeminformation');
@@ -343,5 +344,29 @@ describe('AppRuntimeMonitorService', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('hydrates rolling history from persisted telemetry after a restart', async () => {
+    const telemetry = mock<HostTelemetryService>();
+    telemetry.getRuntimeHistory.mockResolvedValue([
+      {
+        sampledAt: '2026-08-18T12:00:00.000Z',
+        apps: [
+          { appUrn: 'ci-memory:ci-marketplace', appName: 'ci-memory', status: 'running', cpuPercent: 55, memoryUsageBytes: 2048, containerCount: 3 },
+        ],
+      },
+    ]);
+    appsRepository.getApps.mockResolvedValue([]);
+    dockerReadFacade.getHubRuntimeStats.mockResolvedValue([]);
+    (si.processes as any).mockResolvedValue({ list: [] });
+
+    service = new AppRuntimeMonitorService(logger, config, appsRepository, appsService, dockerReadFacade, telemetry);
+    const snapshot = await service.getRuntimeMonitorSnapshot();
+
+    expect(snapshot.history[0]).toMatchObject({
+      sampledAt: '2026-08-18T12:00:00.000Z',
+      apps: [expect.objectContaining({ appUrn: 'ci-memory:ci-marketplace', cpuPercent: 55 })],
+    });
+    expect(telemetry.recordRuntimeApps).toHaveBeenCalled();
   });
 });

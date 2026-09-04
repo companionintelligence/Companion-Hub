@@ -111,6 +111,20 @@ describe('MarketplaceService', () => {
     });
   });
 
+  describe('refreshPortalCatalog', () => {
+    it('invalidates then awaits a forced portal catalog fetch', async () => {
+      await service.initialize();
+      portalCatalog.invalidateCache.mockClear();
+      portalCatalog.getCatalogEntries.mockClear();
+      portalCatalog.getCatalogEntries.mockResolvedValue([]);
+
+      await service.refreshPortalCatalog();
+
+      expect(portalCatalog.invalidateCache).toHaveBeenCalled();
+      expect(portalCatalog.getCatalogEntries).toHaveBeenCalledWith(true);
+    });
+  });
+
   describe('getAvailableApps', () => {
     it('should return available apps filtered by architecture', async () => {
       await service.initialize();
@@ -290,6 +304,38 @@ describe('MarketplaceService', () => {
       expect(portalCatalog.getAppInfoForUrn).not.toHaveBeenCalled();
       expect(result?.description).toBe('# From description.md');
     });
+
+    it('overlays a newer Portal catalog version onto stale local replica metadata', async () => {
+      await service.initialize();
+
+      appStoreService.getAllAppStores.mockResolvedValue([
+        { slug: 'ci-marketplace', name: 'CI Marketplace', url: 'http://portal', enabled: true, type: 'ci_cloud_api', branch: 'main' } as any,
+      ]);
+      await service.initialize();
+
+      spies.getAppInfoFromAppStore.mockResolvedValue({
+        id: 'ci-memory',
+        urn: 'ci-memory:ci-marketplace',
+        name: 'Companion Memory',
+        version: '2026.8.18',
+        cihub_app_version: 1,
+        short_desc: 'Memory',
+        categories: ['ai'],
+      });
+      portalCatalog.isCiMarketplaceUrn.mockReturnValue(true);
+      portalCatalog.getUpdateInfoForUrn.mockReturnValue({
+        latestVersion: 2,
+        latestDockerVersion: '2026.8.23',
+        minHubVersion: null,
+      });
+
+      const result = await service.getAppInfoFromAppStore('ci-memory:ci-marketplace' as any);
+
+      expect(result).toMatchObject({
+        version: '2026.8.23',
+        cihub_app_version: 2,
+      });
+    });
   });
 
   describe('getAppImage', () => {
@@ -388,6 +434,30 @@ describe('MarketplaceService', () => {
       await expect(service.getAppUpdateInfo('ci-memory:ci-marketplace' as any)).resolves.toMatchObject({
         latestVersion: 42,
         latestDockerVersion: '2026.7.17.1',
+      });
+    });
+
+    it('overlays a newer Portal docker tag when cihub_app_version is unchanged', async () => {
+      appStoreService.getAllAppStores.mockResolvedValue([
+        { slug: 'ci-marketplace', name: 'CI Marketplace', url: 'http://portal', enabled: true, type: 'ci_cloud_api', branch: 'main' } as any,
+      ]);
+      await service.initialize();
+
+      portalCatalog.isCiMarketplaceUrn.mockReturnValue(true);
+      spies.getAppUpdateInfo.mockResolvedValue({
+        latestVersion: 42,
+        latestDockerVersion: '2026.8.18',
+        minHubVersion: null,
+      });
+      portalCatalog.getUpdateInfoForUrn.mockReturnValue({
+        latestVersion: 42,
+        latestDockerVersion: '2026.8.23',
+        minHubVersion: null,
+      });
+
+      await expect(service.getAppUpdateInfo('ci-memory:ci-marketplace' as any)).resolves.toMatchObject({
+        latestVersion: 42,
+        latestDockerVersion: '2026.8.23',
       });
     });
   });

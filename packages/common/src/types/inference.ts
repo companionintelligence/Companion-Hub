@@ -1,3 +1,5 @@
+import type { HostPlatform } from './host-metrics.js';
+
 // ─── Hardware Detection ─────────────────────────────────────────────────────
 
 export interface HardwareProfile {
@@ -68,7 +70,7 @@ export interface MemoryBudget {
 
 // ─── Model Registry ─────────────────────────────────────────────────────────
 
-export type InferenceBackendType = 'ollama' | 'vllm' | 'lemonade' | 'lucebox';
+export type InferenceBackendType = 'ollama' | 'vllm' | 'lemonade' | 'mtplx' | 'dspark' | 'lucebox';
 
 export type ModelModality = 'llm' | 'tts' | 'stt' | 'image-gen' | 'embedding';
 export type ModelPurpose = 'general' | 'coding' | 'reasoning' | 'fast' | 'voice' | 'transcription' | 'image' | 'embedding';
@@ -106,6 +108,8 @@ export interface CuratedModel {
     minRamMb: number;
     diskMb: number;
     gpuVendors: ('nvidia' | 'amd' | 'intel' | 'apple' | 'cpu')[];
+    /** Host platforms on which this backend/model combination is runnable locally. */
+    supportedPlatforms?: HostPlatform[];
     npuRequired: boolean;
     minTier: HardwareTier;
   };

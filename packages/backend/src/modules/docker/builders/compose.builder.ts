@@ -86,8 +86,6 @@ export class DockerComposeBuilder {
   private localDomain: string;
   private cloudflareOriginHostname?: string;
   private cloudflarePublicHostname?: string;
-  private defaultCpuLimit?: string;
-  private defaultMemoryLimit?: string;
   private readonly posixPermissionsSupported: boolean;
 
   /**
@@ -225,9 +223,14 @@ export class DockerComposeBuilder {
       );
     }
 
-    const effectiveCpuLimit = form.cpuLimit?.trim() || this.defaultCpuLimit;
-    const effectiveMemoryLimit = (typeof form.memoryLimit === 'string' ? form.memoryLimit.trim() : undefined) || this.defaultMemoryLimit;
-    // App-provided limits always win; defaults only fill the gaps
+    // User-set form limits and app-manifest limits only. Auto-allocated
+    // per-app defaults (50% RAM / 75% CPUs) must not be copied onto every
+    // service — that cgroup-kills one container at half the host while the
+    // rest of RAM is free, and it does not reserve anything for inference
+    // (vLLM/Ollama live outside these compose files).
+    const effectiveCpuLimit = form.cpuLimit?.trim() || undefined;
+    const effectiveMemoryLimit = typeof form.memoryLimit === 'string' ? form.memoryLimit.trim() || undefined : undefined;
+    // App-provided limits always win; form limits only fill the gaps
     const applyCpuLimit = Boolean(effectiveCpuLimit && !params.deploy?.resources?.limits?.cpus);
     const applyMemoryLimit = Boolean(effectiveMemoryLimit && !params.deploy?.resources?.limits?.memory);
     const deployConfig =
@@ -343,16 +346,15 @@ export class DockerComposeBuilder {
     envFile?: string,
     cloudflareOriginHostname?: string,
     cloudflarePublicHostname?: string,
-    defaultCpuLimit?: string,
-    defaultMemoryLimit?: string,
+    // Kept so callers can still pass UI recommendations; they are not applied.
+    _defaultCpuLimit?: string,
+    _defaultMemoryLimit?: string,
   ) {
     const { appName, appStoreId } = extractAppUrn(appUrn);
 
     this.localDomain = localDomain || process.env.LOCAL_DOMAIN || DEFAULT_LOCAL_DOMAIN;
     this.cloudflareOriginHostname = cloudflareOriginHostname;
     this.cloudflarePublicHostname = cloudflarePublicHostname;
-    this.defaultCpuLimit = defaultCpuLimit?.trim() || undefined;
-    this.defaultMemoryLimit = defaultMemoryLimit?.trim() || undefined;
 
     const serviceHealthcheckMap = new Map<string, boolean>();
     for (const service of services) {

@@ -1,9 +1,9 @@
-# Companion Hub — product video
+# Companion Hub product video
 
-> **Private & Confidential — Property of Lifescope Inc. Do not distribute.**
+This directory contains the active HyperFrames build. For archived tutorial reference material, see [`../videos/`](../videos/).
 
-Generates a **16:9 desktop cut** and a **9:16 mobile cut** of Companion Hub, from this repo's
-own UI. Both are produced from [`storyboard.json`](storyboard.json).
+This build generates a **16:9 desktop cut** and a **9:16 mobile cut** of Companion Hub from
+this repository's UI. Both cuts use [`storyboard.json`](storyboard.json).
 
 ## Videos are built locally, on demand
 
@@ -15,9 +15,9 @@ What is *meant* to be committed is the input — the screenshots under `assets/s
 exist they let anyone render a cut without booting the whole stage, and a moved UI shows up as a
 reviewable image diff.
 
-> ✅ **Every shot the storyboard references is captured — 0 slates.** The cut is **16 scenes**
-> and references **8 shot ids × 2 viewports**.
->
+Every shot the storyboard references is captured (0 slates). The cut is **16 scenes**
+and references **8 shot ids × 2 viewports**.
+
 > ⚠️ **Nine shot ids are committed and are NOT in the current cut.** They are kept, not deleted,
 > and that is a deliberate deviation from the house rule that a dropped scene takes its PNGs with
 > it (see CI-Spellbook #52/#53 and CI-Web-XR-Scan #50). The reason: none of them was dropped for a
@@ -36,7 +36,7 @@ reviewable image diff.
 > | `mcp-tools` | MCP server, keys and tool catalog | No agent-plumbing beat |
 > | `hub-settings`, `hub-settings-security` | The settings tab row and Security tab | The old cut ended a chapter on a settings page; the new one does not |
 >
-> ⚠️ **The App Privacy beat is gone.** It is not in Liam's script, and CI-Engineering's
+> ⚠️ **The App Privacy beat is gone.** It is not in the current script, and CI-Engineering's
 > `tools/EDITORIAL-REVIEW.md` finding 2 recommends dropping it outright: the card renders
 > unconditionally but its contents are a fixed i18n constant, zero of the 512 CI-Marketplace
 > manifests carry a privacy field, and `privacy_labels` on the Portal's `AppEntity` is never

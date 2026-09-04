@@ -34,6 +34,7 @@ import {
   UpdateAppStoreDto,
 } from './dto/marketplace.dto';
 import { ImageSizeService } from './image-size.service';
+import { MarketplaceWhoIsService } from '@/core/portal/marketplace-whois.service';
 import { MarketplaceService } from './marketplace.service';
 
 const isExpectedStreamAbortError = (error: unknown) => {
@@ -51,12 +52,13 @@ export class MarketplaceController {
     private readonly appStoreService: AppStoreService,
     private readonly imageSizeService: ImageSizeService,
     private readonly logger: LoggerService,
+    private readonly whois: MarketplaceWhoIsService,
   ) {}
 
   @Get('apps/search')
   @UseGuards(AuthGuard, RegistrationGuard)
   @ApiResponse({ type: SearchAppsDto })
-  async searchApps(@Query() query: SearchAppsQueryDto) {
+  async searchApps(@Query() query: SearchAppsQueryDto, @Req() req: Request) {
     const { search, pageSize, cursor, category, storeId } = query;
 
     const size = pageSize ? Number(pageSize) : 24;
@@ -64,8 +66,11 @@ export class MarketplaceController {
       throw new BadRequestException('Invalid pageSize');
     }
     const res = await this.marketplaceService.searchApps({ search, pageSize: size, cursor, category, storeId });
+    // `searchApps` returns a union of two row shapes, and TS cannot infer a single
+    // `T` from `A[] | B[]` — name the element type so both arms widen into one array.
+    const data = await this.whois.filterSessionByView<(typeof res.data)[number]>(req, res.data, (app) => app.urn, 'store');
 
-    return SearchAppsDto.parse(res, { reportOnly: true });
+    return SearchAppsDto.parse({ ...res, data }, { reportOnly: true });
   }
 
   @Get('apps/:urn/image')
@@ -203,6 +208,7 @@ export class MarketplaceController {
   async pullAppStores() {
     const res = await this.appStoreService.pullRepositories();
     await this.marketplaceService.initialize();
+    await this.marketplaceService.refreshPortalCatalog();
     return PullDto.parse(res, { reportOnly: true });
   }
 

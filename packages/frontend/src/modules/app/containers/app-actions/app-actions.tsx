@@ -28,6 +28,7 @@ import type { AppDetails, AppInfo, AppMetadata, AppStatus } from '@/types/app.ty
 import type { TranslatableError } from '@/types/error.types';
 import clsx from 'clsx';
 import { Tooltip } from 'react-tooltip';
+import { AppDataFolderDialog } from '../../components/dialogs/app-data-folder-dialog/app-data-folder-dialog';
 import { CancelInstallDialog } from '../../components/dialogs/cancel-install-dialog/cancel-install-dialog';
 import { DisconnectMemoryDialog } from '../../components/dialogs/disconnect-memory-dialog/disconnect-memory-dialog';
 import { InstallDialog } from '../../components/dialogs/install-dialog/install-dialog';
@@ -44,7 +45,7 @@ import { useLocation, useNavigate, Link, useSearchParams } from 'react-router';
 import { invalidateAppQueries, type AppInstallErrorCache } from '../../helpers/app-sse-cache';
 import type { AppUrn } from '@ci-hub/common/types';
 import { openExternal } from '@/lib/helpers/open-external';
-import { openPathInFileExplorer } from '@/lib/helpers/open-folder';
+import { canOpenFolderInFileExplorer, openPathInFileExplorer } from '@/lib/helpers/open-folder';
 import { getTauriInvoke } from '@/lib/helpers/tauri-invoke';
 import { openExternalWithHubSession } from '@/lib/hub-browser-handoff';
 import type { AppRuntimeHealth } from '@/lib/app-runtime-monitor';
@@ -200,6 +201,7 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
   const uninstallDisclosure = useDisclosure();
   const resetAppDisclosure = useDisclosure();
   const disconnectMemoryDisclosure = useDisclosure();
+  const appDataFolderDisclosure = useDisclosure();
 
   // Local optimistic flag while a cancel is in flight: the backend keeps the app in `installing`
   // until compensation finishes and the `install_cancelled` SSE lands, so we surface "Cancelling…".
@@ -580,7 +582,7 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
               disabled={isResolving}
             />
           )}
-          {statusMessage && <span className="text-xs text-amber-600">{statusMessage}</span>}
+          {statusMessage && <span className="text-xs text-warning">{statusMessage}</span>}
           {openAnywayLink}
         </div>
       );
@@ -660,17 +662,23 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
   const buttons: React.JSX.Element[] = [];
   const secondaryActions: React.JSX.Element[] = [];
 
-  // "Open data folder" is a desktop-only native action: it needs the Tauri
-  // runtime and a backend-resolved host path. Hidden in the web client.
-  const openDataFolderButton =
-    getTauriInvoke() && appDataHostPath ? (
-      <IconActionButton
-        key="open-data-folder"
-        icon={FolderOpen}
-        label={t('APP_ACTION_OPEN_DATA_FOLDER')}
-        onClick={() => openPathInFileExplorer(appDataHostPath)}
-      />
-    ) : null;
+  // Desktop shell on the Hub host: open Finder / Explorer / the file manager.
+  // Browser (and phone, or desktop without a resolved host path): read-only
+  // listing dialog so the action is never a silent no-op.
+  const openDataFolderButton = app ? (
+    <IconActionButton
+      key="open-data-folder"
+      icon={FolderOpen}
+      label={t('APP_ACTION_OPEN_DATA_FOLDER')}
+      onClick={() => {
+        if (canOpenFolderInFileExplorer() && appDataHostPath) {
+          void openPathInFileExplorer(appDataHostPath);
+          return;
+        }
+        appDataFolderDisclosure.open();
+      }}
+    />
+  ) : null;
 
   // Companion Memory connect/disconnect, sized to match the Open button and
   // placed just before it (running case). Only for memory-consumer apps; the
@@ -774,6 +782,26 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
 
   switch (app?.status ?? 'missing') {
     case 'stopped':
+    case 'missing': {
+      // No DB row → not installed. An installed row with status "missing" is a
+      // legacy/compose-down state and should offer Start, not Install.
+      if (!app) {
+        buttons.push(InstallButton);
+        if (info.urn.split(':')[1] === '_user') {
+          secondaryActions.push(
+            <IconActionButton key="edit-config" icon={Edit} label={t('CUSTOM_APP_EDIT_CONFIG')} onClick={() => navigate(`/apps/${info.id}/edit`)} />,
+            <IconActionButton
+              key="remove"
+              icon={Trash}
+              label={t('COMMON_REMOVE')}
+              onClick={uninstallDisclosure.open}
+              className="text-destructive hover:text-destructive"
+            />,
+          );
+        }
+        break;
+      }
+
       buttons.push(StartButton);
       secondaryActions.push(
         <IconActionButton key="settings" icon={Settings} label={t('COMMON_SETTINGS')} onClick={updateSettingsDisclosure.open} />,
@@ -786,6 +814,11 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
           className="text-destructive hover:text-destructive"
         />,
       );
+      if (info.urn.split(':')[1] === '_user') {
+        secondaryActions.push(
+          <IconActionButton key="edit-config" icon={Edit} label={t('CUSTOM_APP_EDIT_CONFIG')} onClick={() => navigate(`/apps/${info.id}/edit`)} />,
+        );
+      }
       if (openDataFolderButton) secondaryActions.push(openDataFolderButton);
       if (updateAvailable && !versionIsIgnored) {
         secondaryActions.push(
@@ -815,6 +848,7 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
         );
       }
       break;
+    }
     case 'running': {
       secondaryActions.push(
         <IconActionButton key="stop" icon={Pause} label={t('COMMON_STOP')} onClick={stopDisclosure.open} />,
@@ -923,21 +957,6 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
         />,
       );
       break;
-    case 'missing':
-      buttons.push(InstallButton);
-      if (info.urn.split(':')[1] === '_user') {
-        secondaryActions.push(
-          <IconActionButton key="edit-config" icon={Edit} label={t('CUSTOM_APP_EDIT_CONFIG')} onClick={() => navigate(`/apps/${info.id}/edit`)} />,
-          <IconActionButton
-            key="remove"
-            icon={Trash}
-            label={t('COMMON_REMOVE')}
-            onClick={uninstallDisclosure.open}
-            className="text-destructive hover:text-destructive"
-          />,
-        );
-      }
-      break;
     default:
       if (info.urn.split(':')[1] === '_user') {
         secondaryActions.push(
@@ -974,11 +993,42 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
         onConfirm={memory.disconnect}
         isDisconnecting={memory.isDisconnecting}
       />
+      <AppDataFolderDialog isOpen={appDataFolderDisclosure.isOpen} onClose={appDataFolderDisclosure.close} info={info} />
       <UpdateSettingsDialog
         isOpen={updateSettingsDisclosure.isOpen}
         onClose={updateSettingsDisclosure.close}
         info={info}
-        config={app?.config ?? {}}
+        config={{
+          ...(app?.config ?? {}),
+          /*
+           * The row wins for this one field. `config` is the form snapshot as
+           * it was last saved; `customDomainIntent` is the live choice, which the
+           * Hub clears on its own when the domain stops being connected or is
+           * picked for another app. Seeding from the snapshot would re-submit a
+           * choice that has since been dropped — taking the domain off whatever
+           * app holds it now, on a save the person thought changed nothing else.
+           *
+           * Falling back to the DELIVERED binding, because an app can be served on
+           * a domain it never asked for here — one an operator bound in the portal,
+           * or one whose intent the Hub has since cleared while Companion Portal keeps
+           * serving it. Showing "use the platform address" for an app the browser
+           * reaches at `comfy.acme.com` is a flat lie about where it lives, and the
+           * save that follows sends `''` — the explicit instruction to give it up.
+           */
+          ...(app ? { customDomain: app.customDomainIntent ?? app.customDomain ?? '' } : {}),
+          /*
+           * The row wins here too, and it is the ONLY source. The confirmation
+           * authorizes one move and the bind pass spends it, so the row is the
+           * only thing that knows whether one is still outstanding —
+           * `toStoredConfig` deliberately keeps it out of the snapshot so a spent
+           * answer cannot come back as standing permission.
+           *
+           * Seeded rather than defaulted to `false` so an unrelated save does not
+           * quietly withdraw a move the operator confirmed and the pass has not
+           * reached yet.
+           */
+          ...(app ? { customDomainTakeover: app.customDomainTakeover ?? false } : {}),
+        }}
         status={app?.status}
       />
       <div className={clsx('space-y-1', layout === 'default' && 'mt-1')}>

@@ -5,6 +5,7 @@ import { openExternal } from '@/lib/helpers/open-external';
 import type { VllmStatus } from '@/modules/onboarding/helpers/ai-setup-types';
 import { AlertCircle, CheckCircle2, Download, Loader2, RefreshCw } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import { AutoInstallRunnerButton } from './auto-install-runner-button';
 
 const VLLM_DOCS_URL = 'https://docs.vllm.ai/en/latest/getting_started/quickstart.html';
 
@@ -43,6 +44,7 @@ interface VllmSetupCardProps {
   /** Operator-configured vLLM base URL; empty string means "use the Hub default". */
   endpointUrl?: string;
   onEndpointUrlChange?: (value: string) => void;
+  onAutoInstall?: () => Promise<void>;
 }
 
 /** Endpoint URL + API key fields shared by the ready and not-ready branches. */
@@ -102,7 +104,16 @@ const VllmConnectionFields = ({
   );
 };
 
-export const VllmSetupCard = ({ status, checking, onRecheck, apiKey, onApiKeyChange, endpointUrl, onEndpointUrlChange }: VllmSetupCardProps) => {
+export const VllmSetupCard = ({
+  status,
+  checking,
+  onRecheck,
+  apiKey,
+  onApiKeyChange,
+  endpointUrl,
+  onEndpointUrlChange,
+  onAutoInstall,
+}: VllmSetupCardProps) => {
   const { t } = useTranslation();
 
   if (!status) {
@@ -125,14 +136,14 @@ export const VllmSetupCard = ({ status, checking, onRecheck, apiKey, onApiKeyCha
     const endpoint = status.displayEndpoint ?? `${status.endpointUrl}/v1`;
 
     return (
-      <Card className="border-green-200 dark:border-green-800 bg-green-50 dark:bg-green-950">
+      <Card className="border-success/30 bg-success/10">
         <CardContent className="p-4 space-y-4">
           <div className="flex items-center justify-between gap-3">
             <div className="flex min-w-0 items-center gap-3">
-              <CheckCircle2 className="h-5 w-5 shrink-0 text-green-600 dark:text-green-400" />
+              <CheckCircle2 className="h-5 w-5 shrink-0 text-success" />
               <div className="min-w-0">
-                <div className="text-sm font-medium text-green-900 dark:text-green-100">{t('ONBOARDING_VLLM_DETECTED')}</div>
-                <div className="text-xs text-green-700 dark:text-green-300">{endpoint}</div>
+                <div className="text-sm font-medium text-success">{t('ONBOARDING_VLLM_DETECTED')}</div>
+                <div className="text-xs text-success">{endpoint}</div>
               </div>
             </div>
             <Button
@@ -152,8 +163,8 @@ export const VllmSetupCard = ({ status, checking, onRecheck, apiKey, onApiKeyCha
             onApiKeyChange={onApiKeyChange}
             endpointUrl={endpointUrl}
             onEndpointUrlChange={onEndpointUrlChange}
-            labelClass="text-green-900 dark:text-green-100"
-            hintClass="text-green-700/90 dark:text-green-300/90"
+            labelClass="text-success"
+            hintClass="text-success"
             defaultEndpointUrl={status.endpointUrl}
             idSuffix="ready"
           />
@@ -163,18 +174,18 @@ export const VllmSetupCard = ({ status, checking, onRecheck, apiKey, onApiKeyCha
   }
 
   return (
-    <Card className="overflow-hidden border-yellow-200 bg-yellow-50 dark:border-yellow-800 dark:bg-yellow-950">
+    <Card className="overflow-hidden border-warning/30 bg-warning/10">
       <CardContent className="min-w-0 p-4">
         <div className="flex min-w-0 items-start gap-3">
-          <Download className="mt-0.5 h-5 w-5 shrink-0 text-yellow-600 dark:text-yellow-400" />
+          <Download className="mt-0.5 h-5 w-5 shrink-0 text-warning" />
           <div className="min-w-0 flex-1">
-            <div className="mb-1 text-sm font-medium text-yellow-900 dark:text-yellow-100">{t('ONBOARDING_VLLM_NOT_DETECTED')}</div>
-            <div className="mb-3 text-xs text-yellow-700 dark:text-yellow-300">{status.hint ?? t('ONBOARDING_VLLM_NOT_DETECTED_DESC')}</div>
+            <div className="mb-1 text-sm font-medium text-warning">{t('ONBOARDING_VLLM_NOT_DETECTED')}</div>
+            <div className="mb-3 text-xs text-warning">{status.hint ?? t('ONBOARDING_VLLM_NOT_DETECTED_DESC')}</div>
             {status.error && <VllmProbeError error={status.error} />}
             {status.remediationCommand && (
               <div className="mb-3 min-w-0" data-testid="vllm-remediation-command">
-                <div className="mb-1 text-xs font-medium text-yellow-900 dark:text-yellow-100">{t('ONBOARDING_OLLAMA_RUN_ON_HOST')}</div>
-                <code className="block w-full max-w-full overflow-x-auto whitespace-pre-wrap break-all rounded bg-yellow-100 px-2 py-1.5 text-xs text-yellow-900 dark:bg-yellow-900 dark:text-yellow-100">
+                <div className="mb-1 text-xs font-medium text-warning">{t('ONBOARDING_OLLAMA_RUN_ON_HOST')}</div>
+                <code className="block w-full max-w-full overflow-x-auto whitespace-pre-wrap break-all rounded bg-warning/10 px-2 py-1.5 text-xs text-warning">
                   {status.remediationCommand}
                 </code>
               </div>
@@ -185,13 +196,14 @@ export const VllmSetupCard = ({ status, checking, onRecheck, apiKey, onApiKeyCha
                 onApiKeyChange={onApiKeyChange}
                 endpointUrl={endpointUrl}
                 onEndpointUrlChange={onEndpointUrlChange}
-                labelClass="text-yellow-900 dark:text-yellow-100"
-                hintClass="text-yellow-700/90 dark:text-yellow-300/90"
+                labelClass="text-warning"
+                hintClass="text-warning"
                 defaultEndpointUrl={status.endpointUrl}
                 idSuffix="unready"
               />
             </div>
             <div className="flex gap-2 flex-wrap">
+              {onAutoInstall && <AutoInstallRunnerButton onRun={onAutoInstall} />}
               <Button size="sm" variant="ghost" onClick={() => openExternal(VLLM_DOCS_URL)}>
                 {t('ONBOARDING_VLLM_DOCS')}
               </Button>

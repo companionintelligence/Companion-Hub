@@ -1,11 +1,9 @@
 name: Hub CI
+# TEMPORARY (Actions credit): automatic PR/push triggers disabled.
+# Re-enable pull_request/push when credits recover. Manual: gh workflow run ci.yml
 on:
   workflow_call:
   workflow_dispatch:
-  pull_request:
-  push:
-    branches:
-      - dev
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}

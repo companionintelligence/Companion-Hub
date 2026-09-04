@@ -1,10 +1,10 @@
-# CLAUDE.md — CI-Hub
+# CLAUDE.md — Companion Hub
 
-> **Private & Confidential — Property of Lifescope Inc. Do not distribute.**
+Doc map, tip scrub policy, and writing style: [`docs/README.md`](docs/README.md), [`docs/writing-style.md`](docs/writing-style.md).
 
 ## Platform role
 
-**CI-Hub** sits in the **Appliance** layer of the Companion Intelligence platform.
+**Companion Hub** sits in the **Appliance** layer of the Companion Intelligence platform.
 
 Architecture: `CI-Engineering/architecture/architecture.md`
 Roadmap: `CI-Engineering/architecture/roadmap.md`
@@ -47,10 +47,10 @@ pnpm build
 
 ## Cross-repo connections
 
-- Pulls app manifests from CI-Marketplace (via CI-Portal distribution edge)
+- Pulls app manifests from CI-Marketplace through the Portal distribution edge
 - Routes installed apps through CI-Gateway (Traefik) on *.ci.localhost
-- Will add entitlement pre-flight against CI-Portal before installs (issue #32)
-- Installs CI-Server alongside marketplace apps
+- Checks entitlements with Portal before installs: companionintelligence/CI-Hub#722
+- Installs Memory alongside marketplace apps
 
 ## Desktop app
 
@@ -64,6 +64,3 @@ Tauri 2 in `packages/desktop/`. Run `pnpm run local:desktop` to launch against t
 
 Multiple AI agents work these repos in parallel. Never use `git reset --hard`, `git clean -f`, or any destructive git command without explicit confirmation from the user.
 
-## Confidentiality
-
-Private & Confidential — Property of Lifescope Inc. Do not distribute.

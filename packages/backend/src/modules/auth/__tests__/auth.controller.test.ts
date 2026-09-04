@@ -184,7 +184,7 @@ describe('AuthController', () => {
       });
       vi.mocked(verifyPortalIdToken).mockResolvedValue({
         sub: 'portal-sub',
-        email: 'support@lifescope.io',
+        email: 'support@example.com',
         name: 'Support',
       });
       forwardAuthSecrets.resolveForHost.mockResolvedValue({
@@ -215,9 +215,65 @@ describe('AuthController', () => {
       expect(res.redirect).not.toHaveBeenCalled();
       expect(res.status).toHaveBeenCalledWith(200);
       const headers = Object.fromEntries(setHeader.mock.calls);
-      expect(headers['X-CI-Hub-User']).toBe('support@lifescope.io');
+      expect(headers['X-CI-Hub-User']).toBe('support@example.com');
       const timestamp = Number(headers['X-CI-Hub-User-Timestamp']);
-      expect(headers['X-CI-Hub-User-Signature']).toBe(signForwardAuthUser('per-app-secret', 'support@lifescope.io', timestamp));
+      expect(headers['X-CI-Hub-User-Signature']).toBe(signForwardAuthUser('per-app-secret', 'support@example.com', timestamp));
+    });
+
+    it('lets Memory login and API-key traffic through without a Hub session', async () => {
+      const cases: Array<{ uri?: string; extra?: Record<string, string> }> = [
+        { uri: '/api/authenticate/oidc/native/exchange' },
+        { uri: '/api/authenticate?client=native' },
+        { uri: '/api/keys' },
+        { uri: '/graphql', extra: { 'x-api-key': 'mem_live_abc' } },
+      ];
+
+      for (const { uri, extra } of cases) {
+        vi.mocked(verifyPortalIdToken).mockClear();
+        const req = {
+          user: undefined,
+          headers: {
+            'x-forwarded-host': 'ci-memory-core3-team.companionintelligence.com',
+            ...(uri ? { 'x-forwarded-uri': uri } : {}),
+            ...extra,
+          },
+        } as unknown as Request;
+        const res = {
+          status: vi.fn().mockReturnThis(),
+          send: vi.fn(),
+          redirect: vi.fn(),
+          setHeader: vi.fn(),
+        } as unknown as Response;
+
+        await authController.traefik(req, res);
+
+        expect(res.redirect, uri).not.toHaveBeenCalled();
+        expect(res.status, uri).toHaveBeenCalledWith(200);
+        expect(verifyPortalIdToken).not.toHaveBeenCalled();
+      }
+    });
+
+    it('does not treat a Memory JWT on /api/keys as an invalid Portal Bearer', async () => {
+      vi.mocked(verifyPortalIdToken).mockResolvedValue(null);
+      const req = {
+        user: undefined,
+        headers: {
+          authorization: 'Bearer memory.jwt.not-portal',
+          'x-forwarded-host': 'ci-memory-core3-team.companionintelligence.com',
+          'x-forwarded-uri': '/api/keys',
+        },
+      } as unknown as Request;
+      const res = {
+        status: vi.fn().mockReturnThis(),
+        send: vi.fn(),
+        redirect: vi.fn(),
+      } as unknown as Response;
+
+      await authController.traefik(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(200);
+      expect(res.redirect).not.toHaveBeenCalled();
+      expect(verifyPortalIdToken).not.toHaveBeenCalled();
     });
 
     it('returns 401 (not 302) when a Portal Bearer is present but invalid', async () => {
@@ -379,6 +435,36 @@ describe('AuthController', () => {
       const location = new URL((res.redirect as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]);
       expect(location.origin).toBe('http://ci.lan');
       expect(location.searchParams.get('redirect')).toBe('http://importer-org.ci.lan/');
+    });
+
+    it('does not 500 when device_registration lookup fails during tunnel forward-auth', async () => {
+      // Regression: Postgres auth/connection errors used to escape resolvePublicHub as an
+      // unhandled exception on GET /api/auth/traefik (Sentry CI-HUB-BACKEND-JD). Treat like
+      // "no registration" so Traefik gets a redirect instead of a hard failure.
+      deviceRegistration.getFirstDeviceRegistration.mockRejectedValue(
+        Object.assign(new Error('Failed query: select ... from "device_registration" limit $1\nparams: 1'), {
+          cause: new Error('password authentication failed for user "companion"'),
+        }),
+      );
+      config.getConfig.mockReturnValue({ domain: 'example.com' } as never);
+      forwardAuthSecrets.resolveAppUrnForHost.mockResolvedValue('nextcloud:ci-marketplace' as never);
+      const req = {
+        user: undefined,
+        headers: {
+          'cf-ray': 'a32648954da24bbb-BUF',
+          'x-forwarded-uri': '/',
+          'x-forwarded-proto': 'https',
+          'x-forwarded-host': 'nextcloud-test-echolign.ci.lan',
+        },
+      } as unknown as Request;
+      const res = { status: vi.fn().mockReturnThis(), redirect: vi.fn() } as unknown as Response;
+
+      await expect(authController.traefik(req, res)).resolves.toBeUndefined();
+
+      expect(res.redirect).toHaveBeenCalled();
+      const location = new URL((res.redirect as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]);
+      expect(location.origin).toBe('https://ci.lan');
+      expect(logger.warn).toHaveBeenCalledWith('Failed to load device registration while resolving public Hub origin', expect.any(Error));
     });
 
     it('sends a tunnel visitor to the Hub login when the app has no public hostname to return to', async () => {

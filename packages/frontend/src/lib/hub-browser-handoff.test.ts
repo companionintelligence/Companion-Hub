@@ -7,7 +7,7 @@ vi.mock('@/lib/helpers/tauri-invoke', () => ({ getTauriInvoke: h.getTauriInvoke 
 
 import { openExternalWithHubSession } from './hub-browser-handoff';
 
-const TARGET = 'https://ci-hermes-core-2-org.companionintelligence.com/';
+const TARGET = 'https://app.example.com/';
 
 describe('openExternalWithHubSession', () => {
   afterEach(() => {
@@ -27,7 +27,7 @@ describe('openExternalWithHubSession', () => {
 
   it('desktop: mints a ticket and opens the returned Hub handoff URL instead of the bare target', async () => {
     h.getTauriInvoke.mockReturnValue(vi.fn());
-    const handoffUrl = 'https://hub-core-2-org.companionintelligence.com/api/auth/browser-handoff?ticket=abc';
+    const handoffUrl = 'https://hub.example.com/api/auth/browser-handoff?ticket=abc';
     h.post.mockResolvedValue({ data: { url: handoffUrl } });
 
     await openExternalWithHubSession(TARGET);

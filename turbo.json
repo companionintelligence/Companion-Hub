@@ -79,8 +79,9 @@
         "APPS_REPO_URL",
         "OLLAMA_URL",
         "VLLM_URL",
-        "LEMONADE_URL",
-        "SPECULATIVE_INFERENCE_URL"
+        "MTPLX_URL",
+        "DSPARK_URL",
+        "LEMONADE_URL"
       ]
     },
     "local": {
@@ -115,8 +116,9 @@
         "APPS_REPO_URL",
         "OLLAMA_URL",
         "VLLM_URL",
-        "LEMONADE_URL",
-        "SPECULATIVE_INFERENCE_URL"
+        "MTPLX_URL",
+        "DSPARK_URL",
+        "LEMONADE_URL"
       ]
     },
     "test": {

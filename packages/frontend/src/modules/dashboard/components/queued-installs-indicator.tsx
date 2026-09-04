@@ -25,14 +25,14 @@ export const QueuedInstallsIndicator = ({ queue, isLoading }: QueuedInstallsIndi
 
   return (
     <div
-      className="mb-3 flex items-start gap-2 rounded-lg border border-amber-500/25 bg-amber-500/5 px-3 py-2 text-sm text-muted-foreground"
+      className="mb-3 flex items-start gap-2 rounded-lg border border-warning/30 bg-warning/10 px-3 py-2 text-sm text-muted-foreground"
       data-testid="queued-installs-indicator"
       role="status"
     >
       {activeOnly ? (
-        <Loader2 className="mt-0.5 h-4 w-4 shrink-0 animate-spin text-amber-600" aria-hidden />
+        <Loader2 className="mt-0.5 h-4 w-4 shrink-0 animate-spin text-warning" aria-hidden />
       ) : (
-        <Clock className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" aria-hidden />
+        <Clock className="mt-0.5 h-4 w-4 shrink-0 text-warning" aria-hidden />
       )}
       <div className="min-w-0">
         {activeOnly ? (

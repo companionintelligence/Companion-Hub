@@ -13,14 +13,22 @@ import { EnvUtils } from '@/modules/env/env.utils';
 import { MarketplaceService } from '@/modules/marketplace/marketplace.service';
 import { SubnetManagerService } from '@/modules/network/subnet-manager.service';
 import type { AppUrn } from '@ci-hub/common/types';
+import { parseComposeJson } from '@ci-hub/common/schemas';
+import { isRocmKfdPassthroughAvailable } from '@/modules/inference/host-rocm-availability';
+import fs from 'node:fs';
 
 vi.mock('node:fs', async () => ({
   default: {
+    constants: {
+      F_OK: 0,
+      R_OK: 4,
+    },
     promises: {
       mkdir: vi.fn(),
       chmod: vi.fn(),
       writeFile: vi.fn(),
       readFile: vi.fn().mockResolvedValue(''),
+      access: vi.fn().mockResolvedValue(undefined),
     },
   },
 }));
@@ -28,6 +36,10 @@ vi.mock('node:fs', async () => ({
 vi.mock('@ci-hub/common/schemas', async (importOriginal) => ({
   ...((await importOriginal()) as any),
   parseComposeJson: vi.fn().mockReturnValue({ services: [], overrides: [] }),
+}));
+
+vi.mock('@/modules/inference/host-rocm-availability', () => ({
+  isRocmKfdPassthroughAvailable: vi.fn().mockResolvedValue(true),
 }));
 
 describe('RestartAppCommand — pull policy', () => {
@@ -38,6 +50,10 @@ describe('RestartAppCommand — pull policy', () => {
   const appUrn = 'urn:store:test-app' as AppUrn;
 
   beforeEach(() => {
+    vi.mocked(parseComposeJson).mockReturnValue({ services: [], overrides: [] } as any);
+    vi.mocked(isRocmKfdPassthroughAvailable).mockResolvedValue(true);
+    vi.mocked(fs.promises.access).mockResolvedValue(undefined as any);
+
     composeArgs = [];
     dockerService = {
       composeApp: vi.fn(async (_urn: string, args: string) => {
@@ -62,6 +78,7 @@ describe('RestartAppCommand — pull policy', () => {
       force_pull: false,
     } as any);
     appFilesManager.getDockerComposeJson.mockResolvedValue({ content: '{}', path: '/tmp' });
+    appFilesManager.getUserComposeFile.mockResolvedValue({ content: null, path: '/tmp/user-compose.yml' } as any);
     appFilesManager.getAppEnv.mockResolvedValue({ content: '', path: '/tmp/.env' });
     appFilesManager.setAppDataDirPermissions.mockResolvedValue();
     appFilesManager.writeDockerComposeYml.mockResolvedValue();
@@ -122,5 +139,23 @@ describe('RestartAppCommand — pull policy', () => {
     await command.execute(appUrn, {});
     const upCmd = composeArgs.find((a) => a.includes('up'));
     expect(upCmd).toContain('--pull always');
+  });
+
+  // A device present at install time can be gone by a later restart (ROCm/KVM modules not yet
+  // loaded at boot, host reconfigured) — restart needs the same host-device preflight as
+  // install/start, rather than only finding out via Docker's raw compose-up error.
+  it('SHOULD fail fast before compose down/up when /dev/kfd is required but missing', async () => {
+    vi.mocked(parseComposeJson).mockReturnValue({
+      services: [{ name: 'comfyui', image: 'docker.io/example/comfyui:latest', devices: ['/dev/dri:/dev/dri', '/dev/kfd:/dev/kfd'] }],
+      overrides: [],
+    } as any);
+    vi.mocked(isRocmKfdPassthroughAvailable).mockResolvedValueOnce(false);
+
+    const result = await command.execute('comfyui:store' as AppUrn, {});
+
+    expect(result.success).toBe(false);
+    expect((result as any).errorCode).toBe('rocm_kfd_missing');
+    expect(result.message).toContain('Set up ROCm in AI Settings');
+    expect(dockerService.composeApp).not.toHaveBeenCalled();
   });
 });

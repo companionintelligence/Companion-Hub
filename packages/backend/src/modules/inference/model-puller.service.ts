@@ -8,6 +8,8 @@ import { MemoryManagerService } from './memory-manager.service';
 import { OllamaBackend } from './backends/ollama.backend';
 import { VllmBackend } from './backends/vllm.backend';
 import { LemonadeBackend } from './backends/lemonade.backend';
+import { MtplxBackend } from './backends/mtplx.backend';
+import { DsparkBackend } from './backends/dspark.backend';
 import { LuceboxBackend } from './backends/lucebox.backend';
 import type { InferenceBackend } from './backends/backend.interface';
 import { isCatalogModelInstalled, isServedModelForCatalog } from './model-availability.util';
@@ -28,6 +30,8 @@ export class ModelPullerService {
     private readonly ollamaBackend: OllamaBackend,
     private readonly vllmBackend: VllmBackend,
     private readonly lemonadeBackend: LemonadeBackend,
+    private readonly mtplxBackend: MtplxBackend,
+    private readonly dsparkBackend: DsparkBackend,
     private readonly luceboxBackend: LuceboxBackend,
   ) {}
 
@@ -39,6 +43,10 @@ export class ModelPullerService {
         return this.vllmBackend;
       case 'lemonade':
         return this.lemonadeBackend;
+      case 'mtplx':
+        return this.mtplxBackend;
+      case 'dspark':
+        return this.dsparkBackend;
       case 'lucebox':
         return this.luceboxBackend;
     }

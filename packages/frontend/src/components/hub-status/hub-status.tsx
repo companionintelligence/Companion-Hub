@@ -1,4 +1,5 @@
 import { colorizeLogLine } from '@/lib/log-ansi';
+import { POLLING } from '@/lib/polling-budget';
 import { useResolvedTheme } from '@/lib/use-resolved-theme';
 import DOMPurify from 'dompurify';
 import '@/components/logs-terminal/logs-terminal.css';
@@ -62,9 +63,13 @@ function getErrorMessage(err: unknown): string {
 }
 
 /** Tauri denied the invoke — the Hub never tried to start. Keep the raw ACL text for logs. */
-function formatHubStartError(err: unknown, aclHint: string): string {
+function formatHubStartError(err: unknown, aclHint: string, previousSticky?: string): string {
   const raw = getErrorMessage(err);
   if (raw.includes('not allowed by ACL')) {
+    // Do not let an ACL denial replace a real sticky start failure (e.g. Postgres probe).
+    if (previousSticky && !previousSticky.includes('not allowed by ACL')) {
+      return `${previousSticky}\n\n${aclHint}\n\n${raw}`;
+    }
     return `${aclHint}\n\n${raw}`;
   }
   return raw;
@@ -91,7 +96,7 @@ export function isUserInitiatedPageReload(): boolean {
   }
 }
 
-const HUB_STATUS_POLL_INTERVAL_MS = 3000;
+const HUB_STATUS_POLL_INTERVAL_MS = POLLING.HUB_STATUS_MS;
 
 function detectPlatform(): 'windows' | 'macos' | 'linux' {
   const ua = navigator.userAgent.toLowerCase();
@@ -330,7 +335,7 @@ function EngineAlternativePanel({ platform }: { platform: 'windows' | 'macos' })
         )}
 
         {(installState === 'completed' || installState === 'needs_restart') && (
-          <div className="flex items-start gap-3 rounded-md border border-green-500/30 bg-green-500/10 px-4 py-3 text-sm text-green-700 dark:text-green-400">
+          <div className="flex items-start gap-3 rounded-md border border-success/30 bg-success/10 px-4 py-3 text-sm text-success">
             <CheckCircle className="h-4 w-4 shrink-0 mt-0.5" aria-hidden />
             <span>{installState === 'needs_restart' ? t('HUB_STATUS_DOCKER_ALT_NEEDS_RESTART') : t('HUB_STATUS_DOCKER_ALT_SUCCESS')}</span>
           </div>
@@ -411,7 +416,7 @@ function LinuxDockerGuide() {
           )}
 
           {(installState === 'completed' || installState === 'needs_restart') && (
-            <div className="flex items-start gap-3 rounded-md border border-green-500/30 bg-green-500/10 px-4 py-3 text-sm text-green-700 dark:text-green-400">
+            <div className="flex items-start gap-3 rounded-md border border-success/30 bg-success/10 px-4 py-3 text-sm text-success">
               <CheckCircle className="h-4 w-4 shrink-0 mt-0.5" aria-hidden />
               <span>{installState === 'needs_restart' ? t('HUB_STATUS_LINUX_INSTALL_NEEDS_RESTART') : t('HUB_STATUS_LINUX_INSTALL_SUCCESS')}</span>
             </div>
@@ -717,10 +722,16 @@ export function HubStatus({ children }: HubStatusProps) {
     setStatus('Stopped');
   }, []);
 
+  const statusRef = useRef(status);
+  statusRef.current = status;
+
   const startHub = useCallback(
     async (logMessage: string) => {
       const invoke = getTauriInvoke();
       if (!invoke) return false;
+
+      const current = statusRef.current;
+      const previousSticky = typeof current === 'object' && current !== null && 'Error' in current ? current.Error.message : undefined;
 
       hubSteadyRunningRef.current = false;
       setStatus('Starting');
@@ -730,7 +741,9 @@ export function HubStatus({ children }: HubStatusProps) {
         return true;
       } catch (err) {
         console.error(logMessage, err);
-        setStatus({ Error: { message: formatHubStartError(err, t('HUB_STATUS_ACL_DENIED')) } });
+        setStatus({
+          Error: { message: formatHubStartError(err, t('HUB_STATUS_ACL_DENIED'), previousSticky) },
+        });
         return false;
       }
     },

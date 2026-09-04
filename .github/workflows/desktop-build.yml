@@ -1,15 +1,8 @@
 name: Desktop Build
-
+# TEMPORARY (Actions credit): automatic push triggers disabled.
+# Re-enable when credits recover. Manual: gh workflow run desktop-build.yml
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - dev
-    paths:
-      - 'packages/desktop/**'
-      - 'packages/frontend/**'
-      - 'packages/common/**'
-      - '.github/workflows/desktop-build.yml'
 
 concurrency:
   group: desktop-${{ github.ref }}

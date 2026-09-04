@@ -10,6 +10,8 @@ import { CloudFallbackService } from '@/modules/inference/cloud-fallback.service
 import { OllamaBackend } from '@/modules/inference/backends/ollama.backend';
 import { VllmBackend } from '@/modules/inference/backends/vllm.backend';
 import { LemonadeBackend } from '@/modules/inference/backends/lemonade.backend';
+import { MtplxBackend } from '@/modules/inference/backends/mtplx.backend';
+import { DsparkBackend } from '@/modules/inference/backends/dspark.backend';
 import { LuceboxBackend } from '@/modules/inference/backends/lucebox.backend';
 import type { InferenceBackendType, CloudProviderType } from '@ci-hub/common/types';
 
@@ -27,6 +29,8 @@ export class InferenceTools implements OnModuleInit {
     private readonly ollamaBackend: OllamaBackend,
     private readonly vllmBackend: VllmBackend,
     private readonly lemonadeBackend: LemonadeBackend,
+    private readonly mtplxBackend: MtplxBackend,
+    private readonly dsparkBackend: DsparkBackend,
     private readonly luceboxBackend: LuceboxBackend,
   ) {}
 
@@ -50,10 +54,10 @@ export class InferenceTools implements OnModuleInit {
       category: 'Inference & Models',
       name: 'hub_list_inference_backends',
       access: 'read',
-      description: 'List available inference backends (Ollama, vLLM, Lemonade, and speculative inference) and their current status.',
+      description: 'List available inference backends (Ollama, vLLM, Lemonade, MTPLX, mlx-dspark, and Lucebox) and their current status.',
       inputSchema: { type: 'object', properties: {}, required: [] },
       handler: async () => {
-        const backends = [this.ollamaBackend, this.vllmBackend, this.lemonadeBackend, this.luceboxBackend];
+        const backends = [this.ollamaBackend, this.vllmBackend, this.lemonadeBackend, this.mtplxBackend, this.dsparkBackend, this.luceboxBackend];
         const results = await Promise.all(
           backends.map(async (b) => {
             const health = await b.healthCheck();
@@ -72,8 +76,8 @@ export class InferenceTools implements OnModuleInit {
     });
 
     // ─── hub_start_inference_backend ────────────────────────────────
-    // ISSUE-MCP-3: inference backends (Ollama/vLLM/Lemonade/speculative inference) are managed by the Hub runtime (its
-    // compose stack / host services), not started on demand by the Hub. The previous handler
+    // ISSUE-MCP-3: inference backends (Ollama/vLLM/Lemonade/MTPLX/mlx-dspark/Lucebox) are managed
+    // by the Hub runtime and host services, not started on demand by the Hub. The previous handler
     // returned a "start requested" message but did nothing — misleading an agent into believing a
     // backend was started. This now honestly reports live status and states that lifecycle is not
     // performed here. (Real on-demand start/stop would need a public compose-orchestration path in
@@ -83,13 +87,13 @@ export class InferenceTools implements OnModuleInit {
       name: 'hub_start_inference_backend',
       access: 'write',
       description:
-        'Report the live status of an inference backend ("ollama", "vllm", "lemonade", or speculative inference). NOTE: this does NOT ' +
+        'Report the live status of an inference backend ("ollama", "vllm", "lemonade", "mtplx", "dspark", or "lucebox"). NOTE: this does NOT ' +
         'start a container — inference backends are managed by the Hub runtime/compose stack. Use it to verify ' +
         'whether a backend is up before routing inference.',
       inputSchema: {
         type: 'object',
         properties: {
-          backend: { type: 'string', enum: ['ollama', 'vllm', 'lemonade', 'lucebox'], description: 'Backend type to check' },
+          backend: { type: 'string', enum: ['ollama', 'vllm', 'lemonade', 'mtplx', 'dspark', 'lucebox'], description: 'Backend type to check' },
         },
         required: ['backend'],
       },
@@ -107,7 +111,7 @@ export class InferenceTools implements OnModuleInit {
       inputSchema: {
         type: 'object',
         properties: {
-          backend: { type: 'string', enum: ['ollama', 'vllm', 'lemonade', 'lucebox'], description: 'Backend type to check' },
+          backend: { type: 'string', enum: ['ollama', 'vllm', 'lemonade', 'mtplx', 'dspark', 'lucebox'], description: 'Backend type to check' },
         },
         required: ['backend'],
       },
@@ -354,16 +358,24 @@ export class InferenceTools implements OnModuleInit {
   }
 
   /** Resolve the injected backend instance for a backend type. */
-  private backendFor(backendType: InferenceBackendType): OllamaBackend | VllmBackend | LemonadeBackend | LuceboxBackend {
+  private backendFor(
+    backendType: InferenceBackendType,
+  ): OllamaBackend | VllmBackend | LemonadeBackend | MtplxBackend | DsparkBackend | LuceboxBackend {
+    // Exhaustive on purpose — no `default:`. The previous default fell through to Ollama, so a
+    // newly added backend type silently reported Ollama's health under another backend's name.
     switch (backendType) {
+      case 'ollama':
+        return this.ollamaBackend;
       case 'vllm':
         return this.vllmBackend;
       case 'lemonade':
         return this.lemonadeBackend;
+      case 'mtplx':
+        return this.mtplxBackend;
+      case 'dspark':
+        return this.dsparkBackend;
       case 'lucebox':
         return this.luceboxBackend;
-      default:
-        return this.ollamaBackend;
     }
   }
 }

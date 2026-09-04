@@ -1,12 +1,13 @@
 import { useAppContext } from '@/context/app-context';
 import { getFullInspectionOptions } from '@/api-client/@tanstack/react-query.gen';
 import { POLLING } from '@/lib/polling-budget';
-import { openPathInFileExplorer } from '@/lib/helpers/open-folder';
-import { getTauriInvoke } from '@/lib/helpers/tauri-invoke';
+import { copyToClipboard } from '@/lib/copy-to-clipboard';
+import { canOpenFolderInFileExplorer, openPathInFileExplorer } from '@/lib/helpers/open-folder';
 import { useQuery } from '@tanstack/react-query';
 import {
   Activity,
   Cpu,
+  Copy,
   FolderOpen,
   HardDrive,
   Loader2,
@@ -103,7 +104,7 @@ const formatUptime = (seconds: number) => {
 // ─── Shared Components ───────────────────────────────────────────────────────
 
 const ProgressBar = ({ percent }: { percent: number }) => {
-  const barColor = percent > 90 ? 'bg-red-500' : percent > 70 ? 'bg-yellow-500' : 'bg-primary';
+  const barColor = percent > 90 ? 'bg-red-500' : percent > 70 ? 'bg-warning' : 'bg-primary';
   return (
     <div className="w-full h-1.5 bg-foreground/10 rounded-full overflow-hidden">
       <div className={`h-full rounded-full transition-all duration-500 ${barColor}`} style={{ width: `${Math.min(percent, 100)}%` }} />
@@ -142,17 +143,17 @@ const StatCard = ({
 );
 
 const StateIcon = ({ state }: { state: string }) => {
-  if (state === 'running') return <CheckCircle2 className="h-4 w-4 text-green-500" />;
+  if (state === 'running') return <CheckCircle2 className="h-4 w-4 text-success" />;
   if (state === 'exited') return <XCircle className="h-4 w-4 text-red-500" />;
-  return <AlertTriangle className="h-4 w-4 text-yellow-500" />;
+  return <AlertTriangle className="h-4 w-4 text-warning" />;
 };
 
 const Badge = ({ children, variant = 'default' }: { children: React.ReactNode; variant?: 'default' | 'success' | 'danger' | 'warning' }) => {
   const colors = {
     default: 'bg-muted text-muted-foreground',
-    success: 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200',
+    success: 'bg-success/10 text-success',
     danger: 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200',
-    warning: 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200',
+    warning: 'bg-warning/10 text-warning',
   };
   return <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium ${colors[variant]}`}>{children}</span>;
 };
@@ -424,7 +425,7 @@ const PortManagementSection = ({ ports }: { ports: { allocations: PortStatus[]; 
                       <td className="p-2 pl-3">
                         {p.bound ? (
                           <span title={t('SYSTEM_INSPECTOR_PORT_BOUND_ACTIVE')}>
-                            <CheckCircle2 className="h-4 w-4 text-green-500" />
+                            <CheckCircle2 className="h-4 w-4 text-success" />
                           </span>
                         ) : (
                           <span title={t('SYSTEM_INSPECTOR_PORT_ALLOCATED_NOT_BOUND')}>
@@ -446,13 +447,10 @@ const PortManagementSection = ({ ports }: { ports: { allocations: PortStatus[]; 
                   ))}
                   {showUntracked &&
                     ports.untracked.map((u) => (
-                      <tr
-                        key={`untracked-${u.port}`}
-                        className="border-b last:border-0 bg-yellow-50/50 dark:bg-yellow-900/10 hover:bg-yellow-50 dark:hover:bg-yellow-900/20 transition-colors"
-                      >
+                      <tr key={`untracked-${u.port}`} className="border-b last:border-0 bg-warning/10 hover:bg-warning/15 transition-colors">
                         <td className="p-2 pl-3">
                           <span title={t('SYSTEM_INSPECTOR_UNTRACKED_PORT')}>
-                            <AlertTriangle className="h-4 w-4 text-yellow-500" />
+                            <AlertTriangle className="h-4 w-4 text-warning" />
                           </span>
                         </td>
                         <td className="p-2 font-mono text-xs font-semibold">{u.port}</td>
@@ -475,7 +473,7 @@ const PortManagementSection = ({ ports }: { ports: { allocations: PortStatus[]; 
             {ports.allocations.map((p) => (
               <div key={`m-${p.hostPort}-${p.protocol}`} className="rounded-lg border p-3 flex items-center gap-3">
                 {p.bound ? (
-                  <CheckCircle2 className="h-4 w-4 text-green-500 shrink-0" />
+                  <CheckCircle2 className="h-4 w-4 text-success shrink-0" />
                 ) : (
                   <XCircle className="h-4 w-4 text-muted-foreground shrink-0" />
                 )}
@@ -494,11 +492,8 @@ const PortManagementSection = ({ ports }: { ports: { allocations: PortStatus[]; 
             ))}
             {showUntracked &&
               ports.untracked.map((u) => (
-                <div
-                  key={`m-untracked-${u.port}`}
-                  className="rounded-lg border border-yellow-200 dark:border-yellow-800 p-3 flex items-center gap-3 bg-yellow-50/50 dark:bg-yellow-900/10"
-                >
-                  <AlertTriangle className="h-4 w-4 text-yellow-500 shrink-0" />
+                <div key={`m-untracked-${u.port}`} className="rounded-lg border border-warning/30 p-3 flex items-center gap-3 bg-warning/10">
+                  <AlertTriangle className="h-4 w-4 text-warning shrink-0" />
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2">
                       <span className="font-mono text-xs font-semibold">{u.port}</span>
@@ -518,12 +513,13 @@ const PortManagementSection = ({ ports }: { ports: { allocations: PortStatus[]; 
 // ─── Storage Section ─────────────────────────────────────────────────────────
 
 /**
- * Desktop-only section that reveals the root app-data folder (parent of every
- * app's persistent data) in the OS file explorer. Hidden in the web client,
- * where opening a host folder is not possible.
+ * Shows the root app-data folder (parent of every app's persistent data).
+ * Desktop Tauri opens it in the OS file manager; a browser or phone copies
+ * the host path instead — those clients are not the Hub machine.
  */
 const StorageSection = ({ appDataRootHostPath }: { appDataRootHostPath: string }) => {
   const { t } = useTranslation();
+  const canOpen = canOpenFolderInFileExplorer();
 
   return (
     <section className="rounded-lg border border-border bg-linear-to-b from-card to-card/60 p-5 shadow-sm sm:p-6">
@@ -539,15 +535,27 @@ const StorageSection = ({ appDataRootHostPath }: { appDataRootHostPath: string }
             {appDataRootHostPath}
           </div>
         </div>
-        <button
-          type="button"
-          onClick={() => openPathInFileExplorer(appDataRootHostPath)}
-          className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-sm text-muted-foreground hover:bg-muted/50 hover:text-foreground transition-colors"
-          data-testid="open-app-data-folder-btn"
-        >
-          <FolderOpen className="h-4 w-4" />
-          {t('SETTINGS_OPEN_APP_DATA_FOLDER')}
-        </button>
+        {canOpen ? (
+          <button
+            type="button"
+            onClick={() => openPathInFileExplorer(appDataRootHostPath)}
+            className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-sm text-muted-foreground hover:bg-muted/50 hover:text-foreground transition-colors"
+            data-testid="open-app-data-folder-btn"
+          >
+            <FolderOpen className="h-4 w-4" />
+            {t('SETTINGS_OPEN_APP_DATA_FOLDER')}
+          </button>
+        ) : (
+          <button
+            type="button"
+            onClick={() => copyToClipboard(appDataRootHostPath, t('APP_ACTION_DATA_FOLDER_PATH_COPIED'))}
+            className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-sm text-muted-foreground hover:bg-muted/50 hover:text-foreground transition-colors"
+            data-testid="copy-app-data-folder-btn"
+          >
+            <Copy className="h-4 w-4" />
+            {t('SETTINGS_COPY_APP_DATA_FOLDER')}
+          </button>
+        )}
       </div>
     </section>
   );
@@ -558,9 +566,6 @@ const StorageSection = ({ appDataRootHostPath }: { appDataRootHostPath: string }
 export const SystemInspectorContainer = () => {
   const { t } = useTranslation();
   const { appDataRootHostPath } = useAppContext();
-  // Native open-folder action: only meaningful inside the desktop app on the
-  // same machine as the data.
-  const canOpenAppDataFolder = Boolean(getTauriInvoke()) && Boolean(appDataRootHostPath);
   const { data, isLoading, refetch, isFetching, dataUpdatedAt } = useQuery({
     ...getFullInspectionOptions(),
     select: (payload) => payload as InspectionData,
@@ -607,7 +612,7 @@ export const SystemInspectorContainer = () => {
         </div>
       </div>
 
-      {canOpenAppDataFolder && appDataRootHostPath && <StorageSection appDataRootHostPath={appDataRootHostPath} />}
+      {appDataRootHostPath && <StorageSection appDataRootHostPath={appDataRootHostPath} />}
       {data.health.hostResources && <HostResourcesSection hostResources={data.health.hostResources} />}
       <SystemHealthSection health={data.health} />
       <ContainersSection containers={data.containers} />

@@ -721,14 +721,14 @@ describe('DockerComposeBuilder resource limits', () => {
   const build = (form: Parameters<DockerComposeBuilder['getDockerCompose']>[1], services = [service], defaults?: { cpu?: string; memory?: string }) =>
     builder.getDockerCompose(services, form, urn, subnet, 'example.com', 'ci.lan', undefined, undefined, undefined, defaults?.cpu, defaults?.memory);
 
-  it('applies default cpu and memory limits when the app defines none', async () => {
+  it('does not stamp auto-allocated defaults onto every service', async () => {
     const compose = await build({}, [service], { cpu: '4', memory: '4096M' });
     const parsed = yaml.parse(compose);
 
-    expect(parsed.services.nginx.deploy.resources.limits).toEqual({ cpus: '4', memory: '4096M' });
+    expect(parsed.services.nginx.deploy).toBeUndefined();
   });
 
-  it('prefers form limits over defaults', async () => {
+  it('applies user-set form limits when the app defines none', async () => {
     const compose = await build({ cpuLimit: '2', memoryLimit: '2048M' }, [service], { cpu: '4', memory: '4096M' });
     const parsed = yaml.parse(compose);
 
@@ -746,15 +746,15 @@ describe('DockerComposeBuilder resource limits', () => {
     expect(parsed.services.nginx.deploy.resources.limits).toEqual({ cpus: '0.5', memory: '256M' });
   });
 
-  it('fills only the missing limit when the app defines the other', async () => {
+  it('fills only the missing limit from the form, not from auto defaults', async () => {
     const cpuOnlyService: ServiceInput = {
       ...service,
       deploy: { resources: { limits: { cpus: '0.5' } } },
     };
-    const compose = await build({}, [cpuOnlyService], { cpu: '4', memory: '4096M' });
+    const compose = await build({ memoryLimit: '2048M' }, [cpuOnlyService], { cpu: '4', memory: '4096M' });
     const parsed = yaml.parse(compose);
 
-    expect(parsed.services.nginx.deploy.resources.limits).toEqual({ cpus: '0.5', memory: '4096M' });
+    expect(parsed.services.nginx.deploy.resources.limits).toEqual({ cpus: '0.5', memory: '2048M' });
   });
 
   it('adds no deploy section when there are no limits at all', async () => {

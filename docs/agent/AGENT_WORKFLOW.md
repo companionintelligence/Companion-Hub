@@ -1,6 +1,6 @@
-# Agent Workflow — CI-Hub
+# Agent workflow
 
-> **Purpose:** Standard session flow for feature work, bugfixes, and refactors in CI-Hub.
+> **Purpose:** Standard session flow for feature work, bug fixes, and refactoring in Hub.
 > **Scope:** All coding-agent sessions except marketplace QA flywheel (see FLYWHEEL.md).
 > **Tag in sessions:** `@docs/agent/AGENT_WORKFLOW.md`
 > **Queue:** [TODO.md](../../TODO.md)
@@ -14,9 +14,9 @@
 
 ### 1. Research
 
-- Read [AGENTS.md](../../AGENTS.md) router if this is a new session.
+- If this is a new session, read the [AGENTS.md](../../AGENTS.md) router.
 - Pick a task from [TODO.md](../../TODO.md) or accept an explicit user request.
-- Read the relevant [docs/system/](../system/) doc for the area you will touch.
+- Read the relevant [docs/system/](../system/) document for the area you plan to change.
 - Run `bin/agent-review --phase research --persona maintainability` for non-trivial changes.
 
 ### 2. Plan
@@ -61,7 +61,7 @@ cd packages/desktop/src-tauri && cargo test relevant_test
 
 ### 5. Review
 
-Cross-agent review at wrap-up — **different model than implementation**:
+At wrap-up, request a cross-agent review from a model other than the implementation model:
 
 ```bash
 bin/agent-review --phase wrap --persona security
@@ -95,7 +95,7 @@ See [END_OF_SHIFT.md](END_OF_SHIFT.md) for the full checklist.
 
 ---
 
-## Autonomous / night-shift mode
+## Autonomous and night-shift mode
 
 For unattended work:
 

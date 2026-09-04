@@ -6,23 +6,26 @@ import type { HardwareProfileResponse } from '../../helpers/ai-setup-types';
 
 const {
   fetchInferenceOnboardingProfile,
-  fetchSpeculativeInferenceStatus,
   fetchOllamaInstallStatus,
   fetchVllmInstallStatus,
+  fetchDsparkInstallStatus,
+  fetchLemonadeInstallStatus,
   rescanInferenceHardware,
 } = vi.hoisted(() => ({
   fetchInferenceOnboardingProfile: vi.fn(),
-  fetchSpeculativeInferenceStatus: vi.fn(),
   fetchOllamaInstallStatus: vi.fn(),
   fetchVllmInstallStatus: vi.fn(),
+  fetchDsparkInstallStatus: vi.fn(),
+  fetchLemonadeInstallStatus: vi.fn(),
   rescanInferenceHardware: vi.fn(),
 }));
 
 vi.mock('@/lib/inference/inference-api', () => ({
   fetchInferenceOnboardingProfile,
-  fetchSpeculativeInferenceStatus,
   fetchOllamaInstallStatus,
   fetchVllmInstallStatus,
+  fetchDsparkInstallStatus,
+  fetchLemonadeInstallStatus,
   rescanInferenceHardware,
 }));
 
@@ -171,7 +174,6 @@ const vllmReady = {
   displayEndpoint: 'http://host.docker.internal:8000/v1',
 };
 const vllmMissing = { ready: false, running: false, endpointUrl: 'http://host.docker.internal:8000' };
-const speculativeInferenceMissing = { ready: false, running: false, endpointUrl: 'http://host.docker.internal:8000' };
 
 // A model the Hub cannot pull — it only ever appears as installed while the host vLLM serves it.
 const vllmModel = {
@@ -217,12 +219,6 @@ let api: {
     endpointUrl: string;
     displayEndpoint?: string;
   };
-  speculativeInference: {
-    ready: boolean;
-    running: boolean;
-    endpointUrl: string;
-    displayEndpoint?: string;
-  };
   rescanOk: boolean;
 };
 
@@ -244,7 +240,6 @@ describe('AiSetupStep', () => {
       profileReject: false,
       ollama: ollamaReady,
       vllm: vllmMissing,
-      speculativeInference: speculativeInferenceMissing,
       rescanOk: true,
     };
 
@@ -255,7 +250,8 @@ describe('AiSetupStep', () => {
     });
     fetchOllamaInstallStatus.mockImplementation(() => Promise.resolve(api.ollama));
     fetchVllmInstallStatus.mockImplementation(() => Promise.resolve(api.vllm));
-    fetchSpeculativeInferenceStatus.mockImplementation(() => Promise.resolve(api.speculativeInference));
+    fetchDsparkInstallStatus.mockImplementation(() => Promise.resolve({ ready: false, running: false, endpointUrl: 'http://127.0.0.1:8080' }));
+    fetchLemonadeInstallStatus.mockImplementation(() => Promise.resolve({ ready: false, running: false, endpointUrl: 'http://127.0.0.1:13305' }));
     rescanInferenceHardware.mockImplementation(async () => {
       if (!api.rescanOk) throw new Error('HTTP 503');
     });
@@ -471,9 +467,78 @@ describe('AiSetupStep', () => {
 
   it('shows the inference backend selection card', async () => {
     renderStep();
-    await waitFor(() => expect(screen.getByTestId('backend-card-title')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByTestId('backend-selection-embedded')).toBeInTheDocument());
+    const inferenceSetup = screen.getByTestId('inference-setup-section');
+    expect(inferenceSetup).toHaveTextContent('Set up inference');
+    expect(inferenceSetup).toContainElement(screen.getByTestId('backend-selection-embedded'));
+    expect(inferenceSetup).toContainElement(screen.getByTestId('selected-backend-setup'));
+    expect(inferenceSetup).not.toHaveTextContent('Choose a backend, then make sure it is ready to run your models.');
+    expect(inferenceSetup).not.toHaveTextContent('Inference Backend');
+    expect(inferenceSetup).not.toHaveTextContent('The backend runs AI models locally on your hardware.');
     expect(screen.getByTestId('backend-option-ollama')).toBeInTheDocument();
     expect(screen.getByTestId('backend-option-vllm')).toBeInTheDocument();
+  });
+
+  it('puts speculative inference first, nests MTPLX beneath it, and hides Lemonade on macOS', async () => {
+    api.profile = {
+      ...highTierProfile,
+      hardware: {
+        ...highTierProfile.hardware,
+        gpu: { ...highTierProfile.hardware.gpu, vendor: 'apple', model: 'Apple M2 Max', unifiedMemory: true },
+        cpu: { ...highTierProfile.hardware.cpu, arch: 'arm64', model: 'Apple M2 Max' },
+        os: { platform: 'darwin', name: 'macOS', version: '15.6' },
+      },
+      backends: {
+        recommended: 'mtplx',
+        available: [
+          { type: 'ollama', running: true, healthy: true },
+          { type: 'vllm', running: false, healthy: false },
+          { type: 'lemonade', running: false, healthy: false },
+          { type: 'mtplx', running: false, healthy: false },
+          { type: 'dspark', running: false, healthy: false },
+        ],
+      },
+    };
+
+    renderStep();
+    await waitFor(() => expect(screen.getByTestId('backend-option-dspark')).toBeInTheDocument());
+
+    const optionIds = Array.from(screen.getByTestId('backend-options').querySelectorAll('label')).map((label) => label.dataset.testid);
+    expect(optionIds).toEqual(['backend-option-dspark', 'backend-option-mtplx', 'backend-option-ollama', 'backend-option-vllm']);
+    expect(screen.getByTestId('backend-option-dspark-group')).toContainElement(screen.getByTestId('backend-option-mtplx'));
+    expect(screen.getByTestId('backend-option-dspark-group')).toHaveTextContent('Speculative inference');
+    expect(screen.getByTestId('backend-option-dspark')).toHaveTextContent('mlx-dspark');
+    const dsparkDescription = screen.getByTestId('backend-option-dspark-group').querySelector('p');
+    expect(dsparkDescription).not.toBeNull();
+    expect(dsparkDescription).toHaveTextContent('Speculative decoding on Apple Silicon, 2x - 4x Speed boost');
+    expect(screen.getByTestId('backend-option-dspark')).not.toHaveTextContent('Speculative decoding on Apple Silicon, 2x - 4x Speed boost');
+    expect(screen.queryByTestId('backend-option-lemonade')).not.toBeInTheDocument();
+    expect(screen.getByTestId('backend-option-dspark').querySelector('input') as HTMLInputElement).toBeChecked();
+    expect(screen.getByTestId('backend-option-dspark')).toHaveTextContent('Recommended');
+    expect(screen.getByTestId('backend-option-mtplx')).not.toHaveTextContent('ONBOARDING_BACKEND_MTPLX_DESC');
+  });
+
+  it('shows only inference memory beside capabilities on recommended model cards', async () => {
+    const sourceModel = highTierProfile.recommendedModels[0];
+    if (!sourceModel) throw new Error('Test fixture is missing a recommended model');
+    const model = {
+      ...sourceModel,
+      runtime: { ...sourceModel.runtime, memoryFootprintMb: 23552 },
+      requirements: { diskMb: 24064 },
+    };
+    api.profile = {
+      ...highTierProfile,
+      recommendedModels: [model] as any,
+      availableModels: [model] as any,
+    };
+
+    renderStep();
+    await waitFor(() => expect(screen.getByTestId('model-row-phi-4-mini')).toBeInTheDocument());
+
+    const modelCard = screen.getByTestId('model-row-phi-4-mini');
+    expect(modelCard).toHaveTextContent('23.0 GB');
+    expect(modelCard).not.toHaveTextContent('23.5 GB');
+    expect(modelCard.querySelector('[data-testid="model-meta-inline"]')).toBeInTheDocument();
   });
 
   it('does not block Continue on vLLM path when Ollama is down', async () => {
@@ -544,7 +609,7 @@ describe('AiSetupStep', () => {
     await user.click(screen.getByTestId('vllm-recheck-btn'));
 
     // Still on vLLM — the refetch must happen, and must not snap back to the recommended backend.
-    await waitFor(() => expect(fetchInferenceOnboardingProfile).toHaveBeenCalledWith('vllm', '', ''));
+    await waitFor(() => expect(fetchInferenceOnboardingProfile).toHaveBeenCalledWith('vllm', '', '', '', ''));
     expect(screen.getByText('vLLM detected')).toBeInTheDocument();
   });
 
@@ -771,6 +836,7 @@ describe('AiSetupStep', () => {
     api.profile = insufficientProfile;
     renderStep();
     await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
+    await userEvent.setup().click(screen.getByTestId('step-section-toggle-7'));
     expect(screen.getByTestId('cloud-inputs')).toBeInTheDocument();
     expect(screen.getByText(/can't run local AI models/)).toBeInTheDocument();
   });
@@ -1160,7 +1226,8 @@ describe('AiSetupStep', () => {
     renderStep();
     await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
 
-    // Advanced is now a numbered step with the Cloud API Keys shown inline (no accordion).
+    expect(screen.getByTestId('step-section-toggle-7')).toHaveAttribute('aria-expanded', 'false');
+    await user.click(screen.getByTestId('step-section-toggle-7'));
     await user.type(screen.getByTestId('cloud-key-openai'), 'invalid-key');
     expect(screen.getByTestId('cloud-error-openai')).toHaveTextContent('should start with "sk-"');
   });

@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
-import { existsSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, rmSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path, { join } from 'node:path';
 import { stdin as input, stdout as output } from 'node:process';
@@ -8,6 +8,7 @@ import { createInterface } from 'node:readline/promises';
 import { isHostPortBindConflict, runDockerComposeUpOnce } from './compose-up';
 import { parseEnvFile, upsertEnvVar } from './env-file';
 import { CANONICAL_DATA_DIR_NAME, resolveProdApplianceContext, resolveRootFolderHost } from './lib/paths';
+import { resolvePostgresPassword, seedApplianceInstall } from './lib/seed-appliance';
 import {
   type DeviceIdResponse,
   type RegistrationStatusResponse,
@@ -27,6 +28,7 @@ import {
 import { connectAgent, normalizeMemoryUrl, parseConnectArgs } from './lib/connect-agent';
 import { healHubPortBindConflict, healHubPortsBeforeStartup } from './heal-hub-ports';
 import { dockerBindMountPath } from './heal-hub-bind-mounts';
+import { resolveAndPinHubDockerEngine, splitBrainConflict, enumerateDockerEngineCandidates, probeReachableEngines } from './lib/docker-engine';
 import { getDeviceId as resolveLocalDeviceId } from './get-device-id';
 import { isRelatedVolume, parseNames, runHubCleanup } from './hub-cleanup-lib';
 import { initDockerConfig } from './init-docker-config';
@@ -66,6 +68,8 @@ import {
   ensureLocalDevRuntimeEnv,
   getComposeFiles,
   getEnvFileOrExit,
+  hasCloudflareTunnelToken,
+  hasCloudflareTunnelTokenAtDataDir,
   mergeComposeProfilesFromEnvFile,
   packageVersion,
   renderConfigLines,
@@ -268,31 +272,99 @@ function composeArgsForContext(ctx: HubContext): string[] {
   return buildComposeBaseArgs(ctx.envFile, ctx.composeFiles);
 }
 
+/**
+ * Resolve/pin the Hub Docker engine for appliance installs so CLI compose matches
+ * the desktop app (`state/docker-engine.json`).
+ */
+function applyDockerEnginePin(overrides: Record<string, string | undefined>, dataDir: string): Record<string, string | undefined> {
+  try {
+    const engine = resolveAndPinHubDockerEngine({ dataDir });
+    const reachable = probeReachableEngines(enumerateDockerEngineCandidates());
+    const conflict = splitBrainConflict(engine, reachable);
+    if (conflict) {
+      printMessageBox('Docker engine conflict', [conflict], 'red');
+      process.exit(1);
+    }
+    console.log(colorize(`→ Docker engine: ${engine.kind} at ${engine.dockerHost} (${engine.reason})`, 'dim'));
+    const next = { ...overrides, DOCKER_HOST: engine.dockerHost };
+    delete next.DOCKER_CONTEXT;
+    if (engine.pathStyle) {
+      next.CI_HUB_DOCKER_PATH_STYLE = engine.pathStyle;
+    }
+    return next;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    printMessageBox('Docker engine selection failed', [message], 'red');
+    process.exit(1);
+  }
+}
+
 /** Env overrides for a context; pins ROOT_FOLDER_HOST to the data dir in appliance mode. */
 function envOverridesForContext(ctx: HubContext): Record<string, string | undefined> {
-  const overrides = buildEnvOverrides(ctx.envFile);
-  if (ctx.appliance && ctx.dataDir) overrides.ROOT_FOLDER_HOST = ctx.dataDir;
+  let overrides = buildEnvOverrides(ctx.envFile);
+  if (ctx.appliance && ctx.dataDir) {
+    overrides.ROOT_FOLDER_HOST = ctx.dataDir;
+    overrides = applyDockerEnginePin(overrides, ctx.dataDir);
+  }
   return overrides;
+}
+
+function noteApplianceTarget(dataDir: string): void {
+  if (applianceNoticeShown) return;
+  applianceNoticeShown = true;
+  printMessageBox('Targeting prod install', ['No CI-Hub checkout here \u2014 operating on the canonical prod data dir:', dim(dataDir)], 'cyan');
+}
+
+/**
+ * After a reset (or first CLI start) there is no seeded `.env` + compose. Prompt for a
+ * password and write a fresh appliance install instead of sending the user to the desktop app.
+ */
+async function ensureApplianceInstall(): Promise<void> {
+  const ctx = resolveProdApplianceContext();
+  if (ctx.exists) {
+    noteApplianceTarget(ctx.dataDir);
+    return;
+  }
+
+  printMessageBox(
+    'No prod Hub install found',
+    [
+      `Creating a fresh install at ${ctx.dataDir}`,
+      'Enter a password for the Hub database (POSTGRES_PASSWORD).',
+      'Set POSTGRES_PASSWORD in the environment to skip the prompt.',
+    ],
+    'yellow',
+  );
+
+  try {
+    const password = await resolvePostgresPassword({
+      env: process.env,
+      isTty: Boolean(process.stdin.isTTY && process.stdout.isTTY),
+    });
+    const seeded = seedApplianceInstall({ dataDir: ctx.dataDir, postgresPassword: password });
+    printMessageBox(
+      'Fresh Hub install created',
+      [`Data dir: ${seeded.dataDir}`, `Image: ${seeded.hubImage}`, `Next: ${BASE_COMMAND} up continues automatically.`],
+      'green',
+    );
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    printMessageBox('Could not create Hub install', [message, `Expected prod data at: ${ctx.dataDir}`], 'red');
+    process.exit(2);
+  }
 }
 
 /**
  * Gate for lifecycle commands. Allows a CI-Hub checkout (repo mode) or a canonical prod install
  * (appliance mode). When the prod data dir has no seeded `.env` + compose:
- *  - `require-seed` (up/setup/register): error and exit, directing the user to launch the desktop app.
+ *  - `require-seed` (up/setup): seed interactively (password prompt) then continue.
  *  - `allow-missing` (down/reset/clean): proceed anyway so broken/partial installs can still be torn down.
  */
 function requireRepoOrApplianceContext(action: string, gate: 'require-seed' | 'allow-missing' = 'require-seed'): void {
   if (isHubRepoRoot()) return;
   const ctx = resolveProdApplianceContext();
   if (ctx.exists) {
-    if (!applianceNoticeShown) {
-      applianceNoticeShown = true;
-      printMessageBox(
-        'Targeting prod install',
-        ['No CI-Hub checkout here \u2014 operating on the canonical prod data dir:', dim(ctx.dataDir)],
-        'cyan',
-      );
-    }
+    noteApplianceTarget(ctx.dataDir);
     return;
   }
   if (gate === 'allow-missing') {
@@ -309,9 +381,8 @@ function requireRepoOrApplianceContext(action: string, gate: 'require-seed' | 'a
   printMessageBox(
     'No prod Hub install found',
     [
-      `${action} needs either a CI-Hub checkout or an installed CI Hub.`,
-      `Expected prod data at: ${ctx.dataDir}`,
-      'Launch the CI Hub desktop app once to provision it, then retry.',
+      `${action} needs a seeded Hub at ${ctx.dataDir}.`,
+      `Run \`${BASE_COMMAND} up prod\` in a terminal to create one (it will prompt for a password).`,
     ],
     'red',
   );
@@ -403,7 +474,7 @@ async function runDockerComposeUp(
 
 export async function startHub(mode: StartMode, env: HubEnv) {
   if (isApplianceMode()) {
-    requireRepoOrApplianceContext('cihub up', 'require-seed');
+    await ensureApplianceInstall();
     await startApplianceHub(resolveHubContext(env), mode === 'attached' ? 'attached' : 'detached');
     return;
   }
@@ -466,7 +537,12 @@ async function startApplianceHub(ctx: HubContext, detachedMode: 'attached' | 'de
   const dataDir = ctx.dataDir as string;
   const envOverrides = envOverridesForContext(ctx);
 
-  await runScript('scripts/init-hub-data-dirs.ts', () => initHubDataDirs(), { ENV_FILE: ctx.envFile, ROOT_FOLDER_HOST: dataDir }, dataDir);
+  await runScript(
+    'scripts/init-hub-data-dirs.ts',
+    () => initHubDataDirs(),
+    { ENV_FILE: ctx.envFile, ROOT_FOLDER_HOST: dataDir, ...envOverrides },
+    dataDir,
+  );
   await runScript('scripts/init-gpu-runtime.ts', () => initGpuRuntime(), envOverrides);
   await runScript('scripts/init-host-probe.ts', () => initHostProbe(), { ENV_FILE: ctx.envFile, ...envOverrides }, dataDir);
 
@@ -495,13 +571,9 @@ async function startApplianceHub(ctx: HubContext, detachedMode: 'attached' | 'de
 
 export async function setupHub(env: HubEnv) {
   if (isApplianceMode()) {
-    requireRepoOrApplianceContext('cihub setup', 'require-seed');
+    await ensureApplianceInstall();
     const ctx = resolveHubContext(env);
-    printMessageBox(
-      'Setup managed by CI Hub',
-      ['The CI Hub desktop app provisions host assets for prod installs.', `Data dir: ${ctx.dataDir}`, `Next: ${BASE_COMMAND} up`],
-      'cyan',
-    );
+    printMessageBox('Setup complete', [`Prod install is ready at ${ctx.dataDir}.`, `Next: ${BASE_COMMAND} up`], 'cyan');
     return;
   }
   requireRepoRoot('cihub setup');
@@ -1020,15 +1092,13 @@ export async function doctorHub(env: HubEnv, options?: { repairNetworks?: boolea
   printMessageBox(`Hub doctor  [${ctx.env}]`, lines, tone);
 }
 
-/** Tunnel token lives at `<dataDir>/tunnel/token` in appliance mode, `<root>/../tunnel/token` in a checkout. */
+/**
+ * Tunnel token lives at `<ROOT>/../tunnel/token` (compose bind). Also accepts the
+ * legacy nested `<dataDir>/tunnel/token` so doctor matches profile detection.
+ */
 function doctorHasTunnelToken(ctx: HubContext): boolean {
   if (ctx.appliance && ctx.dataDir) {
-    const tokenPath = path.join(ctx.dataDir, 'tunnel', 'token');
-    try {
-      return existsSync(tokenPath) && statSync(tokenPath).isFile() && statSync(tokenPath).size > 0;
-    } catch {
-      return false;
-    }
+    return hasCloudflareTunnelTokenAtDataDir(ctx.dataDir);
   }
   return hasCloudflareTunnelToken(ctx.envFile);
 }

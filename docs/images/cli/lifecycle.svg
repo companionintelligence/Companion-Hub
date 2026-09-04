@@ -22,7 +22,7 @@
     <text x="189" y="125" textLength="90" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">.env.local</text>
     <text x="36" y="146" textLength="36" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9" font-weight="bold">root</text>
     <text x="81" y="146" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9" font-weight="bold">folder</text>
-    <text x="189" y="146" textLength="549" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">/Users/bennett/Development/companion/ci-core/ci-hub/.internal</text>
+    <text x="189" y="146" textLength="549" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">/home/user/ci-hub/.internal</text>
     <text x="36" y="167" textLength="45" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9" font-weight="bold">cloud</text>
     <text x="90" y="167" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9" font-weight="bold">url</text>
     <text x="189" y="167" textLength="333" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">https://hub.companionintelligence.com</text>

@@ -168,10 +168,10 @@ export function getAppStatusPresentation(
     };
   }
 
-  if (status === 'stopped') {
+  if (status === 'stopped' || status === 'missing') {
     return {
       labelKey: 'APP_STATUS_STOPPED',
-      fallbackLabel: friendlyStatusLabels[status] ?? humanizeStatus(status),
+      fallbackLabel: friendlyStatusLabels.stopped ?? 'Stopped',
       tone: 'danger',
       animate: false,
       detail: runtimeHealth?.reason ?? null,
@@ -207,14 +207,12 @@ export const AppStatus: React.FC<{
 }> = ({ status, lite, runtimeHealth, publicUrl, variant = 'inline' }) => {
   const { t } = useTranslation();
 
-  if (status === 'missing') return null;
-
   const presentation = getAppStatusPresentation(status, runtimeHealth, publicUrl);
   const formattedStatus = t(presentation.labelKey, presentation.fallbackLabel);
   const dotClasses = cn(
     'inline-block h-2 w-2 rounded-full',
-    presentation.tone === 'success' && 'bg-green-500',
-    presentation.tone === 'warning' && 'bg-amber-400',
+    presentation.tone === 'success' && 'bg-success',
+    presentation.tone === 'warning' && 'bg-warning',
     presentation.tone === 'danger' && 'bg-red-500',
     presentation.tone === 'neutral' && 'bg-slate-400',
     presentation.animate && 'animate-pulse',
@@ -230,8 +228,8 @@ export const AppStatus: React.FC<{
         aria-live="polite"
         className={cn(
           'inline-flex min-h-12 items-center gap-3 rounded-md border px-4 py-2 shadow-sm',
-          presentation.tone === 'success' && 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-500',
-          presentation.tone === 'warning' && 'border-amber-500/30 bg-amber-500/10 text-amber-500',
+          presentation.tone === 'success' && 'border-success/30 bg-success/10 text-success',
+          presentation.tone === 'warning' && 'border-warning/30 bg-warning/10 text-warning',
           presentation.tone === 'danger' && 'border-red-500/30 bg-red-500/10 text-red-500',
           presentation.tone === 'neutral' && 'border-border/70 bg-muted/30 text-muted-foreground',
         )}

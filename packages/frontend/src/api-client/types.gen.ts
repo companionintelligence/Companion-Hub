@@ -74,12 +74,14 @@ export type AppContextDto = {
         ciHubOrganizationLabel?: string;
         ciHubDeviceSlug?: string;
         ciHubHubSubdomain?: string;
-        inferenceBackend?: 'ollama' | 'vllm' | 'lemonade' | 'lucebox';
+        inferenceBackend?: 'ollama' | 'vllm' | 'lemonade' | 'mtplx' | 'dspark' | 'lucebox';
         inferenceModel?: string;
         inferenceEmbeddingModel?: string;
         inferenceVisionModel?: string;
         inferenceVllmApiKey?: string;
         inferenceVllmUrl?: string;
+        inferenceMtplxUrl?: string;
+        inferenceDsparkUrl?: string;
         inferenceCloudProviders?: Array<{
             provider: 'openai' | 'anthropic' | 'google' | 'github-copilot';
             apiKey?: string;
@@ -154,12 +156,14 @@ export type UserSettingsBody = {
     ciHubOrganizationLabel?: string;
     ciHubDeviceSlug?: string;
     ciHubHubSubdomain?: string;
-    inferenceBackend?: 'ollama' | 'vllm' | 'lemonade' | 'lucebox';
+    inferenceBackend?: 'ollama' | 'vllm' | 'lemonade' | 'mtplx' | 'dspark' | 'lucebox';
     inferenceModel?: string;
     inferenceEmbeddingModel?: string;
     inferenceVisionModel?: string;
     inferenceVllmApiKey?: string;
     inferenceVllmUrl?: string;
+    inferenceMtplxUrl?: string;
+    inferenceDsparkUrl?: string;
     inferenceCloudProviders?: Array<{
         provider: 'openai' | 'anthropic' | 'google' | 'github-copilot';
         apiKey?: string;
@@ -220,6 +224,14 @@ export type SystemResourcesDto = {
     tuning: {
         [key: string]: unknown;
     };
+};
+
+export type HostTelemetryHistoryDto = {
+    [key: string]: unknown;
+};
+
+export type HostEventLogDto = {
+    [key: string]: unknown;
 };
 
 export type FactoryResetDto = {
@@ -362,6 +374,9 @@ export type MyAppsDto = {
             localSubdomain?: string;
             exposureMode?: 'local' | 'cloudflare' | 'tailscale';
             publicDomain?: string;
+            customDomain?: string;
+            customDomainIntent?: string;
+            customDomainTakeover?: boolean;
             pendingRestart: boolean;
             ignoredVersion: number;
         };
@@ -485,7 +500,7 @@ export type MyAppsDto = {
                     header?: string;
                     api_key_name?: string;
                     api_key_in?: 'header' | 'query';
-                    [key: string]: unknown | 'bearer' | 'basic' | 'api_key' | 'none' | string | 'header' | 'query' | undefined;
+                    [key: string]: unknown;
                 };
                 env: Array<{
                     key: string;
@@ -493,60 +508,25 @@ export type MyAppsDto = {
                     hint?: string;
                     required: boolean;
                     secret: boolean;
-                    [key: string]: unknown | string | boolean | undefined;
+                    [key: string]: unknown;
                 }>;
                 requires?: {
                     host_software?: Array<string>;
                     notes?: string;
-                    [key: string]: unknown | Array<string> | string | undefined;
+                    [key: string]: unknown;
                 };
                 tags: Array<string>;
                 manifest?: {
                     tools: Array<{
                         name: string;
                         description: string;
-                        [key: string]: unknown | string;
+                        [key: string]: unknown;
                     }>;
                     resources: Array<unknown>;
                     prompts: Array<unknown>;
-                    [key: string]: unknown | Array<{
-                        name: string;
-                        description: string;
-                        [key: string]: unknown | string;
-                    }> | Array<unknown> | Array<unknown>;
+                    [key: string]: unknown;
                 };
-                [key: string]: unknown | 'stdio' | 'http' | 'container_exec' | 'host_docker' | string | Array<string> | {
-                    type: 'bearer' | 'basic' | 'api_key' | 'none';
-                    token_env: string;
-                    header?: string;
-                    api_key_name?: string;
-                    api_key_in?: 'header' | 'query';
-                    [key: string]: unknown | 'bearer' | 'basic' | 'api_key' | 'none' | string | 'header' | 'query' | undefined;
-                } | Array<{
-                    key: string;
-                    label?: string;
-                    hint?: string;
-                    required: boolean;
-                    secret: boolean;
-                    [key: string]: unknown | string | boolean | undefined;
-                }> | {
-                    host_software?: Array<string>;
-                    notes?: string;
-                    [key: string]: unknown | Array<string> | string | undefined;
-                } | Array<string> | {
-                    tools: Array<{
-                        name: string;
-                        description: string;
-                        [key: string]: unknown | string;
-                    }>;
-                    resources: Array<unknown>;
-                    prompts: Array<unknown>;
-                    [key: string]: unknown | Array<{
-                        name: string;
-                        description: string;
-                        [key: string]: unknown | string;
-                    }> | Array<unknown> | Array<unknown>;
-                } | undefined;
+                [key: string]: unknown;
             };
             privacy?: {
                 declared_by: string;
@@ -642,6 +622,7 @@ export type GuestAppsDto = {
             localSubdomain?: string;
             exposureMode?: 'local' | 'cloudflare' | 'tailscale';
             publicDomain?: string;
+            customDomain?: string;
             pendingRestart: boolean;
             ignoredVersion: number;
         };
@@ -765,7 +746,7 @@ export type GuestAppsDto = {
                     header?: string;
                     api_key_name?: string;
                     api_key_in?: 'header' | 'query';
-                    [key: string]: unknown | 'bearer' | 'basic' | 'api_key' | 'none' | string | 'header' | 'query' | undefined;
+                    [key: string]: unknown;
                 };
                 env: Array<{
                     key: string;
@@ -773,60 +754,25 @@ export type GuestAppsDto = {
                     hint?: string;
                     required: boolean;
                     secret: boolean;
-                    [key: string]: unknown | string | boolean | undefined;
+                    [key: string]: unknown;
                 }>;
                 requires?: {
                     host_software?: Array<string>;
                     notes?: string;
-                    [key: string]: unknown | Array<string> | string | undefined;
+                    [key: string]: unknown;
                 };
                 tags: Array<string>;
                 manifest?: {
                     tools: Array<{
                         name: string;
                         description: string;
-                        [key: string]: unknown | string;
+                        [key: string]: unknown;
                     }>;
                     resources: Array<unknown>;
                     prompts: Array<unknown>;
-                    [key: string]: unknown | Array<{
-                        name: string;
-                        description: string;
-                        [key: string]: unknown | string;
-                    }> | Array<unknown> | Array<unknown>;
+                    [key: string]: unknown;
                 };
-                [key: string]: unknown | 'stdio' | 'http' | 'container_exec' | 'host_docker' | string | Array<string> | {
-                    type: 'bearer' | 'basic' | 'api_key' | 'none';
-                    token_env: string;
-                    header?: string;
-                    api_key_name?: string;
-                    api_key_in?: 'header' | 'query';
-                    [key: string]: unknown | 'bearer' | 'basic' | 'api_key' | 'none' | string | 'header' | 'query' | undefined;
-                } | Array<{
-                    key: string;
-                    label?: string;
-                    hint?: string;
-                    required: boolean;
-                    secret: boolean;
-                    [key: string]: unknown | string | boolean | undefined;
-                }> | {
-                    host_software?: Array<string>;
-                    notes?: string;
-                    [key: string]: unknown | Array<string> | string | undefined;
-                } | Array<string> | {
-                    tools: Array<{
-                        name: string;
-                        description: string;
-                        [key: string]: unknown | string;
-                    }>;
-                    resources: Array<unknown>;
-                    prompts: Array<unknown>;
-                    [key: string]: unknown | Array<{
-                        name: string;
-                        description: string;
-                        [key: string]: unknown | string;
-                    }> | Array<unknown> | Array<unknown>;
-                } | undefined;
+                [key: string]: unknown;
             };
             privacy?: {
                 declared_by: string;
@@ -948,6 +894,9 @@ export type GetAppDto = {
         localSubdomain?: string;
         exposureMode?: 'local' | 'cloudflare' | 'tailscale';
         publicDomain?: string;
+        customDomain?: string;
+        customDomainIntent?: string;
+        customDomainTakeover?: boolean;
         pendingRestart: boolean;
         ignoredVersion: number;
     };
@@ -1071,7 +1020,7 @@ export type GetAppDto = {
                 header?: string;
                 api_key_name?: string;
                 api_key_in?: 'header' | 'query';
-                [key: string]: unknown | 'bearer' | 'basic' | 'api_key' | 'none' | string | 'header' | 'query' | undefined;
+                [key: string]: unknown;
             };
             env: Array<{
                 key: string;
@@ -1079,60 +1028,25 @@ export type GetAppDto = {
                 hint?: string;
                 required: boolean;
                 secret: boolean;
-                [key: string]: unknown | string | boolean | undefined;
+                [key: string]: unknown;
             }>;
             requires?: {
                 host_software?: Array<string>;
                 notes?: string;
-                [key: string]: unknown | Array<string> | string | undefined;
+                [key: string]: unknown;
             };
             tags: Array<string>;
             manifest?: {
                 tools: Array<{
                     name: string;
                     description: string;
-                    [key: string]: unknown | string;
+                    [key: string]: unknown;
                 }>;
                 resources: Array<unknown>;
                 prompts: Array<unknown>;
-                [key: string]: unknown | Array<{
-                    name: string;
-                    description: string;
-                    [key: string]: unknown | string;
-                }> | Array<unknown> | Array<unknown>;
+                [key: string]: unknown;
             };
-            [key: string]: unknown | 'stdio' | 'http' | 'container_exec' | 'host_docker' | string | Array<string> | {
-                type: 'bearer' | 'basic' | 'api_key' | 'none';
-                token_env: string;
-                header?: string;
-                api_key_name?: string;
-                api_key_in?: 'header' | 'query';
-                [key: string]: unknown | 'bearer' | 'basic' | 'api_key' | 'none' | string | 'header' | 'query' | undefined;
-            } | Array<{
-                key: string;
-                label?: string;
-                hint?: string;
-                required: boolean;
-                secret: boolean;
-                [key: string]: unknown | string | boolean | undefined;
-            }> | {
-                host_software?: Array<string>;
-                notes?: string;
-                [key: string]: unknown | Array<string> | string | undefined;
-            } | Array<string> | {
-                tools: Array<{
-                    name: string;
-                    description: string;
-                    [key: string]: unknown | string;
-                }>;
-                resources: Array<unknown>;
-                prompts: Array<unknown>;
-                [key: string]: unknown | Array<{
-                    name: string;
-                    description: string;
-                    [key: string]: unknown | string;
-                }> | Array<unknown> | Array<unknown>;
-            } | undefined;
+            [key: string]: unknown;
         };
         privacy?: {
             declared_by: string;
@@ -1215,6 +1129,18 @@ export type GetAppDto = {
         bridgeWarning?: string;
         connected: boolean;
     };
+};
+
+export type AppDataListingDto = {
+    hostPath: string;
+    rootExists: boolean;
+    truncated: boolean;
+    entries: Array<{
+        name: string;
+        path: string;
+        kind: 'file' | 'directory';
+        sizeBytes: number;
+    }>;
 };
 
 export type GetComposeDiffDto = {
@@ -1312,12 +1238,14 @@ export type UpdateAppStoreDto = {
 };
 
 export type UpdateInferencePreferencesBody = {
-    backend: 'ollama' | 'vllm' | 'lemonade' | 'lucebox';
+    backend: 'ollama' | 'vllm' | 'lemonade' | 'mtplx' | 'dspark' | 'lucebox';
     model?: string;
     embeddingModel?: string;
     visionModel?: string;
     vllmApiKey?: string;
     vllmUrl?: string;
+    mtplxUrl?: string;
+    dsparkUrl?: string;
 };
 
 export type UpdateRocmInstallStateBody = {
@@ -1345,13 +1273,15 @@ export type AppFormBody = {
     enableAuth?: boolean;
     localSubdomain?: string;
     publicDomain?: string;
+    customDomain?: string;
+    customDomainTakeover?: boolean;
     maxBackups?: number;
     cpuLimit?: string;
     memoryLimit?: string;
     skipEnv?: boolean;
     skipPull?: boolean;
     skipRun?: boolean;
-    [key: string]: unknown | number | boolean | 'local' | 'cloudflare' | 'tailscale' | string | string | string | number | string | string | undefined;
+    [key: string]: unknown;
 };
 
 export type LifecycleRequestDto = {
@@ -1439,6 +1369,10 @@ export type EditLinkBodyDto = {
     description?: string;
     iconUrl?: string | '';
     isVisibleOnGuestDashboard?: boolean;
+};
+
+export type PublicWebRepairBody = {
+    appUrns?: Array<string>;
 };
 
 export type GetUserConfigDto = {
@@ -2004,12 +1938,14 @@ export type StreamHubLogsQueryDto = {
 };
 
 export type OnboardingProfileQueryDto = {
-    backend?: 'ollama' | 'vllm' | 'lemonade' | 'lucebox';
+    backend?: 'ollama' | 'vllm' | 'lemonade' | 'mtplx' | 'dspark' | 'lucebox';
     vllmUrl?: string;
+    mtplxUrl?: string;
+    dsparkUrl?: string;
 };
 
 export type RuntimeModelsQueryDto = {
-    backend: 'ollama' | 'vllm' | 'lemonade' | 'lucebox';
+    backend: 'ollama' | 'vllm' | 'lemonade' | 'mtplx' | 'dspark' | 'lucebox';
 };
 
 export type MetadataDto = {
@@ -2077,6 +2013,19 @@ export type AvailableDomainsResponseDto = {
         domain: string;
         isDefault: boolean;
         scope?: string;
+    }>;
+};
+
+export type AvailableCustomDomainsResponseDto = {
+    supported: boolean;
+    domains: Array<{
+        id: string;
+        domain: string;
+        state: 'live' | 'parked' | 'pending' | 'securing' | 'drifted' | 'failed' | 'unknown';
+        bindable: boolean;
+        targetHostname: string;
+        boundAppSlug: string;
+        boundElsewhere: boolean;
     }>;
 };
 
@@ -2557,6 +2506,19 @@ export type GetDomainsResponses = {
 
 export type GetDomainsResponse = GetDomainsResponses[keyof GetDomainsResponses];
 
+export type GetCustomDomainsData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/cloudflare/custom-domains';
+};
+
+export type GetCustomDomainsResponses = {
+    default: AvailableCustomDomainsResponseDto;
+};
+
+export type GetCustomDomainsResponse = GetCustomDomainsResponses[keyof GetCustomDomainsResponses];
+
 export type GetStatus2Data = {
     body?: never;
     path?: never;
@@ -2661,6 +2623,32 @@ export type SystemResourcesResponses = {
 };
 
 export type SystemResourcesResponse = SystemResourcesResponses[keyof SystemResourcesResponses];
+
+export type HostTelemetryHistoryData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/system/telemetry';
+};
+
+export type HostTelemetryHistoryResponses = {
+    default: HostTelemetryHistoryDto;
+};
+
+export type HostTelemetryHistoryResponse = HostTelemetryHistoryResponses[keyof HostTelemetryHistoryResponses];
+
+export type HostEventLogData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/system/events';
+};
+
+export type HostEventLogResponses = {
+    default: HostEventLogDto;
+};
+
+export type HostEventLogResponse = HostEventLogResponses[keyof HostEventLogResponses];
 
 export type DownloadHubLogsData = {
     body?: never;
@@ -3261,6 +3249,21 @@ export type GetAppResponses = {
 
 export type GetAppResponse = GetAppResponses[keyof GetAppResponses];
 
+export type GetAppDataListingData = {
+    body?: never;
+    path: {
+        urn: string;
+    };
+    query?: never;
+    url: '/api/apps/{urn}/data-files';
+};
+
+export type GetAppDataListingResponses = {
+    default: AppDataListingDto;
+};
+
+export type GetAppDataListingResponse = GetAppDataListingResponses[keyof GetAppDataListingResponses];
+
 export type GetAppComposeDiffData = {
     body?: never;
     path: {
@@ -3562,7 +3565,7 @@ export type GetRuntimeModelsData = {
     body?: never;
     path?: never;
     query: {
-        backend: 'ollama' | 'vllm' | 'lemonade' | 'lucebox';
+        backend: 'ollama' | 'vllm' | 'lemonade' | 'mtplx' | 'dspark' | 'lucebox';
     };
     url: '/api/inference/models/runtime';
 };
@@ -3757,8 +3760,10 @@ export type GetOnboardingProfileData = {
     };
     path?: never;
     query?: {
-        backend?: 'ollama' | 'vllm' | 'lemonade' | 'lucebox';
+        backend?: 'ollama' | 'vllm' | 'lemonade' | 'mtplx' | 'dspark' | 'lucebox';
         vllmUrl?: string;
+        mtplxUrl?: string;
+        dsparkUrl?: string;
     };
     url: '/api/inference/onboarding-profile';
 };
@@ -3778,6 +3783,17 @@ export type GetOllamaStatusResponses = {
     200: unknown;
 };
 
+export type GetLemonadeStatusData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/inference/lemonade/status';
+};
+
+export type GetLemonadeStatusResponses = {
+    200: unknown;
+};
+
 export type GetVllmStatusData = {
     body?: never;
     headers?: {
@@ -3794,6 +3810,32 @@ export type GetVllmStatusData = {
 };
 
 export type GetVllmStatusResponses = {
+    200: unknown;
+};
+
+export type GetDsparkStatusData = {
+    body?: never;
+    path?: never;
+    query?: {
+        url?: string;
+    };
+    url: '/api/inference/dspark/status';
+};
+
+export type GetDsparkStatusResponses = {
+    200: unknown;
+};
+
+export type GetMtplxStatusData = {
+    body?: never;
+    path?: never;
+    query?: {
+        url?: string;
+    };
+    url: '/api/inference/mtplx/status';
+};
+
+export type GetMtplxStatusResponses = {
     200: unknown;
 };
 
@@ -4500,19 +4542,19 @@ export type CheckErrors = {
         info?: {
             [key: string]: {
                 status: string;
-                [key: string]: unknown | string;
+                [key: string]: unknown;
             };
         };
         error?: {
             [key: string]: {
                 status: string;
-                [key: string]: unknown | string;
+                [key: string]: unknown;
             };
         };
         details?: {
             [key: string]: {
                 status: string;
-                [key: string]: unknown | string;
+                [key: string]: unknown;
             };
         };
     };
@@ -4529,19 +4571,19 @@ export type CheckResponses = {
         info?: {
             [key: string]: {
                 status: string;
-                [key: string]: unknown | string;
+                [key: string]: unknown;
             };
         };
         error?: {
             [key: string]: {
                 status: string;
-                [key: string]: unknown | string;
+                [key: string]: unknown;
             };
         };
         details?: {
             [key: string]: {
                 status: string;
-                [key: string]: unknown | string;
+                [key: string]: unknown;
             };
         };
     };
@@ -4576,7 +4618,7 @@ export type GetDiagnostics2Responses = {
 export type GetDiagnostics2Response = GetDiagnostics2Responses[keyof GetDiagnostics2Responses];
 
 export type RepairData = {
-    body?: never;
+    body?: PublicWebRepairBody;
     path?: never;
     query?: never;
     url: '/api/public-web/repair';
@@ -4791,6 +4833,17 @@ export type GetHostListenerTokenData = {
 
 export type GetHostListenerTokenResponses = {
     200: unknown;
+};
+
+export type WakeData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/agent-notify/wake';
+};
+
+export type WakeResponses = {
+    201: unknown;
 };
 
 export type StartData = {

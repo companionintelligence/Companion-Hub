@@ -1,5 +1,5 @@
 import { relations } from 'drizzle-orm';
-import { boolean, customType, integer, pgEnum, pgTable, serial, text, timestamp, uniqueIndex, varchar } from 'drizzle-orm/pg-core';
+import { boolean, customType, index, integer, pgEnum, pgTable, primaryKey, serial, text, timestamp, uniqueIndex, varchar } from 'drizzle-orm/pg-core';
 
 export const appStatusEnum = pgEnum('app_status_enum', [
   'running',
@@ -64,6 +64,56 @@ export const app = pgTable(
     subnet: varchar().unique(),
     localSubdomain: varchar('local_subdomain'),
     publicDomain: varchar('public_domain'),
+    /**
+     * Customer-owned hostname Companion Portal has actually wired to this app's platform
+     * hostname, mirrored from the `customDomains[]` of the last successful tunnel
+     * sync. NOT user input: the Hub cannot tell whether a hostname is really
+     * routed, so only a delivered binding may land here.
+     *
+     * `null` means "serve on the platform hostname" — the state an unbind
+     * restores. Env generation reads this column, so a change here means the
+     * app's compose env is stale until it is restarted (`pendingRestart`).
+     */
+    customDomain: varchar('custom_domain'),
+    /**
+     * The custom domain the person installing this app ASKED for — the choice,
+     * not the outcome.
+     *
+     * Env generation never reads this. {@link customDomain} is what Companion Portal
+     * confirmed it wired and is the only value an app may be told to emit; this
+     * is user input, and the Hub cannot tell whether a hostname really resolves
+     * to this tunnel. Emitting a public URL for one that does not is worse than
+     * emitting the platform URL, because the app would sign OAuth redirects for
+     * an address nothing answers on.
+     *
+     * It exists because the two cannot happen at the same moment: at install
+     * time Companion Portal has never heard of the app, so there is nothing to bind a
+     * domain to yet. The intent is recorded here, the tunnel sync registers the
+     * app, the bind follows, and the delivered binding then lands in
+     * `custom_domain` like any other. `null` means "serve on the platform
+     * hostname", which is also what clearing the field asks for.
+     */
+    customDomainIntent: varchar('custom_domain_intent'),
+    /**
+     * The operator confirmed that satisfying {@link customDomainIntent} may take
+     * the domain OFF whatever is serving it now.
+     *
+     * Only ever true alongside an intent, and cleared with it. It exists because
+     * the bind pass runs long after the dialog is closed and cannot ask anyone
+     * anything: CI-Cloud will happily retarget a domain that is live on a
+     * sibling Hub in the organization, so without a recorded answer the pass has
+     * to choose between silently moving a production hostname off another device
+     * and never honouring a deliberate move at all. Neither is acceptable, so
+     * the person choosing is asked once, in the dialog, and their answer is
+     * carried here.
+     *
+     * ⚠ DEFAULTS FALSE, AND AN ABSENT ANSWER IS A NO. Every intent recorded
+     * before this column existed, and every client that does not know about it,
+     * reads as unconfirmed — which refuses the takeover and leaves the domain
+     * where it is. The failure mode of guessing wrong in the other direction is
+     * a customer's production hostname moving between devices unannounced.
+     */
+    customDomainTakeover: boolean('custom_domain_takeover').default(false).notNull(),
     pendingRestart: boolean('pending_restart').default(false).notNull(),
     userConfigEnabled: boolean('user_config_enabled').default(true).notNull(),
     maxBackups: integer('max_backups'),
@@ -191,7 +241,7 @@ export const apiKey = pgTable(
 );
 
 export const deviceRegistration = pgTable('device_registration', {
-  id: varchar().notNull().primaryKey(), // organization_id from CI Cloud
+  id: varchar().notNull().primaryKey(), // organization_id from Companion Portal
   slug: varchar().notNull(), // organization slug for subdomain
   name: varchar().notNull(), // organization label for display
   /**
@@ -235,3 +285,92 @@ export const memoryConnection = pgTable('memory_connection', {
   createdAt: timestamp({ mode: 'string' }).defaultNow().notNull(),
   updatedAt: timestamp({ mode: 'string' }).defaultNow().notNull(),
 });
+
+const telemetryJson = customType<{ data: unknown; driverData: string }>({
+  dataType() {
+    return 'jsonb';
+  },
+  toDriver(value: unknown): string {
+    return JSON.stringify(value);
+  },
+  fromDriver(value: unknown): unknown {
+    if (typeof value === 'string') {
+      try {
+        return JSON.parse(value);
+      } catch {
+        return value;
+      }
+    }
+    return value;
+  },
+});
+
+/**
+ * Rolling local snapshots of host + Docker capacity/load. Survives Hub API restarts
+ * (Postgres is a separate volume) so the resources page and self-heal still have
+ * history from before the process died.
+ */
+export const hostTelemetrySample = pgTable(
+  'host_telemetry_sample',
+  {
+    id: serial().primaryKey().notNull(),
+    sampledAt: timestamp('sampled_at', { mode: 'string' }).defaultNow().notNull(),
+    cpuLoad: integer('cpu_load'),
+    cpuCores: integer('cpu_cores'),
+    memoryUsed: integer('memory_used'),
+    memoryTotal: integer('memory_total'),
+    diskUsed: integer('disk_used'),
+    diskTotal: integer('disk_total'),
+    percentUsedMemory: integer('percent_used_memory'),
+    dockerAvailable: boolean('docker_available'),
+    dockerInfo: telemetryJson('docker_info'),
+    apps: telemetryJson('apps'),
+    source: varchar().default('collector').notNull(),
+  },
+  (table) => [index('host_telemetry_sample_sampled_at_idx').on(table.sampledAt)],
+);
+
+/** Structured local events (API start/stop, docker flips, degraded apps) for post-mortem. */
+export const hostEventLog = pgTable(
+  'host_event_log',
+  {
+    id: serial().primaryKey().notNull(),
+    createdAt: timestamp('created_at', { mode: 'string' }).defaultNow().notNull(),
+    level: varchar().notNull(),
+    source: varchar().notNull(),
+    message: text().notNull(),
+    details: telemetryJson('details'),
+  },
+  (table) => [index('host_event_log_created_at_idx').on(table.createdAt)],
+);
+
+/**
+ * Hub-side cache of Portal marketplace app entitlement checks.
+ *
+ * Portal is the till. This table is UX only — a modified Hub can skip it.
+ * TTL and start-grace live in MarketplaceEntitlementService, not here.
+ */
+export const entitlementCache = pgTable('entitlement_cache', {
+  appUrn: varchar('app_urn').primaryKey().notNull(),
+  entitled: boolean().notNull(),
+  reason: varchar(),
+  paymentUrl: varchar('payment_url'),
+  cachedAt: timestamp('cached_at', { mode: 'string' }).defaultNow().notNull(),
+});
+
+/**
+ * Hub UX cache of Portal WhoIs CapMaps. Not a till. Keyed by Portal user
+ * id (`federated_identity.subject`) and catalog slug. `version` is the
+ * org ACL version so a PUT on Portal drops stale `can[]`.
+ */
+export const whoisCache = pgTable(
+  'whois_cache',
+  {
+    subject: varchar().notNull(),
+    appId: varchar('app_id').notNull(),
+    canJson: text('can_json').notNull(),
+    version: integer().notNull(),
+    cachedAt: timestamp('cached_at', { mode: 'string' }).defaultNow().notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.subject, table.appId] })],
+);

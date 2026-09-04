@@ -166,7 +166,7 @@ describe('launcher selection — public route down', () => {
 });
 
 describe('launcher selection — caller on the Private VPN (CI-Engineering#78)', () => {
-  const TS_HOST = 'hub-x.tail1234.ts.net';
+  const TS_HOST = 'hub-x.example.ts.net';
   const VPN = { connected: true, httpsAvailable: true, nodeFqdn: TS_HOST };
   const TAILNET_LAUNCHER = `https://${TS_HOST}/api/memory-connect/start?app=ci-openclaw%3Aci-marketplace`;
 
@@ -199,7 +199,7 @@ describe('launcher selection — caller on the Private VPN (CI-Engineering#78)',
     // the appliance's LAN — a 192.168.x.x launcher could strand it.
     const { service } = makeService({ tunnelHealth: 'down', tailscale: VPN });
 
-    const status = await service.getStatus(APP, { host: '100.90.154.85' });
+    const status = await service.getStatus(APP, { host: '100.64.0.1' });
 
     expect(status.connectUrl).toBe(TAILNET_LAUNCHER);
     expect(status.connectUrlLocal).toBeNull();

@@ -14,6 +14,7 @@ import { AppIntentSyncService } from './app-intent-sync.service';
 import { RegistrationModule } from '../registration/registration.module';
 import { ApiKeyModule } from '../api-keys/api-key.module';
 import { MemoryConnectionModule } from '../memory-connect/memory-connection.module';
+import { SystemModule } from '../system/system.module';
 
 @Module({
   imports: [
@@ -30,6 +31,7 @@ import { MemoryConnectionModule } from '../memory-connect/memory-connection.modu
     forwardRef(() => RegistrationModule),
     ApiKeyModule,
     MemoryConnectionModule,
+    forwardRef(() => SystemModule),
     // McpProbe is resolved lazily via ModuleRef in AppsController (no Apps → Mcp Nest edge).
   ],
   controllers: [AppsController],

@@ -14,27 +14,15 @@ import type { AppEventFormInput } from '@/modules/queue/entities/app-events';
 import type { AppUrn } from '@ci-hub/common/types';
 import { extractAppUrn } from '@/common/helpers/app-helpers';
 import { resolveBrowserHost } from '@/common/helpers/browser-host';
-import { mergeArchitectureOverrides } from '@/common/helpers/compose-helpers';
 import { AppLifecycleCommand, type CommandExecutionContext } from './command';
-import { createKvmMissingError, createRocmKfdMissingError, AppLifecycleError, type AppCommandResult } from './app-lifecycle-errors';
+import { AppLifecycleError, type AppCommandResult } from './app-lifecycle-errors';
 import { isAbortError, throwIfAborted } from '@/common/abort';
 import { parseComposeJson } from '@ci-hub/common/schemas';
 import { AgentNotifyService } from '@/modules/agent-notify/agent-notify.service';
 import { ErrorReportingService } from '@/core/error-reporting/error-reporting.service';
 import { McpProbeService } from '@/modules/mcp/mcp-probe.service';
-import { isRocmKfdPassthroughAvailable } from '@/modules/inference/host-rocm-availability';
 import fs from 'node:fs';
 import path from 'node:path';
-import * as yaml from 'yaml';
-
-async function isKvmDeviceAvailable(): Promise<boolean> {
-  try {
-    await fs.promises.access('/dev/kvm', fs.constants.R_OK);
-    return true;
-  } catch {
-    return false;
-  }
-}
 
 const DOWNLOAD_PROGRESS_START = 60;
 const DOWNLOAD_PROGRESS_END = 99;
@@ -73,86 +61,6 @@ async function getOpenclawFallbackEntrypoint(): Promise<string> {
 }
 
 export class InstallAppCommand extends AppLifecycleCommand {
-  private hostDevicePath(device: string): string | null {
-    const hostDevice = device.split(':')[0]?.trim();
-    return hostDevice || null;
-  }
-
-  private isKfdHostDevice(device: string): boolean {
-    return this.hostDevicePath(device) === '/dev/kfd';
-  }
-
-  private isKvmHostDevice(device: string): boolean {
-    return this.hostDevicePath(device) === '/dev/kvm';
-  }
-
-  /**
-   * Returns which special host devices a raw user docker-compose.yml override
-   * declares. Failures to parse are silently ignored so a malformed override
-   * never blocks an otherwise-valid install.
-   */
-  private userComposeRequiredDevices(composeYaml: string): { requiresKfd: boolean; requiresKvm: boolean } {
-    try {
-      const parsed = yaml.parse(composeYaml) as { services?: Record<string, { devices?: unknown[] } | null> } | null;
-      if (!parsed?.services) return { requiresKfd: false, requiresKvm: false };
-      let requiresKfd = false;
-      let requiresKvm = false;
-      for (const svc of Object.values(parsed.services)) {
-        for (const device of svc?.devices ?? []) {
-          if (typeof device !== 'string') continue;
-          if (this.isKfdHostDevice(device)) requiresKfd = true;
-          if (this.isKvmHostDevice(device)) requiresKvm = true;
-        }
-      }
-      return { requiresKfd, requiresKvm };
-    } catch {
-      return { requiresKfd: false, requiresKvm: false };
-    }
-  }
-
-  private async assertRequiredHostDevices(appUrn: AppUrn): Promise<void> {
-    const config = this.moduleRef.get(ConfigurationService, { strict: false });
-    const appFilesManager = this.moduleRef.get(AppFilesManager, { strict: false });
-
-    // Check the base installed compose (docker-compose.json) with architecture overrides applied.
-    let requiresKfd = false;
-    let requiresKvm = false;
-    const composeJson = await appFilesManager.getDockerComposeJson(appUrn);
-    if (composeJson.content) {
-      const { services, overrides } = parseComposeJson(composeJson.content);
-      const architecture = config.get('architecture');
-      const mergedServices = mergeArchitectureOverrides(services, overrides, architecture);
-      for (const service of mergedServices) {
-        for (const device of service.devices ?? []) {
-          if (typeof device !== 'string') continue;
-          if (this.isKfdHostDevice(device)) requiresKfd = true;
-          if (this.isKvmHostDevice(device)) requiresKvm = true;
-        }
-      }
-    }
-
-    // Also check the user compose override (user-config/{store}/{app}/docker-compose.yml).
-    // composeApp layers this file on top of the generated docker-compose.yml via an additional
-    // -f flag. Docker Compose appends list fields across -f files, so an override that adds
-    // /dev/kfd or /dev/kvm will be present in the effective compose even when the base does not.
-    if (!requiresKfd || !requiresKvm) {
-      const userCompose = await appFilesManager.getUserComposeFile(appUrn);
-      if (userCompose.content) {
-        const fromUser = this.userComposeRequiredDevices(userCompose.content);
-        requiresKfd = requiresKfd || fromUser.requiresKfd;
-        requiresKvm = requiresKvm || fromUser.requiresKvm;
-      }
-    }
-
-    if (requiresKfd && !(await isRocmKfdPassthroughAvailable())) {
-      throw createRocmKfdMissingError();
-    }
-
-    if (requiresKvm && !(await isKvmDeviceAvailable())) {
-      throw createKvmMissingError();
-    }
-  }
-
   public async execute(appUrn: AppUrn, form: AppEventFormInput, ctx?: CommandExecutionContext): Promise<AppCommandResult> {
     const logger = this.moduleRef.get(LoggerService, { strict: false });
     const _config = this.moduleRef.get(ConfigurationService, { strict: false });
@@ -166,7 +74,11 @@ export class InstallAppCommand extends AppLifecycleCommand {
 
     const emitProgress = async (progress: number) => {
       if (sseService) {
-        sseService.emit('app', { event: 'status_change', appUrn, appStatus: 'installing', progress }, appUrn);
+        // No `appUrn` third argument: that publishes to the `app:<urn>` topic, which
+        // nothing subscribes to (`sse.controller.ts` opens `getTopicObservable('app')`
+        // with no urn), so every install-progress tick was dropped before it reached
+        // the progress bar in `app-sse-cache.ts`.
+        sseService.emit('app', { event: 'status_change', appUrn, appStatus: 'installing', progress });
       }
       if (appsRepository) {
         const app = await appsRepository.getAppByUrn(appUrn);
@@ -191,6 +103,7 @@ export class InstallAppCommand extends AppLifecycleCommand {
 
     try {
       ctx?.setPhase('preparing');
+      await this.assertMarketplaceEntitlement(appUrn, 'install');
       const appImages = extractComposeImages(composeToInstallContent);
       await emitProgress(5);
       if (process.getuid && process.getgid) {

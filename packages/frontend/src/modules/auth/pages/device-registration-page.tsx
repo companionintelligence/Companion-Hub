@@ -2,7 +2,8 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router';
 import { Button } from '@/components/ui/Button';
 import { Alert, AlertDescription } from '@/components/ui/Alert/Alert';
-import { AlertCircle, CheckCircle2, ChevronRight, Copy, Loader2 } from 'lucide-react';
+import { QrCode } from '@/components/ui/qr-code';
+import { AlertCircle, CheckCircle2, ChevronRight, Copy, Loader2, QrCode as QrCodeIcon } from 'lucide-react';
 import {
   fetchDeviceRegistrationInfoResult,
   fetchRegistrationStateDrift,
@@ -35,7 +36,7 @@ const DEFAULT_PORTAL_URL = (
   (import.meta.env.CI_HUB_ENVIRONMENT === 'production' ? 'https://hub.ci.computer' : 'https://hub.companionintelligence.com')
 ).replace(/\/+$/, '');
 const STATUS_POLL_INTERVAL_MS = 3000;
-const HEADLESS_POLL_INTERVAL_MS = 5000; // slower poll when idle, waiting for external registration
+const HEADLESS_POLL_INTERVAL_MS = 5000; // Poll less often while waiting for external registration.
 const DOMAIN_PROBE_INTERVAL_MS = 5000;
 const MAX_DOMAIN_PROBE_ATTEMPTS = 60;
 const REQUIRED_CONSECUTIVE_PROBES = 2;
@@ -60,6 +61,42 @@ type PairingTarget = {
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Provides a QR code for headless appliances and SSH sessions that cannot open
+ * the sign-in or account-creation links locally.
+ *
+ * Keep the code and fallback URL behind a disclosure so they do not stretch the
+ * first panel beyond the otherwise balanced two-column layout.
+ */
+function ScanQrDisclosure({ value, label, summaryLabel }: { value: string; label: string; summaryLabel: string }) {
+  const [open, setOpen] = useState(false);
+
+  return (
+    <>
+      <button
+        type="button"
+        aria-expanded={open}
+        aria-label={summaryLabel}
+        onClick={() => setOpen((current) => !current)}
+        className="flex h-10 shrink-0 cursor-pointer items-center justify-center gap-1.5 rounded-md border border-border/70 bg-background/40 px-3 text-xs font-medium text-foreground transition-colors hover:bg-accent hover:text-accent-foreground md:h-11"
+      >
+        <QrCodeIcon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden />
+        {label}
+      </button>
+      {open ? (
+        <div className="mt-4 flex w-full justify-center">
+          {/*
+            Omit `mark` because the logo and level-H correction increase the QR
+            version for these long URLs. Pin the code at 200 px to keep each
+            module large enough to scan on a headless setup screen.
+          */}
+          <QrCode value={value} fallback={value} size={200} bare />
+        </div>
+      ) : null}
+    </>
+  );
 }
 
 function getProgressCopy(status: RegistrationStatus | null, redirectStatus: string, t: (key: string) => string) {
@@ -155,7 +192,8 @@ export default function DeviceRegistrationPage() {
       if (base) {
         setPortalBaseUrl(base.replace(/\/+$/, ''));
       }
-      // Portal entry URL (device_id + callback_url) opens login/signup and the Add Device flow.
+      // The device ID and callback URL send Companion Portal into authentication
+      // and the Add Device flow.
       setRegistrationUrl(deviceData.registration_url?.trim() || null);
       setDeviceInfoError(null);
     } catch (error) {
@@ -231,11 +269,10 @@ export default function DeviceRegistrationPage() {
 
       if (isRegistrationOperational(status)) {
         cacheRegistrationStatus(status);
-        // A registered Hub whose public tunnel is degraded (tunnel_token_missing)
-        // renders the re-pair form. Load the device info it needs — the device ID
-        // and the device-scoped Portal Add-Device URL — just like the unregistered
-        // path, otherwise the form is stuck on "Loading device ID..." and its login
-        // link falls back to the generic Portal URL.
+        // A registered Hub with `tunnel_token_missing` uses the pairing form to
+        // restore its public tunnel. Load the device ID and device-scoped Portal
+        // Add Device URL as the unregistered path does. Without this data, the
+        // form cannot resolve its device ID and uses a generic Portal link.
         if (requiresPortalRePairing(status)) {
           await loadDeviceInfo();
         }
@@ -261,7 +298,7 @@ export default function DeviceRegistrationPage() {
           return null;
         }
 
-        // Avoid acting on stale operational status while the API is unreachable.
+        // Do not act on a cached operational phase while the status API is unreachable.
         if (isRegistrationOperational(previous) && !requiresDeviceRegistration(previous)) {
           return null;
         }
@@ -313,10 +350,10 @@ export default function DeviceRegistrationPage() {
               continue;
             }
           } catch {
-            // Keep retrying while the tunnel and DNS settle.
+            // Continue probing while tunnel and DNS changes converge.
           }
 
-          // Any failure resets the streak.
+          // Require consecutive successes by resetting the streak after any failure.
           consecutiveSuccesses = 0;
 
           if (attempt >= 12) {
@@ -348,9 +385,9 @@ export default function DeviceRegistrationPage() {
   }, [refreshRegistrationStatus]);
 
   useEffect(() => {
-    // Keep polling while:
-    // - phase is in-progress (paired/provisioning)
-    // - phase is unregistered — poll at a slower rate to detect headless setup completing externally
+    // Poll active provisioning phases at the standard interval. Poll an
+    // unregistered appliance less often so externally completed headless setup
+    // still appears without creating unnecessary requests.
     const isUnregistered = registrationStatus?.phase === 'unregistered';
     const shouldPoll = !statusError && ((registrationStatus && isRegistrationPending(registrationStatus)) || isUnregistered);
 
@@ -384,16 +421,16 @@ export default function DeviceRegistrationPage() {
 
     const target = pendingPairTargetRef.current;
     if (target) {
-      // Phase is operational (locally_ready, publicly_ready, or degraded) — proceed immediately.
+      // Continue immediately after pairing reaches any operational phase.
       completionStartedRef.current = true;
       void finishRegistrationFlow(registrationStatus);
       return;
     }
 
-    // Registered Hub with a degraded public tunnel (tunnel_token_missing) and no
-    // pairing in flight: the user navigated here to re-pair (e.g. from the
-    // dashboard banner). Keep them on the pairing form instead of bouncing back
-    // to the local app.
+    // Keep a registered Hub with `tunnel_token_missing` on the pairing form when
+    // no pairing is active. The user can arrive here from the dashboard recovery
+    // banner and must not be redirected back to the local app before recovering
+    // the tunnel.
     if (requiresPortalRePairing(registrationStatus)) {
       return;
     }
@@ -464,7 +501,7 @@ export default function DeviceRegistrationPage() {
           setPendingDeepLinkCode(code);
         });
       } catch {
-        // Tauri event bridge unavailable in non-desktop contexts.
+        // Non-desktop contexts do not provide the Tauri event bridge.
       }
     })();
 
@@ -566,12 +603,10 @@ export default function DeviceRegistrationPage() {
   };
 
   const portalUrl = portalBaseUrl || DEFAULT_PORTAL_URL;
-  // When restoring an existing device, the user already has a device in Portal
-  // and just needs to grab/regenerate its pairing code — so send them straight
-  // to their Portal home instead of the device-scoped registration (Add Device)
-  // intent URL, which kicks off the "create a new device" flow. For a fresh or
-  // brand-new device, prefer the device-scoped registration URL so Portal can
-  // route into Add Device pairing.
+  // Restoration uses an existing Companion Portal device, so link to Portal Home
+  // where the user can retrieve or regenerate its pairing code. The device-scoped
+  // registration URL starts Add Device and would create another device. Fresh
+  // setup uses that scoped URL intentionally.
   const loginUrl = driftChoice === 'restore' ? `${portalUrl}/home` : (registrationUrl ?? portalUrl);
   const signupUrl = buildPortalSignupUrl(portalUrl, deviceId);
   const redirectStatus = t(redirectStatusKey);
@@ -599,7 +634,7 @@ export default function DeviceRegistrationPage() {
     return (
       <div className="mx-auto flex max-w-md flex-col items-center gap-4 py-4 text-center">
         {showSuccessIcon ? (
-          <CheckCircle2 role="img" aria-label={t('COMMON_SUCCESS')} className="h-10 w-10 text-green-500" />
+          <CheckCircle2 role="img" aria-label={t('COMMON_SUCCESS')} className="h-10 w-10 text-success" />
         ) : (
           <Loader2 role="img" aria-label={t('COMMON_LOADING')} className="h-10 w-10 animate-spin text-primary" />
         )}
@@ -646,7 +681,7 @@ export default function DeviceRegistrationPage() {
   if (statusError && !registrationStatus) {
     return (
       <div className="mx-auto flex max-w-md flex-col items-center gap-4 py-4 text-center">
-        <AlertCircle role="img" aria-label={t('COMMON_ERROR')} className="h-12 w-12 text-amber-500" />
+        <AlertCircle role="img" aria-label={t('COMMON_ERROR')} className="h-12 w-12 text-destructive" />
         <div>
           <h2 className="text-xl font-semibold text-foreground">{t('DEVICE_REGISTRATION_STATUS_UNAVAILABLE')}</h2>
           <p className="mt-3 text-sm text-muted-foreground">{statusError}</p>
@@ -697,7 +732,7 @@ export default function DeviceRegistrationPage() {
 
       {driftChoice === 'restore' ? <RegistrationRestoreBanner /> : null}
 
-      <div className="grid grid-cols-1 items-stretch gap-4 md:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] md:gap-5">
+      <div className="grid grid-cols-1 items-start gap-4 md:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] md:gap-5">
         <section className="flex flex-col rounded-lg border border-border/60 bg-muted/20 p-6 md:p-8">
           <div className="flex items-start gap-1 flex-wrap">
             <HintText
@@ -709,36 +744,54 @@ export default function DeviceRegistrationPage() {
               {t('DEVICE_REGISTRATION_STEP_1_TITLE')}
             </HintText>
           </div>
-          <Button asChild className="mt-6 h-10 w-full text-sm font-semibold md:h-11 md:text-base" intent="primary">
-            <a href={loginUrl} target="_blank" rel="noopener noreferrer">
-              {t('DEVICE_REGISTRATION_LOGIN_TO_COMPANION')}
-            </a>
-          </Button>
-          <p className="mt-3 text-sm leading-relaxed text-muted-foreground">{t('DEVICE_REGISTRATION_LOGIN_HINT')}</p>
-          <div className="mt-6 space-y-3 border-t border-border/60 pt-5">
-            <p className="text-center text-sm text-muted-foreground">{t('DEVICE_REGISTRATION_NO_ACCOUNT_YET')}</p>
-            <Button asChild variant="outline" className="h-10 w-full text-sm font-semibold md:h-11 md:text-base">
-              <a href={signupUrl} target="_blank" rel="noopener noreferrer">
-                {t('DEVICE_REGISTRATION_CREATE_ACCOUNT')}
-              </a>
-            </Button>
+          <div className="mt-6 space-y-2">
+            {/*
+              Match the height of Step 2's device-ID label with an invisible
+              spacer. Step 1 starts with a button, so omitting this line would
+              misalign every following row between the two columns.
+            */}
+            <div className="text-sm text-muted-foreground invisible select-none" aria-hidden="true">
+              &nbsp;
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <Button asChild className="h-10 flex-1 text-sm font-semibold md:h-11 md:text-base" intent="primary">
+                <a href={loginUrl} target="_blank" rel="noopener noreferrer">
+                  {t('DEVICE_REGISTRATION_LOGIN_TO_COMPANION')}
+                </a>
+              </Button>
+              <ScanQrDisclosure value={loginUrl} label={t('DEVICE_REGISTRATION_SCAN_QR')} summaryLabel={t('DEVICE_REGISTRATION_SCAN_QR_SIGN_IN')} />
+            </div>
+          </div>
+          <div className="mt-3 space-y-2 border-t border-border/60 pt-2">
+            <p className="text-sm text-muted-foreground">{t('DEVICE_REGISTRATION_NO_ACCOUNT_YET')}</p>
+            <div className="flex flex-wrap items-center gap-2">
+              <Button asChild variant="outline" className="h-10 flex-1 text-sm font-semibold md:h-11 md:text-base">
+                <a href={signupUrl} target="_blank" rel="noopener noreferrer">
+                  {t('DEVICE_REGISTRATION_CREATE_ACCOUNT')}
+                </a>
+              </Button>
+              <ScanQrDisclosure
+                value={signupUrl}
+                label={t('DEVICE_REGISTRATION_SCAN_QR')}
+                summaryLabel={t('DEVICE_REGISTRATION_SCAN_QR_CREATE_ACCOUNT')}
+              />
+            </div>
           </div>
         </section>
 
-        <div aria-hidden="true" className="hidden items-center justify-center text-muted-foreground md:flex">
-          <ChevronRight className="h-5 w-5" />
+        <div aria-hidden="true" className="hidden items-center justify-center self-stretch text-muted-foreground md:flex">
+          <ChevronRight className="h-8 w-8" />
         </div>
 
-        <section className="flex flex-col rounded-lg border border-border/60 bg-muted/20 p-5">
+        <section className="flex flex-col rounded-lg border border-border/60 bg-muted/20 p-6 md:p-8">
           <h2 className="text-lg font-semibold leading-snug text-foreground md:text-xl">{t('DEVICE_REGISTRATION_STEP_2_TITLE')}</h2>
-          <p className="mt-3 text-sm leading-relaxed text-muted-foreground">{t('DEVICE_REGISTRATION_STEP_2_SUBTITLE')}</p>
 
-          <div className="mt-5 space-y-4">
+          <div className="mt-6 space-y-4">
             <div className="space-y-2">
               <div className="text-sm text-muted-foreground">
                 <LabelWithHint label={t('DEVICE_REGISTRATION_CURRENT_DEVICE_ID')} hint={t(REGISTRATION_DEVICE_ID_HINT)} hintId="reg-device-id" />
               </div>
-              <div className="flex items-center gap-2 rounded-lg border border-border/60 bg-background/60 px-3 py-2">
+              <div className="flex h-10 items-center gap-2 rounded-lg border border-border/60 bg-background/60 px-3 md:h-11">
                 <p title={deviceId ?? undefined} className="min-w-0 flex-1 truncate font-mono text-sm text-foreground">
                   {deviceId ?? t('DEVICE_REGISTRATION_LOADING_DEVICE_ID')}
                 </p>
@@ -764,8 +817,8 @@ export default function DeviceRegistrationPage() {
                 </HintText>
               </label>
               {/*
-                Stack below `sm`: the fixed `w-40` button left the code field ~62px wide
-                inside the two-column card, so the 6-char placeholder rendered as "AB".
+                Stack below `sm` because the fixed-width button otherwise leaves
+                too little room for the six-character code field in this card.
               */}
               <div className="flex flex-col gap-2 sm:flex-row">
                 <input
@@ -788,14 +841,14 @@ export default function DeviceRegistrationPage() {
                   }}
                   maxLength={6}
                   disabled={isPairing}
-                  className={`h-9 min-w-0 flex-1 rounded-md border bg-background/60 px-3 py-1 text-base font-mono tracking-widest shadow-sm transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 md:text-sm ${pairingError ? 'border-destructive focus-visible:ring-destructive' : 'border-input'}`}
+                  className={`h-10 min-w-0 flex-1 rounded-md border bg-background/60 px-3 py-1 text-base font-mono tracking-widest shadow-sm transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 md:h-11 md:text-sm ${pairingError ? 'border-destructive focus-visible:ring-destructive' : 'border-input'}`}
                 />
                 <Button
                   intent="primary"
                   onClick={() => void handlePair()}
                   disabled={pairingCode.length !== 6 || isPairing}
                   loading={isPairing}
-                  className="w-full shrink-0 sm:w-40"
+                  className="h-10 w-full shrink-0 sm:w-40 md:h-11"
                 >
                   {isPairing ? t('DEVICE_REGISTRATION_REGISTERING') : t('DEVICE_REGISTRATION_REGISTER')}
                 </Button>

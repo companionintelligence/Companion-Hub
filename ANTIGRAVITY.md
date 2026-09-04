@@ -1,8 +1,10 @@
-# ANTIGRAVITY.md — CI-Hub
+# ANTIGRAVITY.md — Companion Hub
+
+Documentation map, tip scrub policy, and writing style: [`docs/README.md`](docs/README.md), [`docs/writing-style.md`](docs/writing-style.md).
 
 ## Context
 
-**CI-Hub** — **Appliance** layer of the Companion Intelligence platform (Lifescope Inc).
+**Companion Hub** is part of the **Appliance** layer of the Companion Intelligence platform.
 
 Architecture: `CI-Engineering/architecture/architecture.md`
 Roadmap: `CI-Engineering/architecture/roadmap.md`
@@ -32,4 +34,4 @@ pnpm test
 - Package manager: do not switch or mix.
 - Destructive git operations (`reset --hard`, `clean -f`) require explicit user confirmation.
 - Commits reference CI-Engineering issues.
-- All content is **private and confidential** — Property of Lifescope Inc.
+- Content in this repository is governed by the project license.

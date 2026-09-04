@@ -1,4 +1,4 @@
-# Script Authoring — CI-Hub (Agents)
+# Script authoring
 
 > **Purpose:** How to write bash/TypeScript scripts agents can discover and run reliably.
 > **Scope:** `bin/`, `scripts/agent/`, agent-facing CLIs.
@@ -58,13 +58,13 @@ pnpm exec tsx scripts/agent/my-script.ts
 
 ## Agent-review pattern
 
-`bin/agent-review` prints a structured prompt — agents paste into a **different** model session. Optional `--cursor` hints which subagent skill to use.
+`bin/agent-review` prints a structured prompt. Paste it into a **different** model session. The optional `--cursor` flag suggests which subagent skill to use.
 
 ---
 
 ## Validate-shift pattern
 
-`bin/agent-validate-shift` orchestrates CI steps in order, stops on first failure, supports `--skip-*` for scoped validation.
+`bin/agent-validate-shift` runs CI steps in order, stops at the first failure, and supports `--skip-*` for scoped validation.
 
 ---
 

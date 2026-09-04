@@ -1,8 +1,8 @@
 import { Injectable } from '@nestjs/common';
-import fs from 'node:fs';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import type { InferenceBackend } from './backend.interface';
+import { detectHubContainer, normalizeHostBackendUrl, resolveHostBackendProbeUrl } from './host-url.util';
 import type { BackendHealthStatus, BackendModelInfo, PullProgress } from '@ci-hub/common/types';
 import axios from 'axios';
 import { OpenAiCompatibleClient } from './openai-compatible.client';
@@ -11,39 +11,49 @@ import { OpenAiCompatibleClient } from './openai-compatible.client';
 export const VLLM_PROBE_API_KEY_HEADER = 'x-ci-vllm-api-key';
 
 /** Accept `http://host:8000`, `http://host:8000/` or `http://host:8000/v1` and store the bare origin. */
-export function normalizeVllmBaseUrl(url: string): string {
-  return url.trim().replace(/\/+$/, '').replace(/\/v1$/, '');
+export const normalizeVllmBaseUrl = normalizeHostBackendUrl;
+
+export interface VllmRemediation {
+  /** Copy-pasteable `vllm serve` command for the host's viable install path. */
+  command: string;
+  /** Prose explaining how to get vLLM running, without the trailing probe-URL sentence. */
+  hint: string;
 }
 
-/** Hub container probe — `/.dockerenv` plus Podman's containerenv. Not the `/data` heuristic. */
-export function detectHubContainer(): boolean {
-  try {
-    return fs.existsSync('/.dockerenv') || fs.existsSync('/run/.containerenv');
-  } catch {
-    return false;
+/**
+ * Suggested `vllm serve` command + setup hint for a host where vLLM isn't reachable yet. Apple
+ * Silicon has no Docker/CUDA path at all (see getComposeConfig's `apple` branch below) — vLLM-Metal
+ * (github.com/vllm-project/vllm-metal) is a native venv install that uses MLX as its compute backend
+ * instead, so the suggested model is one of the catalog's `-mlx` rows (see curated-models.ts) rather
+ * than the CUDA-only bitsandbytes quantization suggested elsewhere.
+ */
+export function buildVllmRemediation(isAppleSilicon: boolean): VllmRemediation {
+  if (isAppleSilicon) {
+    return {
+      command: 'vllm serve mlx-community/Qwen3-8B-4bit --host 0.0.0.0 --port 8000 --max-model-len 8192',
+      hint:
+        'Run vLLM on the host via vLLM-Metal (Apple Silicon has no Docker/CUDA path for vLLM): install with ' +
+        '`curl -fsSL https://raw.githubusercontent.com/vllm-project/vllm-metal/main/install.sh | bash`, then ' +
+        '`source ~/.venv-vllm-metal/bin/activate` and run the command above.',
+    };
   }
+  return {
+    // The suggested model must be a catalog `backendModelId` (so the served model is recognized
+    // as installed) and must fit common consumer VRAM — Qwen3-4B-Instruct-2507 with bitsandbytes
+    // quantization runs on an 8 GB card, unlike the old Qwen2.5-7B bf16 suggestion (#1103).
+    command:
+      'vllm serve Qwen/Qwen3-4B-Instruct-2507 --host 0.0.0.0 --port 8000 --quantization bitsandbytes --max-model-len 8192 --gpu-memory-utilization 0.85',
+    hint: 'Run vLLM on the host (not inside Docker).',
+  };
 }
+
+export { detectHubContainer };
 
 /**
  * Operator `localhost` / `127.0.0.1` means the host where vLLM runs. From inside
  * the Hub container that hostname is the container itself — rewrite only then.
  */
-export function resolveVllmProbeUrl(url: string, inContainer: boolean = detectHubContainer()): string {
-  const normalized = normalizeVllmBaseUrl(url);
-  if (!inContainer) {
-    return normalized;
-  }
-  try {
-    const parsed = new URL(normalized);
-    if (parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1' || parsed.hostname === '[::1]') {
-      parsed.hostname = 'host.docker.internal';
-      return normalizeVllmBaseUrl(parsed.toString());
-    }
-  } catch {
-    // Keep normalized input; healthCheck will surface a bad URL.
-  }
-  return normalized;
-}
+export const resolveVllmProbeUrl = resolveHostBackendProbeUrl;
 
 @Injectable()
 export class VllmBackend implements InferenceBackend {
@@ -131,6 +141,21 @@ export class VllmBackend implements InferenceBackend {
   }
 
   getComposeConfig(gpuVendor: string): Record<string, unknown> {
+    if (gpuVendor === 'apple') {
+      // Docker Desktop on macOS has no Metal passthrough, so the CUDA-only `vllm/vllm-openai` image
+      // can only ever run this container CPU-bound — pointless for a backend chosen for GPU speed.
+      // The real Apple Silicon path is vLLM-Metal (github.com/vllm-project/vllm-metal), a
+      // community-maintained plugin that uses MLX as its compute backend: it installs into a native
+      // venv on the host (no Docker) and is started with the ordinary `vllm serve` CLI once
+      // activated. Decline the Docker deploy outright — same posture as the `amd` branch below —
+      // rather than silently hand back a container that can't do what it was asked for; the operator
+      // installs vLLM-Metal themselves and points Settings → vLLM URL at it (see buildVllmRemediation
+      // and the catalog's `-mlx` rows in curated-models.ts for the models it can serve).
+      throw new Error(
+        'vLLM has no Docker path on Apple Silicon (Docker Desktop cannot reach Metal). Install vLLM-Metal natively ' +
+          '(github.com/vllm-project/vllm-metal) and point Settings → vLLM URL at it instead.',
+      );
+    }
     if (gpuVendor === 'amd') {
       // vLLM has no reliably maintained ROCm image for the AMD hardware CI-Hub actually detects
       // (the Strix Halo APU, gfx1151, and consumer Radeon GPUs). The upstream `vllm/vllm-openai-rocm`

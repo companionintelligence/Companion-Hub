@@ -1,5 +1,5 @@
-# @ci-hub/common
+# Common package
 
-Shared TypeScript types, Zod schemas, and helpers for the Companion Intelligence Hub (CI-Hub) monorepo.
+`@ci-hub/common` provides shared TypeScript types, Zod schemas, and helpers for Companion Hub.
 
-Previously published as `@runcihub/common` during the CIHub → CI-Hub migration; runtime env aliases for legacy `RUNCIHUB_*` keys remain in the backend until the migration window closes.
+> **Legacy names:** Historical changelogs can refer to `@runcihub/common`. Use `@ci-hub/common` in current code. The backend temporarily supports `RUNCIHUB_*` environment variable aliases for compatibility.

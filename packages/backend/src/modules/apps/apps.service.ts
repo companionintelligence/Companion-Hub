@@ -7,7 +7,7 @@ import { ModuleRef } from '@nestjs/core';
 import type { AppInfo } from '@ci-hub/common/schemas';
 import type { App } from '@/core/database/drizzle/types';
 import type { AppUrn } from '@ci-hub/common/types';
-import { buildPublicWebIdentity } from '@ci-hub/common/types';
+import { buildPublicWebIdentity, normalizeStoredHostname } from '@ci-hub/common/types';
 import axios from 'axios';
 import { MarketplaceService } from '../marketplace/marketplace.service';
 import { RegistrationService } from '../registration/registration.service';
@@ -137,7 +137,7 @@ export class AppsService {
   }
 
   /**
-   * The app's direct LAN address (`http://<internalIp>:<port><url_suffix>`), or
+   * The app's direct LAN address (`http(s)://<internalIp>:<port><url_suffix>`), or
    * undefined when it has no directly reachable port.
    *
    * Deliberately mirrors `hasDirectLocalAccess` in the frontend's
@@ -190,7 +190,8 @@ export class AppsService {
       return undefined;
     }
 
-    return `http://${host}:${app.port}${info.url_suffix || ''}`;
+    const scheme = info.https ? 'https' : 'http';
+    return `${scheme}://${host}:${app.port}${info.url_suffix || ''}`;
   }
 
   /**
@@ -216,7 +217,8 @@ export class AppsService {
       }
 
       const host = resolveBrowserHost(userSettings.internalIp);
-      appUrl = `http://${host}:${app.port}${urlSuffix}`;
+      const scheme = info.https ? 'https' : 'http';
+      appUrl = `${scheme}://${host}:${app.port}${urlSuffix}`;
       return { available: true, appUrl, stage: 'ready' };
     }
     if (exposureMode === 'tailscale') {
@@ -245,7 +247,8 @@ export class AppsService {
       );
       if (!hasTunnelToken && app.port && hasDirectLocalAccess) {
         const host = resolveBrowserHost(userSettings.internalIp);
-        appUrl = `http://${host}:${app.port}${urlSuffix}`;
+        const scheme = info.https ? 'https' : 'http';
+        appUrl = `${scheme}://${host}:${app.port}${urlSuffix}`;
         return { available: true, appUrl, stage: 'ready' };
       }
 
@@ -271,7 +274,12 @@ export class AppsService {
         orgSlug: organizationSlug,
         publicDomainRoot: resolvedDomain,
       });
-      appUrl = `${identity.publicUrl}${urlSuffix}`;
+      // A custom hostname Companion Portal has wired for this app is the one a user
+      // actually visits, so it is the one to link to and to probe — probing the
+      // platform hostname would report an app as reachable at an address the
+      // user is not being sent to.
+      const customDomain = normalizeStoredHostname(app.customDomain);
+      appUrl = `${customDomain ? `https://${customDomain}` : identity.publicUrl}${urlSuffix}`;
     }
 
     // Helper to determine stage from error code
@@ -440,7 +448,7 @@ export class AppsService {
     const actions: string[] = [];
 
     try {
-      // For Cloudflare errors: re-sync state with CI-Cloud
+      // For Cloudflare errors: re-sync state with Companion Portal
       if (
         check.errorCode === 'DNS_NOT_FOUND' ||
         check.errorCode === 'CF_TUNNEL_NOT_FOUND' ||

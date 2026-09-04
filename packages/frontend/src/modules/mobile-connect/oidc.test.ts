@@ -391,7 +391,7 @@ describe('emailFromIdToken', () => {
   }
 
   it('reads the Portal email from an id_token payload', () => {
-    expect(emailFromIdToken(tokenWithPayload({ email: 'chamberlain.bennett@gmail.com' }))).toBe('chamberlain.bennett@gmail.com');
+    expect(emailFromIdToken(tokenWithPayload({ email: 'user@example.com' }))).toBe('user@example.com');
   });
 
   it('returns null for missing, empty, or unreadable tokens', () => {

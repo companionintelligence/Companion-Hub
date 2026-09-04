@@ -14,8 +14,9 @@ import {
   resolveOutboundPortalBaseUrl,
   withPortalAxiosHeaders,
 } from '@/common/helpers/portal-url';
+import { parseRetryAfterSeconds } from '@/common/helpers/retry-after';
 import { PasswordService } from '@/core/password/password.service';
-import axios from 'axios';
+import axios, { type AxiosResponse } from 'axios';
 import { FederatedIdentityRepository } from '@/modules/user/federated-identity.repository';
 import { UserRepository } from '@/modules/user/user.repository';
 import { HttpStatus, Injectable, ServiceUnavailableException } from '@nestjs/common';
@@ -90,6 +91,15 @@ export class AuthService {
     return buildPortalAxiosConfig(this.getPublicPortalBaseUrl(), readPortalInternalUrlOverride());
   }
 
+  private throwIfPortalRateLimited(response: AxiosResponse) {
+    if (response.status !== 429) {
+      return;
+    }
+
+    const retryAfter = parseRetryAfterSeconds(response.headers);
+    throw new TranslatableError('AUTH_ERROR_RATE_LIMITED', { retryAfter: String(retryAfter ?? 60) }, HttpStatus.TOO_MANY_REQUESTS);
+  }
+
   private async signInWithPortal(email: string, password: string) {
     const base = this.getPortalBaseUrl();
     const publicBase = this.getPublicPortalBaseUrl();
@@ -108,6 +118,8 @@ export class AuthService {
     );
 
     const body = (await Promise.resolve(response.data).catch(() => ({}))) as { code?: string };
+
+    this.throwIfPortalRateLimited(response);
 
     if (response.status < 200 || response.status >= 300) {
       if (body.code === 'EMAIL_NOT_VERIFIED') {
@@ -136,6 +148,8 @@ export class AuthService {
     );
 
     const body = (await Promise.resolve(response.data).catch(() => ({}))) as { code?: string; token?: string | null };
+
+    this.throwIfPortalRateLimited(response);
 
     if (response.status < 200 || response.status >= 300) {
       if (body.code === 'USER_ALREADY_EXISTS') {

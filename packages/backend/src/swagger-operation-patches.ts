@@ -2,7 +2,13 @@ import { z } from 'zod';
 import type { ZodDto } from '@/common/zod-dto';
 import { SearchAppsQueryDto } from '@/modules/marketplace/dto/marketplace.dto';
 import { GetAppBackupsQueryDto } from '@/modules/backups/dto/backups.dto';
-import { OnboardingProfileQueryDto, RuntimeModelsQueryDto, VllmStatusQueryDto } from '@/modules/inference/inference.dto';
+import {
+  DsparkStatusQueryDto,
+  MtplxStatusQueryDto,
+  OnboardingProfileQueryDto,
+  RuntimeModelsQueryDto,
+  VllmStatusQueryDto,
+} from '@/modules/inference/inference.dto';
 import { StreamAppLogsQueryDto, StreamHubLogsQueryDto } from '@/core/sse/dto/sse.dto';
 
 const availableDomainSchema = z.object({
@@ -14,6 +20,39 @@ const availableDomainSchema = z.object({
 
 export const availableDomainsResponseSchema = z.object({
   domains: z.array(availableDomainSchema),
+});
+
+/**
+ * Describes a connected custom domain as shown in the install dialog.
+ *
+ * `supported` does not mean `domains.length > 0`. It indicates whether Companion
+ * Portal could answer the request. The dialog must distinguish an empty domain
+ * list from an older or unavailable Portal, which cannot provide a list. See
+ * CI-Hub#1181.
+ */
+const availableCustomDomainSchema = z.object({
+  id: z.string(),
+  domain: z.string(),
+  /*
+   * Keep this state set broader than the initial domain lifecycle. Companion
+   * Portal reports `securing` when verification succeeds before certificate
+   * issuance and `drifted` when customer DNS changes later. Cloudflare evaluates
+   * those conditions independently, and the Portal can add more states.
+   *
+   * Map states unknown to this Hub to `unknown` and retain the row. Hub versions
+   * often lag behind the Portal, and dropping a newer state would make a connected
+   * domain disappear. Treat `state` as a display label and `bindable` as the gate.
+   */
+  state: z.enum(['live', 'parked', 'pending', 'securing', 'drifted', 'failed', 'unknown']),
+  bindable: z.boolean(),
+  targetHostname: z.string().nullable(),
+  boundAppSlug: z.string().nullable(),
+  boundElsewhere: z.boolean(),
+});
+
+export const availableCustomDomainsResponseSchema = z.object({
+  supported: z.boolean(),
+  domains: z.array(availableCustomDomainSchema),
 });
 
 export const updateAdvancedModeBodySchema = z.object({
@@ -36,18 +75,20 @@ export const featuredStoreBundleSchema = z.object({
   newest: z.array(z.unknown()),
 });
 
-/** Query DTOs Nest does not reflect into OpenAPI for @Query() Zod classes. */
+/** Adds query DTOs that Nest cannot reflect from `@Query()` Zod classes. */
 export const OPERATION_QUERY_DTOS: Record<string, ZodDto> = {
   searchApps: SearchAppsQueryDto,
   getRuntimeModels: RuntimeModelsQueryDto,
   getOnboardingProfile: OnboardingProfileQueryDto,
   getVllmStatus: VllmStatusQueryDto,
+  getMtplxStatus: MtplxStatusQueryDto,
+  getDsparkStatus: DsparkStatusQueryDto,
   getAppBackups: GetAppBackupsQueryDto,
   appLogsEvents: StreamAppLogsQueryDto,
   hubLogsEvents: StreamHubLogsQueryDto,
 };
 
-/** Inline @Body() types and missing request bodies. */
+/** Adds inline `@Body()` types and request bodies missing from reflection. */
 export const OPERATION_REQUEST_BODIES: Record<string, { schemaName: string; schema: z.ZodType }> = {
   updateAdvancedMode: { schemaName: 'UpdateAdvancedModeBody', schema: updateAdvancedModeBodySchema },
   setAutoUpdates: { schemaName: 'SetAutoUpdatesBody', schema: setAutoUpdatesBodySchema },
@@ -72,13 +113,14 @@ export const OPERATION_REQUEST_BODIES: Record<string, { schemaName: string; sche
   performUpdate: { schemaName: 'PerformUpdateBody', schema: z.object({ targetVersion: z.string().optional() }) },
 };
 
-/** Path params missing from Nest Zod DTO reflection. */
+/** Adds path parameters missing from Nest Zod DTO reflection. */
 export const OPERATION_PATH_PARAMS: Record<string, Array<Record<string, unknown>>> = {
   verifyPasswordResetToken: [{ name: 'token', in: 'path', required: true, schema: { type: 'string' } }],
 };
 
-/** @ApiResponse({ type: Object }) placeholders → concrete response schemas. */
+/** Replaces `@ApiResponse({ type: Object })` placeholders with concrete schemas. */
 export const OPERATION_RESPONSE_SCHEMAS: Record<string, { schemaName: string; schema: z.ZodType }> = {
   getDomains: { schemaName: 'AvailableDomainsResponseDto', schema: availableDomainsResponseSchema },
+  getCustomDomains: { schemaName: 'AvailableCustomDomainsResponseDto', schema: availableCustomDomainsResponseSchema },
   getStoreFeaturedBundle: { schemaName: 'FeaturedStoreBundleDto', schema: featuredStoreBundleSchema },
 };

@@ -50,7 +50,7 @@ export const AgentFrameworkCard = ({ frameworks, onToggleFramework }: AgentFrame
   const { t } = useTranslation();
 
   return (
-    <StepSection number={2} badge="recommended" title={t('ONBOARDING_AGENT_FRAMEWORK_TITLE')} description={t('ONBOARDING_AGENT_FRAMEWORK_DESC')}>
+    <StepSection number={2} badge="recommended" title={t('ONBOARDING_AGENT_FRAMEWORK_TITLE')}>
       <div className="space-y-4" data-testid="agent-apps-card">
         <div className="space-y-2">
           <div className="grid items-stretch gap-4 sm:grid-cols-2">

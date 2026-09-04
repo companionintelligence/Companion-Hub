@@ -77,7 +77,7 @@ describe('isPrivateHostname', () => {
     ['172.31.255.254', true],
     ['192.168.1.9', true],
     ['169.254.10.1', true],
-    ['100.101.102.103', true],
+    ['100.64.0.1', true],
     ['hub.local', true],
     ['core-2.lan', true],
     ['gateway.internal', true],
@@ -115,23 +115,21 @@ describe('isPrivateHostname', () => {
 
 describe('buildHubTailnetOrigin', () => {
   it('builds an https origin from the node FQDN when the VPN is connected and servable', () => {
-    expect(buildHubTailnetOrigin({ connected: true, httpsAvailable: true, nodeFqdn: 'hub-x.tail1234.ts.net' })).toBe('https://hub-x.tail1234.ts.net');
+    expect(buildHubTailnetOrigin({ connected: true, httpsAvailable: true, nodeFqdn: 'hub-x.example.ts.net' })).toBe('https://hub-x.example.ts.net');
   });
 
   it('strips the trailing dot MagicDNS reports and lowercases', () => {
     // `tailscale status` returns DNSName with a trailing dot; an origin carrying
     // it would fail every URL.origin comparison it feeds.
-    expect(buildHubTailnetOrigin({ connected: true, httpsAvailable: true, nodeFqdn: 'Hub-X.tail1234.ts.net.' })).toBe(
-      'https://hub-x.tail1234.ts.net',
-    );
+    expect(buildHubTailnetOrigin({ connected: true, httpsAvailable: true, nodeFqdn: 'Hub-X.example.ts.net.' })).toBe('https://hub-x.example.ts.net');
   });
 
   it('returns null when disconnected — a stale FQDN is not an origin', () => {
-    expect(buildHubTailnetOrigin({ connected: false, httpsAvailable: true, nodeFqdn: 'hub-x.tail1234.ts.net' })).toBeNull();
+    expect(buildHubTailnetOrigin({ connected: false, httpsAvailable: true, nodeFqdn: 'hub-x.example.ts.net' })).toBeNull();
   });
 
   it('returns null without tailnet HTTPS — Serve cannot publish the origin', () => {
-    expect(buildHubTailnetOrigin({ connected: true, httpsAvailable: false, nodeFqdn: 'hub-x.tail1234.ts.net' })).toBeNull();
+    expect(buildHubTailnetOrigin({ connected: true, httpsAvailable: false, nodeFqdn: 'hub-x.example.ts.net' })).toBeNull();
   });
 
   it('returns null without a node FQDN', () => {
@@ -142,13 +140,13 @@ describe('buildHubTailnetOrigin', () => {
 
 describe('isTailnetHostname', () => {
   it.each([
-    ['hub-x.tail1234.ts.net', true],
-    ['hub-x.tail1234.ts.net.', true],
-    ['HUB-X.TAIL1234.TS.NET', true],
+    ['hub-x.example.ts.net', true],
+    ['hub-x.example.ts.net.', true],
+    ['HUB-X.EXAMPLE.TS.NET', true],
     // Tailscale assigns from the CGNAT range; a caller arriving from it is on
     // the VPN even though isPrivateHostname also claims it.
     ['100.64.0.1', true],
-    ['100.90.154.85', true],
+    ['100.64.0.1', true],
     ['100.127.255.254', true],
     // Tailscale's IPv6 assignment range (fd7a:115c:a1e0::/48), including the
     // bracketed form URL.hostname reports for IPv6 literals.

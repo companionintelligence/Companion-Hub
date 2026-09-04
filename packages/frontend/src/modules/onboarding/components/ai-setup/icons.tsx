@@ -91,12 +91,36 @@ export function LemonadeIcon({ className }: IconProps) {
   );
 }
 
-/** A small spark for speculative decoding. */
+/** MTPLX — three staggered chevrons, for multiple tokens drafted ahead at once. */
+export function MtplxIcon({ className }: IconProps) {
+  return (
+    <Glyph className={className}>
+      <path d="M4 6l4 6-4 6" />
+      <path d="M10 6l4 6-4 6" />
+      <path d="M16 6l4 6-4 6" />
+    </Glyph>
+  );
+}
+
+/** mlx-dspark — a speculative branch: one path drafts ahead, the target verifies and commits. */
+export function DsparkIcon({ className }: IconProps) {
+  return (
+    <Glyph className={className}>
+      <path d="M4 12h5" />
+      <path d="M9 12l5-5" />
+      <path d="M9 12l5 5" />
+      <circle cx="16.5" cy="7" r="2" />
+      <circle cx="16.5" cy="17" r="2" />
+    </Glyph>
+  );
+}
+
+/** Generic speculative inference mark used for provider-neutral OpenAI-compatible servers. */
 export function SpeculativeInferenceIcon({ className }: IconProps) {
   return (
     <Glyph className={className}>
-      <path d="M12 3.5c.8 4.2 2.3 5.7 6.5 6.5-4.2.8-5.7 2.3-6.5 6.5-.8-4.2-2.3-5.7-6.5-6.5 4.2-.8 5.7-2.3 6.5-6.5Z" />
-      <path d="M19 17v4M17 19h4M5 3v4M3 5h4" />
+      <path d="M12 3.5 14 9l5.5 2-5.5 2-2 5.5-2-5.5-5.5-2 5.5-2L12 3.5Z" />
+      <path d="m19 4 .5 1.5L21 6l-1.5.5L19 8l-.5-1.5L17 6l1.5-.5L19 4Z" />
     </Glyph>
   );
 }

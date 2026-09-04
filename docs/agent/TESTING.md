@@ -1,7 +1,7 @@
-# Testing Guide — CI-Hub (Agents)
+# Testing guide
 
-> **Purpose:** How to write and run unit, integration, and e2e tests in CI-Hub.
-> **Scope:** Vitest (packages), Playwright (e2e), integration tests, visual regression.
+> **Purpose:** How to write and run unit, integration, and E2E tests in Hub.
+> **Scope:** Vitest (packages), Playwright (E2E), integration tests, visual regression.
 > **Inventory:** [TEST_INVENTORY.md](TEST_INVENTORY.md) — regenerate with `pnpm run agent:test-inventory`
 > **Commands:** `pnpm test`, `pnpm run test:e2e:ci`, `pnpm run test:visual`
 > **Router:** [AGENTS.md](../../AGENTS.md)
@@ -49,7 +49,7 @@ cd packages/backend && pnpm test -- src/path/to/file.spec.ts
 
 **Do:**
 - Mock Drizzle/queue dependencies at module boundary
-- Test error paths and validation, not just happy path
+- Test error paths and validation in addition to the happy path
 
 ### Desktop (Rust)
 
@@ -59,7 +59,7 @@ cd packages/desktop/src-tauri && cargo test
 
 ---
 
-## Writing e2e tests
+## Writing E2E tests
 
 See [e2e/README.md](../../e2e/README.md) for lanes and local setup.
 
@@ -68,7 +68,7 @@ See [e2e/README.md](../../e2e/README.md) for lanes and local setup.
 - Tag slow tests appropriately
 - Write targeted specs for the flow you changed
 
-**iOS / phone Hub (not XCUITest):** We do not run the Simulator in CI. WKWebView white-screens are caught in Vitest by `packages/frontend/src/lib/ios-navigation.smoke.test.tsx` (page slides, body scroll-lock, inline theme lock). Add a case there when you add a route or overlay. Playwright `e2e/navigation.spec.ts` covers desktop Chromium only.
+**iOS and phone Hub (not XCUITest):** CI does not run the Simulator. Vitest catches WKWebView white screens in `packages/frontend/src/lib/ios-navigation.smoke.test.tsx` (page slides, body scroll lock, and inline theme lock). Add a case there when you add a route or overlay. Playwright `e2e/navigation.spec.ts` covers desktop Chromium only.
 
 **Don't:**
 - Use App Explorer for general Hub feature validation (marketplace QA only)

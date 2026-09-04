@@ -63,6 +63,8 @@ describe('bridge-diagnostics-cli', () => {
         { label: 'Hub API (cloudflared origin)', port: 5002 },
         { label: 'Ollama', port: 11434 },
         { label: 'vLLM', port: 8000 },
+        { label: 'MTPLX', port: 8000 },
+        { label: 'Speculative inference', port: 8080 },
         { label: 'Lemonade', port: 13305 },
         { label: 'Speculative inference', port: 8000 },
       ]);
@@ -77,6 +79,11 @@ describe('bridge-diagnostics-cli', () => {
       const services = resolveBridgeServices('.env.prod');
       expect(services[0]).toEqual({ label: 'Hub API (cloudflared origin)', port: 5999 });
       expect(services[1]).toEqual({ label: 'Ollama', port: 12000 });
+    });
+
+    it('reads the speculative inference port from a URL-shaped DSPARK_URL', () => {
+      parseEnvFile.mockReturnValue({ DSPARK_URL: 'http://host.docker.internal:9090' });
+      expect(resolveBridgeServices('.env.prod')).toContainEqual({ label: 'Speculative inference', port: 9090 });
     });
 
     it('falls back when a port is out of range rather than handing net.connect a bad port', () => {

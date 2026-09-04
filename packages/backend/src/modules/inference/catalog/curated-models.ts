@@ -1,4 +1,12 @@
-import type { CuratedModel, HardwareTier, InferenceBackendType, ModelModality, ModelPurpose, TierRecommendation } from '@ci-hub/common/types';
+import type {
+  CuratedModel,
+  HardwareTier,
+  HostPlatform,
+  InferenceBackendType,
+  ModelModality,
+  ModelPurpose,
+  TierRecommendation,
+} from '@ci-hub/common/types';
 
 // ─── LLM catalog (TOON) ──────────────────────────────────────────────────────
 // The LLM catalog is authored as a TOON table (https://toonformat.dev) — one compact, pipe-delimited
@@ -54,6 +62,30 @@ import type { CuratedModel, HardwareTier, InferenceBackendType, ModelModality, M
 // ago", single `27b` size at 18GB / 256K context with vision+tools+thinking flags. No Artificial Analysis
 // leaderboard entry exists yet for a model this new, so `intel`/`agentic`/perf columns are left blank.
 //
+// 2026-08-24: added the VLLM_MLX_LLM_TOON table below (6 rows) for vLLM-Metal — Apple Silicon Macs
+// now have a real vLLM path via the MLX compute backend (github.com/vllm-project/vllm-metal), and
+// Ollama 0.19 (preview, March 2026) separately gained a native MLX backend for the existing Ollama
+// catalog above, so no catalog change was needed on that side — the same `family:size` tags apply,
+// Ollama itself decides MLX vs. llama.cpp per host. Every MLX row's HuggingFace repo id and on-disk
+// size were checked live via the Hugging Face Hub API (hub_repo_search + hf_fs), not web search
+// summaries, per the fabrication lesson above.
+//
+// 2026-08-29: five ollama.com/library URLs supplied directly by a human were checked. Per the
+// fabrication lesson above, verification used a real browser render of each library page and its
+// /tags subpage, not this session's WebFetch summarizer. `glm-5.3` and `glm-5.3-flash` are real but
+// `:cloud`-only (no local tag exists for either) — excluded per the LOCAL ONLY rule above, not added.
+// `nemotron-3.5-lightning` was already in the catalog (added 2026-08-12) — nothing to do. `ornith-1.5`
+// (creator: Deep Reinforce, same family as `ornith-9b`/`ornith-35b`) added as three new rows —
+// `ornith-1-5-9b`/`-35b`/`-397b` — with real default tags; unlike the 1.0 rows, its library page shows
+// no `tools`/`thinking` capability badge (only `vision`), so those flags were left unset rather than
+// copied from the older sibling rows. `qwen3.8-flash-next` (Alibaba, billed as an early preview of the
+// architecture behind Qwen4) is real but was NOT added: its only tags are Apple-MLX/NVIDIA-NVFP4
+// (`125b-mlx`, `125b-a6b-nvfp4`, `125b-a6b-mlx-bf16`) — there is no bare GGUF default build, which
+// breaks this table's `quantization === 'q4_K_M'` invariant (see curated-models.test.ts) and would also
+// need a per-row Apple/NVIDIA-only `gpuVendors` gate the shared CATALOG_TOON → `generatedLlms` mapping
+// has no mechanism for. Needs a deliberate schema decision (new `quant` column + gate, or its own small
+// table like VLLM_MLX_LLM_TOON), not a same-shape row — left out pending that.
+//
 // Columns:
 //   id              catalog id (`${family}-${size}`)
 //   backendModelId  the exact ollama pull tag (`family:size`)
@@ -82,7 +114,7 @@ import type { CuratedModel, HardwareTier, InferenceBackendType, ModelModality, M
 // passes (e.g. gpt-oss-120b 33.3→24, llama-3.3-70b 14.5→9) — consistent with AA having rebased/recalibrated
 // the index in between, not with the older numbers being wrong at the time they were entered.
 const CATALOG_TOON = `
-llms[84|]{id,backendModelId,name,purpose,params,gb,tier,ctxK,creator,intel,agentic,reason,vision,tools,audio,tps,ttft,e2e}:
+llms[87|]{id,backendModelId,name,purpose,params,gb,tier,ctxK,creator,intel,agentic,reason,vision,tools,audio,tps,ttft,e2e}:
   gemma4-e2b|gemma4:e2b|Gemma 4 E2B|general|2|7.2|cpu-only|128|Google|9|7.4|1|1|1|1|||
   gemma4-e4b|gemma4:e4b|Gemma 4 E4B|general|4|9.6|cpu-only|128|Google|12|8.7|1|1|1|1|||
   gemma4-26b|gemma4:26b|Gemma 4 26B|general|26|18|medium|256|Google|26|28.9|1|1|1|0|78|1.59|8
@@ -167,10 +199,38 @@ llms[84|]{id,backendModelId,name,purpose,params,gb,tier,ctxK,creator,intel,agent
   glm-4-7-flash-30b|glm-4.7-flash:latest|GLM-4.7 Flash|reasoning|30|19|medium|200|Z AI|||1|0|1|0|||
   nemotron-3-5-lightning-30b|nemotron-3.5-lightning:30b|Nemotron 3.5 Lightning|general|30|25|medium|1000|NVIDIA|24||0|0|1|0|293|1.04|
   deepseek-v4-flash-0731-284b|frob/deepseek-v4-flash-0731:284b-a13b-ud-q4_k_xl|DeepSeek V4 Flash 0731|reasoning|284|155|high|1000|DeepSeek|52||1|0|1|0|128|1.43|20.95
+  ornith-1-5-9b|ornith-1.5:9b|Ornith 1.5 9B|coding|9|6.6|low|256|Deep Reinforce|||0|1|0|0|||
+  ornith-1-5-35b|ornith-1.5:35b|Ornith 1.5 35B|coding|35|23|medium|256|Deep Reinforce|||0|1|0|0|||
+  ornith-1-5-397b|ornith-1.5:397b|Ornith 1.5 397B|coding|397|242|high|256|Deep Reinforce|||0|1|0|0|||
 `;
 
 /** A decoded TOON row: every column mapped to its raw string cell (empty string when blank). */
 type ToonRow = Record<string, string>;
+
+const ALL_HOST_PLATFORMS: HostPlatform[] = ['darwin', 'linux', 'win32'];
+
+/**
+ * Native host platforms supported by the serving implementation behind each catalog table. These
+ * are deliberately separate from `gpuVendors`: a model can fit an Apple unified-memory budget but
+ * still be impossible to serve through a Linux-only backend (and vice versa). Host-served backends
+ * may still be pointed at a remote machine; the platform gate is for automatic local recommendations.
+ */
+function defaultSupportedPlatforms(backend: InferenceBackendType): HostPlatform[] {
+  switch (backend) {
+    case 'vllm':
+      // Plain vLLM rows use the CUDA host/image path in VllmBackend. Apple Silicon has its own
+      // vLLM-Metal table below; neither path is a Hub-supported native macOS CUDA deployment.
+      return ['linux', 'win32'];
+    case 'mtplx':
+    case 'dspark':
+      return ['darwin'];
+    case 'lucebox':
+      return ['linux'];
+    case 'ollama':
+    case 'lemonade':
+      return [...ALL_HOST_PLATFORMS];
+  }
+}
 
 /**
  * Minimal decoder for the pipe-delimited tabular TOON subset this catalog uses:
@@ -242,9 +302,39 @@ const MOE_ACTIVE_PARAMS_B: Record<string, number> = {
   'qwen3-coder-30b-vllm': 3, // Qwen3-Coder-30B-A3B (vLLM) — same 30B-A3B MoE arch
   'gpt-oss-20b-vllm': 3.6, // GPT-OSS 20B (vLLM) — same MoE as the Ollama row
   'gpt-oss-120b-vllm': 5.1, // GPT-OSS 120B (vLLM) — same MoE as the Ollama row
+  'gpt-oss-20b-mlx': 3.6, // GPT-OSS 20B (vLLM-Metal/MLX) — same MoE as the Ollama row
+  'qwen3-30b-a3b-mlx': 3, // Qwen3-30B-A3B-Instruct-2507 (vLLM-Metal/MLX) — same MoE arch as qwen3-30b above
   'glm-4-7-flash-30b': 3, // GLM-4.7 Flash — 30B-A3B MoE
   'nemotron-3-5-lightning-30b': 3, // Nemotron 3.5 Lightning — 30B-A3B MoE
   'deepseek-v4-flash-0731-284b': 13, // DeepSeek V4 Flash 0731 — 284B total / 13B active MoE
+  'ornith-1-5-35b': 3, // Ornith 1.5 35B — 35B-A3B MoE per the library readme; the 9B/397B sizes are dense
+  // 2026-08-24 MLX expansion — active params reused from the matching Ollama-backend row above, or
+  // (where the base row has no MoE entry) taken directly from the HF repo's own `-A#B` name suffix.
+  'gemma4-26b-mlx': 3.8, // Gemma 4 26B (MLX) — same MoE as gemma4-26b above
+  'qwen3-6-35b-mlx': 3, // Qwen 3.6 35B (MLX) — same MoE as qwen3-6-35b above
+  'qwen3-5-35b-mlx': 3, // Qwen3.5-35B-A3B (MLX) — active size from the HF repo's own -A3B suffix
+  'qwen3-5-122b-mlx': 10, // Qwen3.5-122B-A10B (MLX) — active size from the HF repo's own -A10B suffix
+  'nemotron-3-nano-30b-mlx': 3, // NVIDIA-Nemotron-3-Nano-30B-A3B (MLX) — active size from the -A3B suffix
+  'nemotron-3-super-120b-mlx': 12, // Nemotron 3 Super 120B (MLX) — same MoE as nemotron-3-super-120b above
+  'gpt-oss-120b-mlx': 5.1, // GPT-OSS 120B (MLX) — same MoE as gpt-oss-120b-vllm above
+  'deepseek-r1-671b-mlx': 37, // DeepSeek R1 671B (MLX) — same MoE as deepseek-r1-671b above
+  'deepseek-coder-v2-16b-mlx': 2.4, // DeepSeek Coder V2 16B (MLX) — same MoE as deepseek-coder-v2-16b above
+  'qwen3-235b-mlx': 22, // Qwen3-235B-A22B (MLX) — active size from the HF repo's own -A22B suffix
+  'mixtral-8x7b-mlx': 13, // Mixtral 8X7B (MLX) — same MoE as mixtral-8x7b above
+  'mixtral-8x22b-mlx': 39, // Mixtral 8X22B (MLX) — same MoE as mixtral-8x22b above
+  'glm-5-2-mlx': 40, // GLM 5.2 (MLX) — same MoE as glm-5-2 above
+  'glm-4-7-flash-30b-mlx': 3, // GLM-4.7 Flash (MLX) — same MoE as glm-4-7-flash-30b above
+  'nemotron-3-5-lightning-30b-mlx': 3, // Nemotron 3.5 Lightning (MLX) — same MoE as nemotron-3-5-lightning-30b above
+  'deepseek-v4-flash-0731-mlx': 13, // DeepSeek V4 Flash 0731 (MLX) — same MoE as deepseek-v4-flash-0731-284b above
+  'north-mini-code-1-0-mlx': 3, // North Mini Code 1.0 (MLX) — same MoE as north-mini-code-1-0 above
+  'minimax-m2-mlx': 10, // MiniMax M2 (MLX) — same MoE as minimax-m2-community-230b above
+  // MTPLX (native multi-token-prediction) — active params reused from the matching Ollama-backend
+  // 35B-A3B MoE row (qwen3-6-35b above); the MTP head adds a small serial draft/verify cost but
+  // does not change which experts route per token, so the per-token bandwidth profile is unchanged.
+  'qwen3-6-35b-mtplx-speed': 3, // Qwen 3.6 35B A3B MTPLX Optimized Speed
+  'qwen3-6-35b-mtplx-balance': 3, // Qwen 3.6 35B A3B MTPLX Optimized Balance
+  'qwen3-6-35b-dspark': 3, // Qwen3.6-35B-A3B (mlx-dspark) — same MoE as qwen3-6-35b-mlx above
+  'nemotron-3-5-lightning-30b-dspark': 3, // Nemotron 3.5 Lightning (mlx-dspark) — same MoE as nemotron-3-5-lightning-30b-mlx above
 };
 
 /**
@@ -252,8 +342,18 @@ const MOE_ACTIVE_PARAMS_B: Record<string, number> = {
  * per-backend LLM table (e.g. `LEMONADE_LLM_TOON`) that follows the same column schema.
  * `backend` is a parameter rather than hardcoded so a second backend's table can reuse
  * every derived-field computation (tiers, footprint, MoE active-params) unchanged.
+ * `overrides.gpuVendors` lets a table override the per-backend default gpu-vendor gate — used by
+ * `VLLM_MLX_LLM_TOON` below, whose rows only run through vLLM-Metal (Apple Silicon), not the CUDA
+ * image every other vLLM row targets.
  */
-function buildLlmModel(row: ToonRow, backend: InferenceBackendType): CuratedModel {
+function buildLlmModel(
+  row: ToonRow,
+  backend: InferenceBackendType,
+  overrides?: {
+    gpuVendors?: CuratedModel['requirements']['gpuVendors'];
+    supportedPlatforms?: HostPlatform[];
+  },
+): CuratedModel {
   // Per-row `quant` column (vLLM table) wins; otherwise Ollama/Lemonade rows are
   // the q4_K_M default build, and vLLM serves the raw bf16 safetensors.
   const quantization = row.quant || (backend === 'vllm' ? 'bf16' : 'q4_K_M');
@@ -261,9 +361,18 @@ function buildLlmModel(row: ToonRow, backend: InferenceBackendType): CuratedMode
   const gb = Number(row.gb);
   const tier = (row.tier ?? 'cpu-only') as HardwareTier;
   const diskMb = Math.round(gb * 1024);
+  // Optional `ramGb` column: resident RAM stated directly, for rows where it is NOT a fixed
+  // multiple of on-disk size. Only `DSPARK_LLM_TOON` sets it — an mlx-dspark row downloads a
+  // target *and* a speculative drafter, and the drafter's disk↔RAM ratio inverts the usual
+  // assumption (drafters ship BF16 but load.py quantizes them to 4-bit at load, so drafter RAM is
+  // roughly a third of drafter disk). Folding both into `gb` alone would over-state resident RAM
+  // by ~10 GB on the 27B rows — safe for fit-checking, but it hands the memory manager's eviction
+  // planner a footprint it can never actually free. Every row without the column keeps the
+  // historical `diskMb * 1.1` exactly (asserted in curated-models.test.ts).
+  const ramGb = numOrUndef(row.ramGb);
   // Runtime RAM ≈ weights on disk plus KV-cache / runtime overhead. The tier budget fractions
   // (0.9 VRAM, 0.7 unified/RAM) provide the remaining headroom for the OS, app container, and context.
-  const footprintMb = Math.round(diskMb * 1.1);
+  const footprintMb = ramGb === undefined ? Math.round(diskMb * 1.1) : Math.round(ramGb * 1024);
   const reasoning = flag(row.reason);
   const vision = flag(row.vision);
   const audio = flag(row.audio);
@@ -295,15 +404,21 @@ function buildLlmModel(row: ToonRow, backend: InferenceBackendType): CuratedMode
     parameterScale: params,
     activeParameterScale: MOE_ACTIVE_PARAMS_B[row.id ?? ''] ?? params,
     requirements: {
-      minVramMb: diskMb,
-      recommendedVramMb: Math.round(diskMb * 1.1 + 1024),
-      minRamMb: Math.round(diskMb * 1.15),
+      // Anchor the memory requirements on resident RAM when a row states it (`ramGb`), and on
+      // on-disk size otherwise. The `ramGb === undefined` arms are the historical expressions,
+      // left byte-identical so adding this column moved no existing row.
+      minVramMb: ramGb === undefined ? diskMb : footprintMb,
+      recommendedVramMb: ramGb === undefined ? Math.round(diskMb * 1.1 + 1024) : Math.round(footprintMb + 1024),
+      minRamMb: ramGb === undefined ? Math.round(diskMb * 1.15) : Math.round(footprintMb * 1.05),
       diskMb,
-      // vLLM has no CPU serving path in the Hub and no viable AMD/Apple image (see
-      // VllmBackend.getComposeConfig), so its rows must only match an NVIDIA VRAM budget.
+      // vLLM has no CPU serving path in the Hub and no viable AMD/generic-Apple image (see
+      // VllmBackend.getComposeConfig), so its rows must only match an NVIDIA VRAM budget by default.
       // Listing 'cpu' here resurrects VRAM-rejected models through the system-RAM fallback
       // in ModelRegistryService.selectLlmsForHardware, recommending models that OOM (#1103).
-      gpuVendors: backend === 'vllm' ? ['nvidia'] : ['nvidia', 'amd', 'apple', 'cpu'],
+      // `overrides.gpuVendors` (VLLM_MLX_LLM_TOON) replaces this default for rows that run through
+      // vLLM-Metal instead — see the comment above that table for why those are 'apple'-only.
+      gpuVendors: overrides?.gpuVendors ?? (backend === 'vllm' ? ['nvidia'] : ['nvidia', 'amd', 'apple', 'cpu']),
+      supportedPlatforms: overrides?.supportedPlatforms ?? defaultSupportedPlatforms(backend),
       npuRequired: false,
       minTier: tier,
     },
@@ -386,6 +501,247 @@ llms[8|]{id,backendModelId,name,purpose,params,gb,tier,ctxK,creator,intel,agenti
 
 const vllmLlms: CuratedModel[] = decodeToonTable(VLLM_LLM_TOON, 'llms').map((row) => buildLlmModel(row, 'vllm'));
 
+// ─── vLLM-Metal (MLX / Apple Silicon) LLM catalog (TOON) ─────────────────────
+// Chat models for vLLM running on Apple Silicon via vllm-metal (github.com/vllm-project/vllm-metal),
+// a community-maintained vLLM hardware plugin that uses MLX as its compute backend — NOT the CUDA
+// `vllm/vllm-openai` image the table above targets. It has no Docker path (Docker Desktop on macOS
+// can't reach Metal); it installs into a native venv on the host and is started with the normal
+// `vllm serve <repo>` CLI once activated, same OpenAI-compatible surface VllmBackend already talks to
+// (see VllmBackend.getComposeConfig, which declines to deploy the CUDA image on `apple` for this
+// reason). Requires macOS 15+ and native arm64 Python 3.12 — see vllm-metal's own docs.
+//
+// `backendModelId` is the exact `mlx-community/...` HuggingFace repo id `vllm serve` loads. Every row
+// was checked live against huggingface.co on 2026-08-24 (hub_repo_search + hf_fs directory listing,
+// not a paraphrased fetch — see the fabrication-guard precedent in the header comment above) to
+// confirm the repo exists and to sum its real `.safetensors` shard sizes for `gb` (decimal GB,
+// bytes/1e9) — the same real-artifact-size discipline the Ollama table above applies to ollama.com.
+// `params`/`ctxK`/purpose/capability flags are reused from the matching Ollama-backend row for the
+// same base model (architecture and context length don't change with the serving engine or
+// quantization format) rather than re-derived. intel/agentic/perf columns are left blank for the same
+// reason the CUDA vLLM table leaves them blank: none of these MLX-quantized checkpoints have been
+// benchmarked by Artificial Analysis under vLLM-Metal specifically.
+//
+// `gpuVendors` is overridden to `['apple']` (see buildLlmModel) — these repos are MLX-quantized
+// safetensors and only run through vllm-metal; they must never compete for an NVIDIA VRAM budget.
+//
+// 2026-08-24 expansion: broadened from the initial 6 rows to cover every Ollama-catalog LLM family
+// above that has a real, live mlx-community (or, for `command-r-35b-mlx`, an official-org `mlx`
+// namespace) quant — checked the same way as the initial 6 (hub_repo_search + hf_fs directory
+// listing, real summed `.safetensors` bytes, not web search). Not every catalog family has one:
+// checked and confirmed NO mlx-community/MLX-tagged quant exists (as of 2026-08-24) for Poolside's
+// Laguna S/XS 2.1 (`laguna-s-2-1`/`laguna-xs-2-1` — official quants are GGUF/vLLM-NVFP4/INT4/FP8
+// only), Deep Reinforce's Ornith (`ornith-9b`/`ornith-35b`), Liquid AI's LFM 2.5 8B (`lfm2-5-8b` —
+// only the older, unrelated LFM2-24B-A2B has an MLX quant, via lmstudio-community not mlx-community),
+// Thinking Machines' Inkling (`inkling`), Cohere's Command A (`command-a-111b` — only the older,
+// smaller Command R family has one), Llama 4 Scout/Maverick (`llama4-16x17b`/`llama4-128x17b`),
+// the dense Nemotron 3 33B (`nemotron3-33b`), and the original Mistral Small 22B/2409
+// (`mistral-small-22b` — only newer 24B+ releases have been quantized). Community fine-tune rows
+// (`gemma4-26b-think`, `medgemma1-5-thinking`) and the non-standard `AQ4_1`-quantized
+// `deepseek-coder-v2-236b` were not pursued. `params`/`ctxK`/purpose/capability flags for every row
+// below are reused from the matching Ollama-backend row as before; MoE active-params are added to
+// MOE_ACTIVE_PARAMS_B below where the HF repo name itself states an `-A#B` active-expert size.
+const VLLM_MLX_LLM_TOON = `
+llms[64|]{id,backendModelId,name,purpose,params,gb,tier,ctxK,creator,intel,agentic,reason,vision,tools,audio,tps,ttft,e2e,quant}:
+  llama3-2-3b-mlx|mlx-community/Llama-3.2-3B-Instruct-4bit|Llama 3.2 3B (MLX)|general|3|1.8|low||Meta|||0|0|1|0||||mlx-4bit
+  qwen3-8b-mlx|mlx-community/Qwen3-8B-4bit|Qwen 3 8B (MLX)|general|8|4.6|low|40|Alibaba|||1|0|1|0||||mlx-4bit
+  gpt-oss-20b-mlx|mlx-community/gpt-oss-20b-MXFP4-Q8|GPT-OSS 20B (MLX)|general|20|12.1|medium|131|OpenAI|||1|0|1|0||||mxfp4
+  qwen3-8-27b-mlx|mlx-community/Qwen3.8-27B-4bit|Qwen 3.8 27B (MLX)|reasoning|27|16.1|medium|256|Alibaba|||1|1|1|0||||mlx-4bit
+  qwen3-30b-a3b-mlx|mlx-community/Qwen3-30B-A3B-Instruct-2507-4bit|Qwen 3 30B A3B (MLX)|general|30|17.2|medium|256|Alibaba|||1|0|1|0||||mlx-4bit
+  llama3-3-70b-mlx|mlx-community/Llama-3.3-70B-Instruct-4bit|Llama 3.3 70B (MLX)|general|70|39.7|high|128|Meta|||0|0|1|0||||mlx-4bit
+  gemma4-e4b-mlx|mlx-community/gemma-4-e4b-it-4bit|Gemma 4 E4B (MLX)|general|4|5.2|cpu-only|128|Google|||1|1|1|1||||mlx-4bit
+  gemma4-26b-mlx|mlx-community/gemma-4-26b-a4b-it-4bit|Gemma 4 26B (MLX)|general|26|15.4|medium|256|Google|||1|1|1|0||||mlx-4bit
+  gemma4-31b-mlx|mlx-community/gemma-4-31b-it-4bit|Gemma 4 31B (MLX)|general|31|18.4|medium|256|Google|||1|1|1|0||||mlx-4bit
+  muse-glimmer-mlx|mlx-community/Muse-Glimmer-30B-4bit|Muse Glimmer (MLX)|general|30|19.4|medium|128|Meta|||1|1|1|0||||mlx-4bit
+  qwen3-6-27b-mlx|mlx-community/Qwen3.6-27B-4bit|Qwen 3.6 27B (MLX)|coding|27|16.1|medium|262|Alibaba|||1|1|1|0||||mlx-4bit
+  qwen3-6-35b-mlx|mlx-community/Qwen3.6-35B-A3B-4bit|Qwen 3.6 35B (MLX)|coding|35|20.4|medium|262|Alibaba|||1|1|1|0||||mlx-4bit
+  qwen3-5-0-8b-mlx|mlx-community/Qwen3.5-0.8B-MLX-4bit|Qwen 3.5 0.8B (MLX)|reasoning|0.8|0.7|cpu-only|262|Alibaba|||1|1|1|0||||mlx-4bit
+  qwen3-5-2b-mlx|mlx-community/Qwen3.5-2B-MLX-4bit|Qwen 3.5 2B (MLX)|reasoning|2|1.7|cpu-only|262|Alibaba|||1|1|1|0||||mlx-4bit
+  qwen3-5-4b-mlx|mlx-community/Qwen3.5-4B-MLX-4bit|Qwen 3.5 4B (MLX)|reasoning|4|3.1|cpu-only|262|Alibaba|||1|1|1|0||||mlx-4bit
+  qwen3-5-9b-mlx|mlx-community/Qwen3.5-9B-MLX-4bit|Qwen 3.5 9B (MLX)|reasoning|9|6.0|low|262|Alibaba|||1|1|1|0||||mlx-4bit
+  qwen3-5-27b-mlx|mlx-community/Qwen3.5-27B-4bit|Qwen 3.5 27B (MLX)|reasoning|27|16.1|medium|262|Alibaba|||1|1|1|0||||mlx-4bit
+  qwen3-5-35b-mlx|mlx-community/Qwen3.5-35B-A3B-4bit|Qwen 3.5 35B A3B (MLX)|reasoning|35|20.4|medium|262|Alibaba|||1|1|1|0||||mlx-4bit
+  qwen3-5-122b-mlx|mlx-community/Qwen3.5-122B-A10B-4bit|Qwen 3.5 122B A10B (MLX)|reasoning|122|69.6|high|262|Alibaba|||1|1|1|0||||mlx-4bit
+  nemotron-3-nano-4b-mlx|mlx-community/NVIDIA-Nemotron-3-Nano-4B-4bit|Nemotron 3 Nano 4B (MLX)|reasoning|4|2.3|cpu-only|262|NVIDIA|||1|0|1|0||||mlx-4bit
+  nemotron-3-nano-30b-mlx|mlx-community/NVIDIA-Nemotron-3-Nano-30B-A3B-4bit|Nemotron 3 Nano 30B (MLX)|reasoning|30|17.8|medium|1000|NVIDIA|||1|0|1|0||||mlx-4bit
+  nemotron-3-super-120b-mlx|mlx-community/NVIDIA-Nemotron-3-Super-120B-A12B-4bit|Nemotron 3 Super 120B (MLX)|reasoning|120|68.0|high|256|NVIDIA|||1|0|1|0||||mlx-4bit
+  gpt-oss-120b-mlx|mlx-community/gpt-oss-120b-MXFP4-Q8|GPT-OSS 120B (MLX)|general|120|63.4|high|131|OpenAI|||1|0|1|0||||mxfp4
+  deepseek-r1-1-5b-mlx|mlx-community/DeepSeek-R1-Distill-Qwen-1.5B-4bit|DeepSeek R1 1.5B (MLX)|reasoning|1.5|1.0|cpu-only||DeepSeek|||1|0|1|0||||mlx-4bit
+  deepseek-r1-7b-mlx|mlx-community/DeepSeek-R1-Distill-Qwen-7B-4bit|DeepSeek R1 7B (MLX)|reasoning|7|4.3|low||DeepSeek|||1|0|1|0||||mlx-4bit
+  deepseek-r1-8b-mlx|mlx-community/DeepSeek-R1-Distill-Llama-8B-4bit|DeepSeek R1 8B (MLX)|reasoning|8|4.5|low||DeepSeek|||1|0|1|0||||mlx-4bit
+  deepseek-r1-14b-mlx|mlx-community/DeepSeek-R1-Distill-Qwen-14B-4bit|DeepSeek R1 14B (MLX)|reasoning|14|8.3|low||DeepSeek|||1|0|1|0||||mlx-4bit
+  deepseek-r1-32b-mlx|mlx-community/DeepSeek-R1-Distill-Qwen-32B-4bit|DeepSeek R1 32B (MLX)|reasoning|32|18.4|medium||DeepSeek|||1|0|1|0||||mlx-4bit
+  deepseek-r1-70b-mlx|mlx-community/DeepSeek-R1-Distill-Llama-70B-4bit|DeepSeek R1 70B (MLX)|reasoning|70|39.7|high||DeepSeek|||1|0|1|0||||mlx-4bit
+  deepseek-r1-671b-mlx|mlx-community/DeepSeek-R1-4bit|DeepSeek R1 671B (MLX)|reasoning|671|419.5|high|160|DeepSeek|||1|0|1|0||||mlx-4bit
+  deepseek-coder-v2-16b-mlx|mlx-community/DeepSeek-Coder-V2-Lite-Instruct-4bit|DeepSeek Coder V2 16B (MLX)|coding|16|8.8|medium|160|DeepSeek|||0|0|0|0||||mlx-4bit
+  qwen3-1-7b-mlx|mlx-community/Qwen3-1.7B-4bit|Qwen 3 1.7B (MLX)|general|1.7|1.0|cpu-only|40|Alibaba|||1|0|1|0||||mlx-4bit
+  qwen3-4b-mlx|mlx-community/Qwen3-4B-4bit|Qwen 3 4B (MLX)|general|4|2.3|cpu-only|256|Alibaba|||1|0|1|0||||mlx-4bit
+  qwen3-14b-mlx|mlx-community/Qwen3-14B-4bit|Qwen 3 14B (MLX)|general|14|8.3|low|40|Alibaba|||1|0|1|0||||mlx-4bit
+  qwen3-32b-mlx|mlx-community/Qwen3-32B-4bit|Qwen 3 32B (MLX)|general|32|18.4|medium|40|Alibaba|||1|0|1|0||||mlx-4bit
+  qwen3-235b-mlx|mlx-community/Qwen3-235B-A22B-4bit|Qwen 3 235B A22B (MLX)|general|235|132.3|high|256|Alibaba|||1|0|1|0||||mlx-4bit
+  qwq-32b-mlx|mlx-community/QwQ-32B-4bit|QwQ 32B (MLX)|reasoning|32|18.4|medium|40|Alibaba|||1|0|1|0||||mlx-4bit
+  gemma3-270m-mlx|mlx-community/gemma-3-270m-it-4bit|Gemma 3 270M (MLX)|general|0.27|0.2|cpu-only|32|Google|||0|0|0|0||||mlx-4bit
+  mistral-7b-mlx|mlx-community/Mistral-7B-Instruct-v0.3-4bit|Mistral 7B (MLX)|general|7|4.1|low|32|Mistral|||0|0|1|0||||mlx-4bit
+  mistral-nemo-12b-mlx|mlx-community/Mistral-Nemo-Instruct-2407-4bit|Mistral Nemo 12B (MLX)|general|12|6.9|low||Mistral|||0|0|1|0||||mlx-4bit
+  mistral-small-24b-mlx|mlx-community/Mistral-Small-24B-Instruct-2501-4bit|Mistral Small 24B (MLX)|general|24|13.3|medium|32|Mistral|||0|0|1|0||||mlx-4bit
+  mistral-large-123b-mlx|mlx-community/Mistral-Large-Instruct-2407-4bit|Mistral Large 123B (MLX)|general|123|69.0|high||Mistral|||0|0|1|0||||mlx-4bit
+  mixtral-8x7b-mlx|mlx-community/Mixtral-8x7B-Instruct-v0.1-4bit|Mixtral 8X7B (MLX)|general|47|26.3|high|32|Mistral|||0|0|1|0||||mlx-4bit
+  mixtral-8x22b-mlx|mlx-community/Mixtral-8x22B-4bit|Mixtral 8X22B (MLX)|general|141|79.4|high|64|Mistral|||0|0|1|0||||mlx-4bit
+  llama3-2-1b-mlx|mlx-community/Llama-3.2-1B-Instruct-4bit|Llama 3.2 1B (MLX)|general|1|0.7|cpu-only||Meta|||0|0|1|0||||mlx-4bit
+  llama3-1-8b-mlx|mlx-community/Meta-Llama-3.1-8B-Instruct-4bit|Llama 3.1 8B (MLX)|general|8|4.5|low||Meta|||0|0|1|0||||mlx-4bit
+  llama3-1-70b-mlx|mlx-community/Meta-Llama-3.1-70B-Instruct-4bit|Llama 3.1 70B (MLX)|general|70|39.7|high||Meta|||0|0|1|0||||mlx-4bit
+  llama3-1-405b-mlx|mlx-community/Meta-Llama-3.1-405B-4bit|Llama 3.1 405B (MLX)|general|405|230.7|high|128|Meta|||0|0|1|0||||mlx-4bit
+  glm4-9b-mlx|mlx-community/glm-4-9b-chat-1m-4bit|GLM-4 9B (MLX)|general|9|5.4|low||Z AI|||0|0|1|0||||mlx-4bit
+  glm-5-2-mlx|mlx-community/GLM-5.2-4bit|GLM 5.2 (MLX)|reasoning|754|418.3|high|1000|Z AI|||1|0|1|0||||mlx-4bit
+  glm-4-7-flash-30b-mlx|mlx-community/GLM-4.7-Flash-4bit|GLM-4.7 Flash (MLX)|reasoning|30|16.9|medium|200|Z AI|||1|0|1|0||||mlx-4bit
+  nemotron-3-5-lightning-30b-mlx|mlx-community/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-4bit|Nemotron 3.5 Lightning (MLX)|general|30|17.8|medium|1000|NVIDIA|||0|0|1|0||||mlx-4bit
+  deepseek-v4-flash-0731-mlx|mlx-community/DeepSeek-V4-Flash-0731-2.4bit-mixed|DeepSeek V4 Flash 0731 (MLX)|reasoning|284|92.8|high|1000|DeepSeek|||1|0|1|0||||mlx-2.4bit
+  ministral-3-3b-mlx|mlx-community/Ministral-3-3B-Instruct-2512-4bit|Ministral 3 3B (MLX)|general|3|2.8|cpu-only|256|Mistral|||0|1|1|0||||mlx-4bit
+  ministral-3-8b-mlx|mlx-community/Ministral-3-8B-Instruct-2512-4bit|Ministral 3 8B (MLX)|general|8|5.6|low|256|Mistral|||0|1|1|0||||mlx-4bit
+  ministral-3-14b-mlx|mlx-community/Ministral-3-14B-Instruct-2512-4bit|Ministral 3 14B (MLX)|general|14|8.5|low|256|Mistral|||0|1|1|0||||mlx-4bit
+  command-r-35b-mlx|mlx-community/c4ai-command-r-v01-4bit|Command R 35B (MLX)|general|35|22.7|medium|128|Cohere|||0|0|1|0||||mlx-4bit
+  north-mini-code-1-0-mlx|mlx-community/North-Mini-Code-1.0-4bit|North Mini Code 1.0 (MLX)|coding|30|18.5|medium|488|Cohere|||1|0|1|0||||mlx-4bit
+  olmo-3-7b-mlx|mlx-community/Olmo-3-7B-Instruct-4bit|OLMo 3 7B (MLX)|general|7|4.1|low|64|Allen Institute|||0|0|1|0||||mlx-4bit
+  olmo-3-32b-mlx|mlx-community/Olmo-3-1125-32B-8bit|OLMo 3 32B (MLX)|general|32|34.3|medium|64|Allen Institute|||0|0|1|0||||mlx-8bit
+  phi4-14b-mlx|mlx-community/phi-4-4bit|Phi-4 14B (MLX)|general|14|8.3|low|16|Microsoft|||0|0|1|0||||mlx-4bit
+  phi4-mini-3-8b-mlx|mlx-community/Phi-4-mini-instruct-4bit|Phi-4 Mini 3.8B (MLX)|general|3.8|2.2|cpu-only|128|Microsoft|||0|0|1|0||||mlx-4bit
+  phi4-reasoning-14b-mlx|mlx-community/Phi-4-reasoning-4bit|Phi-4 Reasoning 14B (MLX)|reasoning|14|8.3|low|32|Microsoft|||1|0|1|0||||mlx-4bit
+  minimax-m2-mlx|mlx-community/MiniMax-M2-4bit|MiniMax M2 (MLX)|general|230|128.7|high|205|MiniMax|||1|0|1|0||||mlx-4bit
+`;
+
+const vllmMlxLlms: CuratedModel[] = decodeToonTable(VLLM_MLX_LLM_TOON, 'llms').map((row) =>
+  buildLlmModel(row, 'vllm', { gpuVendors: ['apple'], supportedPlatforms: ['darwin'] }),
+);
+
+// ─── MTPLX LLM catalog (TOON) ─────────────────────────────────────────────────
+// Chat models for the `mtplx` backend — github.com/youssofal/MTPLX, a native macOS app/CLI (Apple
+// Silicon, macOS 14+, no Docker or Linux path at all) that speeds up decoding ~1.6-2.9x via native
+// multi-token-prediction (MTP) speculative decoding: the served model drafts several tokens ahead of
+// itself using its own trained-in MTP head (no external drafter model) and verifies them in one
+// batched pass, with exact rejection-sampling correction so the output distribution is unchanged at
+// any temperature. `mtplx serve --model <repo>` exposes an OpenAI-compatible `/v1` surface, the same
+// shape MtplxBackend talks to — see mtplx.backend.ts.
+//
+// `backendModelId` is the exact `Youssofal/...` HuggingFace repo id `mtplx serve --model` loads.
+// Every row was checked live against huggingface.co on 2026-08-25 (hub_repo_search + hf_fs directory
+// listing + each repo's own config.json, not a paraphrased fetch) to confirm it exists and to sum its
+// real download bytes for `gb` — every MTP repo bundles more than the base weights: an extra
+// `mtp.safetensors` (or `mtp/weights.safetensors`) tensor file holding the trained MTP head, loaded
+// via a proprietary `mlx_lm_extra_tensors` config key only MTPLX's own loader understands, plus an
+// `mtplx_runtime.json` with the auto-tuned draft depth for that exact artifact. None of this is
+// optional or generic-MLX-loadable — it is why these rows exist under a dedicated `mtplx` backend
+// rather than the vLLM-Metal catalog above: loading one of these repos through a generic MLX runtime
+// (vLLM-Metal, plain mlx-lm) would silently ignore the MTP head and `mtplx_runtime.json`, downloading
+// the extra weight for zero speedup — the entire reason the repo exists. `quant` is `mtplx-dynamic`
+// (not a uniform bit-width) because MTPLX hand-tunes precision per tensor group — per the model
+// cards: the bulk of the model at 4-bit, layers/embeddings/output-head that hurt most at 4-bit kept
+// at 8-bit, and the MTP head itself kept at 16-bit.
+//
+// `params`/`ctxK`/purpose/capability flags are reused from the matching Ollama-backend row for the
+// same base model, as the other per-backend tables above do. `gpuVendors` is overridden to `['apple']`
+// (see buildLlmModel) — Apple Silicon only, no viable path on any other vendor. intel/agentic/perf
+// columns are left blank for the same reason the other per-backend tables leave them blank: none of
+// these MTP-adapted checkpoints have been independently benchmarked by Artificial Analysis.
+//
+// Scope: only Qwen-family rows are included. Youssofal also publishes a Gemma 4 pair
+// (`Gemma4-MTPLX-Optimized-Speed`/`-Optimized-Quality`), but those repos use a structurally different
+// `assistant/` + `target/` two-checkpoint layout (paired via `mtplx_pair.json`) rather than a single
+// checkpoint with a native MTP head — which looks like exactly the external-drafter architecture
+// MTPLX's own README says it does not use ("Not an external-drafter system. The drafter is the target
+// model's own MTP heads."). Given that unresolved inconsistency, and without independent confirmation
+// of how `mtplx serve` actually loads that pair, the Gemma 4 rows are left out rather than guessed at.
+// `Qwen3.6-35B-A3B-MTPLX-Optimized-Quality` (referenced by name in the org's other READMEs) 404s and
+// was not added — see the fabrication-guard precedent in this file's header for why a 404 is a hard
+// stop, not a "probably still there" guess. The 25 non-MTP "Abliterated-Heretic-Uncensored" models in
+// the same HF org (Qwen3.6/MiniMax fine-tunes with refusal-training removed) are a different,
+// unrelated product line from the same publisher — out of scope for this catalog on quality/safety
+// grounds regardless of MTP status.
+const MTPLX_LLM_TOON = `
+llms[8|]{id,backendModelId,name,purpose,params,gb,tier,ctxK,creator,intel,agentic,reason,vision,tools,audio,tps,ttft,e2e,quant}:
+  qwen3-8-27b-mtplx-speed|Youssofal/Qwen3.8-27B-MTPLX-Optimized-Speed|Qwen 3.8 27B MTPLX Optimized Speed|reasoning|27|20.7|medium|256|Alibaba|||1|1|1|0||||mtplx-dynamic
+  qwen3-8-27b-mtplx-quality|Youssofal/Qwen3.8-27B-MTPLX-Optimized-Quality|Qwen 3.8 27B MTPLX Optimized Quality|reasoning|27|30.0|high|256|Alibaba|||1|1|1|0||||mtplx-dynamic
+  qwen3-8-27b-mtplx-bare|Youssofal/Qwen3.8-27B-MTPLX-Bare-Speed|Qwen 3.8 27B MTPLX Bare Speed|reasoning|27|16.3|medium|256|Alibaba|||1|1|1|0||||mtplx-dynamic
+  qwen3-6-27b-mtplx-v2|Youssofal/Qwen3.6-27B-MTPLX-Optimized-Speed-V2|Qwen 3.6 27B MTPLX Optimized Speed V2|coding|27|19.9|medium|262|Alibaba|||1|1|1|0||||mtplx-dynamic
+  qwen3-6-35b-mtplx-speed|Youssofal/Qwen3.6-35B-A3B-MTPLX-Optimized-Speed|Qwen 3.6 35B A3B MTPLX Optimized Speed|coding|35|21.0|medium|262|Alibaba|||1|1|1|0||||mtplx-dynamic
+  qwen3-6-35b-mtplx-balance|Youssofal/Qwen3.6-35B-A3B-MTPLX-Optimized-Balance|Qwen 3.6 35B A3B MTPLX Optimized Balance|coding|35|29.7|high|262|Alibaba|||1|1|1|0||||mtplx-dynamic
+  qwen3-5-4b-mtplx-speed|Youssofal/Qwen3.5-4B-MTPLX-Optimized-Speed|Qwen 3.5 4B MTPLX Optimized Speed|reasoning|4|2.5|cpu-only|262|Alibaba|||1|1|1|0||||mtplx-dynamic
+  qwen3-5-9b-mtplx-speed|Youssofal/Qwen3.5-9B-MTPLX-Optimized-Speed|Qwen 3.5 9B MTPLX Optimized Speed|reasoning|9|8.7|low|262|Alibaba|||1|1|1|0||||mtplx-dynamic
+`;
+
+const mtplxLlms: CuratedModel[] = decodeToonTable(MTPLX_LLM_TOON, 'llms').map((row) =>
+  buildLlmModel(row, 'mtplx', { gpuVendors: ['apple'], supportedPlatforms: ['darwin'] }),
+);
+
+// ─── mlx-dspark (speculative decoding / Apple Silicon) LLM catalog (TOON) ────
+// Chat models for mlx-dspark (github.com/ARahim3/mlx-dspark), which runs two EAGLE-family
+// speculative-decoding drafters natively on Apple Silicon via MLX: DeepSeek's DSpark and z-lab's
+// DFlash. Both are lossless — the target verifies every drafted token, so output is identical to
+// plain decoding and only the speed changes — provided the acceptance threshold stays at 0, which
+// DsparkBackend pins explicitly on every `/admin/load` (see its `loadPayload`).
+//
+// Same host-run posture as the vLLM-Metal table above: no Docker path on any platform, installed
+// natively (`pip install mlx-dspark`) and reached over an operator-configured URL. What is
+// different, and why this is a separate backend rather than more `-mlx` rows, is that mlx-dspark
+// loads a SECOND checkpoint — the drafter — alongside the target, and only its own runtime knows
+// how to pair them. A generic MLX loader pointed at these targets would serve them with no
+// speculation at all.
+//
+// `backendModelId` is the **target** repo: it is what `POST /admin/load` takes and what
+// `GET /health.target` reports back, so it compares directly against what the backend reports as
+// loaded. The drafter is not named here — mlx-dspark auto-resolves it from its own registry, and
+// pinning our own guess would silently diverge from theirs on their next release.
+//
+// Every id and size below was checked live against the Hugging Face API on 2026-08-26 (per-repo
+// `?blobs=true`, summing real `.safetensors` bytes — not a web-search summary, per the
+// fabrication-guard convention documented in this file's header). All 21 repos (11 targets + 10
+// distinct drafters) returned 200, `gated:false`, exact case-sensitive id match.
+//   gb     = total DOWNLOAD in decimal GB: target safetensors + the drafter `--mode auto` resolves
+//            for that target. `resolve_mode` (load.py:321) prefers a stamped measured-best mode —
+//            only the two Qwen3.8-27B rows have one, DFlash 2 — then the row's DSpark head, so
+//            every other row downloads its `dspark` drafter.
+//   ramGb  = PEAK RESIDENT, taken from each pair's own measured `ram` field in mlx-dspark's
+//            registry (load.py:60-217) rather than derived here. Measured beats arithmetic: the
+//            drafter is quantized to 4-bit at load, so weight math alone would say 5.1 GB for the
+//            4B row where the project measured ~8 GB — the difference is the KV cache and runtime
+//            overhead at chat-length context, which is precisely what memoryFootprintMb means.
+//            (This is also why one row's ramGb exceeds its gb: Muse-Glimmer is multimodal, and its
+//            vision tower sits outside the weight sum.) See buildLlmModel for why this needs its
+//            own column instead of being folded into `gb`.
+// `params`/`ctxK`/purpose/capability flags are reused from the matching existing catalog row for
+// the same base model rather than re-derived — architecture and context length don't change with
+// the serving engine. intel/agentic/perf are left blank for the same reason the vLLM tables leave
+// them blank: none of these pairs are on the Artificial Analysis leaderboard.
+//
+// The project's README quotes 2.6–4.06× speedups on an M4 Pro. Those are author-reported, measured
+// on hardware we do not have, against each engine's own baseline — deliberately NOT surfaced in
+// the UI and not encoded in any column here.
+//
+// Deliberately NOT included, though their repos verify: the LFM2.5 rows (1.2B/2.6B/8B-A1B) and
+// Ternary-Bonsai-27B. They are the only pairs small enough for 8/16 GB Macs, so they are worth a
+// follow-up — but no existing catalog row covers those base models, so their context windows and
+// capability flags would have to be sourced fresh, and this file's header is explicit that
+// unverified field-level metadata is how fabricated rows got in last time.
+const DSPARK_LLM_TOON = `
+llms[11|]{id,backendModelId,name,purpose,params,gb,ramGb,tier,ctxK,creator,intel,agentic,reason,vision,tools,audio,tps,ttft,e2e,quant}:
+  qwen3-4b-dspark|mlx-community/Qwen3-4B-8bit|Qwen 3 4B (mlx-dspark)|general|4|7.05|8.0|low|256|Alibaba|||1|0|1|0||||mlx-8bit+dspark
+  qwen3-8b-dspark|mlx-community/Qwen3-8B-8bit|Qwen 3 8B (mlx-dspark)|general|8|13.44|11.0|medium|40|Alibaba|||1|0|1|0||||mlx-8bit+dspark
+  ornith-9b-dspark|mlx-community/Ornith-1.0-9B-8bit|Ornith 1.0 9B (mlx-dspark)|coding|9|17.00|13.0|medium|256|Deep Reinforce|||1|0|1|0||||mlx-8bit+dspark
+  gemma4-12b-dspark|mlx-community/gemma-4-12B-it-8bit|Gemma 4 12B (mlx-dspark)|general|12|19.57|15.0|medium|128|Google|||1|1|1|0||||mlx-8bit+dspark
+  qwen3-8-27b-dspark|mlx-community/Qwen3.8-27B-4bit|Qwen 3.8 27B (mlx-dspark)|reasoning|27|19.89|18.0|medium|256|Alibaba|||1|1|1|0||||mlx-4bit+dflash2
+  qwen3-14b-dspark|mlx-community/Qwen3-14B-8bit|Qwen 3 14B (mlx-dspark)|general|14|22.52|19.0|medium|40|Alibaba|||1|0|1|0||||mlx-8bit+dspark
+  nemotron-3-5-lightning-30b-dspark|mlx-community/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-4bit|Nemotron 3.5 Lightning (mlx-dspark)|general|30|19.70|20.0|medium|1000|NVIDIA|||0|0|1|0||||mlx-4bit+dspark
+  qwen3-6-35b-dspark|mlx-community/Qwen3.6-35B-A3B-4bit|Qwen 3.6 35B A3B (mlx-dspark)|coding|35|23.46|23.0|medium|262|Alibaba|||1|1|1|0||||mlx-4bit+dspark
+  muse-glimmer-30b-dspark|mlx-community/Muse-Glimmer-30B-4bit|Muse Glimmer 30B (mlx-dspark)|general|30|24.72|26.0|high|128|Meta|||1|1|1|0||||mlx-4bit+dspark
+  qwen3-8-27b-8bit-dspark|mlx-community/Qwen3.8-27B-8bit|Qwen 3.8 27B 8-bit (mlx-dspark)|reasoning|27|33.34|29.0|high|256|Alibaba|||1|1|1|0||||mlx-8bit+dflash2
+  qwen3-6-27b-dspark|mlx-community/Qwen3.6-27B-8bit|Qwen 3.6 27B (mlx-dspark)|coding|27|38.30|32.0|high|262|Alibaba|||1|1|1|0||||mlx-8bit+dspark
+`;
+
+// `gpuVendors: ['apple']` is the whole gating story (enforced in ModelRegistryService): mlx-dspark
+// is Metal-only, and because the system-RAM fallback path reports vendor 'cpu', an 'apple'-only row
+// can never be resurrected onto non-Apple hardware.
+const dsparkLlms: CuratedModel[] = decodeToonTable(DSPARK_LLM_TOON, 'llms').map((row) =>
+  buildLlmModel(row, 'dspark', { gpuVendors: ['apple'], supportedPlatforms: ['darwin'] }),
+);
+
 // Non-LLM models (voice + embedding) in TOON. Unlike the LLM table these carry explicit requirements
 // (they aren't derived from a parameter count); purpose and input modality are derived from `modality`.
 // Voice models run on the Lemonade backend; embedders on Ollama. cpu=1 means CPU inference is supported.
@@ -423,6 +779,7 @@ const extraModels: CuratedModel[] = decodeToonTable(EXTRAS_TOON, 'extras').map((
       minRamMb: Number(row.minRamMb),
       diskMb: Number(row.diskMb),
       gpuVendors,
+      supportedPlatforms: defaultSupportedPlatforms((row.backend ?? 'ollama') as InferenceBackendType),
       npuRequired: false,
       minTier: (row.minTier ?? 'cpu-only') as HardwareTier,
     },
@@ -439,4 +796,12 @@ const extraModels: CuratedModel[] = decodeToonTable(EXTRAS_TOON, 'extras').map((
   };
 });
 
-export const CURATED_MODELS: CuratedModel[] = [...generatedLlms, ...lemonadeLlms, ...vllmLlms, ...extraModels];
+export const CURATED_MODELS: CuratedModel[] = [
+  ...generatedLlms,
+  ...lemonadeLlms,
+  ...vllmLlms,
+  ...vllmMlxLlms,
+  ...mtplxLlms,
+  ...dsparkLlms,
+  ...extraModels,
+];

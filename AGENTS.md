@@ -1,8 +1,8 @@
-# AGENTS.md — CI-Hub Router
+# AGENTS.md — Companion Hub router
 
 > **Start here.** This file routes you to skills, docs, tools, and workflows. Do not duplicate content from linked files — follow the links.
 
-Private & Confidential — Property of Lifescope Inc.
+Doc map, product names, tip scrub policy, and writing style: [`docs/README.md`](docs/README.md) and [`docs/writing-style.md`](docs/writing-style.md).
 
 ---
 
@@ -91,9 +91,8 @@ Git tag after merge: `agent-session/<worksheet-slug>`
 | Agent sweep | `.cursor/skills/agent-sweep/SKILL.md` | Scan recent commits for gotchas |
 | Test audit | `.cursor/skills/test-audit/SKILL.md` | Find false-confidence tests |
 | Visual regression | `.cursor/skills/visual-regression/SKILL.md` | Screenshot baselines |
-| Fleet QA | `.claude/skills/run-fleet-qa/SKILL.md` | Marketplace app QA across fleet |
 
-Claude mirrors live under `.claude/skills/` (same content as `.cursor/skills/` where present).
+Claude mirrors live under `.claude/skills/` (same content as `.cursor/skills/` where present). Multi-node fleet QA (dashboard, SSH orchestrators, `fleet.json`) lives in private **CI-Engineering** `tools/fleet-qa/` — see companionintelligence/CI-Engineering#211. This tip keeps single-node `scripts/qa-stream.ts` only.
 
 ---
 

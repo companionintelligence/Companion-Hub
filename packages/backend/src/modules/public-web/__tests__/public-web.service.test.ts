@@ -13,6 +13,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock } from 'vitest-mock-extended';
 import { PublicWebService } from '../public-web.service';
 
+type RepairAuthorize = (appUrns: AppUrn[], named: boolean) => Promise<AppUrn[]>;
+
 describe('PublicWebService', () => {
   let service: PublicWebService;
   const appsRepository = mock<AppsRepository>();
@@ -129,6 +131,93 @@ describe('PublicWebService', () => {
     });
   });
 
+  it('treats a bound custom domain as the correct hostname', async () => {
+    // Comparing against the platform hostname instead would report every app on
+    // a custom domain as permanently broken, and repair would rewrite the value
+    // the sync just set — the two would fight on every pass.
+    appsRepository.getApps.mockResolvedValue([
+      {
+        appName: 'nextcloud',
+        appStoreSlug: 'store',
+        status: 'running',
+        exposureMode: 'cloudflare',
+        exposedLocal: true,
+        openPort: false,
+        localSubdomain: 'nextcloud',
+        publicDomain: 'example.com',
+        customDomain: 'cloud.acme.com',
+      },
+    ] as any);
+
+    appFilesManager.getAppEnv.mockResolvedValue({ path: '/tmp/env', content: 'APP_PUBLIC_HOSTNAME=cloud.acme.com\n' });
+    envUtils.envStringToMap.mockReturnValue(new Map([['APP_PUBLIC_HOSTNAME', 'cloud.acme.com']]));
+
+    const result = await service.getDiagnostics();
+
+    expect(result.mismatchCount).toBe(0);
+    expect(result.apps[0]).toMatchObject({
+      computedHostname: 'cloud.acme.com',
+      computedPublicUrl: 'https://cloud.acme.com',
+      customDomain: 'cloud.acme.com',
+      envMismatch: false,
+      action: 'ok',
+    });
+  });
+
+  it('flags an app still on the platform hostname after a domain was bound', async () => {
+    appsRepository.getApps.mockResolvedValue([
+      {
+        appName: 'nextcloud',
+        appStoreSlug: 'store',
+        status: 'running',
+        exposureMode: 'cloudflare',
+        exposedLocal: true,
+        openPort: false,
+        localSubdomain: 'nextcloud',
+        publicDomain: 'example.com',
+        customDomain: 'cloud.acme.com',
+      },
+    ] as any);
+
+    appFilesManager.getAppEnv.mockResolvedValue({ path: '/tmp/env', content: 'APP_PUBLIC_HOSTNAME=nextcloud-dev1-myorg.example.com\n' });
+    envUtils.envStringToMap.mockReturnValue(new Map([['APP_PUBLIC_HOSTNAME', 'nextcloud-dev1-myorg.example.com']]));
+
+    const result = await service.getDiagnostics();
+
+    expect(result.mismatchCount).toBe(1);
+    expect(result.apps[0]).toMatchObject({ computedHostname: 'cloud.acme.com', envMismatch: true, action: 'repair' });
+  });
+
+  it('does not call a scheduled restart "repair"', async () => {
+    // The sync deliberately does not recreate a running container: it binds the
+    // row and raises pendingRestart. Reporting that designed window as a fault
+    // would have `repair` with no appUrns restart apps the operator never chose.
+    appsRepository.getApps.mockResolvedValue([
+      {
+        appName: 'nextcloud',
+        appStoreSlug: 'store',
+        status: 'running',
+        exposureMode: 'cloudflare',
+        exposedLocal: true,
+        openPort: false,
+        localSubdomain: 'nextcloud',
+        publicDomain: 'example.com',
+        customDomain: 'cloud.acme.com',
+        pendingRestart: true,
+      },
+    ] as any);
+
+    appFilesManager.getAppEnv.mockResolvedValue({ path: '/tmp/env', content: 'APP_PUBLIC_HOSTNAME=nextcloud-dev1-myorg.example.com\n' });
+    envUtils.envStringToMap.mockReturnValue(new Map([['APP_PUBLIC_HOSTNAME', 'nextcloud-dev1-myorg.example.com']]));
+
+    const result = await service.getDiagnostics();
+
+    expect(result.mismatchCount).toBe(0);
+    // The drift is still reported — it is what the badge is about — only the
+    // verdict waits for the restart the user was already asked for.
+    expect(result.apps[0]).toMatchObject({ envMismatch: true, pendingRestart: true, action: 'ok' });
+  });
+
   it('repairs mismatched apps and triggers cloudflare sync', async () => {
     appsRepository.getApps.mockResolvedValue([
       {
@@ -165,14 +254,124 @@ describe('PublicWebService', () => {
     });
     envUtils.envStringToMap.mockReturnValue(new Map([['APP_PUBLIC_HOSTNAME', 'stale.example.com']]));
     envUtils.envMapToString.mockReturnValue('APP_PUBLIC_HOSTNAME=nextcloud-dev1-myorg.example.com\n');
+    appLifecycleService.restartAppAndWait.mockResolvedValue(true);
 
     const result = await service.repair({ appUrns: [appUrn] });
 
     expect(appHelpers.generateEnvFile).toHaveBeenCalledWith(appUrn, expect.any(Object));
     expect(appFilesManager.writeAppEnv).toHaveBeenCalled();
-    expect(appLifecycleService.restartApp).toHaveBeenCalledWith({ appUrn, skipPull: true });
-    expect(appLifecycleService.triggerCloudflareSync).toHaveBeenCalled();
+    expect(appLifecycleService.restartAppAndWait).toHaveBeenCalledWith({ appUrn, skipPull: true });
+    expect(appLifecycleService.triggerCloudflareSync).toHaveBeenCalledWith({ skipAutoRestartAppUrns: [appUrn] });
     expect(result.synced).toBe(true);
     expect(result.results[0]?.success).toBe(true);
+  });
+  /**
+   * The repair route rewrites an app's env and restarts it, so the controller hands
+   * `repair` the caller's grant check. It has to run BEFORE any app is touched:
+   * denying halfway would leave part of the fleet repaired behind a 403.
+   */
+  describe('authorization hook', () => {
+    const runningApp = {
+      id: 1,
+      appName: 'nextcloud',
+      appStoreSlug: 'store',
+      status: 'running',
+      exposureMode: 'cloudflare',
+      exposedLocal: true,
+      openPort: false,
+      localSubdomain: 'nextcloud',
+      publicDomain: 'example.com',
+      config: { exposureMode: 'cloudflare', exposedLocal: true },
+      enableAuth: true,
+    };
+
+    beforeEach(() => {
+      appsRepository.getApps.mockResolvedValue([runningApp] as any);
+      appsRepository.getAppByUrn.mockResolvedValue(runningApp as any);
+      appLifecycleService.restartAppAndWait.mockResolvedValue(true);
+      appFilesManager.getAppEnv.mockResolvedValue({ path: '/tmp/env', content: 'APP_PUBLIC_HOSTNAME=stale.example.com\n' });
+      envUtils.envStringToMap.mockReturnValue(new Map([['APP_PUBLIC_HOSTNAME', 'stale.example.com']]));
+      envUtils.envMapToString.mockReturnValue('APP_PUBLIC_HOSTNAME=nextcloud-dev1-myorg.example.com\n');
+    });
+
+    it('asks the caller for permission on every app it is about to repair, in one call', async () => {
+      const authorize: RepairAuthorize = vi.fn(async (urns: AppUrn[]) => urns);
+
+      const result = await service.repair({ appUrns: [appUrn] }, authorize);
+
+      expect(authorize).toHaveBeenCalledTimes(1);
+      expect(authorize).toHaveBeenCalledWith([appUrn], true);
+      expect(result.results[0]?.success).toBe(true);
+    });
+
+    it('asks for permission on a named app even when it is not drifted', async () => {
+      // Otherwise the 403-vs-200 answer reports whether an app the caller holds no
+      // grant on is currently drifted, and a request they were never entitled to make
+      // is silently accepted whenever the drift happens to have cleared.
+      envUtils.envStringToMap.mockReturnValue(new Map([['APP_PUBLIC_HOSTNAME', 'nextcloud-dev1-myorg.example.com']]));
+      const authorize: RepairAuthorize = vi.fn(async () => {
+        throw new Error('APP_ACTION_GRANT_DENIED');
+      });
+
+      await expect(service.repair({ appUrns: [appUrn] }, authorize)).rejects.toThrow('APP_ACTION_GRANT_DENIED');
+
+      expect(authorize).toHaveBeenCalledWith([appUrn], true);
+    });
+
+    it('touches nothing when permission is refused for any app in the batch', async () => {
+      // Two drifted apps, allowed then denied. Checking permission app-by-app inside
+      // the repair loop would already have rewritten and restarted the FIRST one by
+      // the time the second is refused, so the assertion that matters is that the
+      // allowed app is untouched too.
+      const secondUrn = createAppUrn('immich', 'store') as AppUrn;
+      appsRepository.getApps.mockResolvedValue([runningApp, { ...runningApp, id: 2, appName: 'immich', localSubdomain: 'immich' }] as any);
+
+      const authorize: RepairAuthorize = vi.fn(async (urns: AppUrn[]) => {
+        if (urns.includes(secondUrn)) throw new Error('APP_ACTION_GRANT_DENIED');
+      });
+
+      await expect(service.repair({ appUrns: [appUrn, secondUrn] }, authorize)).rejects.toThrow('APP_ACTION_GRANT_DENIED');
+
+      expect(authorize).toHaveBeenCalledWith([appUrn, secondUrn], true);
+      expect(appHelpers.generateEnvFile).not.toHaveBeenCalled();
+      expect(appFilesManager.writeAppEnv).not.toHaveBeenCalled();
+      expect(appLifecycleService.restartAppAndWait).not.toHaveBeenCalled();
+      expect(appLifecycleService.triggerCloudflareSync).not.toHaveBeenCalled();
+    });
+
+    it('repairs as before when no hook is supplied, so the CLI is unaffected', async () => {
+      const result = await service.repair({ appUrns: [appUrn] });
+
+      expect(appLifecycleService.restartAppAndWait).toHaveBeenCalledWith({ appUrn, skipPull: true });
+      expect(result.results[0]?.success).toBe(true);
+    });
+    it('filters an unnamed sweep to the apps the caller may repair, rather than refusing it whole', async () => {
+      // An operator holding the grant on one of two drifted apps must still be able to
+      // repair theirs; refusing the sweep outright puts the remedy permanently out of
+      // reach, since every retry meets the same ungranted app.
+      const secondUrn = createAppUrn('immich', 'store') as AppUrn;
+      appsRepository.getApps.mockResolvedValue([runningApp, { ...runningApp, id: 2, appName: 'immich', localSubdomain: 'immich' }] as any);
+
+      const authorize: RepairAuthorize = vi.fn(async (urns: AppUrn[]) => urns.filter((urn) => urn === appUrn));
+
+      const result = await service.repair({}, authorize);
+
+      expect(authorize).toHaveBeenCalledWith([appUrn, secondUrn], false);
+      expect(result.results.map((entry) => entry.appUrn)).toEqual([appUrn]);
+      expect(appLifecycleService.restartAppAndWait).toHaveBeenCalledTimes(1);
+      expect(appLifecycleService.restartAppAndWait).toHaveBeenCalledWith({ appUrn, skipPull: true });
+    });
+
+    it('reports failure when the routing was rewritten but the restart did not settle', async () => {
+      // The env rewrite only reaches the container through the restart, so a queued-but-
+      // failed restart must not be reported as a repair the UI can clear its banner on.
+      appLifecycleService.restartAppAndWait.mockResolvedValue(false);
+
+      const result = await service.repair({ appUrns: [appUrn] });
+
+      expect(appHelpers.generateEnvFile).toHaveBeenCalled();
+      expect(result.results[0]).toMatchObject({ appUrn, success: false });
+      expect(result.synced).toBe(false);
+    });
   });
 });

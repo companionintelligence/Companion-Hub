@@ -1,6 +1,6 @@
 {
   "name": "ci-hub",
-  "version": "0.2.56",
+  "version": "0.2.61",
   "description": "Companion Intelligence Hub CLI and self-hosted app platform runtime.",
   "packageManager": "pnpm@11.5.1",
   "engines": {
@@ -28,6 +28,7 @@
     "gen:api-client": "pnpm --filter frontend exec openapi-ts -f openapi-ts.config.ts",
     "gen:swagger": "pnpm --filter backend run gen:swagger",
     "check:openapi": "node scripts/check-openapi-drift.cjs",
+    "check:pr": "pnpm run lint:ci && pnpm run knip:ci && pnpm run tsc && pnpm run check:openapi && pnpm run test && cargo test --manifest-path packages/desktop/src-tauri/Cargo.toml --bin ci-os-hub-desktop",
     "lint:ci": "biome ci . --error-on-warnings --no-errors-on-unmatched",
     "lint": "biome check",
     "lint:fix": "biome check --write --no-errors-on-unmatched",
@@ -66,10 +67,10 @@
     "mcp"
   ],
   "author": "",
-  "license": "CI-Commercial-1.0",
+  "license": "PolyForm-Noncommercial-1.0.0",
   "devDependencies": {
     "@biomejs/biome": "^2.0.4",
-    "@hey-api/openapi-ts": "^0.86.12",
+    "@hey-api/openapi-ts": "^0.97.3",
     "@playwright/test": "^1.52.0",
     "cloudflare": "^7.0.0",
     "dotenv-cli": "^10.0.0",

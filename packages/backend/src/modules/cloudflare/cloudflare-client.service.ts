@@ -4,7 +4,9 @@ import { ModuleRef } from '@nestjs/core';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { DockerReadFacade } from '../docker/docker-read.facade';
 import { DockerService } from '../docker/docker.service';
-import type { AvailableDomain, AvailableDomainsResponse } from '@ci-hub/common/types';
+import { DeviceRegistrationRepository } from '../registration/device-registration.repository';
+import type { AvailableCustomDomain, AvailableDomain, AvailableDomainsResponse, TunnelCustomDomain } from '@ci-hub/common/types';
+import { parseAvailableCustomDomains, parseTunnelCustomDomains } from '@ci-hub/common/types';
 import axios, { AxiosInstance, type AxiosResponse } from 'axios';
 import * as fs from 'node:fs/promises';
 import * as fsSync from 'node:fs';
@@ -15,49 +17,51 @@ import { PortalClientService } from '@/core/portal/portal-client.service';
 
 export interface AppInfo {
   name: string;
-  subdomain: string; // Full subdomain (e.g., n8n-bdc) - used for Cloudflare public hostname
-  publicDomain?: string; // Selected public root domain for this app hostname
+  subdomain: string; // Complete Cloudflare public-hostname prefix, such as `n8n-bdc`.
+  publicDomain?: string; // Selected public root domain for this app hostname.
   localPort: number;
   protocol?: 'http' | 'https';
   hostname?: string;
-  originServerName?: string; // HTTP Host header to send to Traefik (e.g., n8n-bdc.ci.lan)
+  originServerName?: string; // HTTP Host header sent to Traefik, such as `n8n-bdc.ci.lan`.
   /**
-   * Discriminator for infrastructure entries that CI-Cloud must preserve
-   * across regular app sync. Unset/undefined means a regular user app
-   * (eligible for stale-app cleanup on the Portal). Non-null values are
-   * persisted into `application.privileged_kind` in the Portal DB and those
-   * rows are skipped during sync pruning, so losing visibility of the entry
-   * in a later sync never deletes the Cloudflare tunnel route external
-   * clients depend on.
+   * Distinguishes infrastructure entries that Companion Portal must preserve
+   * across regular app synchronization.
    *
-   *   'hub' — the Hub's own application row. The Portal filters this entry
-   *           out of the generated ingress rules and reconstructs its route
-   *           from the DB so `host.docker.internal:{port}` always reflects
-   *           the authoritative port.
-   *   'vpn' — legacy discriminator; retained for backward compatibility with
-   *           older Portal rows. The Hub no longer syncs Headscale routes.
+   * An undefined value represents a regular user app eligible for stale-app
+   * cleanup. Companion Portal stores other values in
+   * `application.privileged_kind` and excludes those rows from sync pruning, so
+   * a later payload omission cannot remove a required Cloudflare tunnel route.
    *
-   * Replaces the older boolean `isHub` + `isVpn` flags; see CI-Portal
+   * - `hub`: The Companion Hub application row. The Portal omits this entry from
+   *   generated ingress rules and reconstructs its route from the database so
+   *   `host.docker.internal:{port}` uses the authoritative port.
+   * - `vpn`: A legacy value retained for compatibility with older Portal rows.
+   *   Companion Hub no longer synchronizes Headscale routes.
+   *
+   * This discriminator replaces the `isHub` and `isVpn` flags. See CI-Portal
    * migration 0017.
    */
   privilegedKind?: 'hub' | 'vpn';
   /**
-   * Authoritative Hub API listen port. Only meaningful when `privilegedKind === 'hub'`.
-   * Portal persists this on the Hub application row so tunnel routes track desktop port remaps.
+   * Provides the authoritative Hub API listen port for `privilegedKind === 'hub'`.
+   *
+   * Companion Portal stores this value on the Hub application row so tunnel
+   * routes follow desktop port remapping.
    */
   hubListenPort?: number;
 }
 
 /**
- * Why CI-Cloud could not write an app's public DNS record.
+ * Describes why Companion Portal could not write an app's public DNS record.
  *
- * - `conflict` — the hostname is held by a DNS record CI-Cloud will not clobber
- *   (another device/tunnel, or a non-tunnel record). Retrying cannot fix it.
- * - `zone_unreachable` — the selected domain's zone is not provisioned for this
- *   device in CI-Cloud's environment.
- * - `api_error` — Cloudflare rejected the write; usually transient.
- * - `invalid_subdomain` — the requested subdomain has no valid DNS label, so
- *   CI-Cloud rejected it before Cloudflare was ever involved.
+ * - `conflict`: Another device, tunnel, or non-tunnel DNS record owns the
+ *   hostname. Companion Portal does not overwrite it, and retries cannot resolve
+ *   the conflict.
+ * - `zone_unreachable`: The selected domain's zone is not provisioned for this
+ *   device in the Portal environment.
+ * - `api_error`: Cloudflare rejected the write, usually because of a transient error.
+ * - `invalid_subdomain`: The requested subdomain contains no valid DNS label, so
+ *   Companion Portal rejected it before Cloudflare was ever involved.
  */
 export type PublicDnsFailureReason = 'conflict' | 'zone_unreachable' | 'api_error' | 'invalid_subdomain';
 
@@ -69,24 +73,36 @@ export interface PublicDnsFailure {
 }
 
 /**
- * Outcome of a CI-Cloud state sync. `ok` reflects whether the request itself
- * succeeded; `failed` lists app names CI-Cloud could not create a public DNS
- * record for (a partially-applied sync). Callers must treat a non-empty
- * `failed` list as a user-visible failure — those apps will not resolve.
+ * Describes the outcome of a Companion Portal state synchronization.
+ *
+ * `ok` reports whether the request succeeded. `failed` lists apps whose public
+ * DNS records the Portal could not create during a partially applied sync.
+ * Callers must surface a nonempty list because those apps will not resolve.
  */
 export interface CloudflareSyncResult {
   ok: boolean;
   failed: string[];
   /**
-   * Per-app failure detail. Empty when talking to a CI-Cloud that predates
-   * structured failures — `failed` remains the source of truth for *which* apps
-   * failed, and callers fall back to generic messaging when this is empty.
+   * Provides per-app failure details when Companion Portal supports them.
+   *
+   * `failed` remains the source of truth for app identity, and callers use
+   * generic messaging when this list is empty.
    */
   failures: PublicDnsFailure[];
   synced: number;
-  /** HTTP status from Portal when the control-plane request failed. */
+  /**
+   * Lists custom hostnames that Companion Portal reports as wired to this tunnel.
+   *
+   * `undefined` and `[]` have different meanings. `undefined` indicates that the
+   * Portal does not report custom domains, either because its version predates
+   * the feature or because the sync failed. Callers must preserve existing
+   * bindings. An empty array confirms that the device has none and instructs
+   * callers to unbind them.
+   */
+  customDomains?: TunnelCustomDomain[];
+  /** Provides the Portal HTTP status when the control-plane request fails. */
   errorStatus?: number;
-  /** Short, user-safe reason for a full sync failure (auth, ownership, timeout, …). */
+  /** Provides a concise, user-safe reason for a full sync failure. */
   errorMessage?: string;
 }
 
@@ -145,7 +161,7 @@ export class CloudflareClientService {
   }
 
   private async updateTunnelFiles(token: string) {
-    // Tunnel state defaults under APP_DIR, but tests can redirect it with CI_HUB_TUNNEL_DIR.
+    // Tests can override the default `APP_DIR` location through `CI_HUB_TUNNEL_DIR`.
     const tunnelDir = TUNNEL_DIR;
     const certsDir = path.join(tunnelDir, 'certs');
 
@@ -154,7 +170,7 @@ export class CloudflareClientService {
       await fs.mkdir(tunnelDir, { recursive: true });
       await fs.mkdir(certsDir, { recursive: true });
 
-      // Write the token to a file that cloudflared will read (configured in docker-compose)
+      // `cloudflared` reads this token through its Docker Compose configuration.
       await writeHealableTextFile(path.join(tunnelDir, 'token'), token, 0o644);
       try {
         await fs.unlink(tunnelUserClearedMarkerPath());
@@ -168,9 +184,7 @@ export class CloudflareClientService {
     }
   }
 
-  /**
-   * Initialize tunnel by saving credentials provided by CI-Cloud during registration
-   */
+  /** Initializes a tunnel with credentials received during Portal registration. */
   async initializeTunnel(
     organizationId: string,
     credentials: { tunnelId: string; token: string },
@@ -216,8 +230,8 @@ export class CloudflareClientService {
   }
 
   /**
-   * Sync local state (running apps) to CI-Cloud
-   * CI-Cloud will then update Cloudflare Tunnel Config & DNS
+   * Sends running-app state to Companion Portal for Cloudflare tunnel and DNS
+   * reconciliation.
    */
   async syncState(organizationId: string, apps: AppInfo[], tunnelId?: string): Promise<CloudflareSyncResult> {
     if (tunnelId) {
@@ -286,25 +300,22 @@ export class CloudflareClientService {
       this.logger.log(`Sync Response: ${JSON.stringify(response.data)}`);
 
       if (response.data.success) {
-        // CI-Cloud returns `failed` (app names whose public DNS record could not
-        // be created) and `synced` (count of DNS records created). Surface a
-        // clear warning instead of silently reporting success — a partially
-        // applied sync means those apps will not load at their public domain.
-        // Validate the ELEMENTS, not just the container. This is a wire boundary between
-        // two independently deployed services — the same reason `failures` is optional at
-        // all — so a malformed entry is as plausible as a missing one. A `null` or a bare
-        // string in `failures` would throw on `failure.app` in the map below; that throw
-        // lands in this method's own catch, which reports `ok: false` — turning a PARTIAL
-        // sync into a hard failure and making the UI toast every exposed app instead of
-        // the few that really failed. Misreporting the blast radius is the bug this PR
-        // exists to fix, so drop junk entries rather than letting them rewrite the verdict.
+        // Companion Portal returns `failed` app names and a count of created DNS
+        // records in `synced`. A partially applied sync requires a warning because
+        // the affected apps cannot load at their public domains.
+        //
+        // Validate each element at this boundary between independently deployed
+        // services. A malformed `failures` entry could throw during mapping and
+        // reach this method's catch, converting a partial sync into a hard failure.
+        // That result would make the UI notify every exposed app instead of only
+        // those that failed, so discard malformed entries without changing the
+        // request verdict.
         const failed: string[] = Array.isArray(response.data.failed)
           ? response.data.failed.filter((name): name is string => typeof name === 'string')
           : [];
-        // `reason` is required too: it is the whole point of the entry, and an entry
-        // without one would render as `(undefined: …)`. Any string is accepted rather
-        // than only the known classes — a NEWER CI-Cloud may add one, and every consumer
-        // already degrades gracefully on a reason it does not recognise.
+        // Require `reason` because an absent value would render as `undefined`.
+        // Accept unknown strings so a newer Companion Portal can add a class
+        // without breaking older consumers, which already use a generic fallback.
         const failures: PublicDnsFailure[] = Array.isArray(response.data.failures)
           ? response.data.failures.filter(
               (failure): failure is PublicDnsFailure =>
@@ -312,18 +323,31 @@ export class CloudflareClientService {
             )
           : [];
         const synced: number | undefined = typeof response.data.synced === 'number' ? response.data.synced : undefined;
+        // Apply the same wire-boundary validation to `customDomains`, while
+        // preserving field absence. An older Companion Portal omits this field,
+        // and converting that state to an empty array would tell consumers to
+        // remove domains that still serve traffic. `parseTunnelCustomDomains`
+        // returns `undefined` for absence and `{ entries: [] }` for a confirmed
+        // empty set, preserving the distinction through persistence.
+        const parsedCustomDomains = parseTunnelCustomDomains(response.data.customDomains);
+
+        if (parsedCustomDomains && parsedCustomDomains.dropped > 0) {
+          const dropped = parsedCustomDomains.dropped;
+          this.logger.warn(
+            `[Cloudflare] Dropped ${dropped} malformed custom-domain ${dropped === 1 ? 'entry' : 'entries'} from the tunnel state response; the rest of the sync is unaffected.`,
+          );
+        }
 
         if (failed.length > 0) {
-          // Report what actually went wrong per app. Blaming zone provisioning for
-          // every failure sent debugging down the wrong path when the real cause
-          // was a DNS record CI-Cloud refused to overwrite (CI-Portal#403).
+          // Report the per-app cause instead of attributing every failure to zone
+          // provisioning. DNS conflicts require different remediation
+          // (CI-Portal#403).
           //
-          // Drive the list from `failed`, not from `failures`, and enrich it where CI-Cloud
-          // gave us detail. `failures` need not cover every failed app — an older CI-Cloud
-          // sends none, a newer one may omit some, and the validation above deliberately
-          // drops malformed entries — so building the list from it named fewer apps than
-          // the `failed.length` count in the very same sentence, and the apps it dropped
-          // were the ones with no other detail to find them by.
+          // Build the list from `failed` and enrich it with available details.
+          // `failures` can omit apps when an older Portal sends no details, a newer
+          // one sends an incomplete list, or validation discards malformed entries.
+          // Using it as the source would name fewer apps than `failed.length` and
+          // hide the failures with the least diagnostic detail.
           const failureByApp = new Map(failures.map((failure) => [failure.app, failure]));
           const detail = failed
             .map((name) => {
@@ -343,7 +367,7 @@ export class CloudflareClientService {
           this.logger.log(`State sync successful${synced === undefined ? '' : ` (${synced} DNS record(s) synced)`}`);
         }
 
-        return { ok: true, failed, failures, synced: synced ?? 0 };
+        return { ok: true, failed, failures, synced: synced ?? 0, customDomains: parsedCustomDomains?.entries };
       }
       return {
         ok: false,
@@ -391,13 +415,170 @@ export class CloudflareClientService {
     }
   }
 
+  /**
+   * Returns connected custom domains and their binding states for the install
+   * dialog.
+   *
+   * A listed domain exists, but an app may emit only a domain reported in
+   * `customDomains` by the tunnel-state response. That response remains the only
+   * source for `app.custom_domain`. The Hub cannot verify that a hostname resolves
+   * to its tunnel, so it must not build a public URL from an unconfirmed domain.
+   *
+   * `undefined` means the request could not produce an authoritative answer, such
+   * as when an older Portal returns 404, the Portal is unreachable, or the payload
+   * is invalid. An empty array means the organization owns no domains. Preserving
+   * this distinction prevents the dialog from claiming an empty account after a
+   * failed request.
+   */
+  async fetchOrganizationCustomDomains(organizationId?: string): Promise<AvailableCustomDomain[] | undefined> {
+    try {
+      const { status, data } = await this.portalClient.fetchDeviceCustomDomains(organizationId ?? (await this.resolveOrganizationId()));
+
+      if (status === 404) {
+        // A Companion Portal version that predates custom domains has no listing
+        // route. Treat that supported deployment like an unreachable Portal:
+        // neither provides an authoritative list.
+        this.logger.debug('[Cloudflare] This CI-Cloud does not serve the device custom-domain listing');
+
+        return undefined;
+      }
+
+      if (status < 200 || status >= 300) {
+        this.logger.warn(`[Cloudflare] Could not list custom domains: CI-Cloud answered ${status}`);
+
+        return undefined;
+      }
+
+      const domains = parseAvailableCustomDomains(data?.domains);
+
+      if (!domains) {
+        this.logger.warn('[Cloudflare] CI-Cloud answered the custom-domain listing with a payload that could not be read');
+
+        return undefined;
+      }
+
+      this.logger.debug(`Fetched ${domains.length} custom domain(s) from CI-Cloud`);
+
+      return domains;
+    } catch (error) {
+      this.logger.warn(`[Cloudflare] Could not list custom domains: ${error instanceof Error ? error.message : String(error)}`);
+
+      return undefined;
+    }
+  }
+
+  /**
+   * Resolves the organization represented by the Hub for callers such as the
+   * install dialog.
+   *
+   * Companion Portal refuses to choose an arbitrary tenant when an incomplete
+   * transfer leaves a device registered to multiple organizations. Omitting the
+   * ID in that state makes the listing unavailable even though the background
+   * binding pass, which sends an ID, succeeds. Match sync behavior by preferring
+   * the configured organization and otherwise using the Hub's registration.
+   */
+  private async resolveOrganizationId(): Promise<string | undefined> {
+    try {
+      const registrations = this.moduleRef.get(DeviceRegistrationRepository, { strict: false });
+      const configured = this.configService.getConfig().ciHubOrganizationId;
+      const row = configured ? await registrations.getDeviceRegistrationById(configured) : null;
+
+      return (row ?? (await registrations.getFirstDeviceRegistration()))?.id;
+    } catch {
+      // An unregistered Hub has no organization to identify. Companion Portal can
+      // still answer an unqualified request for a single-tenant device.
+      return undefined;
+    }
+  }
+
+  /**
+   * Asks Companion Portal to point a connected domain at an app on this device.
+   *
+   * A successful request changes no local state. The app learns about the alias
+   * only after a later sync reports it in `customDomains`, which updates
+   * `app.custom_domain` and requests a restart. Writing the binding before Portal
+   * confirmation could make the Hub emit a public URL that the edge refused.
+   *
+   * The result includes a failure reason so callers can retain and retry intents
+   * that can become valid, such as an unregistered app or verifying domain, and
+   * clear terminal intents for domains that no longer exist.
+   */
+  async bindCustomDomain(
+    domainId: string,
+    appSlug: string,
+    organizationId?: string,
+  ): Promise<{ ok: true; targetHostname?: string } | { ok: false; status?: number; code?: string; message: string }> {
+    try {
+      const { status, data } = await this.portalClient.postDeviceCustomDomainBind({ domainId, appSlug, organizationId });
+
+      if (status >= 200 && status < 300) {
+        return { ok: true, targetHostname: typeof data?.targetHostname === 'string' ? data.targetHostname : undefined };
+      }
+
+      return {
+        ok: false,
+        status,
+        code: typeof data?.code === 'string' ? data.code : undefined,
+        message: typeof data?.error === 'string' ? data.error : `CI-Cloud answered ${status}`,
+      };
+    } catch (error) {
+      return { ok: false, message: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
+  /**
+   * Ask CI-Cloud to stop serving a custom domain on this device.
+   *
+   * ⚠ THIS PARKS THE DOMAIN; IT DOES NOT GIVE IT UP. CI-Cloud clears the
+   * routing and the Cloudflare origin and leaves the row, the ownership proof
+   * and the certificate intact — the same shape connect-first/bind-later
+   * creates. The organization keeps the domain and can point it at another app
+   * with an ordinary bind; nothing here needs a person in the Entri modal.
+   *
+   * Disconnecting a domain is still a session-and-managing-role act in the
+   * portal, and no Hub path reaches it.
+   *
+   * `DOMAIN_NOT_FOUND` is reported as SUCCESS. A Hub that parks a domain and
+   * loses the response asks again and finds nothing to park — which is the state
+   * it asked for. Treating that as a failure would leave the operator's choice
+   * pending forever against a domain that has already stopped serving.
+   */
+  async unbindCustomDomain(
+    domainId: string,
+    appSlug: string,
+    organizationId?: string,
+  ): Promise<{ ok: true } | { ok: false; status?: number; code?: string; message: string }> {
+    try {
+      const { status, data } = await this.portalClient.postDeviceCustomDomainUnbind({ domainId, appSlug, organizationId });
+
+      if (status >= 200 && status < 300) {
+        return { ok: true };
+      }
+
+      const code = typeof data?.code === 'string' ? data.code : undefined;
+
+      if (code === 'DOMAIN_NOT_FOUND') {
+        return { ok: true };
+      }
+
+      return {
+        ok: false,
+        status,
+        code,
+        message: typeof data?.error === 'string' ? data.error : `CI-Cloud answered ${status}`,
+      };
+    } catch (error) {
+      return { ok: false, message: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
   async fetchAvailableDomains(): Promise<AvailableDomainsResponse> {
     try {
       const requestConfig = this.getRequestConfig();
       let response: AxiosResponse<{ domains?: unknown[] }>;
 
-      // CI-Portal serves domain listing at /api/domains. Keep a namespaced
-      // fallback for compatibility if CI-Cloud route topology changes.
+      // Companion Portal serves the domain list at `/api/domains`. Retain the
+      // namespaced fallback for compatibility with alternate route layouts.
       try {
         response = await this.client.get('domains', requestConfig);
       } catch (error) {
@@ -498,9 +679,11 @@ export class CloudflareClientService {
   }
 
   /**
-   * Load tunnel token from disk into memory. Call on startup so getTunnelToken() returns
-   * correctly after a restart (token file exists but in-memory state was reset).
-   * Optionally set tunnelId from the registered org if available.
+   * Loads the tunnel token from disk and optionally restores the registered
+   * tunnel ID.
+   *
+   * Startup must restore this in-memory state because the token file survives a
+   * process restart while `getTunnelToken()` does not.
    */
   async loadTunnelTokenFromDisk(tunnelId?: string | null): Promise<boolean> {
     try {
@@ -511,8 +694,8 @@ export class CloudflareClientService {
       const token = await fs.readFile(tokenPath, 'utf-8');
       const trimmed = token?.trim();
       if (trimmed) {
-        // Periodic registration validation reloads the token every minute. Only log when the
-        // in-memory value actually changes so healthy hubs do not spam WARN forever.
+        // Periodic registration validation reloads this file. Log only a changed
+        // value so healthy Hubs do not produce repeated warnings.
         const changed = this.tunnelToken !== trimmed;
         this.tunnelToken = trimmed;
         if (changed) {
@@ -528,11 +711,12 @@ export class CloudflareClientService {
   }
 
   /**
-   * Idempotently start/restart the cloudflared container when a token is
-   * present. Called on every Hub boot: the existing `recoverTunnelTokenFromDb`
-   * path only spawns cloudflared when the token file is missing, so restarts
-   * of a previously-registered Hub would otherwise leave the tunnel down.
-   * Skipped in local/E2E mode (domain === ci.localhost).
+   * Starts or restarts `cloudflared` idempotently when a token is available.
+   *
+   * Each Hub boot calls this method because `recoverTunnelTokenFromDb` starts
+   * `cloudflared` only when the token file is missing. Without this additional
+   * check, restarting a registered Hub with an existing file would leave the
+   * tunnel down. Local and E2E modes skip the container.
    */
   async ensureCloudflaredRunning(options: { forceRestart?: boolean } = {}): Promise<boolean> {
     if (!this.tunnelToken) {
@@ -561,9 +745,15 @@ export class CloudflareClientService {
 
       if (alreadyRunning && options.forceRestart) {
         this.logger.warn('ensureCloudflaredRunning: restarting cloudflared after tunnel credential recovery...');
-        await dockerService.restartContainer('cloudflared');
-        this.logger.warn('Cloudflared container restarted with recovered credentials.');
-        return true;
+        try {
+          await dockerService.restartContainer('cloudflared');
+          this.logger.warn('Cloudflared container restarted with recovered credentials.');
+          return true;
+        } catch (restartError) {
+          this.logger.warn(
+            `ensureCloudflaredRunning: restart failed (${restartError instanceof Error ? restartError.message : String(restartError)}); falling through to recreate`,
+          );
+        }
       }
 
       this.logger.warn('Ensuring cloudflared container is running (post-boot)...');
@@ -582,13 +772,13 @@ export class CloudflareClientService {
   }
 
   /**
-   * Resolve the docker-compose file used to spawn the `cloudflared` service.
-   * Inside the bundled Hub container the active compose file is bind-mounted at
-   * `${DATA_DIR}/docker-compose.yml` (matches DockerService.getBaseComposeArgsHub);
-   * fall back to the repo-root source file for local `pnpm dev` and tests.
-   * Gating on NODE_ENV breaks here because .env.dev sets NODE_ENV=development
-   * inside the bundled image, which would point at a non-existent
-   * /app/docker-compose.local.yml.
+   * Resolves the Docker Compose file used to start `cloudflared`.
+   *
+   * The bundled Hub mounts the active file at `${DATA_DIR}/docker-compose.yml`,
+   * matching `DockerService.getBaseComposeArgsHub`. Local `pnpm dev` and tests
+   * fall back to the repository source file. Do not gate the mounted path on
+   * `NODE_ENV`: `.env.dev` sets `NODE_ENV=development` inside the bundled image,
+   * which would select the nonexistent `/app/docker-compose.local.yml`.
    */
   private getComposeFile(): string {
     const mounted = path.join(DATA_DIR, 'docker-compose.yml');

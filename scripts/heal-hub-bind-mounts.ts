@@ -24,6 +24,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { parseEnvFile } from './env-file';
 import { BIND_MOUNT_DIRS, DATA_BEARING_BIND_MOUNT_DIRS, RECREATABLE_BIND_MOUNT_DIRS } from './lib/bind-mounts';
+import { effectiveDockerHost, pinnedPathStyle } from './lib/docker-engine';
+import { resolveCanonicalDataDir } from './lib/paths';
 
 /** MSYS/Git-Bash bind-mount input (`/c/...`). */
 function isMsysDockerPath(value: string): boolean {
@@ -107,6 +109,10 @@ function detectWindowsDockerPathStyleViaDaemon(): WindowsDockerPathStyle {
 }
 
 function windowsDockerPathStyle(): WindowsDockerPathStyle {
+  // Prefer the Hub-pinned engine so bind-mount path style stays paired with DOCKER_HOST.
+  const pinned = pinnedPathStyle({ dataDir: resolveCanonicalDataDir() });
+  if (pinned === 'drive' || pinned === 'wsl-mnt') return pinned;
+
   const fromSignals = windowsDockerPathStyleFromCliSignals();
   if (fromSignals) return fromSignals;
   if (!cachedWindowsDockerPathStyleGuess) {
@@ -217,11 +223,20 @@ export function resolveHostDockerSocketPath(): string {
   const envSocketPath = dockerSocketPathFromDockerHost();
   if (envSocketPath) return envSocketPath;
 
+  // Honor the Hub-pinned engine (state/docker-engine.json) when DOCKER_HOST is unset.
+  const pinnedHost = effectiveDockerHost({ resolveIfMissing: false });
+  if (pinnedHost?.startsWith('unix://')) {
+    const socketPath = pinnedHost.slice('unix://'.length).trim();
+    if (socketPath) return socketPath;
+  }
+
   if (process.platform === 'linux') {
     const candidates = [
       process.env.XDG_RUNTIME_DIR ? path.join(process.env.XDG_RUNTIME_DIR, 'docker.sock') : null,
       typeof process.getuid === 'function' ? `/run/user/${process.getuid()}/docker.sock` : null,
       path.join(os.homedir(), '.docker', 'run', 'docker.sock'),
+      path.join(os.homedir(), '.docker', 'desktop', 'docker.sock'),
+      '/var/run/docker.sock',
     ].filter((candidate): candidate is string => Boolean(candidate));
 
     const existing = candidates.find((candidate) => existsSync(candidate));

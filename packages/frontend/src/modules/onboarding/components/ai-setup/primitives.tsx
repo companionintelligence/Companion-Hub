@@ -1,7 +1,8 @@
 import { cn } from '@/lib/utils';
 import { HintText } from '@/components/ui/field-hint/field-hint';
-import { Check } from 'lucide-react';
+import { Check, ChevronRight } from 'lucide-react';
 import type { ReactNode } from 'react';
+import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { LEVEL_BG, LEVEL_TEXT, scoreColor } from './levels';
 
@@ -18,6 +19,17 @@ interface StepSectionProps {
   children: ReactNode;
   /** Optional content rendered on the right of the section header (e.g. a tier badge). */
   action?: ReactNode;
+  /** Render the section body behind a keyboard-accessible disclosure control. */
+  collapsible?: boolean;
+  /** Initial disclosure state when {@link collapsible} is enabled. */
+  defaultOpen?: boolean;
+  /** Make the complete section a single checkbox-like option. */
+  selected?: boolean;
+  onSelect?: () => void;
+  selectionDisabled?: boolean;
+  selectionTestId?: string;
+  /** Optional test id for the rendered section. */
+  testId?: string;
   className?: string;
 }
 
@@ -28,7 +40,7 @@ const BADGE_KEYS = {
 } as const;
 
 const BADGE_STYLES = {
-  required: 'border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-400',
+  required: 'border-warning/30 bg-warning/10 text-warning',
   recommended: 'border-primary/30 bg-primary/10 text-primary',
   optional: 'border-border bg-muted text-muted-foreground',
 } as const;
@@ -39,38 +51,110 @@ function StepSectionBadge({ badge }: { badge: 'required' | 'recommended' | 'opti
 }
 
 /** A numbered panel: cyan step badge + uppercase title + description, wrapping its content. */
-export function StepSection({ number, title, description, titleHint, badge, children, action, className }: StepSectionProps) {
-  return (
-    <section className={cn('rounded-lg border border-border bg-gradient-to-b from-card to-card/60 p-5 shadow-sm sm:p-6', className)}>
-      <div className="mb-4 flex items-start justify-between gap-3">
-        <div className="flex items-start gap-3">
-          <span className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full border border-primary/40 bg-primary/10 text-sm font-semibold text-primary">
-            {number}
-          </span>
-          <div>
-            <div className="flex flex-wrap items-center gap-2">
-              <h2 className="text-base font-bold uppercase tracking-wide sm:text-lg">
-                {titleHint ? (
-                  <HintText id={`step-${number}-title`} hint={titleHint}>
-                    {title}
-                  </HintText>
-                ) : (
-                  title
-                )}
-              </h2>
-              {badge && <StepSectionBadge badge={badge} />}
+export function StepSection({
+  number,
+  title,
+  description,
+  titleHint,
+  badge,
+  children,
+  action,
+  collapsible = false,
+  defaultOpen = true,
+  selected = false,
+  onSelect,
+  selectionDisabled = false,
+  selectionTestId,
+  testId,
+  className,
+}: StepSectionProps) {
+  const [open, setOpen] = useState(defaultOpen);
+  const selectable = Boolean(onSelect);
+
+  const section = (
+    <section
+      className={cn(
+        'rounded-lg border border-border bg-gradient-to-b from-card to-card/60 p-5 shadow-sm sm:p-6',
+        selectable && 'relative cursor-pointer transition-colors',
+        selectable && selected && 'border-primary ring-1 ring-primary/30',
+        selectable && selectionDisabled && 'cursor-not-allowed opacity-60',
+        className,
+      )}
+      data-testid={testId ?? selectionTestId}
+    >
+      {selectable && (
+        <input
+          type="checkbox"
+          checked={selected}
+          disabled={selectionDisabled}
+          aria-label={title}
+          onChange={() => onSelect?.()}
+          className="absolute inset-0 z-10 h-full w-full cursor-pointer opacity-0 focus-visible:rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 disabled:cursor-not-allowed"
+        />
+      )}
+      <div className={cn('flex items-start justify-between gap-3', !collapsible || open ? 'mb-4' : 'mb-0')}>
+        {collapsible ? (
+          <div className="flex min-w-0 flex-1 items-start gap-2">
+            <button
+              type="button"
+              aria-expanded={open}
+              aria-label={title}
+              data-testid={`step-section-toggle-${number}`}
+              onClick={() => setOpen((current) => !current)}
+              className="mt-1 shrink-0 rounded-sm text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            >
+              <ChevronRight className={cn('h-4 w-4 transition-transform', open && 'rotate-90')} aria-hidden="true" />
+            </button>
+            <span className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full border border-primary/40 bg-primary/10 text-sm font-semibold text-primary">
+              {number}
+            </span>
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <h2 className="text-base font-bold uppercase tracking-wide sm:text-lg">
+                  {titleHint ? (
+                    <HintText id={`step-${number}-title`} hint={titleHint}>
+                      {title}
+                    </HintText>
+                  ) : (
+                    title
+                  )}
+                </h2>
+                {badge && <StepSectionBadge badge={badge} />}
+              </div>
+              {description && <p className="mt-1 text-sm text-muted-foreground sm:text-base">{description}</p>}
             </div>
-            {description && <p className="mt-1 text-sm text-muted-foreground sm:text-base">{description}</p>}
           </div>
-        </div>
+        ) : (
+          <div className="flex items-start gap-3">
+            <span className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full border border-primary/40 bg-primary/10 text-sm font-semibold text-primary">
+              {number}
+            </span>
+            <div>
+              <div className="flex flex-wrap items-center gap-2">
+                <h2 className="text-base font-bold uppercase tracking-wide sm:text-lg">
+                  {titleHint ? (
+                    <HintText id={`step-${number}-title`} hint={titleHint}>
+                      {title}
+                    </HintText>
+                  ) : (
+                    title
+                  )}
+                </h2>
+                {badge && <StepSectionBadge badge={badge} />}
+              </div>
+              {description && <p className="mt-1 text-sm text-muted-foreground sm:text-base">{description}</p>}
+            </div>
+          </div>
+        )}
         {action && <div className="flex-shrink-0">{action}</div>}
       </div>
-      {children}
+      {(!collapsible || open) && children}
     </section>
   );
+  return section;
 }
 
-/** Circular selection marker — a filled cyan check when selected, an empty ring otherwise. */
+/** Selection marker — a filled cyan check when selected, an empty border otherwise. */
 export function SelectIndicator({ selected, className }: { selected: boolean; className?: string }) {
   return (
     <span
@@ -170,6 +254,8 @@ interface ModelCardProps {
   installed?: boolean;
   /** Right-aligned resource footer (RAM / disk). */
   meta?: ReactNode;
+  /** Place the resource metadata beside the capability tags instead of in a separate footer row. */
+  metaInline?: boolean;
   /** Artificial Analysis benchmark scores (omitted fields are hidden). */
   scores?: { intelligence?: number; toolCalling?: number };
   testId?: string;
@@ -202,6 +288,7 @@ export function ModelCard({
   agentDefault,
   installed,
   meta,
+  metaInline = false,
   scores,
   testId,
   checkboxTestId,
@@ -232,22 +319,33 @@ export function ModelCard({
               </span>
             )}
             {installed && (
-              <span className="rounded bg-green-600/90 px-1.5 py-0.5 text-[10px] font-medium text-white">{t('ONBOARDING_INSTALLED')}</span>
+              <span className="rounded bg-success px-1.5 py-0.5 text-[10px] font-medium text-success-foreground">{t('ONBOARDING_INSTALLED')}</span>
             )}
           </span>
           {description && <span className="mt-0.5 block text-xs text-muted-foreground">{description}</span>}
         </span>
       </span>
-      {tags.length > 0 && (
-        <span className="flex flex-wrap gap-1.5">
-          {tags.map((tag) => (
-            <span
-              key={tag}
-              className="rounded-md border border-primary/40 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-primary"
-            >
-              {tag}
+      {(tags.length > 0 || (metaInline && meta)) && (
+        <span className="flex items-center justify-between gap-2">
+          {tags.length > 0 ? (
+            <span className="flex min-w-0 flex-wrap gap-1.5">
+              {tags.map((tag) => (
+                <span
+                  key={tag}
+                  className="rounded-md border border-primary/40 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-primary"
+                >
+                  {tag}
+                </span>
+              ))}
             </span>
-          ))}
+          ) : (
+            <span />
+          )}
+          {metaInline && meta && (
+            <span className="shrink-0 text-xs text-muted-foreground" data-testid="model-meta-inline">
+              {meta}
+            </span>
+          )}
         </span>
       )}
       {scores && (scores.intelligence != null || scores.toolCalling != null) && (
@@ -256,7 +354,7 @@ export function ModelCard({
           {scores.toolCalling != null && <ScoreBar label={t('ONBOARDING_TOOL_USE')} value={scores.toolCalling} testId="score-tools" />}
         </span>
       )}
-      {meta && <span className="block text-xs text-muted-foreground">{meta}</span>}
+      {meta && !metaInline && <span className="block text-xs text-muted-foreground">{meta}</span>}
     </label>
   );
 }

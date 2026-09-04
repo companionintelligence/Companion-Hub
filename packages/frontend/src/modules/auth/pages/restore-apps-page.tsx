@@ -161,7 +161,7 @@ function RestoreAppsContent() {
                   <div>
                     <p className="font-medium text-foreground">{item.portalApp.name}</p>
                     <p className="text-xs text-muted-foreground">{t(`RESTORE_APPS_ACTION_${item.action.toUpperCase()}`)}</p>
-                    {item.hasExistingData ? <p className="text-xs text-emerald-600">{t('RESTORE_APPS_REUSING_DATA')}</p> : null}
+                    {item.hasExistingData ? <p className="text-xs text-success">{t('RESTORE_APPS_REUSING_DATA')}</p> : null}
                   </div>
                 </li>
               ))}

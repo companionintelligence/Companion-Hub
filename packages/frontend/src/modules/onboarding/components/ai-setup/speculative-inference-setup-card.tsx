@@ -36,14 +36,14 @@ export const SpeculativeInferenceSetupCard = ({ status, checking, onRecheck }: S
   if (status.ready) {
     const endpoint = status.displayEndpoint ?? `${status.endpointUrl}/v1`;
     return (
-      <Card className="border-green-200 dark:border-green-800 bg-green-50 dark:bg-green-950">
+      <Card className="border-success/30 bg-success/10">
         <CardContent className="p-4">
           <div className="flex items-center justify-between gap-3">
             <div className="flex min-w-0 items-center gap-3">
-              <CheckCircle2 className="h-5 w-5 shrink-0 text-green-600 dark:text-green-400" />
+              <CheckCircle2 className="h-5 w-5 shrink-0 text-success" />
               <div className="min-w-0">
-                <div className="text-sm font-medium text-green-900 dark:text-green-100">{t('ONBOARDING_SPECULATIVE_DETECTED')}</div>
-                <div className="text-xs text-green-700 dark:text-green-300">{endpoint}</div>
+                <div className="text-sm font-medium text-success">{t('ONBOARDING_SPECULATIVE_DETECTED')}</div>
+                <div className="text-xs text-success">{endpoint}</div>
               </div>
             </div>
             <Button
@@ -64,14 +64,14 @@ export const SpeculativeInferenceSetupCard = ({ status, checking, onRecheck }: S
   }
 
   return (
-    <Card className="border-yellow-200 dark:border-yellow-800 bg-yellow-50 dark:bg-yellow-950">
+    <Card className="border-warning/30 bg-warning/10">
       <CardContent className="p-4">
         <div className="flex items-start gap-3">
-          <Download className="h-5 w-5 shrink-0 mt-0.5 text-yellow-600 dark:text-yellow-400" />
+          <Download className="h-5 w-5 shrink-0 mt-0.5 text-warning" />
           <div className="min-w-0 flex-1">
-            <div className="mb-1 text-sm font-medium text-yellow-900 dark:text-yellow-100">{t('ONBOARDING_SPECULATIVE_NOT_DETECTED')}</div>
-            <div className="mb-3 text-xs text-yellow-700 dark:text-yellow-300">{status.hint ?? t('ONBOARDING_SPECULATIVE_NOT_DETECTED_DESC')}</div>
-            {status.error && <div className="mb-3 break-all text-xs font-mono text-yellow-800 dark:text-yellow-200">{status.error}</div>}
+            <div className="mb-1 text-sm font-medium text-warning">{t('ONBOARDING_SPECULATIVE_NOT_DETECTED')}</div>
+            <div className="mb-3 text-xs text-warning">{status.hint ?? t('ONBOARDING_SPECULATIVE_NOT_DETECTED_DESC')}</div>
+            {status.error && <div className="mb-3 break-all font-mono text-xs text-warning">{status.error}</div>}
             <div className="flex flex-wrap gap-2">
               <Button size="sm" variant="ghost" onClick={() => openExternal(SPECULATIVE_INFERENCE_GUIDE_URL)}>
                 {t('ONBOARDING_SPECULATIVE_DOCS')}

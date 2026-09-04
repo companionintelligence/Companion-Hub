@@ -3,7 +3,7 @@ import { ModelRegistryService } from '../model-registry.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { mock, type MockProxy } from 'vitest-mock-extended';
 import { describe, it, expect, beforeEach } from 'vitest';
-import type { CuratedModel, HardwareProfile, HardwareTier } from '@ci-hub/common/types';
+import type { CuratedModel, HardwareProfile, HardwareTier, HostPlatform } from '@ci-hub/common/types';
 
 describe('ModelRegistryService', () => {
   let service: ModelRegistryService;
@@ -118,6 +118,7 @@ describe('ModelRegistryService', () => {
         vramMb?: number;
         unifiedMemory?: boolean;
         arch?: HardwareProfile['cpu']['arch'];
+        platform?: HostPlatform;
         ramMb: number;
         tier: HardwareTier;
       }): HardwareProfile => ({
@@ -135,9 +136,49 @@ describe('ModelRegistryService', () => {
         cpu: { arch: overrides.arch ?? 'x86_64', cores: 16, model: 'Test CPU' },
         effectiveInferenceMemoryMb: overrides.unifiedMemory ? overrides.ramMb : (overrides.vramMb ?? 0),
         tier: overrides.tier,
+        ...(overrides.platform ? { os: { platform: overrides.platform, name: overrides.platform, version: '' } } : {}),
       });
 
       const topLlm = (models: CuratedModel[]): CuratedModel | undefined => models.find((m) => m.modality === 'llm');
+
+      it('filters local recommendations by host platform across macOS, Linux, and Windows', () => {
+        const linux = service.getRecommendedModelsForHardware('high', profile({ platform: 'linux', vramMb: 48 * GB, ramMb: 128 * GB, tier: 'high' }));
+        const windows = service.getRecommendedModelsForHardware(
+          'high',
+          profile({ platform: 'win32', vramMb: 48 * GB, ramMb: 128 * GB, tier: 'high' }),
+        );
+        const macos = service.getRecommendedModelsForHardware(
+          'high',
+          profile({ platform: 'darwin', vendor: 'apple', unifiedMemory: true, arch: 'arm64', ramMb: 64 * GB, tier: 'high' }),
+        );
+
+        const assertPlatform = (models: CuratedModel[], platform: HostPlatform) => {
+          for (const model of models) {
+            expect(model.requirements.supportedPlatforms, `${model.id} platform`).toContain(platform);
+          }
+        };
+        assertPlatform(linux, 'linux');
+        assertPlatform(windows, 'win32');
+        assertPlatform(macos, 'darwin');
+
+        expect(linux.some((m) => m.backend === 'vllm' && !m.id.endsWith('-mlx'))).toBe(true);
+        expect(windows.some((m) => m.backend === 'vllm' && !m.id.endsWith('-mlx'))).toBe(true);
+        expect(linux.some((m) => m.backend === 'dspark' || m.backend === 'mtplx' || m.id.endsWith('-mlx'))).toBe(false);
+        expect(windows.some((m) => m.backend === 'dspark' || m.backend === 'mtplx' || m.id.endsWith('-mlx'))).toBe(false);
+        expect(macos.some((m) => m.backend === 'dspark' || m.backend === 'mtplx' || m.id.endsWith('-mlx'))).toBe(true);
+        expect(macos.some((m) => m.backend === 'vllm' && !m.id.endsWith('-mlx'))).toBe(false);
+      });
+
+      it('keeps cross-platform host-served rows available only for explicit remote setup', () => {
+        const linux = profile({ platform: 'linux', vramMb: 48 * GB, ramMb: 128 * GB, tier: 'high' });
+        const local = service.getModelsForHardware('high', linux);
+        const remoteSetup = service.getModelsForHardware('high', linux, { includeRemoteHostBackends: true });
+
+        expect(local.some((m) => m.backend === 'dspark' || m.backend === 'mtplx' || m.id.endsWith('-mlx'))).toBe(false);
+        expect(remoteSetup.some((m) => m.backend === 'dspark')).toBe(true);
+        expect(remoteSetup.some((m) => m.backend === 'mtplx')).toBe(true);
+        expect(remoteSetup.some((m) => m.id.endsWith('-mlx'))).toBe(true);
+      });
 
       it('picks a runnable, size-capped LLM for CPU-only machines (regression: previously returned none)', () => {
         const recs = service.getRecommendedModelsForHardware(
@@ -248,6 +289,7 @@ describe('ModelRegistryService', () => {
           { tier: 'medium', hw: profile({ vramMb: 8 * GB, ramMb: 16 * GB, tier: 'medium' }) },
           { tier: 'low', hw: profile({ vramMb: 6 * GB, ramMb: 16 * GB, tier: 'low' }) },
           { tier: 'cpu-only', hw: profile({ available: false, vendor: 'none', ramMb: 32 * GB, tier: 'cpu-only' }) },
+          { tier: 'high', hw: profile({ vendor: 'apple', unifiedMemory: true, arch: 'arm64', vramMb: 64 * GB, ramMb: 64 * GB, tier: 'high' }) },
         ];
         for (const { tier, hw } of scenarios) {
           const browsableIds = new Set(service.getModelsForTier(tier).map((m) => m.id));
@@ -319,6 +361,43 @@ describe('ModelRegistryService', () => {
         for (const m of vllmPicks) {
           expect(m.runtime.memoryFootprintMb).toBeLessThanOrEqual(vramMb * 0.9);
         }
+      });
+
+      // vLLM-Metal (the catalog's `-mlx` rows) is the only vLLM path on Apple Silicon — see
+      // VllmBackend.getComposeConfig's `apple` branch, which declines the CUDA/Docker path outright.
+      it('recommends vLLM-Metal (MLX) models on Apple Silicon, sized to unified memory', () => {
+        const smallMac = service
+          .getRecommendedModelsForHardware('medium', profile({ vendor: 'apple', unifiedMemory: true, arch: 'arm64', ramMb: 16 * GB, tier: 'medium' }))
+          .filter((m) => m.backend === 'vllm');
+        for (const m of smallMac) {
+          expect(m.id, `${m.id} must be an MLX row`).toMatch(/-mlx$/);
+          expect(m.runtime.memoryFootprintMb).toBeLessThanOrEqual(16 * GB * 0.7);
+        }
+
+        // A large-unified-memory Mac (M-series Max/Ultra) can fit the 70B MLX row too.
+        const bigMac = service
+          .getRecommendedModelsForHardware('high', profile({ vendor: 'apple', unifiedMemory: true, arch: 'arm64', ramMb: 64 * GB, tier: 'high' }))
+          .filter((m) => m.backend === 'vllm');
+        expect(bigMac.length).toBeGreaterThan(0);
+        expect(bigMac.some((m) => m.id === 'llama3-3-70b-mlx')).toBe(true);
+        for (const m of bigMac) {
+          expect(m.runtime.memoryFootprintMb).toBeLessThanOrEqual(64 * GB * 0.7);
+        }
+      });
+
+      // #1103's regression, mirrored for Apple: when every MLX row is too big for the unified-memory
+      // budget, the CPU/RAM fallback in selectLlmsForHardware must not resurrect one anyway — MLX
+      // rows are gated to `gpuVendors: ['apple']` (never 'cpu'), so the fallback's `vendor: 'cpu'`
+      // pick correctly finds nothing, same as the CUDA vLLM rows' `vendor: 'nvidia'` gate above.
+      // The 2026-08-24 MLX expansion added catalog rows down to 270M params (~0.2GB — actually a
+      // touch smaller than Ollama's own smallest, gemma3-270m's q4_K_M build), so no *real* Mac RAM
+      // size leaves every MLX row too big while Ollama still has a fit; this uses a synthetic
+      // sub-real RAM purely to exercise the fallback-rejection path itself, not plausible hardware.
+      it('never recommends a vLLM-Metal model that exceeds the unified-memory budget (no CPU-RAM fallback for vLLM)', () => {
+        const ramMb = 256; // below every MLX row's footprint (smallest is gemma3-270m-mlx at ~0.2GB) at the 0.7 budget fraction
+        const hw = profile({ vendor: 'apple', unifiedMemory: true, arch: 'arm64', ramMb, tier: 'low' });
+        const vllmPicks = service.getRecommendedModelsForHardware('low', hw).filter((m) => m.backend === 'vllm');
+        expect(vllmPicks).toEqual([]);
       });
 
       it('recommends the real default (q4_K_M) build and never overflows the VRAM budget', () => {

@@ -175,7 +175,7 @@ export default () => {
             </div>
 
             <div data-testid="app-header-actions-row" className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-              {app && app.status !== 'missing' ? (
+              {app ? (
                 <AppStatus
                   status={app.status}
                   runtimeHealth={runtimeHealth.data}

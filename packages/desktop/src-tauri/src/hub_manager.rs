@@ -138,6 +138,8 @@ const HOST_OLLAMA_PROBE_TIMEOUT: Duration = Duration::from_millis(500);
 const HOST_OLLAMA_PROBE_CACHE_TTL: Duration = Duration::from_secs(10);
 const HUB_API_LIVE_PROBE_TIMEOUT: Duration = Duration::from_millis(800);
 const HUB_API_LIVE_PROBE_CACHE_TTL: Duration = Duration::from_secs(2);
+/// `docker info` is expensive; reuse the last access check across hub-status polls.
+const DOCKER_ACCESS_CACHE_TTL: Duration = Duration::from_secs(5);
 
 struct CachedHostOllamaProbe {
     checked_at: Instant,
@@ -195,6 +197,8 @@ pub fn docker_command() -> Command {
     let mut cmd = base_docker_command();
     if let Some(docker_host) = preferred_docker_host() {
         cmd.env("DOCKER_HOST", docker_host);
+        // Sticky CLI contexts must not override the pinned Hub engine.
+        cmd.env_remove("DOCKER_CONTEXT");
     }
     cmd
 }
@@ -1736,6 +1740,12 @@ pub struct DockerAccessCheck {
     pub detail: Option<String>,
 }
 
+static DOCKER_ACCESS_CACHE: Mutex<Option<(Instant, DockerAccessCheck)>> = Mutex::new(None);
+
+fn docker_access_cache_is_fresh(checked_at: Instant, now: Instant, ttl: Duration) -> bool {
+    now.saturating_duration_since(checked_at) < ttl
+}
+
 #[derive(Clone, serde::Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum DockerInstallState {
@@ -3037,12 +3047,41 @@ pub fn read_desktop_logs(max_lines: usize) -> String {
     lines[start..].join("\n")
 }
 
+/// Canonical tunnel dir on disk — sibling of the Hub data dir.
+///
+/// Matches compose `${ROOT_FOLDER_HOST}/../tunnel` (desktop + CLI + heal scripts).
+/// Do not use `<data_dir>/tunnel`; that nested path is legacy-only.
 pub(crate) fn tunnel_dir_for(data_dir: &Path) -> PathBuf {
+    data_dir
+        .parent()
+        .map(|parent| parent.join("tunnel"))
+        .unwrap_or_else(|| data_dir.join("tunnel"))
+}
+
+/// Pre-sibling migration path (`<data_dir>/tunnel`). Still accepted when reading.
+fn legacy_tunnel_dir_for(data_dir: &Path) -> PathBuf {
     data_dir.join("tunnel")
 }
 
 pub(crate) fn tunnel_token_path_for(data_dir: &Path) -> PathBuf {
     tunnel_dir_for(data_dir).join("token")
+}
+
+fn legacy_tunnel_token_path_for(data_dir: &Path) -> PathBuf {
+    legacy_tunnel_dir_for(data_dir).join("token")
+}
+
+/// True when a non-empty tunnel token exists at the canonical sibling path or the legacy nested path.
+fn tunnel_token_present_for_data_dir(data_dir: &Path) -> bool {
+    for path in [tunnel_token_path_for(data_dir), legacy_tunnel_token_path_for(data_dir)] {
+        if std::fs::metadata(&path)
+            .map(|m| m.is_file() && m.len() > 0)
+            .unwrap_or(false)
+        {
+            return true;
+        }
+    }
+    false
 }
 
 const TUNNEL_USER_CLEARED_MARKER: &str = ".user-cleared-token";
@@ -3055,20 +3094,27 @@ pub(crate) fn tunnel_user_cleared_marker_path_for(data_dir: &Path) -> PathBuf {
 /// Returns a human-readable summary of what was removed for logging. Errors only
 /// when the filesystem refuses to delete an existing file — a missing token is a
 /// no-op success since the post-condition (no token on disk) is already satisfied.
+///
+/// Clears both the canonical sibling token and any legacy nested copy so profile
+/// detection and compose cannot resurrect a "cleared" tunnel from the old path.
 pub fn clear_tunnel_token(data_dir: &Path) -> Result<String, String> {
     let token_path = tunnel_token_path_for(data_dir);
+    let legacy_token_path = legacy_tunnel_token_path_for(data_dir);
     let tunnel_dir = tunnel_dir_for(data_dir);
     let marker_path = tunnel_user_cleared_marker_path_for(data_dir);
 
-    let token_existed = token_path.exists();
-    if token_existed {
-        std::fs::remove_file(&token_path).map_err(|e| {
-            format!(
-                "Failed to remove tunnel token at {}: {}",
-                token_path.display(),
-                e
-            )
-        })?;
+    let mut removed: Vec<String> = Vec::new();
+    for path in [&token_path, &legacy_token_path] {
+        if path.exists() {
+            std::fs::remove_file(path).map_err(|e| {
+                format!(
+                    "Failed to remove tunnel token at {}: {}",
+                    path.display(),
+                    e
+                )
+            })?;
+            removed.push(path.display().to_string());
+        }
     }
 
     std::fs::create_dir_all(&tunnel_dir).map_err(|e| {
@@ -3086,10 +3132,10 @@ pub fn clear_tunnel_token(data_dir: &Path) -> Result<String, String> {
         )
     })?;
 
-    let summary = if token_existed {
+    let summary = if !removed.is_empty() {
         format!(
-            "Tunnel token cleared ({} removed) and user-cleared marker written.",
-            token_path.display()
+            "Tunnel token cleared ({}) and user-cleared marker written.",
+            removed.join(", ")
         )
     } else {
         format!(
@@ -3310,6 +3356,21 @@ fn should_defer_docker_bind_mount_probe(state: &DockerAccessState) -> bool {
 }
 
 pub fn check_docker_access() -> DockerAccessCheck {
+    {
+        let cache = lock_recovering(&DOCKER_ACCESS_CACHE);
+        if let Some((checked_at, check)) = cache.as_ref() {
+            if docker_access_cache_is_fresh(*checked_at, Instant::now(), DOCKER_ACCESS_CACHE_TTL) {
+                return check.clone();
+            }
+        }
+    }
+
+    let check = check_docker_access_uncached();
+    *lock_recovering(&DOCKER_ACCESS_CACHE) = Some((Instant::now(), check.clone()));
+    check
+}
+
+fn check_docker_access_uncached() -> DockerAccessCheck {
     let output = match docker_command().arg("info").output() {
         Ok(output) => output,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -3487,16 +3548,33 @@ const HUB_BIND_MOUNT_DIRS: &[&str] = &[
     "app-data",
     "user-config",
     "backups",
-    // Bind-mounted at compose `${ROOT_FOLDER_HOST}/tunnel:/app/tunnel`. Must be pre-created as
-    // the host user; otherwise Docker auto-creates it root-owned and the Hub container
-    // (UID 1000) cannot write the Cloudflare tunnel token/certs (EACCES).
-    // NOTE: this path is desktop-specific. Here ROOT_FOLDER_HOST is the top-level data dir,
-    // so the tunnel lives at ROOT_FOLDER_HOST/tunnel. The repo-root compose and
-    // scripts/heal-hub-bind-mounts.ts instead use the sibling ROOT_FOLDER_HOST/../tunnel
-    // because there ROOT_FOLDER_HOST is the .internal subdir. Both resolve to <hub-dir>/tunnel;
-    // do not "align" them — the base differs by stack.
-    "tunnel",
 ];
+
+/// Sibling tunnel dir bind-mounted at compose `${ROOT_FOLDER_HOST}/../tunnel`.
+/// Kept separate from [`HUB_BIND_MOUNT_DIRS`] because it is not under the data dir.
+fn ensure_sibling_tunnel_dir(data_dir: &Path) -> Result<(), String> {
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
+
+    let tunnel_dir = tunnel_dir_for(data_dir);
+    std::fs::create_dir_all(&tunnel_dir).map_err(|error| {
+        format!(
+            "Failed to create sibling tunnel dir {}: {}",
+            tunnel_dir.display(),
+            error
+        )
+    })?;
+    #[cfg(unix)]
+    if let Err(error) = std::fs::set_permissions(&tunnel_dir, std::fs::Permissions::from_mode(0o775))
+    {
+        eprintln!(
+            "warning: could not chmod 775 {}: {}",
+            tunnel_dir.display(),
+            error
+        );
+    }
+    Ok(())
+}
 
 /// Files prior root-owned Hub containers commonly leave on bind mounts (block EACCES on rewrite).
 const HUB_STALE_ROOT_OWNED_FILES: &[(&str, &str)] = &[
@@ -3534,8 +3612,8 @@ fn docker_socket_path_from_docker_host(docker_host: &str) -> Option<PathBuf> {
     Some(PathBuf::from(socket_path))
 }
 
-#[cfg_attr(not(any(target_os = "linux", windows)), allow(dead_code))]
-#[cfg(any(target_os = "linux", windows, test))]
+#[cfg_attr(not(windows), allow(dead_code))]
+#[cfg(any(windows, test))]
 fn resolved_host_docker_dir(host_docker_dir: Option<&Path>) -> Option<PathBuf> {
     match host_docker_dir {
         Some(docker_dir) => Some(docker_dir.to_path_buf()),
@@ -3543,8 +3621,8 @@ fn resolved_host_docker_dir(host_docker_dir: Option<&Path>) -> Option<PathBuf> {
     }
 }
 
-#[cfg_attr(not(any(target_os = "linux", windows)), allow(dead_code))]
-#[cfg(any(target_os = "linux", windows, test))]
+#[cfg_attr(not(windows), allow(dead_code))]
+#[cfg(any(windows, test))]
 fn current_docker_context_name(host_docker_dir: Option<&Path>) -> Option<String> {
     let docker_dir = resolved_host_docker_dir(host_docker_dir)?;
     let raw = std::fs::read_to_string(docker_dir.join("config.json")).ok()?;
@@ -3556,70 +3634,8 @@ fn current_docker_context_name(host_docker_dir: Option<&Path>) -> Option<String>
     Some(context_name.to_string())
 }
 
-#[cfg(any(target_os = "linux", test))]
-fn docker_context_host_from_inspect_output(raw: &str) -> Option<String> {
-    let parsed: serde_json::Value = serde_json::from_str(raw).ok()?;
-    let host = parsed
-        .as_array()?
-        .first()?
-        .get("Endpoints")?
-        .get("docker")?
-        .get("Host")?
-        .as_str()?
-        .trim();
-    if host.is_empty() {
-        return None;
-    }
-    Some(host.to_string())
-}
-
-#[cfg(target_os = "linux")]
-fn docker_context_host(context_name: &str) -> Option<String> {
-    let output = base_docker_command()
-        .args(["context", "inspect", context_name])
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    docker_context_host_from_inspect_output(&String::from_utf8_lossy(&output.stdout))
-}
-
-#[cfg(target_os = "linux")]
-fn linux_docker_host_for_context_or_local_sockets<F>(
-    context_host: Option<&str>,
-    has_nondefault_context: bool,
-    candidates: &[PathBuf],
-    mut is_reachable: F,
-) -> Option<String>
-where
-    F: FnMut(&Path) -> bool,
-{
-    if has_nondefault_context {
-        return context_host.map(|host| host.to_string());
-    }
-
-    select_reachable_linux_docker_socket_path(candidates, |candidate| is_reachable(candidate))
-        .map(|socket_path| format!("unix://{}", socket_path.display()))
-}
-
 fn preferred_docker_host() -> Option<String> {
-    if let Ok(docker_host) = std::env::var("DOCKER_HOST") {
-        let trimmed = docker_host.trim();
-        if !trimmed.is_empty() {
-            return Some(trimmed.to_string());
-        }
-    }
-
-    #[cfg(target_os = "linux")]
-    {
-        return active_linux_docker_host(None);
-    }
-
-    #[cfg(not(target_os = "linux"))]
-    {
-        None
-    }
+    crate::docker_engine::effective_docker_host(Some(&get_hub_data_dir()))
 }
 
 #[cfg(target_os = "linux")]
@@ -3632,6 +3648,7 @@ fn linux_docker_socket_candidates() -> Vec<PathBuf> {
     candidates.push(PathBuf::from(format!("/run/user/{uid}/docker.sock")));
     if let Some(home) = dirs::home_dir() {
         candidates.push(home.join(".docker").join("run").join("docker.sock"));
+        candidates.push(home.join(".docker").join("desktop").join("docker.sock"));
     }
 
     let mut deduped = Vec::new();
@@ -3641,51 +3658,6 @@ fn linux_docker_socket_candidates() -> Vec<PathBuf> {
         }
     }
     deduped
-}
-
-#[cfg(target_os = "linux")]
-fn select_reachable_linux_docker_socket_path<F>(
-    candidates: &[PathBuf],
-    mut is_reachable: F,
-) -> Option<PathBuf>
-where
-    F: FnMut(&Path) -> bool,
-{
-    candidates
-        .iter()
-        .find(|candidate| is_reachable(candidate))
-        .cloned()
-}
-
-#[cfg(target_os = "linux")]
-fn probe_linux_docker_socket(socket_path: &Path) -> bool {
-    if !socket_path.exists() {
-        return false;
-    }
-
-    let docker_host = format!("unix://{}", socket_path.display());
-    base_docker_command()
-        .env("DOCKER_HOST", docker_host)
-        .args(["info", "--format", "{{.ServerVersion}}"])
-        .output()
-        .map(|output| output.status.success())
-        .unwrap_or(false)
-}
-
-#[cfg(target_os = "linux")]
-fn active_linux_docker_host(host_docker_dir: Option<&Path>) -> Option<String> {
-    // Respect a configured non-default Docker context even if it is currently
-    // unavailable so the desktop app matches the user's CLI behavior. Only fall
-    // back to local Engine sockets when there is no explicit context override.
-    let context_name = current_docker_context_name(host_docker_dir);
-    let context_host = context_name.as_deref().and_then(docker_context_host);
-
-    linux_docker_host_for_context_or_local_sockets(
-        context_host.as_deref(),
-        context_name.is_some(),
-        &linux_docker_socket_candidates(),
-        probe_linux_docker_socket,
-    )
 }
 
 fn host_docker_socket_path() -> PathBuf {
@@ -3838,6 +3810,9 @@ fn ensure_host_bind_mounts_writable(data_dir: &Path) -> Result<(), String> {
             eprintln!("warning: could not chmod 775 {}: {}", path.display(), error);
         }
     }
+
+    // Compose mounts ${ROOT_FOLDER_HOST}/../tunnel — create beside the data dir, not under it.
+    ensure_sibling_tunnel_dir(data_dir)?;
 
     for (subdir, file) in HUB_STALE_ROOT_OWNED_FILES {
         let stale = data_dir.join(subdir).join(file);
@@ -4952,6 +4927,8 @@ fn warn_if_hub_node_arch_mismatches_host(data_dir: &Path) {
 
 const POSTGRES_DB_CONTAINER: &str = "ci-hub-db";
 const POSTGRES_DOCKER_NETWORK: &str = "ci-os-hub_network";
+const POSTGRES_TCP_PROBE_RETRIES: u32 = 5;
+const POSTGRES_TCP_PROBE_RETRY_DELAY_MS: u64 = 400;
 
 fn escape_sql_literal(value: &str) -> String {
     value.replace('\'', "''")
@@ -4961,26 +4938,121 @@ fn escape_shell_single_quoted(value: &str) -> String {
     value.replace('\'', "'\\''")
 }
 
-fn postgres_tcp_auth_works(password: &str) -> bool {
+#[derive(Debug)]
+struct PostgresTcpProbeResult {
+    ok: bool,
+    stdout: String,
+    stderr: String,
+}
+
+/// Probe Postgres TCP auth from inside the DB container (same engine, no second image).
+fn postgres_tcp_auth_probe(password: &str) -> PostgresTcpProbeResult {
+    let pgpassword = escape_shell_single_quoted(password);
+    let script = format!(
+        "PGPASSWORD='{pgpassword}' psql -h 127.0.0.1 -p 6543 -U companion -d companiondb -qt -c 'SELECT 1'"
+    );
+    match docker_command()
+        .args(["exec", POSTGRES_DB_CONTAINER, "bash", "-lc", &script])
+        .output()
+    {
+        Ok(out) => PostgresTcpProbeResult {
+            ok: out.status.success(),
+            stdout: String::from_utf8_lossy(&out.stdout).to_string(),
+            stderr: String::from_utf8_lossy(&out.stderr).to_string(),
+        },
+        Err(error) => PostgresTcpProbeResult {
+            ok: false,
+            stdout: String::new(),
+            stderr: format!("Failed to exec into {POSTGRES_DB_CONTAINER}: {error}"),
+        },
+    }
+}
+
+/// Secondary probe via a network-attached client (kept for engines where exec TCP differs).
+fn postgres_tcp_auth_probe_via_network(password: &str) -> PostgresTcpProbeResult {
     let pgpassword = escape_shell_single_quoted(password);
     let script = format!(
         "PGPASSWORD='{pgpassword}' psql -h {POSTGRES_DB_CONTAINER} -p 6543 -U companion -d companiondb -qt -c 'SELECT 1'"
     );
-    matches!(
-        docker_command()
-            .args([
-                "run",
-                "--rm",
-                "--network",
-                POSTGRES_DOCKER_NETWORK,
-                "postgres:14",
-                "bash",
-                "-lc",
-                &script,
-            ])
-            .output(),
-        Ok(out) if out.status.success()
-    )
+    match docker_command()
+        .args([
+            "run",
+            "--rm",
+            "--network",
+            POSTGRES_DOCKER_NETWORK,
+            "postgres:14",
+            "bash",
+            "-lc",
+            &script,
+        ])
+        .output()
+    {
+        Ok(out) => PostgresTcpProbeResult {
+            ok: out.status.success(),
+            stdout: String::from_utf8_lossy(&out.stdout).to_string(),
+            stderr: String::from_utf8_lossy(&out.stderr).to_string(),
+        },
+        Err(error) => PostgresTcpProbeResult {
+            ok: false,
+            stdout: String::new(),
+            stderr: format!("Failed to run network Postgres probe: {error}"),
+        },
+    }
+}
+
+fn postgres_tcp_auth_works(password: &str) -> bool {
+    let primary = postgres_tcp_auth_probe(password);
+    if primary.ok {
+        return true;
+    }
+    // Fall back only when exec path looks like a container/exec issue, not auth.
+    let kind = crate::docker_engine::classify_postgres_probe_output(
+        &primary.stdout,
+        &primary.stderr,
+    );
+    if kind == crate::docker_engine::PostgresProbeFailureKind::Auth {
+        return false;
+    }
+    postgres_tcp_auth_probe_via_network(password).ok
+}
+
+fn postgres_tcp_auth_works_with_retries(
+    password: &str,
+) -> Result<(), (crate::docker_engine::PostgresProbeFailureKind, String)> {
+    let mut last = postgres_tcp_auth_probe(password);
+    if last.ok {
+        return Ok(());
+    }
+    for _ in 1..POSTGRES_TCP_PROBE_RETRIES {
+        std::thread::sleep(std::time::Duration::from_millis(
+            POSTGRES_TCP_PROBE_RETRY_DELAY_MS,
+        ));
+        last = postgres_tcp_auth_probe(password);
+        if last.ok {
+            return Ok(());
+        }
+        let kind = crate::docker_engine::classify_postgres_probe_output(
+            &last.stdout,
+            &last.stderr,
+        );
+        if kind == crate::docker_engine::PostgresProbeFailureKind::Auth {
+            break;
+        }
+    }
+
+    // One network-attached attempt if exec still looks like network/unknown.
+    let kind = crate::docker_engine::classify_postgres_probe_output(&last.stdout, &last.stderr);
+    if kind != crate::docker_engine::PostgresProbeFailureKind::Auth {
+        let network = postgres_tcp_auth_probe_via_network(password);
+        if network.ok {
+            return Ok(());
+        }
+        last = network;
+    }
+
+    let kind = crate::docker_engine::classify_postgres_probe_output(&last.stdout, &last.stderr);
+    let detail = format_command_output(&last.stdout, &last.stderr);
+    Err((kind, detail))
 }
 
 fn sync_postgres_password(password: &str, data_dir: &Path) -> Result<(), String> {
@@ -5040,11 +5112,13 @@ fn ensure_postgres_password_matches_env(env_path: &Path, data_dir: &Path) -> Res
 
     sync_postgres_password(&password, data_dir)?;
 
-    if !postgres_tcp_auth_works(&password) {
-        return Err(
-            "Postgres password sync did not restore TCP authentication for user companion."
-                .to_string(),
-        );
+    if let Err((kind, detail)) = postgres_tcp_auth_works_with_retries(&password) {
+        let engine = crate::docker_engine::pinned_engine();
+        return Err(crate::docker_engine::format_postgres_probe_failure(
+            kind,
+            engine.as_ref(),
+            &detail,
+        ));
     }
 
     Ok(())
@@ -5333,6 +5407,33 @@ fn start_hub_inner(
             env_path.display()
         ),
     );
+
+    // Re-resolve on every start/retry so affinity tracks the live Hub stack.
+    crate::docker_engine::clear_process_pin();
+    let engine = crate::docker_engine::resolve_and_pin_hub_docker_engine(data_dir).map_err(
+        |error| {
+            let message = format!("Docker engine selection failed: {error}");
+            let _ = append_desktop_log_for(data_dir, "hub.start", &message);
+            with_view_logs_hint(message)
+        },
+    )?;
+    let _ = append_desktop_log_for(
+        data_dir,
+        "hub.start",
+        &format!(
+            "using {} at {} because {}",
+            engine.kind.as_str(),
+            engine.docker_host,
+            engine.reason
+        ),
+    );
+
+    let candidates = crate::docker_engine::enumerate_docker_engine_candidates(None);
+    let reachable = crate::docker_engine::probe_reachable_engines(&candidates);
+    if let Some(conflict) = crate::docker_engine::split_brain_conflict(&engine, &reachable) {
+        let _ = append_desktop_log_for(data_dir, "hub.start", &conflict);
+        return Err(with_view_logs_hint(conflict));
+    }
 
     if !is_docker_available() {
         let message = "Docker is not running — please start Docker Desktop and try again.";
@@ -6128,12 +6229,9 @@ fn has_cloudflare_tunnel_token(existing: &std::collections::HashMap<String, Stri
     let Some(root) = get_non_empty_env_value(existing, "ROOT_FOLDER_HOST") else {
         return false;
     };
-    let token_path = host_path_from_docker_path(&root)
-        .join("tunnel")
-        .join("token");
-    std::fs::metadata(&token_path)
-        .map(|m| m.is_file() && m.len() > 0)
-        .unwrap_or(false)
+    // Canonical: sibling ../tunnel/token (compose bind). Also accept legacy <root>/tunnel/token
+    // so older installs keep the cloudflare profile until they migrate.
+    tunnel_token_present_for_data_dir(&host_path_from_docker_path(&root))
 }
 
 /// Ensures `private-vpn` and `cloudflare` compose profiles when enabled, without dropping other profiles.
@@ -6667,6 +6765,16 @@ static WINDOWS_DOCKER_HOST_STYLE_GUESS: std::sync::Mutex<Option<WindowsDockerHos
 
 #[cfg(windows)]
 fn windows_docker_host_style() -> WindowsDockerHostStyle {
+    // Prefer the Hub-pinned engine so bind-mount path style stays paired with
+    // DOCKER_HOST for compose / heal operations.
+    if let Some(style) = crate::docker_engine::pinned_path_style(Some(&get_hub_data_dir())) {
+        match style.as_str() {
+            "drive" => return WindowsDockerHostStyle::Drive,
+            "wsl-mnt" => return WindowsDockerHostStyle::WslMnt,
+            _ => {}
+        }
+    }
+
     // Deterministic CLI signals are re-read on every call (cheap: env vars plus one
     // small file). This follows backend switches without an app restart — the in-app
     // WSL2-engine installer runs `docker context use wsl-engine` mid-session and its
@@ -9461,6 +9569,27 @@ mod tests {
     }
 
     #[test]
+    fn docker_access_cache_ttl_is_five_seconds() {
+        use std::time::{Duration, Instant};
+        let start = Instant::now();
+        assert!(super::docker_access_cache_is_fresh(
+            start,
+            start,
+            Duration::from_secs(5)
+        ));
+        assert!(super::docker_access_cache_is_fresh(
+            start,
+            start + Duration::from_secs(4),
+            Duration::from_secs(5)
+        ));
+        assert!(!super::docker_access_cache_is_fresh(
+            start,
+            start + Duration::from_secs(5),
+            Duration::from_secs(5)
+        ));
+    }
+
+    #[test]
     fn hub_watchdog_decision() {
         assert!(!super::should_trigger_hub_watchdog(2, None, false, false));
         assert!(super::should_trigger_hub_watchdog(3, None, false, false));
@@ -9593,13 +9722,12 @@ mod tests {
     use super::wsl2_engine_user_script;
     use super::{
         append_desktop_log_for, classify_docker_access_result, clear_traefik_recreate_required,
-        clear_tunnel_token, derive_optional_service_state, desktop_log_path_for,
-        docker_context_host_from_inspect_output, files_match, format_command_output,
-        generate_container_docker_config, host_docker_socket_path, is_container_name_conflict,
-        is_host_port_bind_conflict, is_oci_runtime_error, is_traefik_recreate_required,
-        logs_open_target_for, managed_app_container_ps_args, mark_traefik_recreate_required,
-        merge_compose_profiles, parse_container_ids, paths_match_by_components,
-        prepare_traefik_runtime_state, private_vpn_enabled_from_map,
+        clear_tunnel_token, derive_optional_service_state, desktop_log_path_for, files_match,
+        format_command_output, generate_container_docker_config, host_docker_socket_path,
+        is_container_name_conflict, is_host_port_bind_conflict, is_oci_runtime_error,
+        is_traefik_recreate_required, logs_open_target_for, managed_app_container_ps_args,
+        mark_traefik_recreate_required, merge_compose_profiles, parse_container_ids,
+        paths_match_by_components, prepare_traefik_runtime_state, private_vpn_enabled_from_map,
         seeded_traefik_config_contents, should_defer_docker_bind_mount_probe,
         startup_service_definitions, truncate_command_output, tunnel_dir_for,
         tunnel_token_path_for, tunnel_user_cleared_marker_path_for, DockerAccessState,
@@ -9609,10 +9737,7 @@ mod tests {
     #[cfg(any(test, target_os = "macos"))]
     use super::{colima_macos_binary_install_script, colima_macos_start_script};
     #[cfg(target_os = "linux")]
-    use super::{
-        current_docker_context_name, linux_docker_host_for_context_or_local_sockets,
-        select_reachable_linux_docker_socket_path,
-    };
+    use super::current_docker_context_name;
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     use std::os::unix::fs::PermissionsExt;
     use std::path::{Path, PathBuf};
@@ -9678,8 +9803,11 @@ mod tests {
 
     #[test]
     fn prefers_docker_host_unix_socket_path() {
+        crate::docker_engine::clear_process_pin();
         let original = std::env::var_os("DOCKER_HOST");
+        let original_ci = std::env::var_os("CI_HUB_DOCKER_HOST");
         unsafe {
+            std::env::remove_var("CI_HUB_DOCKER_HOST");
             std::env::set_var("DOCKER_HOST", "unix:///tmp/ci-hub-docker.sock");
         }
 
@@ -9697,40 +9825,16 @@ mod tests {
                 std::env::remove_var("DOCKER_HOST");
             }
         }
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn prefers_reachable_linux_engine_socket_over_desktop_candidates() {
-        let candidates = vec![
-            PathBuf::from("/var/run/docker.sock"),
-            PathBuf::from("/run/user/1000/docker.sock"),
-            PathBuf::from("/home/test/.docker/run/docker.sock"),
-        ];
-        let reachable = candidates[0].clone();
-
-        let selected = select_reachable_linux_docker_socket_path(&candidates, |candidate| {
-            candidate == reachable.as_path()
-        });
-
-        assert_eq!(selected, Some(reachable));
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn falls_back_to_reachable_linux_desktop_socket_when_engine_isnt_ready() {
-        let candidates = vec![
-            PathBuf::from("/var/run/docker.sock"),
-            PathBuf::from("/run/user/1000/docker.sock"),
-            PathBuf::from("/home/test/.docker/run/docker.sock"),
-        ];
-        let reachable = candidates[1].clone();
-
-        let selected = select_reachable_linux_docker_socket_path(&candidates, |candidate| {
-            candidate == reachable.as_path()
-        });
-
-        assert_eq!(selected, Some(reachable));
+        if let Some(value) = original_ci {
+            unsafe {
+                std::env::set_var("CI_HUB_DOCKER_HOST", value);
+            }
+        } else {
+            unsafe {
+                std::env::remove_var("CI_HUB_DOCKER_HOST");
+            }
+        }
+        crate::docker_engine::clear_process_pin();
     }
 
     #[cfg(target_os = "linux")]
@@ -9766,44 +9870,30 @@ mod tests {
         }]"#;
 
         assert_eq!(
-            docker_context_host_from_inspect_output(inspect_output),
+            crate::docker_engine::docker_context_host_from_inspect_output(inspect_output),
             Some("unix:///home/test/.docker/desktop/docker.sock".to_string())
         );
     }
 
-    #[cfg(target_os = "linux")]
     #[test]
-    fn prefers_reachable_linux_context_host_before_socket_fallbacks() {
-        let context_host = "unix:///home/test/.docker/desktop/docker.sock";
-        let candidates = vec![
-            PathBuf::from("/var/run/docker.sock"),
-            PathBuf::from("/run/user/1000/docker.sock"),
-        ];
-
-        let selected = linux_docker_host_for_context_or_local_sockets(
-            Some(context_host),
-            true,
-            &candidates,
-            |_candidate| false,
-        );
-
-        assert_eq!(selected, Some(context_host.to_string()));
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn does_not_fall_back_when_nondefault_context_is_configured_but_unreachable() {
-        let candidates = vec![
-            PathBuf::from("/var/run/docker.sock"),
-            PathBuf::from("/run/user/1000/docker.sock"),
-        ];
-
-        let selected =
-            linux_docker_host_for_context_or_local_sockets(None, true, &candidates, |candidate| {
-                candidate == Path::new("/var/run/docker.sock")
-            });
-
-        assert_eq!(selected, None);
+    fn unreachable_desktop_falls_through_to_system_affinity() {
+        // Selection matrix: Desktop not in reachable set; system has Hub stack.
+        use crate::docker_engine::{
+            select_docker_engine, DockerEngineCandidate, DockerEngineKind, ReachableEngine,
+        };
+        let engines = vec![ReachableEngine {
+            candidate: DockerEngineCandidate {
+                label: "system".to_string(),
+                docker_host: "unix:///var/run/docker.sock".to_string(),
+                kind: DockerEngineKind::System,
+                context_name: None,
+            },
+            has_hub_identity: true,
+            hub_host_ports: vec!["6543".to_string()],
+        }];
+        let (selected, reason) = select_docker_engine(&engines, None).unwrap();
+        assert_eq!(selected.docker_host, "unix:///var/run/docker.sock");
+        assert!(reason.contains("affinity"));
     }
 
     #[cfg(not(target_os = "windows"))]
@@ -10686,14 +10776,17 @@ Error response from daemon: CONFLICT. The container name "/ci-hub-app" IS ALREAD
     #[test]
     fn clear_tunnel_token_is_noop_when_absent() {
         let tempdir = tempfile::tempdir().expect("tempdir");
-        let summary = clear_tunnel_token(tempdir.path()).expect("clear_tunnel_token succeeds");
+        // Nested hub folder so sibling ../tunnel resolves inside the tempdir.
+        let data_dir = tempdir.path().join("hub");
+        std::fs::create_dir_all(&data_dir).expect("mkdir hub");
+        let summary = clear_tunnel_token(&data_dir).expect("clear_tunnel_token succeeds");
         assert!(
             summary.contains("already absent"),
             "missing token should report no-op, got: {summary}",
         );
-        assert!(!tunnel_token_path_for(tempdir.path()).exists());
+        assert!(!tunnel_token_path_for(&data_dir).exists());
         assert!(
-            tunnel_user_cleared_marker_path_for(tempdir.path()).exists(),
+            tunnel_user_cleared_marker_path_for(&data_dir).exists(),
             "user-cleared marker should be written even when token was absent",
         );
     }
@@ -10701,39 +10794,103 @@ Error response from daemon: CONFLICT. The container name "/ci-hub-app" IS ALREAD
     #[test]
     fn clear_tunnel_token_removes_token_and_writes_marker() {
         let tempdir = tempfile::tempdir().expect("tempdir");
-        let token_path = tunnel_token_path_for(tempdir.path());
+        let data_dir = tempdir.path().join("hub");
+        std::fs::create_dir_all(&data_dir).expect("mkdir hub");
+        let token_path = tunnel_token_path_for(&data_dir);
         std::fs::create_dir_all(token_path.parent().expect("parent")).expect("mkdir tunnel/");
         std::fs::write(&token_path, b"FAKE_TOKEN").expect("write token");
 
-        let summary = clear_tunnel_token(tempdir.path()).expect("clear_tunnel_token succeeds");
+        let summary = clear_tunnel_token(&data_dir).expect("clear_tunnel_token succeeds");
 
         assert!(!token_path.exists(), "token file should be removed");
         assert!(
-            tunnel_user_cleared_marker_path_for(tempdir.path()).exists(),
+            tunnel_user_cleared_marker_path_for(&data_dir).exists(),
             "user-cleared marker should be written",
         );
         assert!(
-            summary.contains("removed"),
-            "summary should report removal, got: {summary}",
+            summary.contains("cleared") && summary.contains(&token_path.display().to_string()),
+            "summary should report clearance of the token path, got: {summary}",
+        );
+    }
+
+    #[test]
+    fn clear_tunnel_token_removes_legacy_nested_token() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let data_dir = tempdir.path().join("hub");
+        let legacy_dir = data_dir.join("tunnel");
+        std::fs::create_dir_all(&legacy_dir).expect("mkdir legacy tunnel");
+        let legacy_token = legacy_dir.join("token");
+        std::fs::write(&legacy_token, b"LEGACY").expect("write legacy token");
+
+        clear_tunnel_token(&data_dir).expect("clear_tunnel_token succeeds");
+
+        assert!(!legacy_token.exists(), "legacy nested token should be removed");
+        assert!(
+            tunnel_user_cleared_marker_path_for(&data_dir).exists(),
+            "marker written to canonical sibling tunnel dir",
         );
     }
 
     #[test]
     fn clear_tunnel_token_keeps_dir_with_siblings() {
         let tempdir = tempfile::tempdir().expect("tempdir");
-        let token_path = tunnel_token_path_for(tempdir.path());
+        let data_dir = tempdir.path().join("hub");
+        std::fs::create_dir_all(&data_dir).expect("mkdir hub");
+        let token_path = tunnel_token_path_for(&data_dir);
         std::fs::create_dir_all(token_path.parent().expect("parent")).expect("mkdir tunnel/");
         std::fs::write(&token_path, b"FAKE_TOKEN").expect("write token");
         // A sibling file (e.g. certs/) keeps the tunnel/ directory alive after token removal.
-        std::fs::write(tunnel_dir_for(tempdir.path()).join("certs.pem"), b"PEM")
-            .expect("write sibling");
+        std::fs::write(tunnel_dir_for(&data_dir).join("certs.pem"), b"PEM").expect("write sibling");
 
-        clear_tunnel_token(tempdir.path()).expect("clear_tunnel_token succeeds");
+        clear_tunnel_token(&data_dir).expect("clear_tunnel_token succeeds");
 
         assert!(!token_path.exists(), "token file should be removed");
         assert!(
-            tunnel_dir_for(tempdir.path()).exists(),
+            tunnel_dir_for(&data_dir).exists(),
             "tunnel dir with sibling files should be preserved",
+        );
+    }
+
+    #[test]
+    fn merge_compose_profiles_adds_cloudflare_for_sibling_tunnel_token() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let data_dir = tempdir.path().join("hub");
+        std::fs::create_dir_all(&data_dir).expect("mkdir hub");
+        let token_path = tunnel_token_path_for(&data_dir);
+        std::fs::create_dir_all(token_path.parent().expect("parent")).expect("mkdir tunnel/");
+        std::fs::write(&token_path, b"test-token").expect("write token");
+
+        let mut env = std::collections::HashMap::new();
+        env.insert(
+            "ROOT_FOLDER_HOST".to_string(),
+            data_dir.to_string_lossy().to_string(),
+        );
+
+        let profiles = merge_compose_profiles(&env, false);
+        assert!(
+            profiles.split(',').any(|p| p == "cloudflare"),
+            "expected cloudflare profile for sibling token, got {profiles}"
+        );
+    }
+
+    #[test]
+    fn merge_compose_profiles_adds_cloudflare_for_legacy_nested_tunnel_token() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let data_dir = tempdir.path().join("hub");
+        let legacy_dir = data_dir.join("tunnel");
+        std::fs::create_dir_all(&legacy_dir).expect("mkdir legacy tunnel");
+        std::fs::write(legacy_dir.join("token"), b"legacy-token").expect("write token");
+
+        let mut env = std::collections::HashMap::new();
+        env.insert(
+            "ROOT_FOLDER_HOST".to_string(),
+            data_dir.to_string_lossy().to_string(),
+        );
+
+        let profiles = merge_compose_profiles(&env, false);
+        assert!(
+            profiles.split(',').any(|p| p == "cloudflare"),
+            "expected cloudflare profile for legacy nested token, got {profiles}"
         );
     }
 

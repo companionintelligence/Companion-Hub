@@ -36,7 +36,7 @@ export function readRememberedPortalAccountEmail(): string | null {
 
 async function fetchPortalSessionHintFromHub(): Promise<PortalSessionHint> {
   try {
-    const data = (await unwrapSdkOrNull(portalSessionHint())) as {
+    const data = (await unwrapSdkOrNull(portalSessionHint({ query: { desktop: '0' } }))) as {
       email?: string | null;
       portalBaseUrl?: string | null;
       source?: 'hub_operator' | 'portal_session' | null;

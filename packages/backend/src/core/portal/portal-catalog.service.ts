@@ -43,6 +43,12 @@ type PortalCatalogApp = {
   demo_video?: string;
 };
 
+const HUB_MANAGED_MARKETPLACE_APP_IDS = new Set(['cloudflared', 'cloudflare-tunnel']);
+
+function isHubManagedMarketplaceApp(slug: string): boolean {
+  return HUB_MANAGED_MARKETPLACE_APP_IDS.has(slug.trim().toLowerCase());
+}
+
 export type PortalCatalogEntry = {
   id: string;
   urn: AppUrn;
@@ -70,6 +76,10 @@ export class PortalCatalogService {
   private cacheUpdatedAt = 0;
   private readonly cacheTtlMs = 1000 * 60 * 15;
   private inflightFetch: Promise<PortalCatalogEntry[]> | null = null;
+  /** True when `inflightFetch` was started with Portal cache-busting. */
+  private inflightBypassCache = false;
+  /** Bumped on invalidate so a fetch that started against a stale catalog cannot republish. */
+  private cacheGeneration = 0;
 
   constructor(
     private readonly portalClient: PortalClientService,
@@ -79,11 +89,15 @@ export class PortalCatalogService {
   invalidateCache() {
     this.cache = null;
     this.cacheUpdatedAt = 0;
+    this.cacheGeneration += 1;
+    this.inflightFetch = null;
+    this.inflightBypassCache = false;
   }
 
   private mapPortalApp(app: PortalCatalogApp): PortalCatalogEntry | null {
     const slug = app.slug ?? app.id;
     if (!slug) return null;
+    if (isHubManagedMarketplaceApp(slug)) return null;
     const name = app.name ?? app.title ?? slug;
     const short_desc = app.short_desc ?? app.shortDescription ?? app.description ?? '';
     const categories = new Set<string>();
@@ -122,16 +136,27 @@ export class PortalCatalogService {
 
     // Dedupe concurrent callers into a single Portal round-trip so hot paths
     // (e.g. per-app fan-outs) never trigger a thundering herd of fetches.
-    if (this.inflightFetch) {
+    // Force refresh may join an inflight fetch that is already cache-busting.
+    if (this.inflightFetch && (!force || this.inflightBypassCache)) {
       return this.inflightFetch;
     }
 
-    this.inflightFetch = (async () => {
+    // A force fetch must not let a non-bypassing inflight republish stale catalog.
+    if (force && this.inflightFetch && !this.inflightBypassCache) {
+      this.cacheGeneration += 1;
+    }
+
+    const generation = this.cacheGeneration;
+    const fetch = (async () => {
       try {
-        const raw = await this.portalClient.fetchStoreCatalog();
+        const raw = await this.portalClient.fetchStoreCatalog({ bypassCache: force });
         const list = Array.isArray(raw) ? raw : [];
         const mapped = list.map((item) => this.mapPortalApp(item as PortalCatalogApp)).filter((entry): entry is PortalCatalogEntry => entry !== null);
-        this.cache = this.filterCatalogEntries(mapped);
+        const filtered = this.filterCatalogEntries(mapped);
+        if (generation !== this.cacheGeneration) {
+          return this.inflightFetch ?? filtered;
+        }
+        this.cache = filtered;
         this.cacheUpdatedAt = Date.now();
         return this.cache;
       } catch (error) {
@@ -139,11 +164,16 @@ export class PortalCatalogService {
         this.logger.warn(`Portal catalog fetch failed: ${message}`);
         return this.cache ?? [];
       } finally {
-        this.inflightFetch = null;
+        if (generation === this.cacheGeneration) {
+          this.inflightFetch = null;
+          this.inflightBypassCache = false;
+        }
       }
     })();
 
-    return this.inflightFetch;
+    this.inflightFetch = fetch;
+    this.inflightBypassCache = force;
+    return fetch;
   }
 
   async searchCatalog(params: { search?: string | null; category?: string | null; pageSize?: number; cursor?: string | null; storeId?: string }) {
@@ -294,6 +324,7 @@ export class PortalCatalogService {
     if (!this.isCiMarketplaceUrn(appUrn)) return null;
 
     const { appName } = extractAppUrn(appUrn);
+    if (isHubManagedMarketplaceApp(appName)) return null;
 
     try {
       const raw = await this.portalClient.fetchStoreCatalog();

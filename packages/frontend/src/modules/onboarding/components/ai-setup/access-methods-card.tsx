@@ -86,10 +86,9 @@ export const AccessMethodsCard = ({
               <span className="text-base font-semibold">
                 <LabelWithHint label={t('ONBOARDING_ACCESS_VPN_TITLE')} hint={t(ONBOARDING_REMOTE_VPN_HINT)} hintId="onboarding-access-vpn" />
               </span>
-              <span className="mt-1 block text-sm text-muted-foreground">
-                {t('ONBOARDING_ACCESS_VPN_DESC')}
-                {vpnSelected && !tailscaleAvailable && ` ${t('ONBOARDING_ACCESS_VPN_CONNECT_BELOW')}`}
-              </span>
+              {vpnSelected && !tailscaleAvailable && (
+                <span className="mt-1 block text-sm text-muted-foreground">{t('ONBOARDING_ACCESS_VPN_CONNECT_BELOW')}</span>
+              )}
             </span>
             <SelectIndicator selected={vpnSelected} className="mt-0.5" />
           </label>

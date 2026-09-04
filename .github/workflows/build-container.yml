@@ -196,15 +196,19 @@ jobs:
 
       - name: Push to Portal registry
         id: portal
-        continue-on-error: true
         env:
           PORTAL_USER: ${{ secrets.PORTAL_REGISTRY_USERNAME }}
           PORTAL_PASS: ${{ secrets.PORTAL_REGISTRY_PASSWORD }}
-        if: env.PORTAL_USER != ''
         run: |
           # Without -e the step's status is just the LAST command's, so a trailing
           # conditional would mask a failed login or copy and report success.
           set -euo pipefail
+
+          if [ -z "${PORTAL_USER}" ] || [ -z "${PORTAL_PASS}" ]; then
+            echo "::error::PORTAL_REGISTRY_USERNAME and PORTAL_REGISTRY_PASSWORD are required."
+            echo "::error::Refusing to skip the Portal mirror. Set both secrets on this environment."
+            exit 1
+          fi
 
           PORTAL="${{ steps.tags.outputs.portal_registry }}"
           TAG="${{ steps.tags.outputs.channel_tag }}"
@@ -213,12 +217,28 @@ jobs:
 
           echo "Logging in to ${PORTAL}..."
           crane auth login "${PORTAL}" -u "${PORTAL_USER}" -p "${PORTAL_PASS}"
+          # Same keychain crane reads. crane auth login only writes config.json and
+          # does not verify the password against the registry.
+          echo "${PORTAL_PASS}" | docker login "${PORTAL}" -u "${PORTAL_USER}" --password-stdin
 
-          echo "Copying ${CHANNEL_IMAGE} → ${PORTAL}/ci-os-hub:${TAG}"
-          crane copy "${CHANNEL_IMAGE}" "${PORTAL}/ci-os-hub:${TAG}"
+          # Fail here with a readable error instead of crane's dest-HEAD 401.
+          # GET /v2/_catalog requires valid Basic; GET /v2/ is anonymous and proves nothing.
+          CATALOG_CODE="$(curl -sS -o /tmp/portal-catalog.json -w '%{http_code}' \
+            -u "${PORTAL_USER}:${PORTAL_PASS}" \
+            "https://${PORTAL}/v2/_catalog")"
+          if [ "${CATALOG_CODE}" != "200" ]; then
+            echo "::error::Portal ${PORTAL} rejected PORTAL_REGISTRY_USERNAME/PASSWORD (HTTP ${CATALOG_CODE} on /v2/_catalog)."
+            echo "::error::Those GitHub Environment secrets must match the Cloudflare Worker REGISTRY_USERNAME/REGISTRY_PASSWORD for this Portal."
+            echo "::error::crane auth login does not verify credentials; a dest HEAD then fails with 401."
+            cat /tmp/portal-catalog.json >&2 || true
+            exit 1
+          fi
 
-          echo "Copying ${CHANNEL_IMAGE} → ${PORTAL}/ci-os-hub:latest"
-          crane copy "${CHANNEL_IMAGE}" "${PORTAL}/ci-os-hub:latest"
+          echo "Copying ${CHANNEL_IMAGE} → ${PORTAL}/ci-hub:${TAG}"
+          crane copy "${CHANNEL_IMAGE}" "${PORTAL}/ci-hub:${TAG}"
+
+          echo "Copying ${CHANNEL_IMAGE} → ${PORTAL}/ci-hub:latest"
+          crane copy "${CHANNEL_IMAGE}" "${PORTAL}/ci-hub:latest"
 
           # The Portal repo is what the backend LISTS for available updates
           # (registry.service.ts filters to semver-valid tags). Without a versioned copy
@@ -230,21 +250,19 @@ jobs:
           # this copy, which would publish a different digest under the version's name.
           if [ -n "${VERSION}" ]; then
             VERSIONED_IMAGE="${{ steps.tags.outputs.image_repo }}:${VERSION}"
-            echo "Copying ${VERSIONED_IMAGE} → ${PORTAL}/ci-os-hub:${VERSION}"
-            crane copy "${VERSIONED_IMAGE}" "${PORTAL}/ci-os-hub:${VERSION}"
+            echo "Copying ${VERSIONED_IMAGE} → ${PORTAL}/ci-hub:${VERSION}"
+            crane copy "${VERSIONED_IMAGE}" "${PORTAL}/ci-hub:${VERSION}"
           fi
 
-      # This step is intentionally non-fatal (Portal is a mirror, not the pull path), but a
-      # silent failure leaves update listing degraded with no signal — so say so loudly.
-      # Keyed on "not success" rather than "failure": the most common degraded path is the
-      # mirror step being SKIPPED because no Portal credentials are configured, which is
-      # exactly the silence this warning exists to break.
+      # Fatal on the mirror step itself. This warning still fires if that step is
+      # cancelled or otherwise does not report success, so the GHCR-vs-Portal gap
+      # is visible in the job log rather than only as a red X.
       - name: Warn when the Portal mirror was not updated
-        if: ${{ !cancelled() && steps.portal.outcome != 'success' }}
+        if: ${{ always() && !cancelled() && steps.portal.outcome != 'success' }}
         run: |
           echo "::warning::Portal mirror was not updated (outcome: ${{ steps.portal.outcome }})." \
                "The image is published to GHCR and is still pullable, but" \
-               "${{ steps.tags.outputs.portal_registry }}/ci-os-hub did not receive it, so in-app" \
+               "${{ steps.tags.outputs.portal_registry }}/ci-hub did not receive it, so in-app" \
                "update listing will fall back to dl.ci.computer/latest.json."
 
       - name: Setup Node.js

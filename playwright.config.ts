@@ -7,9 +7,9 @@ import { defineConfig, devices } from '@playwright/test';
 const BACKEND_PORT = process.env.BACKEND_PORT || '3000';
 const FRONTEND_PORT = process.env.FRONTEND_PORT || '9091';
 const USE_REAL_PORTAL = process.env.E2E_USE_REAL_PORTAL === 'true';
-// Opt in to the generated app-catalog batch specs. Set by the fleet QA harness
-// (scripts/run-fleet-tests.ts) and the app-catalog-fleet workflow; unset everywhere
-// else so the default E2E lane stays fast and infra-light.
+// Opt in to the generated app-catalog batch specs. Set by the private fleet QA
+// harness (CI-Engineering `tools/fleet-qa/`) when running catalog batches; unset
+// everywhere else so the default E2E lane stays fast and infra-light.
 const RUN_CATALOG_TESTS = process.env.E2E_RUN_CATALOG_TESTS === 'true';
 const PORTAL_PORT = process.env.PORTAL_PORT || '8012';
 const MOCK_PORTAL_PORT = process.env.MOCK_PORTAL_PORT || '4444';

@@ -24,6 +24,68 @@ export const appFormSchema = z
       .min(1)
       .refine((value) => isFQDN(value), { message: 'Invalid public domain' })
       .optional(),
+    /*
+     * A custom domain the installer picked from the organization's connected
+     * ones. Recorded as an INTENT (`app.custom_domain_intent`) and asked of
+     * Companion Portal after the app registers — never written into the app's env, which
+     * only ever carries a hostname Companion Portal confirmed it wired.
+     *
+     * Absent and empty are different instructions. `undefined` is "the caller
+     * said nothing about this", which must leave an existing choice alone — a
+     * client that predates custom domains, or one patching a single setting,
+     * must not silently unbind a domain the customer is being served on. `''` is
+     * "serve on the platform hostname again", which the picker sends when
+     * somebody chooses that.
+     *
+     * The empty string carries that meaning rather than `null` because the
+     * OpenAPI client the frontend is generated from cannot express a nullable
+     * field: this repo's spec is 3.1, where `nullable: true` is not a keyword,
+     * and no generated type in it has ever had `| null`. A sentinel the
+     * toolchain can represent beats a nicer one it silently drops.
+     */
+    customDomain: z
+      .string()
+      /*
+       * Checked BEFORE trimming, so whitespace-only input is rejected rather than
+       * silently unbinding a live domain: trimming first turns `'   '` into the
+       * empty string, which is the deliberate "go back to the platform hostname"
+       * instruction. `publicDomain` above gets the same protection from `.min(1)`.
+       */
+      .refine((value) => value === '' || isFQDN(value.trim()), { message: 'Invalid custom domain' })
+      /*
+       * STORED NORMALIZED, because DNS is case-insensitive and every reader of
+       * this value already is: the exclusivity check lowercases, the bind pass
+       * runs it through `normalizeStoredHostname`, and the picker's options are
+       * the normalized hostnames Companion Portal listed. A row left holding
+       * `Comfy.Acme.Com` matches no option, so the settings dialog would show no
+       * custom domain for an app that has one.
+       *
+       * Zod's own string checks rather than `.transform(normalizeHostname)`: a
+       * transform turns the field into a pipe, and the OpenAPI generator emits `{}`
+       * for one — the frontend client would type this `unknown`. The trailing dot
+       * `normalizeHostname` also strips cannot survive `isFQDN` above anyway.
+       */
+      .trim()
+      .toLowerCase()
+      .optional(),
+    /*
+     * The person choosing `customDomain` confirmed it may be taken off whatever
+     * is serving it now.
+     *
+     * Sent only alongside a `customDomain`, and meaningless without one. The
+     * bind pass runs long after this dialog closes and cannot ask anybody
+     * anything, while CI-Cloud will happily retarget a domain that is live on a
+     * sibling Hub in the organization — so the answer has to travel with the
+     * choice or the pass has to guess. See `app.custom_domain_takeover`.
+     *
+     * ⚠ ABSENT IS A NO, NEVER AN INHERIT. Unlike `customDomain` above, an
+     * omitted value here is not "leave the existing answer alone": a client that
+     * does not know about this field cannot have asked anyone, and carrying a
+     * previous confirmation forward would let one dialog's answer authorize a
+     * later dialog's choice. It is written from the form on every save that
+     * carries a `customDomain`, and cleared with the intent otherwise.
+     */
+    customDomainTakeover: z.boolean().optional(),
     maxBackups: z.number().min(0).max(100).optional(),
     cpuLimit: optionalCpuLimitSchema,
     memoryLimit: optionalMemoryLimitSchema,

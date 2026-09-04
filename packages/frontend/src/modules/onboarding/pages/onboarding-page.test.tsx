@@ -103,8 +103,6 @@ vi.mock('@/context/user-context', () => ({
   useUserContext: () => ({ isLoggedIn: true }),
 }));
 
-vi.mock('@/lib/theme/theme', () => ({ getLogo: () => '/logo.svg' }));
-
 vi.mock('@/lib/api-fetch', () => ({
   apiFetch: vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve({ services: [] }) }),
 }));
@@ -222,16 +220,6 @@ vi.mock('../components/ai-setup-step', () => ({
               localSubdomain: 'ci-memory',
               exposureMode: 'tailscale',
             },
-            {
-              appSlug: 'ci-import-tools',
-              name: 'Import Tools',
-              icon: '',
-              category: 'companion-intelligence',
-              replacesNames: [],
-              urn: 'urn:store:ci-import-tools',
-              localSubdomain: 'ci-import-tools',
-              exposureMode: 'tailscale',
-            },
           ])
         }
       >
@@ -256,16 +244,6 @@ vi.mock('../components/ai-setup/companion-apps-card', () => ({
               replacesNames: [],
               urn: 'urn:store:ci-memory',
               localSubdomain: 'ci-memory',
-              exposureMode: 'tailscale',
-            },
-            {
-              appSlug: 'ci-import-tools',
-              name: 'Import Tools',
-              icon: '',
-              category: 'companion-intelligence',
-              replacesNames: [],
-              urn: 'urn:store:ci-import-tools',
-              localSubdomain: 'ci-import-tools',
               exposureMode: 'tailscale',
             },
           ])
@@ -352,6 +330,8 @@ describe('OnboardingPage (single vertical form)', () => {
 
   it('renders config sections and step 4 (app picker) on the same page', () => {
     renderPage();
+    expect(screen.getByRole('img', { name: 'CI-Server e-brain logo' })).toHaveAttribute('src', '/brands/ci-server-e-brain.png');
+    expect(screen.getByRole('heading', { name: 'Set Up Companion Hub' })).toBeInTheDocument();
     expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument();
     expect(screen.getByTestId('recommendations-step')).toBeInTheDocument();
   });
@@ -571,7 +551,7 @@ describe('OnboardingPage (single vertical form)', () => {
     await user.click(screen.getByRole('button', { name: 'emit-companion-apps' }));
     await user.click(screen.getByTestId('finish-setup-btn'));
 
-    expect(screen.getByTestId('install-step')).toHaveAttribute('data-apps', 'ci-openclaw,ci-memory,ci-import-tools');
+    expect(screen.getByTestId('install-step')).toHaveAttribute('data-apps', 'ci-openclaw,ci-memory');
   });
 
   it('deduplicates Hermes when selected via agent framework and legacy app slug', async () => {

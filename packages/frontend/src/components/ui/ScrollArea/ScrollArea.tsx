@@ -15,7 +15,9 @@ const ScrollBar = ({ className, orientation = 'vertical', ...props }: React.Comp
     )}
     {...props}
   >
-    <ScrollAreaPrimitive.ScrollAreaThumb className={clsx('relative rounded-full bg-muted', orientation === 'vertical' && 'grow')} />
+    {/* `cursor-pointer`: the thumb is draggable, and without it the pointer stays
+        an arrow so the bar reads as decoration rather than something to grab. */}
+    <ScrollAreaPrimitive.ScrollAreaThumb className={clsx('relative cursor-pointer rounded-full bg-muted', orientation === 'vertical' && 'grow')} />
   </ScrollAreaPrimitive.ScrollAreaScrollbar>
 );
 

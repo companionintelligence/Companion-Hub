@@ -1,26 +1,16 @@
 import { findCatalogAppBySlug } from '@/lib/marketplace-app-slug';
-import { cn } from '@/lib/utils';
-import { Shield } from 'lucide-react';
+import { Brain, Shield } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { ExposureMode } from '../../helpers/ai-setup-types';
 import type { OnboardingApp } from '../../helpers/types';
 import { useMarketplaceCatalogApps } from '../../helpers/use-marketplace-catalog-apps';
+import { cn } from '@/lib/utils';
 import { OnboardingAppIcon } from '../onboarding-app-icon';
 import { SelectIndicator, StepSection } from './primitives';
 
-/** First-party CI apps pre-selected during onboarding. */
-export const COMPANION_ONBOARDING_SLUGS = ['ci-memory', 'ci-import-tools'] as const;
-
-const COMPANION_DESCRIPTION_KEYS: Record<(typeof COMPANION_ONBOARDING_SLUGS)[number], string> = {
-  'ci-memory': 'ONBOARDING_COMPANION_MEMORY_DESC',
-  'ci-import-tools': 'ONBOARDING_COMPANION_IMPORT_TOOLS_DESC',
-};
-
-const COMPANION_NAME_KEYS: Partial<Record<(typeof COMPANION_ONBOARDING_SLUGS)[number], string>> = {
-  'ci-memory': 'ONBOARDING_COMPANION_MEMORY_TITLE',
-  'ci-import-tools': 'ONBOARDING_COMPANION_IMPORT_TOOLS_NAME',
-};
+/** Companion Memory is the first-party memory provider offered by the Hub. */
+export const COMPANION_ONBOARDING_SLUGS = ['ci-memory'] as const;
 
 interface CompanionAppsCardProps {
   /** Resolved public-web exposure mode (Cloudflare preferred, with fallbacks). */
@@ -30,7 +20,7 @@ interface CompanionAppsCardProps {
 
 export function CompanionAppsCard({ publicExposureMode, onChange }: CompanionAppsCardProps) {
   const { t } = useTranslation();
-  const { apps: storeApps, isLoading: isCatalogLoading, isCatalogSettled, isRetryingEmptyCatalog } = useMarketplaceCatalogApps();
+  const { apps: storeApps, isLoading: isCatalogLoading, isRetryingEmptyCatalog } = useMarketplaceCatalogApps();
 
   const catalogApps = useMemo(
     () =>
@@ -38,12 +28,13 @@ export function CompanionAppsCard({ publicExposureMode, onChange }: CompanionApp
         const storeApp = findCatalogAppBySlug(storeApps, slug);
         return {
           slug,
-          name: COMPANION_NAME_KEYS[slug] ? t(COMPANION_NAME_KEYS[slug]) : (storeApp?.name ?? slug),
-          storeName: storeApp?.name ?? slug,
-          urn: storeApp?.urn,
-          icon: storeApp?.icon ?? undefined,
-          shortDesc: storeApp?.short_desc ?? '',
-          available: Boolean(storeApp?.urn),
+          name: t('ONBOARDING_COMPANION_MEMORY_TITLE'),
+          storeName: storeApp?.name ?? t('ONBOARDING_COMPANION_MEMORY_TITLE'),
+          icon: storeApp?.icon ?? '',
+          // Keep the canonical Portal/CI Marketplace identity even while the local catalog is
+          // still warming. The install request can then resolve the first-party app from Portal.
+          urn: storeApp?.urn ?? `${slug}:ci-marketplace`,
+          available: true,
         };
       }),
     [storeApps, t],
@@ -94,7 +85,7 @@ export function CompanionAppsCard({ publicExposureMode, onChange }: CompanionApp
         appSlug: entry.slug,
         name: entry.name,
         storeName: entry.storeName,
-        icon: '',
+        icon: entry.icon,
         category: 'companion-intelligence',
         replacesNames: [],
         urn: entry.urn,
@@ -111,7 +102,7 @@ export function CompanionAppsCard({ publicExposureMode, onChange }: CompanionApp
     if (!onChange || isCatalogLoading || isRetryingEmptyCatalog) return;
     const apps = buildApps();
     const signature = `${apps
-      .map((a) => `${a.appSlug}:${a.exposureMode}`)
+      .map((a) => `${a.appSlug}:${a.urn ?? ''}:${a.exposureMode}`)
       .sort()
       .join('|')}|${publicExposureMode}`;
     if (signature === lastEmittedSignature.current) return;
@@ -120,22 +111,24 @@ export function CompanionAppsCard({ publicExposureMode, onChange }: CompanionApp
   }, [selected, catalogApps, publicExposureMode, onChange, isCatalogLoading, isRetryingEmptyCatalog]);
 
   const showLoadingState = isCatalogLoading || isRetryingEmptyCatalog;
-  const showUnavailableCopy = isCatalogSettled && !isRetryingEmptyCatalog;
+  const memorySlug = COMPANION_ONBOARDING_SLUGS[0];
+  const memoryApp = catalogApps[0] ?? {
+    slug: memorySlug,
+    name: t('ONBOARDING_COMPANION_MEMORY_TITLE'),
+    storeName: t('ONBOARDING_COMPANION_MEMORY_TITLE'),
+    icon: '',
+    urn: `${memorySlug}:ci-marketplace`,
+    available: true,
+  };
+  const memorySelected = selected.has(memorySlug);
+  const memoryAvailable = Boolean(memoryApp?.available) && !showLoadingState;
 
   return (
-    <StepSection
-      number={5}
-      badge="recommended"
-      title={t('ONBOARDING_COMPANION_MEMORY_TITLE')}
-      description={t('ONBOARDING_COMPANION_MEMORY_SECTION_DESC')}
-    >
+    <StepSection number={5} badge="recommended" title={t('ONBOARDING_COMPANION_MEMORY_TITLE')} description={t('ONBOARDING_COMPANION_MEMORY_DESC')}>
       <div data-testid="companion-apps-card">
-        <div
-          className="mb-4 flex items-start gap-2 rounded-md border border-emerald-500/30 bg-emerald-500/10 p-3"
-          data-testid="companion-privacy-callout"
-        >
-          <Shield className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600 dark:text-emerald-400" aria-hidden="true" />
-          <p className="text-sm text-emerald-900 dark:text-emerald-100">{t('ONBOARDING_COMPANION_PRIVACY_CALLOUT')}</p>
+        <div className="mb-4 flex items-start gap-2 rounded-md border border-success/30 bg-success/10 p-3" data-testid="companion-privacy-callout">
+          <Shield className="mt-0.5 h-4 w-4 shrink-0 text-success" aria-hidden="true" />
+          <p className="text-sm text-success">{t('ONBOARDING_COMPANION_PRIVACY_CALLOUT')}</p>
         </div>
 
         {showLoadingState ? (
@@ -146,48 +139,44 @@ export function CompanionAppsCard({ publicExposureMode, onChange }: CompanionApp
             <p className="text-xs text-muted-foreground">{t('ONBOARDING_CATALOG_LOADING')}</p>
           </div>
         ) : (
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-            {catalogApps.map((app) => {
-              const isSelected = selected.has(app.slug);
-              const descriptionKey = COMPANION_DESCRIPTION_KEYS[app.slug];
-              const description = t(descriptionKey);
-              return (
-                <button
-                  type="button"
-                  key={app.slug}
-                  data-testid={`companion-app-${app.slug}`}
-                  disabled={!app.available}
-                  onClick={() => toggleApp(app.slug, app.available)}
-                  className={cn(
-                    'group relative flex items-start gap-3 rounded-md border p-3 text-left transition-colors',
-                    !app.available && 'cursor-not-allowed opacity-60',
-                    app.available && isSelected
-                      ? 'border-primary bg-primary/[0.08] ring-1 ring-primary/30'
-                      : 'border-border bg-card/40 hover:border-primary/40',
-                  )}
-                >
-                  <OnboardingAppIcon app={{ appSlug: app.slug, name: app.name, icon: app.icon ?? '', urn: app.urn }} size={40} />
-                  <span className="min-w-0 flex-1 pr-5">
-                    <span className="flex flex-wrap items-center gap-1.5">
-                      <span className="block truncate text-base font-medium">{app.name}</span>
-                      <span className="rounded-full bg-primary/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-primary">
-                        {t('ONBOARDING_BUILT_BY_COMPANION')}
-                      </span>
-                    </span>
-                    {description && <span className="mt-0.5 block text-sm leading-snug text-muted-foreground line-clamp-2">{description}</span>}
-                    {!app.available && showUnavailableCopy && (
-                      <span className="mt-1 block text-sm text-muted-foreground">{t('ONBOARDING_COMPANION_APP_UNAVAILABLE')}</span>
-                    )}
-                  </span>
-                  {app.available && (
-                    <span className="absolute right-1.5 top-1.5">
-                      <SelectIndicator selected={isSelected} />
-                    </span>
-                  )}
-                </button>
-              );
-            })}
-          </div>
+          <label
+            className={cn(
+              'relative flex min-h-20 cursor-pointer items-center gap-3 rounded-lg border p-4 transition-colors focus-within:ring-2 focus-within:ring-primary focus-within:ring-offset-2',
+              memorySelected
+                ? 'border-primary/70 bg-primary/[0.08] ring-1 ring-primary/30'
+                : 'border-border bg-foreground/[0.015] hover:border-primary/50 hover:bg-primary/[0.04]',
+              !memoryAvailable && 'cursor-not-allowed opacity-60',
+            )}
+            data-testid="companion-memory-option"
+            htmlFor="companion-memory-checkbox"
+          >
+            <span data-testid="companion-app-ci-memory" className="contents">
+              <input
+                id="companion-memory-checkbox"
+                type="checkbox"
+                checked={memorySelected}
+                disabled={!memoryAvailable}
+                aria-label={t('ONBOARDING_COMPANION_MEMORY_TITLE')}
+                onChange={() => toggleApp(memorySlug, memoryAvailable)}
+                className="sr-only"
+              />
+            </span>
+            <OnboardingAppIcon
+              app={{ appSlug: memoryApp.slug, name: memoryApp.name, icon: memoryApp.icon, urn: memoryApp.urn }}
+              size={48}
+              fallback={<Brain className="h-6 w-6 text-primary" aria-hidden="true" />}
+            />
+            <div className="min-w-0 flex-1">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-base font-semibold text-foreground">{memoryApp.name}</span>
+                <span className="rounded-full border border-primary/30 bg-primary/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-primary">
+                  {t('ONBOARDING_BADGE_RECOMMENDED')}
+                </span>
+              </div>
+              <p className="mt-1 text-sm text-muted-foreground">{t('ONBOARDING_COMPANION_MEMORY_SECTION_DESC')}</p>
+            </div>
+            <SelectIndicator selected={memorySelected} className="h-6 w-6 shrink-0 rounded-md" />
+          </label>
         )}
       </div>
     </StepSection>

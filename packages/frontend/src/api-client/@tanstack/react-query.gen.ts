@@ -3,8 +3,8 @@
 import { type DefaultError, type InfiniteData, infiniteQueryOptions, queryOptions, type UseMutationOptions } from '@tanstack/react-query';
 
 import { client } from '../client.gen';
-import { acknowledgeWelcome, appContext, appEvents, appLogsEvents, backupAllApps, backupApp, callback, callTool, cancelOperation, cancelResetPassword, changePassword, changeUsername, check, checkAppPorts, checkAuth, checkAvailability, checkDataIntegrity, checkDnsAvailability, checkForUpdates, checkResetPasswordRequest, checkUrlAvailability, completeOnboarding, completePasswordReset, connectWithAuthKey, consumeBrowserHandoff, consumers, createAppStore, createCustomApp, createKey, createLink, createPortExposeApp, deleteAppBackup, deleteAppStore, deleteLink, detectServices, disableTotp, disableUserConfig, disconnect, disconnect2, downloadBackup, downloadHubLogs, downloadLocalCertificate, edgeSso, editLink, enableUserConfig, exchangePortalDesktopLogin, executeRehydrate, factoryReset, forceStopApp, getAllAllocations, getAllAppStores, getApp, getAppBackups, getAppComposeDiff, getAppConfigDiff, getAppCredentials, getAppCredentialsEnv0, getAppCredentialsEnv1, getAppDemoVideo, getAppImageSize, getAppMedia, getAppPorts, getAppScreenshot, getAutoUpdates, getCatalog, getCloudProviders, getConfig, getContainers, getDeviceId, getDiagnostics, getDiagnostics2, getDomains, getEnabledAppStores, getFullInspection, getGuestApps, getGuestLinks, getHardware, getHealth, getHostListenerStatus, getHostListenerToken, getHubAccess, getImage, getInstalledApps, getInstalledAppUrns, getInstallQueue, getLinks, getLuceboxStatus, getMcpInstallSchema, getMcpStatus, getMemory, getOllamaStatus, getOnboardingProfile, getPortalConfig, getPorts, getPreferences, getRandomPort, getRehydratePlan, getRehydrateStatus, getResourceMonitor, getRocmStatus, getRuntimeHealth, getRuntimeModels, getServeStatus, getStateDrift, getStatus, getStatus2, getStatus3, getStatus4, getStatus5, getStoreAlternatives, getStoreFeaturedBundle, getStoreListings, getTotpUri, getTrackedModels, getTranslation, getUpdatesAvailable, getUserConfig, getVllmStatus, handleCallback, handleCallbackPost, handleDelete, handleGet, handlePost, health, hubLogsEvents, ignoreAppVersion, incrementAllAppVersions, installApp, installOllama, listKeys, listTools, live, loadModel, login, logout, markRestoreIntent, mintBrowserHandoff, type Options, pairDevice, performUpdate, pinModel, portalCallback, portalSessionHint, prepareFreshSetup, probeDomain, probeMcp, pullAppStores, pullModel, reconnectTunnel, refreshSession, register, registerDevice, removeCatchAllRoutes, removeOriginRequestFromAllRoutes, repair, repairOrphans, requestPasswordReset, rescanHardware, resetApp, resetPassword, resetRegistration, resolveAvailability, restartAllApps, restartApp, restartOnboarding, restoreAppBackup, revokeKey, rotateHubAccess, searchApps, seedDatabase, setAllAppSubnetToNull, setAllAppUpdateAvailable, setAutoUpdates, setCloudProvider, setupTotp, skip, start, startAllApps, startAllApps2, startApp, startAuth, startPortalLogin, startPullModel, state, status, stopAllApps, stopApp, syncExposure, syncMissingDnsRecords, systemLoad, systemResources, telemetry, traefik, unignoreAppVersion, uninstallAllApps, uninstallApp, unloadModel, unpinModel, updateAdvancedMode, updateAllApps, updateApp, updateAppConfig, updateAppMetadata, updateAppStore, updateCustomApp, updateKey, updatePortExposeApp, updatePreferences, updateRocmInstallState, updateUserConfig, updateUserSettings, uploadAppImage, uploadBackup, userContext, validateConfig, validateOrganizationName, verifyPairingCode, verifyPasswordResetToken, verifyTotp } from '../sdk.gen';
-import type { AcknowledgeWelcomeData, AppContextData, AppEventsData, AppLogsEventsData, BackupAllAppsData, BackupAppData, BackupAppResponse, CallbackData, CallToolData, CancelOperationData, CancelOperationResponse, CancelResetPasswordData, ChangePasswordData, ChangeUsernameData, CheckAppPortsData, CheckAuthData, CheckAvailabilityData, CheckData, CheckDataIntegrityData, CheckDnsAvailabilityData, CheckForUpdatesData, CheckResetPasswordRequestData, CheckUrlAvailabilityData, CompleteOnboardingData, CompletePasswordResetData, CompletePasswordResetResponse, ConnectWithAuthKeyData, ConnectWithAuthKeyResponse, ConsumeBrowserHandoffData, ConsumersData, CreateAppStoreData, CreateAppStoreResponse, CreateCustomAppData, CreateCustomAppResponse, CreateKeyData, CreateLinkData, CreatePortExposeAppData, CreatePortExposeAppResponse, DeleteAppBackupData, DeleteAppStoreData, DeleteLinkData, DetectServicesData, DisableTotpData, DisableUserConfigData, Disconnect2Data, DisconnectData, DisconnectResponse, DownloadBackupData, DownloadHubLogsData, DownloadLocalCertificateData, EdgeSsoData, EditLinkData, EnableUserConfigData, ExchangePortalDesktopLoginData, ExecuteRehydrateData, FactoryResetData, ForceStopAppData, ForceStopAppResponse, GetAllAllocationsData, GetAllAppStoresData, GetAppBackupsData, GetAppBackupsResponse, GetAppComposeDiffData, GetAppConfigDiffData, GetAppCredentialsData, GetAppCredentialsEnv0Data, GetAppCredentialsEnv1Data, GetAppData, GetAppDemoVideoData, GetAppImageSizeData, GetAppMediaData, GetAppPortsData, GetAppScreenshotData, GetAutoUpdatesData, GetCatalogData, GetCloudProvidersData, GetConfigData, GetContainersData, GetDeviceIdData, GetDiagnostics2Data, GetDiagnosticsData, GetDomainsData, GetEnabledAppStoresData, GetFullInspectionData, GetGuestAppsData, GetGuestLinksData, GetHardwareData, GetHealthData, GetHostListenerStatusData, GetHostListenerTokenData, GetHubAccessData, GetImageData, GetInstalledAppsData, GetInstalledAppUrnsData, GetInstallQueueData, GetLinksData, GetLuceboxStatusData, GetMcpInstallSchemaData, GetMcpStatusData, GetMemoryData, GetOllamaStatusData, GetOnboardingProfileData, GetPortalConfigData, GetPortsData, GetPreferencesData, GetRandomPortData, GetRandomPortResponse, GetRehydratePlanData, GetRehydrateStatusData, GetResourceMonitorData, GetRocmStatusData, GetRuntimeHealthData, GetRuntimeModelsData, GetServeStatusData, GetStateDriftData, GetStatus2Data, GetStatus3Data, GetStatus4Data, GetStatus5Data, GetStatusData, GetStoreAlternativesData, GetStoreFeaturedBundleData, GetStoreListingsData, GetTotpUriData, GetTotpUriResponse, GetTrackedModelsData, GetTranslationData, GetUpdatesAvailableData, GetUserConfigData, GetVllmStatusData, HandleCallbackData, HandleCallbackPostData, HandleDeleteData, HandleDeleteResponse, HandleGetData, HandlePostData, HealthData, HubLogsEventsData, IgnoreAppVersionData, IncrementAllAppVersionsData, InstallAppData, InstallAppResponse, InstallOllamaData, ListKeysData, ListToolsData, LiveData, LoadModelData, LoginData, LoginResponse, LogoutData, MarkRestoreIntentData, MintBrowserHandoffData, MintBrowserHandoffResponse, PairDeviceData, PerformUpdateData, PinModelData, PortalCallbackData, PortalSessionHintData, PrepareFreshSetupData, ProbeDomainData, ProbeMcpData, ProbeMcpResponse, PullAppStoresData, PullAppStoresResponse, PullModelData, ReconnectTunnelData, RefreshSessionData, RefreshSessionResponse, RegisterData, RegisterDeviceData, RegisterResponse, RemoveCatchAllRoutesData, RemoveCatchAllRoutesResponse, RemoveOriginRequestFromAllRoutesData, RemoveOriginRequestFromAllRoutesResponse, RepairData, RepairOrphansData, RepairOrphansResponse, RepairResponse, RequestPasswordResetData, RequestPasswordResetResponse, RescanHardwareData, ResetAppData, ResetAppResponse, ResetPasswordData, ResetPasswordResponse, ResetRegistrationData, ResolveAvailabilityData, RestartAllAppsData, RestartAppData, RestartAppResponse, RestartOnboardingData, RestoreAppBackupData, RestoreAppBackupResponse, RevokeKeyData, RotateHubAccessData, SearchAppsData, SearchAppsResponse, SeedDatabaseData, SetAllAppSubnetToNullData, SetAllAppUpdateAvailableData, SetAutoUpdatesData, SetCloudProviderData, SetupTotpData, SkipData, StartAllApps2Data, StartAllAppsData, StartAppData, StartAppResponse, StartAuthData, StartAuthResponse, StartData, StartPortalLoginData, StartPullModelData, StateData, StatusData, StopAllAppsData, StopAppData, StopAppResponse, SyncExposureData, SyncMissingDnsRecordsData, SyncMissingDnsRecordsResponse, SystemLoadData, SystemResourcesData, TelemetryData, TraefikData, UnignoreAppVersionData, UninstallAllAppsData, UninstallAppData, UninstallAppResponse, UnloadModelData, UnpinModelData, UpdateAdvancedModeData, UpdateAllAppsData, UpdateAppConfigData, UpdateAppConfigResponse, UpdateAppData, UpdateAppMetadataData, UpdateAppResponse, UpdateAppStoreData, UpdateAppStoreResponse, UpdateCustomAppData, UpdateKeyData, UpdatePortExposeAppData, UpdatePreferencesData, UpdateRocmInstallStateData, UpdateUserConfigData, UpdateUserSettingsData, UploadAppImageData, UploadBackupData, UserContextData, ValidateConfigData, ValidateConfigResponse, ValidateOrganizationNameData, VerifyPairingCodeData, VerifyPasswordResetTokenData, VerifyTotpData, VerifyTotpResponse } from '../types.gen';
+import { acknowledgeWelcome, appContext, appEvents, appLogsEvents, backupAllApps, backupApp, callback, callTool, cancelOperation, cancelResetPassword, changePassword, changeUsername, check, checkAppPorts, checkAuth, checkAvailability, checkDataIntegrity, checkDnsAvailability, checkForUpdates, checkResetPasswordRequest, checkUrlAvailability, completeOnboarding, completePasswordReset, connectWithAuthKey, consumeBrowserHandoff, consumers, createAppStore, createCustomApp, createKey, createLink, createPortExposeApp, deleteAppBackup, deleteAppStore, deleteLink, detectServices, disableTotp, disableUserConfig, disconnect, disconnect2, downloadBackup, downloadHubLogs, downloadLocalCertificate, edgeSso, editLink, enableUserConfig, exchangePortalDesktopLogin, executeRehydrate, factoryReset, forceStopApp, getAllAllocations, getAllAppStores, getApp, getAppBackups, getAppComposeDiff, getAppConfigDiff, getAppCredentials, getAppCredentialsEnv0, getAppCredentialsEnv1, getAppDataListing, getAppDemoVideo, getAppImageSize, getAppMedia, getAppPorts, getAppScreenshot, getAutoUpdates, getCatalog, getCloudProviders, getConfig, getContainers, getCustomDomains, getDeviceId, getDiagnostics, getDiagnostics2, getDomains, getDsparkStatus, getEnabledAppStores, getFullInspection, getGuestApps, getGuestLinks, getHardware, getHealth, getHostListenerStatus, getHostListenerToken, getHubAccess, getImage, getInstalledApps, getInstalledAppUrns, getInstallQueue, getLemonadeStatus, getLinks, getLuceboxStatus, getMcpInstallSchema, getMcpStatus, getMemory, getMtplxStatus, getOllamaStatus, getOnboardingProfile, getPortalConfig, getPorts, getPreferences, getRandomPort, getRehydratePlan, getRehydrateStatus, getResourceMonitor, getRocmStatus, getRuntimeHealth, getRuntimeModels, getServeStatus, getStateDrift, getStatus, getStatus2, getStatus3, getStatus4, getStatus5, getStoreAlternatives, getStoreFeaturedBundle, getStoreListings, getTotpUri, getTrackedModels, getTranslation, getUpdatesAvailable, getUserConfig, getVllmStatus, handleCallback, handleCallbackPost, handleDelete, handleGet, handlePost, health, hostEventLog, hostTelemetryHistory, hubLogsEvents, ignoreAppVersion, incrementAllAppVersions, installApp, installOllama, listKeys, listTools, live, loadModel, login, logout, markRestoreIntent, mintBrowserHandoff, type Options, pairDevice, performUpdate, pinModel, portalCallback, portalSessionHint, prepareFreshSetup, probeDomain, probeMcp, pullAppStores, pullModel, reconnectTunnel, refreshSession, register, registerDevice, removeCatchAllRoutes, removeOriginRequestFromAllRoutes, repair, repairOrphans, requestPasswordReset, rescanHardware, resetApp, resetPassword, resetRegistration, resolveAvailability, restartAllApps, restartApp, restartOnboarding, restoreAppBackup, revokeKey, rotateHubAccess, searchApps, seedDatabase, setAllAppSubnetToNull, setAllAppUpdateAvailable, setAutoUpdates, setCloudProvider, setupTotp, skip, start, startAllApps, startAllApps2, startApp, startAuth, startPortalLogin, startPullModel, state, status, stopAllApps, stopApp, syncExposure, syncMissingDnsRecords, systemLoad, systemResources, telemetry, traefik, unignoreAppVersion, uninstallAllApps, uninstallApp, unloadModel, unpinModel, updateAdvancedMode, updateAllApps, updateApp, updateAppConfig, updateAppMetadata, updateAppStore, updateCustomApp, updateKey, updatePortExposeApp, updatePreferences, updateRocmInstallState, updateUserConfig, updateUserSettings, uploadAppImage, uploadBackup, userContext, validateConfig, validateOrganizationName, verifyPairingCode, verifyPasswordResetToken, verifyTotp, wake } from '../sdk.gen';
+import type { AcknowledgeWelcomeData, AppContextData, AppContextResponse, AppEventsData, AppLogsEventsData, BackupAllAppsData, BackupAppData, BackupAppResponse, CallbackData, CallToolData, CancelOperationData, CancelOperationResponse, CancelResetPasswordData, ChangePasswordData, ChangeUsernameData, CheckAppPortsData, CheckAuthData, CheckAuthResponse, CheckAvailabilityData, CheckData, CheckDataIntegrityData, CheckDnsAvailabilityData, CheckDnsAvailabilityResponse, CheckError, CheckForUpdatesData, CheckResetPasswordRequestData, CheckResetPasswordRequestResponse, CheckResponse, CheckUrlAvailabilityData, CheckUrlAvailabilityResponse, CompleteOnboardingData, CompletePasswordResetData, CompletePasswordResetResponse, ConnectWithAuthKeyData, ConnectWithAuthKeyResponse, ConsumeBrowserHandoffData, ConsumersData, CreateAppStoreData, CreateAppStoreResponse, CreateCustomAppData, CreateCustomAppResponse, CreateKeyData, CreateLinkData, CreatePortExposeAppData, CreatePortExposeAppResponse, DeleteAppBackupData, DeleteAppStoreData, DeleteLinkData, DetectServicesData, DisableTotpData, DisableUserConfigData, Disconnect2Data, DisconnectData, DisconnectResponse, DownloadBackupData, DownloadHubLogsData, DownloadLocalCertificateData, EdgeSsoData, EditLinkData, EnableUserConfigData, ExchangePortalDesktopLoginData, ExchangePortalDesktopLoginResponse, ExecuteRehydrateData, FactoryResetData, ForceStopAppData, ForceStopAppResponse, GetAllAllocationsData, GetAllAppStoresData, GetAllAppStoresResponse, GetAppBackupsData, GetAppBackupsResponse, GetAppComposeDiffData, GetAppComposeDiffResponse, GetAppConfigDiffData, GetAppConfigDiffResponse, GetAppCredentialsData, GetAppCredentialsEnv0Data, GetAppCredentialsEnv1Data, GetAppData, GetAppDataListingData, GetAppDataListingResponse, GetAppDemoVideoData, GetAppImageSizeData, GetAppMediaData, GetAppMediaResponse, GetAppPortsData, GetAppResponse, GetAppScreenshotData, GetAutoUpdatesData, GetCatalogData, GetCloudProvidersData, GetConfigData, GetContainersData, GetCustomDomainsData, GetCustomDomainsResponse, GetDeviceIdData, GetDiagnostics2Data, GetDiagnostics2Response, GetDiagnosticsData, GetDiagnosticsResponse, GetDomainsData, GetDomainsResponse, GetDsparkStatusData, GetEnabledAppStoresData, GetEnabledAppStoresResponse, GetFullInspectionData, GetGuestAppsData, GetGuestAppsResponse, GetGuestLinksData, GetGuestLinksResponse, GetHardwareData, GetHealthData, GetHostListenerStatusData, GetHostListenerTokenData, GetHubAccessData, GetImageData, GetInstalledAppsData, GetInstalledAppsResponse, GetInstalledAppUrnsData, GetInstalledAppUrnsResponse, GetInstallQueueData, GetInstallQueueResponse, GetLemonadeStatusData, GetLinksData, GetLinksResponse, GetLuceboxStatusData, GetMcpInstallSchemaData, GetMcpInstallSchemaResponse, GetMcpStatusData, GetMcpStatusResponse, GetMemoryData, GetMtplxStatusData, GetOllamaStatusData, GetOnboardingProfileData, GetPortalConfigData, GetPortsData, GetPreferencesData, GetRandomPortData, GetRandomPortResponse, GetRehydratePlanData, GetRehydrateStatusData, GetResourceMonitorData, GetResourceMonitorResponse, GetRocmStatusData, GetRuntimeHealthData, GetRuntimeHealthResponse, GetRuntimeModelsData, GetServeStatusData, GetServeStatusResponse, GetStateDriftData, GetStatus2Data, GetStatus2Response, GetStatus3Data, GetStatus4Data, GetStatus4Response, GetStatus5Data, GetStatusData, GetStoreAlternativesData, GetStoreFeaturedBundleData, GetStoreFeaturedBundleResponse, GetStoreListingsData, GetTotpUriData, GetTotpUriResponse, GetTrackedModelsData, GetTranslationData, GetUpdatesAvailableData, GetUpdatesAvailableResponse, GetUserConfigData, GetUserConfigResponse, GetVllmStatusData, HandleCallbackData, HandleCallbackPostData, HandleDeleteData, HandleDeleteResponse, HandleGetData, HandlePostData, HealthData, HostEventLogData, HostEventLogResponse, HostTelemetryHistoryData, HostTelemetryHistoryResponse, HubLogsEventsData, IgnoreAppVersionData, IncrementAllAppVersionsData, InstallAppData, InstallAppResponse, InstallOllamaData, ListKeysData, ListToolsData, LiveData, LoadModelData, LoginData, LoginResponse, LogoutData, MarkRestoreIntentData, MintBrowserHandoffData, MintBrowserHandoffResponse, PairDeviceData, PerformUpdateData, PinModelData, PortalCallbackData, PortalSessionHintData, PortalSessionHintResponse, PrepareFreshSetupData, ProbeDomainData, ProbeMcpData, ProbeMcpResponse, PullAppStoresData, PullAppStoresResponse, PullModelData, ReconnectTunnelData, RefreshSessionData, RefreshSessionResponse, RegisterData, RegisterDeviceData, RegisterResponse, RemoveCatchAllRoutesData, RemoveCatchAllRoutesResponse, RemoveOriginRequestFromAllRoutesData, RemoveOriginRequestFromAllRoutesResponse, RepairData, RepairOrphansData, RepairOrphansResponse, RepairResponse, RequestPasswordResetData, RequestPasswordResetResponse, RescanHardwareData, ResetAppData, ResetAppResponse, ResetPasswordData, ResetPasswordResponse, ResetRegistrationData, ResolveAvailabilityData, RestartAllAppsData, RestartAppData, RestartAppResponse, RestartOnboardingData, RestoreAppBackupData, RestoreAppBackupResponse, RevokeKeyData, RotateHubAccessData, SearchAppsData, SearchAppsResponse, SeedDatabaseData, SetAllAppSubnetToNullData, SetAllAppUpdateAvailableData, SetAutoUpdatesData, SetCloudProviderData, SetupTotpData, SkipData, StartAllApps2Data, StartAllAppsData, StartAppData, StartAppResponse, StartAuthData, StartAuthResponse, StartData, StartPortalLoginData, StartPullModelData, StateData, StatusData, StopAllAppsData, StopAppData, StopAppResponse, SyncExposureData, SyncMissingDnsRecordsData, SyncMissingDnsRecordsResponse, SystemLoadData, SystemLoadResponse, SystemResourcesData, SystemResourcesResponse, TelemetryData, TraefikData, UnignoreAppVersionData, UninstallAllAppsData, UninstallAppData, UninstallAppResponse, UnloadModelData, UnpinModelData, UpdateAdvancedModeData, UpdateAllAppsData, UpdateAppConfigData, UpdateAppConfigResponse, UpdateAppData, UpdateAppMetadataData, UpdateAppResponse, UpdateAppStoreData, UpdateAppStoreResponse, UpdateCustomAppData, UpdateKeyData, UpdatePortExposeAppData, UpdatePreferencesData, UpdateRocmInstallStateData, UpdateUserConfigData, UpdateUserSettingsData, UploadAppImageData, UploadBackupData, UserContextData, UserContextResponse, ValidateConfigData, ValidateConfigResponse, ValidateOrganizationNameData, VerifyPairingCodeData, VerifyPasswordResetTokenData, VerifyPasswordResetTokenResponse, VerifyTotpData, VerifyTotpResponse, WakeData } from '../types.gen';
 
 export type QueryKey<TOptions extends Options> = [
     Pick<TOptions, 'baseUrl' | 'body' | 'headers' | 'path' | 'query'> & {
@@ -36,104 +36,92 @@ const createQueryKey = <TOptions extends Options>(id: string, options?: TOptions
     if (options?.query) {
         params.query = options.query;
     }
-    return [
-        params
-    ];
+    return [params];
 };
 
 export const userContextQueryKey = (options?: Options<UserContextData>) => createQueryKey('userContext', options);
 
-export const userContextOptions = (options?: Options<UserContextData>) => {
-    return queryOptions({
-        queryFn: async ({ queryKey, signal }) => {
-            const { data } = await userContext({
-                ...options,
-                ...queryKey[0],
-                signal,
-                throwOnError: true
-            });
-            return data;
-        },
-        queryKey: userContextQueryKey(options)
-    });
-};
+export const userContextOptions = (options?: Options<UserContextData>) => queryOptions<UserContextResponse, DefaultError, UserContextResponse, ReturnType<typeof userContextQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await userContext({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: userContextQueryKey(options)
+});
 
 export const getStoreAlternativesQueryKey = (options?: Options<GetStoreAlternativesData>) => createQueryKey('getStoreAlternatives', options);
 
 /**
  * Open-source app alternatives catalog (proxied from CI Cloud)
  */
-export const getStoreAlternativesOptions = (options?: Options<GetStoreAlternativesData>) => {
-    return queryOptions({
-        queryFn: async ({ queryKey, signal }) => {
-            const { data } = await getStoreAlternatives({
-                ...options,
-                ...queryKey[0],
-                signal,
-                throwOnError: true
-            });
-            return data;
-        },
-        queryKey: getStoreAlternativesQueryKey(options)
-    });
-};
+export const getStoreAlternativesOptions = (options?: Options<GetStoreAlternativesData>) => queryOptions<unknown, DefaultError, unknown, ReturnType<typeof getStoreAlternativesQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await getStoreAlternatives({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: getStoreAlternativesQueryKey(options)
+});
 
 export const getStoreListingsQueryKey = (options: Options<GetStoreListingsData>) => createQueryKey('getStoreListings', options);
 
 /**
  * App store listings (proxied from CI Cloud)
  */
-export const getStoreListingsOptions = (options: Options<GetStoreListingsData>) => {
-    return queryOptions({
-        queryFn: async ({ queryKey, signal }) => {
-            const { data } = await getStoreListings({
-                ...options,
-                ...queryKey[0],
-                signal,
-                throwOnError: true
-            });
-            return data;
-        },
-        queryKey: getStoreListingsQueryKey(options)
-    });
-};
+export const getStoreListingsOptions = (options: Options<GetStoreListingsData>) => queryOptions<unknown, DefaultError, unknown, ReturnType<typeof getStoreListingsQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await getStoreListings({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: getStoreListingsQueryKey(options)
+});
 
 export const getStoreFeaturedBundleQueryKey = (options?: Options<GetStoreFeaturedBundleData>) => createQueryKey('getStoreFeaturedBundle', options);
 
 /**
  * Featured store sections in one response (firstParty, featured, trending, newest)
  */
-export const getStoreFeaturedBundleOptions = (options?: Options<GetStoreFeaturedBundleData>) => {
-    return queryOptions({
-        queryFn: async ({ queryKey, signal }) => {
-            const { data } = await getStoreFeaturedBundle({
-                ...options,
-                ...queryKey[0],
-                signal,
-                throwOnError: true
-            });
-            return data;
-        },
-        queryKey: getStoreFeaturedBundleQueryKey(options)
-    });
-};
+export const getStoreFeaturedBundleOptions = (options?: Options<GetStoreFeaturedBundleData>) => queryOptions<GetStoreFeaturedBundleResponse, DefaultError, GetStoreFeaturedBundleResponse, ReturnType<typeof getStoreFeaturedBundleQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await getStoreFeaturedBundle({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: getStoreFeaturedBundleQueryKey(options)
+});
 
 export const appContextQueryKey = (options?: Options<AppContextData>) => createQueryKey('appContext', options);
 
-export const appContextOptions = (options?: Options<AppContextData>) => {
-    return queryOptions({
-        queryFn: async ({ queryKey, signal }) => {
-            const { data } = await appContext({
-                ...options,
-                ...queryKey[0],
-                signal,
-                throwOnError: true
-            });
-            return data;
-        },
-        queryKey: appContextQueryKey(options)
-    });
-};
+export const appContextOptions = (options?: Options<AppContextData>) => queryOptions<AppContextResponse, DefaultError, AppContextResponse, ReturnType<typeof appContextQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await appContext({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: appContextQueryKey(options)
+});
 
 export const updateUserSettingsMutation = (options?: Partial<Options<UpdateUserSettingsData>>): UseMutationOptions<unknown, DefaultError, Options<UpdateUserSettingsData>> => {
     const mutationOptions: UseMutationOptions<unknown, DefaultError, Options<UpdateUserSettingsData>> = {
@@ -210,20 +198,18 @@ export const telemetryQueryKey = (options?: Options<TelemetryData>) => createQue
 /**
  * Whether error reporting is permitted on this Hub
  */
-export const telemetryOptions = (options?: Options<TelemetryData>) => {
-    return queryOptions({
-        queryFn: async ({ queryKey, signal }) => {
-            const { data } = await telemetry({
-                ...options,
-                ...queryKey[0],
-                signal,
-                throwOnError: true
-            });
-            return data;
-        },
-        queryKey: telemetryQueryKey(options)
-    });
-};
+export const telemetryOptions = (options?: Options<TelemetryData>) => queryOptions<unknown, DefaultError, unknown, ReturnType<typeof telemetryQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await telemetry({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: telemetryQueryKey(options)
+});
 
 /**
  * Reset device registration to allow re-pairing
@@ -247,20 +233,18 @@ export const getStatusQueryKey = (options?: Options<GetStatusData>) => createQue
 /**
  * Get device registration and provisioning status
  */
-export const getStatusOptions = (options?: Options<GetStatusData>) => {
-    return queryOptions({
-        queryFn: async ({ queryKey, signal }) => {
-            const { data } = await getStatus({
-                ...options,
-                ...queryKey[0],
-                signal,
-                throwOnError: true
-            });
-            return data;
-        },
-        queryKey: getStatusQueryKey(options)
-    });
-};
+export const getStatusOptions = (options?: Options<GetStatusData>) => queryOptions<unknown, DefaultError, unknown, ReturnType<typeof getStatusQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await getStatus({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: getStatusQueryKey(options)
+});
 
 /**
  * Recover public/remote access for a registered but tunnel-degraded Hub
@@ -284,20 +268,18 @@ export const getStateDriftQueryKey = (options?: Options<GetStateDriftData>) => c
 /**
  * Detect local vs CI Portal registration state drift
  */
-export const getStateDriftOptions = (options?: Options<GetStateDriftData>) => {
-    return queryOptions({
-        queryFn: async ({ queryKey, signal }) => {
-            const { data } = await getStateDrift({
-                ...options,
-                ...queryKey[0],
-                signal,
-                throwOnError: true
-            });
-            return data;
-        },
-        queryKey: getStateDriftQueryKey(options)
-    });
-};
+export const getStateDriftOptions = (options?: Options<GetStateDriftData>) => queryOptions<unknown, DefaultError, unknown, ReturnType<typeof getStateDriftQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await getStateDrift({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: getStateDriftQueryKey(options)
+});
 
 /**
  * Clear local registration artifacts for a fresh device pairing
@@ -338,40 +320,36 @@ export const getDeviceIdQueryKey = (options?: Options<GetDeviceIdData>) => creat
 /**
  * Get device ID for registration redirect
  */
-export const getDeviceIdOptions = (options?: Options<GetDeviceIdData>) => {
-    return queryOptions({
-        queryFn: async ({ queryKey, signal }) => {
-            const { data } = await getDeviceId({
-                ...options,
-                ...queryKey[0],
-                signal,
-                throwOnError: true
-            });
-            return data;
-        },
-        queryKey: getDeviceIdQueryKey(options)
-    });
-};
+export const getDeviceIdOptions = (options?: Options<GetDeviceIdData>) => queryOptions<unknown, DefaultError, unknown, ReturnType<typeof getDeviceIdQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await getDeviceId({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: getDeviceIdQueryKey(options)
+});
 
 export const handleCallbackQueryKey = (options: Options<HandleCallbackData>) => createQueryKey('handleCallback', options);
 
 /**
  * Handle registration callback from CI Cloud (legacy GET redirect)
  */
-export const handleCallbackOptions = (options: Options<HandleCallbackData>) => {
-    return queryOptions({
-        queryFn: async ({ queryKey, signal }) => {
-            const { data } = await handleCallback({
-                ...options,
-                ...queryKey[0],
-                signal,
-                throwOnError: true
-            });
-            return data;
-        },
-        queryKey: handleCallbackQueryKey(options)
-    });
-};
+export const handleCallbackOptions = (options: Options<HandleCallbackData>) => queryOptions<unknown, DefaultError, unknown, ReturnType<typeof handleCallbackQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await handleCallback({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: handleCallbackQueryKey(options)
+});
 
 /**
  * Handle registration callback from CI Cloud (preferred — secrets in body)
@@ -395,40 +373,36 @@ export const getConfigQueryKey = (options?: Options<GetConfigData>) => createQue
 /**
  * Get CI Cloud configuration (operator debug)
  */
-export const getConfigOptions = (options?: Options<GetConfigData>) => {
-    return queryOptions({
-        queryFn: async ({ queryKey, signal }) => {
-            const { data } = await getConfig({
-                ...options,
-                ...queryKey[0],
-                signal,
-                throwOnError: true
-            });
-            return data;
-        },
-        queryKey: getConfigQueryKey(options)
-    });
-};
+export const getConfigOptions = (options?: Options<GetConfigData>) => queryOptions<unknown, DefaultError, unknown, ReturnType<typeof getConfigQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await getConfig({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: getConfigQueryKey(options)
+});
 
 export const validateOrganizationNameQueryKey = (options: Options<ValidateOrganizationNameData>) => createQueryKey('validateOrganizationName', options);
 
 /**
  * Validate organization name/subdomain availability
  */
-export const validateOrganizationNameOptions = (options: Options<ValidateOrganizationNameData>) => {
-    return queryOptions({
-        queryFn: async ({ queryKey, signal }) => {
-            const { data } = await validateOrganizationName({
-                ...options,
-                ...queryKey[0],
-                signal,
-                throwOnError: true
-            });
-            return data;
-        },
-        queryKey: validateOrganizationNameQueryKey(options)
-    });
-};
+export const validateOrganizationNameOptions = (options: Options<ValidateOrganizationNameData>) => queryOptions<unknown, DefaultError, unknown, ReturnType<typeof validateOrganizationNameQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await validateOrganizationName({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: validateOrganizationNameQueryKey(options)
+});
 
 /**
  * Verify a signup pairing code and bind device identity with CI Cloud
@@ -452,20 +426,18 @@ export const probeDomainQueryKey = (options: Options<ProbeDomainData>) => create
 /**
  * Probe a CF domain to check if the tunnel is serving the Hub
  */
-export const probeDomainOptions = (options: Options<ProbeDomainData>) => {
-    return queryOptions({
-        queryFn: async ({ queryKey, signal }) => {
-            const { data } = await probeDomain({
-                ...options,
-                ...queryKey[0],
-                signal,
-                throwOnError: true
-            });
-            return data;
-        },
-        queryKey: probeDomainQueryKey(options)
-    });
-};
+export const probeDomainOptions = (options: Options<ProbeDomainData>) => queryOptions<unknown, DefaultError, unknown, ReturnType<typeof probeDomainQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await probeDomain({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: probeDomainQueryKey(options)
+});
 
 /**
  * Pair device using a pairing code — atomic registration in one step
@@ -506,88 +478,93 @@ export const getPortalConfigQueryKey = (options?: Options<GetPortalConfigData>) 
 /**
  * Portal URL and device registration metadata for the frontend
  */
-export const getPortalConfigOptions = (options?: Options<GetPortalConfigData>) => {
-    return queryOptions({
-        queryFn: async ({ queryKey, signal }) => {
-            const { data } = await getPortalConfig({
-                ...options,
-                ...queryKey[0],
-                signal,
-                throwOnError: true
-            });
-            return data;
-        },
-        queryKey: getPortalConfigQueryKey(options)
-    });
-};
+export const getPortalConfigOptions = (options?: Options<GetPortalConfigData>) => queryOptions<unknown, DefaultError, unknown, ReturnType<typeof getPortalConfigQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await getPortalConfig({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: getPortalConfigQueryKey(options)
+});
 
 export const checkDnsAvailabilityQueryKey = (options: Options<CheckDnsAvailabilityData>) => createQueryKey('checkDnsAvailability', options);
 
-export const checkDnsAvailabilityOptions = (options: Options<CheckDnsAvailabilityData>) => {
-    return queryOptions({
-        queryFn: async ({ queryKey, signal }) => {
-            const { data } = await checkDnsAvailability({
-                ...options,
-                ...queryKey[0],
-                signal,
-                throwOnError: true
-            });
-            return data;
-        },
-        queryKey: checkDnsAvailabilityQueryKey(options)
-    });
-};
+export const checkDnsAvailabilityOptions = (options: Options<CheckDnsAvailabilityData>) => queryOptions<CheckDnsAvailabilityResponse, DefaultError, CheckDnsAvailabilityResponse, ReturnType<typeof checkDnsAvailabilityQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await checkDnsAvailability({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: checkDnsAvailabilityQueryKey(options)
+});
 
 export const getDomainsQueryKey = (options?: Options<GetDomainsData>) => createQueryKey('getDomains', options);
 
-export const getDomainsOptions = (options?: Options<GetDomainsData>) => {
-    return queryOptions({
-        queryFn: async ({ queryKey, signal }) => {
-            const { data } = await getDomains({
-                ...options,
-                ...queryKey[0],
-                signal,
-                throwOnError: true
-            });
-            return data;
-        },
-        queryKey: getDomainsQueryKey(options)
-    });
-};
+export const getDomainsOptions = (options?: Options<GetDomainsData>) => queryOptions<GetDomainsResponse, DefaultError, GetDomainsResponse, ReturnType<typeof getDomainsQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await getDomains({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: getDomainsQueryKey(options)
+});
+
+export const getCustomDomainsQueryKey = (options?: Options<GetCustomDomainsData>) => createQueryKey('getCustomDomains', options);
+
+export const getCustomDomainsOptions = (options?: Options<GetCustomDomainsData>) => queryOptions<GetCustomDomainsResponse, DefaultError, GetCustomDomainsResponse, ReturnType<typeof getCustomDomainsQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await getCustomDomains({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: getCustomDomainsQueryKey(options)
+});
 
 export const getStatus2QueryKey = (options?: Options<GetStatus2Data>) => createQueryKey('getStatus2', options);
 
-export const getStatus2Options = (options?: Options<GetStatus2Data>) => {
-    return queryOptions({
-        queryFn: async ({ queryKey, signal }) => {
-            const { data } = await getStatus2({
-                ...options,
-                ...queryKey[0],
-                signal,
-                throwOnError: true
-            });
-            return data;
-        },
-        queryKey: getStatus2QueryKey(options)
-    });
-};
+export const getStatus2Options = (options?: Options<GetStatus2Data>) => queryOptions<GetStatus2Response, DefaultError, GetStatus2Response, ReturnType<typeof getStatus2QueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await getStatus2({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: getStatus2QueryKey(options)
+});
 
 export const checkUrlAvailabilityQueryKey = (options: Options<CheckUrlAvailabilityData>) => createQueryKey('checkUrlAvailability', options);
 
-export const checkUrlAvailabilityOptions = (options: Options<CheckUrlAvailabilityData>) => {
-    return queryOptions({
-        queryFn: async ({ queryKey, signal }) => {
-            const { data } = await checkUrlAvailability({
-                ...options,
-                ...queryKey[0],
-                signal,
-                throwOnError: true
-            });
-            return data;
-        },
-        queryKey: checkUrlAvailabilityQueryKey(options)
-    });
-};
+export const checkUrlAvailabilityOptions = (options: Options<CheckUrlAvailabilityData>) => queryOptions<CheckUrlAvailabilityResponse, DefaultError, CheckUrlAvailabilityResponse, ReturnType<typeof checkUrlAvailabilityQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await checkUrlAvailability({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: checkUrlAvailabilityQueryKey(options)
+});
 
 export const syncMissingDnsRecordsMutation = (options?: Partial<Options<SyncMissingDnsRecordsData>>): UseMutationOptions<SyncMissingDnsRecordsResponse, DefaultError, Options<SyncMissingDnsRecordsData>> => {
     const mutationOptions: UseMutationOptions<SyncMissingDnsRecordsResponse, DefaultError, Options<SyncMissingDnsRecordsData>> = {
@@ -633,168 +610,180 @@ export const removeCatchAllRoutesMutation = (options?: Partial<Options<RemoveCat
 
 export const systemLoadQueryKey = (options?: Options<SystemLoadData>) => createQueryKey('systemLoad', options);
 
-export const systemLoadOptions = (options?: Options<SystemLoadData>) => {
-    return queryOptions({
-        queryFn: async ({ queryKey, signal }) => {
-            const { data } = await systemLoad({
-                ...options,
-                ...queryKey[0],
-                signal,
-                throwOnError: true
-            });
-            return data;
-        },
-        queryKey: systemLoadQueryKey(options)
-    });
-};
+export const systemLoadOptions = (options?: Options<SystemLoadData>) => queryOptions<SystemLoadResponse, DefaultError, SystemLoadResponse, ReturnType<typeof systemLoadQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await systemLoad({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: systemLoadQueryKey(options)
+});
 
 export const systemResourcesQueryKey = (options?: Options<SystemResourcesData>) => createQueryKey('systemResources', options);
 
-export const systemResourcesOptions = (options?: Options<SystemResourcesData>) => {
-    return queryOptions({
-        queryFn: async ({ queryKey, signal }) => {
-            const { data } = await systemResources({
-                ...options,
-                ...queryKey[0],
-                signal,
-                throwOnError: true
-            });
-            return data;
-        },
-        queryKey: systemResourcesQueryKey(options)
-    });
-};
+export const systemResourcesOptions = (options?: Options<SystemResourcesData>) => queryOptions<SystemResourcesResponse, DefaultError, SystemResourcesResponse, ReturnType<typeof systemResourcesQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await systemResources({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: systemResourcesQueryKey(options)
+});
+
+export const hostTelemetryHistoryQueryKey = (options?: Options<HostTelemetryHistoryData>) => createQueryKey('hostTelemetryHistory', options);
+
+export const hostTelemetryHistoryOptions = (options?: Options<HostTelemetryHistoryData>) => queryOptions<HostTelemetryHistoryResponse, DefaultError, HostTelemetryHistoryResponse, ReturnType<typeof hostTelemetryHistoryQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await hostTelemetryHistory({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: hostTelemetryHistoryQueryKey(options)
+});
+
+export const hostEventLogQueryKey = (options?: Options<HostEventLogData>) => createQueryKey('hostEventLog', options);
+
+export const hostEventLogOptions = (options?: Options<HostEventLogData>) => queryOptions<HostEventLogResponse, DefaultError, HostEventLogResponse, ReturnType<typeof hostEventLogQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await hostEventLog({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: hostEventLogQueryKey(options)
+});
 
 export const downloadHubLogsQueryKey = (options?: Options<DownloadHubLogsData>) => createQueryKey('downloadHubLogs', options);
 
-export const downloadHubLogsOptions = (options?: Options<DownloadHubLogsData>) => {
-    return queryOptions({
-        queryFn: async ({ queryKey, signal }) => {
-            const { data } = await downloadHubLogs({
-                ...options,
-                ...queryKey[0],
-                signal,
-                throwOnError: true
-            });
-            return data;
-        },
-        queryKey: downloadHubLogsQueryKey(options)
-    });
-};
+export const downloadHubLogsOptions = (options?: Options<DownloadHubLogsData>) => queryOptions<unknown, DefaultError, unknown, ReturnType<typeof downloadHubLogsQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await downloadHubLogs({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: downloadHubLogsQueryKey(options)
+});
 
 export const downloadLocalCertificateQueryKey = (options?: Options<DownloadLocalCertificateData>) => createQueryKey('downloadLocalCertificate', options);
 
-export const downloadLocalCertificateOptions = (options?: Options<DownloadLocalCertificateData>) => {
-    return queryOptions({
-        queryFn: async ({ queryKey, signal }) => {
-            const { data } = await downloadLocalCertificate({
-                ...options,
-                ...queryKey[0],
-                signal,
-                throwOnError: true
-            });
-            return data;
-        },
-        queryKey: downloadLocalCertificateQueryKey(options)
-    });
-};
+export const downloadLocalCertificateOptions = (options?: Options<DownloadLocalCertificateData>) => queryOptions<unknown, DefaultError, unknown, ReturnType<typeof downloadLocalCertificateQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await downloadLocalCertificate({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: downloadLocalCertificateQueryKey(options)
+});
 
 export const detectServicesQueryKey = (options?: Options<DetectServicesData>) => createQueryKey('detectServices', options);
 
-export const detectServicesOptions = (options?: Options<DetectServicesData>) => {
-    return queryOptions({
-        queryFn: async ({ queryKey, signal }) => {
-            const { data } = await detectServices({
-                ...options,
-                ...queryKey[0],
-                signal,
-                throwOnError: true
-            });
-            return data;
-        },
-        queryKey: detectServicesQueryKey(options)
-    });
-};
+export const detectServicesOptions = (options?: Options<DetectServicesData>) => queryOptions<unknown, DefaultError, unknown, ReturnType<typeof detectServicesQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await detectServices({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: detectServicesQueryKey(options)
+});
 
 export const getFullInspectionQueryKey = (options?: Options<GetFullInspectionData>) => createQueryKey('getFullInspection', options);
 
 /**
  * Full system inspection: ports, containers, health
  */
-export const getFullInspectionOptions = (options?: Options<GetFullInspectionData>) => {
-    return queryOptions({
-        queryFn: async ({ queryKey, signal }) => {
-            const { data } = await getFullInspection({
-                ...options,
-                ...queryKey[0],
-                signal,
-                throwOnError: true
-            });
-            return data;
-        },
-        queryKey: getFullInspectionQueryKey(options)
-    });
-};
+export const getFullInspectionOptions = (options?: Options<GetFullInspectionData>) => queryOptions<unknown, DefaultError, unknown, ReturnType<typeof getFullInspectionQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await getFullInspection({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: getFullInspectionQueryKey(options)
+});
 
 export const getContainersQueryKey = (options?: Options<GetContainersData>) => createQueryKey('getContainers', options);
 
 /**
  * Running Docker containers and their status
  */
-export const getContainersOptions = (options?: Options<GetContainersData>) => {
-    return queryOptions({
-        queryFn: async ({ queryKey, signal }) => {
-            const { data } = await getContainers({
-                ...options,
-                ...queryKey[0],
-                signal,
-                throwOnError: true
-            });
-            return data;
-        },
-        queryKey: getContainersQueryKey(options)
-    });
-};
+export const getContainersOptions = (options?: Options<GetContainersData>) => queryOptions<unknown, DefaultError, unknown, ReturnType<typeof getContainersQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await getContainers({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: getContainersQueryKey(options)
+});
 
 export const getPortsQueryKey = (options?: Options<GetPortsData>) => createQueryKey('getPorts', options);
 
 /**
  * Port allocations with live bind checks
  */
-export const getPortsOptions = (options?: Options<GetPortsData>) => {
-    return queryOptions({
-        queryFn: async ({ queryKey, signal }) => {
-            const { data } = await getPorts({
-                ...options,
-                ...queryKey[0],
-                signal,
-                throwOnError: true
-            });
-            return data;
-        },
-        queryKey: getPortsQueryKey(options)
-    });
-};
+export const getPortsOptions = (options?: Options<GetPortsData>) => queryOptions<unknown, DefaultError, unknown, ReturnType<typeof getPortsQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await getPorts({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: getPortsQueryKey(options)
+});
 
 export const getHealthQueryKey = (options?: Options<GetHealthData>) => createQueryKey('getHealth', options);
 
 /**
  * System health: CPU, memory, disk, uptime
  */
-export const getHealthOptions = (options?: Options<GetHealthData>) => {
-    return queryOptions({
-        queryFn: async ({ queryKey, signal }) => {
-            const { data } = await getHealth({
-                ...options,
-                ...queryKey[0],
-                signal,
-                throwOnError: true
-            });
-            return data;
-        },
-        queryKey: getHealthQueryKey(options)
-    });
-};
+export const getHealthOptions = (options?: Options<GetHealthData>) => queryOptions<unknown, DefaultError, unknown, ReturnType<typeof getHealthQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await getHealth({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: getHealthQueryKey(options)
+});
 
 /**
  * Wipe all Hub state and return to first-operator setup
@@ -818,77 +807,69 @@ export const getAllAllocationsQueryKey = (options?: Options<GetAllAllocationsDat
 /**
  * Get all port allocations
  */
-export const getAllAllocationsOptions = (options?: Options<GetAllAllocationsData>) => {
-    return queryOptions({
-        queryFn: async ({ queryKey, signal }) => {
-            const { data } = await getAllAllocations({
-                ...options,
-                ...queryKey[0],
-                signal,
-                throwOnError: true
-            });
-            return data;
-        },
-        queryKey: getAllAllocationsQueryKey(options)
-    });
-};
+export const getAllAllocationsOptions = (options?: Options<GetAllAllocationsData>) => queryOptions<unknown, DefaultError, unknown, ReturnType<typeof getAllAllocationsQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await getAllAllocations({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: getAllAllocationsQueryKey(options)
+});
 
 export const getAppPortsQueryKey = (options: Options<GetAppPortsData>) => createQueryKey('getAppPorts', options);
 
 /**
  * Get port allocations for a specific app
  */
-export const getAppPortsOptions = (options: Options<GetAppPortsData>) => {
-    return queryOptions({
-        queryFn: async ({ queryKey, signal }) => {
-            const { data } = await getAppPorts({
-                ...options,
-                ...queryKey[0],
-                signal,
-                throwOnError: true
-            });
-            return data;
-        },
-        queryKey: getAppPortsQueryKey(options)
-    });
-};
+export const getAppPortsOptions = (options: Options<GetAppPortsData>) => queryOptions<unknown, DefaultError, unknown, ReturnType<typeof getAppPortsQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await getAppPorts({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: getAppPortsQueryKey(options)
+});
 
 export const checkAppPortsQueryKey = (options: Options<CheckAppPortsData>) => createQueryKey('checkAppPorts', options);
 
 /**
  * Check port availability for an app
  */
-export const checkAppPortsOptions = (options: Options<CheckAppPortsData>) => {
-    return queryOptions({
-        queryFn: async ({ queryKey, signal }) => {
-            const { data } = await checkAppPorts({
-                ...options,
-                ...queryKey[0],
-                signal,
-                throwOnError: true
-            });
-            return data;
-        },
-        queryKey: checkAppPortsQueryKey(options)
-    });
-};
+export const checkAppPortsOptions = (options: Options<CheckAppPortsData>) => queryOptions<unknown, DefaultError, unknown, ReturnType<typeof checkAppPortsQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await checkAppPorts({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: checkAppPortsQueryKey(options)
+});
 
 export const getDiagnosticsQueryKey = (options?: Options<GetDiagnosticsData>) => createQueryKey('getDiagnostics', options);
 
-export const getDiagnosticsOptions = (options?: Options<GetDiagnosticsData>) => {
-    return queryOptions({
-        queryFn: async ({ queryKey, signal }) => {
-            const { data } = await getDiagnostics({
-                ...options,
-                ...queryKey[0],
-                signal,
-                throwOnError: true
-            });
-            return data;
-        },
-        queryKey: getDiagnosticsQueryKey(options)
-    });
-};
+export const getDiagnosticsOptions = (options?: Options<GetDiagnosticsData>) => queryOptions<GetDiagnosticsResponse, DefaultError, GetDiagnosticsResponse, ReturnType<typeof getDiagnosticsQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await getDiagnostics({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: getDiagnosticsQueryKey(options)
+});
 
 export const repairOrphansMutation = (options?: Partial<Options<RepairOrphansData>>): UseMutationOptions<RepairOrphansResponse, DefaultError, Options<RepairOrphansData>> => {
     const mutationOptions: UseMutationOptions<RepairOrphansResponse, DefaultError, Options<RepairOrphansData>> = {
@@ -906,20 +887,18 @@ export const repairOrphansMutation = (options?: Partial<Options<RepairOrphansDat
 
 export const getTranslationQueryKey = (options: Options<GetTranslationData>) => createQueryKey('getTranslation', options);
 
-export const getTranslationOptions = (options: Options<GetTranslationData>) => {
-    return queryOptions({
-        queryFn: async ({ queryKey, signal }) => {
-            const { data } = await getTranslation({
-                ...options,
-                ...queryKey[0],
-                signal,
-                throwOnError: true
-            });
-            return data;
-        },
-        queryKey: getTranslationQueryKey(options)
-    });
-};
+export const getTranslationOptions = (options: Options<GetTranslationData>) => queryOptions<unknown, DefaultError, unknown, ReturnType<typeof getTranslationQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await getTranslation({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: getTranslationQueryKey(options)
+});
 
 export const loginMutation = (options?: Partial<Options<LoginData>>): UseMutationOptions<LoginResponse, DefaultError, Options<LoginData>> => {
     const mutationOptions: UseMutationOptions<LoginResponse, DefaultError, Options<LoginData>> = {
@@ -1007,88 +986,78 @@ export const mintBrowserHandoffMutation = (options?: Partial<Options<MintBrowser
 
 export const consumeBrowserHandoffQueryKey = (options?: Options<ConsumeBrowserHandoffData>) => createQueryKey('consumeBrowserHandoff', options);
 
-export const consumeBrowserHandoffOptions = (options?: Options<ConsumeBrowserHandoffData>) => {
-    return queryOptions({
-        queryFn: async ({ queryKey, signal }) => {
-            const { data } = await consumeBrowserHandoff({
-                ...options,
-                ...queryKey[0],
-                signal,
-                throwOnError: true
-            });
-            return data;
-        },
-        queryKey: consumeBrowserHandoffQueryKey(options)
-    });
-};
+export const consumeBrowserHandoffOptions = (options?: Options<ConsumeBrowserHandoffData>) => queryOptions<unknown, DefaultError, unknown, ReturnType<typeof consumeBrowserHandoffQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await consumeBrowserHandoff({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: consumeBrowserHandoffQueryKey(options)
+});
 
 export const startPortalLoginQueryKey = (options: Options<StartPortalLoginData>) => createQueryKey('startPortalLogin', options);
 
-export const startPortalLoginOptions = (options: Options<StartPortalLoginData>) => {
-    return queryOptions({
-        queryFn: async ({ queryKey, signal }) => {
-            const { data } = await startPortalLogin({
-                ...options,
-                ...queryKey[0],
-                signal,
-                throwOnError: true
-            });
-            return data;
-        },
-        queryKey: startPortalLoginQueryKey(options)
-    });
-};
+export const startPortalLoginOptions = (options: Options<StartPortalLoginData>) => queryOptions<unknown, DefaultError, unknown, ReturnType<typeof startPortalLoginQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await startPortalLogin({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: startPortalLoginQueryKey(options)
+});
 
 export const portalCallbackQueryKey = (options: Options<PortalCallbackData>) => createQueryKey('portalCallback', options);
 
-export const portalCallbackOptions = (options: Options<PortalCallbackData>) => {
-    return queryOptions({
-        queryFn: async ({ queryKey, signal }) => {
-            const { data } = await portalCallback({
-                ...options,
-                ...queryKey[0],
-                signal,
-                throwOnError: true
-            });
-            return data;
-        },
-        queryKey: portalCallbackQueryKey(options)
-    });
-};
+export const portalCallbackOptions = (options: Options<PortalCallbackData>) => queryOptions<unknown, DefaultError, unknown, ReturnType<typeof portalCallbackQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await portalCallback({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: portalCallbackQueryKey(options)
+});
 
 export const portalSessionHintQueryKey = (options: Options<PortalSessionHintData>) => createQueryKey('portalSessionHint', options);
 
-export const portalSessionHintOptions = (options: Options<PortalSessionHintData>) => {
-    return queryOptions({
-        queryFn: async ({ queryKey, signal }) => {
-            const { data } = await portalSessionHint({
-                ...options,
-                ...queryKey[0],
-                signal,
-                throwOnError: true
-            });
-            return data;
-        },
-        queryKey: portalSessionHintQueryKey(options)
-    });
-};
+export const portalSessionHintOptions = (options: Options<PortalSessionHintData>) => queryOptions<PortalSessionHintResponse, DefaultError, PortalSessionHintResponse, ReturnType<typeof portalSessionHintQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await portalSessionHint({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: portalSessionHintQueryKey(options)
+});
 
 export const exchangePortalDesktopLoginQueryKey = (options: Options<ExchangePortalDesktopLoginData>) => createQueryKey('exchangePortalDesktopLogin', options);
 
-export const exchangePortalDesktopLoginOptions = (options: Options<ExchangePortalDesktopLoginData>) => {
-    return queryOptions({
-        queryFn: async ({ queryKey, signal }) => {
-            const { data } = await exchangePortalDesktopLogin({
-                ...options,
-                ...queryKey[0],
-                signal,
-                throwOnError: true
-            });
-            return data;
-        },
-        queryKey: exchangePortalDesktopLoginQueryKey(options)
-    });
-};
+export const exchangePortalDesktopLoginOptions = (options: Options<ExchangePortalDesktopLoginData>) => queryOptions<ExchangePortalDesktopLoginResponse, DefaultError, ExchangePortalDesktopLoginResponse, ReturnType<typeof exchangePortalDesktopLoginQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await exchangePortalDesktopLogin({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: exchangePortalDesktopLoginQueryKey(options)
+});
 
 export const changeUsernameMutation = (options?: Partial<Options<ChangeUsernameData>>): UseMutationOptions<unknown, DefaultError, Options<ChangeUsernameData>> => {
     const mutationOptions: UseMutationOptions<unknown, DefaultError, Options<ChangeUsernameData>> = {
@@ -1176,20 +1145,18 @@ export const cancelResetPasswordMutation = (options?: Partial<Options<CancelRese
 
 export const checkResetPasswordRequestQueryKey = (options?: Options<CheckResetPasswordRequestData>) => createQueryKey('checkResetPasswordRequest', options);
 
-export const checkResetPasswordRequestOptions = (options?: Options<CheckResetPasswordRequestData>) => {
-    return queryOptions({
-        queryFn: async ({ queryKey, signal }) => {
-            const { data } = await checkResetPasswordRequest({
-                ...options,
-                ...queryKey[0],
-                signal,
-                throwOnError: true
-            });
-            return data;
-        },
-        queryKey: checkResetPasswordRequestQueryKey(options)
-    });
-};
+export const checkResetPasswordRequestOptions = (options?: Options<CheckResetPasswordRequestData>) => queryOptions<CheckResetPasswordRequestResponse, DefaultError, CheckResetPasswordRequestResponse, ReturnType<typeof checkResetPasswordRequestQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await checkResetPasswordRequest({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: checkResetPasswordRequestQueryKey(options)
+});
 
 export const resetPasswordMutation = (options?: Partial<Options<ResetPasswordData>>): UseMutationOptions<ResetPasswordResponse, DefaultError, Options<ResetPasswordData>> => {
     const mutationOptions: UseMutationOptions<ResetPasswordResponse, DefaultError, Options<ResetPasswordData>> = {
@@ -1221,20 +1188,18 @@ export const requestPasswordResetMutation = (options?: Partial<Options<RequestPa
 
 export const verifyPasswordResetTokenQueryKey = (options: Options<VerifyPasswordResetTokenData>) => createQueryKey('verifyPasswordResetToken', options);
 
-export const verifyPasswordResetTokenOptions = (options: Options<VerifyPasswordResetTokenData>) => {
-    return queryOptions({
-        queryFn: async ({ queryKey, signal }) => {
-            const { data } = await verifyPasswordResetToken({
-                ...options,
-                ...queryKey[0],
-                signal,
-                throwOnError: true
-            });
-            return data;
-        },
-        queryKey: verifyPasswordResetTokenQueryKey(options)
-    });
-};
+export const verifyPasswordResetTokenOptions = (options: Options<VerifyPasswordResetTokenData>) => queryOptions<VerifyPasswordResetTokenResponse, DefaultError, VerifyPasswordResetTokenResponse, ReturnType<typeof verifyPasswordResetTokenQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await verifyPasswordResetToken({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: verifyPasswordResetTokenQueryKey(options)
+});
 
 export const completePasswordResetMutation = (options?: Partial<Options<CompletePasswordResetData>>): UseMutationOptions<CompletePasswordResetResponse, DefaultError, Options<CompletePasswordResetData>> => {
     const mutationOptions: UseMutationOptions<CompletePasswordResetResponse, DefaultError, Options<CompletePasswordResetData>> = {
@@ -1252,122 +1217,108 @@ export const completePasswordResetMutation = (options?: Partial<Options<Complete
 
 export const traefikQueryKey = (options?: Options<TraefikData>) => createQueryKey('traefik', options);
 
-export const traefikOptions = (options?: Options<TraefikData>) => {
-    return queryOptions({
-        queryFn: async ({ queryKey, signal }) => {
-            const { data } = await traefik({
-                ...options,
-                ...queryKey[0],
-                signal,
-                throwOnError: true
-            });
-            return data;
-        },
-        queryKey: traefikQueryKey(options)
-    });
-};
+export const traefikOptions = (options?: Options<TraefikData>) => queryOptions<unknown, DefaultError, unknown, ReturnType<typeof traefikQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await traefik({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: traefikQueryKey(options)
+});
 
 export const edgeSsoQueryKey = (options?: Options<EdgeSsoData>) => createQueryKey('edgeSso', options);
 
-export const edgeSsoOptions = (options?: Options<EdgeSsoData>) => {
-    return queryOptions({
-        queryFn: async ({ queryKey, signal }) => {
-            const { data } = await edgeSso({
-                ...options,
-                ...queryKey[0],
-                signal,
-                throwOnError: true
-            });
-            return data;
-        },
-        queryKey: edgeSsoQueryKey(options)
-    });
-};
+export const edgeSsoOptions = (options?: Options<EdgeSsoData>) => queryOptions<unknown, DefaultError, unknown, ReturnType<typeof edgeSsoQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await edgeSso({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: edgeSsoQueryKey(options)
+});
 
 export const getInstalledAppsQueryKey = (options?: Options<GetInstalledAppsData>) => createQueryKey('getInstalledApps', options);
 
-export const getInstalledAppsOptions = (options?: Options<GetInstalledAppsData>) => {
-    return queryOptions({
-        queryFn: async ({ queryKey, signal }) => {
-            const { data } = await getInstalledApps({
-                ...options,
-                ...queryKey[0],
-                signal,
-                throwOnError: true
-            });
-            return data;
-        },
-        queryKey: getInstalledAppsQueryKey(options)
-    });
-};
+export const getInstalledAppsOptions = (options?: Options<GetInstalledAppsData>) => queryOptions<GetInstalledAppsResponse, DefaultError, GetInstalledAppsResponse, ReturnType<typeof getInstalledAppsQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await getInstalledApps({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: getInstalledAppsQueryKey(options)
+});
 
 export const getInstalledAppUrnsQueryKey = (options?: Options<GetInstalledAppUrnsData>) => createQueryKey('getInstalledAppUrns', options);
 
-export const getInstalledAppUrnsOptions = (options?: Options<GetInstalledAppUrnsData>) => {
-    return queryOptions({
-        queryFn: async ({ queryKey, signal }) => {
-            const { data } = await getInstalledAppUrns({
-                ...options,
-                ...queryKey[0],
-                signal,
-                throwOnError: true
-            });
-            return data;
-        },
-        queryKey: getInstalledAppUrnsQueryKey(options)
-    });
-};
+export const getInstalledAppUrnsOptions = (options?: Options<GetInstalledAppUrnsData>) => queryOptions<GetInstalledAppUrnsResponse, DefaultError, GetInstalledAppUrnsResponse, ReturnType<typeof getInstalledAppUrnsQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await getInstalledAppUrns({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: getInstalledAppUrnsQueryKey(options)
+});
 
 export const getUpdatesAvailableQueryKey = (options?: Options<GetUpdatesAvailableData>) => createQueryKey('getUpdatesAvailable', options);
 
-export const getUpdatesAvailableOptions = (options?: Options<GetUpdatesAvailableData>) => {
-    return queryOptions({
-        queryFn: async ({ queryKey, signal }) => {
-            const { data } = await getUpdatesAvailable({
-                ...options,
-                ...queryKey[0],
-                signal,
-                throwOnError: true
-            });
-            return data;
-        },
-        queryKey: getUpdatesAvailableQueryKey(options)
-    });
-};
+export const getUpdatesAvailableOptions = (options?: Options<GetUpdatesAvailableData>) => queryOptions<GetUpdatesAvailableResponse, DefaultError, GetUpdatesAvailableResponse, ReturnType<typeof getUpdatesAvailableQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await getUpdatesAvailable({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: getUpdatesAvailableQueryKey(options)
+});
 
 export const getInstallQueueQueryKey = (options?: Options<GetInstallQueueData>) => createQueryKey('getInstallQueue', options);
 
-export const getInstallQueueOptions = (options?: Options<GetInstallQueueData>) => {
-    return queryOptions({
-        queryFn: async ({ queryKey, signal }) => {
-            const { data } = await getInstallQueue({
-                ...options,
-                ...queryKey[0],
-                signal,
-                throwOnError: true
-            });
-            return data;
-        },
-        queryKey: getInstallQueueQueryKey(options)
-    });
-};
+export const getInstallQueueOptions = (options?: Options<GetInstallQueueData>) => queryOptions<GetInstallQueueResponse, DefaultError, GetInstallQueueResponse, ReturnType<typeof getInstallQueueQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await getInstallQueue({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: getInstallQueueQueryKey(options)
+});
 
 export const getGuestAppsQueryKey = (options?: Options<GetGuestAppsData>) => createQueryKey('getGuestApps', options);
 
-export const getGuestAppsOptions = (options?: Options<GetGuestAppsData>) => {
-    return queryOptions({
-        queryFn: async ({ queryKey, signal }) => {
-            const { data } = await getGuestApps({
-                ...options,
-                ...queryKey[0],
-                signal,
-                throwOnError: true
-            });
-            return data;
-        },
-        queryKey: getGuestAppsQueryKey(options)
-    });
-};
+export const getGuestAppsOptions = (options?: Options<GetGuestAppsData>) => queryOptions<GetGuestAppsResponse, DefaultError, GetGuestAppsResponse, ReturnType<typeof getGuestAppsQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await getGuestApps({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: getGuestAppsQueryKey(options)
+});
 
 export const getRandomPortMutation = (options?: Partial<Options<GetRandomPortData>>): UseMutationOptions<GetRandomPortResponse, DefaultError, Options<GetRandomPortData>> => {
     const mutationOptions: UseMutationOptions<GetRandomPortResponse, DefaultError, Options<GetRandomPortData>> = {
@@ -1385,71 +1336,78 @@ export const getRandomPortMutation = (options?: Partial<Options<GetRandomPortDat
 
 export const getResourceMonitorQueryKey = (options?: Options<GetResourceMonitorData>) => createQueryKey('getResourceMonitor', options);
 
-export const getResourceMonitorOptions = (options?: Options<GetResourceMonitorData>) => {
-    return queryOptions({
-        queryFn: async ({ queryKey, signal }) => {
-            const { data } = await getResourceMonitor({
-                ...options,
-                ...queryKey[0],
-                signal,
-                throwOnError: true
-            });
-            return data;
-        },
-        queryKey: getResourceMonitorQueryKey(options)
-    });
-};
+export const getResourceMonitorOptions = (options?: Options<GetResourceMonitorData>) => queryOptions<GetResourceMonitorResponse, DefaultError, GetResourceMonitorResponse, ReturnType<typeof getResourceMonitorQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await getResourceMonitor({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: getResourceMonitorQueryKey(options)
+});
 
 export const getAppQueryKey = (options: Options<GetAppData>) => createQueryKey('getApp', options);
 
-export const getAppOptions = (options: Options<GetAppData>) => {
-    return queryOptions({
-        queryFn: async ({ queryKey, signal }) => {
-            const { data } = await getApp({
-                ...options,
-                ...queryKey[0],
-                signal,
-                throwOnError: true
-            });
-            return data;
-        },
-        queryKey: getAppQueryKey(options)
-    });
-};
+export const getAppOptions = (options: Options<GetAppData>) => queryOptions<GetAppResponse, DefaultError, GetAppResponse, ReturnType<typeof getAppQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await getApp({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: getAppQueryKey(options)
+});
+
+export const getAppDataListingQueryKey = (options: Options<GetAppDataListingData>) => createQueryKey('getAppDataListing', options);
+
+export const getAppDataListingOptions = (options: Options<GetAppDataListingData>) => queryOptions<GetAppDataListingResponse, DefaultError, GetAppDataListingResponse, ReturnType<typeof getAppDataListingQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await getAppDataListing({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: getAppDataListingQueryKey(options)
+});
 
 export const getAppComposeDiffQueryKey = (options: Options<GetAppComposeDiffData>) => createQueryKey('getAppComposeDiff', options);
 
-export const getAppComposeDiffOptions = (options: Options<GetAppComposeDiffData>) => {
-    return queryOptions({
-        queryFn: async ({ queryKey, signal }) => {
-            const { data } = await getAppComposeDiff({
-                ...options,
-                ...queryKey[0],
-                signal,
-                throwOnError: true
-            });
-            return data;
-        },
-        queryKey: getAppComposeDiffQueryKey(options)
-    });
-};
+export const getAppComposeDiffOptions = (options: Options<GetAppComposeDiffData>) => queryOptions<GetAppComposeDiffResponse, DefaultError, GetAppComposeDiffResponse, ReturnType<typeof getAppComposeDiffQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await getAppComposeDiff({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: getAppComposeDiffQueryKey(options)
+});
 
 export const getAppConfigDiffQueryKey = (options: Options<GetAppConfigDiffData>) => createQueryKey('getAppConfigDiff', options);
 
-export const getAppConfigDiffOptions = (options: Options<GetAppConfigDiffData>) => {
-    return queryOptions({
-        queryFn: async ({ queryKey, signal }) => {
-            const { data } = await getAppConfigDiff({
-                ...options,
-                ...queryKey[0],
-                signal,
-                throwOnError: true
-            });
-            return data;
-        },
-        queryKey: getAppConfigDiffQueryKey(options)
-    });
-};
+export const getAppConfigDiffOptions = (options: Options<GetAppConfigDiffData>) => queryOptions<GetAppConfigDiffResponse, DefaultError, GetAppConfigDiffResponse, ReturnType<typeof getAppConfigDiffQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await getAppConfigDiff({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: getAppConfigDiffQueryKey(options)
+});
 
 export const ignoreAppVersionMutation = (options?: Partial<Options<IgnoreAppVersionData>>): UseMutationOptions<unknown, DefaultError, Options<IgnoreAppVersionData>> => {
     const mutationOptions: UseMutationOptions<unknown, DefaultError, Options<IgnoreAppVersionData>> = {
@@ -1481,37 +1439,33 @@ export const unignoreAppVersionMutation = (options?: Partial<Options<UnignoreApp
 
 export const checkAvailabilityQueryKey = (options: Options<CheckAvailabilityData>) => createQueryKey('checkAvailability', options);
 
-export const checkAvailabilityOptions = (options: Options<CheckAvailabilityData>) => {
-    return queryOptions({
-        queryFn: async ({ queryKey, signal }) => {
-            const { data } = await checkAvailability({
-                ...options,
-                ...queryKey[0],
-                signal,
-                throwOnError: true
-            });
-            return data;
-        },
-        queryKey: checkAvailabilityQueryKey(options)
-    });
-};
+export const checkAvailabilityOptions = (options: Options<CheckAvailabilityData>) => queryOptions<unknown, DefaultError, unknown, ReturnType<typeof checkAvailabilityQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await checkAvailability({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: checkAvailabilityQueryKey(options)
+});
 
 export const getRuntimeHealthQueryKey = (options: Options<GetRuntimeHealthData>) => createQueryKey('getRuntimeHealth', options);
 
-export const getRuntimeHealthOptions = (options: Options<GetRuntimeHealthData>) => {
-    return queryOptions({
-        queryFn: async ({ queryKey, signal }) => {
-            const { data } = await getRuntimeHealth({
-                ...options,
-                ...queryKey[0],
-                signal,
-                throwOnError: true
-            });
-            return data;
-        },
-        queryKey: getRuntimeHealthQueryKey(options)
-    });
-};
+export const getRuntimeHealthOptions = (options: Options<GetRuntimeHealthData>) => queryOptions<GetRuntimeHealthResponse, DefaultError, GetRuntimeHealthResponse, ReturnType<typeof getRuntimeHealthQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await getRuntimeHealth({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: getRuntimeHealthQueryKey(options)
+});
 
 export const resolveAvailabilityMutation = (options?: Partial<Options<ResolveAvailabilityData>>): UseMutationOptions<unknown, DefaultError, Options<ResolveAvailabilityData>> => {
     const mutationOptions: UseMutationOptions<unknown, DefaultError, Options<ResolveAvailabilityData>> = {
@@ -1529,25 +1483,21 @@ export const resolveAvailabilityMutation = (options?: Partial<Options<ResolveAva
 
 export const searchAppsQueryKey = (options?: Options<SearchAppsData>) => createQueryKey('searchApps', options);
 
-export const searchAppsOptions = (options?: Options<SearchAppsData>) => {
-    return queryOptions({
-        queryFn: async ({ queryKey, signal }) => {
-            const { data } = await searchApps({
-                ...options,
-                ...queryKey[0],
-                signal,
-                throwOnError: true
-            });
-            return data;
-        },
-        queryKey: searchAppsQueryKey(options)
-    });
-};
+export const searchAppsOptions = (options?: Options<SearchAppsData>) => queryOptions<SearchAppsResponse, DefaultError, SearchAppsResponse, ReturnType<typeof searchAppsQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await searchApps({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: searchAppsQueryKey(options)
+});
 
 const createInfiniteParams = <K extends Pick<QueryKey<Options>[0], 'body' | 'headers' | 'path' | 'query'>>(queryKey: QueryKey<Options>, page: K) => {
-    const params = {
-        ...queryKey[0]
-    };
+    const params = { ...queryKey[0] };
     if (page.body) {
         params.body = {
             ...queryKey[0].body as any,
@@ -1577,114 +1527,102 @@ const createInfiniteParams = <K extends Pick<QueryKey<Options>[0], 'body' | 'hea
 
 export const searchAppsInfiniteQueryKey = (options?: Options<SearchAppsData>): QueryKey<Options<SearchAppsData>> => createQueryKey('searchApps', options, true);
 
-export const searchAppsInfiniteOptions = (options?: Options<SearchAppsData>) => {
-    return infiniteQueryOptions<SearchAppsResponse, DefaultError, InfiniteData<SearchAppsResponse>, QueryKey<Options<SearchAppsData>>, string | Pick<QueryKey<Options<SearchAppsData>>[0], 'body' | 'headers' | 'path' | 'query'>>(
-    // @ts-ignore
-    {
-        queryFn: async ({ pageParam, queryKey, signal }) => {
-            // @ts-ignore
-            const page: Pick<QueryKey<Options<SearchAppsData>>[0], 'body' | 'headers' | 'path' | 'query'> = typeof pageParam === 'object' ? pageParam : {
-                query: {
-                    cursor: pageParam
-                }
-            };
-            const params = createInfiniteParams(queryKey, page);
-            const { data } = await searchApps({
-                ...options,
-                ...params,
-                signal,
-                throwOnError: true
-            });
-            return data;
-        },
-        queryKey: searchAppsInfiniteQueryKey(options)
-    });
-};
+export const searchAppsInfiniteOptions = (options?: Options<SearchAppsData>) => infiniteQueryOptions<SearchAppsResponse, DefaultError, InfiniteData<SearchAppsResponse>, QueryKey<Options<SearchAppsData>>, string | Pick<QueryKey<Options<SearchAppsData>>[0], 'body' | 'headers' | 'path' | 'query'>>(
+// @ts-ignore
+{
+    queryFn: async ({ pageParam, queryKey, signal }) => {
+        // @ts-ignore
+        const page: Pick<QueryKey<Options<SearchAppsData>>[0], 'body' | 'headers' | 'path' | 'query'> = typeof pageParam === 'object' ? pageParam : {
+            query: {
+                cursor: pageParam
+            }
+        };
+        const params = createInfiniteParams(queryKey, page);
+        const { data } = await searchApps({
+            ...options,
+            ...params,
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: searchAppsInfiniteQueryKey(options)
+});
 
 export const getImageQueryKey = (options: Options<GetImageData>) => createQueryKey('getImage', options);
 
-export const getImageOptions = (options: Options<GetImageData>) => {
-    return queryOptions({
-        queryFn: async ({ queryKey, signal }) => {
-            const { data } = await getImage({
-                ...options,
-                ...queryKey[0],
-                signal,
-                throwOnError: true
-            });
-            return data;
-        },
-        queryKey: getImageQueryKey(options)
-    });
-};
+export const getImageOptions = (options: Options<GetImageData>) => queryOptions<unknown, DefaultError, unknown, ReturnType<typeof getImageQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await getImage({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: getImageQueryKey(options)
+});
 
 export const getAppImageSizeQueryKey = (options: Options<GetAppImageSizeData>) => createQueryKey('getAppImageSize', options);
 
-export const getAppImageSizeOptions = (options: Options<GetAppImageSizeData>) => {
-    return queryOptions({
-        queryFn: async ({ queryKey, signal }) => {
-            const { data } = await getAppImageSize({
-                ...options,
-                ...queryKey[0],
-                signal,
-                throwOnError: true
-            });
-            return data;
-        },
-        queryKey: getAppImageSizeQueryKey(options)
-    });
-};
+export const getAppImageSizeOptions = (options: Options<GetAppImageSizeData>) => queryOptions<unknown, DefaultError, unknown, ReturnType<typeof getAppImageSizeQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await getAppImageSize({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: getAppImageSizeQueryKey(options)
+});
 
 export const getAppMediaQueryKey = (options: Options<GetAppMediaData>) => createQueryKey('getAppMedia', options);
 
-export const getAppMediaOptions = (options: Options<GetAppMediaData>) => {
-    return queryOptions({
-        queryFn: async ({ queryKey, signal }) => {
-            const { data } = await getAppMedia({
-                ...options,
-                ...queryKey[0],
-                signal,
-                throwOnError: true
-            });
-            return data;
-        },
-        queryKey: getAppMediaQueryKey(options)
-    });
-};
+export const getAppMediaOptions = (options: Options<GetAppMediaData>) => queryOptions<GetAppMediaResponse, DefaultError, GetAppMediaResponse, ReturnType<typeof getAppMediaQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await getAppMedia({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: getAppMediaQueryKey(options)
+});
 
 export const getAppScreenshotQueryKey = (options: Options<GetAppScreenshotData>) => createQueryKey('getAppScreenshot', options);
 
-export const getAppScreenshotOptions = (options: Options<GetAppScreenshotData>) => {
-    return queryOptions({
-        queryFn: async ({ queryKey, signal }) => {
-            const { data } = await getAppScreenshot({
-                ...options,
-                ...queryKey[0],
-                signal,
-                throwOnError: true
-            });
-            return data;
-        },
-        queryKey: getAppScreenshotQueryKey(options)
-    });
-};
+export const getAppScreenshotOptions = (options: Options<GetAppScreenshotData>) => queryOptions<unknown, DefaultError, unknown, ReturnType<typeof getAppScreenshotQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await getAppScreenshot({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: getAppScreenshotQueryKey(options)
+});
 
 export const getAppDemoVideoQueryKey = (options: Options<GetAppDemoVideoData>) => createQueryKey('getAppDemoVideo', options);
 
-export const getAppDemoVideoOptions = (options: Options<GetAppDemoVideoData>) => {
-    return queryOptions({
-        queryFn: async ({ queryKey, signal }) => {
-            const { data } = await getAppDemoVideo({
-                ...options,
-                ...queryKey[0],
-                signal,
-                throwOnError: true
-            });
-            return data;
-        },
-        queryKey: getAppDemoVideoQueryKey(options)
-    });
-};
+export const getAppDemoVideoOptions = (options: Options<GetAppDemoVideoData>) => queryOptions<unknown, DefaultError, unknown, ReturnType<typeof getAppDemoVideoQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await getAppDemoVideo({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: getAppDemoVideoQueryKey(options)
+});
 
 export const pullAppStoresMutation = (options?: Partial<Options<PullAppStoresData>>): UseMutationOptions<PullAppStoresResponse, DefaultError, Options<PullAppStoresData>> => {
     const mutationOptions: UseMutationOptions<PullAppStoresResponse, DefaultError, Options<PullAppStoresData>> = {
@@ -1716,37 +1654,33 @@ export const createAppStoreMutation = (options?: Partial<Options<CreateAppStoreD
 
 export const getAllAppStoresQueryKey = (options?: Options<GetAllAppStoresData>) => createQueryKey('getAllAppStores', options);
 
-export const getAllAppStoresOptions = (options?: Options<GetAllAppStoresData>) => {
-    return queryOptions({
-        queryFn: async ({ queryKey, signal }) => {
-            const { data } = await getAllAppStores({
-                ...options,
-                ...queryKey[0],
-                signal,
-                throwOnError: true
-            });
-            return data;
-        },
-        queryKey: getAllAppStoresQueryKey(options)
-    });
-};
+export const getAllAppStoresOptions = (options?: Options<GetAllAppStoresData>) => queryOptions<GetAllAppStoresResponse, DefaultError, GetAllAppStoresResponse, ReturnType<typeof getAllAppStoresQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await getAllAppStores({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: getAllAppStoresQueryKey(options)
+});
 
 export const getEnabledAppStoresQueryKey = (options?: Options<GetEnabledAppStoresData>) => createQueryKey('getEnabledAppStores', options);
 
-export const getEnabledAppStoresOptions = (options?: Options<GetEnabledAppStoresData>) => {
-    return queryOptions({
-        queryFn: async ({ queryKey, signal }) => {
-            const { data } = await getEnabledAppStores({
-                ...options,
-                ...queryKey[0],
-                signal,
-                throwOnError: true
-            });
-            return data;
-        },
-        queryKey: getEnabledAppStoresQueryKey(options)
-    });
-};
+export const getEnabledAppStoresOptions = (options?: Options<GetEnabledAppStoresData>) => queryOptions<GetEnabledAppStoresResponse, DefaultError, GetEnabledAppStoresResponse, ReturnType<typeof getEnabledAppStoresQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await getEnabledAppStores({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: getEnabledAppStoresQueryKey(options)
+});
 
 export const deleteAppStoreMutation = (options?: Partial<Options<DeleteAppStoreData>>): UseMutationOptions<unknown, DefaultError, Options<DeleteAppStoreData>> => {
     const mutationOptions: UseMutationOptions<unknown, DefaultError, Options<DeleteAppStoreData>> = {
@@ -1778,37 +1712,33 @@ export const updateAppStoreMutation = (options?: Partial<Options<UpdateAppStoreD
 
 export const healthQueryKey = (options?: Options<HealthData>) => createQueryKey('health', options);
 
-export const healthOptions = (options?: Options<HealthData>) => {
-    return queryOptions({
-        queryFn: async ({ queryKey, signal }) => {
-            const { data } = await health({
-                ...options,
-                ...queryKey[0],
-                signal,
-                throwOnError: true
-            });
-            return data;
-        },
-        queryKey: healthQueryKey(options)
-    });
-};
+export const healthOptions = (options?: Options<HealthData>) => queryOptions<unknown, DefaultError, unknown, ReturnType<typeof healthQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await health({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: healthQueryKey(options)
+});
 
 export const getPreferencesQueryKey = (options?: Options<GetPreferencesData>) => createQueryKey('getPreferences', options);
 
-export const getPreferencesOptions = (options?: Options<GetPreferencesData>) => {
-    return queryOptions({
-        queryFn: async ({ queryKey, signal }) => {
-            const { data } = await getPreferences({
-                ...options,
-                ...queryKey[0],
-                signal,
-                throwOnError: true
-            });
-            return data;
-        },
-        queryKey: getPreferencesQueryKey(options)
-    });
-};
+export const getPreferencesOptions = (options?: Options<GetPreferencesData>) => queryOptions<unknown, DefaultError, unknown, ReturnType<typeof getPreferencesQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await getPreferences({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: getPreferencesQueryKey(options)
+});
 
 export const updatePreferencesMutation = (options?: Partial<Options<UpdatePreferencesData>>): UseMutationOptions<unknown, DefaultError, Options<UpdatePreferencesData>> => {
     const mutationOptions: UseMutationOptions<unknown, DefaultError, Options<UpdatePreferencesData>> = {
@@ -1826,54 +1756,48 @@ export const updatePreferencesMutation = (options?: Partial<Options<UpdatePrefer
 
 export const getRuntimeModelsQueryKey = (options: Options<GetRuntimeModelsData>) => createQueryKey('getRuntimeModels', options);
 
-export const getRuntimeModelsOptions = (options: Options<GetRuntimeModelsData>) => {
-    return queryOptions({
-        queryFn: async ({ queryKey, signal }) => {
-            const { data } = await getRuntimeModels({
-                ...options,
-                ...queryKey[0],
-                signal,
-                throwOnError: true
-            });
-            return data;
-        },
-        queryKey: getRuntimeModelsQueryKey(options)
-    });
-};
+export const getRuntimeModelsOptions = (options: Options<GetRuntimeModelsData>) => queryOptions<unknown, DefaultError, unknown, ReturnType<typeof getRuntimeModelsQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await getRuntimeModels({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: getRuntimeModelsQueryKey(options)
+});
 
 export const getStatus3QueryKey = (options?: Options<GetStatus3Data>) => createQueryKey('getStatus3', options);
 
-export const getStatus3Options = (options?: Options<GetStatus3Data>) => {
-    return queryOptions({
-        queryFn: async ({ queryKey, signal }) => {
-            const { data } = await getStatus3({
-                ...options,
-                ...queryKey[0],
-                signal,
-                throwOnError: true
-            });
-            return data;
-        },
-        queryKey: getStatus3QueryKey(options)
-    });
-};
+export const getStatus3Options = (options?: Options<GetStatus3Data>) => queryOptions<unknown, DefaultError, unknown, ReturnType<typeof getStatus3QueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await getStatus3({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: getStatus3QueryKey(options)
+});
 
 export const getHardwareQueryKey = (options?: Options<GetHardwareData>) => createQueryKey('getHardware', options);
 
-export const getHardwareOptions = (options?: Options<GetHardwareData>) => {
-    return queryOptions({
-        queryFn: async ({ queryKey, signal }) => {
-            const { data } = await getHardware({
-                ...options,
-                ...queryKey[0],
-                signal,
-                throwOnError: true
-            });
-            return data;
-        },
-        queryKey: getHardwareQueryKey(options)
-    });
-};
+export const getHardwareOptions = (options?: Options<GetHardwareData>) => queryOptions<unknown, DefaultError, unknown, ReturnType<typeof getHardwareQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await getHardware({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: getHardwareQueryKey(options)
+});
 
 export const rescanHardwareMutation = (options?: Partial<Options<RescanHardwareData>>): UseMutationOptions<unknown, DefaultError, Options<RescanHardwareData>> => {
     const mutationOptions: UseMutationOptions<unknown, DefaultError, Options<RescanHardwareData>> = {
@@ -1891,20 +1815,18 @@ export const rescanHardwareMutation = (options?: Partial<Options<RescanHardwareD
 
 export const getRocmStatusQueryKey = (options?: Options<GetRocmStatusData>) => createQueryKey('getRocmStatus', options);
 
-export const getRocmStatusOptions = (options?: Options<GetRocmStatusData>) => {
-    return queryOptions({
-        queryFn: async ({ queryKey, signal }) => {
-            const { data } = await getRocmStatus({
-                ...options,
-                ...queryKey[0],
-                signal,
-                throwOnError: true
-            });
-            return data;
-        },
-        queryKey: getRocmStatusQueryKey(options)
-    });
-};
+export const getRocmStatusOptions = (options?: Options<GetRocmStatusData>) => queryOptions<unknown, DefaultError, unknown, ReturnType<typeof getRocmStatusQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await getRocmStatus({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: getRocmStatusQueryKey(options)
+});
 
 export const updateRocmInstallStateMutation = (options?: Partial<Options<UpdateRocmInstallStateData>>): UseMutationOptions<unknown, DefaultError, Options<UpdateRocmInstallStateData>> => {
     const mutationOptions: UseMutationOptions<unknown, DefaultError, Options<UpdateRocmInstallStateData>> = {
@@ -1922,54 +1844,48 @@ export const updateRocmInstallStateMutation = (options?: Partial<Options<UpdateR
 
 export const getMemoryQueryKey = (options?: Options<GetMemoryData>) => createQueryKey('getMemory', options);
 
-export const getMemoryOptions = (options?: Options<GetMemoryData>) => {
-    return queryOptions({
-        queryFn: async ({ queryKey, signal }) => {
-            const { data } = await getMemory({
-                ...options,
-                ...queryKey[0],
-                signal,
-                throwOnError: true
-            });
-            return data;
-        },
-        queryKey: getMemoryQueryKey(options)
-    });
-};
+export const getMemoryOptions = (options?: Options<GetMemoryData>) => queryOptions<unknown, DefaultError, unknown, ReturnType<typeof getMemoryQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await getMemory({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: getMemoryQueryKey(options)
+});
 
 export const getCatalogQueryKey = (options?: Options<GetCatalogData>) => createQueryKey('getCatalog', options);
 
-export const getCatalogOptions = (options?: Options<GetCatalogData>) => {
-    return queryOptions({
-        queryFn: async ({ queryKey, signal }) => {
-            const { data } = await getCatalog({
-                ...options,
-                ...queryKey[0],
-                signal,
-                throwOnError: true
-            });
-            return data;
-        },
-        queryKey: getCatalogQueryKey(options)
-    });
-};
+export const getCatalogOptions = (options?: Options<GetCatalogData>) => queryOptions<unknown, DefaultError, unknown, ReturnType<typeof getCatalogQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await getCatalog({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: getCatalogQueryKey(options)
+});
 
 export const getTrackedModelsQueryKey = (options?: Options<GetTrackedModelsData>) => createQueryKey('getTrackedModels', options);
 
-export const getTrackedModelsOptions = (options?: Options<GetTrackedModelsData>) => {
-    return queryOptions({
-        queryFn: async ({ queryKey, signal }) => {
-            const { data } = await getTrackedModels({
-                ...options,
-                ...queryKey[0],
-                signal,
-                throwOnError: true
-            });
-            return data;
-        },
-        queryKey: getTrackedModelsQueryKey(options)
-    });
-};
+export const getTrackedModelsOptions = (options?: Options<GetTrackedModelsData>) => queryOptions<unknown, DefaultError, unknown, ReturnType<typeof getTrackedModelsQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await getTrackedModels({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: getTrackedModelsQueryKey(options)
+});
 
 export const startPullModelMutation = (options?: Partial<Options<StartPullModelData>>): UseMutationOptions<unknown, DefaultError, Options<StartPullModelData>> => {
     const mutationOptions: UseMutationOptions<unknown, DefaultError, Options<StartPullModelData>> = {
@@ -2057,20 +1973,18 @@ export const unpinModelMutation = (options?: Partial<Options<UnpinModelData>>): 
 
 export const getCloudProvidersQueryKey = (options?: Options<GetCloudProvidersData>) => createQueryKey('getCloudProviders', options);
 
-export const getCloudProvidersOptions = (options?: Options<GetCloudProvidersData>) => {
-    return queryOptions({
-        queryFn: async ({ queryKey, signal }) => {
-            const { data } = await getCloudProviders({
-                ...options,
-                ...queryKey[0],
-                signal,
-                throwOnError: true
-            });
-            return data;
-        },
-        queryKey: getCloudProvidersQueryKey(options)
-    });
-};
+export const getCloudProvidersOptions = (options?: Options<GetCloudProvidersData>) => queryOptions<unknown, DefaultError, unknown, ReturnType<typeof getCloudProvidersQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await getCloudProviders({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: getCloudProvidersQueryKey(options)
+});
 
 export const setCloudProviderMutation = (options?: Partial<Options<SetCloudProviderData>>): UseMutationOptions<unknown, DefaultError, Options<SetCloudProviderData>> => {
     const mutationOptions: UseMutationOptions<unknown, DefaultError, Options<SetCloudProviderData>> = {
@@ -2088,71 +2002,108 @@ export const setCloudProviderMutation = (options?: Partial<Options<SetCloudProvi
 
 export const getOnboardingProfileQueryKey = (options?: Options<GetOnboardingProfileData>) => createQueryKey('getOnboardingProfile', options);
 
-export const getOnboardingProfileOptions = (options?: Options<GetOnboardingProfileData>) => {
-    return queryOptions({
-        queryFn: async ({ queryKey, signal }) => {
-            const { data } = await getOnboardingProfile({
-                ...options,
-                ...queryKey[0],
-                signal,
-                throwOnError: true
-            });
-            return data;
-        },
-        queryKey: getOnboardingProfileQueryKey(options)
-    });
-};
+export const getOnboardingProfileOptions = (options?: Options<GetOnboardingProfileData>) => queryOptions<unknown, DefaultError, unknown, ReturnType<typeof getOnboardingProfileQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await getOnboardingProfile({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: getOnboardingProfileQueryKey(options)
+});
 
 export const getOllamaStatusQueryKey = (options?: Options<GetOllamaStatusData>) => createQueryKey('getOllamaStatus', options);
 
-export const getOllamaStatusOptions = (options?: Options<GetOllamaStatusData>) => {
-    return queryOptions({
-        queryFn: async ({ queryKey, signal }) => {
-            const { data } = await getOllamaStatus({
-                ...options,
-                ...queryKey[0],
-                signal,
-                throwOnError: true
-            });
-            return data;
-        },
-        queryKey: getOllamaStatusQueryKey(options)
-    });
-};
+export const getOllamaStatusOptions = (options?: Options<GetOllamaStatusData>) => queryOptions<unknown, DefaultError, unknown, ReturnType<typeof getOllamaStatusQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await getOllamaStatus({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: getOllamaStatusQueryKey(options)
+});
+
+export const getLemonadeStatusQueryKey = (options?: Options<GetLemonadeStatusData>) => createQueryKey('getLemonadeStatus', options);
+
+export const getLemonadeStatusOptions = (options?: Options<GetLemonadeStatusData>) => queryOptions<unknown, DefaultError, unknown, ReturnType<typeof getLemonadeStatusQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await getLemonadeStatus({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: getLemonadeStatusQueryKey(options)
+});
 
 export const getVllmStatusQueryKey = (options?: Options<GetVllmStatusData>) => createQueryKey('getVllmStatus', options);
 
-export const getVllmStatusOptions = (options?: Options<GetVllmStatusData>) => {
-    return queryOptions({
-        queryFn: async ({ queryKey, signal }) => {
-            const { data } = await getVllmStatus({
-                ...options,
-                ...queryKey[0],
-                signal,
-                throwOnError: true
-            });
-            return data;
-        },
-        queryKey: getVllmStatusQueryKey(options)
-    });
-};
+export const getVllmStatusOptions = (options?: Options<GetVllmStatusData>) => queryOptions<unknown, DefaultError, unknown, ReturnType<typeof getVllmStatusQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await getVllmStatus({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: getVllmStatusQueryKey(options)
+});
+
+export const getDsparkStatusQueryKey = (options?: Options<GetDsparkStatusData>) => createQueryKey('getDsparkStatus', options);
+
+export const getDsparkStatusOptions = (options?: Options<GetDsparkStatusData>) => queryOptions<unknown, DefaultError, unknown, ReturnType<typeof getDsparkStatusQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await getDsparkStatus({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: getDsparkStatusQueryKey(options)
+});
+
+export const getMtplxStatusQueryKey = (options?: Options<GetMtplxStatusData>) => createQueryKey('getMtplxStatus', options);
+
+export const getMtplxStatusOptions = (options?: Options<GetMtplxStatusData>) => queryOptions<unknown, DefaultError, unknown, ReturnType<typeof getMtplxStatusQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await getMtplxStatus({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: getMtplxStatusQueryKey(options)
+});
 
 export const getLuceboxStatusQueryKey = (options?: Options<GetLuceboxStatusData>) => createQueryKey('getLuceboxStatus', options);
 
-export const getLuceboxStatusOptions = (options?: Options<GetLuceboxStatusData>) => {
-    return queryOptions({
-        queryFn: async ({ queryKey, signal }) => {
-            const { data } = await getLuceboxStatus({
-                ...options,
-                ...queryKey[0],
-                signal,
-                throwOnError: true
-            });
-            return data;
-        },
-        queryKey: getLuceboxStatusQueryKey(options)
-    });
-};
+export const getLuceboxStatusOptions = (options?: Options<GetLuceboxStatusData>) => queryOptions<unknown, DefaultError, unknown, ReturnType<typeof getLuceboxStatusQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await getLuceboxStatus({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: getLuceboxStatusQueryKey(options)
+});
 
 export const installOllamaMutation = (options?: Partial<Options<InstallOllamaData>>): UseMutationOptions<unknown, DefaultError, Options<InstallOllamaData>> => {
     const mutationOptions: UseMutationOptions<unknown, DefaultError, Options<InstallOllamaData>> = {
@@ -2170,71 +2121,63 @@ export const installOllamaMutation = (options?: Partial<Options<InstallOllamaDat
 
 export const getAppCredentialsQueryKey = (options: Options<GetAppCredentialsData>) => createQueryKey('getAppCredentials', options);
 
-export const getAppCredentialsOptions = (options: Options<GetAppCredentialsData>) => {
-    return queryOptions({
-        queryFn: async ({ queryKey, signal }) => {
-            const { data } = await getAppCredentials({
-                ...options,
-                ...queryKey[0],
-                signal,
-                throwOnError: true
-            });
-            return data;
-        },
-        queryKey: getAppCredentialsQueryKey(options)
-    });
-};
+export const getAppCredentialsOptions = (options: Options<GetAppCredentialsData>) => queryOptions<unknown, DefaultError, unknown, ReturnType<typeof getAppCredentialsQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await getAppCredentials({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: getAppCredentialsQueryKey(options)
+});
 
 export const getAppCredentialsEnv0QueryKey = (options: Options<GetAppCredentialsEnv0Data>) => createQueryKey('getAppCredentialsEnv0', options);
 
-export const getAppCredentialsEnv0Options = (options: Options<GetAppCredentialsEnv0Data>) => {
-    return queryOptions({
-        queryFn: async ({ queryKey, signal }) => {
-            const { data } = await getAppCredentialsEnv0({
-                ...options,
-                ...queryKey[0],
-                signal,
-                throwOnError: true
-            });
-            return data;
-        },
-        queryKey: getAppCredentialsEnv0QueryKey(options)
-    });
-};
+export const getAppCredentialsEnv0Options = (options: Options<GetAppCredentialsEnv0Data>) => queryOptions<unknown, DefaultError, unknown, ReturnType<typeof getAppCredentialsEnv0QueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await getAppCredentialsEnv0({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: getAppCredentialsEnv0QueryKey(options)
+});
 
 export const getAppCredentialsEnv1QueryKey = (options: Options<GetAppCredentialsEnv1Data>) => createQueryKey('getAppCredentialsEnv1', options);
 
-export const getAppCredentialsEnv1Options = (options: Options<GetAppCredentialsEnv1Data>) => {
-    return queryOptions({
-        queryFn: async ({ queryKey, signal }) => {
-            const { data } = await getAppCredentialsEnv1({
-                ...options,
-                ...queryKey[0],
-                signal,
-                throwOnError: true
-            });
-            return data;
-        },
-        queryKey: getAppCredentialsEnv1QueryKey(options)
-    });
-};
+export const getAppCredentialsEnv1Options = (options: Options<GetAppCredentialsEnv1Data>) => queryOptions<unknown, DefaultError, unknown, ReturnType<typeof getAppCredentialsEnv1QueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await getAppCredentialsEnv1({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: getAppCredentialsEnv1QueryKey(options)
+});
 
 export const listKeysQueryKey = (options?: Options<ListKeysData>) => createQueryKey('listKeys', options);
 
-export const listKeysOptions = (options?: Options<ListKeysData>) => {
-    return queryOptions({
-        queryFn: async ({ queryKey, signal }) => {
-            const { data } = await listKeys({
-                ...options,
-                ...queryKey[0],
-                signal,
-                throwOnError: true
-            });
-            return data;
-        },
-        queryKey: listKeysQueryKey(options)
-    });
-};
+export const listKeysOptions = (options?: Options<ListKeysData>) => queryOptions<unknown, DefaultError, unknown, ReturnType<typeof listKeysQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await listKeys({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: listKeysQueryKey(options)
+});
 
 export const createKeyMutation = (options?: Partial<Options<CreateKeyData>>): UseMutationOptions<unknown, DefaultError, Options<CreateKeyData>> => {
     const mutationOptions: UseMutationOptions<unknown, DefaultError, Options<CreateKeyData>> = {
@@ -2280,37 +2223,33 @@ export const updateKeyMutation = (options?: Partial<Options<UpdateKeyData>>): Us
 
 export const getRehydratePlanQueryKey = (options?: Options<GetRehydratePlanData>) => createQueryKey('getRehydratePlan', options);
 
-export const getRehydratePlanOptions = (options?: Options<GetRehydratePlanData>) => {
-    return queryOptions({
-        queryFn: async ({ queryKey, signal }) => {
-            const { data } = await getRehydratePlan({
-                ...options,
-                ...queryKey[0],
-                signal,
-                throwOnError: true
-            });
-            return data;
-        },
-        queryKey: getRehydratePlanQueryKey(options)
-    });
-};
+export const getRehydratePlanOptions = (options?: Options<GetRehydratePlanData>) => queryOptions<unknown, DefaultError, unknown, ReturnType<typeof getRehydratePlanQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await getRehydratePlan({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: getRehydratePlanQueryKey(options)
+});
 
 export const getRehydrateStatusQueryKey = (options?: Options<GetRehydrateStatusData>) => createQueryKey('getRehydrateStatus', options);
 
-export const getRehydrateStatusOptions = (options?: Options<GetRehydrateStatusData>) => {
-    return queryOptions({
-        queryFn: async ({ queryKey, signal }) => {
-            const { data } = await getRehydrateStatus({
-                ...options,
-                ...queryKey[0],
-                signal,
-                throwOnError: true
-            });
-            return data;
-        },
-        queryKey: getRehydrateStatusQueryKey(options)
-    });
-};
+export const getRehydrateStatusOptions = (options?: Options<GetRehydrateStatusData>) => queryOptions<unknown, DefaultError, unknown, ReturnType<typeof getRehydrateStatusQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await getRehydrateStatus({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: getRehydrateStatusQueryKey(options)
+});
 
 export const executeRehydrateMutation = (options?: Partial<Options<ExecuteRehydrateData>>): UseMutationOptions<unknown, DefaultError, Options<ExecuteRehydrateData>> => {
     const mutationOptions: UseMutationOptions<unknown, DefaultError, Options<ExecuteRehydrateData>> = {
@@ -2328,20 +2267,18 @@ export const executeRehydrateMutation = (options?: Partial<Options<ExecuteRehydr
 
 export const getHubAccessQueryKey = (options: Options<GetHubAccessData>) => createQueryKey('getHubAccess', options);
 
-export const getHubAccessOptions = (options: Options<GetHubAccessData>) => {
-    return queryOptions({
-        queryFn: async ({ queryKey, signal }) => {
-            const { data } = await getHubAccess({
-                ...options,
-                ...queryKey[0],
-                signal,
-                throwOnError: true
-            });
-            return data;
-        },
-        queryKey: getHubAccessQueryKey(options)
-    });
-};
+export const getHubAccessOptions = (options: Options<GetHubAccessData>) => queryOptions<unknown, DefaultError, unknown, ReturnType<typeof getHubAccessQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await getHubAccess({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: getHubAccessQueryKey(options)
+});
 
 export const rotateHubAccessMutation = (options?: Partial<Options<RotateHubAccessData>>): UseMutationOptions<unknown, DefaultError, Options<RotateHubAccessData>> => {
     const mutationOptions: UseMutationOptions<unknown, DefaultError, Options<RotateHubAccessData>> = {
@@ -2611,63 +2548,57 @@ export const deleteAppBackupMutation = (options?: Partial<Options<DeleteAppBacku
 
 export const getAppBackupsQueryKey = (options?: Options<GetAppBackupsData>) => createQueryKey('getAppBackups', options);
 
-export const getAppBackupsOptions = (options?: Options<GetAppBackupsData>) => {
-    return queryOptions({
-        queryFn: async ({ queryKey, signal }) => {
-            const { data } = await getAppBackups({
-                ...options,
-                ...queryKey[0],
-                signal,
-                throwOnError: true
-            });
-            return data;
-        },
-        queryKey: getAppBackupsQueryKey(options)
-    });
-};
+export const getAppBackupsOptions = (options?: Options<GetAppBackupsData>) => queryOptions<GetAppBackupsResponse, DefaultError, GetAppBackupsResponse, ReturnType<typeof getAppBackupsQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await getAppBackups({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: getAppBackupsQueryKey(options)
+});
 
 export const getAppBackupsInfiniteQueryKey = (options?: Options<GetAppBackupsData>): QueryKey<Options<GetAppBackupsData>> => createQueryKey('getAppBackups', options, true);
 
-export const getAppBackupsInfiniteOptions = (options?: Options<GetAppBackupsData>) => {
-    return infiniteQueryOptions<GetAppBackupsResponse, DefaultError, InfiniteData<GetAppBackupsResponse>, QueryKey<Options<GetAppBackupsData>>, number | unknown | Pick<QueryKey<Options<GetAppBackupsData>>[0], 'body' | 'headers' | 'path' | 'query'>>(
-    // @ts-ignore
-    {
-        queryFn: async ({ pageParam, queryKey, signal }) => {
-            // @ts-ignore
-            const page: Pick<QueryKey<Options<GetAppBackupsData>>[0], 'body' | 'headers' | 'path' | 'query'> = typeof pageParam === 'object' ? pageParam : {
-                query: {
-                    page: pageParam
-                }
-            };
-            const params = createInfiniteParams(queryKey, page);
-            const { data } = await getAppBackups({
-                ...options,
-                ...params,
-                signal,
-                throwOnError: true
-            });
-            return data;
-        },
-        queryKey: getAppBackupsInfiniteQueryKey(options)
-    });
-};
+export const getAppBackupsInfiniteOptions = (options?: Options<GetAppBackupsData>) => infiniteQueryOptions<GetAppBackupsResponse, DefaultError, InfiniteData<GetAppBackupsResponse>, QueryKey<Options<GetAppBackupsData>>, number | unknown | Pick<QueryKey<Options<GetAppBackupsData>>[0], 'body' | 'headers' | 'path' | 'query'>>(
+// @ts-ignore
+{
+    queryFn: async ({ pageParam, queryKey, signal }) => {
+        // @ts-ignore
+        const page: Pick<QueryKey<Options<GetAppBackupsData>>[0], 'body' | 'headers' | 'path' | 'query'> = typeof pageParam === 'object' ? pageParam : {
+            query: {
+                page: pageParam
+            }
+        };
+        const params = createInfiniteParams(queryKey, page);
+        const { data } = await getAppBackups({
+            ...options,
+            ...params,
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: getAppBackupsInfiniteQueryKey(options)
+});
 
 export const downloadBackupQueryKey = (options: Options<DownloadBackupData>) => createQueryKey('downloadBackup', options);
 
-export const downloadBackupOptions = (options: Options<DownloadBackupData>) => {
-    return queryOptions({
-        queryFn: async ({ queryKey, signal }) => {
-            const { data } = await downloadBackup({
-                ...options,
-                ...queryKey[0],
-                signal,
-                throwOnError: true
-            });
-            return data;
-        },
-        queryKey: downloadBackupQueryKey(options)
-    });
-};
+export const downloadBackupOptions = (options: Options<DownloadBackupData>) => queryOptions<unknown, DefaultError, unknown, ReturnType<typeof downloadBackupQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await downloadBackup({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: downloadBackupQueryKey(options)
+});
 
 export const uploadBackupMutation = (options?: Partial<Options<UploadBackupData>>): UseMutationOptions<unknown, DefaultError, Options<UploadBackupData>> => {
     const mutationOptions: UseMutationOptions<unknown, DefaultError, Options<UploadBackupData>> = {
@@ -2685,71 +2616,63 @@ export const uploadBackupMutation = (options?: Partial<Options<UploadBackupData>
 
 export const appEventsQueryKey = (options?: Options<AppEventsData>) => createQueryKey('appEvents', options);
 
-export const appEventsOptions = (options?: Options<AppEventsData>) => {
-    return queryOptions({
-        queryFn: async ({ queryKey, signal }) => {
-            const { data } = await appEvents({
-                ...options,
-                ...queryKey[0],
-                signal,
-                throwOnError: true
-            });
-            return data;
-        },
-        queryKey: appEventsQueryKey(options)
-    });
-};
+export const appEventsOptions = (options?: Options<AppEventsData>) => queryOptions<unknown, DefaultError, unknown, ReturnType<typeof appEventsQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await appEvents({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: appEventsQueryKey(options)
+});
 
 export const appLogsEventsQueryKey = (options: Options<AppLogsEventsData>) => createQueryKey('appLogsEvents', options);
 
-export const appLogsEventsOptions = (options: Options<AppLogsEventsData>) => {
-    return queryOptions({
-        queryFn: async ({ queryKey, signal }) => {
-            const { data } = await appLogsEvents({
-                ...options,
-                ...queryKey[0],
-                signal,
-                throwOnError: true
-            });
-            return data;
-        },
-        queryKey: appLogsEventsQueryKey(options)
-    });
-};
+export const appLogsEventsOptions = (options: Options<AppLogsEventsData>) => queryOptions<unknown, DefaultError, unknown, ReturnType<typeof appLogsEventsQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await appLogsEvents({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: appLogsEventsQueryKey(options)
+});
 
 export const hubLogsEventsQueryKey = (options?: Options<HubLogsEventsData>) => createQueryKey('hubLogsEvents', options);
 
-export const hubLogsEventsOptions = (options?: Options<HubLogsEventsData>) => {
-    return queryOptions({
-        queryFn: async ({ queryKey, signal }) => {
-            const { data } = await hubLogsEvents({
-                ...options,
-                ...queryKey[0],
-                signal,
-                throwOnError: true
-            });
-            return data;
-        },
-        queryKey: hubLogsEventsQueryKey(options)
-    });
-};
+export const hubLogsEventsOptions = (options?: Options<HubLogsEventsData>) => queryOptions<unknown, DefaultError, unknown, ReturnType<typeof hubLogsEventsQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await hubLogsEvents({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: hubLogsEventsQueryKey(options)
+});
 
 export const getStatus4QueryKey = (options?: Options<GetStatus4Data>) => createQueryKey('getStatus4', options);
 
-export const getStatus4Options = (options?: Options<GetStatus4Data>) => {
-    return queryOptions({
-        queryFn: async ({ queryKey, signal }) => {
-            const { data } = await getStatus4({
-                ...options,
-                ...queryKey[0],
-                signal,
-                throwOnError: true
-            });
-            return data;
-        },
-        queryKey: getStatus4QueryKey(options)
-    });
-};
+export const getStatus4Options = (options?: Options<GetStatus4Data>) => queryOptions<GetStatus4Response, DefaultError, GetStatus4Response, ReturnType<typeof getStatus4QueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await getStatus4({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: getStatus4QueryKey(options)
+});
 
 /**
  * Reconcile Tailscale Serve routes for Private VPN apps
@@ -2798,20 +2721,18 @@ export const connectWithAuthKeyMutation = (options?: Partial<Options<ConnectWith
 
 export const checkAuthQueryKey = (options?: Options<CheckAuthData>) => createQueryKey('checkAuth', options);
 
-export const checkAuthOptions = (options?: Options<CheckAuthData>) => {
-    return queryOptions({
-        queryFn: async ({ queryKey, signal }) => {
-            const { data } = await checkAuth({
-                ...options,
-                ...queryKey[0],
-                signal,
-                throwOnError: true
-            });
-            return data;
-        },
-        queryKey: checkAuthQueryKey(options)
-    });
-};
+export const checkAuthOptions = (options?: Options<CheckAuthData>) => queryOptions<CheckAuthResponse, DefaultError, CheckAuthResponse, ReturnType<typeof checkAuthQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await checkAuth({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: checkAuthQueryKey(options)
+});
 
 export const disconnectMutation = (options?: Partial<Options<DisconnectData>>): UseMutationOptions<DisconnectResponse, DefaultError, Options<DisconnectData>> => {
     const mutationOptions: UseMutationOptions<DisconnectResponse, DefaultError, Options<DisconnectData>> = {
@@ -2829,54 +2750,48 @@ export const disconnectMutation = (options?: Partial<Options<DisconnectData>>): 
 
 export const getServeStatusQueryKey = (options?: Options<GetServeStatusData>) => createQueryKey('getServeStatus', options);
 
-export const getServeStatusOptions = (options?: Options<GetServeStatusData>) => {
-    return queryOptions({
-        queryFn: async ({ queryKey, signal }) => {
-            const { data } = await getServeStatus({
-                ...options,
-                ...queryKey[0],
-                signal,
-                throwOnError: true
-            });
-            return data;
-        },
-        queryKey: getServeStatusQueryKey(options)
-    });
-};
+export const getServeStatusOptions = (options?: Options<GetServeStatusData>) => queryOptions<GetServeStatusResponse, DefaultError, GetServeStatusResponse, ReturnType<typeof getServeStatusQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await getServeStatus({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: getServeStatusQueryKey(options)
+});
 
 export const getGuestLinksQueryKey = (options?: Options<GetGuestLinksData>) => createQueryKey('getGuestLinks', options);
 
-export const getGuestLinksOptions = (options?: Options<GetGuestLinksData>) => {
-    return queryOptions({
-        queryFn: async ({ queryKey, signal }) => {
-            const { data } = await getGuestLinks({
-                ...options,
-                ...queryKey[0],
-                signal,
-                throwOnError: true
-            });
-            return data;
-        },
-        queryKey: getGuestLinksQueryKey(options)
-    });
-};
+export const getGuestLinksOptions = (options?: Options<GetGuestLinksData>) => queryOptions<GetGuestLinksResponse, DefaultError, GetGuestLinksResponse, ReturnType<typeof getGuestLinksQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await getGuestLinks({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: getGuestLinksQueryKey(options)
+});
 
 export const getLinksQueryKey = (options?: Options<GetLinksData>) => createQueryKey('getLinks', options);
 
-export const getLinksOptions = (options?: Options<GetLinksData>) => {
-    return queryOptions({
-        queryFn: async ({ queryKey, signal }) => {
-            const { data } = await getLinks({
-                ...options,
-                ...queryKey[0],
-                signal,
-                throwOnError: true
-            });
-            return data;
-        },
-        queryKey: getLinksQueryKey(options)
-    });
-};
+export const getLinksOptions = (options?: Options<GetLinksData>) => queryOptions<GetLinksResponse, DefaultError, GetLinksResponse, ReturnType<typeof getLinksQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await getLinks({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: getLinksQueryKey(options)
+});
 
 export const createLinkMutation = (options?: Partial<Options<CreateLinkData>>): UseMutationOptions<unknown, DefaultError, Options<CreateLinkData>> => {
     const mutationOptions: UseMutationOptions<unknown, DefaultError, Options<CreateLinkData>> = {
@@ -2922,71 +2837,63 @@ export const editLinkMutation = (options?: Partial<Options<EditLinkData>>): UseM
 
 export const liveQueryKey = (options?: Options<LiveData>) => createQueryKey('live', options);
 
-export const liveOptions = (options?: Options<LiveData>) => {
-    return queryOptions({
-        queryFn: async ({ queryKey, signal }) => {
-            const { data } = await live({
-                ...options,
-                ...queryKey[0],
-                signal,
-                throwOnError: true
-            });
-            return data;
-        },
-        queryKey: liveQueryKey(options)
-    });
-};
+export const liveOptions = (options?: Options<LiveData>) => queryOptions<unknown, DefaultError, unknown, ReturnType<typeof liveQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await live({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: liveQueryKey(options)
+});
 
 export const checkQueryKey = (options?: Options<CheckData>) => createQueryKey('check', options);
 
-export const checkOptions = (options?: Options<CheckData>) => {
-    return queryOptions({
-        queryFn: async ({ queryKey, signal }) => {
-            const { data } = await check({
-                ...options,
-                ...queryKey[0],
-                signal,
-                throwOnError: true
-            });
-            return data;
-        },
-        queryKey: checkQueryKey(options)
-    });
-};
+export const checkOptions = (options?: Options<CheckData>) => queryOptions<CheckResponse, CheckError, CheckResponse, ReturnType<typeof checkQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await check({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: checkQueryKey(options)
+});
 
 export const checkDataIntegrityQueryKey = (options?: Options<CheckDataIntegrityData>) => createQueryKey('checkDataIntegrity', options);
 
-export const checkDataIntegrityOptions = (options?: Options<CheckDataIntegrityData>) => {
-    return queryOptions({
-        queryFn: async ({ queryKey, signal }) => {
-            const { data } = await checkDataIntegrity({
-                ...options,
-                ...queryKey[0],
-                signal,
-                throwOnError: true
-            });
-            return data;
-        },
-        queryKey: checkDataIntegrityQueryKey(options)
-    });
-};
+export const checkDataIntegrityOptions = (options?: Options<CheckDataIntegrityData>) => queryOptions<unknown, DefaultError, unknown, ReturnType<typeof checkDataIntegrityQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await checkDataIntegrity({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: checkDataIntegrityQueryKey(options)
+});
 
 export const getDiagnostics2QueryKey = (options?: Options<GetDiagnostics2Data>) => createQueryKey('getDiagnostics2', options);
 
-export const getDiagnostics2Options = (options?: Options<GetDiagnostics2Data>) => {
-    return queryOptions({
-        queryFn: async ({ queryKey, signal }) => {
-            const { data } = await getDiagnostics2({
-                ...options,
-                ...queryKey[0],
-                signal,
-                throwOnError: true
-            });
-            return data;
-        },
-        queryKey: getDiagnostics2QueryKey(options)
-    });
-};
+export const getDiagnostics2Options = (options?: Options<GetDiagnostics2Data>) => queryOptions<GetDiagnostics2Response, DefaultError, GetDiagnostics2Response, ReturnType<typeof getDiagnostics2QueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await getDiagnostics2({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: getDiagnostics2QueryKey(options)
+});
 
 export const repairMutation = (options?: Partial<Options<RepairData>>): UseMutationOptions<RepairResponse, DefaultError, Options<RepairData>> => {
     const mutationOptions: UseMutationOptions<RepairResponse, DefaultError, Options<RepairData>> = {
@@ -3007,20 +2914,18 @@ export const getUserConfigQueryKey = (options: Options<GetUserConfigData>) => cr
 /**
  * Get the user configuration for an app
  */
-export const getUserConfigOptions = (options: Options<GetUserConfigData>) => {
-    return queryOptions({
-        queryFn: async ({ queryKey, signal }) => {
-            const { data } = await getUserConfig({
-                ...options,
-                ...queryKey[0],
-                signal,
-                throwOnError: true
-            });
-            return data;
-        },
-        queryKey: getUserConfigQueryKey(options)
-    });
-};
+export const getUserConfigOptions = (options: Options<GetUserConfigData>) => queryOptions<GetUserConfigResponse, DefaultError, GetUserConfigResponse, ReturnType<typeof getUserConfigQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await getUserConfig({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: getUserConfigQueryKey(options)
+});
 
 /**
  * Update the user configuration for an app
@@ -3159,20 +3064,18 @@ export const updateAppMetadataMutation = (options?: Partial<Options<UpdateAppMet
 
 export const checkForUpdatesQueryKey = (options?: Options<CheckForUpdatesData>) => createQueryKey('checkForUpdates', options);
 
-export const checkForUpdatesOptions = (options?: Options<CheckForUpdatesData>) => {
-    return queryOptions({
-        queryFn: async ({ queryKey, signal }) => {
-            const { data } = await checkForUpdates({
-                ...options,
-                ...queryKey[0],
-                signal,
-                throwOnError: true
-            });
-            return data;
-        },
-        queryKey: checkForUpdatesQueryKey(options)
-    });
-};
+export const checkForUpdatesOptions = (options?: Options<CheckForUpdatesData>) => queryOptions<unknown, DefaultError, unknown, ReturnType<typeof checkForUpdatesQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await checkForUpdates({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: checkForUpdatesQueryKey(options)
+});
 
 export const performUpdateMutation = (options?: Partial<Options<PerformUpdateData>>): UseMutationOptions<unknown, DefaultError, Options<PerformUpdateData>> => {
     const mutationOptions: UseMutationOptions<unknown, DefaultError, Options<PerformUpdateData>> = {
@@ -3190,20 +3093,18 @@ export const performUpdateMutation = (options?: Partial<Options<PerformUpdateDat
 
 export const getAutoUpdatesQueryKey = (options?: Options<GetAutoUpdatesData>) => createQueryKey('getAutoUpdates', options);
 
-export const getAutoUpdatesOptions = (options?: Options<GetAutoUpdatesData>) => {
-    return queryOptions({
-        queryFn: async ({ queryKey, signal }) => {
-            const { data } = await getAutoUpdates({
-                ...options,
-                ...queryKey[0],
-                signal,
-                throwOnError: true
-            });
-            return data;
-        },
-        queryKey: getAutoUpdatesQueryKey(options)
-    });
-};
+export const getAutoUpdatesOptions = (options?: Options<GetAutoUpdatesData>) => queryOptions<unknown, DefaultError, unknown, ReturnType<typeof getAutoUpdatesQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await getAutoUpdates({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: getAutoUpdatesQueryKey(options)
+});
 
 export const setAutoUpdatesMutation = (options?: Partial<Options<SetAutoUpdatesData>>): UseMutationOptions<unknown, DefaultError, Options<SetAutoUpdatesData>> => {
     const mutationOptions: UseMutationOptions<unknown, DefaultError, Options<SetAutoUpdatesData>> = {
@@ -3221,122 +3122,122 @@ export const setAutoUpdatesMutation = (options?: Partial<Options<SetAutoUpdatesD
 
 export const getHostListenerStatusQueryKey = (options?: Options<GetHostListenerStatusData>) => createQueryKey('getHostListenerStatus', options);
 
-export const getHostListenerStatusOptions = (options?: Options<GetHostListenerStatusData>) => {
-    return queryOptions({
-        queryFn: async ({ queryKey, signal }) => {
-            const { data } = await getHostListenerStatus({
-                ...options,
-                ...queryKey[0],
-                signal,
-                throwOnError: true
-            });
-            return data;
-        },
-        queryKey: getHostListenerStatusQueryKey(options)
-    });
-};
+export const getHostListenerStatusOptions = (options?: Options<GetHostListenerStatusData>) => queryOptions<unknown, DefaultError, unknown, ReturnType<typeof getHostListenerStatusQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await getHostListenerStatus({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: getHostListenerStatusQueryKey(options)
+});
 
 export const getHostListenerTokenQueryKey = (options?: Options<GetHostListenerTokenData>) => createQueryKey('getHostListenerToken', options);
 
-export const getHostListenerTokenOptions = (options?: Options<GetHostListenerTokenData>) => {
-    return queryOptions({
-        queryFn: async ({ queryKey, signal }) => {
-            const { data } = await getHostListenerToken({
+export const getHostListenerTokenOptions = (options?: Options<GetHostListenerTokenData>) => queryOptions<unknown, DefaultError, unknown, ReturnType<typeof getHostListenerTokenQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await getHostListenerToken({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: getHostListenerTokenQueryKey(options)
+});
+
+export const wakeMutation = (options?: Partial<Options<WakeData>>): UseMutationOptions<unknown, DefaultError, Options<WakeData>> => {
+    const mutationOptions: UseMutationOptions<unknown, DefaultError, Options<WakeData>> = {
+        mutationFn: async (fnOptions) => {
+            const { data } = await wake({
                 ...options,
-                ...queryKey[0],
-                signal,
+                ...fnOptions,
                 throwOnError: true
             });
             return data;
-        },
-        queryKey: getHostListenerTokenQueryKey(options)
-    });
+        }
+    };
+    return mutationOptions;
 };
 
 export const startQueryKey = (options?: Options<StartData>) => createQueryKey('start', options);
 
-export const startOptions = (options?: Options<StartData>) => {
-    return queryOptions({
-        queryFn: async ({ queryKey, signal }) => {
-            const { data } = await start({
-                ...options,
-                ...queryKey[0],
-                signal,
-                throwOnError: true
-            });
-            return data;
-        },
-        queryKey: startQueryKey(options)
-    });
-};
+export const startOptions = (options?: Options<StartData>) => queryOptions<unknown, DefaultError, unknown, ReturnType<typeof startQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await start({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: startQueryKey(options)
+});
 
 export const callbackQueryKey = (options?: Options<CallbackData>) => createQueryKey('callback', options);
 
-export const callbackOptions = (options?: Options<CallbackData>) => {
-    return queryOptions({
-        queryFn: async ({ queryKey, signal }) => {
-            const { data } = await callback({
-                ...options,
-                ...queryKey[0],
-                signal,
-                throwOnError: true
-            });
-            return data;
-        },
-        queryKey: callbackQueryKey(options)
-    });
-};
+export const callbackOptions = (options?: Options<CallbackData>) => queryOptions<unknown, DefaultError, unknown, ReturnType<typeof callbackQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await callback({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: callbackQueryKey(options)
+});
 
 export const stateQueryKey = (options: Options<StateData>) => createQueryKey('state', options);
 
-export const stateOptions = (options: Options<StateData>) => {
-    return queryOptions({
-        queryFn: async ({ queryKey, signal }) => {
-            const { data } = await state({
-                ...options,
-                ...queryKey[0],
-                signal,
-                throwOnError: true
-            });
-            return data;
-        },
-        queryKey: stateQueryKey(options)
-    });
-};
+export const stateOptions = (options: Options<StateData>) => queryOptions<unknown, DefaultError, unknown, ReturnType<typeof stateQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await state({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: stateQueryKey(options)
+});
 
 export const statusQueryKey = (options: Options<StatusData>) => createQueryKey('status', options);
 
-export const statusOptions = (options: Options<StatusData>) => {
-    return queryOptions({
-        queryFn: async ({ queryKey, signal }) => {
-            const { data } = await status({
-                ...options,
-                ...queryKey[0],
-                signal,
-                throwOnError: true
-            });
-            return data;
-        },
-        queryKey: statusQueryKey(options)
-    });
-};
+export const statusOptions = (options: Options<StatusData>) => queryOptions<unknown, DefaultError, unknown, ReturnType<typeof statusQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await status({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: statusQueryKey(options)
+});
 
 export const consumersQueryKey = (options?: Options<ConsumersData>) => createQueryKey('consumers', options);
 
-export const consumersOptions = (options?: Options<ConsumersData>) => {
-    return queryOptions({
-        queryFn: async ({ queryKey, signal }) => {
-            const { data } = await consumers({
-                ...options,
-                ...queryKey[0],
-                signal,
-                throwOnError: true
-            });
-            return data;
-        },
-        queryKey: consumersQueryKey(options)
-    });
-};
+export const consumersOptions = (options?: Options<ConsumersData>) => queryOptions<unknown, DefaultError, unknown, ReturnType<typeof consumersQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await consumers({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: consumersQueryKey(options)
+});
 
 export const skipMutation = (options?: Partial<Options<SkipData>>): UseMutationOptions<unknown, DefaultError, Options<SkipData>> => {
     const mutationOptions: UseMutationOptions<unknown, DefaultError, Options<SkipData>> = {
@@ -3480,20 +3381,18 @@ export const handleDeleteMutation = (options?: Partial<Options<HandleDeleteData>
 
 export const handleGetQueryKey = (options?: Options<HandleGetData>) => createQueryKey('handleGet', options);
 
-export const handleGetOptions = (options?: Options<HandleGetData>) => {
-    return queryOptions({
-        queryFn: async ({ queryKey, signal }) => {
-            const { data } = await handleGet({
-                ...options,
-                ...queryKey[0],
-                signal,
-                throwOnError: true
-            });
-            return data;
-        },
-        queryKey: handleGetQueryKey(options)
-    });
-};
+export const handleGetOptions = (options?: Options<HandleGetData>) => queryOptions<unknown, DefaultError, unknown, ReturnType<typeof handleGetQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await handleGet({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: handleGetQueryKey(options)
+});
 
 export const handlePostMutation = (options?: Partial<Options<HandlePostData>>): UseMutationOptions<unknown, DefaultError, Options<HandlePostData>> => {
     const mutationOptions: UseMutationOptions<unknown, DefaultError, Options<HandlePostData>> = {
@@ -3511,37 +3410,33 @@ export const handlePostMutation = (options?: Partial<Options<HandlePostData>>): 
 
 export const getStatus5QueryKey = (options?: Options<GetStatus5Data>) => createQueryKey('getStatus5', options);
 
-export const getStatus5Options = (options?: Options<GetStatus5Data>) => {
-    return queryOptions({
-        queryFn: async ({ queryKey, signal }) => {
-            const { data } = await getStatus5({
-                ...options,
-                ...queryKey[0],
-                signal,
-                throwOnError: true
-            });
-            return data;
-        },
-        queryKey: getStatus5QueryKey(options)
-    });
-};
+export const getStatus5Options = (options?: Options<GetStatus5Data>) => queryOptions<unknown, DefaultError, unknown, ReturnType<typeof getStatus5QueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await getStatus5({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: getStatus5QueryKey(options)
+});
 
 export const listToolsQueryKey = (options?: Options<ListToolsData>) => createQueryKey('listTools', options);
 
-export const listToolsOptions = (options?: Options<ListToolsData>) => {
-    return queryOptions({
-        queryFn: async ({ queryKey, signal }) => {
-            const { data } = await listTools({
-                ...options,
-                ...queryKey[0],
-                signal,
-                throwOnError: true
-            });
-            return data;
-        },
-        queryKey: listToolsQueryKey(options)
-    });
-};
+export const listToolsOptions = (options?: Options<ListToolsData>) => queryOptions<unknown, DefaultError, unknown, ReturnType<typeof listToolsQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await listTools({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: listToolsQueryKey(options)
+});
 
 export const callToolMutation = (options?: Partial<Options<CallToolData>>): UseMutationOptions<unknown, DefaultError, Options<CallToolData>> => {
     const mutationOptions: UseMutationOptions<unknown, DefaultError, Options<CallToolData>> = {
@@ -3559,20 +3454,18 @@ export const callToolMutation = (options?: Partial<Options<CallToolData>>): UseM
 
 export const getMcpStatusQueryKey = (options: Options<GetMcpStatusData>) => createQueryKey('getMcpStatus', options);
 
-export const getMcpStatusOptions = (options: Options<GetMcpStatusData>) => {
-    return queryOptions({
-        queryFn: async ({ queryKey, signal }) => {
-            const { data } = await getMcpStatus({
-                ...options,
-                ...queryKey[0],
-                signal,
-                throwOnError: true
-            });
-            return data;
-        },
-        queryKey: getMcpStatusQueryKey(options)
-    });
-};
+export const getMcpStatusOptions = (options: Options<GetMcpStatusData>) => queryOptions<GetMcpStatusResponse, DefaultError, GetMcpStatusResponse, ReturnType<typeof getMcpStatusQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await getMcpStatus({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: getMcpStatusQueryKey(options)
+});
 
 export const probeMcpMutation = (options?: Partial<Options<ProbeMcpData>>): UseMutationOptions<ProbeMcpResponse, DefaultError, Options<ProbeMcpData>> => {
     const mutationOptions: UseMutationOptions<ProbeMcpResponse, DefaultError, Options<ProbeMcpData>> = {
@@ -3590,17 +3483,15 @@ export const probeMcpMutation = (options?: Partial<Options<ProbeMcpData>>): UseM
 
 export const getMcpInstallSchemaQueryKey = (options: Options<GetMcpInstallSchemaData>) => createQueryKey('getMcpInstallSchema', options);
 
-export const getMcpInstallSchemaOptions = (options: Options<GetMcpInstallSchemaData>) => {
-    return queryOptions({
-        queryFn: async ({ queryKey, signal }) => {
-            const { data } = await getMcpInstallSchema({
-                ...options,
-                ...queryKey[0],
-                signal,
-                throwOnError: true
-            });
-            return data;
-        },
-        queryKey: getMcpInstallSchemaQueryKey(options)
-    });
-};
+export const getMcpInstallSchemaOptions = (options: Options<GetMcpInstallSchemaData>) => queryOptions<GetMcpInstallSchemaResponse, DefaultError, GetMcpInstallSchemaResponse, ReturnType<typeof getMcpInstallSchemaQueryKey>>({
+    queryFn: async ({ queryKey, signal }) => {
+        const { data } = await getMcpInstallSchema({
+            ...options,
+            ...queryKey[0],
+            signal,
+            throwOnError: true
+        });
+        return data;
+    },
+    queryKey: getMcpInstallSchemaQueryKey(options)
+});

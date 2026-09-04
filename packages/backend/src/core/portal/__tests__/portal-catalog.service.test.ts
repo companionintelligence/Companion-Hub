@@ -27,9 +27,9 @@ describe('PortalCatalogService', () => {
         icon: 'https://cdn.example.com/ci-memory.png',
       },
       {
-        id: 'ci-import-tools',
-        name: 'CI Import Tools',
-        shortDescription: 'Import tooling',
+        id: 'ci-planning',
+        name: 'Companion Planning',
+        shortDescription: 'Local planning',
       },
     ] as any);
 
@@ -43,8 +43,8 @@ describe('PortalCatalogService', () => {
       icon: 'https://cdn.example.com/ci-memory.png',
     });
     expect(entries[1]).toMatchObject({
-      id: 'ci-import-tools',
-      urn: 'ci-import-tools:ci-marketplace',
+      id: 'ci-planning',
+      urn: 'ci-planning:ci-marketplace',
     });
   });
 
@@ -56,6 +56,27 @@ describe('PortalCatalogService', () => {
     expect(result?.data).toHaveLength(1);
     expect(result?.data[0]?.id).toBe('ghost');
     expect(result?.data[0]?.urn).toBe('ghost:ci-marketplace');
+  });
+
+  it('filters Hub-managed Cloudflare Tunnel entries from the installable catalog', async () => {
+    portalClient.fetchStoreCatalog.mockResolvedValue([
+      { slug: 'cloudflared', name: 'Cloudflare Tunnel', short_desc: 'Hub-managed tunnel', categories: ['networking'] },
+      { slug: 'cloudflare-tunnel', name: 'Cloudflare Tunnel', short_desc: 'Legacy tunnel listing', categories: ['networking'] },
+      { slug: 'ghost', name: 'Ghost', short_desc: 'Blog', categories: ['social'] },
+    ] as any);
+
+    const result = await service.searchCatalog({ pageSize: 50 });
+
+    expect(result?.data.map((entry) => entry.urn)).toEqual(['ghost:ci-marketplace']);
+  });
+
+  it('does not resolve Hub-managed Cloudflare Tunnel entries as installable app details', async () => {
+    portalClient.fetchStoreCatalog.mockResolvedValue([
+      { slug: 'cloudflared', name: 'Cloudflare Tunnel', short_desc: 'Hub-managed tunnel', categories: ['networking'] },
+    ] as any);
+
+    await expect(service.getAppInfoForUrn('cloudflared:ci-marketplace' as any)).resolves.toBeNull();
+    expect(portalClient.fetchStoreCatalog).not.toHaveBeenCalled();
   });
 
   it('resolves icon URLs by marketplace urn slug', async () => {
@@ -201,5 +222,65 @@ describe('PortalCatalogService', () => {
     const [a, b] = await Promise.all([first, second]);
     expect(a).toEqual(b);
     expect(portalClient.fetchStoreCatalog).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not keep a stale inflight catalog after invalidateCache', async () => {
+    let resolveStale: (value: unknown) => void = () => {};
+    portalClient.fetchStoreCatalog.mockReturnValueOnce(new Promise((resolve) => (resolveStale = resolve)));
+
+    const stalePromise = service.getCatalogEntries(true);
+    service.invalidateCache();
+
+    portalClient.fetchStoreCatalog.mockResolvedValueOnce([
+      { slug: 'ci-memory', name: 'Companion Memory', version: '2026.8.23', categories: ['ai'] },
+    ] as any);
+
+    const freshPromise = service.getCatalogEntries(true);
+    resolveStale([{ slug: 'ci-memory', name: 'Companion Memory', version: '2026.8.18', categories: ['ai'] }]);
+
+    await stalePromise;
+    const fresh = await freshPromise;
+    expect(fresh[0]?.version).toBe('2026.8.23');
+
+    const cached = await service.getCatalogEntries(false);
+    expect(cached[0]?.version).toBe('2026.8.23');
+    expect(portalClient.fetchStoreCatalog).toHaveBeenCalledWith({ bypassCache: true });
+  });
+
+  it('force-refreshes even when a warm cache already exists', async () => {
+    portalClient.fetchStoreCatalog
+      .mockResolvedValueOnce([{ slug: 'ci-memory', name: 'Companion Memory', version: '2026.8.18', categories: ['ai'] }] as any)
+      .mockResolvedValueOnce([{ slug: 'ci-memory', name: 'Companion Memory', version: '2026.8.23', categories: ['ai'] }] as any);
+
+    const first = await service.getCatalogEntries(true);
+    expect(first[0]?.version).toBe('2026.8.18');
+
+    const second = await service.getCatalogEntries(true);
+    expect(second[0]?.version).toBe('2026.8.23');
+    expect(portalClient.fetchStoreCatalog).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not join a non-bypassing inflight fetch when force-refreshing', async () => {
+    let resolveStale: (value: unknown) => void = () => {};
+    portalClient.fetchStoreCatalog.mockReturnValueOnce(new Promise((resolve) => (resolveStale = resolve)));
+
+    const stalePromise = service.getCatalogEntries(false);
+    portalClient.fetchStoreCatalog.mockResolvedValueOnce([
+      { slug: 'ci-memory', name: 'Companion Memory', version: '2026.8.23', categories: ['ai'] },
+    ] as any);
+
+    const freshPromise = service.getCatalogEntries(true);
+    resolveStale([{ slug: 'ci-memory', name: 'Companion Memory', version: '2026.8.18', categories: ['ai'] }]);
+
+    const [stale, fresh] = await Promise.all([stalePromise, freshPromise]);
+    expect(fresh[0]?.version).toBe('2026.8.23');
+    expect(portalClient.fetchStoreCatalog).toHaveBeenCalledTimes(2);
+    expect(portalClient.fetchStoreCatalog).toHaveBeenLastCalledWith({ bypassCache: true });
+
+    const cached = await service.getCatalogEntries(false);
+    expect(cached[0]?.version).toBe('2026.8.23');
+    // The stale caller may still resolve to the catalog it requested; it must
+    // not republish over the force-refresh cache.
+    expect(['2026.8.18', '2026.8.23']).toContain(stale[0]?.version);
   });
 });

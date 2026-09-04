@@ -1,34 +1,34 @@
-# E2E / Fleet QA Testing Strategy
+# E2E and fleet QA testing strategy
 
-> How CI-Hub verifies that every marketplace app actually **works** when deployed — not
-> just that a page loads, but that the backend runs and is usable.
+> Hub verifies each marketplace app after deployment. The checks confirm that the backend
+> runs and the app is usable, rather than only confirming that a page loads.
 
 ## Goal
 
-A served frontend is not a working app. The recurring failure mode is "the page loads but
-the backend is dead / there's no working login." The strategy below is built to **catch
-that**, at the scale of the whole marketplace (≈170 apps), on real hardware.
+Serving a frontend does not prove that an app works. In a common failure mode, the page
+loads while the backend remains unavailable or login fails. This strategy detects that
+failure across approximately 170 marketplace apps on physical appliances.
 
 ## Two test layers
 
 | Layer | Code | What it proves | Scale |
 |-------|------|----------------|-------|
-| **1. Fleet Docker QA** (primary) | `scripts/qa-stream.ts` + `scripts/fleet-qa-server.ts` | Each app's full `docker-compose` stack comes up, the **backend is healthy**, and the UI renders | All ≈170 apps across the Tailscale node fleet |
+| **1. Docker Compose QA** (primary) | `scripts/qa-stream.ts` (+ private fleet orchestrator) | Each app's full `docker-compose` stack comes up, the **backend is healthy**, and the UI renders | Marketplace apps on lab hardware |
 | **2. Hub-install regression** | `e2e/app-regression.spec.ts` + `e2e/generated/catalog-batch-*.spec.ts` | An app installs **through the real Hub** under one account (install → access → uninstall) and **serves** (HTTP `< 500`, no gateway/error page) | Playwright, per-batch |
 
-Layer 1 is the fast, broad signal run continuously across the fleet. Layer 2 is the
-high-fidelity, product-accurate path — it exercises the Hub's own compose builder and
-Traefik routing — and is the source of truth when Layer 1 and reality disagree.
+Layer 1 provides a fast, broad signal across the fleet. Layer 2 follows the full product
+path through Hub's compose builder and Traefik routing. Use Layer 2 as the source of truth
+when Layer 1 and product behavior disagree.
 
-> **In-app login is recorded, not yet asserted.** `app-regression.spec.ts` *asserts* the
-> app installs and serves (HTTP `< 500`, no gateway error), then calls `attemptAppAuth()` and
-> records the result as `verdict: pass | warn` — a **failed in-app login is flagged `warn`,
-> it does not fail the run**. The generated `catalog-batch-*` specs do Hub login + install/
-> access/cleanup only and do **not** attempt in-app auth. So today neither layer hard-fails
-> on a broken app login; treat the auth signal as advisory until it is promoted to an
-> assertion (see Roadmap).
+> **Current tests record in-app login but do not assert it.** `app-regression.spec.ts`
+> asserts that the app installs and serves (HTTP `< 500`, no gateway error). It then calls
+> `attemptAppAuth()` and records `verdict: pass | warn`. A failed in-app login produces
+> `warn` but does not fail the run. The generated `catalog-batch-*` specs test Hub login,
+> installation, access, and cleanup, but do not attempt in-app authentication. As a result,
+> neither layer currently fails when app login breaks. Treat the authentication signal as
+> advisory until the tests promote it to an assertion (see Roadmap).
 
-## What "working" means — scoring (Layer 1)
+## What "working" means — scoring (layer 1)
 
 | Score | Meaning |
 |-------|---------|
@@ -52,67 +52,50 @@ window on an app that already crashed. `qa-stream` instead waits on:
 Ceiling: **300s single-service / 600s multi-service**, override with `QA_READY_TIMEOUT_MS`.
 The result records `readyVia` (`healthcheck` | `http <code>`) and `startupMs`.
 
-## Harness invariants (why apps that "should" work, do)
+## Harness invariants
 
-These are baked into `qa-stream` so the test deploys an app the same way production does:
+`qa-stream` applies the following invariants to match production deployment behavior:
 
-- **Consistent `${VAR}` substitution.** Every `${VAR}` placeholder (admin passwords, secret
-  keys, DB passwords) is filled with **one consistent value per variable**, reused across
-  services — so a DB password the app and the database both reference actually matches.
-  (Dropping `${VAR}` for single-service apps was the single biggest cause of broken logins.)
+- **Consistent `${VAR}` substitution.** The harness fills every `${VAR}` placeholder (admin
+  passwords, secret keys, and database passwords) with **one consistent value per variable**
+  and reuses that value across services. A password that the app and database both reference
+  therefore matches.
+  Omitting `${VAR}` for single-service apps caused more broken logins than any other harness issue.
 - **Full compose stack** for multi-service apps (DB/redis/workers), with `depends_on`
   health conditions rendered (`service_healthy` when the dep declares a healthcheck).
 - **Honor `user:`** + wipe scratch dirs that a prior run left owned by root/uid-999 — fixes
   the bind-mount-UID crash class (non-root images over an empty harness-owned mount) and
   stale-volume DB-password mismatches. The Hub itself heals these at startup
   (`scripts/heal-hub-bind-mounts.ts`).
-- **Prepull + registry cache** (core-1:5050) and a 900s pull timeout to kill cold-pull
+- **Prepull + registry cache** on lab hardware and a 900s pull timeout to kill cold-pull
   flakiness on heavy images.
 
-## Environment gotchas (reusable)
+## Reusable environment issues
 
-- **MongoDB vs new kernels:** the nodes (and Ubuntu-26.04 prod Hubs) run kernel ≥ 6.19.
-  `mongo:8.0.17+` **refuses to start** there (SERVER-121912); `mongo:8.0.16` only runs
-  because it predates the guard and is below CVE fixes. Use **`mongo:8.2.x`** — it carries
-  the real fix and is CVE-current. Any app pinned to `mongo:8.0` should move to `8.2.x`.
-- **Playwright on Ubuntu 26.04:** `playwright install chromium` has no CDN build; screenshot
-  drives a cached Chromium binary directly. Nodes provisioned by repo-sync lack
-  `~/.cache/ms-playwright` → their apps `warn` (no screenshot) though the backend is fine.
-- **Tailscale SSH ACL:** nodes serve SSH via tailscaled; `ssh ci@<ip>` returning
-  "tailnet policy does not permit you to SSH to this node" is an **ACL denial**, not a
-  network fault — fix the tailnet ACL.
-- **Dashboard durability:** a full 10-node run takes hours; do **not** run the dashboard as
-  a preview server (it gets reaped). Launch it as a background process and poll `/api/status`.
+- **MongoDB vs new kernels:** Ubuntu 26.04 / kernel ≥ 6.19: `mongo:8.0.17+` **refuses to start**
+  (SERVER-121912); prefer **`mongo:8.2.x`**. Any app pinned to `mongo:8.0` should move to `8.2.x`.
+- **Playwright on Ubuntu 26.04:** `playwright install chromium` may lack a CDN build; screenshot
+  paths need a cached Chromium binary under `~/.cache/ms-playwright` or apps score `warn`
+  (no screenshot) even when the backend is fine.
 
-## Operating
+## Run the tests
+
+Run layer 1 on a single lab machine:
 
 ```bash
-# Dashboard (durable): from CI-Hub on the control machine
-QA_PORT=4242 ./node_modules/.bin/tsx scripts/fleet-qa-server.ts &
-
-# Drive it
-curl -s -X POST http://127.0.0.1:4242/api/preflight -d '{}'          # check the fleet
-curl -s -X POST http://127.0.0.1:4242/api/start -d '{"mode":"full"}' # run all apps
-curl -s http://127.0.0.1:4242/api/status                             # poll results
+# Run compose QA for one app (see scripts/qa-stream.ts --help)
+pnpm exec tsx scripts/qa-stream.ts <app-id>
 
 # Regenerate the catalog after marketplace changes
 APP_STORE_PATH=/path/to/CI-Marketplace/apps ./node_modules/.bin/tsx scripts/generate-catalog-tests.ts
 ```
 
-The dashboard SCPs `qa-stream.ts` to each node per run, so editing it locally propagates
-fleet-wide without a push. Results + screenshots land on each node under `~/qa-results-fleet/`.
+Private operations handle multi-node fleet orchestration, including the dashboard, SCP
+fan-out, and Tailscale inventories. That toolkit lives in the private
+**CI-Engineering** repo (`tools/fleet-qa/`, skill `run-fleet-qa`) — not in this
+open-source tip. See companionintelligence/CI-Engineering#211.
 
-## Roadmap / open items
+## Roadmap and open items
 
-- **Still failing** (genuine app bugs, not harness): `n8n` (crashes ~3s after start),
-  `appflowy` (compose mount dir-vs-file).
-- **Chromium** on the repo-synced nodes (core-8/9/10/14/17, beta-ms-a2) — sync the build
-  from core-1 for clean `pass` vs `warn`.
-- **Marketplace branches worth merging** (surfaced by QA, currently unmerged):
-  `fix/adventurelog-anythingllm-images` (fixes `anythingllm:v1.11.2`→`1.11.2` and gives
-  adventurelog a backend + postgis), `codex/add-postiz`, `codex/add-safeos`, and
-  `feat/e2e-app-definitions` (#311 — per-app e2e metadata that should feed catalog generation).
-- **Make in-app login a hard assertion.** Today `app-regression.spec.ts` records
-  `attemptAppAuth()` as `warn`-only and the generated catalog specs don't attempt it, so a
-  broken app login leaves the run green. Promote it to an `expect()` (at least for apps
-  Layer 1 marks healthy) so a broken login fails the run.
+- Promote in-app login from advisory `warn` to a hard assertion where product requires it.
+- Keep Layer 2 (Hub-install regression) as the source of truth when Layer 1 and product disagree.

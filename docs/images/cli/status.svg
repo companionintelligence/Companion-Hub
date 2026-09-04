@@ -36,7 +36,7 @@
     <text x="144" y="230" textLength="27" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">VPN</text>
     <text x="189" y="230" textLength="9" lengthAdjust="spacingAndGlyphs" fill="#3fb950">●</text>
     <text x="207" y="230" textLength="54" lengthAdjust="spacingAndGlyphs" fill="#3fb950">active</text>
-    <text x="279" y="230" textLength="126" lengthAdjust="spacingAndGlyphs" fill="#39c5cf">100.117.72.104</text>
+    <text x="279" y="230" textLength="126" lengthAdjust="spacingAndGlyphs" fill="#39c5cf">100.64.0.3</text>
     <text x="18" y="251" textLength="720" lengthAdjust="spacingAndGlyphs" fill="#39c5cf">└──────────────────────────────────────────────────────────────────────────────┘</text>
   </g>
 </svg>

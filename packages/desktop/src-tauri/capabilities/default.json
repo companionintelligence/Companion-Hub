@@ -1,7 +1,8 @@
 {
   "identifier": "default",
-  "description": "Default capabilities for the main window. remote.urls is the desktop IPC allowlist after bootstrap navigates away from tauri://. *:// covers http and https. URLPattern * is one hostname label, so hub.ci.localhost / hub.ci.lan need *.ci.localhost / *.ci.lan. A port wildcard does not match a default-port URL, so those hosts are listed both with and without :*.",
+  "description": "Default capabilities for the main window. remote.urls is the desktop IPC allowlist after bootstrap navigates away from tauri://. *:// covers http and https. URLPattern * is one hostname label, so hub.ci.localhost / hub.ci.lan need *.ci.localhost / *.ci.lan. A port wildcard does not match a default-port URL, so those hosts are listed both with and without :*. local:true keeps bootstrap (tauri://) Retry Start / start_hub_command on the allowlist. allow-desktop-ipc grants every app command the Hub UI invokes after that navigation — without it Tauri rejects open_path_command (and the rest) with 'not allowed by ACL' on every OS.",
   "windows": ["main"],
+  "local": true,
   "remote": {
     "urls": [
       "https://*.companionintelligence.com",
@@ -36,8 +37,11 @@
     "core:window:allow-set-position",
     "core:window:allow-set-background-color",
     "opener:default",
+    "opener:allow-open-path",
+    "opener:allow-reveal-item-in-dir",
     "notification:default",
     "store:default",
-    "os:default"
+    "os:default",
+    "allow-desktop-ipc"
   ]
 }

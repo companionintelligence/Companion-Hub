@@ -9,6 +9,7 @@ import { SSEService } from '@/core/sse/sse.service';
 import { HttpStatus, Inject, Injectable, OnApplicationBootstrap, OnModuleDestroy, Optional } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
 import type { AppUrn } from '@ci-hub/common/types';
+import { normalizeStoredHostname } from '@ci-hub/common/types';
 import validator from 'validator';
 import { AppFilesManager } from '../apps/app-files-manager';
 import { AppRuntimeMonitorService } from '../apps/app-runtime-monitor.service';
@@ -17,7 +18,7 @@ import { AppsService } from '../apps/apps.service';
 import { InstallPipelineTracker } from '../apps/install-pipeline.tracker';
 import { BackupManager } from '../backups/backup.manager';
 import { TailscaleService } from '../tailscale/tailscale.service';
-import { ExposureSyncService } from './exposure-sync.service';
+import { ExposureSyncService, type ExposureSyncOptions } from './exposure-sync.service';
 import { MarketplaceService } from '../marketplace/marketplace.service';
 import { ImageSizeService } from '../marketplace/image-size.service';
 import { ReposHelpers } from '../app-stores/repos.helpers';
@@ -36,10 +37,12 @@ import type { z } from 'zod';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { DATA_DIR } from '@/common/constants';
+import { MarketplaceWhoIsService } from '@/core/portal/marketplace-whois.service';
+import type { HubAction } from '@/core/portal/hub-actions';
 import { AgentNotifyService } from '../agent-notify/agent-notify.service';
 import { ErrorReportingService, type AppFailurePhase } from '@/core/error-reporting/error-reporting.service';
 import { publishesHostPort } from '../apps/app-exposure.helpers';
-import { didPublicRoutingIdentityChange, type AppPublicRoutingSnapshot } from '../apps/app-public-routing.helpers';
+import { canServeOnCustomDomain, didPublicRoutingIdentityChange, type AppPublicRoutingSnapshot } from '../apps/app-public-routing.helpers';
 import { DockerService } from '../docker/docker.service';
 import { AppIntentSyncService } from '../apps/app-intent-sync.service';
 import { isMemoryProviderApp } from '../memory-connect/memory-provider.predicate';
@@ -60,6 +63,31 @@ function uniqueRoutingLocalSubdomain(parsedForm: AppFormForSubdomain): string | 
   return undefined;
 }
 
+/**
+ * Ignore a custom-domain choice that this app could never be served on.
+ *
+ * An unmounted picker can still submit its value. The field only renders under
+ * Cloudflare exposure, but react-hook-form keeps the value of a field it has
+ * unmounted, so a domain picked before the operator switched to Local or Private
+ * VPN is still in the payload — and acting on it takes that domain off the app
+ * that is actually serving on it (`claimCustomDomainIntent` makes the newest
+ * choice exclusive) and parks it on one the bind pass will skip forever, because
+ * an app that emits no public identity has no ingress rule for a domain to alias.
+ *
+ * Exactly {@link canServeOnCustomDomain}, the gate the bind pass itself applies,
+ * so the two cannot disagree about which apps a domain may be recorded for.
+ *
+ * Only a non-empty choice is dropped: `''` says "serve on the platform address",
+ * which is valid for any app and is what a caller turning exposure off
+ * plainly means. `undefined` is "the caller said nothing", which leaves whatever
+ * choice the row already holds alone.
+ */
+function dropUnservableCustomDomain(parsedForm: ParsedAppForm, exposable: boolean | undefined): void {
+  if (parsedForm.customDomain && (!exposable || !canServeOnCustomDomain(parsedForm))) {
+    parsedForm.customDomain = undefined;
+  }
+}
+
 function normalizeLocalOpenPort(parsedForm: ParsedAppForm): ParsedAppForm {
   if ((parsedForm.exposureMode ?? 'local') === 'local' && !parsedForm.openPort) {
     return { ...parsedForm, openPort: true };
@@ -68,20 +96,136 @@ function normalizeLocalOpenPort(parsedForm: ParsedAppForm): ParsedAppForm {
   return parsedForm;
 }
 
+/**
+ * The row patch a re-install writes, from a parsed install form.
+ *
+ * `customDomain` must not reach the row under that name. `appFormSchema` is
+ * `.passthrough()`, `updateAppById` takes `Partial<NewApp>`, and drizzle's
+ * `buildUpdateSet` applies every set key that names a real column — so spreading
+ * the form wholesale wrote the picker's choice straight into `app.custom_domain`,
+ * the column that carries what Companion Portal confirmed it wired and the one env
+ * generation builds `APP_PUBLIC_URL` from. An app told to emit a hostname nobody
+ * verified signs OAuth redirects for an address that may resolve nowhere, which
+ * is the single invariant the intent/binding split exists to hold.
+ *
+ * The choice is recorded as an intent instead, and only when the caller actually
+ * said something about it: absent leaves an existing choice alone, `''` clears it.
+ */
+/**
+ * The custom-domain columns a form save writes, from the two fields that carry
+ * them — the ONE spelling, because four call sites had grown their own.
+ *
+ * `undefined` says nothing: a caller that omits `customDomain` is not asking for
+ * a change and must leave an existing choice alone. A client predating custom
+ * domains, or one patching a single setting, must not silently unbind a domain
+ * the customer is being served on. `''` is the explicit "serve on the platform
+ * hostname again".
+ *
+ * ⚠ THE CONFIRMATION IS ONLY EVER WRITTEN ALONGSIDE A CHOICE, AND NEVER
+ * INHERITED. `customDomainTakeover` authorizes taking a domain off whatever
+ * serves it now; an answer with no choice attached is standing permission
+ * waiting for a future one, and an answer carried forward from a previous save
+ * authorizes a move nobody was shown. Both are the defect the flag exists to
+ * prevent, so an absent or unaccompanied `true` is a no.
+ *
+ * Clearing the choice clears the answer with it, for the same reason.
+ */
+function customDomainColumns(parsedForm: {
+  customDomain?: string;
+  customDomainTakeover?: boolean;
+}): Partial<{ customDomainIntent: string | null; customDomainTakeover: boolean }> {
+  if (parsedForm.customDomain === undefined) {
+    return {};
+  }
+
+  const intent = parsedForm.customDomain || null;
+
+  return { customDomainIntent: intent, customDomainTakeover: intent !== null && parsedForm.customDomainTakeover === true };
+}
+
+function buildInstallRowPatch(parsedForm: ParsedAppForm): Record<string, unknown> {
+  /*
+   * BOTH destructured out before the spread. `customDomain` always was — it must
+   * never land in `app.custom_domain`, per the note above. `customDomainTakeover`
+   * has to be as well, and less obviously: its form field happens to share a name
+   * with its column, so the bare spread wrote it straight through and bypassed
+   * the rule that an answer is only valid alongside a choice.
+   */
+  const { customDomain: _customDomain, customDomainTakeover: _customDomainTakeover, ...rowFields } = parsedForm;
+
+  return {
+    config: toStoredConfig(parsedForm),
+    ...rowFields,
+    ...customDomainColumns(parsedForm),
+  };
+}
+
+/**
+ * The install form as it is stored in `app.config` — without the custom-domain
+ * choice.
+ *
+ * The choice has one home: the row. `custom_domain_intent` is
+ * cleared by the Hub itself — when the organization disconnects the domain, or
+ * when another app claims it — while `config` is a snapshot of whatever was last
+ * saved. A second copy there gives the two different answers, and every path that
+ * replays the snapshot resurrects a choice that had already been given up: a
+ * version bump re-submits `app.config` verbatim, which would rewrite this app's
+ * intent and strip the domain off whichever app legitimately holds it now. It
+ * would also make re-picking a domain the Hub had cleared compare equal to the
+ * snapshot and be discarded as "no change". The frontend already seeds its picker
+ * from the row rather than from here, for exactly this reason.
+ */
+function toStoredConfig(parsedForm: ParsedAppForm): Record<string, unknown> {
+  const stored: Record<string, unknown> = { ...parsedForm };
+  delete stored.customDomain;
+  /*
+   * ⚠ AND THE CONFIRMATION WITH IT, FOR A SHARPER REASON THAN THE CHOICE.
+   *
+   * `config` is the form snapshot as it was last saved, and the settings dialog
+   * seeds itself from it. `customDomainTakeover` authorizes ONE move — the bind
+   * pass spends it on use — so a copy surviving in the snapshot re-supplies
+   * `true` on every later save, silently restoring it to the column after it was
+   * spent. That turns a one-time answer into standing permission and hands back
+   * exactly the defect the flag exists to fix: an operator re-pointing the domain
+   * in the portal is overruled on the Hub's next sync (CI-Engineering#208,
+   * defect 3), by an answer given to a different question weeks earlier.
+   *
+   * The row is the only place it may live. `app.dto.ts` exposes it so the dialog
+   * can seed an IN-FLIGHT confirmation from there instead.
+   */
+  delete stored.customDomainTakeover;
+
+  return stored;
+}
+
 /** Apply the same schema defaults/normalization used on save so unchanged configs compare equal. */
 function normalizeConfigForCompare(raw: Record<string, unknown>): Record<string, unknown> {
   const parsed = appFormSchema.safeParse(raw);
   if (!parsed.success) {
-    return raw;
+    return toStoredConfig(raw as ParsedAppForm);
   }
-  return normalizeLocalOpenPort(parsed.data) as Record<string, unknown>;
+  // Through `toStoredConfig` so a row written before the choice moved to its own
+  // column does not read as a diff on the first save after the upgrade.
+  return toStoredConfig(normalizeLocalOpenPort(parsed.data));
 }
 
 @Injectable()
 export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDestroy {
   private static readonly TAILSCALE_READINESS_POLL_MS = 45_000;
 
+  /**
+   * How often exposure is re-synced with CI-Cloud on an idle Hub.
+   *
+   * Bounds how long a custom domain connected in the Portal can be live while the
+   * app is still presenting its platform hostname. Five minutes keeps that window
+   * short enough that a customer watching their new domain come up sees it settle,
+   * at the cost of one sync request the Hub already issues on every app start.
+   */
+  private static readonly EXPOSURE_SYNC_POLL_MS = 5 * 60_000;
+
   private tailscaleReadinessInterval: ReturnType<typeof setInterval> | null = null;
+  private exposureSyncInterval: ReturnType<typeof setInterval> | null = null;
+  private periodicExposureSyncInFlight = false;
   private tailscaleReadinessInitialized = false;
   private lastTailscaleConnected = false;
   private lastTailscaleHttpsAvailable = false;
@@ -148,6 +292,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     }, 20_000);
 
     this.startTailscaleReadinessWatcher();
+    this.startPeriodicExposureSync();
   }
 
   private async syncInferenceAppsAfterHubUpgrade(): Promise<void> {
@@ -184,6 +329,61 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       clearInterval(this.tailscaleReadinessInterval);
       this.tailscaleReadinessInterval = null;
     }
+    if (this.exposureSyncInterval) {
+      clearInterval(this.exposureSyncInterval);
+      this.exposureSyncInterval = null;
+    }
+  }
+
+  /**
+   * Re-syncs exposure on a timer so state that only ever changes in CI-Cloud
+   * reaches the Hub without an operator-initiated event.
+   *
+   * A custom domain is connected and disconnected from the Portal, and CI-Cloud
+   * wires the tunnel at bind time, so traffic reaches the app straight away. The
+   * Hub learns of it only from `customDomains` on a sync response — and every
+   * sync was edge-triggered: boot, an app's routing change, or a manual repair.
+   * A Hub that is simply sitting there serving never asked again, so a newly
+   * connected domain reached the app while the app kept emitting its platform
+   * hostname in every redirect, and `docker restart ci-os-hub` was the only cure
+   * (CI-Hub#1209). The registration-validation timer next door does not help:
+   * it is hourly and checks in against a different endpoint that carries no
+   * exposure state.
+   *
+   * This is the same pass every other trigger runs, so it is idempotent, and it
+   * is inert when there is nothing to talk to — `triggerCloudflareSync` returns
+   * early, at debug level, for an unregistered device and during a restore.
+   */
+  private startPeriodicExposureSync() {
+    // Never leak a previous timer if this is ever reached twice.
+    if (this.exposureSyncInterval) {
+      clearInterval(this.exposureSyncInterval);
+    }
+
+    this.exposureSyncInterval = setInterval(() => {
+      /*
+       * Portal requests retry with backoff, so one pass can outlive the interval
+       * on a slow link. Overlapping passes would duplicate every DNS write and
+       * let two custom-domain reconciliations race for the same row.
+       *
+       * The second condition covers the passes this flag cannot see: the startup
+       * sync, a settings save, a port-expose change, availability remediation and
+       * `cihub public-web repair` all enter the same reconcile without going
+       * through this timer. Only the background poll ever yields — a
+       * user-initiated sync is never skipped.
+       */
+      if (this.periodicExposureSyncInFlight || this.exposureSyncService.isCloudflareSyncInFlight()) {
+        this.logger.debug('[Cloudflare] Skipping periodic exposure sync: another pass is still running');
+        return;
+      }
+
+      this.periodicExposureSyncInFlight = true;
+      void this.syncExposure()
+        .catch((e) => this.logger.error(`Periodic exposure sync failed: ${e instanceof Error ? e.message : String(e)}`))
+        .finally(() => {
+          this.periodicExposureSyncInFlight = false;
+        });
+    }, AppLifecycleService.EXPOSURE_SYNC_POLL_MS);
   }
 
   private startTailscaleReadinessWatcher() {
@@ -475,7 +675,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       void this.emitInstallQueueUpdate();
     }
     this.agentNotifyService?.notify('install_error', { appUrn }, 'high');
-    this.reportAppFailure(appUrn, 'install', result.message);
+    this.reportAppFailure(appUrn, 'install', result.message, result.errorCode);
   }
 
   /**
@@ -549,7 +749,8 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     this.registerDispatchedCommand(appUrn, requestId, 'start');
     this.appEventsQueue
       .publish({ appUrn, command: 'start', requestId, form: { ...app.config, skipPull } })
-      .then(async ({ success, message }) => {
+      .then(async (raw) => {
+        const { success, message, errorCode, errorDetail, settingsPath } = raw as z.output<typeof appEventResultSchema>;
         if (success) {
           this.logger.info(`App ${appUrn} started successfully`);
           await this.settleCommandOutcome({
@@ -563,8 +764,21 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
               event: 'start_success',
               clearPendingRestart: true,
               afterApply: async () => {
-                const { isProduction: isProdEnv } = this.config.getConfig();
-                if (isProdEnv && app.exposedLocal) {
+                /*
+                 * NOT GATED ON `isProduction`, and that is the fix.
+                 *
+                 * This is the only sync that runs AFTER `settleCommandOutcome` has applied the
+                 * outcome, so it is the only one that sees the app as `running` rather than
+                 * `starting` — which is exactly the state `reconcileCustomDomains` requires
+                 * before it will write a binding. Gated on the environment, a custom domain
+                 * was delivered on an appliance and silently never delivered on a source-dev
+                 * Hub, so the one path that matters could not be exercised locally at all.
+                 *
+                 * A correctness path must not depend on NODE_ENV. The sync is already inert
+                 * when it has nothing to talk to: `triggerCloudflareSync` returns early, at
+                 * debug level, for an unregistered device and during a restore.
+                 */
+                if (app.exposedLocal) {
                   this.logger.info(`[Cloudflare] App ${appUrn} started and is exposedLocal. Triggering sync.`);
                   await this.syncExposure();
                 }
@@ -580,6 +794,9 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
             command: 'start',
             success: false,
             message,
+            errorCode,
+            errorDetail,
+            settingsPath,
             failureOutcome: {
               status: 'stopped',
               event: 'start_error',
@@ -640,7 +857,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     const { appUrn, form, skipRun } = params;
     const { demoMode, architecture } = this.config.getConfig();
 
-    // Check if we need to download files from CI Cloud
+    // Check if we need to download files from Companion Portal
     const { appStoreId, appName } = extractAppUrn(appUrn);
     const store = await this.appStoreService.getAppStoreBySlug(appStoreId);
 
@@ -749,6 +966,8 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       parsedForm.publicDomain = undefined;
     }
 
+    dropUnservableCustomDomain(parsedForm, appInfo.exposable);
+
     // Manifest edge-auth default (CI-Engineering#74): when the caller did not decide the
     // "Require Auth" toggle — the onboarding install path sends no enableAuth at all — an
     // exposable app that ships `hub_integration.edge_auth.default: true` starts protected.
@@ -794,8 +1013,24 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       }
     }
 
+    /*
+     * ── THE RELEASE APPLIES HERE TOO, OR IT IS A LIE IN ONE DIALOG OUT OF TWO ─
+     *
+     * The install dialog is reachable for an installed app and its picker offers
+     * "use the platform address" like any other. See
+     * {@link releaseClearedCustomDomain}, including why this sits AFTER the
+     * conflict refusals above rather than beside the earlier ones: it reaches
+     * CI-Cloud and writes the row, so a subdomain or port collision throwing
+     * afterwards would park the operator's domain for a reinstall they were told
+     * had failed.
+     */
+    if (existingApp) {
+      await this.releaseClearedCustomDomain(appUrn, parsedForm, existingApp);
+    }
+
     if (existingApp && existingApp.status !== 'install_failed') {
-      await this.appRepository.updateAppById(existingApp.id, { config: parsedForm, ...parsedForm });
+      await this.appRepository.updateAppById(existingApp.id, buildInstallRowPatch(parsedForm));
+      await this.claimCustomDomainIntent(existingApp.id, parsedForm.customDomain);
       return this.startApp({ appUrn });
     }
 
@@ -809,7 +1044,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
         const created = await this.appRepository.createApp({
           appName,
           status: 'installing' as const,
-          config: parsedForm,
+          config: toStoredConfig(parsedForm),
           // Port semantics:
           // - Local exposure always publishes the host port (normalized to openPort=true when needed).
           // - Cloudflare/Tailscale with exposedLocal also publish the host port for LAN access during DNS propagation.
@@ -820,6 +1055,16 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
           domain: domain ?? null,
           localSubdomain: parsedForm.localSubdomain ?? null,
           publicDomain: parsedForm.publicDomain ?? null,
+          // The custom domain the installer picked, recorded as an intent. It is
+          // asked of Companion Portal once the app registers — see `custom_domain_intent`
+          // — and never reaches this app's env until Portal reports it wired.
+          //
+          // ⚠ AND THE CONFIRMATION WITH IT. This branch wrote the intent alone,
+          // so a takeover confirmed in the INSTALL dialog — which is where the
+          // picker primarily lives — was dropped on the floor: the column
+          // defaulted false, the bind pass read that as a refusal, and the move
+          // the person had just agreed to was cleared on the next sync.
+          ...customDomainColumns(parsedForm),
           openPort: openPort ?? false,
           exposedLocal: exposedLocal ?? !!appInfo.exposable,
           exposureMode: parsedForm.exposureMode ?? 'local',
@@ -828,6 +1073,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
           enableAuth: parsedForm.enableAuth ?? false,
         });
         installRecord = { id: created.id, status: created.status, port: created.port, exposedLocal: created.exposedLocal };
+        await this.claimCustomDomainIntent(created.id, parsedForm.customDomain);
       } catch (createError) {
         const isUniqueViolation =
           createError instanceof Error &&
@@ -845,7 +1091,8 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
         }
 
         if (raced.status !== 'install_failed') {
-          await this.appRepository.updateAppById(raced.id, { config: parsedForm, ...parsedForm });
+          await this.appRepository.updateAppById(raced.id, buildInstallRowPatch(parsedForm));
+          await this.claimCustomDomainIntent(raced.id, parsedForm.customDomain);
           return this.startApp({ appUrn });
         }
 
@@ -860,19 +1107,29 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     if (existingApp || installRecord.status === 'install_failed') {
       await this.appRepository.updateAppById(installRecord.id, {
         status: 'installing',
-        config: parsedForm,
+        config: toStoredConfig(parsedForm),
         port: parsedForm.port ?? installRecord.port ?? appInfo.port,
         version: appInfo.cihub_app_version,
         exposed: exposed ?? false,
         domain: domain ?? null,
         localSubdomain: parsedForm.localSubdomain ?? null,
         publicDomain: parsedForm.publicDomain ?? null,
+        /*
+         * Absent is not clear here either — this branch rewrites a row that
+         * already exists (a reinstall, or an install retried after a failure), so
+         * the same rule `updateAppConfig` applies holds: a caller that says
+         * nothing about custom domains must not unbind one the customer is being
+         * served on. The device-restore form never sends the field, and it would
+         * otherwise wipe every recorded choice on the Hub.
+         */
+        ...customDomainColumns(parsedForm),
         openPort: openPort ?? false,
         exposedLocal: exposedLocal ?? !!appInfo.exposable,
         exposureMode: parsedForm.exposureMode ?? 'local',
         isVisibleOnGuestDashboard,
         enableAuth: parsedForm.enableAuth ?? false,
       });
+      await this.claimCustomDomainIntent(installRecord.id, parsedForm.customDomain);
     }
 
     this.sseService.emit('app', { event: 'status_change', appUrn, appStatus: 'installing' });
@@ -966,7 +1223,8 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     this.registerDispatchedCommand(appUrn, requestId, 'stop');
     this.appEventsQueue
       .publish({ command: 'stop', appUrn, requestId, form: app.config })
-      .then(async ({ success, message }) => {
+      .then(async (raw) => {
+        const { success, message, errorCode, errorDetail, settingsPath } = raw as z.output<typeof appEventResultSchema>;
         if (success) {
           await this.settleCommandOutcome({
             appId: app.id,
@@ -1002,6 +1260,9 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
             command: 'stop',
             success: false,
             message,
+            errorCode,
+            errorDetail,
+            settingsPath,
             failureOutcome: {
               status: 'running',
               event: 'stop_error',
@@ -1100,7 +1361,8 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     this.registerDispatchedCommand(appUrn, requestId, 'restart');
     this.appEventsQueue
       .publish({ command: 'restart', appUrn, requestId, form: { ...app.config, skipPull } })
-      .then(async ({ success, message }) => {
+      .then(async (raw) => {
+        const { success, message, errorCode, errorDetail, settingsPath } = raw as z.output<typeof appEventResultSchema>;
         if (success) {
           this.logger.info(`App ${appUrn} restarted successfully`);
           await this.settleCommandOutcome({
@@ -1124,6 +1386,9 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
             command: 'restart',
             success: false,
             message,
+            errorCode,
+            errorDetail,
+            settingsPath,
             failureOutcome: {
               status: 'stopped',
               event: 'restart_error',
@@ -1158,12 +1423,13 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
 
     const requestId = crypto.randomUUID();
     this.registerDispatchedCommand(appUrn, requestId, 'start');
-    const { success, message } = await this.appEventsQueue.publish({
+    const raw = await this.appEventsQueue.publish({
       appUrn,
       command: 'start',
       requestId,
       form: { ...app.config, skipPull },
     });
+    const { success, message, errorCode, errorDetail, settingsPath } = raw as z.output<typeof appEventResultSchema>;
 
     if (success) {
       this.logger.info(`App ${appUrn} started successfully`);
@@ -1178,8 +1444,21 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
           event: 'start_success',
           clearPendingRestart: true,
           afterApply: async () => {
-            const { isProduction: isProdEnv } = this.config.getConfig();
-            if (isProdEnv && app.exposedLocal) {
+            /*
+             * NOT GATED ON `isProduction`, and that is the fix.
+             *
+             * This is the only sync that runs AFTER `settleCommandOutcome` has applied the
+             * outcome, so it is the only one that sees the app as `running` rather than
+             * `starting` — which is exactly the state `reconcileCustomDomains` requires
+             * before it will write a binding. Gated on the environment, a custom domain
+             * was delivered on an appliance and silently never delivered on a source-dev
+             * Hub, so the one path that matters could not be exercised locally at all.
+             *
+             * A correctness path must not depend on NODE_ENV. The sync is already inert
+             * when it has nothing to talk to: `triggerCloudflareSync` returns early, at
+             * debug level, for an unregistered device and during a restore.
+             */
+            if (app.exposedLocal) {
               this.logger.info(`[Cloudflare] App ${appUrn} started and is exposedLocal. Triggering sync.`);
               await this.syncExposure();
             }
@@ -1198,6 +1477,9 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       command: 'start',
       success: false,
       message,
+      errorCode,
+      errorDetail,
+      settingsPath,
       failureOutcome: {
         status: 'stopped',
         event: 'start_error',
@@ -1231,12 +1513,13 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
 
     const requestId = crypto.randomUUID();
     this.registerDispatchedCommand(appUrn, requestId, 'restart');
-    const { success, message } = await this.appEventsQueue.publish({
+    const raw = await this.appEventsQueue.publish({
       command: 'restart',
       appUrn,
       requestId,
       form: { ...app.config, skipPull },
     });
+    const { success, message, errorCode, errorDetail, settingsPath } = raw as z.output<typeof appEventResultSchema>;
 
     if (success) {
       this.logger.info(`App ${appUrn} restarted successfully`);
@@ -1264,6 +1547,9 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       command: 'restart',
       success: false,
       message,
+      errorCode,
+      errorDetail,
+      settingsPath,
       failureOutcome: {
         status: 'stopped',
         event: 'restart_error',
@@ -1411,7 +1697,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     this.appEventsQueue
       .publish({ command: 'uninstall', appUrn, requestId, form: app.config, deleteAllData })
       .then(async (result) => {
-        const { success, message } = result;
+        const { success, message, errorCode, errorDetail, settingsPath } = result as z.output<typeof appEventResultSchema>;
         if (success) {
           if (!this.operationRegistry.claimCompletion(appUrn, requestId)) {
             return;
@@ -1480,6 +1766,9 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
             command: 'uninstall',
             success: false,
             message,
+            errorCode,
+            errorDetail,
+            settingsPath,
             failureOutcome: {
               status: 'stopped',
               event: 'uninstall_error',
@@ -1516,7 +1805,8 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     this.registerDispatchedCommand(appUrn, requestId, 'reset');
     this.appEventsQueue
       .publish({ command: 'reset', appUrn, requestId, form: app.config })
-      .then(async ({ success, message }) => {
+      .then(async (raw) => {
+        const { success, message, errorCode, errorDetail, settingsPath } = raw as z.output<typeof appEventResultSchema>;
         if (success) {
           this.logger.info(`App ${appUrn} reset successfully`);
           await this.settleCommandOutcome({
@@ -1545,6 +1835,9 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
             command: 'reset',
             success: false,
             message,
+            errorCode,
+            errorDetail,
+            settingsPath,
             failureOutcome: {
               status: restoredStatus,
               event: 'reset_error',
@@ -1619,10 +1912,61 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       parsedForm.enableAuth = storedEnableAuth ?? (manifestDefaultsEdgeAuthOn(appInfo) || undefined);
     }
 
-    const settingsChanged = this.hasConfigChanged(
-      normalizeConfigForCompare((app.config ?? {}) as Record<string, unknown>),
-      parsedForm as Record<string, unknown>,
-    );
+    // Before the comparison below, so a choice this app can never be served on
+    // does not read as a change and restart it for nothing.
+    dropUnservableCustomDomain(parsedForm, appInfo.exposable);
+
+    /*
+     * Compare the custom-domain choice against the row, not the snapshot.
+     *
+     * `config` is what was last saved; `custom_domain_intent` is what the app
+     * currently asks for, and the Hub changes it on its own — clearing it when
+     * the organization disconnects the domain, or when another app claims it.
+     * Deciding "nothing changed" from the snapshot alone means a person who
+     * re-picks a domain the Hub had cleared submits a form identical to the
+     * stored one, gets a success toast, and has their choice dropped on the
+     * floor — every time, with no way to tell.
+     *
+     * `undefined` still says nothing: a caller that omits the field is not asking
+     * for a change and must not force a restart.
+     */
+    const customDomainChanged =
+      parsedForm.customDomain !== undefined &&
+      (normalizeStoredHostname(parsedForm.customDomain) !== normalizeStoredHostname(app.customDomainIntent) ||
+        /*
+         * ⚠ COMPARED AGAINST THE BINDING TOO, NOT ONLY THE INTENT.
+         *
+         * A domain bound from CI-Cloud rather than from this dialog leaves the
+         * app SERVING one with no intent recorded — `custom_domain` set,
+         * `custom_domain_intent` null. Asking for the platform address then
+         * submits `''`, which normalizes to null and matches the null intent, so
+         * "nothing changed" returned before anything could act on it and the
+         * release never ran. The one case the field exists for was the one case
+         * that could not reach it.
+         */
+        (parsedForm.customDomain === '' && normalizeStoredHostname(app.customDomain) !== null) ||
+        /*
+         * ⚠ AND THE CONFIRMATION IS ITSELF A CHANGE.
+         *
+         * `toStoredConfig` deliberately keeps `customDomainTakeover` out of the
+         * snapshot, so `hasConfigChanged` cannot see it; comparing only hostnames
+         * meant a save whose ONLY new information was the operator answering the
+         * takeover question — re-picking the domain already recorded as the intent
+         * and confirming the move this time — matched on every term, short-circuited
+         * at "no changes detected", and returned a success toast having written
+         * nothing. The bind pass then read the unwritten `false` as a refusal and
+         * cleared the choice: the same defect this fixes on the install path,
+         * arriving through the settings dialog instead.
+         *
+         * Compared against what `customDomainColumns` would actually write rather
+         * than against the raw form field, so the two cannot disagree about what an
+         * answer with no choice attached means.
+         */
+        (!!parsedForm.customDomain && parsedForm.customDomainTakeover === true) !== (app.customDomainTakeover === true));
+
+    const settingsChanged =
+      this.hasConfigChanged(normalizeConfigForCompare((app.config ?? {}) as Record<string, unknown>), toStoredConfig(parsedForm)) ||
+      customDomainChanged;
     if (!settingsChanged) {
       this.logger.debug(`App ${appUrn} config update skipped — no changes detected`);
       return { requestId: crypto.randomUUID() };
@@ -1680,6 +2024,18 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       }
     }
 
+    /*
+     * ── STOP SERVING IT, BEFORE ANYTHING ELSE IS WRITTEN ─────────────────────
+     *
+     * The picker's "use the platform address", acted on rather than merely
+     * recorded. See {@link releaseClearedCustomDomain} for why this runs on the
+     * save that asked for it rather than in a heartbeat, why it runs after every
+     * refusal above, and why it clears the choice in the same write that clears
+     * the binding — which has to land before `generate_env` is published, because
+     * env generation reads the ROW and not the form.
+     */
+    await this.releaseClearedCustomDomain(appUrn, parsedForm, app);
+
     const requestId = crypto.randomUUID();
     const { success, message } = await this.appEventsQueue.publish({
       command: 'generate_env',
@@ -1706,11 +2062,23 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       domain: parsedForm.domain ?? null,
       localSubdomain: parsedForm.localSubdomain ?? null,
       publicDomain: parsedForm.publicDomain ?? null,
-      config: parsedForm,
+      /*
+       * Absent is not clear here. Every field beside this one is rewritten from
+       * the form on every save, because the settings dialog sends all of them.
+       * `customDomain` is sent only by a client that knows about custom domains,
+       * so treating an omitted field as "clear it" would let an older client — or
+       * any caller that patches one setting — silently unbind a domain the
+       * customer is being served on. The empty string is a real instruction: it
+       * is what the picker sends for "use the platform address".
+       */
+      ...customDomainColumns(parsedForm),
+      config: toStoredConfig(parsedForm),
       isVisibleOnGuestDashboard: parsedForm.isVisibleOnGuestDashboard ?? false,
       enableAuth: parsedForm.enableAuth ?? false,
       maxBackups: parsedForm.maxBackups ?? null,
     });
+
+    await this.claimCustomDomainIntent(app.id, parsedForm.customDomain);
 
     const { appName, appStoreId } = extractAppUrn(appUrn);
     const routingChanged = didPublicRoutingIdentityChange(app as AppPublicRoutingSnapshot, parsedForm, appName, appStoreId);
@@ -1719,7 +2087,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       await this.appRepository.updateAppById(app.id, { pendingRestart: settingsChanged });
     }
 
-    // Sync tunnel/DNS state with CI-Cloud. When subdomain or public domain changed,
+    // Sync tunnel/DNS state with Companion Portal. When subdomain or public domain changed,
     // run a release pass first so the old hostname is removed from Cloudflare DNS.
     this.logger.info(`[Cloudflare] Config updated for ${appUrn}. Triggering state sync.`);
     await this.syncExposureAfterRoutingChange(appUrn, routingChanged);
@@ -1739,12 +2107,12 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
   /**
    * Sync exposure state for all apps — Cloudflare + Tailscale in parallel
    */
-  private async syncExposure(options?: { excludeAppUrns?: AppUrn[] }) {
+  private async syncExposure(options?: ExposureSyncOptions) {
     await this.exposureSyncService.syncExposurePublic(options);
   }
 
   /**
-   * When public routing identity changes, CI-Cloud only deletes stale DNS when the
+   * When public routing identity changes, Companion Portal only deletes stale DNS when the
    * app's previous slug disappears from the sync payload. Sync once without the
    * reconfigured app so the old record is released, then sync the full state.
    */
@@ -1755,7 +2123,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
   /**
    * Public wrapper for syncExposure — used by AppsService.resolveAppAvailability
    */
-  public async syncExposurePublic(options?: { excludeAppUrns?: AppUrn[] }) {
+  public async syncExposurePublic(options?: ExposureSyncOptions) {
     return this.exposureSyncService.syncExposurePublic(options);
   }
 
@@ -1764,7 +2132,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     return this.exposureSyncService.syncTailscaleExposurePublic();
   }
 
-  public async triggerCloudflareSync(options?: { excludeAppUrns?: AppUrn[] }) {
+  public async triggerCloudflareSync(options?: ExposureSyncOptions) {
     return this.exposureSyncService.triggerCloudflareSync(options);
   }
 
@@ -1802,7 +2170,8 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     this.registerDispatchedCommand(appUrn, requestId, 'update');
     this.appEventsQueue
       .publish({ command: 'update', appUrn, requestId, form: app.config, performBackup })
-      .then(async ({ success, message }) => {
+      .then(async (raw) => {
+        const { success, message, errorCode, errorDetail, settingsPath } = raw as z.output<typeof appEventResultSchema>;
         if (success) {
           if (!this.operationRegistry.claimCompletion(appUrn, requestId)) {
             return;
@@ -1829,6 +2198,9 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
             command: 'update',
             success: false,
             message,
+            errorCode,
+            errorDetail,
+            settingsPath,
             failureOutcome: {
               status: restoredStatus,
               event: 'update_error',
@@ -1843,7 +2215,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     return { requestId };
   }
 
-  async updateAllApps(): Promise<void> {
+  async updateAllApps(operatorUserId?: number): Promise<void> {
     const installedApps = await this.appsService.getInstalledApps();
     type InstalledApp = Awaited<ReturnType<typeof this.appsService.getInstalledApps>>[number];
     const availableUpdates: InstalledApp[] = installedApps.filter((item: InstalledApp) => {
@@ -1854,6 +2226,9 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     for (const { app } of availableUpdates) {
       try {
         const appUrn = createAppUrn(app.appName, app.appStoreSlug);
+        if (!(await this.operatorMay(operatorUserId, appUrn, 'update'))) {
+          continue;
+        }
         await this.updateApp({ appUrn, performBackup: true });
       } catch (e) {
         this.logger.error(`Failed to update app ${app.id}`, e);
@@ -1878,7 +2253,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     })();
   }
 
-  async startAllApps() {
+  async startAllApps(operatorUserId?: number) {
     const apps = await this.appRepository.getApps();
     type AppFromDb = Awaited<ReturnType<typeof this.appRepository.getApps>>[number];
     const stoppedApps = apps.filter((app: AppFromDb) => app.status === 'stopped');
@@ -1887,6 +2262,9 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       for (const app of stoppedApps) {
         try {
           const appUrn = createAppUrn(app.appName, app.appStoreSlug);
+          if (!(await this.operatorMay(operatorUserId, appUrn, 'start'))) {
+            continue;
+          }
           await this.startApp({ appUrn, skipPull: true });
         } catch (e) {
           this.logger.error(`Failed to start app ${app.id}`, e);
@@ -1895,7 +2273,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     })();
   }
 
-  async stopAllApps() {
+  async stopAllApps(operatorUserId?: number) {
     const apps = await this.appRepository.getApps();
     type AppFromDb = Awaited<ReturnType<typeof this.appRepository.getApps>>[number];
     const runningApps = apps.filter((app: AppFromDb) => app.status === 'running');
@@ -1904,6 +2282,9 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       for (const app of runningApps) {
         try {
           const appUrn = createAppUrn(app.appName, app.appStoreSlug);
+          if (!(await this.operatorMay(operatorUserId, appUrn, 'stop'))) {
+            continue;
+          }
           await this.stopApp({ appUrn });
         } catch (e) {
           this.logger.error(`Failed to stop app ${app.id}`, e);
@@ -1912,7 +2293,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     })();
   }
 
-  async restartAllApps() {
+  async restartAllApps(operatorUserId?: number) {
     const apps = await this.appRepository.getApps();
     type AppFromDb = Awaited<ReturnType<typeof this.appRepository.getApps>>[number];
     const runningApps = apps.filter((app: AppFromDb) => app.status === 'running');
@@ -1921,6 +2302,9 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       for (const app of runningApps) {
         try {
           const appUrn = createAppUrn(app.appName, app.appStoreSlug);
+          if (!(await this.operatorMay(operatorUserId, appUrn, 'restart'))) {
+            continue;
+          }
           await this.restartApp({ appUrn });
         } catch (e) {
           this.logger.error(`Failed to restart app ${app.id}`, e);
@@ -1968,8 +2352,8 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     }
   }
 
-  private reportAppFailure(appUrn: AppUrn, phase: AppFailurePhase, message: string): void {
-    this.errorReportingService?.reportAppFailure({ appUrn, phase, message });
+  private reportAppFailure(appUrn: AppUrn, phase: AppFailurePhase, message: string, errorCode?: string): void {
+    this.errorReportingService?.reportAppFailure({ appUrn, phase, message, errorCode });
   }
 
   private registerDispatchedCommand(appUrn: AppUrn, requestId: string, command: OperationCommand): void {
@@ -2005,6 +2389,9 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     command: OperationCommand;
     success: boolean;
     message?: string;
+    errorCode?: string;
+    errorDetail?: string;
+    settingsPath?: string;
     successOutcome?: {
       status: AppStatus;
       event: AppOutcomeSseEvent;
@@ -2047,12 +2434,131 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
         appUrn: params.appUrn,
         appStatus: params.failureOutcome.status,
         error: params.message,
+        errorCode: params.errorCode,
+        errorDetail: params.errorDetail,
+        settingsPath: params.settingsPath,
       });
       this.agentNotifyService?.notify(params.failureOutcome.notifyEvent, { appUrn: params.appUrn }, params.failureOutcome.notifySeverity ?? 'high');
-      this.reportAppFailure(params.appUrn, params.failureOutcome.failurePhase, params.message ?? 'Unknown error');
+      this.reportAppFailure(params.appUrn, params.failureOutcome.failurePhase, params.message ?? 'Unknown error', params.errorCode);
       return true;
     }
 
     return true;
+  }
+  /**
+   * Record a custom-domain choice, and take it off any app that held it before.
+   *
+   * A domain serves exactly one app. Two rows naming the same one turns every
+   * sync into a tug of war — whichever binds last takes it, the delivery
+   * reconcile unbinds the loser, the loser becomes a candidate again, and both
+   * apps carry a restart badge forever. The picker deliberately offers a domain
+   * that is already serving something (naming the app beside it), because moving
+   * one is legitimate; this is what makes the move a move rather than a fight.
+   *
+   * Only `custom_domain_intent` moves. The app that lost the choice keeps
+   * serving on the hostname Companion Portal actually wired until Portal says
+   * otherwise, which it does on the sync after the new binding lands.
+   *
+   * Best-effort: a failure here leaves a duplicate choice, which the bind pass
+   * then refuses to act on rather than flapping over. Failing the install for it
+   * would be worse than the state it prevents.
+   */
+  /**
+   * ═══════════════════════════════════════════════════════════════════════════
+   * STOP SERVING THE DOMAIN WHEN THE PICKER ASKED FOR THE PLATFORM ADDRESS
+   * ═══════════════════════════════════════════════════════════════════════════
+   *
+   * `customDomain: ''` is the picker's "use the platform address". Writing a null
+   * intent and stopping changed nothing anybody could see: the bind pass skips
+   * apps with no intent, CI-Cloud went on reporting the domain delivered, the
+   * reconcile computed `next === current`, and the app kept serving a hostname
+   * the operator had just asked it to give up — with a success toast on top
+   * (CI-Engineering#208, defect 1).
+   *
+   * ⚠ HERE, AND NOT IN THE SYNC PASS, because this is an ANSWER rather than a
+   * convergence. CI-Cloud parks the domain — the organization keeps it, and
+   * another bind points it somewhere else — so the cost is not the reason. The
+   * reason is that only the save that cleared the picker knows an operator asked
+   * for it, and the person who asked should be told whether it worked. A
+   * heartbeat has no such instruction to carry.
+   *
+   * ⚠ ONE METHOD FOR BOTH DIALOGS. The settings save and a REINSTALL both offer
+   * "use the platform address", and an install path that only cleared the intent
+   * reported success, dropped the choice, and left CI-Cloud serving — after which
+   * the next reconcile re-adopted the domain and raised a restart badge, so the
+   * operator watched the thing they had just given up come back. Two copies of
+   * this sequence is how the two paths drifted apart in the first place.
+   *
+   * ⚠ CALL IT AFTER EVERY OTHER REFUSAL. It reaches CI-Cloud and writes the row,
+   * so a conflict check that throws afterwards would leave the domain parked and
+   * the binding cleared for a save the operator was told had failed.
+   *
+   * ⚠ AND IT CLEARS THE CHOICE WITH THE BINDING, IN ONE WRITE. Env generation
+   * does not read the form: `generateEnvFile` and the Traefik label builder both
+   * read the ROW, so `custom_domain` has to be null before `generate_env` is
+   * published or a stopped app keeps an `.env` pointing at a hostname that no
+   * longer serves (CI-Hub#1207 from the other end). The intent has to go in the
+   * same write, or a failure between here and the row update below leaves an
+   * intent naming the domain that was just parked — which the next bind pass
+   * would dutifully ask CI-Cloud to wire back.
+   */
+  private async releaseClearedCustomDomain(
+    appUrn: AppUrn,
+    parsedForm: ParsedAppForm,
+    app: Awaited<ReturnType<AppsRepository['getApps']>>[number],
+  ): Promise<void> {
+    // Guarded on the binding so a fresh install, or an app that never had one,
+    // never reaches CI-Cloud at all.
+    if (parsedForm.customDomain !== '' || !normalizeStoredHostname(app.customDomain)) {
+      return;
+    }
+
+    const released = await this.exposureSyncService.releaseCustomDomain(app);
+
+    if (!released.ok) {
+      /*
+       * Reported rather than swallowed, and BEFORE the row is written, so a
+       * refusal leaves the app exactly as it was. Clearing the binding locally
+       * after a failed release would stop the app publishing a hostname CI-Cloud
+       * is still serving on its behalf — the app broken on a domain that still
+       * resolves, which is worse than the state the operator asked to leave.
+       */
+      throw new TranslatableError('APP_ERROR_CUSTOM_DOMAIN_RELEASE_FAILED', { id: appUrn, message: released.message }, HttpStatus.BAD_GATEWAY);
+    }
+
+    await this.appRepository.updateAppById(app.id, { customDomain: null, customDomainIntent: null, customDomainTakeover: false });
+  }
+
+  private async claimCustomDomainIntent(appId: number, customDomain: string | undefined): Promise<void> {
+    if (!customDomain) {
+      return;
+    }
+
+    try {
+      const cleared = await this.appRepository.clearCustomDomainIntentElsewhere(appId, customDomain);
+
+      for (const row of cleared) {
+        this.logger.info(`[Cloudflare] ${row.appName}:${row.appStoreSlug} no longer requests ${customDomain}; it was chosen for another app.`);
+      }
+    } catch (error) {
+      this.logger.error(`Failed to make the custom-domain choice exclusive: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  /**
+   * Hub-session grants. Omitted `operatorUserId` is Portal-push / CLI / boot
+   * recovery — those paths are not a Hub-session person.
+   */
+  private async operatorMay(operatorUserId: number | undefined, appUrn: AppUrn, action: HubAction): Promise<boolean> {
+    if (operatorUserId == null) {
+      return true;
+    }
+
+    const whois = this.moduleRef.get(MarketplaceWhoIsService, { strict: false });
+    if (!whois) {
+      return true;
+    }
+
+    return whois.has(operatorUserId, appUrn, action);
   }
 }

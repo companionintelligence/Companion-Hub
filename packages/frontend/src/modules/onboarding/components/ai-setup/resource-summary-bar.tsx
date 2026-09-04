@@ -77,7 +77,7 @@ export const ResourceSummaryBar = ({ selectedModels, installedCatalogIds, availa
       )}
 
       {budget.memoryWarning && (
-        <p className="text-xs text-yellow-700 dark:text-yellow-500" data-testid="resource-memory-warning">
+        <p className="text-xs text-warning" data-testid="resource-memory-warning">
           {budget.memoryWarning}
         </p>
       )}

@@ -21,6 +21,8 @@ export class StartAppCommand extends AppLifecycleCommand {
         return { success: true, message: 'App config not found. Skipping...' };
       }
 
+      await this.assertMarketplaceEntitlement(appUrn, 'start');
+
       if (isPortExposeApp(config)) {
         const { PortExposeService } = await import('../../custom-apps/port-expose.service');
         const portExposeService = this.moduleRef.get(PortExposeService, { strict: false });
@@ -30,6 +32,12 @@ export class StartAppCommand extends AppLifecycleCommand {
       }
 
       logger.info(`Starting app ${appUrn}`);
+
+      // Host-device preflight — a device present at install time (e.g. /dev/kfd for ROCm)
+      // can be gone by the time the app is started again (driver not loaded yet at boot,
+      // host reconfigured). Catch that here with friendly guidance instead of letting
+      // Docker's raw device-attach error reach the user unclassified.
+      await this.assertRequiredHostDevices(appUrn);
 
       await this.ensureAppDir(appUrn, form);
 

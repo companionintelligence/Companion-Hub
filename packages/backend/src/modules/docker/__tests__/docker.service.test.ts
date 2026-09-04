@@ -697,11 +697,16 @@ describe('DockerService', () => {
   });
 
   describe('composeUpService (bounded up)', () => {
-    const procClosing = (code: number) => {
+    const procClosing = (code: number, stderr = '') => {
       const proc = createMockSpawnProcess();
       proc.on = vi.fn().mockImplementation((event, handler) => {
         if (event === 'close') {
-          queueMicrotask(() => handler(code));
+          queueMicrotask(() => {
+            if (stderr) {
+              proc.stderr.emit('data', Buffer.from(stderr));
+            }
+            handler(code);
+          });
         }
         return proc;
       });
@@ -737,6 +742,27 @@ describe('DockerService', () => {
       });
       return proc;
     };
+
+    it('force-recreates after a stale-network compose up failure', async () => {
+      vi.spyOn(service, 'restartContainer').mockRejectedValue(new Error('Failed to restart container cloudflared'));
+      (child_process.spawn as any)
+        // Initial compose up (2 attempts) — both report the deleted-network error.
+        .mockImplementationOnce(() => procClosing(1, 'Error response from daemon: failed to set up container networking: network abcdef not found'))
+        .mockImplementationOnce(() => procClosing(1, 'Error response from daemon: failed to set up container networking: network abcdef not found'))
+        // docker rm -f
+        .mockImplementationOnce(() => procClosing(0))
+        // Force-recreate compose up
+        .mockImplementationOnce(() => procClosing(0));
+
+      await expect(service.ensureContainerRunning('cloudflared', { composeFile: HUB_COMPOSE_FILE, profile: 'cloudflare' })).resolves.toBeUndefined();
+
+      const calls = (child_process.spawn as any).mock.calls as any[][];
+      const upCalls = calls.filter((c) => Array.isArray(c[1]) && c[1].includes('up'));
+      const rmCalls = calls.filter((c) => Array.isArray(c[1]) && c[1][0] === 'rm' && c[1].includes('-f'));
+      expect(rmCalls.length).toBe(1);
+      expect(upCalls.length).toBe(3); // 2 failed + 1 force-recreate
+      expect(upCalls[2][1]).toEqual(expect.arrayContaining(['--force-recreate']));
+    });
 
     it('does not run compose up when the container restart succeeds', async () => {
       vi.spyOn(service, 'restartContainer').mockResolvedValue(undefined);

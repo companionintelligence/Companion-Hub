@@ -16,7 +16,7 @@ export interface RegistrationStateDrift {
   detected: boolean;
   hardwareDeviceId: string;
   localRegistered: boolean;
-  /** null when CI Cloud is unreachable or not configured */
+  /** null when Companion Portal is unreachable or not configured */
   portalDeviceActive: boolean | null;
   staleAppEnvDeviceIds: string[];
   signals: StateDriftSignal[];

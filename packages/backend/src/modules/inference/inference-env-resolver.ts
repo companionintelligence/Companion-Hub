@@ -6,6 +6,8 @@ import { HardwareInspectorService } from './hardware-inspector.service';
 import { OllamaBackend } from './backends/ollama.backend';
 import { VllmBackend } from './backends/vllm.backend';
 import { LemonadeBackend } from './backends/lemonade.backend';
+import { MtplxBackend } from './backends/mtplx.backend';
+import { DsparkBackend } from './backends/dspark.backend';
 import { LuceboxBackend } from './backends/lucebox.backend';
 import type { InferenceBackend } from './backends/backend.interface';
 import { CloudFallbackService } from './cloud-fallback.service';
@@ -18,6 +20,8 @@ export const BACKEND_API_KEY: Record<InferenceBackendType, string> = {
   ollama: 'ollama',
   vllm: 'vllm',
   lemonade: 'lemonade',
+  mtplx: 'mtplx',
+  dspark: 'dspark',
   lucebox: 'lucebox',
 };
 
@@ -55,7 +59,7 @@ export interface StandardizedAiEnv {
    * window so apps don't inherit Ollama's oversized memory-based default.
    */
   CI_LLM_NUM_CTX?: string;
-  /** Active inference backend (`ollama` | `vllm` | `lemonade` | `lucebox` | `cloud`). */
+  /** Active inference backend (`ollama` | `vllm` | `lemonade` | `mtplx` | `dspark` | `lucebox` | `cloud`). */
   CI_INFERENCE_BACKEND?: string;
   /** Every enabled cloud provider (CI_CLOUD_* + conventional aliases). Additive. */
   cloudProviderEnv?: Record<string, string>;
@@ -81,6 +85,8 @@ export class InferenceEnvResolver {
     private readonly ollamaBackend: OllamaBackend,
     private readonly vllmBackend: VllmBackend,
     private readonly lemonadeBackend: LemonadeBackend,
+    private readonly mtplxBackend: MtplxBackend,
+    private readonly dsparkBackend: DsparkBackend,
     private readonly luceboxBackend: LuceboxBackend,
     private readonly cloudFallback: CloudFallbackService,
   ) {}
@@ -93,6 +99,10 @@ export class InferenceEnvResolver {
         return this.vllmBackend;
       case 'lemonade':
         return this.lemonadeBackend;
+      case 'mtplx':
+        return this.mtplxBackend;
+      case 'dspark':
+        return this.dsparkBackend;
       case 'lucebox':
         return this.luceboxBackend;
     }
@@ -204,7 +214,7 @@ export class InferenceEnvResolver {
         const curated = this.modelRegistry.getCuratedModel(preferences.preferredEmbeddingModel);
         if (curated?.backend === type) return curated.backendModelId;
       }
-      return this.modelRegistry.getRecommendedEmbeddingModel(profile.tier, type)?.backendModelId;
+      return this.modelRegistry.getRecommendedEmbeddingModel(profile.tier, type, profile)?.backendModelId;
     };
 
     let embeddingModel = resolveEmbedding(backendType);
@@ -230,7 +240,7 @@ export class InferenceEnvResolver {
       }
     }
     if (!visionModel) {
-      const recommended = this.modelRegistry.getRecommendedVisionModel(profile.tier, backendType);
+      const recommended = this.modelRegistry.getRecommendedVisionModel(profile.tier, backendType, profile);
       visionModel = recommended?.backendModelId;
     }
 
@@ -278,7 +288,7 @@ export class InferenceEnvResolver {
   private isInstalled(model: CuratedModel, modelsLoaded: string[]): boolean {
     const tracked = this.modelRegistry.getTrackedModel(model.id);
     const trackedPulled = tracked?.state === 'pulled' || tracked?.state === 'loaded' || tracked?.state === 'pinned';
-    if (model.backend === 'vllm' || model.backend === 'lucebox') {
+    if (model.backend === 'vllm' || model.backend === 'mtplx' || model.backend === 'dspark' || model.backend === 'lucebox') {
       return trackedPulled || isServedModelForCatalog(model, modelsLoaded);
     }
     return isCatalogModelInstalled(model, modelsLoaded, trackedPulled);

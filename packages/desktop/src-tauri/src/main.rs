@@ -3,9 +3,11 @@
 
 mod commands;
 mod discovery;
+pub mod docker_engine;
 mod error_reporting;
 pub mod hub_env;
 pub mod hub_manager;
+mod inference_runners;
 pub mod port_manager;
 mod sentry_scrubber;
 mod tray;
@@ -171,6 +173,22 @@ async fn install_ollama_command() -> Result<hub_manager::OllamaInstallResult, St
         .map_err(|e| format!("Ollama install task failed: {e}"))?
 }
 
+/// Install and start the host/container inference runners selected by onboarding.
+#[tauri::command]
+async fn install_and_start_inference_runners_command(
+    state: tauri::State<'_, hub_manager::HubPaths>,
+    backends: Vec<String>,
+) -> Result<Vec<inference_runners::InferenceRunnerResult>, String> {
+    let data_dir = state.data_dir.clone();
+    tokio::task::spawn_blocking(move || {
+        Ok(inference_runners::install_and_start_inference_runners(
+            &data_dir, &backends,
+        ))
+    })
+    .await
+    .map_err(|error| format!("Inference runner setup task failed: {error}"))?
+}
+
 /// Install ROCm on Ubuntu via pkexec-elevated AMDGPU installer.
 #[tauri::command]
 async fn install_rocm_command() -> Result<hub_manager::RocmInstallResult, String> {
@@ -261,9 +279,10 @@ fn validate_open_path(path: &Path) -> Result<(), String> {
 /// OS default file explorer. The single open/log/validate code path so the logs,
 /// per-app data, and root app-data buttons all behave identically.
 ///
-/// `create_if_missing` is `true` for the logs folder (preserving its prior
-/// behavior) and `false` for data folders, so a wrong or remote path surfaces as
-/// an error instead of silently creating a stray directory.
+/// `create_if_missing` is `true` for the logs folder and for an app data folder
+/// whose parent already exists (fresh install, volume not written yet). A path
+/// with no existing parent stays an error so a wrong or remote path does not
+/// silently create a stray directory tree.
 fn open_directory(
     app: &tauri::AppHandle,
     path: &Path,
@@ -291,9 +310,25 @@ fn open_directory(
         &format!("opening {}", path.display()),
     );
 
-    app.opener()
+    // Prefer opening the directory itself. `reveal_item_in_dir` highlights an
+    // item in its *parent* (Finder/Explorer/FileManager1), which is wrong UX for
+    // "open this app's data folder" and on Linux needs a working D-Bus session
+    // (fails headless / some Wayland sessions). `open_path` maps to `open` /
+    // `explorer` / `xdg-open` and opens the folder directly on every desktop OS.
+    // Fall back to reveal only when open_path fails (rare; e.g. no handler).
+    if let Err(open_err) = app
+        .opener()
         .open_path(path.to_string_lossy().to_string(), None::<&str>)
-        .map_err(|err| {
+    {
+        let _ = hub_manager::append_desktop_log_for(
+            &data_dir,
+            "open_folder",
+            &format!(
+                "open_path failed for {}: {open_err}; falling back to reveal_item_in_dir",
+                path.display()
+            ),
+        );
+        app.opener().reveal_item_in_dir(path).map_err(|err| {
             let message = err.to_string();
             let _ = hub_manager::append_desktop_log_for(
                 &data_dir,
@@ -302,6 +337,9 @@ fn open_directory(
             );
             message
         })
+    } else {
+        Ok(())
+    }
 }
 
 /// Open the desktop logs directory in the system file manager.
@@ -314,7 +352,8 @@ async fn open_logs_dir_command(app: tauri::AppHandle) -> Result<(), String> {
 /// Open an absolute host directory in the OS default file explorer. The path is
 /// resolved by the backend (an app's data folder or the root app-data folder)
 /// and passed through here. The desktop app and the data must be on the same
-/// machine; a missing path returns an error so the UI can show a toast.
+/// machine. Creates the leaf directory when its parent already exists so a
+/// freshly installed app whose container has not written yet still opens.
 #[tauri::command]
 async fn open_path_command(app: tauri::AppHandle, path: String) -> Result<(), String> {
     // The backend resolves host paths from ROOT_FOLDER_HOST, which on Windows is
@@ -322,7 +361,9 @@ async fn open_path_command(app: tauri::AppHandle, path: String) -> Result<(), St
     // to a native host path (`C:\Users\...`) so the OS file explorer can open it;
     // otherwise `validate_open_path` rejects it as non-absolute. No-op on POSIX hosts.
     let native = hub_manager::host_path_from_docker_path(&path);
-    open_directory(&app, &native, false)
+    let path = std::path::PathBuf::from(native);
+    let create_if_missing = path.parent().is_some_and(|parent| parent.is_dir()) && !path.exists();
+    open_directory(&app, &path, create_if_missing)
 }
 
 #[tauri::command]
@@ -473,6 +514,7 @@ pub fn run() {
             is_user_stopped_command,
             install_docker_command,
             install_ollama_command,
+            install_and_start_inference_runners_command,
             install_rocm_command,
             verify_rocm_command,
             install_docker_engine_alternative_command,
@@ -513,39 +555,31 @@ pub fn run() {
             // window.open_devtools();
 
             if let Ok(store) = app.store("settings.json") {
-                // Geometry is persisted on window close (see tray.rs). Its absence
-                // means this is the first launch on this machine — open maximized so
-                // the onboarding wizard has the full screen to work with. Every later
-                // launch restores the saved size and position instead.
-                let has_saved_geometry = store.get("window_width").is_some();
-
-                if has_saved_geometry {
-                    if let Some(x) = store
-                        .get("window_x")
+                // Geometry is persisted on window close and on tray Quit (see
+                // tray.rs). When nothing is saved yet the window keeps the
+                // configured default (1280x800, centered) — never maximized.
+                if let Some(x) = store
+                    .get("window_x")
+                    .and_then(|v: serde_json::Value| v.as_f64())
+                {
+                    if let Some(y) = store
+                        .get("window_y")
                         .and_then(|v: serde_json::Value| v.as_f64())
                     {
-                        if let Some(y) = store
-                            .get("window_y")
-                            .and_then(|v: serde_json::Value| v.as_f64())
-                        {
-                            let _ = window
-                                .set_position(tauri::PhysicalPosition::new(x as i32, y as i32));
-                        }
+                        let _ =
+                            window.set_position(tauri::PhysicalPosition::new(x as i32, y as i32));
                     }
-                    if let Some(w) = store
-                        .get("window_width")
+                }
+                if let Some(w) = store
+                    .get("window_width")
+                    .and_then(|v: serde_json::Value| v.as_f64())
+                {
+                    if let Some(h) = store
+                        .get("window_height")
                         .and_then(|v: serde_json::Value| v.as_f64())
                     {
-                        if let Some(h) = store
-                            .get("window_height")
-                            .and_then(|v: serde_json::Value| v.as_f64())
-                        {
-                            let _ = window.set_size(tauri::PhysicalSize::new(w as u32, h as u32));
-                        }
+                        let _ = window.set_size(tauri::PhysicalSize::new(w as u32, h as u32));
                     }
-                } else {
-                    // First-time startup — maximize to fill the screen.
-                    let _ = window.maximize();
                 }
             }
 

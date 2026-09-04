@@ -7,6 +7,7 @@ import { scrubString } from '@/core/error-reporting/sentry-scrubber';
 import { LoggerService } from '@/core/logger/logger.service';
 import { APP_DATA_DIR, DATA_DIR, TUNNEL_DIR, tunnelUserClearedMarkerPath } from '@/common/constants';
 import { buildPortalAxiosConfig, readPortalInternalUrlOverride, withPortalAxiosHeaders } from '@/common/helpers/portal-url';
+import { rateLimitedWaitCopy } from '@/common/helpers/retry-after';
 import { CloudflareClientService } from '../cloudflare/cloudflare-client.service';
 import { PortalClientService } from '@/core/portal/portal-client.service';
 import { TraefikConfigService } from '../docker/traefik-config.service';
@@ -116,32 +117,31 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
   }
 
   private async runDeferredBootstrap() {
-    // Before checking full registration status, try to recover the tunnel
-    // token file from the database. isRegistered() requires both a DB record
-    // AND the token file on disk, so we must restore the file first.
+    // Restore the tunnel token before checking registration. `isRegistered()`
+    // requires both a database row and the on-disk token.
     const tunnelRecovered = await this.recoverTunnelTokenFromDb();
 
-    // Ensure CloudflareClientService has the token in memory (for getTunnelToken() / app-context).
-    // After a restart, the token file may exist on disk but CloudflareClientService starts with null.
+    // Reload the token into `CloudflareClientService` because the file survives a
+    // restart while its in-memory `getTunnelToken()` state does not.
     await this.ensureCloudflareClientHasTunnelToken();
 
-    // Covers the "registered-before, Hub restarted" case: recoverTunnelTokenFromDb
-    // only spawns cloudflared when the token file is missing, so without this call
-    // the public hub-*.$DOMAIN hostname stays DNS-resolvable but the tunnel is dead.
+    // `recoverTunnelTokenFromDb` starts `cloudflared` only when the token file is
+    // missing. Ensure it also runs after a registered Hub restarts with an existing
+    // file, or the public hostname could resolve while its tunnel remains down.
     await this.cloudflareClientService.ensureCloudflaredRunning({ forceRestart: tunnelRecovered });
 
-    // Ensure Traefik has a route for the hub's public hostname (e.g. devbox-core1.companionintelligence.com)
-    // so requests through the Cloudflare tunnel reach ci-os-hub.
+    // Restore the Traefik route so Cloudflare Tunnel requests for the public
+    // hostname reach Companion Hub.
     await this.ensureHubRouteFromRegistration();
 
-    // Sync in-memory phase from persisted DB state
+    // Restore the in-memory phase from durable registration state.
     await this.syncPhaseFromDb();
 
     if (isOperational(this._currentPhase)) {
       await this.verifyLicense();
 
-      // Log a warning if tunnelId is missing — hub can still operate but some
-      // features (e.g. tunnel config updates) may not work until re-paired.
+      // A missing tunnel ID does not stop the Hub, but tunnel configuration
+      // updates remain unavailable until the device pairs again.
       if (isOperational(this._currentPhase)) {
         await this.recoverTunnelIdFromCloud();
       }
@@ -163,9 +163,10 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
   }
 
   /**
-   * Write the Traefik hub route for the public hostname when we have a
-   * registered org with hubSubdomain. Ensures the hub is reachable via
-   * Cloudflare tunnel after bootstrap/restart.
+   * Writes the Traefik route for a registered Hub's public hostname.
+   *
+   * Restore this route during bootstrap so Cloudflare Tunnel can reach the Hub
+   * after a restart.
    */
   private async ensureHubRouteFromRegistration(): Promise<void> {
     try {
@@ -186,9 +187,10 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
   // ---------------------------------------------------------------------------
 
   /**
-   * Sync the in-memory phase from the persisted DB row.
-   * Detects disk-level degradation (e.g. missing tunnel token) and
-   * transitions accordingly.
+   * Synchronizes the in-memory phase with the persisted database row.
+   *
+   * A missing on-disk tunnel token moves an otherwise operational registration
+   * into the degraded phase.
    */
   private async syncPhaseFromDb(): Promise<void> {
     try {
@@ -205,9 +207,9 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
         this.logger.warn(`Invalid provisioning phase "${rawPhase}" in DB — falling back to "${persisted}"`);
       }
 
-      // If the DB says we should be operational, verify the tunnel token is on disk.
-      // Sync the in-memory phase first so the transition from an operational phase
-      // to 'degraded' is legal (unregistered → degraded is not).
+      // If durable state is operational, require its tunnel token on disk. Set the
+      // in-memory phase first so the transition to `degraded` remains legal;
+      // `unregistered` cannot transition directly to `degraded`.
       if (isOperational(persisted) && !this.hasTunnelToken()) {
         this.logger.warn('Tunnel token missing — transitioning to degraded');
         this._currentPhase = persisted;
@@ -223,13 +225,13 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
   }
 
   /**
-   * Transition to a new provisioning phase. Persists to DB if an org exists
-   * and updates the in-memory cache. Logs the transition.
+   * Transitions to a provisioning phase and updates durable state when an
+   * organization exists.
    */
   public async setPhase(to: ProvisioningPhase, reasons: DegradedReason[] = [], orgId?: string): Promise<void> {
     const from = this._currentPhase;
 
-    // Allow idempotent no-ops — except degraded→degraded which may update reasons
+    // Skip idempotent transitions except `degraded` updates that change reasons.
     if (from === to && to !== 'degraded') return;
 
     if (!isLegalTransition(from, to)) {
@@ -242,11 +244,11 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
 
     this.logger.info(`Provisioning phase: ${from} → ${to}${reasons.length ? ` (${reasons.join(', ')})` : ''}`);
 
-    // Notify agent of phase transitions
+    // Notify the agent so it can respond to registration-state changes.
     const urgency = to === 'degraded' ? 'high' : 'medium';
     this.agentNotifyService?.notify('registration.state_changed', { from, to, reasons }, urgency as 'high' | 'medium');
 
-    // Persist when we know the org ID
+    // Persist only when an organization row can own the phase.
     const id = orgId ?? (await this.deviceRegistrationRepository.getFirstDeviceRegistration())?.id;
     if (id) {
       await this.deviceRegistrationRepository.updateProvisioningState(id, to, this._degradedReasons).catch((e) => {
@@ -257,15 +259,15 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     this.phaseReadCachedAt = Date.now();
   }
 
-  /** Return the current in-memory registration status snapshot. */
+  /** Returns the current in-memory registration status snapshot. */
   public getRegistrationStatus(): RegistrationStatus {
     return buildRegistrationStatus(this._currentPhase, this._degradedReasons);
   }
 
   /**
-   * Return the current in-memory registration status snapshot.
-   * Schedules a background refresh from durable sources (DB + disk) when the
-   * read cache is stale; callers get the cached phase immediately.
+   * Returns the current registration status without waiting for durable reads.
+   *
+   * A stale cache schedules a background refresh from the database and disk.
    */
   public async getLiveRegistrationStatus(): Promise<RegistrationStatus> {
     this.schedulePhaseRefreshFromSources();
@@ -273,7 +275,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     return this.getRegistrationStatus();
   }
 
-  /** Refresh phase from DB/disk in the background when the read cache is stale. */
+  /** Refreshes the phase from the database and disk when the read cache is stale. */
   private schedulePhaseRefreshFromSources(): void {
     const now = Date.now();
     if (this.phaseReadCachedAt > 0 && now - this.phaseReadCachedAt < PHASE_READ_CACHE_TTL_MS) {
@@ -289,15 +291,17 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
         this.logger.debug('Background registration phase refresh failed', error);
       })
       .finally(() => {
-        // Throttle retries even when refresh fails so status polls don't hammer DB/disk.
+        // Throttle failed refreshes too, preventing status polling from repeatedly
+        // reading the database and disk.
         this.phaseReadCachedAt = Date.now();
         this.phaseRefreshInFlight = null;
       });
   }
 
   /**
-   * Throttled, deduped Portal check-in for status endpoints.
-   * Non-fatal when Portal is unreachable.
+   * Starts a throttled, deduplicated Portal check-in for status endpoints.
+   *
+   * Portal unavailability does not fail the status request.
    */
   private async maybeValidateWithCloud(): Promise<void> {
     if (!isOperational(this._currentPhase)) {
@@ -323,23 +327,22 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
         });
     }
 
-    // Never block status/API handlers on Portal or tunnel probes — return the
-    // last-known phase immediately while validation runs in the background.
+    // Return the last known phase immediately so Portal and tunnel probes never
+    // block status handlers.
   }
 
   /**
-   * Single source of truth for refreshing the in-memory phase from DB + disk.
-   * Called by getLiveRegistrationStatus() and isRegistered().
+   * Refreshes the in-memory phase from the database and disk.
    *
-   * Rules:
-   *  1. If the in-memory phase is already operational AND the tunnel token
-   *     exists on disk → keep the current phase (fast path).
-   *  2. If operational but the token is missing AND there is no DB row →
-   *     reset to unregistered.
-   *  3. If operational but the token is missing AND there IS a DB row →
-   *     transition to degraded.
-   *  4. If not operational → check the DB; if an org exists with the token
-   *     on disk, sync the DB phase into memory.
+   * `getLiveRegistrationStatus()` and `isRegistered()` share these rules:
+   *
+   * 1. Keep an operational in-memory phase when the tunnel token exists.
+   * 2. Reset an operational phase to `unregistered` when both the token and
+   *    organization row are missing.
+   * 3. Move an operational phase to `degraded` when the organization row exists
+   *    but the token is missing.
+   * 4. When the phase is not operational, restore it from an organization row
+   *    that has an on-disk token.
    */
   private async refreshPhaseFromSources(): Promise<void> {
     if (isOperational(this._currentPhase)) {
@@ -347,7 +350,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
 
       const hasOrg = await this.deviceRegistrationRepository.hasAnyDeviceRegistration().catch((error) => {
         this.logger.debug('Could not check organization in database:', error);
-        return true; // Assume org exists so we don't wipe state on transient DB errors
+        return true; // Preserve state when a transient database error prevents verification.
       });
 
       if (!hasOrg) {
@@ -361,7 +364,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
       return;
     }
 
-    // Not currently operational — check DB for an existing registration
+    // An existing durable registration can restore a nonoperational in-memory phase.
     try {
       const hasOrg = await this.deviceRegistrationRepository.hasAnyDeviceRegistration();
       if (hasOrg) {
@@ -377,9 +380,10 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
   }
 
   /**
-   * If the DB has a registered org with tunnel credentials but the token file
-   * is missing on disk, re-write it. This covers container restarts, volume
-   * resets, and dev-mode scenarios.
+   * Restores a missing tunnel-token file from a registered organization row.
+   *
+   * Container restarts, volume resets, and development environments can preserve
+   * the database credentials while losing the file.
    */
   private async recoverTunnelTokenFromDb(): Promise<boolean> {
     try {
@@ -434,9 +438,10 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
   }
 
   /**
-   * Load tunnel token from disk into CloudflareClientService memory.
-   * After a restart, the token file exists but CloudflareClientService.tunnelToken is null.
-   * This ensures getTunnelToken() returns correctly for /app-context (cloudflareAvailable).
+   * Loads the on-disk tunnel token into `CloudflareClientService`.
+   *
+   * A process restart clears the in-memory token but preserves the file. Restoring
+   * it keeps `getTunnelToken()` and `/app-context` availability accurate.
    */
   private async ensureCloudflareClientHasTunnelToken(): Promise<void> {
     try {
@@ -450,12 +455,12 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
   }
 
   /**
-   * Logs a warning if the org record is missing its tunnelId.
-   * We no longer attempt a cloud round-trip here — if the hub is operational
-   * (token file + DB record present) cloudflared is running and requests are
-   * being served regardless of what's stored in the tunnelId column.
-   * A missing tunnelId will be re-populated naturally on the next full
-   * re-pairing or when CI Portal pushes a state update via the callback.
+   * Reports an organization row that lacks its tunnel ID.
+   *
+   * Do not make a Portal request here. If the Hub is operational, its database
+   * row and token file already let `cloudflared` serve requests independently of
+   * the `tunnelId` column. Re-pairing or a later Companion Portal callback
+   * restores the missing metadata.
    */
   private async recoverTunnelIdFromCloud() {
     try {
@@ -482,11 +487,11 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
   }
 
   /**
-   * Validates the current registration against CI Cloud.
-   * Checks that the tunnel token file still exists, the device_id matches,
-   * and the device status in CI Cloud is 'active'.
-   * Only transitions to 'degraded' after 3 consecutive failures to tolerate
-   * transient network issues.
+   * Validates the current registration against Companion Portal.
+   *
+   * The check requires an on-disk tunnel token and an active matching device.
+   * Three consecutive remote failures trigger `degraded`, allowing transient
+   * network errors to recover without changing the phase.
    */
   private async validateRegistrationWithCloud(): Promise<void> {
     if (!isOperational(this._currentPhase)) return;
@@ -497,7 +502,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
       return;
     }
 
-    // Re-sync CloudflareClientService from disk so getTunnelToken() stays correct
+    // Refresh the in-memory token so `getTunnelToken()` matches durable state.
     await this.ensureCloudflareClientHasTunnelToken();
 
     const { ciCloudUrl, ciHubApiKey } = this.config.getConfig();
@@ -506,10 +511,10 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     try {
       const deviceId = await this.getDeviceId();
 
-      // Confirm the device is still active in CI Portal via the check-in endpoint.
-      // The endpoint is device-authenticated, so present this device's API key
-      // (x-device-key) — a registered device always holds one. A 400 means the
-      // device is no longer active; network errors count toward the failure threshold.
+      // Confirm that Companion Portal still considers the device active. The
+      // check-in endpoint authenticates with the registered device's
+      // `x-device-key`. A 400 is definitive; network errors count toward the
+      // transient-failure threshold.
       const response = await axios.post(
         `${this.config.getOutboundCiCloudUrl()}/api/devices/check-in`,
         { device_id: deviceId },
@@ -524,7 +529,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
       );
 
       if (response.status === 400) {
-        // 400 is definitive — device was removed or deactivated in CI Portal.
+        // A 400 definitively means Companion Portal removed or deactivated the device.
         this.consecutiveValidationFailures = 0;
         this.logger.warn('Registration validation: device is no longer active in CI Portal (400) — clearing local registration for re-pairing');
         await this.resetRegistration({ reason: 'portal_rejected' });
@@ -532,7 +537,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
       }
 
       if (response.status < 200 || response.status >= 300) {
-        // Transient failure (5xx, etc.) — count toward the 3-strike threshold.
+        // Count remote failures, including 5xx responses, toward the three-attempt threshold.
         this.consecutiveValidationFailures++;
         this.logger.warn(`Registration validation: CI Portal check-in returned ${response.status} (failure ${this.consecutiveValidationFailures}/3)`);
         if (this.consecutiveValidationFailures >= 3) {
@@ -543,7 +548,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
 
       this.consecutiveValidationFailures = 0;
 
-      // Validation passed — recover from degraded if applicable
+      // A successful check-in restores a registration degraded by remote failures.
       if (this._currentPhase === 'degraded') {
         this.logger.info('Registration validation passed — recovering from degraded');
         await this.setPhase('locally_ready');
@@ -551,14 +556,14 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
         this.logger.info('Registration validation passed: device is active in CI Portal');
       }
 
-      // Best-effort tunnel reachability logging — never block validation completion.
+      // Probe tunnel reachability for diagnostics without delaying validation.
       if (this._currentPhase === 'locally_ready') {
         void this.logPublicHostnameReachability().catch((error) => {
           this.logger.debug(`Registration validation: public hostname probe failed: ${error instanceof Error ? error.message : String(error)}`);
         });
       }
     } catch (e) {
-      // Network/timeout errors are transient — count toward the 3-strike threshold.
+      // Count network and timeout errors toward the transient-failure threshold.
       this.consecutiveValidationFailures++;
       this.logger.error(`Registration validation: failed to reach CI Portal (failure ${this.consecutiveValidationFailures}/3)`, e);
       if (this.consecutiveValidationFailures >= 3) {
@@ -567,7 +572,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     }
   }
 
-  /** Log-only probe for tunnel DNS/HTTPS reachability — must not block request handlers. */
+  /** Probes tunnel DNS and HTTPS for logging without blocking request handlers. */
   private async logPublicHostnameReachability(): Promise<void> {
     const org = await this.deviceRegistrationRepository.getFirstDeviceRegistration();
     const { domain } = this.config.getConfig();
@@ -591,8 +596,10 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
   }
 
   /**
-   * Reset device registration to allow re-pairing.
-   * Clears in-memory state, database records, tunnel token, and resolved env.
+   * Resets device registration so the appliance can pair again.
+   *
+   * The reset clears in-memory state, database rows, the tunnel token, and the
+   * resolved environment.
    */
   public async resetRegistration(options?: { reason?: 'manual' | 'portal_rejected'; deregisterFromPortal?: boolean }): Promise<void> {
     const reason = options?.reason ?? 'manual';
@@ -614,67 +621,66 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
       }
     }
 
-    // Transition via setPhase so the change is logged consistently.
-    // Reset → unregistered is always a legal transition.
+    // Use `setPhase` for consistent logging. Reset to `unregistered` is always legal.
     await this.setPhase('unregistered');
 
-    // Stop validation intervals
+    // Stop validation before removing its registration state.
     if (this.periodicValidationInterval) {
       clearInterval(this.periodicValidationInterval);
       this.periodicValidationInterval = null;
     }
 
-    // Delete the device_registration records from the database
+    // Remove all durable device-registration rows.
     await this.deviceRegistrationRepository.deleteAll();
 
-    // Delete the tunnel token file from disk
+    // Remove the tunnel token from disk.
     const tokenPath = path.join(TUNNEL_DIR, 'token');
     try {
       await fs.promises.unlink(tokenPath);
     } catch {
-      // File may not exist
+      // A missing token already satisfies the reset.
     }
 
-    // Clear the resolved env file so it regenerates
+    // Remove the resolved environment so the next startup regenerates it.
     const resolvedEnvPath = path.join(DATA_DIR, 'state', '.env.resolved');
     try {
       await fs.promises.unlink(resolvedEnvPath);
     } catch {
-      // File may not exist
+      // A missing resolved environment already satisfies the reset.
     }
 
     await clearRehydrationState();
 
     this.logger.info('Device registration reset complete');
 
-    // Start polling for new registration
+    // Resume polling for the next registration.
     this.pollRegistration();
   }
 
   /**
-   * Restore public/remote access for a *registered* Hub degraded with
-   * `tunnel_token_missing`. Pairing is refused once registered (see pairDevice),
-   * so this instead recovers the already-provisioned tunnel credentials from the
-   * database and rewrites the token file. Returns a structured outcome so the UI
-   * can route correctly instead of dead-ending on the pairing screen:
-   *  - { recovered: true }                       token rewritten, tunnel restarted
-   *  - { recovered: false, action: 'restart' }   creds exist but the token file
-   *      could not be written (tunnel dir not writable by the Hub uid) — a restart
-   *      lets the container entrypoint heal ownership, then boot recovery rewrites it
-   *  - { recovered: false, action: 're_pair' }   no recoverable credentials — the
-   *      tunnel must be re-provisioned, which requires resetting and re-pairing
+   * Restores remote access for a registered Hub with `tunnel_token_missing`.
+   *
+   * `pairDevice` refuses an already registered device, so recover the existing
+   * tunnel credentials from the database and rewrite the token file. The
+   * structured result directs the UI:
+   *
+   * - `{ recovered: true }`: The token was restored and the tunnel restarted.
+   * - `{ recovered: false, action: 'restart' }`: Credentials exist, but the Hub
+   *   user cannot write the tunnel directory. A restart lets the container
+   *   entrypoint repair ownership before boot recovery tries again.
+   * - `{ recovered: false, action: 're_pair' }`: No recoverable credentials
+   *   remain, so the device must reset and pair again to provision a tunnel.
    */
   public async reconnectTunnel(): Promise<{ recovered: boolean; action?: 're_pair' | 'restart'; reason: string }> {
-    // The banner only surfaces this action for a degraded + tunnel_token_missing
-    // device, so trust the in-memory phase instead of re-deriving it — a
-    // refreshPhaseFromSources() here would re-persist a degraded→degraded
-    // transition (firing a redundant high-urgency agent notification) and could
-    // even flip an out-of-band-cleared registration to 'unregistered'.
+    // The banner exposes this action only for a degraded device with
+    // `tunnel_token_missing`, so trust the in-memory phase. Calling
+    // `refreshPhaseFromSources()` would persist a redundant degraded transition,
+    // emit another high-urgency notification, and could reset a registration
+    // cleared out of band to `unregistered`.
 
-    // If the token is already on disk, the missing-token condition is resolved.
-    // Clear any stuck degraded phase so the UI reflects success — this state is
-    // reachable when boot recovery rewrote the token but Portal was unreachable,
-    // so the phase never transitioned out of degraded.
+    // If the token already exists, clear a stale degraded phase. Boot recovery can
+    // rewrite the file while Companion Portal is unavailable, leaving the phase
+    // unchanged even though the local condition has recovered.
     if (this.hasTunnelToken()) {
       await this.clearTunnelTokenMissingDegraded();
       return { recovered: true, reason: 'tunnel_token_present' };
@@ -683,12 +689,12 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
       return { recovered: false, reason: 'not_tunnel_token_missing' };
     }
 
-    // Honor an explicit reconnect over a user-cleared token: drop the marker so
-    // credential recovery from the database is no longer skipped.
+    // An explicit reconnect overrides an earlier user-cleared token. Remove the
+    // marker so database recovery can proceed.
     try {
       await fs.promises.unlink(tunnelUserClearedMarkerPath());
     } catch {
-      // marker not present — nothing to clear
+      // A missing marker requires no cleanup.
     }
 
     const org = await this.deviceRegistrationRepository.getFirstDeviceRegistration();
@@ -696,29 +702,29 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
       return { recovered: false, action: 're_pair', reason: 'not_registered' };
     }
     if (!org.tunnelToken || !org.tunnelId) {
-      // Portal never returned (or we lost) tunnel credentials — nothing to recover
-      // locally; the tunnel must be re-provisioned by resetting and re-pairing.
+      // Missing Portal credentials leave nothing to restore locally. Reset and
+      // pair again to provision another tunnel.
       return { recovered: false, action: 're_pair', reason: 'no_credentials' };
     }
 
-    // Credentials exist — rewrite the token file.
+    // Existing credentials can restore the token file without a new pairing.
     await this.cloudflareClientService.initializeTunnel(org.id, {
       tunnelId: org.tunnelId,
       token: org.tunnelToken,
     });
 
-    // Success is determined by the token now being on disk, NOT by initializeTunnel's
-    // return value: it swallows transient cloudflared/Portal errors and returns null
-    // even after the token file was written. If the token still isn't there, the
-    // write itself failed (root-owned tunnel dir) — a restart lets the container
-    // entrypoint fix ownership before the next boot-time recovery.
+    // Determine success from the on-disk token, not `initializeTunnel()`'s return
+    // value. That method can return `null` after writing the file when a later
+    // `cloudflared` or Portal operation fails. If the token remains absent, the
+    // write failed, often because the tunnel directory is root-owned. Restarting
+    // lets the container entrypoint repair ownership before boot recovery retries.
     if (!this.hasTunnelToken()) {
       return { recovered: false, action: 'restart', reason: 'tunnel_dir_not_writable' };
     }
 
-    // The missing-token condition is resolved, so clear the degraded phase directly —
-    // success must not hinge on a Portal round-trip. Bringing cloudflared up and the
-    // Portal reconcile both run in the background so the response returns promptly.
+    // Clear the degraded phase as soon as the local condition recovers; success
+    // must not depend on a Portal request. Start `cloudflared` and Portal
+    // reconciliation in the background so the response remains prompt.
     await this.clearTunnelTokenMissingDegraded();
     void (async () => {
       try {
@@ -726,8 +732,8 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
       } catch (e) {
         this.logger.warn('Post-reconnect cloudflared restart failed (non-fatal)', e);
       }
-      // Deduped/throttled Portal check-in — shares cloudValidationInFlight with the
-      // status-poll path, so it won't double-run or double-reset on a Portal 400.
+      // Share the throttled, deduplicated check-in with status polling to avoid
+      // duplicate requests or resets after a Portal 400.
       await this.maybeValidateWithCloud();
     })();
 
@@ -736,9 +742,10 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
   }
 
   /**
-   * Clear a stuck `degraded` / `tunnel_token_missing` phase once the token is
-   * present again, resetting the transient-failure counter so a single stale
-   * strike cannot immediately re-degrade the just-restored phase.
+   * Clears `degraded` after a missing tunnel token returns.
+   *
+   * Reset the transient-failure counter so one stale failure cannot immediately
+   * degrade the restored phase again.
    */
   private async clearTunnelTokenMissingDegraded(): Promise<void> {
     if (this._currentPhase === 'degraded' && this._degradedReasons.includes('tunnel_token_missing')) {
@@ -748,16 +755,18 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
   }
 
   /**
-   * Detect when local Hub registration artifacts disagree with CI Portal or
-   * persisted app-data. Only meaningful while the Hub is unregistered locally.
+   * Detects disagreements among local registration artifacts, Companion Portal,
+   * and persisted app data.
+   *
+   * Drift detection applies only while the Hub is locally unregistered.
    */
   public async getStateDrift(): Promise<RegistrationStateDrift> {
     await this.refreshPhaseFromSources();
     const status = this.getRegistrationStatus();
     const hardwareDeviceId = await this.getDeviceId();
 
-    // Portal may reflect the device immediately after pairing while local provisioning
-    // is still in progress — that is expected registration flow, not drift.
+    // Companion Portal can reflect a paired device before local provisioning
+    // finishes. Treat that intermediate state as expected progress, not drift.
     if (isActiveRegistrationPhase(status.phase)) {
       return buildStateDriftResult({
         hardwareDeviceId,
@@ -793,7 +802,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     });
   }
 
-  /** Persist server-side restore intent before re-pairing (survives beyond sessionStorage). */
+  /** Persists restore intent beyond `sessionStorage` before the device pairs again. */
   public async markRestoreIntent(): Promise<{ success: boolean; message: string }> {
     await this.refreshPhaseFromSources();
     if (isOperational(this._currentPhase)) {
@@ -808,8 +817,9 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
   }
 
   /**
-   * Wipe local registration artifacts so the user can pair as a fresh device.
-   * Allowed only while the Hub is unregistered (no operational registration).
+   * Clears local registration artifacts for a fresh device pairing.
+   *
+   * An operational registration prevents this destructive preparation.
    */
   public async prepareFreshSetup(): Promise<{ success: boolean; message: string; clearedAppEnvFiles: number }> {
     await this.refreshPhaseFromSources();
@@ -835,11 +845,12 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
   }
 
   /**
-   * Portal probe — true when hardware device_id is active in CI Portal. Runs only while the
-   * Hub is locally unregistered (drift detection), so a device API key is usually absent; the
-   * check-in endpoint is device-authenticated, so without a valid key this returns null
-   * (unknown) rather than a definitive active/inactive answer. A stale-but-valid key, when
-   * present, still yields a definitive result.
+   * Returns whether Companion Portal considers the hardware device ID active.
+   *
+   * Drift detection calls this only while the Hub is locally unregistered, when
+   * a device API key is usually absent. Because the check-in endpoint requires
+   * device authentication, a missing or invalid key returns `null` rather than a
+   * definitive result. A stale but still valid key can produce an answer.
    */
   private async probePortalDeviceActive(deviceId: string, ciCloudUrl: string): Promise<boolean | null> {
     try {
@@ -872,10 +883,10 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     }
   }
 
-  // Memoized device-id resolution. The detection chain (env → dmidecode →
-  // systeminformation → sysfs → machine-id → generated UUID) is invoked on every
-  // app lifecycle command, bootstrap restart, and hourly validation; resolving
-  // it once per process avoids re-running (and re-logging) the same probes.
+  // Cache device-ID resolution because app lifecycle commands, bootstrap, and
+  // hourly validation all use the same environment, `dmidecode`,
+  // `systeminformation`, sysfs, machine ID, and generated UUID chain. Resolve and
+  // log those probes once per process.
   private deviceIdPromise?: Promise<string>;
 
   public async getDeviceId(): Promise<string> {
@@ -921,7 +932,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
   }
 
   private async verifyLicense() {
-    // License verification is not currently implemented
+    // Reserve the bootstrap step until license verification is implemented.
     return;
   }
 
@@ -954,25 +965,27 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
       }
     };
 
-    // Initial check
+    // Check immediately before starting the interval.
     await check();
 
-    // Start interval if not registered
+    // Continue polling only while registration remains incomplete.
     if (!isOperational(this._currentPhase)) {
       this.checkInterval = setInterval(check, 30000);
     }
   }
 
   /**
-   * Checks whether registration is complete by inspecting local DB state.
-   * Registration arrives via the CI Portal callback (completeRegistrationFromCallback)
-   * — there is nothing to poll cloud for. This function simply checks whether
-   * the callback has already populated the local DB with valid credentials.
+   * Checks local database state for a completed registration.
+   *
+   * `completeRegistrationFromCallback` receives registration from Companion
+   * Portal, so no remote poll is required. This method waits for that callback to
+   * persist complete credentials.
    */
   private async checkRegistrationWithCloud(): Promise<boolean> {
     const { ciCloudUrl } = this.config.getConfig();
 
-    // If CI Cloud API is not configured, allow access (backward compatibility)
+    // Preserve backward compatibility by allowing local access without a
+    // configured Companion Portal.
     if (!ciCloudUrl) {
       this.logger.debug('CI Cloud not configured, skipping registration check.');
       if (!isOperational(this._currentPhase)) {
@@ -982,18 +995,17 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     }
 
     try {
-      // Registration state lives in the local DB and is written by the CI Portal
-      // callback. Check whether a complete registration record exists locally.
+      // The Companion Portal callback writes registration state to the local
+      // database. Wait until it has created a complete row.
       const org = await this.deviceRegistrationRepository.getFirstDeviceRegistration();
       if (!org?.tunnelToken) {
         this.logger.debug('checkRegistrationWithCloud: no local registration record yet, waiting for CI Portal callback');
         return false;
       }
 
-      // We have a local registration — require all fields needed by
-      // setupOrganizationInfrastructure before proceeding. If any are absent
-      // (callback may still be in progress), return false and let the poll
-      // loop retry rather than calling infra setup with empty strings.
+      // Require every field used by `setupOrganizationInfrastructure`. The
+      // callback can still be writing an incomplete row, so let polling retry
+      // instead of provisioning with empty values.
       if (!org.tunnelId || !org.tunnelToken || !org.hubSubdomain || !org.name || !org.slug) {
         this.logger.debug(
           'checkRegistrationWithCloud: local registration exists but is incomplete (missing tunnelId/subdomain/name/slug), waiting for callback to finish',
@@ -1022,30 +1034,30 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
   }
 
   /**
-   * Setup Cloudflare tunnel and DNS for the organization
-   * Creates organization subdomain: {orgName}.{domain}
-   * @param organizationId - Organization ID from CI Cloud
-   * @param activationResult - Result from device activation (may contain org details)
+   * Configures the organization's Cloudflare tunnel, DNS, and public subdomain.
+   *
+   * @param organizationId Organization ID from Companion Portal.
+   * @param activationResult Organization and tunnel details returned by activation.
    */
   private async setupOrganizationInfrastructure(
     organizationId: string,
     activationResult: { organization_name: string; tunnel_id: string; tunnel_token: string; slug: string; subdomain: string; domain?: string },
   ): Promise<void> {
-    // Check if organization infrastructure already exists (idempotent retry)
+    // Update an existing row in place so provisioning retries remain idempotent.
     const existingOrg = await this.deviceRegistrationRepository.getDeviceRegistrationById(organizationId);
     if (existingOrg) {
       this.logger.debug(`Organization infrastructure already exists for ${organizationId}`);
 
       const updates: Record<string, string> = {};
 
-      // Update tunnel credentials if provided (from device registration)
+      // Registration can refresh tunnel credentials for an existing organization.
       if (activationResult?.tunnel_id && activationResult?.tunnel_token) {
         this.logger.info(`Updating organization ${organizationId} with tunnel credentials from registration`);
         updates.tunnelId = activationResult.tunnel_id;
         updates.tunnelToken = activationResult.tunnel_token;
       }
 
-      // Backfill hubSubdomain if missing (pre-existing registrations)
+      // Backfill `hubSubdomain` on rows created before the field existed.
       if (!existingOrg.hubSubdomain && activationResult?.subdomain) {
         this.logger.info(`Backfilling hubSubdomain for organization ${organizationId}: ${activationResult.subdomain}`);
         updates.hubSubdomain = activationResult.subdomain;
@@ -1062,35 +1074,35 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
         });
       }
 
-      // Ensure Traefik has a route for the hub's public hostname
+      // Restore the Traefik route for the Hub's public hostname.
       const hubSub = existingOrg.hubSubdomain ?? updates.hubSubdomain;
       const domainForRoute = this.config.getConfig().domain;
       if (hubSub && domainForRoute && domainForRoute !== 'example.com') {
         await this.traefikConfigService.writeHubRoute(hubSub, domainForRoute);
       }
 
-      // Ensure phase is at least locally_ready for idempotent retries
+      // An idempotent retry must leave existing infrastructure operational.
       if (!isOperational(this._currentPhase)) {
         await this.setPhase('locally_ready', [], organizationId);
       }
       return;
     }
 
-    // Transition: paired → provisioning
+    // Provisioning begins only after the device reaches the paired phase.
     await this.setPhase('provisioning', [], organizationId);
 
     try {
       const { userSettings } = this.config.getConfig();
       const rootDomain = userSettings.domain;
 
-      // Try to fetch organization details from CI Cloud API
+      // Resolve organization and tunnel details from the activation result.
       let orgName: string | null = null;
       let tunnelId: string | null = null;
       let tunnelToken: string | null = null;
       let orgSlug: string | null = null;
       let subdomain: string | null = null;
 
-      // First, check if activation result contains organization info
+      // Validate each required activation field before changing infrastructure.
       if (activationResult) {
         if (!activationResult.organization_name) {
           throw new Error('Missing organization_name in activation result');
@@ -1125,13 +1137,13 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
       const correctDomain = activationResult.domain || rootDomain;
       const domain = `${subdomain}.${correctDomain}`;
 
-      // Write Traefik route for hub's public hostname immediately so redirect can succeed.
-      // Must happen before tunnel init so the route is in place when Cloudflare forwards traffic.
+      // Write the Traefik route before tunnel initialization so the first
+      // Cloudflare-forwarded redirect can reach the Hub.
       if (subdomain && correctDomain && correctDomain !== 'example.com') {
         await this.traefikConfigService.writeHubRoute(subdomain, correctDomain);
       }
 
-      // Configure tunnel using credentials from CI-Cloud
+      // Configure the tunnel with credentials from Companion Portal.
       this.logger.info(`Initializing tunnel for organization: ${organizationId}`);
 
       let tunnelCredentials = null;
@@ -1149,8 +1161,8 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
       } else {
         this.logger.error(`Failed to initialize tunnel for organization ${organizationId} - missing credentials`);
         this.logger.error('tunnelCredentials', tunnelCredentials);
-        // We might want to abort here, but for now we'll continue and try to create the org record
-        // so at least the local state is consistent, even if cloud sync failed.
+        // Preserve the organization row even when tunnel startup fails so local
+        // registration state remains consistent and can recover later.
       }
 
       if (!orgName) {
@@ -1161,9 +1173,9 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
         throw new Error('Organization slug is required to create device registration');
       }
 
-      // Store organization info in database.
-      // `hubSubdomain` is the canonical subdomain prefix for Hub routing (e.g. "core1-xyz"),
-      // assigned by CI-Cloud. It is NOT derived from `DOMAIN` / `userSettings.domain`.
+      // Store `hubSubdomain` as the canonical Hub routing prefix assigned by
+      // Companion Portal. Do not derive it from `DOMAIN` or `userSettings.domain`,
+      // which identify the root domain.
       await this.deviceRegistrationRepository.createDeviceRegistration({
         id: organizationId,
         slug: orgSlug,
@@ -1174,24 +1186,23 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
         provisioningPhase: 'locally_ready',
       });
 
-      // Hub is locally functional — transition to locally_ready
+      // The persisted organization makes the Hub locally operational.
       await this.setPhase('locally_ready', [], organizationId);
 
       this.logger.info(`Successfully setup organization infrastructure: ${domain} (tunnel: ${tunnelId})`);
 
-      // Persist the correct root domain (e.g. "companionintelligence.com") to the data .env.
-      // `DOMAIN` / `userSettings.domain` is the root domain used for constructing app hostnames
-      // (e.g. "{app}-{org}.{DOMAIN}"). It is NOT used for Hub route identity — that comes from
-      // `hubSubdomain` stored in `device_registration`.
+      // Persist the root domain in the data environment. `DOMAIN` and
+      // `userSettings.domain` construct app hostnames, while
+      // `device_registration.hubSubdomain` defines the Hub route identity.
       if (correctDomain && correctDomain !== 'example.com') {
         await this.config.setDomain(correctDomain);
       }
 
-      // Sync hub domain to CI-Cloud so it can create DNS and tunnel routes
-      // Hub route is managed by CI-Cloud's /devices/register — no syncState needed here.
-      // triggerCloudflareSync in app-lifecycle.service.ts includes the Hub on every sync.
+      // Companion Portal's `/devices/register` owns the initial Hub DNS and tunnel
+      // route, so this path does not call `syncState`. Later calls to
+      // `triggerCloudflareSync` include the Hub in every app synchronization.
 
-      // Verify tunnel connectivity (best-effort, don't block registration)
+      // Verify tunnel connectivity without blocking local registration.
       if (process.env.E2E_TEST === 'true') {
         this.logger.info(`Skipping tunnel reachability probe for E2E registration at https://${domain}`);
         await this.setPhase('publicly_ready', [], organizationId);
@@ -1203,10 +1214,10 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
           try {
             const controller = new AbortController();
             const timeoutId = setTimeout(() => controller.abort(), 2000);
-            /* 
-              We fetch /api/health to verify the hub itself is reachable through the tunnel.
-              Using HEAD might return 404 if the route doesn't support HEAD, so we use GET.
-            */
+            /*
+             * Request `/api/health` with GET because routes that do not support
+             * HEAD can return 404 even when the Hub is reachable.
+             */
             const response = await fetch(`https://${domain}/api/health`, {
               method: 'GET',
               signal: controller.signal,
@@ -1233,23 +1244,22 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
           this.logger.warn(
             `Tunnel not yet reachable at https://${domain} after ${maxRetries}s — DNS may still be propagating. This is normal for first-time setup.`,
           );
-          // Stay at locally_ready — tunnel will be probed again during validation
+          // Keep `locally_ready`; periodic validation probes the tunnel again.
         }
       }
     } catch (error) {
       this.logger.error(`Error setting up organization infrastructure: ${error}`);
-      // Transition to degraded if we were provisioning
+      // A provisioning failure leaves existing phases unchanged but degrades an
+      // active provisioning attempt.
       if (this._currentPhase === 'provisioning') {
         await this.setPhase('degraded', ['tunnel_unreachable'], organizationId);
       }
     }
   }
 
-  /**
-   * Get device registration info for the current hub instance
-   */
+  /** Returns registration information for the current Companion Hub. */
   public async getDeviceRegistrationInfo() {
-    // First try to get by configured organization ID
+    // Prefer the explicitly configured organization.
     const { ciHubOrganizationId } = this.config.getConfig();
     if (ciHubOrganizationId) {
       const deviceRegistration = await this.deviceRegistrationRepository.getDeviceRegistrationById(ciHubOrganizationId);
@@ -1258,15 +1268,16 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
       }
     }
 
-    // If not found, get the first device registration (from manual registration)
-    // Since we only support one device registration per hub, return the first one
+    // Manual registration can omit the configured ID. The Hub supports one
+    // registration, so the first row is authoritative.
     return this.deviceRegistrationRepository.getFirstDeviceRegistration();
   }
 
   /**
-   * Pair device using a pairing code — atomic registration in one step.
-   * Sends pairing code + device_id to Portal's POST /api/devices/pair,
-   * stores all returned data locally, and marks the device as registered.
+   * Pairs a device atomically with a pairing code.
+   *
+   * Send the code and device ID to Companion Portal, persist the returned state,
+   * and mark the device as registered.
    */
   public async pairDevice(pairingCode: string): Promise<{ success: boolean; message: string; domain?: string; subdomain?: string }> {
     const { ciCloudUrl } = this.config.getConfig();
@@ -1280,7 +1291,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
       return { success: false, message: 'Device ID not found. Please ensure your device is properly initialized.' };
     }
 
-    // Check if already registered
+    // Prevent pairing from replacing an operational registration.
     const alreadyRegistered = await this.isRegistered();
     if (alreadyRegistered) {
       return { success: false, message: 'Device is already registered.' };
@@ -1297,6 +1308,12 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
           timeout: 15_000,
         },
       );
+
+      if (response.status === 429) {
+        const message = rateLimitedWaitCopy(response.headers);
+        this.logger.warn(`Portal pairing rate-limited: ${message}`);
+        return { success: false, message };
+      }
 
       if (response.status < 200 || response.status >= 300) {
         const errorData = (response.data ?? { error: 'Unknown error' }) as { error?: string; message?: string };
@@ -1328,7 +1345,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
         };
       }
 
-      // Validate required fields from Portal response
+      // Reject incomplete Portal responses before persisting registration state.
       if (!data.organization_id || !data.tunnel_id || !data.tunnel_token || !data.subdomain || !data.slug) {
         this.logger.warn(`Portal pairing response was incomplete: status=${response.status} body=${describePortalPairingResponse(response.data)}`);
         return {
@@ -1337,7 +1354,8 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
         };
       }
 
-      // Use completeRegistrationFromCallback which already handles all the storage logic
+      // Reuse the callback path so pairing and redirected registration persist the
+      // same fields and phase transitions.
       return await this.completeRegistrationFromCallback({
         deviceId: data.device_id || deviceId,
         organizationId: data.organization_id,
@@ -1362,15 +1380,11 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
   }
 
   /**
-   * Manually initiate device registration with organization
-   * Called from the registration form
+   * Starts manual organization registration from the registration form.
    *
-   * This method performs the complete registration flow:
-   * 1. Registers device with CI Cloud (/api/devices/register)
-   * 2. Activates device (/api/web/register)
-   * 3. Validates organization subdomain availability
-   * 4. Creates Cloudflare tunnel and DNS records
-   * 5. Stores device registration info in database
+   * The flow registers the device with Companion Portal, validates the
+   * organization identity, creates Cloudflare tunnel and DNS state, and stores
+   * the registration locally.
    */
   public async initiateRegistration(
     organizationId: string,
@@ -1394,7 +1408,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
       };
     }
 
-    // Sanitize organization name
+    // Normalize the organization name for use as a slug.
     const sanitizedName = organizationName
       .trim()
       .toLowerCase()
@@ -1410,14 +1424,13 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     }
 
     try {
-      // Get device ID (use custom if provided, otherwise auto-generate)
+      // Prefer an explicit device ID and otherwise use the hardware-derived value.
       const deviceId = customDeviceId?.trim() || (await this.getDeviceId());
       const description = customDescription?.trim() || `CI OS Hub Device - ${deviceId}`;
 
       this.logger.info(`Starting device registration: device_id=${deviceId}, organization_id=${organizationId}, organization_name=${sanitizedName}`);
 
-      // Step 1: Register device with CI Cloud
-      // POST http://localhost:8001/api/devices/register
+      // Register the device through Companion Portal's `/api/devices/register`.
       const registerUrl = `${this.config.getOutboundCiCloudUrl()}/api/devices/register`;
       const registerHeaders: Record<string, string> = {
         'Content-Type': 'application/json',
@@ -1455,25 +1468,23 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
       const registerResult = registerResponse.data ?? {};
       this.logger.info(`Device registered successfully: ${JSON.stringify(registerResult)}`);
 
-      // Step 2: Activate device - REMOVED (Merged into Step 1)
-      // The register endpoint now returns the organization details directly.
+      // The registration endpoint now returns the organization details that the
+      // former activation step provided.
 
-      const activateResult = registerResult; // Use register result as activation result
+      const activateResult = registerResult; // Retain the activation-shaped input expected below.
       this.logger.info(`Device activated successfully (merged): ${JSON.stringify(activateResult)}`);
 
-      // Step 3: Validate organization name/subdomain availability before setup
-      // Use provided organization name (already sanitized)
+      // Keep the normalized name available for compatibility with the existing
+      // registration flow.
       const _finalOrgName = sanitizedName;
 
-      // Note: We used to validate against local Cloudflare service, now we rely on CI-Cloud provisioning
-      // which will happen in setupOrganizationInfrastructure.
-      // If validation is needed before setup, we should add a validate endpoint to CI-Cloud.
+      // Companion Portal now validates and provisions the Cloudflare identity
+      // during infrastructure setup. A separate preflight would require a
+      // Portal validation endpoint.
 
-      // Step 4: Setup organization infrastructure
-      // Transition to paired before infrastructure setup.
-      // Note: paired/provisioning are transient in-memory phases — no DB row
-      // exists yet, so this won't survive a restart. If the process crashes
-      // during setup, it re-enters as unregistered and retries.
+      // Enter `paired` before infrastructure setup. The `paired` and
+      // `provisioning` phases remain in memory until a database row exists. If the
+      // process stops during setup, it starts as `unregistered` and can retry.
       await this.setPhase('paired');
 
       await this.setupOrganizationInfrastructure(organizationId, {
@@ -1483,14 +1494,13 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
         slug: sanitizedName,
       });
 
-      // setupOrganizationInfrastructure handles phase transitions internally
+      // Infrastructure setup owns the remaining phase transitions.
       if (this.checkInterval) {
         clearInterval(this.checkInterval);
         this.checkInterval = null;
       }
 
-      // Update environment/config with organization ID for future use
-      // Note: This would ideally update the .env file, but for now we'll rely on the database
+      // The database remains the durable source for the organization ID.
       this.logger.info(`Device registered successfully with organization ${organizationId}`);
 
       return {
@@ -1507,9 +1517,10 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
   }
 
   /**
-   * Complete registration from CI Cloud callback
-   * Called when CI Cloud redirects back to OS Hub after registration
-   * CI Cloud provides: device_id, organization_id, organization_name, subdomain, tunnel_id (optional)
+   * Completes registration from a Companion Portal callback.
+   *
+   * The callback returns the device, organization, routing, tunnel, and optional
+   * API-key details to Companion Hub.
    */
   public async completeRegistrationFromCallback(data: {
     deviceId: string;
@@ -1523,7 +1534,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     domain?: string;
   }): Promise<{ success: boolean; message: string; domain?: string; subdomain?: string }> {
     try {
-      // Verify device ID matches
+      // Reject callbacks for a different hardware device.
       const currentDeviceId = await this.getDeviceId();
       if (data.deviceId !== currentDeviceId) {
         this.logger.warn(`Device ID mismatch: expected ${currentDeviceId}, got ${data.deviceId}`);
@@ -1533,21 +1544,20 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
         };
       }
 
-      // Save API Key if provided
+      // Persist the optional device API key for authenticated Portal requests.
       if (data.apiKey) {
         this.logger.info('Saving CI Hub API Key from registration callback');
         await this.config.setUserSettings({ ciHubApiKey: data.apiKey });
       }
 
-      // Save Organization ID
+      // Persist the organization ID for future Portal disambiguation.
       if (data.organizationId) {
         this.logger.info('Saving CI Hub Organization ID from registration callback');
         await this.config.setUserSettings({ ciHubOrganizationId: data.organizationId });
       }
 
-      // Use the subdomain provided by CI Cloud (already validated on CI Cloud side)
-      // The subdomain is the organization name part (e.g., "acme-corp" from "acme-corp.{domain}")
-      // OR device-org slug (e.g. "device-org" from "device-org.{domain}")
+      // Use the subdomain already validated by Companion Portal. It can represent
+      // an organization prefix or a device-and-organization slug.
       const incomingSubdomain = data.subdomain.trim();
 
       if (!incomingSubdomain) {
@@ -1557,23 +1567,23 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
         };
       }
 
-      // Transition to paired — the frontend can already detect forward progress
+      // Enter `paired` so the frontend can display provisioning progress.
       await this.setPhase('paired');
       if (this.checkInterval) {
         clearInterval(this.checkInterval);
         this.checkInterval = null;
       }
 
-      // Persist the root domain immediately so the response includes the correct value
-      // for the frontend redirect (e.g. "companionintelligence.com").
+      // Persist the root domain before responding so the frontend builds the
+      // redirect from the registered value.
       const currentDomain = this.config.getConfig().domain;
       const rootDomain = data.domain || currentDomain;
       if (rootDomain && rootDomain !== 'example.com' && rootDomain !== currentDomain) {
         await this.config.setDomain(rootDomain);
       }
 
-      // Setup organization infrastructure (Cloudflare tunnel and DNS)
-      // Fire-and-forget: don't block the callback response while waiting for DNS/tunnel
+      // Start Cloudflare tunnel and DNS setup without holding the callback open
+      // while external infrastructure converges.
       this.setupOrganizationInfrastructure(data.organizationId, {
         organization_name: data.organizationName,
         tunnel_id: data.tunnelId,

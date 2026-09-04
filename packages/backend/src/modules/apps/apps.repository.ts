@@ -4,7 +4,8 @@ import { app } from '@/core/database/drizzle/schema';
 import type { AppStatus, NewApp } from '@/core/database/drizzle/types';
 import { Inject, Injectable } from '@nestjs/common';
 import type { AppUrn } from '@ci-hub/common/types';
-import { and, asc, eq, ne, notInArray, or } from 'drizzle-orm';
+import { normalizeStoredHostname } from '@ci-hub/common/types';
+import { and, asc, eq, ne, notInArray, or, sql } from 'drizzle-orm';
 
 @Injectable()
 export class AppsRepository {
@@ -26,6 +27,28 @@ export class AppsRepository {
   }
 
   /**
+   * The custom hostname bound to this app, or `null` when it serves on its
+   * platform hostname (and when the row does not exist yet, which is the state
+   * every install starts from).
+   *
+   * Deliberately NOT `getAppByUrn`: env generation needs this one `varchar` on
+   * every install/start/stop/restart/update/reset, and the joined read ships the
+   * whole `config` jsonb plus every `app_store` column to get it.
+   */
+  public async getAppCustomDomain(appUrn: AppUrn): Promise<string | null> {
+    const { appStoreId, appName } = extractAppUrn(appUrn);
+
+    const [row] = await this.db
+      .select({ customDomain: app.customDomain })
+      .from(app)
+      .where(and(eq(app.appName, appName), eq(app.appStoreSlug, appStoreId)))
+      .limit(1)
+      .execute();
+
+    return row?.customDomain ?? null;
+  }
+
+  /**
    * Given an app id, update the app with the given data
    *
    * @param {string} appId - The id of the app to update
@@ -39,6 +62,56 @@ export class AppsRepository {
       .returning()
       .execute();
     return updatedApps[0];
+  }
+
+  /**
+   * Make a custom-domain choice exclusive: clear this intent from every OTHER
+   * app.
+   *
+   * A domain serves exactly one app, and two rows naming it turns every sync
+   * into a tug of war — whichever binds last takes it, the delivery reconcile
+   * unbinds the loser, the loser becomes a candidate again, and both apps are
+   * asked to restart, forever. Enforced HERE, where the choice is written,
+   * because that is the only moment the intent is a decision somebody just made:
+   * the newest choice wins, which is what a person picking a domain already
+   * serving another app plainly means (the picker names that app beside it).
+   *
+   * Deliberately does NOT touch `custom_domain`. That column is what Companion Portal
+   * reported delivered, and the app losing the choice keeps serving on the
+   * hostname it was actually wired to until Companion Portal says otherwise — which it
+   * will, on the sync after the new binding lands.
+   *
+   * Matching is case-insensitive because DNS is: the value is stored normalized,
+   * but a row written before that was, or by hand, must not escape the rule.
+   */
+  public async clearCustomDomainIntentElsewhere(appId: number, customDomain: string) {
+    // The one spelling, not a second hand-rolled one: `normalizeStoredHostname`
+    // also strips the trailing dot, which every reader of this column applies —
+    // a local trim+lowercase would let `comfy.acme.com.` escape the rule and
+    // leave two apps chasing the same domain.
+    const normalized = normalizeStoredHostname(customDomain);
+
+    if (!normalized) {
+      return [];
+    }
+
+    return (
+      this.db
+        .update(app)
+        /*
+         * ⚠ THE CONFIRMATION GOES WITH THE CHOICE, on this path as on every other.
+         *
+         * `custom_domain_takeover` authorizes taking a domain off whatever serves
+         * it now, and it is answered about ONE domain. Left set on an app whose
+         * choice has just been taken away, it becomes a standing yes waiting for
+         * that app's next choice — which could be a different domain, serving a
+         * different app, that nobody was ever asked about.
+         */
+        .set({ customDomainIntent: null, customDomainTakeover: false, updatedAt: new Date().toISOString() })
+        .where(and(ne(app.id, appId), sql`lower(${app.customDomainIntent}) = ${normalized}`))
+        .returning({ id: app.id, appName: app.appName, appStoreSlug: app.appStoreSlug })
+        .execute()
+    );
   }
 
   /**

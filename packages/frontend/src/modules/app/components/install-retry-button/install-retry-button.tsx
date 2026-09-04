@@ -63,7 +63,7 @@ export const InstallRetryButton: React.FC<InstallRetryButtonProps> = ({ urn, nam
           retryMutation.mutate({ path: { urn }, body: { openPort: true, ...(config ?? {}) } });
         }}
       >
-        <RotateCw className={`text-amber-600 ${retryMutation.isPending ? 'animate-spin' : ''}`} size={iconSize} strokeWidth={2.5} />
+        <RotateCw className={`text-warning ${retryMutation.isPending ? 'animate-spin' : ''}`} size={iconSize} strokeWidth={2.5} />
       </button>
     </>
   );

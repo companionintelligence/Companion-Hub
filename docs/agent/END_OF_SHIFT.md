@@ -1,4 +1,4 @@
-# End of Shift — CI-Hub
+# End of shift
 
 > **Purpose:** Final validation checklist before an agent session ends.
 > **Scope:** All coding sessions; run via `bin/agent-validate-shift`.
@@ -17,7 +17,7 @@ bin/agent-validate-shift
 # equivalent: pnpm run agent:validate
 ```
 
-The script runs these steps in order and stops on first failure:
+The script runs these steps in order and stops at the first failure:
 
 | Step | Command | When skipped |
 |------|---------|--------------|
@@ -34,14 +34,14 @@ The script runs these steps in order and stops on first failure:
 
 Complete these even if automated steps pass:
 
-- [ ] **App was run** — `pnpm run local` or `local:desktop` during implementation
-- [ ] **System docs updated** — relevant `docs/system/*.md` reflects your changes
-- [ ] **Session worksheet** — copied to `docs/agent/sessions/` and committed
-- [ ] **Session feedback** — filled and committed
-- [ ] **Cross-agent review** — at least one `bin/agent-review --phase wrap` with a different persona/model
-- [ ] **TODO.md updated** — task moved out of `## In Progress`
-- [ ] **No secrets committed** — no `.env`, tokens, or credentials in diff
-- [ ] **Scoped tests added** — new behavior has test coverage per TESTING.md
+- [ ] **Run the app** — during implementation, run `pnpm run local` or `local:desktop`
+- [ ] **Update system docs** — verify that the relevant `docs/system/*.md` file reflects your changes
+- [ ] **Complete the session worksheet** — copy it to `docs/agent/sessions/` and commit it
+- [ ] **Complete the session feedback** — fill it out and commit it
+- [ ] **Request a cross-agent review** — run `bin/agent-review --phase wrap` at least once with a different persona and model
+- [ ] **Update TODO.md** — move the task out of `## In Progress`
+- [ ] **Check for secrets** — verify that the diff contains no `.env` files, tokens, or credentials
+- [ ] **Add scoped tests** — cover new behavior as described in TESTING.md
 
 ---
 

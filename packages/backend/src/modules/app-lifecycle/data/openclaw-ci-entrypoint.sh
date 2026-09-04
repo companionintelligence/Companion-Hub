@@ -13,7 +13,7 @@
 # Environment variables consumed:
 #   OLLAMA_HOST                — native Ollama URL (injected by Hub, e.g. http://host.docker.internal:11434)
 #   OPENAI_API_BASE            — OpenAI-compatible /v1 URL (from bootstrap.env or app.env)
-#   CI_INFERENCE_BACKEND       — active Hub backend: ollama | vllm | lemonade | lucebox | cloud
+#   CI_INFERENCE_BACKEND       — active Hub backend: ollama | vllm | lemonade | mtplx | dspark | cloud
 #   HUB_INFERENCE_URL          — legacy Hub-proxied inference URL (optional)
 #   HUB_URL                    — Hub base URL fallback (default: http://ci-os-hub:5002)
 #   OPENCLAW_DATA_DIR          — state directory (default: /data/.openclaw)
@@ -452,12 +452,12 @@ const baseEntry = (id, name, caps) => {
 NODE
 }
 
-sync_openai_compatible_models() {
+sync_vllm_models() {
   if [ ! -f "${CONFIG_FILE}" ]; then
     return 0
   fi
   if ! command -v node >/dev/null 2>&1; then
-    echo "CI Hub: node not available; skipping OpenAI-compatible model sync"
+    echo "CI Hub: node not available; skipping vLLM model sync"
     return 0
   fi
 
@@ -527,7 +527,7 @@ const baseEntry = (id, name) => ({
   }
 
   if (models.length === 0) {
-    console.warn('CI Hub: no OpenAI-compatible chat models found at ' + openAiBase + '; left existing agent defaults intact');
+    console.warn('CI Hub: no vLLM chat models found at ' + openAiBase + '; left existing agent defaults intact');
     return;
   }
 
@@ -576,9 +576,9 @@ const baseEntry = (id, name) => ({
   config.tools.profile = 'coding';
 
   fs.writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n');
-  console.log('CI Hub: synced ' + models.length + ' OpenAI-compatible model(s) via API at ' + openAiBase);
+  console.log('CI Hub: synced ' + models.length + ' vLLM model(s) via OpenAI API at ' + openAiBase);
 })().catch((error) => {
-  console.error('CI Hub: OpenAI-compatible model sync failed: ' + (error instanceof Error ? error.message : String(error)));
+  console.error('CI Hub: vLLM model sync failed: ' + (error instanceof Error ? error.message : String(error)));
 });
 NODE
 }
@@ -586,8 +586,11 @@ NODE
 sync_inference_models() {
   backend="$(resolve_inference_backend)"
   case "${backend}" in
-    vllm|lucebox)
-      sync_openai_compatible_models
+    # mlx-dspark shares vLLM's path here: both are host-run servers reached over the OpenAI
+    # /v1 surface, so the model list comes from /v1/models rather than Ollama's native API.
+    # Without this arm dspark falls to *) and syncs against Ollama, which is not what is serving.
+    vllm|dspark)
+      sync_vllm_models
       ;;
     cloud)
       echo "CI Hub: cloud inference selected as primary; still registering additional Hub cloud providers"

@@ -48,6 +48,8 @@ describe('docker-compose.prod.yml sync', () => {
   it('inference URLs default to host.docker.internal', () => {
     const content = readCompose(rootCompose);
     expect(extractEnvDefault(content, 'VLLM_URL')).toBe('http://host.docker.internal:8000');
+    expect(extractEnvDefault(content, 'MTPLX_URL')).toBe('http://host.docker.internal:8000');
+    expect(extractEnvDefault(content, 'DSPARK_URL')).toBe('http://host.docker.internal:8080');
     expect(extractEnvDefault(content, 'LEMONADE_URL')).toBe('http://host.docker.internal:13305');
     expect(extractEnvDefault(content, 'SPECULATIVE_INFERENCE_URL')).toBe('http://host.docker.internal:8000');
   });

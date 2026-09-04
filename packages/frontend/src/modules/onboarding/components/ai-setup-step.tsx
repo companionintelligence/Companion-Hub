@@ -1,11 +1,16 @@
 import {
   fetchInferenceOnboardingProfile,
-  fetchSpeculativeInferenceStatus,
+  fetchLemonadeInstallStatus,
+  fetchMtplxInstallStatus,
   fetchOllamaInstallStatus,
+  fetchDsparkInstallStatus,
+  fetchSpeculativeInferenceStatus,
   fetchVllmInstallStatus,
   rescanInferenceHardware,
 } from '@/lib/inference/inference-api';
 import { openExternal } from '@/lib/helpers/open-external';
+import { getTauriInvoke } from '@/lib/helpers/tauri-invoke';
+import { installAndStartInferenceRunners, type AutomaticInferenceRunner } from '@/lib/inference/auto-inference-runners';
 import { Button } from '@/components/ui/Button';
 import { useEffect, useRef, useState } from 'react';
 import {
@@ -15,9 +20,12 @@ import {
   type CloudProviderInput,
   type ExposureMode,
   type HardwareProfileResponse,
-  type SpeculativeInferenceStatus,
+  type MtplxStatus,
+  type LemonadeStatus,
   type OllamaStatus,
   type VllmStatus,
+  type DsparkStatus,
+  type SpeculativeInferenceStatus,
   type RemoteAccessMode,
 } from '../helpers/ai-setup-types';
 import type { CuratedModel, InferenceBackendType } from '@ci-hub/common/types';
@@ -32,21 +40,29 @@ import { SystemOverview } from './ai-setup/system-overview';
 import { ResourceSummaryBar } from './ai-setup/resource-summary-bar';
 import { OllamaSetupCard } from './ai-setup/ollama-setup-card';
 import { VllmSetupCard } from './ai-setup/vllm-setup-card';
+import { MtplxSetupCard } from './ai-setup/mtplx-setup-card';
+import { DsparkSetupCard } from './ai-setup/dspark-setup-card';
+import { LemonadeSetupCard } from './ai-setup/lemonade-setup-card';
 import { SpeculativeInferenceSetupCard } from './ai-setup/speculative-inference-setup-card';
 import { TailscaleSetupStep } from './tailscale-setup-step';
 import { computeSelectionBudget } from '../helpers/onboarding-model-selection';
-import { EMBEDDING_INFERENCE_BACKEND, unavailableInferenceBackends } from '../helpers/inference-backend-availability';
+import {
+  EMBEDDING_INFERENCE_BACKEND,
+  hubLoadableSelection,
+  hiddenInferenceBackends,
+  isHostServedBackend,
+  recommendedInferenceBackend,
+  unavailableInferenceBackends,
+} from '../helpers/inference-backend-availability';
 import { Skeleton } from '@/components/ui/Skeleton/Skeleton';
 import { Loader2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
-// Models a chat agent (Hermes, OpenClaw) can use as its default.
-// Only LLMs qualify here; embeddings / speech models may share a generic
-// purpose label but must never become the default chat model.
+// Only LLMs qualify as agent defaults; generic purpose labels can also include
+// embedding and speech models.
 const isAgentModel = (model: CuratedModel) => model.modality === 'llm';
 const isEmbeddingModel = (model: CuratedModel) => model.modality === 'embedding';
 const isVisionModel = (model: CuratedModel) => model.modality === 'llm' && model.metadata?.capabilities?.vision === true;
-const isHostManagedBackend = (backend: InferenceBackendType) => backend === 'vllm' || backend === 'lucebox';
 
 interface AiSetupStepProps {
   onComplete?: (config: AiSetupConfig) => void;
@@ -57,8 +73,8 @@ interface AiSetupStepProps {
   /** Whether Tailscale is connected — seeds the default agent remote-access choice. */
   tailscaleAvailable?: boolean;
   /**
-   * Section mode for the single-page FTUE form: hides the step navigation, drops the internal
-   * scroll, and emits the live config via {@link onConfigChange} instead of waiting for a Continue.
+   * Enables single-page FTUE behavior by hiding navigation and emitting live
+   * configuration through {@link onConfigChange}.
    */
   embedded?: boolean;
   onConfigChange?: (config: AiSetupConfig) => void;
@@ -79,6 +95,16 @@ const defaultRemoteAccess = (_cloudflareAvailable: boolean, tailscaleAvailable: 
 // The app installer exposes each app under a single mode; derive that primary from the selection.
 const primaryExposureMode = (remoteAccess: RemoteAccessMode[]): ExposureMode =>
   remoteAccess.includes('cloudflare') ? 'cloudflare' : remoteAccess.includes('tailscale') ? 'tailscale' : 'local';
+
+const BackendSetupGroup = ({ title, description, children }: { title: string; description?: string; children: React.ReactNode }) => (
+  <div className="space-y-3" data-testid="selected-backend-setup">
+    <div>
+      <h3 className="text-sm font-semibold">{title}</h3>
+      {description && <p className="mt-1 text-xs text-muted-foreground">{description}</p>}
+    </div>
+    {children}
+  </div>
+);
 
 export const AiSetupStep = ({
   onComplete,
@@ -104,30 +130,32 @@ export const AiSetupStep = ({
   const [cloudProviders, setCloudProviders] = useState<CloudProviderInput[]>([]);
   const [ollamaStatus, setOllamaStatus] = useState<OllamaStatus | null>(null);
   const [vllmStatus, setVllmStatus] = useState<VllmStatus | null>(null);
+  const [mtplxStatus, setMtplxStatus] = useState<MtplxStatus | null>(null);
+  const [dsparkStatus, setDsparkStatus] = useState<DsparkStatus | null>(null);
   const [speculativeInferenceStatus, setSpeculativeInferenceStatus] = useState<SpeculativeInferenceStatus | null>(null);
+  const [lemonadeStatus, setLemonadeStatus] = useState<LemonadeStatus | null>(null);
   const [checkingOllama, setCheckingOllama] = useState(false);
   const [checkingVllm, setCheckingVllm] = useState(false);
+  const [checkingMtplx, setCheckingMtplx] = useState(false);
+  const [checkingDspark, setCheckingDspark] = useState(false);
   const [checkingSpeculativeInference, setCheckingSpeculativeInference] = useState(false);
+  const [checkingLemonade, setCheckingLemonade] = useState(false);
   const [vllmApiKey, setVllmApiKey] = useState('');
   const [vllmUrl, setVllmUrl] = useState('');
+  const [mtplxUrl, setMtplxUrl] = useState('');
+  const [dsparkUrl, setDsparkUrl] = useState('');
   const [selectedBackend, setSelectedBackend] = useState<InferenceBackendType>('ollama');
 
-  // Three code paths fetch the same profile endpoint concurrently (mount/Rescan, backend switch,
-  // and the Re-check refresh below). Each stamps its request, so a slow answer can be recognised as
-  // superseded and dropped instead of reverting the state the operator is actually looking at.
+  // Stamp profile requests so slower responses cannot overwrite newer operator choices.
   const profileRequestId = useRef(0);
-  // Mirrors of the selection state, read by the refresh *after* its await: the render closure still
-  // holds the values from the moment of the click, so writing back from it would silently revert
-  // anything the operator changed while the fetch was in flight.
+  // Refs preserve edits made while a profile refresh is awaiting its response.
   const selectedModelIdsRef = useRef(selectedModelIds);
   selectedModelIdsRef.current = selectedModelIds;
   const preferredModelIdRef = useRef(preferredModelId);
   preferredModelIdRef.current = preferredModelId;
 
-  // The default model Companion agents (Hermes, OpenClaw) use: the BEST-FIT agent LLM. recommendedModels
-  // is ordered best-first (index 0 is the largest model that fits the hardware budget), so we walk it
-  // in order and take the top installable agent LLM — not whatever happens to come first in the catalog.
-  // Both agents read this single model from the Hub's bootstrap.env, so it must be the best-fit pick.
+  // Both agent frameworks share one default, so use the highest-ranked selected or
+  // installable LLM instead of catalog order.
   const getDefaultPreferredModelId = (data: HardwareProfileResponse, backend: InferenceBackendType, selectedIds?: string[]): string | undefined => {
     const installed = new Set(data.installedCatalogIds ?? []);
     const selected = selectedIds ?? data.availableModels.filter((m) => m.backend === backend && installed.has(m.id)).map((m) => m.id);
@@ -163,7 +191,7 @@ export const AiSetupStep = ({
       .filter((m) => {
         if (!installed.has(m.id)) return false;
         if (m.backend === backend) return true;
-        return backend === 'vllm' && m.backend === EMBEDDING_INFERENCE_BACKEND && isEmbeddingModel(m);
+        return isHostServedBackend(backend) && m.backend === EMBEDDING_INFERENCE_BACKEND && isEmbeddingModel(m);
       })
       .map((m) => m.id);
   };
@@ -174,13 +202,15 @@ export const AiSetupStep = ({
     const requestId = ++profileRequestId.current;
     try {
       const backend = backendOverride ?? selectedBackend;
-      const data = await fetchInferenceOnboardingProfile(backend, vllmUrl, backend === 'vllm' ? vllmApiKey : undefined);
-      // Superseded: a rescan that started before a backend switch but answers after it would push
-      // `backends.recommended` back over the backend the operator just picked, and reset their
-      // selection to that backend's defaults.
+      const data = await fetchInferenceOnboardingProfile(backend, vllmUrl, backend === 'vllm' ? vllmApiKey : undefined, mtplxUrl, dsparkUrl);
+      // Ignore superseded rescans so they cannot restore an earlier backend and its defaults.
       if (profileRequestId.current !== requestId) return;
       setProfile(data);
-      const resolvedBackend = backendOverride ?? data.backends.recommended;
+      const requestedBackend = backendOverride ?? recommendedInferenceBackend(data);
+      const hiddenBackends = hiddenInferenceBackends(data);
+      const resolvedBackend = hiddenBackends.includes(requestedBackend)
+        ? (data.backends.available.find(({ type }) => !hiddenBackends.includes(type))?.type ?? 'ollama')
+        : requestedBackend;
       setSelectedBackend(resolvedBackend);
       const defaultSelected = getDefaultSelectedModelIds(data, resolvedBackend);
       setSelectedModelIds(defaultSelected);
@@ -191,9 +221,8 @@ export const AiSetupStep = ({
       if (profileRequestId.current !== requestId) return;
       setError((e as Error).message);
     } finally {
-      // Deliberately unguarded: `handleSelectBackend` bumps the request id without owning these
-      // flags, so skipping the clear when superseded would strand the spinner with nothing left to
-      // stop it. Clearing a beat early is cosmetic; a spinner that never stops is not.
+      // Clear flags even for superseded requests because backend selection does not own them;
+      // otherwise its request ID change can strand the spinner.
       if (!isRescan) setLoading(false);
       setRescanning(false);
     }
@@ -217,6 +246,51 @@ export const AiSetupStep = ({
     }
   };
 
+  const checkLemonadeStatus = async (): Promise<LemonadeStatus> => {
+    setCheckingLemonade(true);
+    try {
+      const data = await fetchLemonadeInstallStatus();
+      setLemonadeStatus(data);
+      return data;
+    } catch {
+      const unreachable: LemonadeStatus = { ready: false, running: false, endpointUrl: '' };
+      setLemonadeStatus(unreachable);
+      return unreachable;
+    } finally {
+      setCheckingLemonade(false);
+    }
+  };
+
+  const checkDsparkStatus = async (): Promise<DsparkStatus> => {
+    setCheckingDspark(true);
+    try {
+      const data = await fetchDsparkInstallStatus(dsparkUrl);
+      setDsparkStatus(data);
+      return data;
+    } catch {
+      const unreachable: DsparkStatus = { ready: false, running: false, endpointUrl: '' };
+      setDsparkStatus(unreachable);
+      return unreachable;
+    } finally {
+      setCheckingDspark(false);
+    }
+  };
+
+  const checkSpeculativeInferenceStatus = async (): Promise<SpeculativeInferenceStatus> => {
+    setCheckingSpeculativeInference(true);
+    try {
+      const data = await fetchSpeculativeInferenceStatus();
+      setSpeculativeInferenceStatus(data);
+      return data;
+    } catch {
+      const unreachable: SpeculativeInferenceStatus = { ready: false, running: false, endpointUrl: '' };
+      setSpeculativeInferenceStatus(unreachable);
+      return unreachable;
+    } finally {
+      setCheckingSpeculativeInference(false);
+    }
+  };
+
   const checkVllmStatus = async (): Promise<VllmStatus> => {
     setCheckingVllm(true);
     try {
@@ -232,43 +306,53 @@ export const AiSetupStep = ({
     }
   };
 
-  // "Re-check" is the documented last step of both backend flows ("start it, then re-check" /
-  // "load a model in your host vLLM server, then Re-check"), so it must also refresh what the
-  // backend reports as installed: `installedCatalogIds` is what decides whether a model card reads
-  // as installed and selectable, and a status probe alone leaves it at the value fetched on mount.
-  //
-  // Deliberately narrower than `fetchProfile`, which exists to (re)establish defaults. Re-checking
-  // must not discard model choices already made, must not reset a hand-picked backend, and must not
-  // replace the whole step with the error screen when the refresh fails — the status probe is the
-  // signal the operator asked for, and their in-progress setup outweighs a stale model list.
-  const refreshInstalledModels = async (backend: InferenceBackendType) => {
+  const checkMtplxStatus = async (): Promise<MtplxStatus> => {
+    setCheckingMtplx(true);
+    try {
+      const data = (await fetchMtplxInstallStatus(mtplxUrl)) as MtplxStatus;
+      setMtplxStatus(data);
+      return data;
+    } catch (_e) {
+      const unreachable: MtplxStatus = { ready: false, running: false, endpointUrl: '' };
+      setMtplxStatus(unreachable);
+      return unreachable;
+    } finally {
+      setCheckingMtplx(false);
+    }
+  };
+
+  // Re-check refreshes installed models without resetting in-progress choices. A status probe
+  // alone leaves `installedCatalogIds` stale; unlike `fetchProfile`, this best-effort refresh
+  // does not replace the step with an error.
+  const refreshInstalledModels = async (backend: InferenceBackendType, endpointUrlOverride?: string) => {
     const requestId = ++profileRequestId.current;
     try {
       const previouslyInstalled = new Set(profile?.installedCatalogIds ?? []);
-      const data = await fetchInferenceOnboardingProfile(backend, vllmUrl, backend === 'vllm' ? vllmApiKey : undefined);
-      // Drop a superseded answer. Rescan and the backend selector write the same `profile`, so a
-      // refresh that started first but landed last would reinstate pre-rescan hardware figures, or
-      // leave `profile` scoped to a backend the operator has already switched away from.
+      const data = await fetchInferenceOnboardingProfile(
+        backend,
+        backend === 'vllm' && endpointUrlOverride ? endpointUrlOverride : vllmUrl,
+        backend === 'vllm' ? vllmApiKey : undefined,
+        backend === 'mtplx' && endpointUrlOverride ? endpointUrlOverride : mtplxUrl,
+        backend === 'dspark' && endpointUrlOverride ? endpointUrlOverride : dsparkUrl,
+      );
+      // Drop superseded responses so refreshes cannot restore stale hardware or backend state.
       if (profileRequestId.current !== requestId) return;
       setProfile(data);
 
       const nextInstalled = new Set(data.installedCatalogIds ?? []);
-      // Adopt only models that appeared since the last look, so an earlier opt-out survives.
+      // Preserve earlier opt-outs while selecting newly detected models.
       const newlySelectable = getDefaultSelectedModelIds(data, backend).filter((id) => !previouslyInstalled.has(id));
-      // The Hub cannot pull a host-managed model, so `handleToggleModel` only lets one be ticked while the
-      // host is serving it. Drop the ones it stopped serving to keep that invariant: left ticked,
-      // `computeSelectionBudget` bills them as pending downloads and can block Continue on disk.
+      // Remove unavailable host-served models because selection budgeting would treat them
+      // as pending downloads and could block Continue.
       const isStillSelectable = (id: string) => {
         const modelBackend = data.availableModels.find((m) => m.id === id)?.backend;
-        return !modelBackend || !isHostManagedBackend(modelBackend) || nextInstalled.has(id);
+        return !isHostServedBackend(modelBackend) || nextInstalled.has(id);
       };
       const nextSelected = [...new Set([...selectedModelIdsRef.current, ...newlySelectable])].filter(isStillSelectable);
       setSelectedModelIds(nextSelected);
 
-      // `fetchProfile` seeds the agent default from the catalog before anything is installed, so
-      // that placeholder must give way once the backend reports what it is really serving —
-      // otherwise the "agent default" badge sits on a model the host does not have. A model the
-      // operator picked (installed, or ticked for download) is never overridden.
+      // Replace a catalog-seeded default when the backend does not serve it, but preserve an
+      // installed or explicitly selected default.
       const preferred = preferredModelIdRef.current;
       setPreferredModelId(
         preferred && (nextInstalled.has(preferred) || nextSelected.includes(preferred))
@@ -276,25 +360,18 @@ export const AiSetupStep = ({
           : getDefaultPreferredModelId(data, backend, nextSelected),
       );
     } catch (e) {
-      // Best-effort refresh: the status probe already reported reachability, and taking the whole
-      // step down over a secondary fetch would discard an in-progress setup. Leave a trace though —
-      // a silent no-op here is indistinguishable from the bug this function exists to fix.
+      // Keep the in-progress setup after a secondary refresh fails, but retain a diagnostic.
       console.warn('Re-check could not refresh the installed model list', e);
     }
   };
 
-  // Kept separate from the probe helpers because those also run on mount, where `selectedBackend`
-  // is still the initial value and a refresh would read the wrong backend.
+  // Mount probes cannot refresh because `selectedBackend` still has its initial value.
   const handleRecheck = async (probe: () => Promise<{ ready: boolean }>, setChecking: (checking: boolean) => void) => {
     const status = await probe();
-    // The profile endpoint swallows its own backend health-check failure and answers 200 with
-    // nothing served, so refreshing against a backend that is down does not reveal a new model —
-    // it erases the ones already there, dropping every card back into the "open Hugging Face"
-    // branch this fix exists to leave. The probe is the gate.
+    // Refresh only after a successful probe; a failed backend health check returns an empty
+    // installed set and would erase valid selections.
     if (!status.ready) return;
-    // The probe clears its own `checking` flag the moment it returns, and `Button` is only disabled
-    // while `loading`. Hold the control busy for the slower half too, so the operator is not invited
-    // to click again — a second refresh racing the first is how the stale answer wins.
+    // Keep the control busy through the profile refresh to prevent racing requests.
     setChecking(true);
     try {
       await refreshInstalledModels(selectedBackend);
@@ -304,30 +381,56 @@ export const AiSetupStep = ({
   };
 
   const handleVllmRecheck = () => handleRecheck(checkVllmStatus, setCheckingVllm);
-  const handleOllamaRecheck = () => handleRecheck(checkOllamaStatus, setCheckingOllama);
-
-  const checkSpeculativeInferenceStatus = async (): Promise<SpeculativeInferenceStatus> => {
-    setCheckingSpeculativeInference(true);
-    try {
-      const data = (await fetchSpeculativeInferenceStatus()) as SpeculativeInferenceStatus;
-      setSpeculativeInferenceStatus(data);
-      return data;
-    } catch (_e) {
-      const unreachable: SpeculativeInferenceStatus = { ready: false, running: false, endpointUrl: '' };
-      setSpeculativeInferenceStatus(unreachable);
-      return unreachable;
-    } finally {
-      setCheckingSpeculativeInference(false);
-    }
-  };
-
+  const handleDsparkRecheck = () => handleRecheck(checkDsparkStatus, setCheckingDspark);
   const handleSpeculativeInferenceRecheck = () => handleRecheck(checkSpeculativeInferenceStatus, setCheckingSpeculativeInference);
+  const handleOllamaRecheck = () => handleRecheck(checkOllamaStatus, setCheckingOllama);
+  const handleMtplxRecheck = () => handleRecheck(checkMtplxStatus, setCheckingMtplx);
+  const handleLemonadeRecheck = () => handleRecheck(checkLemonadeStatus, setCheckingLemonade);
+
+  const handleAutoInstallRunner = async (runner: Extract<AutomaticInferenceRunner, 'dspark' | 'mtplx' | 'vllm'>) => {
+    const results = await installAndStartInferenceRunners([runner]);
+    const result = results.find((candidate) => candidate.runner === runner);
+    if (!result || result.state === 'failed' || result.state === 'skipped') {
+      throw new Error('The local runner could not be installed on this machine.');
+    }
+
+    const endpoint = result.endpointUrl;
+    if (!endpoint) {
+      throw new Error('The local runner did not return a reachable endpoint.');
+    }
+
+    if (runner === 'vllm') {
+      setVllmUrl(endpoint);
+      const status = (await fetchVllmInstallStatus(endpoint, vllmApiKey)) as VllmStatus;
+      setVllmStatus(status);
+      if (!status.ready) throw new Error('The local runner is still starting.');
+    } else if (runner === 'mtplx') {
+      setMtplxUrl(endpoint);
+      const status = (await fetchMtplxInstallStatus(endpoint)) as MtplxStatus;
+      setMtplxStatus(status);
+      if (!status.ready) throw new Error('The local runner is still starting.');
+    } else {
+      setDsparkUrl(endpoint);
+      const status = await fetchDsparkInstallStatus(endpoint);
+      setDsparkStatus(status);
+      if (!status.ready) throw new Error('The local runner is still starting.');
+    }
+
+    await refreshInstalledModels(runner, endpoint);
+  };
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: only on mount
   useEffect(() => {
     void (async () => {
       await fetchProfile(false);
-      await Promise.all([checkOllamaStatus(), checkVllmStatus(), checkSpeculativeInferenceStatus()]);
+      await Promise.all([
+        checkOllamaStatus(),
+        checkVllmStatus(),
+        checkMtplxStatus(),
+        checkDsparkStatus(),
+        checkSpeculativeInferenceStatus(),
+        checkLemonadeStatus(),
+      ]);
     })();
   }, []);
 
@@ -350,10 +453,8 @@ export const AiSetupStep = ({
     setSelectedBackend(backend);
     const requestId = ++profileRequestId.current;
     try {
-      const data = await fetchInferenceOnboardingProfile(backend, vllmUrl, backend === 'vllm' ? vllmApiKey : undefined);
-      // `setSelectedBackend` above is synchronous, so two quick switches already end on the right
-      // backend — but the slower fetch can still answer last and leave `profile` (and the selection
-      // derived from it) describing the backend the operator switched away from.
+      const data = await fetchInferenceOnboardingProfile(backend, vllmUrl, backend === 'vllm' ? vllmApiKey : undefined, mtplxUrl, dsparkUrl);
+      // Ignore a slower response from an earlier backend choice.
       if (profileRequestId.current === requestId) {
         setProfile(data);
         const defaultSelected = getDefaultSelectedModelIds(data, backend);
@@ -365,6 +466,13 @@ export const AiSetupStep = ({
     }
     if (backend === 'vllm') {
       void checkVllmStatus();
+    } else if (backend === 'mtplx') {
+      void checkMtplxStatus();
+    } else if (backend === 'lemonade') {
+      void checkLemonadeStatus();
+    }
+    if (backend === 'dspark') {
+      void checkDsparkStatus();
     } else if (backend === 'lucebox') {
       void checkSpeculativeInferenceStatus();
     }
@@ -372,8 +480,11 @@ export const AiSetupStep = ({
 
   const handleToggleModel = (modelId: string) => {
     const model = profile?.availableModels.find((m) => m.id === modelId);
+    if (!model) return;
     const installed = new Set(profile?.installedCatalogIds ?? []);
-    if (model && isHostManagedBackend(model.backend) && !installed.has(modelId) && !selectedModelIds.includes(modelId)) {
+    // Host-served backends cannot hot-swap, so uninstalled models open their model page.
+    // Hub-loadable backends remain selectable.
+    if (isHostServedBackend(model?.backend) && !installed.has(modelId) && !selectedModelIds.includes(modelId)) {
       openExternal(`https://huggingface.co/${model.backendModelId}`);
       return;
     }
@@ -439,13 +550,20 @@ export const AiSetupStep = ({
       preferredModelId && selectedModels.includes(preferredModelId)
         ? preferredModelId
         : selectedModels.find((id) => profile.availableModels.some((m) => m.id === id && isAgentModel(m)));
-    const effectivePreferredEmbeddingModelId = getDefaultPreferredAuxModelId(profile, EMBEDDING_INFERENCE_BACKEND, isEmbeddingModel, selectedModels);
+    const embeddingBackend = selectedBackend === 'lemonade' ? selectedBackend : EMBEDDING_INFERENCE_BACKEND;
+    const effectivePreferredEmbeddingModelId = getDefaultPreferredAuxModelId(profile, embeddingBackend, isEmbeddingModel, selectedModels);
     const effectivePreferredVisionModelId = getDefaultPreferredAuxModelId(profile, selectedBackend, isVisionModel, selectedModels);
 
     return {
       agentFrameworks,
       selectedModels,
-      ollamaSelectedModelIds: profile.availableModels.filter((m) => selectedModels.includes(m.id) && m.backend === 'ollama').map((m) => m.id),
+      // The historical field name represents every Hub-loadable model, including the one
+      // resident mlx-dspark model.
+      ollamaSelectedModelIds: hubLoadableSelection(
+        selectedModels,
+        (id) => profile.availableModels.find((m) => m.id === id)?.backend,
+        effectivePreferredModelId,
+      ),
       backend: selectedBackend,
       cloudProviders: validProviders,
       preferredModelId: effectivePreferredModelId,
@@ -459,6 +577,8 @@ export const AiSetupStep = ({
       installBlockReason,
       ...(selectedBackend === 'vllm' && vllmApiKey.trim() ? { vllmApiKey: vllmApiKey.trim() } : {}),
       ...(selectedBackend === 'vllm' && vllmUrl.trim() ? { vllmUrl: vllmUrl.trim() } : {}),
+      ...(selectedBackend === 'mtplx' && mtplxUrl.trim() ? { mtplxUrl: mtplxUrl.trim() } : {}),
+      ...(selectedBackend === 'dspark' && dsparkUrl.trim() ? { dsparkUrl: dsparkUrl.trim() } : {}),
     };
   };
 
@@ -489,6 +609,8 @@ export const AiSetupStep = ({
     cloudProviders,
     vllmApiKey,
     vllmUrl,
+    mtplxUrl,
+    dsparkUrl,
     onConfigChange,
   ]);
 
@@ -507,23 +629,20 @@ export const AiSetupStep = ({
   }
 
   if (error || !profile) {
-    // The profile endpoint bundles hardware detection with live probes of the
-    // inference backends, so a blocked host service fails the whole call. Naming
-    // hardware here sent operators after the one component that was working —
-    // report the probe diagnosis instead, but only when the probe actually found
-    // a bridge failure, so an unrelated profile error is not blamed on Ollama.
+    // Show bridge guidance only when the probe identifies that failure; profile requests
+    // can fail for unrelated reasons.
     return (
       <div className="py-8" data-testid="ai-setup-error">
         <p className="text-destructive mb-4 text-center">
           {t('ONBOARDING_AI_SETUP_FAILED')}: {error}
         </p>
         {ollamaStatus?.bridgeUnreachable && ollamaStatus.hint && (
-          <div className="mx-auto mb-4 max-w-2xl rounded-lg border border-yellow-200 dark:border-yellow-800 bg-yellow-50 dark:bg-yellow-950 p-3">
-            <div className="text-xs text-yellow-800 dark:text-yellow-200">{ollamaStatus.hint}</div>
+          <div className="mx-auto mb-4 max-w-2xl rounded-lg border border-warning/30 bg-warning/10 p-3">
+            <div className="text-xs text-warning">{ollamaStatus.hint}</div>
             {ollamaStatus.remediationCommand && (
               <>
-                <div className="mt-2 mb-1 text-xs font-medium text-yellow-900 dark:text-yellow-100">{t('ONBOARDING_OLLAMA_RUN_ON_HOST')}</div>
-                <code className="block overflow-x-auto whitespace-pre rounded bg-yellow-100 dark:bg-yellow-900 px-2 py-1.5 text-xs text-yellow-900 dark:text-yellow-100">
+                <div className="mt-2 mb-1 text-xs font-medium text-warning">{t('ONBOARDING_OLLAMA_RUN_ON_HOST')}</div>
+                <code className="block overflow-x-auto whitespace-pre rounded bg-warning/10 px-2 py-1.5 text-xs text-warning">
                   {ollamaStatus.remediationCommand}
                 </code>
               </>
@@ -564,9 +683,14 @@ export const AiSetupStep = ({
   const availableMemoryMb = profile.resourceEstimate.availableMemoryMb;
   const needsOllamaForContinue = selectedBackend === 'ollama' && (ollamaStatus === null || !ollamaStatus.ready);
   const needsVllmForContinue = selectedBackend === 'vllm' && (vllmStatus === null || !vllmStatus.ready);
+  const needsMtplxForContinue = selectedBackend === 'mtplx' && (mtplxStatus === null || !mtplxStatus.ready);
+  const needsDsparkForContinue = selectedBackend === 'dspark' && (dsparkStatus === null || !dsparkStatus.ready);
   const needsSpeculativeInferenceForContinue =
     selectedBackend === 'lucebox' && (speculativeInferenceStatus === null || !speculativeInferenceStatus.ready);
-  const ollamaEmbeddingsWarning = isHostManagedBackend(selectedBackend) && ollamaStatus !== null && !ollamaStatus.ready && !checkingOllama;
+  const needsLemonadeForContinue = selectedBackend === 'lemonade' && (lemonadeStatus === null || !lemonadeStatus.ready);
+  const canAutoInstallRunners = getTauriInvoke() !== null;
+  // Host-run backends leave embeddings on Ollama, so the co-install warning covers all of them.
+  const ollamaEmbeddingsWarning = isHostServedBackend(selectedBackend) && ollamaStatus !== null && !ollamaStatus.ready && !checkingOllama;
   const showTailscaleSetup = remoteAccess.includes('tailscale');
 
   return (
@@ -592,63 +716,103 @@ export const AiSetupStep = ({
 
           <AgentFrameworkCard frameworks={agentFrameworks} onToggleFramework={toggleFramework} />
 
-          <BackendSelectionCard
-            recommended={profile.backends.recommended}
-            available={profile.backends.available}
-            selected={selectedBackend}
-            onSelect={handleSelectBackend}
-            unavailableTypes={unavailableInferenceBackends(profile)}
-          />
-
-          {selectedBackend === 'vllm' ? (
-            <StepSection number={3} badge="required" title={t('ONBOARDING_VLLM_SECTION_TITLE')} description={t('ONBOARDING_VLLM_SECTION_DESC')}>
-              <VllmSetupCard
-                status={vllmStatus}
-                checking={checkingVllm}
-                onRecheck={handleVllmRecheck}
-                apiKey={vllmApiKey}
-                onApiKeyChange={setVllmApiKey}
-                endpointUrl={vllmUrl}
-                onEndpointUrlChange={setVllmUrl}
+          <StepSection
+            number={3}
+            badge="required"
+            title={t('ONBOARDING_INFERENCE_SETUP_TITLE')}
+            className="space-y-5"
+            testId="inference-setup-section"
+          >
+            <div className="border-b border-border pb-5">
+              <BackendSelectionCard
+                recommended={recommendedInferenceBackend(profile)}
+                available={profile.backends.available}
+                selected={selectedBackend}
+                onSelect={handleSelectBackend}
+                embedded
+                unavailableTypes={unavailableInferenceBackends(profile)}
+                hiddenTypes={hiddenInferenceBackends(profile)}
               />
-            </StepSection>
-          ) : selectedBackend === 'lucebox' ? (
-            <StepSection
-              number={3}
-              badge="required"
-              title={t('ONBOARDING_SPECULATIVE_SECTION_TITLE')}
-              description={t('ONBOARDING_SPECULATIVE_SECTION_DESC')}
-            >
-              <SpeculativeInferenceSetupCard
-                status={speculativeInferenceStatus}
-                checking={checkingSpeculativeInference}
-                onRecheck={handleSpeculativeInferenceRecheck}
-              />
-            </StepSection>
-          ) : (
-            <StepSection number={3} badge="required" title={t('ONBOARDING_OLLAMA_SECTION_TITLE')} description={t('ONBOARDING_OLLAMA_SECTION_DESC')}>
-              <OllamaSetupCard status={ollamaStatus} checking={checkingOllama} onRecheck={handleOllamaRecheck} />
-            </StepSection>
-          )}
+            </div>
 
-          {isHostManagedBackend(selectedBackend) && (
-            <StepSection
-              number={3}
-              badge="recommended"
-              title={t('ONBOARDING_EMBEDDINGS_OLLAMA_SECTION_TITLE')}
-              description={t('ONBOARDING_EMBEDDINGS_OLLAMA_SECTION_DESC')}
-            >
-              {ollamaEmbeddingsWarning && (
-                <div
-                  className="mb-3 rounded-md border border-yellow-200 dark:border-yellow-800 bg-yellow-50 dark:bg-yellow-950 px-3 py-2 text-xs text-yellow-800 dark:text-yellow-200"
-                  data-testid="ollama-embeddings-warning"
-                >
-                  {t('ONBOARDING_EMBEDDINGS_OLLAMA_WARNING')}
+            {selectedBackend === 'lucebox' ? (
+              <BackendSetupGroup title={t('ONBOARDING_SPECULATIVE_SECTION_TITLE')} description={t('ONBOARDING_SPECULATIVE_SECTION_DESC')}>
+                <SpeculativeInferenceSetupCard
+                  status={speculativeInferenceStatus}
+                  checking={checkingSpeculativeInference}
+                  onRecheck={handleSpeculativeInferenceRecheck}
+                />
+              </BackendSetupGroup>
+            ) : selectedBackend === 'vllm' ? (
+              <BackendSetupGroup title={t('ONBOARDING_VLLM_SECTION_TITLE')} description={t('ONBOARDING_VLLM_SECTION_DESC')}>
+                <VllmSetupCard
+                  status={vllmStatus}
+                  checking={checkingVllm}
+                  onRecheck={handleVllmRecheck}
+                  apiKey={vllmApiKey}
+                  onApiKeyChange={setVllmApiKey}
+                  endpointUrl={vllmUrl}
+                  onEndpointUrlChange={setVllmUrl}
+                  onAutoInstall={canAutoInstallRunners ? () => handleAutoInstallRunner('vllm') : undefined}
+                />
+              </BackendSetupGroup>
+            ) : selectedBackend === 'mtplx' ? (
+              <BackendSetupGroup title={t('ONBOARDING_MTPLX_SECTION_TITLE')} description={t('ONBOARDING_MTPLX_SECTION_DESC')}>
+                <MtplxSetupCard
+                  status={mtplxStatus}
+                  checking={checkingMtplx}
+                  onRecheck={handleMtplxRecheck}
+                  endpointUrl={mtplxUrl}
+                  onEndpointUrlChange={setMtplxUrl}
+                  onAutoInstall={canAutoInstallRunners ? () => handleAutoInstallRunner('mtplx') : undefined}
+                />
+              </BackendSetupGroup>
+            ) : selectedBackend === 'dspark' ? (
+              <BackendSetupGroup title={t('ONBOARDING_DSPARK_SECTION_TITLE')} description={t('ONBOARDING_DSPARK_SECTION_DESC')}>
+                <DsparkSetupCard
+                  status={dsparkStatus}
+                  checking={checkingDspark}
+                  onRecheck={handleDsparkRecheck}
+                  endpointUrl={dsparkUrl}
+                  onEndpointUrlChange={setDsparkUrl}
+                  onAutoInstall={canAutoInstallRunners ? () => handleAutoInstallRunner('dspark') : undefined}
+                />
+              </BackendSetupGroup>
+            ) : selectedBackend === 'lemonade' ? (
+              <BackendSetupGroup title={t('ONBOARDING_LEMONADE_SECTION_TITLE')} description={t('ONBOARDING_LEMONADE_SECTION_DESC')}>
+                <LemonadeSetupCard status={lemonadeStatus} checking={checkingLemonade} onRecheck={handleLemonadeRecheck} />
+              </BackendSetupGroup>
+            ) : (
+              <BackendSetupGroup title={t('ONBOARDING_OLLAMA_SECTION_TITLE')} description={t('ONBOARDING_OLLAMA_SECTION_DESC')}>
+                <OllamaSetupCard status={ollamaStatus} checking={checkingOllama} onRecheck={handleOllamaRecheck} />
+              </BackendSetupGroup>
+            )}
+
+            {isHostServedBackend(selectedBackend) && (
+              <div className="space-y-3 border-t border-border pt-5" data-testid="embeddings-inference-setup">
+                <div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <h3 className="text-sm font-semibold">{t('ONBOARDING_EMBEDDINGS_OLLAMA_SECTION_TITLE')}</h3>
+                    <span className="rounded-full border border-primary/30 bg-primary/10 px-2.5 py-0.5 text-xs font-medium text-primary">
+                      {t('ONBOARDING_BADGE_RECOMMENDED')}
+                    </span>
+                  </div>
+                  {selectedBackend !== 'dspark' && (
+                    <p className="mt-1 text-xs text-muted-foreground">{t('ONBOARDING_EMBEDDINGS_OLLAMA_SECTION_DESC')}</p>
+                  )}
                 </div>
-              )}
-              <OllamaSetupCard status={ollamaStatus} checking={checkingOllama} onRecheck={handleOllamaRecheck} />
-            </StepSection>
-          )}
+                {ollamaEmbeddingsWarning && (
+                  <div
+                    className="rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning"
+                    data-testid="ollama-embeddings-warning"
+                  >
+                    {t('ONBOARDING_EMBEDDINGS_OLLAMA_WARNING')}
+                  </div>
+                )}
+                <OllamaSetupCard status={ollamaStatus} checking={checkingOllama} onRecheck={handleOllamaRecheck} />
+              </div>
+            )}
+          </StepSection>
 
           <ResourceSummaryBar
             selectedModels={selectedModels}
@@ -699,11 +863,20 @@ export const AiSetupStep = ({
               onClick={handleContinue}
               data-testid="ai-continue-btn"
               disabled={
-                (needsOllamaForContinue || needsVllmForContinue || needsSpeculativeInferenceForContinue) &&
+                !canAutoInstallRunners &&
+                (needsOllamaForContinue ||
+                  needsVllmForContinue ||
+                  needsMtplxForContinue ||
+                  needsDsparkForContinue ||
+                  needsSpeculativeInferenceForContinue ||
+                  needsLemonadeForContinue) &&
                 !isInsufficient &&
                 ((needsOllamaForContinue && (checkingOllama || !ollamaStatus?.ready)) ||
                   (needsVllmForContinue && (checkingVllm || !vllmStatus?.ready)) ||
-                  (needsSpeculativeInferenceForContinue && (checkingSpeculativeInference || !speculativeInferenceStatus?.ready)))
+                  (needsMtplxForContinue && (checkingMtplx || !mtplxStatus?.ready)) ||
+                  (needsDsparkForContinue && (checkingDspark || !dsparkStatus?.ready)) ||
+                  (needsSpeculativeInferenceForContinue && (checkingSpeculativeInference || !speculativeInferenceStatus?.ready)) ||
+                  (needsLemonadeForContinue && (checkingLemonade || !lemonadeStatus?.ready)))
               }
             >
               {isInsufficient && cloudProviders.filter((p) => p.apiKey.trim()).length === 0

@@ -3,7 +3,7 @@
  * QA Stream Runner
  *
  * Runs per-app Docker tests and emits newline-delimited JSON events to stdout.
- * Designed to be SCP'd to fleet nodes and invoked by fleet-qa-server.ts.
+ * Designed to be copied to remote QA nodes and invoked by a private fleet runner.
  *
  * Usage:
  *   tsx scripts/qa-stream.ts nextcloud jellyfin uptime-kuma
@@ -310,6 +310,13 @@ interface AppConfig {
   // smoke (scripts/qa-mcp.ts) instead of the HTTP path. Only `transport` is read here; qa-mcp reads
   // the full block (command/args/env/manifest) itself.
   mcp?: { transport?: string };
+  // The marketplace GPU contract. An app can need a GPU without saying so in its image name or a
+  // compose device reservation (e.g. tabbyml/tabby links libcuda at runtime), so this declaration
+  // is the only reliable signal for those.
+  gpu_requirements?: { type?: string; optional?: boolean };
+  supported_architectures?: string[];
+  host_access?: boolean;
+  form_fields?: unknown[];
 }
 
 interface HealthCheck {
@@ -366,7 +373,11 @@ interface ComposeJson {
  * compose `deploy.resources.reservations.devices`, or its image is a GPU-only build (rocm/cuda/
  * amd-strix). Such apps can't run on the GPU-less fleet nodes, so they're a skip(gpu), not a fail.
  */
-function requiresGpu(services: DockerService[]): boolean {
+function requiresGpu(services: DockerService[], config?: AppConfig): boolean {
+  // A declared, non-optional gpu_requirements block is authoritative — it catches apps whose image
+  // name and compose stanza give no hint that they need a GPU.
+  const gpu = config?.gpu_requirements;
+  if (gpu && gpu.optional !== true && /cuda|rocm|nvidia/i.test(gpu.type ?? '')) return true;
   for (const s of services) {
     if (s.image && /rocm|cuda|amd-strix/i.test(s.image)) return true;
     const devices = s.deploy?.resources?.reservations?.devices ?? [];
@@ -418,6 +429,11 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
     result.name = config.name ?? appId;
     result.port = config.port ?? 80;
     result.categories = config.categories ?? [];
+    // Requirements — surfaced in the dashboard drawer so a reviewer can spot a poorly-declared
+    // manifest (e.g. no arch list, an undeclared host-access need) without opening config.json.
+    result.architectures = config.supported_architectures ?? [];
+    result.hostAccess = !!config.host_access;
+    result.formFieldsCount = Array.isArray(config.form_fields) ? config.form_fields.length : 0;
 
     // Non-HTTP apps have no web surface to check. MCP-server apps (a `.mcp` block) speak JSON-RPC
     // over stdio — route them to the protocol smoke (boot → initialize → tools/list → manifest
@@ -499,7 +515,22 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
         const cache = new Map<string, string>();
         const scratchBase = join(RESULTS_DIR, 'scratch', appId);
         const subst = (s: string) =>
-          s.replace(/\$\{([A-Z0-9_]+)(?::-([^}]*))?\}/g, (_, k, def) => (def === undefined ? valueForVar(k, cache, scratchBase) : def));
+          s
+            // The negative lookbehind excludes a `${VAR}` immediately preceded by another `$` — i.e.
+            // a compose-escaped `$${VAR}` (see the unescape step below). Without it, this regex still
+            // matches starting at the SECOND `$` of that pair (a bare `{`/`}` search doesn't care what
+            // came before), substituting the inner placeholder and leaving the leading `$` orphaned —
+            // e.g. mesh-llm's `"$${APP_MODEL}"` became `$<generated-value>`, and the container's own
+            // shell then expanded that as its own (unset) `$APP_MODEL`-shaped variable, silently
+            // truncating the value and breaking its CLI arg parsing.
+            .replace(/(?<!\$)\$\{([A-Z0-9_]+)(?::-([^}]*))?\}/g, (_, k, def) => (def === undefined ? valueForVar(k, cache, scratchBase) : def))
+            // Manifests are authored for docker-compose semantics, where `$$` escapes a literal `$`
+            // (e.g. ollama's entrypoint uses `$$!`/`$$OLLAMA_MODEL` to survive compose's own
+            // interpolation pass). This single-container path invokes `docker run` directly, with no
+            // compose layer to perform that unescape, so a raw `$$` reaches the shell verbatim —
+            // where it means "this process's PID" — and breaks (`ollama`: `$$(...)` parsed as
+            // `<pid>(...)`, a syntax error). Replicate compose's unescape so both paths agree.
+            .replace(/\$\$/g, '$');
         for (const e of main?.environment ?? []) {
           if (!e.key || e.value == null) continue;
           runFlags += ` -e ${e.key}=${shQuote(subst(String(e.value)))}`;
@@ -507,6 +538,11 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
         // Host-privilege flags — mirror the Hub builder (service.builder.ts). steam-headless
         // declares `privileged: true` and dies on `mount: /proc: permission denied` without it;
         // pi-hole/searxng/anything-llm/collabora need cap_add; home-assistant needs devices.
+        // `user` was already honored by the compose path (composeUp's `user:` YAML line below) but
+        // silently dropped here — invoiceshelf declares "user": "root" (needed so its entrypoint's
+        // self-healing chown step can run) and instead ran as the image's default non-root user,
+        // hit an EPERM writing to storage/, and never got the chance to prove the fix.
+        if (main?.user) runFlags += ` --user ${shQuote(subst(String(main.user)))}`;
         if (main?.privileged === true) runFlags += ' --privileged';
         for (const c of main?.capAdd ?? []) runFlags += ` --cap-add ${shQuote(String(c))}`;
         for (const d of main?.devices ?? []) runFlags += ` --device ${shQuote(subst(String(d)))}`;
@@ -574,10 +610,10 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
     // ANY service, or a GPU-only image build (rocm/cuda/amd-strix). These need GPU hardware the
     // fleet nodes lack, so they're skip(gpu) — NOT a fail. (This stops hunyuan3d and similar image-
     // /video-gen apps from showing as false fails.) `reason:"gpu"` lets the dashboard bucket them.
-    if (requiresGpu(services) || /rocm|amd-strix|:cuda|\.cuda/i.test(mainImg)) {
+    if (requiresGpu(services, config) || /rocm|amd-strix|:cuda|\.cuda/i.test(mainImg)) {
       result.score = 'skip' as Score;
       result.reason = 'gpu';
-      result.notes = 'requires GPU (nvidia device reservation or rocm/cuda image) — no GPU on fleet nodes';
+      result.notes = 'requires GPU (declared gpu_requirements, nvidia device reservation, or rocm/cuda image) — no GPU on fleet nodes';
       return result;
     }
 
@@ -661,14 +697,63 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
         result.notes = `Container start failed: ${run.err.slice(0, 200)}`;
         return result;
       }
-      // Resolve the host port Docker assigned (output like "0.0.0.0:49154\n[::]:49154").
-      const portMap = execQuiet(`docker port ${containerName} ${result.port}/tcp`);
-      hostPort = portMap.ok ? Number(portMap.out.split('\n')[0]?.trim().split(':').pop()) : 0;
+      // Resolve the host port. When reserveHostPort() succeeded above, `publishFlag` already asked
+      // Docker for that EXACT port (not `0:<port>`) — `docker run` either bound it or failed outright
+      // (caught by `!run.ok` above), so there is nothing left to discover. Trust it directly instead
+      // of re-querying `docker port` immediately after `-d` returns, for two independent reasons:
+      //
+      //  1. A genuine (if narrow) eventual-consistency gap: `docker run -d` returns as soon as the
+      //     daemon acknowledges container creation, not necessarily after the iptables/userland-proxy
+      //     publish step has fully landed, so a same-tick `docker port` query can race ahead of that.
+      //     This mirrors the established fix in composeUp() below (`reservedHostPort > 0 ?
+      //     reservedHostPort : ...`), which already trusts its reservation for the identical reason.
+      //  2. The dominant cause found while investigating the 11-app/6-node fleet run that hit this:
+      //     reproduced locally, several of the affected apps (immich-kiosk, jellysweep, drivebase,
+      //     self-hosted-metrics, glance — 5/5 tried) turned out to EXIT IMMEDIATELY on this exact
+      //     synthesized-config path (missing required env vars the manifest doesn't declare, images
+      //     needing a real backing service, one app rejecting the harness's 0777 scratch-dir chmod
+      //     outright) — real per-app problems, not a harness race. `docker port` on an already-exited
+      //     container correctly returns nothing (its mapping is gone), but the single unretried check
+      //     here turned that into a generic, misleading 'error'/'portmap' — masking what the readiness
+      //     loop below would have diagnosed accurately (`fail`/`exit`, with the real exit reason and
+      //     log tail). The apparent "same bug on 6 different nodes" pattern was this ONE unhelpful
+      //     message swallowing many unrelated, fully-deterministic per-app crashes, not a shared race.
+      //
+      // Only fall back to querying `docker port` (with retries) when reservation failed and we
+      // published on `0:<port>` — there Docker itself chose the port and there's genuinely nothing
+      // else to trust. Either way, a container that crashed immediately is still caught correctly: the
+      // readiness loop right below inspects the container's own State.Status/RestartCount and fails
+      // fast with a clear `exit` failKind + captured logs — a strictly better diagnosis than this
+      // early portmap check ever gave it.
+      if (reserved > 0) {
+        hostPort = reserved;
+      } else {
+        const portAttempts = 5;
+        for (let attempt = 0; attempt < portAttempts && !hostPort; attempt++) {
+          if (attempt > 0) await new Promise((r) => setTimeout(r, 1000));
+          // Output like "0.0.0.0:49154\n[::]:49154".
+          const portMap = execQuiet(`docker port ${containerName} ${result.port}/tcp`);
+          hostPort = portMap.ok ? Number(portMap.out.split('\n')[0]?.trim().split(':').pop()) : 0;
+        }
+      }
       if (!hostPort) {
+        // Distinguish a genuine crash (real app bug) from a still-unresolved mapping (daemon/harness
+        // issue) so the note points a future investigator at the right place instead of always
+        // reading as a harness bug.
+        const ins = execQuiet(`docker inspect ${containerName} --format '{{.State.Running}}|{{.State.ExitCode}}'`, 10_000);
+        const [running = '', exitCode = ''] = ins.ok ? ins.out.split('|') : [];
+        const crashed = ins.ok && running.trim() === 'false';
+        let crashLogs = '';
+        if (crashed) {
+          const logs = execQuiet(`docker logs --tail 20 ${containerName}`, 10_000);
+          crashLogs = (logs.out || logs.err || '').replace(/\s+/g, ' ').trim().slice(0, 200);
+        }
         execQuiet(`docker rm -f ${containerName}`, 30_000);
         result.score = 'error';
         result.failKind = 'portmap';
-        result.notes = `Could not resolve host port mapping for container :${result.port}`;
+        result.notes = crashed
+          ? `Container exited (code ${exitCode.trim()}) before host port mapping could be resolved for :${result.port}${crashLogs ? ` | ${crashLogs}` : ''}`
+          : `Could not resolve host port mapping for container :${result.port}`;
         return result;
       }
     }
@@ -884,6 +969,8 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
     phase(appId, 'benchmark', 'Collecting metrics');
     await new Promise((r) => setTimeout(r, 2000));
 
+    result.containerCount = services.length || 1;
+
     let memTotal = 0;
     let memPeak = 0;
     let cpuTotal = 0;
@@ -908,6 +995,14 @@ async function attemptApp(appId: string): Promise<Record<string, unknown>> {
     result.memMb = samples ? Math.round(memTotal / samples) : 0;
     result.memPeakMb = Math.round(memPeak);
     result.cpuPct = samples ? Math.round((cpuTotal / samples) * 10) / 10 : 0;
+
+    // Writable-layer disk usage (SizeRw) of the main container — same single-container convention
+    // as the RAM/CPU sample above (statsName), not an aggregate across a multi-service compose app.
+    const diskSample = await execAsync(`docker inspect ${statsName} --size --format "{{.SizeRw}}"`, 10_000);
+    if (diskSample.ok) {
+      const bytes = Number.parseInt(diskSample.out.trim(), 10);
+      if (Number.isFinite(bytes) && bytes >= 0) result.diskMb = Math.round(bytes / (1024 * 1024));
+    }
 
     // ── Score ─────────────────────────────────────────────────
     // httpOk is guaranteed true here (the !httpOk early-return is above)
@@ -1218,7 +1313,7 @@ function serverGreets(port: number, waitMs = 3000): Promise<boolean> {
  * QA run while a real Hub install was fine. That is the harness testing something the product
  * never does.
  */
-type FieldSpec = { min?: number; max?: number; type?: string; def?: string };
+type FieldSpec = { min?: number; max?: number; type?: string; def?: string; encoding?: string };
 let FIELD_SPECS: Map<string, FieldSpec> = new Map();
 
 function loadFieldSpecs(config: Record<string, unknown>): void {
@@ -1233,6 +1328,7 @@ function loadFieldSpecs(config: Record<string, unknown>): void {
       max: typeof f.max === 'number' ? f.max : undefined,
       type: typeof f.type === 'string' ? f.type : undefined,
       def: f.default !== undefined && f.default !== null ? String(f.default) : undefined,
+      encoding: typeof f.encoding === 'string' ? f.encoding : undefined,
     });
   }
 }
@@ -1284,14 +1380,69 @@ function valueForVar(name: string, cache: Map<string, string>, scratchBase: stri
   const hit = cache.get(name);
   if (hit !== undefined) return hit;
   let v: string;
+  const spec = FIELD_SPECS.get(name);
+  // Production's real app_base_url resolution (app.helpers.ts) keys off `field.type ===
+  // 'app_base_url'`, NOT the field's env_variable name — `envMap.set(field.env_variable,
+  // resolvedBaseUrl)` works identically whether that name is the catalog-wide convention
+  // "APP_BASE_URL" or something app-specific like checkmate's "CLIENT_HOST". This harness's
+  // FIELD_SPECS captures `type` but, before this check existed, never consulted it here — only the
+  // two name-specific cases below (APP_BASE_HOST/APP_BASE_WSS_ORIGIN) got a real URL; every OTHER
+  // app_base_url field (any name, any app) fell through to the generic HOST/DOMAIN heuristic, which
+  // yields a bare hostname with no scheme ("ci.localhost") — checkmate's own field is declared
+  // exactly this way (type: app_base_url, env_variable: CLIENT_HOST) and failed its own validator
+  // ("CLIENT_HOST must be a valid URL") for that reason alone once an unrelated earlier bug (a dead
+  // mongo image tag) stopped masking it. Route ANY app_base_url-typed field through the same
+  // APP_BASE_URL derivation used below, regardless of its declared name.
+  // The `name !== 'APP_BASE_URL'` guard matters: a field can be declared with that EXACT name (the
+  // catalog convention — e.g. wishlist, after its own fix) as well as a different one (checkmate's
+  // CLIENT_HOST). When it's the same name, recursing into valueForVar('APP_BASE_URL', ...) would
+  // just call this function again with identical arguments before `cache.set` ever runs — infinite
+  // recursion (reproduced: "Maximum call stack size exceeded"). Only delegate when there's an
+  // actual OTHER variable to delegate to; the literal APP_BASE_URL case falls through to the
+  // generic `/URL/` heuristic below like it always has.
+  if (spec?.type === 'app_base_url' && name !== 'APP_BASE_URL') {
+    v = valueForVar('APP_BASE_URL', cache, scratchBase);
+    cache.set(name, v);
+    return v;
+  }
+  // Production derives these two from a single parsed APP_BASE_URL (app.helpers.ts,
+  // deriveAppBaseWsOrigin + its call site) — never from a form_field, since they're not meant to be
+  // user-supplied. Neither name matches any pattern below (APP_BASE_HOST doesn't end in
+  // HOST/HOSTNAME; APP_BASE_WSS_ORIGIN matches nothing at all), so both fell through to a random
+  // hex string. outline (and dify/skyvern/superdesk/taiga, which reference the same variable) then
+  // fail their own env validation at boot ("COLLABORATION_URL must be a URL address") — a QA
+  // artifact, not an app bug: the manifests correctly use the Hub-derived variable, this harness
+  // just never computed it. Mirror production exactly: parse whatever APP_BASE_URL this run
+  // resolves to (via the same cache, so a compose-path pre-seeded real value is honored) and derive
+  // both from it, ws:// unless the base URL is https.
+  if (name === 'APP_BASE_HOST' || name === 'APP_BASE_WSS_ORIGIN') {
+    const baseUrl = valueForVar('APP_BASE_URL', cache, scratchBase);
+    try {
+      const parsed = new URL(/^https?:\/\//i.test(baseUrl) ? baseUrl : `http://${baseUrl}`);
+      v = name === 'APP_BASE_HOST' ? parsed.host : `${parsed.protocol === 'https:' ? 'wss' : 'ws'}://${parsed.host}`;
+    } catch {
+      v = name === 'APP_BASE_HOST' ? 'ci.localhost' : 'ws://ci.localhost';
+    }
+    cache.set(name, v);
+    return v;
+  }
   // Honour the declared length, but ONLY for `random` fields — those are the ones the Hub itself
   // mints as opaque strings (app.helpers.ts createRandomString), so length is the whole contract.
   // Typed fields (fqdnip, password, email, text) carry a FORMAT the length alone can't satisfy:
   // pds declares PDS_HOSTNAME as fqdnip min=4, and a 4-char hex blob is a valid length but not a
   // valid hostname — zod rejects it and the app dies. Those keep the name-based heuristics below.
-  const spec = FIELD_SPECS.get(name);
   if (spec?.type === 'random' && spec.min && spec.min > 0) {
-    v = hexOfLength(spec.min);
+    // Mirror production's createRandomString (env.utils.ts) exactly — the two encodings measure
+    // `min`/`length` in different units, and conflating them mis-sizes the result. `encoding:
+    // 'base64'` means `length` RAW BYTES, base64-encoded afterward (so the resulting STRING is
+    // longer than `min` — a 32-byte key becomes a 44-character base64 string, matching e.g.
+    // dittofeed's own upstream default secretKey). The default `hex` encoding instead means `min`
+    // HEX CHARACTERS directly. Before this branch existed, EVERY `random` field got a hex string
+    // regardless of its declared encoding, so a `base64:${KEY}`-style Laravel app (mixpost) or a
+    // raw base64 secret (dittofeed) got a value that decodes to 3/4 the byte length it declared —
+    // wrong for any cipher with a fixed valid key size, and neither app could ever boot under this
+    // harness even though their manifests were already correct for real production.
+    v = spec.encoding === 'base64' ? randomBytes(spec.min).toString('base64') : hexOfLength(spec.min);
     cache.set(name, v);
     return v;
   }
@@ -1452,8 +1603,21 @@ async function composeUp(
   if (reservedHostPort > 0 && composeReferencesVar(services, 'APP_BASE_URL')) {
     cache.set('APP_BASE_URL', `http://127.0.0.1:${reservedHostPort}`);
   }
+  // The negative lookbehind excludes a `${VAR}` immediately preceded by another `$` — a
+  // compose-escaped `$${VAR}` sequence a manifest uses (e.g. in a healthCheck.test string) to defer
+  // expansion to the CONTAINER's own runtime shell via its `environment:` block, past not just this
+  // JS-level substitution but also real `docker compose`'s own interpolation pass over the YAML this
+  // function writes. Without the lookbehind, this regex still matches starting at the second `$` of
+  // that pair, splicing in the QA-generated secret value and leaving the leading `$` orphaned (e.g.
+  // `$${MONGO_INITDB_ROOT_USERNAME}` -> `$admin`) — which compose's own interpolation then treats as
+  // an ORDINARY (unset) compose variable reference and blanks to "", corrupting the healthcheck
+  // (mongodb: `--username ""` unconditionally fails mongosh's own arg validation). Unlike the
+  // single-container path's subst(), this one must NOT also unescape `$$` -> `$` afterward — that's
+  // real compose's job once it parses the YAML this writes; doing it here would collapse `$${VAR}`
+  // to `${VAR}` before compose ever sees the escape, and compose would then try to interpolate that
+  // ${VAR} using ITS OWN (unset) environment instead of leaving it for the container's shell.
   const subst = (s: string) =>
-    s.replace(/\$\{([A-Z0-9_]+)(?::-([^}]*))?\}/g, (_, k, def) => (def === undefined ? valueForVar(k, cache, scratchBase) : def));
+    s.replace(/(?<!\$)\$\{([A-Z0-9_]+)(?::-([^}]*))?\}/g, (_, k, def) => (def === undefined ? valueForVar(k, cache, scratchBase) : def));
   // One scratch dir per declared hostPath, shared by every service that mounts it (see the volumes
   // block below), plus the set of dirs already seeded so shared ones are prepared exactly once.
   const sharedMounts = new Map<string, string>();
@@ -1499,6 +1663,21 @@ async function composeUp(
     if (s.sysctls && typeof s.sysctls === 'object' && Object.keys(s.sysctls).length) {
       y += '    sysctls:\n';
       for (const [k, v] of Object.entries(s.sysctls)) y += `      ${k}: ${yamlStr(String(v))}\n`;
+    }
+    // dns / extra_hosts — mirror the Hub builder (service.builder.ts setDNS/setExtraHosts) and the
+    // single-container path above. Dropping these is a spurious fail: mailu's admin service
+    // (start.py::test_DNS()) blocks forever waiting for a DNSSEC AD flag Docker's embedded resolver
+    // (127.0.0.11) never sends without an external forwarder — every mailu service declares
+    // `"dns": "8.8.8.8"` for exactly this. vui needs a fixed resolver the same way.
+    const dnsRaw = s.dns;
+    const dnsList = Array.isArray(dnsRaw) ? dnsRaw : dnsRaw ? [String(dnsRaw)] : [];
+    if (dnsList.length) {
+      y += '    dns:\n';
+      for (const d of dnsList) y += `      - ${yamlStr(String(d))}\n`;
+    }
+    if (Array.isArray(s.extraHosts) && s.extraHosts.length) {
+      y += '    extra_hosts:\n';
+      for (const eh of s.extraHosts) y += `      - ${yamlStr(subst(String(eh)))}\n`;
     }
     // Command override — for some apps (e.g. affine) this is the ONLY thing that runs the
     // DB migration/predeploy step; dropping it boots the app against an empty schema and

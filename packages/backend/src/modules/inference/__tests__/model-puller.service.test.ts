@@ -10,6 +10,8 @@ import { ModelRegistryService } from '../model-registry.service';
 import { OllamaBackend } from '../backends/ollama.backend';
 import { VllmBackend } from '../backends/vllm.backend';
 import { LemonadeBackend } from '../backends/lemonade.backend';
+import { MtplxBackend } from '../backends/mtplx.backend';
+import { DsparkBackend } from '../backends/dspark.backend';
 import { LuceboxBackend } from '../backends/lucebox.backend';
 import type { CuratedModel, HardwareProfile } from '@ci-hub/common/types';
 
@@ -95,6 +97,8 @@ describe('ModelPullerService.evaluatePull', () => {
         { provide: OllamaBackend, useValue: ollamaBackend },
         { provide: VllmBackend, useValue: mock<VllmBackend>() },
         { provide: LemonadeBackend, useValue: mock<LemonadeBackend>() },
+        { provide: MtplxBackend, useValue: mock<MtplxBackend>() },
+        { provide: DsparkBackend, useValue: mock<DsparkBackend>() },
         { provide: LuceboxBackend, useValue: mock<LuceboxBackend>() },
       ],
     }).compile();
@@ -222,6 +226,8 @@ describe('ModelPullerService.startPull', () => {
         { provide: OllamaBackend, useValue: ollamaBackend },
         { provide: VllmBackend, useValue: mock<VllmBackend>() },
         { provide: LemonadeBackend, useValue: mock<LemonadeBackend>() },
+        { provide: MtplxBackend, useValue: mock<MtplxBackend>() },
+        { provide: DsparkBackend, useValue: mock<DsparkBackend>() },
         { provide: LuceboxBackend, useValue: mock<LuceboxBackend>() },
       ],
     }).compile();

@@ -269,7 +269,7 @@ export class ServiceBuilder {
     // safe — the same reason the sandbox check throws rather than dropping the offending volume.
     if (volume.hostPath !== undefined && volume.volumeName !== undefined) {
       throw new Error(
-        `Volume for "${volume.containerPath}" declares both hostPath and volumeName. ` + 'Refusing to guess which one the manifest meant to mount.',
+        `Volume for "${volume.containerPath}" declares both hostPath and volumeName. Refusing to guess which one the manifest meant to mount.`,
       );
     }
 

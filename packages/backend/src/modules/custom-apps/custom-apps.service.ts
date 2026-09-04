@@ -59,7 +59,8 @@ export class CustomAppService {
         appStoreSlug: APPS_FOLDER,
         appName: slug,
         config: {},
-        status: 'missing',
+        // Created but not started yet — same durable status as compose-down stop.
+        status: 'stopped',
       });
 
       this.logger.info(`Custom app ${displayName} (${slug}) created successfully with URN ${appUrn}`);

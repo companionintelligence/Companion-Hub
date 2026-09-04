@@ -54,6 +54,7 @@ vi.mock('@/modules/app/helpers/use-memory-connection', () => ({
 vi.mock('@/lib/helpers/open-folder', () => ({
   openPathInFileExplorer: (...args: unknown[]) => hoisted.openPath(...args),
   openLogsFolder: vi.fn(),
+  canOpenFolderInFileExplorer: () => hoisted.tauriInvoke !== null,
 }));
 
 vi.mock('@/lib/helpers/tauri-invoke', () => ({
@@ -99,10 +100,12 @@ vi.mock('@/api-client/client.gen', () => ({
   },
 }));
 
+const disclosureOpen = vi.hoisted(() => vi.fn());
+
 vi.mock('@/lib/hooks/use-disclosure', () => ({
   useDisclosure: () => ({
     isOpen: false,
-    open: vi.fn(),
+    open: disclosureOpen,
     close: vi.fn(),
   }),
 }));
@@ -174,6 +177,9 @@ vi.mock('../../components/dialogs/uninstall-dialog/uninstall-dialog', () => ({
 }));
 vi.mock('../../components/dialogs/reset-dialog/reset-dialog', () => ({
   ResetDialog: () => null,
+}));
+vi.mock('../../components/dialogs/app-data-folder-dialog/app-data-folder-dialog', () => ({
+  AppDataFolderDialog: () => null,
 }));
 vi.mock('../../components/dialogs/update-settings-dialog/update-settings-dialog', () => ({
   UpdateSettingsDialog: () => null,
@@ -248,6 +254,7 @@ const runningApp = makeApp();
 const exposedApp = makeApp({ exposureMode: 'cloudflare' });
 
 const OPEN_DATA_FOLDER_TESTID = 'icon-action-app_action_open_data_folder';
+const COPY_DATA_FOLDER_TESTID = 'icon-action-app_action_copy_data_folder_path';
 
 describe('AppActions', () => {
   afterEach(() => {
@@ -272,6 +279,7 @@ describe('AppActions', () => {
     });
     hoisted.architecture = 'amd64';
     hoisted.toastError.mockReset();
+    disclosureOpen.mockReset();
   });
 
   it('re-syncs the app when a start fails synchronously so the status never sticks on "starting" (#909)', () => {
@@ -299,7 +307,7 @@ describe('AppActions', () => {
     expect(hoisted.invalidateAppQueries).toHaveBeenCalledWith(hoisted.queryClient, 'test-app:community');
   });
 
-  it('hides the "Open data folder" button in the web client (no Tauri)', () => {
+  it('opens a read-only data-folder dialog in the web client', async () => {
     hoisted.queryClient.getQueryData.mockReturnValue(null);
     hoisted.tauriInvoke = null;
 
@@ -314,7 +322,13 @@ describe('AppActions', () => {
       />,
     );
 
-    expect(screen.queryByTestId(OPEN_DATA_FOLDER_TESTID)).not.toBeInTheDocument();
+    const button = screen.getByTestId(OPEN_DATA_FOLDER_TESTID);
+    expect(button).toBeInTheDocument();
+    expect(screen.queryByTestId(COPY_DATA_FOLDER_TESTID)).not.toBeInTheDocument();
+
+    await userEvent.click(button);
+    expect(disclosureOpen).toHaveBeenCalled();
+    expect(hoisted.openPath).not.toHaveBeenCalled();
   });
 
   it('shows the "Open data folder" button in the desktop app and opens the host path on click', async () => {
@@ -337,15 +351,29 @@ describe('AppActions', () => {
 
     await userEvent.click(button);
     expect(hoisted.openPath).toHaveBeenCalledWith('/srv/hub/app-data/community/test-app');
+    expect(disclosureOpen).not.toHaveBeenCalled();
   });
 
-  it('hides the "Open data folder" button when no host path is available', () => {
+  it('opens the listing dialog on desktop when the host path is missing', async () => {
     hoisted.queryClient.getQueryData.mockReturnValue(null);
     hoisted.tauriInvoke = vi.fn();
 
     render(<AppActions app={runningApp} metadata={metadata} info={info} urlAvailability={idleAvailability} layout="hero" />);
 
+    const button = screen.getByTestId(OPEN_DATA_FOLDER_TESTID);
+    await userEvent.click(button);
+    expect(disclosureOpen).toHaveBeenCalled();
+    expect(hoisted.openPath).not.toHaveBeenCalled();
+  });
+
+  it('hides the "Open data folder" button when the app is not installed', () => {
+    hoisted.queryClient.getQueryData.mockReturnValue(null);
+    hoisted.tauriInvoke = vi.fn();
+
+    render(<AppActions app={null} metadata={metadata} info={info} urlAvailability={idleAvailability} layout="hero" />);
+
     expect(screen.queryByTestId(OPEN_DATA_FOLDER_TESTID)).not.toBeInTheDocument();
+    expect(screen.queryByTestId(COPY_DATA_FOLDER_TESTID)).not.toBeInTheDocument();
   });
 
   it('disables Install and toasts wrong architecture when the Hub arch is unsupported', async () => {
@@ -354,7 +382,7 @@ describe('AppActions', () => {
 
     render(
       <AppActions
-        app={makeApp({ status: 'missing' })}
+        app={null}
         metadata={metadata}
         info={makeInfo({ supported_architectures: ['amd64'] })}
         urlAvailability={idleAvailability}
@@ -366,6 +394,31 @@ describe('AppActions', () => {
     expect(install).toHaveAttribute('aria-disabled', 'true');
     await userEvent.click(install);
     expect(hoisted.toastError).toHaveBeenCalledWith('APP_ACTION_WRONG_ARCHITECTURE');
+  });
+
+  it('shows Start (not Install) when an installed app has no containers (stopped or legacy missing)', () => {
+    hoisted.queryClient.getQueryData.mockReturnValue(null);
+
+    const { rerender } = render(
+      <AppActions app={makeApp({ status: 'stopped' })} metadata={metadata} info={info} urlAvailability={idleAvailability} layout="hero" />,
+    );
+
+    expect(screen.getByTestId('action-app_action_start')).toBeInTheDocument();
+    expect(screen.queryByTestId('action-common_install')).not.toBeInTheDocument();
+
+    rerender(<AppActions app={makeApp({ status: 'missing' })} metadata={metadata} info={info} urlAvailability={idleAvailability} layout="hero" />);
+
+    expect(screen.getByTestId('action-app_action_start')).toBeInTheDocument();
+    expect(screen.queryByTestId('action-common_install')).not.toBeInTheDocument();
+  });
+
+  it('shows Install when the app is not installed', () => {
+    hoisted.queryClient.getQueryData.mockReturnValue(null);
+
+    render(<AppActions app={null} metadata={metadata} info={info} urlAvailability={idleAvailability} layout="hero" />);
+
+    expect(screen.getByTestId('action-common_install')).toBeInTheDocument();
+    expect(screen.queryByTestId('action-app_action_start')).not.toBeInTheDocument();
   });
 
   it('keeps install errors inline in hero layout with constrained width', () => {

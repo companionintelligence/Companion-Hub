@@ -61,7 +61,7 @@ const deviceCheckIn: RouteHandler = () => ({ body: { active: true, device_id: 't
 /** Shared routes present in every scenario (health / registry / auth). */
 const baseRoutes: RouteMap = {
   'GET /v2/': () => ({ body: {}, status: 200 }),
-  'GET /v2/ci-os-hub/tags/list': () => ({ body: { name: 'ci-os-hub', tags: ['1.0.0'] }, status: 200 }),
+  'GET /v2/ci-hub/tags/list': () => ({ body: { name: 'ci-hub', tags: ['1.0.0'] }, status: 200 }),
   'POST /api/auth/sign-in/email': signInWithEmail,
   'POST /api/devices/check-in': deviceCheckIn,
 };
@@ -72,11 +72,123 @@ const sampleStoreApps = [
   { id: 'n8n', name: 'n8n', short_desc: 'Workflow automation', categories: ['automation'], icon: null },
 ];
 
+const portalFavicon = (url: string) => `https://www.google.com/s2/favicons?sz=32&domain_url=${url}`;
+
 const sampleAlternatives = {
-  productivity: [
+  utilities: [
     {
-      proprietary: [{ name: 'Notion', icon: '', url: 'https://notion.so' }],
-      alternatives: [{ name: 'AppFlowy', icon: '', url: '', appSlug: 'appflowy' }],
+      proprietary: [{ name: 'Microsoft Office', icon: '', url: 'https://www.microsoft.com/microsoft-365' }],
+      alternatives: [
+        { name: 'OnlyOffice', icon: portalFavicon('https://www.onlyoffice.com'), url: 'https://www.onlyoffice.com', appSlug: 'onlyoffice' },
+      ],
+    },
+    {
+      proprietary: [{ name: 'Notion', icon: '', url: 'https://www.notion.so' }],
+      alternatives: [{ name: 'AppFlowy', icon: portalFavicon('https://appflowy.io'), url: 'https://appflowy.io', appSlug: 'appflowy' }],
+    },
+    {
+      proprietary: [{ name: 'Evernote', icon: '', url: 'https://evernote.com' }],
+      alternatives: [{ name: 'Joplin', icon: portalFavicon('https://joplinapp.org'), url: 'https://joplinapp.org', appSlug: 'joplin' }],
+    },
+    {
+      proprietary: [{ name: 'Adobe Acrobat', icon: '', url: 'https://www.adobe.com/acrobat.html' }],
+      alternatives: [{ name: 'Stirling PDF', icon: portalFavicon('https://stirlingpdf.io'), url: 'https://stirlingpdf.io', appSlug: 'stirling-pdf' }],
+    },
+  ],
+  social: [
+    {
+      proprietary: [{ name: 'Slack', icon: '', url: 'https://slack.com' }],
+      alternatives: [{ name: 'Mattermost', icon: portalFavicon('https://mattermost.com'), url: 'https://mattermost.com', appSlug: 'mattermost' }],
+    },
+    {
+      proprietary: [{ name: 'Zoom', icon: '', url: 'https://zoom.us' }],
+      alternatives: [{ name: 'Jitsi Meet', icon: portalFavicon('https://jitsi.org'), url: 'https://jitsi.org', appSlug: 'jitsi' }],
+    },
+  ],
+  development: [
+    {
+      proprietary: [{ name: 'Jira', icon: '', url: 'https://www.atlassian.com/software/jira' }],
+      alternatives: [{ name: 'Plane', icon: portalFavicon('https://plane.so'), url: 'https://plane.so', appSlug: 'plane' }],
+    },
+    {
+      proprietary: [{ name: 'GitHub', icon: '', url: 'https://github.com' }],
+      alternatives: [{ name: 'Gitea', icon: portalFavicon('https://about.gitea.com'), url: 'https://about.gitea.com', appSlug: 'gitea' }],
+    },
+    {
+      proprietary: [{ name: 'VS Code', icon: '', url: 'https://code.visualstudio.com' }],
+      alternatives: [{ name: 'code-server', icon: portalFavicon('https://coder.com'), url: 'https://coder.com', appSlug: 'code-server' }],
+    },
+  ],
+  data: [
+    {
+      proprietary: [{ name: 'Airtable', icon: '', url: 'https://airtable.com' }],
+      alternatives: [{ name: 'NocoDB', icon: portalFavicon('https://nocodb.com'), url: 'https://nocodb.com', appSlug: 'nocodb' }],
+    },
+    {
+      proprietary: [{ name: 'Google Drive', icon: '', url: 'https://drive.google.com' }],
+      alternatives: [{ name: 'Nextcloud', icon: portalFavicon('https://nextcloud.com'), url: 'https://nextcloud.com', appSlug: 'nextcloud' }],
+    },
+  ],
+  media: [
+    {
+      proprietary: [{ name: 'Figma', icon: '', url: 'https://www.figma.com' }],
+      alternatives: [{ name: 'Penpot', icon: portalFavicon('https://penpot.app'), url: 'https://penpot.app', appSlug: 'penpot' }],
+    },
+    {
+      proprietary: [{ name: 'Miro', icon: '', url: 'https://miro.com' }],
+      alternatives: [{ name: 'Excalidraw', icon: portalFavicon('https://excalidraw.com'), url: 'https://excalidraw.com', appSlug: 'excalidraw' }],
+    },
+  ],
+  automation: [
+    {
+      proprietary: [{ name: 'Google Home', icon: '', url: 'https://home.google.com' }],
+      alternatives: [
+        {
+          name: 'Home Assistant',
+          icon: portalFavicon('https://www.home-assistant.io'),
+          url: 'https://www.home-assistant.io',
+          appSlug: 'home-assistant',
+        },
+      ],
+    },
+    {
+      proprietary: [{ name: 'Zapier', icon: '', url: 'https://zapier.com' }],
+      alternatives: [{ name: 'n8n', icon: portalFavicon('https://n8n.io'), url: 'https://n8n.io', appSlug: 'n8n' }],
+    },
+  ],
+  security: [
+    {
+      proprietary: [{ name: '1Password', icon: '', url: 'https://1password.com' }],
+      alternatives: [
+        {
+          name: 'Vaultwarden',
+          icon: '/brands/vaultwarden.png',
+          url: 'https://github.com/dani-garcia/vaultwarden',
+          appSlug: 'vaultwarden',
+        },
+      ],
+    },
+    {
+      proprietary: [{ name: 'AdGuard', icon: '', url: 'https://adguard.com' }],
+      alternatives: [{ name: 'Pi-hole', icon: portalFavicon('https://pi-hole.net'), url: 'https://pi-hole.net', appSlug: 'pi-hole' }],
+    },
+  ],
+  finance: [
+    {
+      proprietary: [{ name: 'Rocket Money', icon: '', url: 'https://www.rocketmoney.com' }],
+      alternatives: [{ name: 'Wallos', icon: portalFavicon('https://wallosapp.com'), url: 'https://wallosapp.com', appSlug: 'wallos' }],
+    },
+  ],
+  photography: [
+    {
+      proprietary: [{ name: 'Google Photos', icon: '', url: 'https://photos.google.com' }],
+      alternatives: [{ name: 'Immich', icon: portalFavicon('https://immich.app'), url: 'https://immich.app', appSlug: 'immich' }],
+    },
+  ],
+  ai: [
+    {
+      proprietary: [{ name: 'ChatGPT', icon: '', url: 'https://chatgpt.com' }],
+      alternatives: [{ name: 'Open WebUI', icon: portalFavicon('https://openwebui.com'), url: 'https://openwebui.com', appSlug: 'open-webui' }],
     },
   ],
 };

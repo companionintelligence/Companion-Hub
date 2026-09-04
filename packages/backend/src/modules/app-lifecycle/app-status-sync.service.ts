@@ -190,7 +190,10 @@ export class AppStatusSyncService {
             continue;
           }
 
-          newStatus = 'missing';
+          // Installed row + no containers means the app is stopped (compose down),
+          // not uninstalled. Keep "missing" for install verification / SSE uninstall
+          // events — never as the durable status of an installed app.
+          newStatus = 'stopped';
         } else if (dockerStatus.running + dockerStatus.exitZero === dockerStatus.total) {
           newStatus = 'running';
         } else {
@@ -216,8 +219,8 @@ export class AppStatusSyncService {
           this.sseService.emit('app', { event: 'status_change', appUrn, appStatus: newStatus });
           this.logger.info(`Synced ${appUrn}: '${app.status}' -> '${newStatus}'`);
 
-          // Detect crash: running → stopped or missing
-          if (app.status === 'running' && (newStatus === 'stopped' || newStatus === 'missing')) {
+          // Detect crash: running → stopped (containers gone or unhealthy)
+          if (app.status === 'running' && newStatus === 'stopped') {
             this.agentNotifyService?.notify('app.crashed', { appUrn, previousStatus: app.status, newStatus }, 'high');
             await this.reportAppCrash(appUrn, app.status, newStatus);
           }

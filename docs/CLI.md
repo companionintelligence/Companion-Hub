@@ -33,7 +33,7 @@ box), use one of these instead of launching the GUI:
 companion-hub --detached   # one-shot headless start of the Hub stack, then exits
 cihub up                   # same, via the CLI
 cihub status               # containers, tunnel, VPN, models
-cihub register --code <c>  # pair with CI Cloud without the desktop pairing UI
+cihub register --code <c>  # pair with Companion Portal (required for marketplace installs)
 ```
 
 Discoverability guarantees:
@@ -132,7 +132,9 @@ cihub setup local
 
 ### `cihub register [env]`
 
-Prints your device ID and the CI Cloud registration URL. Open the URL in a browser to pair the device, then proceed to `cihub up`.
+Prints your device ID and the Companion Portal registration URL. Open the URL in a browser to pair the device, then proceed to `cihub up`.
+
+Marketplace compose downloads and registry JWTs require the device key Portal issues at pairing ([CI-Portal#634](https://github.com/companionintelligence/CI-Portal/pull/634)). Hub always tries to send it. If this machine is not paired, or cannot store the key, store installs fail and tag lists can look empty — the UI may look slow rather than unauthorized.
 
 ```bash
 cihub register local
@@ -155,6 +157,7 @@ cihub config [env]           # show resolved config values only
 ```
 
 - `--detached` runs the stack in the background (equivalent to `docker compose up -d`).
+- After a reset (no `~/.local/share/companion-hub` seed), `cihub up prod` prompts interactively for a database password and writes a fresh install. Set `POSTGRES_PASSWORD` (or `CIHUB_POSTGRES_PASSWORD`) to skip the prompt.
 - `status` shows three sections: **Containers** (color-coded ●/✗), **Network** (local URL, Cloudflare tunnel URL from `CF_DOMAIN`/`DOMAIN`, Tailscale VPN IP), and **Models** (installed Ollama models).
 
 ![Screenshot of cihub status local](./images/cli/status.svg)

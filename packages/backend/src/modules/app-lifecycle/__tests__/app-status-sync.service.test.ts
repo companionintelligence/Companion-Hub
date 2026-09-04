@@ -142,7 +142,7 @@ describe('AppStatusSyncService', () => {
     expect(result.syncedCount).toBe(0);
   });
 
-  it('marks stopped apps without containers as missing', async () => {
+  it('keeps stopped apps without containers as stopped', async () => {
     appRepository.getApps.mockResolvedValue([
       {
         id: 2,
@@ -153,9 +153,26 @@ describe('AppStatusSyncService', () => {
       },
     ] as never);
 
+    const result = await service.syncAllAppStatuses();
+
+    expect(appRepository.updateAppByIdIfStatus).not.toHaveBeenCalled();
+    expect(result.syncedCount).toBe(0);
+  });
+
+  it('heals legacy missing status to stopped when no containers exist', async () => {
+    appRepository.getApps.mockResolvedValue([
+      {
+        id: 9,
+        appName: 'demo',
+        appStoreSlug: 'ci-marketplace',
+        status: 'missing',
+        updatedAt: new Date().toISOString(),
+      },
+    ] as never);
+
     await service.syncAllAppStatuses();
 
-    expect(appRepository.updateAppByIdIfStatus).toHaveBeenCalledWith(2, 'stopped', expect.objectContaining({ status: 'missing' }));
+    expect(appRepository.updateAppByIdIfStatus).toHaveBeenCalledWith(9, 'missing', expect.objectContaining({ status: 'stopped' }));
   });
 
   it('keeps port-expose workloads running without Docker containers', async () => {
@@ -227,7 +244,7 @@ describe('AppStatusSyncService', () => {
 
     const result = await service.syncAllAppStatuses();
 
-    expect(appRepository.updateAppByIdIfStatus).toHaveBeenCalledWith(8, 'running', expect.objectContaining({ status: 'missing' }));
+    expect(appRepository.updateAppByIdIfStatus).toHaveBeenCalledWith(8, 'running', expect.objectContaining({ status: 'stopped' }));
     expect(result.skippedCount).toBe(1);
     expect(result.syncedCount).toBe(0);
   });
