@@ -467,7 +467,14 @@ describe('AiSetupStep', () => {
 
   it('shows the inference backend selection card', async () => {
     renderStep();
-    await waitFor(() => expect(screen.getByTestId('backend-card-title')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByTestId('backend-selection-embedded')).toBeInTheDocument());
+    const inferenceSetup = screen.getByTestId('inference-setup-section');
+    expect(inferenceSetup).toHaveTextContent('Set up inference');
+    expect(inferenceSetup).toContainElement(screen.getByTestId('backend-selection-embedded'));
+    expect(inferenceSetup).toContainElement(screen.getByTestId('selected-backend-setup'));
+    expect(inferenceSetup).not.toHaveTextContent('Choose a backend, then make sure it is ready to run your models.');
+    expect(inferenceSetup).not.toHaveTextContent('Inference Backend');
+    expect(inferenceSetup).not.toHaveTextContent('The backend runs AI models locally on your hardware.');
     expect(screen.getByTestId('backend-option-ollama')).toBeInTheDocument();
     expect(screen.getByTestId('backend-option-vllm')).toBeInTheDocument();
   });
@@ -499,6 +506,12 @@ describe('AiSetupStep', () => {
     const optionIds = Array.from(screen.getByTestId('backend-options').querySelectorAll('label')).map((label) => label.dataset.testid);
     expect(optionIds).toEqual(['backend-option-dspark', 'backend-option-mtplx', 'backend-option-ollama', 'backend-option-vllm']);
     expect(screen.getByTestId('backend-option-dspark-group')).toContainElement(screen.getByTestId('backend-option-mtplx'));
+    expect(screen.getByTestId('backend-option-dspark-group')).toHaveTextContent('Speculative inference');
+    expect(screen.getByTestId('backend-option-dspark')).toHaveTextContent('mlx-dspark');
+    const dsparkDescription = screen.getByTestId('backend-option-dspark-group').querySelector('p');
+    expect(dsparkDescription).not.toBeNull();
+    expect(dsparkDescription).toHaveTextContent('Speculative decoding on Apple Silicon, 2x - 4x Speed boost');
+    expect(screen.getByTestId('backend-option-dspark')).not.toHaveTextContent('Speculative decoding on Apple Silicon, 2x - 4x Speed boost');
     expect(screen.queryByTestId('backend-option-lemonade')).not.toBeInTheDocument();
     expect(screen.getByTestId('backend-option-dspark').querySelector('input') as HTMLInputElement).toBeChecked();
     expect(screen.getByTestId('backend-option-dspark')).toHaveTextContent('Recommended');

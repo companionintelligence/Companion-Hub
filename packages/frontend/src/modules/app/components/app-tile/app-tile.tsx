@@ -44,7 +44,7 @@ export const AppTile: React.FC<{
         <Tooltip className="tooltip" anchorSelect=".pendingRestart">
           {t('MY_APPS_PENDING_RESTART')}
         </Tooltip>
-        <div className="pendingRestart absolute top-0 right-0 rounded-tr-lg rounded-bl-lg bg-amber-500 text-white p-1.5">
+        <div className="pendingRestart absolute top-0 right-0 rounded-tr-lg rounded-bl-lg bg-warning text-warning-foreground p-1.5">
           <RotateCw size={20} />
         </div>
       </>
@@ -55,7 +55,7 @@ export const AppTile: React.FC<{
         <Tooltip className="tooltip" anchorSelect=".updateAvailable">
           {t('COMMON_UPDATE_AVAILABLE')}
         </Tooltip>
-        <div className="updateAvailable absolute top-0 right-0 rounded-tr-lg rounded-bl-lg bg-green-500 text-white p-1.5">
+        <div className="updateAvailable absolute top-0 right-0 rounded-tr-lg rounded-bl-lg bg-success text-success-foreground p-1.5">
           <Download size={20} />
         </div>
       </>
@@ -64,7 +64,7 @@ export const AppTile: React.FC<{
     const [slug] = info.urn.split(':');
     if (slug) {
       badge = (
-        <div className="absolute top-0 right-0 rounded-tr-lg rounded-bl-lg bg-amber-500/90 text-white p-1.5">
+        <div className="absolute top-0 right-0 rounded-tr-lg rounded-bl-lg bg-destructive text-destructive-foreground p-1.5">
           <InstallRetryButton
             urn={info.urn}
             name={info.name}

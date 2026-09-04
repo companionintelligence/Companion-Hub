@@ -307,7 +307,7 @@ export default function ConnectPage() {
                         <LoadingSpinner className="size-4 shrink-0" />
                       ) : (
                         <span
-                          className={`shrink-0 rounded-full px-2 py-0.5 text-sm ${active ? 'bg-green-500/15 text-green-600 dark:text-green-400' : 'bg-muted text-foreground/80'}`}
+                          className={`shrink-0 rounded-full px-2 py-0.5 text-sm ${active ? 'bg-success/10 text-success' : 'bg-muted text-foreground/80'}`}
                         >
                           {reachable ? device.status : t('MOBILE_CONNECT_UNREACHABLE')}
                         </span>

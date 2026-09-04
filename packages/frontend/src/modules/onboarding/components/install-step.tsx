@@ -2,6 +2,7 @@ import { getInstalledApps, installApp } from '@/api-client/sdk.gen';
 import { pinInferenceModel, saveCloudProviderConfig, saveInferencePreferences } from '@/lib/inference/inference-api';
 import {
   DEFAULT_AUTOMATIC_INFERENCE_RUNNERS,
+  DEFAULT_MACOS_AUTOMATIC_INFERENCE_RUNNERS,
   installAndStartInferenceRunners,
   type AutomaticInferenceRunnerResult,
 } from '@/lib/inference/auto-inference-runners';
@@ -125,14 +126,17 @@ export const InstallStep = ({
       // ─── AI Setup Phase ───────────────────────────────────────────────
       if (aiSetupConfig && !aiSetupConfig.skipped) {
         let automaticRunnerUrls = new Map<string, string>();
+        const automaticRunners = aiSetupConfig.backend === 'dspark' ? DEFAULT_MACOS_AUTOMATIC_INFERENCE_RUNNERS : DEFAULT_AUTOMATIC_INFERENCE_RUNNERS;
 
         // Native runner setup belongs in the desktop shell. It is deliberately
         // best-effort: unsupported hardware or one failed install must not
-        // prevent cloud configuration, model pulls, or app installation.
+        // prevent cloud configuration, model pulls, or app installation. The
+        // Apple Silicon default is a deliberate two-runner pair: mlx-dspark
+        // serves chat and Ollama supplies embeddings.
         if (canAutoInstallRunners) {
           setAiPhase((prev) => ({ ...prev, status: 'installing-runners' }));
           try {
-            const runnerResults = await installAndStartInferenceRunners(DEFAULT_AUTOMATIC_INFERENCE_RUNNERS);
+            const runnerResults = await installAndStartInferenceRunners(automaticRunners);
             setAiPhase((prev) => ({ ...prev, runnerResults }));
             automaticRunnerUrls = new Map(
               runnerResults.filter((result) => result.endpointUrl).map((result) => [result.runner, result.endpointUrl as string]),
@@ -419,13 +423,13 @@ export const InstallStep = ({
         return <Loader2 className="w-4 h-4 animate-spin text-primary" data-testid="status-installing" />;
       case 'running':
         return (
-          <span className="text-green-500" data-testid="status-running">
+          <span className="text-success" data-testid="status-running">
             ✓
           </span>
         );
       case 'incomplete':
         return (
-          <span className="text-yellow-500" data-testid="status-incomplete">
+          <span className="text-warning" data-testid="status-incomplete">
             ⏳
           </span>
         );
@@ -543,9 +547,7 @@ export const InstallStep = ({
               </span>
               <span className="flex-1">{t('ONBOARDING_INFERENCE_RUNNERS')}</span>
               {unavailableRunnerCount > 0 && (
-                <span className="text-xs text-yellow-600 dark:text-yellow-500">
-                  {t('ONBOARDING_INFERENCE_RUNNERS_UNAVAILABLE', { count: unavailableRunnerCount })}
-                </span>
+                <span className="text-xs text-warning">{t('ONBOARDING_INFERENCE_RUNNERS_UNAVAILABLE', { count: unavailableRunnerCount })}</span>
               )}
             </div>
           )}
@@ -585,7 +587,7 @@ export const InstallStep = ({
             </div>
           ))}
           {aiPhase.error && (
-            <div className="px-3 py-1 text-xs text-yellow-600 dark:text-yellow-500" data-testid="ai-phase-warning">
+            <div className="px-3 py-1 text-xs text-warning" data-testid="ai-phase-warning">
               {aiPhase.error}
             </div>
           )}

@@ -5,7 +5,7 @@
 > **Key paths:** `packages/frontend/src/components/hub-status/`, `packages/frontend/src/modules/`, `packages/frontend/src/lib/`
 > **Commands:** `cd packages/frontend && pnpm test`, `pnpm run local` (root, port 5004/5005)
 > **Owner persona:** code-quality + maintainability
-> **Last updated:** 2026-09-04 (public-web drift repair action)
+> **Last updated:** 2026-09-04 (compact FTUE rows and public-web drift repair action)
 > **Related:** docs/system/desktop.md, docs/DESKTOP-UI-ARCHITECTURE.md, docs/system/e2e.md
 
 ---
@@ -82,6 +82,38 @@ The iOS/Android thin client signs into the Portal with PKCE and a `cihub://auth/
 - Hung Hub calls must not spin forever. I18n never gates on "Loading…". Root loader, `/home` session/app-context, and a 6s DOM watchdog all end in Retry + Switch Hub. The HTML boot strip also grows Reload / Connect if React never paints. Do not send a failed app-context load into onboarding.
 
 Tests: `packages/frontend/src/modules/mobile-connect/oidc.test.ts`, `connect-page.test.tsx`
+
+## Onboarding inference setup
+
+`AiSetupStep` owns Step 3 of the FTUE: one “Set up inference” panel contains the backend choice,
+the selected backend's readiness check, and the Ollama embeddings check when a host-served backend
+is selected. On Apple Silicon macOS it presents a Speculative inference group with `mlx-dspark`
+first and MTPLX nested beneath it. When the operator confirms “Install & Finish”, `InstallStep` asks
+the desktop shell to install and start
+both mlx-dspark (chat) and Ollama (embeddings). A plain browser build does not have a native process
+boundary, so it retains the manual setup and re-check flow.
+
+`RecommendationsStep` uses the Alternatives chart treatment for its optional app discovery section:
+it shows a curated 20-app shortlist across ten categories, grouped in compact paired comparison rows. Category
+counts, repeated column labels, and the agent-selection summary are intentionally omitted so this
+optional section stays focused and compact. Portal or synced catalog metadata supplies the app icon
+and display name, including tiny Portal/fallback marks for the private apps being replaced; canonical
+CI Marketplace URNs keep every curated row selectable even before a local catalog refresh completes.
+The page owns the only vertical scroll on the chart, and each compact row exposes a keyboard-accessible
+checkbox with a category-colored fallback icon on mobile and desktop. The FTUE shell centers the official
+CI-Server e-brain mark in a centered squircle above its title, with the title block set down from the
+top edge so the page header remains legible at phone widths.
+Step 5 keeps Companion Memory as one keyboard-accessible checkbox on its option card; the step panel
+itself is informational and does not add a second selection layer.
+
+## Semantic status colors
+
+Use the design-system `success` and `warning` tokens for status communication across the frontend:
+`border-success/30 bg-success/10 text-success` and `border-warning/30 bg-warning/10 text-warning`.
+Use `text-success-foreground` / `text-warning-foreground` on solid controls. Do not add component-local
+yellow, amber, green, or emerald ramps or dark-mode shade overrides for these roles; raw hues remain
+appropriate only for non-status meaning such as model score tiers, recommendation categories, ratings,
+and user-selectable theme colors.
 
 ## Custom domains
 

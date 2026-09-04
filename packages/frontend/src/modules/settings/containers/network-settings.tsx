@@ -27,12 +27,10 @@ const StatusBadge = ({ connected, label }: { connected: boolean; label: string }
   <span
     className={cn(
       'inline-flex shrink-0 items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium',
-      connected
-        ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400'
-        : 'border-border/70 bg-muted/30 text-muted-foreground',
+      connected ? 'border-success/40 bg-success/10 text-success' : 'border-border/70 bg-muted/30 text-muted-foreground',
     )}
   >
-    <span className={cn('h-1.5 w-1.5 rounded-full', connected ? 'bg-emerald-500' : 'bg-muted-foreground/60')} />
+    <span className={cn('h-1.5 w-1.5 rounded-full', connected ? 'bg-success' : 'bg-muted-foreground/60')} />
     {label}
   </span>
 );
@@ -182,7 +180,7 @@ const TailscaleSidecarSection = () => {
 
         {cliUnavailable && (
           <div className="space-y-2">
-            <p className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2.5 text-sm text-amber-700 dark:text-amber-400">
+            <p className="rounded-md border border-warning/30 bg-warning/10 px-3 py-2.5 text-sm text-warning">
               {t('SETTINGS_NETWORK_TAILSCALE_NOT_INSTALLED_DESC')}
             </p>
             <p className="text-xs text-muted-foreground">
