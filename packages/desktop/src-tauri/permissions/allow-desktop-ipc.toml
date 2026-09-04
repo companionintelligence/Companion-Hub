@@ -1,0 +1,40 @@
+[[permission]]
+identifier = "allow-desktop-ipc"
+description = """
+All Companion Hub desktop IPC commands. Required once the webview leaves
+tauri://localhost for the Hub UI (hub.ci.localhost / *.ci.lan / etc.): Tauri 2
+rejects app commands from a remote origin unless they are explicitly allowed
+here. Without this grant, Open data folder / Start Hub / installers fail with
+"Command … not allowed by ACL" on every OS.
+"""
+commands.allow = [
+  "check_hub_status",
+  "discover_hubs",
+  "start_hub_command",
+  "is_stack_dev_mode_command",
+  "check_docker_available",
+  "check_docker_access_command",
+  "get_hub_api_url_command",
+  "get_hub_status_command",
+  "get_startup_progress_command",
+  "read_desktop_logs_command",
+  "open_logs_dir_command",
+  "open_path_command",
+  "save_download_command",
+  "is_user_stopped_command",
+  "install_docker_command",
+  "install_ollama_command",
+  "install_and_start_inference_runners_command",
+  "install_rocm_command",
+  "verify_rocm_command",
+  "install_docker_engine_alternative_command",
+  "consume_pending_pairing_code",
+  "consume_pending_portal_auth",
+  "consume_pending_install_intent",
+  "check_desktop_update_command",
+  "get_desktop_release_version_command",
+  "perform_desktop_update_command",
+  "get_update_progress_command",
+  "trigger_host_update_command",
+  "flush_dns_cache"
+]
