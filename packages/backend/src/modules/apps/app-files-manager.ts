@@ -274,4 +274,66 @@ export class AppFilesManager {
 
     return { path: configPath, content };
   }
+
+  /**
+   * Read-only inventory of an app's data directory for the web UI (no native
+   * file manager). Depth/entry caps keep the response bounded when an app has
+   * written a large tree.
+   */
+  public async listAppDataListing(appUrn: AppUrn): Promise<{
+    entries: Array<{ name: string; path: string; kind: 'file' | 'directory'; sizeBytes: number | null }>;
+    truncated: boolean;
+    rootExists: boolean;
+  }> {
+    const maxEntries = 500;
+    const maxDepth = 8;
+    const { appDataDir } = this.getAppPaths(appUrn);
+
+    if (!(await this.filesystem.pathExists(appDataDir))) {
+      return { entries: [], truncated: false, rootExists: false };
+    }
+
+    const entries: Array<{ name: string; path: string; kind: 'file' | 'directory'; sizeBytes: number | null }> = [];
+    let truncated = false;
+
+    const walk = async (dir: string, relative: string, depth: number): Promise<void> => {
+      if (truncated || depth > maxDepth) {
+        if (depth > maxDepth) truncated = true;
+        return;
+      }
+
+      let names: string[];
+      try {
+        names = await this.filesystem.listFiles(dir);
+      } catch (error) {
+        this.logger.debug(`Could not list app data dir ${dir}:`, error);
+        return;
+      }
+
+      names.sort((a, b) => a.localeCompare(b));
+      for (const name of names) {
+        if (entries.length >= maxEntries) {
+          truncated = true;
+          return;
+        }
+
+        const full = path.join(dir, name);
+        const rel = relative ? `${relative}/${name}` : name;
+        try {
+          const stats = await this.filesystem.getStats(full);
+          if (stats.isDirectory()) {
+            entries.push({ name, path: rel, kind: 'directory', sizeBytes: null });
+            await walk(full, rel, depth + 1);
+          } else if (stats.isFile()) {
+            entries.push({ name, path: rel, kind: 'file', sizeBytes: stats.size });
+          }
+        } catch (error) {
+          this.logger.debug(`Skipping unreadable app data path ${full}:`, error);
+        }
+      }
+    };
+
+    await walk(appDataDir, '', 0);
+    return { entries, truncated, rootExists: true };
+  }
 }

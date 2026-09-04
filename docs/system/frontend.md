@@ -5,7 +5,7 @@
 > **Key paths:** `packages/frontend/src/components/hub-status/`, `packages/frontend/src/modules/`, `packages/frontend/src/lib/`
 > **Commands:** `cd packages/frontend && pnpm test`, `pnpm run local` (root, port 5004/5005)
 > **Owner persona:** code-quality + maintainability
-> **Last updated:** 2026-09-04 (compact alternatives rows and focused FTUE copy)
+> **Last updated:** 2026-09-04 (compact FTUE rows and public-web drift repair action)
 > **Related:** docs/system/desktop.md, docs/DESKTOP-UI-ARCHITECTURE.md, docs/system/e2e.md
 
 ---
@@ -126,6 +126,17 @@ Binding raises `pendingRestart` rather than recreating the container, so there i
 where the row names the custom domain and the running container does not. `public-web/diagnostics`
 reports that window as `action: 'ok'` with `envMismatch: true` — **key UI off `action`, not
 `envMismatch`**, or a healthy app awaiting its restart is shown as broken.
+
+Genuine drift raises a banner in the app config dialog carrying its own **Repair routing** action
+(`repairPublicWebRouting` in `lib/cloudflare-api.ts` → `POST /api/public-web/repair`). It has to be a
+separate action: routing drift leaves the form clean, so the dialog's Update button — gated on
+`isDirty` — cannot be the remedy. Two things that path depends on:
+
+- The generated client **resolves** on a non-2xx unless `throwOnError` is passed, so an error from
+  the interceptor arrives as `result.error`, not as a rejection. Rethrow it or a denied grant loses
+  its `APP_ACTION_GRANT_DENIED` message.
+- An empty `results` array means the Hub found nothing drifted, which is not a repair — clear the
+  banner, but do not claim one.
 
 ⚠ `SSEService.emit('app', data, appUrn)` publishes to `app:<urn>`, which nothing subscribes to: the
 client opens `/api/sse/app` only. Omit the third argument.

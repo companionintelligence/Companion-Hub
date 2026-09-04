@@ -53,4 +53,9 @@ describe('desktop Tauri remote URL allowlist', () => {
     const parsed = JSON.parse(readFileSync(CAPABILITIES, 'utf8')) as { local?: boolean };
     expect(parsed.local).toBe(true);
   });
+
+  it('grants desktop IPC and opener open-path so Open data folder works after bootstrap', () => {
+    const parsed = JSON.parse(readFileSync(CAPABILITIES, 'utf8')) as { permissions?: string[] };
+    expect(parsed.permissions).toEqual(expect.arrayContaining(['allow-desktop-ipc', 'opener:allow-open-path']));
+  });
 });

@@ -1,9 +1,10 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { afterEach, describe, it, expect, vi } from 'vitest';
+import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import { MemoryRouter } from 'react-router';
 import type { AppInfo } from '@/types/app.types';
 import { InstallForm } from './install-form';
 import { useAppContext } from '@/context/app-context';
+import { TranslatableError } from '@/types/error.types';
 
 // Polyfill ResizeObserver for Radix UI
 global.ResizeObserver = class ResizeObserver {
@@ -23,14 +24,16 @@ vi.mock('@/context/app-context', () => ({
   useAppContext: vi.fn(),
 }));
 
-const { fetchDnsAvailability, fetchPublicWebDiagnostics } = vi.hoisted(() => ({
+const { fetchDnsAvailability, fetchPublicWebDiagnostics, repairPublicWebRouting } = vi.hoisted(() => ({
   fetchDnsAvailability: vi.fn(),
   fetchPublicWebDiagnostics: vi.fn().mockResolvedValue(null),
+  repairPublicWebRouting: vi.fn(),
 }));
 
 vi.mock('@/lib/cloudflare-api', () => ({
   fetchDnsAvailability,
   fetchPublicWebDiagnostics,
+  repairPublicWebRouting,
 }));
 
 const { toast } = vi.hoisted(() => ({
@@ -89,9 +92,27 @@ vi.mock('@ci-hub/common/types', () => {
     return `${nodeFqdn}:${port}`;
   };
 
+  /*
+   * The real predicate, not an approximation: the picker's confirmation, its
+   * in-use note and the Hub's bind pass all decide with this one function, and a
+   * mock that answered differently would let a divergence between them pass.
+   */
+  const customDomainServesAnotherApp = (
+    entry: { boundAppSlug: string | null; boundElsewhere: boolean },
+    appSlug: string | null | undefined,
+  ): boolean => {
+    if (entry.boundElsewhere) return true;
+
+    const theirs = entry.boundAppSlug ? sanitizeAppSubdomain(entry.boundAppSlug) : '';
+    if (!theirs) return false;
+
+    return (appSlug ? sanitizeAppSubdomain(appSlug) : '') !== theirs;
+  };
+
   return {
     buildPublicWebIdentity,
     buildTailscalePortHost,
+    customDomainServesAnotherApp,
     sanitizeAppSubdomain,
   };
 });
@@ -711,6 +732,46 @@ describe('InstallForm', () => {
       expect(screen.getByLabelText('APP_INSTALL_FORM_CUSTOM_DOMAIN')).toHaveTextContent(/^comfy\.acme\.com$/);
     });
 
+    it("recognises the app's own domain when it has no Local Subdomain of its own", async () => {
+      /*
+       * ⚠ THE FALLBACKS HAVE TO MATCH. `resolveRoutingSubdomain` on the backend
+       * falls back to `<appName>-<appStoreSlug>`, which is what the bind sends
+       * and what CI-Cloud returns as `boundAppSlug`. The field's PLACEHOLDER is
+       * the bare app name, and comparing that instead made every app installed
+       * without a Local Subdomain — API, MCP and restore installs — read as
+       * somebody else's: the picker asked the operator to confirm moving the
+       * app's own domain away from itself.
+       */
+      MOCK_CUSTOM_DOMAINS.supported = true;
+      MOCK_CUSTOM_DOMAINS.domains = [connected({ state: 'live', boundAppSlug: 'comfyui-store', targetHostname: 'comfyui-core2-acme.example.com' })];
+
+      /*
+       * `dynamic_config: false`, because that is what leaves `localSubdomain`
+       * empty. The form auto-fills it for a dynamic-config app, and an app that
+       * carries a subdomain has no fallback to get wrong — so this is the only
+       * shape where the two fallbacks are compared against each other.
+       */
+      vi.mocked(useAppContext).mockReturnValue(CONTEXT);
+
+      render(
+        <MemoryRouter>
+          <InstallForm
+            info={{ ...INFO, dynamic_config: false } as unknown as AppInfo}
+            onSubmit={vi.fn()}
+            formId="test-form"
+            formFields={[]}
+            initialValues={{ exposureMode: 'cloudflare' }}
+          />
+        </MemoryRouter>,
+      );
+
+      fireEvent.click(screen.getByLabelText('APP_INSTALL_FORM_CUSTOM_DOMAIN'));
+      fireEvent.click(screen.getByRole('option', { name: /comfy\.acme\.com/ }));
+
+      expect(screen.queryByTestId('custom-domain-takeover-confirm')).not.toBeInTheDocument();
+      expect(screen.getByLabelText('APP_INSTALL_FORM_CUSTOM_DOMAIN')).toHaveTextContent(/^comfy\.acme\.com$/);
+    });
+
     it('does not warn that a domain is in use by the app being configured', () => {
       /*
        * The normal case in the settings dialog. Telling the operator that
@@ -723,6 +784,123 @@ describe('InstallForm', () => {
       renderForm({ exposureMode: 'cloudflare', localSubdomain: 'comfyui', customDomain: 'comfy.acme.com' });
 
       expect(screen.queryByText(/APP_INSTALL_FORM_CUSTOM_DOMAIN_IN_USE/)).not.toBeInTheDocument();
+    });
+
+    it('names a permanently failed certificate instead of offering it silently', () => {
+      /*
+       * CI-Cloud reports `failed` with `bindable: true`, deliberately. A build
+       * that had not heard of the state parsed it as `unknown`, matched none of
+       * the picker's conditions, and rendered a domain whose certificate can
+       * never issue as an ordinary choice with no note at all.
+       */
+      MOCK_CUSTOM_DOMAINS.supported = true;
+      MOCK_CUSTOM_DOMAINS.domains = [connected({ state: 'failed' })];
+
+      renderForm();
+
+      fireEvent.click(screen.getByLabelText('APP_INSTALL_FORM_CUSTOM_DOMAIN'));
+
+      expect(screen.getByText('APP_INSTALL_FORM_CUSTOM_DOMAIN_FAILED')).toBeInTheDocument();
+    });
+
+    it('asks before moving a domain that is serving another Hub, and commits nothing until answered', async () => {
+      /*
+       * CI-Engineering#208, defect 4. The domain was selectable with only a text
+       * suffix, and a background heartbeat then moved a production hostname off
+       * another device in the organization with no confirmation anywhere.
+       *
+       * ⚠ THE FORM MUST STILL HOLD THE PLATFORM ADDRESS while the question is
+       * open. Writing the choice first and the answer second means a save
+       * landing between the two records a move with no confirmation attached,
+       * which the bind pass reads as a refusal — the operator's choice silently
+       * dropped.
+       */
+      MOCK_CUSTOM_DOMAINS.supported = true;
+      MOCK_CUSTOM_DOMAINS.domains = [connected({ state: 'live', boundElsewhere: true, targetHostname: 'grafana-core9-acme.example.com' })];
+
+      renderForm();
+
+      fireEvent.click(screen.getByLabelText('APP_INSTALL_FORM_CUSTOM_DOMAIN'));
+      // By role, not by text: Radix mirrors an item's label into the trigger,
+      // so a plain text query matches both the option and the collapsed control.
+      fireEvent.click(screen.getByRole('option', { name: /comfy\.acme\.com/ }));
+
+      expect(screen.getByTestId('custom-domain-takeover-confirm')).toBeInTheDocument();
+      expect(screen.getByLabelText('APP_INSTALL_FORM_CUSTOM_DOMAIN')).toHaveTextContent('APP_INSTALL_FORM_CUSTOM_DOMAIN_NONE');
+    });
+
+    it('leaves the domain where it is when the move is declined', async () => {
+      MOCK_CUSTOM_DOMAINS.supported = true;
+      MOCK_CUSTOM_DOMAINS.domains = [connected({ state: 'live', boundElsewhere: true, targetHostname: 'grafana-core9-acme.example.com' })];
+
+      renderForm();
+
+      fireEvent.click(screen.getByLabelText('APP_INSTALL_FORM_CUSTOM_DOMAIN'));
+      // By role, not by text: Radix mirrors an item's label into the trigger,
+      // so a plain text query matches both the option and the collapsed control.
+      fireEvent.click(screen.getByRole('option', { name: /comfy\.acme\.com/ }));
+      fireEvent.click(screen.getByTestId('custom-domain-takeover-cancel'));
+
+      expect(screen.queryByTestId('custom-domain-takeover-confirm')).not.toBeInTheDocument();
+      expect(screen.getByLabelText('APP_INSTALL_FORM_CUSTOM_DOMAIN')).toHaveTextContent('APP_INSTALL_FORM_CUSTOM_DOMAIN_NONE');
+    });
+
+    it('commits the choice once the move is confirmed', async () => {
+      MOCK_CUSTOM_DOMAINS.supported = true;
+      MOCK_CUSTOM_DOMAINS.domains = [connected({ state: 'live', boundElsewhere: true, targetHostname: 'grafana-core9-acme.example.com' })];
+
+      renderForm();
+
+      fireEvent.click(screen.getByLabelText('APP_INSTALL_FORM_CUSTOM_DOMAIN'));
+      // By role, not by text: Radix mirrors an item's label into the trigger,
+      // so a plain text query matches both the option and the collapsed control.
+      fireEvent.click(screen.getByRole('option', { name: /comfy\.acme\.com/ }));
+      fireEvent.click(screen.getByTestId('custom-domain-takeover-accept'));
+
+      expect(screen.queryByTestId('custom-domain-takeover-confirm')).not.toBeInTheDocument();
+      expect(screen.getByLabelText('APP_INSTALL_FORM_CUSTOM_DOMAIN')).toHaveTextContent(/^comfy\.acme\.com$/);
+    });
+
+    it('does not ask when the domain is already serving the app being configured', () => {
+      // Re-picking the domain an app already serves is not a move, and asking
+      // about it would read as a bug in the ordinary settings case.
+      MOCK_CUSTOM_DOMAINS.supported = true;
+      MOCK_CUSTOM_DOMAINS.domains = [connected({ state: 'live', boundAppSlug: 'comfyui', targetHostname: 'comfyui-core2-acme.example.com' })];
+
+      renderForm({ exposureMode: 'cloudflare', localSubdomain: 'comfyui' });
+
+      fireEvent.click(screen.getByLabelText('APP_INSTALL_FORM_CUSTOM_DOMAIN'));
+      // By role, not by text: Radix mirrors an item's label into the trigger,
+      // so a plain text query matches both the option and the collapsed control.
+      fireEvent.click(screen.getByRole('option', { name: /comfy\.acme\.com/ }));
+
+      expect(screen.queryByTestId('custom-domain-takeover-confirm')).not.toBeInTheDocument();
+      expect(screen.getByLabelText('APP_INSTALL_FORM_CUSTOM_DOMAIN')).toHaveTextContent(/^comfy\.acme\.com$/);
+    });
+
+    it('warns that clearing the picker releases a domain the app is serving', () => {
+      /*
+       * CI-Cloud cannot park a connected domain, so this save gives it up
+       * entirely and only a person in the portal can reconnect it. Showing that
+       * behind the same neutral sentence used when nothing is bound would be the
+       * one place this dialog hides an irreversible act.
+       */
+      MOCK_CUSTOM_DOMAINS.supported = true;
+      MOCK_CUSTOM_DOMAINS.domains = [connected({ state: 'live', boundAppSlug: 'comfyui', targetHostname: 'comfyui-core2-acme.example.com' })];
+
+      renderForm({ exposureMode: 'cloudflare', localSubdomain: 'comfyui' });
+
+      expect(screen.getByText('APP_INSTALL_FORM_CUSTOM_DOMAIN_RELEASE_HINT')).toBeInTheDocument();
+    });
+
+    it('does not threaten a release when the app is not serving anything', () => {
+      MOCK_CUSTOM_DOMAINS.supported = true;
+      MOCK_CUSTOM_DOMAINS.domains = [connected()];
+
+      renderForm();
+
+      expect(screen.getByText('APP_INSTALL_FORM_CUSTOM_DOMAIN_HINT')).toBeInTheDocument();
+      expect(screen.queryByText('APP_INSTALL_FORM_CUSTOM_DOMAIN_RELEASE_HINT')).not.toBeInTheDocument();
     });
   });
 
@@ -1297,5 +1475,204 @@ describe('InstallForm', () => {
 
     expect(getEnableAuthSwitch()).toBeInTheDocument(); // the switch itself still renders
     expect(screen.queryByText('APP_INSTALL_FORM_ENABLE_AUTH_RECOMMENDED')).not.toBeInTheDocument();
+  });
+});
+
+/**
+ * The drift banner named "Save settings", but nothing on the form is dirty when only
+ * routing has drifted, so the Update button it pointed at stayed disabled and the
+ * dialog dead-ended (#1208). It now carries the repair action itself.
+ */
+describe('InstallForm - Public Web routing drift', () => {
+  const driftedApp = {
+    urn: 'n8n:store',
+    form_fields: [],
+    exposable: true,
+    dynamic_config: true,
+    port: 3001,
+  } as unknown as AppInfo;
+
+  const context = {
+    userSettings: {
+      ciHubOrganizationSlug: 'bc',
+      ciHubDeviceSlug: 'blaptop',
+      localDomain: 'ci.lan',
+      domain: 'companionintelligence.com',
+      maxBackups: 5,
+      guestDashboard: false,
+    },
+    user: { advancedMode: true },
+    isProduction: true,
+    cloudflareAvailable: true,
+    tailscaleAvailable: false,
+  } as unknown as ReturnType<typeof useAppContext>;
+
+  const renderDrifted = (onSubmit: (values: Record<string, unknown>) => void = vi.fn()) =>
+    render(
+      <MemoryRouter>
+        <InstallForm
+          info={driftedApp}
+          onSubmit={onSubmit}
+          formId="test-form"
+          formFields={[]}
+          initialValues={{ exposureMode: 'cloudflare' }}
+          appStatus="running"
+          editingAppUrn="n8n:store"
+        />
+      </MemoryRouter>,
+    );
+
+  beforeEach(() => {
+    // This describe is a SIBLING of `describe('InstallForm')`, so that block's
+    // afterEach never runs for it and vitest is not configured to reset mocks
+    // between files' suites. Without this, an implementation set over there (the
+    // DNS stub in particular, whose single Response body is already consumed)
+    // leaks in and can fire a toast these tests assert the absence of.
+    vi.clearAllMocks();
+    fetchDnsAvailability.mockReset();
+    fetchDnsAvailability.mockResolvedValue(new Response(JSON.stringify({ available: true }), { status: 200 }));
+    vi.mocked(useAppContext).mockReturnValue(context);
+    fetchPublicWebDiagnostics.mockResolvedValue({
+      apps: [{ appUrn: 'n8n:store', envMismatch: true, action: 'repair', computedPublicUrl: 'https://n8n-blaptop-bc.companionintelligence.com' }],
+    });
+  });
+
+  afterEach(() => {
+    // Restore the file-wide defaults so this suite's stubs cannot leak into another.
+    fetchPublicWebDiagnostics.mockReset();
+    fetchPublicWebDiagnostics.mockResolvedValue(null);
+    repairPublicWebRouting.mockReset();
+    fetchDnsAvailability.mockReset();
+  });
+
+  it('offers a repair action on the drift banner', async () => {
+    renderDrifted();
+
+    expect(await screen.findByTestId('public-web-drift-banner')).toBeInTheDocument();
+    expect(screen.getByTestId('public-web-repair-button')).toBeEnabled();
+  });
+
+  it('repairs the edited app and clears the banner', async () => {
+    repairPublicWebRouting.mockResolvedValue([{ appUrn: 'n8n:store', success: true }]);
+    renderDrifted();
+
+    fireEvent.click(await screen.findByTestId('public-web-repair-button'));
+
+    await waitFor(() => {
+      expect(repairPublicWebRouting).toHaveBeenCalledWith('n8n:store');
+    });
+    await waitFor(() => {
+      expect(screen.queryByTestId('public-web-drift-banner')).not.toBeInTheDocument();
+    });
+    expect(toast.success).toHaveBeenCalledWith('APP_PUBLIC_WEB_REPAIR_SUCCESS');
+  });
+
+  it('keeps the banner up when the repair fails', async () => {
+    repairPublicWebRouting.mockResolvedValue([{ appUrn: 'n8n:store', success: false, message: 'App not found' }]);
+    renderDrifted();
+
+    fireEvent.click(await screen.findByTestId('public-web-repair-button'));
+
+    await waitFor(() => {
+      expect(toast.error).toHaveBeenCalledWith('APP_PUBLIC_WEB_REPAIR_ERROR');
+    });
+    expect(screen.getByTestId('public-web-drift-banner')).toBeInTheDocument();
+  });
+
+  it('does not submit the config form when repairing', async () => {
+    // The banner renders inside the config <form>, so a button that defaulted to
+    // type="submit" would save the settings as a side effect of repairing routing.
+    repairPublicWebRouting.mockResolvedValue([{ appUrn: 'n8n:store', success: true }]);
+    const onSubmit = vi.fn();
+    renderDrifted(onSubmit);
+
+    fireEvent.click(await screen.findByTestId('public-web-repair-button'));
+
+    await waitFor(() => {
+      expect(repairPublicWebRouting).toHaveBeenCalled();
+    });
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  it('clears the banner when the Hub reports nothing left to repair', async () => {
+    // The Hub returns a result per drifted app, so an empty list means this one is
+    // already in sync — treating that as a failure would strand a stale banner.
+    repairPublicWebRouting.mockResolvedValue([]);
+    renderDrifted();
+
+    fireEvent.click(await screen.findByTestId('public-web-repair-button'));
+
+    await waitFor(() => {
+      expect(screen.queryByTestId('public-web-drift-banner')).not.toBeInTheDocument();
+    });
+    expect(toast.error).not.toHaveBeenCalled();
+    // Nothing was rewritten and nothing restarted, so it must not claim a repair.
+    expect(toast.success).toHaveBeenCalledWith('APP_PUBLIC_WEB_REPAIR_ALREADY_SYNCED');
+  });
+
+  it('does not force a repair when the drift has resolved since the dialog opened', async () => {
+    /*
+     * The banner is drawn from a snapshot taken on open, and the server repairs a NAMED
+     * app on `envMismatch` alone — deliberately overriding the `action: 'ok'` window a
+     * freshly bound custom domain opens. Acting on the stale snapshot would force the
+     * very restart that bind deferred.
+     */
+    repairPublicWebRouting.mockResolvedValue([{ appUrn: 'n8n:store', success: true }]);
+    renderDrifted();
+    await screen.findByTestId('public-web-drift-banner');
+
+    fetchPublicWebDiagnostics.mockResolvedValue({
+      apps: [{ appUrn: 'n8n:store', envMismatch: true, action: 'ok', computedPublicUrl: 'https://n8n-blaptop-bc.companionintelligence.com' }],
+    });
+    fireEvent.click(screen.getByTestId('public-web-repair-button'));
+
+    await waitFor(() => {
+      expect(toast.success).toHaveBeenCalledWith('APP_PUBLIC_WEB_REPAIR_ALREADY_SYNCED');
+    });
+    expect(repairPublicWebRouting).not.toHaveBeenCalled();
+    expect(screen.queryByTestId('public-web-drift-banner')).not.toBeInTheDocument();
+  });
+
+  it('repairs nothing when the drift cannot be re-read', async () => {
+    // Unverified state is not a licence to restart the app; the operator can retry.
+    renderDrifted();
+    await screen.findByTestId('public-web-drift-banner');
+
+    fetchPublicWebDiagnostics.mockResolvedValue(null);
+    fireEvent.click(screen.getByTestId('public-web-repair-button'));
+
+    await waitFor(() => {
+      expect(toast.error).toHaveBeenCalledWith('APP_PUBLIC_WEB_REPAIR_ERROR');
+    });
+    expect(repairPublicWebRouting).not.toHaveBeenCalled();
+    expect(screen.getByTestId('public-web-drift-banner')).toBeInTheDocument();
+  });
+
+  it('surfaces the reason when the operator holds no grant for the app', async () => {
+    // The Hub answers a denied repair with APP_ACTION_GRANT_DENIED, and telling that
+    // operator to "check the Hub logs" would send them hunting a fault that is not there.
+    repairPublicWebRouting.mockRejectedValue(new TranslatableError('APP_ACTION_GRANT_DENIED', { action: 'configure', app: 'n8n' }));
+    renderDrifted();
+
+    fireEvent.click(await screen.findByTestId('public-web-repair-button'));
+
+    await waitFor(() => {
+      expect(toast.error).toHaveBeenCalledWith('APP_ACTION_GRANT_DENIED');
+    });
+    expect(screen.getByTestId('public-web-drift-banner')).toBeInTheDocument();
+  });
+
+  it('re-enables the repair button after a failed attempt so it can be retried', async () => {
+    repairPublicWebRouting.mockRejectedValue(new Error('network down'));
+    renderDrifted();
+
+    fireEvent.click(await screen.findByTestId('public-web-repair-button'));
+
+    await waitFor(() => {
+      expect(toast.error).toHaveBeenCalled();
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('public-web-repair-button')).toBeEnabled();
+    });
   });
 });

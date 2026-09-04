@@ -95,12 +95,23 @@ export class AppsRepository {
       return [];
     }
 
-    return this.db
-      .update(app)
-      .set({ customDomainIntent: null, updatedAt: new Date().toISOString() })
-      .where(and(ne(app.id, appId), sql`lower(${app.customDomainIntent}) = ${normalized}`))
-      .returning({ id: app.id, appName: app.appName, appStoreSlug: app.appStoreSlug })
-      .execute();
+    return (
+      this.db
+        .update(app)
+        /*
+         * ⚠ THE CONFIRMATION GOES WITH THE CHOICE, on this path as on every other.
+         *
+         * `custom_domain_takeover` authorizes taking a domain off whatever serves
+         * it now, and it is answered about ONE domain. Left set on an app whose
+         * choice has just been taken away, it becomes a standing yes waiting for
+         * that app's next choice — which could be a different domain, serving a
+         * different app, that nobody was ever asked about.
+         */
+        .set({ customDomainIntent: null, customDomainTakeover: false, updatedAt: new Date().toISOString() })
+        .where(and(ne(app.id, appId), sql`lower(${app.customDomainIntent}) = ${normalized}`))
+        .returning({ id: app.id, appName: app.appName, appStoreSlug: app.appStoreSlug })
+        .execute()
+    );
   }
 
   /**

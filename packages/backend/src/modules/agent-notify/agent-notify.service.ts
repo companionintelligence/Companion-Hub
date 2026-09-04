@@ -228,8 +228,6 @@ export class AgentNotifyService implements OnApplicationBootstrap, OnModuleDestr
     this.debounceMap.set(debounceKey, Date.now());
 
     // `now` avoids waiting up to 30 minutes for the next scheduled heartbeat.
-    const body = JSON.stringify({ text: buildWakeText(event, data, urgency), mode: 'now' });
-
     await Promise.allSettled(targets.map((target) => this.postWake(target, buildWakeText(event, data, urgency))));
   }
 

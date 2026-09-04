@@ -1,6 +1,8 @@
 import { castAppUrn } from '@/common/helpers/app-helpers';
 import { Body, Controller, Delete, Get, Param, Patch, Post, Req, UseGuards } from '@nestjs/common';
 import type { Request } from 'express';
+import { MarketplaceWhoIsService } from '@/core/portal/marketplace-whois.service';
+import { hubSessionOperatorUserId } from '@/core/portal/hub-session-operator';
 import { AuthGuard } from '../auth/auth.guard';
 import { AppLifecycleService } from './app-lifecycle.service';
 import { HubAccessService } from './hub-access.service';
@@ -29,6 +31,7 @@ export class AppLifecycleController {
     private readonly appLifecycleService: AppLifecycleService,
     private readonly appRehydrationService: AppRehydrationService,
     private readonly hubAccessService: HubAccessService,
+    private readonly whois: MarketplaceWhoIsService,
   ) {}
 
   @Get('rehydrate/plan')
@@ -68,50 +71,64 @@ export class AppLifecycleController {
 
   @Post(':urn/install')
   @ApiResponse({ type: LifecycleRequestDto })
-  async installApp(@Param('urn') urn: string, @Body() body: AppFormBody) {
-    const res = await this.appLifecycleService.installApp({ appUrn: castAppUrn(urn), form: body });
+  async installApp(@Param('urn') urn: string, @Body() body: AppFormBody, @Req() req: Request) {
+    const appUrn = castAppUrn(urn);
+    await this.whois.assertSessionAction(req, appUrn, 'install');
+    const res = await this.appLifecycleService.installApp({ appUrn, form: body });
     return LifecycleRequestDto.parse(res, { reportOnly: true });
   }
 
   @Post(':urn/validate-config')
   @ApiResponse({ type: ValidateConfigResultDto })
-  async validateConfig(@Param('urn') urn: string, @Body() body: AppFormBody) {
-    const res = await this.appLifecycleService.validateAppConfig(castAppUrn(urn), body);
+  async validateConfig(@Param('urn') urn: string, @Body() body: AppFormBody, @Req() req: Request) {
+    const appUrn = castAppUrn(urn);
+    await this.whois.assertSessionAction(req, appUrn, 'configure');
+    const res = await this.appLifecycleService.validateAppConfig(appUrn, body);
     return ValidateConfigResultDto.parse(res, { reportOnly: true });
   }
 
   @Post(':urn/start')
   @ApiResponse({ type: LifecycleRequestDto })
-  async startApp(@Param('urn') urn: string) {
-    const res = await this.appLifecycleService.startApp({ appUrn: castAppUrn(urn) });
+  async startApp(@Param('urn') urn: string, @Req() req: Request) {
+    const appUrn = castAppUrn(urn);
+    await this.whois.assertSessionAction(req, appUrn, 'start');
+    const res = await this.appLifecycleService.startApp({ appUrn });
     return LifecycleRequestDto.parse(res, { reportOnly: true });
   }
 
   @Post(':urn/stop')
   @ApiResponse({ type: LifecycleRequestDto })
-  async stopApp(@Param('urn') urn: string) {
-    const res = await this.appLifecycleService.stopApp({ appUrn: castAppUrn(urn) });
+  async stopApp(@Param('urn') urn: string, @Req() req: Request) {
+    const appUrn = castAppUrn(urn);
+    await this.whois.assertSessionAction(req, appUrn, 'stop');
+    const res = await this.appLifecycleService.stopApp({ appUrn });
     return LifecycleRequestDto.parse(res, { reportOnly: true });
   }
 
   @Post(':urn/force-stop')
   @ApiResponse({ type: LifecycleRequestDto })
-  async forceStopApp(@Param('urn') urn: string) {
-    const res = await this.appLifecycleService.forceStopApp({ appUrn: castAppUrn(urn) });
+  async forceStopApp(@Param('urn') urn: string, @Req() req: Request) {
+    const appUrn = castAppUrn(urn);
+    await this.whois.assertSessionAction(req, appUrn, 'stop');
+    const res = await this.appLifecycleService.forceStopApp({ appUrn });
     return LifecycleRequestDto.parse(res, { reportOnly: true });
   }
 
   @Post(':urn/restart')
   @ApiResponse({ type: LifecycleRequestDto })
-  async restartApp(@Param('urn') urn: string) {
-    const res = await this.appLifecycleService.restartApp({ appUrn: castAppUrn(urn) });
+  async restartApp(@Param('urn') urn: string, @Req() req: Request) {
+    const appUrn = castAppUrn(urn);
+    await this.whois.assertSessionAction(req, appUrn, 'restart');
+    const res = await this.appLifecycleService.restartApp({ appUrn });
     return LifecycleRequestDto.parse(res, { reportOnly: true });
   }
 
   @Delete(':urn/uninstall')
   @ApiResponse({ type: LifecycleRequestDto })
-  async uninstallApp(@Param('urn') urn: string, @Body() body: UninstallAppBody) {
-    const res = await this.appLifecycleService.uninstallApp({ appUrn: castAppUrn(urn), deleteAllData: body.deleteAllData, force: body.force });
+  async uninstallApp(@Param('urn') urn: string, @Body() body: UninstallAppBody, @Req() req: Request) {
+    const appUrn = castAppUrn(urn);
+    await this.whois.assertSessionAction(req, appUrn, 'uninstall');
+    const res = await this.appLifecycleService.uninstallApp({ appUrn, deleteAllData: body.deleteAllData, force: body.force });
     return LifecycleRequestDto.parse(res, { reportOnly: true });
   }
 
@@ -119,22 +136,28 @@ export class AppLifecycleController {
   @ApiResponse({ type: LifecycleRequestDto })
   // The route historically took no body and the schema defaults `force`, so the body is optional.
   @ApiBody({ type: ResetAppBody, required: false })
-  async resetApp(@Param('urn') urn: string, @Body() body: ResetAppBody) {
-    const res = await this.appLifecycleService.resetApp({ appUrn: castAppUrn(urn), force: body.force });
+  async resetApp(@Param('urn') urn: string, @Body() body: ResetAppBody, @Req() req: Request) {
+    const appUrn = castAppUrn(urn);
+    await this.whois.assertSessionAction(req, appUrn, 'reset');
+    const res = await this.appLifecycleService.resetApp({ appUrn, force: body.force });
     return LifecycleRequestDto.parse(res, { reportOnly: true });
   }
 
   @Patch(':urn/update')
   @ApiResponse({ type: LifecycleRequestDto })
-  async updateApp(@Param('urn') urn: string, @Body() body: UpdateAppBody) {
-    const res = await this.appLifecycleService.updateApp({ appUrn: castAppUrn(urn), performBackup: body.performBackup });
+  async updateApp(@Param('urn') urn: string, @Body() body: UpdateAppBody, @Req() req: Request) {
+    const appUrn = castAppUrn(urn);
+    await this.whois.assertSessionAction(req, appUrn, 'update');
+    const res = await this.appLifecycleService.updateApp({ appUrn, performBackup: body.performBackup });
     return LifecycleRequestDto.parse(res, { reportOnly: true });
   }
 
   @Patch(':urn/update-config')
   @ApiResponse({ type: LifecycleRequestDto })
-  async updateAppConfig(@Param('urn') urn: string, @Body() body: AppFormBody) {
-    const res = await this.appLifecycleService.updateAppConfig({ appUrn: castAppUrn(urn), form: body });
+  async updateAppConfig(@Param('urn') urn: string, @Body() body: AppFormBody, @Req() req: Request) {
+    const appUrn = castAppUrn(urn);
+    await this.whois.assertSessionAction(req, appUrn, 'configure');
+    const res = await this.appLifecycleService.updateAppConfig({ appUrn, form: body });
     return LifecycleRequestDto.parse(res, { reportOnly: true });
   }
 
@@ -151,22 +174,22 @@ export class AppLifecycleController {
   }
 
   @Patch('update-all')
-  async updateAllApps() {
-    return this.appLifecycleService.updateAllApps();
+  async updateAllApps(@Req() req: Request) {
+    return this.appLifecycleService.updateAllApps(hubSessionOperatorUserId(req));
   }
 
   @Post('start-all')
-  async startAllApps() {
-    return this.appLifecycleService.startAllApps();
+  async startAllApps(@Req() req: Request) {
+    return this.appLifecycleService.startAllApps(hubSessionOperatorUserId(req));
   }
 
   @Post('stop-all')
-  async stopAllApps() {
-    return this.appLifecycleService.stopAllApps();
+  async stopAllApps(@Req() req: Request) {
+    return this.appLifecycleService.stopAllApps(hubSessionOperatorUserId(req));
   }
 
   @Post('restart-all')
-  async restartAllApps() {
-    return this.appLifecycleService.restartAllApps();
+  async restartAllApps(@Req() req: Request) {
+    return this.appLifecycleService.restartAllApps(hubSessionOperatorUserId(req));
   }
 }

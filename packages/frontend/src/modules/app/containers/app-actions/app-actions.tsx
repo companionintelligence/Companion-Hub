@@ -4,7 +4,6 @@ import {
   BrainCircuit,
   CheckCircle,
   CircleStop,
-  Copy,
   Download,
   Edit,
   Eraser,
@@ -29,6 +28,7 @@ import type { AppDetails, AppInfo, AppMetadata, AppStatus } from '@/types/app.ty
 import type { TranslatableError } from '@/types/error.types';
 import clsx from 'clsx';
 import { Tooltip } from 'react-tooltip';
+import { AppDataFolderDialog } from '../../components/dialogs/app-data-folder-dialog/app-data-folder-dialog';
 import { CancelInstallDialog } from '../../components/dialogs/cancel-install-dialog/cancel-install-dialog';
 import { DisconnectMemoryDialog } from '../../components/dialogs/disconnect-memory-dialog/disconnect-memory-dialog';
 import { InstallDialog } from '../../components/dialogs/install-dialog/install-dialog';
@@ -45,7 +45,6 @@ import { useLocation, useNavigate, Link, useSearchParams } from 'react-router';
 import { invalidateAppQueries, type AppInstallErrorCache } from '../../helpers/app-sse-cache';
 import type { AppUrn } from '@ci-hub/common/types';
 import { openExternal } from '@/lib/helpers/open-external';
-import { copyToClipboard } from '@/lib/copy-to-clipboard';
 import { canOpenFolderInFileExplorer, openPathInFileExplorer } from '@/lib/helpers/open-folder';
 import { getTauriInvoke } from '@/lib/helpers/tauri-invoke';
 import { openExternalWithHubSession } from '@/lib/hub-browser-handoff';
@@ -202,6 +201,7 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
   const uninstallDisclosure = useDisclosure();
   const resetAppDisclosure = useDisclosure();
   const disconnectMemoryDisclosure = useDisclosure();
+  const appDataFolderDisclosure = useDisclosure();
 
   // Local optimistic flag while a cancel is in flight: the backend keeps the app in `installing`
   // until compensation finishes and the `install_cancelled` SSE lands, so we surface "Cancelling…".
@@ -662,26 +662,22 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
   const buttons: React.JSX.Element[] = [];
   const secondaryActions: React.JSX.Element[] = [];
 
-  // Native open only works in the desktop shell on the Hub host (Finder /
-  // Explorer / the Linux file manager). A browser tab or the phone app is not
-  // that machine — offer a copy of the host path so the operator can open it
-  // there instead of a dead "folder may not exist" toast.
-  const openDataFolderButton = appDataHostPath ? (
-    canOpenFolderInFileExplorer() ? (
-      <IconActionButton
-        key="open-data-folder"
-        icon={FolderOpen}
-        label={t('APP_ACTION_OPEN_DATA_FOLDER')}
-        onClick={() => openPathInFileExplorer(appDataHostPath)}
-      />
-    ) : (
-      <IconActionButton
-        key="copy-data-folder"
-        icon={Copy}
-        label={t('APP_ACTION_COPY_DATA_FOLDER_PATH')}
-        onClick={() => copyToClipboard(appDataHostPath, t('APP_ACTION_DATA_FOLDER_PATH_COPIED'))}
-      />
-    )
+  // Desktop shell on the Hub host: open Finder / Explorer / the file manager.
+  // Browser (and phone, or desktop without a resolved host path): read-only
+  // listing dialog so the action is never a silent no-op.
+  const openDataFolderButton = app ? (
+    <IconActionButton
+      key="open-data-folder"
+      icon={FolderOpen}
+      label={t('APP_ACTION_OPEN_DATA_FOLDER')}
+      onClick={() => {
+        if (canOpenFolderInFileExplorer() && appDataHostPath) {
+          void openPathInFileExplorer(appDataHostPath);
+          return;
+        }
+        appDataFolderDisclosure.open();
+      }}
+    />
   ) : null;
 
   // Companion Memory connect/disconnect, sized to match the Open button and
@@ -997,6 +993,7 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
         onConfirm={memory.disconnect}
         isDisconnecting={memory.isDisconnecting}
       />
+      <AppDataFolderDialog isOpen={appDataFolderDisclosure.isOpen} onClose={appDataFolderDisclosure.close} info={info} />
       <UpdateSettingsDialog
         isOpen={updateSettingsDisclosure.isOpen}
         onClose={updateSettingsDisclosure.close}
@@ -1019,6 +1016,18 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
            * save that follows sends `''` — the explicit instruction to give it up.
            */
           ...(app ? { customDomain: app.customDomainIntent ?? app.customDomain ?? '' } : {}),
+          /*
+           * The row wins here too, and it is the ONLY source. The confirmation
+           * authorizes one move and the bind pass spends it, so the row is the
+           * only thing that knows whether one is still outstanding —
+           * `toStoredConfig` deliberately keeps it out of the snapshot so a spent
+           * answer cannot come back as standing permission.
+           *
+           * Seeded rather than defaulted to `false` so an unrelated save does not
+           * quietly withdraw a move the operator confirmed and the pass has not
+           * reached yet.
+           */
+          ...(app ? { customDomainTakeover: app.customDomainTakeover ?? false } : {}),
         }}
         status={app?.status}
       />

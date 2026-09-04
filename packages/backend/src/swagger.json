@@ -1948,6 +1948,36 @@
         ]
       }
     },
+    "/api/apps/{urn}/data-files": {
+      "get": {
+        "operationId": "getAppDataListing",
+        "parameters": [
+          {
+            "name": "urn",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppDataListingDto"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Apps"
+        ]
+      }
+    },
     "/api/apps/{urn}/compose-diff": {
       "get": {
         "operationId": "getAppComposeDiff",
@@ -4543,6 +4573,16 @@
       "post": {
         "operationId": "repair",
         "parameters": [],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PublicWebRepairBody"
+              }
+            }
+          }
+        },
         "responses": {
           "default": {
             "description": "",
@@ -4970,6 +5010,20 @@
         },
         "tags": [
           "SystemUpdate"
+        ]
+      }
+    },
+    "/api/agent-notify/wake": {
+      "post": {
+        "operationId": "wake",
+        "parameters": [],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "AgentNotify"
         ]
       }
     },
@@ -6843,6 +6897,9 @@
                     "customDomainIntent": {
                       "nullable": true,
                       "type": "string"
+                    },
+                    "customDomainTakeover": {
+                      "type": "boolean"
                     },
                     "pendingRestart": {
                       "type": "boolean"
@@ -9334,6 +9391,9 @@
                 "nullable": true,
                 "type": "string"
               },
+              "customDomainTakeover": {
+                "type": "boolean"
+              },
               "pendingRestart": {
                 "type": "boolean"
               },
@@ -10486,6 +10546,60 @@
         ],
         "additionalProperties": false
       },
+      "AppDataListingDto": {
+        "type": "object",
+        "properties": {
+          "hostPath": {
+            "nullable": true,
+            "type": "string"
+          },
+          "rootExists": {
+            "type": "boolean"
+          },
+          "truncated": {
+            "type": "boolean"
+          },
+          "entries": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "path": {
+                  "type": "string"
+                },
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "file",
+                    "directory"
+                  ]
+                },
+                "sizeBytes": {
+                  "nullable": true,
+                  "type": "number"
+                }
+              },
+              "required": [
+                "name",
+                "path",
+                "kind",
+                "sizeBytes"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "hostPath",
+          "rootExists",
+          "truncated",
+          "entries"
+        ],
+        "additionalProperties": false
+      },
       "GetComposeDiffDto": {
         "type": "object",
         "properties": {
@@ -11047,6 +11161,9 @@
           "customDomain": {
             "type": "string"
           },
+          "customDomainTakeover": {
+            "type": "boolean"
+          },
           "maxBackups": {
             "type": "number",
             "minimum": 0,
@@ -11432,6 +11549,18 @@
           "title",
           "url"
         ],
+        "additionalProperties": false
+      },
+      "PublicWebRepairBody": {
+        "type": "object",
+        "properties": {
+          "appUrns": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
         "additionalProperties": false
       },
       "GetUserConfigDto": {
@@ -14443,6 +14572,7 @@
                     "pending",
                     "securing",
                     "drifted",
+                    "failed",
                     "unknown"
                   ]
                 },
