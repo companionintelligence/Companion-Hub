@@ -135,13 +135,14 @@ describe('PasswordInput', () => {
     expect(document.querySelector(String(anchorSelect))).toBe(getToggle());
   });
 
-  it('should carry the error border on the toggle as well as the field', () => {
+  it('should leave the error border to the field alone', () => {
     // arrange
     render(<PasswordInput name="password" label="Password" error="Wrong password" />);
 
-    // assert — the two sit flush against each other, so only one going red reads as broken
+    // assert — the toggle is overlaid inside the field and draws no edge of its own, so a
+    // second red border around it would read as a stray box sitting on top of the input
     expect(getField()).toHaveClass('border-destructive');
-    expect(getToggle()).toHaveClass('border-destructive');
+    expect(getToggle()).not.toHaveClass('border-destructive');
   });
 
   it('should not submit the surrounding form when toggled', () => {
@@ -160,24 +161,37 @@ describe('PasswordInput', () => {
     expect(onSubmit).not.toHaveBeenCalled();
   });
 
-  it('should match the toggle height to the field size', () => {
-    // Both halves are asserted: the toggle butts against the input, so a height that
-    // follows the size on one side only is the overhang this is meant to prevent.
-    // `size-8` is what Button's icon variant sets, hence the negative assertions.
+  it('should keep the toggle inset inside the field at either size', () => {
+    // The toggle is overlaid on the field rather than butted against it, so it tracks the
+    // size a step below the field height instead of matching it. `size-8` is what Button's
+    // icon variant sets, hence the negative assertions.
     // arrange
     const { rerender } = render(<PasswordInput name="password" label="Password" />);
 
     // assert
     const defaultToggle = getToggle();
-    expect(getField()).toHaveClass('h-11');
-    expect(defaultToggle).toHaveClass('size-11');
+    expect(getField()).toHaveClass('h-9');
+    expect(defaultToggle).toHaveClass('size-7');
     expect(defaultToggle).not.toHaveClass('size-8');
 
     rerender(<PasswordInput name="password" label="Password" size="sm" />);
     const toggle = getToggle();
     expect(getField()).toHaveClass('h-8');
-    expect(toggle).toHaveClass('size-8');
-    expect(toggle).not.toHaveClass('size-11');
+    expect(toggle).toHaveClass('size-6');
+    expect(toggle).not.toHaveClass('size-8');
+  });
+
+  it('should overlay the toggle so the field keeps the full row width', () => {
+    // Appending the toggle beside the input left the field stopping a toggle short of the
+    // submit button below it, and gave the button a fill of its own against the field.
+    // arrange
+    const { container } = render(<PasswordInput name="password" label="Password" />);
+
+    // assert — out of the row's flex flow, so the input is the only thing sizing the row
+    const suffix = getToggle().parentElement;
+    expect(suffix).toHaveClass('absolute');
+    expect(suffix?.parentElement).toHaveClass('relative');
+    expect(container.firstElementChild).toHaveClass('[&_input]:rounded-r-md', '[&_input]:pr-9');
   });
 
   it('should hide the native Edge reveal control without dropping the caller className', () => {

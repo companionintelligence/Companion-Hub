@@ -47,7 +47,7 @@ export function CloudflareSubdomainField<TFormValues extends FieldValues>({
                 const selectedDomain = (value as string) || watchPublicDomain || domain || '';
 
                 return (
-                  <div className="flex h-11 w-full min-w-0 overflow-hidden items-stretch rounded-r-md border border-l-0 border-input bg-muted text-sm text-muted-foreground">
+                  <div className="flex h-9 w-full min-w-0 overflow-hidden items-stretch rounded-r-md border border-l-0 border-input bg-muted text-sm text-muted-foreground">
                     <div title={prefixText} className="flex min-w-0 max-w-[52%] shrink-0 items-center px-3 overflow-hidden">
                       <span className="block w-full min-w-0 truncate">{prefixText}</span>
                     </div>
@@ -55,7 +55,7 @@ export function CloudflareSubdomainField<TFormValues extends FieldValues>({
                       <SelectTrigger
                         title={selectedDomain}
                         aria-label={t('COMMON_PUBLIC_DOMAIN')}
-                        className="h-11 min-w-0 w-0 flex-1 basis-0 rounded-r-md rounded-l-none border-0 bg-muted px-3 text-sm text-foreground shadow-none focus:ring-0 overflow-hidden gap-2 [&>span]:min-w-0 [&>span]:flex-1 [&>span]:truncate [&>span]:text-left [&>svg]:shrink-0"
+                        className="h-9 min-w-0 w-0 flex-1 basis-0 rounded-r-md rounded-l-none border-0 bg-muted px-3 text-sm text-foreground shadow-none focus:ring-0 overflow-hidden gap-2 [&>span]:min-w-0 [&>span]:flex-1 [&>span]:truncate [&>span]:text-left [&>svg]:shrink-0"
                       >
                         <SelectValue placeholder={t('COMMON_PUBLIC_DOMAIN')} />
                       </SelectTrigger>
