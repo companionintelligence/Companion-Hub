@@ -43,7 +43,7 @@ const availableCustomDomainSchema = z.object({
    * often lag behind the Portal, and dropping a newer state would make a connected
    * domain disappear. Treat `state` as a display label and `bindable` as the gate.
    */
-  state: z.enum(['live', 'parked', 'pending', 'securing', 'drifted', 'unknown']),
+  state: z.enum(['live', 'parked', 'pending', 'securing', 'drifted', 'failed', 'unknown']),
   bindable: z.boolean(),
   targetHostname: z.string().nullable(),
   boundAppSlug: z.string().nullable(),

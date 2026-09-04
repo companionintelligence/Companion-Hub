@@ -6898,6 +6898,9 @@
                       "nullable": true,
                       "type": "string"
                     },
+                    "customDomainTakeover": {
+                      "type": "boolean"
+                    },
                     "pendingRestart": {
                       "type": "boolean"
                     },
@@ -9388,6 +9391,9 @@
                 "nullable": true,
                 "type": "string"
               },
+              "customDomainTakeover": {
+                "type": "boolean"
+              },
               "pendingRestart": {
                 "type": "boolean"
               },
@@ -11154,6 +11160,9 @@
           },
           "customDomain": {
             "type": "string"
+          },
+          "customDomainTakeover": {
+            "type": "boolean"
           },
           "maxBackups": {
             "type": "number",
@@ -14563,6 +14572,7 @@
                     "pending",
                     "securing",
                     "drifted",
+                    "failed",
                     "unknown"
                   ]
                 },

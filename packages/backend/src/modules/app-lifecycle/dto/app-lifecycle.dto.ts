@@ -68,6 +68,24 @@ export const appFormSchema = z
       .trim()
       .toLowerCase()
       .optional(),
+    /*
+     * The person choosing `customDomain` confirmed it may be taken off whatever
+     * is serving it now.
+     *
+     * Sent only alongside a `customDomain`, and meaningless without one. The
+     * bind pass runs long after this dialog closes and cannot ask anybody
+     * anything, while CI-Cloud will happily retarget a domain that is live on a
+     * sibling Hub in the organization — so the answer has to travel with the
+     * choice or the pass has to guess. See `app.custom_domain_takeover`.
+     *
+     * ⚠ ABSENT IS A NO, NEVER AN INHERIT. Unlike `customDomain` above, an
+     * omitted value here is not "leave the existing answer alone": a client that
+     * does not know about this field cannot have asked anyone, and carrying a
+     * previous confirmation forward would let one dialog's answer authorize a
+     * later dialog's choice. It is written from the form on every save that
+     * carries a `customDomain`, and cleared with the intent otherwise.
+     */
+    customDomainTakeover: z.boolean().optional(),
     maxBackups: z.number().min(0).max(100).optional(),
     cpuLimit: optionalCpuLimitSchema,
     memoryLimit: optionalMemoryLimitSchema,
