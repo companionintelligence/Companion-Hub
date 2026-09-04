@@ -59,10 +59,15 @@ export type PublicWebRepairResult = {
 export async function repairPublicWebRouting(appUrn: string): Promise<PublicWebRepairResult[]> {
   const result = await sdkResult(repairPublicWebSdk({ body: { appUrns: [appUrn] } }));
   if (!result.ok) {
-    // An i18n key, not prose: callers hand this to `formatApiError`, which translates
-    // it. A 4xx never reaches here — the client's response interceptor throws its own
-    // TranslatableError first, so a denied grant keeps its own message.
-    throw new Error('APP_PUBLIC_WEB_REPAIR_ERROR');
+    /*
+     * The generated client RESOLVES on a non-2xx unless `throwOnError` is passed, so
+     * the response interceptor's TranslatableError arrives as `result.error` rather
+     * than as a rejection. Rethrow it: a denied grant has to keep reading "You are
+     * not allowed to configure this app", not the generic fallback below, which is
+     * for transport faults that carry no error of their own. The fallback is an i18n
+     * key, not prose — callers hand it to `formatApiError`, which translates it.
+     */
+    throw result.error instanceof Error ? result.error : new Error('APP_PUBLIC_WEB_REPAIR_ERROR');
   }
-  return ((result.data ?? {}) as { results?: PublicWebRepairResult[] }).results ?? [];
+  return (result.data as { results?: PublicWebRepairResult[] } | undefined)?.results ?? [];
 }

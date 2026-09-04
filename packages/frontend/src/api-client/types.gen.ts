@@ -1130,7 +1130,15 @@ export type GetAppDto = {
 };
 
 export type AppDataListingDto = {
-    [key: string]: unknown;
+    hostPath: string;
+    rootExists: boolean;
+    truncated: boolean;
+    entries: Array<{
+        name: string;
+        path: string;
+        kind: 'file' | 'directory';
+        sizeBytes: number;
+    }>;
 };
 
 export type GetComposeDiffDto = {

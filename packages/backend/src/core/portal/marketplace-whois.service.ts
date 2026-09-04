@@ -42,14 +42,29 @@ export class MarketplaceWhoIsService {
   ) {}
 
   async assertSessionAction(req: Request, appUrn: AppUrn, action: HubAction, surface: GrantSurface = 'hub'): Promise<void> {
+    await this.assertSessionActions(req, [appUrn], action, surface);
+  }
+
+  /**
+   * Assert the grant over a whole set of apps in ONE WhoIs round trip. Asserting
+   * app-by-app in a loop costs a Portal request (and a federated-identity read) per
+   * app, which `canMap` already batches at `MAX_WHOIS_APP_IDS`.
+   *
+   * Throws on the first app the operator is refused, so callers that must not touch
+   * anything on a partial refusal get all-or-nothing by construction.
+   */
+  async assertSessionActions(req: Request, appUrns: AppUrn[], action: HubAction, surface: GrantSurface = 'hub'): Promise<void> {
     const userId = hubSessionOperatorUserId(req);
-    if (userId == null) {
+    if (userId == null || appUrns.length === 0) {
       return;
     }
 
-    const allowed = await this.has(userId, appUrn, action, surface);
-    if (!allowed) {
-      throw new TranslatableError('APP_ACTION_GRANT_DENIED', { action, app: extractAppUrn(appUrn).appName }, HttpStatus.FORBIDDEN);
+    const map = await this.canMap(userId, appUrns, surface);
+    for (const appUrn of appUrns) {
+      // `null` (WhoIs missed, no fresh cache) is a refusal: these callers mutate.
+      if (map.get(appUrn)?.includes(action) !== true) {
+        throw new TranslatableError('APP_ACTION_GRANT_DENIED', { action, app: extractAppUrn(appUrn).appName }, HttpStatus.FORBIDDEN);
+      }
     }
   }
 

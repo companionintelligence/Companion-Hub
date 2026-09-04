@@ -461,6 +461,7 @@
   "APP_PUBLIC_WEB_DRIFT_HINT": "Public Web routing is out of sync. Expected URL: {{url}}. Repair re-applies the routing and restarts the app.",
   "APP_PUBLIC_WEB_REPAIR_ACTION": "Repair routing",
   "APP_PUBLIC_WEB_REPAIR_SUCCESS": "Public Web routing repaired.",
+  "APP_PUBLIC_WEB_REPAIR_ALREADY_SYNCED": "Public Web routing is already in sync.",
   "APP_PUBLIC_WEB_REPAIR_ERROR": "Could not repair Public Web routing. Check the Hub logs and try again.",
   "APP_UPDATE_ERROR_MIN_HUB_VERSION": "App {{id}} update requires CI Hub version {{minVersion}} or higher. Please update your instance.",
   "APP_UPDATE_INFORMATION_SUBTITLE": "To update {{name}} to version <strong>{{version}}</strong>, follow the steps to review and apply the update.",

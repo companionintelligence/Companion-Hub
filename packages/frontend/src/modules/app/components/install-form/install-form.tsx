@@ -238,9 +238,11 @@ export const InstallForm: React.FC<IProps> = ({
       // No entry at all is NOT a failure: the Hub returns one per app it found drifted,
       // so an empty result means this app is already in sync — someone else repaired it,
       // or the diagnostics the banner was raised from went stale. Reporting that as an
-      // error would leave a banner up that is asserting something no longer true.
+      // error would leave a banner up that is asserting something no longer true. It is
+      // not a repair either, though, so it does not get to claim one: nothing was
+      // rewritten and nothing restarted.
       setPublicWebExpectedUrl(null);
-      toast.success(t('APP_PUBLIC_WEB_REPAIR_SUCCESS'));
+      toast.success(t(outcome ? 'APP_PUBLIC_WEB_REPAIR_SUCCESS' : 'APP_PUBLIC_WEB_REPAIR_ALREADY_SYNCED'));
     } catch (error) {
       // `formatApiError`, not a fixed string: a repair the operator has no grant for
       // comes back as APP_ACTION_GRANT_DENIED, and "check the Hub logs" would send

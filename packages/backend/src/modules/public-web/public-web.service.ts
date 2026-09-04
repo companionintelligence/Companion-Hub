@@ -168,11 +168,11 @@ export class PublicWebService {
   }
 
   /**
-   * @param authorize Called for every app this run would touch, BEFORE any of them is
-   *   touched, so a caller lacking permission on one app has the whole request refused
-   *   rather than finding half the fleet already repaired behind a 403.
+   * @param authorize Called once with every app this run could touch, BEFORE any of
+   *   them is touched, so a caller lacking permission on one app has the whole request
+   *   refused rather than finding half the fleet already repaired behind a 403.
    */
-  public async repair(request: PublicWebRepairRequest = {}, authorize?: (appUrn: AppUrn) => Promise<void>): Promise<PublicWebRepairResponse> {
+  public async repair(request: PublicWebRepairRequest = {}, authorize?: (appUrns: AppUrn[]) => Promise<void>): Promise<PublicWebRepairResponse> {
     const diagnostics = await this.getDiagnostics();
     const targetUrns = new Set(request.appUrns ?? []);
     const toRepair = diagnostics.apps.filter((entry) => {
@@ -185,9 +185,13 @@ export class PublicWebService {
     });
 
     if (authorize) {
-      for (const entry of toRepair) {
-        await authorize(entry.appUrn);
-      }
+      /*
+       * Named apps are authorized even when they are not currently drifted. Checking
+       * only `toRepair` would let a caller with no grant on an app probe its drift
+       * state — 403 when it is drifted, 200 when it is not — and would silently accept
+       * a request the operator was never entitled to make.
+       */
+      await authorize(targetUrns.size > 0 ? [...targetUrns] : toRepair.map((entry) => entry.appUrn));
     }
 
     const results: PublicWebRepairResult[] = [];

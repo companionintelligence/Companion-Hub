@@ -290,13 +290,28 @@ describe('PublicWebService', () => {
       envUtils.envMapToString.mockReturnValue('APP_PUBLIC_HOSTNAME=nextcloud-dev1-myorg.example.com\n');
     });
 
-    it('asks the caller for permission on every app it is about to repair', async () => {
-      const authorize = vi.fn().mockResolvedValue(undefined);
+    it('asks the caller for permission on every app it is about to repair, in one call', async () => {
+      const authorize: (appUrns: AppUrn[]) => Promise<void> = vi.fn(async () => undefined);
 
       const result = await service.repair({ appUrns: [appUrn] }, authorize);
 
-      expect(authorize).toHaveBeenCalledWith(appUrn);
+      expect(authorize).toHaveBeenCalledTimes(1);
+      expect(authorize).toHaveBeenCalledWith([appUrn]);
       expect(result.results[0]?.success).toBe(true);
+    });
+
+    it('asks for permission on a named app even when it is not drifted', async () => {
+      // Otherwise the 403-vs-200 answer reports whether an app the caller holds no
+      // grant on is currently drifted, and a request they were never entitled to make
+      // is silently accepted whenever the drift happens to have cleared.
+      envUtils.envStringToMap.mockReturnValue(new Map([['APP_PUBLIC_HOSTNAME', 'nextcloud-dev1-myorg.example.com']]));
+      const authorize: (appUrns: AppUrn[]) => Promise<void> = vi.fn(async () => {
+        throw new Error('APP_ACTION_GRANT_DENIED');
+      });
+
+      await expect(service.repair({ appUrns: [appUrn] }, authorize)).rejects.toThrow('APP_ACTION_GRANT_DENIED');
+
+      expect(authorize).toHaveBeenCalledWith([appUrn]);
     });
 
     it('touches nothing when permission is refused for any app in the batch', async () => {
@@ -307,13 +322,13 @@ describe('PublicWebService', () => {
       const secondUrn = createAppUrn('immich', 'store') as AppUrn;
       appsRepository.getApps.mockResolvedValue([runningApp, { ...runningApp, id: 2, appName: 'immich', localSubdomain: 'immich' }] as any);
 
-      const authorize = vi.fn(async (urn: AppUrn) => {
-        if (urn === secondUrn) throw new Error('APP_ACTION_GRANT_DENIED');
+      const authorize: (appUrns: AppUrn[]) => Promise<void> = vi.fn(async (urns: AppUrn[]) => {
+        if (urns.includes(secondUrn)) throw new Error('APP_ACTION_GRANT_DENIED');
       });
 
       await expect(service.repair({ appUrns: [appUrn, secondUrn] }, authorize)).rejects.toThrow('APP_ACTION_GRANT_DENIED');
 
-      expect(authorize).toHaveBeenCalledWith(appUrn);
+      expect(authorize).toHaveBeenCalledWith([appUrn, secondUrn]);
       expect(appHelpers.generateEnvFile).not.toHaveBeenCalled();
       expect(appFilesManager.writeAppEnv).not.toHaveBeenCalled();
       expect(appLifecycleService.restartApp).not.toHaveBeenCalled();

@@ -39,6 +39,7 @@ import {
   ValidateConfigResultDto as LifecycleValidateConfigResultDto,
 } from './modules/app-lifecycle/dto/app-lifecycle.dto';
 import {
+  AppDataListingDto,
   GetAppDto,
   GetComposeDiffDto,
   GetConfigDiffDto,
@@ -87,6 +88,7 @@ import { PublicWebRepairBody } from './modules/public-web/public-web.dto';
 
 /** Every Zod-backed DTO referenced in OpenAPI `components.schemas`. */
 export const SWAGGER_ZOD_DTOS: ZodDto[] = [
+  AppDataListingDto,
   AcknowledgeWelcomeBody,
   AppContextDto,
   UserContextDto,

@@ -1332,12 +1332,12 @@ describe('InstallForm - Public Web routing drift', () => {
     tailscaleAvailable: false,
   } as unknown as ReturnType<typeof useAppContext>;
 
-  const renderDrifted = () =>
+  const renderDrifted = (onSubmit: (values: Record<string, unknown>) => void = vi.fn()) =>
     render(
       <MemoryRouter>
         <InstallForm
           info={driftedApp}
-          onSubmit={vi.fn()}
+          onSubmit={onSubmit}
           formId="test-form"
           formFields={[]}
           initialValues={{ exposureMode: 'cloudflare' }}
@@ -1348,6 +1348,14 @@ describe('InstallForm - Public Web routing drift', () => {
     );
 
   beforeEach(() => {
+    // This describe is a SIBLING of `describe('InstallForm')`, so that block's
+    // afterEach never runs for it and vitest is not configured to reset mocks
+    // between files' suites. Without this, an implementation set over there (the
+    // DNS stub in particular, whose single Response body is already consumed)
+    // leaks in and can fire a toast these tests assert the absence of.
+    vi.clearAllMocks();
+    fetchDnsAvailability.mockReset();
+    fetchDnsAvailability.mockResolvedValue(new Response(JSON.stringify({ available: true }), { status: 200 }));
     vi.mocked(useAppContext).mockReturnValue(context);
     fetchPublicWebDiagnostics.mockResolvedValue({
       apps: [{ appUrn: 'n8n:store', envMismatch: true, action: 'repair', computedPublicUrl: 'https://n8n-blaptop-bc.companionintelligence.com' }],
@@ -1355,12 +1363,11 @@ describe('InstallForm - Public Web routing drift', () => {
   });
 
   afterEach(() => {
-    // Restore the file-wide default so the drift stub cannot leak into other suites,
-    // and clear the toast spies these tests assert on call counts of.
+    // Restore the file-wide defaults so this suite's stubs cannot leak into another.
+    fetchPublicWebDiagnostics.mockReset();
     fetchPublicWebDiagnostics.mockResolvedValue(null);
     repairPublicWebRouting.mockReset();
-    toast.success.mockClear();
-    toast.error.mockClear();
+    fetchDnsAvailability.mockReset();
   });
 
   it('offers a repair action on the drift banner', async () => {
@@ -1398,10 +1405,18 @@ describe('InstallForm - Public Web routing drift', () => {
   });
 
   it('does not submit the config form when repairing', async () => {
+    // The banner renders inside the config <form>, so a button that defaulted to
+    // type="submit" would save the settings as a side effect of repairing routing.
     repairPublicWebRouting.mockResolvedValue([{ appUrn: 'n8n:store', success: true }]);
-    renderDrifted();
+    const onSubmit = vi.fn();
+    renderDrifted(onSubmit);
 
-    expect(await screen.findByTestId('public-web-repair-button')).toHaveAttribute('type', 'button');
+    fireEvent.click(await screen.findByTestId('public-web-repair-button'));
+
+    await waitFor(() => {
+      expect(repairPublicWebRouting).toHaveBeenCalled();
+    });
+    expect(onSubmit).not.toHaveBeenCalled();
   });
 
   it('clears the banner when the Hub reports nothing left to repair', async () => {
@@ -1416,6 +1431,8 @@ describe('InstallForm - Public Web routing drift', () => {
       expect(screen.queryByTestId('public-web-drift-banner')).not.toBeInTheDocument();
     });
     expect(toast.error).not.toHaveBeenCalled();
+    // Nothing was rewritten and nothing restarted, so it must not claim a repair.
+    expect(toast.success).toHaveBeenCalledWith('APP_PUBLIC_WEB_REPAIR_ALREADY_SYNCED');
   });
 
   it('surfaces the reason when the operator holds no grant for the app', async () => {

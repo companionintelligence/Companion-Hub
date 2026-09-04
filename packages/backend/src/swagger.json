@@ -10542,7 +10542,57 @@
       },
       "AppDataListingDto": {
         "type": "object",
-        "properties": {}
+        "properties": {
+          "hostPath": {
+            "nullable": true,
+            "type": "string"
+          },
+          "rootExists": {
+            "type": "boolean"
+          },
+          "truncated": {
+            "type": "boolean"
+          },
+          "entries": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "path": {
+                  "type": "string"
+                },
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "file",
+                    "directory"
+                  ]
+                },
+                "sizeBytes": {
+                  "nullable": true,
+                  "type": "number"
+                }
+              },
+              "required": [
+                "name",
+                "path",
+                "kind",
+                "sizeBytes"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "hostPath",
+          "rootExists",
+          "truncated",
+          "entries"
+        ],
+        "additionalProperties": false
       },
       "GetComposeDiffDto": {
         "type": "object",
