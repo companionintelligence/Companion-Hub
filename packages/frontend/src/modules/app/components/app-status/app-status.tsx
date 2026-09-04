@@ -9,9 +9,18 @@ type AppStatusVariant = 'inline' | 'pill';
 /** Init containers for multi-service stacks (ci-memory setup/migrate jobs, etc.). */
 const EPHEMERAL_INIT_CONTAINER = /-(setup-|migrate-|fix-db-permissions)/i;
 
+function runtimeExitCode(container: Pick<AppContainerRuntimeStats, 'status' | 'exitCode'>): number | null {
+  if (typeof container.exitCode === 'number') {
+    return container.exitCode;
+  }
+
+  const statusCode = container.status.match(/\bExited \((-?\d+)\)/i)?.[1];
+  return statusCode == null ? null : Number(statusCode);
+}
+
 /** One-shot compose jobs (e.g. ci-memory setup-secrets) exit 0 and should not alarm the UI. */
-export function isCompletedOneShotContainer(container: Pick<AppContainerRuntimeStats, 'state' | 'exitCode'>) {
-  return container.state === 'exited' && (container.exitCode === 0 || container.exitCode === null);
+export function isCompletedOneShotContainer(container: Pick<AppContainerRuntimeStats, 'state' | 'status' | 'exitCode'>) {
+  return container.state === 'exited' && runtimeExitCode(container) === 0;
 }
 
 /**
@@ -19,13 +28,13 @@ export function isCompletedOneShotContainer(container: Pick<AppContainerRuntimeS
  * long-lived services are up. Failed init containers (non-zero exit) stay in
  * the monitored set so the pill can surface "Needs attention".
  */
-export function isEphemeralInitContainer(container: Pick<AppContainerRuntimeStats, 'name' | 'state' | 'exitCode'>) {
+export function isEphemeralInitContainer(container: Pick<AppContainerRuntimeStats, 'name' | 'state' | 'status' | 'exitCode'>) {
   if (!EPHEMERAL_INIT_CONTAINER.test(container.name)) {
     return isCompletedOneShotContainer(container);
   }
 
   if (container.state === 'exited') {
-    return container.exitCode === 0 || container.exitCode === null;
+    return isCompletedOneShotContainer(container);
   }
 
   // Not started yet — do not wait on it when judging readiness.
@@ -36,7 +45,7 @@ export function isEphemeralInitContainer(container: Pick<AppContainerRuntimeStat
   return false;
 }
 
-export function isConcerningContainer(container: Pick<AppContainerRuntimeStats, 'state' | 'health' | 'exitCode'>) {
+export function isConcerningContainer(container: Pick<AppContainerRuntimeStats, 'state' | 'status' | 'health' | 'exitCode'>) {
   if (container.health === 'unhealthy') {
     return true;
   }
@@ -46,7 +55,8 @@ export function isConcerningContainer(container: Pick<AppContainerRuntimeStats, 
   }
 
   if (container.state === 'exited') {
-    return container.exitCode != null && container.exitCode !== 0;
+    const exitCode = runtimeExitCode(container);
+    return exitCode != null && exitCode !== 0;
   }
 
   return false;
