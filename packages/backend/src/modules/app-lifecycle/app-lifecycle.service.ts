@@ -18,7 +18,7 @@ import { AppsService } from '../apps/apps.service';
 import { InstallPipelineTracker } from '../apps/install-pipeline.tracker';
 import { BackupManager } from '../backups/backup.manager';
 import { TailscaleService } from '../tailscale/tailscale.service';
-import { ExposureSyncService } from './exposure-sync.service';
+import { ExposureSyncService, type ExposureSyncOptions } from './exposure-sync.service';
 import { MarketplaceService } from '../marketplace/marketplace.service';
 import { ImageSizeService } from '../marketplace/image-size.service';
 import { ReposHelpers } from '../app-stores/repos.helpers';
@@ -158,7 +158,19 @@ function normalizeConfigForCompare(raw: Record<string, unknown>): Record<string,
 export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDestroy {
   private static readonly TAILSCALE_READINESS_POLL_MS = 45_000;
 
+  /**
+   * How often exposure is re-synced with CI-Cloud on an idle Hub.
+   *
+   * Bounds how long a custom domain connected in the Portal can be live while the
+   * app is still presenting its platform hostname. Five minutes keeps that window
+   * short enough that a customer watching their new domain come up sees it settle,
+   * at the cost of one sync request the Hub already issues on every app start.
+   */
+  private static readonly EXPOSURE_SYNC_POLL_MS = 5 * 60_000;
+
   private tailscaleReadinessInterval: ReturnType<typeof setInterval> | null = null;
+  private exposureSyncInterval: ReturnType<typeof setInterval> | null = null;
+  private periodicExposureSyncInFlight = false;
   private tailscaleReadinessInitialized = false;
   private lastTailscaleConnected = false;
   private lastTailscaleHttpsAvailable = false;
@@ -225,6 +237,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     }, 20_000);
 
     this.startTailscaleReadinessWatcher();
+    this.startPeriodicExposureSync();
   }
 
   private async syncInferenceAppsAfterHubUpgrade(): Promise<void> {
@@ -261,6 +274,61 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       clearInterval(this.tailscaleReadinessInterval);
       this.tailscaleReadinessInterval = null;
     }
+    if (this.exposureSyncInterval) {
+      clearInterval(this.exposureSyncInterval);
+      this.exposureSyncInterval = null;
+    }
+  }
+
+  /**
+   * Re-syncs exposure on a timer so state that only ever changes in CI-Cloud
+   * reaches the Hub without an operator-initiated event.
+   *
+   * A custom domain is connected and disconnected from the Portal, and CI-Cloud
+   * wires the tunnel at bind time, so traffic reaches the app straight away. The
+   * Hub learns of it only from `customDomains` on a sync response — and every
+   * sync was edge-triggered: boot, an app's routing change, or a manual repair.
+   * A Hub that is simply sitting there serving never asked again, so a newly
+   * connected domain reached the app while the app kept emitting its platform
+   * hostname in every redirect, and `docker restart ci-os-hub` was the only cure
+   * (CI-Hub#1209). The registration-validation timer next door does not help:
+   * it is hourly and checks in against a different endpoint that carries no
+   * exposure state.
+   *
+   * This is the same pass every other trigger runs, so it is idempotent, and it
+   * is inert when there is nothing to talk to — `triggerCloudflareSync` returns
+   * early, at debug level, for an unregistered device and during a restore.
+   */
+  private startPeriodicExposureSync() {
+    // Never leak a previous timer if this is ever reached twice.
+    if (this.exposureSyncInterval) {
+      clearInterval(this.exposureSyncInterval);
+    }
+
+    this.exposureSyncInterval = setInterval(() => {
+      /*
+       * Portal requests retry with backoff, so one pass can outlive the interval
+       * on a slow link. Overlapping passes would duplicate every DNS write and
+       * let two custom-domain reconciliations race for the same row.
+       *
+       * The second condition covers the passes this flag cannot see: the startup
+       * sync, a settings save, a port-expose change, availability remediation and
+       * `cihub public-web repair` all enter the same reconcile without going
+       * through this timer. Only the background poll ever yields — a
+       * user-initiated sync is never skipped.
+       */
+      if (this.periodicExposureSyncInFlight || this.exposureSyncService.isCloudflareSyncInFlight()) {
+        this.logger.debug('[Cloudflare] Skipping periodic exposure sync: another pass is still running');
+        return;
+      }
+
+      this.periodicExposureSyncInFlight = true;
+      void this.syncExposure()
+        .catch((e) => this.logger.error(`Periodic exposure sync failed: ${e instanceof Error ? e.message : String(e)}`))
+        .finally(() => {
+          this.periodicExposureSyncInFlight = false;
+        });
+    }, AppLifecycleService.EXPOSURE_SYNC_POLL_MS);
   }
 
   private startTailscaleReadinessWatcher() {
@@ -1920,7 +1988,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
   /**
    * Sync exposure state for all apps — Cloudflare + Tailscale in parallel
    */
-  private async syncExposure(options?: { excludeAppUrns?: AppUrn[] }) {
+  private async syncExposure(options?: ExposureSyncOptions) {
     await this.exposureSyncService.syncExposurePublic(options);
   }
 
@@ -1936,7 +2004,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
   /**
    * Public wrapper for syncExposure — used by AppsService.resolveAppAvailability
    */
-  public async syncExposurePublic(options?: { excludeAppUrns?: AppUrn[] }) {
+  public async syncExposurePublic(options?: ExposureSyncOptions) {
     return this.exposureSyncService.syncExposurePublic(options);
   }
 
@@ -1945,7 +2013,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     return this.exposureSyncService.syncTailscaleExposurePublic();
   }
 
-  public async triggerCloudflareSync(options?: { excludeAppUrns?: AppUrn[] }) {
+  public async triggerCloudflareSync(options?: ExposureSyncOptions) {
     return this.exposureSyncService.triggerCloudflareSync(options);
   }
 

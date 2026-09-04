@@ -971,6 +971,280 @@ describe('AppLifecycleService', () => {
       expect(appsRepository.updateAppByIdIfStatus).toHaveBeenCalledWith(7, 'running', { customDomain: null, pendingRestart: true });
     });
 
+    /**
+     * Resolves the lifecycle service the reconcile reaches for through the
+     * (mocked) ModuleRef so the revert path can be observed.
+     */
+    const stubLifecycleForRevert = () => {
+      const restartApp = vi.fn().mockResolvedValue({ requestId: 'req-1' });
+      vi.mocked((exposureSyncService as any).moduleRef.get).mockReturnValue({ restartApp });
+      return restartApp;
+    };
+
+    it('restarts a running app whose custom domain was removed', async () => {
+      // Clearing the row is not enough: the container's Traefik middleware still
+      // injects the removed hostname as X-Forwarded-Host, so the app redirects
+      // every visitor to a name that no longer resolves — including visitors who
+      // arrived on its platform hostname. Only recreating it clears that label.
+      const restartApp = stubLifecycleForRevert();
+      appsRepository.getApps.mockResolvedValue([runningComfy({ customDomain: 'comfy.acme.com' })] as any);
+      cloudflareClientService.syncState.mockResolvedValue({ ok: true, failed: [], failures: [], synced: 1, customDomains: [] });
+
+      await service.triggerCloudflareSync();
+
+      expect(restartApp).toHaveBeenCalledWith({ appUrn: 'comfyui:ci-marketplace', skipPull: true });
+    });
+
+    it('restarts a running app whose custom domain was re-pointed to another name', async () => {
+      // A re-point is the same fault as a disconnect from the app's side: the
+      // container is still forwarding the hostname that went away.
+      const restartApp = stubLifecycleForRevert();
+      appsRepository.getApps.mockResolvedValue([runningComfy({ customDomain: 'old.acme.com' })] as any);
+      cloudflareClientService.syncState.mockResolvedValue({
+        ok: true,
+        failed: [],
+        failures: [],
+        synced: 1,
+        customDomains: [{ id: 'cd_1', domain: 'new.acme.com', targetHostname: TARGET }],
+      });
+
+      await service.triggerCloudflareSync();
+
+      expect(appsRepository.updateAppByIdIfStatus).toHaveBeenCalledWith(7, 'running', { customDomain: 'new.acme.com', pendingRestart: true });
+      expect(restartApp).toHaveBeenCalledWith({ appUrn: 'comfyui:ci-marketplace', skipPull: true });
+    });
+
+    it('restarts an app at most once per cooldown when CI-Cloud keeps changing its mind', async () => {
+      // The row is written before the restart, so a settled Portal never asks
+      // twice. An unsettled one must not recreate the container on every tick of
+      // the periodic sync.
+      const restartApp = stubLifecycleForRevert();
+      // The row keeps reading as bound, so every pass sees the same unbind to make.
+      appsRepository.getApps.mockResolvedValue([runningComfy({ customDomain: 'comfy.acme.com' })] as any);
+      cloudflareClientService.syncState.mockResolvedValue({ ok: true, failed: [], failures: [], synced: 1, customDomains: [] });
+
+      await service.triggerCloudflareSync();
+      await service.triggerCloudflareSync();
+
+      expect(restartApp).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not restart an app that stopped being publicly routed', async () => {
+      // The binding falls away here because a settings save turned public
+      // exposure off — and `updateAppConfig` awaits this sync before firing its
+      // own restart. Restarting from here too would recreate the container twice
+      // for one save.
+      const restartApp = stubLifecycleForRevert();
+      appsRepository.getApps.mockResolvedValue([runningComfy({ exposedLocal: false, exposureMode: 'local', customDomain: 'comfy.acme.com' })] as any);
+      cloudflareClientService.syncState.mockResolvedValue({ ok: true, failed: [], failures: [], synced: 0, customDomains: [] });
+
+      await service.triggerCloudflareSync();
+
+      expect(appsRepository.updateAppByIdIfStatus).toHaveBeenCalledWith(7, 'running', { customDomain: null, pendingRestart: true });
+      expect(restartApp).not.toHaveBeenCalled();
+    });
+
+    it('leaves the restart to the caller when a config save drove the sync', async () => {
+      // A subdomain rename moves the app's platform hostname out from under a
+      // binding CI-Cloud still reports against the old target, so the reconcile
+      // sees a lost hostname. `updateAppConfig` awaits this sync and then
+      // restarts the app itself — recreating the container twice for one save.
+      const restartApp = stubLifecycleForRevert();
+      appsRepository.getApps.mockResolvedValue([runningComfy({ customDomain: 'comfy.acme.com' })] as any);
+      cloudflareClientService.syncState.mockResolvedValue({
+        ok: true,
+        failed: [],
+        failures: [],
+        synced: 1,
+        customDomains: [{ id: 'cd_1', domain: 'comfy.acme.com', targetHostname: 'comfyui-old-acme.companionintelligence.com' }],
+      });
+
+      await exposureSyncService.syncExposureAfterRoutingChange('comfyui:ci-marketplace' as AppUrn, true);
+
+      expect(appsRepository.updateAppByIdIfStatus).toHaveBeenCalledWith(7, 'running', { customDomain: null, pendingRestart: true });
+      expect(restartApp).not.toHaveBeenCalled();
+    });
+
+    it('does not restart when a custom domain is newly bound', async () => {
+      // The bind direction is asymmetric: the app still works on its platform
+      // hostname, so a background heartbeat must not take it down for it.
+      const restartApp = stubLifecycleForRevert();
+      appsRepository.getApps.mockResolvedValue([runningComfy()] as any);
+      cloudflareClientService.syncState.mockResolvedValue({
+        ok: true,
+        failed: [],
+        failures: [],
+        synced: 1,
+        customDomains: [{ id: 'cd_1', domain: 'comfy.acme.com', targetHostname: TARGET }],
+      });
+
+      await service.triggerCloudflareSync();
+
+      expect(restartApp).not.toHaveBeenCalled();
+    });
+
+    it('does not restart an app that is not running when its binding is dropped', async () => {
+      // Its next start regenerates the env, the Compose file and the Traefik
+      // labels from the cleared row, so there is nothing to repair and nothing
+      // to justify starting a container the user chose to stop.
+      const restartApp = stubLifecycleForRevert();
+      appsRepository.getApps.mockResolvedValue([
+        runningComfy({ status: 'stopped', exposedLocal: false, exposureMode: 'local', customDomain: 'comfy.acme.com' }),
+      ] as any);
+      cloudflareClientService.syncState.mockResolvedValue({ ok: true, failed: [], failures: [], synced: 0, customDomains: [] });
+
+      await service.triggerCloudflareSync();
+
+      expect(appsRepository.updateAppByIdIfStatus).toHaveBeenCalledWith(7, 'stopped', { customDomain: null, pendingRestart: true });
+      expect(restartApp).not.toHaveBeenCalled();
+    });
+
+    it('warns instead of throwing when the lifecycle service cannot be resolved', async () => {
+      // `ModuleRef.get` throws for an unresolvable provider. A failed revert must
+      // not unwind through the reconcile and relabel the whole sync as failed.
+      vi.mocked((exposureSyncService as any).moduleRef.get).mockImplementation(() => {
+        throw new Error('Nest could not find AppLifecycleService');
+      });
+      appsRepository.getApps.mockResolvedValue([runningComfy({ customDomain: 'comfy.acme.com' })] as any);
+      cloudflareClientService.syncState.mockResolvedValue({ ok: true, failed: [], failures: [], synced: 1, customDomains: [] });
+
+      await service.triggerCloudflareSync();
+
+      expect(appsRepository.updateAppByIdIfStatus).toHaveBeenCalledWith(7, 'running', { customDomain: null, pendingRestart: true });
+      expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('cihub public-web repair'));
+    });
+
+    it('retries a revert whose restart could not be dispatched', async () => {
+      // The row is settled before the restart is asked for, so once a dispatch
+      // fails no later reconcile ever looks at the app again — it would sit
+      // forwarding a hostname the Hub has stopped serving until someone ran
+      // `cihub public-web repair`.
+      const restartApp = stubLifecycleForRevert();
+      restartApp.mockRejectedValueOnce(new Error('queue unavailable'));
+      appsRepository.getApps.mockResolvedValue([runningComfy({ customDomain: 'comfy.acme.com' })] as any);
+      cloudflareClientService.syncState.mockResolvedValue({ ok: true, failed: [], failures: [], synced: 1, customDomains: [] });
+
+      await service.triggerCloudflareSync();
+      expect(restartApp).toHaveBeenCalledTimes(1);
+
+      // The row now reads as unbound, so this pass has no change of its own to make.
+      appsRepository.getApps.mockResolvedValue([runningComfy({ customDomain: null })] as any);
+      await service.triggerCloudflareSync();
+
+      expect(restartApp).toHaveBeenCalledTimes(2);
+      expect(restartApp).toHaveBeenLastCalledWith({ appUrn: 'comfyui:ci-marketplace', skipPull: true });
+    });
+
+    it('defers the revert while the Hub is still asking CI-Cloud for that hostname', async () => {
+      // A domain unbound from the app in the Portal while it stays connected to
+      // the organization: `bindCustomDomainIntents` runs straight after this
+      // reconcile and asks for it back, so bouncing the container here would
+      // recreate an app that is about to be served on that exact hostname again.
+      const restartApp = stubLifecycleForRevert();
+      // The bind pass re-reads the rows the reconcile just wrote.
+      appsRepository.getApps
+        .mockResolvedValueOnce([runningComfy({ customDomain: 'comfy.acme.com', customDomainIntent: 'comfy.acme.com' })] as any)
+        .mockResolvedValue([runningComfy({ customDomain: null, customDomainIntent: 'comfy.acme.com' })] as any);
+      cloudflareClientService.syncState.mockResolvedValue({ ok: true, failed: [], failures: [], synced: 1, customDomains: [] });
+      cloudflareClientService.fetchOrganizationCustomDomains.mockResolvedValue([
+        { id: 'cd_1', domain: 'comfy.acme.com', state: 'active', bindable: true, targetHostname: null },
+      ] as any);
+      cloudflareClientService.bindCustomDomain.mockResolvedValue({ ok: true } as any);
+
+      await service.triggerCloudflareSync();
+
+      expect(appsRepository.updateAppByIdIfStatus).toHaveBeenCalledWith(7, 'running', { customDomain: null, pendingRestart: true });
+      expect(cloudflareClientService.bindCustomDomain).toHaveBeenCalled();
+      expect(restartApp).not.toHaveBeenCalled();
+    });
+
+    it('performs the deferred revert once the bind pass gives the domain up', async () => {
+      // Same start, but the organization no longer holds the domain. The choice is
+      // now provably nonviable, and the app is still forwarding it — so the revert
+      // the reconcile held back has to happen here (CI-Hub#1207).
+      const restartApp = stubLifecycleForRevert();
+      appsRepository.getApps
+        .mockResolvedValueOnce([runningComfy({ customDomain: 'comfy.acme.com', customDomainIntent: 'comfy.acme.com' })] as any)
+        .mockResolvedValue([runningComfy({ customDomain: null, customDomainIntent: 'comfy.acme.com' })] as any);
+      cloudflareClientService.syncState.mockResolvedValue({ ok: true, failed: [], failures: [], synced: 1, customDomains: [] });
+      cloudflareClientService.fetchOrganizationCustomDomains.mockResolvedValue([] as any);
+
+      await service.triggerCloudflareSync();
+
+      expect(appsRepository.updateAppById).toHaveBeenCalledWith(7, { customDomainIntent: null });
+      expect(restartApp).toHaveBeenCalledWith({ appUrn: 'comfyui:ci-marketplace', skipPull: true });
+    });
+
+    it('does not recreate every public app when the Hub identity moves', async () => {
+      // `toPublicHostname` is composed from the org slug, Hub subdomain and default
+      // public domain. When one of those moves, every app on a custom domain misses
+      // the join in the same pass. CI-Cloud still reports both domains — against the
+      // hostnames this Hub no longer composes — which is what separates an identity
+      // change from a disconnect. Recreating them all would be worse than the drift.
+      const restartApp = stubLifecycleForRevert();
+      appsRepository.getApps.mockResolvedValue([
+        runningComfy({ customDomain: 'comfy.acme.com' }),
+        runningComfy({ id: 8, appName: 'wordpress', localSubdomain: 'wordpress', customDomain: 'blog.acme.com' }),
+      ] as any);
+      cloudflareClientService.syncState.mockResolvedValue({
+        ok: true,
+        failed: [],
+        failures: [],
+        synced: 2,
+        customDomains: [
+          { id: 'cd_1', domain: 'comfy.acme.com', targetHostname: 'comfyui-oldhub-acme.companionintelligence.com' },
+          { id: 'cd_2', domain: 'blog.acme.com', targetHostname: 'wordpress-oldhub-acme.companionintelligence.com' },
+        ],
+      });
+
+      await service.triggerCloudflareSync();
+
+      expect(appsRepository.updateAppByIdIfStatus).toHaveBeenCalledWith(7, 'running', { customDomain: null, pendingRestart: true });
+      expect(appsRepository.updateAppByIdIfStatus).toHaveBeenCalledWith(8, 'running', { customDomain: null, pendingRestart: true });
+      expect(restartApp).not.toHaveBeenCalled();
+      expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('public identity changing'));
+    });
+
+    it('restarts every app when several domains are genuinely disconnected at once', async () => {
+      // An empty payload is CI-Cloud saying "this device has none" — the unbind
+      // instruction. Disconnecting two domains inside one five-minute poll is
+      // ordinary, so a count threshold would be the wrong shape of guard here.
+      const restartApp = stubLifecycleForRevert();
+      appsRepository.getApps.mockResolvedValue([
+        runningComfy({ customDomain: 'comfy.acme.com' }),
+        runningComfy({ id: 8, appName: 'wordpress', localSubdomain: 'wordpress', customDomain: 'blog.acme.com' }),
+      ] as any);
+      cloudflareClientService.syncState.mockResolvedValue({ ok: true, failed: [], failures: [], synced: 2, customDomains: [] });
+
+      await service.triggerCloudflareSync();
+
+      expect(restartApp).toHaveBeenCalledWith({ appUrn: 'comfyui:ci-marketplace', skipPull: true });
+      expect(restartApp).toHaveBeenCalledWith({ appUrn: 'wordpress:ci-marketplace', skipPull: true });
+    });
+
+    it('restarts an app whose domain was re-pointed to a sibling app on this Hub', async () => {
+      // The domain is still delivered, but against the sibling's target, which IS
+      // matched — so this app really is stranded and must be recreated. Only a
+      // domain delivered against a target no app here answers means the Hub's own
+      // identity moved.
+      const restartApp = stubLifecycleForRevert();
+      appsRepository.getApps.mockResolvedValue([
+        runningComfy({ customDomain: 'comfy.acme.com' }),
+        runningComfy({ id: 8, appName: 'wordpress', localSubdomain: 'wordpress', customDomain: null }),
+      ] as any);
+      cloudflareClientService.syncState.mockResolvedValue({
+        ok: true,
+        failed: [],
+        failures: [],
+        synced: 2,
+        customDomains: [{ id: 'cd_1', domain: 'comfy.acme.com', targetHostname: 'wordpress-core2-acme.companionintelligence.com' }],
+      });
+
+      await service.triggerCloudflareSync();
+
+      expect(restartApp).toHaveBeenCalledWith({ appUrn: 'comfyui:ci-marketplace', skipPull: true });
+    });
+
     it('changes nothing when CI-Cloud predates custom domains', async () => {
       appsRepository.getApps.mockResolvedValue([runningComfy({ customDomain: 'comfy.acme.com' })] as any);
       // No `customDomains` key at all — every Portal released before the feature.
@@ -1812,8 +2086,13 @@ describe('AppLifecycleService', () => {
       });
 
       expect(syncSpy).toHaveBeenCalledTimes(2);
-      expect(syncSpy).toHaveBeenNthCalledWith(1, { excludeAppUrns: ['myapp:ci-marketplace'] });
-      expect(syncSpy).toHaveBeenNthCalledWith(2, undefined);
+      // Both passes claim the restart: `updateAppConfig` fires its own below, and
+      // a rename reads inside the reconcile as a lost custom hostname.
+      expect(syncSpy).toHaveBeenNthCalledWith(1, {
+        excludeAppUrns: ['myapp:ci-marketplace'],
+        skipAutoRestartAppUrns: ['myapp:ci-marketplace'],
+      });
+      expect(syncSpy).toHaveBeenNthCalledWith(2, { skipAutoRestartAppUrns: ['myapp:ci-marketplace'] });
     });
   });
 
