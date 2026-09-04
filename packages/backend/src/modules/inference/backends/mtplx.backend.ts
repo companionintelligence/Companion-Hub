@@ -5,6 +5,7 @@ import { LoggerService } from '@/core/logger/logger.service';
 import type { InferenceBackend } from './backend.interface';
 import type { BackendHealthStatus, BackendModelInfo, PullProgress } from '@ci-hub/common/types';
 import axios from 'axios';
+import { bearerHeaders, readManagedRunnerApiKey } from '../managed-runner-auth';
 
 /** Accept `http://host:8000`, `http://host:8000/` or `http://host:8000/v1` and store the bare origin. */
 export function normalizeMtplxBaseUrl(url: string): string {
@@ -74,7 +75,7 @@ export class MtplxBackend implements InferenceBackend {
   ) {}
 
   /**
-   * MTPLX is host-run (or remote), never Hub-managed — same posture as vLLM-Metal. The
+   * MTPLX is host-run (or remote), with optional lifecycle management from desktop FTUE. The
    * operator-configured URL from Settings wins over the compose-injected MTPLX_URL env; read
    * per-call rather than caching in the constructor so a Settings change takes effect without a
    * Hub restart.
@@ -84,11 +85,20 @@ export class MtplxBackend implements InferenceBackend {
     return resolveMtplxProbeUrl(configured || process.env.MTPLX_URL || 'http://ci-hub-mtplx:8000');
   }
 
+  getApiKey(): string | undefined {
+    return readManagedRunnerApiKey('mtplx');
+  }
+
+  private requestConfig(timeout: number): { timeout: number; headers?: Record<string, string> } {
+    const headers = bearerHeaders(this.getApiKey());
+    return headers ? { timeout, headers } : { timeout };
+  }
+
   /** Overrides let status + onboarding probe unsaved Settings input without persisting it. */
   async healthCheck(baseUrlOverride?: string): Promise<BackendHealthStatus> {
     const baseUrl = baseUrlOverride ? resolveMtplxProbeUrl(baseUrlOverride) : this.getBaseUrl();
     try {
-      const response = await axios.get(`${baseUrl}/v1/models`, { timeout: 5000 });
+      const response = await axios.get(`${baseUrl}/v1/models`, this.requestConfig(5000));
       const models = response.data?.data ?? [];
       return {
         running: true,
@@ -107,7 +117,7 @@ export class MtplxBackend implements InferenceBackend {
 
   async listModels(): Promise<BackendModelInfo[]> {
     try {
-      const response = await axios.get(`${this.getBaseUrl()}/v1/models`, { timeout: 10000 });
+      const response = await axios.get(`${this.getBaseUrl()}/v1/models`, this.requestConfig(10000));
       const models = response.data?.data ?? [];
       return models.map((m: { id: string }) => ({
         id: m.id,

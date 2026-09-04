@@ -33,15 +33,25 @@ packages/desktop/
 
 The desktop shell owns the best-effort native setup used by the onboarding FTUE. On Apple Silicon,
 the selected speculative backend is installed and started with Ollama: `mlx-dspark` uses its
-host-served `mlx-dspark serve --no-model --host 0.0.0.0 --port 8080` process, while MTPLX creates
-its Python environment and serves on port 8000 or the next available host port. The frontend passes
-the selected runner set, so the two speculative servers are alternatives rather than an automatic
-bundle. Runner PIDs, logs, and endpoints are persisted under the Hub data directory; a later MTPLX
-retry reuses a healthy persisted endpoint before starting another process.
+host-served `mlx-dspark serve --no-model` process, while MTPLX serves on port 8000 or the next
+available host port. Each runner gets an isolated Hub-managed Python environment (Python 3.10+ for
+mlx-dspark and 3.11+ for MTPLX); when macOS has no compatible interpreter but Homebrew is available,
+setup installs Python 3.11 automatically. Package upgrades are best-effort when a working command is
+already present, so an offline retry does not break an installed runner.
 
-This is onboarding-time install/start, not a macOS LaunchAgent or Linux systemd login service. A
-future always-on desktop experience should add an explicit OS autostart layer instead of assuming
-that a persisted PID is still alive.
+mlx-dspark and MTPLX bind on the host gateway for the containerized Hub, so desktop setup creates a
+separate random API key for each under `state/inference-runners/*.api-key` with user-only permissions.
+The backend reads that shared state, authenticates model/admin requests, and passes the same key to
+installed apps. Keys are redacted from desktop logs. New macOS installs are registered as per-user
+LaunchAgents with `RunAtLoad` and restart-on-failure; choosing another backend removes only the Hub's
+known LaunchAgent, never an operator-managed process. If LaunchAgent registration fails, setup falls
+back to a detached session process and reports the degraded lifecycle in the runner log.
+
+The frontend passes the exact selected runner set: the chat backend plus Ollama for embeddings (or
+Ollama alone). The two speculative servers are alternatives, not an automatic bundle. Runner PIDs,
+logs, credentials, and endpoints are persisted under the Hub data directory; a later MTPLX retry
+reuses a healthy persisted endpoint before starting another process. Linux and Windows host runners
+retain the existing detached-process lifecycle; a future systemd/Windows-service layer remains open.
 
 ## Running locally
 
