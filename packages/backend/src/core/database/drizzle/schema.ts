@@ -1,5 +1,5 @@
 import { relations } from 'drizzle-orm';
-import { boolean, customType, index, integer, pgEnum, pgTable, serial, text, timestamp, uniqueIndex, varchar } from 'drizzle-orm/pg-core';
+import { boolean, customType, index, integer, pgEnum, pgTable, primaryKey, serial, text, timestamp, uniqueIndex, varchar } from 'drizzle-orm/pg-core';
 
 export const appStatusEnum = pgEnum('app_status_enum', [
   'running',
@@ -337,3 +337,20 @@ export const entitlementCache = pgTable('entitlement_cache', {
   paymentUrl: varchar('payment_url'),
   cachedAt: timestamp('cached_at', { mode: 'string' }).defaultNow().notNull(),
 });
+
+/**
+ * Hub UX cache of Portal WhoIs CapMaps. Not a till. Keyed by Portal user
+ * id (`federated_identity.subject`) and catalog slug. `version` is the
+ * org ACL version so a PUT on Portal drops stale `can[]`.
+ */
+export const whoisCache = pgTable(
+  'whois_cache',
+  {
+    subject: varchar().notNull(),
+    appId: varchar('app_id').notNull(),
+    canJson: text('can_json').notNull(),
+    version: integer().notNull(),
+    cachedAt: timestamp('cached_at', { mode: 'string' }).defaultNow().notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.subject, table.appId] })],
+);

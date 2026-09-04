@@ -1,6 +1,8 @@
 import { castAppUrn } from '@/common/helpers/app-helpers';
-import { Controller, Get, Param, Patch, Post, UseGuards } from '@nestjs/common';
+import { Controller, Get, Param, Patch, Post, Req, UseGuards } from '@nestjs/common';
+import type { Request } from 'express';
 import { ModuleRef } from '@nestjs/core';
+import { MarketplaceWhoIsService } from '@/core/portal/marketplace-whois.service';
 import { AuthGuard } from '../auth/auth.guard';
 import { AppRuntimeMonitorService } from './app-runtime-monitor.service';
 import { AppsReadService } from './apps-read.service';
@@ -29,23 +31,26 @@ export class AppsController {
     private readonly appsService: AppsService,
     private readonly runtimeMonitor: AppRuntimeMonitorService,
     private readonly moduleRef: ModuleRef,
+    private readonly whois: MarketplaceWhoIsService,
   ) {}
 
   @Get('installed')
   @UseGuards(AuthGuard)
   @ApiResponse({ type: MyAppsDto })
-  async getInstalledApps() {
+  async getInstalledApps(@Req() req: Request) {
     const installed = await this.appsReadService.getInstalledApps();
-    return MyAppsDto.parse({ installed }, { reportOnly: true });
+    const visible = await this.whois.filterSessionByView(req, installed, (item) => item.info?.urn, 'hub');
+    return MyAppsDto.parse({ installed: visible }, { reportOnly: true });
   }
 
   /** Lightweight URN set for store "installed" badges — no FS/compose populate. */
   @Get('installed-urns')
   @UseGuards(AuthGuard)
   @ApiResponse({ type: InstalledAppUrnsDto })
-  async getInstalledAppUrns() {
+  async getInstalledAppUrns(@Req() req: Request) {
     const urns = await this.appsReadService.getInstalledAppUrns();
-    return InstalledAppUrnsDto.parse({ urns }, { reportOnly: true });
+    const visible = await this.whois.filterSessionByView(req, urns, (urn) => urn, 'hub');
+    return InstalledAppUrnsDto.parse({ urns: visible }, { reportOnly: true });
   }
 
   /** Deferred update badge — not on the critical `/api/app-context` path. */
@@ -91,8 +96,9 @@ export class AppsController {
   @Get(':urn')
   @UseGuards(AuthGuard)
   @ApiResponse({ type: GetAppDto })
-  async getApp(@Param('urn') urn: string) {
+  async getApp(@Param('urn') urn: string, @Req() req: Request) {
     const appUrn = castAppUrn(urn);
+    await this.whois.assertSessionAction(req, appUrn, 'view');
     const res = await this.appsReadService.getApp(appUrn);
     const mcpExtras = await this.buildMcpExtras(appUrn, res.info);
     return GetAppDto.parse({ ...res, ...mcpExtras }, { reportOnly: true });
@@ -129,16 +135,20 @@ export class AppsController {
   @Get(':urn/compose-diff')
   @UseGuards(AuthGuard)
   @ApiResponse({ type: GetComposeDiffDto })
-  async getAppComposeDiff(@Param('urn') urn: string) {
-    const res = await this.appsReadService.getAppComposeDiff(castAppUrn(urn));
+  async getAppComposeDiff(@Param('urn') urn: string, @Req() req: Request) {
+    const appUrn = castAppUrn(urn);
+    await this.whois.assertSessionAction(req, appUrn, 'view');
+    const res = await this.appsReadService.getAppComposeDiff(appUrn);
     return GetComposeDiffDto.parse(res, { reportOnly: true });
   }
 
   @Get(':urn/config-diff')
   @UseGuards(AuthGuard)
   @ApiResponse({ type: GetConfigDiffDto })
-  async getAppConfigDiff(@Param('urn') urn: string) {
-    const res = await this.appsReadService.getAppConfigDiff(castAppUrn(urn));
+  async getAppConfigDiff(@Param('urn') urn: string, @Req() req: Request) {
+    const appUrn = castAppUrn(urn);
+    await this.whois.assertSessionAction(req, appUrn, 'view');
+    const res = await this.appsReadService.getAppConfigDiff(appUrn);
     return GetConfigDiffDto.parse(res, { reportOnly: true });
   }
 
@@ -156,15 +166,19 @@ export class AppsController {
 
   @Get(':urn/check-availability')
   @UseGuards(AuthGuard)
-  async checkAvailability(@Param('urn') urn: string) {
-    return this.appsService.checkAppAvailability(castAppUrn(urn));
+  async checkAvailability(@Param('urn') urn: string, @Req() req: Request) {
+    const appUrn = castAppUrn(urn);
+    await this.whois.assertSessionAction(req, appUrn, 'view');
+    return this.appsService.checkAppAvailability(appUrn);
   }
 
   @Get(':urn/runtime-health')
   @UseGuards(AuthGuard)
   @ApiResponse({ type: AppRuntimeHealthDto })
-  async getRuntimeHealth(@Param('urn') urn: string) {
-    const snapshot = await this.runtimeMonitor.getAppRuntimeHealth(castAppUrn(urn));
+  async getRuntimeHealth(@Param('urn') urn: string, @Req() req: Request) {
+    const appUrn = castAppUrn(urn);
+    await this.whois.assertSessionAction(req, appUrn, 'view');
+    const snapshot = await this.runtimeMonitor.getAppRuntimeHealth(appUrn);
     return AppRuntimeHealthDto.parse(snapshot, { reportOnly: true });
   }
 
