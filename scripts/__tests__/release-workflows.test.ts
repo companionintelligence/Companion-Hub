@@ -225,3 +225,13 @@ describe('uninstall cleanup supports both Hub identity generations', () => {
     expect(content).toContain('ci-os-hub_network');
   });
 });
+
+it('bundled app entrypoints default to the canonical Hub DNS name', () => {
+  const openclawEntrypoint = fs.readFileSync(
+    path.join(repoRoot, 'packages/backend/src/modules/app-lifecycle/data/openclaw-ci-entrypoint.sh'),
+    'utf-8',
+  );
+
+  expect(openclawEntrypoint).toContain('HUB_URL:-http://ci-hub:5002');
+  expect(openclawEntrypoint).not.toContain('HUB_URL:-http://ci-os-hub:5002');
+});
