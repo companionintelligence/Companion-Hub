@@ -314,6 +314,25 @@ describe('InferenceEnvResolver', () => {
     expect(env.CI_CHAT_MODEL).toBe('preferred:latest');
   });
 
+  it('passes the desktop-managed key to apps using mlx-dspark', async () => {
+    const dsparkModel = makeLlm('qwen-dspark', 'mlx-community/Qwen3-8B-8bit', false, 'dspark');
+    config.getInferencePreferences.mockReturnValue({
+      preferredBackend: 'dspark',
+      preferredModel: null,
+      preferredEmbeddingModel: null,
+      preferredVisionModel: null,
+    });
+    dsparkBackend.getBaseUrl.mockReturnValue('http://host.docker.internal:8080');
+    dsparkBackend.getApiKey.mockReturnValue('managed-dspark-key');
+    dsparkBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [dsparkModel.backendModelId] });
+    modelRegistry.getRecommendedModelsForHardware.mockReturnValue([dsparkModel]);
+    modelRegistry.getRecommendedVisionModel.mockReturnValue(undefined);
+
+    const env = await service.resolve();
+
+    expect(env.CI_LLM_API_KEY).toBe('managed-dspark-key');
+  });
+
   describe('vLLM backend with split-backend embeddings', () => {
     const VLLM_BASE_URL = 'http://ci-hub-vllm:8000';
 

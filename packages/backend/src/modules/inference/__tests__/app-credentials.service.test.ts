@@ -382,6 +382,29 @@ describe('AppCredentialsService', () => {
     });
   });
 
+  describe('getCredentials — desktop-managed mlx-dspark', () => {
+    it('hands the generated API key to direct sibling-app clients', async () => {
+      const model = makeLlm('qwen-dspark', 'mlx-community/Qwen3-8B-8bit', 8000, 16000, 'dspark');
+      configurationService.getInferencePreferences.mockReturnValue({
+        preferredBackend: 'dspark',
+        preferredModel: 'qwen-dspark',
+        preferredEmbeddingModel: null,
+        preferredVisionModel: null,
+      });
+      dsparkBackend.getBaseUrl.mockReturnValue('http://host.docker.internal:8080');
+      dsparkBackend.getApiKey.mockReturnValue('managed-dspark-key');
+      dsparkBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [model.backendModelId] });
+      modelRegistry.getRecommendedModelsForHardware.mockReturnValue([model]);
+      modelRegistry.getCuratedModel.mockImplementation((id) => (id === model.id ? model : undefined));
+      service.invalidateCache();
+
+      const config = await service.getCredentials('openclaw');
+
+      expect(config.env.OPENAI_API_KEY).toBe('managed-dspark-key');
+      expect(config.endpointUrl).toBe('http://host.docker.internal:8080/v1');
+    });
+  });
+
   describe('getCredentials — cloud providers', () => {
     const cloudProvider: CloudProviderConfig = {
       provider: 'openai',
