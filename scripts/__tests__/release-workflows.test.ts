@@ -244,6 +244,7 @@ describe('Hub service rename upgrade compatibility', () => {
     const stop = desktopHubManager.slice(stopAt, stopManagedAppsAt);
 
     expect(start).toMatch(/"up"\.to_string\(\),\s*"-d"\.to_string\(\),\s*"--remove-orphans"\.to_string\(\)/);
+    expect(start).toMatch(/"up",\s*"-d",\s*"--remove-orphans",\s*HUB_QUEUE/);
     expect(stopForUpdate).toMatch(/"down",\s*"--remove-orphans"/);
     expect(stop).toMatch(/"down",\s*"--remove-orphans"/);
   });

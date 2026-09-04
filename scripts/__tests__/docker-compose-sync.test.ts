@@ -53,6 +53,7 @@ describe('docker-compose.prod.yml sync', () => {
     expect(content).toContain('name: ci-os-hub_network');
     expect(content).toContain('- ci-os-hub');
     expect(content).toContain('- ci-os-hub-queue');
+    expect(content.match(/host\.docker\.internal/g)?.length).toBeGreaterThanOrEqual(2);
     expect(content).toContain('HUB_CONTAINER_NAME: ci-hub');
     expect(content).toContain('traefik.docker.network: "ci-hub_network"');
     expect(content).toContain('traefik.http.services.ci-hub.loadbalancer.server.port: "5002"');

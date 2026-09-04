@@ -101,30 +101,33 @@ describe('resolveDataDir', () => {
 
 describe('Hub Docker topology names', () => {
   it('defaults to canonical names for current installs', async () => {
-    const { hubAppNetworkNames, hubContainerName, hubNetworkName } = await loadConstants();
+    const { hubAppNetworkNames, hubContainerName, hubNetworkName, hubQueueName } = await loadConstants();
 
     expect(hubContainerName({})).toBe('ci-hub');
+    expect(hubQueueName({})).toBe('ci-hub-queue');
     expect(hubNetworkName({})).toBe('ci-hub_network');
     expect(hubAppNetworkNames({})).toEqual(['ci-hub_network', 'ci-os-hub_network']);
   });
 
   it('keeps image-only updates on the legacy topology until compose migrates', async () => {
-    const { hubAppNetworkNames, hubContainerName, hubNetworkName } = await loadConstants();
+    const { hubAppNetworkNames, hubContainerName, hubNetworkName, hubQueueName } = await loadConstants();
     const legacyComposeEnv = { RABBITMQ_HOST: 'ci-os-hub-queue' };
 
     expect(hubContainerName(legacyComposeEnv)).toBe('ci-os-hub');
+    expect(hubQueueName(legacyComposeEnv)).toBe('ci-os-hub-queue');
     expect(hubNetworkName(legacyComposeEnv)).toBe('ci-os-hub_network');
     expect(hubAppNetworkNames(legacyComposeEnv)).toEqual(['ci-os-hub_network']);
   });
 
   it('lets the canonical compose marker override legacy persisted queue settings', async () => {
-    const { hubContainerName, hubNetworkName } = await loadConstants();
+    const { hubContainerName, hubNetworkName, hubQueueName } = await loadConstants();
     const migratedComposeEnv = {
       HUB_CONTAINER_NAME: 'ci-hub',
       RABBITMQ_HOST: 'ci-os-hub-queue',
     };
 
     expect(hubContainerName(migratedComposeEnv)).toBe('ci-hub');
+    expect(hubQueueName(migratedComposeEnv)).toBe('ci-hub-queue');
     expect(hubNetworkName(migratedComposeEnv)).toBe('ci-hub_network');
   });
 

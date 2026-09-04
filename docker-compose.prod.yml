@@ -195,6 +195,7 @@ services:
       ci_os_hub_network:
         aliases:
           - ci-os-hub
+          - host.docker.internal
     environment:
       # Runtime marker: if absent, a new image detects the pre-rename compose
       # from its legacy queue host and keeps writing ci-os-hub DNS/network names.
