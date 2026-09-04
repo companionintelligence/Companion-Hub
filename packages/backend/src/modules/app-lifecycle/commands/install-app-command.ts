@@ -103,6 +103,7 @@ export class InstallAppCommand extends AppLifecycleCommand {
 
     try {
       ctx?.setPhase('preparing');
+      await this.assertMarketplaceEntitlement(appUrn, 'install');
       const appImages = extractComposeImages(composeToInstallContent);
       await emitProgress(5);
       if (process.getuid && process.getgid) {
