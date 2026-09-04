@@ -7,6 +7,7 @@ const containerRuntimeStatsSchema = z.object({
   state: z.string(),
   status: z.string(),
   health: z.string().nullable(),
+  exitCode: z.number().int().nullable(),
   cpuPercent: z.number(),
   memoryUsageBytes: z.number(),
   memoryLimitBytes: z.number(),
