@@ -4873,18 +4873,79 @@ fn inspect_container_state_health(container_name: &str) -> String {
         .unwrap_or_default()
 }
 
-fn docker_inspect_ok(name: &str) -> bool {
-    docker_command()
-        .args(["inspect", "--format", "{{.Id}}", name])
-        .output()
-        .map(|output| {
-            output.status.success() && !String::from_utf8_lossy(&output.stdout).trim().is_empty()
-        })
-        .unwrap_or(false)
+fn first_existing_container(names: &[&'static str]) -> Option<&'static str> {
+    first_preferred_container(names, |name| inspect_container_state_health(name))
 }
 
-fn first_existing_container(names: &[&'static str]) -> Option<&'static str> {
-    names.iter().copied().find(|name| docker_inspect_ok(name))
+fn container_inspect_state(status: &str) -> Option<&str> {
+    if !inspect_status_ok(status) {
+        return None;
+    }
+    status.split(':').next().filter(|state| !state.is_empty())
+}
+
+fn first_preferred_container<'a>(
+    names: &[&'a str],
+    inspect_status: impl Fn(&str) -> String,
+) -> Option<&'a str> {
+    let mut fallback = None;
+    for name in names {
+        let status = inspect_status(name);
+        let Some(state) = container_inspect_state(&status) else {
+            continue;
+        };
+        if fallback.is_none() {
+            fallback = Some(*name);
+        }
+        if state == "running" {
+            return Some(*name);
+        }
+    }
+    fallback
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum NamedContainerWaitDecision {
+    Ready,
+    KeepWaiting,
+    Failed(String),
+}
+
+fn named_container_wait_decision(
+    names: &[&str],
+    statuses: &[(&str, &str)],
+    display_name: &str,
+) -> NamedContainerWaitDecision {
+    let mut last_status = String::new();
+    let mut saw_existing = false;
+    let mut saw_live = false;
+
+    for name in names {
+        let Some((_, status)) = statuses.iter().find(|(candidate, _)| *candidate == *name) else {
+            continue;
+        };
+        let Some(state) = container_inspect_state(status) else {
+            continue;
+        };
+        saw_existing = true;
+        last_status = (*status).to_string();
+        if *status == "running:healthy" {
+            return NamedContainerWaitDecision::Ready;
+        }
+        if matches!(state, "exited" | "dead") {
+            continue;
+        }
+        saw_live = true;
+    }
+
+    if saw_existing && !saw_live {
+        return NamedContainerWaitDecision::Failed(format!(
+            "{} container exited during startup (status: {}).",
+            display_name, last_status
+        ));
+    }
+
+    NamedContainerWaitDecision::KeepWaiting
 }
 
 fn hub_container_name() -> &'static str {
@@ -4954,23 +5015,26 @@ fn wait_for_named_container_healthy(
     let mut last_status = String::new();
 
     while Instant::now() < deadline {
-        for name in names {
-            let status = inspect_container_state_health(name);
-            if !inspect_status_ok(&status) {
-                continue;
+        let inspected: Vec<(&str, String)> = names
+            .iter()
+            .map(|name| (*name, inspect_container_state_health(name)))
+            .collect();
+        let statuses: Vec<(&str, &str)> = inspected
+            .iter()
+            .map(|(name, status)| (*name, status.as_str()))
+            .collect();
+        match named_container_wait_decision(names, &statuses, display_name) {
+            NamedContainerWaitDecision::Ready => return Ok(()),
+            NamedContainerWaitDecision::Failed(message) => return Err(message),
+            NamedContainerWaitDecision::KeepWaiting => {
+                if let Some((_, status)) = statuses
+                    .iter()
+                    .rev()
+                    .find(|(_, status)| inspect_status_ok(status))
+                {
+                    last_status = (*status).to_string();
+                }
             }
-            last_status = status.clone();
-            if status == "running:healthy" {
-                return Ok(());
-            }
-            let state = status.split(':').next().unwrap_or("");
-            if matches!(state, "exited" | "dead") {
-                return Err(format!(
-                    "{} container exited during startup (status: {}).",
-                    display_name, status
-                ));
-            }
-            break;
         }
 
         std::thread::sleep(Duration::from_secs(1));
@@ -5740,6 +5804,7 @@ fn start_hub_inner(
             &compose_path.to_string_lossy(),
             "up",
             "-d",
+            "--remove-orphans",
             HUB_QUEUE,
         ])
         .output();
@@ -5788,13 +5853,13 @@ fn start_hub_inner(
             compose_path.to_string_lossy().into_owned(),
             "up".to_string(),
             "-d".to_string(),
+            "--remove-orphans".to_string(),
         ];
         if should_refresh_stack {
             compose_up_args.extend([
                 "--pull".to_string(),
                 "always".to_string(),
                 "--force-recreate".to_string(),
-                "--remove-orphans".to_string(),
             ]);
         }
         let output = match docker_command()
@@ -6067,6 +6132,7 @@ pub fn stop_hub_for_update(compose_path: &Path, env_path: &Path) -> Result<Strin
             "-f",
             &compose_path.to_string_lossy(),
             "down",
+            "--remove-orphans",
         ])
         .output()
         .map_err(|e| format!("Failed to run docker compose down: {}", e))?;
@@ -6133,6 +6199,7 @@ pub fn stop_hub(compose_path: &Path, env_path: &Path) -> Result<String, String> 
             "-f",
             &compose_path.to_string_lossy(),
             "down",
+            "--remove-orphans",
         ])
         .output()
         .map_err(|e| {
@@ -9652,6 +9719,54 @@ pub(crate) fn format_command_output(stdout: &str, stderr: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn prefers_a_running_legacy_hub_over_an_exited_canonical_container() {
+        let names = ["ci-hub", "ci-os-hub"];
+        let chosen = super::first_preferred_container(&names, |name| match name {
+            "ci-hub" => "exited:none".to_string(),
+            "ci-os-hub" => "running:healthy".to_string(),
+            _ => String::new(),
+        });
+
+        assert_eq!(chosen, Some("ci-os-hub"));
+    }
+
+    #[test]
+    fn wait_decision_keeps_looking_when_the_new_name_exited() {
+        let decision = super::named_container_wait_decision(
+            &["ci-hub", "ci-os-hub"],
+            &[("ci-hub", "exited:none"), ("ci-os-hub", "running:starting")],
+            "Hub",
+        );
+
+        assert_eq!(decision, super::NamedContainerWaitDecision::KeepWaiting);
+    }
+
+    #[test]
+    fn wait_decision_succeeds_when_the_legacy_name_is_healthy() {
+        let decision = super::named_container_wait_decision(
+            &["ci-hub", "ci-os-hub"],
+            &[("ci-hub", "exited:none"), ("ci-os-hub", "running:healthy")],
+            "Hub",
+        );
+
+        assert_eq!(decision, super::NamedContainerWaitDecision::Ready);
+    }
+
+    #[test]
+    fn wait_decision_fails_only_when_every_known_name_has_exited() {
+        let decision = super::named_container_wait_decision(
+            &["ci-hub", "ci-os-hub"],
+            &[("ci-hub", "exited:none"), ("ci-os-hub", "dead:none")],
+            "Hub",
+        );
+
+        assert!(matches!(
+            decision,
+            super::NamedContainerWaitDecision::Failed(message) if message.contains("exited during startup")
+        ));
+    }
+
     #[test]
     fn webview_cache_clear_needed_decision() {
         // Fresh install / first run with this logic → clear.

@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { execFile } from 'node:child_process';
 import { access, constants } from 'node:fs/promises';
+import { hubContainerName } from '@/common/constants';
 
 export interface TailscaleStatus {
   installed: boolean;
@@ -594,7 +595,7 @@ export class TailscaleService {
   async getHubServeUpstream(): Promise<string> {
     const strategy = await this.resolveStrategy();
     if (strategy === 'sidecar') {
-      return process.env.TAILSCALE_HUB_UPSTREAM ?? 'http://ci-hub:5002';
+      return process.env.TAILSCALE_HUB_UPSTREAM ?? `http://${hubContainerName()}:5002`;
     }
     return `http://localhost:${process.env.API_PORT || 3000}`;
   }

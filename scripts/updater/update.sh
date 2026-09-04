@@ -142,7 +142,7 @@ docker compose --project-name "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" pull
 
 echo ""
 echo "5. Restarting services..."
-docker compose --project-name "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" up -d
+docker compose --project-name "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" up -d --remove-orphans
 
 # ── Wait for health ─────────────────────────────
 

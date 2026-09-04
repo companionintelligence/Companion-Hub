@@ -86,6 +86,7 @@ services:
         echo 'Starting application...'
         exec npx turbo run dev --filter backend --filter frontend --filter @ci-hub/common
     environment:
+      HUB_CONTAINER_NAME: ci-hub
       CI_CLOUD_URL: http://host.docker.internal:${PORTAL_PORT:-8012}
       DOMAIN: ci.localhost
       E2E_TEST: "true"
