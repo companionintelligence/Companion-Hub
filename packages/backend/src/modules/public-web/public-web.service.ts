@@ -259,8 +259,16 @@ export class PublicWebService {
     }
 
     let synced = false;
-    if (results.some((result) => result.success)) {
-      await this.appLifecycleService.triggerCloudflareSync();
+    const restarted = results.filter((result) => result.success).map((result) => result.appUrn);
+    if (restarted.length > 0) {
+      /*
+       * `skipAutoRestartAppUrns` for what this run just restarted. The reconcile
+       * recreates an app that lost its bound hostname (CI-Hub#1220), and a repair is
+       * the same caller shape that option exists for: it has already rewritten the env
+       * and restarted the app, so letting the reconcile dispatch its own restart on the
+       * way out would recreate the container twice for one repair.
+       */
+      await this.appLifecycleService.triggerCloudflareSync({ skipAutoRestartAppUrns: restarted });
       synced = true;
     }
 

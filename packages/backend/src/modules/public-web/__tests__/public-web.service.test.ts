@@ -261,7 +261,7 @@ describe('PublicWebService', () => {
     expect(appHelpers.generateEnvFile).toHaveBeenCalledWith(appUrn, expect.any(Object));
     expect(appFilesManager.writeAppEnv).toHaveBeenCalled();
     expect(appLifecycleService.restartAppAndWait).toHaveBeenCalledWith({ appUrn, skipPull: true });
-    expect(appLifecycleService.triggerCloudflareSync).toHaveBeenCalled();
+    expect(appLifecycleService.triggerCloudflareSync).toHaveBeenCalledWith({ skipAutoRestartAppUrns: [appUrn] });
     expect(result.synced).toBe(true);
     expect(result.results[0]?.success).toBe(true);
   });
