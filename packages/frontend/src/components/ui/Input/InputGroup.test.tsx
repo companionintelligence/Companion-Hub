@@ -28,4 +28,10 @@ describe('InputGroup', () => {
 
     expect(screen.getByText(LONG_SUFFIX).parentElement).toHaveAttribute('title', LONG_SUFFIX);
   });
+
+  it('keeps the default prefix the same height as the field', () => {
+    render(<InputGroup name="localSubdomain" label="Subdomain" groupPrefix="https://" />);
+
+    expect(screen.getByText('https://')).toHaveClass('h-9');
+  });
 });

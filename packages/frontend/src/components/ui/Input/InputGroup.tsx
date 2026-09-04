@@ -41,7 +41,7 @@ export const InputGroup = React.forwardRef<HTMLInputElement, InputGroupProps>(
           <div
             className={cn(
               'flex shrink-0 items-center whitespace-nowrap rounded-l-md border border-r-0 border-input bg-muted text-muted-foreground',
-              isSm ? 'h-8 px-2 text-xs' : 'px-3 text-sm',
+              isSm ? 'h-8 px-2 text-xs' : 'h-9 px-3 text-sm',
             )}
           >
             {groupPrefix}

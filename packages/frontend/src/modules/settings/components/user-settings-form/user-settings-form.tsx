@@ -164,6 +164,21 @@ export const UserSettingsForm = (props: IProps) => {
     }
   };
 
+  const renderFieldCopyButton = (value: string) => (
+    <Button
+      type="button"
+      variant="ghost"
+      size="icon"
+      className="absolute inset-y-0 right-1 size-7 text-muted-foreground hover:text-foreground"
+      disabled={!value.trim()}
+      onClick={() => void copyToClipboard(value)}
+      title={t('SETTINGS_GENERAL_COPY')}
+      aria-label={t('SETTINGS_GENERAL_COPY')}
+    >
+      <Copy className="h-4 w-4" />
+    </Button>
+  );
+
   return (
     <div className="space-y-6">
       {isDirty && (
@@ -403,30 +418,18 @@ export const UserSettingsForm = (props: IProps) => {
                   </label>
                 </div>
                 {/* Copy sits inside the field rather than beside it, so the row keeps the
-                    full width of every other control in this card. Matches the device-id
-                    field on the registration screen. */}
-                <div className="relative">
-                  <Input
-                    id="settings-local-domain"
-                    {...register('localDomain')}
-                    error={errors.localDomain?.message}
-                    placeholder={t('SETTINGS_GENERAL_LOCAL_DOMAIN_PLACEHOLDER')}
-                    readOnly={initialValues?.advancedSettings === false}
-                    className={clsx('[&_input]:pr-9', initialValues?.advancedSettings === false && '[&_input]:cursor-default')}
-                  />
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon"
-                    className="absolute right-1 top-1 size-7 text-muted-foreground hover:text-foreground"
-                    disabled={!localDomainValue.trim()}
-                    onClick={() => copyToClipboard(localDomainValue)}
-                    title={t('SETTINGS_GENERAL_COPY')}
-                    aria-label={t('SETTINGS_GENERAL_COPY')}
-                  >
-                    <Copy className="h-4 w-4" />
-                  </Button>
-                </div>
+                    full width of every other control in this card. Input wraps children
+                    against the control itself so an error line cannot stretch the overlay. */}
+                <Input
+                  id="settings-local-domain"
+                  {...register('localDomain')}
+                  error={errors.localDomain?.message}
+                  placeholder={t('SETTINGS_GENERAL_LOCAL_DOMAIN_PLACEHOLDER')}
+                  readOnly={initialValues?.advancedSettings === false}
+                  className={clsx('[&_input]:pr-9', initialValues?.advancedSettings === false && '[&_input]:cursor-default')}
+                >
+                  {renderFieldCopyButton(localDomainValue)}
+                </Input>
               </div>
               <div className="space-y-2">
                 <div className="text-sm font-medium leading-none">
@@ -444,31 +447,19 @@ export const UserSettingsForm = (props: IProps) => {
                     </span>
                   </label>
                 </div>
-                <div className="relative">
-                  <Input
-                    id="public-hub-hostname"
-                    name="public-hub-hostname"
-                    value={publicHubHostname ?? ''}
-                    placeholder={t('SETTINGS_GENERAL_PUBLIC_DOMAIN_PENDING')}
-                    readOnly
-                    className="[&_input]:pr-9 [&_input]:cursor-default"
-                    onChange={() => {
-                      /* display-only; value is derived from app context */
-                    }}
-                  />
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon"
-                    className="absolute right-1 top-1 size-7 text-muted-foreground hover:text-foreground"
-                    disabled={!publicHubHostname?.trim()}
-                    onClick={() => copyToClipboard(publicHubHostname ?? '')}
-                    title={t('SETTINGS_GENERAL_COPY')}
-                    aria-label={t('SETTINGS_GENERAL_COPY')}
-                  >
-                    <Copy className="h-4 w-4" />
-                  </Button>
-                </div>
+                <Input
+                  id="public-hub-hostname"
+                  name="public-hub-hostname"
+                  value={publicHubHostname ?? ''}
+                  placeholder={t('SETTINGS_GENERAL_PUBLIC_DOMAIN_PENDING')}
+                  readOnly
+                  className="[&_input]:pr-9 [&_input]:cursor-default"
+                  onChange={() => {
+                    /* display-only; value is derived from app context */
+                  }}
+                >
+                  {renderFieldCopyButton(publicHubHostname ?? '')}
+                </Input>
               </div>
               <Button variant="outline" className="mt-2 mb-2" onClick={downloadCertificate}>
                 {t('SETTINGS_GENERAL_DOWNLOAD_CERTIFICATE')}
