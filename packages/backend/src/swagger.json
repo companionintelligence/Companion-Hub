@@ -1948,6 +1948,36 @@
         ]
       }
     },
+    "/api/apps/{urn}/data-files": {
+      "get": {
+        "operationId": "getAppDataListing",
+        "parameters": [
+          {
+            "name": "urn",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppDataListingDto"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Apps"
+        ]
+      }
+    },
     "/api/apps/{urn}/compose-diff": {
       "get": {
         "operationId": "getAppComposeDiff",
@@ -4543,6 +4573,16 @@
       "post": {
         "operationId": "repair",
         "parameters": [],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PublicWebRepairBody"
+              }
+            }
+          }
+        },
         "responses": {
           "default": {
             "description": "",
@@ -10500,6 +10540,60 @@
         ],
         "additionalProperties": false
       },
+      "AppDataListingDto": {
+        "type": "object",
+        "properties": {
+          "hostPath": {
+            "nullable": true,
+            "type": "string"
+          },
+          "rootExists": {
+            "type": "boolean"
+          },
+          "truncated": {
+            "type": "boolean"
+          },
+          "entries": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "path": {
+                  "type": "string"
+                },
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "file",
+                    "directory"
+                  ]
+                },
+                "sizeBytes": {
+                  "nullable": true,
+                  "type": "number"
+                }
+              },
+              "required": [
+                "name",
+                "path",
+                "kind",
+                "sizeBytes"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "hostPath",
+          "rootExists",
+          "truncated",
+          "entries"
+        ],
+        "additionalProperties": false
+      },
       "GetComposeDiffDto": {
         "type": "object",
         "properties": {
@@ -11446,6 +11540,18 @@
           "title",
           "url"
         ],
+        "additionalProperties": false
+      },
+      "PublicWebRepairBody": {
+        "type": "object",
+        "properties": {
+          "appUrns": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
         "additionalProperties": false
       },
       "GetUserConfigDto": {

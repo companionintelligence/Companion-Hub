@@ -1,9 +1,10 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { afterEach, describe, it, expect, vi } from 'vitest';
+import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import { MemoryRouter } from 'react-router';
 import type { AppInfo } from '@/types/app.types';
 import { InstallForm } from './install-form';
 import { useAppContext } from '@/context/app-context';
+import { TranslatableError } from '@/types/error.types';
 
 // Polyfill ResizeObserver for Radix UI
 global.ResizeObserver = class ResizeObserver {
@@ -23,14 +24,16 @@ vi.mock('@/context/app-context', () => ({
   useAppContext: vi.fn(),
 }));
 
-const { fetchDnsAvailability, fetchPublicWebDiagnostics } = vi.hoisted(() => ({
+const { fetchDnsAvailability, fetchPublicWebDiagnostics, repairPublicWebRouting } = vi.hoisted(() => ({
   fetchDnsAvailability: vi.fn(),
   fetchPublicWebDiagnostics: vi.fn().mockResolvedValue(null),
+  repairPublicWebRouting: vi.fn(),
 }));
 
 vi.mock('@/lib/cloudflare-api', () => ({
   fetchDnsAvailability,
   fetchPublicWebDiagnostics,
+  repairPublicWebRouting,
 }));
 
 const { toast } = vi.hoisted(() => ({
@@ -1297,5 +1300,204 @@ describe('InstallForm', () => {
 
     expect(getEnableAuthSwitch()).toBeInTheDocument(); // the switch itself still renders
     expect(screen.queryByText('APP_INSTALL_FORM_ENABLE_AUTH_RECOMMENDED')).not.toBeInTheDocument();
+  });
+});
+
+/**
+ * The drift banner named "Save settings", but nothing on the form is dirty when only
+ * routing has drifted, so the Update button it pointed at stayed disabled and the
+ * dialog dead-ended (#1208). It now carries the repair action itself.
+ */
+describe('InstallForm - Public Web routing drift', () => {
+  const driftedApp = {
+    urn: 'n8n:store',
+    form_fields: [],
+    exposable: true,
+    dynamic_config: true,
+    port: 3001,
+  } as unknown as AppInfo;
+
+  const context = {
+    userSettings: {
+      ciHubOrganizationSlug: 'bc',
+      ciHubDeviceSlug: 'blaptop',
+      localDomain: 'ci.lan',
+      domain: 'companionintelligence.com',
+      maxBackups: 5,
+      guestDashboard: false,
+    },
+    user: { advancedMode: true },
+    isProduction: true,
+    cloudflareAvailable: true,
+    tailscaleAvailable: false,
+  } as unknown as ReturnType<typeof useAppContext>;
+
+  const renderDrifted = (onSubmit: (values: Record<string, unknown>) => void = vi.fn()) =>
+    render(
+      <MemoryRouter>
+        <InstallForm
+          info={driftedApp}
+          onSubmit={onSubmit}
+          formId="test-form"
+          formFields={[]}
+          initialValues={{ exposureMode: 'cloudflare' }}
+          appStatus="running"
+          editingAppUrn="n8n:store"
+        />
+      </MemoryRouter>,
+    );
+
+  beforeEach(() => {
+    // This describe is a SIBLING of `describe('InstallForm')`, so that block's
+    // afterEach never runs for it and vitest is not configured to reset mocks
+    // between files' suites. Without this, an implementation set over there (the
+    // DNS stub in particular, whose single Response body is already consumed)
+    // leaks in and can fire a toast these tests assert the absence of.
+    vi.clearAllMocks();
+    fetchDnsAvailability.mockReset();
+    fetchDnsAvailability.mockResolvedValue(new Response(JSON.stringify({ available: true }), { status: 200 }));
+    vi.mocked(useAppContext).mockReturnValue(context);
+    fetchPublicWebDiagnostics.mockResolvedValue({
+      apps: [{ appUrn: 'n8n:store', envMismatch: true, action: 'repair', computedPublicUrl: 'https://n8n-blaptop-bc.companionintelligence.com' }],
+    });
+  });
+
+  afterEach(() => {
+    // Restore the file-wide defaults so this suite's stubs cannot leak into another.
+    fetchPublicWebDiagnostics.mockReset();
+    fetchPublicWebDiagnostics.mockResolvedValue(null);
+    repairPublicWebRouting.mockReset();
+    fetchDnsAvailability.mockReset();
+  });
+
+  it('offers a repair action on the drift banner', async () => {
+    renderDrifted();
+
+    expect(await screen.findByTestId('public-web-drift-banner')).toBeInTheDocument();
+    expect(screen.getByTestId('public-web-repair-button')).toBeEnabled();
+  });
+
+  it('repairs the edited app and clears the banner', async () => {
+    repairPublicWebRouting.mockResolvedValue([{ appUrn: 'n8n:store', success: true }]);
+    renderDrifted();
+
+    fireEvent.click(await screen.findByTestId('public-web-repair-button'));
+
+    await waitFor(() => {
+      expect(repairPublicWebRouting).toHaveBeenCalledWith('n8n:store');
+    });
+    await waitFor(() => {
+      expect(screen.queryByTestId('public-web-drift-banner')).not.toBeInTheDocument();
+    });
+    expect(toast.success).toHaveBeenCalledWith('APP_PUBLIC_WEB_REPAIR_SUCCESS');
+  });
+
+  it('keeps the banner up when the repair fails', async () => {
+    repairPublicWebRouting.mockResolvedValue([{ appUrn: 'n8n:store', success: false, message: 'App not found' }]);
+    renderDrifted();
+
+    fireEvent.click(await screen.findByTestId('public-web-repair-button'));
+
+    await waitFor(() => {
+      expect(toast.error).toHaveBeenCalledWith('APP_PUBLIC_WEB_REPAIR_ERROR');
+    });
+    expect(screen.getByTestId('public-web-drift-banner')).toBeInTheDocument();
+  });
+
+  it('does not submit the config form when repairing', async () => {
+    // The banner renders inside the config <form>, so a button that defaulted to
+    // type="submit" would save the settings as a side effect of repairing routing.
+    repairPublicWebRouting.mockResolvedValue([{ appUrn: 'n8n:store', success: true }]);
+    const onSubmit = vi.fn();
+    renderDrifted(onSubmit);
+
+    fireEvent.click(await screen.findByTestId('public-web-repair-button'));
+
+    await waitFor(() => {
+      expect(repairPublicWebRouting).toHaveBeenCalled();
+    });
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  it('clears the banner when the Hub reports nothing left to repair', async () => {
+    // The Hub returns a result per drifted app, so an empty list means this one is
+    // already in sync — treating that as a failure would strand a stale banner.
+    repairPublicWebRouting.mockResolvedValue([]);
+    renderDrifted();
+
+    fireEvent.click(await screen.findByTestId('public-web-repair-button'));
+
+    await waitFor(() => {
+      expect(screen.queryByTestId('public-web-drift-banner')).not.toBeInTheDocument();
+    });
+    expect(toast.error).not.toHaveBeenCalled();
+    // Nothing was rewritten and nothing restarted, so it must not claim a repair.
+    expect(toast.success).toHaveBeenCalledWith('APP_PUBLIC_WEB_REPAIR_ALREADY_SYNCED');
+  });
+
+  it('does not force a repair when the drift has resolved since the dialog opened', async () => {
+    /*
+     * The banner is drawn from a snapshot taken on open, and the server repairs a NAMED
+     * app on `envMismatch` alone — deliberately overriding the `action: 'ok'` window a
+     * freshly bound custom domain opens. Acting on the stale snapshot would force the
+     * very restart that bind deferred.
+     */
+    repairPublicWebRouting.mockResolvedValue([{ appUrn: 'n8n:store', success: true }]);
+    renderDrifted();
+    await screen.findByTestId('public-web-drift-banner');
+
+    fetchPublicWebDiagnostics.mockResolvedValue({
+      apps: [{ appUrn: 'n8n:store', envMismatch: true, action: 'ok', computedPublicUrl: 'https://n8n-blaptop-bc.companionintelligence.com' }],
+    });
+    fireEvent.click(screen.getByTestId('public-web-repair-button'));
+
+    await waitFor(() => {
+      expect(toast.success).toHaveBeenCalledWith('APP_PUBLIC_WEB_REPAIR_ALREADY_SYNCED');
+    });
+    expect(repairPublicWebRouting).not.toHaveBeenCalled();
+    expect(screen.queryByTestId('public-web-drift-banner')).not.toBeInTheDocument();
+  });
+
+  it('repairs nothing when the drift cannot be re-read', async () => {
+    // Unverified state is not a licence to restart the app; the operator can retry.
+    renderDrifted();
+    await screen.findByTestId('public-web-drift-banner');
+
+    fetchPublicWebDiagnostics.mockResolvedValue(null);
+    fireEvent.click(screen.getByTestId('public-web-repair-button'));
+
+    await waitFor(() => {
+      expect(toast.error).toHaveBeenCalledWith('APP_PUBLIC_WEB_REPAIR_ERROR');
+    });
+    expect(repairPublicWebRouting).not.toHaveBeenCalled();
+    expect(screen.getByTestId('public-web-drift-banner')).toBeInTheDocument();
+  });
+
+  it('surfaces the reason when the operator holds no grant for the app', async () => {
+    // The Hub answers a denied repair with APP_ACTION_GRANT_DENIED, and telling that
+    // operator to "check the Hub logs" would send them hunting a fault that is not there.
+    repairPublicWebRouting.mockRejectedValue(new TranslatableError('APP_ACTION_GRANT_DENIED', { action: 'configure', app: 'n8n' }));
+    renderDrifted();
+
+    fireEvent.click(await screen.findByTestId('public-web-repair-button'));
+
+    await waitFor(() => {
+      expect(toast.error).toHaveBeenCalledWith('APP_ACTION_GRANT_DENIED');
+    });
+    expect(screen.getByTestId('public-web-drift-banner')).toBeInTheDocument();
+  });
+
+  it('re-enables the repair button after a failed attempt so it can be retried', async () => {
+    repairPublicWebRouting.mockRejectedValue(new Error('network down'));
+    renderDrifted();
+
+    fireEvent.click(await screen.findByTestId('public-web-repair-button'));
+
+    await waitFor(() => {
+      expect(toast.error).toHaveBeenCalled();
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('public-web-repair-button')).toBeEnabled();
+    });
   });
 });

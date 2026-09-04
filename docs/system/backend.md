@@ -5,7 +5,7 @@
 > **Key paths:** `packages/backend/src/modules/`, `packages/backend/src/database/`, `packages/backend/src/queue/`
 > **Commands:** `cd packages/backend && pnpm test`, `pnpm run test:integration` (root)
 > **Owner persona:** maintainability + security (see REVIEW_PERSONAS.md)
-> **Last updated:** 2026-09-04
+> **Last updated:** 2026-09-04 (custom-domain reconcile, public-web grant gating)
 > **Related:** docs/system/e2e.md, docs/ARCHITECTURE.md
 
 ---
@@ -182,11 +182,30 @@ On save the Hub:
 AI apps that want these tokens must read the `CI_CLOUD_*` contract (or `hub_integration.inference`
 plus the extra env). See the tracking issue on marketplace / OpenClaw / Hermes.
 
+## Per-app grants
+
+Routes that read or mutate one app assert the operator's Portal grant through
+`MarketplaceWhoIsService`: `assertSessionAction` for a single app, `assertSessionActions` for a set
+(one batched WhoIs round trip — asserting in a loop costs a Portal request per app), and
+`filterSessionByView` to trim a list. Both asserts no-op when the request carries no Hub session, so
+API-key callers such as the `cihub` CLI are unaffected.
+
+Assert over **every** app a request could touch before touching any of them, and include apps the
+caller named even when they turn out to need no work — checking only the apps that do lets an
+unauthorized caller read an app's state out of the 403-vs-200 answer.
+
+`public-web/repair` rewrites app envs and restarts apps, so it carries `configure`; `public-web/diagnostics`
+filters its report by `view`.
+
 ## API client generation
 
 OpenAPI spec generated from NestJS decorators. Drift check: `pnpm run check:openapi`.
 
 Frontend client: `packages/frontend/src/api-client/` (regenerate via `pnpm run gen:api-client`).
+
+Zod-backed DTOs must also be listed in `src/swagger-zod-registry.ts` — Nest reflects the class as an
+empty object, and only registered DTOs get their schema patched in. An unregistered one publishes
+`{"type":"object","properties":{}}` and generates as `{ [key: string]: unknown }`.
 
 ## Agent notes
 
