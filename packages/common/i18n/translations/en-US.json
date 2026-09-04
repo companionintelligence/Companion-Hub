@@ -866,6 +866,7 @@
   "SETTINGS_NETWORK_TAILSCALE_NOT_INSTALLED_DESC": "The Hub could not access Tailscale (no host CLI/socket and no hub-tailscale sidecar). Ensure the private-vpn compose profile is enabled.",
   "OPEN_FOLDER_ERROR": "Couldn't open the folder in the file manager.",
   "OPEN_FOLDER_NOT_ON_THIS_MACHINE": "This folder lives on the Hub host, not this computer. Copy the path and open it there.",
+  "OPEN_FOLDER_ACL_DENIED": "Desktop permissions are missing for opening folders. Update Companion Hub and try again.",
   "ONBOARDING_TAILSCALE_NOT_AVAILABLE": "Tailscale needs to be installed on this computer",
   "ONBOARDING_TAILSCALE_NOT_AVAILABLE_DESC": "Install Tailscale on this machine, then come back here. Once it is detected, you can log in and connect your account.",
   "SETTINGS_NETWORK_TAILSCALE_INSTALL_LINK": "Install Tailscale",
