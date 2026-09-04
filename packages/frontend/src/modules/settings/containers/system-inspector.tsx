@@ -104,7 +104,7 @@ const formatUptime = (seconds: number) => {
 // ─── Shared Components ───────────────────────────────────────────────────────
 
 const ProgressBar = ({ percent }: { percent: number }) => {
-  const barColor = percent > 90 ? 'bg-red-500' : percent > 70 ? 'bg-yellow-500' : 'bg-primary';
+  const barColor = percent > 90 ? 'bg-red-500' : percent > 70 ? 'bg-warning' : 'bg-primary';
   return (
     <div className="w-full h-1.5 bg-foreground/10 rounded-full overflow-hidden">
       <div className={`h-full rounded-full transition-all duration-500 ${barColor}`} style={{ width: `${Math.min(percent, 100)}%` }} />
@@ -143,17 +143,17 @@ const StatCard = ({
 );
 
 const StateIcon = ({ state }: { state: string }) => {
-  if (state === 'running') return <CheckCircle2 className="h-4 w-4 text-green-500" />;
+  if (state === 'running') return <CheckCircle2 className="h-4 w-4 text-success" />;
   if (state === 'exited') return <XCircle className="h-4 w-4 text-red-500" />;
-  return <AlertTriangle className="h-4 w-4 text-yellow-500" />;
+  return <AlertTriangle className="h-4 w-4 text-warning" />;
 };
 
 const Badge = ({ children, variant = 'default' }: { children: React.ReactNode; variant?: 'default' | 'success' | 'danger' | 'warning' }) => {
   const colors = {
     default: 'bg-muted text-muted-foreground',
-    success: 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200',
+    success: 'bg-success/10 text-success',
     danger: 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200',
-    warning: 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200',
+    warning: 'bg-warning/10 text-warning',
   };
   return <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium ${colors[variant]}`}>{children}</span>;
 };
@@ -425,7 +425,7 @@ const PortManagementSection = ({ ports }: { ports: { allocations: PortStatus[]; 
                       <td className="p-2 pl-3">
                         {p.bound ? (
                           <span title={t('SYSTEM_INSPECTOR_PORT_BOUND_ACTIVE')}>
-                            <CheckCircle2 className="h-4 w-4 text-green-500" />
+                            <CheckCircle2 className="h-4 w-4 text-success" />
                           </span>
                         ) : (
                           <span title={t('SYSTEM_INSPECTOR_PORT_ALLOCATED_NOT_BOUND')}>
@@ -447,13 +447,10 @@ const PortManagementSection = ({ ports }: { ports: { allocations: PortStatus[]; 
                   ))}
                   {showUntracked &&
                     ports.untracked.map((u) => (
-                      <tr
-                        key={`untracked-${u.port}`}
-                        className="border-b last:border-0 bg-yellow-50/50 dark:bg-yellow-900/10 hover:bg-yellow-50 dark:hover:bg-yellow-900/20 transition-colors"
-                      >
+                      <tr key={`untracked-${u.port}`} className="border-b last:border-0 bg-warning/10 hover:bg-warning/15 transition-colors">
                         <td className="p-2 pl-3">
                           <span title={t('SYSTEM_INSPECTOR_UNTRACKED_PORT')}>
-                            <AlertTriangle className="h-4 w-4 text-yellow-500" />
+                            <AlertTriangle className="h-4 w-4 text-warning" />
                           </span>
                         </td>
                         <td className="p-2 font-mono text-xs font-semibold">{u.port}</td>
@@ -476,7 +473,7 @@ const PortManagementSection = ({ ports }: { ports: { allocations: PortStatus[]; 
             {ports.allocations.map((p) => (
               <div key={`m-${p.hostPort}-${p.protocol}`} className="rounded-lg border p-3 flex items-center gap-3">
                 {p.bound ? (
-                  <CheckCircle2 className="h-4 w-4 text-green-500 shrink-0" />
+                  <CheckCircle2 className="h-4 w-4 text-success shrink-0" />
                 ) : (
                   <XCircle className="h-4 w-4 text-muted-foreground shrink-0" />
                 )}
@@ -495,11 +492,8 @@ const PortManagementSection = ({ ports }: { ports: { allocations: PortStatus[]; 
             ))}
             {showUntracked &&
               ports.untracked.map((u) => (
-                <div
-                  key={`m-untracked-${u.port}`}
-                  className="rounded-lg border border-yellow-200 dark:border-yellow-800 p-3 flex items-center gap-3 bg-yellow-50/50 dark:bg-yellow-900/10"
-                >
-                  <AlertTriangle className="h-4 w-4 text-yellow-500 shrink-0" />
+                <div key={`m-untracked-${u.port}`} className="rounded-lg border border-warning/30 p-3 flex items-center gap-3 bg-warning/10">
+                  <AlertTriangle className="h-4 w-4 text-warning shrink-0" />
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2">
                       <span className="font-mono text-xs font-semibold">{u.port}</span>

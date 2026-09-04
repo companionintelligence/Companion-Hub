@@ -98,12 +98,12 @@ describe('RecommendationsStep (embedded emit)', () => {
     renderWithRouter(<Harness onEmit={onEmit} />);
     onEmit.mockClear();
 
-    await user.click(screen.getByTestId('recommended-app'));
+    await user.click(screen.getByTestId('recommended-app-checkbox-immich'));
     expect(onEmit).toHaveBeenCalledTimes(1);
     expect(onEmit).toHaveBeenLastCalledWith([expect.objectContaining({ appSlug: 'immich', urn: 'urn:store:immich' })]);
 
     onEmit.mockClear();
-    await user.click(screen.getByTestId('recommended-app'));
+    await user.click(screen.getByTestId('recommended-app-checkbox-immich'));
     expect(onEmit).toHaveBeenCalledTimes(1);
     expect(onEmit).toHaveBeenLastCalledWith([]);
   });
@@ -125,7 +125,7 @@ describe('RecommendationsStep (embedded emit)', () => {
     renderWithRouter(<Harness onEmit={onEmit} />);
     onEmit.mockClear();
 
-    await user.click(screen.getByTestId('recommended-app'));
+    await user.click(screen.getByTestId('recommended-app-checkbox-immich'));
     expect(onEmit).toHaveBeenLastCalledWith([expect.objectContaining({ appSlug: 'immich', urn: 'immich:ci-marketplace' })]);
   });
 
@@ -139,7 +139,7 @@ describe('RecommendationsStep (embedded emit)', () => {
     expect(screen.queryByText('ONBOARDING_NO_MATCHING_STORE_APPS')).not.toBeInTheDocument();
   });
 
-  it('shows a load-more card when more recommendations are available', async () => {
+  it('renders the 20-item chart and keeps every synced alternative selectable', () => {
     mockCatalogState.apps = [
       { id: 'immich', name: 'Immich', urn: 'urn:store:immich', short_desc: 'Photos' },
       { id: 'mattermost', name: 'Mattermost', urn: 'urn:store:mattermost', short_desc: 'Chat' },
@@ -148,21 +148,28 @@ describe('RecommendationsStep (embedded emit)', () => {
       { id: 'n8n', name: 'n8n', urn: 'urn:store:n8n', short_desc: 'Automation' },
     ];
 
-    const user = userEvent.setup();
     renderWithRouter(<RecommendationsStep embedded detectedServices={[]} onChange={vi.fn()} />);
 
-    expect(screen.getAllByTestId('recommended-app')).toHaveLength(4);
-    const loadMore = await screen.findByTestId('show-more-recommendations');
-    await user.click(loadMore);
-
-    expect(screen.getAllByTestId('recommended-app').length).toBeGreaterThan(4);
+    expect(screen.getByTestId('recommended-alternatives-chart')).toBeInTheDocument();
+    expect(screen.getAllByTestId('recommended-app')).toHaveLength(20);
+    expect(screen.getAllByRole('checkbox')).toHaveLength(20);
+    expect(screen.getByTestId('recommended-app-checkbox-wallos')).toBeInTheDocument();
+    expect(screen.queryByTestId('recommended-app-checkbox-pocketbase')).not.toBeInTheDocument();
+    expect(screen.getByTestId('recommended-private-icon-microsoft-office')).toBeInTheDocument();
+    expect(screen.getByTestId('recommended-private-icon-google-workspace')).toBeInTheDocument();
+    expect(screen.queryByText('ONBOARDING_RECOMMENDED_APPS_CLOUD_SUBSCRIPTION')).not.toBeInTheDocument();
+    expect(screen.queryByText('APP_STORE_OPEN_SOURCE_ALTERNATIVES')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('recommended-agent-selection')).not.toBeInTheDocument();
+    expect(screen.queryByText('ONBOARDING_RECOMMENDED_APPS_COUNT_SUFFIX')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('recommended-app-unavailable')).not.toBeInTheDocument();
     expect(screen.queryByTestId('show-more-recommendations')).not.toBeInTheDocument();
   });
 
-  it('hides the load-more card when every recommendation is already visible', () => {
+  it('keeps the full shortlist visible when only one alternative is synced', () => {
     renderWithRouter(<RecommendationsStep embedded detectedServices={[]} onChange={vi.fn()} />);
 
-    expect(screen.getAllByTestId('recommended-app')).toHaveLength(1);
+    expect(screen.getAllByTestId('recommended-app')).toHaveLength(20);
+    expect(screen.queryByTestId('recommended-app-unavailable')).not.toBeInTheDocument();
     expect(screen.queryByTestId('show-more-recommendations')).not.toBeInTheDocument();
   });
 });

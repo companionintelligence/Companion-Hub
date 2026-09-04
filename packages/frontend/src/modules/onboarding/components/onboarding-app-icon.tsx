@@ -1,5 +1,6 @@
-import { AppLogo } from '@/components/app-logo/app-logo';
+import { getMarketplaceAppImageUrl } from '@/lib/marketplace-image-url';
 import { cn } from '@/lib/utils';
+import type { ReactNode } from 'react';
 import { useState } from 'react';
 import type { OnboardingApp } from '../helpers/types';
 
@@ -7,25 +8,40 @@ interface OnboardingAppIconProps {
   app: Pick<OnboardingApp, 'appSlug' | 'name' | 'icon' | 'urn'>;
   size?: number;
   className?: string;
+  /** Deterministic local glyph shown when the marketplace and portal images are unavailable. */
+  fallback?: ReactNode;
 }
 
-function InitialFallback({ name, size, className }: { name: string; size: number; className?: string }) {
+function InitialFallback({ name, size, className, fallback }: { name: string; size: number; className?: string; fallback?: ReactNode }) {
   return (
     <span
       className={cn('flex shrink-0 items-center justify-center rounded-md bg-foreground/10 text-sm font-semibold text-muted-foreground', className)}
       style={{ width: size, height: size }}
       aria-hidden
     >
-      {name.charAt(0).toUpperCase()}
+      {fallback ?? name.charAt(0).toUpperCase()}
     </span>
   );
 }
 
-function RemoteIcon({ src, name, size, className }: { src: string; name: string; size: number; className?: string }) {
-  const [failed, setFailed] = useState(false);
+function RemoteIcon({
+  sources,
+  name,
+  size,
+  className,
+  fallback,
+}: {
+  sources: string[];
+  name: string;
+  size: number;
+  className?: string;
+  fallback?: ReactNode;
+}) {
+  const [sourceIndex, setSourceIndex] = useState(0);
 
-  if (failed || !src) {
-    return <InitialFallback name={name} size={size} className={className} />;
+  const src = sources[sourceIndex];
+  if (!src) {
+    return <InitialFallback name={name} size={size} className={className} fallback={fallback} />;
   }
 
   return (
@@ -34,24 +50,21 @@ function RemoteIcon({ src, name, size, className }: { src: string; name: string;
       alt=""
       className={cn('shrink-0 rounded-md object-contain', className)}
       style={{ width: size, height: size }}
-      onError={() => setFailed(true)}
+      loading="lazy"
+      onError={() => setSourceIndex((current) => current + 1)}
     />
   );
 }
 
 /**
  * Renders the best available icon for an onboarding app.
- * Marketplace URN images are preferred over portal/alternatives icon URLs, which are often
- * third-party favicons (e.g. Google s2) that fail to load.
+ * The Hub marketplace image proxy is the canonical source. Portal/alternatives metadata is the
+ * next source, and a local glyph keeps an app recognizable when a catalog entry is still syncing.
  */
-export function OnboardingAppIcon({ app, size = 36, className }: OnboardingAppIconProps) {
-  if (app.urn) {
-    return <AppLogo urn={app.urn} alt={app.name} size={size} className={cn('shrink-0', className)} />;
-  }
+export function OnboardingAppIcon({ app, size = 36, className, fallback }: OnboardingAppIconProps) {
+  const sources = [app.urn ? getMarketplaceAppImageUrl(app.urn) : '', app.icon].filter(
+    (source, index, all) => source && all.indexOf(source) === index,
+  );
 
-  if (app.icon) {
-    return <RemoteIcon src={app.icon} name={app.name} size={size} className={className} />;
-  }
-
-  return <InitialFallback name={app.name} size={size} className={className} />;
+  return <RemoteIcon key={sources.join('|')} sources={sources} name={app.name} size={size} className={className} fallback={fallback} />;
 }

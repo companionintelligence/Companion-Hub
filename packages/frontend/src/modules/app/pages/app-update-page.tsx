@@ -84,7 +84,7 @@ export default function AppUpdatePage({ loaderData }: Route.ComponentProps) {
             <div className="flex flex-wrap items-center gap-2 text-muted-foreground">
               <span className="badge bg-muted text-white">{info.version}</span>
               <ArrowRight size={16} />
-              <span className="badge bg-success text-white">{metadata.latestDockerVersion}</span>
+              <span className="badge bg-success text-success-foreground">{metadata.latestDockerVersion}</span>
             </div>
           </div>
         </div>

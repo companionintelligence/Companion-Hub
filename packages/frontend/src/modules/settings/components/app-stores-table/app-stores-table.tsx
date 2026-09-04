@@ -14,7 +14,7 @@ const EnabledBadge = ({ enabled }: { enabled: boolean }) => {
 
   return (
     <div className="flex items-center">
-      <span className={`inline-block size-2 rounded-full mr-2 ${enabled ? 'bg-green-500' : 'bg-red-500'}`} />
+      <span className={`inline-block size-2 rounded-full mr-2 ${enabled ? 'bg-success' : 'bg-red-500'}`} />
       <span>{enabled ? t('SETTINGS_NETWORK_ACTIVE') : t('SETTINGS_NETWORK_INACTIVE')}</span>
     </div>
   );
