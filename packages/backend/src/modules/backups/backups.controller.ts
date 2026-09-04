@@ -9,6 +9,7 @@ import {
   Param,
   Post,
   Query,
+  Req,
   Res,
   UploadedFile,
   UseGuards,
@@ -16,8 +17,9 @@ import {
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { ApiBody, ApiConsumes, ApiResponse } from '@nestjs/swagger';
-import type { Response } from 'express';
+import type { Request, Response } from 'express';
 import { AuthGuard } from '../auth/auth.guard';
+import { MarketplaceWhoIsService } from '@/core/portal/marketplace-whois.service';
 import { BackupsService } from './backups.service';
 import { BackupRequestDto, DeleteAppBackupBodyDto, GetAppBackupsDto, GetAppBackupsQueryDto, RestoreAppBackupDto } from './dto/backups.dto';
 
@@ -25,39 +27,52 @@ import { BackupRequestDto, DeleteAppBackupBodyDto, GetAppBackupsDto, GetAppBacku
 @UseGuards(AuthGuard)
 @Controller('backups')
 export class BackupsController {
-  constructor(private readonly backupsService: BackupsService) {}
+  constructor(
+    private readonly backupsService: BackupsService,
+    private readonly whois: MarketplaceWhoIsService,
+  ) {}
 
   @Post(':urn/backup')
   @ApiResponse({ type: BackupRequestDto })
-  async backupApp(@Param('urn') urn: string) {
-    const res = await this.backupsService.backupApp({ appUrn: castAppUrn(urn) });
+  async backupApp(@Param('urn') urn: string, @Req() req: Request) {
+    const appUrn = castAppUrn(urn);
+    await this.whois.assertSessionAction(req, appUrn, 'backup');
+    const res = await this.backupsService.backupApp({ appUrn });
     return BackupRequestDto.parse(res, { reportOnly: true });
   }
 
   @Post(':urn/restore')
   @ApiResponse({ type: BackupRequestDto })
-  async restoreAppBackup(@Param('urn') urn: string, @Body() body: RestoreAppBackupDto) {
-    const res = await this.backupsService.restoreApp({ appUrn: castAppUrn(urn), filename: body.filename });
+  async restoreAppBackup(@Param('urn') urn: string, @Body() body: RestoreAppBackupDto, @Req() req: Request) {
+    const appUrn = castAppUrn(urn);
+    await this.whois.assertSessionAction(req, appUrn, 'restore');
+    const res = await this.backupsService.restoreApp({ appUrn, filename: body.filename });
     return BackupRequestDto.parse(res, { reportOnly: true });
   }
 
   @Get(':urn')
   @ApiResponse({ type: GetAppBackupsDto })
-  async getAppBackups(@Param('urn') urn: string, @Query() query: GetAppBackupsQueryDto) {
-    const backups = await this.backupsService.getAppBackups({ appUrn: castAppUrn(urn), page: query.page ?? 0, pageSize: query.pageSize ?? 10 });
+  async getAppBackups(@Param('urn') urn: string, @Query() query: GetAppBackupsQueryDto, @Req() req: Request) {
+    const appUrn = castAppUrn(urn);
+    await this.whois.assertSessionAction(req, appUrn, 'view');
+    const backups = await this.backupsService.getAppBackups({ appUrn, page: query.page ?? 0, pageSize: query.pageSize ?? 10 });
 
     return GetAppBackupsDto.parse(backups, { reportOnly: true });
   }
 
   @Delete(':urn')
-  async deleteAppBackup(@Param('urn') urn: string, @Body() body: DeleteAppBackupBodyDto) {
-    return this.backupsService.deleteAppBackup({ appUrn: castAppUrn(urn), filename: body.filename });
+  async deleteAppBackup(@Param('urn') urn: string, @Body() body: DeleteAppBackupBodyDto, @Req() req: Request) {
+    const appUrn = castAppUrn(urn);
+    await this.whois.assertSessionAction(req, appUrn, 'backup');
+    return this.backupsService.deleteAppBackup({ appUrn, filename: body.filename });
   }
 
   @Get(':urn/:filename/download')
   @ApiResponse({ status: 200, description: 'Backup file download' })
-  async downloadBackup(@Param('urn') urn: string, @Param('filename') filename: string, @Res() res: Response) {
-    const filePath = await this.backupsService.getBackupFilePath({ appUrn: castAppUrn(urn), filename });
+  async downloadBackup(@Param('urn') urn: string, @Param('filename') filename: string, @Res() res: Response, @Req() req: Request) {
+    const appUrn = castAppUrn(urn);
+    await this.whois.assertSessionAction(req, appUrn, 'view');
+    const filePath = await this.backupsService.getBackupFilePath({ appUrn, filename });
 
     res.set({
       'Content-Type': 'application/gzip',
@@ -82,7 +97,11 @@ export class BackupsController {
     },
   })
   @ApiResponse({ status: 201, description: 'Backup uploaded successfully' })
-  async uploadBackup(@Param('urn') urn: string, @UploadedFile() file?: { buffer: Buffer; originalname: string; mimetype: string }) {
+  async uploadBackup(
+    @Param('urn') urn: string,
+    @Req() req: Request,
+    @UploadedFile() file?: { buffer: Buffer; originalname: string; mimetype: string },
+  ) {
     if (!file) {
       throw new BadRequestException('No backup file provided');
     }
@@ -91,8 +110,11 @@ export class BackupsController {
       throw new BadRequestException('File must be a .tar.gz backup file');
     }
 
+    const appUrn = castAppUrn(urn);
+    await this.whois.assertSessionAction(req, appUrn, 'backup');
+
     await this.backupsService.uploadBackup({
-      appUrn: castAppUrn(urn),
+      appUrn,
       filename: file.originalname,
       fileBuffer: file.buffer,
     });

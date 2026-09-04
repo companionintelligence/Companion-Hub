@@ -37,6 +37,8 @@ import type { z } from 'zod';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { DATA_DIR } from '@/common/constants';
+import { MarketplaceWhoIsService } from '@/core/portal/marketplace-whois.service';
+import type { HubAction } from '@/core/portal/hub-actions';
 import { AgentNotifyService } from '../agent-notify/agent-notify.service';
 import { ErrorReportingService, type AppFailurePhase } from '@/core/error-reporting/error-reporting.service';
 import { publishesHostPort } from '../apps/app-exposure.helpers';
@@ -2026,7 +2028,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     return { requestId };
   }
 
-  async updateAllApps(): Promise<void> {
+  async updateAllApps(operatorUserId?: number): Promise<void> {
     const installedApps = await this.appsService.getInstalledApps();
     type InstalledApp = Awaited<ReturnType<typeof this.appsService.getInstalledApps>>[number];
     const availableUpdates: InstalledApp[] = installedApps.filter((item: InstalledApp) => {
@@ -2037,6 +2039,9 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     for (const { app } of availableUpdates) {
       try {
         const appUrn = createAppUrn(app.appName, app.appStoreSlug);
+        if (!(await this.operatorMay(operatorUserId, appUrn, 'update'))) {
+          continue;
+        }
         await this.updateApp({ appUrn, performBackup: true });
       } catch (e) {
         this.logger.error(`Failed to update app ${app.id}`, e);
@@ -2061,7 +2066,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     })();
   }
 
-  async startAllApps() {
+  async startAllApps(operatorUserId?: number) {
     const apps = await this.appRepository.getApps();
     type AppFromDb = Awaited<ReturnType<typeof this.appRepository.getApps>>[number];
     const stoppedApps = apps.filter((app: AppFromDb) => app.status === 'stopped');
@@ -2070,6 +2075,9 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       for (const app of stoppedApps) {
         try {
           const appUrn = createAppUrn(app.appName, app.appStoreSlug);
+          if (!(await this.operatorMay(operatorUserId, appUrn, 'start'))) {
+            continue;
+          }
           await this.startApp({ appUrn, skipPull: true });
         } catch (e) {
           this.logger.error(`Failed to start app ${app.id}`, e);
@@ -2078,7 +2086,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     })();
   }
 
-  async stopAllApps() {
+  async stopAllApps(operatorUserId?: number) {
     const apps = await this.appRepository.getApps();
     type AppFromDb = Awaited<ReturnType<typeof this.appRepository.getApps>>[number];
     const runningApps = apps.filter((app: AppFromDb) => app.status === 'running');
@@ -2087,6 +2095,9 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       for (const app of runningApps) {
         try {
           const appUrn = createAppUrn(app.appName, app.appStoreSlug);
+          if (!(await this.operatorMay(operatorUserId, appUrn, 'stop'))) {
+            continue;
+          }
           await this.stopApp({ appUrn });
         } catch (e) {
           this.logger.error(`Failed to stop app ${app.id}`, e);
@@ -2095,7 +2106,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     })();
   }
 
-  async restartAllApps() {
+  async restartAllApps(operatorUserId?: number) {
     const apps = await this.appRepository.getApps();
     type AppFromDb = Awaited<ReturnType<typeof this.appRepository.getApps>>[number];
     const runningApps = apps.filter((app: AppFromDb) => app.status === 'running');
@@ -2104,6 +2115,9 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       for (const app of runningApps) {
         try {
           const appUrn = createAppUrn(app.appName, app.appStoreSlug);
+          if (!(await this.operatorMay(operatorUserId, appUrn, 'restart'))) {
+            continue;
+          }
           await this.restartApp({ appUrn });
         } catch (e) {
           this.logger.error(`Failed to restart app ${app.id}`, e);
@@ -2276,5 +2290,22 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     } catch (error) {
       this.logger.error(`Failed to make the custom-domain choice exclusive: ${error instanceof Error ? error.message : String(error)}`);
     }
+  }
+
+  /**
+   * Hub-session grants. Omitted `operatorUserId` is Portal-push / CLI / boot
+   * recovery — those paths are not a Hub-session person.
+   */
+  private async operatorMay(operatorUserId: number | undefined, appUrn: AppUrn, action: HubAction): Promise<boolean> {
+    if (operatorUserId == null) {
+      return true;
+    }
+
+    const whois = this.moduleRef.get(MarketplaceWhoIsService, { strict: false });
+    if (!whois) {
+      return true;
+    }
+
+    return whois.has(operatorUserId, appUrn, action);
   }
 }
