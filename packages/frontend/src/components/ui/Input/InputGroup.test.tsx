@@ -7,7 +7,7 @@ const LONG_SUFFIX = '-very-long-org-name-with-domain-that-should-wrap.example.co
 describe('InputGroup', () => {
   // Previously this suffix used `whitespace-normal break-all`, which kept it inside
   // the row but broke the domain mid-word onto a second line and made the suffix
-  // taller than the h-11 input — visible as a layout bug in the install dialog.
+  // taller than the h-9 input — visible as a layout bug in the install dialog.
   // It now truncates on one line, matching how CloudflareSubdomainField renders its
   // own element suffix, with the full value still exposed via `title`.
   it('keeps a long suffix on one line and constrains it inside the row', () => {
@@ -20,12 +20,18 @@ describe('InputGroup', () => {
     expect(container).toHaveClass('max-w-[50%]');
     expect(container).toHaveClass('min-w-0');
     // Matches the input height so the row does not grow when the suffix is long.
-    expect(container).toHaveClass('h-11');
+    expect(container).toHaveClass('h-9');
   });
 
   it('exposes the full suffix via title so truncation never hides the domain', () => {
     render(<InputGroup name="localSubdomain" label="Subdomain" groupPrefix="https://" groupSuffix={LONG_SUFFIX} />);
 
     expect(screen.getByText(LONG_SUFFIX).parentElement).toHaveAttribute('title', LONG_SUFFIX);
+  });
+
+  it('keeps the default prefix the same height as the field', () => {
+    render(<InputGroup name="localSubdomain" label="Subdomain" groupPrefix="https://" />);
+
+    expect(screen.getByText('https://')).toHaveClass('h-9');
   });
 });
