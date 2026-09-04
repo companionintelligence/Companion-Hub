@@ -6888,6 +6888,9 @@
                       "nullable": true,
                       "type": "string"
                     },
+                    "customDomainTakeover": {
+                      "type": "boolean"
+                    },
                     "pendingRestart": {
                       "type": "boolean"
                     },
@@ -9377,6 +9380,9 @@
               "customDomainIntent": {
                 "nullable": true,
                 "type": "string"
+              },
+              "customDomainTakeover": {
+                "type": "boolean"
               },
               "pendingRestart": {
                 "type": "boolean"

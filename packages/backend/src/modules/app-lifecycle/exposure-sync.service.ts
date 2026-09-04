@@ -744,18 +744,65 @@ export class ExposureSyncService {
 
     if (!entry) {
       /*
-       * The organization no longer holds it — disconnected in the portal while
-       * this dialog was open, or already released by an earlier attempt whose
-       * answer was lost. Either way the domain has stopped serving this app,
-       * which is what was asked, so this is success. The next sync clears
-       * `custom_domain` from the row when CI-Cloud stops reporting it delivered.
+       * ⚠ REFUSED, NOT TREATED AS DONE — AND THAT IS A DELIBERATE REVERSAL.
+       *
+       * "The listing does not contain it" is tempting to read as "the
+       * organization no longer holds it, so it has already stopped serving".
+       * That reading is unsafe, because the listing drops rows it cannot parse:
+       * `parseAvailableCustomDomains` requires a non-empty STRING `id`, and this
+       * codebase already records that CI-Cloud's ids "arrive as numbers on a
+       * sibling endpoint, so the shape is not guaranteed". A single malformed row
+       * among well-formed ones is dropped silently, and the whole-payload guard
+       * does not fire.
+       *
+       * So a wire hiccup would have produced a success toast and a cleared
+       * binding while CI-Cloud went on serving the domain — precisely what this
+       * method's own contract forbids, and it would then self-heal WRONGLY: the
+       * next reconcile re-adopts the domain and raises another restart badge, so
+       * the operator watches the thing they released come back.
+       *
+       * The genuinely-already-gone case still resolves, one sync later and
+       * safely: reconciliation clears `custom_domain` when CI-Cloud stops
+       * reporting it delivered, after which there is nothing left to release and
+       * the branch above returns early.
        */
-      this.logger.info(`[Cloudflare] ${appUrn} asked to release ${current}, which CI-Cloud no longer lists; nothing to do.`);
+      this.logger.warn(`[Cloudflare] ${appUrn} asked to release ${current}, but CI-Cloud did not list that domain; leaving it alone.`);
 
-      return { ok: true };
+      return {
+        ok: false,
+        message: `CI-Cloud did not list ${current} among this organization's domains, so it was left as it is. Try again.`,
+      };
     }
 
+    /*
+     * ⚠ ASK WHOSE IT IS BEFORE DESTROYING IT, WITH THE ANSWER ALREADY IN HAND.
+     *
+     * `custom_domain` is a mirror of what CI-Cloud last reported delivered, and a
+     * mirror goes stale: an operator who moves the domain to a sibling app and
+     * then opens THIS app's settings before the next sync is still shown it as
+     * the current domain, and clearing the picker would fire a full release
+     * naming a domain that now serves something else.
+     *
+     * CI-Cloud would refuse — `DOMAIN_NOT_BOUND_HERE` checks the application, not
+     * only the device — but relying on that means the safety of an irreversible
+     * act rests on a round trip whose answer is already sitting in the listing
+     * this method just read. `boundAppSlug` is set only for an app on this
+     * device, so a mismatch is decisive locally.
+     */
     const appSubdomain = resolveRoutingSubdomain(app.localSubdomain, app.appName, app.appStoreSlug);
+
+    if (entry.boundElsewhere || (entry.boundAppSlug !== null && entry.boundAppSlug !== appSubdomain)) {
+      this.logger.warn(
+        `[Cloudflare] ${appUrn} asked to release ${current}, but CI-Cloud reports it serving ` +
+          `${entry.boundAppSlug ?? 'an app on another Hub'}; leaving it alone.`,
+      );
+
+      return {
+        ok: false,
+        message: `CI-Cloud reports ${current} is serving something else now, so it was left alone. Reload and try again.`,
+      };
+    }
+
     const released = await this.cloudflareClientService.unbindCustomDomain(entry.id, appSubdomain, orgInfo.id);
 
     if (!released.ok) {
@@ -967,6 +1014,18 @@ export class ExposureSyncService {
         }
 
         const target = normalizeHostname(params.toPublicHostname(app));
+        /*
+         * The subdomain this device synchronizes, not a hostname or a local guess
+         * at Companion Portal's slug — the Portal canonicalizes it with the same
+         * function that created the row. `resolveRoutingSubdomain` matches the
+         * tunnel-state payload and trims whitespace, where an inline `||` would
+         * send `" comfy "` verbatim and match no `application` row.
+         *
+         * Resolved here rather than at the bind call because the ownership check
+         * below compares it against `boundAppSlug`, which is the same value read
+         * back off CI-Cloud.
+         */
+        const appSubdomain = resolveRoutingSubdomain(app.localSubdomain, app.appName, app.appStoreSlug);
 
         /*
          * Companion Portal already points the domain here but has not reported it
@@ -1019,7 +1078,29 @@ export class ExposureSyncService {
          */
         const currentTarget = normalizeStoredHostname(entry.targetHostname);
 
-        if (currentTarget && !app.customDomainTakeover) {
+        /*
+         * ⚠ ASKED OF WHOSE IT IS, NOT OF WHICH HOSTNAME IT POINTS AT.
+         *
+         * `targetHostname` alone is the wrong question, and getting it wrong
+         * breaks the most ordinary operation there is. `toPublicHostname` is
+         * composed from the app's local subdomain, its public domain, the hub
+         * subdomain and the org slug — so RENAMING an app moves its own target.
+         * The domain still points at the app's OLD hostname for one sync, which
+         * reads as "serving something else", and an unconfirmed intent would be
+         * cleared: the operator renames a subdomain and silently loses the custom
+         * domain that app has served for months, with a log line accusing the app
+         * of stealing from itself.
+         *
+         * CI-Cloud already answers the real question. `boundAppSlug` is set only
+         * for an app on THIS device, and `boundElsewhere` is derived from the
+         * row's `device_id` — so the pair says whether this is a move at all, and
+         * the picker decides with exactly the same predicate. Divergence between
+         * the two is not academic: a state the dialog does not warn about but the
+         * pass refuses is a choice that evaporates after a success toast.
+         */
+        const servesAnotherApp = entry.boundElsewhere || (entry.boundAppSlug !== null && entry.boundAppSlug !== appSubdomain);
+
+        if (currentTarget && servesAnotherApp && !app.customDomainTakeover) {
           await this.appRepository.updateAppById(app.id, { customDomainIntent: null, customDomainTakeover: false });
           this.logger.warn(
             `[Cloudflare] ${intent} is currently serving ${entry.boundAppSlug ?? (entry.boundElsewhere ? 'an app on another Hub' : 'another app')}; ` +
@@ -1056,14 +1137,6 @@ export class ExposureSyncService {
           continue;
         }
 
-        // Send the subdomain this device synchronizes, not a hostname or a local
-        // guess at Companion Portal's slug. The Portal canonicalizes it with the
-        // same function that created the row.
-        //
-        // Use `resolveRoutingSubdomain` to match the tunnel-state payload. The
-        // helper trims whitespace, while an inline `||` would send a value such
-        // as `" comfy "` verbatim and fail to match any `application` row.
-        const appSubdomain = resolveRoutingSubdomain(app.localSubdomain, app.appName, app.appStoreSlug);
         const bound = await this.cloudflareClientService.bindCustomDomain(entry.id, appSubdomain, params.organizationId);
 
         if (bound.ok) {

@@ -111,13 +111,52 @@ function normalizeLocalOpenPort(parsedForm: ParsedAppForm): ParsedAppForm {
  * The choice is recorded as an intent instead, and only when the caller actually
  * said something about it: absent leaves an existing choice alone, `''` clears it.
  */
+/**
+ * The custom-domain columns a form save writes, from the two fields that carry
+ * them — the ONE spelling, because four call sites had grown their own.
+ *
+ * `undefined` says nothing: a caller that omits `customDomain` is not asking for
+ * a change and must leave an existing choice alone. A client predating custom
+ * domains, or one patching a single setting, must not silently unbind a domain
+ * the customer is being served on. `''` is the explicit "serve on the platform
+ * hostname again".
+ *
+ * ⚠ THE CONFIRMATION IS ONLY EVER WRITTEN ALONGSIDE A CHOICE, AND NEVER
+ * INHERITED. `customDomainTakeover` authorizes taking a domain off whatever
+ * serves it now; an answer with no choice attached is standing permission
+ * waiting for a future one, and an answer carried forward from a previous save
+ * authorizes a move nobody was shown. Both are the defect the flag exists to
+ * prevent, so an absent or unaccompanied `true` is a no.
+ *
+ * Clearing the choice clears the answer with it, for the same reason.
+ */
+function customDomainColumns(parsedForm: {
+  customDomain?: string;
+  customDomainTakeover?: boolean;
+}): { customDomainIntent: string | null; customDomainTakeover: boolean } | Record<string, never> {
+  if (parsedForm.customDomain === undefined) {
+    return {};
+  }
+
+  const intent = parsedForm.customDomain || null;
+
+  return { customDomainIntent: intent, customDomainTakeover: intent !== null && parsedForm.customDomainTakeover === true };
+}
+
 function buildInstallRowPatch(parsedForm: ParsedAppForm): Record<string, unknown> {
-  const { customDomain, ...rowFields } = parsedForm;
+  /*
+   * BOTH destructured out before the spread. `customDomain` always was — it must
+   * never land in `app.custom_domain`, per the note above. `customDomainTakeover`
+   * has to be as well, and less obviously: its form field happens to share a name
+   * with its column, so the bare spread wrote it straight through and bypassed
+   * the rule that an answer is only valid alongside a choice.
+   */
+  const { customDomain: _customDomain, customDomainTakeover: _customDomainTakeover, ...rowFields } = parsedForm;
 
   return {
     config: toStoredConfig(parsedForm),
     ...rowFields,
-    ...(customDomain === undefined ? {} : { customDomainIntent: customDomain || null }),
+    ...customDomainColumns(parsedForm),
   };
 }
 
@@ -139,6 +178,22 @@ function buildInstallRowPatch(parsedForm: ParsedAppForm): Record<string, unknown
 function toStoredConfig(parsedForm: ParsedAppForm): Record<string, unknown> {
   const stored: Record<string, unknown> = { ...parsedForm };
   delete stored.customDomain;
+  /*
+   * ⚠ AND THE CONFIRMATION WITH IT, FOR A SHARPER REASON THAN THE CHOICE.
+   *
+   * `config` is the form snapshot as it was last saved, and the settings dialog
+   * seeds itself from it. `customDomainTakeover` authorizes ONE move — the bind
+   * pass spends it on use — so a copy surviving in the snapshot re-supplies
+   * `true` on every later save, silently restoring it to the column after it was
+   * spent. That turns a one-time answer into standing permission and hands back
+   * exactly the defect the flag exists to fix: an operator re-pointing the domain
+   * in the portal is overruled on the Hub's next sync (CI-Engineering#208,
+   * defect 3), by an answer given to a different question weeks earlier.
+   *
+   * The row is the only place it may live. `app.dto.ts` exposes it so the dialog
+   * can seed an IN-FLIGHT confirmation from there instead.
+   */
+  delete stored.customDomainTakeover;
 
   return stored;
 }
@@ -927,6 +982,33 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       throw new TranslatableError('APP_ERROR_APP_FORCE_EXPOSED', { id: appUrn });
     }
 
+    /*
+     * ── THE RELEASE APPLIES HERE TOO, OR IT IS A LIE IN ONE DIALOG OUT OF TWO ─
+     *
+     * `updateAppConfig` releases the domain when the picker is cleared. This path
+     * only cleared the intent, so a REINSTALL of an app that is currently serving
+     * one — the install dialog is reachable for an installed app, and its picker
+     * offers "use the platform address" like any other — reported success,
+     * dropped the choice, and left CI-Cloud serving. The next reconcile then
+     * re-adopted the domain and raised a restart badge, so the operator watched
+     * the thing they had just given up come back.
+     *
+     * Guarded on `existingApp.customDomain` so a fresh install, where nothing is
+     * bound and there is nothing to release, never reaches CI-Cloud at all.
+     * Placed with the other refusals, before anything is written or queued, for
+     * the reason the settings path states: a release that did not happen must not
+     * take the binding with it.
+     */
+    if (parsedForm.customDomain === '' && existingApp && normalizeStoredHostname(existingApp.customDomain)) {
+      const released = await this.exposureSyncService.releaseCustomDomain(existingApp);
+
+      if (!released.ok) {
+        throw new TranslatableError('APP_ERROR_CUSTOM_DOMAIN_RELEASE_FAILED', { id: appUrn, message: released.message }, HttpStatus.BAD_GATEWAY);
+      }
+
+      await this.appRepository.updateAppById(existingApp.id, { customDomain: null });
+    }
+
     const conflictsOtherApp = <T extends { id?: number }>(candidates: T[]) =>
       existingApp ? candidates.filter((candidate) => candidate.id !== existingApp.id) : candidates;
 
@@ -988,7 +1070,13 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
           // The custom domain the installer picked, recorded as an intent. It is
           // asked of Companion Portal once the app registers — see `custom_domain_intent`
           // — and never reaches this app's env until Portal reports it wired.
-          customDomainIntent: parsedForm.customDomain || null,
+          //
+          // ⚠ AND THE CONFIRMATION WITH IT. This branch wrote the intent alone,
+          // so a takeover confirmed in the INSTALL dialog — which is where the
+          // picker primarily lives — was dropped on the floor: the column
+          // defaulted false, the bind pass read that as a refusal, and the move
+          // the person had just agreed to was cleared on the next sync.
+          ...customDomainColumns(parsedForm),
           openPort: openPort ?? false,
           exposedLocal: exposedLocal ?? !!appInfo.exposable,
           exposureMode: parsedForm.exposureMode ?? 'local',
@@ -1046,13 +1134,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
          * served on. The device-restore form never sends the field, and it would
          * otherwise wipe every recorded choice on the Hub.
          */
-        ...(parsedForm.customDomain === undefined
-          ? {}
-          : {
-              customDomainIntent: parsedForm.customDomain || null,
-              // Written from the form, never inherited — see the DTO field.
-              customDomainTakeover: Boolean(parsedForm.customDomain) && parsedForm.customDomainTakeover === true,
-            }),
+        ...customDomainColumns(parsedForm),
         openPort: openPort ?? false,
         exposedLocal: exposedLocal ?? !!appInfo.exposable,
         exposureMode: parsedForm.exposureMode ?? 'local',
@@ -1968,13 +2050,24 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       }
 
       /*
-       * The domain is gone at CI-Cloud, so the local binding goes with it rather
-       * than waiting for a heartbeat to notice. The write below carries the rest
-       * of the form; this is the one field it would otherwise leave alone,
-       * because `custom_domain` is normally only ever written from what CI-Cloud
-       * reported delivered — and what it reports now is nothing.
+       * ⚠ CLEARED HERE, BEFORE `generate_env` IS PUBLISHED, AND NOT WITH THE REST
+       * OF THE FORM.
+       *
+       * Env generation does not read the form. `generateEnvFile` and the Traefik
+       * label builder both read the ROW, through
+       * `appsRepository.getAppCustomDomain` — so a `generate_env` published while
+       * `custom_domain` still names the released hostname writes
+       * `APP_PUBLIC_URL=https://<the domain we just destroyed>` and an
+       * `X-Forwarded-Host` to match. A running app recovers on the automatic
+       * restart below, but a stopped one keeps that .env until somebody starts
+       * it: the app comes up pointed at a hostname that no longer resolves, which
+       * is CI-Hub#1207's fault reintroduced from the other end.
+       *
+       * `custom_domain` is otherwise only ever written from what CI-Cloud
+       * reported delivered. This is the one exception, and it is sound because
+       * CI-Cloud has just confirmed it reports nothing.
        */
-      parsedForm.customDomain = '';
+      await this.appRepository.updateAppById(app.id, { customDomain: null });
       releasedCustomDomain = true;
     }
 
@@ -2005,10 +2098,10 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       localSubdomain: parsedForm.localSubdomain ?? null,
       publicDomain: parsedForm.publicDomain ?? null,
       /*
-       * Released just above, so the local binding goes with it. Only ever set
-       * here by that branch: every other path leaves `custom_domain` to the
-       * delivery reconcile, which is the only thing that may claim a hostname is
-       * being served.
+       * Re-asserted, having already been written above so `generate_env` could
+       * see it. Kept because this call is the one that also writes `config`, and
+       * a row where the two disagree is the state `settleCommandOutcome` and the
+       * restart badge both reason from. Idempotent by construction.
        */
       ...(releasedCustomDomain ? { customDomain: null } : {}),
       /*
@@ -2020,13 +2113,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
        * customer is being served on. The empty string is a real instruction: it
        * is what the picker sends for "use the platform address".
        */
-      ...(parsedForm.customDomain === undefined
-        ? {}
-        : {
-            customDomainIntent: parsedForm.customDomain || null,
-            // Written from the form, never inherited — see the DTO field.
-            customDomainTakeover: Boolean(parsedForm.customDomain) && parsedForm.customDomainTakeover === true,
-          }),
+      ...customDomainColumns(parsedForm),
       config: toStoredConfig(parsedForm),
       isVisibleOnGuestDashboard: parsedForm.isVisibleOnGuestDashboard ?? false,
       enableAuth: parsedForm.enableAuth ?? false,

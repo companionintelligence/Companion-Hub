@@ -694,9 +694,19 @@ export const InstallForm: React.FC<IProps> = ({
             domains={customDomains}
             supported={customDomainsData?.supported === true}
             platformHostname={publicWebPreview?.hostname}
-            // The same value the bind sends as `appSlug`, so a domain already
-            // serving THIS app is recognised instead of warned about.
-            currentAppSlug={watchLocalSubdomain || defaultAppSubdomain}
+            /*
+             * The same value the bind sends as `appSlug`, so a domain already
+             * serving THIS app is recognised instead of warned about.
+             *
+             * ⚠ TRIMMED, because the value being compared against is. CI-Cloud's
+             * `boundAppSlug` mirrors the subdomain the Hub SYNCS, which is
+             * trimmed on the way out; the raw field value is not. While somebody
+             * is typing in the Local Subdomain box, an untrimmed value stops
+             * matching and the app's own domain briefly reads as another app's —
+             * warning about a move that is not one, and dropping the
+             * irreversible-release hint for a domain that is still being served.
+             */
+            currentAppSlug={watchLocalSubdomain?.trim() || defaultAppSubdomain}
             onTakeoverChange={(confirmed) => setValue('customDomainTakeover', confirmed)}
             loading={loading}
             t={t}

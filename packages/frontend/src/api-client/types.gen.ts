@@ -376,6 +376,7 @@ export type MyAppsDto = {
             publicDomain?: string;
             customDomain?: string;
             customDomainIntent?: string;
+            customDomainTakeover?: boolean;
             pendingRestart: boolean;
             ignoredVersion: number;
         };
@@ -895,6 +896,7 @@ export type GetAppDto = {
         publicDomain?: string;
         customDomain?: string;
         customDomainIntent?: string;
+        customDomainTakeover?: boolean;
         pendingRestart: boolean;
         ignoredVersion: number;
     };

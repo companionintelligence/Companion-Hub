@@ -1016,6 +1016,18 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
            * save that follows sends `''` — the explicit instruction to give it up.
            */
           ...(app ? { customDomain: app.customDomainIntent ?? app.customDomain ?? '' } : {}),
+          /*
+           * The row wins here too, and it is the ONLY source. The confirmation
+           * authorizes one move and the bind pass spends it, so the row is the
+           * only thing that knows whether one is still outstanding —
+           * `toStoredConfig` deliberately keeps it out of the snapshot so a spent
+           * answer cannot come back as standing permission.
+           *
+           * Seeded rather than defaulted to `false` so an unrelated save does not
+           * quietly withdraw a move the operator confirmed and the pass has not
+           * reached yet.
+           */
+          ...(app ? { customDomainTakeover: app.customDomainTakeover ?? false } : {}),
         }}
         status={app?.status}
       />
