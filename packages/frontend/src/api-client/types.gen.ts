@@ -856,6 +856,7 @@ export type AppRuntimeMonitorDto = {
             state: string;
             status: string;
             health: string;
+            exitCode: number;
             cpuPercent: number;
             memoryUsageBytes: number;
             memoryLimitBytes: number;
@@ -1175,6 +1176,7 @@ export type AppRuntimeHealthDto = {
         state: string;
         status: string;
         health: string;
+        exitCode: number;
         cpuPercent: number;
         memoryUsageBytes: number;
         memoryLimitBytes: number;
