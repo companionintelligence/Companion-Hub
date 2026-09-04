@@ -68,7 +68,7 @@ export class TraefikConfigService {
     private readonly filesystem: FilesystemService,
     @Inject(DOCKERODE) private readonly docker: Dockerode,
   ) {
-    this.mainNetworkName = `${process.env.HUB_CONTAINER_NAME || 'ci-os-hub'}_network`;
+    this.mainNetworkName = `${process.env.HUB_CONTAINER_NAME || 'ci-hub'}_network`;
   }
 
   /**
@@ -168,15 +168,17 @@ export class TraefikConfigService {
         const container = this.docker.getContainer(containerInfo.Id);
         const inspect = await container.inspect();
 
-        // Skip ci-os-hub and traefik containers (they're handled separately)
-        if (inspect.Name.includes('ci-os-hub') || inspect.Name.includes('traefik')) {
+        // Skip the Hub appliance and traefik containers (they're handled separately)
+        const containerName = inspect.Name.replace(/^\//, '');
+        if (containerName === 'ci-hub' || containerName === 'ci-os-hub' || containerName.includes('traefik')) {
           continue;
         }
 
         // Get container IP from the main network
-        const networkSettings = inspect.NetworkSettings?.Networks?.[this.mainNetworkName];
+        const networks = inspect.NetworkSettings?.Networks;
+        const networkSettings = networks?.[this.mainNetworkName] ?? networks?.['ci-os-hub_network'];
         if (!networkSettings?.IPAddress) {
-          this.logger.debug(`Skipping container ${inspect.Name}: not on ${this.mainNetworkName} network or IP not assigned yet`);
+          this.logger.debug(`Skipping container ${inspect.Name}: not on a Hub network or IP not assigned yet`);
           continue;
         }
 
@@ -382,7 +384,7 @@ export class TraefikConfigService {
   /**
    * Write or update the Traefik route for the Hub's public hostname
    * (e.g. devbox-core1.companionintelligence.com) so requests coming through the
-   * Cloudflare tunnel reach ci-os-hub. This file is separate from apps.yml
+   * Cloudflare tunnel reach ci-hub. This file is separate from apps.yml
    * because the hub container is explicitly skipped in generateTraefikConfig.
    */
   public async writeHubRoute(hubSubdomain: string, domain: string): Promise<void> {
@@ -391,7 +393,7 @@ export class TraefikConfigService {
       return;
     }
     const hostname = `${hubSubdomain.trim()}.${domain.trim()}`;
-    const hubContainer = process.env.HUB_CONTAINER_NAME || 'ci-os-hub';
+    const hubContainer = process.env.HUB_CONTAINER_NAME || 'ci-hub';
 
     try {
       const { directories } = this.config.getConfig();

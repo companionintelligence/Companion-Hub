@@ -83,7 +83,7 @@ export class SystemInspectorService {
       const containers = await this.docker.listContainers({ all: true });
       return containers.map((c) => {
         const names = c.Names?.map((n) => n.replace(/^\//, '')) || [];
-        const appUrn = c.Labels?.['ci-os-hub.appurn'] || null;
+        const appUrn = c.Labels?.['ci-hub.appurn'] || c.Labels?.['ci-os-hub.appurn'] || null;
         const ports = (c.Ports || []).map((p) => ({
           hostPort: p.PublicPort || null,
           containerPort: p.PrivatePort,

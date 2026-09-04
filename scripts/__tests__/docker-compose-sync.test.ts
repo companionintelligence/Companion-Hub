@@ -1,6 +1,6 @@
 /**
  * Ensures desktop bundled compose is derived from root docker-compose.prod.yml
- * with the ci-os-hub service switched to prebuilt image pulls (no local build).
+ * with the ci-hub service switched to prebuilt image pulls (no local build).
  */
 import { execSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -22,7 +22,7 @@ function extractEnvDefault(content: string, key: string) {
 }
 
 describe('docker-compose.prod.yml sync', () => {
-  it('sync script patches ci-os-hub to pull CI_HUB_IMAGE instead of building', () => {
+  it('sync script patches ci-hub to pull CI_HUB_IMAGE instead of building', () => {
     execSync('node scripts/sync-docker-compose-prod.cjs', { cwd: repoRoot, stdio: 'pipe' });
     const root = readCompose(rootCompose);
     const desktop = readCompose(desktopCompose);
@@ -36,13 +36,14 @@ describe('docker-compose.prod.yml sync', () => {
 
   // The bundled fallback must name the public GHCR package. Pointing it at the private
   // ci-os-hub package is what made a missing CI_HUB_IMAGE fail with 403 instead of
-  // starting (#920). The `ci-os-hub` service/container name is unaffected and must remain.
+  // starting (#920). The compose service/container is now `ci-hub`.
   it('desktop compose falls back to the public ci-hub image, never ci-os-hub', () => {
     execSync('node scripts/sync-docker-compose-prod.cjs', { cwd: repoRoot, stdio: 'pipe' });
     const desktop = readCompose(desktopCompose);
 
     expect(desktop).not.toMatch(/image:.*ci-os-hub/);
-    expect(desktop).toContain('  ci-os-hub:');
+    expect(desktop).toContain('  ci-hub:');
+    expect(desktop).toContain('container_name: ci-hub');
   });
 
   it('inference URLs default to host.docker.internal', () => {

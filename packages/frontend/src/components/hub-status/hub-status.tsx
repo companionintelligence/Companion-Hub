@@ -809,9 +809,9 @@ export function HubStatus({ children }: HubStatusProps) {
             return;
           }
 
-          // Docker may report Starting while ci-os-hub is already serving HTTP (healthcheck
+          // Docker may report Starting while ci-hub is already serving HTTP (healthcheck
           // lag, sidecar churn). The local API probe is the UI gate — not container health alone.
-          // Match Docker's ci-os-hub healthcheck (`/api/health/live` only).
+          // Match Docker's ci-hub healthcheck (`/api/health/live` only).
           if (result === 'Running' || result === 'Starting') {
             const alivePort = await probeHealthyHubApiPort();
             if (alivePort !== null) {

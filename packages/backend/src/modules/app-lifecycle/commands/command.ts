@@ -102,9 +102,16 @@ export class AppLifecycleCommand {
       userSettings: configService.get('userSettings'),
     };
 
-    const pruned = await this.docker
+    const prunedNew = await this.docker
+      .pruneContainers({ filters: { label: [`ci-hub.appurn=${appUrn}`] } })
+      .catch(() => ({ ContainersDeleted: [] as string[], SpaceReclaimed: 0 }));
+    const prunedLegacy = await this.docker
       .pruneContainers({ filters: { label: [`ci-os-hub.appurn=${appUrn}`] } })
-      .catch(() => ({ ContainersDeleted: [], SpaceReclaimed: 0 }));
+      .catch(() => ({ ContainersDeleted: [] as string[], SpaceReclaimed: 0 }));
+    const pruned = {
+      ContainersDeleted: [...(prunedNew.ContainersDeleted ?? []), ...(prunedLegacy.ContainersDeleted ?? [])],
+      SpaceReclaimed: (prunedNew.SpaceReclaimed ?? 0) + (prunedLegacy.SpaceReclaimed ?? 0),
+    };
 
     logger.info('Pruned containers:', pruned.ContainersDeleted, 'Space reclaimed:', pruned.SpaceReclaimed / 1024 / 1024, 'MB');
 

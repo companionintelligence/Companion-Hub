@@ -29,10 +29,11 @@ services:
       timeout: 20s
       retries: 120
     networks:
+      - ci_hub_network
       - ci_os_hub_network
 
-  ci-os-hub-queue:
-    container_name: ci-os-hub-queue
+  ci-hub-queue:
+    container_name: ci-hub-queue
     logging: *default-logging
     image: rabbitmq:4-alpine
     pull_policy: if_not_present
@@ -51,9 +52,14 @@ services:
       retries: 20
       start_period: 180s
     networks:
-      - ci_os_hub_network
+      ci_hub_network:
+        aliases:
+          - ci-os-hub-queue
+      ci_os_hub_network:
+        aliases:
+          - ci-os-hub-queue
 
-  ci-os-hub:
+  ci-hub:
     # Platform selection based on DOCKER_PLATFORM env variable
     # Set DOCKER_PLATFORM=linux/arm64 for Mac development (native ARM64 build, faster)
     # Set DOCKER_PLATFORM=linux/amd64 for Linux production (AMD64 build, slower on Mac due to emulation)
@@ -82,9 +88,9 @@ services:
     depends_on:
       ci-hub-db:
         condition: service_healthy
-      ci-os-hub-queue:
+      ci-hub-queue:
         condition: service_healthy
-    container_name: ci-os-hub
+    container_name: ci-hub
     logging: *default-logging
     restart: unless-stopped
     # The container starts as root and drops to CI_HUB_CONTAINER_UID:GID in its
@@ -147,7 +153,7 @@ services:
       - /etc/machine-id:/etc/machine-id:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    # Resolver patience (#933): the Hub resolves sibling containers (ci-hub-db, ci-os-hub-queue,
+    # Resolver patience (#933): the Hub resolves sibling containers (ci-hub-db, ci-hub-queue,
     # per-app services) through Docker's embedded DNS, which drops queries under network churn —
     # every app install/uninstall recreates networks. Default musl/glibc behavior gives up after
     # 2 attempts and surfaces getaddrinfo EAI_AGAIN. Retry harder before failing.
@@ -155,9 +161,13 @@ services:
       - attempts:5
       - timeout:2
     networks:
+      ci_hub_network:
+        aliases:
+          - ci-os-hub
+          - host.docker.internal
       ci_os_hub_network:
         aliases:
-          - host.docker.internal
+          - ci-os-hub
     environment:
       OLLAMA_URL: http://host.docker.internal:11434
       VLLM_URL: ${VLLM_URL:-http://host.docker.internal:8000}
@@ -185,7 +195,7 @@ services:
       POSTGRES_PORT: 6543
       RABBITMQ_USERNAME: companion
       RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-admin}
-      RABBITMQ_HOST: ci-os-hub-queue
+      RABBITMQ_HOST: ci-hub-queue
       RABBITMQ_PORT: 5672
       INTERNAL_IP: ${INTERNAL_IP:-127.0.0.1}
       CI_HUB_VERSION: ${CI_HUB_VERSION:-0.2.27}
@@ -197,14 +207,17 @@ services:
         required: false
     labels:
       traefik.enable: true
+      ci-hub.managed: true
       ci-os-hub.managed: true
-      traefik.http.middlewares.ci-hub.forwardauth.address: "http://ci-os-hub:5002/api/auth/traefik"
+      traefik.http.middlewares.ci-hub.forwardauth.address: "http://ci-hub:5002/api/auth/traefik"
       traefik.http.middlewares.ci-hub.forwardauth.trustForwardHeader: "true"
       # All three signed identity headers must ride through — Traefik copies ONLY the headers
       # listed here onto the forwarded request, and consumers verifying the signature fail
       # closed on a missing timestamp/signature (CI-Engineering#74).
       traefik.http.middlewares.ci-hub.forwardauth.authResponseHeaders: "X-CI-Hub-User,X-CI-Hub-User-Timestamp,X-CI-Hub-User-Signature"
       # Prevent Traefik from creating a default router on websecure (which triggers ACME)
+      traefik.http.routers.ci-hub.entrypoints: "web"
+      traefik.http.routers.ci-hub.rule: "Host(`ci-hub.local`)"
       traefik.http.routers.ci-os-hub.entrypoints: "web"
       traefik.http.routers.ci-os-hub.rule: "Host(`ci-os-hub.local`)"
 
@@ -243,12 +256,14 @@ services:
           create_host_path: false
       - ${ROOT_FOLDER_HOST:-.internal}/state/traefik/tls:/etc/traefik/tls:ro
     networks:
+      ci_hub_network:
       ci_os_hub_network:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
-      - ci-os-hub
+      - ci-hub
     labels:
+      ci-hub.managed: true
       ci-os-hub.managed: true
 
   # Cloudflare tunnel — opt-in. Requires a token file at ./tunnel/token.
@@ -261,14 +276,15 @@ services:
     restart: unless-stopped
     command: tunnel run --token-file /home/nonroot/.cloudflared/token
     volumes:
-      # Sibling tunnel/ dir (see ci-os-hub /app/tunnel mount above) — where the Hub writes the token.
+      # Sibling tunnel/ dir (see ci-hub /app/tunnel mount above) — where the Hub writes the token.
       - ${ROOT_FOLDER_HOST:-.internal}/../tunnel:/home/nonroot/.cloudflared:ro
     networks:
+      - ci_hub_network
       - ci_os_hub_network
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
-      - ci-os-hub
+      - ci-hub
       - traefik
     profiles:
       - cloudflare
@@ -304,6 +320,7 @@ services:
     volumes:
       - hub_tailscale_state:/var/lib/tailscale
     networks:
+      - ci_hub_network
       - ci_os_hub_network
     healthcheck:
       # Passes as soon as tailscaled is accepting commands (any BackendState).
@@ -315,11 +332,17 @@ services:
       retries: 12
       start_period: 10s
     labels:
+      ci-hub.managed: true
       ci-os-hub.managed: true
     profiles:
       - private-vpn
 
 networks:
+  ci_hub_network:
+    driver: bridge
+    name: ci-hub_network
+  # Keep the retired network so already-installed apps stay attached and can
+  # still resolve the Hub via the ci-os-hub alias on this network.
   ci_os_hub_network:
     driver: bridge
     name: ci-os-hub_network

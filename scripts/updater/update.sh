@@ -6,7 +6,7 @@ set -o pipefail
 VERSION="latest"
 REPO="companionintelligence/ci-os-hub"
 COMPOSE_FILE="${COMPOSE_FILE:-docker-compose.prod.yml}"
-HUB_CONTAINER="${HUB_CONTAINER_NAME:-ci-os-hub}"
+HUB_CONTAINER="${HUB_CONTAINER_NAME:-ci-hub}"
 HUB_PORT="${API_PORT:-5002}"
 HEALTH_TIMEOUT=120
 SKIP_BACKUP="${SKIP_BACKUP:-false}"
@@ -161,7 +161,7 @@ done
 
 if [ $ELAPSED -ge $HEALTH_TIMEOUT ]; then
   echo "   WARNING: Hub did not become healthy within ${HEALTH_TIMEOUT}s"
-  echo "   Check logs: docker compose -f $COMPOSE_FILE logs ci-os-hub --tail 50"
+  echo "   Check logs: docker compose -f $COMPOSE_FILE logs ci-hub --tail 50"
   exit 1
 fi
 

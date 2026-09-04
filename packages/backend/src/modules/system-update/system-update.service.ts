@@ -275,10 +275,10 @@ export class SystemUpdateService implements OnApplicationBootstrap, OnApplicatio
     const logBanner = `\n[${new Date().toISOString()}] Hub stack update recreate (target=${imageRef})\n`;
     fs.appendFileSync(updateLogPath, logBanner);
 
-    const composeArgs = [...this.composeBaseArgs(envFile, composeFile), 'up', '-d', '--pull', 'always', '--force-recreate', '--no-deps', 'ci-os-hub'];
+    const composeArgs = [...this.composeBaseArgs(envFile, composeFile), 'up', '-d', '--pull', 'always', '--force-recreate', '--no-deps', 'ci-hub'];
 
     setTimeout(() => {
-      this.logger.info(`Recreating ci-os-hub from ${imageRef} (logging to ${updateLogPath})...`);
+      this.logger.info(`Recreating ci-hub from ${imageRef} (logging to ${updateLogPath})...`);
       const logFd = fs.openSync(updateLogPath, 'a');
       // Binary is `docker` exactly once — a duplicated `docker` in argv makes
       // the CLI reject `--env-file` (the 0.2.44–0.2.46 stack-update regression).

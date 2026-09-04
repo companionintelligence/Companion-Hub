@@ -17,7 +17,15 @@ import net from 'node:net';
 import { parseEnvFile } from './env-file';
 
 /** Hub stack container that shares the network the checks must run from. */
-const HUB_CONTAINER = 'ci-os-hub';
+const HUB_CONTAINERS = ['ci-hub', 'ci-os-hub'] as const;
+
+function resolveHubContainer(): string | undefined {
+  for (const name of HUB_CONTAINERS) {
+    const result = docker(['ps', '--filter', `name=^/${name}$`, '--filter', 'status=running', '--format', '{{.Names}}']);
+    if (result.ok && result.stdout.split('\n').includes(name)) return name;
+  }
+  return undefined;
+}
 const PROBE_TIMEOUT_MS = 3000;
 
 export interface BridgeServiceSpec {
@@ -109,7 +117,9 @@ export function probeFromHubContainer(port: number, timeoutMs = PROBE_TIMEOUT_MS
     "s.once('connect',()=>end(0));s.once('timeout',()=>end(10));" +
     "s.once('error',e=>end(e.code==='ECONNREFUSED'||e.code==='ECONNRESET'?11:e.code==='ENOTFOUND'||e.code==='EAI_AGAIN'?12:10));" +
     `s.connect(${port},'host.docker.internal');`;
-  const result = spawnSync('docker', ['exec', HUB_CONTAINER, 'node', '-e', script], {
+  const hubContainer = resolveHubContainer();
+  if (!hubContainer) return 'absent';
+  const result = spawnSync('docker', ['exec', hubContainer, 'node', '-e', script], {
     encoding: 'utf8',
     timeout: timeoutMs + 7000,
   });
@@ -121,8 +131,7 @@ export function probeFromHubContainer(port: number, timeoutMs = PROBE_TIMEOUT_MS
 }
 
 export function isHubContainerRunning(): boolean {
-  const result = docker(['ps', '--filter', `name=^/${HUB_CONTAINER}$`, '--filter', 'status=running', '--format', '{{.Names}}']);
-  return result.ok && result.stdout.split('\n').includes(HUB_CONTAINER);
+  return resolveHubContainer() !== undefined;
 }
 
 /**
@@ -132,10 +141,17 @@ export function isHubContainerRunning(): boolean {
  * so that is unambiguous today.
  */
 export function resolveHubContainerCidr(): string | undefined {
-  const result = docker(['inspect', HUB_CONTAINER, '--format', '{{range .NetworkSettings.Networks}}{{.IPAddress}}/{{.IPPrefixLen}} {{end}}']);
-  if (!result.ok) return undefined;
+  let inspectStdout: string | undefined;
+  for (const name of HUB_CONTAINERS) {
+    const result = docker(['inspect', name, '--format', '{{range .NetworkSettings.Networks}}{{.IPAddress}}/{{.IPPrefixLen}} {{end}}']);
+    if (result.ok && result.stdout.trim()) {
+      inspectStdout = result.stdout;
+      break;
+    }
+  }
+  if (!inspectStdout) return undefined;
 
-  const [first] = result.stdout.split(/\s+/).filter(Boolean);
+  const [first] = inspectStdout.split(/\s+/).filter(Boolean);
   if (!first) return undefined;
 
   const [address, prefix] = first.split('/');
@@ -154,7 +170,13 @@ export function resolveHubContainerCidr(): string | undefined {
 export function resolveHostGatewayIp(): string | undefined {
   const result = spawnSync(
     'docker',
-    ['exec', HUB_CONTAINER, 'node', '-e', "require('dns').lookup('host.docker.internal',{family:4},(e,a)=>{if(e)process.exit(1);console.log(a)})"],
+    [
+      'exec',
+      resolveHubContainer() ?? 'ci-hub',
+      'node',
+      '-e',
+      "require('dns').lookup('host.docker.internal',{family:4},(e,a)=>{if(e)process.exit(1);console.log(a)})",
+    ],
     { encoding: 'utf8', timeout: 10_000 },
   );
   if (result.status !== 0) return undefined;

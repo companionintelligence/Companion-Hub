@@ -9,7 +9,7 @@ services:
   ci-hub-db:
     container_name: ci-hub-e2e-db
 
-  ci-os-hub-queue:
+  ci-hub-queue:
     container_name: ci-hub-e2e-queue
     # Override healthcheck: rabbitmqctl status can pass before the AMQP
     # TCP listener (5672) accepts connections from peer containers.
@@ -20,7 +20,7 @@ services:
       retries: 30
       start_period: 10s
 
-  ci-os-hub:
+  ci-hub:
     container_name: ci-hub-e2e-hub
     # Probe RabbitMQ with the same library the backend uses (rabbitmq-client)
     # to confirm the AMQP connection actually works before handing off to
@@ -63,7 +63,7 @@ services:
         let attempt = 0;
         function tryConnect() {
           attempt++;
-          const s = net.createConnection({port: 5672, host: 'ci-os-hub-queue', timeout: 5000});
+          const s = net.createConnection({port: 5672, host: 'ci-hub-queue', timeout: 5000});
           s.on('connect', () => {
             s.destroy();
             console.log('RabbitMQ TCP reachable after ' + Math.round((Date.now() - start)/1000) + 's (attempt ' + attempt + ')');
@@ -131,7 +131,8 @@ services:
       - .internal-e2e/state/traefik/dynamic:/dynamic:ro
       - .internal-e2e/state/traefik/tls:/tls:ro
     networks:
+      - ci_hub_network
       - ci_os_hub_network
     depends_on:
-      ci-os-hub:
+      ci-hub:
         condition: service_healthy

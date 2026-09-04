@@ -24,9 +24,10 @@ pub(crate) const DEFAULT_PROD_UPDATE_CDN_HOST: &str = "dl.ci.computer";
 /// what the in-container updater writes into `CI_HUB_IMAGE` — when the two disagree,
 /// the desktop and the updater fight over `.env` on every start.
 ///
-/// NOTE: `ci-os-hub` elsewhere in this codebase is the compose *service*/container
-/// name (`container_name: ci-os-hub`, `ci-os-hub_network`, `ci-os-hub.managed`
-/// labels). That is unrelated to this image repo and must not be renamed with it.
+/// NOTE: The compose service/container is now `ci-hub` (`container_name: ci-hub`,
+/// `ci-hub_network`, `ci-hub.managed` labels), with `ci-os-hub` kept as a
+/// network alias and lookup fallback. That is unrelated to this image repo and
+/// must not be renamed with it.
 pub(crate) const HUB_STACK_IMAGE_REPO: &str = "ghcr.io/companionintelligence/ci-hub";
 
 pub(crate) fn default_public_domain() -> &'static str {

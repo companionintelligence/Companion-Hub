@@ -536,7 +536,12 @@ describe('DockerComposeBuilder', () => {
     const compose = await composeBuilder.getDockerCompose([service], { exposed: false, exposedLocal: false }, urn, subnet);
     const yamlObject = yaml.parse(compose);
 
-    expect(yamlObject.services.service.labels).toEqual({ 'ci-os-hub.managed': true, 'ci-os-hub.appurn': urn });
+    expect(yamlObject.services.service.labels).toEqual({
+      'ci-hub.managed': true,
+      'ci-hub.appurn': urn,
+      'ci-os-hub.managed': true,
+      'ci-os-hub.appurn': urn,
+    });
   });
 
   it('should publish host port for local exposure mode even when openPort is false', async () => {

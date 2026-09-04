@@ -589,7 +589,7 @@ export class TailscaleService {
   async getHubServeUpstream(): Promise<string> {
     const strategy = await this.resolveStrategy();
     if (strategy === 'sidecar') {
-      return process.env.TAILSCALE_HUB_UPSTREAM ?? 'http://ci-os-hub:5002';
+      return process.env.TAILSCALE_HUB_UPSTREAM ?? 'http://ci-hub:5002';
     }
     return `http://localhost:${process.env.API_PORT || 3000}`;
   }

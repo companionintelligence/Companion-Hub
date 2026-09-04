@@ -99,7 +99,10 @@ fn read_hub_image(env_path: &Path) -> Option<String> {
 fn hub_image_tag(image: &str) -> Option<&str> {
     // Only inspect the final path segment so `localhost:5000/ci-hub:tag` works and
     // `repo@sha256:…` digests are ignored.
-    let name = image.rsplit_once('/').map(|(_, name)| name).unwrap_or(image);
+    let name = image
+        .rsplit_once('/')
+        .map(|(_, name)| name)
+        .unwrap_or(image);
     if name.contains('@') {
         return None;
     }
@@ -448,7 +451,11 @@ fn should_capture_with(
     now: Instant,
 ) -> bool {
     let normalized_message = message.trim().to_ascii_lowercase();
-    let key = format!("{}:{}", operation.trim().to_ascii_lowercase(), normalized_message);
+    let key = format!(
+        "{}:{}",
+        operation.trim().to_ascii_lowercase(),
+        normalized_message
+    );
 
     events.retain(|_, record| now.duration_since(record.last_captured) < REPEAT_CAPTURE_WINDOW);
 
@@ -590,13 +597,12 @@ fn truncate(value: &str, max_len: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        classify_log_level, env_telemetry_block, grouping_fingerprint,
+        classify_log_level, env_telemetry_block, grouping_fingerprint, hub_image_tag,
         is_benign_compose_optional_env_warning, is_benign_hub_start_message, normalize_portal_url,
-        parse_dsn, portal_environment_for_url, read_user_consent_from, settings_path_for,
-        hub_image_tag, read_deployment_version, read_device_id, read_first_env_value, read_hub_image,
-        read_portal_url,
-        should_capture_with, CaptureRecord, UserConsent, LOG_EVENT_DEBOUNCE_WINDOW,
-        REPEAT_CAPTURE_LIMIT,
+        parse_dsn, portal_environment_for_url, read_deployment_version, read_device_id,
+        read_first_env_value, read_hub_image, read_portal_url, read_user_consent_from,
+        settings_path_for, should_capture_with, CaptureRecord, UserConsent,
+        LOG_EVENT_DEBOUNCE_WINDOW, REPEAT_CAPTURE_LIMIT,
     };
     use std::collections::HashMap;
     use std::time::{Duration, Instant};
@@ -849,7 +855,8 @@ mod tests {
         assert!(should_capture_with(&mut events, "hub.start", inner, now));
 
         // The watchdog re-logs the same error wrapped with prefix and suffix.
-        let wrapped = format!("Watchdog start_hub failed: {inner} Open tray → View Logs for details.");
+        let wrapped =
+            format!("Watchdog start_hub failed: {inner} Open tray → View Logs for details.");
         assert!(!should_capture_with(
             &mut events,
             "tray.watchdog",
@@ -861,7 +868,7 @@ mod tests {
         assert!(should_capture_with(
             &mut events,
             "tray.watchdog",
-            "Watchdog container restart failed: docker restart ci-os-hub failed: permission denied",
+            "Watchdog container restart failed: docker restart ci-hub failed: permission denied",
             now + Duration::from_secs(2)
         ));
     }

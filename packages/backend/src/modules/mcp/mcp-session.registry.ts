@@ -138,7 +138,7 @@ export class McpSessionRegistry implements OnModuleDestroy {
         hosts.add(`${host}:${port}`);
       }
     };
-    for (const base of ['localhost', '127.0.0.1', process.env.HUB_CONTAINER_NAME || 'ci-os-hub']) {
+    for (const base of ['localhost', '127.0.0.1', process.env.HUB_CONTAINER_NAME || 'ci-hub', 'ci-os-hub']) {
       addWithPortVariant(base);
     }
     let operatorHostConfigured = false;

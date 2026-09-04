@@ -442,7 +442,8 @@ pub fn create_tray(app: &App) -> Result<(), Box<dyn std::error::Error>> {
                 let hub_status = crate::hub_manager::get_hub_status();
                 let api_container_up = matches!(
                     hub_status,
-                    crate::hub_manager::HubStatus::Running | crate::hub_manager::HubStatus::Starting
+                    crate::hub_manager::HubStatus::Running
+                        | crate::hub_manager::HubStatus::Starting
                 );
                 let action = if !compose_ready {
                     // Desktop initialize copies compose into the data dir; don't race it.
@@ -451,7 +452,8 @@ pub fn create_tray(app: &App) -> Result<(), Box<dyn std::error::Error>> {
                     crate::hub_manager::decide_hub_watchdog_action(
                         consecutive_failures,
                         cooldown_secs,
-                        stack_dev_mode || crate::hub_manager::is_user_stopped(&data_dir_for_watchdog),
+                        stack_dev_mode
+                            || crate::hub_manager::is_user_stopped(&data_dir_for_watchdog),
                         crate::hub_manager::is_start_failed(&data_dir_for_watchdog),
                         api_container_up,
                         crate::hub_manager::is_docker_available(),
@@ -503,7 +505,7 @@ pub fn create_tray(app: &App) -> Result<(), Box<dyn std::error::Error>> {
                         let _ = crate::hub_manager::append_desktop_log(
                             "tray.watchdog",
                             &format!(
-                                "Hub API unreachable for {} consecutive checks while container is up — restarting ci-os-hub only.",
+                                "Hub API unreachable for {} consecutive checks while container is up — restarting ci-hub only.",
                                 consecutive_failures
                             ),
                         );
