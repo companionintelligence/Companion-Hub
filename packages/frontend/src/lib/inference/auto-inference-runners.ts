@@ -27,10 +27,19 @@ export const DEFAULT_MACOS_AUTOMATIC_INFERENCE_RUNNERS: AutomaticInferenceRunner
  */
 export const DEFAULT_MACOS_MTPLX_AUTOMATIC_INFERENCE_RUNNERS: AutomaticInferenceRunner[] = ['mtplx', 'ollama'];
 
+const AUTOMATIC_RUNNERS_BY_BACKEND: Record<string, AutomaticInferenceRunner[]> = {
+  dspark: DEFAULT_MACOS_AUTOMATIC_INFERENCE_RUNNERS,
+  mtplx: DEFAULT_MACOS_MTPLX_AUTOMATIC_INFERENCE_RUNNERS,
+  lucebox: ['lucebox', 'ollama'],
+  vllm: ['vllm', 'ollama'],
+  // Lemonade is an operator-managed host service. Ollama is still installed for
+  // the embeddings path shared by every chat backend.
+  lemonade: ['ollama'],
+  ollama: ['ollama'],
+};
+
 export function automaticRunnersForBackend(backend: string): AutomaticInferenceRunner[] {
-  if (backend === 'dspark') return DEFAULT_MACOS_AUTOMATIC_INFERENCE_RUNNERS;
-  if (backend === 'mtplx') return DEFAULT_MACOS_MTPLX_AUTOMATIC_INFERENCE_RUNNERS;
-  return DEFAULT_AUTOMATIC_INFERENCE_RUNNERS;
+  return AUTOMATIC_RUNNERS_BY_BACKEND[backend] ?? DEFAULT_AUTOMATIC_INFERENCE_RUNNERS;
 }
 
 /**

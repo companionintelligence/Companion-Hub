@@ -221,7 +221,7 @@ export class AppCredentialsService {
     // ─── Local (default) connection: app → active backend /v1 directly ───
     let provider: InferenceBackendType | 'cloud' = backendType;
     let endpointUrl = backendOpenAiUrl;
-    let apiKey = BACKEND_API_KEY[backendType];
+    let apiKey = backend.getApiKey?.()?.trim() || BACKEND_API_KEY[backendType];
     if (backendType === 'vllm') {
       const customKey = preferences.preferredVllmApiKey?.trim();
       if (customKey) {

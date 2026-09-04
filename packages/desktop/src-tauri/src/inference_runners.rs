@@ -15,10 +15,11 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 #[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
 
+use rand::{rngs::OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 
 use crate::hub_manager;
@@ -29,6 +30,8 @@ const RUNNER_LOG_DIR: &str = "logs/inference";
 const RUNNER_STATE_FILE: &str = "state/inference-runners.json";
 const STARTUP_WAIT: Duration = Duration::from_secs(45);
 const POLL_INTERVAL: Duration = Duration::from_millis(500);
+const API_KEY_BYTES: usize = 32;
+const MACOS_LAUNCH_AGENT_PREFIX: &str = "computer.ci.companion-hub.inference";
 
 const DSPARK_PORT: u16 = 8080;
 const MTPLX_PORT: u16 = 8000;
@@ -118,6 +121,8 @@ pub fn install_and_start_inference_runners(
     let runners = automatic_runner_names(requested);
     let mut results = Vec::with_capacity(runners.len());
 
+    reconcile_macos_launch_agents(data_dir, &runners);
+
     for runner in runners {
         let result = run_runner(data_dir, &runner);
         append_runner_log(
@@ -198,8 +203,12 @@ fn install_and_start_dspark(data_dir: &Path) -> InferenceRunnerResult {
         return already_running("dspark", DSPARK_ENDPOINT);
     }
 
-    let executable = match ensure_python_cli(data_dir, "dspark", "mlx-dspark", "mlx-dspark") {
+    let executable = match ensure_python_cli(data_dir, "dspark", "mlx-dspark", "mlx-dspark", 10) {
         Ok(path) => path,
+        Err(error) => return failed("dspark", error),
+    };
+    let api_key = match ensure_runner_api_key(data_dir, "dspark") {
+        Ok(key) => key,
         Err(error) => return failed("dspark", error),
     };
 
@@ -212,6 +221,8 @@ fn install_and_start_dspark(data_dir: &Path) -> InferenceRunnerResult {
         "0.0.0.0".to_string(),
         "--port".to_string(),
         DSPARK_PORT.to_string(),
+        "--api-key".to_string(),
+        api_key.clone(),
     ];
     start_host_process(
         data_dir,
@@ -221,6 +232,7 @@ fn install_and_start_dspark(data_dir: &Path) -> InferenceRunnerResult {
         DSPARK_PORT,
         "/health",
         DSPARK_ENDPOINT,
+        Some(&api_key),
     )
 }
 
@@ -236,15 +248,16 @@ fn install_and_start_mtplx(data_dir: &Path) -> InferenceRunnerResult {
     // preferred port on its first run. Reuse the persisted endpoint before
     // allocating another port, otherwise every FTUE retry can launch a second
     // MTPLX process on a new port.
+    let existing_api_key = read_runner_api_key(data_dir, "mtplx");
     if let Some(endpoint) = persisted_runner_endpoint(data_dir, "mtplx") {
         if let Some(port) = endpoint_port(&endpoint) {
-            if probe_http(port, "/v1/models") {
+            if probe_http_authenticated(port, "/v1/models", existing_api_key.as_deref()) {
                 return already_running("mtplx", &endpoint);
             }
         }
     }
 
-    if probe_http(MTPLX_PORT, "/v1/models") {
+    if probe_http_authenticated(MTPLX_PORT, "/v1/models", existing_api_key.as_deref()) {
         return already_running("mtplx", MTPLX_ENDPOINT);
     }
 
@@ -259,16 +272,23 @@ fn install_and_start_mtplx(data_dir: &Path) -> InferenceRunnerResult {
     };
     let endpoint = host_endpoint(port);
 
-    let executable = match ensure_python_cli(data_dir, "mtplx", "mtplx", "mtplx") {
+    let executable = match ensure_python_cli(data_dir, "mtplx", "mtplx", "mtplx", 11) {
         Ok(path) => path,
         Err(error) => return failed("mtplx", error),
     };
+    let api_key = match ensure_runner_api_key(data_dir, "mtplx") {
+        Ok(key) => key,
+        Err(error) => return failed("mtplx", error),
+    };
+    let api_key_path = runner_api_key_path(data_dir, "mtplx");
     let args = vec![
         "serve".to_string(),
         "--host".to_string(),
         "0.0.0.0".to_string(),
         "--port".to_string(),
         port.to_string(),
+        "--api-key-file".to_string(),
+        api_key_path.display().to_string(),
     ];
     start_host_process(
         data_dir,
@@ -278,6 +298,7 @@ fn install_and_start_mtplx(data_dir: &Path) -> InferenceRunnerResult {
         port,
         "/v1/models",
         &endpoint,
+        Some(&api_key),
     )
 }
 
@@ -315,7 +336,7 @@ fn install_and_start_vllm(data_dir: &Path) -> InferenceRunnerResult {
                 "Automatic Linux vLLM setup requires a working NVIDIA GPU.",
             );
         }
-        let path = match ensure_python_cli(data_dir, "vllm", "vllm", "vllm") {
+        let path = match ensure_python_cli(data_dir, "vllm", "vllm", "vllm", 10) {
             Ok(path) => path,
             Err(error) => return failed("vllm", error),
         };
@@ -350,6 +371,7 @@ fn install_and_start_vllm(data_dir: &Path) -> InferenceRunnerResult {
         port,
         "/v1/models",
         &endpoint,
+        None,
     )
 }
 
@@ -521,14 +543,10 @@ fn ensure_python_cli(
     runner: &str,
     package: &str,
     executable_name: &str,
+    minimum_minor: u8,
 ) -> Result<PathBuf, String> {
     let runner_dir = data_dir.join(RUNNER_INSTALL_DIR).join(runner);
     let venv_dir = runner_dir.join("venv");
-    let python = host_python().ok_or_else(|| {
-        "Python 3 is required to install this runner, but python3 was not found on PATH."
-            .to_string()
-    })?;
-
     let venv_python = if cfg!(target_os = "windows") {
         venv_dir.join("Scripts").join("python.exe")
     } else {
@@ -540,9 +558,23 @@ fn ensure_python_cli(
         venv_dir.join("bin").join(executable_name)
     };
 
+    if venv_python.exists() && !python_is_compatible(&venv_python, minimum_minor) {
+        append_runner_log(
+            data_dir,
+            runner,
+            &format!(
+                "rebuilding the managed environment because {package} requires Python 3.{minimum_minor}+"
+            ),
+        );
+        fs::remove_dir_all(&venv_dir).map_err(|error| {
+            format!("Could not replace the incompatible {runner} environment: {error}")
+        })?;
+    }
+
     if !venv_python.exists() {
         fs::create_dir_all(&runner_dir)
             .map_err(|error| format!("Could not create the {runner} runner directory: {error}"))?;
+        let python = ensure_compatible_host_python(data_dir, runner, minimum_minor)?;
         run_command(
             data_dir,
             runner,
@@ -555,19 +587,27 @@ fn ensure_python_cli(
         )?;
     }
 
-    if !venv_executable.exists() {
-        run_command(
+    let install_result = run_command(
+        data_dir,
+        runner,
+        &venv_python,
+        &[
+            "-m".to_string(),
+            "pip".to_string(),
+            "install".to_string(),
+            "--upgrade".to_string(),
+            package.to_string(),
+        ],
+    );
+    if let Err(error) = install_result {
+        if !venv_executable.exists() {
+            return Err(error);
+        }
+        append_runner_log(
             data_dir,
             runner,
-            &venv_python,
-            &[
-                "-m".to_string(),
-                "pip".to_string(),
-                "install".to_string(),
-                "--upgrade".to_string(),
-                package.to_string(),
-            ],
-        )?;
+            &format!("warning: could not check for a {package} update; using the installed command: {error}"),
+        );
     }
 
     if venv_executable.exists() {
@@ -577,6 +617,43 @@ fn ensure_python_cli(
             "The {package} installation completed without creating its {executable_name} command."
         ))
     }
+}
+
+fn ensure_compatible_host_python(
+    data_dir: &Path,
+    runner: &str,
+    minimum_minor: u8,
+) -> Result<PathBuf, String> {
+    if let Some(python) = host_python(minimum_minor) {
+        return Ok(python);
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let brew = command_on_path("brew").ok_or_else(|| {
+            format!(
+                "Python 3.{minimum_minor}+ is required for {runner}. Install Python or Homebrew, then retry setup."
+            )
+        })?;
+        append_runner_log(
+            data_dir,
+            runner,
+            &format!("installing a compatible Python for {runner} with Homebrew"),
+        );
+        run_command(
+            data_dir,
+            runner,
+            &brew,
+            &["install".to_string(), "python@3.11".to_string()],
+        )?;
+        if let Some(python) = host_python(minimum_minor) {
+            return Ok(python);
+        }
+    }
+
+    Err(format!(
+        "Python 3.{minimum_minor}+ is required to install {runner}, but no compatible Python was found."
+    ))
 }
 
 fn ensure_vllm_metal(data_dir: &Path) -> Result<PathBuf, String> {
@@ -632,10 +709,49 @@ fn ensure_vllm_metal(data_dir: &Path) -> Result<PathBuf, String> {
     }
 }
 
-fn host_python() -> Option<PathBuf> {
-    ["python3", "python"]
-        .iter()
-        .find_map(|candidate| command_on_path(candidate))
+fn host_python(minimum_minor: u8) -> Option<PathBuf> {
+    [
+        "python3.13",
+        "python3.12",
+        "python3.11",
+        "python3.10",
+        "python3",
+        "python",
+    ]
+    .iter()
+    .filter_map(|candidate| command_on_path(candidate))
+    .find(|candidate| python_is_compatible(candidate, minimum_minor))
+}
+
+fn python_is_compatible(python: &Path, minimum_minor: u8) -> bool {
+    python_version(python)
+        .map(|version| python_version_is_compatible(version, minimum_minor))
+        .unwrap_or(false)
+}
+
+fn python_version_is_compatible((major, minor): (u8, u8), minimum_minor: u8) -> bool {
+    major == 3 && minor >= minimum_minor
+}
+
+fn python_version(python: &Path) -> Option<(u8, u8)> {
+    let output = Command::new(python)
+        .args([
+            "-c",
+            "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')",
+        ])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    parse_python_version(&String::from_utf8_lossy(&output.stdout))
+}
+
+fn parse_python_version(value: &str) -> Option<(u8, u8)> {
+    let mut parts = value.trim().split('.');
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next()?.parse().ok()?;
+    Some((major, minor))
 }
 
 fn command_on_path(binary: &str) -> Option<PathBuf> {
@@ -711,6 +827,249 @@ fn nvidia_smi_works() -> bool {
         .unwrap_or(false)
 }
 
+fn runner_api_key_path(data_dir: &Path, runner: &str) -> PathBuf {
+    runner_state_dir(data_dir).join(format!("{runner}.api-key"))
+}
+
+fn read_runner_api_key(data_dir: &Path, runner: &str) -> Option<String> {
+    let value = fs::read_to_string(runner_api_key_path(data_dir, runner)).ok()?;
+    let value = value.trim();
+    (!value.is_empty()).then(|| value.to_string())
+}
+
+fn ensure_runner_api_key(data_dir: &Path, runner: &str) -> Result<String, String> {
+    if let Some(key) = read_runner_api_key(data_dir, runner) {
+        return Ok(key);
+    }
+
+    fs::create_dir_all(runner_state_dir(data_dir)).map_err(|error| {
+        format!("Could not create the {runner} runner state directory: {error}")
+    })?;
+
+    let mut bytes = [0u8; API_KEY_BYTES];
+    OsRng.fill_bytes(&mut bytes);
+    let key = bytes
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let path = runner_api_key_path(data_dir, runner);
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+
+    match options.open(&path) {
+        Ok(mut file) => {
+            if let Err(error) = file
+                .write_all(key.as_bytes())
+                .and_then(|_| file.write_all(b"\n"))
+            {
+                drop(file);
+                let _ = fs::remove_file(&path);
+                return Err(format!("Could not write the {runner} API key: {error}"));
+            }
+            #[cfg(unix)]
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o600))
+                .map_err(|error| format!("Could not protect the {runner} API key: {error}"))?;
+            Ok(key)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            read_runner_api_key(data_dir, runner)
+                .ok_or_else(|| format!("The existing {runner} API key is empty or unreadable."))
+        }
+        Err(error) => Err(format!("Could not create the {runner} API key: {error}")),
+    }
+}
+
+fn reconcile_macos_launch_agents(data_dir: &Path, requested: &[String]) {
+    #[cfg(target_os = "macos")]
+    for runner in unselected_persistent_runners(requested) {
+        if let Err(error) = disable_macos_launch_agent(runner) {
+            append_runner_log(
+                data_dir,
+                runner,
+                &format!("warning: could not disable the unselected login service: {error}"),
+            );
+        }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    let _ = (data_dir, requested);
+}
+
+fn unselected_persistent_runners(requested: &[String]) -> Vec<&'static str> {
+    ["dspark", "mtplx"]
+        .into_iter()
+        .filter(|runner| !requested.iter().any(|requested| requested == runner))
+        .collect()
+}
+
+#[cfg(target_os = "macos")]
+fn launch_agent_label(runner: &str) -> String {
+    format!("{MACOS_LAUNCH_AGENT_PREFIX}.{runner}")
+}
+
+#[cfg(target_os = "macos")]
+fn launch_agent_path(runner: &str) -> Result<PathBuf, String> {
+    let home = dirs::home_dir()
+        .ok_or_else(|| "The current user's home directory could not be resolved.".to_string())?;
+    Ok(home
+        .join("Library")
+        .join("LaunchAgents")
+        .join(format!("{}.plist", launch_agent_label(runner))))
+}
+
+#[cfg(target_os = "macos")]
+fn launchctl_target() -> String {
+    let uid = unsafe { libc::geteuid() };
+    format!("gui/{uid}")
+}
+
+#[cfg(target_os = "macos")]
+fn disable_macos_launch_agent(runner: &str) -> Result<(), String> {
+    let path = launch_agent_path(runner)?;
+    if !path.exists() {
+        return Ok(());
+    }
+
+    let target = format!("{}/{}", launchctl_target(), launch_agent_label(runner));
+    let _ = Command::new("/bin/launchctl")
+        .args(["bootout", target.as_str()])
+        .output();
+    fs::remove_file(&path).map_err(|error| format!("Could not remove {}: {error}", path.display()))
+}
+
+#[cfg(target_os = "macos")]
+fn start_macos_launch_agent(
+    runner: &str,
+    executable: &Path,
+    args: &[String],
+    log_path: &Path,
+) -> Result<(), String> {
+    let path = launch_agent_path(runner)?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| "Could not resolve the LaunchAgents directory.".to_string())?;
+    fs::create_dir_all(parent)
+        .map_err(|error| format!("Could not create {}: {error}", parent.display()))?;
+
+    let label = launch_agent_label(runner);
+    let plist = render_launch_agent_plist(&label, executable, args, log_path);
+    let mut options = OpenOptions::new();
+    options.write(true).create(true).truncate(true).mode(0o600);
+    let mut file = options
+        .open(&path)
+        .map_err(|error| format!("Could not open {}: {error}", path.display()))?;
+    file.write_all(plist.as_bytes())
+        .map_err(|error| format!("Could not write {}: {error}", path.display()))?;
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o600))
+        .map_err(|error| format!("Could not protect {}: {error}", path.display()))?;
+
+    let target = launchctl_target();
+    let service_target = format!("{target}/{label}");
+    let _ = Command::new("/bin/launchctl")
+        .args(["bootout", service_target.as_str()])
+        .output();
+    if let Err(error) = run_launchctl(&[
+        "bootstrap",
+        target.as_str(),
+        path.to_string_lossy().as_ref(),
+    ]) {
+        let _ = fs::remove_file(&path);
+        return Err(error);
+    }
+    if let Err(error) = run_launchctl(&["kickstart", "-k", service_target.as_str()]) {
+        let _ = Command::new("/bin/launchctl")
+            .args(["bootout", service_target.as_str()])
+            .output();
+        let _ = fs::remove_file(&path);
+        return Err(error);
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn run_launchctl(args: &[&str]) -> Result<(), String> {
+    let output = Command::new("/bin/launchctl")
+        .args(args)
+        .output()
+        .map_err(|error| format!("Could not run launchctl: {error}"))?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    if stderr.is_empty() {
+        Err(format!(
+            "launchctl {} exited with {}",
+            args.join(" "),
+            output.status
+        ))
+    } else {
+        Err(format!("launchctl {} failed: {stderr}", args.join(" ")))
+    }
+}
+
+fn render_launch_agent_plist(
+    label: &str,
+    executable: &Path,
+    args: &[String],
+    log_path: &Path,
+) -> String {
+    let mut program_arguments = Vec::with_capacity(args.len() + 1);
+    program_arguments.push(executable.display().to_string());
+    program_arguments.extend(args.iter().cloned());
+    let arguments = program_arguments
+        .iter()
+        .map(|argument| format!("    <string>{}</string>", xml_escape(argument)))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let log_path = xml_escape(&log_path.display().to_string());
+
+    format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
+<plist version=\"1.0\">\n\
+<dict>\n\
+  <key>Label</key>\n\
+  <string>{}</string>\n\
+  <key>ProgramArguments</key>\n\
+  <array>\n{}\n  </array>\n\
+  <key>EnvironmentVariables</key>\n\
+  <dict>\n\
+    <key>PATH</key>\n\
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>\n\
+  </dict>\n\
+  <key>RunAtLoad</key>\n\
+  <true/>\n\
+  <key>KeepAlive</key>\n\
+  <dict>\n\
+    <key>SuccessfulExit</key>\n\
+    <false/>\n\
+  </dict>\n\
+  <key>ThrottleInterval</key>\n\
+  <integer>10</integer>\n\
+  <key>StandardOutPath</key>\n\
+  <string>{}</string>\n\
+  <key>StandardErrorPath</key>\n\
+  <string>{}</string>\n\
+</dict>\n\
+</plist>\n",
+        xml_escape(label),
+        arguments,
+        log_path,
+        log_path,
+    )
+}
+
+fn xml_escape(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
+}
+
 fn start_host_process(
     data_dir: &Path,
     runner: &str,
@@ -719,13 +1078,14 @@ fn start_host_process(
     port: u16,
     health_path: &str,
     endpoint: &str,
+    api_key: Option<&str>,
 ) -> InferenceRunnerResult {
-    if probe_http(port, health_path) {
+    if probe_http_authenticated(port, health_path, api_key) {
         return already_running(runner, endpoint);
     }
 
     if let Some(pid) = existing_runner_pid(data_dir, runner) {
-        if wait_for_http(port, health_path, STARTUP_WAIT) {
+        if wait_for_http_authenticated(port, health_path, api_key, STARTUP_WAIT) {
             return already_running(runner, endpoint);
         }
         return failed(
@@ -764,8 +1124,45 @@ fn start_host_process(
     append_runner_log(
         data_dir,
         runner,
-        &format!("starting {} {}", executable.display(), args.join(" ")),
+        &format!(
+            "starting {} {}",
+            executable.display(),
+            redact_args(args, api_key).join(" ")
+        ),
     );
+
+    #[cfg(target_os = "macos")]
+    if matches!(runner, "dspark" | "mtplx") {
+        match start_macos_launch_agent(runner, executable, args, &log_path) {
+            Ok(()) => {
+                if wait_for_http_authenticated(port, health_path, api_key, STARTUP_WAIT) {
+                    return success(
+                        runner,
+                        InferenceRunnerState::InstalledAndStarted,
+                        Some(endpoint.to_string()),
+                        Some(format!(
+                            "{runner} was installed and will restart automatically at login or after a crash."
+                        )),
+                    );
+                }
+                return success(
+                    runner,
+                    InferenceRunnerState::Installed,
+                    Some(endpoint.to_string()),
+                    Some(format!(
+                        "{runner} was installed as a login service; its API is still starting."
+                    )),
+                );
+            }
+            Err(error) => append_runner_log(
+                data_dir,
+                runner,
+                &format!(
+                    "warning: login service setup failed; falling back to this session: {error}"
+                ),
+            ),
+        }
+    }
 
     let mut command = Command::new(executable);
     command
@@ -789,7 +1186,7 @@ fn start_host_process(
         );
     }
 
-    if wait_for_http(port, health_path, STARTUP_WAIT) {
+    if wait_for_http_authenticated(port, health_path, api_key, STARTUP_WAIT) {
         success(
             runner,
             InferenceRunnerState::InstalledAndStarted,
@@ -808,7 +1205,23 @@ fn start_host_process(
     }
 }
 
+fn redact_args(args: &[String], secret: Option<&str>) -> Vec<String> {
+    args.iter()
+        .map(|argument| {
+            if secret.is_some_and(|secret| argument == secret) {
+                "<redacted>".to_string()
+            } else {
+                argument.clone()
+            }
+        })
+        .collect()
+}
+
 fn probe_http(port: u16, path: &str) -> bool {
+    probe_http_authenticated(port, path, None)
+}
+
+fn probe_http_authenticated(port: u16, path: &str, api_key: Option<&str>) -> bool {
     let client = match reqwest::blocking::Client::builder()
         .timeout(Duration::from_millis(750))
         .build()
@@ -816,17 +1229,29 @@ fn probe_http(port: u16, path: &str) -> bool {
         Ok(client) => client,
         Err(_) => return false,
     };
-    client
-        .get(format!("http://127.0.0.1:{port}{path}"))
+    let mut request = client.get(format!("http://127.0.0.1:{port}{path}"));
+    if let Some(api_key) = api_key {
+        request = request.bearer_auth(api_key);
+    }
+    request
         .send()
         .map(|response| response.status().is_success())
         .unwrap_or(false)
 }
 
 fn wait_for_http(port: u16, path: &str, timeout: Duration) -> bool {
+    wait_for_http_authenticated(port, path, None, timeout)
+}
+
+fn wait_for_http_authenticated(
+    port: u16,
+    path: &str,
+    api_key: Option<&str>,
+    timeout: Duration,
+) -> bool {
     let started = Instant::now();
     while started.elapsed() < timeout {
-        if probe_http(port, path) {
+        if probe_http_authenticated(port, path, api_key) {
             return true;
         }
         thread::sleep(POLL_INTERVAL);
@@ -1091,10 +1516,80 @@ mod tests {
 
     #[test]
     fn dspark_command_is_the_managed_no_model_command() {
-        let args = ["serve", "--no-model", "--host", "0.0.0.0", "--port", "8080"];
+        let args = [
+            "serve",
+            "--no-model",
+            "--host",
+            "0.0.0.0",
+            "--port",
+            "8080",
+            "--api-key",
+            "secret",
+        ];
         assert_eq!(
             args.join(" "),
-            "serve --no-model --host 0.0.0.0 --port 8080"
+            "serve --no-model --host 0.0.0.0 --port 8080 --api-key secret"
+        );
+        assert_eq!(
+            redact_args(&args.map(ToString::to_string), Some("secret")).join(" "),
+            "serve --no-model --host 0.0.0.0 --port 8080 --api-key <redacted>"
+        );
+    }
+
+    #[test]
+    fn parses_and_enforces_backend_python_versions() {
+        assert_eq!(parse_python_version("3.11\n"), Some((3, 11)));
+        assert_eq!(parse_python_version("Python 3.11.9"), None);
+        assert!(python_version_is_compatible((3, 11), 11));
+        assert!(!python_version_is_compatible((3, 10), 11));
+        assert!(!python_version_is_compatible((2, 17), 11));
+    }
+
+    #[test]
+    fn creates_and_reuses_private_runner_api_keys() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let first = ensure_runner_api_key(tempdir.path(), "dspark").expect("create key");
+        let second = ensure_runner_api_key(tempdir.path(), "dspark").expect("reuse key");
+
+        assert_eq!(first, second);
+        assert_eq!(first.len(), API_KEY_BYTES * 2);
+        assert!(first.chars().all(|character| character.is_ascii_hexdigit()));
+        #[cfg(unix)]
+        assert_eq!(
+            fs::metadata(runner_api_key_path(tempdir.path(), "dspark"))
+                .expect("key metadata")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+    }
+
+    #[test]
+    fn launch_agent_restarts_and_escapes_program_arguments() {
+        let plist = render_launch_agent_plist(
+            "computer.ci.test",
+            Path::new("/tmp/runner & helper"),
+            &["serve".to_string(), "model<one>".to_string()],
+            Path::new("/tmp/runner.log"),
+        );
+
+        assert!(plist.contains("<string>/tmp/runner &amp; helper</string>"));
+        assert!(plist.contains("<string>model&lt;one&gt;</string>"));
+        assert!(plist.contains("<key>RunAtLoad</key>"));
+        assert!(plist.contains("<key>KeepAlive</key>"));
+        assert!(plist.contains("<key>SuccessfulExit</key>"));
+    }
+
+    #[test]
+    fn selecting_one_backend_disables_only_the_other_persistent_runner() {
+        assert_eq!(
+            unselected_persistent_runners(&["dspark".to_string(), "ollama".to_string()]),
+            vec!["mtplx"]
+        );
+        assert_eq!(
+            unselected_persistent_runners(&["ollama".to_string()]),
+            vec!["dspark", "mtplx"]
         );
     }
 
@@ -1111,8 +1606,14 @@ mod tests {
 
     #[test]
     fn recovers_the_port_from_a_persisted_runner_endpoint() {
-        assert_eq!(endpoint_port("http://host.docker.internal:8001"), Some(8001));
-        assert_eq!(endpoint_port("http://host.docker.internal:8001/v1"), Some(8001));
+        assert_eq!(
+            endpoint_port("http://host.docker.internal:8001"),
+            Some(8001)
+        );
+        assert_eq!(
+            endpoint_port("http://host.docker.internal:8001/v1"),
+            Some(8001)
+        );
         assert_eq!(endpoint_port("not-a-url"), None);
 
         let tempdir = tempfile::tempdir().expect("tempdir");

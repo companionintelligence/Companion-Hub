@@ -10,6 +10,9 @@ export interface InferenceBackend {
   /** Base URL for the backend's API (e.g. http://ollama:11434) */
   getBaseUrl(): string;
 
+  /** API key for direct app access when the backend authenticates requests. */
+  getApiKey?(): string | undefined;
+
   /** Check if the backend container is running and healthy */
   healthCheck(): Promise<BackendHealthStatus>;
 
