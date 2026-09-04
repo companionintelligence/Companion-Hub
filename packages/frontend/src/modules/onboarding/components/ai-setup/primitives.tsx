@@ -316,7 +316,7 @@ export function ModelCard({
               </span>
             )}
             {installed && (
-              <span className="rounded bg-green-600/90 px-1.5 py-0.5 text-[10px] font-medium text-white">{t('ONBOARDING_INSTALLED')}</span>
+              <span className="rounded bg-success px-1.5 py-0.5 text-[10px] font-medium text-success-foreground">{t('ONBOARDING_INSTALLED')}</span>
             )}
           </span>
           {description && <span className="mt-0.5 block text-xs text-muted-foreground">{description}</span>}

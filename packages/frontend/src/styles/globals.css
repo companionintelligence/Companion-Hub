@@ -21,6 +21,18 @@
   --radius-xl: 9px;
   --radius-2xl: 9px;
   --radius-3xl: 9px;
+
+  /*
+   * The tokens package ships each status colour as a trio — `--ci-success`,
+   * `--ci-success-bg`, `--ci-success-border` — but only maps the bare
+   * foreground into Tailwind's colour namespace. Without the two below there
+   * is no `bg-ci-success-bg` utility, which is why callouts across the app
+   * hand-rolled `bg-green-50 dark:bg-green-950` instead: the token existed,
+   * the utility did not. Map the surface pair so tinted status panels can use
+   * the designed values and stay theme-aware.
+   */
+  --color-ci-success-bg: var(--ci-success-bg);
+  --color-ci-success-border: var(--ci-success-border);
 }
 
 :root {

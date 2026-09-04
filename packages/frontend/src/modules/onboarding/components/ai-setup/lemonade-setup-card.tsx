@@ -37,18 +37,16 @@ export const LemonadeSetupCard = ({ status, checking, onRecheck }: LemonadeSetup
     const endpoint = status.displayEndpoint ?? `${status.endpointUrl}/v1`;
     const loadedModel = status.loadedModels?.[0];
     return (
-      <Card className="border-green-200 bg-green-50 dark:border-green-800 dark:bg-green-950">
+      <Card className="border-ci-success-border bg-ci-success-bg">
         <CardContent className="space-y-3 p-4">
           <div className="flex items-center justify-between gap-3">
             <div className="flex min-w-0 items-center gap-3">
-              <CheckCircle2 className="h-5 w-5 shrink-0 text-green-600 dark:text-green-400" />
+              <CheckCircle2 className="h-5 w-5 shrink-0 text-ci-success" />
               <div className="min-w-0">
-                <div className="text-sm font-medium text-green-900 dark:text-green-100">{t('ONBOARDING_LEMONADE_DETECTED')}</div>
-                <div className="text-xs text-green-700 dark:text-green-300">{endpoint}</div>
+                <div className="text-sm font-medium text-ci-success">{t('ONBOARDING_LEMONADE_DETECTED')}</div>
+                <div className="text-xs text-ci-success/90">{endpoint}</div>
                 {loadedModel && (
-                  <div className="mt-0.5 truncate text-xs text-green-700/90 dark:text-green-300/90">
-                    {t('ONBOARDING_LEMONADE_MODEL_LOADED', { model: loadedModel })}
-                  </div>
+                  <div className="mt-0.5 truncate text-xs text-ci-success/80">{t('ONBOARDING_LEMONADE_MODEL_LOADED', { model: loadedModel })}</div>
                 )}
               </div>
             </div>

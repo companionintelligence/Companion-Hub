@@ -225,7 +225,7 @@ export const SystemOverview = ({ hardware, tier, onRescan, rescanning = false, a
 
       {nvidiaRuntimeReady && (
         <div
-          className="mt-4 rounded-md border border-emerald-200 bg-emerald-50 p-3 text-xs text-emerald-900 dark:border-emerald-800 dark:bg-emerald-950 dark:text-emerald-100"
+          className="mt-4 rounded-md border border-ci-success-border bg-ci-success-bg p-3 text-xs text-ci-success"
           data-testid="nvidia-runtime-ready"
         >
           {t('ONBOARDING_NVIDIA_RUNTIME_READY')}

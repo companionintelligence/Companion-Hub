@@ -419,7 +419,7 @@ export const InstallStep = ({
         return <Loader2 className="w-4 h-4 animate-spin text-primary" data-testid="status-installing" />;
       case 'running':
         return (
-          <span className="text-green-500" data-testid="status-running">
+          <span className="text-ci-success" data-testid="status-running">
             ✓
           </span>
         );

@@ -93,7 +93,7 @@ function BackendOption({ backend, recommended, selected, onSelect, disabled, una
             </span>
           ) : (
             <span
-              className={`w-2 h-2 rounded-full ${healthy ? 'bg-green-500' : running ? 'bg-yellow-500' : 'bg-muted-foreground/30'}`}
+              className={`w-2 h-2 rounded-full ${healthy ? 'bg-ci-success' : running ? 'bg-yellow-500' : 'bg-muted-foreground/30'}`}
               title={healthy ? t('ONBOARDING_HEALTHY') : running ? t('COMMON_RUNNING') : t('ONBOARDING_NOT_RUNNING')}
             />
           )}

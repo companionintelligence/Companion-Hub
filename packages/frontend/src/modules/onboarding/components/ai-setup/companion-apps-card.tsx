@@ -125,11 +125,11 @@ export function CompanionAppsCard({ publicExposureMode, onChange }: CompanionApp
     >
       <div data-testid="companion-apps-card">
         <div
-          className="mb-4 flex items-start gap-2 rounded-md border border-emerald-500/30 bg-emerald-500/10 p-3"
+          className="mb-4 flex items-start gap-2 rounded-md border border-ci-success-border bg-ci-success-bg p-3"
           data-testid="companion-privacy-callout"
         >
-          <Shield className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600 dark:text-emerald-400" aria-hidden="true" />
-          <p className="text-sm text-emerald-900 dark:text-emerald-100">{t('ONBOARDING_COMPANION_PRIVACY_CALLOUT')}</p>
+          <Shield className="mt-0.5 h-4 w-4 shrink-0 text-ci-success" aria-hidden="true" />
+          <p className="text-sm text-ci-success">{t('ONBOARDING_COMPANION_PRIVACY_CALLOUT')}</p>
         </div>
 
         {showLoadingState ? (

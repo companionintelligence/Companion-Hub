@@ -104,15 +104,15 @@ export const DsparkSetupCard = ({ status, checking, onRecheck, endpointUrl, onEn
     const loadedModel = status.loadedModels?.[0];
 
     return (
-      <Card className="border-green-200 dark:border-green-800 bg-green-50 dark:bg-green-950">
+      <Card className="border-ci-success-border bg-ci-success-bg">
         <CardContent className="p-4 space-y-4">
           <div className="flex items-center justify-between gap-3">
             <div className="flex min-w-0 items-center gap-3">
-              <CheckCircle2 className="h-5 w-5 shrink-0 text-green-600 dark:text-green-400" />
+              <CheckCircle2 className="h-5 w-5 shrink-0 text-ci-success" />
               <div className="min-w-0">
-                <div className="text-sm font-medium text-green-900 dark:text-green-100">{t('ONBOARDING_DSPARK_DETECTED')}</div>
-                <div className="text-xs text-green-700 dark:text-green-300">{endpoint}</div>
-                <div className="mt-0.5 truncate text-xs text-green-700/90 dark:text-green-300/90">
+                <div className="text-sm font-medium text-ci-success">{t('ONBOARDING_DSPARK_DETECTED')}</div>
+                <div className="text-xs text-ci-success/90">{endpoint}</div>
+                <div className="mt-0.5 truncate text-xs text-ci-success/80">
                   {loadedModel ? t('ONBOARDING_DSPARK_MODEL_LOADED', { model: loadedModel }) : t('ONBOARDING_DSPARK_NO_MODEL_LOADED')}
                 </div>
               </div>
@@ -132,8 +132,8 @@ export const DsparkSetupCard = ({ status, checking, onRecheck, endpointUrl, onEn
           <DsparkConnectionFields
             endpointUrl={endpointUrl}
             onEndpointUrlChange={onEndpointUrlChange}
-            labelClass="text-green-900 dark:text-green-100"
-            hintClass="text-green-700/90 dark:text-green-300/90"
+            labelClass="text-ci-success"
+            hintClass="text-ci-success/80"
             defaultEndpointUrl={status.endpointUrl}
             idSuffix="ready"
           />
