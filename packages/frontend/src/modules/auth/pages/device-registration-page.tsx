@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router';
 import { Button } from '@/components/ui/Button';
 import { Alert, AlertDescription } from '@/components/ui/Alert/Alert';
 import { QrCode } from '@/components/ui/qr-code';
-import { AlertCircle, CheckCircle2, ChevronRight, Copy, Loader2, QrCode as QrCodeIcon } from 'lucide-react';
+import { AlertCircle, CheckCircle2, Copy, Loader2, QrCode as QrCodeIcon } from 'lucide-react';
 import {
   fetchDeviceRegistrationInfoResult,
   fetchRegistrationStateDrift,
@@ -70,7 +70,7 @@ function sleep(ms: number) {
  * Keep the code and fallback URL behind a disclosure so they do not stretch the
  * first panel beyond the otherwise balanced two-column layout.
  */
-function ScanQrDisclosure({ value, label, summaryLabel }: { value: string; label: string; summaryLabel: string }) {
+function ScanQrDisclosure({ value, summaryLabel }: { value: string; summaryLabel: string }) {
   const [open, setOpen] = useState(false);
 
   return (
@@ -79,11 +79,11 @@ function ScanQrDisclosure({ value, label, summaryLabel }: { value: string; label
         type="button"
         aria-expanded={open}
         aria-label={summaryLabel}
+        title={summaryLabel}
         onClick={() => setOpen((current) => !current)}
-        className="flex h-10 shrink-0 cursor-pointer items-center justify-center gap-1.5 rounded-md border border-border/70 bg-background/40 px-3 text-xs font-medium text-foreground transition-colors hover:bg-accent hover:text-accent-foreground md:h-11"
+        className="flex h-10 w-10 shrink-0 cursor-pointer items-center justify-center rounded-md border border-border/70 bg-background/40 text-foreground transition-colors hover:bg-accent hover:text-accent-foreground md:h-11 md:w-11"
       >
-        <QrCodeIcon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden />
-        {label}
+        <QrCodeIcon className="h-5 w-5 shrink-0 text-muted-foreground" aria-hidden />
       </button>
       {open ? (
         <div className="mt-4 flex w-full justify-center">
@@ -759,7 +759,7 @@ export default function DeviceRegistrationPage() {
                   {t('DEVICE_REGISTRATION_LOGIN_TO_COMPANION')}
                 </a>
               </Button>
-              <ScanQrDisclosure value={loginUrl} label={t('DEVICE_REGISTRATION_SCAN_QR')} summaryLabel={t('DEVICE_REGISTRATION_SCAN_QR_SIGN_IN')} />
+              <ScanQrDisclosure value={loginUrl} summaryLabel={t('DEVICE_REGISTRATION_SCAN_QR_SIGN_IN')} />
             </div>
           </div>
           <div className="mt-3 space-y-2 border-t border-border/60 pt-2">
@@ -770,23 +770,20 @@ export default function DeviceRegistrationPage() {
                   {t('DEVICE_REGISTRATION_CREATE_ACCOUNT')}
                 </a>
               </Button>
-              <ScanQrDisclosure
-                value={signupUrl}
-                label={t('DEVICE_REGISTRATION_SCAN_QR')}
-                summaryLabel={t('DEVICE_REGISTRATION_SCAN_QR_CREATE_ACCOUNT')}
-              />
+              <ScanQrDisclosure value={signupUrl} summaryLabel={t('DEVICE_REGISTRATION_SCAN_QR_CREATE_ACCOUNT')} />
             </div>
           </div>
         </section>
 
-        <div aria-hidden="true" className="hidden items-center justify-center self-stretch text-muted-foreground md:flex">
-          <ChevronRight className="h-8 w-8" />
+        <div aria-hidden="true" className="hidden justify-center self-stretch md:flex">
+          {/* Hairline rule between the two steps; `bg-background/60` is the same fill as the device-ID and pairing-code fields. */}
+          <div className="w-px self-stretch bg-background/60" />
         </div>
 
         <section className="flex flex-col rounded-lg border border-border/60 bg-muted/20 p-6 md:p-8">
           <h2 className="text-lg font-semibold leading-snug text-foreground md:text-xl">{t('DEVICE_REGISTRATION_STEP_2_TITLE')}</h2>
 
-          <div className="mt-6 space-y-4">
+          <div className="mt-6">
             <div className="space-y-2">
               <div className="text-sm text-muted-foreground">
                 <LabelWithHint label={t('DEVICE_REGISTRATION_CURRENT_DEVICE_ID')} hint={t(REGISTRATION_DEVICE_ID_HINT)} hintId="reg-device-id" />
@@ -810,7 +807,16 @@ export default function DeviceRegistrationPage() {
               </div>
             </div>
 
-            <div className="space-y-2">
+            {/*
+              Mirror Step 1's group separator exactly — mt-3 + a 1px rule + pt-2 —
+              so the second row lines up across both columns and both cards end at
+              the same height. Step 1 uses 22.25px here (0.75rem + 1px + 0.5rem)
+              while a plain space-y-4 is 17px, and that 5.25px gap pushed Step 1's
+              second row below Step 2's. Step 2 has no divider to draw, so the rule
+              is transparent — but its 1px still has to be accounted for, same idea
+              as the invisible label spacer in Step 1.
+            */}
+            <div className="mt-3 space-y-2 border-t border-transparent pt-2">
               <label htmlFor="pairing-code" className="block text-sm text-muted-foreground">
                 <HintText id="reg-pairing-code" hint={t(REGISTRATION_PAIRING_CODE_HINT)}>
                   {t('DEVICE_REGISTRATION_ENTER_PAIRING_CODE')}
