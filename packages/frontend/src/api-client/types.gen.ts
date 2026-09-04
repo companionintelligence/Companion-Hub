@@ -1132,7 +1132,15 @@ export type GetAppDto = {
 };
 
 export type AppDataListingDto = {
-    [key: string]: unknown;
+    hostPath: string;
+    rootExists: boolean;
+    truncated: boolean;
+    entries: Array<{
+        name: string;
+        path: string;
+        kind: 'file' | 'directory';
+        sizeBytes: number;
+    }>;
 };
 
 export type GetComposeDiffDto = {
@@ -1361,6 +1369,10 @@ export type EditLinkBodyDto = {
     description?: string;
     iconUrl?: string | '';
     isVisibleOnGuestDashboard?: boolean;
+};
+
+export type PublicWebRepairBody = {
+    appUrns?: Array<string>;
 };
 
 export type GetUserConfigDto = {
@@ -4595,7 +4607,7 @@ export type GetDiagnostics2Responses = {
 export type GetDiagnostics2Response = GetDiagnostics2Responses[keyof GetDiagnostics2Responses];
 
 export type RepairData = {
-    body?: never;
+    body?: PublicWebRepairBody;
     path?: never;
     query?: never;
     url: '/api/public-web/repair';

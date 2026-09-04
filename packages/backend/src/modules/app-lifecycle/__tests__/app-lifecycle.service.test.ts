@@ -1250,7 +1250,9 @@ describe('AppLifecycleService', () => {
 
       await service.triggerCloudflareSync();
 
-      expect(appsRepository.updateAppById).toHaveBeenCalledWith(7, { customDomainIntent: null });
+      // The confirmation goes with the choice: an answer about a domain the
+      // organization no longer holds cannot authorize a later move.
+      expect(appsRepository.updateAppById).toHaveBeenCalledWith(7, { customDomainIntent: null, customDomainTakeover: false });
       expect(restartApp).toHaveBeenCalledWith({ appUrn: 'comfyui:ci-marketplace', skipPull: true });
     });
 
