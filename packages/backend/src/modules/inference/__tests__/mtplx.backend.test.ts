@@ -3,7 +3,7 @@ import { buildMtplxRemediation, normalizeMtplxBaseUrl, resolveMtplxProbeUrl, Mtp
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { mock, type MockProxy } from 'vitest-mock-extended';
-import { vi, describe, it, expect, beforeEach } from 'vitest';
+import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
 import axios from 'axios';
 
 vi.mock('axios');
@@ -23,6 +23,7 @@ describe('MtplxBackend', () => {
       preferredVisionModel: null,
       preferredMtplxUrl: null,
     });
+    delete process.env.MTPLX_API_KEY;
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -33,6 +34,10 @@ describe('MtplxBackend', () => {
     }).compile();
 
     backend = module.get<MtplxBackend>(MtplxBackend);
+  });
+
+  afterEach(() => {
+    delete process.env.MTPLX_API_KEY;
   });
 
   describe('Health check', () => {
@@ -56,6 +61,18 @@ describe('MtplxBackend', () => {
 
       expect(health.running).toBe(false);
       expect(health.error).toBeDefined();
+    });
+
+    it('sends the configured bearer key to the secured model endpoint', async () => {
+      process.env.MTPLX_API_KEY = 'managed-mtplx-key';
+      (axios.get as any) = vi.fn().mockResolvedValue({ data: { data: [] } });
+
+      await backend.healthCheck();
+
+      expect(axios.get).toHaveBeenCalledWith(
+        expect.stringContaining('/v1/models'),
+        expect.objectContaining({ headers: { Authorization: 'Bearer managed-mtplx-key' } }),
+      );
     });
   });
 
