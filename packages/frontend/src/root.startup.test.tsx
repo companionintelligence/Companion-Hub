@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { render, screen } from './tests/test-utils';
+import { act, render, screen } from './tests/test-utils';
 
 const { isTauriMobileSync, isMobileClient, getHubBaseUrlSync, initMobileConnection, clearHubConnection } = vi.hoisted(() => ({
   isTauriMobileSync: vi.fn(() => false),
@@ -110,5 +110,17 @@ describe('root startup/loading fallback', () => {
 
     expect(screen.getByText(DESKTOP_COPY)).toBeInTheDocument();
     expect(screen.queryByTestId('startup-switch-hub-btn')).not.toBeInTheDocument();
+  });
+
+  it('offers a reload after the connecting copy has been up for a few seconds', async () => {
+    vi.useFakeTimers();
+    render(<DesktopStartupFallback />);
+
+    expect(screen.queryByRole('button', { name: /reload/i })).not.toBeInTheDocument();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(4_000);
+    });
+    expect(screen.getByRole('button', { name: /reload/i })).toBeInTheDocument();
+    vi.useRealTimers();
   });
 });
