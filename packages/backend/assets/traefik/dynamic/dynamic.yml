@@ -16,7 +16,7 @@ http:
   middlewares:
     ci-hub:
       forwardAuth:
-        address: "http://ci-hub:5002/api/auth/traefik"
+        address: "http://{{HUB_CONTAINER_NAME}}:5002/api/auth/traefik"
         trustForwardHeader: true
         # All three signed identity headers must ride through — Traefik copies ONLY the
         # headers listed here, and consumers verifying the signature fail closed on a

@@ -3,7 +3,14 @@ import path from 'node:path';
 import fs from 'node:fs';
 import axios from 'axios';
 import { Injectable, OnApplicationBootstrap, type OnApplicationShutdown, Optional } from '@nestjs/common';
-import { DATA_DIR, HUB_STACK_IMAGE_REPO, HUB_STACK_REGISTRY_REPO, UPDATE_LISTENER_TOKEN_FILENAME } from '@/common/constants';
+import {
+  DATA_DIR,
+  HUB_STACK_IMAGE_REPO,
+  HUB_STACK_REGISTRY_REPO,
+  UPDATE_LISTENER_TOKEN_FILENAME,
+  hubContainerName,
+  hubQueueName,
+} from '@/common/constants';
 import { writeSettingsJsonFile } from '@/common/helpers/env-helpers';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
@@ -275,10 +282,23 @@ export class SystemUpdateService implements OnApplicationBootstrap, OnApplicatio
     const logBanner = `\n[${new Date().toISOString()}] Hub stack update recreate (target=${imageRef})\n`;
     fs.appendFileSync(updateLogPath, logBanner);
 
-    const composeArgs = [...this.composeBaseArgs(envFile, composeFile), 'up', '-d', '--pull', 'always', '--force-recreate', '--no-deps', 'ci-hub'];
+    const hubService = hubContainerName();
+    const queueService = hubQueueName();
+    const composeArgs = [
+      ...this.composeBaseArgs(envFile, composeFile),
+      'up',
+      '-d',
+      '--pull',
+      'always',
+      '--force-recreate',
+      '--no-deps',
+      '--remove-orphans',
+      hubService,
+      queueService,
+    ];
 
     setTimeout(() => {
-      this.logger.info(`Recreating ci-hub from ${imageRef} (logging to ${updateLogPath})...`);
+      this.logger.info(`Recreating ${hubService} and ${queueService} from ${imageRef} (logging to ${updateLogPath})...`);
       const logFd = fs.openSync(updateLogPath, 'a');
       // Binary is `docker` exactly once — a duplicated `docker` in argv makes
       // the CLI reject `--env-file` (the 0.2.44–0.2.46 stack-update regression).

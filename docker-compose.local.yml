@@ -116,6 +116,7 @@ services:
         aliases:
           - ci-os-hub
     environment:
+      HUB_CONTAINER_NAME: ci-hub
       LOCAL: true
       NODE_ENV: development
       HOME: /data/user-config

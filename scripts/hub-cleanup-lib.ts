@@ -291,10 +291,10 @@ export function runHubCleanup(options?: CleanupOptions): CleanupSummary {
   const hubImages = [...new Set(['ci-os-hub', 'ci-hub', 'runcihub'].flatMap(snapshotProjectImages))];
 
   // Marketplace apps installed by Hub run as their own compose projects (<app>_<store>),
-  // separate from the Hub stack. Hub stamps every managed app container with the
-  // `ci-os-hub.managed=true` label (store-agnostic). Tear these down BEFORE the shared Hub
-  // networks below: main app services attach to `ci-os-hub_network`, so removing it while an
-  // app container is still attached would fail.
+  // separate from the Hub stack. Hub stamps every managed app container with canonical and
+  // legacy managed labels (store-agnostic). Tear these down BEFORE the shared Hub networks
+  // below: main app services attach to those networks, so removing either while an app
+  // container is still attached would fail.
   //
   // `{{.Labels}}` returns a comma-joined `key=value` list; parsing it here avoids a quoted
   // Go-template arg (`'{{.Label "..."}}'`), which cmd.exe mishandles on Windows.
@@ -305,7 +305,7 @@ export function runHubCleanup(options?: CleanupOptions): CleanupSummary {
     ].join('\n'),
   );
   const projectLabelPrefix = 'com.docker.compose.project=';
-  // The Hub's own compose services in docker-compose.*.yml also carry `ci-os-hub.managed=true`,
+  // The Hub's own compose services in docker-compose.*.yml also carry both managed labels,
   // so exclude the Hub stack projects here — they're handled by the dedicated Hub teardown
   // (which is also where Hub images are snapshotted), keeping that the single source of truth.
   const hubProjects = new Set(['ci-os-hub', 'ci-hub', 'runcihub']);
