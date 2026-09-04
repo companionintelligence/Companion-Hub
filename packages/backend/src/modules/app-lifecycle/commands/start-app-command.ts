@@ -21,6 +21,8 @@ export class StartAppCommand extends AppLifecycleCommand {
         return { success: true, message: 'App config not found. Skipping...' };
       }
 
+      await this.assertMarketplaceEntitlement(appUrn, 'start');
+
       if (isPortExposeApp(config)) {
         const { PortExposeService } = await import('../../custom-apps/port-expose.service');
         const portExposeService = this.moduleRef.get(PortExposeService, { strict: false });

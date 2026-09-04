@@ -38,6 +38,7 @@ export class UpdateAppCommand extends AppLifecycleCommand {
     }
 
     try {
+      await this.assertMarketplaceEntitlement(appUrn, 'update');
       if (this.performBackup) {
         await dockerService.composeApp(appUrn, 'stop');
         await backupManager.backupApp(appUrn);
