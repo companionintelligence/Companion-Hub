@@ -2599,7 +2599,8 @@
                 "vllm",
                 "lemonade",
                 "mtplx",
-                "dspark"
+                "dspark",
+                "lucebox"
               ]
             }
           }
@@ -2901,7 +2902,8 @@
                 "vllm",
                 "lemonade",
                 "mtplx",
-                "dspark"
+                "dspark",
+                "lucebox"
               ]
             }
           },
@@ -3051,6 +3053,20 @@
             }
           }
         ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Inference"
+        ]
+      }
+    },
+    "/api/inference/lucebox/status": {
+      "get": {
+        "operationId": "getLuceboxStatus",
+        "parameters": [],
         "responses": {
           "200": {
             "description": ""
@@ -5739,7 +5755,8 @@
                   "vllm",
                   "lemonade",
                   "mtplx",
-                  "dspark"
+                  "dspark",
+                  "lucebox"
                 ]
               },
               "inferenceModel": {
@@ -6133,7 +6150,8 @@
               "vllm",
               "lemonade",
               "mtplx",
-              "dspark"
+              "dspark",
+              "lucebox"
             ]
           },
           "inferenceModel": {
@@ -11009,7 +11027,8 @@
               "vllm",
               "lemonade",
               "mtplx",
-              "dspark"
+              "dspark",
+              "lucebox"
             ]
           },
           "model": {
@@ -14267,7 +14286,8 @@
               "vllm",
               "lemonade",
               "mtplx",
-              "dspark"
+              "dspark",
+              "lucebox"
             ]
           },
           "vllmUrl": {
@@ -14295,7 +14315,8 @@
               "vllm",
               "lemonade",
               "mtplx",
-              "dspark"
+              "dspark",
+              "lucebox"
             ]
           }
         },

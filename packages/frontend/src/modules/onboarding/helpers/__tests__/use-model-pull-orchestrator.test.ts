@@ -2,11 +2,20 @@ import { act, renderHook, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { useModelPullOrchestrator } from '@/lib/hooks/use-model-pull-orchestrator';
 
-const { fetchOllamaInstallStatus, fetchVllmInstallStatus, fetchDsparkInstallStatus, fetchLemonadeInstallStatus } = vi.hoisted(() => ({
+const {
+  fetchOllamaInstallStatus,
+  fetchVllmInstallStatus,
+  fetchDsparkInstallStatus,
+  fetchLemonadeInstallStatus,
+  fetchMtplxInstallStatus,
+  fetchSpeculativeInferenceStatus,
+} = vi.hoisted(() => ({
   fetchOllamaInstallStatus: vi.fn(),
   fetchVllmInstallStatus: vi.fn(),
   fetchDsparkInstallStatus: vi.fn(),
   fetchLemonadeInstallStatus: vi.fn(),
+  fetchMtplxInstallStatus: vi.fn(),
+  fetchSpeculativeInferenceStatus: vi.fn(),
 }));
 
 const { fetchTrackedModels, ensurePullStarted } = vi.hoisted(() => ({
@@ -19,6 +28,8 @@ vi.mock('@/lib/inference/inference-api', () => ({
   fetchVllmInstallStatus,
   fetchDsparkInstallStatus,
   fetchLemonadeInstallStatus,
+  fetchMtplxInstallStatus,
+  fetchSpeculativeInferenceStatus,
 }));
 
 vi.mock('@/lib/inference/tracked-models', async (importOriginal) => {
@@ -37,6 +48,7 @@ describe('useModelPullOrchestrator', () => {
     fetchVllmInstallStatus.mockResolvedValue({ ready: false, running: false });
     fetchDsparkInstallStatus.mockResolvedValue({ ready: true, running: true });
     fetchLemonadeInstallStatus.mockResolvedValue({ ready: true, running: true });
+    fetchSpeculativeInferenceStatus.mockResolvedValue({ ready: true, running: true });
     ensurePullStarted.mockResolvedValue(undefined);
     fetchTrackedModels.mockResolvedValue([{ catalogId: 'phi-4-mini', state: 'pulling', pullProgress: 42 }] as never);
   });
@@ -139,5 +151,21 @@ describe('useModelPullOrchestrator', () => {
       await new Promise((r) => setTimeout(r, 50));
     });
     expect(ensurePullStarted).not.toHaveBeenCalled();
+  });
+
+  it('passes the selected MTPLX endpoint to the readiness probe', async () => {
+    fetchMtplxInstallStatus.mockResolvedValue({ ready: true, running: true });
+
+    renderHook(() =>
+      useModelPullOrchestrator({
+        selectedModelIds: ['qwen3-8b-mtplx'],
+        installedCatalogIds: [],
+        enabled: true,
+        inferenceBackend: 'mtplx',
+        backendUrl: 'http://192.168.1.50:8001',
+      }),
+    );
+
+    await waitFor(() => expect(fetchMtplxInstallStatus).toHaveBeenCalledWith('http://192.168.1.50:8001'));
   });
 });

@@ -74,7 +74,7 @@ export type AppContextDto = {
         ciHubOrganizationLabel?: string;
         ciHubDeviceSlug?: string;
         ciHubHubSubdomain?: string;
-        inferenceBackend?: 'ollama' | 'vllm' | 'lemonade' | 'mtplx' | 'dspark';
+        inferenceBackend?: 'ollama' | 'vllm' | 'lemonade' | 'mtplx' | 'dspark' | 'lucebox';
         inferenceModel?: string;
         inferenceEmbeddingModel?: string;
         inferenceVisionModel?: string;
@@ -156,7 +156,7 @@ export type UserSettingsBody = {
     ciHubOrganizationLabel?: string;
     ciHubDeviceSlug?: string;
     ciHubHubSubdomain?: string;
-    inferenceBackend?: 'ollama' | 'vllm' | 'lemonade' | 'mtplx' | 'dspark';
+    inferenceBackend?: 'ollama' | 'vllm' | 'lemonade' | 'mtplx' | 'dspark' | 'lucebox';
     inferenceModel?: string;
     inferenceEmbeddingModel?: string;
     inferenceVisionModel?: string;
@@ -1238,7 +1238,7 @@ export type UpdateAppStoreDto = {
 };
 
 export type UpdateInferencePreferencesBody = {
-    backend: 'ollama' | 'vllm' | 'lemonade' | 'mtplx' | 'dspark';
+    backend: 'ollama' | 'vllm' | 'lemonade' | 'mtplx' | 'dspark' | 'lucebox';
     model?: string;
     embeddingModel?: string;
     visionModel?: string;
@@ -1938,14 +1938,14 @@ export type StreamHubLogsQueryDto = {
 };
 
 export type OnboardingProfileQueryDto = {
-    backend?: 'ollama' | 'vllm' | 'lemonade' | 'mtplx' | 'dspark';
+    backend?: 'ollama' | 'vllm' | 'lemonade' | 'mtplx' | 'dspark' | 'lucebox';
     vllmUrl?: string;
     mtplxUrl?: string;
     dsparkUrl?: string;
 };
 
 export type RuntimeModelsQueryDto = {
-    backend: 'ollama' | 'vllm' | 'lemonade' | 'mtplx' | 'dspark';
+    backend: 'ollama' | 'vllm' | 'lemonade' | 'mtplx' | 'dspark' | 'lucebox';
 };
 
 export type MetadataDto = {
@@ -3565,7 +3565,7 @@ export type GetRuntimeModelsData = {
     body?: never;
     path?: never;
     query: {
-        backend: 'ollama' | 'vllm' | 'lemonade' | 'mtplx' | 'dspark';
+        backend: 'ollama' | 'vllm' | 'lemonade' | 'mtplx' | 'dspark' | 'lucebox';
     };
     url: '/api/inference/models/runtime';
 };
@@ -3760,7 +3760,7 @@ export type GetOnboardingProfileData = {
     };
     path?: never;
     query?: {
-        backend?: 'ollama' | 'vllm' | 'lemonade' | 'mtplx' | 'dspark';
+        backend?: 'ollama' | 'vllm' | 'lemonade' | 'mtplx' | 'dspark' | 'lucebox';
         vllmUrl?: string;
         mtplxUrl?: string;
         dsparkUrl?: string;
@@ -3836,6 +3836,17 @@ export type GetMtplxStatusData = {
 };
 
 export type GetMtplxStatusResponses = {
+    200: unknown;
+};
+
+export type GetLuceboxStatusData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/inference/lucebox/status';
+};
+
+export type GetLuceboxStatusResponses = {
     200: unknown;
 };
 

@@ -88,10 +88,11 @@ Tests: `packages/frontend/src/modules/mobile-connect/oidc.test.ts`, `connect-pag
 `AiSetupStep` owns Step 3 of the FTUE: one “Set up inference” panel contains the backend choice,
 the selected backend's readiness check, and the Ollama embeddings check when a host-served backend
 is selected. On Apple Silicon macOS it presents a Speculative inference group with `mlx-dspark`
-first and MTPLX nested beneath it. When the operator confirms “Install & Finish”, `InstallStep` asks
-the desktop shell to install and start
-both mlx-dspark (chat) and Ollama (embeddings). A plain browser build does not have a native process
-boundary, so it retains the manual setup and re-check flow.
+first, MTPLX nested beneath it, and Lucebox available as the provider-neutral option. When the
+operator confirms “Install & Finish”, `InstallStep` asks the desktop shell to install and start the
+selected speculative runner (`mlx-dspark` or MTPLX) alongside Ollama (embeddings); it persists the
+actual MTPLX endpoint when the runner has to move off port 8000. A plain browser build does not
+have a native process boundary, so it retains the manual setup and re-check flow.
 
 `RecommendationsStep` uses the Alternatives chart treatment for its optional app discovery section:
 it shows a curated 20-app shortlist across ten categories, grouped in compact paired comparison rows. Category

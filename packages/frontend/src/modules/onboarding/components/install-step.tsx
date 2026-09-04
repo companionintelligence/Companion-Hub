@@ -1,8 +1,7 @@
 import { getInstalledApps, installApp } from '@/api-client/sdk.gen';
 import { pinInferenceModel, saveCloudProviderConfig, saveInferencePreferences } from '@/lib/inference/inference-api';
 import {
-  DEFAULT_AUTOMATIC_INFERENCE_RUNNERS,
-  DEFAULT_MACOS_AUTOMATIC_INFERENCE_RUNNERS,
+  automaticRunnersForBackend,
   installAndStartInferenceRunners,
   type AutomaticInferenceRunnerResult,
 } from '@/lib/inference/auto-inference-runners';
@@ -126,7 +125,7 @@ export const InstallStep = ({
       // ─── AI Setup Phase ───────────────────────────────────────────────
       if (aiSetupConfig && !aiSetupConfig.skipped) {
         let automaticRunnerUrls = new Map<string, string>();
-        const automaticRunners = aiSetupConfig.backend === 'dspark' ? DEFAULT_MACOS_AUTOMATIC_INFERENCE_RUNNERS : DEFAULT_AUTOMATIC_INFERENCE_RUNNERS;
+        const automaticRunners = automaticRunnersForBackend(aiSetupConfig.backend);
 
         // Native runner setup belongs in the desktop shell. It is deliberately
         // best-effort: unsupported hardware or one failed install must not

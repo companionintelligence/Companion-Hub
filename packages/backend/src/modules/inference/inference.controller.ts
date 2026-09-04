@@ -33,6 +33,7 @@ import { buildVllmRemediation, resolveVllmProbeUrl, VLLM_PROBE_API_KEY_HEADER, V
 import { LemonadeBackend } from './backends/lemonade.backend';
 import { buildMtplxRemediation, resolveMtplxProbeUrl, MtplxBackend } from './backends/mtplx.backend';
 import { buildDsparkRemediation, DsparkBackend, resolveDsparkProbeUrl } from './backends/dspark.backend';
+import { LuceboxBackend } from './backends/lucebox.backend';
 import { resolveInstalledCatalogIds, resolveInstalledCatalogIdsFromServedModels } from './model-availability.util';
 import type { InferenceBackend } from './backends/backend.interface';
 
@@ -40,8 +41,8 @@ import type { InferenceBackend } from './backends/backend.interface';
  * Inference controller — exposes Ollama/backend provisioning + management.
  *
  * The Hub does NOT proxy inference requests. Apps talk to the Ollama container
- * (its own OpenAI-compatible `/v1` or native protocol) or a cloud provider
- * directly. This controller provisions Ollama (install/pull/catalog/hardware),
+ * (its own OpenAI-compatible `/v1` or native protocol), a host-managed backend
+ * such as vLLM or speculative inference, or a cloud provider directly. This controller provisions Ollama (install/pull/catalog/hardware),
  * stores the operator's cloud-provider keys, and distributes connection info to
  * apps via the credentials endpoints below.
  */
@@ -65,6 +66,7 @@ export class InferenceController {
     private readonly lemonadeBackend: LemonadeBackend,
     private readonly mtplxBackend: MtplxBackend,
     private readonly dsparkBackend: DsparkBackend,
+    private readonly luceboxBackend: LuceboxBackend,
     private readonly moduleRef: ModuleRef,
     readonly _logger: LoggerService,
   ) {}
@@ -87,6 +89,8 @@ export class InferenceController {
         return this.mtplxBackend;
       case 'dspark':
         return this.dsparkBackend;
+      case 'lucebox':
+        return this.luceboxBackend;
     }
   }
 
@@ -438,8 +442,8 @@ export class InferenceController {
     const ollamaInstalled = resolveInstalledCatalogIds(catalog, ollamaHealth.modelsLoaded ?? [], getTrackedState);
 
     let installedCatalogIds: string[];
-    // Lemonade exposes the same model registry surface as its load/pull API, while vLLM, MTPLX, and
-    // mlx-dspark are host-run servers with no Hub-side pull registry. Read each
+    // Lemonade exposes the same model registry surface as its load/pull API, while vLLM, MTPLX,
+    // mlx-dspark, and Lucebox are host-run servers with no Hub-side pull registry. Read each
     // backend's live model ids so the model picker reflects what the selected endpoint can actually
     // serve. Ollama's embedding rows are merged for host-served chat backends because embeddings
     // stay on Ollama there. vLLM's probe takes an optional API key override; the other probes only
@@ -451,7 +455,7 @@ export class InferenceController {
         modelsLoaded: [] as string[],
       }));
       installedCatalogIds = resolveInstalledCatalogIdsFromServedModels(catalog, lemonadeHealth.modelsLoaded ?? [], 'lemonade', getTrackedState);
-    } else if (installBackend === 'vllm' || installBackend === 'mtplx' || installBackend === 'dspark') {
+    } else if (installBackend === 'vllm' || installBackend === 'mtplx' || installBackend === 'dspark' || installBackend === 'lucebox') {
       const servedHealth =
         installBackend === 'dspark'
           ? await this.dsparkBackend.healthCheck(query?.dsparkUrl).catch(() => ({
@@ -465,11 +469,17 @@ export class InferenceController {
                 healthy: false,
                 modelsLoaded: [] as string[],
               }))
-            : await this.vllmBackend.healthCheck(query?.vllmUrl, vllmApiKey).catch(() => ({
-                running: false,
-                healthy: false,
-                modelsLoaded: [] as string[],
-              }));
+            : installBackend === 'lucebox'
+              ? await this.luceboxBackend.healthCheck().catch(() => ({
+                  running: false,
+                  healthy: false,
+                  modelsLoaded: [] as string[],
+                }))
+              : await this.vllmBackend.healthCheck(query?.vllmUrl, vllmApiKey).catch(() => ({
+                  running: false,
+                  healthy: false,
+                  modelsLoaded: [] as string[],
+                }));
       const servedInstalled = resolveInstalledCatalogIdsFromServedModels(catalog, servedHealth.modelsLoaded ?? [], installBackend, getTrackedState);
       const ollamaEmbeddingIds = ollamaInstalled.filter((id) => {
         const model = catalog.find((m) => m.id === id);
@@ -627,6 +637,29 @@ export class InferenceController {
       hint: remediation
         ? `${remediation.hint} Hub probes from inside its container — use http://host.docker.internal:8000, not localhost. Currently probing ${probeUrl}.`
         : undefined,
+    };
+  }
+
+  @UseGuards(AuthGuard)
+  @Get('lucebox/status')
+  async getLuceboxStatus() {
+    const endpointUrl = this.luceboxBackend.getBaseUrl();
+    const health = await this.luceboxBackend.healthCheck().catch((err) => ({
+      running: false,
+      healthy: false,
+      modelsLoaded: [] as string[],
+      error: err instanceof Error ? err.message : String(err),
+    }));
+    const ready = !!(health.running && health.healthy);
+    return {
+      ready,
+      running: health.running,
+      endpointUrl,
+      displayEndpoint: ready ? `${endpointUrl}/v1` : undefined,
+      error: ready ? undefined : health.error,
+      hint: ready
+        ? undefined
+        : `Start the speculative inference server with a loaded target model, then re-check. Hub probes ${endpointUrl}; set SPECULATIVE_INFERENCE_URL if the server uses another address.`,
     };
   }
 

@@ -17,6 +17,7 @@ import { VllmBackend } from './backends/vllm.backend';
 import { LemonadeBackend } from './backends/lemonade.backend';
 import { MtplxBackend } from './backends/mtplx.backend';
 import { DsparkBackend } from './backends/dspark.backend';
+import { LuceboxBackend } from './backends/lucebox.backend';
 import { InferenceController } from './inference.controller';
 
 @Module({
@@ -38,6 +39,7 @@ import { InferenceController } from './inference.controller';
     LemonadeBackend,
     MtplxBackend,
     DsparkBackend,
+    LuceboxBackend,
   ],
   exports: [
     HardwareInspectorService,
@@ -55,6 +57,7 @@ import { InferenceController } from './inference.controller';
     LemonadeBackend,
     MtplxBackend,
     DsparkBackend,
+    LuceboxBackend,
   ],
 })
 export class InferenceModule {}

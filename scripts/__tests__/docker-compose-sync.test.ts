@@ -51,6 +51,7 @@ describe('docker-compose.prod.yml sync', () => {
     expect(extractEnvDefault(content, 'MTPLX_URL')).toBe('http://host.docker.internal:8000');
     expect(extractEnvDefault(content, 'DSPARK_URL')).toBe('http://host.docker.internal:8080');
     expect(extractEnvDefault(content, 'LEMONADE_URL')).toBe('http://host.docker.internal:13305');
+    expect(extractEnvDefault(content, 'SPECULATIVE_INFERENCE_URL')).toBe('http://host.docker.internal:8000');
   });
 
   it('tunnel mount uses sibling ../tunnel beside ROOT_FOLDER_HOST (not .internal/tunnel)', () => {
