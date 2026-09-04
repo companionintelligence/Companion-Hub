@@ -78,6 +78,11 @@ export type FormValues = {
    * — never written into the app's env directly.
    */
   customDomain?: string;
+  /**
+   * The operator confirmed that `customDomain` may be taken off whatever is
+   * serving it now. Set only by the picker, and only after it has asked.
+   */
+  customDomainTakeover?: boolean;
   isVisibleOnGuestDashboard?: boolean;
   enableAuth: boolean;
   maxBackups?: number;
@@ -129,6 +134,21 @@ export const InstallForm: React.FC<IProps> = ({
 
   const orgSlug = ciHubOrganizationSlug ? ciHubOrganizationSlug.toLowerCase().replace(/\s+/g, '-') : undefined;
   const defaultAppSubdomain = info.urn.split(':')[0] ?? info.urn;
+  /*
+   * The subdomain this app ROUTES on when the Local Subdomain field is empty —
+   * which is not `defaultAppSubdomain`, the field's placeholder.
+   *
+   * ⚠ THE TWO DIFFER, AND ONLY THIS ONE MAY BE COMPARED AGAINST CI-CLOUD.
+   * `resolveRoutingSubdomain` on the backend falls back to
+   * `<appName>-<appStoreSlug>`, and that is what the bind sends and what comes
+   * back as `boundAppSlug`. The placeholder is the bare app name. Comparing the
+   * placeholder against CI-Cloud's answer makes every app whose `localSubdomain`
+   * is null — an API, MCP or restore install — read as somebody else's: the
+   * picker asks the operator to confirm moving the app's own domain away from
+   * itself, and drops the hint that says the save will stop serving it.
+   */
+  const [urnAppName = info.urn, urnAppStoreSlug = ''] = info.urn.split(':');
+  const routingAppSubdomain = urnAppStoreSlug ? `${urnAppName}-${urnAppStoreSlug}` : urnAppName;
 
   const {
     register,
@@ -689,9 +709,20 @@ export const InstallForm: React.FC<IProps> = ({
             domains={customDomains}
             supported={customDomainsData?.supported === true}
             platformHostname={publicWebPreview?.hostname}
-            // The same value the bind sends as `appSlug`, so a domain already
-            // serving THIS app is recognised instead of warned about.
-            currentAppSlug={watchLocalSubdomain || defaultAppSubdomain}
+            /*
+             * The same value the bind sends as `appSlug`, so a domain already
+             * serving THIS app is recognised instead of warned about.
+             *
+             * ⚠ TRIMMED, because the value being compared against is. CI-Cloud's
+             * `boundAppSlug` mirrors the subdomain the Hub SYNCS, which is
+             * trimmed on the way out; the raw field value is not. While somebody
+             * is typing in the Local Subdomain box, an untrimmed value stops
+             * matching and the app's own domain briefly reads as another app's —
+             * warning about a move that is not one, and dropping the
+             * irreversible-release hint for a domain that is still being served.
+             */
+            currentAppSlug={watchLocalSubdomain?.trim() || routingAppSubdomain}
+            onTakeoverChange={(confirmed) => setValue('customDomainTakeover', confirmed)}
             loading={loading}
             t={t}
           />

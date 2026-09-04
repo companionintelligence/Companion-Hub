@@ -94,6 +94,26 @@ export const app = pgTable(
      * hostname", which is also what clearing the field asks for.
      */
     customDomainIntent: varchar('custom_domain_intent'),
+    /**
+     * The operator confirmed that satisfying {@link customDomainIntent} may take
+     * the domain OFF whatever is serving it now.
+     *
+     * Only ever true alongside an intent, and cleared with it. It exists because
+     * the bind pass runs long after the dialog is closed and cannot ask anyone
+     * anything: CI-Cloud will happily retarget a domain that is live on a
+     * sibling Hub in the organization, so without a recorded answer the pass has
+     * to choose between silently moving a production hostname off another device
+     * and never honouring a deliberate move at all. Neither is acceptable, so
+     * the person choosing is asked once, in the dialog, and their answer is
+     * carried here.
+     *
+     * ⚠ DEFAULTS FALSE, AND AN ABSENT ANSWER IS A NO. Every intent recorded
+     * before this column existed, and every client that does not know about it,
+     * reads as unconfirmed — which refuses the takeover and leaves the domain
+     * where it is. The failure mode of guessing wrong in the other direction is
+     * a customer's production hostname moving between devices unannounced.
+     */
+    customDomainTakeover: boolean('custom_domain_takeover').default(false).notNull(),
     pendingRestart: boolean('pending_restart').default(false).notNull(),
     userConfigEnabled: boolean('user_config_enabled').default(true).notNull(),
     maxBackups: integer('max_backups'),

@@ -376,6 +376,7 @@ export type MyAppsDto = {
             publicDomain?: string;
             customDomain?: string;
             customDomainIntent?: string;
+            customDomainTakeover?: boolean;
             pendingRestart: boolean;
             ignoredVersion: number;
         };
@@ -895,6 +896,7 @@ export type GetAppDto = {
         publicDomain?: string;
         customDomain?: string;
         customDomainIntent?: string;
+        customDomainTakeover?: boolean;
         pendingRestart: boolean;
         ignoredVersion: number;
     };
@@ -1272,6 +1274,7 @@ export type AppFormBody = {
     localSubdomain?: string;
     publicDomain?: string;
     customDomain?: string;
+    customDomainTakeover?: boolean;
     maxBackups?: number;
     cpuLimit?: string;
     memoryLimit?: string;
@@ -2018,7 +2021,7 @@ export type AvailableCustomDomainsResponseDto = {
     domains: Array<{
         id: string;
         domain: string;
-        state: 'live' | 'parked' | 'pending' | 'securing' | 'drifted' | 'unknown';
+        state: 'live' | 'parked' | 'pending' | 'securing' | 'drifted' | 'failed' | 'unknown';
         bindable: boolean;
         targetHostname: string;
         boundAppSlug: string;

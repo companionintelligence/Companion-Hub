@@ -92,9 +92,27 @@ vi.mock('@ci-hub/common/types', () => {
     return `${nodeFqdn}:${port}`;
   };
 
+  /*
+   * The real predicate, not an approximation: the picker's confirmation, its
+   * in-use note and the Hub's bind pass all decide with this one function, and a
+   * mock that answered differently would let a divergence between them pass.
+   */
+  const customDomainServesAnotherApp = (
+    entry: { boundAppSlug: string | null; boundElsewhere: boolean },
+    appSlug: string | null | undefined,
+  ): boolean => {
+    if (entry.boundElsewhere) return true;
+
+    const theirs = entry.boundAppSlug ? sanitizeAppSubdomain(entry.boundAppSlug) : '';
+    if (!theirs) return false;
+
+    return (appSlug ? sanitizeAppSubdomain(appSlug) : '') !== theirs;
+  };
+
   return {
     buildPublicWebIdentity,
     buildTailscalePortHost,
+    customDomainServesAnotherApp,
     sanitizeAppSubdomain,
   };
 });
@@ -714,6 +732,46 @@ describe('InstallForm', () => {
       expect(screen.getByLabelText('APP_INSTALL_FORM_CUSTOM_DOMAIN')).toHaveTextContent(/^comfy\.acme\.com$/);
     });
 
+    it("recognises the app's own domain when it has no Local Subdomain of its own", async () => {
+      /*
+       * ⚠ THE FALLBACKS HAVE TO MATCH. `resolveRoutingSubdomain` on the backend
+       * falls back to `<appName>-<appStoreSlug>`, which is what the bind sends
+       * and what CI-Cloud returns as `boundAppSlug`. The field's PLACEHOLDER is
+       * the bare app name, and comparing that instead made every app installed
+       * without a Local Subdomain — API, MCP and restore installs — read as
+       * somebody else's: the picker asked the operator to confirm moving the
+       * app's own domain away from itself.
+       */
+      MOCK_CUSTOM_DOMAINS.supported = true;
+      MOCK_CUSTOM_DOMAINS.domains = [connected({ state: 'live', boundAppSlug: 'comfyui-store', targetHostname: 'comfyui-core2-acme.example.com' })];
+
+      /*
+       * `dynamic_config: false`, because that is what leaves `localSubdomain`
+       * empty. The form auto-fills it for a dynamic-config app, and an app that
+       * carries a subdomain has no fallback to get wrong — so this is the only
+       * shape where the two fallbacks are compared against each other.
+       */
+      vi.mocked(useAppContext).mockReturnValue(CONTEXT);
+
+      render(
+        <MemoryRouter>
+          <InstallForm
+            info={{ ...INFO, dynamic_config: false } as unknown as AppInfo}
+            onSubmit={vi.fn()}
+            formId="test-form"
+            formFields={[]}
+            initialValues={{ exposureMode: 'cloudflare' }}
+          />
+        </MemoryRouter>,
+      );
+
+      fireEvent.click(screen.getByLabelText('APP_INSTALL_FORM_CUSTOM_DOMAIN'));
+      fireEvent.click(screen.getByRole('option', { name: /comfy\.acme\.com/ }));
+
+      expect(screen.queryByTestId('custom-domain-takeover-confirm')).not.toBeInTheDocument();
+      expect(screen.getByLabelText('APP_INSTALL_FORM_CUSTOM_DOMAIN')).toHaveTextContent(/^comfy\.acme\.com$/);
+    });
+
     it('does not warn that a domain is in use by the app being configured', () => {
       /*
        * The normal case in the settings dialog. Telling the operator that
@@ -726,6 +784,123 @@ describe('InstallForm', () => {
       renderForm({ exposureMode: 'cloudflare', localSubdomain: 'comfyui', customDomain: 'comfy.acme.com' });
 
       expect(screen.queryByText(/APP_INSTALL_FORM_CUSTOM_DOMAIN_IN_USE/)).not.toBeInTheDocument();
+    });
+
+    it('names a permanently failed certificate instead of offering it silently', () => {
+      /*
+       * CI-Cloud reports `failed` with `bindable: true`, deliberately. A build
+       * that had not heard of the state parsed it as `unknown`, matched none of
+       * the picker's conditions, and rendered a domain whose certificate can
+       * never issue as an ordinary choice with no note at all.
+       */
+      MOCK_CUSTOM_DOMAINS.supported = true;
+      MOCK_CUSTOM_DOMAINS.domains = [connected({ state: 'failed' })];
+
+      renderForm();
+
+      fireEvent.click(screen.getByLabelText('APP_INSTALL_FORM_CUSTOM_DOMAIN'));
+
+      expect(screen.getByText('APP_INSTALL_FORM_CUSTOM_DOMAIN_FAILED')).toBeInTheDocument();
+    });
+
+    it('asks before moving a domain that is serving another Hub, and commits nothing until answered', async () => {
+      /*
+       * CI-Engineering#208, defect 4. The domain was selectable with only a text
+       * suffix, and a background heartbeat then moved a production hostname off
+       * another device in the organization with no confirmation anywhere.
+       *
+       * ⚠ THE FORM MUST STILL HOLD THE PLATFORM ADDRESS while the question is
+       * open. Writing the choice first and the answer second means a save
+       * landing between the two records a move with no confirmation attached,
+       * which the bind pass reads as a refusal — the operator's choice silently
+       * dropped.
+       */
+      MOCK_CUSTOM_DOMAINS.supported = true;
+      MOCK_CUSTOM_DOMAINS.domains = [connected({ state: 'live', boundElsewhere: true, targetHostname: 'grafana-core9-acme.example.com' })];
+
+      renderForm();
+
+      fireEvent.click(screen.getByLabelText('APP_INSTALL_FORM_CUSTOM_DOMAIN'));
+      // By role, not by text: Radix mirrors an item's label into the trigger,
+      // so a plain text query matches both the option and the collapsed control.
+      fireEvent.click(screen.getByRole('option', { name: /comfy\.acme\.com/ }));
+
+      expect(screen.getByTestId('custom-domain-takeover-confirm')).toBeInTheDocument();
+      expect(screen.getByLabelText('APP_INSTALL_FORM_CUSTOM_DOMAIN')).toHaveTextContent('APP_INSTALL_FORM_CUSTOM_DOMAIN_NONE');
+    });
+
+    it('leaves the domain where it is when the move is declined', async () => {
+      MOCK_CUSTOM_DOMAINS.supported = true;
+      MOCK_CUSTOM_DOMAINS.domains = [connected({ state: 'live', boundElsewhere: true, targetHostname: 'grafana-core9-acme.example.com' })];
+
+      renderForm();
+
+      fireEvent.click(screen.getByLabelText('APP_INSTALL_FORM_CUSTOM_DOMAIN'));
+      // By role, not by text: Radix mirrors an item's label into the trigger,
+      // so a plain text query matches both the option and the collapsed control.
+      fireEvent.click(screen.getByRole('option', { name: /comfy\.acme\.com/ }));
+      fireEvent.click(screen.getByTestId('custom-domain-takeover-cancel'));
+
+      expect(screen.queryByTestId('custom-domain-takeover-confirm')).not.toBeInTheDocument();
+      expect(screen.getByLabelText('APP_INSTALL_FORM_CUSTOM_DOMAIN')).toHaveTextContent('APP_INSTALL_FORM_CUSTOM_DOMAIN_NONE');
+    });
+
+    it('commits the choice once the move is confirmed', async () => {
+      MOCK_CUSTOM_DOMAINS.supported = true;
+      MOCK_CUSTOM_DOMAINS.domains = [connected({ state: 'live', boundElsewhere: true, targetHostname: 'grafana-core9-acme.example.com' })];
+
+      renderForm();
+
+      fireEvent.click(screen.getByLabelText('APP_INSTALL_FORM_CUSTOM_DOMAIN'));
+      // By role, not by text: Radix mirrors an item's label into the trigger,
+      // so a plain text query matches both the option and the collapsed control.
+      fireEvent.click(screen.getByRole('option', { name: /comfy\.acme\.com/ }));
+      fireEvent.click(screen.getByTestId('custom-domain-takeover-accept'));
+
+      expect(screen.queryByTestId('custom-domain-takeover-confirm')).not.toBeInTheDocument();
+      expect(screen.getByLabelText('APP_INSTALL_FORM_CUSTOM_DOMAIN')).toHaveTextContent(/^comfy\.acme\.com$/);
+    });
+
+    it('does not ask when the domain is already serving the app being configured', () => {
+      // Re-picking the domain an app already serves is not a move, and asking
+      // about it would read as a bug in the ordinary settings case.
+      MOCK_CUSTOM_DOMAINS.supported = true;
+      MOCK_CUSTOM_DOMAINS.domains = [connected({ state: 'live', boundAppSlug: 'comfyui', targetHostname: 'comfyui-core2-acme.example.com' })];
+
+      renderForm({ exposureMode: 'cloudflare', localSubdomain: 'comfyui' });
+
+      fireEvent.click(screen.getByLabelText('APP_INSTALL_FORM_CUSTOM_DOMAIN'));
+      // By role, not by text: Radix mirrors an item's label into the trigger,
+      // so a plain text query matches both the option and the collapsed control.
+      fireEvent.click(screen.getByRole('option', { name: /comfy\.acme\.com/ }));
+
+      expect(screen.queryByTestId('custom-domain-takeover-confirm')).not.toBeInTheDocument();
+      expect(screen.getByLabelText('APP_INSTALL_FORM_CUSTOM_DOMAIN')).toHaveTextContent(/^comfy\.acme\.com$/);
+    });
+
+    it('warns that clearing the picker releases a domain the app is serving', () => {
+      /*
+       * CI-Cloud cannot park a connected domain, so this save gives it up
+       * entirely and only a person in the portal can reconnect it. Showing that
+       * behind the same neutral sentence used when nothing is bound would be the
+       * one place this dialog hides an irreversible act.
+       */
+      MOCK_CUSTOM_DOMAINS.supported = true;
+      MOCK_CUSTOM_DOMAINS.domains = [connected({ state: 'live', boundAppSlug: 'comfyui', targetHostname: 'comfyui-core2-acme.example.com' })];
+
+      renderForm({ exposureMode: 'cloudflare', localSubdomain: 'comfyui' });
+
+      expect(screen.getByText('APP_INSTALL_FORM_CUSTOM_DOMAIN_RELEASE_HINT')).toBeInTheDocument();
+    });
+
+    it('does not threaten a release when the app is not serving anything', () => {
+      MOCK_CUSTOM_DOMAINS.supported = true;
+      MOCK_CUSTOM_DOMAINS.domains = [connected()];
+
+      renderForm();
+
+      expect(screen.getByText('APP_INSTALL_FORM_CUSTOM_DOMAIN_HINT')).toBeInTheDocument();
+      expect(screen.queryByText('APP_INSTALL_FORM_CUSTOM_DOMAIN_RELEASE_HINT')).not.toBeInTheDocument();
     });
   });
 

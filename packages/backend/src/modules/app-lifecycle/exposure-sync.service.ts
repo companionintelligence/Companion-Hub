@@ -9,6 +9,7 @@ import {
   buildOriginServerName,
   buildPublicWebIdentity,
   collectAmbiguousCustomDomains,
+  customDomainServesAnotherApp,
   indexCustomDomainsByTarget,
   normalizeHostname,
   normalizeStoredHostname,
@@ -687,6 +688,155 @@ export class ExposureSyncService {
   }
 
   /**
+   * ═══════════════════════════════════════════════════════════════════════════
+   * STOP SERVING A DOMAIN, ON BEHALF OF SOMEBODY WHO JUST SAID TO
+   * ═══════════════════════════════════════════════════════════════════════════
+   *
+   * The counterpart to {@link bindCustomDomainIntents}. CI-Cloud PARKS the
+   * domain — it clears the routing and the Cloudflare origin and leaves the row,
+   * the ownership proof and the certificate alone — so the organization keeps
+   * the domain and another bind points it somewhere else. Nothing here needs a
+   * person in the Entri modal, and disconnecting a domain remains a portal act
+   * no Hub path reaches.
+   *
+   * ⚠ STILL RUN WHERE THE INSTRUCTION WAS GIVEN, and not from the heartbeat.
+   * Not because it is dangerous — it is reversible — but because it is an
+   * ANSWER, not a convergence: only the save that cleared the picker knows the
+   * operator asked for it, and the person who asked should be told whether it
+   * worked. That is also why it takes the app row rather than scanning for
+   * candidates; there is no such thing as a park this service should discover on
+   * its own.
+   *
+   * Reports failure rather than throwing so the caller can leave the app exactly
+   * as it was: a park that did not happen must not clear the binding locally, or
+   * the app would stop publishing a hostname CI-Cloud is still serving.
+   */
+  public async releaseCustomDomain(
+    app: Awaited<ReturnType<AppsRepository['getApps']>>[number],
+  ): Promise<{ ok: true } | { ok: false; message: string }> {
+    const appUrn = createAppUrn(app.appName, app.appStoreSlug);
+    const current = normalizeStoredHostname(app.customDomain);
+
+    if (!current) {
+      // Nothing is bound, so there is nothing to give up. Not an error: this is
+      // the ordinary case of clearing a picker that was never satisfied.
+      return { ok: true };
+    }
+
+    const orgInfo = await this.registrationService.getDeviceRegistrationInfo();
+
+    if (!orgInfo?.id) {
+      return { ok: false, message: 'This Hub is not registered with CI-Cloud, so it cannot stop serving a custom domain.' };
+    }
+
+    /*
+     * CI-Cloud names domains by row id and the Hub stores only the hostname, so
+     * the listing is how the two are joined. It is also the check that the
+     * domain is still the organization's at all.
+     */
+    const available = await this.cloudflareClientService.fetchOrganizationCustomDomains(orgInfo.id);
+
+    if (!available) {
+      return { ok: false, message: 'CI-Cloud did not answer, so the domain was left as it is. Try again.' };
+    }
+
+    const entry = available.find((candidate) => candidate.domain === current);
+
+    if (!entry) {
+      /*
+       * ⚠ REFUSED, NOT TREATED AS DONE — AND THAT IS A DELIBERATE REVERSAL.
+       *
+       * "The listing does not contain it" is tempting to read as "the
+       * organization no longer holds it, so it has already stopped serving".
+       * That reading is unsafe, because the listing drops rows it cannot parse:
+       * `parseAvailableCustomDomains` requires a non-empty STRING `id`, and this
+       * codebase already records that CI-Cloud's ids "arrive as numbers on a
+       * sibling endpoint, so the shape is not guaranteed". A single malformed row
+       * among well-formed ones is dropped silently, and the whole-payload guard
+       * does not fire.
+       *
+       * So a wire hiccup would have produced a success toast and a cleared
+       * binding while CI-Cloud went on serving the domain — precisely what this
+       * method's own contract forbids, and it would then self-heal WRONGLY: the
+       * next reconcile re-adopts the domain and raises another restart badge, so
+       * the operator watches the thing they released come back.
+       *
+       * The genuinely-already-gone case still resolves, one sync later and
+       * safely: reconciliation clears `custom_domain` when CI-Cloud stops
+       * reporting it delivered, after which there is nothing left to release and
+       * the branch above returns early.
+       */
+      this.logger.warn(`[Cloudflare] ${appUrn} asked to release ${current}, but CI-Cloud did not list that domain; leaving it alone.`);
+
+      return {
+        ok: false,
+        message: `CI-Cloud did not list ${current} among this organization's domains, so it was left as it is. Try again.`,
+      };
+    }
+
+    /*
+     * ⚠ ASK WHOSE IT IS BEFORE DESTROYING IT, WITH THE ANSWER ALREADY IN HAND.
+     *
+     * `custom_domain` is a mirror of what CI-Cloud last reported delivered, and a
+     * mirror goes stale: an operator who moves the domain to a sibling app and
+     * then opens THIS app's settings before the next sync is still shown it as
+     * the current domain, and clearing the picker would unpoint a domain that
+     * now serves something else.
+     *
+     * CI-Cloud would refuse — `DOMAIN_NOT_BOUND_HERE` checks the application, not
+     * only the device — but relying on that means the safety of an irreversible
+     * act rests on a round trip whose answer is already sitting in the listing
+     * this method just read. `boundAppSlug` is set only for an app on this
+     * device, so a mismatch is decisive locally.
+     *
+     * Asked through {@link customDomainServesAnotherApp} rather than with an
+     * inline `!==`, because CI-Cloud holds the CANONICAL slug and this side holds
+     * the raw one — see that function for what a raw comparison costs.
+     */
+    const appSubdomain = resolveRoutingSubdomain(app.localSubdomain, app.appName, app.appStoreSlug);
+
+    if (customDomainServesAnotherApp(entry, appSubdomain)) {
+      this.logger.warn(
+        `[Cloudflare] ${appUrn} asked to release ${current}, but CI-Cloud reports it serving ` +
+          `${entry.boundAppSlug ?? 'an app on another Hub'}; leaving it alone.`,
+      );
+
+      return {
+        ok: false,
+        message: `CI-Cloud reports ${current} is serving something else now, so it was left alone. Reload and try again.`,
+      };
+    }
+
+    const released = await this.cloudflareClientService.unbindCustomDomain(entry.id, appSubdomain, orgInfo.id);
+
+    if (!released.ok) {
+      this.logger.warn(`[Cloudflare] Could not release ${current} from ${appUrn}: ${released.message}${released.code ? ` (${released.code})` : ''}.`);
+
+      /*
+       * `DOMAIN_NOT_BOUND_HERE` is the one refusal worth its own sentence. It
+       * means CI-Cloud holds the domain against a different device or app than
+       * this Hub believes, so the local row is stale — and telling the operator
+       * "try again" would be wrong, because a retry cannot change CI-Cloud's mind.
+       */
+      if (released.code === 'DOMAIN_NOT_BOUND_HERE') {
+        return {
+          ok: false,
+          message: `CI-Cloud reports ${current} is not currently serving this app, so it was left alone. Check the domain in CI-Cloud.`,
+        };
+      }
+
+      return { ok: false, message: `Could not release ${current}: ${released.message}` };
+    }
+
+    this.logger.info(
+      `[Cloudflare] ${appUrn} stopped serving ${current} at the operator's request. ` +
+        'The organization still holds that domain in CI-Cloud and can point it at another app.',
+    );
+
+    return { ok: true };
+  }
+
+  /**
    * Asks Companion Portal to wire an install-time custom-domain choice after the
    * app is available as a routing target.
    *
@@ -847,7 +997,7 @@ export class ExposureSyncService {
          * hostname, and log the reason.
          */
         if (!entry) {
-          await this.appRepository.updateAppById(app.id, { customDomainIntent: null });
+          await this.appRepository.updateAppById(app.id, { customDomainIntent: null, customDomainTakeover: false });
           this.logger.warn(
             `[Cloudflare] ${appUrn} was set up to serve on ${intent}, but that domain is no longer connected to this organization; clearing the choice and leaving the app on its platform hostname.`,
           );
@@ -868,14 +1018,121 @@ export class ExposureSyncService {
         }
 
         const target = normalizeHostname(params.toPublicHostname(app));
+        /*
+         * The subdomain this device synchronizes, not a hostname or a local guess
+         * at Companion Portal's slug — the Portal canonicalizes it with the same
+         * function that created the row. `resolveRoutingSubdomain` matches the
+         * tunnel-state payload and trims whitespace, where an inline `||` would
+         * send `" comfy "` verbatim and match no `application` row.
+         *
+         * Resolved here rather than at the bind call because the ownership check
+         * below compares it against `boundAppSlug`, which is the same value read
+         * back off CI-Cloud.
+         */
+        const appSubdomain = resolveRoutingSubdomain(app.localSubdomain, app.appName, app.appStoreSlug);
+        /** The hostname CI-Cloud delivers this domain to now, if any. */
+        const currentTarget = normalizeStoredHostname(entry.targetHostname);
 
         /*
          * Companion Portal already points the domain here but has not reported it
          * as delivered. The ingress clone arrives on the next sync. Repeating the
          * request would spend a Cloudflare call on every heartbeat without
          * changing the asserted target.
+         *
+         * ⚠ SAID OUT LOUD, because this skip used to be where a stuck move went
+         * to die. An app already serving a sibling domain kept the sticky pick,
+         * so `custom_domain` never became the intent, the intent stayed a
+         * candidate forever, and every pass landed here and returned in silence —
+         * no log line anywhere naming a choice that could not land
+         * (CI-Engineering#208, defect 2). The selection now prefers a delivered
+         * intent, so this is once again what it claims to be: a short wait for
+         * the next sync. A line that persists across many passes says otherwise.
          */
-        if (normalizeStoredHostname(entry.targetHostname) === target) {
+        if (currentTarget === target) {
+          this.logger.debug(`[Cloudflare] ${appUrn} is waiting for CI-Cloud to report ${intent} delivered; it is already pointed here.`);
+
+          continue;
+        }
+
+        /*
+         * ── IT IS SERVING SOMETHING ELSE, AND ONLY A PERSON MAY MOVE IT ──────
+         *
+         * A non-null `targetHostname` that is not ours means CI-Cloud currently
+         * delivers this domain to another app — on this Hub or, worse, on a
+         * sibling Hub in the organization. `bindCustomDomain` would move it
+         * without asking anyone: the bind route retargets happily, the other Hub
+         * holds no intent for the domain so nothing puts it back, and a customer's
+         * production hostname changes device on a background heartbeat with
+         * nothing in the log to tell it from a fresh bind (CI-Engineering#208,
+         * defect 4).
+         *
+         * So the pass acts only on an answer a person gave in the dialog. Without
+         * one the intent is CLEARED rather than retained — three reasons, and the
+         * third is a separate defect:
+         *
+         *   * Retaining it would re-ask this question on every heartbeat forever,
+         *     for a move that will never be authorized by anything a background
+         *     pass can reach.
+         *   * The choice is not merely unfulfillable, it is REFUSED. Leaving it on
+         *     the row would show the operator a picker still claiming a domain the
+         *     Hub has decided not to take.
+         *   * It is what makes CI-Cloud authoritative over its own data. An
+         *     operator re-pointing a domain in the portal used to be reverted on
+         *     the Hub's next sync, indefinitely, because nothing ever cleared the
+         *     intent that had been satisfied before the move (defect 3). Now the
+         *     portal's change stands and the Hub stops arguing with it.
+         */
+        /*
+         * ⚠ ASKED OF WHOSE IT IS, NOT OF WHICH HOSTNAME IT POINTS AT.
+         *
+         * `targetHostname` alone is the wrong question, and getting it wrong
+         * breaks the most ordinary operation there is. `toPublicHostname` is
+         * composed from the app's local subdomain, its public domain, the hub
+         * subdomain and the org slug — so RENAMING an app moves its own target.
+         * The domain still points at the app's OLD hostname for one sync, which
+         * reads as "serving something else", and an unconfirmed intent would be
+         * cleared: the operator renames a subdomain and silently loses the custom
+         * domain that app has served for months, with a log line accusing the app
+         * of stealing from itself.
+         *
+         * CI-Cloud already answers the real question. `boundAppSlug` is set only
+         * for an app on THIS device, and `boundElsewhere` is derived from the
+         * row's `device_id` — so the pair says whether this is a move at all, and
+         * the picker decides with exactly the same predicate — literally the same
+         * function, {@link customDomainServesAnotherApp}, which is also what
+         * canonicalizes the slug CI-Cloud stored against the raw one this side
+         * composes. Divergence between the two is not academic: a state the
+         * dialog does not warn about but the pass refuses is a choice that
+         * evaporates after a success toast.
+         *
+         * ⚠ AND NOT GATED ON `currentTarget`. A domain CI-Cloud holds against
+         * another device is a move whether or not it has been given a target yet:
+         * `targetHostname` is absent while a bind is still settling, and the
+         * parser NULLS one it cannot read rather than dropping the row. Requiring
+         * it meant the one case the flag exists for — a hostname live on a
+         * sibling Hub — could slip past unconfirmed on a payload hiccup.
+         */
+        const servesAnotherApp = customDomainServesAnotherApp(entry, appSubdomain);
+
+        if (servesAnotherApp && !app.customDomainTakeover) {
+          await this.appRepository.updateAppById(app.id, { customDomainIntent: null, customDomainTakeover: false });
+          this.logger.warn(
+            `[Cloudflare] ${intent} is currently serving ${entry.boundAppSlug ?? (entry.boundElsewhere ? 'an app on another Hub' : 'another app')}; ` +
+              `moving it to ${appUrn} was not confirmed, so the choice has been cleared and the domain left where it is.`,
+          );
+
+          /*
+           * Terminal in the same way as the missing-entry and `DOMAIN_NOT_FOUND`
+           * cases, so the deferred revert applies here too. The reconcile held it
+           * back only because this Hub was still asking for the hostname the app
+           * had just lost; refusing the move settles that question, and the app is
+           * now injecting `X-Forwarded-Host` for a name it no longer serves until
+           * its container is recreated (CI-Hub#1207).
+           */
+          if (params.deferredRevertAppUrns.has(appUrn)) {
+            strandedAppUrns.push(appUrn);
+          }
+
           continue;
         }
 
@@ -906,19 +1163,49 @@ export class ExposureSyncService {
           continue;
         }
 
-        // Send the subdomain this device synchronizes, not a hostname or a local
-        // guess at Companion Portal's slug. The Portal canonicalizes it with the
-        // same function that created the row.
-        //
-        // Use `resolveRoutingSubdomain` to match the tunnel-state payload. The
-        // helper trims whitespace, while an inline `||` would send a value such
-        // as `" comfy "` verbatim and fail to match any `application` row.
-        const appSubdomain = resolveRoutingSubdomain(app.localSubdomain, app.appName, app.appStoreSlug);
+        /*
+         * ⚠ BINDABLE AND YET UNSERVABLE, WHICH IS WHY IT IS SAID OUT LOUD HERE.
+         *
+         * CI-Cloud reports a permanently failed certificate with `bindable: true`
+         * deliberately, and `bindable` is its gate, not ours to override — so the
+         * request still goes out. But unlike `securing`, this state never clears
+         * itself: there is no in-place reissue, only disconnect-and-reconnect. The
+         * bind therefore succeeds and the domain is never delivered, after which
+         * every later pass lands on the "already pointed here" skip above and says
+         * nothing louder than debug — a permanently unsatisfiable intent going
+         * quiet, which is the stuck-move state (CI-Engineering#208, defect 2) this
+         * pass now exists to make visible. `AvailableCustomDomain` names the bind
+         * pass as a caller that must weigh this state; this is it doing so.
+         */
+        if (entry.state === 'failed') {
+          this.logger.warn(
+            `[Cloudflare] ${intent} has a certificate that will never issue (state: failed), so CI-Cloud will not deliver it; ` +
+              `${appUrn} stays on its platform hostname until the domain is reconnected in the portal.`,
+          );
+        }
+
         const bound = await this.cloudflareClientService.bindCustomDomain(entry.id, appSubdomain, params.organizationId);
 
         if (bound.ok) {
+          /*
+           * ⚠ THE CONFIRMATION IS SPENT HERE, not left standing on the row.
+           *
+           * It authorized ONE move, the one the person was shown. Leaving it set
+           * would make it standing permission: an operator re-pointing the domain
+           * in the portal later would be overruled by an answer given to a
+           * different question, weeks earlier — which is defect 3 wearing defect
+           * 4's clothes, and the exact case the guard above cannot tell apart
+           * once the flag outlives its move.
+           */
+          if (app.customDomainTakeover) {
+            await this.appRepository.updateAppById(app.id, { customDomainTakeover: false });
+          }
+
           this.logger.info(
-            `[Cloudflare] ${intent} is now wired to ${appUrn}; it will be published to the app once the next sync reports it delivered.`,
+            currentTarget
+              ? `[Cloudflare] ${intent} has been MOVED from ${currentTarget} to ${appUrn} at the operator's request; ` +
+                  'it will be published to the app once the next sync reports it delivered.'
+              : `[Cloudflare] ${intent} is now wired to ${appUrn}; it will be published to the app once the next sync reports it delivered.`,
           );
 
           continue;
@@ -932,7 +1219,7 @@ export class ExposureSyncService {
          * missing-entry case above.
          */
         if (bound.code === 'DOMAIN_NOT_FOUND') {
-          await this.appRepository.updateAppById(app.id, { customDomainIntent: null });
+          await this.appRepository.updateAppById(app.id, { customDomainIntent: null, customDomainTakeover: false });
           this.logger.warn(`[Cloudflare] CI-Cloud does not recognise ${intent} for this organization; clearing the choice on ${appUrn}.`);
 
           // Terminal in the same way as the missing-entry case above, so the
@@ -1061,7 +1348,14 @@ export class ExposureSyncService {
           this.logger.warn(`[Cloudflare] CI-Cloud reports ${current} wired to more than one app; keeping ${appUrn} on it until that resolves.`);
           continue;
         }
-        next = selectCustomDomain(byTarget.get(target), current);
+        /*
+         * The intent is passed so a deliberate move can land. It can only ever
+         * choose between hostnames CI-Cloud has already reported delivered for
+         * this target — see `selectCustomDomain` — so this does not let an
+         * unconfirmed choice reach the app's env, which is the whole reason
+         * `custom_domain` and `custom_domain_intent` are separate columns.
+         */
+        next = selectCustomDomain(byTarget.get(target), current, normalizeStoredHostname(app.customDomainIntent));
         cloudDrivenChange = true;
       } else {
         /*

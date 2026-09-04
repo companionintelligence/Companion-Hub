@@ -35,6 +35,18 @@ const appSchema = z.object({
    * that still names it would silently re-claim it on the next save.
    */
   customDomainIntent: z.string().nullable().optional(),
+  /**
+   * Whether the operator has confirmed that {@link customDomainIntent} may be
+   * taken off whatever is serving it now — and has not had that answer spent
+   * yet.
+   *
+   * Exposed for the same reason the intent is, and it must come from the ROW
+   * rather than the stored form snapshot: the bind pass clears it the moment it
+   * acts on it, so the row is the only place that knows whether a confirmation
+   * is still outstanding. Seeding a still-pending move from here keeps an
+   * unrelated save from quietly withdrawing it.
+   */
+  customDomainTakeover: z.boolean().optional(),
   pendingRestart: z.boolean(),
   ignoredVersion: z.number().nullable(),
 });
@@ -58,13 +70,17 @@ const myAppsSchema = z.object({
  * already WIRED — live and publicly resolvable, so naming it discloses nothing.
  * `custom_domain_intent` can name a domain the organization owns but has not
  * published: parked, or still verifying, and not discoverable any other way.
+ * `custom_domain_takeover` goes with it for the same reason and one of its own —
+ * on its own it discloses that this organization has an outstanding, unconfirmed
+ * plan to move a domain off something, which is a fact about their intentions
+ * rather than about an address anyone can already resolve.
  * `reportOnly` parsing strips whatever the schema omits, so leaving it out here
  * is what keeps it out of the response.
  */
 const guestAppsSchema = z.object({
   installed: z.array(
     z.object({
-      app: appSchema.omit({ customDomainIntent: true }),
+      app: appSchema.omit({ customDomainIntent: true, customDomainTakeover: true }),
       info: appInfoSchemaRef,
       metadata: metadataSchema,
     }),

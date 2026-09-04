@@ -370,6 +370,34 @@ export class PortalClientService {
     return this.requestWithStatus('post', '/custom-domains/device/bind', payload);
   }
 
+  /**
+   * Ask CI-Cloud to stop pointing a custom domain at an app on THIS device.
+   *
+   * ⚠ THIS PARKS THE DOMAIN; IT DOES NOT GIVE IT UP. The route clears
+   * `device_id`, `application_id` and `target_hostname` and clears the
+   * hostname's origin at the edge, leaving the row, the ownership proof and the
+   * certificate intact — the ordinary connect-first/bind-later shape, reached
+   * from the other direction. The organization keeps the domain and an ordinary
+   * bind points it somewhere else, so the call is idempotent and safe to retry;
+   * `unbindCustomDomain` maps `DOMAIN_NOT_FOUND` to success for exactly that
+   * reason. Disconnecting a domain is a separate, session-and-managing-role act
+   * in the portal that no Hub path reaches.
+   *
+   * The app slug is REQUIRED and is not decoration: it makes the device assert
+   * which of its own apps it believes the domain serves, so a stale intent left
+   * by a rename or a reinstall is refused rather than silently taking a
+   * different app's domain off the air. The device half of the guard is the
+   * authorizing one; an orphaned row whose `application_id` was nulled by an
+   * uninstall still parks, or an app could never release a domain it had
+   * removed.
+   */
+  async postDeviceCustomDomainUnbind(payload: { domainId: string; appSlug: string; organizationId?: string }): Promise<{
+    status: number;
+    data: { success?: boolean; code?: string; error?: string };
+  }> {
+    return this.requestWithStatus('post', '/custom-domains/device/unbind', payload);
+  }
+
   async postDeviceCheckIn(payload: Record<string, unknown>): Promise<unknown> {
     return this.postJson('/devices/check-in', payload, { authenticated: true });
   }
