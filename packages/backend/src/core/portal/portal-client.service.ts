@@ -13,6 +13,22 @@ export type PortalStoreListingsParams = {
   q?: string;
 };
 
+export type PortalWhoIsApp = {
+  appId: string;
+  entitled?: boolean;
+  can?: string[];
+  capMap?: Record<string, unknown>;
+};
+
+export type PortalWhoIsResponse = {
+  organizations: Array<{
+    organizationId: string;
+    version?: number;
+    source?: string;
+    apps: PortalWhoIsApp[];
+  }>;
+};
+
 @Injectable()
 export class PortalClientService {
   private readonly publicPortalUrl: string;
@@ -166,6 +182,39 @@ export class PortalClientService {
       paymentUrl: data.paymentUrl,
       code: data.code,
     };
+  }
+
+  /**
+   * Hub UX WhoIs. Device key + Portal user `subject`. `organizationId` is
+   * not sent — Portal intersects memberships with this appliance.
+   *
+   * `null` means Portal is not configured; callers apply compiled inherit.
+   */
+  async whoisApps(params: { subject: string; appIds: string[]; surface: 'hub' | 'store' }): Promise<{
+    status: number;
+    body: PortalWhoIsResponse | null;
+  } | null> {
+    if (!this.outboundPortalUrl) {
+      return null;
+    }
+
+    const response = await this.apiClient.post<PortalWhoIsResponse>(
+      'whois',
+      {
+        subject: params.subject,
+        appIds: params.appIds,
+        surface: params.surface,
+      },
+      {
+        headers: this.getDeviceAuthHeaders(),
+        validateStatus: () => true,
+        timeout: 10_000,
+      },
+    );
+
+    const body = response.data && typeof response.data === 'object' ? response.data : null;
+
+    return { status: response.status, body };
   }
 
   async fetchStoreMetadataText(appSlug: string, filename: string): Promise<string | null> {
