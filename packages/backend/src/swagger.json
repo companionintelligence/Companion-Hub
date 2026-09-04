@@ -4973,6 +4973,20 @@
         ]
       }
     },
+    "/api/agent-notify/wake": {
+      "post": {
+        "operationId": "wake",
+        "parameters": [],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "AgentNotify"
+        ]
+      }
+    },
     "/api/memory-connect/start": {
       "get": {
         "operationId": "start",
