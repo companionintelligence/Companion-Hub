@@ -15,7 +15,7 @@ import { recommendContextLength } from './context-length.util';
 import { isCatalogModelInstalled, isServedModelForCatalog } from './model-availability.util';
 import type { CuratedModel, InferenceBackendType } from '@ci-hub/common/types';
 
-/** Non-secret placeholder API key each backend's OpenAI-compatible surface accepts (none validate it). */
+/** Fallback keys for backends that do not expose a configured or desktop-managed key. */
 export const BACKEND_API_KEY: Record<InferenceBackendType, string> = {
   ollama: 'ollama',
   vllm: 'vllm',
@@ -155,7 +155,8 @@ export class InferenceEnvResolver {
     // ── Base URL + API key ────────────────────────────────────────────────
     const baseUrl = `${backendBaseUrl}/v1`;
     const configuredVllmKey = preferences.preferredVllmApiKey?.trim();
-    const apiKey = backendType === 'vllm' && configuredVllmKey ? configuredVllmKey : BACKEND_API_KEY[backendType];
+    const managedBackendKey = backend.getApiKey?.()?.trim();
+    const apiKey = backendType === 'vllm' && configuredVllmKey ? configuredVllmKey : managedBackendKey || BACKEND_API_KEY[backendType];
 
     // ── Chat model ────────────────────────────────────────────────────────
     // Prefer a model that is actually present on the active backend: this env is

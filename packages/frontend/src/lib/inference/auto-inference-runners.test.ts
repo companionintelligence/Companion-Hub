@@ -26,8 +26,15 @@ describe('installAndStartInferenceRunners', () => {
     expect(automaticRunnersForBackend('dspark')).toEqual(['dspark', 'ollama']);
   });
 
-  it('uses the complete set for non-Apple-specific backends', () => {
-    expect(automaticRunnersForBackend('vllm')).toEqual(DEFAULT_AUTOMATIC_INFERENCE_RUNNERS);
+  it('installs only the selected chat runner plus the shared Ollama embedder', () => {
+    expect(automaticRunnersForBackend('vllm')).toEqual(['vllm', 'ollama']);
+    expect(automaticRunnersForBackend('lucebox')).toEqual(['lucebox', 'ollama']);
+    expect(automaticRunnersForBackend('ollama')).toEqual(['ollama']);
+    expect(automaticRunnersForBackend('lemonade')).toEqual(['ollama']);
+  });
+
+  it('keeps the complete set only as a defensive fallback for an unknown backend', () => {
+    expect(automaticRunnersForBackend('future-backend')).toEqual(DEFAULT_AUTOMATIC_INFERENCE_RUNNERS);
   });
 
   it('is a no-op in a browser build', async () => {
