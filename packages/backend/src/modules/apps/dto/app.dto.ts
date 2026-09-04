@@ -127,6 +127,20 @@ const getConfigDiffSchema = z.object({
   new: z.string().nullable(),
 });
 
+const appDataListingSchema = z.object({
+  hostPath: z.string().nullable(),
+  rootExists: z.boolean(),
+  truncated: z.boolean(),
+  entries: z.array(
+    z.object({
+      name: z.string(),
+      path: z.string(),
+      kind: z.enum(['file', 'directory']),
+      sizeBytes: z.number().nullable(),
+    }),
+  ),
+});
+
 const installedAppUrnsSchema = z.object({
   urns: z.array(z.string()),
 });
@@ -143,3 +157,4 @@ export class GetAppDto extends createZodDto(getAppSchema) {}
 export class GetRandomPortDto extends createZodDto(getRandomPortSchema) {}
 export class GetConfigDiffDto extends createZodDto(getConfigDiffSchema) {}
 export class GetComposeDiffDto extends createZodDto(getComposeDiff) {}
+export class AppDataListingDto extends createZodDto(appDataListingSchema) {}

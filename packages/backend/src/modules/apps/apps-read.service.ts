@@ -263,6 +263,29 @@ export class AppsReadService {
     return { app: app ?? null, info, metadata, allocatedPort, appDataHostPath };
   }
 
+  public async getAppDataListing(appUrn: AppUrn) {
+    const app = await this.appsRepository.getAppByUrn(appUrn);
+    if (!app) {
+      throw new TranslatableError('APP_ERROR_APP_NOT_FOUND', {}, 404);
+    }
+
+    const listing = await this.appFilesManager.listAppDataListing(appUrn);
+
+    let hostPath: string | null = null;
+    try {
+      const config = this.configurationService.getConfig();
+      hostPath = getAppDataHostPath(appUrn, {
+        ciHubAppDataPath: process.env.CI_HUB_APP_DATA_PATH,
+        appDataPath: config.userSettings.appDataPath,
+        rootFolderHost: config.rootFolderHost,
+      });
+    } catch (err) {
+      this.logger.debug(`Could not resolve app data host path for listing ${appUrn}: ${err}`);
+    }
+
+    return { ...listing, hostPath };
+  }
+
   public async getAppComposeDiff(appUrn: AppUrn) {
     const app = await this.appsRepository.getAppByUrn(appUrn);
     if (!app) {
