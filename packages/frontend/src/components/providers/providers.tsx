@@ -1,6 +1,7 @@
 import { UserContextProvider } from '@/context/user-context';
-import { QueryClient, QueryClientProvider, QueryErrorResetBoundary } from '@tanstack/react-query';
+import { QueryClient, QueryClientProvider, QueryErrorResetBoundary, useQueryClient } from '@tanstack/react-query';
 import { type PropsWithChildren, Suspense, useEffect } from 'react';
+import { subscribeHubResume } from '@/lib/hub-resume';
 import { ErrorBoundary } from 'react-error-boundary';
 import { ErrorPage } from '../error/error-page';
 import { AutoThemeProvider } from './theme/auto-theme-provider';
@@ -25,6 +26,18 @@ const PageSuspense = ({ children }: PropsWithChildren) => {
     </div>
   );
 };
+
+function HubResumeQueryRefresh() {
+  const queryClient = useQueryClient();
+
+  useEffect(() => {
+    return subscribeHubResume(() => {
+      void queryClient.invalidateQueries();
+    });
+  }, [queryClient]);
+
+  return null;
+}
 
 export const Providers = ({ children }: PropsWithChildren) => {
   useEffect(() => {
@@ -64,6 +77,7 @@ export const Providers = ({ children }: PropsWithChildren) => {
           >
             <Suspense fallback={<PageSuspense />}>
               <UserContextProvider>
+                <HubResumeQueryRefresh />
                 <DesktopPortalAuthListener />
                 <DesktopInstallIntentListener />
                 <HubSessionRefresh />

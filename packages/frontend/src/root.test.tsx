@@ -219,6 +219,20 @@ describe('root clientLoader registration gating', () => {
     }
   });
 
+  it('gives up on a hung user-context fetch instead of sitting on Connecting to local API', async () => {
+    vi.useFakeTimers();
+    resolveRegistrationStatus.mockResolvedValue(makeStatus('locally_ready', true));
+    userContext.mockReturnValue(new Promise(() => undefined));
+
+    const pending = clientLoader({ request: new Request('http://localhost/') } as never);
+    await vi.advanceTimersByTimeAsync(8_000);
+    const result = (await pending) as Response;
+
+    expect(result.status).toBe(302);
+    expect(result.headers.get('Location')).toBe('/login');
+    vi.useRealTimers();
+  });
+
   it('keeps login available and sends root there when registration status is temporarily unavailable', async () => {
     resolveRegistrationStatus.mockResolvedValue(null);
 
