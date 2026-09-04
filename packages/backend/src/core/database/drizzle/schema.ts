@@ -323,3 +323,17 @@ export const hostEventLog = pgTable(
   },
   (table) => [index('host_event_log_created_at_idx').on(table.createdAt)],
 );
+
+/**
+ * Hub-side cache of Portal marketplace app entitlement checks.
+ *
+ * Portal is the till. This table is UX only — a modified Hub can skip it.
+ * TTL and start-grace live in MarketplaceEntitlementService, not here.
+ */
+export const entitlementCache = pgTable('entitlement_cache', {
+  appUrn: varchar('app_urn').primaryKey().notNull(),
+  entitled: boolean().notNull(),
+  reason: varchar(),
+  paymentUrl: varchar('payment_url'),
+  cachedAt: timestamp('cached_at', { mode: 'string' }).defaultNow().notNull(),
+});

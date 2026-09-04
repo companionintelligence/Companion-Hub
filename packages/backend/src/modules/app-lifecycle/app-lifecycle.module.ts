@@ -22,6 +22,7 @@ import { AppLifecycleService } from './app-lifecycle.service';
 import { ExposureSyncService } from './exposure-sync.service';
 import { AppOperationRegistry } from './app-operation-registry';
 import { AppStatusSyncService } from './app-status-sync.service';
+import { PortalModule } from '@/core/portal/portal.module';
 
 @Module({
   imports: [
@@ -39,6 +40,7 @@ import { AppStatusSyncService } from './app-status-sync.service';
     UserModule,
     NetworkModule,
     ApiKeyModule,
+    PortalModule,
   ],
   providers: [
     HubAccessService,

@@ -17,6 +17,7 @@ import type { ModuleRef } from '@nestjs/core';
 import { parseComposeJson } from '@ci-hub/common/schemas';
 import type { AppUrn } from '@ci-hub/common/types';
 import { ErrorReportingService, type AppFailurePhase } from '@/core/error-reporting/error-reporting.service';
+import { MarketplaceEntitlementService } from '@/core/portal/marketplace-entitlement.service';
 import { buildOriginServerName, buildPublicWebIdentity, normalizeStoredHostname, resolvePublicDomainRoot } from '@ci-hub/common/types';
 import Dockerode from 'dockerode';
 import { ZodError } from 'zod';
@@ -72,6 +73,22 @@ export class AppLifecycleCommand {
     protected moduleRef: ModuleRef,
     protected docker: Dockerode,
   ) {}
+
+  protected async assertMarketplaceEntitlement(appUrn: AppUrn, mode: 'install' | 'start' | 'update'): Promise<void> {
+    const entitlements = this.moduleRef.get(MarketplaceEntitlementService, { strict: false });
+    if (!entitlements) {
+      return;
+    }
+    if (mode === 'start') {
+      await entitlements.assertForStart(appUrn);
+      return;
+    }
+    if (mode === 'update') {
+      await entitlements.assertForUpdate(appUrn);
+      return;
+    }
+    await entitlements.assertForInstall(appUrn);
+  }
 
   protected async ensureAppDir(appUrn: AppUrn, form: AppEventFormInput, options?: { excludeSubnets?: string[] }): Promise<void> {
     const appFilesManager = this.moduleRef.get(AppFilesManager, { strict: false });
