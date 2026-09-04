@@ -59,7 +59,7 @@ export class MarketplaceWhoIsService {
       return items;
     }
 
-    const urns = items.map((item) => urnOf(item)).filter((urn): urn is AppUrn => Boolean(urn) && urn.includes(':'));
+    const urns = items.map((item) => urnOf(item)).filter((urn): urn is AppUrn => urn?.includes(':') ?? false);
     const map = await this.canMap(userId, urns, surface);
     return items.filter((item) => {
       const urn = urnOf(item);

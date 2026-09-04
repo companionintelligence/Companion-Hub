@@ -66,7 +66,9 @@ export class MarketplaceController {
       throw new BadRequestException('Invalid pageSize');
     }
     const res = await this.marketplaceService.searchApps({ search, pageSize: size, cursor, category, storeId });
-    const data = await this.whois.filterSessionByView(req, res.data, (app) => app.urn, 'store');
+    // `searchApps` returns a union of two row shapes, and TS cannot infer a single
+    // `T` from `A[] | B[]` — name the element type so both arms widen into one array.
+    const data = await this.whois.filterSessionByView<(typeof res.data)[number]>(req, res.data, (app) => app.urn, 'store');
 
     return SearchAppsDto.parse({ ...res, data }, { reportOnly: true });
   }
