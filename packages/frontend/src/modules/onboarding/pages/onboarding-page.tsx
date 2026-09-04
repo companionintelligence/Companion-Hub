@@ -83,7 +83,7 @@ function Shell({ children }: { children: React.ReactNode }) {
   return (
     <div className="flex flex-col items-center overflow-y-auto px-4 py-8" style={{ height: 'calc(100vh - var(--titlebar-height, 0px))' }}>
       <div className="w-full max-w-[82.94rem]">
-        <div className="mb-8 flex flex-col items-center text-center sm:mb-10">
+        <div className="mb-8 mt-[10vh] flex flex-col items-center text-center sm:mb-10">
           <div
             className="mb-3 flex h-14 w-14 items-center justify-center overflow-hidden rounded-[30%] border border-primary/30 bg-primary/10 p-2 shadow-sm"
             data-testid="onboarding-brand-mark"
@@ -96,7 +96,7 @@ function Shell({ children }: { children: React.ReactNode }) {
               className="h-10 w-10 object-contain"
             />
           </div>
-          <h1 className="text-2xl font-bold tracking-tight text-foreground sm:text-3xl">{t('ONBOARDING_SET_UP_YOUR_COMPANION_HUB')}</h1>
+          <h1 className="text-2xl font-bold tracking-tight text-foreground sm:text-3xl">{t('ONBOARDING_SET_UP_COMPANION_HUB')}</h1>
         </div>
         {children}
       </div>

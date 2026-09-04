@@ -331,7 +331,7 @@ describe('OnboardingPage (single vertical form)', () => {
   it('renders config sections and step 4 (app picker) on the same page', () => {
     renderPage();
     expect(screen.getByRole('img', { name: 'CI-Server e-brain logo' })).toHaveAttribute('src', '/brands/ci-server-e-brain.png');
-    expect(screen.getByRole('heading', { name: 'Set Up Your Companion Hub' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Set Up Companion Hub' })).toBeInTheDocument();
     expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument();
     expect(screen.getByTestId('recommendations-step')).toBeInTheDocument();
   });
