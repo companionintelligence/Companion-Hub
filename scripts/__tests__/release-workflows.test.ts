@@ -206,3 +206,22 @@ describe('no workflow publishes to the private ci-os-hub package', () => {
     expect(content).not.toMatch(/ghcr\.io\/companionintelligence\/ci-os-hub/);
   });
 });
+
+describe('uninstall cleanup supports both Hub identity generations', () => {
+  const cleanupFiles = [
+    'distribution/scripts/uninstall-cleanup.sh',
+    'distribution/scripts/uninstall-cleanup.ps1',
+    'distribution/scripts/update-package-manifests.sh',
+    'distribution/scoop/companion-hub.json',
+    'distribution/publish/scoop-bucket/companion-hub.json',
+  ];
+
+  it.each(cleanupFiles)('%s discovers canonical and legacy labels and networks', (file) => {
+    const content = fs.readFileSync(path.join(repoRoot, file), 'utf-8');
+
+    expect(content).toContain('ci-hub.managed=true');
+    expect(content).toContain('ci-os-hub.managed=true');
+    expect(content).toContain('ci-hub_network');
+    expect(content).toContain('ci-os-hub_network');
+  });
+});

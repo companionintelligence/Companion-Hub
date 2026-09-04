@@ -74,15 +74,19 @@ if command -v docker >/dev/null 2>&1; then
 
   # Marketplace apps run as their own compose projects (<app>_<store>), separate
   # from the Hub stack. Hub stamps every managed app container with
-  # `ci-os-hub.managed=true` (store-agnostic). Discover the project set from those
-  # containers, then remove each project's containers, networks (except the shared
-  # Hub network), volumes, and images.
-  docker ps -a --filter "label=ci-os-hub.managed=true" \
-    --format '{{.Label "com.docker.compose.project"}}' 2>/dev/null | awk 'NF && !seen[$0]++' |
+  # `ci-hub.managed=true`; pre-rename apps carry `ci-os-hub.managed=true`.
+  # Discover the union, then remove each project's containers, networks (except
+  # the shared Hub networks), volumes, and images.
+  {
+    docker ps -a --filter "label=ci-hub.managed=true" \
+      --format '{{.Label "com.docker.compose.project"}}' 2>/dev/null || true
+    docker ps -a --filter "label=ci-os-hub.managed=true" \
+      --format '{{.Label "com.docker.compose.project"}}' 2>/dev/null || true
+  } | awk 'NF && !seen[$0]++' |
     while IFS= read -r project; do
       [ -n "$project" ] || continue
       case "$project" in *[!A-Za-z0-9_.-]*) continue ;; esac
-      # Hub's own services also carry ci-os-hub.managed=true; the dedicated Hub-stack
+      # Hub's own services also carry managed=true; the dedicated Hub-stack
       # cleanup below is the single source of truth, so skip it here.
       case "$project" in ci-os-hub|ci-hub) continue ;; esac
       project_images="$(snapshot_project_images "$project")"
@@ -91,7 +95,7 @@ if command -v docker >/dev/null 2>&1; then
       docker network ls --filter "label=com.docker.compose.project=$project" --format '{{.Name}}' 2>/dev/null |
         while IFS= read -r net; do
           case "$net" in
-            ''|bridge|host|none|ci_os_hub_network|ci-os-hub_network) ;;
+            ''|bridge|host|none|ci_hub_network|ci-hub_network|ci_os_hub_network|ci-os-hub_network) ;;
             *) run_cmd "docker network rm $net" || true ;;
           esac
         done
@@ -106,6 +110,8 @@ if command -v docker >/dev/null 2>&1; then
     {
       collect_names --filter "label=com.docker.compose.project=ci-os-hub"
       collect_names --filter "label=com.docker.compose.project=ci-hub"
+      collect_names --filter "network=ci_hub_network"
+      collect_names --filter "network=ci-hub_network"
       collect_names --filter "network=ci_os_hub_network"
       collect_names --filter "network=ci-os-hub_network"
     } | awk 'NF && !seen[$0]++'
@@ -117,7 +123,7 @@ if command -v docker >/dev/null 2>&1; then
     done
   fi
 
-  for network in ci_os_hub_network ci-os-hub_network; do
+  for network in ci_hub_network ci-hub_network ci_os_hub_network ci-os-hub_network; do
     run_cmd "docker network rm $network" || true
   done
 
