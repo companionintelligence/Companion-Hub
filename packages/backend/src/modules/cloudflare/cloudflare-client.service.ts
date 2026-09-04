@@ -527,21 +527,20 @@ export class CloudflareClientService {
   }
 
   /**
-   * Ask CI-Cloud to release a custom domain this device is serving.
+   * Ask CI-Cloud to stop serving a custom domain on this device.
    *
-   * ⚠ THIS DESTROYS THE ORGANIZATION'S CONNECTION TO THE DOMAIN. CI-Cloud
-   * cannot park a connected domain — it has no call that clears a Cloudflare
-   * `custom_origin_server`, so a row left connected-but-unbound is a live
-   * certificate over a permanent 404 that nothing can repair — which means
-   * "stop serving this" and "give this up" are the same operation. Getting the
-   * domain back needs a person in the Entri modal.
+   * ⚠ THIS PARKS THE DOMAIN; IT DOES NOT GIVE IT UP. CI-Cloud clears the
+   * routing and the Cloudflare origin and leaves the row, the ownership proof
+   * and the certificate intact — the same shape connect-first/bind-later
+   * creates. The organization keeps the domain and can point it at another app
+   * with an ordinary bind; nothing here needs a person in the Entri modal.
    *
-   * So this is only ever called for a choice a person just made in the dialog,
-   * never from a heartbeat's own reasoning.
+   * Disconnecting a domain is still a session-and-managing-role act in the
+   * portal, and no Hub path reaches it.
    *
-   * `DOMAIN_NOT_FOUND` is reported as SUCCESS. A Hub that released a domain and
-   * lost the response asks again and finds the row gone — which is the state it
-   * asked for. Treating that as a failure would leave the operator's choice
+   * `DOMAIN_NOT_FOUND` is reported as SUCCESS. A Hub that parks a domain and
+   * loses the response asks again and finds nothing to park — which is the state
+   * it asked for. Treating that as a failure would leave the operator's choice
    * pending forever against a domain that has already stopped serving.
    */
   async unbindCustomDomain(

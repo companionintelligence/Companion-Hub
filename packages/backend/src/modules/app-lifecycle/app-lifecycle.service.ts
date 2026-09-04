@@ -994,9 +994,9 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
      * the thing they had just given up come back.
      *
      * Guarded on `existingApp.customDomain` so a fresh install, where nothing is
-     * bound and there is nothing to release, never reaches CI-Cloud at all.
+     * bound and there is nothing to unpoint, never reaches CI-Cloud at all.
      * Placed with the other refusals, before anything is written or queued, for
-     * the reason the settings path states: a release that did not happen must not
+     * the reason the settings path states: a park that did not happen must not
      * take the binding with it.
      */
     if (parsedForm.customDomain === '' && existingApp && normalizeStoredHostname(existingApp.customDomain)) {
@@ -2019,7 +2019,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     }
 
     /*
-     * ── GIVING THE DOMAIN UP, BEFORE ANYTHING ELSE IS WRITTEN ────────────────
+     * ── STOP SERVING IT, BEFORE ANYTHING ELSE IS WRITTEN ─────────────────────
      *
      * `customDomain: ''` is the picker's "use the platform address". It used to
      * write a null intent and stop, which changed nothing anybody could see: the
@@ -2028,11 +2028,12 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
      * serving a hostname the operator had just asked it to give up — with a
      * success toast on top (CI-Engineering#208, defect 1).
      *
-     * ⚠ HERE, AND NOT IN THE SYNC PASS, because of what a release costs.
-     * CI-Cloud cannot park a connected domain, so releasing one destroys the
-     * organization's connection to it and only a person in the Entri modal can
-     * put it back. That is not a decision a heartbeat may reach on its own; it
-     * may only carry an instruction somebody just gave, which is this save.
+     * ⚠ HERE, AND NOT IN THE SYNC PASS, because this is an ANSWER rather than a
+     * convergence. CI-Cloud parks the domain — the organization keeps it, and
+     * another bind points it somewhere else — so the cost is not the reason.
+     * The reason is that only the save that cleared the picker knows an operator
+     * asked for it, and the person who asked should be told whether it worked. A
+     * heartbeat has no such instruction to carry.
      *
      * ⚠ AND BEFORE THE ROW IS WRITTEN, so a refusal leaves the app exactly as it
      * was. Clearing the binding locally after a failed release would stop the

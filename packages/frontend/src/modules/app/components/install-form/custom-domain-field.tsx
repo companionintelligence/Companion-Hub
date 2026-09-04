@@ -147,8 +147,8 @@ export function CustomDomainField<TFormValues extends FieldValues>({
    *
    * `boundAppSlug` is only ever set for an app on this device, so a row naming
    * this app is CI-Cloud saying it delivers that hostname here — which is the
-   * only state a release can act on, and the only one where clearing the picker
-   * is irreversible. Derived rather than passed in because the answer has to be
+   * only state a park can act on, and the only one where clearing the picker
+   * does anything at all. Derived rather than passed in because the answer has to be
    * CI-Cloud's: `app.custom_domain` is a copy of it that goes stale between
    * syncs, and a stale copy would either hide the warning or show it for a
    * domain that has already gone.
@@ -279,13 +279,17 @@ export function CustomDomainField<TFormValues extends FieldValues>({
               <p className="mt-2 text-xs text-muted-foreground">
                 {selected === PLATFORM_ADDRESS
                   ? /*
-                     * ⚠ SAY THAT SAVING RELEASES IT, WHEN IT WILL. Clearing the
-                     * picker for an app that is currently SERVING a domain is not
-                     * a local preference: CI-Cloud cannot park a connected domain,
-                     * so the save gives it up entirely and only a person in the
-                     * portal can reconnect it. Offering that behind the same
-                     * neutral sentence used when nothing is bound would be the
-                     * one place this dialog hides an irreversible act.
+                     * ⚠ SAY WHAT THE SAVE WILL DO, WHEN IT WILL DO SOMETHING.
+                     * Clearing the picker for an app that is currently SERVING a
+                     * domain takes that domain off the air; clearing it when
+                     * nothing is bound changes nothing at all. Those are
+                     * different sentences, and the neutral one for both would
+                     * leave an operator unsure whether they had just stopped
+                     * serving a customer's hostname.
+                     *
+                     * It is not irreversible — CI-Cloud parks the domain and the
+                     * organization keeps it — so the copy says where it goes
+                     * rather than warning about a loss that does not happen.
                      */
                     servingDomain
                     ? t('APP_INSTALL_FORM_CUSTOM_DOMAIN_RELEASE_HINT')

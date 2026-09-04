@@ -188,7 +188,7 @@
   "NETWORK_ERROR_NO_AVAILABLE_SUBNETS": "No available subnets left",
   "NETWORK_ERROR_NO_AVAILABLE_PORTS": "No available ports in the configured range",
   "APP_ERROR_ARCHITECTURE_NOT_SUPPORTED": "Your architecture {{arch}} is not supported by app {{id}}",
-  "APP_ERROR_CUSTOM_DOMAIN_RELEASE_FAILED": "Could not release the custom domain for {{id}}. {{message}}",
+  "APP_ERROR_CUSTOM_DOMAIN_RELEASE_FAILED": "Could not stop serving the custom domain for {{id}}. {{message}}",
   "APP_ERROR_DOMAIN_ALREADY_IN_USE": "Domain {{domain}} is already in use by app {{id}}",
   "APP_ERROR_LOCAL_SUBDOMAIN_ALREADY_IN_USE": "Subdomain {{subdomain}} is already in use by app {{id}}",
   "APP_ERROR_DOMAIN_NOT_VALID": "Domain {{domain}} is not a valid domain",
@@ -1916,5 +1916,5 @@
   "APP_INSTALL_FORM_CUSTOM_DOMAIN_TAKEOVER_BODY_ELSEWHERE": "{{domain}} is serving an app on another Hub in this organization. Choosing it here moves it to this Hub, and that app goes back to its platform address without warning.",
   "APP_INSTALL_FORM_CUSTOM_DOMAIN_TAKEOVER_CONFIRM": "Move it here",
   "APP_INSTALL_FORM_CUSTOM_DOMAIN_TAKEOVER_CANCEL": "Leave it where it is",
-  "APP_INSTALL_FORM_CUSTOM_DOMAIN_RELEASE_HINT": "Saving releases this domain from CI-Cloud. The organization will have to reconnect it to use it again."
+  "APP_INSTALL_FORM_CUSTOM_DOMAIN_RELEASE_HINT": "Saving stops this app serving the domain. It stays connected to your organization, ready to point at another app."
 }

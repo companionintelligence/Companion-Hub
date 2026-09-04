@@ -688,28 +688,27 @@ export class ExposureSyncService {
 
   /**
    * ═══════════════════════════════════════════════════════════════════════════
-   * GIVE A DOMAIN UP, ON BEHALF OF SOMEBODY WHO JUST SAID TO
+   * STOP SERVING A DOMAIN, ON BEHALF OF SOMEBODY WHO JUST SAID TO
    * ═══════════════════════════════════════════════════════════════════════════
    *
-   * The counterpart to {@link bindCustomDomainIntents}, and deliberately NOT
-   * part of it. Binding is something a heartbeat does: it is idempotent, it
-   * retries until CI-Cloud reports the domain delivered, and a redundant attempt
-   * changes nothing. Releasing is none of those. CI-Cloud cannot park a
-   * connected domain — it has no call that clears a Cloudflare
-   * `custom_origin_server`, so a row left connected-but-unbound is a live
-   * certificate over a permanent 404 — which means the only way to stop serving
-   * a domain is to give it up entirely, and getting it back needs a person in
-   * the Entri modal.
+   * The counterpart to {@link bindCustomDomainIntents}. CI-Cloud PARKS the
+   * domain — it clears the routing and the Cloudflare origin and leaves the row,
+   * the ownership proof and the certificate alone — so the organization keeps
+   * the domain and another bind points it somewhere else. Nothing here needs a
+   * person in the Entri modal, and disconnecting a domain remains a portal act
+   * no Hub path reaches.
    *
-   * So this runs where the instruction was given: synchronously, on the save
-   * that cleared the picker, with the result reported to the person who did it.
-   * A background pass must never reach it. That is also why it takes the app row
-   * rather than scanning for candidates — there is no such thing as a release
-   * this service should discover on its own.
+   * ⚠ STILL RUN WHERE THE INSTRUCTION WAS GIVEN, and not from the heartbeat.
+   * Not because it is dangerous — it is reversible — but because it is an
+   * ANSWER, not a convergence: only the save that cleared the picker knows the
+   * operator asked for it, and the person who asked should be told whether it
+   * worked. That is also why it takes the app row rather than scanning for
+   * candidates; there is no such thing as a park this service should discover on
+   * its own.
    *
    * Reports failure rather than throwing so the caller can leave the app exactly
-   * as it was: a release that did not happen must not clear the binding locally,
-   * or the app would stop publishing a hostname CI-Cloud is still serving.
+   * as it was: a park that did not happen must not clear the binding locally, or
+   * the app would stop publishing a hostname CI-Cloud is still serving.
    */
   public async releaseCustomDomain(
     app: Awaited<ReturnType<AppsRepository['getApps']>>[number],
@@ -726,7 +725,7 @@ export class ExposureSyncService {
     const orgInfo = await this.registrationService.getDeviceRegistrationInfo();
 
     if (!orgInfo?.id) {
-      return { ok: false, message: 'This Hub is not registered with CI-Cloud, so it cannot release a custom domain.' };
+      return { ok: false, message: 'This Hub is not registered with CI-Cloud, so it cannot stop serving a custom domain.' };
     }
 
     /*
@@ -780,8 +779,8 @@ export class ExposureSyncService {
      * `custom_domain` is a mirror of what CI-Cloud last reported delivered, and a
      * mirror goes stale: an operator who moves the domain to a sibling app and
      * then opens THIS app's settings before the next sync is still shown it as
-     * the current domain, and clearing the picker would fire a full release
-     * naming a domain that now serves something else.
+     * the current domain, and clearing the picker would unpoint a domain that
+     * now serves something else.
      *
      * CI-Cloud would refuse — `DOMAIN_NOT_BOUND_HERE` checks the application, not
      * only the device — but relying on that means the safety of an irreversible
@@ -824,9 +823,9 @@ export class ExposureSyncService {
       return { ok: false, message: `Could not release ${current}: ${released.message}` };
     }
 
-    this.logger.warn(
-      `[Cloudflare] ${current} was released from ${appUrn} at the operator's request. ` +
-        'The organization no longer holds that domain and must reconnect it in CI-Cloud to use it again.',
+    this.logger.info(
+      `[Cloudflare] ${appUrn} stopped serving ${current} at the operator's request. ` +
+        'The organization still holds that domain in CI-Cloud and can point it at another app.',
     );
 
     return { ok: true };
