@@ -34,6 +34,7 @@ describe('DsparkBackend', () => {
       preferredDsparkUrl: null,
     });
     delete process.env.DSPARK_URL;
+    delete process.env.DSPARK_API_KEY;
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -49,6 +50,7 @@ describe('DsparkBackend', () => {
   afterEach(() => {
     vi.useRealTimers();
     delete process.env.DSPARK_URL;
+    delete process.env.DSPARK_API_KEY;
   });
 
   // ─── Health check ───────────────────────────────────────────────
@@ -154,6 +156,20 @@ describe('DsparkBackend', () => {
   // ─── Model load / unload ────────────────────────────────────────
 
   describe('loadModel', () => {
+    it('authenticates managed admin requests without changing the public health probe', async () => {
+      process.env.DSPARK_API_KEY = 'managed-dspark-key';
+      const post = vi.fn().mockResolvedValue({ data: { ready: true, loading: false, model: 'Qwen3-8B-8bit', error: null } });
+      (axios.post as never) = post;
+
+      await backend.loadModel(TARGET);
+
+      expect(post).toHaveBeenCalledWith(
+        'http://127.0.0.1:8080/admin/load',
+        expect.anything(),
+        expect.objectContaining({ headers: { Authorization: 'Bearer managed-dspark-key' } }),
+      );
+    });
+
     it('pins confidence_threshold and kv_bits to 0 on every load — the losslessness guard', async () => {
       const post = vi.fn().mockResolvedValue({ data: { ready: true, loading: false, model: 'Qwen3-8B-8bit', error: null } });
       (axios.post as never) = post;

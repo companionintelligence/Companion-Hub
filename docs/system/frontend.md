@@ -94,6 +94,11 @@ selected speculative runner (`mlx-dspark` or MTPLX) alongside Ollama (embeddings
 actual MTPLX endpoint when the runner has to move off port 8000. A plain browser build does not
 have a native process boundary, so it retains the manual setup and re-check flow.
 
+Runner selection is exact rather than a fleet-wide install: mlx-dspark, MTPLX, vLLM, and Lucebox
+each pair only with Ollama; Ollama and operator-managed Lemonade request only Ollama. Unknown future
+backend ids retain the complete native fallback set. This keeps FTUE from downloading unrelated
+engines and lets desktop reconcile the two mutually exclusive macOS login services.
+
 `RecommendationsStep` uses the Alternatives chart treatment for its optional app discovery section:
 it shows a curated 20-app shortlist across ten categories, grouped in compact paired comparison rows. Category
 counts, repeated column labels, and the agent-selection summary are intentionally omitted so this
