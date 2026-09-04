@@ -134,6 +134,21 @@ export const InstallForm: React.FC<IProps> = ({
 
   const orgSlug = ciHubOrganizationSlug ? ciHubOrganizationSlug.toLowerCase().replace(/\s+/g, '-') : undefined;
   const defaultAppSubdomain = info.urn.split(':')[0] ?? info.urn;
+  /*
+   * The subdomain this app ROUTES on when the Local Subdomain field is empty —
+   * which is not `defaultAppSubdomain`, the field's placeholder.
+   *
+   * ⚠ THE TWO DIFFER, AND ONLY THIS ONE MAY BE COMPARED AGAINST CI-CLOUD.
+   * `resolveRoutingSubdomain` on the backend falls back to
+   * `<appName>-<appStoreSlug>`, and that is what the bind sends and what comes
+   * back as `boundAppSlug`. The placeholder is the bare app name. Comparing the
+   * placeholder against CI-Cloud's answer makes every app whose `localSubdomain`
+   * is null — an API, MCP or restore install — read as somebody else's: the
+   * picker asks the operator to confirm moving the app's own domain away from
+   * itself, and drops the hint that says the save will stop serving it.
+   */
+  const [urnAppName = info.urn, urnAppStoreSlug = ''] = info.urn.split(':');
+  const routingAppSubdomain = urnAppStoreSlug ? `${urnAppName}-${urnAppStoreSlug}` : urnAppName;
 
   const {
     register,
@@ -706,7 +721,7 @@ export const InstallForm: React.FC<IProps> = ({
              * warning about a move that is not one, and dropping the
              * irreversible-release hint for a domain that is still being served.
              */
-            currentAppSlug={watchLocalSubdomain?.trim() || defaultAppSubdomain}
+            currentAppSlug={watchLocalSubdomain?.trim() || routingAppSubdomain}
             onTakeoverChange={(confirmed) => setValue('customDomainTakeover', confirmed)}
             loading={loading}
             t={t}

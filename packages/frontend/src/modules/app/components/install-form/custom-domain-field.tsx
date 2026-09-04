@@ -1,4 +1,5 @@
 import { Button } from '@/components/ui/Button';
+import { customDomainServesAnotherApp } from '@ci-hub/common/types';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/Select';
 import type { AvailableCustomDomainsResponseDto } from '@/api-client';
 import type { Control, FieldValues, Path } from 'react-hook-form';
@@ -47,27 +48,15 @@ function describeEntry(entry: AvailableCustomDomain, currentAppSlug: string | un
   /*
    * Name the current binding before selection because choosing this live domain
    * moves it away from the app or device it serves.
+   *
+   * Asked through the shared predicate so this note, the confirmation below and
+   * the bind pass cannot disagree about which choices are moves — and so the
+   * slug comparison is canonicalized, which a bare `===` against CI-Cloud's
+   * stored slug is not.
    */
-  if (entry.boundAppSlug) {
-    return entry.boundAppSlug === currentAppSlug ? null : `${t('APP_INSTALL_FORM_CUSTOM_DOMAIN_IN_USE')} ${entry.boundAppSlug}`;
-  }
-  if (entry.boundElsewhere) return t('APP_INSTALL_FORM_CUSTOM_DOMAIN_IN_USE_ELSEWHERE');
-  return null;
-}
-
-/**
- * Would choosing this domain take it off something that is serving now?
- *
- * The same question the bind pass asks of `entry.targetHostname`, asked here of
- * what the listing can name — CI-Cloud reports `boundAppSlug` only for an app on
- * THIS device and sets `boundElsewhere` from `device_id`, so the two together
- * are the whole answer. A domain already serving the app being configured is not
- * a move.
- */
-function isTakeover(entry: AvailableCustomDomain, currentAppSlug: string | undefined): boolean {
-  if (entry.boundAppSlug) return entry.boundAppSlug !== currentAppSlug;
-
-  return entry.boundElsewhere;
+  if (!customDomainServesAnotherApp(entry, currentAppSlug)) return null;
+  if (entry.boundAppSlug) return `${t('APP_INSTALL_FORM_CUSTOM_DOMAIN_IN_USE')} ${entry.boundAppSlug}`;
+  return t('APP_INSTALL_FORM_CUSTOM_DOMAIN_IN_USE_ELSEWHERE');
 }
 
 interface CustomDomainFieldProps<TFormValues extends FieldValues> {
@@ -152,8 +141,12 @@ export function CustomDomainField<TFormValues extends FieldValues>({
    * CI-Cloud's: `app.custom_domain` is a copy of it that goes stale between
    * syncs, and a stale copy would either hide the warning or show it for a
    * domain that has already gone.
+   *
+   * The hostname itself is never rendered — only whether there is one — so this
+   * is a `some`, and it asks the shared predicate rather than a fourth
+   * hand-rolled spelling of the same comparison.
    */
-  const servingDomain = domains.find((entry) => entry.boundAppSlug && entry.boundAppSlug === currentAppSlug)?.domain ?? null;
+  const isServingCustomDomain = domains.some((entry) => entry.boundAppSlug !== null && !customDomainServesAnotherApp(entry, currentAppSlug));
   /*
    * Hide the field when no connected domains are available or the Portal cannot
    * list them. An empty dropdown would advertise an unusable feature; Companion
@@ -204,7 +197,7 @@ export function CustomDomainField<TFormValues extends FieldValues>({
                    * in the organization — from a background heartbeat, with no
                    * confirmation anywhere (CI-Engineering#208, defect 4).
                    */
-                  if (entry && isTakeover(entry, currentAppSlug)) {
+                  if (entry && customDomainServesAnotherApp(entry, currentAppSlug)) {
                     setPendingTakeover(entry);
 
                     return;
@@ -291,7 +284,7 @@ export function CustomDomainField<TFormValues extends FieldValues>({
                      * organization keeps it — so the copy says where it goes
                      * rather than warning about a loss that does not happen.
                      */
-                    servingDomain
+                    isServingCustomDomain
                     ? t('APP_INSTALL_FORM_CUSTOM_DOMAIN_RELEASE_HINT')
                     : t('APP_INSTALL_FORM_CUSTOM_DOMAIN_HINT')
                   : /*

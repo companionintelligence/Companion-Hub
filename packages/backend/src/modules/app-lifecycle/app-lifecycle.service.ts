@@ -133,7 +133,7 @@ function normalizeLocalOpenPort(parsedForm: ParsedAppForm): ParsedAppForm {
 function customDomainColumns(parsedForm: {
   customDomain?: string;
   customDomainTakeover?: boolean;
-}): { customDomainIntent: string | null; customDomainTakeover: boolean } | Record<string, never> {
+}): Partial<{ customDomainIntent: string | null; customDomainTakeover: boolean }> {
   if (parsedForm.customDomain === undefined) {
     return {};
   }
@@ -982,33 +982,6 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       throw new TranslatableError('APP_ERROR_APP_FORCE_EXPOSED', { id: appUrn });
     }
 
-    /*
-     * ── THE RELEASE APPLIES HERE TOO, OR IT IS A LIE IN ONE DIALOG OUT OF TWO ─
-     *
-     * `updateAppConfig` releases the domain when the picker is cleared. This path
-     * only cleared the intent, so a REINSTALL of an app that is currently serving
-     * one — the install dialog is reachable for an installed app, and its picker
-     * offers "use the platform address" like any other — reported success,
-     * dropped the choice, and left CI-Cloud serving. The next reconcile then
-     * re-adopted the domain and raised a restart badge, so the operator watched
-     * the thing they had just given up come back.
-     *
-     * Guarded on `existingApp.customDomain` so a fresh install, where nothing is
-     * bound and there is nothing to unpoint, never reaches CI-Cloud at all.
-     * Placed with the other refusals, before anything is written or queued, for
-     * the reason the settings path states: a park that did not happen must not
-     * take the binding with it.
-     */
-    if (parsedForm.customDomain === '' && existingApp && normalizeStoredHostname(existingApp.customDomain)) {
-      const released = await this.exposureSyncService.releaseCustomDomain(existingApp);
-
-      if (!released.ok) {
-        throw new TranslatableError('APP_ERROR_CUSTOM_DOMAIN_RELEASE_FAILED', { id: appUrn, message: released.message }, HttpStatus.BAD_GATEWAY);
-      }
-
-      await this.appRepository.updateAppById(existingApp.id, { customDomain: null });
-    }
-
     const conflictsOtherApp = <T extends { id?: number }>(candidates: T[]) =>
       existingApp ? candidates.filter((candidate) => candidate.id !== existingApp.id) : candidates;
 
@@ -1038,6 +1011,21 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       if (appsWithSamePort.length > 0) {
         throw new TranslatableError('APP_ERROR_PORT_ALREADY_IN_USE', { port: port.toString(), id: appsWithSamePort[0]?.appName });
       }
+    }
+
+    /*
+     * ── THE RELEASE APPLIES HERE TOO, OR IT IS A LIE IN ONE DIALOG OUT OF TWO ─
+     *
+     * The install dialog is reachable for an installed app and its picker offers
+     * "use the platform address" like any other. See
+     * {@link releaseClearedCustomDomain}, including why this sits AFTER the
+     * conflict refusals above rather than beside the earlier ones: it reaches
+     * CI-Cloud and writes the row, so a subdomain or port collision throwing
+     * afterwards would park the operator's domain for a reinstall they were told
+     * had failed.
+     */
+    if (existingApp) {
+      await this.releaseClearedCustomDomain(appUrn, parsedForm, existingApp);
     }
 
     if (existingApp && existingApp.status !== 'install_failed') {
@@ -1956,7 +1944,25 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
          * release never ran. The one case the field exists for was the one case
          * that could not reach it.
          */
-        (parsedForm.customDomain === '' && normalizeStoredHostname(app.customDomain) !== null));
+        (parsedForm.customDomain === '' && normalizeStoredHostname(app.customDomain) !== null) ||
+        /*
+         * ⚠ AND THE CONFIRMATION IS ITSELF A CHANGE.
+         *
+         * `toStoredConfig` deliberately keeps `customDomainTakeover` out of the
+         * snapshot, so `hasConfigChanged` cannot see it; comparing only hostnames
+         * meant a save whose ONLY new information was the operator answering the
+         * takeover question — re-picking the domain already recorded as the intent
+         * and confirming the move this time — matched on every term, short-circuited
+         * at "no changes detected", and returned a success toast having written
+         * nothing. The bind pass then read the unwritten `false` as a refusal and
+         * cleared the choice: the same defect this fixes on the install path,
+         * arriving through the settings dialog instead.
+         *
+         * Compared against what `customDomainColumns` would actually write rather
+         * than against the raw form field, so the two cannot disagree about what an
+         * answer with no choice attached means.
+         */
+        (!!parsedForm.customDomain && parsedForm.customDomainTakeover === true) !== (app.customDomainTakeover === true));
 
     const settingsChanged =
       this.hasConfigChanged(normalizeConfigForCompare((app.config ?? {}) as Record<string, unknown>), toStoredConfig(parsedForm)) ||
@@ -2021,56 +2027,14 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     /*
      * ── STOP SERVING IT, BEFORE ANYTHING ELSE IS WRITTEN ─────────────────────
      *
-     * `customDomain: ''` is the picker's "use the platform address". It used to
-     * write a null intent and stop, which changed nothing anybody could see: the
-     * bind pass skips apps with no intent, CI-Cloud went on reporting the domain
-     * delivered, the reconcile computed `next === current`, and the app kept
-     * serving a hostname the operator had just asked it to give up — with a
-     * success toast on top (CI-Engineering#208, defect 1).
-     *
-     * ⚠ HERE, AND NOT IN THE SYNC PASS, because this is an ANSWER rather than a
-     * convergence. CI-Cloud parks the domain — the organization keeps it, and
-     * another bind points it somewhere else — so the cost is not the reason.
-     * The reason is that only the save that cleared the picker knows an operator
-     * asked for it, and the person who asked should be told whether it worked. A
-     * heartbeat has no such instruction to carry.
-     *
-     * ⚠ AND BEFORE THE ROW IS WRITTEN, so a refusal leaves the app exactly as it
-     * was. Clearing the binding locally after a failed release would stop the
-     * app publishing a hostname CI-Cloud is still serving on its behalf — the
-     * app broken on a domain that still resolves, which is worse than the state
-     * the operator asked to leave.
+     * The picker's "use the platform address", acted on rather than merely
+     * recorded. See {@link releaseClearedCustomDomain} for why this runs on the
+     * save that asked for it rather than in a heartbeat, why it runs after every
+     * refusal above, and why it clears the choice in the same write that clears
+     * the binding — which has to land before `generate_env` is published, because
+     * env generation reads the ROW and not the form.
      */
-    let releasedCustomDomain = false;
-
-    if (parsedForm.customDomain === '' && normalizeStoredHostname(app.customDomain)) {
-      const released = await this.exposureSyncService.releaseCustomDomain(app);
-
-      if (!released.ok) {
-        throw new TranslatableError('APP_ERROR_CUSTOM_DOMAIN_RELEASE_FAILED', { id: appUrn, message: released.message }, HttpStatus.BAD_GATEWAY);
-      }
-
-      /*
-       * ⚠ CLEARED HERE, BEFORE `generate_env` IS PUBLISHED, AND NOT WITH THE REST
-       * OF THE FORM.
-       *
-       * Env generation does not read the form. `generateEnvFile` and the Traefik
-       * label builder both read the ROW, through
-       * `appsRepository.getAppCustomDomain` — so a `generate_env` published while
-       * `custom_domain` still names the released hostname writes
-       * `APP_PUBLIC_URL=https://<the domain we just destroyed>` and an
-       * `X-Forwarded-Host` to match. A running app recovers on the automatic
-       * restart below, but a stopped one keeps that .env until somebody starts
-       * it: the app comes up pointed at a hostname that no longer resolves, which
-       * is CI-Hub#1207's fault reintroduced from the other end.
-       *
-       * `custom_domain` is otherwise only ever written from what CI-Cloud
-       * reported delivered. This is the one exception, and it is sound because
-       * CI-Cloud has just confirmed it reports nothing.
-       */
-      await this.appRepository.updateAppById(app.id, { customDomain: null });
-      releasedCustomDomain = true;
-    }
+    await this.releaseClearedCustomDomain(appUrn, parsedForm, app);
 
     const requestId = crypto.randomUUID();
     const { success, message } = await this.appEventsQueue.publish({
@@ -2098,13 +2062,6 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       domain: parsedForm.domain ?? null,
       localSubdomain: parsedForm.localSubdomain ?? null,
       publicDomain: parsedForm.publicDomain ?? null,
-      /*
-       * Re-asserted, having already been written above so `generate_env` could
-       * see it. Kept because this call is the one that also writes `config`, and
-       * a row where the two disagree is the state `settleCommandOutcome` and the
-       * restart badge both reason from. Idempotent by construction.
-       */
-      ...(releasedCustomDomain ? { customDomain: null } : {}),
       /*
        * Absent is not clear here. Every field beside this one is rewritten from
        * the form on every save, because the settings dialog sends all of them.
@@ -2506,6 +2463,72 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
    * then refuses to act on rather than flapping over. Failing the install for it
    * would be worse than the state it prevents.
    */
+  /**
+   * ═══════════════════════════════════════════════════════════════════════════
+   * STOP SERVING THE DOMAIN WHEN THE PICKER ASKED FOR THE PLATFORM ADDRESS
+   * ═══════════════════════════════════════════════════════════════════════════
+   *
+   * `customDomain: ''` is the picker's "use the platform address". Writing a null
+   * intent and stopping changed nothing anybody could see: the bind pass skips
+   * apps with no intent, CI-Cloud went on reporting the domain delivered, the
+   * reconcile computed `next === current`, and the app kept serving a hostname
+   * the operator had just asked it to give up — with a success toast on top
+   * (CI-Engineering#208, defect 1).
+   *
+   * ⚠ HERE, AND NOT IN THE SYNC PASS, because this is an ANSWER rather than a
+   * convergence. CI-Cloud parks the domain — the organization keeps it, and
+   * another bind points it somewhere else — so the cost is not the reason. The
+   * reason is that only the save that cleared the picker knows an operator asked
+   * for it, and the person who asked should be told whether it worked. A
+   * heartbeat has no such instruction to carry.
+   *
+   * ⚠ ONE METHOD FOR BOTH DIALOGS. The settings save and a REINSTALL both offer
+   * "use the platform address", and an install path that only cleared the intent
+   * reported success, dropped the choice, and left CI-Cloud serving — after which
+   * the next reconcile re-adopted the domain and raised a restart badge, so the
+   * operator watched the thing they had just given up come back. Two copies of
+   * this sequence is how the two paths drifted apart in the first place.
+   *
+   * ⚠ CALL IT AFTER EVERY OTHER REFUSAL. It reaches CI-Cloud and writes the row,
+   * so a conflict check that throws afterwards would leave the domain parked and
+   * the binding cleared for a save the operator was told had failed.
+   *
+   * ⚠ AND IT CLEARS THE CHOICE WITH THE BINDING, IN ONE WRITE. Env generation
+   * does not read the form: `generateEnvFile` and the Traefik label builder both
+   * read the ROW, so `custom_domain` has to be null before `generate_env` is
+   * published or a stopped app keeps an `.env` pointing at a hostname that no
+   * longer serves (CI-Hub#1207 from the other end). The intent has to go in the
+   * same write, or a failure between here and the row update below leaves an
+   * intent naming the domain that was just parked — which the next bind pass
+   * would dutifully ask CI-Cloud to wire back.
+   */
+  private async releaseClearedCustomDomain(
+    appUrn: AppUrn,
+    parsedForm: ParsedAppForm,
+    app: Awaited<ReturnType<AppsRepository['getApps']>>[number],
+  ): Promise<void> {
+    // Guarded on the binding so a fresh install, or an app that never had one,
+    // never reaches CI-Cloud at all.
+    if (parsedForm.customDomain !== '' || !normalizeStoredHostname(app.customDomain)) {
+      return;
+    }
+
+    const released = await this.exposureSyncService.releaseCustomDomain(app);
+
+    if (!released.ok) {
+      /*
+       * Reported rather than swallowed, and BEFORE the row is written, so a
+       * refusal leaves the app exactly as it was. Clearing the binding locally
+       * after a failed release would stop the app publishing a hostname CI-Cloud
+       * is still serving on its behalf — the app broken on a domain that still
+       * resolves, which is worse than the state the operator asked to leave.
+       */
+      throw new TranslatableError('APP_ERROR_CUSTOM_DOMAIN_RELEASE_FAILED', { id: appUrn, message: released.message }, HttpStatus.BAD_GATEWAY);
+    }
+
+    await this.appRepository.updateAppById(app.id, { customDomain: null, customDomainIntent: null, customDomainTakeover: false });
+  }
+
   private async claimCustomDomainIntent(appId: number, customDomain: string | undefined): Promise<void> {
     if (!customDomain) {
       return;

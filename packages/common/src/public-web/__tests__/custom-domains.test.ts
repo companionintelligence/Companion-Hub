@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { indexCustomDomainsByTarget, parseAvailableCustomDomains, parseTunnelCustomDomains, selectCustomDomain } from '../custom-domains';
+import {
+  customDomainServesAnotherApp,
+  indexCustomDomainsByTarget,
+  parseAvailableCustomDomains,
+  parseTunnelCustomDomains,
+  selectCustomDomain,
+} from '../custom-domains';
 
 describe('parseTunnelCustomDomains', () => {
   it('keeps "absent" and "empty" apart', () => {
@@ -338,5 +344,46 @@ describe('parseAvailableCustomDomains and a permanently failed certificate', () 
     ]);
 
     expect(parsed).toEqual([expect.objectContaining({ domain: 'newer.acme.com', state: 'unknown', bindable: true })]);
+  });
+});
+
+describe('customDomainServesAnotherApp', () => {
+  const entry = (over: Partial<{ boundAppSlug: string | null; boundElsewhere: boolean }>) => ({
+    boundAppSlug: null as string | null,
+    boundElsewhere: false,
+    ...over,
+  });
+
+  it('canonicalizes both slugs, because CI-Cloud stores the canonical one and the Hub holds the raw one', () => {
+    /*
+     * `application.slug` is `canonicalizeAppSubdomain(<what the Hub synced>)`,
+     * while `resolveRoutingSubdomain` only trims and `localSubdomain` accepts
+     * `/^[a-zA-Z0-9-]{1,63}$/`. Compared raw, an app whose subdomain is not
+     * already canonical reads as somebody else's: its release is refused forever
+     * with "serving something else now" and the picker asks the operator to
+     * confirm moving a domain off themselves.
+     */
+    expect(customDomainServesAnotherApp(entry({ boundAppSlug: 'myapp' }), 'MyApp')).toBe(false);
+    expect(customDomainServesAnotherApp(entry({ boundAppSlug: 'my-app' }), 'my--app')).toBe(false);
+    expect(customDomainServesAnotherApp(entry({ boundAppSlug: 'comfy' }), 'comfy')).toBe(false);
+  });
+
+  it('says yes for another app on this device and for another Hub', () => {
+    expect(customDomainServesAnotherApp(entry({ boundAppSlug: 'grafana' }), 'comfy')).toBe(true);
+    expect(customDomainServesAnotherApp(entry({ boundAppSlug: 'comfy', boundElsewhere: true }), 'comfy')).toBe(true);
+    expect(customDomainServesAnotherApp(entry({ boundElsewhere: true }), 'comfy')).toBe(true);
+  });
+
+  it('says no when CI-Cloud named no app — a parked domain is not a move', () => {
+    // `application_id` is ON DELETE SET NULL, so an uninstalled app leaves a row
+    // this device still owns with nothing to name. Refusing that as "somebody
+    // else's" is how an app could never release a domain whose app it removed.
+    expect(customDomainServesAnotherApp(entry({ boundAppSlug: null }), 'comfy')).toBe(false);
+    expect(customDomainServesAnotherApp({} as never, 'comfy')).toBe(false);
+  });
+
+  it('answers "somebody else" when we cannot name ourselves', () => {
+    expect(customDomainServesAnotherApp(entry({ boundAppSlug: 'comfy' }), undefined)).toBe(true);
+    expect(customDomainServesAnotherApp(entry({ boundAppSlug: 'comfy' }), '')).toBe(true);
   });
 });

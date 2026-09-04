@@ -92,9 +92,27 @@ vi.mock('@ci-hub/common/types', () => {
     return `${nodeFqdn}:${port}`;
   };
 
+  /*
+   * The real predicate, not an approximation: the picker's confirmation, its
+   * in-use note and the Hub's bind pass all decide with this one function, and a
+   * mock that answered differently would let a divergence between them pass.
+   */
+  const customDomainServesAnotherApp = (
+    entry: { boundAppSlug: string | null; boundElsewhere: boolean },
+    appSlug: string | null | undefined,
+  ): boolean => {
+    if (entry.boundElsewhere) return true;
+
+    const theirs = entry.boundAppSlug ? sanitizeAppSubdomain(entry.boundAppSlug) : '';
+    if (!theirs) return false;
+
+    return (appSlug ? sanitizeAppSubdomain(appSlug) : '') !== theirs;
+  };
+
   return {
     buildPublicWebIdentity,
     buildTailscalePortHost,
+    customDomainServesAnotherApp,
     sanitizeAppSubdomain,
   };
 });
@@ -711,6 +729,46 @@ describe('InstallForm', () => {
 
       renderForm({ exposureMode: 'cloudflare', customDomain: 'comfy.acme.com' });
 
+      expect(screen.getByLabelText('APP_INSTALL_FORM_CUSTOM_DOMAIN')).toHaveTextContent(/^comfy\.acme\.com$/);
+    });
+
+    it("recognises the app's own domain when it has no Local Subdomain of its own", async () => {
+      /*
+       * ⚠ THE FALLBACKS HAVE TO MATCH. `resolveRoutingSubdomain` on the backend
+       * falls back to `<appName>-<appStoreSlug>`, which is what the bind sends
+       * and what CI-Cloud returns as `boundAppSlug`. The field's PLACEHOLDER is
+       * the bare app name, and comparing that instead made every app installed
+       * without a Local Subdomain — API, MCP and restore installs — read as
+       * somebody else's: the picker asked the operator to confirm moving the
+       * app's own domain away from itself.
+       */
+      MOCK_CUSTOM_DOMAINS.supported = true;
+      MOCK_CUSTOM_DOMAINS.domains = [connected({ state: 'live', boundAppSlug: 'comfyui-store', targetHostname: 'comfyui-core2-acme.example.com' })];
+
+      /*
+       * `dynamic_config: false`, because that is what leaves `localSubdomain`
+       * empty. The form auto-fills it for a dynamic-config app, and an app that
+       * carries a subdomain has no fallback to get wrong — so this is the only
+       * shape where the two fallbacks are compared against each other.
+       */
+      vi.mocked(useAppContext).mockReturnValue(CONTEXT);
+
+      render(
+        <MemoryRouter>
+          <InstallForm
+            info={{ ...INFO, dynamic_config: false } as unknown as AppInfo}
+            onSubmit={vi.fn()}
+            formId="test-form"
+            formFields={[]}
+            initialValues={{ exposureMode: 'cloudflare' }}
+          />
+        </MemoryRouter>,
+      );
+
+      fireEvent.click(screen.getByLabelText('APP_INSTALL_FORM_CUSTOM_DOMAIN'));
+      fireEvent.click(screen.getByRole('option', { name: /comfy\.acme\.com/ }));
+
+      expect(screen.queryByTestId('custom-domain-takeover-confirm')).not.toBeInTheDocument();
       expect(screen.getByLabelText('APP_INSTALL_FORM_CUSTOM_DOMAIN')).toHaveTextContent(/^comfy\.acme\.com$/);
     });
 

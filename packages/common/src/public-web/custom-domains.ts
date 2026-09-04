@@ -1,4 +1,5 @@
 import validator from 'validator';
+import { sanitizeAppSubdomain } from './identity.js';
 
 /**
  * The custom-domain bindings CI-Cloud reports back on `POST /api/tunnels/state`.
@@ -360,6 +361,60 @@ export interface AvailableCustomDomain {
   boundAppSlug: string | null;
   /** Bound to an app this Hub does not hold — another Hub in the org. */
   boundElsewhere: boolean;
+}
+
+/**
+ * Would binding this domain to `appSlug` take it off something that is serving
+ * it now?
+ *
+ * ⚠ THE ONE SPELLING, because three callers decide the same question and a
+ * divergence between them is a choice that evaporates after a success toast:
+ * the picker asks the operator to confirm a move, the bind pass refuses an
+ * unconfirmed one, and the release refuses to unpoint a domain that has moved
+ * on. A state the dialog does not warn about but the pass refuses, or the other
+ * way round, is a defect in whichever one is the odd copy out.
+ *
+ * ⚠ AND THE SLUG IS CANONICALIZED ON BOTH SIDES. `boundAppSlug` is
+ * `application.slug` as CI-Cloud stored it, which is
+ * `canonicalizeAppSubdomain(<the subdomain the Hub sent>)` — lowercased, with
+ * runs of separators collapsed. The Hub's own routing subdomain is the RAW
+ * value (`resolveRoutingSubdomain` only trims), and `localSubdomain` accepts
+ * `/^[a-zA-Z0-9-]{1,63}$/`, so `MyApp` and `my--app` both compare unequal to
+ * the slug CI-Cloud is holding for the very same app. Left raw, an app whose
+ * subdomain is not already canonical reads as somebody else's: its release is
+ * refused forever with "serving something else now", and the picker asks the
+ * operator to confirm moving a domain off themselves. CI-Portal canonicalizes
+ * both sides of every comparison it makes for exactly this reason;
+ * {@link sanitizeAppSubdomain} exists here to mirror that rule.
+ *
+ * A slug that survives neither side — absent, or punctuation that sanitizes to
+ * nothing — answers "yes, another app". Ownership that cannot be established is
+ * not ownership, and the conservative answer only ever costs a confirmation.
+ */
+export function customDomainServesAnotherApp(
+  entry: Pick<AvailableCustomDomain, 'boundAppSlug' | 'boundElsewhere'>,
+  appSlug: string | null | undefined,
+): boolean {
+  if (entry.boundElsewhere) {
+    return true;
+  }
+
+  /*
+   * CI-Cloud named no app on this device. That is a parked domain, or one whose
+   * app was uninstalled (`application_id` is `ON DELETE SET NULL`) — not a
+   * hostname being taken off somebody. Read through truthiness rather than
+   * `=== null` so a payload that omits the field, or sends punctuation that
+   * sanitizes to nothing, lands here instead of crashing the pass.
+   */
+  const theirs = entry.boundAppSlug ? sanitizeAppSubdomain(entry.boundAppSlug) : '';
+
+  if (!theirs) {
+    return false;
+  }
+
+  // No slug of our own is no claim to the domain, so the answer is "somebody
+  // else's" — which only ever costs a confirmation.
+  return (appSlug ? sanitizeAppSubdomain(appSlug) : '') !== theirs;
 }
 
 const DOMAIN_STATES = new Set(['live', 'parked', 'pending', 'securing', 'drifted', 'failed']);
