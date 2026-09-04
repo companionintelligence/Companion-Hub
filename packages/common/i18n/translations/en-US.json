@@ -1246,6 +1246,7 @@
   "APP_INSTALL_PORTAL_DOWNLOAD_UNAUTHORIZED": "Could not download this app from the marketplace. Installs need a Portal device key from pairing this Hub. If pairing never finished, or this machine could not store the key, install fails and the catalog can look slow or empty. Sign in again, or re-pair in Settings → Network.",
   "APP_INSTALL_PORTAL_DOWNLOAD_FORBIDDEN": "Your device is not authorized to install this app. Check your CI Account subscription or device registration.",
   "APP_INSTALL_PORTAL_DOWNLOAD_PAYMENT_REQUIRED": "This app requires an active subscription or payment. Check your CI Account before installing.",
+  "APP_INSTALL_PORTAL_DOWNLOAD_ASK_ADMIN": "Ask an organization owner or admin to purchase this app before installing it on this Hub.",
   "TIMEZONE_SELECTOR_LABEL": "Timezone",
   "TIMEZONE_SELECTOR_PLACEHOLDER": "Select a timezone",
   "YES": "Yes",

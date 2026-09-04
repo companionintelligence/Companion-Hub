@@ -128,6 +128,46 @@ export class PortalClientService {
     return this.fetchJson(`/store/${encodeURIComponent(slug)}/install`, { authenticated: true });
   }
 
+  /**
+   * Hub-facing till check. Returns the HTTP status so callers can tell 402
+   * (pay) from 404 (unknown / local app) from a network failure.
+   *
+   * `null` means Portal is not configured on this Hub — skip the check.
+   */
+  async checkAppEntitlement(appId: string): Promise<{
+    status: number;
+    entitled?: boolean;
+    reason?: string;
+    paymentUrl?: string;
+    code?: string;
+  } | null> {
+    if (!this.outboundPortalUrl) {
+      return null;
+    }
+
+    const response = await this.apiClient.get<{
+      entitled?: boolean;
+      reason?: string;
+      paymentUrl?: string;
+      code?: string;
+    }>('entitlements/check', {
+      headers: this.getDeviceAuthHeaders(),
+      params: { appId },
+      validateStatus: () => true,
+      timeout: 10_000,
+    });
+
+    const data = response.data && typeof response.data === 'object' ? response.data : {};
+
+    return {
+      status: response.status,
+      entitled: data.entitled,
+      reason: data.reason,
+      paymentUrl: data.paymentUrl,
+      code: data.code,
+    };
+  }
+
   async fetchStoreMetadataText(appSlug: string, filename: string): Promise<string | null> {
     if (!this.publicPortalUrl) {
       return null;
