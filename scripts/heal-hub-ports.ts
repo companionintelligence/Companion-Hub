@@ -3,7 +3,16 @@ import { readFileSync } from 'node:fs';
 import { parseEnvFile, upsertEnvVar } from './cihub-cli';
 import { isPortAvailable } from './port-availability';
 
-const HUB_STACK_CONTAINERS = new Set(['ci-os-hub', 'ci-hub-db', 'ci-os-hub-queue', 'traefik', 'cloudflared', 'hub-tailscale']);
+const HUB_STACK_CONTAINERS = new Set([
+  'ci-hub',
+  'ci-os-hub',
+  'ci-hub-db',
+  'ci-hub-queue',
+  'ci-os-hub-queue',
+  'traefik',
+  'cloudflared',
+  'hub-tailscale',
+]);
 
 function noopLog(_message: string): void {
   // Optional logging callback when none is provided.

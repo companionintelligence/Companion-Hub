@@ -87,7 +87,7 @@ describe('AppHelpers trust material (#74)', () => {
     expect(apiKeys.provisionManagedKey).toHaveBeenCalledTimes(1);
     expect(apiKeys.provisionManagedKey).toHaveBeenCalledWith(expect.objectContaining({ appUrn: officialConsumerUrn, scopes: ['app'] }));
     expect(envMap.get('HUB_APP_KEY')).toBe('minted-managed-key');
-    expect(envMap.get('HUB_URL')).toBe('http://ci-os-hub:3000');
+    expect(envMap.get('HUB_URL')).toBe('http://ci-hub:3000');
     expect(envMap.get('CI_APP_URN')).toBe(officialConsumerUrn);
     expect(envMap.get('CI_HUB_FORWARD_AUTH_ENABLED')).toBe('true');
     // Freshly minted per-app secret: 64 hex chars, never the Hub-global value.
@@ -122,7 +122,7 @@ describe('AppHelpers trust material (#74)', () => {
     expect(apiKeys.provisionManagedKey).toHaveBeenCalledWith(expect.objectContaining({ scopes: ['mcp', 'app'] }));
     expect(envMap.get('HUB_MCP_API_KEY')).toBe('minted-managed-key');
     expect(envMap.get('HUB_APP_KEY')).toBe('minted-managed-key');
-    expect(envMap.get('HUB_MCP_URL')).toBe('http://ci-os-hub:3000/api/mcp');
+    expect(envMap.get('HUB_MCP_URL')).toBe('http://ci-hub:3000/api/mcp');
   });
 
   it("mcp_client-only app (any store) keeps today's behavior: ['mcp'] scope, no HUB_APP_KEY, no forward-auth secret", async () => {

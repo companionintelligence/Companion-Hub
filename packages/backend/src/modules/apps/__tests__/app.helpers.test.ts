@@ -1316,8 +1316,8 @@ describe('AppHelpers', () => {
 
         await appHelpers.generateEnvFile(testAppUrn, {});
 
-        expect(envMap.get('HUB_URL')).toBe('http://ci-os-hub:3000');
-        expect(envMap.get('HUB_MCP_URL')).toBe('http://ci-os-hub:3000/api/mcp');
+        expect(envMap.get('HUB_URL')).toBe('http://ci-hub:3000');
+        expect(envMap.get('HUB_MCP_URL')).toBe('http://ci-hub:3000/api/mcp');
         expect(envMap.has('HUB_MCP_MESSAGES_URL')).toBe(false);
       });
 
@@ -1346,8 +1346,8 @@ describe('AppHelpers', () => {
         process.env.API_PORT = '5002';
         try {
           await appHelpers.generateEnvFile(testAppUrn, {});
-          expect(envMap.get('HUB_URL')).toBe('http://ci-os-hub:5002');
-          expect(envMap.get('HUB_MCP_URL')).toBe('http://ci-os-hub:5002/api/mcp');
+          expect(envMap.get('HUB_URL')).toBe('http://ci-hub:5002');
+          expect(envMap.get('HUB_MCP_URL')).toBe('http://ci-hub:5002/api/mcp');
           expect(envMap.has('HUB_MCP_MESSAGES_URL')).toBe(false);
         } finally {
           delete process.env.API_PORT;

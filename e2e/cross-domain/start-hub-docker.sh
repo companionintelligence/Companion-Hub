@@ -75,7 +75,7 @@ POSTGRES_HOST=ci-hub-db
 POSTGRES_PORT=6543
 POSTGRES_USERNAME=companion
 POSTGRES_DBNAME=companiondb
-RABBITMQ_HOST=ci-os-hub-queue
+RABBITMQ_HOST=ci-hub-queue
 RABBITMQ_PORT=5672
 RABBITMQ_USERNAME=companion
 RABBITMQ_PASSWORD=admin
@@ -94,7 +94,7 @@ ln -sfn .internal-e2e .internal
 echo "Starting Hub in Docker (project=$COMPOSE_PROJECT, portal=localhost:$PORTAL_PORT)..."
 
 # Ensure the base compose's ${ENV_FILE:-.env}:/data/.env volume mount picks up
-# the E2E .env (with RABBITMQ_HOST=ci-os-hub-queue, POSTGRES_HOST=ci-hub-db)
+# the E2E .env (with RABBITMQ_HOST=ci-hub-queue, POSTGRES_HOST=ci-hub-db)
 # instead of the repo-root .env (which has localhost hosts and port 6543).
 export ENV_FILE=.internal-e2e/.env
 

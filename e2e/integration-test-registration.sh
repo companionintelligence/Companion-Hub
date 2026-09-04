@@ -3,7 +3,7 @@
 # Prerequisites:
 # - The Hub is running and reachable at HUB_URL.
 # - The Portal is reachable at PORTAL_URL.
-# - Docker access is available for the ci-os-hub and related containers used below.
+# - Docker access is available for the ci-hub and related containers used below.
 set -euo pipefail
 
 PORTAL_URL="https://hub.companionintelligence.com"
@@ -106,10 +106,10 @@ reset_hub() {
   docker rm -f cloudflared 2>/dev/null && ok "Removed cloudflared container" || ok "No cloudflared to remove"
   
   # Clear tunnel token
-  docker exec ci-os-hub rm -f /app/tunnel/token 2>/dev/null && ok "Removed tunnel token" || ok "No tunnel token to remove"
+  docker exec ci-hub rm -f /app/tunnel/token 2>/dev/null && ok "Removed tunnel token" || ok "No tunnel token to remove"
   
   # Wipe registration from DB
-  docker exec ci-os-hub node -e "
+  docker exec ci-hub node -e "
     const { Client } = require('pg');
     const c = new Client({
       host: process.env.POSTGRES_HOST || 'ci-hub-db',
@@ -128,8 +128,8 @@ reset_hub() {
   ok "Wiped device_registration table"
   
   # Restart Hub container to pick up clean state
-  docker restart ci-os-hub 2>&1 | tail -1
-  ok "Restarted ci-os-hub"
+  docker restart ci-hub 2>&1 | tail -1
+  ok "Restarted ci-hub"
   
   # Wait for healthy
   for i in $(seq 1 60); do
@@ -292,8 +292,8 @@ verify_registration() {
   }
   
   # Verify tunnel token exists
-  docker exec ci-os-hub test -f /app/tunnel/token && ok "Tunnel token file exists" || fail "No tunnel token file"
-  TOKEN_LEN=$(docker exec ci-os-hub sh -c 'wc -c < /app/tunnel/token' 2>/dev/null || echo "0")
+  docker exec ci-hub test -f /app/tunnel/token && ok "Tunnel token file exists" || fail "No tunnel token file"
+  TOKEN_LEN=$(docker exec ci-hub sh -c 'wc -c < /app/tunnel/token' 2>/dev/null || echo "0")
   TOKEN_LEN=$(echo "$TOKEN_LEN" | tr -d ' ')
   [ "$TOKEN_LEN" -gt 10 ] && ok "Tunnel token has content (${TOKEN_LEN} bytes)" || fail "Tunnel token too short: ${TOKEN_LEN} bytes"
   

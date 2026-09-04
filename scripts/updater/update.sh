@@ -4,9 +4,9 @@ set -o nounset
 set -o pipefail
 
 VERSION="latest"
-REPO="companionintelligence/ci-os-hub"
 COMPOSE_FILE="${COMPOSE_FILE:-docker-compose.prod.yml}"
-HUB_CONTAINER="${HUB_CONTAINER_NAME:-ci-os-hub}"
+COMPOSE_PROJECT="${COMPOSE_PROJECT:-ci-hub}"
+HUB_CONTAINER="${HUB_CONTAINER_NAME:-ci-hub}"
 HUB_PORT="${API_PORT:-5002}"
 HEALTH_TIMEOUT=120
 SKIP_BACKUP="${SKIP_BACKUP:-false}"
@@ -26,7 +26,7 @@ while [ -n "${1-}" ]; do
 done
 
 echo "============================================"
-echo "  CI-OS-Hub Update — Version: ${VERSION}"
+echo "  Companion Hub Update — Version: ${VERSION}"
 echo "============================================"
 
 # ── Pre-flight checks ──────────────────────────
@@ -44,7 +44,7 @@ fi
 
 if [ -z "${ROOT_FOLDER_HOST:-}" ]; then
   echo "ERROR: ROOT_FOLDER_HOST is not set. Set it in .env or export it."
-  echo "       Example: ROOT_FOLDER_HOST=/opt/ci-os-hub/data"
+  echo "       Example: ROOT_FOLDER_HOST=/opt/companion-hub/data"
   exit 1
 fi
 
@@ -136,13 +136,13 @@ fi
 
 echo ""
 echo "4. Pulling new images..."
-docker compose -f "$COMPOSE_FILE" pull
+docker compose --project-name "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" pull
 
 # ── Restart Hub ─────────────────────────────────
 
 echo ""
 echo "5. Restarting services..."
-docker compose -f "$COMPOSE_FILE" up -d
+docker compose --project-name "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" up -d
 
 # ── Wait for health ─────────────────────────────
 
@@ -161,7 +161,7 @@ done
 
 if [ $ELAPSED -ge $HEALTH_TIMEOUT ]; then
   echo "   WARNING: Hub did not become healthy within ${HEALTH_TIMEOUT}s"
-  echo "   Check logs: docker compose -f $COMPOSE_FILE logs ci-os-hub --tail 50"
+  echo "   Check logs: docker compose -f $COMPOSE_FILE logs ci-hub --tail 50"
   exit 1
 fi
 

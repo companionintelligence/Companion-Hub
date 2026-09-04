@@ -41,8 +41,8 @@ export type ReachableEngine = {
   hubHostPorts: string[];
 };
 
-const HUB_IDENTITY_CONTAINERS = ['ci-hub-db', 'ci-os-hub'] as const;
-const HUB_IDENTITY_NETWORK = 'ci-os-hub_network';
+const HUB_IDENTITY_CONTAINERS = ['ci-hub-db', 'ci-hub', 'ci-os-hub'] as const;
+const HUB_IDENTITY_NETWORKS = ['ci-hub_network', 'ci-os-hub_network'] as const;
 const HUB_IDENTITY_VOLUME = 'ci_hub_pgdata';
 const HUB_HOST_PORTS = ['6543', '5002', '80', '443'] as const;
 
@@ -132,8 +132,10 @@ export function engineHasHubIdentity(dockerHost: string, env?: NodeJS.ProcessEnv
     const result = runDocker(['ps', '-aq', '--filter', `name=^${name}$`], dockerHost, env);
     if (result.status === 0 && result.stdout.trim().length > 0) return true;
   }
-  const network = runDocker(['network', 'ls', '-q', '--filter', `name=^${HUB_IDENTITY_NETWORK}$`], dockerHost, env);
-  if (network.status === 0 && network.stdout.trim().length > 0) return true;
+  for (const networkName of HUB_IDENTITY_NETWORKS) {
+    const network = runDocker(['network', 'ls', '-q', '--filter', `name=^${networkName}$`], dockerHost, env);
+    if (network.status === 0 && network.stdout.trim().length > 0) return true;
+  }
   const volume = runDocker(['volume', 'ls', '-q', '--filter', `name=^${HUB_IDENTITY_VOLUME}$`], dockerHost, env);
   return volume.status === 0 && volume.stdout.trim().length > 0;
 }
