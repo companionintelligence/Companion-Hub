@@ -20,6 +20,8 @@ function readWorkflow(name: string) {
 const buildContainer = readWorkflow('build-container.yml');
 const desktopRelease = readWorkflow('desktop-release.yml');
 const dockerfile = fs.readFileSync(path.join(repoRoot, 'Dockerfile'), 'utf-8');
+const updaterScript = fs.readFileSync(path.join(repoRoot, 'scripts/updater/update.sh'), 'utf-8');
+const desktopHubManager = fs.readFileSync(path.join(repoRoot, 'packages/desktop/src-tauri/src/hub_manager.rs'), 'utf-8');
 
 const GATE_JOB = 'verify-anonymous-pull:';
 
@@ -223,6 +225,27 @@ describe('uninstall cleanup supports both Hub identity generations', () => {
     expect(content).toContain('ci-os-hub.managed=true');
     expect(content).toContain('ci-hub_network');
     expect(content).toContain('ci-os-hub_network');
+  });
+});
+
+describe('Hub service rename upgrade compatibility', () => {
+  it('removes renamed service orphans during headless updates', () => {
+    expect(updaterScript).toContain('up -d --remove-orphans');
+  });
+
+  it('removes renamed service orphans on every desktop start and stop path', () => {
+    const startAt = desktopHubManager.indexOf('fn start_hub_inner');
+    const pullAt = desktopHubManager.indexOf('pub fn pull_hub_images', startAt);
+    const stopForUpdateAt = desktopHubManager.indexOf('pub fn stop_hub_for_update');
+    const stopAt = desktopHubManager.indexOf('pub fn stop_hub(', stopForUpdateAt);
+    const stopManagedAppsAt = desktopHubManager.indexOf('pub fn stop_managed_app_containers', stopAt);
+    const start = desktopHubManager.slice(startAt, pullAt);
+    const stopForUpdate = desktopHubManager.slice(stopForUpdateAt, stopAt);
+    const stop = desktopHubManager.slice(stopAt, stopManagedAppsAt);
+
+    expect(start).toMatch(/"up"\.to_string\(\),\s*"-d"\.to_string\(\),\s*"--remove-orphans"\.to_string\(\)/);
+    expect(stopForUpdate).toMatch(/"down",\s*"--remove-orphans"/);
+    expect(stop).toMatch(/"down",\s*"--remove-orphans"/);
   });
 });
 

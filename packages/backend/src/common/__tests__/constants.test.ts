@@ -3,8 +3,11 @@ import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const savedEnv = {
+  API_PORT: process.env.API_PORT,
   CI_HUB_ENVIRONMENT: process.env.CI_HUB_ENVIRONMENT,
+  HUB_CONTAINER_NAME: process.env.HUB_CONTAINER_NAME,
   NODE_ENV: process.env.NODE_ENV,
+  RABBITMQ_HOST: process.env.RABBITMQ_HOST,
 };
 
 async function loadConstants() {
@@ -12,15 +15,24 @@ async function loadConstants() {
   return import('../constants');
 }
 
+afterEach(() => {
+  if (savedEnv.API_PORT === undefined) delete process.env.API_PORT;
+  else process.env.API_PORT = savedEnv.API_PORT;
+
+  if (savedEnv.CI_HUB_ENVIRONMENT === undefined) delete process.env.CI_HUB_ENVIRONMENT;
+  else process.env.CI_HUB_ENVIRONMENT = savedEnv.CI_HUB_ENVIRONMENT;
+
+  if (savedEnv.HUB_CONTAINER_NAME === undefined) delete process.env.HUB_CONTAINER_NAME;
+  else process.env.HUB_CONTAINER_NAME = savedEnv.HUB_CONTAINER_NAME;
+
+  if (savedEnv.NODE_ENV === undefined) delete process.env.NODE_ENV;
+  else process.env.NODE_ENV = savedEnv.NODE_ENV;
+
+  if (savedEnv.RABBITMQ_HOST === undefined) delete process.env.RABBITMQ_HOST;
+  else process.env.RABBITMQ_HOST = savedEnv.RABBITMQ_HOST;
+});
+
 describe('constants environment defaults', () => {
-  afterEach(() => {
-    if (savedEnv.CI_HUB_ENVIRONMENT === undefined) delete process.env.CI_HUB_ENVIRONMENT;
-    else process.env.CI_HUB_ENVIRONMENT = savedEnv.CI_HUB_ENVIRONMENT;
-
-    if (savedEnv.NODE_ENV === undefined) delete process.env.NODE_ENV;
-    else process.env.NODE_ENV = savedEnv.NODE_ENV;
-  });
-
   it('uses production defaults only when CI_HUB_ENVIRONMENT is production', async () => {
     process.env.CI_HUB_ENVIRONMENT = 'production';
     process.env.NODE_ENV = 'development';
@@ -84,5 +96,45 @@ describe('resolveDataDir', () => {
     // Bare `turbo run dev`: turbo does not feed .env files to tasks, so NODE_ENV and
     // ROOT_FOLDER_HOST are both absent. Returning /data here is the EACCES boot crash.
     expect(resolveDataDir({}, onHost)).toBe(path.join(os.homedir(), '.ci-hub'));
+  });
+});
+
+describe('Hub Docker topology names', () => {
+  it('defaults to canonical names for current installs', async () => {
+    const { hubAppNetworkNames, hubContainerName, hubNetworkName } = await loadConstants();
+
+    expect(hubContainerName({})).toBe('ci-hub');
+    expect(hubNetworkName({})).toBe('ci-hub_network');
+    expect(hubAppNetworkNames({})).toEqual(['ci-hub_network', 'ci-os-hub_network']);
+  });
+
+  it('keeps image-only updates on the legacy topology until compose migrates', async () => {
+    const { hubAppNetworkNames, hubContainerName, hubNetworkName } = await loadConstants();
+    const legacyComposeEnv = { RABBITMQ_HOST: 'ci-os-hub-queue' };
+
+    expect(hubContainerName(legacyComposeEnv)).toBe('ci-os-hub');
+    expect(hubNetworkName(legacyComposeEnv)).toBe('ci-os-hub_network');
+    expect(hubAppNetworkNames(legacyComposeEnv)).toEqual(['ci-os-hub_network']);
+  });
+
+  it('lets the canonical compose marker override legacy persisted queue settings', async () => {
+    const { hubContainerName, hubNetworkName } = await loadConstants();
+    const migratedComposeEnv = {
+      HUB_CONTAINER_NAME: 'ci-hub',
+      RABBITMQ_HOST: 'ci-os-hub-queue',
+    };
+
+    expect(hubContainerName(migratedComposeEnv)).toBe('ci-hub');
+    expect(hubNetworkName(migratedComposeEnv)).toBe('ci-hub_network');
+  });
+
+  it('uses legacy forward auth DNS and the actual API port under the old compose', async () => {
+    delete process.env.HUB_CONTAINER_NAME;
+    process.env.RABBITMQ_HOST = 'ci-os-hub-queue';
+    process.env.API_PORT = '5002';
+
+    const { DEFAULT_FORWARD_AUTH_URL } = await loadConstants();
+
+    expect(DEFAULT_FORWARD_AUTH_URL).toBe('http://ci-os-hub:5002/api/auth/traefik');
   });
 });

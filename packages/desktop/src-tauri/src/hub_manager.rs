@@ -5788,13 +5788,13 @@ fn start_hub_inner(
             compose_path.to_string_lossy().into_owned(),
             "up".to_string(),
             "-d".to_string(),
+            "--remove-orphans".to_string(),
         ];
         if should_refresh_stack {
             compose_up_args.extend([
                 "--pull".to_string(),
                 "always".to_string(),
                 "--force-recreate".to_string(),
-                "--remove-orphans".to_string(),
             ]);
         }
         let output = match docker_command()
@@ -6067,6 +6067,7 @@ pub fn stop_hub_for_update(compose_path: &Path, env_path: &Path) -> Result<Strin
             "-f",
             &compose_path.to_string_lossy(),
             "down",
+            "--remove-orphans",
         ])
         .output()
         .map_err(|e| format!("Failed to run docker compose down: {}", e))?;
@@ -6133,6 +6134,7 @@ pub fn stop_hub(compose_path: &Path, env_path: &Path) -> Result<String, String> 
             "-f",
             &compose_path.to_string_lossy(),
             "down",
+            "--remove-orphans",
         ])
         .output()
         .map_err(|e| {

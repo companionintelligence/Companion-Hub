@@ -84,10 +84,15 @@ describe('SystemUpdateService', () => {
   });
 
   describe('performUpdate', () => {
-    it('should pull the pinned Hub image and recreate ci-hub', async () => {
+    it.each([
+      { topology: 'canonical', hubContainerName: 'ci-hub', rabbitmqHost: 'ci-hub-queue', expectedService: 'ci-hub' },
+      { topology: 'legacy', hubContainerName: '', rabbitmqHost: 'ci-os-hub-queue', expectedService: 'ci-os-hub' },
+    ])('should pull the pinned Hub image and recreate the $topology service', async ({ hubContainerName, rabbitmqHost, expectedService }) => {
       vi.useFakeTimers();
       vi.stubEnv('ROOT_FOLDER_HOST', '/host/companion-hub');
       vi.stubEnv('CI_HUB_IMAGE', `${HUB_STACK_IMAGE_REPO}:old`);
+      vi.stubEnv('HUB_CONTAINER_NAME', hubContainerName);
+      vi.stubEnv('RABBITMQ_HOST', rabbitmqHost);
       vi.mocked(fs.existsSync).mockReturnValue(true);
       vi.mocked(fs.readFileSync).mockReturnValue(`CI_HUB_IMAGE=${HUB_STACK_IMAGE_REPO}:old\nCI_HUB_VERSION=old\n`);
       vi.mocked(fs.mkdirSync).mockImplementation(() => undefined);
@@ -136,7 +141,7 @@ describe('SystemUpdateService', () => {
       expect(upCall[1]).toContain('always');
       expect(upCall[1]).toContain('--force-recreate');
       expect(upCall[1]).toContain('--no-deps');
-      expect(upCall[1]).toContain('ci-hub');
+      expect(upCall[1]).toContain(expectedService);
       expect(upCall[1]).toContain('--project-directory');
       expect(upCall[1]).toContain('/host/companion-hub');
       expect(upCall[2].env.CI_HUB_IMAGE).toBe(`${HUB_STACK_IMAGE_REPO}:1.1.0`);

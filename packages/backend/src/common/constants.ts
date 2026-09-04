@@ -64,6 +64,7 @@ export const DEFAULT_POSTGRES_PORT = '6543';
 
 // Message queue
 export const DEFAULT_RABBITMQ_HOST = 'ci-hub-queue';
+export const LEGACY_RABBITMQ_HOST = 'ci-os-hub-queue';
 export const DEFAULT_RABBITMQ_USERNAME = 'companion';
 export const DEFAULT_RABBITMQ_PASSWORD = 'admin';
 
@@ -84,11 +85,22 @@ export const LEGACY_HUB_MANAGED_LABEL = 'ci-os-hub.managed';
 export const LEGACY_HUB_APPURN_LABEL = 'ci-os-hub.appurn';
 
 export function hubContainerName(env: NodeJS.ProcessEnv = process.env): string {
-  return env.HUB_CONTAINER_NAME || DEFAULT_HUB_CONTAINER_NAME;
+  if (env.HUB_CONTAINER_NAME) return env.HUB_CONTAINER_NAME;
+
+  // An image-only update can start this backend under the pre-rename compose
+  // file. That file has no HUB_CONTAINER_NAME marker, but does explicitly use
+  // the legacy queue host. Keep all generated DNS/network writes on the old
+  // topology until the desktop/updater installs the canonical compose file.
+  return env.RABBITMQ_HOST === LEGACY_RABBITMQ_HOST ? LEGACY_HUB_CONTAINER_NAME : DEFAULT_HUB_CONTAINER_NAME;
 }
 
 export function hubNetworkName(env: NodeJS.ProcessEnv = process.env): string {
   return `${hubContainerName(env)}_network`;
+}
+
+export function hubAppNetworkNames(env: NodeJS.ProcessEnv = process.env): string[] {
+  const primary = hubNetworkName(env);
+  return primary === LEGACY_NETWORK_NAME ? [primary] : [primary, LEGACY_NETWORK_NAME];
 }
 
 export function isHubApplianceContainerName(name: string): boolean {
@@ -119,7 +131,7 @@ export function ipOnHubNetwork(networks?: Record<string, { IPAddress?: string } 
 }
 
 // Traefik
-export const DEFAULT_FORWARD_AUTH_URL = `http://${DEFAULT_HUB_CONTAINER_NAME}:3000/api/auth/traefik`;
+export const DEFAULT_FORWARD_AUTH_URL = `http://${hubContainerName()}:${process.env.API_PORT || '3000'}/api/auth/traefik`;
 
 // DNS
 export const DEFAULT_DNS_IP = '9.9.9.9';

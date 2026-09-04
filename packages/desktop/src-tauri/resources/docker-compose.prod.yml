@@ -169,6 +169,9 @@ services:
         aliases:
           - ci-os-hub
     environment:
+      # Runtime marker: if absent, a new image detects the pre-rename compose
+      # from its legacy queue host and keeps writing ci-os-hub DNS/network names.
+      HUB_CONTAINER_NAME: ci-hub
       OLLAMA_URL: http://host.docker.internal:11434
       VLLM_URL: ${VLLM_URL:-http://host.docker.internal:8000}
       MTPLX_URL: ${MTPLX_URL:-http://host.docker.internal:8000}

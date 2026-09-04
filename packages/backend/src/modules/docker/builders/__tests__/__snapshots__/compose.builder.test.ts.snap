@@ -10,6 +10,8 @@ exports[`DockerComposeBuilder > should be able to parse a compose.json file 1`] 
         gw_priority: 0
       ci-hub_network:
         gw_priority: 1
+      ci-os-hub_network:
+        gw_priority: 0
     environment:
       UPLOAD_FOLDER: /var/uploads
       DATABASE_URL: mysql+pymysql://cihub:\${CTFD_MYSQL_DB_PASSWORD}@ctfd-db/ctfd
@@ -70,6 +72,9 @@ networks:
   ci-hub_network:
     name: ci-hub_network
     external: true
+  ci-os-hub_network:
+    name: ci-os-hub_network
+    external: true
   nginx_store-id_network:
     name: nginx_store-id_network
     external: false
@@ -95,6 +100,9 @@ exports[`DockerComposeBuilder > should build a docker-compose file 1`] = `
 networks:
   ci-hub_network:
     name: ci-hub_network
+    external: true
+  ci-os-hub_network:
+    name: ci-os-hub_network
     external: true
   nginx_store-id_network:
     name: nginx_store-id_network
@@ -202,6 +210,9 @@ networks:
   ci-hub_network:
     name: ci-hub_network
     external: true
+  ci-os-hub_network:
+    name: ci-os-hub_network
+    external: true
   home-assistant_store-id_network:
     name: home-assistant_store-id_network
     external: false
@@ -242,6 +253,9 @@ networks:
   ci-hub_network:
     name: ci-hub_network
     external: true
+  ci-os-hub_network:
+    name: ci-os-hub_network
+    external: true
   nginx_store-id_network:
     name: nginx_store-id_network
     external: false
@@ -270,6 +284,9 @@ exports[`DockerComposeBuilder > should correctly format devices 1`] = `
 networks:
   ci-hub_network:
     name: ci-hub_network
+    external: true
+  ci-os-hub_network:
+    name: ci-os-hub_network
     external: true
   nginx_store-id_network:
     name: nginx_store-id_network
@@ -301,6 +318,9 @@ networks:
   ci-hub_network:
     name: ci-hub_network
     external: true
+  ci-os-hub_network:
+    name: ci-os-hub_network
+    external: true
   nginx_store-id_network:
     name: nginx_store-id_network
     external: false
@@ -327,6 +347,9 @@ exports[`DockerComposeBuilder > should correctly format entrypoint as string 1`]
 networks:
   ci-hub_network:
     name: ci-hub_network
+    external: true
+  ci-os-hub_network:
+    name: ci-os-hub_network
     external: true
   nginx_store-id_network:
     name: nginx_store-id_network
@@ -357,6 +380,9 @@ exports[`DockerComposeBuilder > should correctly format logging 1`] = `
 networks:
   ci-hub_network:
     name: ci-hub_network
+    external: true
+  ci-os-hub_network:
+    name: ci-os-hub_network
     external: true
   nginx_store-id_network:
     name: nginx_store-id_network

@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { Inject, Injectable, type OnApplicationShutdown } from '@nestjs/common';
-import { APP_DATA_DIR, DATA_DIR, HUB_STACK_REGISTRY_REPO } from './common/constants';
+import { APP_DATA_DIR, DATA_DIR, HUB_STACK_REGISTRY_REPO, hubContainerName } from './common/constants';
 import { withTimeout } from './common/helpers/with-timeout';
 import { CacheService, ONE_DAY_IN_SECONDS } from './core/cache/cache.service';
 import { ConfigurationService } from './core/config/configuration.service';
@@ -280,7 +280,9 @@ export class AppService implements OnApplicationShutdown {
       // Copy dynamic config
       const dynamicDestDir = path.join(dataDir, 'state', 'traefik', 'dynamic');
       await this.filesystem.createDirectory(dynamicDestDir);
-      await this.copyTraefikConfigFile(path.join(assetsTraefikDir, 'dynamic', 'dynamic.yml'), path.join(dynamicDestDir, 'dynamic.yml'));
+      await this.copyTraefikConfigFile(path.join(assetsTraefikDir, 'dynamic', 'dynamic.yml'), path.join(dynamicDestDir, 'dynamic.yml'), (content) =>
+        content.replaceAll('{{HUB_CONTAINER_NAME}}', hubContainerName()),
+      );
     } catch (error) {
       this.logger.warn(`Failed to copy Traefik config files: ${error instanceof Error ? error.message : error}. Traefik may not start correctly.`);
     }
