@@ -98,6 +98,19 @@ export class ExposureSyncService {
   private readonly lastTailscaleServeToastAt = new Map<string, number>();
   private static readonly TAILSCALE_SERVE_FAILURE_COOLDOWN_MS = 5 * 60_000;
 
+  private readonly lastCustomDomainRestartAt = new Map<AppUrn, number>();
+  /**
+   * Floor on how often a single app may be recreated to follow its custom domain.
+   *
+   * The reconcile writes the row before it restarts, so a settled Portal cannot
+   * ask twice — the second pass sees no change. This bounds the damage if one
+   * ever does not settle: with exposure now re-synced on a timer, an alternating
+   * answer would otherwise recreate the container on every tick. Ten minutes
+   * still repairs the app well inside the window a person would take to notice,
+   * while making a stuck flap cost one restart rather than a loop.
+   */
+  private static readonly CUSTOM_DOMAIN_RESTART_COOLDOWN_MS = 10 * 60_000;
+
   /**
    * Reserves HTTPS port 443 for the Hub on the tailnet.
    *
@@ -883,6 +896,7 @@ export class ExposureSyncService {
     const byTarget = indexCustomDomainsByTarget(params.customDomains);
     const ambiguousDomains = collectAmbiguousCustomDomains(params.customDomains);
     const matchedTargets = new Set<string>();
+    const revertedAppUrns: AppUrn[] = [];
 
     for (const app of params.apps) {
       const appUrn = createAppUrn(app.appName, app.appStoreSlug);
@@ -994,15 +1008,56 @@ export class ExposureSyncService {
         continue;
       }
 
-      this.logger.info(
-        next
-          ? `[Cloudflare] ${appUrn} is now served on custom domain ${next}; restart it to publish that hostname to the app.`
-          : `[Cloudflare] Custom domain ${current} is no longer wired for ${appUrn}; restart it to revert to its platform hostname.`,
-      );
+      /*
+       * Act when the app is already publishing a hostname CI-Cloud has stopped
+       * wiring; keep waiting for the user on a first bind.
+       *
+       * A first bind can wait. The app still works on its platform hostname
+       * while the badge asks for a restart, so taking a running container down
+       * from a background heartbeat would be the more disruptive choice for a
+       * hostname nothing depends on yet.
+       *
+       * Losing one is not symmetric. The container's Traefik middleware still
+       * injects `X-Forwarded-Host: <the hostname that went away>`, and apps are
+       * told to build absolute URLs from that header, so every redirect, asset
+       * and form post it emits now points somewhere the Hub has stopped serving
+       * and DNS no longer resolves. The app is broken on the very URL it was
+       * supposed to fall back to, and it stays broken until someone notices a
+       * banner. That header comes from the container's labels, so no amount of
+       * rewriting Traefik's generated config can clear it — only recreating the
+       * container can (CI-Hub#1207).
+       *
+       * This covers a re-point as well as a disconnect: `current` non-null means
+       * the app is publishing a hostname that is no longer the bound one, and
+       * whether CI-Cloud replaced it or removed it, that hostname is gone.
+       */
+      const restartingNow = current !== null && app.status === 'running';
+      if (restartingNow) {
+        revertedAppUrns.push(appUrn);
+      }
+
+      let message: string;
+      if (current === null) {
+        message = `[Cloudflare] ${appUrn} is now served on custom domain ${next}; restart it to publish that hostname to the app.`;
+      } else {
+        const destination = next ? `custom domain ${next}` : 'its platform hostname';
+        message = restartingNow
+          ? `[Cloudflare] ${appUrn} no longer serves ${current}; restarting it to move to ${destination}.`
+          : `[Cloudflare] ${appUrn} no longer serves ${current}; it will move to ${destination} when it next starts.`;
+      }
+      this.logger.info(message);
       // Omit the third `appUrn` argument because it would publish to `app:<urn>`.
       // The frontend opens only `/api/sse/app`, so a per-app topic would not
       // trigger the required cache invalidation.
       this.sseService.emit('app', { event: 'custom_domain_changed', appUrn });
+    }
+
+    /*
+     * Dispatch after the loop so one app's restart cannot delay reconciling the
+     * next, and so every row is settled before any container is recreated.
+     */
+    if (revertedAppUrns.length > 0) {
+      await this.restartRevertedApps(revertedAppUrns);
     }
 
     /*
@@ -1021,6 +1076,73 @@ export class ExposureSyncService {
         `[Cloudflare] CI-Cloud reports custom domains wired to ${unmatched.length} hostname(s) that match no app on this Hub: ${unmatched.join(', ')}. ` +
           `Those domains are serving but their apps will keep emitting their platform hostname — check the apps' public domain and subdomain settings.`,
       );
+    }
+  }
+
+  /**
+   * Recreates apps whose custom domain was just removed so their public identity
+   * returns to the platform hostname.
+   *
+   * A restart is the whole repair: it regenerates `app.env`, rebuilds the Compose
+   * file — and with it the Traefik `X-Forwarded-Host` middleware, which is
+   * derived from the container's labels and so cannot be corrected in place —
+   * and regenerates Traefik's dynamic config. That is exactly what
+   * `cihub public-web repair` performs for this state; the only thing missing was
+   * anything that ran it without a human.
+   *
+   * `restartApp` resolves once the command is queued, so a slow container does
+   * not hold the sync open, and the app event queue serializes the restart
+   * against any lifecycle command that claims the app first.
+   */
+  private async restartRevertedApps(appUrns: AppUrn[]): Promise<void> {
+    /*
+     * Imported dynamically. `AppLifecycleService` injects this service, so a
+     * static import would close the cycle and leave this module's DI tokens
+     * undefined at decoration time — the same reason `AppsService` reaches for
+     * it this way.
+     */
+    let lifecycleService: { restartApp(params: { appUrn: AppUrn; skipPull?: boolean }): Promise<unknown> } | undefined;
+    try {
+      const { AppLifecycleService } = await import('./app-lifecycle.service');
+      // `ModuleRef.get` throws when a provider cannot be resolved; it does not
+      // return undefined.
+      lifecycleService = this.moduleRef.get(AppLifecycleService, { strict: false });
+    } catch (error) {
+      this.logger.debug(
+        `[Cloudflare] Lifecycle service unavailable for custom-domain revert: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      lifecycleService = undefined;
+    }
+
+    if (!lifecycleService) {
+      this.logger.warn(
+        `[Cloudflare] Could not revert ${appUrns.join(', ')} to the platform hostname automatically. ` +
+          'Those apps are still forwarding a hostname that no longer resolves — run `cihub public-web repair` to apply it.',
+      );
+      return;
+    }
+
+    const now = Date.now();
+    for (const appUrn of appUrns) {
+      const lastRestart = this.lastCustomDomainRestartAt.get(appUrn) ?? 0;
+      if (now - lastRestart < ExposureSyncService.CUSTOM_DOMAIN_RESTART_COOLDOWN_MS) {
+        this.logger.warn(
+          `[Cloudflare] ${appUrn} changed public hostname again within the restart cooldown — leaving it alone. ` +
+            'CI-Cloud is reporting an unstable custom-domain binding for this app.',
+        );
+        continue;
+      }
+
+      try {
+        this.lastCustomDomainRestartAt.set(appUrn, now);
+        // Skip the pull: nothing about the image changed, and a registry round
+        // trip would extend the outage this restart exists to end.
+        await lifecycleService.restartApp({ appUrn, skipPull: true });
+      } catch (error) {
+        this.logger.error(
+          `[Cloudflare] Failed to restart ${appUrn} after its custom domain was removed: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
     }
   }
 }
