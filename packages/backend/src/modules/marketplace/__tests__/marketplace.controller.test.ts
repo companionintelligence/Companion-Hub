@@ -1,4 +1,5 @@
 import { LoggerService } from '@/core/logger/logger.service';
+import { MarketplaceWhoIsService } from '@/core/portal/marketplace-whois.service';
 import { NotFoundException } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import type { Request, Response } from 'express';
@@ -42,6 +43,7 @@ describe('MarketplaceController demo video', () => {
         { provide: AppStoreService, useValue: mock<AppStoreService>() },
         { provide: ImageSizeService, useValue: mock<ImageSizeService>() },
         { provide: LoggerService, useValue: mock<LoggerService>() },
+        { provide: MarketplaceWhoIsService, useValue: mock<MarketplaceWhoIsService>() },
       ],
     })
       .overrideGuard(AuthGuard)
