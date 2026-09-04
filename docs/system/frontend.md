@@ -101,7 +101,8 @@ and display name, including tiny Portal/fallback marks for the private apps bein
 CI Marketplace URNs keep every curated row selectable even before a local catalog refresh completes.
 The page owns the only vertical scroll on the chart, and each compact row exposes a keyboard-accessible
 checkbox with a category-colored fallback icon on mobile and desktop. The FTUE shell centers the official
-CI-Server e-brain mark in a squircle above its title so the page header remains legible at phone widths.
+CI-Server e-brain mark in a centered squircle above its title, with the title block set down from the
+top edge so the page header remains legible at phone widths.
 Step 5 keeps Companion Memory as one keyboard-accessible checkbox on its option card; the step panel
 itself is informational and does not add a second selection layer.
 
