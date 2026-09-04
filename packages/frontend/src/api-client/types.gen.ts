@@ -1130,15 +1130,7 @@ export type GetAppDto = {
 };
 
 export type AppDataListingDto = {
-    hostPath: string;
-    rootExists: boolean;
-    truncated: boolean;
-    entries: Array<{
-        name: string;
-        path: string;
-        kind: 'file' | 'directory';
-        sizeBytes: number;
-    }>;
+    [key: string]: unknown;
 };
 
 export type GetComposeDiffDto = {
@@ -1272,6 +1264,7 @@ export type AppFormBody = {
     localSubdomain?: string;
     publicDomain?: string;
     customDomain?: string;
+    customDomainTakeover?: boolean;
     maxBackups?: number;
     cpuLimit?: string;
     memoryLimit?: string;
@@ -1366,10 +1359,6 @@ export type EditLinkBodyDto = {
     description?: string;
     iconUrl?: string | '';
     isVisibleOnGuestDashboard?: boolean;
-};
-
-export type PublicWebRepairBody = {
-    appUrns?: Array<string>;
 };
 
 export type GetUserConfigDto = {
@@ -2018,7 +2007,7 @@ export type AvailableCustomDomainsResponseDto = {
     domains: Array<{
         id: string;
         domain: string;
-        state: 'live' | 'parked' | 'pending' | 'securing' | 'drifted' | 'unknown';
+        state: 'live' | 'parked' | 'pending' | 'securing' | 'drifted' | 'failed' | 'unknown';
         bindable: boolean;
         targetHostname: string;
         boundAppSlug: string;
@@ -4604,7 +4593,7 @@ export type GetDiagnostics2Responses = {
 export type GetDiagnostics2Response = GetDiagnostics2Responses[keyof GetDiagnostics2Responses];
 
 export type RepairData = {
-    body?: PublicWebRepairBody;
+    body?: never;
     path?: never;
     query?: never;
     url: '/api/public-web/repair';

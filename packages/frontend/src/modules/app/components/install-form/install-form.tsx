@@ -78,6 +78,11 @@ export type FormValues = {
    * — never written into the app's env directly.
    */
   customDomain?: string;
+  /**
+   * The operator confirmed that `customDomain` may be taken off whatever is
+   * serving it now. Set only by the picker, and only after it has asked.
+   */
+  customDomainTakeover?: boolean;
   isVisibleOnGuestDashboard?: boolean;
   enableAuth: boolean;
   maxBackups?: number;
@@ -692,6 +697,7 @@ export const InstallForm: React.FC<IProps> = ({
             // The same value the bind sends as `appSlug`, so a domain already
             // serving THIS app is recognised instead of warned about.
             currentAppSlug={watchLocalSubdomain || defaultAppSubdomain}
+            onTakeoverChange={(confirmed) => setValue('customDomainTakeover', confirmed)}
             loading={loading}
             t={t}
           />

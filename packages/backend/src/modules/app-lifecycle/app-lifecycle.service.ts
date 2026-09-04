@@ -1046,7 +1046,13 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
          * served on. The device-restore form never sends the field, and it would
          * otherwise wipe every recorded choice on the Hub.
          */
-        ...(parsedForm.customDomain === undefined ? {} : { customDomainIntent: parsedForm.customDomain || null }),
+        ...(parsedForm.customDomain === undefined
+          ? {}
+          : {
+              customDomainIntent: parsedForm.customDomain || null,
+              // Written from the form, never inherited — see the DTO field.
+              customDomainTakeover: Boolean(parsedForm.customDomain) && parsedForm.customDomainTakeover === true,
+            }),
         openPort: openPort ?? false,
         exposedLocal: exposedLocal ?? !!appInfo.exposable,
         exposureMode: parsedForm.exposureMode ?? 'local',
@@ -1855,7 +1861,20 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
      * for a change and must not force a restart.
      */
     const customDomainChanged =
-      parsedForm.customDomain !== undefined && normalizeStoredHostname(parsedForm.customDomain) !== normalizeStoredHostname(app.customDomainIntent);
+      parsedForm.customDomain !== undefined &&
+      (normalizeStoredHostname(parsedForm.customDomain) !== normalizeStoredHostname(app.customDomainIntent) ||
+        /*
+         * ⚠ COMPARED AGAINST THE BINDING TOO, NOT ONLY THE INTENT.
+         *
+         * A domain bound from CI-Cloud rather than from this dialog leaves the
+         * app SERVING one with no intent recorded — `custom_domain` set,
+         * `custom_domain_intent` null. Asking for the platform address then
+         * submits `''`, which normalizes to null and matches the null intent, so
+         * "nothing changed" returned before anything could act on it and the
+         * release never ran. The one case the field exists for was the one case
+         * that could not reach it.
+         */
+        (parsedForm.customDomain === '' && normalizeStoredHostname(app.customDomain) !== null));
 
     const settingsChanged =
       this.hasConfigChanged(normalizeConfigForCompare((app.config ?? {}) as Record<string, unknown>), toStoredConfig(parsedForm)) ||
@@ -1917,6 +1936,48 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       }
     }
 
+    /*
+     * ── GIVING THE DOMAIN UP, BEFORE ANYTHING ELSE IS WRITTEN ────────────────
+     *
+     * `customDomain: ''` is the picker's "use the platform address". It used to
+     * write a null intent and stop, which changed nothing anybody could see: the
+     * bind pass skips apps with no intent, CI-Cloud went on reporting the domain
+     * delivered, the reconcile computed `next === current`, and the app kept
+     * serving a hostname the operator had just asked it to give up — with a
+     * success toast on top (CI-Engineering#208, defect 1).
+     *
+     * ⚠ HERE, AND NOT IN THE SYNC PASS, because of what a release costs.
+     * CI-Cloud cannot park a connected domain, so releasing one destroys the
+     * organization's connection to it and only a person in the Entri modal can
+     * put it back. That is not a decision a heartbeat may reach on its own; it
+     * may only carry an instruction somebody just gave, which is this save.
+     *
+     * ⚠ AND BEFORE THE ROW IS WRITTEN, so a refusal leaves the app exactly as it
+     * was. Clearing the binding locally after a failed release would stop the
+     * app publishing a hostname CI-Cloud is still serving on its behalf — the
+     * app broken on a domain that still resolves, which is worse than the state
+     * the operator asked to leave.
+     */
+    let releasedCustomDomain = false;
+
+    if (parsedForm.customDomain === '' && normalizeStoredHostname(app.customDomain)) {
+      const released = await this.exposureSyncService.releaseCustomDomain(app);
+
+      if (!released.ok) {
+        throw new TranslatableError('APP_ERROR_CUSTOM_DOMAIN_RELEASE_FAILED', { id: appUrn, message: released.message }, HttpStatus.BAD_GATEWAY);
+      }
+
+      /*
+       * The domain is gone at CI-Cloud, so the local binding goes with it rather
+       * than waiting for a heartbeat to notice. The write below carries the rest
+       * of the form; this is the one field it would otherwise leave alone,
+       * because `custom_domain` is normally only ever written from what CI-Cloud
+       * reported delivered — and what it reports now is nothing.
+       */
+      parsedForm.customDomain = '';
+      releasedCustomDomain = true;
+    }
+
     const requestId = crypto.randomUUID();
     const { success, message } = await this.appEventsQueue.publish({
       command: 'generate_env',
@@ -1944,6 +2005,13 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       localSubdomain: parsedForm.localSubdomain ?? null,
       publicDomain: parsedForm.publicDomain ?? null,
       /*
+       * Released just above, so the local binding goes with it. Only ever set
+       * here by that branch: every other path leaves `custom_domain` to the
+       * delivery reconcile, which is the only thing that may claim a hostname is
+       * being served.
+       */
+      ...(releasedCustomDomain ? { customDomain: null } : {}),
+      /*
        * Absent is not clear here. Every field beside this one is rewritten from
        * the form on every save, because the settings dialog sends all of them.
        * `customDomain` is sent only by a client that knows about custom domains,
@@ -1952,7 +2020,13 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
        * customer is being served on. The empty string is a real instruction: it
        * is what the picker sends for "use the platform address".
        */
-      ...(parsedForm.customDomain === undefined ? {} : { customDomainIntent: parsedForm.customDomain || null }),
+      ...(parsedForm.customDomain === undefined
+        ? {}
+        : {
+            customDomainIntent: parsedForm.customDomain || null,
+            // Written from the form, never inherited — see the DTO field.
+            customDomainTakeover: Boolean(parsedForm.customDomain) && parsedForm.customDomainTakeover === true,
+          }),
       config: toStoredConfig(parsedForm),
       isVisibleOnGuestDashboard: parsedForm.isVisibleOnGuestDashboard ?? false,
       enableAuth: parsedForm.enableAuth ?? false,

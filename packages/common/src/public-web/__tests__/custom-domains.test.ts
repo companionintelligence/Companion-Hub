@@ -283,3 +283,60 @@ describe('parseAvailableCustomDomains', () => {
     });
   });
 });
+
+describe('selectCustomDomain and the intent', () => {
+  it('prefers a delivered intent over the domain already bound', () => {
+    /*
+     * The move that could not land (CI-Engineering#208, defect 2). Binding B
+     * never unbound A, so CI-Cloud reports both against this target — legal,
+     * since an apex and its `www` are a normal pairing — and the sticky pick
+     * returned A forever while the intent stayed permanently unsatisfied.
+     */
+    expect(selectCustomDomain(['a.acme.com', 'b.acme.com'], 'a.acme.com', 'b.acme.com')).toBe('b.acme.com');
+  });
+
+  it('ignores an intent CI-Cloud has not delivered for this target', () => {
+    /*
+     * ⚠ THE LINE THAT KEEPS THE TWO COLUMNS APART. The intent may only break a
+     * tie between hostnames CI-Cloud already reports serving this app; if it
+     * could introduce one, an unconfirmed choice would reach `APP_PUBLIC_URL`
+     * and the app would sign OAuth redirects for an address nothing answers on.
+     */
+    expect(selectCustomDomain(['a.acme.com'], 'a.acme.com', 'b.acme.com')).toBe('a.acme.com');
+    expect(selectCustomDomain([], 'a.acme.com', 'b.acme.com')).toBeNull();
+    expect(selectCustomDomain(undefined, null, 'b.acme.com')).toBeNull();
+  });
+
+  it('stays sticky when there is no intent, so a new alias cannot drag an app off its hostname', () => {
+    expect(selectCustomDomain(['aaa.acme.com', 'zzz.acme.com'], 'zzz.acme.com')).toBe('zzz.acme.com');
+    expect(selectCustomDomain(['aaa.acme.com', 'zzz.acme.com'], 'zzz.acme.com', null)).toBe('zzz.acme.com');
+  });
+
+  it('falls back to the sorted first when neither the intent nor the current domain is delivered', () => {
+    expect(selectCustomDomain(['aaa.acme.com', 'zzz.acme.com'], 'gone.acme.com', 'also-gone.acme.com')).toBe('aaa.acme.com');
+  });
+});
+
+describe('parseAvailableCustomDomains and a permanently failed certificate', () => {
+  it('keeps `failed` rather than flattening it to `unknown`', () => {
+    /*
+     * CI-Cloud added this state after the picker shipped. Parsed as `unknown` it
+     * matched none of the picker's conditions and rendered with no note at all —
+     * a domain whose certificate can never issue, offered silently as an
+     * ordinary choice.
+     */
+    const parsed = parseAvailableCustomDomains([
+      { id: '1', domain: 'dead.acme.com', state: 'failed', bindable: true, targetHostname: null, boundElsewhere: false },
+    ]);
+
+    expect(parsed).toEqual([expect.objectContaining({ domain: 'dead.acme.com', state: 'failed', bindable: true })]);
+  });
+
+  it('still maps a state this build has never heard of to `unknown`, and keeps the row', () => {
+    const parsed = parseAvailableCustomDomains([
+      { id: '1', domain: 'newer.acme.com', state: 'quantum', bindable: true, targetHostname: null, boundElsewhere: false },
+    ]);
+
+    expect(parsed).toEqual([expect.objectContaining({ domain: 'newer.acme.com', state: 'unknown', bindable: true })]);
+  });
+});

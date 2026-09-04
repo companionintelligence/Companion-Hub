@@ -257,9 +257,42 @@ export function indexCustomDomainsByTarget(entries: readonly TunnelCustomDomain[
  * wins for as long as CI-Cloud keeps delivering it, and the sort order only
  * decides the FIRST binding.
  */
-export function selectCustomDomain(delivered: readonly string[] | undefined, current: string | null): string | null {
+export function selectCustomDomain(
+  delivered: readonly string[] | undefined,
+  current: string | null,
+  /**
+   * What the operator asked for, when they asked for something.
+   *
+   * Only ever consulted against domains CI-Cloud has ALREADY DELIVERED for this
+   * target, which is what keeps it from being the thing the split between
+   * `custom_domain` and `custom_domain_intent` exists to prevent: the intent
+   * never introduces a hostname here, it only breaks a tie between hostnames
+   * CI-Cloud already reported serving this app.
+   */
+  intent?: string | null,
+): string | null {
   if (!delivered || delivered.length === 0) {
     return null;
+  }
+
+  /*
+   * ⚠ THE INTENT OUTRANKS STICKINESS, AND ONLY INSIDE `delivered`.
+   *
+   * Stickiness below exists to stop a newly added alias dragging an app off the
+   * hostname it has served for months. It cannot tell that case apart from a
+   * MOVE the operator deliberately asked for, and it used to lose to it every
+   * time: binding B never unbinds A, so CI-Cloud reports both against this
+   * target — legal, since an apex and its `www` are a normal pairing — and the
+   * sticky pick returned A forever. The intent stayed permanently unsatisfied,
+   * every later pass hit the "CI-Cloud already points it here" skip, and nothing
+   * logged (CI-Engineering#208, defect 2).
+   *
+   * Asking for the intent first is what makes a move land, and it costs the
+   * sticky rule nothing: an app with no intent, or one whose intent is already
+   * what it serves, takes exactly the branch below.
+   */
+  if (intent && delivered.includes(intent)) {
+    return intent;
   }
 
   if (current && delivered.includes(current)) {
@@ -300,16 +333,25 @@ export interface AvailableCustomDomain {
    * proved, but its certificate is still issuing (Cloudflare gates ownership and
    * TLS independently, so this is a real and common state). `drifted` — the
    * records the customer's zone held have changed since, and the monitor noticed.
+   * `failed` — the certificate will never issue.
    *
    * ⚠ A LABEL, NOT A GATE. `bindable` is the only field that decides whether a
    * domain may be chosen — `securing` and `drifted` are both bindable, because a
    * certificate finishes on its own and drift is a fact about someone else's DNS
    * rather than about our permission to point the row somewhere.
    *
+   * ⚠ AND `failed` IS BINDABLE TOO, WHICH IS WHY IT HAS TO BE READ. CI-Cloud
+   * reports it on the same terms as the other two and says so at length: a gate
+   * there would strand the row and tell us nothing. But unlike them it does NOT
+   * clear itself — there is no in-place reissue, and the only remedy is
+   * disconnect-and-reconnect — so a caller that treats `bindable` as the whole
+   * answer offers a domain that can never serve. Callers must weigh this state
+   * themselves; see the picker and the bind pass.
+   *
    * `unknown` is this Hub meeting a CI-Cloud newer than itself. See
    * {@link parseAvailableCustomDomains} for why that must not hide the domain.
    */
-  state: 'live' | 'parked' | 'pending' | 'securing' | 'drifted' | 'unknown';
+  state: 'live' | 'parked' | 'pending' | 'securing' | 'drifted' | 'failed' | 'unknown';
   /** Whether CI-Cloud would accept a bind for it now. */
   bindable: boolean;
   /** The platform hostname it currently aliases, if any. */
@@ -320,7 +362,7 @@ export interface AvailableCustomDomain {
   boundElsewhere: boolean;
 }
 
-const DOMAIN_STATES = new Set(['live', 'parked', 'pending', 'securing', 'drifted']);
+const DOMAIN_STATES = new Set(['live', 'parked', 'pending', 'securing', 'drifted', 'failed']);
 
 /**
  * Validate the `domains` field of the device custom-domain listing.

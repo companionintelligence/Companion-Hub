@@ -526,6 +526,53 @@ export class CloudflareClientService {
     }
   }
 
+  /**
+   * Ask CI-Cloud to release a custom domain this device is serving.
+   *
+   * ⚠ THIS DESTROYS THE ORGANIZATION'S CONNECTION TO THE DOMAIN. CI-Cloud
+   * cannot park a connected domain — it has no call that clears a Cloudflare
+   * `custom_origin_server`, so a row left connected-but-unbound is a live
+   * certificate over a permanent 404 that nothing can repair — which means
+   * "stop serving this" and "give this up" are the same operation. Getting the
+   * domain back needs a person in the Entri modal.
+   *
+   * So this is only ever called for a choice a person just made in the dialog,
+   * never from a heartbeat's own reasoning.
+   *
+   * `DOMAIN_NOT_FOUND` is reported as SUCCESS. A Hub that released a domain and
+   * lost the response asks again and finds the row gone — which is the state it
+   * asked for. Treating that as a failure would leave the operator's choice
+   * pending forever against a domain that has already stopped serving.
+   */
+  async unbindCustomDomain(
+    domainId: string,
+    appSlug: string,
+    organizationId?: string,
+  ): Promise<{ ok: true } | { ok: false; status?: number; code?: string; message: string }> {
+    try {
+      const { status, data } = await this.portalClient.postDeviceCustomDomainUnbind({ domainId, appSlug, organizationId });
+
+      if (status >= 200 && status < 300) {
+        return { ok: true };
+      }
+
+      const code = typeof data?.code === 'string' ? data.code : undefined;
+
+      if (code === 'DOMAIN_NOT_FOUND') {
+        return { ok: true };
+      }
+
+      return {
+        ok: false,
+        status,
+        code,
+        message: typeof data?.error === 'string' ? data.error : `CI-Cloud answered ${status}`,
+      };
+    } catch (error) {
+      return { ok: false, message: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
   async fetchAvailableDomains(): Promise<AvailableDomainsResponse> {
     try {
       const requestConfig = this.getRequestConfig();

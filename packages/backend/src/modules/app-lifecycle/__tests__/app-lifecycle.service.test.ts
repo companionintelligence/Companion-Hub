@@ -1619,7 +1619,9 @@ describe('AppLifecycleService', () => {
 
       await service.triggerCloudflareSync();
 
-      expect(appsRepository.updateAppById).toHaveBeenCalledWith(7, { customDomainIntent: null });
+      // The confirmation goes with the choice: an answer about a domain the
+      // organization no longer holds cannot authorize anything later.
+      expect(appsRepository.updateAppById).toHaveBeenCalledWith(7, { customDomainIntent: null, customDomainTakeover: false });
       expect(cloudflareClientService.bindCustomDomain).not.toHaveBeenCalled();
     });
 
@@ -1635,7 +1637,9 @@ describe('AppLifecycleService', () => {
 
       await service.triggerCloudflareSync();
 
-      expect(appsRepository.updateAppById).toHaveBeenCalledWith(7, { customDomainIntent: null });
+      // The confirmation goes with the choice: an answer about a domain the
+      // organization no longer holds cannot authorize anything later.
+      expect(appsRepository.updateAppById).toHaveBeenCalledWith(7, { customDomainIntent: null, customDomainTakeover: false });
     });
 
     it('retries a refusal that can clear itself rather than discarding the choice', async () => {
@@ -1705,6 +1709,154 @@ describe('AppLifecycleService', () => {
       await service.triggerCloudflareSync();
 
       expect(cloudflareClientService.fetchOrganizationCustomDomains).not.toHaveBeenCalled();
+    });
+
+    /*
+     * ── MOVING A DOMAIN OFF WHATEVER IS SERVING IT ─────────────────────────
+     *
+     * CI-Engineering#208, defects 3 and 4. The pass read `bindable` and
+     * `targetHostname` and nothing else, so a domain live on a sibling Hub was
+     * retargeted by a background heartbeat with no confirmation anywhere — and
+     * an operator re-pointing a domain in the portal had it taken straight back
+     * on the Hub's next sync, indefinitely.
+     */
+    const servingElsewhere = (overrides: Record<string, unknown> = {}) =>
+      parked({
+        state: 'live',
+        targetHostname: 'grafana-core9-acme.companionintelligence.com',
+        boundAppSlug: null,
+        boundElsewhere: true,
+        ...overrides,
+      });
+
+    it('refuses to move a domain that is serving another Hub, and clears the unconfirmed choice', async () => {
+      appsRepository.getApps.mockResolvedValue([wantsComfy({ customDomainTakeover: false })] as any);
+      cloudflareClientService.fetchOrganizationCustomDomains.mockResolvedValue([servingElsewhere()] as any);
+
+      await service.triggerCloudflareSync();
+
+      expect(cloudflareClientService.bindCustomDomain).not.toHaveBeenCalled();
+      // Cleared, not retained: retaining would re-ask on every heartbeat forever
+      // for a move nothing a background pass can reach will ever authorize.
+      expect(appsRepository.updateAppById).toHaveBeenCalledWith(7, { customDomainIntent: null, customDomainTakeover: false });
+    });
+
+    it('leaves a portal re-point alone instead of taking the domain back every heartbeat', async () => {
+      /*
+       * Defect 3 exactly: the domain now points at a DIFFERENT app, because
+       * somebody moved it in CI-Cloud. Nothing had cleared the intent that was
+       * satisfied before the move, so the pass re-POSTed the original bind and
+       * the portal's change was undone on the next sync, forever.
+       */
+      appsRepository.getApps.mockResolvedValue([wantsComfy({ customDomain: null, customDomainTakeover: false })] as any);
+      cloudflareClientService.fetchOrganizationCustomDomains.mockResolvedValue([
+        servingElsewhere({ boundElsewhere: false, boundAppSlug: 'grafana' }),
+      ] as any);
+
+      await service.triggerCloudflareSync();
+
+      expect(cloudflareClientService.bindCustomDomain).not.toHaveBeenCalled();
+      expect(appsRepository.updateAppById).toHaveBeenCalledWith(7, { customDomainIntent: null, customDomainTakeover: false });
+    });
+
+    it('moves the domain when the operator confirmed it, and spends the confirmation', async () => {
+      appsRepository.getApps.mockResolvedValue([wantsComfy({ customDomainTakeover: true })] as any);
+      cloudflareClientService.fetchOrganizationCustomDomains.mockResolvedValue([servingElsewhere()] as any);
+
+      await service.triggerCloudflareSync();
+
+      expect(cloudflareClientService.bindCustomDomain).toHaveBeenCalledWith('cd_1', 'comfyui', 'org-1');
+      /*
+       * ⚠ SPENT, NOT LEFT STANDING. It authorized the one move the person was
+       * shown; carried forward it would overrule a portal re-point weeks later
+       * with an answer given to a different question.
+       */
+      expect(appsRepository.updateAppById).toHaveBeenCalledWith(7, { customDomainTakeover: false });
+    });
+
+    it('still binds a parked domain with no confirmation, because nothing is being moved', async () => {
+      // The ordinary case must not be made to require an answer nobody was asked.
+      appsRepository.getApps.mockResolvedValue([wantsComfy({ customDomainTakeover: false })] as any);
+      cloudflareClientService.fetchOrganizationCustomDomains.mockResolvedValue([parked()] as any);
+
+      await service.triggerCloudflareSync();
+
+      expect(cloudflareClientService.bindCustomDomain).toHaveBeenCalledWith('cd_1', 'comfyui', 'org-1');
+    });
+  });
+
+  describe('releasing a custom domain', () => {
+    const REGISTRATION = { id: 'org-1', slug: 'acme', hubSubdomain: 'core2-acme', tunnelId: 't', tunnelToken: 'k' };
+
+    const servingApp = (overrides: Record<string, unknown> = {}) => ({
+      id: 7,
+      appName: 'comfyui',
+      appStoreSlug: 'ci-marketplace',
+      localSubdomain: 'comfyui',
+      customDomain: 'comfy.acme.com',
+      customDomainIntent: 'comfy.acme.com',
+      ...overrides,
+    });
+
+    beforeEach(() => {
+      registrationService.getDeviceRegistrationInfo.mockResolvedValue(REGISTRATION as any);
+      cloudflareClientService.fetchOrganizationCustomDomains.mockResolvedValue([
+        { id: 'cd_1', domain: 'comfy.acme.com', state: 'live', bindable: true, targetHostname: 'x', boundAppSlug: 'comfyui', boundElsewhere: false },
+      ] as any);
+      cloudflareClientService.unbindCustomDomain.mockResolvedValue({ ok: true } as any);
+    });
+
+    it("names the domain by CI-Cloud's row id and the app by its subdomain", async () => {
+      const result = await exposureSyncService.releaseCustomDomain(servingApp() as any);
+
+      expect(result).toEqual({ ok: true });
+      expect(cloudflareClientService.unbindCustomDomain).toHaveBeenCalledWith('cd_1', 'comfyui', 'org-1');
+    });
+
+    it('does nothing when the app is not serving a domain', async () => {
+      // Clearing a picker that was never satisfied is the ordinary case, not an
+      // error, and it must not spend a CI-Cloud call.
+      const result = await exposureSyncService.releaseCustomDomain(servingApp({ customDomain: null }) as any);
+
+      expect(result).toEqual({ ok: true });
+      expect(cloudflareClientService.unbindCustomDomain).not.toHaveBeenCalled();
+    });
+
+    it('succeeds when CI-Cloud no longer lists the domain at all', async () => {
+      /*
+       * Disconnected in the portal while the dialog was open, or already
+       * released by an attempt whose answer was lost. Either way it has stopped
+       * serving this app, which is what was asked.
+       */
+      cloudflareClientService.fetchOrganizationCustomDomains.mockResolvedValue([] as any);
+
+      const result = await exposureSyncService.releaseCustomDomain(servingApp() as any);
+
+      expect(result).toEqual({ ok: true });
+      expect(cloudflareClientService.unbindCustomDomain).not.toHaveBeenCalled();
+    });
+
+    it('reports failure rather than throwing when CI-Cloud cannot be asked', async () => {
+      // A release that did not happen must leave the binding alone, or the app
+      // stops publishing a hostname CI-Cloud is still serving on its behalf.
+      cloudflareClientService.fetchOrganizationCustomDomains.mockResolvedValue(undefined as any);
+
+      const result = await exposureSyncService.releaseCustomDomain(servingApp() as any);
+
+      expect(result.ok).toBe(false);
+      expect(cloudflareClientService.unbindCustomDomain).not.toHaveBeenCalled();
+    });
+
+    it('says so plainly when CI-Cloud holds the domain against something else', async () => {
+      cloudflareClientService.unbindCustomDomain.mockResolvedValue({
+        ok: false,
+        code: 'DOMAIN_NOT_BOUND_HERE',
+        message: 'no',
+      } as any);
+
+      const result = await exposureSyncService.releaseCustomDomain(servingApp() as any);
+
+      expect(result).toMatchObject({ ok: false, message: expect.stringContaining('not currently serving this app') });
     });
   });
 

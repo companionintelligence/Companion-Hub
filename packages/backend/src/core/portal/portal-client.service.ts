@@ -370,6 +370,22 @@ export class PortalClientService {
     return this.requestWithStatus('post', '/custom-domains/device/bind', payload);
   }
 
+  /**
+   * Ask CI-Cloud to let a custom domain go.
+   *
+   * The app slug is REQUIRED and is not decoration: CI-Cloud refuses unless the
+   * row it holds agrees on both the device and the application, which is what
+   * stops one Hub destroying a hostname that is serving from another. See the
+   * route's own notes — this is a full release, not a park, and it cannot be
+   * undone from here.
+   */
+  async postDeviceCustomDomainUnbind(payload: { domainId: string; appSlug: string; organizationId?: string }): Promise<{
+    status: number;
+    data: { success?: boolean; code?: string; error?: string };
+  }> {
+    return this.requestWithStatus('post', '/custom-domains/device/unbind', payload);
+  }
+
   async postDeviceCheckIn(payload: Record<string, unknown>): Promise<unknown> {
     return this.postJson('/devices/check-in', payload, { authenticated: true });
   }
