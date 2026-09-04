@@ -5,7 +5,7 @@
 > **Key paths:** `packages/desktop/src-tauri/src/hub_manager.rs`, `packages/desktop/src-tauri/resources/`
 > **Commands:** `pnpm run local:desktop` (Vite :5005), `pnpm run dev:desktop` (appliance :5002), `cd packages/desktop/src-tauri && cargo test`
 > **Owner persona:** maintainability + security
-> **Last updated:** 2026-08-28
+> **Last updated:** 2026-09-04
 > **Related:** docs/system/frontend.md, docs/DESKTOP-UI-ARCHITECTURE.md, docs/AUTO_HEALING.md
 
 ---
@@ -28,6 +28,20 @@ packages/desktop/
 - `DockerNotAvailable` | `Stopped` | `Starting` | `Running` | `Error`
 - Optional sidecars (Tailscale, cloudflared, Ollama): only `Ready` or `Unavailable` — never `Starting`/`Failed`
 - Optional sidecars must not block `all_ready`
+
+## Native inference runners
+
+The desktop shell owns the best-effort native setup used by the onboarding FTUE. On Apple Silicon,
+the selected speculative backend is installed and started with Ollama: `mlx-dspark` uses its
+host-served `mlx-dspark serve --no-model --host 0.0.0.0 --port 8080` process, while MTPLX creates
+its Python environment and serves on port 8000 or the next available host port. The frontend passes
+the selected runner set, so the two speculative servers are alternatives rather than an automatic
+bundle. Runner PIDs, logs, and endpoints are persisted under the Hub data directory; a later MTPLX
+retry reuses a healthy persisted endpoint before starting another process.
+
+This is onboarding-time install/start, not a macOS LaunchAgent or Linux systemd login service. A
+future always-on desktop experience should add an explicit OS autostart layer instead of assuming
+that a persisted PID is still alive.
 
 ## Running locally
 

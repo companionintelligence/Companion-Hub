@@ -6,9 +6,10 @@ import {
   ONBOARDING_BACKEND_LEMONADE_HINT,
   ONBOARDING_BACKEND_MTPLX_HINT,
   ONBOARDING_BACKEND_OLLAMA_HINT,
+  ONBOARDING_BACKEND_SPECULATIVE_HINT,
   ONBOARDING_BACKEND_VLLM_HINT,
 } from '@/components/hub-status/hub-status-tooltips';
-import { BrandLogo, LemonadeIcon, VllmIcon } from './icons';
+import { BrandLogo, LemonadeIcon, SpeculativeInferenceIcon, VllmIcon } from './icons';
 import { OptionCard, StepSection } from './primitives';
 import { useTranslation } from 'react-i18next';
 
@@ -18,6 +19,7 @@ const BACKEND_HINT_KEYS: Record<InferenceBackendType, string> = {
   lemonade: ONBOARDING_BACKEND_LEMONADE_HINT,
   mtplx: ONBOARDING_BACKEND_MTPLX_HINT,
   dspark: ONBOARDING_BACKEND_DSPARK_HINT,
+  lucebox: ONBOARDING_BACKEND_SPECULATIVE_HINT,
 };
 
 const BACKEND_INFO: Record<InferenceBackendType, { label: string; descriptionKey?: string }> = {
@@ -26,10 +28,11 @@ const BACKEND_INFO: Record<InferenceBackendType, { label: string; descriptionKey
   lemonade: { label: 'Lemonade', descriptionKey: 'ONBOARDING_BACKEND_LEMONADE_DESC' },
   mtplx: { label: 'MTPLX' },
   dspark: { label: 'mlx-dspark' },
+  lucebox: { label: 'Speculative inference', descriptionKey: 'ONBOARDING_BACKEND_SPECULATIVE_DESC' },
 };
 
 /** Keep the Apple-Silicon speculative path prominent, with MTPLX as its variant. */
-const BACKEND_ORDER: InferenceBackendType[] = ['dspark', 'mtplx', 'ollama', 'vllm', 'lemonade'];
+const BACKEND_ORDER: InferenceBackendType[] = ['dspark', 'mtplx', 'lucebox', 'ollama', 'vllm', 'lemonade'];
 
 type BackendStatus = { type: InferenceBackendType; running: boolean; healthy: boolean };
 
@@ -125,6 +128,7 @@ export const BackendSelectionCard = ({
   const backendsByType = new Map(visibleBackends.map((backend) => [backend.type, backend] as const));
   const speculativeBackend = backendsByType.get('dspark');
   const mtplxBackend = backendsByType.get('mtplx');
+  const luceboxBackend = backendsByType.get('lucebox');
   const orderedBackends = BACKEND_ORDER.filter((type) => backendsByType.has(type));
 
   const content = (
@@ -166,11 +170,22 @@ export const BackendSelectionCard = ({
                   nested
                 />
               )}
+              {luceboxBackend && (
+                <BackendOption
+                  backend={luceboxBackend}
+                  recommended={recommended}
+                  selected={selected}
+                  onSelect={onSelect}
+                  disabled={disabled}
+                  unavailableTypes={unavailableTypes}
+                  nested
+                />
+              )}
             </div>
           </div>
         )}
         {orderedBackends
-          .filter((type) => type !== 'dspark' && !(type === 'mtplx' && speculativeBackend))
+          .filter((type) => type !== 'dspark' && type !== 'lucebox' && !(type === 'mtplx' && speculativeBackend))
           .map((type) => {
             const backend = backendsByType.get(type);
             if (!backend) return null;
@@ -237,6 +252,15 @@ export const BackendCard = () => {
           disabled
           badge={t('ONBOARDING_SOON')}
           hint={t(ONBOARDING_BACKEND_LEMONADE_HINT)}
+        />
+        <OptionCard
+          testId="backend-option-speculative-inference"
+          title="Speculative inference"
+          description={t('ONBOARDING_BACKEND_SPECULATIVE_OPTION_DESC')}
+          icon={<SpeculativeInferenceIcon />}
+          disabled
+          badge={t('ONBOARDING_SOON')}
+          hint={t(ONBOARDING_BACKEND_SPECULATIVE_HINT)}
         />
       </div>
     </StepSection>

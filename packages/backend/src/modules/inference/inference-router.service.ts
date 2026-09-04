@@ -10,6 +10,7 @@ import { VllmBackend } from './backends/vllm.backend';
 import { LemonadeBackend } from './backends/lemonade.backend';
 import { MtplxBackend } from './backends/mtplx.backend';
 import { DsparkBackend } from './backends/dspark.backend';
+import { LuceboxBackend } from './backends/lucebox.backend';
 import type { InferenceBackend } from './backends/backend.interface';
 
 /**
@@ -33,6 +34,7 @@ export class InferenceRouterService {
     private readonly lemonadeBackend: LemonadeBackend,
     private readonly mtplxBackend: MtplxBackend,
     private readonly dsparkBackend: DsparkBackend,
+    private readonly luceboxBackend: LuceboxBackend,
   ) {}
 
   private getBackend(type: InferenceBackendType): InferenceBackend {
@@ -47,6 +49,8 @@ export class InferenceRouterService {
         return this.mtplxBackend;
       case 'dspark':
         return this.dsparkBackend;
+      case 'lucebox':
+        return this.luceboxBackend;
     }
   }
 
@@ -56,7 +60,7 @@ export class InferenceRouterService {
     const budget = this.memoryManager.calculateBudget(profile);
 
     const backends = await Promise.all(
-      (['ollama', 'vllm', 'lemonade', 'mtplx', 'dspark'] as InferenceBackendType[]).map(async (type) => {
+      (['ollama', 'vllm', 'lemonade', 'mtplx', 'dspark', 'lucebox'] as InferenceBackendType[]).map(async (type) => {
         const backend = this.getBackend(type);
         const health = await backend.healthCheck();
         return {
@@ -147,7 +151,7 @@ export class InferenceRouterService {
 
     // Discovered models from backends (not in curated catalog or tracked)
     const knownIds = new Set(models.map((m) => m.id));
-    for (const backendType of ['ollama', 'vllm', 'lemonade', 'mtplx', 'dspark'] as InferenceBackendType[]) {
+    for (const backendType of ['ollama', 'vllm', 'lemonade', 'mtplx', 'dspark', 'lucebox'] as InferenceBackendType[]) {
       const backend = this.getBackend(backendType);
       const health = await backend.healthCheck();
       if (health.running && health.healthy) {

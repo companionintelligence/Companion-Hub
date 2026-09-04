@@ -345,6 +345,12 @@
       "description": "Permission identifier",
       "oneOf": [
         {
+          "description": "All Companion Hub desktop IPC commands. Required once the webview leaves\ntauri://localhost for the Hub UI (hub.ci.localhost / *.ci.lan / etc.): Tauri 2\nrejects app commands from a remote origin unless they are explicitly allowed\nhere. Without this grant, Open data folder / Start Hub / installers fail with\n\"Command … not allowed by ACL\" on every OS.\n",
+          "type": "string",
+          "const": "allow-desktop-ipc",
+          "markdownDescription": "All Companion Hub desktop IPC commands. Required once the webview leaves\ntauri://localhost for the Hub UI (hub.ci.localhost / *.ci.lan / etc.): Tauri 2\nrejects app commands from a remote origin unless they are explicitly allowed\nhere. Without this grant, Open data folder / Start Hub / installers fail with\n\"Command … not allowed by ACL\" on every OS.\n"
+        },
+        {
           "description": "Default core plugins set.\n#### This default permission set includes:\n\n- `core:path:default`\n- `core:event:default`\n- `core:window:default`\n- `core:webview:default`\n- `core:app:default`\n- `core:image:default`\n- `core:resources:default`\n- `core:menu:default`\n- `core:tray:default`",
           "type": "string",
           "const": "core:default",

@@ -210,7 +210,14 @@ function OnboardingWizard() {
     // models anyway), but mlx-dspark IS Hub-loadable, so an operator with mlx-dspark up and Ollama
     // down would have had their model silently never load.
     inferenceBackend: aiSetupConfig?.backend,
-    backendUrl: aiSetupConfig?.backend === 'dspark' ? aiSetupConfig?.dsparkUrl : aiSetupConfig?.vllmUrl,
+    backendUrl:
+      aiSetupConfig?.backend === 'dspark'
+        ? aiSetupConfig?.dsparkUrl
+        : aiSetupConfig?.backend === 'mtplx'
+          ? aiSetupConfig?.mtplxUrl
+          : aiSetupConfig?.backend === 'vllm'
+            ? aiSetupConfig?.vllmUrl
+            : undefined,
     // Only the rows the Hub can install — `selectedModels` also carries vLLM rows the operator
     // fetched themselves.
     pullableModelIds: aiSetupConfig?.ollamaSelectedModelIds,

@@ -21,6 +21,19 @@ export const DEFAULT_AUTOMATIC_INFERENCE_RUNNERS: AutomaticInferenceRunner[] = [
 export const DEFAULT_MACOS_AUTOMATIC_INFERENCE_RUNNERS: AutomaticInferenceRunner[] = ['dspark', 'ollama'];
 
 /**
+ * Keep the native FTUE install set aligned with the selected Apple Silicon
+ * backend. MTPLX is an alternative to mlx-dspark, not a second server to
+ * launch alongside it; Ollama remains the shared embeddings service.
+ */
+export const DEFAULT_MACOS_MTPLX_AUTOMATIC_INFERENCE_RUNNERS: AutomaticInferenceRunner[] = ['mtplx', 'ollama'];
+
+export function automaticRunnersForBackend(backend: string): AutomaticInferenceRunner[] {
+  if (backend === 'dspark') return DEFAULT_MACOS_AUTOMATIC_INFERENCE_RUNNERS;
+  if (backend === 'mtplx') return DEFAULT_MACOS_MTPLX_AUTOMATIC_INFERENCE_RUNNERS;
+  return DEFAULT_AUTOMATIC_INFERENCE_RUNNERS;
+}
+
+/**
  * Ask the desktop shell to install and launch host/container inference
  * runners. A browser build has no safe native process boundary, so it is a
  * no-op there and keeps the existing manual setup flow.

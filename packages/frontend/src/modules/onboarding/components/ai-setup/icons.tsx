@@ -115,6 +115,16 @@ export function DsparkIcon({ className }: IconProps) {
   );
 }
 
+/** Generic speculative inference mark used for provider-neutral OpenAI-compatible servers. */
+export function SpeculativeInferenceIcon({ className }: IconProps) {
+  return (
+    <Glyph className={className}>
+      <path d="M12 3.5 14 9l5.5 2-5.5 2-2 5.5-2-5.5-5.5-2 5.5-2L12 3.5Z" />
+      <path d="m19 4 .5 1.5L21 6l-1.5.5L19 8l-.5-1.5L17 6l1.5-.5L19 4Z" />
+    </Glyph>
+  );
+}
+
 /* ── Model labs without an official brand mark (custom marks) ────────────────────────────────── */
 // These labs don't have a sourced SVG in /public/brands (unlike the CREATOR_BRAND set below, which
 // are official marks). Rather than fetch third-party logo files we can't vet the provenance of, these

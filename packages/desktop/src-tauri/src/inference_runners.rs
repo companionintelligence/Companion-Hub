@@ -232,6 +232,18 @@ fn install_and_start_mtplx(data_dir: &Path) -> InferenceRunnerResult {
         );
     }
 
+    // MTPLX may have moved off 8000 when another service occupied the
+    // preferred port on its first run. Reuse the persisted endpoint before
+    // allocating another port, otherwise every FTUE retry can launch a second
+    // MTPLX process on a new port.
+    if let Some(endpoint) = persisted_runner_endpoint(data_dir, "mtplx") {
+        if let Some(port) = endpoint_port(&endpoint) {
+            if probe_http(port, "/v1/models") {
+                return already_running("mtplx", &endpoint);
+            }
+        }
+    }
+
     if probe_http(MTPLX_PORT, "/v1/models") {
         return already_running("mtplx", MTPLX_ENDPOINT);
     }
@@ -682,6 +694,11 @@ fn host_endpoint(port: u16) -> String {
     format!("http://host.docker.internal:{port}")
 }
 
+fn endpoint_port(endpoint: &str) -> Option<u16> {
+    let authority = endpoint.split_once("://")?.1.split('/').next()?;
+    authority.rsplit_once(':')?.1.parse().ok()
+}
+
 fn nvidia_smi_works() -> bool {
     let Some(nvidia_smi) = command_on_path("nvidia-smi") else {
         return false;
@@ -1005,6 +1022,17 @@ fn persist_results(data_dir: &Path, results: &[InferenceRunnerResult]) {
     }
 }
 
+fn persisted_runner_endpoint(data_dir: &Path, runner: &str) -> Option<String> {
+    let path = data_dir.join(RUNNER_STATE_FILE);
+    let contents = fs::read_to_string(path).ok()?;
+    let results = serde_json::from_str::<Vec<InferenceRunnerResult>>(&contents).ok()?;
+    results
+        .into_iter()
+        .rev()
+        .find(|result| result.runner == runner)
+        .and_then(|result| result.endpoint_url)
+}
+
 fn format_command_output(stdout: &str, stderr: &str) -> String {
     let stdout = stdout.trim();
     let stderr = stderr.trim();
@@ -1079,6 +1107,26 @@ mod tests {
             .port();
         let selected = available_host_port(preferred).expect("a nearby test port should be free");
         assert_ne!(selected, preferred);
+    }
+
+    #[test]
+    fn recovers_the_port_from_a_persisted_runner_endpoint() {
+        assert_eq!(endpoint_port("http://host.docker.internal:8001"), Some(8001));
+        assert_eq!(endpoint_port("http://host.docker.internal:8001/v1"), Some(8001));
+        assert_eq!(endpoint_port("not-a-url"), None);
+
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let results = vec![success(
+            "mtplx",
+            InferenceRunnerState::Installed,
+            Some("http://host.docker.internal:8001".to_string()),
+            None,
+        )];
+        persist_results(tempdir.path(), &results);
+        assert_eq!(
+            persisted_runner_endpoint(tempdir.path(), "mtplx"),
+            Some("http://host.docker.internal:8001".to_string())
+        );
     }
 
     #[test]

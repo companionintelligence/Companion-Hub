@@ -24,6 +24,7 @@ import { VllmBackend } from '../backends/vllm.backend';
 import { LemonadeBackend } from '../backends/lemonade.backend';
 import { MtplxBackend } from '../backends/mtplx.backend';
 import { DsparkBackend } from '../backends/dspark.backend';
+import { LuceboxBackend } from '../backends/lucebox.backend';
 import { HostMetricsService } from '@/modules/system/host-metrics.service';
 
 describe('InferenceController — preferences', () => {
@@ -51,6 +52,7 @@ describe('InferenceController — preferences', () => {
         { provide: LemonadeBackend, useValue: mock<LemonadeBackend>() },
         { provide: MtplxBackend, useValue: mock<MtplxBackend>() },
         { provide: DsparkBackend, useValue: mock<DsparkBackend>() },
+        { provide: LuceboxBackend, useValue: mock<LuceboxBackend>() },
         { provide: LoggerService, useValue: mock<LoggerService>() },
       ],
     }).compile();
