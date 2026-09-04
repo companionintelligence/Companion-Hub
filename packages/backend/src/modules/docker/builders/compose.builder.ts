@@ -1,4 +1,4 @@
-import { DEFAULT_LOCAL_DOMAIN, hubNetworkName, managedAppLabels } from '@/common/constants';
+import { DEFAULT_LOCAL_DOMAIN, hubAppNetworkNames, managedAppLabels } from '@/common/constants';
 import { extractAppUrn } from '@/common/helpers/app-helpers';
 import type { AppEventFormInput } from '@/modules/queue/entities/app-events';
 import {
@@ -289,9 +289,10 @@ export class DockerComposeBuilder {
       service.setEnvFile([envFile]);
     }
 
-    const mainNetworkName = hubNetworkName();
     if (params.isMain || params.addToMainNetwork) {
-      service.setNetwork(mainNetworkName, 1);
+      hubAppNetworkNames().forEach((networkName, index) => {
+        service.setNetwork(networkName, index === 0 ? 1 : 0);
+      });
     }
 
     const effectiveExposureMode = form.exposureMode || (form.exposedLocal ? 'cloudflare' : 'local');
@@ -380,20 +381,20 @@ export class DockerComposeBuilder {
 
     const myServices = fixedServices.map((service) => this.buildService(service, form, appUrn, envFile));
 
-    const mainNetworkName = hubNetworkName();
-
-    const dockerCompose = this.addServices(myServices)
-      .addNetwork({
-        key: mainNetworkName,
-        name: mainNetworkName,
+    const dockerCompose = this.addServices(myServices);
+    for (const networkName of hubAppNetworkNames()) {
+      dockerCompose.addNetwork({
+        key: networkName,
+        name: networkName,
         external: true,
-      })
-      .addNetwork({
-        key: `${appName}_${appStoreId}_network`,
-        name: `${appName}_${appStoreId}_network`,
-        external: false,
-        subnet,
       });
+    }
+    dockerCompose.addNetwork({
+      key: `${appName}_${appStoreId}_network`,
+      name: `${appName}_${appStoreId}_network`,
+      external: false,
+      subnet,
+    });
 
     return dockerCompose.build();
   }
