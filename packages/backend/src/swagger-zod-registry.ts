@@ -83,6 +83,7 @@ import { McpInstallSchemaDto, McpProbeResultDto, ValidateConfigResultDto } from 
 import { FactoryResetDto } from './modules/system/dto/factory-reset.dto';
 import { LoadDto, SystemResourcesDto } from './modules/system/dto/system.dto';
 import { GetUserConfigDto, UpdateUserConfigDto } from './modules/user-config/dto/user-config.dto';
+import { PublicWebRepairBody } from './modules/public-web/public-web.dto';
 
 /** Every Zod-backed DTO referenced in OpenAPI `components.schemas`. */
 export const SWAGGER_ZOD_DTOS: ZodDto[] = [
@@ -173,4 +174,5 @@ export const SWAGGER_ZOD_DTOS: ZodDto[] = [
   SystemResourcesDto,
   GetUserConfigDto,
   UpdateUserConfigDto,
+  PublicWebRepairBody,
 ];

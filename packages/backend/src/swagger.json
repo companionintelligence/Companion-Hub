@@ -1948,6 +1948,36 @@
         ]
       }
     },
+    "/api/apps/{urn}/data-files": {
+      "get": {
+        "operationId": "getAppDataListing",
+        "parameters": [
+          {
+            "name": "urn",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppDataListingDto"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Apps"
+        ]
+      }
+    },
     "/api/apps/{urn}/compose-diff": {
       "get": {
         "operationId": "getAppComposeDiff",
@@ -4543,6 +4573,16 @@
       "post": {
         "operationId": "repair",
         "parameters": [],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PublicWebRepairBody"
+              }
+            }
+          }
+        },
         "responses": {
           "default": {
             "description": "",
@@ -10500,6 +10540,10 @@
         ],
         "additionalProperties": false
       },
+      "AppDataListingDto": {
+        "type": "object",
+        "properties": {}
+      },
       "GetComposeDiffDto": {
         "type": "object",
         "properties": {
@@ -11446,6 +11490,18 @@
           "title",
           "url"
         ],
+        "additionalProperties": false
+      },
+      "PublicWebRepairBody": {
+        "type": "object",
+        "properties": {
+          "appUrns": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
         "additionalProperties": false
       },
       "GetUserConfigDto": {

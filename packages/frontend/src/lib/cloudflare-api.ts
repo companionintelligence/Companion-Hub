@@ -1,4 +1,4 @@
-import { checkDnsAvailability as checkDnsAvailabilitySdk, getDiagnostics2 } from '@/api-client/sdk.gen';
+import { checkDnsAvailability as checkDnsAvailabilitySdk, getDiagnostics2, repair as repairPublicWebSdk } from '@/api-client/sdk.gen';
 import { sdkResult } from '@/lib/sdk-unwrap';
 
 /** Minimal Response shape for legacy DNS check callers. */
@@ -41,4 +41,25 @@ export async function fetchPublicWebDiagnostics(): Promise<{ apps: PublicWebDiag
   const result = await sdkResult(getDiagnostics2());
   if (!result.ok) return null;
   return (result.data ?? { apps: [] }) as { apps: PublicWebDiagnosticsApp[] };
+}
+
+export type PublicWebRepairResult = {
+  appUrn: string;
+  success: boolean;
+  message?: string;
+  repairedHostname?: string;
+};
+
+/**
+ * Re-apply an app's Public Web routing from its stored config. The Hub rewrites the
+ * app env, restarts the app when it is running and re-syncs Cloudflare — the same
+ * work `cihub public-web repair --app <name>` does, so a drifted app can be fixed
+ * without editing (and re-saving) its configuration.
+ */
+export async function repairPublicWebRouting(appUrn: string): Promise<PublicWebRepairResult[]> {
+  const result = await sdkResult(repairPublicWebSdk({ body: { appUrns: [appUrn] } }));
+  if (!result.ok) {
+    throw new Error('PUBLIC_WEB_REPAIR_FAILED');
+  }
+  return ((result.data ?? {}) as { results?: PublicWebRepairResult[] }).results ?? [];
 }

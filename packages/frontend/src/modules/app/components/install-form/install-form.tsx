@@ -1,6 +1,7 @@
-import { fetchDnsAvailability, fetchPublicWebDiagnostics } from '@/lib/cloudflare-api';
+import { fetchDnsAvailability, fetchPublicWebDiagnostics, repairPublicWebRouting } from '@/lib/cloudflare-api';
 import type { AvailableCustomDomainsResponseDto, GetRandomPortResponse } from '@/api-client';
 import { getRandomPortMutation, getDomainsOptions, getCustomDomainsOptions } from '@/api-client/@tanstack/react-query.gen';
+import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
 import { ScrollArea } from '@/components/ui/ScrollArea';
 import { Switch } from '@/components/ui/Switch';
@@ -199,6 +200,7 @@ export const InstallForm: React.FC<IProps> = ({
   const prevUrnRef = useRef<string | undefined>(undefined);
   const lastAutoPrefilledAppBaseUrl = useRef<Partial<Record<string, string>>>({});
   const [publicWebExpectedUrl, setPublicWebExpectedUrl] = useState<string | null>(null);
+  const [isRepairingPublicWeb, setIsRepairingPublicWeb] = useState(false);
   const [showAdvancedSettings, setShowAdvancedSettings] = useState(() => isMcpOptionalOnlyInstall(info));
 
   const mcpOptionalOnly = useMemo(() => isMcpOptionalOnlyInstall(info), [info]);
@@ -213,6 +215,32 @@ export const InstallForm: React.FC<IProps> = ({
     },
     [editingAppUrn],
   );
+
+  /**
+   * Re-apply the app's Public Web routing without touching its configuration.
+   * The drift banner used to point at Save, but nothing on the form is dirty when
+   * routing alone is out of sync, so the Update button it named was greyed out and
+   * the only remedies left were the CLI or a throwaway config edit (#1208).
+   */
+  const handleRepairPublicWeb = async () => {
+    if (!editingAppUrn) return;
+
+    setIsRepairingPublicWeb(true);
+    try {
+      const results = await repairPublicWebRouting(editingAppUrn);
+      const outcome = results.find((result) => result.appUrn === editingAppUrn);
+      if (!outcome?.success) {
+        toast.error(t('APP_PUBLIC_WEB_REPAIR_ERROR'));
+        return;
+      }
+      setPublicWebExpectedUrl(null);
+      toast.success(t('APP_PUBLIC_WEB_REPAIR_SUCCESS'));
+    } catch {
+      toast.error(t('APP_PUBLIC_WEB_REPAIR_ERROR'));
+    } finally {
+      setIsRepairingPublicWeb(false);
+    }
+  };
 
   const copyToClipboard = async (text: string) => {
     const value = text.trim();
@@ -568,9 +596,24 @@ export const InstallForm: React.FC<IProps> = ({
     return (
       <>
         {publicWebExpectedUrl && (
-          <p className="mb-3 text-sm text-amber-700 dark:text-amber-400">
-            Public Web routing is out of sync. Expected URL: {publicWebExpectedUrl}. Save settings or run repair to update routing.
-          </p>
+          <div
+            className="mb-3 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2.5 text-sm text-amber-700 dark:text-amber-400"
+            data-testid="public-web-drift-banner"
+          >
+            <p className="mb-2">{t('APP_PUBLIC_WEB_DRIFT_HINT', { url: publicWebExpectedUrl })}</p>
+            {/* `type="button"`: this sits inside the config form, and a bare button
+                would submit it — the one thing the drifted app does not need. */}
+            <Button
+              type="button"
+              size="sm"
+              intent="warning"
+              loading={isRepairingPublicWeb}
+              onClick={handleRepairPublicWeb}
+              data-testid="public-web-repair-button"
+            >
+              {t('APP_PUBLIC_WEB_REPAIR_ACTION')}
+            </Button>
+          </div>
         )}
         {watchExposureMode === 'cloudflare' ? (
           <CloudflareSubdomainField

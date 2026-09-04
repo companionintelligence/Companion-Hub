@@ -1,13 +1,8 @@
 import { Body, Controller, Get, Post, UseGuards } from '@nestjs/common';
 import { AuthGuard } from '../auth/auth.guard';
-import { ApiResponse } from '@nestjs/swagger';
+import { ApiBody, ApiResponse } from '@nestjs/swagger';
 import { PublicWebService, type PublicWebRepairRequest } from './public-web.service';
-import { z } from 'zod';
-import { zodAppUrn } from '@ci-hub/common/types';
-
-const repairBodySchema = z.object({
-  appUrns: z.array(zodAppUrn).optional(),
-});
+import { PublicWebRepairBody, publicWebRepairBodySchema } from './public-web.dto';
 
 @UseGuards(AuthGuard)
 @Controller('public-web')
@@ -22,8 +17,10 @@ export class PublicWebController {
 
   @Post('repair')
   @ApiResponse({ type: Object })
+  // Sending no body repairs every drifted app, so the body stays optional.
+  @ApiBody({ type: PublicWebRepairBody, required: false })
   async repair(@Body() body?: PublicWebRepairRequest) {
-    const parsed = repairBodySchema.parse(body ?? {});
+    const parsed = publicWebRepairBodySchema.parse(body ?? {});
     return this.publicWebService.repair(parsed);
   }
 }

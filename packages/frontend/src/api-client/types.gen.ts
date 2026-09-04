@@ -1129,6 +1129,10 @@ export type GetAppDto = {
     };
 };
 
+export type AppDataListingDto = {
+    [key: string]: unknown;
+};
+
 export type GetComposeDiffDto = {
     current: string;
     new: string;
@@ -1354,6 +1358,10 @@ export type EditLinkBodyDto = {
     description?: string;
     iconUrl?: string | '';
     isVisibleOnGuestDashboard?: boolean;
+};
+
+export type PublicWebRepairBody = {
+    appUrns?: Array<string>;
 };
 
 export type GetUserConfigDto = {
@@ -3230,6 +3238,21 @@ export type GetAppResponses = {
 
 export type GetAppResponse = GetAppResponses[keyof GetAppResponses];
 
+export type GetAppDataListingData = {
+    body?: never;
+    path: {
+        urn: string;
+    };
+    query?: never;
+    url: '/api/apps/{urn}/data-files';
+};
+
+export type GetAppDataListingResponses = {
+    default: AppDataListingDto;
+};
+
+export type GetAppDataListingResponse = GetAppDataListingResponses[keyof GetAppDataListingResponses];
+
 export type GetAppComposeDiffData = {
     body?: never;
     path: {
@@ -4573,7 +4596,7 @@ export type GetDiagnostics2Responses = {
 export type GetDiagnostics2Response = GetDiagnostics2Responses[keyof GetDiagnostics2Responses];
 
 export type RepairData = {
-    body?: never;
+    body?: PublicWebRepairBody;
     path?: never;
     query?: never;
     url: '/api/public-web/repair';
@@ -4788,6 +4811,17 @@ export type GetHostListenerTokenData = {
 
 export type GetHostListenerTokenResponses = {
     200: unknown;
+};
+
+export type WakeData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/agent-notify/wake';
+};
+
+export type WakeResponses = {
+    201: unknown;
 };
 
 export type StartData = {
