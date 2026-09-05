@@ -407,6 +407,13 @@
       "when": 1780800000000,
       "tag": "0057_app_custom_domain_takeover",
       "breakpoints": true
+    },
+    {
+      "idx": 58,
+      "version": "7",
+      "when": 1780900000000,
+      "tag": "0058_hub_pool_peer",
+      "breakpoints": true
     }
   ]
 }
