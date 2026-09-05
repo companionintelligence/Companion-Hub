@@ -39,6 +39,7 @@ Follow the [Google developer documentation style guide](https://developers.googl
 | [`security/hub-portal-trust.md`](security/hub-portal-trust.md) | Hub ↔ Portal trust; marketplace needs a paired device key |
 | [`CLI.md`](CLI.md) | `cihub` CLI |
 | [`private-vpn.md`](private-vpn.md) | Tailscale private VPN |
+| [`hub-pool.md`](hub-pool.md) | Multi-Hub inference pooling over Tailscale |
 | [`ci-cd-pipeline.md`](ci-cd-pipeline.md) | Historical multi-env deploy notes |
 | [`dns-cache-analysis.md`](dns-cache-analysis.md) | Desktop DNS NXDOMAIN investigation |
 

@@ -1,6 +1,8 @@
-import { Injectable } from '@nestjs/common';
+import { forwardRef, Inject, Injectable } from '@nestjs/common';
 import { LoggerService } from '@/core/logger/logger.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
+import { hubContainerName } from '@/common/constants';
+import { HubPoolPeerService } from '@/modules/hub-pool/hub-pool-peer.service';
 import { ModelRegistryService } from './model-registry.service';
 import { HardwareInspectorService } from './hardware-inspector.service';
 import { OllamaBackend } from './backends/ollama.backend';
@@ -89,6 +91,8 @@ export class InferenceEnvResolver {
     private readonly dsparkBackend: DsparkBackend,
     private readonly luceboxBackend: LuceboxBackend,
     private readonly cloudFallback: CloudFallbackService,
+    @Inject(forwardRef(() => HubPoolPeerService))
+    private readonly hubPoolPeerService: HubPoolPeerService,
   ) {}
 
   private getBackend(type: InferenceBackendType): InferenceBackend {
@@ -274,6 +278,19 @@ export class InferenceEnvResolver {
 
     if (Object.keys(cloudProviderEnv).length > 0) {
       env.cloudProviderEnv = cloudProviderEnv;
+    }
+
+    // Multi-Hub pooling: once any peer is connected, route the app through this Hub's own pool
+    // proxy instead of a directly-resolved backend URL. The model/context values above are
+    // unchanged — the proxy uses the resolved model name to pick whichever pool node actually has
+    // it. This is a global override (no per-app opt-in): with zero connected peers it's a no-op,
+    // so a single-node Hub behaves exactly as before.
+    if (await this.hubPoolPeerService.hasConnectedPeers()) {
+      const poolBaseUrl = `http://${hubContainerName()}:${process.env.API_PORT || '3000'}/api/inference/pool`;
+      env.CI_LLM_BASE_URL = `${poolBaseUrl}/v1`;
+      if (env.OLLAMA_HOST) env.OLLAMA_HOST = poolBaseUrl;
+      if (env.CI_OLLAMA_EMBED_HOST) env.CI_OLLAMA_EMBED_HOST = poolBaseUrl;
+      this.logger.info('[InferenceEnvResolver] connected pool peer(s) present; routing CI_LLM_BASE_URL through the pool proxy');
     }
 
     this.logger.info(

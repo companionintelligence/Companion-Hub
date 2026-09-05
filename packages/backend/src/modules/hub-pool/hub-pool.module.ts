@@ -1,0 +1,22 @@
+import { forwardRef, Module } from '@nestjs/common';
+import { LoggerModule } from '@/core/logger/logger.module';
+import { EncryptionModule } from '@/core/encryption/encryption.module';
+import { TailscaleModule } from '@/modules/tailscale/tailscale.module';
+import { InferenceModule } from '@/modules/inference/inference.module';
+import { HubPoolController } from './hub-pool.controller';
+import { HubPoolPeerRepository } from './hub-pool-peer.repository';
+import { HubPoolPeerService } from './hub-pool-peer.service';
+import { PoolProxyService } from './hub-pool-proxy.service';
+import { PoolPeerGuard } from './guards/pool-peer.guard';
+
+// forwardRef with InferenceModule: HubPoolPeerService needs InferenceRouterService (to report this
+// node's own capabilities to peers) and InferenceEnvResolver needs HubPoolPeerService (to know
+// whether to route an app's CI_LLM_BASE_URL through the pool proxy) — same circular shape already
+// used between AppsModule and InferenceModule.
+@Module({
+  imports: [LoggerModule, EncryptionModule, TailscaleModule, forwardRef(() => InferenceModule)],
+  controllers: [HubPoolController],
+  providers: [HubPoolPeerRepository, HubPoolPeerService, PoolProxyService, PoolPeerGuard],
+  exports: [HubPoolPeerService, PoolProxyService],
+})
+export class HubPoolModule {}

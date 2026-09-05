@@ -3160,6 +3160,564 @@
         ]
       }
     },
+    "/api/inference/pool/identify": {
+      "get": {
+        "operationId": "identify",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Hub Pool"
+        ]
+      }
+    },
+    "/api/inference/pool/peers": {
+      "get": {
+        "operationId": "listPeers",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Hub Pool"
+        ]
+      }
+    },
+    "/api/inference/pool/peers/discoverable": {
+      "get": {
+        "operationId": "listDiscoverable",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Hub Pool"
+        ]
+      }
+    },
+    "/api/inference/pool/peers/pair": {
+      "post": {
+        "operationId": "pairPeer",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PairPeerBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Hub Pool"
+        ]
+      }
+    },
+    "/api/inference/pool/peers/{id}/approve": {
+      "post": {
+        "operationId": "approvePeer",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Hub Pool"
+        ]
+      }
+    },
+    "/api/inference/pool/peers/{id}/reject": {
+      "post": {
+        "operationId": "rejectPeer",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Hub Pool"
+        ]
+      }
+    },
+    "/api/inference/pool/peers/{id}": {
+      "delete": {
+        "operationId": "removePeer",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Hub Pool"
+        ]
+      }
+    },
+    "/api/inference/pool/pair/request": {
+      "post": {
+        "operationId": "handlePairingRequest",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IncomingPairingRequestBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Hub Pool"
+        ]
+      }
+    },
+    "/api/inference/pool/pair/confirm": {
+      "post": {
+        "operationId": "handlePairingConfirm",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PairingConfirmBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Hub Pool"
+        ]
+      }
+    },
+    "/api/inference/pool/pair/reject": {
+      "post": {
+        "operationId": "handlePairingReject",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PairingRejectBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Hub Pool"
+        ]
+      }
+    },
+    "/api/inference/pool/capabilities": {
+      "get": {
+        "operationId": "capabilities",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Hub Pool"
+        ]
+      }
+    },
+    "/api/inference/pool/v1/chat/completions": {
+      "post": {
+        "operationId": "proxyChatCompletions",
+        "parameters": [],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Hub Pool"
+        ]
+      }
+    },
+    "/api/inference/pool/v1/completions": {
+      "post": {
+        "operationId": "proxyCompletions",
+        "parameters": [],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Hub Pool"
+        ]
+      }
+    },
+    "/api/inference/pool/v1/embeddings": {
+      "post": {
+        "operationId": "proxyEmbeddings",
+        "parameters": [],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Hub Pool"
+        ]
+      }
+    },
+    "/api/inference/pool/api/generate": {
+      "post": {
+        "operationId": "proxyOllamaGenerate",
+        "parameters": [],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Hub Pool"
+        ]
+      }
+    },
+    "/api/inference/pool/api/embeddings": {
+      "post": {
+        "operationId": "proxyOllamaEmbeddings",
+        "parameters": [],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Hub Pool"
+        ]
+      }
+    },
+    "/api/inference/pool/v1/models": {
+      "get": {
+        "operationId": "proxyOpenAiModelsList",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Hub Pool"
+        ]
+      }
+    },
+    "/api/inference/pool/api/tags": {
+      "get": {
+        "operationId": "proxyOllamaTags",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Hub Pool"
+        ]
+      }
+    },
+    "/api/inference/pool/local/v1/chat/completions": {
+      "post": {
+        "operationId": "localChatCompletions",
+        "parameters": [],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Hub Pool"
+        ]
+      }
+    },
+    "/api/inference/pool/local/v1/completions": {
+      "post": {
+        "operationId": "localCompletions",
+        "parameters": [],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Hub Pool"
+        ]
+      }
+    },
+    "/api/inference/pool/local/v1/embeddings": {
+      "post": {
+        "operationId": "localEmbeddings",
+        "parameters": [],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Hub Pool"
+        ]
+      }
+    },
+    "/api/inference/pool/local/api/generate": {
+      "post": {
+        "operationId": "localOllamaGenerate",
+        "parameters": [],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Hub Pool"
+        ]
+      }
+    },
+    "/api/inference/pool/local/api/embeddings": {
+      "post": {
+        "operationId": "localOllamaEmbeddings",
+        "parameters": [],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Hub Pool"
+        ]
+      }
+    },
+    "/api/inference/pool/local/v1/models": {
+      "get": {
+        "operationId": "localOpenAiModels",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Hub Pool"
+        ]
+      }
+    },
+    "/api/inference/pool/local/api/tags": {
+      "get": {
+        "operationId": "localOllamaTags",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Hub Pool"
+        ]
+      }
+    },
+    "/api/tailscale/status": {
+      "get": {
+        "operationId": "getStatus",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Tailscale"
+        ]
+      }
+    },
+    "/api/tailscale/sync": {
+      "post": {
+        "operationId": "syncExposure",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Sync triggered"
+          }
+        },
+        "summary": "Reconcile Tailscale Serve routes for Private VPN apps",
+        "tags": [
+          "Tailscale"
+        ]
+      }
+    },
+    "/api/tailscale/auth/start": {
+      "post": {
+        "operationId": "startAuth",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Tailscale"
+        ]
+      }
+    },
+    "/api/tailscale/auth/key": {
+      "post": {
+        "operationId": "connectWithAuthKey",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Tailscale"
+        ]
+      }
+    },
+    "/api/tailscale/auth/check": {
+      "get": {
+        "operationId": "checkAuth",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Tailscale"
+        ]
+      }
+    },
+    "/api/tailscale/disconnect": {
+      "post": {
+        "operationId": "disconnect",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Tailscale"
+        ]
+      }
+    },
+    "/api/tailscale/serve": {
+      "get": {
+        "operationId": "getServeStatus",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Tailscale"
+        ]
+      }
+    },
     "/api/api-keys": {
       "get": {
         "operationId": "listKeys",
@@ -4106,147 +4664,6 @@
         },
         "tags": [
           "SSE"
-        ]
-      }
-    },
-    "/api/tailscale/status": {
-      "get": {
-        "operationId": "getStatus",
-        "parameters": [],
-        "responses": {
-          "default": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object"
-                }
-              }
-            }
-          }
-        },
-        "tags": [
-          "Tailscale"
-        ]
-      }
-    },
-    "/api/tailscale/sync": {
-      "post": {
-        "operationId": "syncExposure",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "description": "Sync triggered"
-          }
-        },
-        "summary": "Reconcile Tailscale Serve routes for Private VPN apps",
-        "tags": [
-          "Tailscale"
-        ]
-      }
-    },
-    "/api/tailscale/auth/start": {
-      "post": {
-        "operationId": "startAuth",
-        "parameters": [],
-        "responses": {
-          "default": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object"
-                }
-              }
-            }
-          }
-        },
-        "tags": [
-          "Tailscale"
-        ]
-      }
-    },
-    "/api/tailscale/auth/key": {
-      "post": {
-        "operationId": "connectWithAuthKey",
-        "parameters": [],
-        "responses": {
-          "default": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object"
-                }
-              }
-            }
-          }
-        },
-        "tags": [
-          "Tailscale"
-        ]
-      }
-    },
-    "/api/tailscale/auth/check": {
-      "get": {
-        "operationId": "checkAuth",
-        "parameters": [],
-        "responses": {
-          "default": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object"
-                }
-              }
-            }
-          }
-        },
-        "tags": [
-          "Tailscale"
-        ]
-      }
-    },
-    "/api/tailscale/disconnect": {
-      "post": {
-        "operationId": "disconnect",
-        "parameters": [],
-        "responses": {
-          "default": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object"
-                }
-              }
-            }
-          }
-        },
-        "tags": [
-          "Tailscale"
-        ]
-      }
-    },
-    "/api/tailscale/serve": {
-      "get": {
-        "operationId": "getServeStatus",
-        "parameters": [],
-        "responses": {
-          "default": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object"
-                }
-              }
-            }
-          }
-        },
-        "tags": [
-          "Tailscale"
         ]
       }
     },
@@ -11107,6 +11524,22 @@
           "phase"
         ],
         "additionalProperties": false
+      },
+      "PairPeerBody": {
+        "type": "object",
+        "properties": {}
+      },
+      "IncomingPairingRequestBody": {
+        "type": "object",
+        "properties": {}
+      },
+      "PairingConfirmBody": {
+        "type": "object",
+        "properties": {}
+      },
+      "PairingRejectBody": {
+        "type": "object",
+        "properties": {}
       },
       "CreateApiKeyBody": {
         "type": "object",
