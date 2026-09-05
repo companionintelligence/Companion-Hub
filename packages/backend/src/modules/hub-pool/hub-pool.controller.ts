@@ -105,6 +105,17 @@ export class HubPoolController {
     return { acknowledged: true };
   }
 
+  /** Guarded (unlike `pair/reject`, which can only delete a pending row): unpairing tears down an established pairing, so the caller must prove it holds our token. */
+  @UseGuards(PoolPeerGuard)
+  @Post('pair/unpair')
+  async handlePairingUnpair(@Req() req: Request) {
+    if (!req.poolPeer) {
+      throw new ForbiddenException('Pool peer not resolved');
+    }
+    await this.peerService.handleRemoteUnpair(req.poolPeer);
+    return { acknowledged: true };
+  }
+
   // ── Peer-facing: this node's capabilities ───────────────────────────────
 
   @UseGuards(PoolPeerGuard)
@@ -148,21 +159,53 @@ export class HubPoolController {
   }
 
   @UseGuards(InternalNetworkGuard)
+  @Post('api/chat')
+  async proxyOllamaChat(@Body() body: Record<string, unknown>, @Res() res: Response) {
+    await this.proxyToPool('/api/chat', body, res);
+  }
+
+  @UseGuards(InternalNetworkGuard)
   @Post('api/embeddings')
   async proxyOllamaEmbeddings(@Body() body: Record<string, unknown>, @Res() res: Response) {
     await this.proxyToPool('/api/embeddings', body, res);
   }
 
   @UseGuards(InternalNetworkGuard)
+  @Post('api/embed')
+  async proxyOllamaEmbed(@Body() body: Record<string, unknown>, @Res() res: Response) {
+    await this.proxyToPool('/api/embed', body, res);
+  }
+
+  @UseGuards(InternalNetworkGuard)
   @Get('v1/models')
   async proxyOpenAiModelsList(@Res() res: Response) {
-    await this.proxyService.proxyListRequest('/v1/models', res);
+    await this.proxyService.proxyLocalOnlyRequest('/v1/models', 'GET', undefined, res);
   }
 
   @UseGuards(InternalNetworkGuard)
   @Get('api/tags')
   async proxyOllamaTags(@Res() res: Response) {
-    await this.proxyService.proxyListRequest('/api/tags', res);
+    await this.proxyService.proxyLocalOnlyRequest('/api/tags', 'GET', undefined, res);
+  }
+
+  // Ollama natives with no `model` to route on (or, for /api/show, nothing worth routing): served
+  // by this node's own engine so an app pointed at OLLAMA_HOST doesn't get a 404 from the proxy.
+  @UseGuards(InternalNetworkGuard)
+  @Get('api/ps')
+  async proxyOllamaPs(@Res() res: Response) {
+    await this.proxyService.proxyLocalOnlyRequest('/api/ps', 'GET', undefined, res);
+  }
+
+  @UseGuards(InternalNetworkGuard)
+  @Get('api/version')
+  async proxyOllamaVersion(@Res() res: Response) {
+    await this.proxyService.proxyLocalOnlyRequest('/api/version', 'GET', undefined, res);
+  }
+
+  @UseGuards(InternalNetworkGuard)
+  @Post('api/show')
+  async proxyOllamaShow(@Body() body: Record<string, unknown>, @Res() res: Response) {
+    await this.proxyService.proxyLocalOnlyRequest('/api/show', 'POST', body, res);
   }
 
   private async proxyToPool(path: string, body: Record<string, unknown>, res: Response): Promise<void> {
@@ -201,9 +244,21 @@ export class HubPoolController {
   }
 
   @UseGuards(PoolPeerGuard)
+  @Post('local/api/chat')
+  async localOllamaChat(@Req() req: Request, @Body() body: Record<string, unknown>, @Res() res: Response) {
+    await this.forwardLocal(req, '/api/chat', 'POST', body, res);
+  }
+
+  @UseGuards(PoolPeerGuard)
   @Post('local/api/embeddings')
   async localOllamaEmbeddings(@Req() req: Request, @Body() body: Record<string, unknown>, @Res() res: Response) {
     await this.forwardLocal(req, '/api/embeddings', 'POST', body, res);
+  }
+
+  @UseGuards(PoolPeerGuard)
+  @Post('local/api/embed')
+  async localOllamaEmbed(@Req() req: Request, @Body() body: Record<string, unknown>, @Res() res: Response) {
+    await this.forwardLocal(req, '/api/embed', 'POST', body, res);
   }
 
   @UseGuards(PoolPeerGuard)
