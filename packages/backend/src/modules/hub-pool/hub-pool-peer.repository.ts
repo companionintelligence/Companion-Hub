@@ -1,5 +1,5 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { eq } from 'drizzle-orm';
+import { eq, inArray } from 'drizzle-orm';
 import { DATABASE, type Database } from '@/core/database/database.module';
 import { hubPoolPeer } from '@/core/database/drizzle/schema';
 import type { HubPoolPeer, NewHubPoolPeer } from '@/core/database/drizzle/types';
@@ -30,6 +30,10 @@ export class HubPoolPeerRepository {
 
   async listByStatus(status: string): Promise<HubPoolPeer[]> {
     return this.db.query.hubPoolPeer.findMany({ where: eq(hubPoolPeer.status, status) });
+  }
+
+  async listByStatuses(statuses: string[]): Promise<HubPoolPeer[]> {
+    return this.db.query.hubPoolPeer.findMany({ where: inArray(hubPoolPeer.status, statuses) });
   }
 
   async update(id: string, data: Partial<NewHubPoolPeer>): Promise<HubPoolPeer | undefined> {
