@@ -1,12 +1,21 @@
-import { appContextQueryKey, getStatus2Options, getStatus5Options, getStatus5QueryKey } from '@/api-client/@tanstack/react-query.gen';
-import { disconnect, resetRegistration, startAuth } from '@/api-client/sdk.gen';
+import {
+  appContextQueryKey,
+  getStatus2Options,
+  getStatus5Options,
+  getStatus5QueryKey,
+  listDiscoverableOptions,
+  listDiscoverableQueryKey,
+  listPeersOptions,
+  listPeersQueryKey,
+} from '@/api-client/@tanstack/react-query.gen';
+import { approvePeer, disconnect, pairPeer, rejectPeer, removePeer, resetRegistration, startAuth } from '@/api-client/sdk.gen';
 import { Button } from '@/components/ui/Button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/Card';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/Dialog';
 import { Skeleton } from '@/components/ui/Skeleton/Skeleton';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { Globe, Shield } from 'lucide-react';
+import { Globe, Network, Shield } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { useState } from 'react';
@@ -224,6 +233,215 @@ const TailscaleSidecarSection = () => {
   );
 };
 
+interface DiscoverablePoolPeer {
+  tailscaleDeviceId: string;
+  nodeFqdn: string;
+  hostname: string;
+}
+
+interface PoolPeer {
+  id: string;
+  nodeFqdn: string;
+  displayName: string | null;
+  direction: 'inbound' | 'outbound';
+  status: 'pending' | 'connected' | 'unreachable' | 'rejected';
+  lastSeenAt: string | null;
+}
+
+const peerLabel = (peer: { displayName: string | null; nodeFqdn: string }) => peer.displayName || peer.nodeFqdn;
+
+const PoolPeerStatusBadge = ({ status, t }: { status: PoolPeer['status']; t: (key: string) => string }) => {
+  if (status === 'connected') {
+    return <StatusBadge connected label={t('HUB_POOL_STATUS_CONNECTED')} />;
+  }
+  if (status === 'unreachable') {
+    return (
+      <span className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-danger/40 bg-danger/10 px-2.5 py-1 text-xs font-medium text-danger">
+        <span className="h-1.5 w-1.5 rounded-full bg-danger" />
+        {t('HUB_POOL_STATUS_UNREACHABLE')}
+      </span>
+    );
+  }
+  return <StatusBadge connected={false} label={t('HUB_POOL_STATUS_PENDING')} />;
+};
+
+const HubPoolSection = () => {
+  const { t } = useTranslation();
+  const queryClient = useQueryClient();
+  const demoMode = useDemoMode();
+
+  const { data: peers, isLoading: peersLoading } = useQuery({
+    ...listPeersOptions(),
+    select: (payload) => payload as unknown as PoolPeer[],
+    refetchInterval: 15_000,
+  });
+
+  const { data: discoverable, isLoading: discoverableLoading } = useQuery({
+    ...listDiscoverableOptions(),
+    select: (payload) => payload as unknown as DiscoverablePoolPeer[],
+    refetchInterval: 30_000,
+  });
+
+  const invalidatePool = () => {
+    void queryClient.invalidateQueries({ queryKey: listPeersQueryKey() });
+    void queryClient.invalidateQueries({ queryKey: listDiscoverableQueryKey() });
+  };
+
+  const pairMutation = useMutation({
+    mutationFn: (nodeFqdn: string) => pairPeer({ body: { nodeFqdn } }),
+    onSuccess: () => {
+      toast.success(t('HUB_POOL_PAIR_SUCCESS'));
+      invalidatePool();
+    },
+    onError: () => toast.error(t('HUB_POOL_PAIR_ERROR')),
+  });
+
+  const approveMutation = useMutation({
+    mutationFn: (id: string) => approvePeer({ path: { id } }),
+    onSuccess: () => {
+      toast.success(t('HUB_POOL_APPROVE_SUCCESS'));
+      invalidatePool();
+    },
+    onError: () => toast.error(t('HUB_POOL_APPROVE_ERROR')),
+  });
+
+  const rejectMutation = useMutation({
+    mutationFn: (id: string) => rejectPeer({ path: { id } }),
+    onSuccess: () => {
+      toast.success(t('HUB_POOL_REJECT_SUCCESS'));
+      invalidatePool();
+    },
+    onError: () => toast.error(t('HUB_POOL_REJECT_ERROR')),
+  });
+
+  const removeMutation = useMutation({
+    mutationFn: (id: string) => removePeer({ path: { id } }),
+    onSuccess: () => {
+      toast.success(t('HUB_POOL_UNPAIR_SUCCESS'));
+      invalidatePool();
+    },
+    onError: () => toast.error(t('HUB_POOL_UNPAIR_ERROR')),
+  });
+
+  if (peersLoading || discoverableLoading) {
+    return <LoadingCard icon={Network} title={t('HUB_POOL_SECTION_TITLE')} />;
+  }
+
+  const pendingInbound = (peers ?? []).filter((p) => p.direction === 'inbound' && p.status === 'pending');
+  const pendingOutbound = (peers ?? []).filter((p) => p.direction === 'outbound' && p.status === 'pending');
+  const paired = (peers ?? []).filter((p) => p.status === 'connected' || p.status === 'unreachable');
+
+  return (
+    <Card data-testid="hub-pool-card">
+      <SectionHeader icon={Network} title={t('HUB_POOL_SECTION_TITLE')} description={t('HUB_POOL_SECTION_DESC')} />
+      <CardContent className="space-y-5">
+        <div className="space-y-2">
+          <h3 className="text-sm font-medium">{t('HUB_POOL_DISCOVERABLE_TITLE')}</h3>
+          {discoverable?.length ? (
+            <ul className="space-y-2">
+              {discoverable.map((device) => (
+                <li key={device.tailscaleDeviceId} className="flex items-center justify-between gap-3 rounded-md border px-3 py-2">
+                  <span className="min-w-0 truncate font-mono text-xs" title={device.nodeFqdn}>
+                    {device.hostname}
+                  </span>
+                  <Button
+                    type="button"
+                    size="sm"
+                    disabled={demoMode || pairMutation.isPending}
+                    loading={pairMutation.isPending && pairMutation.variables === device.nodeFqdn}
+                    onClick={() => pairMutation.mutate(device.nodeFqdn)}
+                  >
+                    {pairMutation.isPending && pairMutation.variables === device.nodeFqdn ? t('HUB_POOL_PAIRING') : t('HUB_POOL_PAIR_BUTTON')}
+                  </Button>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="text-sm text-muted-foreground">{t('HUB_POOL_DISCOVERABLE_EMPTY')}</p>
+          )}
+        </div>
+
+        <div className="space-y-2 border-t pt-4">
+          <h3 className="text-sm font-medium">{t('HUB_POOL_PENDING_TITLE')}</h3>
+          {!pendingInbound.length && !pendingOutbound.length ? (
+            <p className="text-sm text-muted-foreground">{t('HUB_POOL_PENDING_EMPTY')}</p>
+          ) : (
+            <ul className="space-y-2">
+              {pendingInbound.map((peer) => (
+                <li key={peer.id} className="flex items-center justify-between gap-3 rounded-md border px-3 py-2">
+                  <span className="min-w-0 truncate font-mono text-xs" title={peer.nodeFqdn}>
+                    {peerLabel(peer)}
+                  </span>
+                  <div className="flex shrink-0 gap-2">
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      disabled={demoMode}
+                      loading={rejectMutation.isPending}
+                      onClick={() => rejectMutation.mutate(peer.id)}
+                    >
+                      {t('HUB_POOL_REJECT_BUTTON')}
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      disabled={demoMode}
+                      loading={approveMutation.isPending}
+                      onClick={() => approveMutation.mutate(peer.id)}
+                    >
+                      {t('HUB_POOL_APPROVE_BUTTON')}
+                    </Button>
+                  </div>
+                </li>
+              ))}
+              {pendingOutbound.map((peer) => (
+                <li key={peer.id} className="flex items-center justify-between gap-3 rounded-md border px-3 py-2">
+                  <span className="min-w-0 truncate font-mono text-xs" title={peer.nodeFqdn}>
+                    {peerLabel(peer)}
+                  </span>
+                  <span className="shrink-0 text-xs text-muted-foreground">{t('HUB_POOL_OUTBOUND_WAITING', { name: peerLabel(peer) })}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+
+        <div className="space-y-2 border-t pt-4">
+          <h3 className="text-sm font-medium">{t('HUB_POOL_CONNECTED_TITLE')}</h3>
+          {paired.length ? (
+            <ul className="space-y-2">
+              {paired.map((peer) => (
+                <li key={peer.id} className="flex items-center justify-between gap-3 rounded-md border px-3 py-2">
+                  <div className="flex min-w-0 items-center gap-2">
+                    <span className="truncate font-mono text-xs" title={peer.nodeFqdn}>
+                      {peerLabel(peer)}
+                    </span>
+                    <PoolPeerStatusBadge status={peer.status} t={t} />
+                  </div>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    intent="danger"
+                    disabled={demoMode}
+                    loading={removeMutation.isPending}
+                    onClick={() => removeMutation.mutate(peer.id)}
+                  >
+                    {t('HUB_POOL_UNPAIR_BUTTON')}
+                  </Button>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="text-sm text-muted-foreground">{t('HUB_POOL_CONNECTED_EMPTY')}</p>
+          )}
+        </div>
+      </CardContent>
+    </Card>
+  );
+};
+
 const CloudflareSection = () => {
   const { t } = useTranslation();
   const demoMode = useDemoMode();
@@ -327,6 +545,7 @@ const CloudflareSection = () => {
 export const NetworkSettingsContainer = () => (
   <div className="space-y-6" data-testid="network-settings">
     <TailscaleSidecarSection />
+    <HubPoolSection />
     <CloudflareSection />
   </div>
 );

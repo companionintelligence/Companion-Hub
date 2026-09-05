@@ -1,5 +1,19 @@
 import { relations } from 'drizzle-orm';
-import { boolean, customType, index, integer, pgEnum, pgTable, primaryKey, serial, text, timestamp, uniqueIndex, varchar } from 'drizzle-orm/pg-core';
+import {
+  boolean,
+  customType,
+  index,
+  integer,
+  pgEnum,
+  pgTable,
+  primaryKey,
+  serial,
+  text,
+  timestamp,
+  uniqueIndex,
+  uuid,
+  varchar,
+} from 'drizzle-orm/pg-core';
 
 export const appStatusEnum = pgEnum('app_status_enum', [
   'running',
@@ -374,3 +388,54 @@ export const whoisCache = pgTable(
   },
   (table) => [primaryKey({ columns: [table.subject, table.appId] })],
 );
+
+const poolPeerCapabilities = customType<{ data: Record<string, unknown>; driverData: string }>({
+  dataType() {
+    return 'jsonb';
+  },
+  toDriver(value: Record<string, unknown>): string {
+    return JSON.stringify(value);
+  },
+});
+
+/**
+ * A paired sibling Hub node reachable over the tailnet, used for cross-node
+ * inference pooling (`HubPoolPeerService`). One row per peer, keyed by its
+ * stable Tailscale node FQDN.
+ *
+ * Pairing uses one bearer token PER DIRECTION rather than one shared secret,
+ * because each side must both PRESENT a token (on its own outbound calls to
+ * the peer) and VERIFY one (on the peer's inbound calls to it) — a single
+ * shared value stored as a hash on both sides (the `apiKey`-table pattern)
+ * would leave neither side able to reconstruct a raw value to present:
+ *  - `verifyTokenHash`: SHA-256 hash of the token THIS Hub issued to the peer.
+ *    The peer presents the raw value on its calls to us; we only ever need to
+ *    verify it, so only the hash is stored (mirrors `apiKey.hashedKey`).
+ *  - `presentTokenEncrypted`: the token the PEER issued to us, which we must
+ *    present on our own calls to it — so the raw value has to be retrievable,
+ *    hence encrypted-at-rest via `EncryptionService` rather than hashed
+ *    (mirrors `memoryConnection.encryptedKey`, salt = this row's `nodeFqdn`).
+ * Both are null while a pairing is still `pending` on the side that has not
+ * yet issued/received its half of the handshake.
+ */
+export const hubPoolPeer = pgTable('hub_pool_peer', {
+  id: uuid('id').defaultRandom().primaryKey().notNull(),
+  // Populated when the peer was discovered via the Tailscale Admin API; null for a peer
+  // that only ever arrived as an inbound pairing request (its nodeFqdn is still the trust anchor).
+  tailscaleDeviceId: varchar('tailscale_device_id'),
+  nodeFqdn: varchar('node_fqdn').notNull().unique(),
+  displayName: varchar('display_name'),
+  // 'outbound': we initiated pairing with this peer. 'inbound': this peer asked to pair with us.
+  // Only 'inbound' + 'pending' rows show an Approve/Reject action in the operator UI.
+  direction: varchar('direction').notNull(),
+  // 'pending' (handshake not yet complete) | 'connected' | 'unreachable' | 'rejected'
+  status: varchar('status').default('pending').notNull(),
+  consecutiveFailures: integer('consecutive_failures').default(0).notNull(),
+  lastSeenAt: timestamp('last_seen_at', { mode: 'string' }),
+  // Cached { backends, models, hardwareTier } from this peer's last GET /inference/pool/capabilities poll.
+  lastCapabilities: poolPeerCapabilities('last_capabilities'),
+  verifyTokenHash: varchar('verify_token_hash'),
+  presentTokenEncrypted: text('present_token_encrypted'),
+  createdAt: timestamp('created_at', { mode: 'string' }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { mode: 'string' }).defaultNow().notNull(),
+});

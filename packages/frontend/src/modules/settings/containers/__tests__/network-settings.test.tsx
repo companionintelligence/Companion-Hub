@@ -17,6 +17,10 @@ vi.mock('@/api-client/sdk.gen', () => ({
   disconnect: vi.fn(),
   resetRegistration: vi.fn(),
   startAuth: vi.fn(),
+  pairPeer: vi.fn(),
+  approvePeer: vi.fn(),
+  rejectPeer: vi.fn(),
+  removePeer: vi.fn(),
 }));
 vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
   appContextQueryKey: () => ['ctx'],
@@ -30,6 +34,10 @@ vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
     queryKey: ['ts'],
     queryFn: async () => ({ installed: false, connected: false, ip: null, hostname: null, backendState: null }),
   }),
+  listPeersQueryKey: () => ['pool-peers'],
+  listPeersOptions: () => ({ queryKey: ['pool-peers'], queryFn: async () => [] }),
+  listDiscoverableQueryKey: () => ['pool-discoverable'],
+  listDiscoverableOptions: () => ({ queryKey: ['pool-discoverable'], queryFn: async () => [] }),
 }));
 
 const renderContainer = () => {
@@ -53,6 +61,15 @@ describe('NetworkSettingsContainer', () => {
     expect(screen.getByText('SETTINGS_NETWORK_ACTIVE')).toBeTruthy();
     expect(screen.getByText('fe950a10-8659')).toBeTruthy();
     expect(screen.getByText('SETTINGS_NETWORK_TAILSCALE_NOT_INSTALLED_DESC')).toBeTruthy();
+  });
+
+  it('renders the Hub Pool card with empty-state copy when nothing is paired or discoverable', async () => {
+    renderContainer();
+
+    await waitFor(() => expect(screen.getByTestId('hub-pool-card')).toBeTruthy());
+    expect(screen.getByText('HUB_POOL_DISCOVERABLE_EMPTY')).toBeTruthy();
+    expect(screen.getByText('HUB_POOL_PENDING_EMPTY')).toBeTruthy();
+    expect(screen.getByText('HUB_POOL_CONNECTED_EMPTY')).toBeTruthy();
   });
 
   it('confirms re-registration in a dialog instead of window.confirm', async () => {
