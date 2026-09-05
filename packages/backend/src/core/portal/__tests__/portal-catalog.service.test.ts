@@ -48,6 +48,44 @@ describe('PortalCatalogService', () => {
     });
   });
 
+  it('searchCatalog matches proprietary platforms from the app replaces field', async () => {
+    portalClient.fetchStoreCatalog.mockResolvedValue([
+      {
+        slug: 'nextcloud',
+        name: 'Nextcloud',
+        short_desc: 'A safe home for all your data.',
+        categories: ['data'],
+        replaces: ['Google Drive', 'Dropbox'],
+      },
+      { slug: 'ghost', name: 'Ghost', short_desc: 'Blog', categories: ['social'] },
+    ] as any);
+    portalClient.fetchStoreAlternatives.mockResolvedValue({});
+
+    const result = await service.searchCatalog({ search: 'google drive', pageSize: 50 });
+
+    expect(result?.data.map((entry) => entry.id)).toEqual(['nextcloud']);
+    expect(result?.data[0]?.replaces).toEqual(['Google Drive', 'Dropbox']);
+  });
+
+  it('searchCatalog returns Nextcloud when the query is a proprietary alternative', async () => {
+    portalClient.fetchStoreCatalog.mockResolvedValue([
+      { slug: 'ghost', name: 'Ghost', short_desc: 'Blog', categories: ['social'] },
+      { slug: 'nextcloud', name: 'Nextcloud', short_desc: 'Self-hosted files', categories: ['data'] },
+    ] as any);
+    portalClient.fetchStoreAlternatives.mockResolvedValue({
+      data: [
+        {
+          proprietary: [{ name: 'Google Drive' }, { name: 'Dropbox' }],
+          alternatives: [{ name: 'Nextcloud', appSlug: 'nextcloud' }],
+        },
+      ],
+    });
+
+    const result = await service.searchCatalog({ search: 'google drive', pageSize: 50 });
+
+    expect(result?.data.map((entry) => entry.id)).toEqual(['nextcloud']);
+  });
+
   it('searchCatalog returns entries with id', async () => {
     portalClient.fetchStoreCatalog.mockResolvedValue([{ slug: 'ghost', name: 'Ghost', short_desc: 'Blog', categories: ['social'] }] as any);
 

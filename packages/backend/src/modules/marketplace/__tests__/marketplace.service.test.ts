@@ -30,6 +30,7 @@ describe('MarketplaceService', () => {
     portalCatalog = mock<PortalCatalogService>();
     marketplaceCacheBus = new MarketplaceCacheBus();
     portalCatalog.warmCacheInBackground.mockReturnValue(undefined);
+    portalCatalog.getSearchAliasTextByAppId.mockResolvedValue(new Map());
 
     configService.getConfig.mockReturnValue({
       architecture: 'amd64', // Default arch
