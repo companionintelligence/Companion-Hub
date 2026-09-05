@@ -15,6 +15,7 @@ const LOGIN_FILE_NAME = 'portal-login.json';
 
 export type PortalLogin = {
   token: string;
+  tokenId?: string | null;
   orgId: string;
   orgSlug: string | null;
   portalOrigin: string;
@@ -46,9 +47,17 @@ type ComposeService = {
   isMain?: boolean;
 };
 
-export function portalOriginFromEnv(env: NodeJS.ProcessEnv = process.env, explicit?: string): string {
-  const raw = explicit || env.CI_PORTAL_ORIGIN || env.CI_CLOUD_URL || CI_CLOUD_DEFAULT;
+export function portalOriginFromEnv(env: NodeJS.ProcessEnv = process.env, explicit?: string, stored?: string | null): string {
+  const raw = explicit || env.CI_PORTAL_ORIGIN || env.CI_CLOUD_URL || stored || CI_CLOUD_DEFAULT;
   return raw.replace(/\/$/, '');
+}
+
+export function registryHostFromOrigin(origin: string): string {
+  return new URL(origin).host;
+}
+
+export function loopbackStateMatches(received: string | null, expected: string): boolean {
+  return received === expected;
 }
 
 export function catalogIdFor(bundleId: string, organizationSlug: string): string {
@@ -265,9 +274,9 @@ export async function runCatalogSubmit(rawArgs: string[], options: CatalogSubmit
     process.exit(2);
   }
 
-  const portalOrigin = portalOriginFromEnv(process.env, options.portalOrigin || portalFlag);
-  const registryHost = new URL(portalOrigin).hostname;
   const stored = readStoredLogin();
+  const portalOrigin = portalOriginFromEnv(process.env, options.portalOrigin || portalFlag, stored?.portalOrigin);
+  const registryHost = registryHostFromOrigin(portalOrigin);
   const credentials = resolveSubmitCredentials({
     token: options.token || tokenFlag,
     orgId: options.orgId || orgFlag,
@@ -364,8 +373,35 @@ export async function runCatalogSubmit(rawArgs: string[], options: CatalogSubmit
   printMessageBox('Submitted', [`id ${result.id}`, `status ${result.status}`], 'green');
 }
 
-export async function runCatalogLogout(): Promise<void> {
-  deleteStoredLogin();
+export async function runCatalogLogout(options: { fetchImpl?: typeof fetch; filePath?: string } = {}): Promise<void> {
+  const filePath = options.filePath ?? loginFilePath();
+  const stored = readStoredLogin(filePath);
+  let revoked = false;
+
+  if (stored?.tokenId && stored.orgId && stored.token) {
+    const fetchImpl = options.fetchImpl ?? fetch;
+
+    try {
+      const response = await fetchImpl(
+        `${stored.portalOrigin}/api/organizations/${encodeURIComponent(stored.orgId)}/developer-tokens/${encodeURIComponent(stored.tokenId)}`,
+        {
+          method: 'DELETE',
+          headers: { Authorization: `Bearer ${stored.token}` },
+        },
+      );
+      revoked = response.ok;
+    } catch {
+      revoked = false;
+    }
+  }
+
+  deleteStoredLogin(filePath);
+
+  if (stored?.tokenId && !revoked) {
+    printMessageBox('Logged out locally', ['Portal did not revoke the token. Revoke it from Developer apps if it is still listed.'], 'yellow');
+    return;
+  }
+
   printMessageBox('Logged out', ['Removed the stored Portal developer token.'], 'green');
 }
 
@@ -408,7 +444,7 @@ async function loopbackLogin(params: {
   const code = await new Promise<string>((resolve, reject) => {
     const server = createServer((request, response) => {
       const url = new URL(request.url ?? '/', 'http://127.0.0.1');
-      if (url.searchParams.get('state') && url.searchParams.get('state') !== state) {
+      if (!loopbackStateMatches(url.searchParams.get('state'), state)) {
         response.writeHead(400);
         response.end('state mismatch');
         return;
@@ -495,6 +531,7 @@ async function deviceCodeLogin(params: {
     });
     const payload = (await polled.json()) as {
       token?: string;
+      tokenId?: string;
       orgId?: string;
       orgSlug?: string | null;
       code?: string;
@@ -508,6 +545,7 @@ async function deviceCodeLogin(params: {
     }
     writeStoredLogin({
       token: payload.token,
+      tokenId: payload.tokenId ?? null,
       orgId: payload.orgId,
       orgSlug: payload.orgSlug ?? null,
       portalOrigin: params.portalOrigin,
@@ -523,12 +561,18 @@ async function redeemCode(portalOrigin: string, body: { code?: string; device_co
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
-  const payload = (await polled.json()) as { token?: string; orgId?: string; orgSlug?: string | null };
+  const payload = (await polled.json()) as {
+    token?: string;
+    tokenId?: string;
+    orgId?: string;
+    orgSlug?: string | null;
+  };
   if (!polled.ok || !payload.token || !payload.orgId) {
     throw new Error('token exchange failed');
   }
   writeStoredLogin({
     token: payload.token,
+    tokenId: payload.tokenId ?? null,
     orgId: payload.orgId,
     orgSlug: payload.orgSlug ?? null,
     portalOrigin,
