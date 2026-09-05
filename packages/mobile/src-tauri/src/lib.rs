@@ -261,15 +261,13 @@ fn safe_navigate(window: &tauri::WebviewWindow, url: tauri::Url) -> Result<(), S
 /// HTTP — `window.url()` reports the logical Vite URL even when the document
 /// is still the broken custom scheme, so we must not trust it.
 fn ensure_frontend_webview(app: &tauri::AppHandle, force: bool) {
-    let Some(start) = app_frontend_url(app) else {
-        return;
-    };
+    let start = app_frontend_url(app);
     let windows: Vec<_> = match app.get_webview_window("main") {
         Some(main) => vec![main],
         None => app.webview_windows().into_values().collect(),
     };
     if windows.is_empty() {
-        eprintln!("[ci-hub-mobile] no webview yet; cannot load {start}");
+        eprintln!("[ci-hub-mobile] no webview yet; nothing to fix up");
         return;
     }
     for window in windows {
@@ -278,6 +276,11 @@ fn ensure_frontend_webview(app: &tauri::AppHandle, force: bool) {
         }));
         // Do not call `window.url()` — wry unwraps a nil WKWebView.URL on the
         // main run loop and the Simulator shows Apple's Reopen/Report dialog.
+        // None means this platform needs no fix-up (Android). Skip the
+        // navigation, but keep the background-colour fix applied above.
+        let Some(start) = start.clone() else {
+            continue;
+        };
         if !force && FRONTEND_NAVIGATED.load(Ordering::SeqCst) {
             eprintln!("[ci-hub-mobile] keep webview on frontend (skip reload)");
             continue;
@@ -290,20 +293,52 @@ fn ensure_frontend_webview(app: &tauri::AppHandle, force: bool) {
     }
 }
 
+/// The URL the webview must be forced onto, or `None` when this platform needs
+/// no fix-up.
+///
+/// This whole mechanism is an **iOS-only** workaround: WKWebView paints black
+/// for `cihub://`, `about:blank` and the mobile-dev `tauri://localhost` proxy
+/// on iOS 26/27, so the app re-navigates itself to a URL that actually renders.
+///
+/// Android needs a *different* fix-up, not the iOS one. Two separate bugs made
+/// every release launch unusable there:
+///
+/// 1. `tauri://` is a WKWebView-only scheme. Android serves the bundle from
+///    `http://tauri.localhost`, so forcing it to `tauri://localhost/connect`
+///    replaced the app with a `net::ERR_UNKNOWN_URL_SCHEME` "Webpage not
+///    available" error page.
+/// 2. The frontend is an SPA (`ssr: false`) that emits **only** `index.html` —
+///    there is no prerendered `/connect` document. iOS's custom-scheme handler
+///    falls back to `index.html` for unknown paths; Android's asset handler
+///    does not, so `/connect` renders a blank page.
+///
+/// So Android is sent to the bundle root and the client router takes it to
+/// `/connect` itself (root.tsx redirects mobile there when no Hub is stored).
 fn app_frontend_url(_app: &tauri::AppHandle) -> Option<tauri::Url> {
-    #[cfg(debug_assertions)]
+    frontend_fixup_url().and_then(|url| tauri::Url::parse(url).ok())
+}
+
+/// Split out from [`app_frontend_url`] so the platform contract is unit-testable
+/// without constructing a `tauri::AppHandle`.
+fn frontend_fixup_url() -> Option<&'static str> {
+    #[cfg(target_os = "android")]
+    {
+        None
+    }
+
+    #[cfg(all(not(target_os = "android"), debug_assertions))]
     {
         // ios:dev must hit the Vite server. Falling through to tauri://localhost
         // is what left the Simulator on a black custom-scheme document.
         // `navigate()` is a raw WKWebView loadRequest — it is not rewritten to
         // `tauri://`. ATS only auto-allows cleartext HTTP to `localhost`
         // (`127.0.0.1` and public names like `lvh.me` are blocked).
-        return tauri::Url::parse("http://localhost:5005/connect").ok();
+        Some("http://localhost:5005/connect")
     }
 
-    #[cfg(not(debug_assertions))]
+    #[cfg(all(not(target_os = "android"), not(debug_assertions)))]
     {
-        tauri::Url::parse("tauri://localhost/connect").ok()
+        Some("tauri://localhost/connect")
     }
 }
 
@@ -440,8 +475,43 @@ fn extract_intent(url: &str) -> Option<String> {
 mod tests {
     use super::{
         deep_link_urls_from_payload, extract_intent, extract_oidc_callback, extract_pairing_code,
-        extract_portal_auth, webview_already_on_frontend, PortalAuthPayload,
+        extract_portal_auth, frontend_fixup_url, webview_already_on_frontend, PortalAuthPayload,
     };
+
+    /// The webview fix-up is an iOS WKWebView workaround. Forcing it on Android
+    /// navigated the webview to iOS's `tauri://localhost`, which Android cannot
+    /// resolve — every release launch showed `net::ERR_UNKNOWN_URL_SCHEME`
+    /// ("Webpage not available") instead of the app.
+    #[test]
+    fn frontend_fixup_targets_a_loadable_url_per_platform() {
+        if cfg!(target_os = "android") {
+            assert_eq!(
+                frontend_fixup_url(),
+                None,
+                "Android must not be re-navigated: tauri:// is unresolvable there, and the \
+                 window already opens on the SPA root"
+            );
+        } else {
+            let url = frontend_fixup_url().expect("iOS/macOS still need the WKWebView fix-up");
+            assert!(url.contains("/connect"), "iOS deep-links straight to connect: {url}");
+        }
+    }
+
+    /// Whatever URL we do force must be a scheme the host webview can load.
+    /// `tauri://` is WKWebView-only; Android serves over `http://tauri.localhost`.
+    #[test]
+    fn frontend_fixup_url_never_uses_tauri_scheme_on_android() {
+        if let Some(url) = frontend_fixup_url() {
+            assert!(
+                !cfg!(target_os = "android") || !url.starts_with("tauri://"),
+                "tauri:// is not resolvable by the Android webview: {url}"
+            );
+            assert!(
+                url.starts_with("http://") || url.starts_with("tauri://"),
+                "unexpected scheme: {url}"
+            );
+        }
+    }
 
     #[test]
     fn frontend_href_accepts_vite_and_https_hubs() {
