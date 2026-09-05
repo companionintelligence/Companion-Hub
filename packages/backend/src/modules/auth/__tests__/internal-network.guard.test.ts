@@ -44,6 +44,10 @@ describe('InternalNetworkGuard', () => {
     ).toBe(true);
   });
 
+  it('allows tailnet clients (Tailscale CGNAT range)', () => {
+    expect(guard.canActivate(createContext({ ip: '100.101.102.103' }))).toBe(true);
+  });
+
   it('rejects public client addresses', () => {
     expect(() =>
       guard.canActivate(
