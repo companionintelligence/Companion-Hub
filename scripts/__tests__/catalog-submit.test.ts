@@ -8,6 +8,9 @@ import {
   imageTag,
   packBundleTarGz,
   prepareSubmitPlan,
+  portalOriginFromEnv,
+  registryHostFromOrigin,
+  loopbackStateMatches,
   resolveSubmitCredentials,
   rewriteComposeImages,
   validateSubmitDir,
@@ -15,6 +18,7 @@ import {
   readStoredLogin,
   deleteStoredLogin,
   loginFilePath,
+  runCatalogLogout,
 } from '../lib/catalog-submit';
 import { renderHelp, stripAnsi } from '../cihub-cli';
 
@@ -106,15 +110,102 @@ describe('submit directory', () => {
   });
 });
 
+describe('submit portal origin', () => {
+  it('prefers explicit then env then the stored issuer, and keeps localhost ports', () => {
+    expect(portalOriginFromEnv({}, undefined, 'https://stored.example:8787')).toBe('https://stored.example:8787');
+    expect(portalOriginFromEnv({ CI_PORTAL_ORIGIN: 'https://env.example' }, undefined, 'https://stored.example:8787')).toBe('https://env.example');
+    expect(portalOriginFromEnv({}, 'https://flag.example', 'https://stored.example:8787')).toBe('https://flag.example');
+    expect(registryHostFromOrigin('https://localhost:8787')).toBe('localhost:8787');
+    expect(registryHostFromOrigin('https://hub.ci.computer')).toBe('hub.ci.computer');
+  });
+
+  it('requires the loopback CSRF state to match exactly', () => {
+    expect(loopbackStateMatches('abc', 'abc')).toBe(true);
+    expect(loopbackStateMatches('abc', 'xyz')).toBe(false);
+    expect(loopbackStateMatches(null, 'abc')).toBe(false);
+  });
+});
+
 describe('stored login file', () => {
   it('writes mode-restricted JSON next to cihub config, not pairing state', () => {
     const home = mkdtempSync(join(tmpdir(), 'cihub-home-'));
     dirs.push(home);
     const filePath = loginFilePath(home);
     expect(filePath).toContain(`${join('.config', 'cihub', 'portal-login.json')}`);
-    writeStoredLogin({ token: 'cio_test', orgId: 'org_1', orgSlug: 'acme', portalOrigin: 'https://hub.ci.computer' }, filePath);
+    writeStoredLogin(
+      {
+        token: 'cio_test',
+        tokenId: 'tok_1',
+        orgId: 'org_1',
+        orgSlug: 'acme',
+        portalOrigin: 'https://hub.ci.computer',
+      },
+      filePath,
+    );
     expect(readStoredLogin(filePath)?.token).toBe('cio_test');
+    expect(readStoredLogin(filePath)?.tokenId).toBe('tok_1');
     deleteStoredLogin(filePath);
+    expect(readStoredLogin(filePath)).toBeNull();
+  });
+
+  it('revokes the stored token id on logout, then deletes the file', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'cihub-home-'));
+    dirs.push(home);
+    const filePath = loginFilePath(home);
+    writeStoredLogin(
+      {
+        token: 'cio_test',
+        tokenId: 'tok_1',
+        orgId: 'org_1',
+        orgSlug: 'acme',
+        portalOrigin: 'https://hub.ci.computer',
+      },
+      filePath,
+    );
+    const calls: Array<{ url: string; method?: string; authorization?: string | null }> = [];
+
+    await runCatalogLogout({
+      filePath,
+      fetchImpl: (async (input, init) => {
+        calls.push({
+          url: String(input),
+          method: typeof init?.method === 'string' ? init.method : undefined,
+          authorization: new Headers(init?.headers).get('authorization'),
+        });
+        return new Response(JSON.stringify({ success: true }), { status: 200 });
+      }) as typeof fetch,
+    });
+
+    expect(calls).toEqual([
+      {
+        url: 'https://hub.ci.computer/api/organizations/org_1/developer-tokens/tok_1',
+        method: 'DELETE',
+        authorization: 'Bearer cio_test',
+      },
+    ]);
+    expect(readStoredLogin(filePath)).toBeNull();
+  });
+
+  it('deletes the local file even when Portal revoke fails', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'cihub-home-'));
+    dirs.push(home);
+    const filePath = loginFilePath(home);
+    writeStoredLogin(
+      {
+        token: 'cio_test',
+        tokenId: 'tok_1',
+        orgId: 'org_1',
+        orgSlug: 'acme',
+        portalOrigin: 'https://hub.ci.computer',
+      },
+      filePath,
+    );
+
+    await runCatalogLogout({
+      filePath,
+      fetchImpl: (async () => new Response('nope', { status: 500 })) as typeof fetch,
+    });
+
     expect(readStoredLogin(filePath)).toBeNull();
   });
 });
