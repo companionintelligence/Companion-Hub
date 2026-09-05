@@ -92,6 +92,22 @@ const commandSections: { title: string; entries: CommandEntry[] }[] = [
     ],
   },
   {
+    title: 'Hub Pool',
+    entries: [
+      { command: `${BASE_COMMAND} pool status [env]`, description: 'Whether pooling is routing, this node, and every peer' },
+      { command: `${BASE_COMMAND} pool peers [env]`, description: 'Paired peers with status, last seen, queue depth, and models' },
+      { command: `${BASE_COMMAND} pool discover [env]`, description: 'Unpaired CI-Hub nodes on the tailnet (needs the Tailscale OAuth client)' },
+      { command: `${BASE_COMMAND} pool pair <node> [--name <label>] [--yes]`, description: 'Send a pairing request to a peer (it must approve)' },
+      { command: `${BASE_COMMAND} pool approve|reject <id> [--yes]`, description: 'Act on a pending inbound pairing request' },
+      { command: `${BASE_COMMAND} pool unpair <id> [--yes]`, description: 'Remove a peer and revoke both tokens' },
+      { command: `${BASE_COMMAND} pool log [env] [--limit N]`, description: 'Recent routing decisions, with failovers called out' },
+      {
+        command: `${BASE_COMMAND} pool enable|disable [env] [--yes]`,
+        description: 'Flip the persisted pool kill switch (HUB_POOL_USER_DISABLED wins)',
+      },
+    ],
+  },
+  {
     title: 'App lifecycle',
     entries: [
       { command: `${BASE_COMMAND} app list`, description: 'List managed Docker containers' },
@@ -182,6 +198,20 @@ export function cliWarn(text: string) {
 export function stripAnsi(text: string) {
   const esc = String.fromCharCode(27);
   return text.replace(new RegExp(`${esc}\\[[0-9;]*m`, 'g'), '');
+}
+
+/**
+ * Make an untrusted string safe to print inside a message box: whitespace runs collapse to a single
+ * space (so a value cannot span rows) and every control character is dropped.
+ *
+ * `stripAnsi` is not enough on its own — it only removes SGR colour sequences, so `ESC[2J`, a bare
+ * ESC, or any other C0 character would survive and be handed to the terminal verbatim.
+ */
+export function sanitizeForBox(value: string): string {
+  return [...stripAnsi(value).replace(/\s+/g, ' ')]
+    .filter((char) => char >= ' ' && char !== '\u007f') // >= space keeps printables; \u007f is DEL
+    .join('')
+    .trim();
 }
 
 function pad(value: string, width: number) {

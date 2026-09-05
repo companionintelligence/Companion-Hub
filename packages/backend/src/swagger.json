@@ -3174,6 +3174,81 @@
         ]
       }
     },
+    "/api/inference/pool/status": {
+      "get": {
+        "operationId": "poolStatus",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Hub Pool"
+        ]
+      }
+    },
+    "/api/inference/pool/settings": {
+      "get": {
+        "operationId": "getPoolSettings",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Hub Pool"
+        ]
+      },
+      "patch": {
+        "operationId": "updatePoolSettings",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateHubPoolPreferencesBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Hub Pool"
+        ]
+      }
+    },
+    "/api/inference/pool/routing-log": {
+      "get": {
+        "operationId": "getPoolRoutingLog",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 200
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Hub Pool"
+        ]
+      }
+    },
     "/api/inference/pool/peers": {
       "get": {
         "operationId": "listPeers",
@@ -6299,6 +6374,19 @@
               "inferenceDsparkUrl": {
                 "type": "string"
               },
+              "hubPoolEnabled": {
+                "type": "boolean"
+              },
+              "hubPoolLocalAffinity": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 20
+              },
+              "hubPoolHealthPollSeconds": {
+                "type": "integer",
+                "minimum": 10,
+                "maximum": 300
+              },
               "inferenceCloudProviders": {
                 "type": "array",
                 "items": {
@@ -6693,6 +6781,19 @@
           },
           "inferenceDsparkUrl": {
             "type": "string"
+          },
+          "hubPoolEnabled": {
+            "type": "boolean"
+          },
+          "hubPoolLocalAffinity": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 20
+          },
+          "hubPoolHealthPollSeconds": {
+            "type": "integer",
+            "minimum": 10,
+            "maximum": 300
           },
           "inferenceCloudProviders": {
             "type": "array",
@@ -11627,6 +11728,25 @@
         ],
         "additionalProperties": false
       },
+      "UpdateHubPoolPreferencesBody": {
+        "type": "object",
+        "properties": {
+          "poolEnabled": {
+            "type": "boolean"
+          },
+          "poolLocalAffinity": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 20
+          },
+          "poolHealthPollSeconds": {
+            "type": "integer",
+            "minimum": 10,
+            "maximum": 300
+          }
+        },
+        "additionalProperties": false
+      },
       "PairPeerBody": {
         "type": "object",
         "properties": {}
@@ -14868,6 +14988,17 @@
         "required": [
           "backend"
         ],
+        "additionalProperties": false
+      },
+      "RoutingLogQueryDto": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 200
+          }
+        },
         "additionalProperties": false
       },
       "MetadataDto": {

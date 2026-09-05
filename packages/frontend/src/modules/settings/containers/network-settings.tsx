@@ -1,87 +1,25 @@
-import {
-  appContextQueryKey,
-  getStatus2Options,
-  getStatus5Options,
-  getStatus5QueryKey,
-  listDiscoverableOptions,
-  listDiscoverableQueryKey,
-  listPeersOptions,
-  listPeersQueryKey,
-} from '@/api-client/@tanstack/react-query.gen';
-import { approvePeer, disconnect, pairPeer, rejectPeer, removePeer, resetRegistration, startAuth } from '@/api-client/sdk.gen';
+import { appContextQueryKey, getStatus2Options, getStatus5Options, getStatus5QueryKey } from '@/api-client/@tanstack/react-query.gen';
+import { disconnect, resetRegistration, startAuth } from '@/api-client/sdk.gen';
 import { Button } from '@/components/ui/Button';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/Card';
+import { Card, CardContent } from '@/components/ui/Card';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/Dialog';
-import { Skeleton } from '@/components/ui/Skeleton/Skeleton';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { Globe, Network, Shield } from 'lucide-react';
-import type { LucideIcon } from 'lucide-react';
-import type { ReactNode } from 'react';
+import { Globe, Shield } from 'lucide-react';
 import { useState } from 'react';
-import { cn } from '@/lib/utils';
 import { clearClientHubState } from '@/lib/clear-client-hub-state';
 import { useDemoMode } from '@/lib/hooks/use-demo-mode';
 import toast from 'react-hot-toast';
 import { openExternal } from '@/lib/helpers/open-external';
 import { useTailscaleReadinessSync } from '@/lib/hooks/use-tailscale-readiness-sync';
+import { Detail, DetailGrid, LoadingCard, SectionHeader, StatusBadge } from '../components/network-section/network-section';
+import { HubPoolSection } from './hub-pool-settings';
 
 interface CloudflareStatus {
   tunnelEnabled: boolean;
   tunnelId: string | null;
   message: string;
 }
-
-const StatusBadge = ({ connected, label }: { connected: boolean; label: string }) => (
-  <span
-    className={cn(
-      'inline-flex shrink-0 items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium',
-      connected ? 'border-success/40 bg-success/10 text-success' : 'border-border/70 bg-muted/30 text-muted-foreground',
-    )}
-  >
-    <span className={cn('h-1.5 w-1.5 rounded-full', connected ? 'bg-success' : 'bg-muted-foreground/60')} />
-    {label}
-  </span>
-);
-
-/** Card header shared by both sections: icon + title on the left, connection state on the right —
- *  the same shape the App Stores / Security / System tabs use for their card headers. */
-const SectionHeader = ({ icon: Icon, title, description, badge }: { icon: LucideIcon; title: string; description?: string; badge?: ReactNode }) => (
-  <CardHeader>
-    <div className="flex items-center justify-between gap-3">
-      <div className="flex items-center gap-2">
-        <Icon className="h-5 w-5 shrink-0 text-muted-foreground" />
-        <CardTitle className="text-xl">{title}</CardTitle>
-      </div>
-      {badge}
-    </div>
-    {description ? <CardDescription>{description}</CardDescription> : null}
-  </CardHeader>
-);
-
-/** Connection facts (tailnet IP, tunnel id, …) as compact label-over-value cells — the same shape
- *  the MCP tab uses for its status grid, so the value stays next to its label instead of being
- *  pushed to the far edge of the card. */
-const DetailGrid = ({ children }: { children: ReactNode }) => <dl className="grid grid-cols-2 gap-3 text-sm sm:grid-cols-3">{children}</dl>;
-
-const Detail = ({ label, value }: { label: string; value: string }) => (
-  <div className="min-w-0 space-y-0.5">
-    <dt className="text-xs text-muted-foreground">{label}</dt>
-    <dd className="truncate font-mono text-xs" title={value}>
-      {value}
-    </dd>
-  </div>
-);
-
-const LoadingCard = ({ icon, title }: { icon: LucideIcon; title: string }) => (
-  <Card>
-    <SectionHeader icon={icon} title={title} />
-    <CardContent className="space-y-3">
-      <Skeleton className="h-4 w-2/3 rounded-md" />
-      <Skeleton className="h-16 w-full rounded-md" />
-    </CardContent>
-  </Card>
-);
 
 interface TailscaleApiStatus {
   installed: boolean;
@@ -228,220 +166,6 @@ const TailscaleSidecarSection = () => {
             </Button>
           </div>
         )}
-      </CardContent>
-    </Card>
-  );
-};
-
-interface DiscoverablePoolPeer {
-  tailscaleDeviceId: string;
-  nodeFqdn: string;
-  hostname: string;
-}
-
-interface PoolPeer {
-  id: string;
-  nodeFqdn: string;
-  displayName: string | null;
-  direction: 'inbound' | 'outbound';
-  status: 'pending' | 'connected' | 'unreachable' | 'rejected';
-  lastSeenAt: string | null;
-}
-
-const peerLabel = (peer: { displayName: string | null; nodeFqdn: string }) => peer.displayName || peer.nodeFqdn;
-
-const PoolPeerStatusBadge = ({ status, t }: { status: PoolPeer['status']; t: (key: string) => string }) => {
-  if (status === 'connected') {
-    return <StatusBadge connected label={t('HUB_POOL_STATUS_CONNECTED')} />;
-  }
-  if (status === 'unreachable') {
-    return (
-      <span className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-danger/40 bg-danger/10 px-2.5 py-1 text-xs font-medium text-danger">
-        <span className="h-1.5 w-1.5 rounded-full bg-danger" />
-        {t('HUB_POOL_STATUS_UNREACHABLE')}
-      </span>
-    );
-  }
-  return <StatusBadge connected={false} label={t('HUB_POOL_STATUS_PENDING')} />;
-};
-
-const HubPoolSection = () => {
-  const { t } = useTranslation();
-  const queryClient = useQueryClient();
-  const demoMode = useDemoMode();
-
-  const { data: peers, isLoading: peersLoading } = useQuery({
-    ...listPeersOptions(),
-    select: (payload) => payload as unknown as PoolPeer[],
-    refetchInterval: 15_000,
-  });
-
-  const { data: discoverable, isLoading: discoverableLoading } = useQuery({
-    ...listDiscoverableOptions(),
-    select: (payload) => payload as unknown as DiscoverablePoolPeer[],
-    refetchInterval: 30_000,
-  });
-
-  const invalidatePool = () => {
-    void queryClient.invalidateQueries({ queryKey: listPeersQueryKey() });
-    void queryClient.invalidateQueries({ queryKey: listDiscoverableQueryKey() });
-  };
-
-  const pairMutation = useMutation({
-    mutationFn: (nodeFqdn: string) => pairPeer({ body: { nodeFqdn } }),
-    onSuccess: () => {
-      toast.success(t('HUB_POOL_PAIR_SUCCESS'));
-      invalidatePool();
-    },
-    onError: () => toast.error(t('HUB_POOL_PAIR_ERROR')),
-  });
-
-  const approveMutation = useMutation({
-    mutationFn: (id: string) => approvePeer({ path: { id } }),
-    onSuccess: () => {
-      toast.success(t('HUB_POOL_APPROVE_SUCCESS'));
-      invalidatePool();
-    },
-    onError: () => toast.error(t('HUB_POOL_APPROVE_ERROR')),
-  });
-
-  const rejectMutation = useMutation({
-    mutationFn: (id: string) => rejectPeer({ path: { id } }),
-    onSuccess: () => {
-      toast.success(t('HUB_POOL_REJECT_SUCCESS'));
-      invalidatePool();
-    },
-    onError: () => toast.error(t('HUB_POOL_REJECT_ERROR')),
-  });
-
-  const removeMutation = useMutation({
-    mutationFn: (id: string) => removePeer({ path: { id } }),
-    onSuccess: () => {
-      toast.success(t('HUB_POOL_UNPAIR_SUCCESS'));
-      invalidatePool();
-    },
-    onError: () => toast.error(t('HUB_POOL_UNPAIR_ERROR')),
-  });
-
-  if (peersLoading || discoverableLoading) {
-    return <LoadingCard icon={Network} title={t('HUB_POOL_SECTION_TITLE')} />;
-  }
-
-  const pendingInbound = (peers ?? []).filter((p) => p.direction === 'inbound' && p.status === 'pending');
-  const pendingOutbound = (peers ?? []).filter((p) => p.direction === 'outbound' && p.status === 'pending');
-  const paired = (peers ?? []).filter((p) => p.status === 'connected' || p.status === 'unreachable');
-
-  return (
-    <Card data-testid="hub-pool-card">
-      <SectionHeader icon={Network} title={t('HUB_POOL_SECTION_TITLE')} description={t('HUB_POOL_SECTION_DESC')} />
-      <CardContent className="space-y-5">
-        <div className="space-y-2">
-          <h3 className="text-sm font-medium">{t('HUB_POOL_DISCOVERABLE_TITLE')}</h3>
-          {discoverable?.length ? (
-            <ul className="space-y-2">
-              {discoverable.map((device) => (
-                <li key={device.tailscaleDeviceId} className="flex items-center justify-between gap-3 rounded-md border px-3 py-2">
-                  <span className="min-w-0 truncate font-mono text-xs" title={device.nodeFqdn}>
-                    {device.hostname}
-                  </span>
-                  <Button
-                    type="button"
-                    size="sm"
-                    disabled={demoMode || pairMutation.isPending}
-                    loading={pairMutation.isPending && pairMutation.variables === device.nodeFqdn}
-                    onClick={() => pairMutation.mutate(device.nodeFqdn)}
-                  >
-                    {pairMutation.isPending && pairMutation.variables === device.nodeFqdn ? t('HUB_POOL_PAIRING') : t('HUB_POOL_PAIR_BUTTON')}
-                  </Button>
-                </li>
-              ))}
-            </ul>
-          ) : (
-            <p className="text-sm text-muted-foreground">{t('HUB_POOL_DISCOVERABLE_EMPTY')}</p>
-          )}
-        </div>
-
-        <div className="space-y-2 border-t pt-4">
-          <h3 className="text-sm font-medium">{t('HUB_POOL_PENDING_TITLE')}</h3>
-          {!pendingInbound.length && !pendingOutbound.length ? (
-            <p className="text-sm text-muted-foreground">{t('HUB_POOL_PENDING_EMPTY')}</p>
-          ) : (
-            <ul className="space-y-2">
-              {pendingInbound.map((peer) => (
-                <li key={peer.id} className="flex items-center justify-between gap-3 rounded-md border px-3 py-2">
-                  {/* The FQDN, not the display name: approving issues a fresh token to this exact host,
-                      and the name is whatever the (unauthenticated) requester chose to call itself. */}
-                  <div className="min-w-0">
-                    <span className="block truncate font-mono text-xs" title={peer.nodeFqdn} data-testid="hub-pool-pending-fqdn">
-                      {peer.nodeFqdn}
-                    </span>
-                    {peer.displayName ? <span className="block truncate text-xs text-muted-foreground">{peer.displayName}</span> : null}
-                  </div>
-                  <div className="flex shrink-0 gap-2">
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="outline"
-                      disabled={demoMode}
-                      loading={rejectMutation.isPending}
-                      onClick={() => rejectMutation.mutate(peer.id)}
-                    >
-                      {t('HUB_POOL_REJECT_BUTTON')}
-                    </Button>
-                    <Button
-                      type="button"
-                      size="sm"
-                      disabled={demoMode}
-                      loading={approveMutation.isPending}
-                      onClick={() => approveMutation.mutate(peer.id)}
-                    >
-                      {t('HUB_POOL_APPROVE_BUTTON')}
-                    </Button>
-                  </div>
-                </li>
-              ))}
-              {pendingOutbound.map((peer) => (
-                <li key={peer.id} className="flex items-center justify-between gap-3 rounded-md border px-3 py-2">
-                  <span className="min-w-0 truncate font-mono text-xs" title={peer.nodeFqdn}>
-                    {peerLabel(peer)}
-                  </span>
-                  <span className="shrink-0 text-xs text-muted-foreground">{t('HUB_POOL_OUTBOUND_WAITING', { name: peerLabel(peer) })}</span>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-
-        <div className="space-y-2 border-t pt-4">
-          <h3 className="text-sm font-medium">{t('HUB_POOL_CONNECTED_TITLE')}</h3>
-          {paired.length ? (
-            <ul className="space-y-2">
-              {paired.map((peer) => (
-                <li key={peer.id} className="flex items-center justify-between gap-3 rounded-md border px-3 py-2">
-                  <div className="flex min-w-0 items-center gap-2">
-                    <span className="truncate font-mono text-xs" title={peer.nodeFqdn}>
-                      {peerLabel(peer)}
-                    </span>
-                    <PoolPeerStatusBadge status={peer.status} t={t} />
-                  </div>
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="outline"
-                    intent="danger"
-                    disabled={demoMode}
-                    loading={removeMutation.isPending}
-                    onClick={() => removeMutation.mutate(peer.id)}
-                  >
-                    {t('HUB_POOL_UNPAIR_BUTTON')}
-                  </Button>
-                </li>
-              ))}
-            </ul>
-          ) : (
-            <p className="text-sm text-muted-foreground">{t('HUB_POOL_CONNECTED_EMPTY')}</p>
-          )}
-        </div>
       </CardContent>
     </Card>
   );

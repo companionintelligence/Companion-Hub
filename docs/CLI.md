@@ -312,6 +312,76 @@ Plugin versions are **pinned in the CLI** and bumped deliberately; `connect` nev
 
 ---
 
+## Hub Pool
+
+Operate multi-Hub inference pooling from the terminal — the same surface as **Settings → Network →
+Hub Pool**. See [`hub-pool.md`](./hub-pool.md) for how pooling works.
+
+```bash
+cihub pool status [env]                       # is pooling routing, and why or why not
+cihub pool peers [env]                        # paired peers: status, last seen, queue depth, models
+cihub pool discover [env]                     # unpaired CI-Hub nodes on the tailnet
+cihub pool pair <node> [--name <label>]       # send a pairing request (the other Hub must approve)
+cihub pool approve <id>                       # accept a pending inbound request
+cihub pool reject <id>                        # refuse one
+cihub pool unpair <id>                        # remove a peer and revoke both tokens
+cihub pool log [env] [--limit N]              # recent routing decisions, failovers marked
+cihub pool enable [env] | cihub pool disable  # flip the persisted kill switch
+```
+
+| Flag | Effect |
+| ---- | ------ |
+| `--yes` | Skip the confirmation prompt. Required for `pair`/`approve`/`reject`/`unpair`/`enable`/`disable` on a non-interactive terminal |
+| `--name <label>` | `pair` only: a display label for the peer |
+| `--limit N` | `log` only: how many decisions to show, 1–200 (default: all 200 retained) |
+
+**It runs on the Hub it manages.** Every call goes to `http://127.0.0.1:<API_PORT>` — `cihub pool` on
+machine A cannot manage machine B, which matters more than usual for a feature about several Hubs.
+Approving a pairing request means running `cihub pool approve` (or clicking Approve) **on the Hub that
+received it**.
+
+**It needs the Portal device key**, the same credential the dashboard uses, read from
+`state/settings.json`. A Hub that has never run `cihub register` has none, and the command says so
+instead of returning a bare 401. A key from `cihub api-key create` is MCP-scoped and is *not* accepted
+here.
+
+### Identifying a peer
+
+`approve`, `reject` and `unpair` take the 8-character `ID` from the peers table, the full row uuid, or
+the peer's FQDN. An ambiguous prefix is refused rather than guessed. `pair` takes the MagicDNS name a
+peer publishes on the tailnet (`hub-b.example-tailnet.ts.net`) — a scheme, port, path or IP address is
+rejected before the request is sent.
+
+### `cihub pool discover`
+
+Discovery needs a Tailscale OAuth client (`TAILSCALE_OAUTH_CLIENT_ID` / `TAILSCALE_OAUTH_CLIENT_SECRET`,
+`devices:core:read`). Without one the command **says so and names the variables** rather than printing
+an empty table — an important distinction, because a Hub with no credential can still be paired *with*
+by a Hub that has one, and pools normally once paired.
+
+### `cihub pool log`
+
+The answer to "is pooling actually doing anything". One line per routing decision — time, direction,
+model, the node that served it, which ranked candidate won, time to response headers, and outcome — with
+a `↳ failed over from …` line naming the chain whenever a candidate was tried and rejected. `in` rows are
+work a *peer* sent to this node's engines.
+
+The log is in-memory, process-local and holds the last 200 decisions, so an empty log means "nothing
+routed since this Hub started", not "nothing ever routed". Duration is time to headers, not the streamed
+generation.
+
+### `cihub pool enable` / `disable`
+
+These write the persisted `poolEnabled` setting through the Hub API; they take effect on the next request,
+with no restart. **`HUB_POOL_USER_DISABLED=true` in the env file wins.** Under that override, `enable`
+saves the setting and then says plainly that nothing changed in effect, naming the file to edit and the
+restart needed — it never reports success it did not deliver.
+
+Disabling keeps existing pairings. Peers mark this node unreachable while it is off and pick it back up
+on their next successful health poll.
+
+---
+
 ## Maintenance
 
 ```bash
