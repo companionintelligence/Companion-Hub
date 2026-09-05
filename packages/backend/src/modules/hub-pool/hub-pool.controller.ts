@@ -6,10 +6,11 @@ import { AuthGuard } from '@/modules/auth/auth.guard';
 import { InternalNetworkGuard } from '@/modules/auth/internal-network.guard';
 import { TailscaleService } from '@/modules/tailscale/tailscale.service';
 import { isHubPoolEnabled } from '@/common/helpers/hub-pool';
+import { PoolAppGuard } from './guards/pool-app.guard';
 import { PoolPeerGuard } from './guards/pool-peer.guard';
 import { HubPoolPeerService } from './hub-pool-peer.service';
 import { ALL_BACKEND_TYPES, PoolProxyService } from './hub-pool-proxy.service';
-import { IncomingPairingRequestBody, PairingConfirmBody, PairingRejectBody, PairPeerBody } from './hub-pool.dto';
+import { IncomingPairingRequestBody, PairingConfirmBody, PairPeerBody } from './hub-pool.dto';
 import { toPublicPeer } from './hub-pool.types';
 
 /**
@@ -17,12 +18,12 @@ import { toPublicPeer } from './hub-pool.types';
  *
  * `peers/*` and `pair/*` are the pairing lifecycle (see `HubPoolPeerService`
  * doc comment for the token model). `v1/*` and `api/*` are app-facing —
- * guarded by {@link InternalNetworkGuard} like every other app-integration
- * route in the `inference` module — and run full candidate selection +
- * failover. `local/*` are peer-facing — guarded by {@link PoolPeerGuard} —
- * and forward straight to this node's own backend with NO candidate
- * selection, which is what stops a request being relayed through a third
- * node.
+ * guarded by {@link InternalNetworkGuard} plus {@link PoolAppGuard}, which
+ * rejects requests that reached the Hub through the public tunnel — and run
+ * full candidate selection + failover. `local/*` are peer-facing — guarded by
+ * {@link PoolPeerGuard} — and forward straight to this node's own backend with
+ * NO candidate selection, which is what stops a request being relayed through a
+ * third node.
  */
 @ApiTags('Hub Pool')
 @Controller('inference/pool')
@@ -99,13 +100,18 @@ export class HubPoolController {
     return { confirmed: true };
   }
 
+  /** Guarded like `pair/unpair`: an anonymous caller could otherwise delete any pending outbound row by naming it, and the operator would see the pairing silently disappear. */
+  @UseGuards(PoolPeerGuard)
   @Post('pair/reject')
-  async handlePairingReject(@Body() body: PairingRejectBody) {
-    await this.peerService.handleRemoteReject(body.fromNodeFqdn);
+  async handlePairingReject(@Req() req: Request) {
+    if (!req.poolPeer) {
+      throw new ForbiddenException('Pool peer not resolved');
+    }
+    await this.peerService.handleRemoteReject(req.poolPeer);
     return { acknowledged: true };
   }
 
-  /** Guarded (unlike `pair/reject`, which can only delete a pending row): unpairing tears down an established pairing, so the caller must prove it holds our token. */
+  /** Unpairing tears down an established pairing, so the caller must prove it holds our token. */
   @UseGuards(PoolPeerGuard)
   @Post('pair/unpair')
   async handlePairingUnpair(@Req() req: Request) {
@@ -132,57 +138,57 @@ export class HubPoolController {
     return this.peerService.getOwnCapabilities();
   }
 
-  // ── App-facing proxy (InternalNetworkGuard: local Docker network apps only) ──
+  // ── App-facing proxy (local Docker network apps only; PoolAppGuard additionally rejects tunnel-forwarded traffic) ──
 
-  @UseGuards(InternalNetworkGuard)
+  @UseGuards(InternalNetworkGuard, PoolAppGuard)
   @Post('v1/chat/completions')
   async proxyChatCompletions(@Body() body: Record<string, unknown>, @Res() res: Response) {
     await this.proxyToPool('/v1/chat/completions', body, res);
   }
 
-  @UseGuards(InternalNetworkGuard)
+  @UseGuards(InternalNetworkGuard, PoolAppGuard)
   @Post('v1/completions')
   async proxyCompletions(@Body() body: Record<string, unknown>, @Res() res: Response) {
     await this.proxyToPool('/v1/completions', body, res);
   }
 
-  @UseGuards(InternalNetworkGuard)
+  @UseGuards(InternalNetworkGuard, PoolAppGuard)
   @Post('v1/embeddings')
   async proxyEmbeddings(@Body() body: Record<string, unknown>, @Res() res: Response) {
     await this.proxyToPool('/v1/embeddings', body, res);
   }
 
-  @UseGuards(InternalNetworkGuard)
+  @UseGuards(InternalNetworkGuard, PoolAppGuard)
   @Post('api/generate')
   async proxyOllamaGenerate(@Body() body: Record<string, unknown>, @Res() res: Response) {
     await this.proxyToPool('/api/generate', body, res);
   }
 
-  @UseGuards(InternalNetworkGuard)
+  @UseGuards(InternalNetworkGuard, PoolAppGuard)
   @Post('api/chat')
   async proxyOllamaChat(@Body() body: Record<string, unknown>, @Res() res: Response) {
     await this.proxyToPool('/api/chat', body, res);
   }
 
-  @UseGuards(InternalNetworkGuard)
+  @UseGuards(InternalNetworkGuard, PoolAppGuard)
   @Post('api/embeddings')
   async proxyOllamaEmbeddings(@Body() body: Record<string, unknown>, @Res() res: Response) {
     await this.proxyToPool('/api/embeddings', body, res);
   }
 
-  @UseGuards(InternalNetworkGuard)
+  @UseGuards(InternalNetworkGuard, PoolAppGuard)
   @Post('api/embed')
   async proxyOllamaEmbed(@Body() body: Record<string, unknown>, @Res() res: Response) {
     await this.proxyToPool('/api/embed', body, res);
   }
 
-  @UseGuards(InternalNetworkGuard)
+  @UseGuards(InternalNetworkGuard, PoolAppGuard)
   @Get('v1/models')
   async proxyOpenAiModelsList(@Res() res: Response) {
     await this.proxyService.proxyLocalOnlyRequest('/v1/models', 'GET', undefined, res);
   }
 
-  @UseGuards(InternalNetworkGuard)
+  @UseGuards(InternalNetworkGuard, PoolAppGuard)
   @Get('api/tags')
   async proxyOllamaTags(@Res() res: Response) {
     await this.proxyService.proxyLocalOnlyRequest('/api/tags', 'GET', undefined, res);
@@ -190,19 +196,19 @@ export class HubPoolController {
 
   // Ollama natives with no `model` to route on (or, for /api/show, nothing worth routing): served
   // by this node's own engine so an app pointed at OLLAMA_HOST doesn't get a 404 from the proxy.
-  @UseGuards(InternalNetworkGuard)
+  @UseGuards(InternalNetworkGuard, PoolAppGuard)
   @Get('api/ps')
   async proxyOllamaPs(@Res() res: Response) {
     await this.proxyService.proxyLocalOnlyRequest('/api/ps', 'GET', undefined, res);
   }
 
-  @UseGuards(InternalNetworkGuard)
+  @UseGuards(InternalNetworkGuard, PoolAppGuard)
   @Get('api/version')
   async proxyOllamaVersion(@Res() res: Response) {
     await this.proxyService.proxyLocalOnlyRequest('/api/version', 'GET', undefined, res);
   }
 
-  @UseGuards(InternalNetworkGuard)
+  @UseGuards(InternalNetworkGuard, PoolAppGuard)
   @Post('api/show')
   async proxyOllamaShow(@Body() body: Record<string, unknown>, @Res() res: Response) {
     await this.proxyService.proxyLocalOnlyRequest('/api/show', 'POST', body, res);
