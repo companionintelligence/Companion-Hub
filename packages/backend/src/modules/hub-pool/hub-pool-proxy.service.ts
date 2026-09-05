@@ -12,8 +12,11 @@ import { MtplxBackend } from '@/modules/inference/backends/mtplx.backend';
 import { DsparkBackend } from '@/modules/inference/backends/dspark.backend';
 import { LuceboxBackend } from '@/modules/inference/backends/lucebox.backend';
 import type { InferenceBackend } from '@/modules/inference/backends/backend.interface';
+import { ConfigurationService } from '@/core/config/configuration.service';
+import { CAPABILITIES_FRESHNESS_POLLS } from '@/common/helpers/hub-pool';
 import { HubPoolPeerService } from './hub-pool-peer.service';
 import { HubPoolLoadService, LOCAL_CANDIDATE_KEY } from './hub-pool-load.service';
+import { HubPoolRoutingLogService } from './hub-pool-routing-log.service';
 import type { HubPoolPeer } from '@/core/database/drizzle/types';
 import type { PoolCandidate, PoolPeerCapabilities } from './hub-pool.types';
 
@@ -29,25 +32,6 @@ const TRANSPORT_4XX = new Set([408, 429]);
  * doesn't have 404), not the application's request being wrong.
  */
 const PEER_TRANSPORT_4XX = new Set([401, 403, 404, 408, 429]);
-
-/**
- * The head start the local node gets over a peer, in queued requests.
- *
- * This is a real advantage, not favouritism: a follow-up turn served here reuses the prompt prefix
- * and KV cache the previous turn left resident, while the same turn sent to a peer re-processes the
- * whole prompt cold. One queued request is roughly what that re-processing costs, so work only
- * leaves this node once a peer is at least that much emptier. Tuning it to 0 makes the pool a pure
- * least-loaded balancer; raising it makes handoff rarer.
- */
-const LOCAL_AFFINITY_REQUESTS = 1;
-
-/**
- * How old a peer's capability snapshot may be before its self-reported load is discarded. Three
- * health polls (`HEALTH_POLL_INTERVAL_MS` in hub-pool-peer.service.ts is 30s), matching the three
- * strikes that mark a peer unreachable — a peer still `connected` but two polls behind is exactly
- * the case this covers.
- */
-const CAPABILITIES_FRESHNESS_MS = 90_000;
 
 /**
  * Load assumed for a peer whose snapshot is stale, or predates `inFlightRequests` entirely.
@@ -81,8 +65,9 @@ interface RankedCandidate {
  *
  * Local and peer candidates are ranked in ONE list by queue depth, so a saturated
  * local node hands work to an idle peer — the case multi-node pooling exists for.
- * The local node's head start is the explicit {@link LOCAL_AFFINITY_REQUESTS}
- * constant, not an accident of list order.
+ * The local node's head start is the explicit, operator-tunable
+ * `poolLocalAffinity` setting (`DEFAULT_POOL_LOCAL_AFFINITY`), not an accident of
+ * list order.
  *
  * Fails over on a connection error, a header-wait timeout, a 5xx, and the 4xx
  * that describe the *hop* rather than the request (see TRANSPORT_4XX /
@@ -106,7 +91,19 @@ export class PoolProxyService {
     private readonly peerService: HubPoolPeerService,
     private readonly tailscaleService: TailscaleService,
     private readonly loadService: HubPoolLoadService,
+    private readonly configuration: ConfigurationService,
+    private readonly routingLog: HubPoolRoutingLogService,
   ) {}
+
+  /** Read per request, not cached: a settings PATCH must change routing on the next request, not on the next restart. */
+  private localAffinity(): number {
+    return this.configuration.getHubPoolPreferences().poolLocalAffinity;
+  }
+
+  /** How old a peer's capability snapshot may be before its self-reported load is discarded, derived from the configured poll cadence so retuning one retunes the other. */
+  private capabilitiesFreshnessMs(): number {
+    return this.configuration.getHubPoolPreferences().poolHealthPollSeconds * 1000 * CAPABILITIES_FRESHNESS_POLLS;
+  }
 
   private getBackend(type: InferenceBackendType): InferenceBackend {
     switch (type) {
@@ -147,31 +144,71 @@ export class PoolProxyService {
 
   async proxyRequest(params: { path: string; method: string; body: unknown; model: string; res: Response }): Promise<void> {
     const { path, method, body, model, res } = params;
+    const startedAt = Date.now();
     const candidates = await this.buildCandidateList(model);
+    // Nodes a candidate rejected before one answered. Non-empty in the finished record is exactly
+    // what makes it a failover, so the whole chain is one entry rather than one per attempt.
+    const failedOverFrom: string[] = [];
 
     if (candidates.length === 0) {
+      this.routingLog.record({
+        at: new Date().toISOString(),
+        direction: 'outbound',
+        path,
+        model,
+        node: null,
+        peerId: null,
+        backend: null,
+        candidates: 0,
+        attempt: 0,
+        failedOverFrom,
+        outcome: 'failed',
+        status: null,
+        durationMs: Date.now() - startedAt,
+      });
       res.status(502).json({ error: `No pool node currently has model "${model}" available.` });
       return;
     }
 
     let lastError: unknown;
     let committed = false;
-    for (const candidate of candidates) {
+    for (const [index, candidate] of candidates.entries()) {
       const key = candidate.peerId ?? LOCAL_CANDIDATE_KEY;
+      const nodeLabel = candidate.nodeFqdn ?? LOCAL_CANDIDATE_KEY;
       this.loadService.acquire(key);
       try {
         const upstream = await this.forward(candidate, path, method, body);
         if (this.shouldFailover(candidate, upstream.status)) {
           lastError = new Error(`${candidate.nodeFqdn ?? 'local'} returned ${upstream.status}`);
+          failedOverFrom.push(nodeLabel);
           await this.noteRejectedCandidate(candidate, upstream.status);
           continue;
         }
+        // Recorded here rather than after the stream: this is the routing decision, and a
+        // generation that runs for minutes would otherwise be invisible to the operator until
+        // it finished (or never, if the client hung up).
+        this.routingLog.record({
+          at: new Date().toISOString(),
+          direction: 'outbound',
+          path,
+          model,
+          node: nodeLabel,
+          peerId: candidate.peerId,
+          backend: candidate.backend,
+          candidates: candidates.length,
+          attempt: index + 1,
+          failedOverFrom: [...failedOverFrom],
+          outcome: 'served',
+          status: upstream.status,
+          durationMs: Date.now() - startedAt,
+        });
         this.commitResponse(upstream, res);
         committed = true;
         await this.streamResponse(upstream, res);
         return;
       } catch (error) {
         lastError = error;
+        failedOverFrom.push(nodeLabel);
         this.logger.warn(
           `[PoolProxy] candidate ${candidate.nodeFqdn ?? 'local'} (${candidate.backend}) failed: ${error instanceof Error ? error.message : String(error)}`,
         );
@@ -188,6 +225,21 @@ export class PoolProxyService {
       }
     }
 
+    this.routingLog.record({
+      at: new Date().toISOString(),
+      direction: 'outbound',
+      path,
+      model,
+      node: null,
+      peerId: null,
+      backend: null,
+      candidates: candidates.length,
+      attempt: candidates.length,
+      failedOverFrom: [...failedOverFrom],
+      outcome: 'failed',
+      status: null,
+      durationMs: Date.now() - startedAt,
+    });
     this.logger.error(
       `[PoolProxy] all ${candidates.length} candidate(s) for model "${model}" failed: ${lastError instanceof Error ? lastError.message : String(lastError)}`,
     );
@@ -238,17 +290,64 @@ export class PoolProxyService {
    * re-enter candidate selection (that's what stops a request being relayed
    * through a third node).
    */
-  async forwardToLocalBackendAndRespond(backend: InferenceBackendType, path: string, method: string, body: unknown, res: Response): Promise<void> {
+  async forwardToLocalBackendAndRespond(
+    backend: InferenceBackendType,
+    path: string,
+    method: string,
+    body: unknown,
+    res: Response,
+    /** FQDN of the peer that sent us this work, for the routing log. Optional so the log is never what breaks a forward. */
+    fromPeerFqdn?: string,
+  ): Promise<void> {
     // Counted like a locally-routed request: a peer's forwarded work occupies this node's engine
     // exactly as its own apps' does, and a node busy serving the pool must not report itself idle
     // to the very peers deciding whether to send it more.
+    const startedAt = Date.now();
     this.loadService.acquire(LOCAL_CANDIDATE_KEY);
+    // Recorded once per forward, whichever way it ends: a stream that dies after the backend
+    // answered is the same routing decision, not a second one.
+    let recorded = false;
     try {
       const upstream = await this.callBackend(backend, path, method, body);
+      // Logged from the receiving side too, so an operator can answer "which of my peers is
+      // spending my GPU time" — the sender's own log only covers what it sent.
+      this.recordInbound(backend, path, fromPeerFqdn, upstream.status, startedAt);
+      recorded = true;
       await this.pipeResponse(upstream, res);
+    } catch (error) {
+      if (!recorded) {
+        this.recordInbound(backend, path, fromPeerFqdn, null, startedAt);
+      }
+      throw error;
     } finally {
       this.loadService.release(LOCAL_CANDIDATE_KEY);
     }
+  }
+
+  private recordInbound(
+    backend: InferenceBackendType,
+    path: string,
+    fromPeerFqdn: string | undefined,
+    status: number | null,
+    startedAt: number,
+  ): void {
+    this.routingLog.record({
+      at: new Date().toISOString(),
+      direction: 'inbound',
+      path,
+      // A peer forward carries the model in a body we deliberately never parse — it is passed
+      // through untouched, and reading it here would mean holding the payload we promise not to log.
+      model: null,
+      node: fromPeerFqdn ?? null,
+      peerId: null,
+      backend,
+      candidates: 1,
+      attempt: 1,
+      failedOverFrom: [],
+      outcome: status !== null && status < 500 ? 'served' : 'failed',
+      status,
+      durationMs: Date.now() - startedAt,
+    });
   }
 
   /**
@@ -306,7 +405,7 @@ export class PoolProxyService {
       if (match) {
         candidates.push({
           candidate: { peerId: peer.id, nodeFqdn: peer.nodeFqdn, backend: match.type },
-          score: this.peerLoad(peer, capabilities) + LOCAL_AFFINITY_REQUESTS,
+          score: this.peerLoad(peer, capabilities) + this.localAffinity(),
           tierRank: this.tierRank(capabilities.hardwareTier),
         });
       }
@@ -335,7 +434,7 @@ export class PoolProxyService {
     // capabilities.updatedAt, which is the peer's — comparing another machine's clock to ours would
     // read skew as staleness (or, worse, staleness as freshness).
     const observedAt = peer.lastSeenAt ? Date.parse(peer.lastSeenAt) : Number.NaN;
-    if (!Number.isFinite(observedAt) || Date.now() - observedAt > CAPABILITIES_FRESHNESS_MS) {
+    if (!Number.isFinite(observedAt) || Date.now() - observedAt > this.capabilitiesFreshnessMs()) {
       return UNKNOWN_PEER_LOAD;
     }
     return capabilities.inFlightRequests ?? UNKNOWN_PEER_LOAD;
