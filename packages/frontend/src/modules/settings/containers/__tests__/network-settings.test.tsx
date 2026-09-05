@@ -4,7 +4,7 @@ import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { NetworkSettingsContainer } from '../network-settings';
 
-const fixtures = vi.hoisted(() => ({ poolPeers: [] as Array<Record<string, unknown>> }));
+const fixtures = vi.hoisted(() => ({ poolStatus: {} as Record<string, unknown> }));
 
 vi.mock('react-i18next', () => {
   const t = (key: string) => key;
@@ -36,10 +36,16 @@ vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
     queryKey: ['ts'],
     queryFn: async () => ({ installed: false, connected: false, ip: null, hostname: null, backendState: null }),
   }),
-  listPeersQueryKey: () => ['pool-peers'],
-  listPeersOptions: () => ({ queryKey: ['pool-peers'], queryFn: async () => fixtures.poolPeers }),
+  poolStatusQueryKey: () => ['pool-status'],
+  poolStatusOptions: () => ({ queryKey: ['pool-status'], queryFn: async () => fixtures.poolStatus }),
   listDiscoverableQueryKey: () => ['pool-discoverable'],
   listDiscoverableOptions: () => ({ queryKey: ['pool-discoverable'], queryFn: async () => [] }),
+  getPoolRoutingLogQueryKey: () => ['pool-routing-log'],
+  getPoolRoutingLogOptions: () => ({
+    queryKey: ['pool-routing-log'],
+    queryFn: async () => ({ entries: [], summary: { recorded: 0, capacity: 200, served: 0, failed: 0, failovers: 0, lastAt: null } }),
+  }),
+  updatePoolSettingsMutation: () => ({ mutationFn: vi.fn() }),
 }));
 
 const renderContainer = () => {
@@ -51,9 +57,30 @@ const renderContainer = () => {
   );
 };
 
+const poolStatus = () => ({
+  enabled: true,
+  disabledBy: null,
+  reason: 'no_peers',
+  routingActive: false,
+  settings: { poolEnabled: true, poolLocalAffinity: 1, poolHealthPollSeconds: 30 },
+  tailscaleAdminApiConfigured: true,
+  localNode: {
+    nodeFqdn: 'hub-a.example-tailnet.ts.net',
+    tailnet: 'example-tailnet.ts.net',
+    tailscaleConnected: true,
+    inFlightRequests: 0,
+    hardwareTier: 'workstation',
+    backends: [],
+    capabilitiesError: null,
+  },
+  peers: [],
+  peerCounts: { total: 0, connected: 0, pending: 0, unreachable: 0 },
+  routing: { recorded: 0, capacity: 200, served: 0, failed: 0, failovers: 0, lastAt: null },
+});
+
 describe('NetworkSettingsContainer', () => {
   beforeEach(() => {
-    fixtures.poolPeers = [];
+    fixtures.poolStatus = poolStatus();
   });
 
   it('renders both cards with status badges and the tunnel id', async () => {
@@ -69,33 +96,11 @@ describe('NetworkSettingsContainer', () => {
     expect(screen.getByText('SETTINGS_NETWORK_TAILSCALE_NOT_INSTALLED_DESC')).toBeTruthy();
   });
 
-  it('renders the Hub Pool card with empty-state copy when nothing is paired or discoverable', async () => {
+  it('still renders the Hub Pool section inside the Network tab', async () => {
     renderContainer();
 
     await waitFor(() => expect(screen.getByTestId('hub-pool-card')).toBeTruthy());
-    expect(screen.getByText('HUB_POOL_DISCOVERABLE_EMPTY')).toBeTruthy();
-    expect(screen.getByText('HUB_POOL_PENDING_EMPTY')).toBeTruthy();
     expect(screen.getByText('HUB_POOL_CONNECTED_EMPTY')).toBeTruthy();
-  });
-
-  it('shows the requester FQDN on a pending inbound request, not just its self-chosen display name', async () => {
-    fixtures.poolPeers = [
-      {
-        id: 'inbound-1',
-        nodeFqdn: 'attacker-box.tailxyz.ts.net',
-        // A pairing request is unauthenticated, so the display name is whatever the caller sent.
-        displayName: "Liam's MacBook",
-        direction: 'inbound',
-        status: 'pending',
-        lastSeenAt: null,
-      },
-    ];
-
-    renderContainer();
-
-    const fqdn = await screen.findByTestId('hub-pool-pending-fqdn');
-    expect(fqdn.textContent).toBe('attacker-box.tailxyz.ts.net');
-    expect(screen.getByText("Liam's MacBook")).toBeTruthy();
   });
 
   it('confirms re-registration in a dialog instead of window.confirm', async () => {
