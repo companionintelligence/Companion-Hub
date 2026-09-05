@@ -43,6 +43,10 @@ export function isPrivateOrLocalIp(ip: string, options?: { includeUnspecified?: 
   if (a === 0) return options?.includeUnspecified ?? false;
   if (a === 10 || a === 127) return true;
   if (a === 169 && b === 254) return true;
+  // 100.64.0.0/10 (RFC 6598 CGNAT) is where Tailscale puts every tailnet node, so a request from a
+  // paired Hub is as internal as one from the Docker bridge — and, for outbound URLs, a tailnet
+  // address is never a legitimate public target.
+  if (a === 100 && b >= 64 && b <= 127) return true;
   if (a === 172 && b >= 16 && b <= 31) return true;
   if (a === 192 && b === 168) return true;
   return false;
