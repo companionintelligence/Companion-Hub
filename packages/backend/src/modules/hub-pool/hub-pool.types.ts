@@ -12,6 +12,15 @@ export interface PoolPeerBackendCapability {
 export interface PoolPeerCapabilities {
   hardwareTier: string;
   backends: PoolPeerBackendCapability[];
+  /**
+   * Requests the node's own engines were serving when the snapshot was taken — the only load signal
+   * the Hub can actually measure, since it has no live GPU-utilization telemetry anywhere (see
+   * `HardwareInspectorService`, which reports a static hardware profile, not counters).
+   *
+   * Optional because a peer on a pre-pooling-rank build omits it, and because the field arrives over
+   * the wire: an absent or stale value must read as "unknown", never as "idle".
+   */
+  inFlightRequests?: number;
   updatedAt: string;
 }
 
