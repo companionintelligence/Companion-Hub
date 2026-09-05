@@ -1267,10 +1267,6 @@ export type PairingConfirmBody = {
     [key: string]: unknown;
 };
 
-export type PairingRejectBody = {
-    [key: string]: unknown;
-};
-
 export type CreateApiKeyBody = {
     name: string;
     capability: 'read' | 'write' | 'full';
@@ -4024,13 +4020,24 @@ export type HandlePairingConfirmResponses = {
 };
 
 export type HandlePairingRejectData = {
-    body: PairingRejectBody;
+    body?: never;
     path?: never;
     query?: never;
     url: '/api/inference/pool/pair/reject';
 };
 
 export type HandlePairingRejectResponses = {
+    201: unknown;
+};
+
+export type HandlePairingUnpairData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/inference/pool/pair/unpair';
+};
+
+export type HandlePairingUnpairResponses = {
     201: unknown;
 };
 
@@ -4089,6 +4096,17 @@ export type ProxyOllamaGenerateResponses = {
     201: unknown;
 };
 
+export type ProxyOllamaChatData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/inference/pool/api/chat';
+};
+
+export type ProxyOllamaChatResponses = {
+    201: unknown;
+};
+
 export type ProxyOllamaEmbeddingsData = {
     body?: never;
     path?: never;
@@ -4097,6 +4115,17 @@ export type ProxyOllamaEmbeddingsData = {
 };
 
 export type ProxyOllamaEmbeddingsResponses = {
+    201: unknown;
+};
+
+export type ProxyOllamaEmbedData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/inference/pool/api/embed';
+};
+
+export type ProxyOllamaEmbedResponses = {
     201: unknown;
 };
 
@@ -4120,6 +4149,39 @@ export type ProxyOllamaTagsData = {
 
 export type ProxyOllamaTagsResponses = {
     200: unknown;
+};
+
+export type ProxyOllamaPsData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/inference/pool/api/ps';
+};
+
+export type ProxyOllamaPsResponses = {
+    200: unknown;
+};
+
+export type ProxyOllamaVersionData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/inference/pool/api/version';
+};
+
+export type ProxyOllamaVersionResponses = {
+    200: unknown;
+};
+
+export type ProxyOllamaShowData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/inference/pool/api/show';
+};
+
+export type ProxyOllamaShowResponses = {
+    201: unknown;
 };
 
 export type LocalChatCompletionsData = {
@@ -4166,6 +4228,17 @@ export type LocalOllamaGenerateResponses = {
     201: unknown;
 };
 
+export type LocalOllamaChatData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/inference/pool/local/api/chat';
+};
+
+export type LocalOllamaChatResponses = {
+    201: unknown;
+};
+
 export type LocalOllamaEmbeddingsData = {
     body?: never;
     path?: never;
@@ -4174,6 +4247,17 @@ export type LocalOllamaEmbeddingsData = {
 };
 
 export type LocalOllamaEmbeddingsResponses = {
+    201: unknown;
+};
+
+export type LocalOllamaEmbedData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/inference/pool/local/api/embed';
+};
+
+export type LocalOllamaEmbedResponses = {
     201: unknown;
 };
 
