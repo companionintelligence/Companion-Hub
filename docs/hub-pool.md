@@ -53,6 +53,8 @@ Persisted in `settings.json` and editable over `GET`/`PATCH /api/inference/pool/
 
 A peer shown **unreachable** needs no operator action: it is skipped while it fails probes and rejoins on the next successful one. Unpairing is for removing a Hub from the pool, not for recovering one.
 
+Every step above is also available headlessly through `cihub pool` — `status`, `peers`, `discover`, `pair`, `approve`, `reject`, `unpair`, `log`, `enable`, `disable` — which is the path for an SSH-only Hub or a coding agent. It hits the same endpoints with the Portal device key and runs on the Hub it manages, so approval still happens on the receiving Hub. See [`CLI.md` → Hub Pool](CLI.md#hub-pool).
+
 ## Endpoints an app sees through the proxy
 
 Apps using `hub_integration.inference` get `CI_LLM_BASE_URL`, `OLLAMA_HOST` and `CI_OLLAMA_EMBED_HOST` pointed at the pool proxy, so it has to answer both protocols:

@@ -1,0 +1,455 @@
+/**
+ * `cihub pool` — API calls and pure formatters for multi-Hub inference pooling.
+ *
+ * Split out of `cihub-cli.ts` the way `network-diagnostics-cli.ts` is: the formatters take a payload
+ * and return lines, so presentation is asserted with no mocking, and `cihub-cli.ts` keeps only the
+ * arg/confirm/box plumbing. It must not import `cihub-cli.ts` for values — that file imports this
+ * one, and the dispatcher imports that.
+ *
+ * Every response type here is hand-mirrored from
+ * `packages/backend/src/modules/hub-pool/hub-pool.types.ts` and `hub-pool-routing-log.service.ts`:
+ * the pool routes all declare an empty response schema in swagger.json, so the generated client types
+ * them as `unknown` and there is nothing to import.
+ */
+import { sanitizeForBox } from './lib/cli-ui';
+import { hubApiFetch } from './public-web-cli';
+
+/** Reads are cheap and local; a hung one should surface, not wedge the CLI. Matches register-hub's GET budget. */
+const POOL_GET_TIMEOUT_MS = 10_000;
+/** Pairing is a two-way handshake with a peer that may be offline, so it gets the POST budget, not the GET one. */
+const POOL_MUTATION_TIMEOUT_MS = 30_000;
+
+export type PoolPeerStatus = 'pending' | 'connected' | 'unreachable' | 'rejected';
+export type PoolStatusReason = 'active' | 'no_peers' | 'disabled_by_env' | 'disabled_by_setting';
+
+export interface PoolBackendCapability {
+  type: string;
+  healthy: boolean;
+  modelsLoaded: string[];
+}
+
+export interface PoolPeerRow {
+  id: string;
+  nodeFqdn: string;
+  displayName: string | null;
+  direction: 'inbound' | 'outbound';
+  status: PoolPeerStatus;
+  consecutiveFailures: number;
+  lastSeenAt: string | null;
+  lastCapabilities: { hardwareTier?: string; backends?: PoolBackendCapability[]; inFlightRequests?: number } | null;
+  /** Present on `/status` rows only: what this node currently has forwarded to the peer. */
+  inFlightRequests?: number;
+}
+
+export interface PoolRoutingSummary {
+  recorded: number;
+  capacity: number;
+  served: number;
+  failed: number;
+  failovers: number;
+  lastAt: string | null;
+}
+
+export interface PoolStatusResponse {
+  enabled: boolean;
+  disabledBy: 'env' | 'setting' | null;
+  reason: PoolStatusReason;
+  routingActive: boolean;
+  settings: { poolEnabled: boolean; poolLocalAffinity: number; poolHealthPollSeconds: number };
+  tailscaleAdminApiConfigured: boolean;
+  localNode: {
+    nodeFqdn: string | null;
+    tailnet: string | null;
+    tailscaleConnected: boolean;
+    inFlightRequests: number;
+    hardwareTier: string | null;
+    backends: PoolBackendCapability[];
+    capabilitiesError: string | null;
+  };
+  peers: PoolPeerRow[];
+  peerCounts: { total: number; connected: number; pending: number; unreachable: number };
+  routing: PoolRoutingSummary;
+}
+
+export interface DiscoverablePoolPeer {
+  tailscaleDeviceId: string;
+  nodeFqdn: string;
+  hostname: string;
+}
+
+export interface PoolRoutingRecord {
+  at: string;
+  direction: 'outbound' | 'inbound';
+  path: string;
+  model: string | null;
+  node: string | null;
+  peerId: string | null;
+  backend: string | null;
+  candidates: number;
+  attempt: number;
+  failedOverFrom: string[];
+  outcome: 'served' | 'failed';
+  status: number | null;
+  durationMs: number;
+}
+
+export interface PoolRoutingLogResponse {
+  entries: PoolRoutingRecord[];
+  summary: PoolRoutingSummary;
+}
+
+// --- API ---
+
+export async function fetchPoolStatus(envFileName: string): Promise<PoolStatusResponse> {
+  return hubApiFetch<PoolStatusResponse>(envFileName, '/inference/pool/status', { signal: AbortSignal.timeout(POOL_GET_TIMEOUT_MS) });
+}
+
+export async function fetchPoolPeers(envFileName: string): Promise<PoolPeerRow[]> {
+  return hubApiFetch<PoolPeerRow[]>(envFileName, '/inference/pool/peers', { signal: AbortSignal.timeout(POOL_GET_TIMEOUT_MS) });
+}
+
+/** One HTTPS probe per tailnet device on the backend, so it gets the mutation budget rather than the GET one. */
+export async function fetchDiscoverablePeers(envFileName: string): Promise<DiscoverablePoolPeer[]> {
+  return hubApiFetch<DiscoverablePoolPeer[]>(envFileName, '/inference/pool/peers/discoverable', {
+    signal: AbortSignal.timeout(POOL_MUTATION_TIMEOUT_MS),
+  });
+}
+
+export async function fetchPoolRoutingLog(envFileName: string, limit?: number): Promise<PoolRoutingLogResponse> {
+  const query = limit === undefined ? '' : `?limit=${limit}`;
+  return hubApiFetch<PoolRoutingLogResponse>(envFileName, `/inference/pool/routing-log${query}`, {
+    signal: AbortSignal.timeout(POOL_GET_TIMEOUT_MS),
+  });
+}
+
+export async function pairPoolPeer(envFileName: string, nodeFqdn: string, displayName?: string): Promise<PoolPeerRow> {
+  return hubApiFetch<PoolPeerRow>(envFileName, '/inference/pool/peers/pair', {
+    method: 'POST',
+    body: JSON.stringify(displayName ? { nodeFqdn, displayName } : { nodeFqdn }),
+    signal: AbortSignal.timeout(POOL_MUTATION_TIMEOUT_MS),
+  });
+}
+
+export async function approvePoolPeer(envFileName: string, id: string): Promise<PoolPeerRow> {
+  return hubApiFetch<PoolPeerRow>(envFileName, `/inference/pool/peers/${encodeURIComponent(id)}/approve`, {
+    method: 'POST',
+    body: '{}',
+    signal: AbortSignal.timeout(POOL_MUTATION_TIMEOUT_MS),
+  });
+}
+
+export async function rejectPoolPeer(envFileName: string, id: string): Promise<void> {
+  await hubApiFetch(envFileName, `/inference/pool/peers/${encodeURIComponent(id)}/reject`, {
+    method: 'POST',
+    body: '{}',
+    signal: AbortSignal.timeout(POOL_MUTATION_TIMEOUT_MS),
+  });
+}
+
+export async function unpairPoolPeer(envFileName: string, id: string): Promise<void> {
+  await hubApiFetch(envFileName, `/inference/pool/peers/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+    signal: AbortSignal.timeout(POOL_MUTATION_TIMEOUT_MS),
+  });
+}
+
+export async function setPoolEnabledSetting(
+  envFileName: string,
+  poolEnabled: boolean,
+): Promise<{ poolEnabled: boolean; poolLocalAffinity: number; poolHealthPollSeconds: number }> {
+  return hubApiFetch(envFileName, '/inference/pool/settings', {
+    method: 'PATCH',
+    body: JSON.stringify({ poolEnabled }),
+    signal: AbortSignal.timeout(POOL_MUTATION_TIMEOUT_MS),
+  });
+}
+
+// --- formatting primitives ---
+
+const OK = '✓';
+const FAIL = '✗';
+const PENDING = '○';
+
+/** Every cell passes through here: `displayName` is free operator text and the rest arrives over HTTP. */
+function cell(value: string, width: number): string {
+  const clean = sanitizeForBox(value);
+  const text = clean.length > width ? `${clean.slice(0, width - 1)}…` : clean;
+  return text.padEnd(width);
+}
+
+function ruleRow(widths: readonly number[]): string {
+  return widths.map((width) => '-'.repeat(width)).join(' ');
+}
+
+/** `2026-09-05 10:00:01Z`. Non-ISO input is echoed sanitized rather than rendered as `Invalid Date`. */
+export function formatPoolTimestamp(value: string | null | undefined): string {
+  if (!value) return '-';
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return sanitizeForBox(value);
+  return parsed
+    .toISOString()
+    .replace('T', ' ')
+    .replace(/\.\d{3}Z$/, 'Z');
+}
+
+function formatEngines(backends: PoolBackendCapability[] | undefined): string {
+  if (!backends || backends.length === 0) return '-';
+  return backends.map((backend) => `${backend.type} ${backend.healthy ? OK : FAIL} ${backend.modelsLoaded?.length ?? 0}`).join('  ');
+}
+
+function shortId(id: string): string {
+  return sanitizeForBox(id).slice(0, 8);
+}
+
+// --- peers ---
+
+const PEER_WIDTHS = [8, 34, 4, 16, 20, 5] as const;
+
+/**
+ * Peer table. The ID column is the first 8 characters of the row uuid — enough to hand back to
+ * `approve`/`reject`/`unpair`, which resolve a prefix (or the FQDN) against this same list.
+ */
+export function formatPoolPeerTable(peers: PoolPeerRow[]): string[] {
+  if (peers.length === 0) {
+    return ['No paired peers. Discover candidates with: cihub pool discover'];
+  }
+
+  const lines = [
+    `${cell('ID', PEER_WIDTHS[0])} ${cell('NODE', PEER_WIDTHS[1])} ${cell('DIR', PEER_WIDTHS[2])} ${cell('STATUS', PEER_WIDTHS[3])} ${cell('LAST SEEN', PEER_WIDTHS[4])} ${cell('QUEUE', PEER_WIDTHS[5])} ENGINES`,
+    ruleRow([...PEER_WIDTHS, 'ENGINES'.length]),
+  ];
+
+  for (const peer of peers) {
+    // Strikes are what decide whether a peer is still offered as a candidate, so they belong next to
+    // the status rather than in a footnote — "connected 2/3" is a peer about to drop out.
+    const status = peer.consecutiveFailures > 0 ? `${peer.status} ${peer.consecutiveFailures}/3` : peer.status;
+    const queue = peer.inFlightRequests ?? peer.lastCapabilities?.inFlightRequests;
+    lines.push(
+      [
+        cell(shortId(peer.id), PEER_WIDTHS[0]),
+        cell(peer.nodeFqdn, PEER_WIDTHS[1]),
+        cell(peer.direction === 'inbound' ? 'in' : 'out', PEER_WIDTHS[2]),
+        cell(status, PEER_WIDTHS[3]),
+        cell(formatPoolTimestamp(peer.lastSeenAt), PEER_WIDTHS[4]),
+        cell(queue === undefined ? '-' : String(queue), PEER_WIDTHS[5]),
+        formatEngines(peer.lastCapabilities?.backends),
+      ].join(' '),
+    );
+  }
+
+  return lines;
+}
+
+const MAX_LISTED_MODELS = 8;
+
+/** `cihub pool peers` detail: which models each peer actually holds, which the table only counts. */
+export function formatPoolPeerModelLines(peers: PoolPeerRow[]): string[] {
+  const lines: string[] = [];
+  for (const peer of peers) {
+    for (const backend of peer.lastCapabilities?.backends ?? []) {
+      const models = backend.modelsLoaded ?? [];
+      if (models.length === 0) continue;
+      const shown = models.slice(0, MAX_LISTED_MODELS).map(sanitizeForBox).join(', ');
+      const overflow = models.length > MAX_LISTED_MODELS ? ` (+${models.length - MAX_LISTED_MODELS} more)` : '';
+      lines.push(`  ${shortId(peer.id)}  ${sanitizeForBox(backend.type)}: ${shown}${overflow}`);
+    }
+  }
+  if (lines.length === 0) return [];
+  // Disk inventory, not VRAM residency — a peer listing a model may still have to cold-load it.
+  return ['', 'Models on each peer (on disk, not necessarily loaded)', ...lines];
+}
+
+const PENDING_INBOUND_HINT = 'Pending inbound requests: approve with `cihub pool approve <id>` or reject with `cihub pool reject <id>`.';
+
+export function formatPoolPeersLines(peers: PoolPeerRow[]): string[] {
+  const lines = [...formatPoolPeerTable(peers), ...formatPoolPeerModelLines(peers)];
+  if (peers.some((peer) => peer.direction === 'inbound' && peer.status === 'pending')) {
+    lines.push('', PENDING_INBOUND_HINT);
+  }
+  return lines;
+}
+
+/**
+ * Resolve an operator-typed peer reference to exactly one row. Accepts the full uuid, the 8-character
+ * prefix the table prints, or the node FQDN — an ambiguous prefix is an error rather than a guess,
+ * because the commands taking one all change pairing state.
+ */
+export function resolvePoolPeerTarget(peers: PoolPeerRow[], target: string): { peer: PoolPeerRow } | { error: string } {
+  const needle = target.trim().toLowerCase();
+  if (!needle) return { error: 'Missing peer id.' };
+
+  const exact = peers.filter((peer) => peer.id.toLowerCase() === needle || peer.nodeFqdn.toLowerCase() === needle);
+  if (exact.length === 1) return { peer: exact[0] as PoolPeerRow };
+
+  const prefixed = peers.filter((peer) => peer.id.toLowerCase().startsWith(needle));
+  if (prefixed.length === 1) return { peer: prefixed[0] as PoolPeerRow };
+  if (prefixed.length > 1) {
+    return { error: `"${sanitizeForBox(target)}" matches ${prefixed.length} peers — use the full id.` };
+  }
+  return { error: `No paired peer matching "${sanitizeForBox(target)}". List them with: cihub pool peers` };
+}
+
+// --- status ---
+
+function describePoolReason(status: PoolStatusResponse): string {
+  switch (status.reason) {
+    case 'active':
+      return `${OK} active — apps on this Hub are routed through the pool`;
+    case 'no_peers':
+      return `${PENDING} enabled, not routing — no connected peers, so this Hub resolves inference locally`;
+    case 'disabled_by_env':
+      return `${FAIL} disabled — HUB_POOL_USER_DISABLED=true in this Hub's .env (the .env wins over the setting)`;
+    case 'disabled_by_setting':
+      return `${FAIL} disabled — turned off in settings (re-enable with: cihub pool enable)`;
+    default:
+      return `${PENDING} unknown state`;
+  }
+}
+
+export function formatPoolStatusLines(status: PoolStatusResponse): string[] {
+  const counts = status.peerCounts;
+  const routing = status.routing;
+  const lines = [
+    `Pooling      ${describePoolReason(status)}`,
+    `Peers        ${counts.total} total · ${counts.connected} connected · ${counts.pending} pending · ${counts.unreachable} unreachable`,
+    `Discovery    ${
+      status.tailscaleAdminApiConfigured
+        ? 'Tailscale Admin API configured — cihub pool discover can enumerate the tailnet'
+        : 'not configured — this Hub cannot enumerate the tailnet (it can still be paired with)'
+    }`,
+    `Settings     poolEnabled=${status.settings.poolEnabled} · localAffinity=${status.settings.poolLocalAffinity} · healthPoll=${status.settings.poolHealthPollSeconds}s`,
+    `Routing log  ${routing.recorded}/${routing.capacity} recorded · ${routing.served} served · ${routing.failed} failed · ${routing.failovers} failover(s)`,
+    '',
+    'This node',
+    `  Node       ${sanitizeForBox(status.localNode.nodeFqdn ?? '(unknown)')}${status.localNode.tailnet ? `  tailnet ${sanitizeForBox(status.localNode.tailnet)}` : ''}`,
+    `  Tailscale  ${status.localNode.tailscaleConnected ? `${OK} connected` : `${FAIL} not connected — pooling needs the tailnet`}`,
+    `  Hardware   ${sanitizeForBox(status.localNode.hardwareTier ?? '-')}`,
+    // A live gauge, process-local and zeroed by a restart. Never a request total.
+    `  In flight  ${status.localNode.inFlightRequests} request(s) now`,
+    `  Engines    ${formatEngines(status.localNode.backends)}`,
+  ];
+
+  // An unreachable backend and a node with no models both show an empty inventory; only this says which.
+  if (status.localNode.capabilitiesError) {
+    lines.push(`  Engines    ${FAIL} ${sanitizeForBox(status.localNode.capabilitiesError)}`);
+  }
+
+  lines.push('', 'Peers', ...formatPoolPeerTable(status.peers).map((line) => `  ${line}`));
+
+  if (status.peers.some((peer) => peer.direction === 'inbound' && peer.status === 'pending')) {
+    lines.push('', PENDING_INBOUND_HINT);
+  }
+
+  return lines;
+}
+
+// --- discovery ---
+
+const DISCOVER_WIDTHS = [34, 24] as const;
+
+/**
+ * An empty discoverable list has two completely different causes, and the CLI must not print the same
+ * empty table for both: no Admin API credential means discovery could never have run.
+ */
+export function formatPoolDiscoverLines(devices: DiscoverablePoolPeer[], tailscaleAdminApiConfigured: boolean): string[] {
+  if (!tailscaleAdminApiConfigured) {
+    return [
+      `${FAIL} Peer discovery is not configured on this Hub.`,
+      '',
+      'Set TAILSCALE_OAUTH_CLIENT_ID and TAILSCALE_OAUTH_CLIENT_SECRET (a Tailscale',
+      'OAuth client with the devices:core:read scope), then restart the Hub.',
+      '',
+      'This is only needed to enumerate the tailnet. Without it this Hub can still be',
+      'paired with by a Hub that has the credential, and pools normally once paired.',
+    ];
+  }
+
+  if (devices.length === 0) {
+    return [
+      'No unpaired CI-Hub nodes found on this tailnet.',
+      '',
+      'Already-paired nodes are excluded — see: cihub pool peers',
+      'A candidate only appears once its Hub is running and answers /api/inference/pool/identify.',
+    ];
+  }
+
+  const lines = [
+    `${cell('NODE', DISCOVER_WIDTHS[0])} ${cell('HOSTNAME', DISCOVER_WIDTHS[1])} TAILSCALE DEVICE`,
+    ruleRow([...DISCOVER_WIDTHS, 'TAILSCALE DEVICE'.length]),
+  ];
+  for (const device of devices) {
+    lines.push(
+      `${cell(device.nodeFqdn, DISCOVER_WIDTHS[0])} ${cell(device.hostname, DISCOVER_WIDTHS[1])} ${sanitizeForBox(device.tailscaleDeviceId)}`,
+    );
+  }
+  lines.push('', 'Pair one with: cihub pool pair <node>');
+  return lines;
+}
+
+// --- routing log ---
+
+const LOG_WIDTHS = [20, 4, 20, 34, 5, 7] as const;
+
+export function formatPoolRoutingLogLines(log: PoolRoutingLogResponse): string[] {
+  const summary = log.summary;
+  const header = [
+    `${summary.recorded}/${summary.capacity} recorded · ${summary.served} served · ${summary.failed} failed · ${summary.failovers} failover(s)`,
+    `Last decision  ${formatPoolTimestamp(summary.lastAt)}`,
+    '',
+  ];
+
+  if (log.entries.length === 0) {
+    return [
+      ...header,
+      'Nothing routed since the Hub started.',
+      '',
+      'The log is in-memory and process-local: it is empty after a restart, and it only',
+      'records requests that went through the pool proxy. If apps are running and this',
+      'stays empty, check `cihub pool status` — with no connected peers nothing is routed.',
+    ];
+  }
+
+  const lines = [
+    ...header,
+    `${cell('TIME', LOG_WIDTHS[0])} ${cell('DIR', LOG_WIDTHS[1])} ${cell('MODEL', LOG_WIDTHS[2])} ${cell('NODE', LOG_WIDTHS[3])} ${cell('ATT', LOG_WIDTHS[4])} ${cell('MS', LOG_WIDTHS[5])} OUTCOME`,
+    ruleRow([...LOG_WIDTHS, 'OUTCOME'.length]),
+  ];
+
+  for (const entry of log.entries) {
+    const outcome = entry.outcome === 'served' ? `${OK} served` : `${FAIL} failed`;
+    const status = entry.status === null ? '' : ` ${entry.status}`;
+    lines.push(
+      [
+        cell(formatPoolTimestamp(entry.at), LOG_WIDTHS[0]),
+        cell(entry.direction === 'inbound' ? 'in' : 'out', LOG_WIDTHS[1]),
+        cell(entry.model ?? '-', LOG_WIDTHS[2]),
+        cell(entry.node ?? '-', LOG_WIDTHS[3]),
+        cell(`${entry.attempt}/${entry.candidates}`, LOG_WIDTHS[4]),
+        cell(String(entry.durationMs), LOG_WIDTHS[5]),
+        `${outcome}${status}`,
+      ].join(' '),
+    );
+    // The chain, not a count: which nodes refused is the whole point of reading this log.
+    if (entry.failedOverFrom.length > 0) {
+      lines.push(`  ↳ failed over from ${entry.failedOverFrom.map(sanitizeForBox).join(', ')}`);
+    }
+  }
+
+  lines.push('', 'Duration is time to response headers, not the streamed generation. `in` rows are work a peer sent here.');
+  return lines;
+}
+
+// --- discover orchestration ---
+
+/**
+ * Status first, so a Hub with no Admin API credential gets the explanation instead of an OAuth
+ * attempt that can only fail — and so the empty-vs-unconfigured distinction is made from the same
+ * boolean the UI uses.
+ */
+export async function runPoolDiscover(envFileName: string): Promise<{ lines: string[]; configured: boolean }> {
+  const status = await fetchPoolStatus(envFileName);
+  if (!status.tailscaleAdminApiConfigured) {
+    return { lines: formatPoolDiscoverLines([], false), configured: false };
+  }
+  return { lines: formatPoolDiscoverLines(await fetchDiscoverablePeers(envFileName), true), configured: true };
+}
