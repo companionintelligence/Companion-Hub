@@ -16,7 +16,7 @@
 import { spawnSync } from 'node:child_process';
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { COLS, EMPTY, type Line, T, ansiToLines, bannerLines, box, promptLine, renderSvg } from './cli-svg-lib';
+import { COLS, EMPTY, type Line, T, ansiToLines, bannerLines, box, promptLine, renderSvg, stripCaptureNoise } from './cli-svg-lib';
 
 // ── scene helpers ─────────────────────────────────────────────────────────────
 
@@ -28,8 +28,10 @@ function capture(cmd: string): Line[] {
     encoding: 'utf-8',
     env: { ...process.env, FORCE_COLOR: '1', COLUMNS: String(COLS) },
   });
+  // stderr is kept so real diagnostics stay in the screenshot, but the harness's own warnings
+  // (Node PIDs, pnpm's .npmrc token complaint) would otherwise be baked into published art.
   const out = `${res.stdout || ''}${res.stderr || ''}`;
-  return ansiToLines(out);
+  return ansiToLines(stripCaptureNoise(out));
 }
 
 /** Build a scene: prompt line(s) + captured/authored body. */

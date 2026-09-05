@@ -41,6 +41,47 @@ export const COLORS: Record<ColorKey, string> = {
 export type Seg = { t: string; c: ColorKey; b?: boolean };
 export type Line = Seg[];
 
+// ── capture noise filter ──────────────────────────────────────────────────────
+
+/**
+ * Lines the recording harness emits on stderr that belong to the machine doing the
+ * recording, not to the CLI being documented. `capture()` folds stderr into the
+ * screenshot so a command's real diagnostics are visible, which also drags these in.
+ *
+ * The Node prefix is only ever produced by Node's internal process-warning emitter and
+ * carries the recording host's PID, so it can never be legitimate cihub output. The pnpm
+ * line is the workspace `.npmrc` resolving a publish token that only CI has set.
+ */
+const CAPTURE_NOISE = [
+  /^\(node:\d+\)\s/,
+  // pnpm pads the tag to `[ WARN ]` when it is not colouring, and `[WARN]` when it is.
+  /^\[ ?WARN ?\] Failed to replace env in config: \$\{[^}]*\}$/,
+];
+
+/** Second half of a Node process warning — dropped only when its warning was dropped too. */
+const NODE_WARNING_FOOTER = /^\(Use `node --trace-warnings \.\.\.` to show where the warning was created\)$/;
+
+const stripAnsi = (s: string): string => s.replace(new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, 'g'), '');
+
+/** Remove harness noise from captured output, leaving every other line byte-identical. */
+export function stripCaptureNoise(input: string): string {
+  const kept: string[] = [];
+  let droppedNodeWarning = false;
+
+  for (const raw of input.replace(/\r/g, '').split('\n')) {
+    const plain = stripAnsi(raw).trimEnd();
+    if (CAPTURE_NOISE.some((pattern) => pattern.test(plain))) {
+      droppedNodeWarning = plain.startsWith('(node:');
+      continue;
+    }
+    if (droppedNodeWarning && NODE_WARNING_FOOTER.test(plain)) continue;
+    droppedNodeWarning = false;
+    kept.push(raw);
+  }
+
+  return kept.join('\n');
+}
+
 // ── ANSI SGR parser ───────────────────────────────────────────────────────────
 
 export function ansiToLines(input: string): Line[] {

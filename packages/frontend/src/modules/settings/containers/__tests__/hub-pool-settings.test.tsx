@@ -1,3 +1,4 @@
+import { removePeer } from '@/api-client/sdk.gen';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -8,6 +9,7 @@ type Json = Record<string, unknown>;
 
 const fixtures = vi.hoisted(() => ({
   status: {} as Json,
+  statusFails: false,
   discoverable: [] as Json[],
   routingLog: { entries: [] as Json[], summary: { recorded: 0, capacity: 200, served: 0, failed: 0, failovers: 0, lastAt: null } } as Json,
   updateSettings: vi.fn(async (_options: { body: Record<string, unknown> }) => ({})),
@@ -27,7 +29,13 @@ vi.mock('@/api-client/sdk.gen', () => ({
 }));
 vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
   poolStatusQueryKey: () => ['pool-status'],
-  poolStatusOptions: () => ({ queryKey: ['pool-status'], queryFn: async () => fixtures.status }),
+  poolStatusOptions: () => ({
+    queryKey: ['pool-status'],
+    queryFn: async () => {
+      if (fixtures.statusFails) throw new Error('pool status unreachable');
+      return fixtures.status;
+    },
+  }),
   listDiscoverableQueryKey: () => ['pool-discoverable'],
   listDiscoverableOptions: () => ({ queryKey: ['pool-discoverable'], queryFn: async () => fixtures.discoverable }),
   getPoolRoutingLogQueryKey: () => ['pool-routing-log'],
@@ -86,9 +94,11 @@ const renderSection = () => {
 describe('HubPoolSection', () => {
   beforeEach(() => {
     fixtures.status = baseStatus();
+    fixtures.statusFails = false;
     fixtures.discoverable = [];
     fixtures.routingLog = { entries: [], summary: { recorded: 0, capacity: 200, served: 0, failed: 0, failovers: 0, lastAt: null } };
     fixtures.updateSettings.mockClear();
+    vi.mocked(removePeer).mockClear();
   });
 
   it('explains that pooling is on but idle when nothing is paired', async () => {
@@ -255,5 +265,61 @@ describe('HubPoolSection', () => {
     const fqdn = await screen.findByTestId('hub-pool-pending-fqdn');
     expect(fqdn.textContent).toBe('attacker-box.example-tailnet.ts.net');
     expect(screen.getByText("Liam's MacBook")).toBeTruthy();
+  });
+
+  // Nothing sweeps outbound pending rows and discovery hides an FQDN already in the peer table, so
+  // without this button a peer that never answers is stuck on the page and unpairable except by CLI.
+  it('lets the operator cancel an outbound request the other Hub never answered', async () => {
+    fixtures.status = baseStatus({
+      reason: 'no_peers',
+      routingActive: false,
+      peers: [
+        connectedPeer({ id: 'outbound-1', direction: 'outbound', status: 'pending', lastSeenAt: null, lastCapabilities: null, inFlightRequests: 0 }),
+      ],
+      peerCounts: { total: 1, connected: 0, pending: 1, unreachable: 0 },
+    });
+
+    renderSection();
+
+    const row = await screen.findByTestId('hub-pool-pending-outbound');
+    expect(row.textContent).toContain('HUB_POOL_OUTBOUND_WAITING');
+
+    await userEvent.click(screen.getByTestId('hub-pool-cancel-request-btn'));
+
+    await waitFor(() => expect(vi.mocked(removePeer)).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(removePeer).mock.calls[0]?.[0]).toMatchObject({ path: { id: 'outbound-1' } });
+  });
+
+  it('holds an unpair behind a confirmation dialog because it revokes both tokens', async () => {
+    fixtures.status = baseStatus({
+      peers: [connectedPeer()],
+      peerCounts: { total: 1, connected: 1, pending: 0, unreachable: 0 },
+    });
+
+    renderSection();
+
+    await userEvent.click(await screen.findByTestId('hub-pool-unpair-btn'));
+    // The click opens the dialog and nothing else — the peer is still paired at this point.
+    expect(vi.mocked(removePeer)).not.toHaveBeenCalled();
+
+    const confirm = await screen.findByTestId('hub-pool-unpair-confirm-btn');
+    expect(screen.getByText('HUB_POOL_UNPAIR_CONFIRM')).toBeTruthy();
+
+    await userEvent.click(confirm);
+
+    await waitFor(() => expect(vi.mocked(removePeer)).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(removePeer).mock.calls[0]?.[0]).toMatchObject({ path: { id: 'peer-1' } });
+  });
+
+  // react-query v5 leaves an errored query with `isPending` false and `data` undefined, so a
+  // skeleton keyed off "no data" would never clear.
+  it('explains a failed status fetch instead of showing the skeleton forever', async () => {
+    fixtures.statusFails = true;
+
+    renderSection();
+
+    const error = await screen.findByTestId('hub-pool-status-error');
+    expect(error.textContent).toBe('HUB_POOL_STATUS_ERROR');
+    expect(screen.queryByTestId('hub-pool-state')).toBeNull();
   });
 });
