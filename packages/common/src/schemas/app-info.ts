@@ -440,6 +440,17 @@ export const formFieldSchema = z.object({
   trailing_slash: z.boolean().optional(),
 });
 
+function normalizeReplaces(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const names: string[] = [];
+  for (const item of value) {
+    if (typeof item !== 'string') continue;
+    const name = item.trim();
+    if (name) names.push(name);
+  }
+  return names;
+}
+
 /** Accept legacy CIHub field names when parsing app config.json from stores or backups. */
 function normalizeAppInfoInput(input: unknown): unknown {
   if (!input || typeof input !== 'object' || Array.isArray(input)) return input;
@@ -450,6 +461,9 @@ function normalizeAppInfoInput(input: unknown): unknown {
       typeof raw.cihub_app_version === 'number' ? raw.cihub_app_version : typeof raw.cihub_version === 'number' ? raw.cihub_version : 1,
     min_hub_version:
       typeof raw.min_hub_version === 'string' ? raw.min_hub_version : typeof raw.min_cihub_version === 'string' ? raw.min_cihub_version : undefined,
+    // Late-added field: missing, null, or junk must not fail the whole app parse
+    // or the store hides the listing. Coerce to [] and keep the app visible.
+    replaces: normalizeReplaces(raw.replaces),
   };
 }
 
@@ -464,6 +478,12 @@ export const appInfoObjectSchema = z.object({
   version: z.string().optional().default('latest'),
   cihub_app_version: z.number().optional().default(1),
   short_desc: z.string(),
+  /**
+   * Popular proprietary products this app replaces (e.g. Nextcloud →
+   * "Google Drive", "Dropbox"). Indexed by store search. Do not stuff these
+   * into `short_desc` — that field is human copy, not a synonym list.
+   */
+  replaces: z.array(z.string().min(1)).optional().nullable().default([]),
   author: z.string(),
   source: z.string(),
   website: z.string().optional(),
