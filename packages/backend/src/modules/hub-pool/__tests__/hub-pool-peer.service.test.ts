@@ -9,6 +9,7 @@ import { InferenceRouterService } from '@/modules/inference/inference-router.ser
 import type { HubPoolPeer } from '@/core/database/drizzle/types';
 import { HubPoolPeerRepository } from '../hub-pool-peer.repository';
 import { HubPoolPeerService } from '../hub-pool-peer.service';
+import { HubPoolLoadService, LOCAL_CANDIDATE_KEY } from '../hub-pool-load.service';
 
 function mockPeer(overrides: Partial<HubPoolPeer> = {}): HubPoolPeer {
   return {
@@ -35,6 +36,7 @@ describe('HubPoolPeerService', () => {
   let tailscaleAdminApi: MockProxy<TailscaleAdminApiService>;
   let encryption: MockProxy<EncryptionService>;
   let inferenceRouter: MockProxy<InferenceRouterService>;
+  let loadService: HubPoolLoadService;
   let service: HubPoolPeerService;
 
   beforeEach(() => {
@@ -61,7 +63,8 @@ describe('HubPoolPeerService', () => {
       authUrl: null,
     });
 
-    service = new HubPoolPeerService(mock<LoggerService>(), repo, tailscaleService, tailscaleAdminApi, encryption, inferenceRouter);
+    loadService = new HubPoolLoadService();
+    service = new HubPoolPeerService(mock<LoggerService>(), repo, tailscaleService, tailscaleAdminApi, encryption, inferenceRouter, loadService);
     global.fetch = vi.fn();
   });
 
@@ -393,6 +396,60 @@ describe('HubPoolPeerService', () => {
       await expect(service.removePeer('remove-me')).resolves.toBeUndefined();
 
       expect(repo.delete).toHaveBeenCalledWith('remove-me');
+    });
+  });
+
+  describe('getOwnCapabilities', () => {
+    beforeEach(() => {
+      inferenceRouter.getStatus.mockResolvedValue({
+        hardwareTier: 'high',
+        backends: [{ type: 'ollama', running: true, healthy: true, url: 'http://ollama:11434', modelsLoaded: 1 }],
+        models: [],
+        memoryBudget: {
+          totalVramMb: 24576,
+          totalRamMb: 65536,
+          systemReservedRamMb: 8192,
+          dockerOverheadMb: 2048,
+          appContainerBudgetMb: 8192,
+          modelBudgetVramMb: 20480,
+          modelBudgetRamMb: 32768,
+          modelUsedVramMb: 0,
+          modelUsedRamMb: 0,
+          pinnedVramMb: 0,
+          pinnedRamMb: 0,
+        },
+        cloudProviders: [],
+      });
+      inferenceRouter.listModels.mockResolvedValue([
+        {
+          id: 'llama3.2:3b',
+          object: 'model',
+          created: 0,
+          owned_by: 'local:ollama',
+          state: 'loaded',
+          backend: 'ollama',
+          modality: ['text'],
+          local: true,
+        },
+      ]);
+    });
+
+    it('publishes the queue depth peers rank this node on', async () => {
+      loadService.acquire(LOCAL_CANDIDATE_KEY);
+      loadService.acquire(LOCAL_CANDIDATE_KEY);
+
+      const capabilities = await service.getOwnCapabilities();
+
+      // Without this a node saturated by its own apps is indistinguishable from an idle one: the
+      // polling peer can only count the work it forwarded itself.
+      expect(capabilities.inFlightRequests).toBe(2);
+      expect(capabilities.backends).toEqual([{ type: 'ollama', healthy: true, modelsLoaded: ['llama3.2:3b'] }]);
+    });
+
+    it('reports an idle node as zero rather than omitting the figure', async () => {
+      // `undefined` is the wire signal for "this build cannot measure it", and peers rank that as
+      // mid-load — an idle node must not be handed that penalty.
+      await expect(service.getOwnCapabilities()).resolves.toMatchObject({ inFlightRequests: 0 });
     });
   });
 });
