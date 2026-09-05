@@ -135,6 +135,7 @@ services:
       CI_HUB_VERSION: ${CI_HUB_VERSION:-0.2.27}
       LOG_LEVEL: debug
       OLLAMA_URL: http://host.docker.internal:11434
+      SPECULATIVE_INFERENCE_URL: ${SPECULATIVE_INFERENCE_URL:-http://host.docker.internal:8000}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     # See docker-compose.prod.yml: retry Docker embedded-DNS lookups instead of failing

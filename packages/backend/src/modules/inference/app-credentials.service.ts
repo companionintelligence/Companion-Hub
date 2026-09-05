@@ -10,6 +10,7 @@ import { VllmBackend } from './backends/vllm.backend';
 import { LemonadeBackend } from './backends/lemonade.backend';
 import { MtplxBackend } from './backends/mtplx.backend';
 import { DsparkBackend } from './backends/dspark.backend';
+import { LuceboxBackend } from './backends/lucebox.backend';
 import type { InferenceBackend } from './backends/backend.interface';
 import type { CuratedModel, HardwareProfile, HardwareTier, InferenceBackendType } from '@ci-hub/common/types';
 import { isCatalogModelInstalled, isServedModelForCatalog } from './model-availability.util';
@@ -81,12 +82,12 @@ interface CacheEntry {
  */
 /**
  * Backends whose models are served by a process the operator runs, not pulled into a Hub-managed
- * registry: vLLM (including vLLM-Metal), mlx-dspark, and MTPLX. For these, "is this model
+ * registry: vLLM (including vLLM-Metal), mlx-dspark, MTPLX, and Lucebox. For these, "is this model
  * installed?" can only be answered from what the server reports it is serving, so catalog matching
  * goes through `isServedModelForCatalog` rather than the Ollama-style pulled-tag comparison.
  */
 function isHostServedBackend(backendType: InferenceBackendType): boolean {
-  return backendType === 'vllm' || backendType === 'dspark' || backendType === 'mtplx';
+  return backendType === 'vllm' || backendType === 'dspark' || backendType === 'mtplx' || backendType === 'lucebox';
 }
 
 @Injectable()
@@ -105,6 +106,7 @@ export class AppCredentialsService {
     private readonly lemonadeBackend: LemonadeBackend,
     private readonly mtplxBackend: MtplxBackend,
     private readonly dsparkBackend: DsparkBackend,
+    private readonly luceboxBackend: LuceboxBackend,
     private readonly configurationService: ConfigurationService,
   ) {}
 
@@ -120,6 +122,8 @@ export class AppCredentialsService {
         return this.mtplxBackend;
       case 'dspark':
         return this.dsparkBackend;
+      case 'lucebox':
+        return this.luceboxBackend;
     }
   }
 
@@ -198,7 +202,12 @@ export class AppCredentialsService {
     const cloudProviders = this.cloudFallback.getEnabledProviders();
     const cloudProvider = endpointReady ? undefined : cloudProviders[0];
 
-    const chatModelReady = recommendedLlm ? this.isModelPulled(recommendedLlm.id, endpointHealth.modelsLoaded, backendType) : false;
+    // Host-managed servers can expose an operator-chosen model that is not in the Hub catalog.
+    // A healthy endpoint with at least one served model is therefore ready even when there is no
+    // curated `recommendedLlm` to match (the speculative inference model alias is configured at server startup).
+    const chatModelReady =
+      (recommendedLlm ? this.isModelPulled(recommendedLlm.id, endpointHealth.modelsLoaded, backendType) : false) ||
+      (isHostServedBackend(backendType) && endpointReady && endpointHealth.modelsLoaded.length > 0);
     if (!cloudProvider && recommendedLlm && !chatModelReady && endpointReady && backendType === 'ollama') {
       void this.maybeFirePrePull(recommendedLlm.id);
     }
@@ -212,7 +221,7 @@ export class AppCredentialsService {
     // ─── Local (default) connection: app → active backend /v1 directly ───
     let provider: InferenceBackendType | 'cloud' = backendType;
     let endpointUrl = backendOpenAiUrl;
-    let apiKey = BACKEND_API_KEY[backendType];
+    let apiKey = backend.getApiKey?.()?.trim() || BACKEND_API_KEY[backendType];
     if (backendType === 'vllm') {
       const customKey = preferences.preferredVllmApiKey?.trim();
       if (customKey) {

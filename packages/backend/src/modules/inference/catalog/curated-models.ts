@@ -224,6 +224,8 @@ function defaultSupportedPlatforms(backend: InferenceBackendType): HostPlatform[
     case 'mtplx':
     case 'dspark':
       return ['darwin'];
+    case 'lucebox':
+      return ['linux'];
     case 'ollama':
     case 'lemonade':
       return [...ALL_HOST_PLATFORMS];

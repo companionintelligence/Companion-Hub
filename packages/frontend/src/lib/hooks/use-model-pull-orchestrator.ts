@@ -3,6 +3,7 @@ import {
   fetchLemonadeInstallStatus,
   fetchMtplxInstallStatus,
   fetchOllamaInstallStatus,
+  fetchSpeculativeInferenceStatus,
   fetchVllmInstallStatus,
 } from '@/lib/inference/inference-api';
 import {
@@ -102,7 +103,12 @@ export function useModelPullOrchestrator({
           return;
         }
         if (inferenceBackend === 'mtplx') {
-          const data = (await fetchMtplxInstallStatus()) as { ready?: boolean; running?: boolean };
+          const data = (await fetchMtplxInstallStatus(backendUrl)) as { ready?: boolean; running?: boolean };
+          if (!cancelled) setBackendReady(!!(data.ready ?? data.running));
+          return;
+        }
+        if (inferenceBackend === 'lucebox') {
+          const data = (await fetchSpeculativeInferenceStatus()) as { ready?: boolean; running?: boolean };
           if (!cancelled) setBackendReady(!!(data.ready ?? data.running));
           return;
         }

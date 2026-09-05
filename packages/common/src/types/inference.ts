@@ -70,7 +70,7 @@ export interface MemoryBudget {
 
 // ─── Model Registry ─────────────────────────────────────────────────────────
 
-export type InferenceBackendType = 'ollama' | 'vllm' | 'lemonade' | 'mtplx' | 'dspark';
+export type InferenceBackendType = 'ollama' | 'vllm' | 'lemonade' | 'mtplx' | 'dspark' | 'lucebox';
 
 export type ModelModality = 'llm' | 'tts' | 'stt' | 'image-gen' | 'embedding';
 export type ModelPurpose = 'general' | 'coding' | 'reasoning' | 'fast' | 'voice' | 'transcription' | 'image' | 'embedding';

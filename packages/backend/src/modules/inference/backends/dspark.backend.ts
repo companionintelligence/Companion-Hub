@@ -5,6 +5,7 @@ import type { InferenceBackend } from './backend.interface';
 import { detectHubContainer, normalizeHostBackendUrl, resolveHostBackendProbeUrl } from './host-url.util';
 import type { BackendHealthStatus, BackendModelInfo, PullProgress } from '@ci-hub/common/types';
 import axios from 'axios';
+import { bearerHeaders, readManagedRunnerApiKey } from '../managed-runner-auth';
 
 /** Accept `http://host:8080`, `http://host:8080/` or `http://host:8080/v1` and store the bare origin. */
 export const normalizeDsparkBaseUrl = normalizeHostBackendUrl;
@@ -79,7 +80,7 @@ export interface DsparkRemediation {
  * `xattr -dr com.apple.quarantine` because the app is ad-hoc signed rather than notarized.
  */
 export function buildDsparkRemediation(isAppleSilicon: boolean): DsparkRemediation {
-  const command = `mlx-dspark serve --no-model --host 0.0.0.0 --port ${DSPARK_DEFAULT_PORT}`;
+  const command = `mlx-dspark serve --no-model --host 0.0.0.0 --port ${DSPARK_DEFAULT_PORT} --api-key YOUR_PRIVATE_API_KEY`;
   if (isAppleSilicon) {
     return {
       command,
@@ -87,7 +88,8 @@ export function buildDsparkRemediation(isAppleSilicon: boolean): DsparkRemediati
         'Run mlx-dspark on the host (it is a native Metal server — there is no Docker path): install it into a venv ' +
         'with `pip install mlx-dspark` (Python 3.10+; pulls mlx 0.32+), check the install with ' +
         '`mlx-dspark doctor --json` (exit 0 = ok), then run the command above. `--no-model` starts it empty so the ' +
-        'Hub can load, swap and unload models over its admin API instead of you restarting the server.',
+        'Hub can load, swap and unload models over its admin API instead of you restarting the server. Replace ' +
+        '`YOUR_PRIVATE_API_KEY` and configure the same value as `DSPARK_API_KEY` in the Hub.',
     };
   }
   return {
@@ -114,8 +116,9 @@ export function buildDsparkRemediation(isAppleSilicon: boolean): DsparkRemediati
  * state for this backend — see model-puller.service.ts, which derives registry state from these
  * calls simply not throwing.
  *
- * Like vLLM-Metal, the server itself is host-run and never Hub-managed: `getDockerImage` and
- * `getComposeConfig` both throw unconditionally.
+ * The server is host-run rather than containerized. Desktop FTUE can manage its Python environment,
+ * credential, and macOS login service; an operator can still point the backend at a remote process.
+ * `getDockerImage` and `getComposeConfig` both throw unconditionally because Metal has no Docker path.
  */
 @Injectable()
 export class DsparkBackend implements InferenceBackend {
@@ -127,7 +130,7 @@ export class DsparkBackend implements InferenceBackend {
   ) {}
 
   /**
-   * mlx-dspark is host-run (or remote), never Hub-managed — same posture as vLLM-Metal. The
+   * mlx-dspark is host-run (or remote), with optional lifecycle management from desktop FTUE. The
    * operator-configured URL from Settings wins over the compose-injected DSPARK_URL env; read
    * per-call rather than caching in the constructor so a Settings change takes effect without a
    * Hub restart.
@@ -139,6 +142,15 @@ export class DsparkBackend implements InferenceBackend {
   getBaseUrl(): string {
     const configured = this.configuration.getInferencePreferences().preferredDsparkUrl?.trim();
     return resolveDsparkProbeUrl(configured || process.env.DSPARK_URL || `http://127.0.0.1:${DSPARK_DEFAULT_PORT}`);
+  }
+
+  getApiKey(): string | undefined {
+    return readManagedRunnerApiKey('dspark');
+  }
+
+  private authenticatedRequest(timeout: number): { timeout: number; headers?: Record<string, string> } {
+    const headers = bearerHeaders(this.getApiKey());
+    return headers ? { timeout, headers } : { timeout };
   }
 
   private async fetchHealth(baseUrl: string, timeout = 5000): Promise<DsparkHealthBody> {
@@ -283,9 +295,7 @@ export class DsparkBackend implements InferenceBackend {
     try {
       // No request timeout: this call is the download, and a large target legitimately takes
       // many minutes.
-      const response = await axios.post<DsparkAdminStatusBody>(this.adminUrl('/admin/load'), this.loadPayload(modelId), {
-        timeout: 0,
-      });
+      const response = await axios.post<DsparkAdminStatusBody>(this.adminUrl('/admin/load'), this.loadPayload(modelId), this.authenticatedRequest(0));
       if (!response.data?.ready) {
         throw new Error(response.data?.error || `mlx-dspark did not become ready after loading ${modelId}`);
       }
@@ -317,9 +327,7 @@ export class DsparkBackend implements InferenceBackend {
       return;
     }
     try {
-      const response = await axios.post<DsparkAdminStatusBody>(this.adminUrl('/admin/load'), this.loadPayload(modelId), {
-        timeout: 0,
-      });
+      const response = await axios.post<DsparkAdminStatusBody>(this.adminUrl('/admin/load'), this.loadPayload(modelId), this.authenticatedRequest(0));
       if (!response.data?.ready) {
         throw new Error(response.data?.error || `mlx-dspark did not become ready after loading ${modelId}`);
       }
@@ -340,7 +348,7 @@ export class DsparkBackend implements InferenceBackend {
       return;
     }
     try {
-      await axios.post<DsparkAdminStatusBody>(this.adminUrl('/admin/unload'), {}, { timeout: 30000 });
+      await axios.post<DsparkAdminStatusBody>(this.adminUrl('/admin/unload'), {}, this.authenticatedRequest(30000));
       this.logger.info(`[mlx-dspark] Unloaded ${modelId}`);
     } catch (err) {
       throw new Error(`[mlx-dspark] Failed to unload ${modelId}: ${this.describeAxiosError(err, modelId)}`);

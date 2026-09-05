@@ -8,6 +8,7 @@ import {
   fetchMtplxInstallStatus,
   fetchOllamaInstallStatus,
   fetchDsparkInstallStatus,
+  fetchSpeculativeInferenceStatus,
   fetchVllmInstallStatus,
   pinInferenceModel,
   rescanInferenceHardware,
@@ -24,7 +25,12 @@ import { RefreshCw, Loader2 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router';
 import toast from 'react-hot-toast';
-import type { CloudProviderInput, HardwareProfileResponse, RuntimeModelInfo } from '@/modules/onboarding/helpers/ai-setup-types';
+import type {
+  CloudProviderInput,
+  HardwareProfileResponse,
+  RuntimeModelInfo,
+  SpeculativeInferenceStatus,
+} from '@/modules/onboarding/helpers/ai-setup-types';
 import type { CuratedModel, InferenceBackendType, ModelState, TrackedModel } from '@ci-hub/common/types';
 import { SystemOverview } from '@/modules/onboarding/components/ai-setup/system-overview';
 import { BackendSelectionCard } from '@/modules/onboarding/components/ai-setup/backend-selection-card';
@@ -39,6 +45,7 @@ import { MtplxSetupCard } from '@/modules/onboarding/components/ai-setup/mtplx-s
 import { DsparkSetupCard } from '@/modules/onboarding/components/ai-setup/dspark-setup-card';
 import { LemonadeSetupCard } from '@/modules/onboarding/components/ai-setup/lemonade-setup-card';
 import { OllamaSetupCard } from '@/modules/onboarding/components/ai-setup/ollama-setup-card';
+import { SpeculativeInferenceSetupCard } from '@/modules/onboarding/components/ai-setup/speculative-inference-setup-card';
 import type { LemonadeStatus, MtplxStatus, DsparkStatus, OllamaStatus, VllmStatus } from '@/modules/onboarding/helpers/ai-setup-types';
 import {
   EMBEDDING_INFERENCE_BACKEND,
@@ -118,11 +125,13 @@ export const AiSettingsContainer = () => {
   const [vllmStatus, setVllmStatus] = useState<VllmStatus | null>(null);
   const [mtplxStatus, setMtplxStatus] = useState<MtplxStatus | null>(null);
   const [dsparkStatus, setDsparkStatus] = useState<DsparkStatus | null>(null);
+  const [speculativeInferenceStatus, setSpeculativeInferenceStatus] = useState<SpeculativeInferenceStatus | null>(null);
   const [lemonadeStatus, setLemonadeStatus] = useState<LemonadeStatus | null>(null);
   const [checkingOllama, setCheckingOllama] = useState(false);
   const [checkingVllm, setCheckingVllm] = useState(false);
   const [checkingMtplx, setCheckingMtplx] = useState(false);
   const [checkingDspark, setCheckingDspark] = useState(false);
+  const [checkingSpeculativeInference, setCheckingSpeculativeInference] = useState(false);
   const [checkingLemonade, setCheckingLemonade] = useState(false);
   // Backend the backend-switch effect has already refetched for (set by fetchProfile too, since it
   // fetches profile + runtime models itself); prevents a duplicate fetch right after mount.
@@ -234,6 +243,8 @@ export const AiSettingsContainer = () => {
         void checkMtplxStatus();
       } else if (preferredBackend === 'lemonade') {
         void checkLemonadeStatus();
+      } else if (preferredBackend === 'lucebox') {
+        void checkSpeculativeInferenceStatus();
       }
 
       const configured = await fetchConfiguredCloudProviders();
@@ -351,6 +362,30 @@ export const AiSettingsContainer = () => {
     }
   }, [checkDsparkStatus, seedSelectedModelIds]);
 
+  const checkSpeculativeInferenceStatus = useCallback(async () => {
+    setCheckingSpeculativeInference(true);
+    try {
+      const data = await fetchSpeculativeInferenceStatus();
+      setSpeculativeInferenceStatus(data);
+      return data;
+    } catch {
+      const unreachable: SpeculativeInferenceStatus = { ready: false, running: false, endpointUrl: '' };
+      setSpeculativeInferenceStatus(unreachable);
+      return null;
+    } finally {
+      setCheckingSpeculativeInference(false);
+    }
+  }, []);
+
+  const handleRecheckSpeculativeInference = useCallback(async () => {
+    const status = await checkSpeculativeInferenceStatus();
+    if (status?.ready) {
+      const data = await fetchInferenceOnboardingProfile('lucebox');
+      setProfile(data);
+      seedSelectedModelIds(data, 'lucebox', trackedModelsRef.current);
+    }
+  }, [checkSpeculativeInferenceStatus, seedSelectedModelIds]);
+
   const checkLemonadeStatus = useCallback(async () => {
     setCheckingLemonade(true);
     try {
@@ -427,11 +462,22 @@ export const AiSettingsContainer = () => {
       void checkMtplxStatus();
     } else if (selectedBackend === 'lemonade') {
       void checkLemonadeStatus();
+    } else if (selectedBackend === 'lucebox') {
+      void checkSpeculativeInferenceStatus();
     }
     if (selectedBackend === 'dspark') {
       void checkDsparkStatus();
     }
-  }, [selectedBackend, fetchRuntimeModels, checkVllmStatus, checkMtplxStatus, checkDsparkStatus, checkLemonadeStatus, seedSelectedModelIds]);
+  }, [
+    selectedBackend,
+    fetchRuntimeModels,
+    checkVllmStatus,
+    checkMtplxStatus,
+    checkDsparkStatus,
+    checkSpeculativeInferenceStatus,
+    checkLemonadeStatus,
+    seedSelectedModelIds,
+  ]);
 
   const hasActiveTransfers = Object.values(trackedModels).some((model) => ['pulling', 'loading', 'unloading'].includes(model.state));
 
@@ -729,6 +775,20 @@ export const AiSettingsContainer = () => {
             onSelect={setSelectedBackend}
             unavailableTypes={profile ? unavailableInferenceBackends(profile) : []}
           />
+
+          {selectedBackend === 'lucebox' && (
+            <section className="rounded-lg border border-border bg-gradient-to-b from-card to-card/60 p-5 shadow-sm sm:p-6 space-y-4">
+              <div>
+                <h2 className="text-base font-bold uppercase tracking-wide">{t('ONBOARDING_SPECULATIVE_SECTION_TITLE')}</h2>
+                <p className="text-xs sm:text-sm text-muted-foreground mt-0.5">{t('ONBOARDING_SPECULATIVE_SECTION_DESC')}</p>
+              </div>
+              <SpeculativeInferenceSetupCard
+                status={speculativeInferenceStatus}
+                checking={checkingSpeculativeInference}
+                onRecheck={handleRecheckSpeculativeInference}
+              />
+            </section>
+          )}
 
           {selectedBackend === 'vllm' && (
             <section className="rounded-lg border border-border bg-gradient-to-b from-card to-card/60 p-5 shadow-sm sm:p-6 space-y-4">

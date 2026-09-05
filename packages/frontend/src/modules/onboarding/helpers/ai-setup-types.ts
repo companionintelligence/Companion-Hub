@@ -116,6 +116,9 @@ export interface DsparkStatus extends VllmStatus {
   loadedModels?: string[];
 }
 
+/** Lucebox exposes the same OpenAI-compatible health shape but is configured outside the Hub. */
+export type SpeculativeInferenceStatus = VllmStatus;
+
 /** Lemonade's health card uses the same connection shape and also reports cached model ids. */
 export interface LemonadeStatus extends VllmStatus {
   loadedModels?: string[];
