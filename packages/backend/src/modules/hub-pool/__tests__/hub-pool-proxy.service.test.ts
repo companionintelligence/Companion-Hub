@@ -11,6 +11,7 @@ import { MtplxBackend } from '@/modules/inference/backends/mtplx.backend';
 import { DsparkBackend } from '@/modules/inference/backends/dspark.backend';
 import { LuceboxBackend } from '@/modules/inference/backends/lucebox.backend';
 import { HubPoolPeerService } from '../hub-pool-peer.service';
+import { HubPoolLoadService, LOCAL_CANDIDATE_KEY } from '../hub-pool-load.service';
 import { PoolProxyService } from '../hub-pool-proxy.service';
 import type { PoolPeerCapabilities } from '../hub-pool.types';
 
@@ -33,12 +34,30 @@ function mockPeer(overrides: Partial<HubPoolPeer> = {}): HubPoolPeer {
   };
 }
 
-function capabilitiesWithModel(model: string): PoolPeerCapabilities {
+function capabilitiesWithModel(model: string, overrides: Partial<PoolPeerCapabilities> = {}): PoolPeerCapabilities {
   return {
     hardwareTier: 'high',
     backends: [{ type: 'ollama', healthy: true, modelsLoaded: [model] }],
     updatedAt: new Date().toISOString(),
+    ...overrides,
   };
+}
+
+/** A connected peer that has the model and reports its own queue depth, as `refreshOnePeer` would have cached it. */
+function peerServing(
+  id: string,
+  model: string,
+  options: { inFlightRequests?: number; hardwareTier?: string; lastSeenAt?: string } = {},
+): HubPoolPeer {
+  return mockPeer({
+    id,
+    nodeFqdn: `${id}.tailxyz.ts.net`,
+    lastSeenAt: options.lastSeenAt ?? new Date().toISOString(),
+    lastCapabilities: capabilitiesWithModel(model, {
+      inFlightRequests: options.inFlightRequests,
+      ...(options.hardwareTier ? { hardwareTier: options.hardwareTier } : {}),
+    }) as unknown as Record<string, unknown>,
+  });
 }
 
 /**
@@ -76,6 +95,8 @@ describe('PoolProxyService', () => {
   let lucebox: MockProxy<LuceboxBackend>;
   let peerService: MockProxy<HubPoolPeerService>;
   let tailscaleService: MockProxy<TailscaleService>;
+  // Real, not mocked: ranking is only meaningful against the counter the proxy itself maintains.
+  let loadService: HubPoolLoadService;
   let service: PoolProxyService;
 
   beforeEach(() => {
@@ -107,7 +128,8 @@ describe('PoolProxyService', () => {
       authUrl: null,
     });
 
-    service = new PoolProxyService(ollama, vllm, lemonade, mtplx, dspark, lucebox, peerService, tailscaleService);
+    loadService = new HubPoolLoadService();
+    service = new PoolProxyService(ollama, vllm, lemonade, mtplx, dspark, lucebox, peerService, tailscaleService, loadService);
     global.fetch = vi.fn();
   });
 
@@ -135,6 +157,123 @@ describe('PoolProxyService', () => {
       const candidates = await service.buildCandidateList('llama3.2:3b');
 
       expect(candidates).toEqual([{ peerId: 'peer-1', nodeFqdn: 'peer-hub.tailxyz.ts.net', backend: 'ollama' }]);
+    });
+  });
+
+  /**
+   * Local and peer candidates are ranked in one list, so these assert on the full order rather than
+   * on "local, then peers" — the concatenation this replaced made the pool a failover list, where a
+   * local backend that merely had the model always won however long its queue was.
+   */
+  describe('candidate ranking', () => {
+    const MODEL = 'llama3.2:3b';
+
+    beforeEach(() => {
+      ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL] });
+    });
+
+    /** Keeps the local node out of a comparison that is only about peers. */
+    function withoutLocalCandidate(): void {
+      ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [] });
+    }
+
+    it('hands work to an idle peer once the local node is busier than the affinity margin', async () => {
+      peerService.listConnectedPeers.mockResolvedValue([peerServing('peer-idle', MODEL, { inFlightRequests: 0 })]);
+      loadService.acquire(LOCAL_CANDIDATE_KEY);
+      loadService.acquire(LOCAL_CANDIDATE_KEY);
+
+      const candidates = await service.buildCandidateList(MODEL);
+
+      expect(candidates.map((c) => c.peerId)).toEqual(['peer-idle', null]);
+    });
+
+    it('keeps work local while the peer is only one request emptier', async () => {
+      peerService.listConnectedPeers.mockResolvedValue([peerServing('peer-idle', MODEL, { inFlightRequests: 0 })]);
+      loadService.acquire(LOCAL_CANDIDATE_KEY);
+
+      const candidates = await service.buildCandidateList(MODEL);
+
+      // One queued request is what LOCAL_AFFINITY_REQUESTS says the prompt-prefix / KV cache here is
+      // worth, so the handoff isn't taken yet.
+      expect(candidates.map((c) => c.peerId)).toEqual([null, 'peer-idle']);
+    });
+
+    it('ranks a peer whose snapshot has gone stale as mid-load, never as idle', async () => {
+      const stale = peerServing('peer-stale', MODEL, { inFlightRequests: 0, lastSeenAt: new Date(Date.now() - 5 * 60_000).toISOString() });
+      const fresh = peerServing('peer-fresh', MODEL, { inFlightRequests: 0 });
+      // Listed stale-first: insertion order alone would put the node we know nothing about in front.
+      peerService.listConnectedPeers.mockResolvedValue([stale, fresh]);
+
+      const candidates = await service.buildCandidateList(MODEL);
+
+      expect(candidates.map((c) => c.peerId)).toEqual([null, 'peer-fresh', 'peer-stale']);
+    });
+
+    it('ranks a peer that reports no queue figure at all as mid-load', async () => {
+      // A peer on a build from before `inFlightRequests` existed — silence is not idleness.
+      const silent = peerServing('peer-silent', MODEL);
+      const reporting = peerServing('peer-reporting', MODEL, { inFlightRequests: 0 });
+      peerService.listConnectedPeers.mockResolvedValue([silent, reporting]);
+      withoutLocalCandidate();
+
+      const candidates = await service.buildCandidateList(MODEL);
+
+      expect(candidates.map((c) => c.peerId)).toEqual(['peer-reporting', 'peer-silent']);
+    });
+
+    it('counts forwards this node has in flight to a peer, not just what that peer last reported', async () => {
+      const busy = peerServing('peer-busy', MODEL, { inFlightRequests: 0 });
+      const light = peerServing('peer-light', MODEL, { inFlightRequests: 1 });
+      peerService.listConnectedPeers.mockResolvedValue([busy, light]);
+      withoutLocalCandidate();
+      // Sent since peer-busy's last poll, so its own snapshot cannot know about them yet.
+      loadService.acquire('peer-busy');
+      loadService.acquire('peer-busy');
+
+      const candidates = await service.buildCandidateList(MODEL);
+
+      expect(candidates.map((c) => c.peerId)).toEqual(['peer-light', 'peer-busy']);
+    });
+
+    it('breaks a tie between equally queued peers on the hardware tier they report', async () => {
+      const slow = peerServing('peer-low', MODEL, { inFlightRequests: 0, hardwareTier: 'low' });
+      const fast = peerServing('peer-high', MODEL, { inFlightRequests: 0, hardwareTier: 'high' });
+      peerService.listConnectedPeers.mockResolvedValue([slow, fast]);
+      withoutLocalCandidate();
+
+      const candidates = await service.buildCandidateList(MODEL);
+
+      expect(candidates.map((c) => c.peerId)).toEqual(['peer-high', 'peer-low']);
+    });
+
+    it('counts a request a peer forwarded to us as local load for as long as it runs', async () => {
+      let respond: (response: globalThis.Response) => void = () => {};
+      vi.mocked(global.fetch).mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            respond = resolve;
+          }),
+      );
+
+      const forwarded = service.forwardToLocalBackendAndRespond('ollama', '/api/chat', 'POST', { model: MODEL }, createMockResponse());
+
+      // Otherwise a node saturated by peers' work advertises itself as idle to those same peers.
+      expect(loadService.localInFlight()).toBe(1);
+
+      respond(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+      await forwarded;
+
+      expect(loadService.localInFlight()).toBe(0);
+    });
+
+    it('releases the local count when the request it was serving fails', async () => {
+      ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL] });
+      peerService.listConnectedPeers.mockResolvedValue([]);
+      vi.mocked(global.fetch).mockRejectedValue(new Error('ECONNREFUSED'));
+
+      await service.proxyRequest({ path: '/v1/chat/completions', method: 'POST', body: { model: MODEL }, model: MODEL, res: createMockResponse() });
+
+      expect(loadService.localInFlight()).toBe(0);
     });
   });
 

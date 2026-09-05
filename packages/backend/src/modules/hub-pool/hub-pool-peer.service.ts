@@ -19,6 +19,7 @@ import { TailscaleService } from '@/modules/tailscale/tailscale.service';
 import { TailscaleAdminApiService, type TailscaleDevice } from '@/modules/tailscale/tailscale-admin-api.service';
 import { InferenceRouterService } from '@/modules/inference/inference-router.service';
 import { HubPoolPeerRepository } from './hub-pool-peer.repository';
+import { HubPoolLoadService } from './hub-pool-load.service';
 import type { DiscoverablePoolPeer, PoolPeerCapabilities } from './hub-pool.types';
 
 const HEALTH_POLL_INTERVAL_MS = 30_000;
@@ -52,6 +53,7 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
     private readonly encryption: EncryptionService,
     @Inject(forwardRef(() => InferenceRouterService))
     private readonly inferenceRouter: InferenceRouterService,
+    private readonly loadService: HubPoolLoadService,
   ) {}
 
   onModuleInit(): void {
@@ -383,7 +385,13 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
     await this.repo.update(peerId, { lastCapabilities: null });
   }
 
-  /** This node's current capabilities, served to peers at `GET /inference/pool/capabilities`. */
+  /**
+   * This node's current capabilities, served to peers at `GET /inference/pool/capabilities`.
+   *
+   * `inFlightRequests` is what makes a peer's ranking of us more than a guess: without it a node
+   * saturated by its own apps looks identical to an idle one, since the polling peer can only count
+   * the work it forwarded itself.
+   */
   async getOwnCapabilities(): Promise<PoolPeerCapabilities> {
     const [status, models] = await Promise.all([this.inferenceRouter.getStatus(), this.inferenceRouter.listModels()]);
     return {
@@ -393,6 +401,7 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
         healthy: b.healthy,
         modelsLoaded: models.filter((m) => m.backend === b.type && m.local && m.state !== 'available').map((m) => m.id),
       })),
+      inFlightRequests: this.loadService.localInFlight(),
       updatedAt: new Date().toISOString(),
     };
   }
