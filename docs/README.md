@@ -40,6 +40,7 @@ Follow the [Google developer documentation style guide](https://developers.googl
 | [`CLI.md`](CLI.md) | `cihub` CLI |
 | [`private-vpn.md`](private-vpn.md) | Tailscale private VPN |
 | [`hub-pool.md`](hub-pool.md) | Multi-Hub inference pooling over Tailscale |
+| [`hub-pool-fleet-testing.md`](hub-pool-fleet-testing.md) | Two-node validation plan for Hub Pool |
 | [`ci-cd-pipeline.md`](ci-cd-pipeline.md) | Historical multi-env deploy notes |
 | [`dns-cache-analysis.md`](dns-cache-analysis.md) | Desktop DNS NXDOMAIN investigation |
 
@@ -61,6 +62,7 @@ Follow the [Google developer documentation style guide](https://developers.googl
 | [`MCP_TESTING_STRATEGY.md`](MCP_TESTING_STRATEGY.md) | Marketplace MCP QA |
 | [`FLYWHEEL.md`](FLYWHEEL.md) | App explorer flywheel (lab passwords are placeholders) |
 | [`../e2e/README.md`](../e2e/README.md) | Local e2e commands |
+| [`hub-pool-fleet-testing.md`](hub-pool-fleet-testing.md) | Manual two-node Hub Pool validation on real appliances |
 
 Multi-node fleet orchestration lives on a **private** ops mirror, not in this tip.
 

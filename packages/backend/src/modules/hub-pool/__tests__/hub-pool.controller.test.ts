@@ -1,7 +1,8 @@
-import { ServiceUnavailableException } from '@nestjs/common';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { ForbiddenException, ServiceUnavailableException } from '@nestjs/common';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
-import type { Request } from 'express';
+import type { Request, Response } from 'express';
+import type { HubPoolPeer } from '@/core/database/drizzle/types';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { TailscaleService } from '@/modules/tailscale/tailscale.service';
 import { HubPoolPeerService } from '../hub-pool-peer.service';
@@ -33,17 +34,33 @@ function poolStatus(overrides: Partial<PoolStatus> = {}): PoolStatus {
   };
 }
 
+/** The guard-resolved row a peer-facing handler reads, plus the header the caller supplied. */
+function peerRequest(peer: Partial<HubPoolPeer> | undefined, headers: Record<string, string> = {}): Request {
+  return {
+    poolPeer: peer,
+    header: (name: string) => headers[name.toLowerCase()],
+  } as unknown as Request;
+}
+
+function mockResponse(): Response {
+  const res = { status: vi.fn(), json: vi.fn() } as unknown as Response;
+  vi.mocked(res.status).mockReturnValue(res);
+  return res;
+}
+
 describe('HubPoolController', () => {
   let peerService: MockProxy<HubPoolPeerService>;
+  let proxyService: MockProxy<PoolProxyService>;
   let configuration: MockProxy<ConfigurationService>;
   let routingLog: HubPoolRoutingLogService;
   let controller: HubPoolController;
 
   beforeEach(() => {
     peerService = mock<HubPoolPeerService>();
+    proxyService = mock<PoolProxyService>();
     configuration = mock<ConfigurationService>();
     routingLog = new HubPoolRoutingLogService();
-    controller = new HubPoolController(peerService, mock<PoolProxyService>(), mock<TailscaleService>(), configuration, routingLog);
+    controller = new HubPoolController(peerService, proxyService, mock<TailscaleService>(), configuration, routingLog);
   });
 
   describe('GET status', () => {
@@ -123,6 +140,106 @@ describe('HubPoolController', () => {
 
       await expect(controller.capabilities({ poolPeer: { status: 'connected' } } as unknown as Request)).rejects.toThrow(ServiceUnavailableException);
       expect(peerService.getOwnCapabilities).not.toHaveBeenCalled();
+    });
+
+    it.each(['pending', 'unreachable'])('refuses a peer whose row is %s, even though the guard admitted its token', async (status) => {
+      peerService.enabledState.mockReturnValue({ enabled: true, disabledBy: null });
+
+      // PoolPeerGuard deliberately admits a pending row so /pair/confirm can use it, so this handler
+      // is the only thing standing between a half-finished pairing and this node's inventory.
+      await expect(controller.capabilities(peerRequest({ status }))).rejects.toThrow(ForbiddenException);
+      expect(peerService.getOwnCapabilities).not.toHaveBeenCalled();
+    });
+  });
+
+  /**
+   * The peer-facing forward. It never re-enters candidate selection — that is what stops a request
+   * being relayed through a third node — so everything it refuses, it has to refuse here.
+   */
+  describe('peer-facing local forward', () => {
+    const body = { model: 'llama3.2:3b' };
+
+    it('forwards to the backend the caller named, attributed to the peer the guard authenticated', async () => {
+      const res = mockResponse();
+      const peer = { nodeFqdn: 'hub-b.example-tailnet.ts.net', status: 'connected' };
+
+      await controller.localOllamaChat(
+        peerRequest(peer, { 'x-hub-pool-backend': 'ollama', 'x-hub-pool-peer': 'spoofed.example-tailnet.ts.net' }),
+        body,
+        res,
+      );
+
+      // The FQDN comes from the row, not the header: the routing log has to record who was
+      // authenticated, not who claimed to call.
+      expect(proxyService.forwardToLocalBackendAndRespond).toHaveBeenCalledWith(
+        'ollama',
+        '/api/chat',
+        'POST',
+        body,
+        res,
+        'hub-b.example-tailnet.ts.net',
+      );
+    });
+
+    it.each(['pending', 'unreachable'])('refuses a %s peer with 403 without touching a backend', async (status) => {
+      const res = mockResponse();
+
+      await controller.localOllamaChat(peerRequest({ nodeFqdn: 'hub-b.example-tailnet.ts.net', status }), body, res);
+
+      expect(res.status).toHaveBeenCalledWith(403);
+      expect(proxyService.forwardToLocalBackendAndRespond).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['no backend header', {}],
+      ['a backend this build does not have', { 'x-hub-pool-backend': 'not-a-backend' }],
+      ['an empty backend header', { 'x-hub-pool-backend': '' }],
+    ])('refuses %s with 400 rather than guessing an engine', async (_label, headers) => {
+      const res = mockResponse();
+
+      await controller.localOllamaChat(peerRequest({ nodeFqdn: 'hub-b.example-tailnet.ts.net', status: 'connected' }, headers), body, res);
+
+      expect(res.status).toHaveBeenCalledWith(400);
+      expect(proxyService.forwardToLocalBackendAndRespond).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('app-facing proxy', () => {
+    it.each([
+      ['/api/chat', (c: HubPoolController, b: Record<string, unknown>, r: Response) => c.proxyOllamaChat(b, r)],
+      ['/api/embed', (c: HubPoolController, b: Record<string, unknown>, r: Response) => c.proxyOllamaEmbed(b, r)],
+      ['/api/embeddings', (c: HubPoolController, b: Record<string, unknown>, r: Response) => c.proxyOllamaEmbeddings(b, r)],
+      ['/api/generate', (c: HubPoolController, b: Record<string, unknown>, r: Response) => c.proxyOllamaGenerate(b, r)],
+      ['/v1/chat/completions', (c: HubPoolController, b: Record<string, unknown>, r: Response) => c.proxyChatCompletions(b, r)],
+      ['/v1/completions', (c: HubPoolController, b: Record<string, unknown>, r: Response) => c.proxyCompletions(b, r)],
+      ['/v1/embeddings', (c: HubPoolController, b: Record<string, unknown>, r: Response) => c.proxyEmbeddings(b, r)],
+    ])('routes %s across the pool on the body’s model', async (path, invoke) => {
+      // Apps get OLLAMA_HOST pointed here as well as CI_LLM_BASE_URL, so a native missing from this
+      // list is a 404 for every app on the node the moment a peer connects.
+      await invoke(controller, { model: 'llama3.2:3b' }, mockResponse());
+
+      expect(proxyService.proxyRequest).toHaveBeenCalledWith(expect.objectContaining({ path, method: 'POST', model: 'llama3.2:3b' }));
+    });
+
+    it('400s a body with no model instead of ranking candidates for undefined', async () => {
+      const res = mockResponse();
+
+      await controller.proxyChatCompletions({ messages: [] }, res);
+
+      expect(res.status).toHaveBeenCalledWith(400);
+      expect(proxyService.proxyRequest).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['/api/tags', (c: HubPoolController, r: Response) => c.proxyOllamaTags(r)],
+      ['/api/ps', (c: HubPoolController, r: Response) => c.proxyOllamaPs(r)],
+      ['/api/version', (c: HubPoolController, r: Response) => c.proxyOllamaVersion(r)],
+      ['/v1/models', (c: HubPoolController, r: Response) => c.proxyOpenAiModelsList(r)],
+    ])('serves %s from this node alone, since it carries no model to route on', async (path, invoke) => {
+      await invoke(controller, mockResponse());
+
+      expect(proxyService.proxyLocalOnlyRequest).toHaveBeenCalledWith(path, 'GET', undefined, expect.anything());
+      expect(proxyService.proxyRequest).not.toHaveBeenCalled();
     });
   });
 });
