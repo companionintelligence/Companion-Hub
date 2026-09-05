@@ -1267,10 +1267,6 @@ export type PairingConfirmBody = {
     [key: string]: unknown;
 };
 
-export type PairingRejectBody = {
-    [key: string]: unknown;
-};
-
 export type CreateApiKeyBody = {
     name: string;
     capability: 'read' | 'write' | 'full';
@@ -4024,7 +4020,7 @@ export type HandlePairingConfirmResponses = {
 };
 
 export type HandlePairingRejectData = {
-    body: PairingRejectBody;
+    body?: never;
     path?: never;
     query?: never;
     url: '/api/inference/pool/pair/reject';
