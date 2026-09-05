@@ -2,6 +2,7 @@ import { createHash, timingSafeEqual } from 'node:crypto';
 import { type CanActivate, type ExecutionContext, Injectable, UnauthorizedException } from '@nestjs/common';
 import type { Request } from 'express';
 import type { HubPoolPeer } from '@/core/database/drizzle/types';
+import { normalizePeerFqdn } from '@/common/helpers/hub-pool';
 import { HubPoolPeerRepository } from '../hub-pool-peer.repository';
 
 declare module 'express' {
@@ -32,7 +33,10 @@ export class PoolPeerGuard implements CanActivate {
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
     const request = context.switchToHttp().getRequest<Request>();
-    const nodeFqdn = request.header('x-hub-pool-peer');
+    // Canonicalized the same way rows are stored, so a peer that spells its own name differently
+    // (trailing dot, mixed case) still resolves — and a header that isn't a hostname never reaches
+    // the lookup at all.
+    const nodeFqdn = normalizePeerFqdn(request.header('x-hub-pool-peer') ?? '');
     const authHeader = request.header('authorization');
     const token = authHeader?.startsWith('Bearer ') ? authHeader.slice('Bearer '.length) : undefined;
 

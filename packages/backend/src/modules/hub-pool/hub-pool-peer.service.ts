@@ -1,13 +1,25 @@
 import { createHash, randomBytes } from 'node:crypto';
-import { ConflictException, forwardRef, Inject, Injectable, NotFoundException, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  ForbiddenException,
+  forwardRef,
+  Inject,
+  Injectable,
+  NotFoundException,
+  OnModuleDestroy,
+  OnModuleInit,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import { LoggerService } from '@/core/logger/logger.service';
 import { EncryptionService } from '@/core/encryption/encryption.service';
-import { isHubPoolEnabled } from '@/common/helpers/hub-pool';
+import { isHubPoolEnabled, normalizePeerFqdn } from '@/common/helpers/hub-pool';
 import type { HubPoolPeer } from '@/core/database/drizzle/types';
 import { TailscaleService } from '@/modules/tailscale/tailscale.service';
-import { TailscaleAdminApiService } from '@/modules/tailscale/tailscale-admin-api.service';
+import { TailscaleAdminApiService, type TailscaleDevice } from '@/modules/tailscale/tailscale-admin-api.service';
 import { InferenceRouterService } from '@/modules/inference/inference-router.service';
 import { HubPoolPeerRepository } from './hub-pool-peer.repository';
+import { HubPoolLoadService } from './hub-pool-load.service';
 import type { DiscoverablePoolPeer, PoolPeerCapabilities } from './hub-pool.types';
 
 const HEALTH_POLL_INTERVAL_MS = 30_000;
@@ -16,6 +28,14 @@ const UNREACHABLE_THRESHOLD = 3;
 const DISCOVERY_PROBE_TIMEOUT_MS = 5_000;
 const HANDSHAKE_TIMEOUT_MS = 10_000;
 const CAPABILITIES_PROBE_TIMEOUT_MS = 8_000;
+/**
+ * Ceiling on inbound `pending` rows. They are created by unauthenticated callers and outlive the
+ * request, so without a cap the table is an anonymous write primitive; with one, the worst an
+ * attacker achieves is filling the operator's approval list until the sweep below drains it.
+ */
+const MAX_PENDING_INBOUND_REQUESTS = 20;
+/** How long an unanswered inbound request survives. Long enough for an operator to notice it the next day, short enough that a squatted FQDN unblocks itself. */
+const PENDING_REQUEST_TTL_MS = 24 * 60 * 60 * 1000;
 
 /**
  * Pairing lifecycle + health polling for sibling Hub nodes ("peers") reachable
@@ -33,11 +53,13 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
     private readonly encryption: EncryptionService,
     @Inject(forwardRef(() => InferenceRouterService))
     private readonly inferenceRouter: InferenceRouterService,
+    private readonly loadService: HubPoolLoadService,
   ) {}
 
   onModuleInit(): void {
     this.intervalHandle = setInterval(() => {
       void this.refreshPeerHealth();
+      void this.sweepExpiredPendingRequests();
     }, HEALTH_POLL_INTERVAL_MS);
   }
 
@@ -115,7 +137,8 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
   }
 
   /** Operator-initiated: pair with a candidate peer discovered above. */
-  async initiatePairing(nodeFqdn: string, displayName?: string): Promise<HubPoolPeer> {
+  async initiatePairing(rawNodeFqdn: string, displayName?: string): Promise<HubPoolPeer> {
+    const nodeFqdn = this.requireBareHostname(rawNodeFqdn);
     const existing = await this.repo.findByNodeFqdn(nodeFqdn);
     if (existing) {
       throw new ConflictException(`Already paired or pairing with ${nodeFqdn}`);
@@ -151,13 +174,34 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
     return row;
   }
 
-  /** Inbound `POST /inference/pool/pair/request` from a would-be peer — no trust established yet. */
-  async receivePairingRequest(fromNodeFqdn: string, fromDisplayName: string | undefined, token: string): Promise<void> {
+  /**
+   * Inbound `POST /inference/pool/pair/request` from a would-be peer — the only
+   * unauthenticated write in the module, so every check that can be made without
+   * established trust is made here: the kill switch, the hostname shape, the
+   * pending-row ceiling, and tailnet membership where the Admin API can attest it.
+   */
+  async receivePairingRequest(rawFromNodeFqdn: string, fromDisplayName: string | undefined, token: string): Promise<void> {
+    if (!isHubPoolEnabled()) {
+      throw new ServiceUnavailableException('Hub pooling is disabled on this node (HUB_POOL_USER_DISABLED)');
+    }
+
+    const fromNodeFqdn = this.requireBareHostname(rawFromNodeFqdn);
+
     const existing = await this.repo.findByNodeFqdn(fromNodeFqdn);
     if (existing) {
       this.logger.debug(`[HubPool] ignoring duplicate pairing request from ${fromNodeFqdn} (already have a ${existing.status} row)`);
       return;
     }
+
+    const pending = await this.repo.listByStatus('pending');
+    if (pending.filter((row) => row.direction === 'inbound').length >= MAX_PENDING_INBOUND_REQUESTS) {
+      this.logger.warn(
+        `[HubPool] refusing pairing request from ${fromNodeFqdn}: ${MAX_PENDING_INBOUND_REQUESTS} inbound requests already await approval`,
+      );
+      throw new ServiceUnavailableException('Too many pairing requests are already awaiting approval on this node');
+    }
+
+    await this.assertTailnetMember(fromNodeFqdn);
 
     await this.repo.create({
       nodeFqdn: fromNodeFqdn,
@@ -168,6 +212,60 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
       presentTokenEncrypted: this.encryption.encrypt(token, fromNodeFqdn),
       tailscaleDeviceId: null,
     });
+  }
+
+  private requireBareHostname(raw: string): string {
+    const normalized = normalizePeerFqdn(raw);
+    if (!normalized) {
+      throw new BadRequestException('Peer node FQDN must be a bare hostname (no scheme, credentials, port, path or IP literal)');
+    }
+    return normalized;
+  }
+
+  /**
+   * Refuses a pairing request from a name that is not on this tailnet.
+   *
+   * Degrades to a no-op when the Admin API credential is absent or unhealthy: it
+   * is explicitly optional (see `docs/hub-pool.md`), and a Hub that cannot
+   * discover peers must still be able to accept pairing from one that can.
+   */
+  private async assertTailnetMember(nodeFqdn: string): Promise<void> {
+    if (!this.tailscaleAdminApi.isConfigured()) {
+      return;
+    }
+
+    let devices: TailscaleDevice[];
+    try {
+      const selfStatus = await this.tailscaleService.getStatusCached();
+      if (!selfStatus.tailnet) {
+        return;
+      }
+      devices = await this.tailscaleAdminApi.listDevices(selfStatus.tailnet);
+    } catch (error) {
+      this.logger.warn(
+        `[HubPool] could not verify tailnet membership for ${nodeFqdn}; accepting the request on the operator's judgement: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      return;
+    }
+
+    if (!devices.some((device) => normalizePeerFqdn(device.name) === nodeFqdn)) {
+      this.logger.warn(`[HubPool] rejecting pairing request from ${nodeFqdn}: not a device on this tailnet`);
+      throw new ForbiddenException('Pairing requests are only accepted from devices on this tailnet');
+    }
+  }
+
+  /** Expires inbound `pending` rows nothing ever answered, so a squatted FQDN cannot block pairing forever and the table cannot grow without bound. */
+  private async sweepExpiredPendingRequests(): Promise<void> {
+    const cutoff = Date.now() - PENDING_REQUEST_TTL_MS;
+    const pending = await this.repo.listByStatus('pending');
+    // Outbound rows are operator-created and are cleaned up by the peer's reject callback or by
+    // Unpair, so only the anonymously-created inbound half is swept.
+    const expired = pending.filter((row) => row.direction === 'inbound' && Date.parse(row.createdAt) < cutoff);
+
+    for (const row of expired) {
+      this.logger.info(`[HubPool] expiring unanswered pairing request from ${row.nodeFqdn} (created ${row.createdAt})`);
+      await this.repo.delete(row.id);
+    }
   }
 
   /** Operator approves a pending inbound request — issues our half of the handshake and confirms to the peer. */
@@ -220,11 +318,14 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
     await this.repo.delete(id);
 
     try {
+      // Authenticated like the unpair callback: the initiator only deletes its pending row for a
+      // caller that can present the token it issued in its own pair/request.
+      const presentToken = await this.getPresentToken(row);
       const selfStatus = await this.tailscaleService.getStatusCached();
       await fetch(`https://${row.nodeFqdn}/api/inference/pool/pair/reject`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ fromNodeFqdn: selfStatus.nodeFqdn }),
+        // No body: the peer identifies us from the guard headers, which is the only claim it should trust here.
+        headers: { 'X-Hub-Pool-Peer': selfStatus.nodeFqdn ?? '', Authorization: `Bearer ${presentToken}` },
         signal: AbortSignal.timeout(HANDSHAKE_TIMEOUT_MS),
       });
     } catch (error) {
@@ -240,11 +341,10 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
     await this.repo.update(guardedRow.id, { status: 'connected', presentTokenEncrypted: this.encryption.encrypt(rawToken, guardedRow.nodeFqdn) });
   }
 
-  /** Inbound `POST /inference/pool/pair/reject` — the peer we asked to pair with declined. */
-  async handleRemoteReject(fromNodeFqdn: string): Promise<void> {
-    const row = await this.repo.findByNodeFqdn(fromNodeFqdn);
-    if (row && row.direction === 'outbound' && row.status === 'pending') {
-      await this.repo.delete(row.id);
+  /** Inbound `POST /inference/pool/pair/reject` — `guardedRow` is `request.poolPeer` from {@link PoolPeerGuard}: the decliner proved it holds the token we issued in our own pair/request. */
+  async handleRemoteReject(guardedRow: HubPoolPeer): Promise<void> {
+    if (guardedRow.direction === 'outbound' && guardedRow.status === 'pending') {
+      await this.repo.delete(guardedRow.id);
     }
   }
 
@@ -285,7 +385,13 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
     await this.repo.update(peerId, { lastCapabilities: null });
   }
 
-  /** This node's current capabilities, served to peers at `GET /inference/pool/capabilities`. */
+  /**
+   * This node's current capabilities, served to peers at `GET /inference/pool/capabilities`.
+   *
+   * `inFlightRequests` is what makes a peer's ranking of us more than a guess: without it a node
+   * saturated by its own apps looks identical to an idle one, since the polling peer can only count
+   * the work it forwarded itself.
+   */
   async getOwnCapabilities(): Promise<PoolPeerCapabilities> {
     const [status, models] = await Promise.all([this.inferenceRouter.getStatus(), this.inferenceRouter.listModels()]);
     return {
@@ -295,6 +401,7 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
         healthy: b.healthy,
         modelsLoaded: models.filter((m) => m.backend === b.type && m.local && m.state !== 'available').map((m) => m.id),
       })),
+      inFlightRequests: this.loadService.localInFlight(),
       updatedAt: new Date().toISOString(),
     };
   }
