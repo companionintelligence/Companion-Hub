@@ -22,12 +22,84 @@ The native shell (`src-tauri`) only captures the `cihub://` deep links (Portal
 SSO + pairing) and exposes the Tauri HTTP/store/os/notification/opener plugins.
 All Hub auth (portal SSO, password, TOTP) is reused from the existing frontend.
 
-## Prerequisites
+## First-time setup
 
-- **Rust** + the mobile targets:
-  `rustup target add aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios aarch64-linux-android armv7-linux-androideabi i686-linux-android x86_64-linux-android`
-- **Android:** JDK 17, Android SDK + NDK. Set `ANDROID_HOME`, `NDK_HOME`, `JAVA_HOME`.
-- **iOS:** Xcode (full, not just Command Line Tools); `xcode-select` pointed at it.
+Work through this once on a new machine. Each step ends with a command that
+proves it worked — the failures below are all ones a clean Mac actually hits,
+and most of them fail *late* (deep in a 10-minute Rust build) if you skip ahead.
+
+### 1. Rust + mobile targets
+
+```bash
+rustup target add aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios \
+  aarch64-linux-android armv7-linux-androideabi i686-linux-android x86_64-linux-android
+rustup target list --installed | grep -cE 'ios|android'    # expect 7
+```
+
+### 2. Android — SDK, NDK, and a JDK
+
+`JAVA_HOME` is the one people miss: macOS ships **no** JDK, so `java -version`
+fails with *"Unable to locate a Java Runtime"* and Gradle dies with a message
+that never mentions Java. Android Studio bundles one you can point at.
+
+```bash
+export ANDROID_HOME="$HOME/Library/Android/sdk"
+export NDK_HOME="$ANDROID_HOME/ndk/$(ls "$ANDROID_HOME/ndk" | sort -V | tail -1)"
+export JAVA_HOME=/opt/homebrew/opt/openjdk@17          # or:
+# export JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home"
+export PATH="$JAVA_HOME/bin:$PATH"
+
+java -version                                    # must print a version
+ls "$ANDROID_HOME/platforms" "$NDK_HOME" >/dev/null && echo "sdk+ndk ok"
+```
+
+Put those exports in your shell profile — a login shell without them is the
+single most common cause of a failed Android build.
+
+### 3. iOS — Xcode with an iOS SDK
+
+A *full* Xcode, not just Command Line Tools. Check that the selected Xcode
+actually has an iOS SDK — having Xcode installed is not the same thing:
+
+```bash
+xcode-select -p
+xcodebuild -showsdks | grep -i iphone      # must list an iOS + iOS Simulator SDK
+```
+
+If this prints nothing, that Xcode has no iOS platform installed. On a machine
+with several Xcodes, only one may be usable — select it with
+`sudo xcode-select -s /Applications/<Xcode>.app` (needs your password), or
+override per-command with `DEVELOPER_DIR=/Applications/<Xcode>.app/Contents/Developer`,
+which needs no sudo.
+
+> Xcode **27** additionally needs the vendored-`swift-rs` workaround in
+> [Building iOS on Xcode 27](#building-ios-on-xcode-27). Nothing builds for the
+> simulator without it.
+
+### 4. Optional — driving the simulator from an agent
+
+Two MCP servers cover build + UI automation and are the most reliable path
+today:
+
+```bash
+claude mcp add xcodebuild    -- npx -y xcodebuildmcp@latest mcp
+claude mcp add ios-simulator -- npx -y ios-simulator-mcp@latest
+npx -y -p xcodebuildmcp@latest xcodebuildmcp-doctor     # verify
+```
+
+Note `xcodebuildmcp` needs the **`mcp` subcommand** — without it the process
+prints usage and exits, and the server silently never starts.
+
+The `ui_*` tools (tap/type/describe) additionally need `idb_companion`:
+
+```bash
+brew trust facebook/fb && brew install idb-companion
+```
+
+which itself wants the *Command Line Tools for Xcode* matching your Xcode,
+a manual download from
+[developer.apple.com/download/all](https://developer.apple.com/download/all/).
+Screenshot, install and launch work without it.
 
 ## Commands
 
@@ -139,11 +211,31 @@ The app **builds, installs, and runs on the iOS 27 simulator** (verified
 2.11.3) predates Xcode 27, so three **local-only** toolchain workarounds are
 needed. None are app code; keep them out of commits.
 
-Vendor `swift-rs` (copy from
-`~/.cargo/registry/src/*/swift-rs-1.0.7`), point at it with
-`[patch.crates-io] swift-rs = { path = "…/vendored/swift-rs" }` in
-`src-tauri/Cargo.toml`, and build with `IPHONEOS_DEPLOYMENT_TARGET=16.0`
-(App Intents' minimum). In the vendored `src-rs/build.rs`:
+Vendor `swift-rs` (copy from `~/.cargo/registry/src/*/swift-rs-1.0.7`), point at
+it from `src-tauri/Cargo.toml`, and build with `IPHONEOS_DEPLOYMENT_TARGET=16.0`
+(App Intents' minimum).
+
+> **Two traps when wiring up the patch — both cost a full failed build:**
+>
+> 1. `src-tauri/Cargo.toml` **already has a `[patch.crates-io]` section** (for
+>    `glib`). Appending a second one is a no-op or a duplicate-section error —
+>    add the line *inside* the existing section:
+>
+>    ```toml
+>    [patch.crates-io]
+>    swift-rs = { path = "../vendored/swift-rs" }
+>    glib = { path = "../../../third_party/glib-0.18.5" }
+>    ```
+>
+> 2. Cargo keeps the **already-compiled registry copy** until you tell it
+>    otherwise, so the patch appears to do nothing. Force the swap and confirm
+>    it took — you want to see `Removing swift-rs v1.0.7`:
+>
+>    ```bash
+>    cargo update -p swift-rs --manifest-path src-tauri/Cargo.toml
+>    ```
+
+In the vendored `src-rs/build.rs`:
 
 1. **SDK selection.** Replace `.args(["--arch", arch])` with
    `.args(["--triple", &swift_target_triple])` (else SwiftPM picks the macOS SDK →
@@ -170,6 +262,84 @@ With all three, `pnpm tauri ios build --target aarch64-sim` succeeds; install th
 Products/release-iphonesimulator/` with `xcrun simctl install`. (`tauri`'s own
 archive-rename step then errors harmlessly — the built `.app` is already there.)
 
-Note: `simctl io screenshot` returns black for the WKWebView layer on the
-simulator — the app *is* rendering (check the unified log for a WebKit
-`Created rendering backend`), or inspect via Safari ▸ Develop.
+### Telling "rendering" apart from "blank"
+
+`simctl io screenshot` returns black for the WKWebView layer on the simulator,
+so **a black screenshot proves nothing either way** — do not read it as "the app
+is fine". Two checks that actually distinguish the cases:
+
+```bash
+UDID=$(xcrun simctl list devices booted | grep -oE '[0-9A-F-]{36}' | head -1)
+
+# 1. Did React actually mount? i18next only writes this key after it does.
+C=$(xcrun simctl get_app_container "$UDID" computer.ci.app.hub data)
+sqlite3 "$(find "$C/Library/WebKit" -name localstorage.sqlite3 | head -1)" \
+  'SELECT key FROM ItemTable;'          # expect i18nextLng
+
+# 2. Did the main frame load, or did something cancel/replace it?
+xcrun simctl spawn "$UDID" log show --last 2m --style compact \
+  --predicate 'process == "Companion Hub"' \
+  | grep -E 'didFinishLoading|didFailProvisionalLoadForFrame'
+```
+
+A healthy boot shows ~100+ `didFinishLoading` **and** an `i18nextLng` key. Many
+finished resource loads with *no* `i18nextLng` means assets are being served but
+the app never mounted — that is a blank screen, not a capture artifact.
+`didFailProvisionalLoadForFrame … isMainFrame=1, code=-999` is
+`NSURLErrorCancelled`: a navigation superseded the one in flight.
+
+`snapshot_ui` from XcodeBuildMCP is the quickest signal of all — it returns
+`targets: []` for a genuinely empty screen. Safari ▸ Develop still works for a
+live DOM.
+
+---
+
+## Troubleshooting
+
+Symptoms seen on real machines, with the actual cause. Most of these fail late
+and blame the wrong thing.
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `Unable to locate a Java Runtime`, or Gradle fails with no mention of Java | macOS ships no JDK | Set `JAVA_HOME` ([step 2](#2-android--sdk-ndk-and-a-jdk)) |
+| `unable to resolve module 'UIKit'`, `could not build module 'WebKit'`, or references to `MacOSX*.sdk` in an **iOS** build | SwiftPM picked the macOS SDK — the Xcode 27 `swift-rs` bug | [Xcode 27 workaround](#building-ios-on-xcode-27) |
+| The `swift-rs` patch "does nothing" | Second `[patch.crates-io]` section, or Cargo reused the cached registry build | Both traps in [Xcode 27](#building-ios-on-xcode-27) |
+| `xcodebuild -showsdks` lists no iPhone SDK | That Xcode has no iOS platform | Select another Xcode, or `DEVELOPER_DIR=…` |
+| `failed to rename app … Directory not empty (os error 66)` at the very end of `tauri ios build` | Tauri's post-build archive-rename step | **Harmless** — the `.app` is already built. Check for real errors instead of trusting the exit code |
+| A build "succeeds" but nothing changed | You piped the build through `\| tail`, which masks the exit code | Capture the real status: `cmd > log 2>&1; echo $?` |
+| `INSTALL_PARSE_FAILED_NO_CERTIFICATES` installing an Android **release** APK | `tauri android build --apk` emits `app-universal-release-unsigned.apk` | Sign it with the debug key (below) |
+| MCP server `xcodebuild` never starts | Missing the `mcp` subcommand | `npx -y xcodebuildmcp@latest mcp` |
+| Black simulator screenshot | Says nothing on its own | [Telling "rendering" apart from "blank"](#telling-rendering-apart-from-blank) |
+
+### Installing an unsigned release APK locally
+
+`--apk` produces an *unsigned* release APK, which Android refuses to install.
+For local testing, sign it with the standard debug key:
+
+```bash
+BT=$(ls -d "$ANDROID_HOME/build-tools"/* | sort -V | tail -1)
+cp src-tauri/gen/android/app/build/outputs/apk/universal/release/app-universal-release-unsigned.apk /tmp/hub.apk
+"$BT/apksigner" sign --ks ~/.android/debug.keystore \
+  --ks-pass pass:android --key-pass pass:android \
+  --ks-key-alias androiddebugkey /tmp/hub.apk
+"$BT/apksigner" verify /tmp/hub.apk && adb install -r /tmp/hub.apk
+```
+
+`apksigner` is a Java tool — it fails with a bare *"Please visit
+http://www.java.com"* if `JAVA_HOME` is not exported in that shell.
+
+### Generated Apple files are committed, and xcodegen does not regenerate them
+
+`gen/apple/` is checked in, and **`Info.plist` is not regenerated from
+`project.yml` during `tauri ios build`** — the committed plist is what ships.
+Editing only `project.yml` changes nothing about the build. Change both, or edit
+the plist directly:
+
+```bash
+plutil -replace CFBundleVersion -string 42 \
+  src-tauri/gen/apple/ci-os-hub-mobile_iOS/Info.plist
+```
+
+This matters for release automation: any step that stamps a version into
+`project.yml` alone is a no-op. See
+[`STORE-READINESS.md`](./STORE-READINESS.md).

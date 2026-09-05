@@ -20,9 +20,17 @@
  * With no `IOS_BUILD_NUMBER`, the build number is left alone — local
  * simulator builds don't need one and shouldn't churn the tracked file.
  *
- * xcodegen regenerates `Info.plist` from `project.yml` on each build, so
- * writing `project.yml` is the single injection point; editing the plist
- * directly would be overwritten.
+ * ⚠️ KNOWN GAP (verified 2026-09-05): this script writes ONLY `project.yml`, on
+ * the assumption that xcodegen regenerates `Info.plist` from it during
+ * `tauri ios build`. It does not — `gen/apple/Info.plist` is committed and is
+ * what actually ships. Editing `project.yml` alone was observed to leave the
+ * built `.app`'s CFBundleVersion untouched, which makes the stamping below a
+ * no-op for the artifact you upload.
+ *
+ * Until that is fixed, this must also write the plist, e.g.
+ *   plutil -replace CFBundleVersion -string "$IOS_BUILD_NUMBER" \
+ *     src-tauri/gen/apple/ci-os-hub-mobile_iOS/Info.plist
+ * See the README's "Generated Apple files are committed" note.
  */
 
 import { readFileSync, writeFileSync } from 'node:fs';
