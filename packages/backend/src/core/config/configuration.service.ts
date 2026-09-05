@@ -3,6 +3,7 @@ import path from 'node:path';
 import { type UserSettingsBody, settingsSchema } from '@/app.dto';
 import { APP_DATA_DIR, APP_DIR, ARCHITECTURES, DATA_DIR, DEFAULT_LOCAL_DOMAIN } from '@/common/constants';
 import { ensureSettingsJsonReady, writeSettingsJsonFile } from '@/common/helpers/env-helpers';
+import { DEFAULT_POOL_HEALTH_POLL_SECONDS, DEFAULT_POOL_LOCAL_AFFINITY, type HubPoolPreferences } from '@/common/helpers/hub-pool';
 import { readPortalInternalUrlOverride, resolveOutboundPortalBaseUrl } from '@/common/helpers/portal-url';
 import { TranslatableError } from '@/common/error/translatable-error';
 import { scrubString } from '@/core/error-reporting/sentry-scrubber';
@@ -139,6 +140,9 @@ export class ConfigurationService {
       inferenceMtplxUrl: string | undefined;
       inferenceDsparkUrl: string | undefined;
       inferenceCloudProviders: CloudProviderConfig[] | undefined;
+      hubPoolEnabled: boolean | undefined;
+      hubPoolLocalAffinity: number | undefined;
+      hubPoolHealthPollSeconds: number | undefined;
     } = {
       ciHubApiKey: null,
       ciHubOrganizationId: null,
@@ -155,6 +159,9 @@ export class ConfigurationService {
       inferenceMtplxUrl: undefined,
       inferenceDsparkUrl: undefined,
       inferenceCloudProviders: undefined,
+      hubPoolEnabled: undefined,
+      hubPoolLocalAffinity: undefined,
+      hubPoolHealthPollSeconds: undefined,
     };
     try {
       const settingsPath = path.join(DATA_DIR, 'state', 'settings.json');
@@ -177,6 +184,9 @@ export class ConfigurationService {
           inferenceMtplxUrl: settings.inferenceMtplxUrl,
           inferenceDsparkUrl: settings.inferenceDsparkUrl,
           inferenceCloudProviders: settings.inferenceCloudProviders,
+          hubPoolEnabled: settings.hubPoolEnabled,
+          hubPoolLocalAffinity: settings.hubPoolLocalAffinity,
+          hubPoolHealthPollSeconds: settings.hubPoolHealthPollSeconds,
         };
       }
     } catch (_e) {
@@ -246,6 +256,12 @@ export class ConfigurationService {
         inferenceMtplxUrl: settingsValues.inferenceMtplxUrl,
         inferenceDsparkUrl: settingsValues.inferenceDsparkUrl,
         inferenceCloudProviders: settingsValues.inferenceCloudProviders,
+        // Left tri-state on purpose: `undefined` (never touched) and `false` (operator turned it
+        // off) mean the same thing to routing but different things to the UI, which distinguishes
+        // "on by default" from "you disabled this here".
+        hubPoolEnabled: settingsValues.hubPoolEnabled,
+        hubPoolLocalAffinity: settingsValues.hubPoolLocalAffinity,
+        hubPoolHealthPollSeconds: settingsValues.hubPoolHealthPollSeconds,
         experimental: {
           insecureCookie: env.data.EXPERIMENTAL_INSECURE_COOKIE,
         },
@@ -388,6 +404,39 @@ export class ConfigurationService {
     }
     await this.setUserSettings(settings);
     return this.getInferencePreferences();
+  }
+
+  /**
+   * Operator-editable Hub Pool tuning. `poolEnabled` here is the *persisted* switch only — it says
+   * nothing about `HUB_POOL_USER_DISABLED`, which overrides it. Resolve the two with
+   * `resolveHubPoolEnabled(prefs.poolEnabled)` rather than reading this field as the effective state.
+   */
+  public getHubPoolPreferences(): HubPoolPreferences {
+    return {
+      poolEnabled: this.config.userSettings.hubPoolEnabled ?? true,
+      poolLocalAffinity: this.config.userSettings.hubPoolLocalAffinity ?? DEFAULT_POOL_LOCAL_AFFINITY,
+      poolHealthPollSeconds: this.config.userSettings.hubPoolHealthPollSeconds ?? DEFAULT_POOL_HEALTH_POLL_SECONDS,
+    };
+  }
+
+  /** Persist Hub Pool tuning. Every field is optional and `undefined` leaves it unchanged; there is no "clear" state because each has a real default. */
+  public async setHubPoolPreferences(preferences: Partial<HubPoolPreferences>): Promise<HubPoolPreferences> {
+    const settings: { hubPoolEnabled?: boolean; hubPoolLocalAffinity?: number; hubPoolHealthPollSeconds?: number } = {};
+    if (preferences.poolEnabled !== undefined) {
+      settings.hubPoolEnabled = preferences.poolEnabled;
+    }
+    if (preferences.poolLocalAffinity !== undefined) {
+      settings.hubPoolLocalAffinity = preferences.poolLocalAffinity;
+    }
+    if (preferences.poolHealthPollSeconds !== undefined) {
+      settings.hubPoolHealthPollSeconds = preferences.poolHealthPollSeconds;
+    }
+    // A no-op PATCH must not rewrite settings.json: every write is a read-modify-write of the whole
+    // file with no locking, so an empty one can still clobber a concurrent inference-preferences save.
+    if (Object.keys(settings).length > 0) {
+      await this.setUserSettings(settings);
+    }
+    return this.getHubPoolPreferences();
   }
 
   public getInferenceCloudProviders(): CloudProviderConfig[] {
