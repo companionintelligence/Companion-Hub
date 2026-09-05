@@ -12,6 +12,7 @@ import { VllmBackend } from '../backends/vllm.backend';
 import { MtplxBackend } from '../backends/mtplx.backend';
 import { LemonadeBackend } from '../backends/lemonade.backend';
 import { DsparkBackend } from '../backends/dspark.backend';
+import { LuceboxBackend } from '../backends/lucebox.backend';
 import { LoggerService } from '@/core/logger/logger.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import type { CloudProviderConfig, CuratedModel, HardwareProfile } from '@ci-hub/common/types';
@@ -101,6 +102,7 @@ describe('AppCredentialsService', () => {
   let lemonadeBackend: MockProxy<LemonadeBackend>;
   let mtplxBackend: MockProxy<MtplxBackend>;
   let dsparkBackend: MockProxy<DsparkBackend>;
+  let luceboxBackend: MockProxy<LuceboxBackend>;
   let configurationService: MockProxy<ConfigurationService>;
 
   beforeEach(async () => {
@@ -114,6 +116,7 @@ describe('AppCredentialsService', () => {
     lemonadeBackend = mock<LemonadeBackend>();
     mtplxBackend = mock<MtplxBackend>();
     dsparkBackend = mock<DsparkBackend>();
+    luceboxBackend = mock<LuceboxBackend>();
     configurationService = mock<ConfigurationService>();
 
     configurationService.getInferencePreferences.mockReturnValue({
@@ -163,6 +166,7 @@ describe('AppCredentialsService', () => {
         { provide: LemonadeBackend, useValue: lemonadeBackend },
         { provide: MtplxBackend, useValue: mtplxBackend },
         { provide: DsparkBackend, useValue: dsparkBackend },
+        { provide: LuceboxBackend, useValue: luceboxBackend },
         { provide: ConfigurationService, useValue: configurationService },
       ],
     }).compile();
@@ -375,6 +379,29 @@ describe('AppCredentialsService', () => {
       await service.getCredentials('openclaw');
       await new Promise((resolve) => setImmediate(resolve));
       expect(modelPuller.startPull).not.toHaveBeenCalledWith('qwen-vllm', expect.anything());
+    });
+  });
+
+  describe('getCredentials — desktop-managed mlx-dspark', () => {
+    it('hands the generated API key to direct sibling-app clients', async () => {
+      const model = makeLlm('qwen-dspark', 'mlx-community/Qwen3-8B-8bit', 8000, 16000, 'dspark');
+      configurationService.getInferencePreferences.mockReturnValue({
+        preferredBackend: 'dspark',
+        preferredModel: 'qwen-dspark',
+        preferredEmbeddingModel: null,
+        preferredVisionModel: null,
+      });
+      dsparkBackend.getBaseUrl.mockReturnValue('http://host.docker.internal:8080');
+      dsparkBackend.getApiKey.mockReturnValue('managed-dspark-key');
+      dsparkBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [model.backendModelId] });
+      modelRegistry.getRecommendedModelsForHardware.mockReturnValue([model]);
+      modelRegistry.getCuratedModel.mockImplementation((id) => (id === model.id ? model : undefined));
+      service.invalidateCache();
+
+      const config = await service.getCredentials('openclaw');
+
+      expect(config.env.OPENAI_API_KEY).toBe('managed-dspark-key');
+      expect(config.endpointUrl).toBe('http://host.docker.internal:8080/v1');
     });
   });
 

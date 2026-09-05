@@ -6,6 +6,7 @@ import {
   getRuntimeModels,
   getTrackedModels,
   getDsparkStatus,
+  getLuceboxStatus,
   getLemonadeStatus,
   getOllamaStatus,
   getVllmStatus,
@@ -22,6 +23,7 @@ import type { CloudProviderType, InferenceBackendType, TrackedModel } from '@ci-
 import type {
   CloudProviderInput,
   DsparkStatus,
+  SpeculativeInferenceStatus,
   LemonadeStatus,
   HardwareProfileResponse,
   InferencePreferencesResponse,
@@ -149,6 +151,11 @@ export async function fetchVllmInstallStatus(url?: string, apiKey?: string) {
 export async function fetchDsparkInstallStatus(url?: string): Promise<DsparkStatus> {
   const query = url?.trim() ? { url: url.trim() } : undefined;
   return unwrap(getDsparkStatus({ query })) as Promise<DsparkStatus>;
+}
+
+/** Probe the provider-neutral speculative inference server configured for the Hub runtime. */
+export async function fetchSpeculativeInferenceStatus(): Promise<SpeculativeInferenceStatus> {
+  return unwrap(getLuceboxStatus()) as Promise<SpeculativeInferenceStatus>;
 }
 
 /** Probe the configured Lemonade server through its standard /v1/health endpoint. */

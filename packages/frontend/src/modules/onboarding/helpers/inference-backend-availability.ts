@@ -6,7 +6,7 @@ import type { HardwareProfileResponse } from './ai-setup-types';
  * Backends grayed out in the backend picker. All registered local backends are selectable; their
  * setup cards are responsible for showing whether the operator's endpoint is reachable.
  *
- * vLLM, MTPLX, and mlx-dspark are always selectable: all are host-run (or remote)
+ * vLLM, MTPLX, mlx-dspark, and provider-neutral speculative inference are always selectable: all are host-run (or remote)
  * OpenAI-compatible endpoints, so the real gate is the live endpoint probe in their setup cards —
  * not the local GPU or, for MTPLX/mlx-dspark, whether the Mac is Apple Silicon. Hardware still
  * drives which backend is *recommended* (server-side `getRecommendedBackend`), and the catalog only
@@ -48,7 +48,7 @@ export function recommendedInferenceBackend(profile: HardwareProfileResponse): I
  * reports it is serving this".
  */
 export function isHostServedBackend(backend: InferenceBackendType | undefined): boolean {
-  return backend === 'vllm' || backend === 'mtplx' || backend === 'dspark';
+  return backend === 'vllm' || backend === 'mtplx' || backend === 'dspark' || backend === 'lucebox';
 }
 
 /**

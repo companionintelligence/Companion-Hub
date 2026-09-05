@@ -22,11 +22,11 @@ export class LemonadeBackend implements InferenceBackend {
     try {
       const response = await axios.get(`${this.baseUrl}/v1/health`, { timeout: 5000 });
       if (response.status === 200) {
-        const models = await new OpenAiCompatibleClient(this.baseUrl).listModels(5000).catch(() => []);
+        const models = await new OpenAiCompatibleClient().listModelIds(this.baseUrl, { timeout: 5000 }).catch(() => []);
         return {
           running: true,
           healthy: true,
-          modelsLoaded: models.map((model) => model.id),
+          modelsLoaded: models,
         };
       }
       return { running: true, healthy: false, modelsLoaded: [] };
@@ -42,13 +42,7 @@ export class LemonadeBackend implements InferenceBackend {
 
   async listModels(): Promise<BackendModelInfo[]> {
     try {
-      const models = await new OpenAiCompatibleClient(this.baseUrl).listModels();
-      return models.map((model) => ({
-        id: model.id,
-        name: model.id,
-        size: 0,
-        loaded: true,
-      }));
+      return await new OpenAiCompatibleClient().listModels(this.baseUrl);
     } catch {
       return [];
     }

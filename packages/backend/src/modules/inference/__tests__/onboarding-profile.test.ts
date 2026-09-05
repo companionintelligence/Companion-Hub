@@ -20,6 +20,7 @@ import { VllmBackend } from '../backends/vllm.backend';
 import { LemonadeBackend } from '../backends/lemonade.backend';
 import { MtplxBackend } from '../backends/mtplx.backend';
 import { DsparkBackend } from '../backends/dspark.backend';
+import { LuceboxBackend } from '../backends/lucebox.backend';
 import { HostMetricsService } from '@/modules/system/host-metrics.service';
 
 describe('InferenceController — onboarding-profile', () => {
@@ -34,6 +35,7 @@ describe('InferenceController — onboarding-profile', () => {
   let mtplxBackend: MockProxy<MtplxBackend>;
   let dsparkBackend: MockProxy<DsparkBackend>;
   let lemonadeBackend: MockProxy<LemonadeBackend>;
+  let luceboxBackend: MockProxy<LuceboxBackend>;
 
   const fakeProfile: HardwareProfile = {
     gpu: {
@@ -95,6 +97,7 @@ describe('InferenceController — onboarding-profile', () => {
         { provide: LemonadeBackend, useValue: mock<LemonadeBackend>() },
         { provide: MtplxBackend, useValue: mock<MtplxBackend>() },
         { provide: DsparkBackend, useValue: mock<DsparkBackend>() },
+        { provide: LuceboxBackend, useValue: mock<LuceboxBackend>() },
         { provide: LoggerService, useValue: mock<LoggerService>() },
       ],
     }).compile();
@@ -110,10 +113,12 @@ describe('InferenceController — onboarding-profile', () => {
     lemonadeBackend = moduleRef.get(LemonadeBackend);
     mtplxBackend = moduleRef.get(MtplxBackend);
     dsparkBackend = moduleRef.get(DsparkBackend);
+    luceboxBackend = moduleRef.get(LuceboxBackend);
     ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['phi4-mini'] });
     vllmBackend.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [] });
     mtplxBackend.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [] });
     dsparkBackend.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [] });
+    luceboxBackend.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [] });
     lemonadeBackend.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [] });
     modelRegistry.getCatalog.mockReturnValue([{ id: 'phi-4-mini', backendModelId: 'phi4-mini', backend: 'ollama' }] as any);
     modelRegistry.getModelsForHardware.mockImplementation((tier) => modelRegistry.getModelsForTier(tier));

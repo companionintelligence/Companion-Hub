@@ -66,6 +66,7 @@ describe('bridge-diagnostics-cli', () => {
         { label: 'MTPLX', port: 8000 },
         { label: 'Speculative inference', port: 8080 },
         { label: 'Lemonade', port: 13305 },
+        { label: 'Speculative inference', port: 8000 },
       ]);
     });
 

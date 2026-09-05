@@ -5,7 +5,7 @@
 > **Key paths:** `packages/backend/src/modules/`, `packages/backend/src/database/`, `packages/backend/src/queue/`
 > **Commands:** `cd packages/backend && pnpm test`, `pnpm run test:integration` (root)
 > **Owner persona:** maintainability + security (see REVIEW_PERSONAS.md)
-> **Last updated:** 2026-09-04 (custom-domain reconcile, public-web grant gating)
+> **Last updated:** 2026-09-04 (managed host-inference credentials)
 > **Related:** docs/system/e2e.md, docs/ARCHITECTURE.md
 
 ---
@@ -159,6 +159,17 @@ The install dialog offers the organization's connected domains (`GET /api/cloudf
 - A listing that could not be READ (older CI-Cloud, unreachable, unparseable) keeps every intent.
   `supported: false` on the Hub's own endpoint means "could not ask", which the dialog must not
   render as "you have none".
+
+## Managed host-inference credentials
+
+mlx-dspark and MTPLX run on the macOS host but are reached from the containerized Hub and installed
+apps. Desktop FTUE writes a random key for each managed runner under
+`/data/state/inference-runners/*.api-key` (the host `state/` directory is mounted at `/data/state`).
+`readManagedRunnerApiKey` checks `DSPARK_API_KEY` or `MTPLX_API_KEY` first for operator-managed and
+remote servers, then reads that desktop-managed key. The backend uses it for mlx-dspark admin calls
+and every MTPLX request, and both `InferenceEnvResolver` and `AppCredentialsService` pass the same
+credential to direct app clients. mlx-dspark `/health` remains unauthenticated by upstream design so
+an empty `--no-model` server is still a valid readiness target. Never log or return these key files.
 
 ## Inference cloud providers
 
