@@ -41,6 +41,7 @@ import {
   uninstallHub,
   usageAndExit,
 } from '../cihub-cli.js';
+import { runCatalogLogin, runCatalogLogout, runCatalogSubmit } from './catalog-submit.js';
 
 export async function runCli(rawArgs: string[]) {
   const args = normalizeCliArgs(rawArgs);
@@ -178,6 +179,25 @@ export async function runCli(rawArgs: string[]) {
     if (sub === 'shutdown') return setMcpState(env, false);
     if (sub === 'config') return printConfig(env);
     usageAndExit(`Usage: ${BASE_COMMAND} mcp <setup|shutdown|config> [env]`);
+  }
+
+  if (first === 'login') {
+    await runCatalogLogin(args.slice(1));
+    return;
+  }
+
+  if (first === 'logout') {
+    await runCatalogLogout();
+    return;
+  }
+
+  if (first === 'submit') {
+    await runCatalogSubmit(args.slice(1));
+    return;
+  }
+
+  if (first === 'catalog') {
+    printRemovedCommand('cihub catalog publish', 'cihub submit <dir>', 'Catalog submit never publishes. Staff approve in CI-App-Review.');
   }
 
   if (first === 'connect') {
