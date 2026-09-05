@@ -16,15 +16,29 @@ mkdir -p "$DATA_DIR"/{state,logs,apps,app-data,repos,backups,user-config,media}
 mkdir -p "$DATA_DIR/state/traefik"/{config,dynamic,tls}
 touch "$DATA_DIR/state/traefik/acme_storage.json"
 
-# Link CI-Marketplace so app-store tests find apps in E2E
+# Future-onboarding E2E can supply a deterministic native-host snapshot. This
+# keeps hardware recommendations stable without adding an E2E-only API path.
+if [ -n "${E2E_HOST_METRICS_FIXTURE:-}" ]; then
+  mkdir -p "$DATA_DIR/state/hardware"
+  cp "$E2E_HOST_METRICS_FIXTURE" "$DATA_DIR/state/hardware/host_metrics.json"
+fi
+
+# Make CI-Marketplace available so app-store tests find apps in E2E.
+# The FTUE integration lane copies its small writable fixture catalog; the
+# default lane keeps the faster link to a full adjacent marketplace checkout.
 # The backend resolves apps at $DATA_DIR/repos/<store-slug>/apps/
 MARKETPLACE_SRC="${CI_MARKETPLACE_DIR:-$(pwd)/../CI-Marketplace}"
 MARKETPLACE_LINK="$DATA_DIR/repos/ci-marketplace"
 mkdir -p "$MARKETPLACE_LINK"
 rm -rf "$MARKETPLACE_LINK/apps"          # Remove any stale dir or nested symlink
 if [ -d "$MARKETPLACE_SRC/apps" ]; then
-  ln -s "$(realpath "$MARKETPLACE_SRC/apps")" "$MARKETPLACE_LINK/apps"
-  echo "CI-Marketplace: linked $(ls "$MARKETPLACE_LINK/apps" | wc -l | tr -d ' ') apps from $MARKETPLACE_SRC"
+  if [ "${E2E_COPY_MARKETPLACE:-false}" = "true" ]; then
+    cp -R "$MARKETPLACE_SRC/apps" "$MARKETPLACE_LINK/apps"
+    echo "CI-Marketplace: copied $(ls "$MARKETPLACE_LINK/apps" | wc -l | tr -d ' ') fixture apps from $MARKETPLACE_SRC"
+  else
+    ln -s "$(realpath "$MARKETPLACE_SRC/apps")" "$MARKETPLACE_LINK/apps"
+    echo "CI-Marketplace: linked $(ls "$MARKETPLACE_LINK/apps" | wc -l | tr -d ' ') apps from $MARKETPLACE_SRC"
+  fi
 else
   mkdir -p "$MARKETPLACE_LINK/apps"
   echo "Warning: CI-Marketplace not found at $MARKETPLACE_SRC — app store will be empty"
@@ -61,6 +75,7 @@ RABBITMQ_HOST=${RABBITMQ_HOST:-localhost}
 RABBITMQ_PORT=${RABBITMQ_PORT:-5672}
 RABBITMQ_USERNAME=${RABBITMQ_USERNAME:-companion}
 RABBITMQ_PASSWORD=${RABBITMQ_PASSWORD:-admin}
+RABBITMQ_QUEUE_PREFIX=${RABBITMQ_QUEUE_PREFIX:-}
 JWT_SECRET=${JWT_SECRET:-e2e-test-secret}
 CI_CLOUD_URL=${CI_CLOUD_URL:-https://app.companionintelligence.com}
 DOMAIN=${DOMAIN:-ci.computer}
@@ -84,11 +99,19 @@ ADVANCED_SETTINGS=${ADVANCED_SETTINGS:-false}
 DISABLE_PASSWORD_RESET=${DISABLE_PASSWORD_RESET:-true}
 DNS_IP=${DNS_IP:-9.9.9.9}
 ARCHITECTURE=${ARCHITECTURE:-amd64}
+CI_HUB_HOST_PLATFORM=${CI_HUB_HOST_PLATFORM:-}
 DEVICE_ID=${DEVICE_ID:-test-device-e2e}
 CI_HUB_DATA_DIR=$DATA_DIR
 CI_HUB_APP_DATA_DIR=$DATA_DIR/app-data
 CI_HUB_APP_DIR=$(pwd)
 CI_HUB_TUNNEL_DIR=$TUNNEL_DIR
+OLLAMA_URL=${OLLAMA_URL:-http://localhost:11434}
+DSPARK_URL=${DSPARK_URL:-http://127.0.0.1:8080}
+MTPLX_URL=${MTPLX_URL:-http://127.0.0.1:8080}
+VLLM_URL=${VLLM_URL:-http://127.0.0.1:8000}
+SPECULATIVE_INFERENCE_URL=${SPECULATIVE_INFERENCE_URL:-http://127.0.0.1:8090}
+LUCEBOX_URL=${LUCEBOX_URL:-http://127.0.0.1:8090}
+LEMONADE_URL=${LEMONADE_URL:-http://127.0.0.1:8000}
 E2E_TEST=${E2E_TEST:-true}
 EOF
 

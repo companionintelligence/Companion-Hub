@@ -50,6 +50,7 @@ import {
   EMBEDDING_INFERENCE_BACKEND,
   hubLoadableSelection,
   hiddenInferenceBackends,
+  isHubLoadableBackend,
   isHostServedBackend,
   recommendedInferenceBackend,
   unavailableInferenceBackends,
@@ -346,7 +347,7 @@ export const AiSetupStep = ({
       // as pending downloads and could block Continue.
       const isStillSelectable = (id: string) => {
         const modelBackend = data.availableModels.find((m) => m.id === id)?.backend;
-        return !isHostServedBackend(modelBackend) || nextInstalled.has(id);
+        return isHubLoadableBackend(modelBackend) || !isHostServedBackend(modelBackend) || nextInstalled.has(id);
       };
       const nextSelected = [...new Set([...selectedModelIdsRef.current, ...newlySelectable])].filter(isStillSelectable);
       setSelectedModelIds(nextSelected);
@@ -484,7 +485,12 @@ export const AiSetupStep = ({
     const installed = new Set(profile?.installedCatalogIds ?? []);
     // Host-served backends cannot hot-swap, so uninstalled models open their model page.
     // Hub-loadable backends remain selectable.
-    if (isHostServedBackend(model?.backend) && !installed.has(modelId) && !selectedModelIds.includes(modelId)) {
+    if (
+      isHostServedBackend(model?.backend) &&
+      !isHubLoadableBackend(model?.backend) &&
+      !installed.has(modelId) &&
+      !selectedModelIds.includes(modelId)
+    ) {
       openExternal(`https://huggingface.co/${model.backendModelId}`);
       return;
     }

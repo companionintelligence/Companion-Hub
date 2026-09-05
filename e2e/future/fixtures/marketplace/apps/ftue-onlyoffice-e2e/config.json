@@ -1,0 +1,18 @@
+{
+  "id": "ftue-onlyoffice-e2e",
+  "name": "OnlyOffice",
+  "available": true,
+  "description": "Small deterministic container used by the FTUE integration suite.",
+  "short_desc": "FTUE installer integration fixture",
+  "author": "Companion Intelligence",
+  "source": "https://github.com/companionintelligence/CI-Hub",
+  "version": "1.0.0-e2e",
+  "port": 8080,
+  "dynamic_config": true,
+  "exposable": true,
+  "supported_architectures": ["amd64", "arm64"],
+  "min_hub_version": "v0.0.0",
+  "cihub_app_version": 1,
+  "pricing": { "type": "free" },
+  "categories": ["utilities"]
+}

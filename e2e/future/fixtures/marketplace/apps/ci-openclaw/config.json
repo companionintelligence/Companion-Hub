@@ -1,0 +1,17 @@
+{
+  "id": "ci-openclaw",
+  "name": "OpenClaw",
+  "short_desc": "Agent framework",
+  "categories": ["development"],
+  "icon": null,
+  "urn": "urn:app:ci-openclaw",
+  "author": "Unknown Author",
+  "available": true,
+  "title": "OpenClaw",
+  "description": "No full description.",
+  "port": 8080,
+  "version": "0.0.1",
+  "cihub_app_version": 1,
+  "source": "https://github.com/example/repo",
+  "supported_architectures": ["amd64", "arm64"]
+}

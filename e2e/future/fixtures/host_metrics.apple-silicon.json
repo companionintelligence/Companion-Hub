@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "platform": "darwin",
+  "cpuArch": "arm64",
+  "source": "desktop-host-macos",
+  "probedAt": "2026-09-04T12:00:00.000Z",
+  "host": {
+    "totalRamMb": 98304,
+    "availableRamMb": 83558,
+    "cpuCores": 24,
+    "cpuModel": "Apple M2 Ultra",
+    "diskTotalGb": 1024,
+    "diskUsedGb": 128,
+    "diskMount": "/"
+  }
+}

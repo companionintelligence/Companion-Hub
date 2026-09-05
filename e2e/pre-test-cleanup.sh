@@ -14,7 +14,17 @@ echo "[pre-test-cleanup] Cleaning up before $SUITE E2E suite..."
 # Only runs in CI or when explicitly opted-in to avoid killing unrelated local processes.
 if [ "${CI:-}" = "true" ] || [ "${E2E_CLEANUP_PORTS:-}" = "true" ]; then
   if command -v lsof >/dev/null 2>&1; then
-    for port in 3000 4444 5173 8012 9091 6543 5672 8880 8881 8843; do
+    if [ "$SUITE" = "future-onboarding" ]; then
+      PORTS=(
+        "${BACKEND_PORT:-13000}"
+        "${FRONTEND_PORT:-19091}"
+        "${MOCK_PORTAL_PORT:-16444}"
+        "${FTUE_INFERENCE_FIXTURE_PORT:-18090}"
+      )
+    else
+      PORTS=(3000 4444 5173 8012 9091 6543 5672 8880 8881 8843)
+    fi
+    for port in "${PORTS[@]}"; do
       pids=$(lsof -ti :$port 2>/dev/null || true)
       for pid in $pids; do
         [ -z "$pid" ] && continue
@@ -38,8 +48,9 @@ if docker compose -p "$PROJECT" -f docker-compose.local.yml -f e2e/cross-domain/
   docker compose -p "$PROJECT" -f docker-compose.local.yml -f e2e/cross-domain/docker-compose.cross-domain.yml down -v 2>/dev/null || true
 fi
 
-# Tear down standard E2E infra
-if docker compose -f e2e/docker-compose.e2e.yml ps -q 2>/dev/null | grep -q .; then
+# The focused FTUE runner reuses healthy infra and owns any services it starts.
+# Other suites retain the historical clean-slate behavior.
+if [ "$SUITE" != "future-onboarding" ] && docker compose -f e2e/docker-compose.e2e.yml ps -q 2>/dev/null | grep -q .; then
   echo "[pre-test-cleanup] Tearing down stale standard E2E infra..."
   docker compose -f e2e/docker-compose.e2e.yml down -v 2>/dev/null || true
 fi

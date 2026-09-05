@@ -42,6 +42,15 @@ export const createTestUser = async () => {
   await db.insert(user).values({ password: testUser.hashedPassword, username: testUser.email, operator: true, hasCompletedOnboarding: true });
 };
 
+export const createOnboardingTestUser = async () => {
+  await db.insert(user).values({
+    password: testUser.hashedPassword,
+    username: testUser.email,
+    operator: true,
+    hasCompletedOnboarding: false,
+  });
+};
+
 export const loginUser = async (page: Page, _?: BrowserContext) => {
   // Create user in database
   await createTestUser();

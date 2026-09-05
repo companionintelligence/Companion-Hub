@@ -8,6 +8,11 @@ import { SystemEventsQueue, systemCommandResultSchema, systemCommandSchema } fro
 import { QueueFactory } from './queue.factory';
 import { QueueHealthIndicator } from './queue.health';
 
+export function scopedQueueName(queueName: string, configuredPrefix = process.env.RABBITMQ_QUEUE_PREFIX): string {
+  const prefix = configuredPrefix?.trim();
+  return prefix ? `${prefix}-${queueName}` : queueName;
+}
+
 @Module({
   imports: [TerminusModule],
   providers: [
@@ -21,7 +26,7 @@ import { QueueHealthIndicator } from './queue.health';
         const timeout = timeoutMinutes * 60 * 1000;
 
         return await queueFactory.createQueue({
-          queueName: 'app-events-queue',
+          queueName: scopedQueueName('app-events-queue'),
           workers: 3,
           eventSchema: appEventSchema,
           // Must match AppEventsQueue's Queue<T, R> type: publish() validates the
@@ -39,7 +44,7 @@ import { QueueHealthIndicator } from './queue.health';
         const timeout = config.get('userSettings').eventsTimeout * 60 * 1000;
 
         return await queueFactory.createQueue({
-          queueName: 'repo-queue',
+          queueName: scopedQueueName('repo-queue'),
           workers: 3,
           eventSchema: repoCommandSchema,
           resultSchema: repoCommandResultSchema,
@@ -54,7 +59,7 @@ import { QueueHealthIndicator } from './queue.health';
         const timeout = config.get('userSettings').eventsTimeout * 60 * 1000;
 
         return await queueFactory.createQueue({
-          queueName: 'system-events-queue',
+          queueName: scopedQueueName('system-events-queue'),
           workers: 1,
           eventSchema: systemCommandSchema,
           resultSchema: systemCommandResultSchema,

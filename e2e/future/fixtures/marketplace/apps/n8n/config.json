@@ -1,0 +1,17 @@
+{
+  "id": "n8n",
+  "name": "n8n",
+  "short_desc": "Workflow automation",
+  "categories": ["automation"],
+  "icon": null,
+  "urn": "urn:app:n8n",
+  "author": "Unknown Author",
+  "available": true,
+  "title": "n8n",
+  "description": "No full description.",
+  "port": 8080,
+  "version": "0.0.1",
+  "cihub_app_version": 1,
+  "source": "https://github.com/example/repo",
+  "supported_architectures": ["amd64", "arm64"]
+}

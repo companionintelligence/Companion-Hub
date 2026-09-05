@@ -197,6 +197,29 @@ const vllmProfile = (installedCatalogIds: string[] = []): HardwareProfileRespons
     installedCatalogIds,
   }) as any;
 
+const dsparkModel = {
+  ...vllmModel,
+  id: 'qwen3-4b-dspark',
+  displayName: 'Qwen 3 4B (mlx-dspark)',
+  backend: 'dspark',
+  runtime: { ...vllmModel.runtime, backendModelId: 'mlx-community/Qwen3-4B-4bit' },
+};
+
+const dsparkProfile = (installedCatalogIds: string[] = []): HardwareProfileResponse =>
+  ({
+    ...highTierProfile,
+    backends: {
+      recommended: 'dspark',
+      available: [
+        { type: 'dspark', running: true, healthy: true },
+        { type: 'ollama', running: true, healthy: true },
+      ],
+    },
+    recommendedModels: [dsparkModel],
+    availableModels: [dsparkModel],
+    installedCatalogIds,
+  }) as any;
+
 // Mutable API state read by the default mock; tests tweak it before rendering.
 let api: {
   profile: HardwareProfileResponse;
@@ -588,6 +611,21 @@ describe('AiSetupStep', () => {
     await user.click(screen.getByTestId('vllm-recheck-btn'));
 
     await waitFor(() => expect((screen.getByTestId('model-checkbox-qwen3-4b-instruct-vllm') as HTMLInputElement).checked).toBe(true));
+  });
+
+  it('lets the operator select an uninstalled mlx-dspark model for Hub-managed loading', async () => {
+    api.profile = dsparkProfile();
+
+    const user = userEvent.setup();
+    renderStep();
+    await waitFor(() => expect(screen.getByTestId('ai-setup-step')).toBeInTheDocument());
+
+    const checkbox = screen.getByTestId('model-checkbox-qwen3-4b-dspark') as HTMLInputElement;
+    expect(checkbox.checked).toBe(false);
+    await user.click(checkbox);
+
+    expect(checkbox.checked).toBe(true);
+    expect(mockOpenExternal).not.toHaveBeenCalled();
   });
 
   it('keeps the selected backend when re-checking, rather than resetting to the recommended one', async () => {

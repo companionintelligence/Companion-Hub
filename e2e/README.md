@@ -10,7 +10,7 @@ Companion Hub has multiple Playwright lanes. The default config ([`playwright.co
 |------|---------------|-------------|----------------|
 | **Default** | `pnpm test:e2e:ci` | [`e2e.yml`](../.github/workflows/e2e.yml) (release/nightly) | Auth, dashboard, store, lifecycle reconciliation; mock Portal on **4444** |
 | **Cross-domain** | `pnpm e2e:cross-domain` | [`e2e-extended.yml`](../.github/workflows/e2e-extended.yml) | Real Portal (wrangler **8012**) + Hub Docker; device registration, Traefik |
-| **Future onboarding** | `pnpm e2e:future:onboarding` | `e2e-extended.yml` | Onboarding AI setup wizard (`e2e/future/onboarding-ai-setup.spec.ts`) |
+| **Future onboarding** | `pnpm e2e:future:onboarding` | `e2e-extended.yml` | Full one-page FTUE: frontend + backend + PostgreSQL + RabbitMQ + Docker + deterministic inference protocols |
 | **Platform** | `npx playwright test e2e/platform/` | [`e2e-platform.yml`](../.github/workflows/e2e-platform.yml) | Self-hosted Hub + seeded test app (networking, lifecycle) |
 | **Multi-node fleet** | — | Private ops mirror | Tailscale lab hardware; not published on this tip (see companionintelligence/CI-Hub#1210) |
 
@@ -29,11 +29,31 @@ PORTAL_DIR=../ci-portal pnpm e2e:cross-domain
 pnpm e2e:future:onboarding
 ```
 
+This lane uses a fixed Apple Silicon host profile and local protocol fixture for Ollama,
+mlx-dspark, MTPLX, vLLM, Lucebox, and Lemonade. The selected recommendation crosses the real
+RabbitMQ worker boundary and starts a real, digest-pinned Docker fixture. Tauri IPC is simulated so
+the test does not install native packages or services on the developer machine. See the
+[FTUE acceptance matrix](future/FTUE_TEST_CASES.md) for exact cases, fidelity boundaries, and native
+follow-ups.
+
+The runner reuses healthy PostgreSQL and RabbitMQ services when they are already available. If they
+are missing, it starts only those two Docker Compose services and stops only the services it started.
+Local defaults use dedicated FTUE ports, `/tmp/ci-hub-ftue-e2e`, and the
+`companion_ftue_e2e` database so an active development Hub is not reused or cleared.
+The per-run marketplace catalog is copied into the test data directory because backend catalog
+normalization is intentionally writable; repository fixtures remain unchanged after a run.
+The Docker fixture also uses a dedicated app URN and Compose project, so selecting the visible
+OnlyOffice row cannot target a real OnlyOffice installation on the host.
+
+The lane scopes its RabbitMQ names with `ftue-e2e-`. This is required when a development Hub and the
+test backend share a broker; without separate queue names, either process could consume the other's
+installer job.
+
 ### Triggering extended CI
 
-- **Nightly:** `e2e-extended` runs on schedule (3:00 UTC).
+- **Nightly:** the checked-in schedule can be restored from the `ci-local:gated` block; this checkout currently exposes manual dispatch only.
 - **Manual:** Actions → **E2E Extended** → **Run workflow**.
-- **PR label:** Add label `e2e-extended` to a pull request to run cross-domain + future onboarding on that branch.
+- **PR label:** when the gated pull-request trigger is restored, add `e2e-extended` to run cross-domain + future onboarding on that branch.
 
 ---
 

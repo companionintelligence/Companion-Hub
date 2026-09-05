@@ -5,7 +5,7 @@
 > **Key paths:** `packages/backend/src/modules/`, `packages/backend/src/database/`, `packages/backend/src/queue/`
 > **Commands:** `cd packages/backend && pnpm test`, `pnpm run test:integration` (root)
 > **Owner persona:** maintainability + security (see REVIEW_PERSONAS.md)
-> **Last updated:** 2026-09-04 (managed host-inference credentials)
+> **Last updated:** 2026-09-05 (isolated FTUE worker queues)
 > **Related:** docs/system/e2e.md, docs/ARCHITECTURE.md
 
 ---
@@ -63,6 +63,12 @@ bind mounts keep working and existing data stays exactly where it is.
 ## Queue workers
 
 RabbitMQ consumers handle long-running install/update operations. Frontend polls + SSE for progress.
+
+Queue names may be scoped with `RABBITMQ_QUEUE_PREFIX`. This is intended for integration tests that
+run a compiled backend beside a developer Hub against the same RabbitMQ broker: the FTUE lane uses
+`ftue-e2e-app-events-queue`, `ftue-e2e-repo-queue`, and `ftue-e2e-system-events-queue` so only its own
+worker can consume its installer RPCs. The variable is optional; when unset, production and normal
+development retain the established queue names exactly.
 
 ## Install lifecycle recovery
 

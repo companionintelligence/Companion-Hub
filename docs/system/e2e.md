@@ -2,10 +2,10 @@
 
 > **Purpose:** Playwright e2e, visual regression, fleet QA, performance benchmarks.
 > **Scope:** `e2e/`, `playwright*.config.ts`, `scripts/benchmark-app.ts`, `scripts/run-e2e.ts`
-> **Key paths:** `e2e/`, `e2e/visual/`, `e2e/helpers/screenshot.ts`, `scripts/agent/benchmark-gate.ts`
-> **Commands:** `pnpm run test:e2e:ci`, `pnpm run test:visual`, `pnpm run benchmark:gate`
+> **Key paths:** `e2e/`, `e2e/future/`, `e2e/visual/`, `playwright.future-onboarding.config.ts`
+> **Commands:** `pnpm run test:e2e:ci`, `pnpm e2e:future:onboarding`, `pnpm run test:visual`
 > **Owner persona:** code-quality + performance
-> **Last updated:** 2026-07-12
+> **Last updated:** 2026-09-05 (FTUE full-integration lane)
 > **Related:** docs/agent/TESTING.md, docs/agent/TEST_INVENTORY.md, docs/FLYWHEEL.md
 
 ---
@@ -21,13 +21,40 @@
 
 Local full stack: `pnpm run test:e2e` (docker-compose + Playwright via `scripts/run-e2e.ts`).
 
+## FTUE full integration
+
+The future-onboarding lane runs the current one-page FTUE against the real frontend, compiled
+backend, PostgreSQL, RabbitMQ, and Docker installer. It uses deterministic protocol fixtures for
+inference engines and a browser-side Tauri IPC contract so the test never changes the developer's
+Homebrew, Python, model, or LaunchAgent installation.
+
+- Spec: `e2e/future/onboarding-ai-setup.spec.ts`
+- Acceptance matrix: `e2e/future/FTUE_TEST_CASES.md`
+- Engine fixture: `e2e/future/fixtures/inference-engine-server.ts`
+- Hardware fixture: `e2e/future/fixtures/host_metrics.apple-silicon.json`
+- Marketplace/Docker fixture: `e2e/future/fixtures/marketplace/`
+- Infrastructure runner: `e2e/run-future-onboarding.sh`
+- Run: `pnpm e2e:future:onboarding`
+
+The lane covers Apple Silicon recommendations, mobile behavior, mlx-dspark and MTPLX automatic
+runner setup, vLLM key/URL propagation, Lucebox discovery, Ollama pull/load/pin, a real queued
+Docker install, and completion retry rules. The backend receives
+`RABBITMQ_QUEUE_PREFIX=ftue-e2e`, which keeps its consumers from sharing jobs with a development Hub
+connected to the same broker. Production queue names are unchanged when the variable is absent.
+The runner preserves healthy PostgreSQL and RabbitMQ services, provisions them only when absent,
+and tears them down only when it owns them. The FTUE catalog is copied per run so backend
+normalization cannot mutate checked-in fixture files. Local defaults use dedicated FTUE ports, data
+directory, and PostgreSQL database rather than sharing mutable application state with a running Hub.
+The installer fixture uses a test-only app URN and Compose project to avoid colliding with the real
+marketplace app represented by its FTUE row.
+
 ## CI coverage
 
 | Workflow | Trigger | What runs |
 |----------|---------|-----------|
 | `ci.yml` | Every PR | lint, tsc, unit tests (not e2e) |
 | `e2e.yml` | Release / manual | Default Playwright |
-| `e2e-extended.yml` | Nightly / label | Cross-domain + future |
+| `e2e-extended.yml` | Manual (or restored nightly / label triggers) | Cross-domain + future |
 | `e2e-mcp.yml` | Manual dispatch only | MCP connect recipe — protocol handshake + app env injection (12 tests) |
 | `agent-gates.yml` | PR (optional) | Visual + benchmark gates |
 

@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 2,
+  "services": [
+    {
+      "name": "ftue-onlyoffice-e2e",
+      "image": "busybox:1.36.1@sha256:73aaf090f3d85aa34ee199857f03fa3a95c8ede2ffd4cc2cdb5b94e566b11662",
+      "command": ["httpd", "-f", "-p", "8080"],
+      "restart": "no",
+      "internalPort": 8080,
+      "isMain": true,
+      "healthCheck": {
+        "test": "wget -qO- http://127.0.0.1:8080 >/dev/null || exit 1",
+        "interval": "1s",
+        "timeout": "1s",
+        "retries": 20
+      }
+    }
+  ]
+}
