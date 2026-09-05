@@ -56,3 +56,64 @@ describe('settingsSchema — retired MCP fields', () => {
     expect(parsed.data).toEqual({ themeColor: 'blue' });
   });
 });
+
+describe('ConfigurationService Hub Pool preferences', () => {
+  function makePoolService() {
+    const svc = Object.create(ConfigurationService.prototype) as unknown as {
+      config: { demoMode: boolean; userSettings: Record<string, unknown> };
+      mergeSettingsToDisk: ReturnType<typeof vi.fn>;
+      logger: { warn: ReturnType<typeof vi.fn>; error: ReturnType<typeof vi.fn>; info: ReturnType<typeof vi.fn> };
+      getHubPoolPreferences: () => { poolEnabled: boolean; poolLocalAffinity: number; poolHealthPollSeconds: number };
+      setHubPoolPreferences: (p: Record<string, unknown>) => Promise<unknown>;
+    };
+    svc.logger = { warn: vi.fn(), error: vi.fn(), info: vi.fn() };
+    svc.config = { demoMode: false, userSettings: {} };
+    svc.mergeSettingsToDisk = vi.fn().mockResolvedValue(undefined);
+    return svc;
+  }
+
+  it('falls back to the defaults before anything has been persisted', () => {
+    expect(makePoolService().getHubPoolPreferences()).toEqual({ poolEnabled: true, poolLocalAffinity: 1, poolHealthPollSeconds: 30 });
+  });
+
+  it('keeps a persisted false rather than reading it as unset', () => {
+    const svc = makePoolService();
+    svc.config.userSettings = { hubPoolEnabled: false, hubPoolLocalAffinity: 0 };
+
+    // Both values are the meaningful-zero case a `||` fallback would silently discard.
+    expect(svc.getHubPoolPreferences()).toMatchObject({ poolEnabled: false, poolLocalAffinity: 0 });
+  });
+
+  it('writes only the fields the caller sent, leaving the rest of settings.json alone', async () => {
+    const svc = makePoolService();
+
+    await svc.setHubPoolPreferences({ poolLocalAffinity: 3 });
+
+    expect(svc.mergeSettingsToDisk.mock.calls[0][0]).toEqual({ hubPoolLocalAffinity: 3 });
+  });
+
+  it('does not rewrite settings.json for a PATCH that changes nothing', async () => {
+    const svc = makePoolService();
+
+    // Every write is a read-modify-write of the whole file with no locking, so an empty one can
+    // still clobber a concurrent inference-preferences save.
+    await svc.setHubPoolPreferences({});
+
+    expect(svc.mergeSettingsToDisk).not.toHaveBeenCalled();
+  });
+});
+
+describe('settingsSchema — Hub Pool fields', () => {
+  it('accepts the numeric knobs as strings, as a form would submit them', () => {
+    const parsed = settingsSchema.partial().safeParse({ hubPoolLocalAffinity: '4', hubPoolHealthPollSeconds: '60' });
+
+    expect(parsed.success).toBe(true);
+    expect(parsed.data).toEqual({ hubPoolLocalAffinity: 4, hubPoolHealthPollSeconds: 60 });
+  });
+
+  it('rejects out-of-range tuning rather than persisting a value that would break routing', () => {
+    expect(settingsSchema.partial().safeParse({ hubPoolLocalAffinity: -1 }).success).toBe(false);
+    expect(settingsSchema.partial().safeParse({ hubPoolHealthPollSeconds: 1 }).success).toBe(false);
+    expect(settingsSchema.partial().safeParse({ hubPoolHealthPollSeconds: 9999 }).success).toBe(false);
+  });
+});

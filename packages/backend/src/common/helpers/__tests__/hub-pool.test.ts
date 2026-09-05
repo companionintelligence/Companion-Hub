@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest';
-import { normalizePeerFqdn } from '../hub-pool';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { describeHubPoolDisabled, isHubPoolEnabled, normalizePeerFqdn, resolveHubPoolEnabled } from '../hub-pool';
 
 describe('normalizePeerFqdn', () => {
   it('accepts and canonicalizes a MagicDNS name', () => {
@@ -33,5 +33,48 @@ describe('normalizePeerFqdn', () => {
   it('rejects a name longer than the DNS maximum', () => {
     const label = 'a'.repeat(63);
     expect(normalizePeerFqdn(`${label}.${label}.${label}.${label}.net`)).toBeNull();
+  });
+});
+
+describe('resolveHubPoolEnabled', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('is on when neither switch says otherwise, including before the setting has ever been written', () => {
+    expect(resolveHubPoolEnabled(undefined)).toEqual({ enabled: true, disabledBy: null });
+    expect(resolveHubPoolEnabled(true)).toEqual({ enabled: true, disabledBy: null });
+  });
+
+  it('reports the persisted setting as the reason when only it is off', () => {
+    expect(resolveHubPoolEnabled(false)).toEqual({ enabled: false, disabledBy: 'setting' });
+  });
+
+  it('lets HUB_POOL_USER_DISABLED override a setting that says on', () => {
+    // The whole point of the env switch: an operator-of-the-box decision a UI toggle cannot undo.
+    vi.stubEnv('HUB_POOL_USER_DISABLED', 'true');
+
+    expect(resolveHubPoolEnabled(true)).toEqual({ enabled: false, disabledBy: 'env' });
+    expect(isHubPoolEnabled(true)).toBe(false);
+  });
+
+  it('attributes the env switch even when the setting is also off, so the UI names the one that must be changed', () => {
+    vi.stubEnv('HUB_POOL_USER_DISABLED', 'true');
+
+    expect(resolveHubPoolEnabled(false).disabledBy).toBe('env');
+  });
+
+  it('only treats the exact string "true" as disabled', () => {
+    vi.stubEnv('HUB_POOL_USER_DISABLED', 'false');
+    expect(resolveHubPoolEnabled(undefined).enabled).toBe(true);
+
+    vi.stubEnv('HUB_POOL_USER_DISABLED', '1');
+    expect(resolveHubPoolEnabled(undefined).enabled).toBe(true);
+  });
+
+  it('names the switch actually in force, so an operator does not go editing the wrong file', () => {
+    expect(describeHubPoolDisabled('env')).toContain('HUB_POOL_USER_DISABLED');
+    expect(describeHubPoolDisabled('setting')).toContain('Settings');
+    expect(describeHubPoolDisabled('setting')).not.toContain('HUB_POOL_USER_DISABLED');
   });
 });
