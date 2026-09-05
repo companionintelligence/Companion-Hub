@@ -44,6 +44,24 @@ const commandSections: { title: string; entries: CommandEntry[] }[] = [
     ],
   },
   {
+    title: 'Catalog publishing',
+    entries: [
+      {
+        command: `${BASE_COMMAND} login [--device] [--org <slug>]`,
+        description: 'Authorize cihub against Portal (never the Hub hostname). Stores a cio_ token locally',
+      },
+      { command: `${BASE_COMMAND} logout`, description: 'Delete the stored Portal developer token' },
+      {
+        command: `${BASE_COMMAND} submit <dir>`,
+        description: 'Rewrite compose images to Portal, push, and ingest a _template folder as pending',
+      },
+      {
+        command: `${BASE_COMMAND} submit --dry-run <dir>`,
+        description: 'Validate and print the {bundle}_{org} catalog id; no token, push, or ingest',
+      },
+    ],
+  },
+  {
     title: 'Hub lifecycle',
     entries: [
       { command: `${BASE_COMMAND} up [env] [--detached]`, description: 'Start the hub stack (prompts for a password after a reset)' },
