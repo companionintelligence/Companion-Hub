@@ -90,7 +90,7 @@ test.describe('App Store Lifecycle with Real R2', () => {
         'Content-Type': 'application/json',
         'x-admin-key': ADMIN_API_KEY,
       },
-      data: JSON.stringify({ public: true }),
+      data: JSON.stringify({ channels: ['prod'], public: true }),
     });
 
     expect(publishResponse.ok(), `Publish failed: ${await publishResponse.text()}`).toBeTruthy();
@@ -149,7 +149,7 @@ test.describe('App Store Lifecycle with Real R2', () => {
         'Content-Type': 'application/json',
         'x-admin-key': ADMIN_API_KEY,
       },
-      data: JSON.stringify({ public: false }),
+      data: JSON.stringify({ channels: ['prod'], public: false }),
     });
 
     // Fetch app detail
