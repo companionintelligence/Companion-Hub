@@ -1,12 +1,19 @@
 name: Desktop Tests
-# TEMPORARY (Actions credit): automatic PR/push triggers disabled.
-# Re-enable when credits recover. Manual: gh workflow run desktop-tests.yml
+# Auto-triggers are scoped to `packages/desktop/src-tauri/**` so this only burns
+# Actions credit when the Rust crate actually changes (~62 commits/quarter).
 on:
   workflow_dispatch:
+  pull_request:
+    paths:
+      - 'packages/desktop/src-tauri/**'
+      - '.github/workflows/desktop-tests.yml'
 
 concurrency:
   group: desktop-tests-${{ github.ref }}
   cancel-in-progress: true
+
+env:
+  MANIFEST: packages/desktop/src-tauri/Cargo.toml
 
 jobs:
   rust-tests:
@@ -19,6 +26,8 @@ jobs:
 
       - name: Install Rust (stable)
         uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
 
       - name: Rust cache
         uses: swatinem/rust-cache@v2
@@ -36,7 +45,29 @@ jobs:
             libgtk-3-dev \
             libayatana-appindicator3-dev \
             librsvg2-dev \
-            libxdo-dev
+            libxdo-dev \
+            libdbus-1-dev \
+            libglib2.0-dev
+
+      - name: Formatting
+        run: cargo fmt --manifest-path "$MANIFEST" --check
+
+      # --all-targets is what compiles the `#[cfg(any(test, target_os = "..."))]`
+      # installer-script generators on Linux. Without it they are never type-checked
+      # here, and a dropped cfg only surfaces on the Windows/macOS bundle build.
+      - name: Type check (all targets)
+        run: cargo check --manifest-path "$MANIFEST" --all-targets
 
       - name: Run tests
-        run: cargo test --manifest-path packages/desktop/src-tauri/Cargo.toml
+        run: cargo test --manifest-path "$MANIFEST"
+
+      - name: Module size budget (advisory)
+        continue-on-error: true
+        run: packages/desktop/src-tauri/scripts/check-module-size.sh
+
+      # Advisory only: ~20k lines have never been clippy-gated, so failing the build
+      # on the existing backlog would mean permanently red CI. Tighten once the
+      # backlog is burned down.
+      - name: Clippy (advisory)
+        continue-on-error: true
+        run: cargo clippy --manifest-path "$MANIFEST" --all-targets -- -W clippy::all
