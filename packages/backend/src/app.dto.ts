@@ -3,6 +3,12 @@ import { createZodDto } from '@/common/zod-dto';
 import { canonicalTimeZone } from '@/common/helpers/timezone-helpers';
 import { optionalCpuLimitSchema } from '@/common/validation/cpu-limit';
 import { optionalMemoryLimitSchema } from '@/common/validation/memory-limit';
+import {
+  MAX_POOL_HEALTH_POLL_SECONDS,
+  MAX_POOL_LOCAL_AFFINITY,
+  MIN_POOL_HEALTH_POLL_SECONDS,
+  MIN_POOL_LOCAL_AFFINITY,
+} from '@/common/helpers/hub-pool';
 
 import { userSchema } from './modules/user/dto/user.dto';
 
@@ -52,6 +58,18 @@ export const settingsSchema = z.object({
   inferenceVllmUrl: z.string().trim().optional(),
   inferenceMtplxUrl: z.string().trim().optional(),
   inferenceDsparkUrl: z.string().trim().optional(),
+  // Multi-Hub inference pooling. `hubPoolEnabled` is opt-out (absent = on) and is the in-product
+  // half of the kill switch; `HUB_POOL_USER_DISABLED=true` in the environment still overrides it
+  // (see resolveHubPoolEnabled). Absent numeric values fall back to the DEFAULT_POOL_* constants.
+  hubPoolEnabled: z.boolean().optional(),
+  hubPoolLocalAffinity: z
+    .union([z.number().int(), z.string().transform(Number)])
+    .pipe(z.number().int().min(MIN_POOL_LOCAL_AFFINITY).max(MAX_POOL_LOCAL_AFFINITY))
+    .optional(),
+  hubPoolHealthPollSeconds: z
+    .union([z.number().int(), z.string().transform(Number)])
+    .pipe(z.number().int().min(MIN_POOL_HEALTH_POLL_SECONDS).max(MAX_POOL_HEALTH_POLL_SECONDS))
+    .optional(),
   inferenceCloudProviders: z
     .array(
       z.object({

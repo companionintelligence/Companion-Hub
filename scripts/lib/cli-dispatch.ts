@@ -31,6 +31,7 @@ import {
   runAppCommand,
   runHostUpdate,
   runModelsCommand,
+  runPoolCommand,
   runPublicWebCommand,
   runWizard,
   setMcpState,
@@ -222,6 +223,11 @@ export async function runCli(rawArgs: string[]) {
 
   if (first === 'public-web') {
     await runPublicWebCommand(args.slice(1));
+    return;
+  }
+
+  if (first === 'pool') {
+    await runPoolCommand(args.slice(1));
     return;
   }
 

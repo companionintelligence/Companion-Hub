@@ -10,9 +10,12 @@ import {
   ensureLocalDevRuntimeEnv,
   getComposeFiles,
   isApplianceMode,
+  isPlausiblePeerFqdn,
   isValidApiKeyName,
   isFirstRun,
   isHubRepoRoot,
+  parsePoolArgs,
+  runPoolCommand,
   mergeComposeProfilesFromEnvFile,
   resolveHubContext,
   normalizeCliArgs,
@@ -40,6 +43,32 @@ import {
   upsertEnvVar,
 } from '../cihub-cli';
 import { setTailscalePersistedStateProbeForTests } from '../lib/cli-compose-env';
+
+/**
+ * Pool HTTP is stubbed at the `hub-pool-cli` boundary so these tests exercise the parts that live in
+ * `cihub-cli.ts` — the confirmation gate, the env-override reporting, and the missing-key guard. The
+ * real module is spread back in so the formatters (and every non-pool import) stay genuine.
+ */
+const poolApi = {
+  fetchPoolStatus: vi.fn(),
+  fetchPoolPeers: vi.fn(),
+  setPoolEnabledSetting: vi.fn(),
+  unpairPoolPeer: vi.fn(),
+};
+let poolApiKey: string | undefined = 'device-key';
+
+vi.mock('../hub-pool-cli', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../hub-pool-cli')>()),
+  fetchPoolStatus: (...args: unknown[]) => poolApi.fetchPoolStatus(...args),
+  fetchPoolPeers: (...args: unknown[]) => poolApi.fetchPoolPeers(...args),
+  setPoolEnabledSetting: (...args: unknown[]) => poolApi.setPoolEnabledSetting(...args),
+  unpairPoolPeer: (...args: unknown[]) => poolApi.unpairPoolPeer(...args),
+}));
+
+vi.mock('../public-web-cli', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../public-web-cli')>()),
+  readHubApiKey: () => poolApiKey,
+}));
 
 // --- banner ---
 
@@ -92,6 +121,20 @@ describe('renderHelp', () => {
     const plain = stripAnsi(renderHelp());
     expect(plain).toContain('public-web status');
     expect(plain).toContain('public-web repair');
+  });
+
+  it('mentions every pool subcommand in help and man', () => {
+    for (const rendered of [stripAnsi(renderHelp()), stripAnsi(renderManPage())]) {
+      expect(rendered).toContain('Hub Pool');
+      expect(rendered).toContain('pool status');
+      expect(rendered).toContain('pool peers');
+      expect(rendered).toContain('pool discover');
+      expect(rendered).toContain('pool pair');
+      expect(rendered).toContain('pool approve|reject');
+      expect(rendered).toContain('pool unpair');
+      expect(rendered).toContain('pool log');
+      expect(rendered).toContain('pool enable|disable');
+    }
   });
 
   it('mentions the new app subcommands', () => {
@@ -954,5 +997,187 @@ describe('formatApiKeyRows on a Hub without per-key capability', () => {
   it('still reports capability when the Hub has it', () => {
     const withCap = JSON.stringify([{ id: 1, name: 'laptop', scopes: ['mcp'], capability: 'read', prefix: 'abc12345' }]);
     expect(formatApiKeyRows(withCap, true)[0]).toContain('read');
+  });
+});
+
+// --- hub pool ---
+
+// Placeholder tailnet names only — docs/README.md tip-scrub policy.
+const POOL_PEER_FQDN = 'hub-b.example-tailnet.ts.net';
+
+describe('parsePoolArgs', () => {
+  it('defaults to status on the local env', () => {
+    expect(parsePoolArgs([])).toEqual({
+      subcommand: 'status',
+      target: undefined,
+      displayName: undefined,
+      limit: undefined,
+      yes: false,
+      env: 'local',
+    });
+  });
+
+  it('reads the env argument after a targetless subcommand', () => {
+    expect(parsePoolArgs(['peers', 'dev']).env).toBe('dev');
+  });
+
+  it('takes the peer reference before the env for target subcommands', () => {
+    const parsed = parsePoolArgs(['pair', POOL_PEER_FQDN, 'dev', '--name', 'Studio', '--yes']);
+    expect(parsed).toMatchObject({ subcommand: 'pair', target: POOL_PEER_FQDN, displayName: 'Studio', yes: true, env: 'dev' });
+  });
+
+  it('accepts --limit in both forms', () => {
+    expect(parsePoolArgs(['log', '--limit', '25']).limit).toBe(25);
+    expect(parsePoolArgs(['log', '--limit=25']).limit).toBe(25);
+  });
+
+  it('exits on an unknown subcommand, unknown flag, or out-of-range limit', () => {
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => {
+      throw new Error('exit');
+    });
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    expect(() => parsePoolArgs(['bogus'])).toThrow();
+    expect(() => parsePoolArgs(['status', '--bogus'])).toThrow();
+    expect(() => parsePoolArgs(['log', '--limit', '0'])).toThrow();
+    expect(() => parsePoolArgs(['log', '--limit', '201'])).toThrow();
+    expect(exitSpy).toHaveBeenCalledWith(2);
+
+    exitSpy.mockRestore();
+    consoleSpy.mockRestore();
+    logSpy.mockRestore();
+  });
+});
+
+describe('isPlausiblePeerFqdn', () => {
+  it('accepts a MagicDNS name and rejects anything carrying a scheme, port, path or address', () => {
+    expect(isPlausiblePeerFqdn(POOL_PEER_FQDN)).toBe(true);
+    expect(isPlausiblePeerFqdn(`${POOL_PEER_FQDN}.`)).toBe(true);
+    expect(isPlausiblePeerFqdn(`https://${POOL_PEER_FQDN}`)).toBe(false);
+    expect(isPlausiblePeerFqdn(`${POOL_PEER_FQDN}:8443`)).toBe(false);
+    expect(isPlausiblePeerFqdn(`${POOL_PEER_FQDN}/api`)).toBe(false);
+    expect(isPlausiblePeerFqdn('100.64.0.1')).toBe(false);
+    expect(isPlausiblePeerFqdn('hub-b')).toBe(false);
+  });
+});
+
+describe('runPoolCommand', () => {
+  const originalIsTTY = process.stdin.isTTY;
+  let exitSpy: ReturnType<typeof vi.spyOn>;
+  let logSpy: ReturnType<typeof vi.spyOn>;
+  let errorSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    poolApiKey = 'device-key';
+    poolApi.fetchPoolStatus.mockReset();
+    poolApi.fetchPoolPeers.mockReset();
+    poolApi.setPoolEnabledSetting.mockReset();
+    poolApi.unpairPoolPeer.mockReset();
+    // Non-TTY is the CI/agent case: the confirmation gate must refuse rather than hang on a prompt.
+    Object.defineProperty(process.stdin, 'isTTY', { value: false, configurable: true });
+    exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => {
+      throw new Error('exit');
+    });
+    logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    Object.defineProperty(process.stdin, 'isTTY', { value: originalIsTTY, configurable: true });
+    exitSpy.mockRestore();
+    logSpy.mockRestore();
+    errorSpy.mockRestore();
+  });
+
+  const boxText = () => (logSpy.mock.calls as unknown[][]).map((call) => stripAnsi(String(call[0]))).join('\n');
+
+  it('refuses a state change without --yes on a non-interactive terminal', async () => {
+    poolApi.fetchPoolPeers.mockResolvedValue([
+      {
+        id: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
+        nodeFqdn: POOL_PEER_FQDN,
+        direction: 'outbound',
+        status: 'connected',
+        consecutiveFailures: 0,
+        lastSeenAt: null,
+        lastCapabilities: null,
+        displayName: null,
+      },
+    ]);
+
+    await expect(runPoolCommand(['unpair', POOL_PEER_FQDN])).rejects.toThrow('exit');
+
+    expect(poolApi.unpairPoolPeer).not.toHaveBeenCalled();
+    expect(exitSpy).toHaveBeenCalledWith(2);
+    expect(stripAnsi(String(errorSpy.mock.calls[0]?.[0]))).toContain('requires an interactive terminal or --yes');
+  });
+
+  it('unpairs the peer resolved from an id prefix once --yes is given', async () => {
+    poolApi.fetchPoolPeers.mockResolvedValue([
+      {
+        id: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
+        nodeFqdn: POOL_PEER_FQDN,
+        direction: 'outbound',
+        status: 'connected',
+        consecutiveFailures: 0,
+        lastSeenAt: null,
+        lastCapabilities: null,
+        displayName: null,
+      },
+    ]);
+
+    await runPoolCommand(['unpair', 'aaaaaaaa', '--yes']);
+
+    expect(poolApi.unpairPoolPeer).toHaveBeenCalledWith('.env.local', 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
+    expect(boxText()).toContain('Peer unpaired');
+  });
+
+  it('says plainly that the .env override wins when enabling under HUB_POOL_USER_DISABLED', async () => {
+    poolApi.fetchPoolStatus.mockResolvedValue({
+      enabled: false,
+      disabledBy: 'env',
+      reason: 'disabled_by_env',
+      routingActive: false,
+      settings: { poolEnabled: false, poolLocalAffinity: 1, poolHealthPollSeconds: 30 },
+      peerCounts: { total: 0, connected: 0, pending: 0, unreachable: 0 },
+    });
+    poolApi.setPoolEnabledSetting.mockResolvedValue({ poolEnabled: true, poolLocalAffinity: 1, poolHealthPollSeconds: 30 });
+
+    await runPoolCommand(['enable', '--yes']);
+
+    expect(poolApi.setPoolEnabledSetting).toHaveBeenCalledWith('.env.local', true);
+    const text = boxText();
+    expect(text).toContain('this changed nothing in effect');
+    expect(text).toContain('HUB_POOL_USER_DISABLED=true');
+    expect(text).toContain('cihub restart local');
+  });
+
+  it('reports an enable that actually takes effect without the override warning', async () => {
+    poolApi.fetchPoolStatus.mockResolvedValue({
+      enabled: false,
+      disabledBy: 'setting',
+      reason: 'disabled_by_setting',
+      routingActive: false,
+      settings: { poolEnabled: false, poolLocalAffinity: 1, poolHealthPollSeconds: 30 },
+      peerCounts: { total: 1, connected: 1, pending: 0, unreachable: 0 },
+    });
+    poolApi.setPoolEnabledSetting.mockResolvedValue({ poolEnabled: true, poolLocalAffinity: 1, poolHealthPollSeconds: 30 });
+
+    await runPoolCommand(['enable', '--yes']);
+
+    const text = boxText();
+    expect(text).toContain('Hub Pool enabled');
+    expect(text).not.toContain('changed nothing in effect');
+  });
+
+  it('points an unpaired Hub at cihub register instead of a raw 401', async () => {
+    poolApiKey = undefined;
+
+    await expect(runPoolCommand(['status'])).rejects.toThrow('exit');
+
+    expect(poolApi.fetchPoolStatus).not.toHaveBeenCalled();
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    expect(boxText()).toContain('cihub register');
   });
 });

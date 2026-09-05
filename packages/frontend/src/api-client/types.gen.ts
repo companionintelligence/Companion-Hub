@@ -82,6 +82,9 @@ export type AppContextDto = {
         inferenceVllmUrl?: string;
         inferenceMtplxUrl?: string;
         inferenceDsparkUrl?: string;
+        hubPoolEnabled?: boolean;
+        hubPoolLocalAffinity?: number;
+        hubPoolHealthPollSeconds?: number;
         inferenceCloudProviders?: Array<{
             provider: 'openai' | 'anthropic' | 'google' | 'github-copilot';
             apiKey?: string;
@@ -164,6 +167,9 @@ export type UserSettingsBody = {
     inferenceVllmUrl?: string;
     inferenceMtplxUrl?: string;
     inferenceDsparkUrl?: string;
+    hubPoolEnabled?: boolean;
+    hubPoolLocalAffinity?: number;
+    hubPoolHealthPollSeconds?: number;
     inferenceCloudProviders?: Array<{
         provider: 'openai' | 'anthropic' | 'google' | 'github-copilot';
         apiKey?: string;
@@ -1255,6 +1261,12 @@ export type UpdateRocmInstallStateBody = {
     message?: string;
 };
 
+export type UpdateHubPoolPreferencesBody = {
+    poolEnabled?: boolean;
+    poolLocalAffinity?: number;
+    poolHealthPollSeconds?: number;
+};
+
 export type PairPeerBody = {
     [key: string]: unknown;
 };
@@ -1960,6 +1972,10 @@ export type OnboardingProfileQueryDto = {
 
 export type RuntimeModelsQueryDto = {
     backend: 'ollama' | 'vllm' | 'lemonade' | 'mtplx' | 'dspark' | 'lucebox';
+};
+
+export type RoutingLogQueryDto = {
+    limit?: number;
 };
 
 export type MetadataDto = {
@@ -3922,6 +3938,52 @@ export type IdentifyData = {
 };
 
 export type IdentifyResponses = {
+    200: unknown;
+};
+
+export type PoolStatusData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/inference/pool/status';
+};
+
+export type PoolStatusResponses = {
+    200: unknown;
+};
+
+export type GetPoolSettingsData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/inference/pool/settings';
+};
+
+export type GetPoolSettingsResponses = {
+    200: unknown;
+};
+
+export type UpdatePoolSettingsData = {
+    body: UpdateHubPoolPreferencesBody;
+    path?: never;
+    query?: never;
+    url: '/api/inference/pool/settings';
+};
+
+export type UpdatePoolSettingsResponses = {
+    200: unknown;
+};
+
+export type GetPoolRoutingLogData = {
+    body?: never;
+    path?: never;
+    query?: {
+        limit?: number;
+    };
+    url: '/api/inference/pool/routing-log';
+};
+
+export type GetPoolRoutingLogResponses = {
     200: unknown;
 };
 
