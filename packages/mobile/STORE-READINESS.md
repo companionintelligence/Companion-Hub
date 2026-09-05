@@ -114,6 +114,13 @@ gh workflow run mobile-build.yml
 #   → companion-hub-ios-release-ipa       (needs the 4 Apple secrets)
 ```
 
+> ⚠️ **The iOS build-number stamping is currently a no-op** (verified
+> 2026-09-05). `scripts/set-ios-version.mjs` writes only `project.yml`, but
+> `gen/apple/…/Info.plist` is committed and is what ships — xcodegen does **not**
+> regenerate it during `tauri ios build`. Until the script also writes the plist,
+> assume every upload carries the committed `CFBundleVersion`, and ASC will
+> reject the second one. See the README's "Generated Apple files are committed".
+
 - **Versioning:** bump `version` in `tauri.conf.json` — it is the single source for both platforms. Android `versionName`/`versionCode` derive from it (`major*1e6 + minor*1e3 + patch`); iOS gets it via `scripts/set-ios-version.mjs`, which stamps `CFBundleShortVersionString` from that same field and sets `CFBundleVersion` to `$IOS_BUILD_NUMBER` (CI passes `github.run_number`, which is monotonic). Run `node scripts/set-ios-version.mjs --check` to catch marketing-version drift.
 
 > ⚠️ **Do not use tauri's `--build-number` flag for App Store builds.** It
