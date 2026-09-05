@@ -3347,16 +3347,6 @@
       "post": {
         "operationId": "handlePairingReject",
         "parameters": [],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/PairingRejectBody"
-              }
-            }
-          }
-        },
         "responses": {
           "201": {
             "description": ""
@@ -11646,10 +11636,6 @@
         "properties": {}
       },
       "PairingConfirmBody": {
-        "type": "object",
-        "properties": {}
-      },
-      "PairingRejectBody": {
         "type": "object",
         "properties": {}
       },

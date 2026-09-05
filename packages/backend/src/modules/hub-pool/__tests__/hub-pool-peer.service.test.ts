@@ -1,4 +1,5 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { BadRequestException, ForbiddenException, ServiceUnavailableException } from '@nestjs/common';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
 import { LoggerService } from '@/core/logger/logger.service';
 import { EncryptionService } from '@/core/encryption/encryption.service';
@@ -8,6 +9,7 @@ import { InferenceRouterService } from '@/modules/inference/inference-router.ser
 import type { HubPoolPeer } from '@/core/database/drizzle/types';
 import { HubPoolPeerRepository } from '../hub-pool-peer.repository';
 import { HubPoolPeerService } from '../hub-pool-peer.service';
+import { HubPoolLoadService, LOCAL_CANDIDATE_KEY } from '../hub-pool-load.service';
 
 function mockPeer(overrides: Partial<HubPoolPeer> = {}): HubPoolPeer {
   return {
@@ -34,6 +36,7 @@ describe('HubPoolPeerService', () => {
   let tailscaleAdminApi: MockProxy<TailscaleAdminApiService>;
   let encryption: MockProxy<EncryptionService>;
   let inferenceRouter: MockProxy<InferenceRouterService>;
+  let loadService: HubPoolLoadService;
   let service: HubPoolPeerService;
 
   beforeEach(() => {
@@ -45,6 +48,7 @@ describe('HubPoolPeerService', () => {
 
     encryption.encrypt.mockImplementation((data: string) => `ENC:${data}`);
     encryption.decrypt.mockImplementation((data: string) => data.replace(/^ENC:/, ''));
+    repo.listByStatus.mockResolvedValue([]);
     tailscaleService.getStatusCached.mockResolvedValue({
       installed: true,
       connected: true,
@@ -59,8 +63,13 @@ describe('HubPoolPeerService', () => {
       authUrl: null,
     });
 
-    service = new HubPoolPeerService(mock<LoggerService>(), repo, tailscaleService, tailscaleAdminApi, encryption, inferenceRouter);
+    loadService = new HubPoolLoadService();
+    service = new HubPoolPeerService(mock<LoggerService>(), repo, tailscaleService, tailscaleAdminApi, encryption, inferenceRouter, loadService);
     global.fetch = vi.fn();
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
   });
 
   describe('initiatePairing', () => {
@@ -77,6 +86,13 @@ describe('HubPoolPeerService', () => {
       const [url, init] = vi.mocked(global.fetch).mock.calls[0] as [string, RequestInit];
       expect(url).toContain('peer-hub.tailxyz.ts.net/api/inference/pool/pair/request');
       expect(JSON.parse(init.body as string)).toMatchObject({ fromNodeFqdn: 'self-hub.tailxyz.ts.net' });
+    });
+
+    it('refuses a node FQDN that is not a bare hostname', async () => {
+      await expect(service.initiatePairing('https://evil.example.com/x')).rejects.toThrow(BadRequestException);
+
+      expect(repo.create).not.toHaveBeenCalled();
+      expect(global.fetch).not.toHaveBeenCalled();
     });
 
     it('rolls back the local row when the peer rejects the request', async () => {
@@ -114,6 +130,119 @@ describe('HubPoolPeerService', () => {
 
       expect(repo.create).not.toHaveBeenCalled();
     });
+
+    it.each([
+      'https://evil.example.com',
+      'peer.tailxyz.ts.net@evil.example.com',
+      'peer.tailxyz.ts.net:8443',
+      'peer.tailxyz.ts.net/../attacker',
+      '203.0.113.10',
+    ])('refuses %s — the FQDN becomes the host of every later handshake call', async (fqdn) => {
+      repo.findByNodeFqdn.mockResolvedValue(undefined);
+
+      await expect(service.receivePairingRequest(fqdn, undefined, 'raw-token-value')).rejects.toThrow(BadRequestException);
+
+      expect(repo.create).not.toHaveBeenCalled();
+    });
+
+    it('stores the canonicalized name so a case-shifted retry cannot squat a second row', async () => {
+      repo.findByNodeFqdn.mockResolvedValue(undefined);
+
+      await service.receivePairingRequest('Requester.TailXYZ.TS.NET.', undefined, 'raw-token-value');
+
+      expect(repo.create).toHaveBeenCalledWith(expect.objectContaining({ nodeFqdn: 'requester.tailxyz.ts.net' }));
+    });
+
+    it('refuses intake when the node is disabled by the kill switch', async () => {
+      vi.stubEnv('HUB_POOL_USER_DISABLED', 'true');
+      repo.findByNodeFqdn.mockResolvedValue(undefined);
+
+      await expect(service.receivePairingRequest('requester.tailxyz.ts.net', undefined, 'raw-token-value')).rejects.toThrow(
+        ServiceUnavailableException,
+      );
+
+      expect(repo.create).not.toHaveBeenCalled();
+    });
+
+    it('refuses a new request once the pending-approval list is full', async () => {
+      repo.findByNodeFqdn.mockResolvedValue(undefined);
+      repo.listByStatus.mockResolvedValue(
+        Array.from({ length: 20 }, (_, i) => mockPeer({ id: `pending-${i}`, nodeFqdn: `squat-${i}.tailxyz.ts.net`, direction: 'inbound' })),
+      );
+
+      await expect(service.receivePairingRequest('requester.tailxyz.ts.net', undefined, 'raw-token-value')).rejects.toThrow(
+        ServiceUnavailableException,
+      );
+
+      expect(repo.create).not.toHaveBeenCalled();
+    });
+
+    it('does not count operator-created outbound rows against the inbound cap', async () => {
+      repo.findByNodeFqdn.mockResolvedValue(undefined);
+      repo.listByStatus.mockResolvedValue(
+        Array.from({ length: 20 }, (_, i) => mockPeer({ id: `pending-${i}`, nodeFqdn: `mine-${i}.tailxyz.ts.net`, direction: 'outbound' })),
+      );
+
+      await expect(service.receivePairingRequest('requester.tailxyz.ts.net', undefined, 'raw-token-value')).resolves.toBeUndefined();
+
+      expect(repo.create).toHaveBeenCalled();
+    });
+
+    it('refuses a requester that is not a device on this tailnet', async () => {
+      repo.findByNodeFqdn.mockResolvedValue(undefined);
+      tailscaleAdminApi.isConfigured.mockReturnValue(true);
+      tailscaleAdminApi.listDevices.mockResolvedValue([{ name: 'someone-else.tailxyz.ts.net' } as never]);
+
+      await expect(service.receivePairingRequest('requester.tailxyz.ts.net', undefined, 'raw-token-value')).rejects.toThrow(ForbiddenException);
+
+      expect(repo.create).not.toHaveBeenCalled();
+    });
+
+    it('accepts the request when the Admin API confirms the requester', async () => {
+      repo.findByNodeFqdn.mockResolvedValue(undefined);
+      tailscaleAdminApi.isConfigured.mockReturnValue(true);
+      tailscaleAdminApi.listDevices.mockResolvedValue([{ name: 'Requester.TailXYZ.TS.NET' } as never]);
+
+      await service.receivePairingRequest('requester.tailxyz.ts.net', undefined, 'raw-token-value');
+
+      expect(repo.create).toHaveBeenCalled();
+    });
+
+    it('accepts the request when the Admin API is unreachable — the credential is optional, so it must not gate pairing', async () => {
+      repo.findByNodeFqdn.mockResolvedValue(undefined);
+      tailscaleAdminApi.isConfigured.mockReturnValue(true);
+      tailscaleAdminApi.listDevices.mockRejectedValue(new Error('502 from control plane'));
+
+      await service.receivePairingRequest('requester.tailxyz.ts.net', undefined, 'raw-token-value');
+
+      expect(repo.create).toHaveBeenCalled();
+    });
+  });
+
+  describe('pending request expiry', () => {
+    const sweep = (s: HubPoolPeerService) => (s as unknown as { sweepExpiredPendingRequests: () => Promise<void> }).sweepExpiredPendingRequests();
+
+    it('deletes inbound pending rows older than the TTL', async () => {
+      const stale = new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString();
+      repo.listByStatus.mockResolvedValue([
+        mockPeer({ id: 'stale', direction: 'inbound', createdAt: stale }),
+        mockPeer({ id: 'fresh', direction: 'inbound', createdAt: new Date().toISOString() }),
+      ]);
+
+      await sweep(service);
+
+      expect(repo.delete).toHaveBeenCalledWith('stale');
+      expect(repo.delete).not.toHaveBeenCalledWith('fresh');
+    });
+
+    it('leaves an old outbound row alone — the operator created it and only they retire it', async () => {
+      const stale = new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString();
+      repo.listByStatus.mockResolvedValue([mockPeer({ id: 'mine', direction: 'outbound', createdAt: stale })]);
+
+      await sweep(service);
+
+      expect(repo.delete).not.toHaveBeenCalled();
+    });
   });
 
   describe('approvePairing', () => {
@@ -144,6 +273,39 @@ describe('HubPoolPeerService', () => {
       repo.findById.mockResolvedValue(mockPeer({ status: 'connected' }));
 
       await expect(service.approvePairing('already-connected')).rejects.toThrow();
+    });
+  });
+
+  describe('rejectPairing', () => {
+    it('proves the exchange to the peer with the token that peer issued us', async () => {
+      const pending = mockPeer({ id: 'reject-me', direction: 'inbound', status: 'pending', presentTokenEncrypted: 'ENC:their-token' });
+      repo.findById.mockResolvedValue(pending);
+      vi.mocked(global.fetch).mockResolvedValue(new Response('{}', { status: 200 }));
+
+      await service.rejectPairing('reject-me');
+
+      expect(repo.delete).toHaveBeenCalledWith('reject-me');
+      const [url, init] = vi.mocked(global.fetch).mock.calls[0] as [string, RequestInit];
+      expect(url).toContain('/api/inference/pool/pair/reject');
+      const headers = init.headers as Record<string, string>;
+      expect(headers.Authorization).toBe('Bearer their-token');
+      expect(headers['X-Hub-Pool-Peer']).toBe('self-hub.tailxyz.ts.net');
+      // The peer resolves us from the guarded headers, so a body naming a node would just be a second, forgeable claim.
+      expect(init.body).toBeUndefined();
+    });
+  });
+
+  describe('handleRemoteReject', () => {
+    it('drops the pending outbound row the guard resolved', async () => {
+      await service.handleRemoteReject(mockPeer({ id: 'ours', direction: 'outbound', status: 'pending' }));
+
+      expect(repo.delete).toHaveBeenCalledWith('ours');
+    });
+
+    it('leaves a connected pairing alone — reject only retires a request that never completed', async () => {
+      await service.handleRemoteReject(mockPeer({ id: 'ours', direction: 'outbound', status: 'connected' }));
+
+      expect(repo.delete).not.toHaveBeenCalled();
     });
   });
 
@@ -234,6 +396,60 @@ describe('HubPoolPeerService', () => {
       await expect(service.removePeer('remove-me')).resolves.toBeUndefined();
 
       expect(repo.delete).toHaveBeenCalledWith('remove-me');
+    });
+  });
+
+  describe('getOwnCapabilities', () => {
+    beforeEach(() => {
+      inferenceRouter.getStatus.mockResolvedValue({
+        hardwareTier: 'high',
+        backends: [{ type: 'ollama', running: true, healthy: true, url: 'http://ollama:11434', modelsLoaded: 1 }],
+        models: [],
+        memoryBudget: {
+          totalVramMb: 24576,
+          totalRamMb: 65536,
+          systemReservedRamMb: 8192,
+          dockerOverheadMb: 2048,
+          appContainerBudgetMb: 8192,
+          modelBudgetVramMb: 20480,
+          modelBudgetRamMb: 32768,
+          modelUsedVramMb: 0,
+          modelUsedRamMb: 0,
+          pinnedVramMb: 0,
+          pinnedRamMb: 0,
+        },
+        cloudProviders: [],
+      });
+      inferenceRouter.listModels.mockResolvedValue([
+        {
+          id: 'llama3.2:3b',
+          object: 'model',
+          created: 0,
+          owned_by: 'local:ollama',
+          state: 'loaded',
+          backend: 'ollama',
+          modality: ['text'],
+          local: true,
+        },
+      ]);
+    });
+
+    it('publishes the queue depth peers rank this node on', async () => {
+      loadService.acquire(LOCAL_CANDIDATE_KEY);
+      loadService.acquire(LOCAL_CANDIDATE_KEY);
+
+      const capabilities = await service.getOwnCapabilities();
+
+      // Without this a node saturated by its own apps is indistinguishable from an idle one: the
+      // polling peer can only count the work it forwarded itself.
+      expect(capabilities.inFlightRequests).toBe(2);
+      expect(capabilities.backends).toEqual([{ type: 'ollama', healthy: true, modelsLoaded: ['llama3.2:3b'] }]);
+    });
+
+    it('reports an idle node as zero rather than omitting the figure', async () => {
+      // `undefined` is the wire signal for "this build cannot measure it", and peers rank that as
+      // mid-load — an idle node must not be handed that penalty.
+      await expect(service.getOwnCapabilities()).resolves.toMatchObject({ inFlightRequests: 0 });
     });
   });
 });

@@ -588,14 +588,7 @@ export const handlePairingConfirm = <ThrowOnError extends boolean = false>(optio
     }
 });
 
-export const handlePairingReject = <ThrowOnError extends boolean = false>(options: Options<HandlePairingRejectData, ThrowOnError>) => (options.client ?? client).post<HandlePairingRejectResponses, unknown, ThrowOnError>({
-    url: '/api/inference/pool/pair/reject',
-    ...options,
-    headers: {
-        'Content-Type': 'application/json',
-        ...options.headers
-    }
-});
+export const handlePairingReject = <ThrowOnError extends boolean = false>(options?: Options<HandlePairingRejectData, ThrowOnError>) => (options?.client ?? client).post<HandlePairingRejectResponses, unknown, ThrowOnError>({ url: '/api/inference/pool/pair/reject', ...options });
 
 export const handlePairingUnpair = <ThrowOnError extends boolean = false>(options?: Options<HandlePairingUnpairData, ThrowOnError>) => (options?.client ?? client).post<HandlePairingUnpairResponses, unknown, ThrowOnError>({ url: '/api/inference/pool/pair/unpair', ...options });
 
