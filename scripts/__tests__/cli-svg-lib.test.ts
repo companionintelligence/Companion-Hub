@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { ansiToLines, bannerLines, box, escapeXml, lineCols, promptLine, renderSvg, T } from '../cli-svg-lib';
+import { ansiToLines, bannerLines, box, escapeXml, lineCols, promptLine, renderSvg, stripCaptureNoise, T } from '../cli-svg-lib';
 
 const ESC = '';
 const g = (code: number) => `${ESC}[${code}m`;
@@ -51,6 +51,55 @@ describe('ansiToLines', () => {
     const segs = ansiToLines(`${g(32)}foo${g(32)}bar${RESET}`)[0];
     expect(segs).toHaveLength(1);
     expect(segs[0].t).toBe('foobar');
+  });
+});
+
+// ─── capture noise filter ──────────────────────────────────────────────────────
+
+describe('stripCaptureNoise', () => {
+  const NODE_WARNING = "(node:92948) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.";
+  const NODE_FOOTER = '(Use `node --trace-warnings ...` to show where the warning was created)';
+  const PNPM_WARNING = '[WARN] Failed to replace env in config: ${NODE_AUTH_TOKEN}';
+
+  it('drops the FORCE_COLOR warning the renderer induces, along with its trace-warnings footer', () => {
+    expect(stripCaptureNoise(`${NODE_WARNING}\n${NODE_FOOTER}\nUsage: cihub <command>`)).toBe('Usage: cihub <command>');
+  });
+
+  it('never leaks the recording host PID into the rendered art', () => {
+    expect(stripCaptureNoise(`${NODE_WARNING}\nreal output`)).not.toMatch(/node:\d+/);
+  });
+
+  it("drops pnpm's .npmrc token complaint", () => {
+    expect(stripCaptureNoise(`${PNPM_WARNING}\nreal output`)).toBe('real output');
+  });
+
+  // pnpm pads the tag when it is not colouring and does not when it is, so the renderer sees
+  // both spellings depending on whether FORCE_COLOR reached the inner process.
+  it('drops the padded spelling of the same pnpm warning', () => {
+    expect(stripCaptureNoise('[ WARN ] Failed to replace env in config: ${NODE_AUTH_TOKEN}\nreal output')).toBe('real output');
+  });
+
+  it('matches noise that arrived wrapped in ANSI colour codes', () => {
+    expect(
+      stripCaptureNoise(
+        `${g(43)}${g(33)}[${RESET}${g(30)}WARN${RESET}${g(33)}]${RESET} Failed to replace env in config: \${NODE_AUTH_TOKEN}\nreal output`,
+      ),
+    ).toBe('real output');
+  });
+
+  it('keeps a trace-warnings footer whose own warning was kept', () => {
+    const kept = '(node) some other shape of warning';
+    expect(stripCaptureNoise(`${kept}\n${NODE_FOOTER}`)).toBe(`${kept}\n${NODE_FOOTER}`);
+  });
+
+  it('leaves legitimate command output byte-identical, blank lines included', () => {
+    const real = 'Commands:\n\n  wizard   Guided setup\n  status   Show hub status\n';
+    expect(stripCaptureNoise(real)).toBe(real);
+  });
+
+  it('does not swallow a genuine warning that merely starts with a bracket tag', () => {
+    const real = '[ WARN ] Docker daemon is not running';
+    expect(stripCaptureNoise(real)).toBe(real);
   });
 });
 

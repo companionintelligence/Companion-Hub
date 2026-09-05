@@ -2014,5 +2014,10 @@
   "HUB_POOL_ROUTING_FAILOVER": "Failed over from {{nodes}}",
   "HUB_POOL_DISCOVERABLE_HELP": "CI-Hub devices on your tailnet that are not paired with this one yet.",
   "HUB_POOL_DISCOVERY_UNCONFIGURED": "Peer discovery needs a Tailscale API credential this Hub does not have. Set TAILSCALE_OAUTH_CLIENT_ID and TAILSCALE_OAUTH_CLIENT_SECRET in the Hub's .env and restart. Without it this Hub cannot list your tailnet, but another Hub can still pair with it — its request appears below.",
-  "HUB_POOL_PENDING_HELP": "Pairing is two-way: approve a request here, and the other Hub approves yours."
+  "HUB_POOL_PENDING_HELP": "Pairing is two-way: approve a request here, and the other Hub approves yours.",
+  "HUB_POOL_CANCEL_REQUEST_BUTTON": "Cancel request",
+  "HUB_POOL_CANCEL_REQUEST_SUCCESS": "Pairing request cancelled.",
+  "HUB_POOL_CANCEL_REQUEST_ERROR": "Failed to cancel the pairing request.",
+  "HUB_POOL_UNPAIR_CONFIRM": "Unpair {{name}}? This deletes the pairing and revokes both Hubs’ tokens, so neither node can route to the other until you pair again and the other Hub approves.",
+  "HUB_POOL_STATUS_ERROR": "Could not load the Hub Pool status. This page retries every 15 seconds; pooling itself keeps running either way."
 }
