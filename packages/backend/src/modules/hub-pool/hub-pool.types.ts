@@ -1,5 +1,6 @@
 import type { InferenceBackendType } from '@ci-hub/common/types';
 import type { HubPoolPeer } from '@/core/database/drizzle/types';
+import type { HubPoolDisabledBy, HubPoolPreferences } from '@/common/helpers/hub-pool';
 
 /** One backend's live model availability on a node, as reported by `GET /inference/pool/capabilities`. */
 export interface PoolPeerBackendCapability {
@@ -51,4 +52,45 @@ export type PublicHubPoolPeer = Omit<HubPoolPeer, 'verifyTokenHash' | 'presentTo
 export function toPublicPeer(peer: HubPoolPeer): PublicHubPoolPeer {
   const { verifyTokenHash: _verifyTokenHash, presentTokenEncrypted: _presentTokenEncrypted, ...publicFields } = peer;
   return publicFields;
+}
+
+/** A peer row plus what this node currently has in flight to it. Built from {@link toPublicPeer}, so the token columns cannot reach it. */
+export interface PoolStatusPeer extends PublicHubPoolPeer {
+  /** Requests this node has forwarded to the peer and not yet finished reading. A live gauge reset by a restart, never a total. */
+  inFlightRequests: number;
+}
+
+export interface PoolStatusLocalNode {
+  nodeFqdn: string | null;
+  tailnet: string | null;
+  tailscaleConnected: boolean;
+  /** Requests this node's own engines are serving — its apps' and its peers' alike. */
+  inFlightRequests: number;
+  hardwareTier: string | null;
+  backends: PoolPeerBackendCapability[];
+  /** Why the local inventory is empty, when it is — a down backend must read differently from a node with no models. */
+  capabilitiesError: string | null;
+}
+
+/**
+ * Why pooling is or isn't routing right now. `disabled_by_env` and `disabled_by_setting` are kept
+ * apart on purpose: the UI must be able to say "your .env overrides this" rather than showing a
+ * toggle that appears to do nothing.
+ */
+export type PoolStatusReason = 'active' | 'no_peers' | 'disabled_by_env' | 'disabled_by_setting';
+
+export interface PoolStatus {
+  /** Effective kill-switch state (env override applied). Not the same as `settings.poolEnabled`. */
+  enabled: boolean;
+  disabledBy: HubPoolDisabledBy | null;
+  reason: PoolStatusReason;
+  /** Whether apps are actually being routed through the pool: enabled AND at least one connected peer. */
+  routingActive: boolean;
+  /** The persisted settings as stored, before the env override — what a settings form should render. */
+  settings: HubPoolPreferences;
+  /** Whether TAILSCALE_OAUTH_CLIENT_ID/SECRET are set, i.e. whether peer discovery can work at all. Never the credentials themselves. */
+  tailscaleAdminApiConfigured: boolean;
+  localNode: PoolStatusLocalNode;
+  peers: PoolStatusPeer[];
+  peerCounts: { total: number; connected: number; pending: number; unreachable: number };
 }

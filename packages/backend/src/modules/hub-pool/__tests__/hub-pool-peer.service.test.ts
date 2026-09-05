@@ -7,6 +7,8 @@ import { TailscaleService } from '@/modules/tailscale/tailscale.service';
 import { TailscaleAdminApiService } from '@/modules/tailscale/tailscale-admin-api.service';
 import { InferenceRouterService } from '@/modules/inference/inference-router.service';
 import type { HubPoolPeer } from '@/core/database/drizzle/types';
+import { ConfigurationService } from '@/core/config/configuration.service';
+import { DEFAULT_POOL_HEALTH_POLL_SECONDS, DEFAULT_POOL_LOCAL_AFFINITY, type HubPoolPreferences } from '@/common/helpers/hub-pool';
 import { HubPoolPeerRepository } from '../hub-pool-peer.repository';
 import { HubPoolPeerService } from '../hub-pool-peer.service';
 import { HubPoolLoadService, LOCAL_CANDIDATE_KEY } from '../hub-pool-load.service';
@@ -36,8 +38,19 @@ describe('HubPoolPeerService', () => {
   let tailscaleAdminApi: MockProxy<TailscaleAdminApiService>;
   let encryption: MockProxy<EncryptionService>;
   let inferenceRouter: MockProxy<InferenceRouterService>;
+  let configuration: MockProxy<ConfigurationService>;
   let loadService: HubPoolLoadService;
   let service: HubPoolPeerService;
+
+  /** Repoint the persisted settings, as a settings PATCH would. */
+  function setPoolPreferences(overrides: Partial<HubPoolPreferences>): void {
+    configuration.getHubPoolPreferences.mockReturnValue({
+      poolEnabled: true,
+      poolLocalAffinity: DEFAULT_POOL_LOCAL_AFFINITY,
+      poolHealthPollSeconds: DEFAULT_POOL_HEALTH_POLL_SECONDS,
+      ...overrides,
+    });
+  }
 
   beforeEach(() => {
     repo = mock<HubPoolPeerRepository>();
@@ -45,6 +58,8 @@ describe('HubPoolPeerService', () => {
     tailscaleAdminApi = mock<TailscaleAdminApiService>();
     encryption = mock<EncryptionService>();
     inferenceRouter = mock<InferenceRouterService>();
+    configuration = mock<ConfigurationService>();
+    setPoolPreferences({});
 
     encryption.encrypt.mockImplementation((data: string) => `ENC:${data}`);
     encryption.decrypt.mockImplementation((data: string) => data.replace(/^ENC:/, ''));
@@ -64,7 +79,16 @@ describe('HubPoolPeerService', () => {
     });
 
     loadService = new HubPoolLoadService();
-    service = new HubPoolPeerService(mock<LoggerService>(), repo, tailscaleService, tailscaleAdminApi, encryption, inferenceRouter, loadService);
+    service = new HubPoolPeerService(
+      mock<LoggerService>(),
+      repo,
+      tailscaleService,
+      tailscaleAdminApi,
+      encryption,
+      inferenceRouter,
+      loadService,
+      configuration,
+    );
     global.fetch = vi.fn();
   });
 
@@ -160,6 +184,15 @@ describe('HubPoolPeerService', () => {
       await expect(service.receivePairingRequest('requester.tailxyz.ts.net', undefined, 'raw-token-value')).rejects.toThrow(
         ServiceUnavailableException,
       );
+
+      expect(repo.create).not.toHaveBeenCalled();
+    });
+
+    it('refuses intake when the operator turned pooling off in Settings, naming that switch and not the env one', async () => {
+      setPoolPreferences({ poolEnabled: false });
+      repo.findByNodeFqdn.mockResolvedValue(undefined);
+
+      await expect(service.receivePairingRequest('requester.tailxyz.ts.net', undefined, 'raw-token-value')).rejects.toThrow(/Settings/);
 
       expect(repo.create).not.toHaveBeenCalled();
     });
@@ -450,6 +483,120 @@ describe('HubPoolPeerService', () => {
       // `undefined` is the wire signal for "this build cannot measure it", and peers rank that as
       // mid-load — an idle node must not be handed that penalty.
       await expect(service.getOwnCapabilities()).resolves.toMatchObject({ inFlightRequests: 0 });
+    });
+
+    it('builds the model inventory once for concurrent callers instead of fanning out twice', async () => {
+      // getStatus + listModels are twelve uncached backend health checks between them; a peer probe
+      // arriving alongside an operator status poll must not pay for it twice.
+      await Promise.all([service.getOwnCapabilities(), service.getOwnCapabilities()]);
+
+      expect(inferenceRouter.getStatus).toHaveBeenCalledTimes(1);
+      expect(inferenceRouter.listModels).toHaveBeenCalledTimes(1);
+    });
+
+    it('reuses the cached inventory but re-reads the queue depth on every call', async () => {
+      await service.getOwnCapabilities();
+      loadService.acquire(LOCAL_CANDIDATE_KEY);
+
+      const second = await service.getOwnCapabilities();
+
+      expect(inferenceRouter.getStatus).toHaveBeenCalledTimes(1);
+      // A cached load figure would tell a ranking peer we are idle while our engines are busy.
+      expect(second.inFlightRequests).toBe(1);
+    });
+  });
+
+  describe('getPoolStatus', () => {
+    beforeEach(() => {
+      inferenceRouter.getStatus.mockRejectedValue(new Error('ollama unreachable'));
+      inferenceRouter.listModels.mockRejectedValue(new Error('ollama unreachable'));
+      tailscaleAdminApi.isConfigured.mockReturnValue(false);
+      repo.listAll.mockResolvedValue([]);
+    });
+
+    it('reports no_peers when pooling is on but nothing is paired', async () => {
+      const status = await service.getPoolStatus();
+
+      expect(status).toMatchObject({
+        enabled: true,
+        disabledBy: null,
+        reason: 'no_peers',
+        routingActive: false,
+        tailscaleAdminApiConfigured: false,
+        peerCounts: { total: 0, connected: 0, pending: 0, unreachable: 0 },
+      });
+    });
+
+    it('separates a .env override from an in-product one so the UI can name the right switch', async () => {
+      setPoolPreferences({ poolEnabled: true });
+      vi.stubEnv('HUB_POOL_USER_DISABLED', 'true');
+
+      const fromEnv = await service.getPoolStatus();
+      expect(fromEnv).toMatchObject({ enabled: false, disabledBy: 'env', reason: 'disabled_by_env' });
+      // The persisted value is reported unchanged, so the settings form still shows what is stored.
+      expect(fromEnv.settings.poolEnabled).toBe(true);
+
+      vi.unstubAllEnvs();
+      setPoolPreferences({ poolEnabled: false });
+
+      expect(await service.getPoolStatus()).toMatchObject({ enabled: false, disabledBy: 'setting', reason: 'disabled_by_setting' });
+    });
+
+    it('is only routingActive when pooling is enabled AND a peer is connected', async () => {
+      repo.listAll.mockResolvedValue([mockPeer({ id: 'p1', status: 'connected', direction: 'outbound' })]);
+
+      expect(await service.getPoolStatus()).toMatchObject({ reason: 'active', routingActive: true });
+
+      setPoolPreferences({ poolEnabled: false });
+
+      expect(await service.getPoolStatus()).toMatchObject({ reason: 'disabled_by_setting', routingActive: false });
+    });
+
+    it('carries every peer with its live queue depth, counted by status', async () => {
+      repo.listAll.mockResolvedValue([
+        mockPeer({ id: 'p-connected', nodeFqdn: 'a.example-tailnet.ts.net', status: 'connected' }),
+        mockPeer({ id: 'p-pending', nodeFqdn: 'b.example-tailnet.ts.net', status: 'pending' }),
+        mockPeer({ id: 'p-down', nodeFqdn: 'c.example-tailnet.ts.net', status: 'unreachable', consecutiveFailures: 3 }),
+      ]);
+      loadService.acquire('p-connected');
+      loadService.acquire('p-connected');
+
+      const status = await service.getPoolStatus();
+
+      expect(status.peerCounts).toEqual({ total: 3, connected: 1, pending: 1, unreachable: 1 });
+      expect(status.peers.map((p) => [p.id, p.inFlightRequests])).toEqual([
+        ['p-connected', 2],
+        ['p-pending', 0],
+        ['p-down', 0],
+      ]);
+      expect(status.peers[2]).toMatchObject({ status: 'unreachable', consecutiveFailures: 3 });
+    });
+
+    it('never exposes the token columns, whatever a peer row holds', async () => {
+      repo.listAll.mockResolvedValue([mockPeer({ verifyTokenHash: 'secret-hash', presentTokenEncrypted: 'ENC:secret-token' })]);
+
+      const status = await service.getPoolStatus();
+
+      expect(status.peers[0]).not.toHaveProperty('verifyTokenHash');
+      expect(status.peers[0]).not.toHaveProperty('presentTokenEncrypted');
+      expect(JSON.stringify(status)).not.toContain('secret-hash');
+      expect(JSON.stringify(status)).not.toContain('secret-token');
+    });
+
+    it('still answers while the local backends are down, saying why the inventory is empty', async () => {
+      const status = await service.getPoolStatus();
+
+      // The pairing and kill-switch halves of this payload are exactly what an operator needs
+      // while inference is broken, so a dead backend must not 500 the whole card.
+      expect(status.localNode).toMatchObject({ hardwareTier: null, backends: [], capabilitiesError: 'ollama unreachable' });
+      expect(status.localNode.nodeFqdn).toBe('self-hub.tailxyz.ts.net');
+    });
+
+    it('never triggers peer discovery, which is a Tailscale OAuth exchange plus a probe per device', async () => {
+      await service.getPoolStatus();
+
+      expect(tailscaleAdminApi.listDevices).not.toHaveBeenCalled();
+      expect(global.fetch).not.toHaveBeenCalled();
     });
   });
 });

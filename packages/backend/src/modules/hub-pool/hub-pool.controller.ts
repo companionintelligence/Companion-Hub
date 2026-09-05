@@ -1,16 +1,32 @@
-import { Body, Controller, Delete, ForbiddenException, Get, Param, Post, Req, Res, ServiceUnavailableException, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Delete,
+  ForbiddenException,
+  Get,
+  Param,
+  Patch,
+  Post,
+  Query,
+  Req,
+  Res,
+  ServiceUnavailableException,
+  UseGuards,
+} from '@nestjs/common';
 import type { Request, Response } from 'express';
 import { ApiTags } from '@nestjs/swagger';
 import type { InferenceBackendType } from '@ci-hub/common/types';
 import { AuthGuard } from '@/modules/auth/auth.guard';
 import { InternalNetworkGuard } from '@/modules/auth/internal-network.guard';
 import { TailscaleService } from '@/modules/tailscale/tailscale.service';
-import { isHubPoolEnabled } from '@/common/helpers/hub-pool';
+import { ConfigurationService } from '@/core/config/configuration.service';
+import { describeHubPoolDisabled } from '@/common/helpers/hub-pool';
 import { PoolAppGuard } from './guards/pool-app.guard';
 import { PoolPeerGuard } from './guards/pool-peer.guard';
 import { HubPoolPeerService } from './hub-pool-peer.service';
+import { HubPoolRoutingLogService } from './hub-pool-routing-log.service';
 import { ALL_BACKEND_TYPES, PoolProxyService } from './hub-pool-proxy.service';
-import { IncomingPairingRequestBody, PairingConfirmBody, PairPeerBody } from './hub-pool.dto';
+import { IncomingPairingRequestBody, PairingConfirmBody, PairPeerBody, RoutingLogQueryDto, UpdateHubPoolPreferencesBody } from './hub-pool.dto';
 import { toPublicPeer } from './hub-pool.types';
 
 /**
@@ -32,6 +48,8 @@ export class HubPoolController {
     private readonly peerService: HubPoolPeerService,
     private readonly proxyService: PoolProxyService,
     private readonly tailscaleService: TailscaleService,
+    private readonly configuration: ConfigurationService,
+    private readonly routingLog: HubPoolRoutingLogService,
   ) {}
 
   // ── Discovery / identification ──────────────────────────────────────────
@@ -40,6 +58,43 @@ export class HubPoolController {
   async identify() {
     const status = await this.tailscaleService.getStatusCached();
     return { isCiHub: true, nodeFqdn: status.nodeFqdn };
+  }
+
+  // ── Operator-facing status, settings and observability ──────────────────
+
+  /**
+   * One call answering "is pooling on, why or why not, who is in the pool, what can they serve, and
+   * how loaded is everything". Safe to poll: see `HubPoolPeerService.getPoolStatus` for what it does
+   * and does not touch. Peer rows come from `toPublicPeer`, so the token columns cannot leak here.
+   */
+  @UseGuards(AuthGuard)
+  @Get('status')
+  async poolStatus() {
+    return { ...(await this.peerService.getPoolStatus()), routing: this.routingLog.summary() };
+  }
+
+  @UseGuards(AuthGuard)
+  @Get('settings')
+  async getPoolSettings() {
+    return this.configuration.getHubPoolPreferences();
+  }
+
+  /**
+   * Persisted pool tuning. No app restart is scheduled, unlike the inference preferences: every
+   * value here is read on the Hub's own request/poll path, so it takes effect on the next request
+   * without an app's environment changing.
+   */
+  @UseGuards(AuthGuard)
+  @Patch('settings')
+  async updatePoolSettings(@Body() body: UpdateHubPoolPreferencesBody) {
+    return this.configuration.setHubPoolPreferences(body);
+  }
+
+  /** Recent routing decisions, newest first. Metadata only — never prompts or response bodies. */
+  @UseGuards(AuthGuard)
+  @Get('routing-log')
+  async getPoolRoutingLog(@Query() query: RoutingLogQueryDto) {
+    return { entries: this.routingLog.list(query.limit), summary: this.routingLog.summary() };
   }
 
   // ── Operator-facing peer management ─────────────────────────────────────
@@ -127,10 +182,11 @@ export class HubPoolController {
   @UseGuards(PoolPeerGuard)
   @Get('capabilities')
   async capabilities(@Req() req: Request) {
-    if (!isHubPoolEnabled()) {
+    const enabled = this.peerService.enabledState();
+    if (!enabled.enabled) {
       // Answering "I have nothing" would get cached as this node's capabilities; refusing instead
       // makes the caller's health probe fail outright, which is what should mark us unreachable.
-      throw new ServiceUnavailableException('Hub pooling is disabled on this node (HUB_POOL_USER_DISABLED)');
+      throw new ServiceUnavailableException(describeHubPoolDisabled(enabled.disabledBy));
     }
     if (req.poolPeer?.status !== 'connected') {
       throw new ForbiddenException('Peer is not connected');
@@ -291,6 +347,8 @@ export class HubPoolController {
       res.status(400).json({ error: 'Missing or invalid X-Hub-Pool-Backend header' });
       return;
     }
-    await this.proxyService.forwardToLocalBackendAndRespond(backend, path, method, body, res);
+    // The peer's FQDN comes from its `hub_pool_peer` row, not the caller-supplied header, so the
+    // routing log records who the guard actually authenticated rather than who claimed to call.
+    await this.proxyService.forwardToLocalBackendAndRespond(backend, path, method, body, res, peer.nodeFqdn);
   }
 }
