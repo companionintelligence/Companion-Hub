@@ -1255,6 +1255,22 @@ export type UpdateRocmInstallStateBody = {
     message?: string;
 };
 
+export type PairPeerBody = {
+    [key: string]: unknown;
+};
+
+export type IncomingPairingRequestBody = {
+    [key: string]: unknown;
+};
+
+export type PairingConfirmBody = {
+    [key: string]: unknown;
+};
+
+export type PairingRejectBody = {
+    [key: string]: unknown;
+};
+
 export type CreateApiKeyBody = {
     name: string;
     capability: 'read' | 'write' | 'full';
@@ -3902,6 +3918,391 @@ export type GetAppCredentialsEnv1Responses = {
     200: unknown;
 };
 
+export type IdentifyData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/inference/pool/identify';
+};
+
+export type IdentifyResponses = {
+    200: unknown;
+};
+
+export type ListPeersData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/inference/pool/peers';
+};
+
+export type ListPeersResponses = {
+    200: unknown;
+};
+
+export type ListDiscoverableData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/inference/pool/peers/discoverable';
+};
+
+export type ListDiscoverableResponses = {
+    200: unknown;
+};
+
+export type PairPeerData = {
+    body: PairPeerBody;
+    path?: never;
+    query?: never;
+    url: '/api/inference/pool/peers/pair';
+};
+
+export type PairPeerResponses = {
+    201: unknown;
+};
+
+export type ApprovePeerData = {
+    body?: never;
+    path: {
+        id: string;
+    };
+    query?: never;
+    url: '/api/inference/pool/peers/{id}/approve';
+};
+
+export type ApprovePeerResponses = {
+    201: unknown;
+};
+
+export type RejectPeerData = {
+    body?: never;
+    path: {
+        id: string;
+    };
+    query?: never;
+    url: '/api/inference/pool/peers/{id}/reject';
+};
+
+export type RejectPeerResponses = {
+    201: unknown;
+};
+
+export type RemovePeerData = {
+    body?: never;
+    path: {
+        id: string;
+    };
+    query?: never;
+    url: '/api/inference/pool/peers/{id}';
+};
+
+export type RemovePeerResponses = {
+    200: unknown;
+};
+
+export type HandlePairingRequestData = {
+    body: IncomingPairingRequestBody;
+    path?: never;
+    query?: never;
+    url: '/api/inference/pool/pair/request';
+};
+
+export type HandlePairingRequestResponses = {
+    201: unknown;
+};
+
+export type HandlePairingConfirmData = {
+    body: PairingConfirmBody;
+    path?: never;
+    query?: never;
+    url: '/api/inference/pool/pair/confirm';
+};
+
+export type HandlePairingConfirmResponses = {
+    201: unknown;
+};
+
+export type HandlePairingRejectData = {
+    body: PairingRejectBody;
+    path?: never;
+    query?: never;
+    url: '/api/inference/pool/pair/reject';
+};
+
+export type HandlePairingRejectResponses = {
+    201: unknown;
+};
+
+export type CapabilitiesData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/inference/pool/capabilities';
+};
+
+export type CapabilitiesResponses = {
+    200: unknown;
+};
+
+export type ProxyChatCompletionsData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/inference/pool/v1/chat/completions';
+};
+
+export type ProxyChatCompletionsResponses = {
+    201: unknown;
+};
+
+export type ProxyCompletionsData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/inference/pool/v1/completions';
+};
+
+export type ProxyCompletionsResponses = {
+    201: unknown;
+};
+
+export type ProxyEmbeddingsData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/inference/pool/v1/embeddings';
+};
+
+export type ProxyEmbeddingsResponses = {
+    201: unknown;
+};
+
+export type ProxyOllamaGenerateData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/inference/pool/api/generate';
+};
+
+export type ProxyOllamaGenerateResponses = {
+    201: unknown;
+};
+
+export type ProxyOllamaEmbeddingsData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/inference/pool/api/embeddings';
+};
+
+export type ProxyOllamaEmbeddingsResponses = {
+    201: unknown;
+};
+
+export type ProxyOpenAiModelsListData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/inference/pool/v1/models';
+};
+
+export type ProxyOpenAiModelsListResponses = {
+    200: unknown;
+};
+
+export type ProxyOllamaTagsData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/inference/pool/api/tags';
+};
+
+export type ProxyOllamaTagsResponses = {
+    200: unknown;
+};
+
+export type LocalChatCompletionsData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/inference/pool/local/v1/chat/completions';
+};
+
+export type LocalChatCompletionsResponses = {
+    201: unknown;
+};
+
+export type LocalCompletionsData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/inference/pool/local/v1/completions';
+};
+
+export type LocalCompletionsResponses = {
+    201: unknown;
+};
+
+export type LocalEmbeddingsData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/inference/pool/local/v1/embeddings';
+};
+
+export type LocalEmbeddingsResponses = {
+    201: unknown;
+};
+
+export type LocalOllamaGenerateData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/inference/pool/local/api/generate';
+};
+
+export type LocalOllamaGenerateResponses = {
+    201: unknown;
+};
+
+export type LocalOllamaEmbeddingsData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/inference/pool/local/api/embeddings';
+};
+
+export type LocalOllamaEmbeddingsResponses = {
+    201: unknown;
+};
+
+export type LocalOpenAiModelsData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/inference/pool/local/v1/models';
+};
+
+export type LocalOpenAiModelsResponses = {
+    200: unknown;
+};
+
+export type LocalOllamaTagsData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/inference/pool/local/api/tags';
+};
+
+export type LocalOllamaTagsResponses = {
+    200: unknown;
+};
+
+export type GetStatus4Data = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/tailscale/status';
+};
+
+export type GetStatus4Responses = {
+    default: {
+        [key: string]: unknown;
+    };
+};
+
+export type GetStatus4Response = GetStatus4Responses[keyof GetStatus4Responses];
+
+export type SyncExposureData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/tailscale/sync';
+};
+
+export type SyncExposureResponses = {
+    /**
+     * Sync triggered
+     */
+    200: unknown;
+};
+
+export type StartAuthData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/tailscale/auth/start';
+};
+
+export type StartAuthResponses = {
+    default: {
+        [key: string]: unknown;
+    };
+};
+
+export type StartAuthResponse = StartAuthResponses[keyof StartAuthResponses];
+
+export type ConnectWithAuthKeyData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/tailscale/auth/key';
+};
+
+export type ConnectWithAuthKeyResponses = {
+    default: {
+        [key: string]: unknown;
+    };
+};
+
+export type ConnectWithAuthKeyResponse = ConnectWithAuthKeyResponses[keyof ConnectWithAuthKeyResponses];
+
+export type CheckAuthData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/tailscale/auth/check';
+};
+
+export type CheckAuthResponses = {
+    default: {
+        [key: string]: unknown;
+    };
+};
+
+export type CheckAuthResponse = CheckAuthResponses[keyof CheckAuthResponses];
+
+export type DisconnectData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/tailscale/disconnect';
+};
+
+export type DisconnectResponses = {
+    default: {
+        [key: string]: unknown;
+    };
+};
+
+export type DisconnectResponse = DisconnectResponses[keyof DisconnectResponses];
+
+export type GetServeStatusData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/tailscale/serve';
+};
+
+export type GetServeStatusResponses = {
+    default: {
+        [key: string]: unknown;
+    };
+};
+
+export type GetServeStatusResponse = GetServeStatusResponses[keyof GetServeStatusResponses];
+
 export type ListKeysData = {
     body?: never;
     path?: never;
@@ -4349,110 +4750,6 @@ export type HubLogsEventsData = {
 export type HubLogsEventsResponses = {
     200: unknown;
 };
-
-export type GetStatus4Data = {
-    body?: never;
-    path?: never;
-    query?: never;
-    url: '/api/tailscale/status';
-};
-
-export type GetStatus4Responses = {
-    default: {
-        [key: string]: unknown;
-    };
-};
-
-export type GetStatus4Response = GetStatus4Responses[keyof GetStatus4Responses];
-
-export type SyncExposureData = {
-    body?: never;
-    path?: never;
-    query?: never;
-    url: '/api/tailscale/sync';
-};
-
-export type SyncExposureResponses = {
-    /**
-     * Sync triggered
-     */
-    200: unknown;
-};
-
-export type StartAuthData = {
-    body?: never;
-    path?: never;
-    query?: never;
-    url: '/api/tailscale/auth/start';
-};
-
-export type StartAuthResponses = {
-    default: {
-        [key: string]: unknown;
-    };
-};
-
-export type StartAuthResponse = StartAuthResponses[keyof StartAuthResponses];
-
-export type ConnectWithAuthKeyData = {
-    body?: never;
-    path?: never;
-    query?: never;
-    url: '/api/tailscale/auth/key';
-};
-
-export type ConnectWithAuthKeyResponses = {
-    default: {
-        [key: string]: unknown;
-    };
-};
-
-export type ConnectWithAuthKeyResponse = ConnectWithAuthKeyResponses[keyof ConnectWithAuthKeyResponses];
-
-export type CheckAuthData = {
-    body?: never;
-    path?: never;
-    query?: never;
-    url: '/api/tailscale/auth/check';
-};
-
-export type CheckAuthResponses = {
-    default: {
-        [key: string]: unknown;
-    };
-};
-
-export type CheckAuthResponse = CheckAuthResponses[keyof CheckAuthResponses];
-
-export type DisconnectData = {
-    body?: never;
-    path?: never;
-    query?: never;
-    url: '/api/tailscale/disconnect';
-};
-
-export type DisconnectResponses = {
-    default: {
-        [key: string]: unknown;
-    };
-};
-
-export type DisconnectResponse = DisconnectResponses[keyof DisconnectResponses];
-
-export type GetServeStatusData = {
-    body?: never;
-    path?: never;
-    query?: never;
-    url: '/api/tailscale/serve';
-};
-
-export type GetServeStatusResponses = {
-    default: {
-        [key: string]: unknown;
-    };
-};
-
-export type GetServeStatusResponse = GetServeStatusResponses[keyof GetServeStatusResponses];
 
 export type GetGuestLinksData = {
     body?: never;

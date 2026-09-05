@@ -13,6 +13,7 @@ import { MtplxBackend } from '../backends/mtplx.backend';
 import { DsparkBackend } from '../backends/dspark.backend';
 import { LuceboxBackend } from '../backends/lucebox.backend';
 import { CloudFallbackService } from '../cloud-fallback.service';
+import { HubPoolPeerService } from '@/modules/hub-pool/hub-pool-peer.service';
 import type { CloudProviderConfig, CuratedModel, HardwareProfile } from '@ci-hub/common/types';
 
 const OLLAMA_BASE_URL = 'http://host.docker.internal:11434';
@@ -104,6 +105,7 @@ describe('InferenceEnvResolver', () => {
   let dsparkBackend: MockProxy<DsparkBackend>;
   let luceboxBackend: MockProxy<LuceboxBackend>;
   let cloudFallback: MockProxy<CloudFallbackService>;
+  let hubPoolPeerService: MockProxy<HubPoolPeerService>;
 
   beforeEach(async () => {
     config = mock<ConfigurationService>();
@@ -117,6 +119,10 @@ describe('InferenceEnvResolver', () => {
     dsparkBackend = mock<DsparkBackend>();
     luceboxBackend = mock<LuceboxBackend>();
     cloudFallback = mock<CloudFallbackService>();
+    hubPoolPeerService = mock<HubPoolPeerService>();
+    // No connected peers by default — every existing test asserts the pre-pooling env shape, so
+    // the pool override must be a no-op unless a test opts in explicitly.
+    hubPoolPeerService.hasConnectedPeers.mockResolvedValue(false);
 
     config.getInferencePreferences.mockReturnValue({
       preferredBackend: null,
@@ -154,6 +160,7 @@ describe('InferenceEnvResolver', () => {
         { provide: DsparkBackend, useValue: dsparkBackend },
         { provide: LuceboxBackend, useValue: luceboxBackend },
         { provide: CloudFallbackService, useValue: cloudFallback },
+        { provide: HubPoolPeerService, useValue: hubPoolPeerService },
       ],
     }).compile();
 
@@ -404,5 +411,27 @@ describe('InferenceEnvResolver', () => {
     expect(env.CI_CHAT_MODEL).toBe('preferred:latest');
     expect(env.CI_EMBEDDING_MODEL).toBe('preferred-embed:latest');
     expect(env.CI_VISION_MODEL).toBe('gemma4:27b');
+  });
+
+  describe('multi-Hub pooling', () => {
+    it('routes CI_LLM_BASE_URL and OLLAMA_HOST through the pool proxy once a peer is connected', async () => {
+      hubPoolPeerService.hasConnectedPeers.mockResolvedValue(true);
+
+      const env = await service.resolve();
+
+      expect(env.CI_LLM_BASE_URL).toMatch(/\/api\/inference\/pool\/v1$/);
+      expect(env.OLLAMA_HOST).toMatch(/\/api\/inference\/pool$/);
+      expect(env.CI_OLLAMA_EMBED_HOST).toMatch(/\/api\/inference\/pool$/);
+      // The resolved model/context values are untouched by the override — only the transport changes.
+      expect(env.CI_CHAT_MODEL).toBe('hermes4:70b');
+    });
+
+    it('leaves CI_LLM_BASE_URL pointed directly at the backend when there are no connected peers', async () => {
+      hubPoolPeerService.hasConnectedPeers.mockResolvedValue(false);
+
+      const env = await service.resolve();
+
+      expect(env.CI_LLM_BASE_URL).toBe(`${OLLAMA_BASE_URL}/v1`);
+    });
   });
 });
