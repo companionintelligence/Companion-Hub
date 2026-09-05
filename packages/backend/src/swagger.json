@@ -3367,6 +3367,20 @@
         ]
       }
     },
+    "/api/inference/pool/pair/unpair": {
+      "post": {
+        "operationId": "handlePairingUnpair",
+        "parameters": [],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Hub Pool"
+        ]
+      }
+    },
     "/api/inference/pool/capabilities": {
       "get": {
         "operationId": "capabilities",
@@ -3437,9 +3451,37 @@
         ]
       }
     },
+    "/api/inference/pool/api/chat": {
+      "post": {
+        "operationId": "proxyOllamaChat",
+        "parameters": [],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Hub Pool"
+        ]
+      }
+    },
     "/api/inference/pool/api/embeddings": {
       "post": {
         "operationId": "proxyOllamaEmbeddings",
+        "parameters": [],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Hub Pool"
+        ]
+      }
+    },
+    "/api/inference/pool/api/embed": {
+      "post": {
+        "operationId": "proxyOllamaEmbed",
         "parameters": [],
         "responses": {
           "201": {
@@ -3471,6 +3513,48 @@
         "parameters": [],
         "responses": {
           "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Hub Pool"
+        ]
+      }
+    },
+    "/api/inference/pool/api/ps": {
+      "get": {
+        "operationId": "proxyOllamaPs",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Hub Pool"
+        ]
+      }
+    },
+    "/api/inference/pool/api/version": {
+      "get": {
+        "operationId": "proxyOllamaVersion",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Hub Pool"
+        ]
+      }
+    },
+    "/api/inference/pool/api/show": {
+      "post": {
+        "operationId": "proxyOllamaShow",
+        "parameters": [],
+        "responses": {
+          "201": {
             "description": ""
           }
         },
@@ -3535,9 +3619,37 @@
         ]
       }
     },
+    "/api/inference/pool/local/api/chat": {
+      "post": {
+        "operationId": "localOllamaChat",
+        "parameters": [],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Hub Pool"
+        ]
+      }
+    },
     "/api/inference/pool/local/api/embeddings": {
       "post": {
         "operationId": "localOllamaEmbeddings",
+        "parameters": [],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Hub Pool"
+        ]
+      }
+    },
+    "/api/inference/pool/local/api/embed": {
+      "post": {
+        "operationId": "localOllamaEmbed",
         "parameters": [],
         "responses": {
           "201": {

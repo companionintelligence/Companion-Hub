@@ -186,5 +186,54 @@ describe('HubPoolPeerService', () => {
 
       expect(repo.update).toHaveBeenCalledWith(peer.id, expect.objectContaining({ consecutiveFailures: 0 }));
     });
+
+    it('keeps polling unreachable rows, not just connected ones', async () => {
+      repo.listByStatuses.mockResolvedValue([]);
+
+      await (service as unknown as { refreshPeerHealth: () => Promise<void> }).refreshPeerHealth();
+
+      expect(repo.listByStatuses).toHaveBeenCalledWith(['connected', 'unreachable']);
+    });
+
+    it('drives a peer to unreachable and back to connected once it answers again', async () => {
+      const capabilities = { hardwareTier: 'high', backends: [], updatedAt: new Date().toISOString() };
+      const peer = mockPeer({ status: 'connected', consecutiveFailures: 2, presentTokenEncrypted: 'ENC:token' });
+      const refresh = (service as unknown as { refreshOnePeer: (p: HubPoolPeer) => Promise<void> }).refreshOnePeer.bind(service);
+
+      vi.mocked(global.fetch).mockRejectedValueOnce(new Error('timeout'));
+      await refresh(peer);
+      expect(repo.update).toHaveBeenLastCalledWith(peer.id, expect.objectContaining({ status: 'unreachable' }));
+
+      // The recovery half: the same row, now unreachable, is re-probed and answers.
+      vi.mocked(global.fetch).mockResolvedValueOnce(new Response(JSON.stringify(capabilities), { status: 200 }));
+      await refresh({ ...peer, status: 'unreachable', consecutiveFailures: 3 });
+
+      expect(repo.update).toHaveBeenLastCalledWith(peer.id, expect.objectContaining({ status: 'connected', consecutiveFailures: 0 }));
+    });
+  });
+
+  describe('removePeer', () => {
+    it('deletes the row and tells the peer to drop its half of the pairing', async () => {
+      const peer = mockPeer({ id: 'remove-me', status: 'connected', presentTokenEncrypted: 'ENC:their-token' });
+      repo.findById.mockResolvedValue(peer);
+      vi.mocked(global.fetch).mockResolvedValue(new Response('{}', { status: 200 }));
+
+      await service.removePeer('remove-me');
+
+      expect(repo.delete).toHaveBeenCalledWith('remove-me');
+      const [url, init] = vi.mocked(global.fetch).mock.calls[0] as [string, RequestInit];
+      expect(url).toContain('peer-hub.tailxyz.ts.net/api/inference/pool/pair/unpair');
+      expect((init.headers as Record<string, string>).Authorization).toBe('Bearer their-token');
+    });
+
+    it('still removes the row when the unpair callback fails', async () => {
+      const peer = mockPeer({ id: 'remove-me', status: 'connected', presentTokenEncrypted: 'ENC:their-token' });
+      repo.findById.mockResolvedValue(peer);
+      vi.mocked(global.fetch).mockRejectedValue(new Error('network down'));
+
+      await expect(service.removePeer('remove-me')).resolves.toBeUndefined();
+
+      expect(repo.delete).toHaveBeenCalledWith('remove-me');
+    });
   });
 });

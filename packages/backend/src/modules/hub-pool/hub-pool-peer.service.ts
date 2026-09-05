@@ -249,7 +249,40 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
   }
 
   async removePeer(id: string): Promise<void> {
+    const row = await this.repo.findById(id);
     await this.repo.delete(id);
+    if (!row) {
+      return;
+    }
+
+    // Best-effort, like rejectPairing: without it the peer keeps our row for up to three health
+    // polls (~90s) and keeps forwarding us work we now answer with a 401 from PoolPeerGuard.
+    try {
+      const presentToken = await this.getPresentToken(row);
+      const selfStatus = await this.tailscaleService.getStatusCached();
+      await fetch(`https://${row.nodeFqdn}/api/inference/pool/pair/unpair`, {
+        method: 'POST',
+        // No body: the peer identifies us from the guard headers, which is the only claim it should trust here.
+        headers: { 'X-Hub-Pool-Peer': selfStatus.nodeFqdn ?? '', Authorization: `Bearer ${presentToken}` },
+        signal: AbortSignal.timeout(HANDSHAKE_TIMEOUT_MS),
+      });
+    } catch (error) {
+      this.logger.debug(`[HubPool] best-effort unpair callback to ${row.nodeFqdn} failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  /** Inbound `POST /inference/pool/pair/unpair` — the peer removed us, so drop our side too. */
+  async handleRemoteUnpair(guardedRow: HubPoolPeer): Promise<void> {
+    await this.repo.delete(guardedRow.id);
+  }
+
+  /**
+   * Drop a peer's cached capability snapshot so the proxy stops offering it as a candidate until
+   * the next successful health probe re-populates it. Used when a peer answers a forwarded request
+   * with 401/403 — it no longer considers us paired, so its cached model list is a lie.
+   */
+  async clearCachedCapabilities(peerId: string): Promise<void> {
+    await this.repo.update(peerId, { lastCapabilities: null });
   }
 
   /** This node's current capabilities, served to peers at `GET /inference/pool/capabilities`. */
@@ -271,7 +304,9 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async refreshPeerHealth(): Promise<void> {
-    const peers = await this.listConnectedPeers();
+    // 'unreachable' rows are polled too: the peer may have come back (rebooted, network healed,
+    // or HUB_POOL_USER_DISABLED removed), and nothing else in the system would ever re-probe it.
+    const peers = await this.repo.listByStatuses(['connected', 'unreachable']);
     await Promise.all(peers.map((peer) => this.refreshOnePeer(peer)));
   }
 
@@ -288,6 +323,9 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
       }
       const capabilities = (await response.json()) as PoolPeerCapabilities;
       await this.repo.update(peer.id, {
+        // A successful probe is the only recovery path back out of 'unreachable' — without this the
+        // row would stay excluded from routing forever and Unpair would be the operator's only move.
+        status: 'connected',
         consecutiveFailures: 0,
         lastSeenAt: new Date().toISOString(),
         lastCapabilities: capabilities as unknown as Record<string, unknown>,

@@ -41,15 +41,25 @@ function capabilitiesWithModel(model: string): PoolPeerCapabilities {
   };
 }
 
-/** A real Writable so node:stream/promises `pipeline()` can drive it, plus the subset of Express's Response API the service calls, as spies so tests can assert on them. */
-function createMockResponse(): Response & { chunks: Buffer[] } {
+/**
+ * A real Writable so node:stream/promises `pipeline()` can drive it, plus the subset of Express's
+ * Response API the service calls, as spies so tests can assert on them. `writeFails` simulates the
+ * client vanishing mid-stream — the only way to reach the post-commit failure path.
+ */
+function createMockResponse(options: { writeFails?: boolean } = {}): Response & { chunks: Buffer[] } {
   const chunks: Buffer[] = [];
   const writable = new Writable({
     write(chunk, _enc, cb) {
+      if (options.writeFails) {
+        cb(new Error('client went away'));
+        return;
+      }
       chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
       cb();
     },
   }) as unknown as Response & { chunks: Buffer[] };
+  // pipeline() destroys the destination on failure, which emits 'error'; nothing else listens here.
+  writable.on('error', () => {});
   writable.chunks = chunks;
   writable.status = vi.fn().mockReturnValue(writable) as unknown as Response['status'];
   writable.setHeader = vi.fn().mockReturnValue(writable) as unknown as Response['setHeader'];
@@ -173,6 +183,130 @@ describe('PoolProxyService', () => {
       // signal to retry elsewhere.
       expect(fetchMock).toHaveBeenCalledTimes(1);
       expect(res.status).toHaveBeenCalledWith(400);
+    });
+
+    it('passes a local 401 through instead of retrying it elsewhere', async () => {
+      ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['llama3.2:3b'] });
+      const peer = mockPeer({ lastCapabilities: capabilitiesWithModel('llama3.2:3b') as unknown as Record<string, unknown> });
+      peerService.listConnectedPeers.mockResolvedValue([peer]);
+
+      const fetchMock = vi.mocked(global.fetch);
+      fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ error: 'bad api key' }), { status: 401 }));
+
+      const res = createMockResponse();
+      await service.proxyRequest({ path: '/v1/chat/completions', method: 'POST', body: { model: 'llama3.2:3b' }, model: 'llama3.2:3b', res });
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(res.status).toHaveBeenCalledWith(401);
+    });
+
+    it('fails over on a 429 from the local engine — an overloaded node should shed work to a peer', async () => {
+      ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['llama3.2:3b'] });
+      const peer = mockPeer({ lastCapabilities: capabilitiesWithModel('llama3.2:3b') as unknown as Record<string, unknown> });
+      peerService.listConnectedPeers.mockResolvedValue([peer]);
+      peerService.getPeerById.mockResolvedValue(peer);
+      peerService.getPresentToken.mockResolvedValue('raw-token');
+
+      const fetchMock = vi.mocked(global.fetch);
+      fetchMock
+        .mockResolvedValueOnce(new Response('busy', { status: 429 }))
+        .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+
+      const res = createMockResponse();
+      await service.proxyRequest({ path: '/v1/chat/completions', method: 'POST', body: { model: 'llama3.2:3b' }, model: 'llama3.2:3b', res });
+
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(res.status).toHaveBeenCalledWith(200);
+    });
+
+    it('fails over when a peer answers 401, and drops its cached capabilities', async () => {
+      const capabilities = capabilitiesWithModel('llama3.2:3b') as unknown as Record<string, unknown>;
+      const peerA = mockPeer({ id: 'peer-a', nodeFqdn: 'a.tailxyz.ts.net', lastCapabilities: capabilities });
+      const peerB = mockPeer({ id: 'peer-b', nodeFqdn: 'b.tailxyz.ts.net', lastCapabilities: capabilities });
+      peerService.listConnectedPeers.mockResolvedValue([peerA, peerB]);
+      peerService.getPeerById.mockImplementation(async (id) => (id === 'peer-a' ? peerA : peerB));
+      peerService.getPresentToken.mockResolvedValue('raw-token');
+
+      const fetchMock = vi.mocked(global.fetch);
+      fetchMock
+        // peerA no longer holds our row: its PoolPeerGuard 401s. That is the transport rejecting
+        // us, not a verdict on the caller's request.
+        .mockResolvedValueOnce(new Response('unauthorized', { status: 401 }))
+        .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+
+      const res = createMockResponse();
+      await service.proxyRequest({ path: '/v1/chat/completions', method: 'POST', body: { model: 'llama3.2:3b' }, model: 'llama3.2:3b', res });
+
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(fetchMock.mock.calls[1]?.[0]).toContain('b.tailxyz.ts.net');
+      expect(peerService.clearCachedCapabilities).toHaveBeenCalledWith('peer-a');
+      expect(res.status).toHaveBeenCalledWith(200);
+    });
+
+    it('fails over when the first candidate fails BEFORE the response is committed', async () => {
+      ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['llama3.2:3b'] });
+      const peer = mockPeer({ lastCapabilities: capabilitiesWithModel('llama3.2:3b') as unknown as Record<string, unknown> });
+      peerService.listConnectedPeers.mockResolvedValue([peer]);
+      peerService.getPeerById.mockResolvedValue(peer);
+      peerService.getPresentToken.mockResolvedValue('raw-token');
+
+      const fetchMock = vi.mocked(global.fetch);
+      fetchMock.mockRejectedValueOnce(new Error('ECONNREFUSED')).mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+
+      const res = createMockResponse();
+      await service.proxyRequest({ path: '/v1/chat/completions', method: 'POST', body: { model: 'llama3.2:3b' }, model: 'llama3.2:3b', res });
+
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(res.status).toHaveBeenCalledWith(200);
+      expect(res.status).toHaveBeenCalledTimes(1);
+    });
+
+    it('does NOT fail over when the stream dies AFTER the response is committed', async () => {
+      ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['llama3.2:3b'] });
+      const peer = mockPeer({ lastCapabilities: capabilitiesWithModel('llama3.2:3b') as unknown as Record<string, unknown> });
+      peerService.listConnectedPeers.mockResolvedValue([peer]);
+      peerService.getPeerById.mockResolvedValue(peer);
+      peerService.getPresentToken.mockResolvedValue('raw-token');
+
+      const fetchMock = vi.mocked(global.fetch);
+      fetchMock.mockResolvedValue(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+
+      const res = createMockResponse({ writeFails: true });
+      const destroySpy = vi.spyOn(res, 'destroy');
+
+      await service.proxyRequest({ path: '/v1/chat/completions', method: 'POST', body: { model: 'llama3.2:3b' }, model: 'llama3.2:3b', res });
+
+      // The local candidate already flushed status + headers, so the peer must not be tried: a
+      // second candidate writing into a committed response is ERR_HTTP_HEADERS_SENT.
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(res.status).toHaveBeenCalledTimes(1);
+      expect(res.status).toHaveBeenCalledWith(200);
+      expect(res.json).not.toHaveBeenCalled();
+      expect(destroySpy).toHaveBeenCalled();
+    });
+  });
+
+  describe('proxyLocalOnlyRequest', () => {
+    it('serves an Ollama native that has no model to route on from the local engine', async () => {
+      const fetchMock = vi.mocked(global.fetch);
+      fetchMock.mockResolvedValue(new Response(JSON.stringify({ models: [] }), { status: 200 }));
+
+      const res = createMockResponse();
+      await service.proxyLocalOnlyRequest('/api/show', 'POST', { model: 'llama3.2:3b' }, res);
+
+      const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+      expect(url).toBe('http://local-ollama:11434/api/show');
+      expect(JSON.parse(init.body as string)).toEqual({ model: 'llama3.2:3b' });
+      expect(res.status).toHaveBeenCalledWith(200);
+    });
+
+    it('502s when no local backend can serve the path', async () => {
+      vi.mocked(global.fetch).mockResolvedValue(new Response('not found', { status: 404 }));
+
+      const res = createMockResponse();
+      await service.proxyLocalOnlyRequest('/api/version', 'GET', undefined, res);
+
+      expect(res.status).toHaveBeenCalledWith(502);
     });
   });
 });
