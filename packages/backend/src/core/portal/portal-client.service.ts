@@ -117,7 +117,7 @@ export class PortalClientService {
     if (params.tags) query.tags = params.tags;
     if (params.sort) query.sort = params.sort;
     if (params.q) query.q = params.q;
-    return this.fetchJson('/store', { params: query });
+    return this.fetchJson('/store', { params: query, authenticated: true });
   }
 
   async fetchStoreAlternatives(): Promise<unknown> {
@@ -125,7 +125,7 @@ export class PortalClientService {
   }
 
   async fetchStoreCatalog(init?: { bypassCache?: boolean }): Promise<unknown> {
-    return this.fetchJson('/store', { bypassCache: init?.bypassCache });
+    return this.fetchJson('/store', { bypassCache: init?.bypassCache, authenticated: true });
   }
 
   async fetchStoreAppDetails(slug: string): Promise<{ screenshots?: string[]; demo_video?: string } | null> {
