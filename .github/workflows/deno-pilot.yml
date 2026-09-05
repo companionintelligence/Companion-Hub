@@ -1,0 +1,142 @@
+name: Deno Phase 1 Pilot (common + openclaw-plugin)
+
+# Phase 1 of the org's phased Deno migration plan. Scoped ONLY to the two packages
+# picked as zero-risk candidates: packages/common (framework-agnostic zod
+# schemas/types/validation, no decorators, no native deps) and
+# packages/openclaw-plugin (5 files, zero runtime deps, Web-standard fetch/SSE).
+#
+# This workflow does not touch, replace, or run in place of any of the repo's other
+# workflows (ci.yml etc.) and does not gate merges on its own — it is additive
+# verification for the pilot only. The full NestJS backend migration is a separate,
+# separately-gated effort and is out of scope here.
+
+# >>> ci-local:gated original triggers below, restore with `ci-local restore`
+# on:
+#   pull_request:
+#     paths:
+#       - 'packages/common/**'
+#       - 'packages/openclaw-plugin/**'
+#       - '.github/workflows/deno-pilot.yml'
+#   push:
+#     branches:
+#       - dev
+#     paths:
+#       - 'packages/common/**'
+#       - 'packages/openclaw-plugin/**'
+# <<< ci-local:gated
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  deno-common:
+    name: packages/common (Deno)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          registry-url: "https://npm.pkg.github.com"
+          scope: "@companionintelligence"
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Install workspace dependencies
+        run: pnpm install --frozen-lockfile
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      - name: deno check (typecheck all public entry points)
+        working-directory: packages/common
+        run: deno task typecheck
+
+      - name: deno run (real vitest suite, executed by the Deno runtime)
+        working-directory: packages/common
+        run: deno task test
+
+  deno-openclaw-plugin:
+    name: packages/openclaw-plugin (Deno)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          registry-url: "https://npm.pkg.github.com"
+          scope: "@companionintelligence"
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Install workspace dependencies
+        run: pnpm install --frozen-lockfile
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      - name: deno check (typecheck)
+        working-directory: packages/openclaw-plugin
+        run: deno task typecheck
+
+      - name: deno run (real vitest suite, executed by the Deno runtime)
+        working-directory: packages/openclaw-plugin
+        run: deno task test
+
+      - name: deno run register() directly from TS source (no esbuild step)
+        working-directory: packages/openclaw-plugin
+        run: deno task smoke
+
+  regression-check:
+    name: backend + frontend regression (unchanged consumers of packages/common)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          registry-url: "https://npm.pkg.github.com"
+          scope: "@companionintelligence"
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Install workspace dependencies
+        run: pnpm install --frozen-lockfile
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build packages/common (existing npm/tsc build, unchanged)
+        run: pnpm --filter @ci-hub/common run build
+
+      - name: backend typecheck
+        run: pnpm --filter backend run tsc
+
+      - name: frontend typecheck
+        run: pnpm --filter frontend run tsc
