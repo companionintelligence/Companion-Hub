@@ -10,6 +10,7 @@ import {
 import { approvePeer, pairPeer, rejectPeer, removePeer } from '@/api-client/sdk.gen';
 import { Button } from '@/components/ui/Button';
 import { Card, CardContent } from '@/components/ui/Card';
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/Dialog';
 import { Input } from '@/components/ui/Input';
 import { Switch } from '@/components/ui/Switch';
 import { useDemoMode } from '@/lib/hooks/use-demo-mode';
@@ -195,7 +196,16 @@ export const HubPoolSection = () => {
   // it must not be overwritten by the next 15s poll landing mid-edit.
   const [draft, setDraft] = useState<{ poolLocalAffinity: number; poolHealthPollSeconds: number } | null>(null);
 
-  const { data: status, isLoading: statusLoading } = useQuery({
+  // The peer an Unpair click is waiting on confirmation for; `null` closes the dialog.
+  const [unpairTarget, setUnpairTarget] = useState<PoolPeer | null>(null);
+
+  // `isPending`, not `isLoading`: an errored query has `isLoading` false and `data` undefined, so
+  // keying the skeleton off `isLoading` would leave a failed fetch rendering it forever.
+  const {
+    data: status,
+    isPending: statusPending,
+    isError: statusFailed,
+  } = useQuery({
     ...poolStatusOptions(),
     select: (payload) => payload as PoolStatus,
     refetchInterval: 15_000,
@@ -259,14 +269,41 @@ export const HubPoolSection = () => {
   const removeMutation = useMutation({
     mutationFn: (id: string) => removePeer({ path: { id } }),
     onSuccess: () => {
+      setUnpairTarget(null);
       toast.success(t('HUB_POOL_UNPAIR_SUCCESS'));
       invalidatePool();
     },
     onError: () => toast.error(t('HUB_POOL_UNPAIR_ERROR')),
   });
 
-  if (statusLoading || !status) {
+  /* Same DELETE as Unpair, split out only so the toasts match what the operator did: cancelling
+     an unanswered outbound request is not the same event as tearing down a live pairing. */
+  const cancelRequestMutation = useMutation({
+    mutationFn: (id: string) => removePeer({ path: { id } }),
+    onSuccess: () => {
+      toast.success(t('HUB_POOL_CANCEL_REQUEST_SUCCESS'));
+      invalidatePool();
+    },
+    onError: () => toast.error(t('HUB_POOL_CANCEL_REQUEST_ERROR')),
+  });
+
+  if (statusPending) {
     return <LoadingCard icon={Network} title={t('HUB_POOL_SECTION_TITLE')} />;
+  }
+
+  /* A poll that failed leaves no status to render. The section self-heals on the next 15s tick, so
+     this says what happened rather than sitting on a skeleton that never resolves. */
+  if (statusFailed || !status) {
+    return (
+      <Card data-testid="hub-pool-card">
+        <SectionHeader icon={Network} title={t('HUB_POOL_SECTION_TITLE')} />
+        <CardContent>
+          <p data-testid="hub-pool-status-error" className="rounded-md border border-danger/30 bg-danger/10 px-3 py-2.5 text-sm text-danger">
+            {t('HUB_POOL_STATUS_ERROR')}
+          </p>
+        </CardContent>
+      </Card>
+    );
   }
 
   const envLocked = status.disabledBy === 'env';
@@ -445,14 +482,17 @@ export const HubPoolSection = () => {
                         {peer.nodeFqdn}
                       </span>
                     </div>
+                    {/* Confirmed in a dialog like Re-register device: it deletes the peer and revokes
+                        both directional tokens, so recovering means a full two-sided re-pair. */}
                     <Button
                       type="button"
                       size="sm"
                       variant="outline"
                       intent="danger"
+                      data-testid="hub-pool-unpair-btn"
                       disabled={demoMode}
                       loading={removeMutation.isPending && removeMutation.variables === peer.id}
-                      onClick={() => removeMutation.mutate(peer.id)}
+                      onClick={() => setUnpairTarget(peer)}
                     >
                       {t('HUB_POOL_UNPAIR_BUTTON')}
                     </Button>
@@ -631,18 +671,64 @@ export const HubPoolSection = () => {
                   </div>
                 </li>
               ))}
+              {/* Without this row's cancel the request is unrecoverable from the page: nothing sweeps
+                  outbound pending rows, and discovery hides any FQDN already in the peer table, so a
+                  peer that never answers would drop out of the pairing list forever. */}
               {pendingOutbound.map((peer) => (
-                <li key={peer.id} className="flex items-center justify-between gap-3 rounded-md border px-3 py-2">
+                <li
+                  key={peer.id}
+                  data-testid="hub-pool-pending-outbound"
+                  className="flex items-center justify-between gap-3 rounded-md border px-3 py-2"
+                >
                   <span className="min-w-0 truncate font-mono text-xs" title={peer.nodeFqdn}>
                     {peerLabel(peer)}
                   </span>
-                  <span className="shrink-0 text-xs text-muted-foreground">{t('HUB_POOL_OUTBOUND_WAITING', { name: peerLabel(peer) })}</span>
+                  <div className="flex shrink-0 items-center gap-3">
+                    <span className="text-xs text-muted-foreground">{t('HUB_POOL_OUTBOUND_WAITING', { name: peerLabel(peer) })}</span>
+                    {/* No confirm dialog, unlike Unpair: this discards a request nobody answered, so
+                        there is no established pairing or issued token to lose. */}
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      data-testid="hub-pool-cancel-request-btn"
+                      disabled={demoMode}
+                      loading={cancelRequestMutation.isPending && cancelRequestMutation.variables === peer.id}
+                      onClick={() => cancelRequestMutation.mutate(peer.id)}
+                    >
+                      {t('HUB_POOL_CANCEL_REQUEST_BUTTON')}
+                    </Button>
+                  </div>
                 </li>
               ))}
             </ul>
           )}
         </Block>
       </CardContent>
+
+      <Dialog open={!!unpairTarget} onOpenChange={(open) => !open && setUnpairTarget(null)}>
+        <DialogContent type="danger" size="sm">
+          <DialogHeader>
+            <DialogTitle>{t('HUB_POOL_UNPAIR_BUTTON')}</DialogTitle>
+          </DialogHeader>
+          <DialogDescription className="py-2">
+            {unpairTarget ? t('HUB_POOL_UNPAIR_CONFIRM', { name: peerLabel(unpairTarget) }) : null}
+          </DialogDescription>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setUnpairTarget(null)} disabled={removeMutation.isPending}>
+              {t('COMMON_CANCEL')}
+            </Button>
+            <Button
+              intent="danger"
+              data-testid="hub-pool-unpair-confirm-btn"
+              loading={removeMutation.isPending}
+              onClick={() => unpairTarget && removeMutation.mutate(unpairTarget.id)}
+            >
+              {t('HUB_POOL_UNPAIR_BUTTON')}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </Card>
   );
 };
