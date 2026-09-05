@@ -23,7 +23,7 @@ type GpuVendorKey = CuratedModel['requirements']['gpuVendors'][number]; // 'nvid
 // Vendors Ollama can actually offload to. Anything else (e.g. Intel) falls back to CPU inference.
 const GPU_INFERENCE_VENDORS = new Set<HardwareProfile['gpu']['vendor']>(['nvidia', 'amd', 'apple']);
 
-const HOST_SERVED_BACKENDS = new Set<InferenceBackendType>(['vllm', 'mtplx', 'dspark']);
+const HOST_SERVED_BACKENDS = new Set<InferenceBackendType>(['vllm', 'mtplx', 'dspark', 'lucebox']);
 
 // Fraction of each memory pool a model may occupy, leaving headroom for the OS, the app container,
 // KV-cache/context growth, and (for shared pools) everything else running on the machine.
@@ -258,7 +258,7 @@ export class ModelRegistryService implements OnModuleInit {
 
   /**
    * Compute the best-fit LLMs for the hardware, best first, across every backend represented in the
-   * LLM catalog (currently 'ollama', 'vllm', 'lemonade', 'mtplx', and 'dspark') — not just Ollama. Each backend's picks are
+   * LLM catalog (currently 'ollama', 'vllm', 'lemonade', 'mtplx', 'dspark', and 'lucebox') — not just Ollama. Each backend's picks are
    * computed independently (its own best-fit ranking, size-spanning selection) and concatenated, so
    * `getRecommendedModelsForHardware`'s result naturally contains a per-backend recommendation without
    * callers needing to ask for one explicitly; a caller resolving a specific active backend (see

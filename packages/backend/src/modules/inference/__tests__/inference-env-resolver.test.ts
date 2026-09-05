@@ -11,6 +11,7 @@ import { VllmBackend } from '../backends/vllm.backend';
 import { LemonadeBackend } from '../backends/lemonade.backend';
 import { MtplxBackend } from '../backends/mtplx.backend';
 import { DsparkBackend } from '../backends/dspark.backend';
+import { LuceboxBackend } from '../backends/lucebox.backend';
 import { CloudFallbackService } from '../cloud-fallback.service';
 import type { CloudProviderConfig, CuratedModel, HardwareProfile } from '@ci-hub/common/types';
 
@@ -101,6 +102,7 @@ describe('InferenceEnvResolver', () => {
   let lemonadeBackend: MockProxy<LemonadeBackend>;
   let mtplxBackend: MockProxy<MtplxBackend>;
   let dsparkBackend: MockProxy<DsparkBackend>;
+  let luceboxBackend: MockProxy<LuceboxBackend>;
   let cloudFallback: MockProxy<CloudFallbackService>;
 
   beforeEach(async () => {
@@ -113,6 +115,7 @@ describe('InferenceEnvResolver', () => {
     lemonadeBackend = mock<LemonadeBackend>();
     mtplxBackend = mock<MtplxBackend>();
     dsparkBackend = mock<DsparkBackend>();
+    luceboxBackend = mock<LuceboxBackend>();
     cloudFallback = mock<CloudFallbackService>();
 
     config.getInferencePreferences.mockReturnValue({
@@ -149,6 +152,7 @@ describe('InferenceEnvResolver', () => {
         { provide: LemonadeBackend, useValue: lemonadeBackend },
         { provide: MtplxBackend, useValue: mtplxBackend },
         { provide: DsparkBackend, useValue: dsparkBackend },
+        { provide: LuceboxBackend, useValue: luceboxBackend },
         { provide: CloudFallbackService, useValue: cloudFallback },
       ],
     }).compile();
@@ -308,6 +312,25 @@ describe('InferenceEnvResolver', () => {
     const env = await service.resolve();
 
     expect(env.CI_CHAT_MODEL).toBe('preferred:latest');
+  });
+
+  it('passes the desktop-managed key to apps using mlx-dspark', async () => {
+    const dsparkModel = makeLlm('qwen-dspark', 'mlx-community/Qwen3-8B-8bit', false, 'dspark');
+    config.getInferencePreferences.mockReturnValue({
+      preferredBackend: 'dspark',
+      preferredModel: null,
+      preferredEmbeddingModel: null,
+      preferredVisionModel: null,
+    });
+    dsparkBackend.getBaseUrl.mockReturnValue('http://host.docker.internal:8080');
+    dsparkBackend.getApiKey.mockReturnValue('managed-dspark-key');
+    dsparkBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [dsparkModel.backendModelId] });
+    modelRegistry.getRecommendedModelsForHardware.mockReturnValue([dsparkModel]);
+    modelRegistry.getRecommendedVisionModel.mockReturnValue(undefined);
+
+    const env = await service.resolve();
+
+    expect(env.CI_LLM_API_KEY).toBe('managed-dspark-key');
   });
 
   describe('vLLM backend with split-backend embeddings', () => {

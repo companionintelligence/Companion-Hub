@@ -206,6 +206,7 @@ export function resolveBridgeServices(envFileName: string): BridgeServiceSpec[] 
     { label: 'MTPLX', port: port(portFromUrl(vars.MTPLX_URL), 8000) },
     { label: 'Speculative inference', port: port(portFromUrl(vars.DSPARK_URL), 8080) },
     { label: 'Lemonade', port: port(portFromUrl(vars.LEMONADE_URL), 13305) },
+    { label: 'Speculative inference', port: port(portFromUrl(vars.SPECULATIVE_INFERENCE_URL), 8000) },
   ];
 }
 

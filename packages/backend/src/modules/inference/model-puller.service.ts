@@ -10,8 +10,9 @@ import { VllmBackend } from './backends/vllm.backend';
 import { LemonadeBackend } from './backends/lemonade.backend';
 import { MtplxBackend } from './backends/mtplx.backend';
 import { DsparkBackend } from './backends/dspark.backend';
+import { LuceboxBackend } from './backends/lucebox.backend';
 import type { InferenceBackend } from './backends/backend.interface';
-import { isCatalogModelInstalled } from './model-availability.util';
+import { isCatalogModelInstalled, isServedModelForCatalog } from './model-availability.util';
 import type { PullEvaluation, PullStartResult } from './pull-evaluation.types';
 
 @Injectable()
@@ -31,6 +32,7 @@ export class ModelPullerService {
     private readonly lemonadeBackend: LemonadeBackend,
     private readonly mtplxBackend: MtplxBackend,
     private readonly dsparkBackend: DsparkBackend,
+    private readonly luceboxBackend: LuceboxBackend,
   ) {}
 
   private getBackend(type: InferenceBackendType): InferenceBackend {
@@ -45,6 +47,8 @@ export class ModelPullerService {
         return this.mtplxBackend;
       case 'dspark':
         return this.dsparkBackend;
+      case 'lucebox':
+        return this.luceboxBackend;
     }
   }
 
@@ -79,14 +83,14 @@ export class ModelPullerService {
     const requiredDiskMb = curated.requirements?.diskMb ?? 0;
     const requiredMemoryMb = curated.runtime.memoryFootprintMb;
 
-    const ollamaTags =
-      curated.backend === 'ollama'
-        ? ((await this.ollamaBackend.healthCheck().catch(() => ({ modelsLoaded: [] as string[] }))).modelsLoaded ?? [])
-        : [];
+    const backend = this.getBackend(curated.backend);
+    const backendModels = (await backend.healthCheck().catch(() => ({ modelsLoaded: [] as string[] }))).modelsLoaded ?? [];
 
     const tracked = this.modelRegistry.getTrackedModel(catalogId);
     const trackedPulled = tracked?.state === 'pulled' || tracked?.state === 'loaded' || tracked?.state === 'pinned';
-    const alreadyInstalled = isCatalogModelInstalled(curated, ollamaTags, trackedPulled);
+    const alreadyInstalled =
+      trackedPulled ||
+      (curated.backend === 'ollama' ? isCatalogModelInstalled(curated, backendModels) : isServedModelForCatalog(curated, backendModels));
 
     if (alreadyInstalled) {
       return {
@@ -106,6 +110,19 @@ export class ModelPullerService {
         alreadyInstalled: false,
         canPull: false,
         reason: `Model ${catalogId} is not available for your hardware tier (${effectiveTier}).`,
+        requiredDiskMb,
+        requiredMemoryMb,
+        availableDiskMb,
+        availableMemoryMb,
+      };
+    }
+
+    if (curated.backend === 'lucebox') {
+      return {
+        catalogId,
+        alreadyInstalled: false,
+        canPull: false,
+        reason: 'Speculative inference models are loaded when the server starts; start it with this model, then re-check.',
         requiredDiskMb,
         requiredMemoryMb,
         availableDiskMb,
@@ -267,11 +284,15 @@ export class ModelPullerService {
   /** Pull a model by catalog ID — queue worker only; use startPull or pullAndWait externally. */
   async pullModel(catalogId: string, onProgress?: (progress: PullProgress) => void, tier?: HardwareTier): Promise<void> {
     try {
+      const curated = this.modelRegistry.getCuratedModel(catalogId);
+      if (!curated) {
+        throw new Error(`Model ${catalogId} not found in catalog`);
+      }
       const evaluation = await this.evaluatePull(catalogId, tier);
 
       if (evaluation.alreadyInstalled) {
         this.markAlreadyInstalled(catalogId);
-        this.logger.info(`[ModelPuller] ${catalogId} already installed in Ollama — skipping download`);
+        this.logger.info(`[ModelPuller] ${catalogId} already installed in ${curated.backend} — skipping download`);
         return;
       }
 
@@ -279,10 +300,6 @@ export class ModelPullerService {
         throw new Error(evaluation.reason ?? `Pull blocked for ${catalogId}`);
       }
 
-      const curated = this.modelRegistry.getCuratedModel(catalogId);
-      if (!curated) {
-        throw new Error(`Model ${catalogId} not found in catalog`);
-      }
       const backend = this.getBackend(curated.backend);
       let lastLoggedPercent = -1;
       let lastLoggedStatus = '';

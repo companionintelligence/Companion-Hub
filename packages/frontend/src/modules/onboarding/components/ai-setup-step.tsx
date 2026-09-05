@@ -4,6 +4,7 @@ import {
   fetchMtplxInstallStatus,
   fetchOllamaInstallStatus,
   fetchDsparkInstallStatus,
+  fetchSpeculativeInferenceStatus,
   fetchVllmInstallStatus,
   rescanInferenceHardware,
 } from '@/lib/inference/inference-api';
@@ -24,6 +25,7 @@ import {
   type OllamaStatus,
   type VllmStatus,
   type DsparkStatus,
+  type SpeculativeInferenceStatus,
   type RemoteAccessMode,
 } from '../helpers/ai-setup-types';
 import type { CuratedModel, InferenceBackendType } from '@ci-hub/common/types';
@@ -41,6 +43,7 @@ import { VllmSetupCard } from './ai-setup/vllm-setup-card';
 import { MtplxSetupCard } from './ai-setup/mtplx-setup-card';
 import { DsparkSetupCard } from './ai-setup/dspark-setup-card';
 import { LemonadeSetupCard } from './ai-setup/lemonade-setup-card';
+import { SpeculativeInferenceSetupCard } from './ai-setup/speculative-inference-setup-card';
 import { TailscaleSetupStep } from './tailscale-setup-step';
 import { computeSelectionBudget } from '../helpers/onboarding-model-selection';
 import {
@@ -129,11 +132,13 @@ export const AiSetupStep = ({
   const [vllmStatus, setVllmStatus] = useState<VllmStatus | null>(null);
   const [mtplxStatus, setMtplxStatus] = useState<MtplxStatus | null>(null);
   const [dsparkStatus, setDsparkStatus] = useState<DsparkStatus | null>(null);
+  const [speculativeInferenceStatus, setSpeculativeInferenceStatus] = useState<SpeculativeInferenceStatus | null>(null);
   const [lemonadeStatus, setLemonadeStatus] = useState<LemonadeStatus | null>(null);
   const [checkingOllama, setCheckingOllama] = useState(false);
   const [checkingVllm, setCheckingVllm] = useState(false);
   const [checkingMtplx, setCheckingMtplx] = useState(false);
   const [checkingDspark, setCheckingDspark] = useState(false);
+  const [checkingSpeculativeInference, setCheckingSpeculativeInference] = useState(false);
   const [checkingLemonade, setCheckingLemonade] = useState(false);
   const [vllmApiKey, setVllmApiKey] = useState('');
   const [vllmUrl, setVllmUrl] = useState('');
@@ -271,6 +276,21 @@ export const AiSetupStep = ({
     }
   };
 
+  const checkSpeculativeInferenceStatus = async (): Promise<SpeculativeInferenceStatus> => {
+    setCheckingSpeculativeInference(true);
+    try {
+      const data = await fetchSpeculativeInferenceStatus();
+      setSpeculativeInferenceStatus(data);
+      return data;
+    } catch {
+      const unreachable: SpeculativeInferenceStatus = { ready: false, running: false, endpointUrl: '' };
+      setSpeculativeInferenceStatus(unreachable);
+      return unreachable;
+    } finally {
+      setCheckingSpeculativeInference(false);
+    }
+  };
+
   const checkVllmStatus = async (): Promise<VllmStatus> => {
     setCheckingVllm(true);
     try {
@@ -362,6 +382,7 @@ export const AiSetupStep = ({
 
   const handleVllmRecheck = () => handleRecheck(checkVllmStatus, setCheckingVllm);
   const handleDsparkRecheck = () => handleRecheck(checkDsparkStatus, setCheckingDspark);
+  const handleSpeculativeInferenceRecheck = () => handleRecheck(checkSpeculativeInferenceStatus, setCheckingSpeculativeInference);
   const handleOllamaRecheck = () => handleRecheck(checkOllamaStatus, setCheckingOllama);
   const handleMtplxRecheck = () => handleRecheck(checkMtplxStatus, setCheckingMtplx);
   const handleLemonadeRecheck = () => handleRecheck(checkLemonadeStatus, setCheckingLemonade);
@@ -402,7 +423,14 @@ export const AiSetupStep = ({
   useEffect(() => {
     void (async () => {
       await fetchProfile(false);
-      await Promise.all([checkOllamaStatus(), checkVllmStatus(), checkMtplxStatus(), checkDsparkStatus(), checkLemonadeStatus()]);
+      await Promise.all([
+        checkOllamaStatus(),
+        checkVllmStatus(),
+        checkMtplxStatus(),
+        checkDsparkStatus(),
+        checkSpeculativeInferenceStatus(),
+        checkLemonadeStatus(),
+      ]);
     })();
   }, []);
 
@@ -445,6 +473,8 @@ export const AiSetupStep = ({
     }
     if (backend === 'dspark') {
       void checkDsparkStatus();
+    } else if (backend === 'lucebox') {
+      void checkSpeculativeInferenceStatus();
     }
   };
 
@@ -655,6 +685,8 @@ export const AiSetupStep = ({
   const needsVllmForContinue = selectedBackend === 'vllm' && (vllmStatus === null || !vllmStatus.ready);
   const needsMtplxForContinue = selectedBackend === 'mtplx' && (mtplxStatus === null || !mtplxStatus.ready);
   const needsDsparkForContinue = selectedBackend === 'dspark' && (dsparkStatus === null || !dsparkStatus.ready);
+  const needsSpeculativeInferenceForContinue =
+    selectedBackend === 'lucebox' && (speculativeInferenceStatus === null || !speculativeInferenceStatus.ready);
   const needsLemonadeForContinue = selectedBackend === 'lemonade' && (lemonadeStatus === null || !lemonadeStatus.ready);
   const canAutoInstallRunners = getTauriInvoke() !== null;
   // Host-run backends leave embeddings on Ollama, so the co-install warning covers all of them.
@@ -703,7 +735,15 @@ export const AiSetupStep = ({
               />
             </div>
 
-            {selectedBackend === 'vllm' ? (
+            {selectedBackend === 'lucebox' ? (
+              <BackendSetupGroup title={t('ONBOARDING_SPECULATIVE_SECTION_TITLE')} description={t('ONBOARDING_SPECULATIVE_SECTION_DESC')}>
+                <SpeculativeInferenceSetupCard
+                  status={speculativeInferenceStatus}
+                  checking={checkingSpeculativeInference}
+                  onRecheck={handleSpeculativeInferenceRecheck}
+                />
+              </BackendSetupGroup>
+            ) : selectedBackend === 'vllm' ? (
               <BackendSetupGroup title={t('ONBOARDING_VLLM_SECTION_TITLE')} description={t('ONBOARDING_VLLM_SECTION_DESC')}>
                 <VllmSetupCard
                   status={vllmStatus}
@@ -824,12 +864,18 @@ export const AiSetupStep = ({
               data-testid="ai-continue-btn"
               disabled={
                 !canAutoInstallRunners &&
-                (needsOllamaForContinue || needsVllmForContinue || needsMtplxForContinue || needsDsparkForContinue || needsLemonadeForContinue) &&
+                (needsOllamaForContinue ||
+                  needsVllmForContinue ||
+                  needsMtplxForContinue ||
+                  needsDsparkForContinue ||
+                  needsSpeculativeInferenceForContinue ||
+                  needsLemonadeForContinue) &&
                 !isInsufficient &&
                 ((needsOllamaForContinue && (checkingOllama || !ollamaStatus?.ready)) ||
                   (needsVllmForContinue && (checkingVllm || !vllmStatus?.ready)) ||
                   (needsMtplxForContinue && (checkingMtplx || !mtplxStatus?.ready)) ||
                   (needsDsparkForContinue && (checkingDspark || !dsparkStatus?.ready)) ||
+                  (needsSpeculativeInferenceForContinue && (checkingSpeculativeInference || !speculativeInferenceStatus?.ready)) ||
                   (needsLemonadeForContinue && (checkingLemonade || !lemonadeStatus?.ready)))
               }
             >

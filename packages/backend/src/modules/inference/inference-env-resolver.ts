@@ -8,19 +8,21 @@ import { VllmBackend } from './backends/vllm.backend';
 import { LemonadeBackend } from './backends/lemonade.backend';
 import { MtplxBackend } from './backends/mtplx.backend';
 import { DsparkBackend } from './backends/dspark.backend';
+import { LuceboxBackend } from './backends/lucebox.backend';
 import type { InferenceBackend } from './backends/backend.interface';
 import { CloudFallbackService } from './cloud-fallback.service';
 import { recommendContextLength } from './context-length.util';
-import { isCatalogModelInstalled } from './model-availability.util';
+import { isCatalogModelInstalled, isServedModelForCatalog } from './model-availability.util';
 import type { CuratedModel, InferenceBackendType } from '@ci-hub/common/types';
 
-/** Non-secret placeholder API key each backend's OpenAI-compatible surface accepts (none validate it). */
+/** Fallback keys for backends that do not expose a configured or desktop-managed key. */
 export const BACKEND_API_KEY: Record<InferenceBackendType, string> = {
   ollama: 'ollama',
   vllm: 'vllm',
   lemonade: 'lemonade',
   mtplx: 'mtplx',
   dspark: 'dspark',
+  lucebox: 'lucebox',
 };
 
 /**
@@ -57,7 +59,7 @@ export interface StandardizedAiEnv {
    * window so apps don't inherit Ollama's oversized memory-based default.
    */
   CI_LLM_NUM_CTX?: string;
-  /** Active inference backend (`ollama` | `vllm` | `lemonade` | `mtplx` | `dspark` | `cloud`). */
+  /** Active inference backend (`ollama` | `vllm` | `lemonade` | `mtplx` | `dspark` | `lucebox` | `cloud`). */
   CI_INFERENCE_BACKEND?: string;
   /** Every enabled cloud provider (CI_CLOUD_* + conventional aliases). Additive. */
   cloudProviderEnv?: Record<string, string>;
@@ -85,6 +87,7 @@ export class InferenceEnvResolver {
     private readonly lemonadeBackend: LemonadeBackend,
     private readonly mtplxBackend: MtplxBackend,
     private readonly dsparkBackend: DsparkBackend,
+    private readonly luceboxBackend: LuceboxBackend,
     private readonly cloudFallback: CloudFallbackService,
   ) {}
 
@@ -100,6 +103,8 @@ export class InferenceEnvResolver {
         return this.mtplxBackend;
       case 'dspark':
         return this.dsparkBackend;
+      case 'lucebox':
+        return this.luceboxBackend;
     }
   }
 
@@ -150,7 +155,8 @@ export class InferenceEnvResolver {
     // ── Base URL + API key ────────────────────────────────────────────────
     const baseUrl = `${backendBaseUrl}/v1`;
     const configuredVllmKey = preferences.preferredVllmApiKey?.trim();
-    const apiKey = backendType === 'vllm' && configuredVllmKey ? configuredVllmKey : BACKEND_API_KEY[backendType];
+    const managedBackendKey = backend.getApiKey?.()?.trim();
+    const apiKey = backendType === 'vllm' && configuredVllmKey ? configuredVllmKey : managedBackendKey || BACKEND_API_KEY[backendType];
 
     // ── Chat model ────────────────────────────────────────────────────────
     // Prefer a model that is actually present on the active backend: this env is
@@ -283,6 +289,9 @@ export class InferenceEnvResolver {
   private isInstalled(model: CuratedModel, modelsLoaded: string[]): boolean {
     const tracked = this.modelRegistry.getTrackedModel(model.id);
     const trackedPulled = tracked?.state === 'pulled' || tracked?.state === 'loaded' || tracked?.state === 'pinned';
+    if (model.backend === 'vllm' || model.backend === 'mtplx' || model.backend === 'dspark' || model.backend === 'lucebox') {
+      return trackedPulled || isServedModelForCatalog(model, modelsLoaded);
+    }
     return isCatalogModelInstalled(model, modelsLoaded, trackedPulled);
   }
 }

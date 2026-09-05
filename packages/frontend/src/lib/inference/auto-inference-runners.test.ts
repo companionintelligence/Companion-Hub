@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  automaticRunnersForBackend,
   DEFAULT_AUTOMATIC_INFERENCE_RUNNERS,
   DEFAULT_MACOS_AUTOMATIC_INFERENCE_RUNNERS,
+  DEFAULT_MACOS_MTPLX_AUTOMATIC_INFERENCE_RUNNERS,
   installAndStartInferenceRunners,
 } from './auto-inference-runners';
 
@@ -16,6 +18,23 @@ afterEach(() => {
 describe('installAndStartInferenceRunners', () => {
   it('keeps the Apple Silicon FTUE set focused on mlx-dspark and Ollama', () => {
     expect(DEFAULT_MACOS_AUTOMATIC_INFERENCE_RUNNERS).toEqual(['dspark', 'ollama']);
+  });
+
+  it('keeps the MTPLX alternative focused on MTPLX and Ollama', () => {
+    expect(DEFAULT_MACOS_MTPLX_AUTOMATIC_INFERENCE_RUNNERS).toEqual(['mtplx', 'ollama']);
+    expect(automaticRunnersForBackend('mtplx')).toEqual(['mtplx', 'ollama']);
+    expect(automaticRunnersForBackend('dspark')).toEqual(['dspark', 'ollama']);
+  });
+
+  it('installs only the selected chat runner plus the shared Ollama embedder', () => {
+    expect(automaticRunnersForBackend('vllm')).toEqual(['vllm', 'ollama']);
+    expect(automaticRunnersForBackend('lucebox')).toEqual(['lucebox', 'ollama']);
+    expect(automaticRunnersForBackend('ollama')).toEqual(['ollama']);
+    expect(automaticRunnersForBackend('lemonade')).toEqual(['ollama']);
+  });
+
+  it('keeps the complete set only as a defensive fallback for an unknown backend', () => {
+    expect(automaticRunnersForBackend('future-backend')).toEqual(DEFAULT_AUTOMATIC_INFERENCE_RUNNERS);
   });
 
   it('is a no-op in a browser build', async () => {
