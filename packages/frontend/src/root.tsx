@@ -418,6 +418,16 @@ export function Layout({ children }: { children: React.ReactNode }) {
   });
   const [documentTitle, setDocumentTitle] = useState(() => (i18next.isInitialized ? i18next.t('APP_NAME') : 'CI Hub'));
   const [documentLang, setDocumentLang] = useState(() => i18next.resolvedLanguage || i18next.language || 'en');
+  // The document is PRERENDERED in Node, where isMobileClient() is false, so the
+  // emitted <html>/<body> carry no mobile classes. Rendering them on the very
+  // first client pass makes the markup disagree with that document and React
+  // throws a hydration error (#418, args[]=HTML) — uncaught, which on Android
+  // left the app a blank webview. Stay identical to the prerender for the first
+  // render, then adopt the mobile classes once hydration has committed.
+  const [mobileUi, setMobileUi] = useState(false);
+  useEffect(() => {
+    if (isMobileClient()) setMobileUi(true);
+  }, []);
 
   useEffect(() => {
     installMobileLoadWatchdog();
@@ -563,7 +573,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
   }, []);
 
   return (
-    <html lang={documentLang} className={isMobileClient() ? 'ci-mobile' : undefined}>
+    <html lang={documentLang} className={mobileUi ? 'ci-mobile' : undefined}>
       <head>
         <title>{documentTitle}</title>
         <meta charSet="UTF-8" />
@@ -571,7 +581,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
         <Meta />
         <Links />
       </head>
-      <body className={isMobileClient() ? 'bg-background text-foreground' : undefined}>
+      <body className={mobileUi ? 'bg-background text-foreground' : undefined}>
         <ThemeProvider defaultTheme={isMobileClient() ? 'light' : 'dark'}>
           {apiReady ? (
             <I18nProvider>
