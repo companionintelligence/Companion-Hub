@@ -369,9 +369,14 @@ const HubPoolSection = () => {
             <ul className="space-y-2">
               {pendingInbound.map((peer) => (
                 <li key={peer.id} className="flex items-center justify-between gap-3 rounded-md border px-3 py-2">
-                  <span className="min-w-0 truncate font-mono text-xs" title={peer.nodeFqdn}>
-                    {peerLabel(peer)}
-                  </span>
+                  {/* The FQDN, not the display name: approving issues a fresh token to this exact host,
+                      and the name is whatever the (unauthenticated) requester chose to call itself. */}
+                  <div className="min-w-0">
+                    <span className="block truncate font-mono text-xs" title={peer.nodeFqdn} data-testid="hub-pool-pending-fqdn">
+                      {peer.nodeFqdn}
+                    </span>
+                    {peer.displayName ? <span className="block truncate text-xs text-muted-foreground">{peer.displayName}</span> : null}
+                  </div>
                   <div className="flex shrink-0 gap-2">
                     <Button
                       type="button"

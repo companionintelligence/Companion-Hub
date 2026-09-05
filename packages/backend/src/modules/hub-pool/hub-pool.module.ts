@@ -7,6 +7,7 @@ import { HubPoolController } from './hub-pool.controller';
 import { HubPoolPeerRepository } from './hub-pool-peer.repository';
 import { HubPoolPeerService } from './hub-pool-peer.service';
 import { PoolProxyService } from './hub-pool-proxy.service';
+import { PoolAppGuard } from './guards/pool-app.guard';
 import { PoolPeerGuard } from './guards/pool-peer.guard';
 
 // forwardRef with InferenceModule: HubPoolPeerService needs InferenceRouterService (to report this
@@ -16,7 +17,7 @@ import { PoolPeerGuard } from './guards/pool-peer.guard';
 @Module({
   imports: [LoggerModule, EncryptionModule, TailscaleModule, forwardRef(() => InferenceModule)],
   controllers: [HubPoolController],
-  providers: [HubPoolPeerRepository, HubPoolPeerService, PoolProxyService, PoolPeerGuard],
+  providers: [HubPoolPeerRepository, HubPoolPeerService, PoolProxyService, PoolAppGuard, PoolPeerGuard],
   exports: [HubPoolPeerService, PoolProxyService],
 })
 export class HubPoolModule {}
