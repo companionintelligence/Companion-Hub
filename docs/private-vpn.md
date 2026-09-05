@@ -47,6 +47,8 @@ This is useful for pre-provisioned devices or admin-managed deployments.
 
 The backend **`TailscaleService`** talks to Tailscale via `docker exec hub-tailscale tailscale …` when the Hub container has no host Tailscale socket.
 
+> Pooling inference capacity across multiple CI-Hub devices on the same tailnet is a separate, opt-in feature built on top of this connection — see [`hub-pool.md`](hub-pool.md).
+
 ## Accessing the Hub and apps over Tailscale
 
 ### Access the Hub itself
