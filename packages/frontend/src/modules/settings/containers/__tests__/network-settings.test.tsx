@@ -1,8 +1,10 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { NetworkSettingsContainer } from '../network-settings';
+
+const fixtures = vi.hoisted(() => ({ poolPeers: [] as Array<Record<string, unknown>> }));
 
 vi.mock('react-i18next', () => {
   const t = (key: string) => key;
@@ -35,7 +37,7 @@ vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
     queryFn: async () => ({ installed: false, connected: false, ip: null, hostname: null, backendState: null }),
   }),
   listPeersQueryKey: () => ['pool-peers'],
-  listPeersOptions: () => ({ queryKey: ['pool-peers'], queryFn: async () => [] }),
+  listPeersOptions: () => ({ queryKey: ['pool-peers'], queryFn: async () => fixtures.poolPeers }),
   listDiscoverableQueryKey: () => ['pool-discoverable'],
   listDiscoverableOptions: () => ({ queryKey: ['pool-discoverable'], queryFn: async () => [] }),
 }));
@@ -50,6 +52,10 @@ const renderContainer = () => {
 };
 
 describe('NetworkSettingsContainer', () => {
+  beforeEach(() => {
+    fixtures.poolPeers = [];
+  });
+
   it('renders both cards with status badges and the tunnel id', async () => {
     renderContainer();
 
@@ -70,6 +76,26 @@ describe('NetworkSettingsContainer', () => {
     expect(screen.getByText('HUB_POOL_DISCOVERABLE_EMPTY')).toBeTruthy();
     expect(screen.getByText('HUB_POOL_PENDING_EMPTY')).toBeTruthy();
     expect(screen.getByText('HUB_POOL_CONNECTED_EMPTY')).toBeTruthy();
+  });
+
+  it('shows the requester FQDN on a pending inbound request, not just its self-chosen display name', async () => {
+    fixtures.poolPeers = [
+      {
+        id: 'inbound-1',
+        nodeFqdn: 'attacker-box.tailxyz.ts.net',
+        // A pairing request is unauthenticated, so the display name is whatever the caller sent.
+        displayName: "Liam's MacBook",
+        direction: 'inbound',
+        status: 'pending',
+        lastSeenAt: null,
+      },
+    ];
+
+    renderContainer();
+
+    const fqdn = await screen.findByTestId('hub-pool-pending-fqdn');
+    expect(fqdn.textContent).toBe('attacker-box.tailxyz.ts.net');
+    expect(screen.getByText("Liam's MacBook")).toBeTruthy();
   });
 
   it('confirms re-registration in a dialog instead of window.confirm', async () => {
