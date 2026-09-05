@@ -47,9 +47,11 @@ Persisted in `settings.json` and editable over `GET`/`PATCH /api/inference/pool/
 
 1. On each participating Hub, confirm **Settings → Network** shows Tailscale connected.
 2. On at least one Hub, set the Tailscale OAuth client env vars above and restart.
-3. Open **Settings → Network → Hub Pool**. Discoverable devices on the tailnet that identify as CI-Hub nodes appear with a **Pair** button.
-4. On the *other* Hub, a pending inbound request appears with **Approve** / **Reject**.
-5. Once connected, both Hubs' **Hub Pool** sections show the peer's status, last-seen time, and a summary of the models it currently reports.
+3. Open **Settings → Network → Hub Pool**. Discoverable devices on the tailnet that identify as CI-Hub nodes appear with a **Pair** button. Without the OAuth credential the section says so and names the two variables, rather than showing an empty list — a Hub with no credential can still be paired *with*, it just cannot enumerate the tailnet itself.
+4. On the *other* Hub, a pending inbound request appears with **Approve** / **Reject**, identified by the requester's FQDN.
+5. Once connected, both Hubs' **Hub Pool** sections show whether pooling is actually routing (and if not, which of the two kill switches is responsible), the `poolEnabled` and `poolLocalAffinity` controls, each peer's status / last-seen / queue depth / hardware tier / engines, the merged list of models the pool can serve and which nodes hold each, and the recent routing decisions with failovers called out.
+
+A peer shown **unreachable** needs no operator action: it is skipped while it fails probes and rejoins on the next successful one. Unpairing is for removing a Hub from the pool, not for recovering one.
 
 ## Endpoints an app sees through the proxy
 
