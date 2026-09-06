@@ -7,6 +7,7 @@ import { HardwareInspectorService } from '../hardware-inspector.service';
 import { MemoryManagerService } from '../memory-manager.service';
 import { ModelPullerService } from '../model-puller.service';
 import { ModelRegistryService } from '../model-registry.service';
+import { InferenceBackendRegistry } from '../backends/backend-registry';
 import { OllamaBackend } from '../backends/ollama.backend';
 import { VllmBackend } from '../backends/vllm.backend';
 import { LemonadeBackend } from '../backends/lemonade.backend';
@@ -100,6 +101,7 @@ describe('ModelPullerService.evaluatePull', () => {
         { provide: MtplxBackend, useValue: mock<MtplxBackend>() },
         { provide: DsparkBackend, useValue: mock<DsparkBackend>() },
         { provide: LuceboxBackend, useValue: mock<LuceboxBackend>() },
+        InferenceBackendRegistry,
       ],
     }).compile();
 
@@ -229,6 +231,7 @@ describe('ModelPullerService.startPull', () => {
         { provide: MtplxBackend, useValue: mock<MtplxBackend>() },
         { provide: DsparkBackend, useValue: mock<DsparkBackend>() },
         { provide: LuceboxBackend, useValue: mock<LuceboxBackend>() },
+        InferenceBackendRegistry,
       ],
     }).compile();
 

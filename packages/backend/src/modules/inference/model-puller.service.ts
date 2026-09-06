@@ -1,19 +1,13 @@
 import { Injectable } from '@nestjs/common';
 import { LoggerService } from '@/core/logger/logger.service';
 import { HostMetricsService } from '@/modules/system/host-metrics.service';
-import type { HardwareProfile, HardwareTier, InferenceBackendType, PullProgress } from '@ci-hub/common/types';
+import type { HardwareProfile, HardwareTier, PullProgress } from '@ci-hub/common/types';
 import { ModelRegistryService } from './model-registry.service';
 import { HardwareInspectorService } from './hardware-inspector.service';
 import { MemoryManagerService } from './memory-manager.service';
-import { OllamaBackend } from './backends/ollama.backend';
-import { VllmBackend } from './backends/vllm.backend';
-import { LemonadeBackend } from './backends/lemonade.backend';
-import { MtplxBackend } from './backends/mtplx.backend';
-import { DsparkBackend } from './backends/dspark.backend';
-import { LuceboxBackend } from './backends/lucebox.backend';
-import type { InferenceBackend } from './backends/backend.interface';
 import { isCatalogModelInstalled, isServedModelForCatalog } from './model-availability.util';
 import type { PullEvaluation, PullStartResult } from './pull-evaluation.types';
+import { InferenceBackendRegistry } from './backends/backend-registry';
 
 @Injectable()
 export class ModelPullerService {
@@ -27,30 +21,8 @@ export class ModelPullerService {
     private readonly hardwareInspector: HardwareInspectorService,
     private readonly memoryManager: MemoryManagerService,
     private readonly hostMetrics: HostMetricsService,
-    private readonly ollamaBackend: OllamaBackend,
-    private readonly vllmBackend: VllmBackend,
-    private readonly lemonadeBackend: LemonadeBackend,
-    private readonly mtplxBackend: MtplxBackend,
-    private readonly dsparkBackend: DsparkBackend,
-    private readonly luceboxBackend: LuceboxBackend,
+    private readonly backends: InferenceBackendRegistry,
   ) {}
-
-  private getBackend(type: InferenceBackendType): InferenceBackend {
-    switch (type) {
-      case 'ollama':
-        return this.ollamaBackend;
-      case 'vllm':
-        return this.vllmBackend;
-      case 'lemonade':
-        return this.lemonadeBackend;
-      case 'mtplx':
-        return this.mtplxBackend;
-      case 'dspark':
-        return this.dsparkBackend;
-      case 'lucebox':
-        return this.luceboxBackend;
-    }
-  }
 
   private async getAvailableDiskMb(): Promise<number> {
     const hostSection = await this.hostMetrics.readHostSection();
@@ -83,7 +55,7 @@ export class ModelPullerService {
     const requiredDiskMb = curated.requirements?.diskMb ?? 0;
     const requiredMemoryMb = curated.runtime.memoryFootprintMb;
 
-    const backend = this.getBackend(curated.backend);
+    const backend = this.backends.get(curated.backend);
     const backendModels = (await backend.healthCheck().catch(() => ({ modelsLoaded: [] as string[] }))).modelsLoaded ?? [];
 
     const tracked = this.modelRegistry.getTrackedModel(catalogId);
@@ -300,7 +272,7 @@ export class ModelPullerService {
         throw new Error(evaluation.reason ?? `Pull blocked for ${catalogId}`);
       }
 
-      const backend = this.getBackend(curated.backend);
+      const backend = this.backends.get(curated.backend);
       let lastLoggedPercent = -1;
       let lastLoggedStatus = '';
 
@@ -349,7 +321,7 @@ export class ModelPullerService {
       throw new Error(`Model ${catalogId} not found in catalog`);
     }
 
-    const backend = this.getBackend(curated.backend);
+    const backend = this.backends.get(curated.backend);
 
     if (this.modelRegistry.getTrackedModel(catalogId)) {
       this.modelRegistry.updateModelState(catalogId, 'loading');
@@ -376,7 +348,7 @@ export class ModelPullerService {
       throw new Error(`Model ${catalogId} not found in catalog`);
     }
 
-    const backend = this.getBackend(curated.backend);
+    const backend = this.backends.get(curated.backend);
 
     this.modelRegistry.updateModelState(catalogId, 'unloading');
     this.logger.info(`[ModelPuller] Unloading ${catalogId} from memory`);
