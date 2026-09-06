@@ -9,8 +9,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import * as yaml from 'yaml';
 import {
   KVM_MISSING_CODE,
+  KVM_MISSING_DETAIL,
   KVM_MISSING_USER_MESSAGE,
   ROCM_KFD_MISSING_CODE,
+  ROCM_KFD_MISSING_DETAIL,
   ROCM_KFD_MISSING_SETTINGS_PATH,
   ROCM_KFD_MISSING_USER_MESSAGE,
 } from '../app-lifecycle-errors';
@@ -111,10 +113,13 @@ describe('assertHostDevicesAvailable', () => {
       vi.mocked(isRocmKfdPassthroughAvailable).mockResolvedValue(false);
       const moduleRef = createModuleRef({ composeJson: composeManifest(['/dev/kfd', '/dev/dri']) });
 
+      // The whole payload travels to the UI: the short message is rendered, errorDetail goes to
+      // logs and support, and settingsPath is what turns the toast into a link to ROCm setup.
       await expect(assertHostDevicesAvailable(moduleRef, APP_URN)).rejects.toMatchObject({
         name: 'AppLifecycleError',
         message: ROCM_KFD_MISSING_USER_MESSAGE,
         errorCode: ROCM_KFD_MISSING_CODE,
+        errorDetail: ROCM_KFD_MISSING_DETAIL,
         settingsPath: ROCM_KFD_MISSING_SETTINGS_PATH,
       });
     });
@@ -140,6 +145,23 @@ describe('assertHostDevicesAvailable', () => {
       await expect(assertHostDevicesAvailable(moduleRef, APP_URN)).rejects.toMatchObject({ errorCode: ROCM_KFD_MISSING_CODE });
     });
 
+    it('scans every service in the manifest, not just the first', async () => {
+      vi.mocked(isRocmKfdPassthroughAvailable).mockResolvedValue(false);
+      // GPU work normally lives in a sidecar beside the main service, so a scan that stopped at
+      // services[0] would miss the declaration on exactly the apps this preflight exists for.
+      const moduleRef = createModuleRef({
+        composeJson: {
+          schemaVersion: 2,
+          services: [
+            { name: 'main', image: 'example/app:1.0.0', isMain: true },
+            { name: 'gpu-worker', image: 'example/worker:1.0.0', devices: ['/dev/kfd'] },
+          ],
+        },
+      });
+
+      await expect(assertHostDevicesAvailable(moduleRef, APP_URN)).rejects.toMatchObject({ errorCode: ROCM_KFD_MISSING_CODE });
+    });
+
     it('ignores a container path that only ends in /dev/kfd', async () => {
       vi.mocked(isRocmKfdPassthroughAvailable).mockResolvedValue(false);
       // Host side is /dev/null; a substring match on the whole entry would wrongly demand ROCm.
@@ -153,10 +175,14 @@ describe('assertHostDevicesAvailable', () => {
     it('rejects with the KVM guidance error when /dev/kvm is absent from the host', async () => {
       const moduleRef = createModuleRef({ composeJson: composeManifest(['/dev/kvm']) });
 
+      // Unlike the ROCm case there is nothing to configure in Settings, so settingsPath must stay
+      // absent — the frontend renders a "fix this" link for any error that carries one.
       await expect(assertHostDevicesAvailable(moduleRef, APP_URN)).rejects.toMatchObject({
         name: 'AppLifecycleError',
         message: KVM_MISSING_USER_MESSAGE,
         errorCode: KVM_MISSING_CODE,
+        errorDetail: KVM_MISSING_DETAIL,
+        settingsPath: undefined,
       });
     });
 
@@ -211,6 +237,22 @@ describe('assertHostDevicesAvailable', () => {
       });
 
       await expect(assertHostDevicesAvailable(moduleRef, APP_URN)).rejects.toMatchObject({ errorCode: KVM_MISSING_CODE });
+    });
+
+    // Overrides usually exist for reasons that have nothing to do with devices — a timezone, an
+    // extra port. Folding one in has to be additive: letting the override's verdict replace the
+    // base's would silently drop a device the manifest itself declared.
+    it.each([
+      ['kfd', '/dev/kfd', ROCM_KFD_MISSING_CODE],
+      ['kvm', '/dev/kvm', KVM_MISSING_CODE],
+    ])('keeps the base manifest %s requirement when the override declares no devices', async (_label, devicePath, errorCode) => {
+      vi.mocked(isRocmKfdPassthroughAvailable).mockResolvedValue(false);
+      const moduleRef = createModuleRef({
+        composeJson: composeManifest([devicePath]),
+        userCompose: 'services:\n  main:\n    environment:\n      - TZ=UTC\n',
+      });
+
+      await expect(assertHostDevicesAvailable(moduleRef, APP_URN)).rejects.toMatchObject({ errorCode });
     });
 
     it('resolves when the override declares kvm and the host provides it', async () => {

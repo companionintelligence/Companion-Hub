@@ -284,6 +284,10 @@ describe('runCli up start-mode resolution', () => {
   it.each([
     { argv: ['up'], mode: 'local-dev', env: 'local' },
     { argv: ['up', 'local'], mode: 'local-dev', env: 'local' },
+    // local is the source stack, so neither mode flag may demote it to a container start. The env
+    // check has to outrank both; reordering those guards silently changes what `up local` runs.
+    { argv: ['up', 'local', '--detached'], mode: 'local-dev', env: 'local' },
+    { argv: ['up', 'local', '--attached'], mode: 'local-dev', env: 'local' },
     { argv: ['up', 'dev'], mode: 'detached', env: 'dev' },
     { argv: ['up', 'dev', '--attached'], mode: 'attached', env: 'dev' },
     { argv: ['up', 'staging'], mode: 'attached', env: 'staging' },
@@ -308,6 +312,16 @@ describe('runCli up start-mode resolution', () => {
     await runCli(['up', '--attached']);
 
     expect(mocks.calls).toEqual<Dispatch[]>([{ handler: 'startHub', args: ['attached', 'local'] }]);
+  });
+
+  it('defaults every env to detached outside a checkout, not just local', async () => {
+    mocks.state.appliance = true;
+
+    // From a checkout this same argv starts attached (row above), so an appliance guard narrowed to
+    // `local` would leave a non-local start inheriting the checkout default and blocking the shell.
+    await runCli(['up', 'staging']);
+
+    expect(mocks.calls).toEqual<Dispatch[]>([{ handler: 'startHub', args: ['detached', 'staging'] }]);
   });
 });
 
@@ -379,6 +393,9 @@ describe('runCli clean confirmation gate', () => {
 
     expect(mocks.calls.map((call) => call.handler)).toEqual(['confirmDestructiveAction']);
     expect(logText()).toContain('Clean cancelled');
+    // A bare 'Clean cancelled' banner does not say whether anything was already deleted; the body
+    // line is the part that tells the user their generated files survived.
+    expect(logText()).toContain('Left generated files untouched.');
   });
 });
 

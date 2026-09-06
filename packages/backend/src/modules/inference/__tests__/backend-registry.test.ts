@@ -91,6 +91,29 @@ describe('InferenceBackendRegistry', () => {
       expect(() => registry.get(staleCatalogValue as InferenceBackendType)).toThrow(/'llamacpp'/);
       expect(() => registry.get(staleCatalogValue as InferenceBackendType)).toThrow(new RegExp(INFERENCE_BACKEND_TYPES.join(', ')));
     });
+
+    it('names itself and carries the rejected value on the error object, not only in the message prose', () => {
+      const registry = buildRegistry(makeBackends());
+
+      // The test above pins the human half of the contract; this pins the machine half, which no
+      // message regex and no `instanceof` can reach. Every route out of the registry that does not
+      // branch on `tryGet` ends at MainExceptionFilter as a 500, and that filter scrubs the response
+      // body to `INTERNAL_SERVER_ERROR` — so the logged and Sentry-captured exception is the only
+      // artifact left holding the bad value. Sentry groups that by `name`: without `this.name` the
+      // class collapses into generic `Error` and the group is unreadable, and without the `readonly`
+      // on the constructor parameter the only way back to the rejected string is re-parsing English.
+      const staleCatalogValue: string = 'llamacpp';
+
+      let caught: unknown;
+      try {
+        registry.get(staleCatalogValue as InferenceBackendType);
+      } catch (error) {
+        caught = error;
+      }
+
+      expect(caught).toBeInstanceOf(UnknownInferenceBackendError);
+      expect(caught).toMatchObject({ name: 'UnknownInferenceBackendError', requestedType: staleCatalogValue });
+    });
   });
 
   describe('tryGet', () => {
