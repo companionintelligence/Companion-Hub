@@ -233,7 +233,7 @@ export class MarketplaceService implements OnModuleInit {
 
       this.appsAvailable = this.filterApps(apps);
 
-      type SearchDoc = (typeof this.appsAvailable)[number] & { aliases?: string; replaces?: string[] };
+      type SearchDoc = (typeof this.appsAvailable)[number] & { aliases?: string };
       const aliasMap = await this.portalCatalog.getSearchAliasTextByAppId().catch(() => new Map<string, string>());
       this.miniSearch = new MiniSearch<SearchDoc>({
         fields: ['name', 'short_desc', 'categories', 'replaces', 'aliases'],

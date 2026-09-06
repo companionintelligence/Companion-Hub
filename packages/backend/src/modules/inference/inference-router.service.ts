@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { LoggerService } from '@/core/logger/logger.service';
-import type { InferenceBackendType, InferenceModelInfo, InferenceStatus } from '@ci-hub/common/types';
+import type { InferenceModelInfo, InferenceStatus } from '@ci-hub/common/types';
 import { HardwareInspectorService } from './hardware-inspector.service';
 import { ModelRegistryService } from './model-registry.service';
 import { MemoryManagerService } from './memory-manager.service';
@@ -32,8 +32,7 @@ export class InferenceRouterService {
     const budget = this.memoryManager.calculateBudget(profile);
 
     const backends = await Promise.all(
-      (['ollama', 'vllm', 'lemonade', 'mtplx', 'dspark', 'lucebox'] as InferenceBackendType[]).map(async (type) => {
-        const backend = this.backends.get(type);
+      this.backends.entries().map(async ([type, backend]) => {
         const health = await backend.healthCheck();
         return {
           type,
@@ -123,8 +122,7 @@ export class InferenceRouterService {
 
     // Discovered models from backends (not in curated catalog or tracked)
     const knownIds = new Set(models.map((m) => m.id));
-    for (const backendType of ['ollama', 'vllm', 'lemonade', 'mtplx', 'dspark', 'lucebox'] as InferenceBackendType[]) {
-      const backend = this.backends.get(backendType);
+    for (const [backendType, backend] of this.backends.entries()) {
       const health = await backend.healthCheck();
       if (health.running && health.healthy) {
         for (const modelName of health.modelsLoaded) {
