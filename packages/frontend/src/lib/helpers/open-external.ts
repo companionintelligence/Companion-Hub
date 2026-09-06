@@ -1,3 +1,5 @@
+import { retryDynamicImport } from '@/lib/chunk-load-error';
+
 /**
  * Opens a URL in the user's default system browser.
  * In Tauri context, uses the opener plugin to escape the webview.
@@ -74,43 +76,68 @@ export const openExternal = async (url: string): Promise<void> => {
   const normalizedUrl = normalizeExternalUrl(url);
 
   if (typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window) {
+    let hostname = '';
+    let shouldWarmDns = false;
     try {
-      // Only perform DNS operations for http/https URLs with a hostname
-      let shouldWarmDns = false;
-      let hostname = '';
-
-      try {
-        const parsedUrl = new URL(normalizedUrl);
-        shouldWarmDns = (parsedUrl.protocol === 'http:' || parsedUrl.protocol === 'https:') && Boolean(parsedUrl.hostname);
-        hostname = parsedUrl.hostname;
-      } catch {
-        // Invalid URL or non-HTTP scheme (mailto:, etc.) - skip DNS operations
-        shouldWarmDns = false;
-      }
-
-      if (shouldWarmDns) {
-        // Step 1: Attempt to flush system DNS cache (best-effort, may fail silently)
-        try {
-          const { invoke } = await import('@tauri-apps/api/core');
-          await invoke('flush_dns_cache');
-        } catch {
-          // Ignore flush failures - not all systems support this
-        }
-
-        // Step 2: Pre-warm DNS by verifying resolution
-        // This ensures both system and browser DNS caches are populated
-        await verifyDnsResolution(hostname);
-      }
-
-      // Step 3: Open URL via system shell
-      const { openUrl } = await import('@tauri-apps/plugin-opener');
-      await openUrl(normalizedUrl);
-      return;
+      const parsedUrl = new URL(normalizedUrl);
+      shouldWarmDns = (parsedUrl.protocol === 'http:' || parsedUrl.protocol === 'https:') && Boolean(parsedUrl.hostname);
+      hostname = parsedUrl.hostname;
     } catch {
-      // Fall through to window.open
+      shouldWarmDns = false;
+    }
+
+    // OPEN FIRST, WARM DNS AFTER.
+    //
+    // The DNS pre-warm used to run BEFORE openUrl: a flush_dns_cache round trip
+    // plus verifyDnsResolution, which carries its own 3000 ms abort timeout. So
+    // on a slow or unresolvable host the user clicked a link and nothing at all
+    // happened for up to three seconds, which reads as a dead button. Handing
+    // the URL to the OS first costs nothing and makes the click feel instant.
+    try {
+      // retryDynamicImport, because a stale chunk hash here is not cosmetic.
+      //
+      // On desktop this is the SIGN-IN path, not just a docs link: login-form
+      // renders an <a> and the Providers interceptor hands it to openExternal, so
+      // the system browser is how desktop SSO starts (hub-auth-flow.ts —
+      // announceDesktopPresence exists "so a Chrome loopback callback can hand
+      // off into Tauri"). If this import fails, the sign-in button and every
+      // external link die together, which is exactly the reported pairing.
+      const { openUrl } = await retryDynamicImport(() => import('@tauri-apps/plugin-opener'));
+      await openUrl(normalizedUrl);
+      if (shouldWarmDns) void warmDns(hostname);
+      return;
+    } catch (error) {
+      // DO NOT fall through to window.open here.
+      //
+      // window.open is inert in a wry webview, so falling through turned every
+      // opener failure -- an ACL denial, a scope rejection, a missing plugin --
+      // into a silent no-op with nothing in the console. That is what made a
+      // broken link indistinguishable from a dead button.
+      //
+      // This LOGS rather than throws on purpose: openExternal has ~20 call sites,
+      // most of them fire-and-forget `onClick={() => openExternal(url)}`, and
+      // rejecting would turn each into an unhandled rejection. The defect being
+      // fixed is that the failure was invisible, not that it failed to propagate.
+      console.error(`openExternal: the system opener refused ${normalizedUrl}`, error);
+      return;
     }
   }
 
-  // Fallback for web context or if Tauri fails
+  // Fallback for a real web context, where window.open actually works.
   window.open(normalizedUrl, '_blank', 'noopener,noreferrer');
 };
+
+/** Best-effort DNS warm, after the URL is already on its way to the browser. */
+async function warmDns(hostname: string): Promise<void> {
+  try {
+    const { invoke } = await retryDynamicImport(() => import('@tauri-apps/api/core'));
+    await invoke('flush_dns_cache');
+  } catch {
+    // Not all systems support this.
+  }
+  try {
+    await verifyDnsResolution(hostname);
+  } catch {
+    // Warming is advisory; the browser has the URL either way.
+  }
+}
