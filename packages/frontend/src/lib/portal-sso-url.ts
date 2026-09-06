@@ -109,6 +109,19 @@ export function buildPortalSsoStartUrl(input: {
   }
   if (shouldUsePortalDesktopHandoff(input)) {
     url.searchParams.set('desktop', '1');
+    // WHICH BUILD IS ASKING, so the backend does not have to guess.
+    //
+    // It used to infer "dev" from the Hub origin being loopback — but the
+    // PACKAGED desktop app serves its UI from http://127.0.0.1:<apiPort> too, so
+    // production sign-ins were handed back `cihub-dev://`, a scheme no installer
+    // registers. The two shells differ here reliably: the dev shell loads the
+    // frontend from the Vite dev server, the packaged one loads a production
+    // build, so import.meta.env.DEV separates them at build time.
+    // Desktop only: mobile shells are a different binary with their own scheme
+    // registration, and the loopback-vs-dev confusion this fixes is desktop's.
+    if (input.isTauriDesktop && import.meta.env.DEV) {
+      url.searchParams.set('desktop_channel', 'dev');
+    }
   }
   return url.toString();
 }
