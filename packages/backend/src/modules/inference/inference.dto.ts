@@ -1,7 +1,19 @@
 import { createZodDto } from '@/common/zod-dto';
+import { INFERENCE_BACKEND_TYPES } from '@ci-hub/common/types';
 import { z } from 'zod';
 
-const inferenceBackendSchema = z.enum(['ollama', 'vllm', 'lemonade', 'mtplx', 'dspark', 'lucebox']);
+/**
+ * Derived from the source tuple, never re-listed. This was one of several hand-written copies of the
+ * backend list; the rest — the settings validator in app.dto.ts and the two MCP tool schemas in
+ * mcp/tools/inference.tools.ts — were derived in the same change, so a backend added to
+ * INFERENCE_BACKEND_TYPES can no longer be accepted by one edge and rejected by another. That
+ * asymmetry was the real hazard: app.dto.ts gates settings.json, and a rejected settings object is
+ * swallowed whole by the `catch` in configuration.service, so a drifted enum there would have
+ * silently discarded every stored setting rather than failing loudly.
+ *
+ * Zod 4 takes the readonly `as const` tuple directly, so no widening cast is needed.
+ */
+const inferenceBackendSchema = z.enum(INFERENCE_BACKEND_TYPES);
 
 export const inferencePreferencesSchema = z.object({
   backend: inferenceBackendSchema,
