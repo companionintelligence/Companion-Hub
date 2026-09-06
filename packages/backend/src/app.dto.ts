@@ -10,6 +10,7 @@ import {
   MIN_POOL_LOCAL_AFFINITY,
 } from '@/common/helpers/hub-pool';
 
+import { INFERENCE_BACKEND_TYPES } from '@ci-hub/common/types';
 import { userSchema } from './modules/user/dto/user.dto';
 
 import { LOG_LEVEL_ENUM } from './core/logger/logger.service';
@@ -50,7 +51,7 @@ export const settingsSchema = z.object({
   ciHubOrganizationLabel: z.string().trim().optional(),
   ciHubDeviceSlug: z.string().trim().optional(),
   ciHubHubSubdomain: z.string().trim().optional(),
-  inferenceBackend: z.enum(['ollama', 'vllm', 'lemonade', 'mtplx', 'dspark', 'lucebox']).optional(),
+  inferenceBackend: z.enum(INFERENCE_BACKEND_TYPES).optional(),
   inferenceModel: z.string().trim().optional(),
   inferenceEmbeddingModel: z.string().trim().optional(),
   inferenceVisionModel: z.string().trim().optional(),
