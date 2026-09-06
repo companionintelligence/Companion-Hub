@@ -3,15 +3,9 @@ import { pipeline } from 'node:stream/promises';
 import type { ReadableStream as WebReadableStream } from 'node:stream/web';
 import { Injectable, Logger } from '@nestjs/common';
 import type { Response } from 'express';
-import type { InferenceBackendType } from '@ci-hub/common/types';
+import { INFERENCE_BACKEND_TYPES, type InferenceBackendType } from '@ci-hub/common/types';
 import { TailscaleService } from '@/modules/tailscale/tailscale.service';
-import { OllamaBackend } from '@/modules/inference/backends/ollama.backend';
-import { VllmBackend } from '@/modules/inference/backends/vllm.backend';
-import { LemonadeBackend } from '@/modules/inference/backends/lemonade.backend';
-import { MtplxBackend } from '@/modules/inference/backends/mtplx.backend';
-import { DsparkBackend } from '@/modules/inference/backends/dspark.backend';
-import { LuceboxBackend } from '@/modules/inference/backends/lucebox.backend';
-import type { InferenceBackend } from '@/modules/inference/backends/backend.interface';
+import { InferenceBackendRegistry } from '@/modules/inference/backends/backend-registry';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { CAPABILITIES_FRESHNESS_POLLS } from '@/common/helpers/hub-pool';
 import { HubPoolPeerService } from './hub-pool-peer.service';
@@ -20,7 +14,6 @@ import { HubPoolRoutingLogService } from './hub-pool-routing-log.service';
 import type { HubPoolPeer } from '@/core/database/drizzle/types';
 import type { PoolCandidate, PoolPeerCapabilities } from './hub-pool.types';
 
-export const ALL_BACKEND_TYPES: InferenceBackendType[] = ['ollama', 'vllm', 'lemonade', 'mtplx', 'dspark', 'lucebox'];
 /** Header-wait timeout for a forwarded request. Cleared as soon as the upstream responds, so it never caps how long a streamed generation may run. */
 const CONNECT_TIMEOUT_MS = 15_000;
 const HOP_BY_HOP_HEADERS = new Set(['connection', 'keep-alive', 'transfer-encoding', 'content-length', 'content-encoding', 'upgrade']);
@@ -82,12 +75,7 @@ export class PoolProxyService {
   private readonly logger = new Logger(PoolProxyService.name);
 
   constructor(
-    private readonly ollamaBackend: OllamaBackend,
-    private readonly vllmBackend: VllmBackend,
-    private readonly lemonadeBackend: LemonadeBackend,
-    private readonly mtplxBackend: MtplxBackend,
-    private readonly dsparkBackend: DsparkBackend,
-    private readonly luceboxBackend: LuceboxBackend,
+    private readonly backends: InferenceBackendRegistry,
     private readonly peerService: HubPoolPeerService,
     private readonly tailscaleService: TailscaleService,
     private readonly loadService: HubPoolLoadService,
@@ -103,23 +91,6 @@ export class PoolProxyService {
   /** How old a peer's capability snapshot may be before its self-reported load is discarded, derived from the configured poll cadence so retuning one retunes the other. */
   private capabilitiesFreshnessMs(): number {
     return this.configuration.getHubPoolPreferences().poolHealthPollSeconds * 1000 * CAPABILITIES_FRESHNESS_POLLS;
-  }
-
-  private getBackend(type: InferenceBackendType): InferenceBackend {
-    switch (type) {
-      case 'ollama':
-        return this.ollamaBackend;
-      case 'vllm':
-        return this.vllmBackend;
-      case 'lemonade':
-        return this.lemonadeBackend;
-      case 'mtplx':
-        return this.mtplxBackend;
-      case 'dspark':
-        return this.dsparkBackend;
-      case 'lucebox':
-        return this.luceboxBackend;
-    }
   }
 
   /**
@@ -138,7 +109,7 @@ export class PoolProxyService {
       ...this.peerCandidates(model, peers),
     ];
     // Stable sort: candidates that tie on both keys keep insertion order — local backends in
-    // ALL_BACKEND_TYPES order, then peers in the order the repository returned them.
+    // INFERENCE_BACKEND_TYPES order, then peers in the order the repository returned them.
     return ranked.sort((a, b) => a.score - b.score || a.tierRank - b.tierRank).map((entry) => entry.candidate);
   }
 
@@ -358,7 +329,7 @@ export class PoolProxyService {
    */
   async proxyLocalOnlyRequest(path: string, method: string, body: unknown, res: Response): Promise<void> {
     let committed = false;
-    for (const type of ALL_BACKEND_TYPES) {
+    for (const type of INFERENCE_BACKEND_TYPES) {
       try {
         const upstream = await this.callBackend(type, path, method, body);
         if (!upstream.ok) {
@@ -381,9 +352,9 @@ export class PoolProxyService {
 
   private async localCandidates(model: string): Promise<PoolCandidate[]> {
     const results = await Promise.all(
-      ALL_BACKEND_TYPES.map(async (type): Promise<PoolCandidate | null> => {
+      this.backends.entries().map(async ([type, backend]): Promise<PoolCandidate | null> => {
         try {
-          const health = await this.getBackend(type).healthCheck();
+          const health = await backend.healthCheck();
           if (health.running && health.healthy && health.modelsLoaded.includes(model)) {
             return { peerId: null, nodeFqdn: null, backend: type };
           }
@@ -441,7 +412,7 @@ export class PoolProxyService {
   }
 
   private async callBackend(backend: InferenceBackendType, path: string, method: string, body: unknown): Promise<globalThis.Response> {
-    const backendImpl = this.getBackend(backend);
+    const backendImpl = this.backends.get(backend);
     const url = `${backendImpl.getBaseUrl()}${path}`;
     const apiKey = backendImpl.getApiKey?.();
     return this.fetchWithConnectTimeout(url, {

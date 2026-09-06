@@ -1,17 +1,11 @@
 import { Injectable } from '@nestjs/common';
 import { LoggerService } from '@/core/logger/logger.service';
-import type { InferenceBackendType, InferenceModelInfo, InferenceStatus } from '@ci-hub/common/types';
+import type { InferenceModelInfo, InferenceStatus } from '@ci-hub/common/types';
 import { HardwareInspectorService } from './hardware-inspector.service';
 import { ModelRegistryService } from './model-registry.service';
 import { MemoryManagerService } from './memory-manager.service';
 import { CloudFallbackService } from './cloud-fallback.service';
-import { OllamaBackend } from './backends/ollama.backend';
-import { VllmBackend } from './backends/vllm.backend';
-import { LemonadeBackend } from './backends/lemonade.backend';
-import { MtplxBackend } from './backends/mtplx.backend';
-import { DsparkBackend } from './backends/dspark.backend';
-import { LuceboxBackend } from './backends/lucebox.backend';
-import type { InferenceBackend } from './backends/backend.interface';
+import { InferenceBackendRegistry } from './backends/backend-registry';
 
 /**
  * Inference router — read-only view over the local backends + cloud key store.
@@ -29,30 +23,8 @@ export class InferenceRouterService {
     private readonly modelRegistry: ModelRegistryService,
     private readonly memoryManager: MemoryManagerService,
     private readonly cloudFallback: CloudFallbackService,
-    private readonly ollamaBackend: OllamaBackend,
-    private readonly vllmBackend: VllmBackend,
-    private readonly lemonadeBackend: LemonadeBackend,
-    private readonly mtplxBackend: MtplxBackend,
-    private readonly dsparkBackend: DsparkBackend,
-    private readonly luceboxBackend: LuceboxBackend,
+    private readonly backends: InferenceBackendRegistry,
   ) {}
-
-  private getBackend(type: InferenceBackendType): InferenceBackend {
-    switch (type) {
-      case 'ollama':
-        return this.ollamaBackend;
-      case 'vllm':
-        return this.vllmBackend;
-      case 'lemonade':
-        return this.lemonadeBackend;
-      case 'mtplx':
-        return this.mtplxBackend;
-      case 'dspark':
-        return this.dsparkBackend;
-      case 'lucebox':
-        return this.luceboxBackend;
-    }
-  }
 
   /** Get full inference status for MCP / API */
   async getStatus(): Promise<InferenceStatus> {
@@ -60,8 +32,7 @@ export class InferenceRouterService {
     const budget = this.memoryManager.calculateBudget(profile);
 
     const backends = await Promise.all(
-      (['ollama', 'vllm', 'lemonade', 'mtplx', 'dspark', 'lucebox'] as InferenceBackendType[]).map(async (type) => {
-        const backend = this.getBackend(type);
+      this.backends.entries().map(async ([type, backend]) => {
         const health = await backend.healthCheck();
         return {
           type,
@@ -151,8 +122,7 @@ export class InferenceRouterService {
 
     // Discovered models from backends (not in curated catalog or tracked)
     const knownIds = new Set(models.map((m) => m.id));
-    for (const backendType of ['ollama', 'vllm', 'lemonade', 'mtplx', 'dspark', 'lucebox'] as InferenceBackendType[]) {
-      const backend = this.getBackend(backendType);
+    for (const [backendType, backend] of this.backends.entries()) {
       const health = await backend.healthCheck();
       if (health.running && health.healthy) {
         for (const modelName of health.modelsLoaded) {

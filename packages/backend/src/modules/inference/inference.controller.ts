@@ -28,6 +28,7 @@ import {
   MtplxStatusQueryDto,
   DsparkStatusQueryDto,
 } from './inference.dto';
+import { InferenceBackendRegistry } from './backends/backend-registry';
 import { OllamaBackend } from './backends/ollama.backend';
 import { buildVllmRemediation, resolveVllmProbeUrl, VLLM_PROBE_API_KEY_HEADER, VllmBackend } from './backends/vllm.backend';
 import { LemonadeBackend } from './backends/lemonade.backend';
@@ -35,7 +36,6 @@ import { buildMtplxRemediation, resolveMtplxProbeUrl, MtplxBackend } from './bac
 import { buildDsparkRemediation, DsparkBackend, resolveDsparkProbeUrl } from './backends/dspark.backend';
 import { LuceboxBackend } from './backends/lucebox.backend';
 import { resolveInstalledCatalogIds, resolveInstalledCatalogIdsFromServedModels } from './model-availability.util';
-import type { InferenceBackend } from './backends/backend.interface';
 
 /**
  * Inference controller — exposes Ollama/backend provisioning + management.
@@ -69,30 +69,8 @@ export class InferenceController {
     private readonly luceboxBackend: LuceboxBackend,
     private readonly moduleRef: ModuleRef,
     readonly _logger: LoggerService,
+    private readonly backends: InferenceBackendRegistry,
   ) {}
-
-  /**
-   * Exhaustive backend lookup. Deliberately a `switch` on the union rather than a ternary chain:
-   * the previous `backend === 'ollama' ? … : backend === 'vllm' ? … : this.lemonadeBackend` shape
-   * silently handed back Lemonade for any newly added backend type, and the compiler could not
-   * see it. A missing `case` here is a build error instead.
-   */
-  private getBackendService(type: InferenceBackendType): InferenceBackend {
-    switch (type) {
-      case 'ollama':
-        return this.ollamaBackend;
-      case 'vllm':
-        return this.vllmBackend;
-      case 'lemonade':
-        return this.lemonadeBackend;
-      case 'mtplx':
-        return this.mtplxBackend;
-      case 'dspark':
-        return this.dsparkBackend;
-      case 'lucebox':
-        return this.luceboxBackend;
-    }
-  }
 
   private getRecommendedBackend(profile: HardwareProfile): InferenceBackendType {
     // AMD GPUs (including the Strix Halo APU) always recommend Ollama, whether or not ROCm is
@@ -211,7 +189,7 @@ export class InferenceController {
   @Get('models/runtime')
   async getRuntimeModels(@Query() query: RuntimeModelsQueryDto) {
     const backend = query.backend;
-    const backendService = this.getBackendService(backend);
+    const backendService = this.backends.get(backend);
 
     const health = await backendService.healthCheck();
     if (!health.running || !health.healthy) {
