@@ -2,9 +2,40 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { setTailscalePersistedStateProbeForTests } from '../lib/cli-compose-env';
 import { isApplianceMode, isHubRepoRoot, requireRepoRoot } from '../lib/cli-repo-context';
 import { stripAnsi } from '../lib/cli-ui';
-import { buildComposeBaseArgs, composeArgsForContext, isFirstRun, resolveHubContext } from '../lib/hub-context';
+import type { PinnedDockerEngine, ReachableEngine } from '../lib/docker-engine';
+import {
+  applyDockerEnginePin,
+  buildComposeBaseArgs,
+  composeArgsForContext,
+  envOverridesForContext,
+  isFirstRun,
+  resolveHubContext,
+} from '../lib/hub-context';
+
+/**
+ * `docker-engine` and `seed-appliance` are the appliance path's two side-effecting collaborators:
+ * one pins DOCKER_HOST for every subsequent compose call, the other writes a fresh install to disk.
+ * Stubbing them is what makes those branches reachable without a Docker daemon or a TTY password
+ * prompt. Every stub value below is deliberately un-producible by the real implementation (TEST-NET-1
+ * addresses, a nonexistent image repo), so a stub value surfacing in the output proves it was threaded
+ * through rather than defaulted or hardcoded.
+ */
+const dockerEngine = vi.hoisted(() => ({
+  enumerateDockerEngineCandidates: vi.fn(),
+  probeReachableEngines: vi.fn(),
+  resolveAndPinHubDockerEngine: vi.fn(),
+  splitBrainConflict: vi.fn(),
+}));
+vi.mock('../lib/docker-engine.js', () => dockerEngine);
+
+const seedAppliance = vi.hoisted(() => ({
+  resolvePostgresPassword: vi.fn(),
+  seedApplianceInstall: vi.fn(),
+}));
+vi.mock('../lib/seed-appliance.js', () => seedAppliance);
 
 /**
  * These two modules decide whether a lifecycle command drives the repo's compose stack or the
@@ -68,6 +99,9 @@ afterEach(() => {
   else process.env.CI_HUB_DATA_DIR = previousDataDir;
   for (const dir of tempDirs) rmSync(dir, { recursive: true, force: true });
   tempDirs.length = 0;
+  // The module mocks are hoisted once for the file, so their call history outlives restoreAllMocks;
+  // reset makes each test declare the engine/seed behavior it depends on.
+  vi.resetAllMocks();
   vi.restoreAllMocks();
 });
 
@@ -574,5 +608,248 @@ describe('requireRepoOrApplianceContext', () => {
 
     expect(boxText()).not.toContain('Docker-level cleanup only');
     expect(boxText()).toContain('Targeting prod install');
+  });
+});
+
+// --- engine pin + env overrides ---
+
+/** TEST-NET-1/2 hosts: the real resolver only ever yields unix sockets, npipes, or a real context host. */
+const WSL_ENGINE: PinnedDockerEngine = {
+  dockerHost: 'tcp://192.0.2.77:2375',
+  kind: 'wsl-engine',
+  contextName: 'wsl-engine',
+  reason: 'selected by test fixture',
+  selectedAt: 0,
+  pathStyle: 'wsl-mnt',
+};
+
+const PLAIN_ENGINE: PinnedDockerEngine = {
+  dockerHost: 'tcp://198.51.100.4:2375',
+  kind: 'system',
+  reason: 'selected by test fixture',
+  selectedAt: 0,
+};
+
+/** Distinct sentinel objects so an assertion can prove which value reached splitBrainConflict. */
+const REACHABLE: ReachableEngine[] = [
+  { candidate: { label: 'test engine', dockerHost: WSL_ENGINE.dockerHost, kind: 'wsl-engine' }, hasHubIdentity: true, hubHostPorts: [] },
+];
+
+function stubEngineResolution(engine: PinnedDockerEngine, conflict: string | null = null): void {
+  dockerEngine.enumerateDockerEngineCandidates.mockReturnValue([]);
+  dockerEngine.probeReachableEngines.mockReturnValue(REACHABLE);
+  dockerEngine.resolveAndPinHubDockerEngine.mockReturnValue(engine);
+  dockerEngine.splitBrainConflict.mockReturnValue(conflict);
+}
+
+describe('applyDockerEnginePin', () => {
+  let logSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+  });
+
+  const boxText = () => stripAnsi((logSpy.mock.calls as unknown[][]).map((call) => String(call[0])).join('\n'));
+
+  it('overlays the resolved DOCKER_HOST, drops a stale DOCKER_CONTEXT, and keeps the caller overrides', () => {
+    stubEngineResolution(WSL_ENGINE);
+
+    // A DOCKER_CONTEXT inherited from the operator's shell outranks DOCKER_HOST for the docker CLI,
+    // so leaving it in place would send compose to the context's engine and ignore the pin entirely.
+    const result = applyDockerEnginePin({ ENV_FILE: '.env.dev', COMPOSE_PROFILES: 'cloudflare', DOCKER_CONTEXT: 'desktop-linux' }, '/data/dir');
+
+    expect(result.DOCKER_HOST).toBe(WSL_ENGINE.dockerHost);
+    expect(Object.keys(result)).not.toContain('DOCKER_CONTEXT');
+    expect(result.ENV_FILE).toBe('.env.dev');
+    expect(result.COMPOSE_PROFILES).toBe('cloudflare');
+    expect(result.CI_HUB_DOCKER_PATH_STYLE).toBe('wsl-mnt');
+  });
+
+  it('omits CI_HUB_DOCKER_PATH_STYLE when the pinned engine has no path style', () => {
+    // Only Windows-side engines carry a bind-mount style; emitting one for a plain socket engine
+    // would rewrite every compose bind path on Linux/macOS.
+    stubEngineResolution(PLAIN_ENGINE);
+
+    const result = applyDockerEnginePin({ ENV_FILE: '.env.dev' }, '/data/dir');
+
+    expect(result.DOCKER_HOST).toBe(PLAIN_ENGINE.dockerHost);
+    expect(Object.keys(result)).not.toContain('CI_HUB_DOCKER_PATH_STYLE');
+  });
+
+  it('exits 1 with the conflict text when the Hub stack lives on another engine', () => {
+    const conflict = 'Hub stack is on some other engine (tcp://203.0.113.9:2375)';
+    stubEngineResolution(WSL_ENGINE, conflict);
+    const exitSpy = spyOnExit();
+
+    // The mocked exit throws, and the function's own catch re-reports that throw — so assert on the
+    // first exit call and on the conflict box, which only the conflict branch can produce.
+    expect(() => applyDockerEnginePin({ ENV_FILE: '.env.dev' }, '/data/dir')).toThrow('process.exit');
+    expect(exitSpy.mock.calls[0]).toEqual([1]);
+    // Engine problems are exit 1; the seeding gates in this module use 2, and scripts branch on that.
+    expect(exitSpy).not.toHaveBeenCalledWith(2);
+    expect(boxText()).toContain('Docker engine conflict');
+    expect(boxText()).toContain(conflict);
+    // The conflict must be judged against the engine that was just pinned, not some other candidate.
+    expect(dockerEngine.splitBrainConflict).toHaveBeenCalledWith(WSL_ENGINE, REACHABLE);
+  });
+
+  it('exits 1 when engine resolution throws, naming the failure', () => {
+    dockerEngine.resolveAndPinHubDockerEngine.mockImplementation(() => {
+      throw new Error('no reachable docker engine in test');
+    });
+    const exitSpy = spyOnExit();
+
+    expect(() => applyDockerEnginePin({ ENV_FILE: '.env.dev' }, '/data/dir')).toThrow('process.exit');
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    expect(boxText()).toContain('Docker engine selection failed');
+    expect(boxText()).toContain('no reachable docker engine in test');
+  });
+});
+
+describe('envOverridesForContext', () => {
+  beforeEach(() => {
+    // Otherwise the profile merge shells out to `docker run` to look for persisted Tailscale state.
+    setTailscalePersistedStateProbeForTests(() => false);
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    setTailscalePersistedStateProbeForTests(null);
+  });
+
+  it('pins ROOT_FOLDER_HOST and the Docker engine to the data dir in appliance mode', () => {
+    stubEngineResolution(WSL_ENGINE);
+    const { dataDir } = makeApplianceHost({ seeded: true });
+
+    const overrides = envOverridesForContext(resolveHubContext('prod'));
+
+    // ROOT_FOLDER_HOST is what compose interpolates into every bind mount. Left at the checkout
+    // default ('.internal', resolved against cwd) the appliance stack would mount the operator's cwd.
+    expect(overrides.ROOT_FOLDER_HOST).toBe(dataDir);
+    expect(overrides.ENV_FILE).toBe(join(dataDir, PRIMARY_ENV_NAME));
+    expect(overrides.DOCKER_HOST).toBe(WSL_ENGINE.dockerHost);
+    // The engine pin is persisted per data dir; pinning against the cwd would write the wrong state file.
+    expect(dockerEngine.resolveAndPinHubDockerEngine).toHaveBeenCalledWith({ dataDir });
+  });
+
+  it('leaves ROOT_FOLDER_HOST unset in a checkout and never pins a Docker engine', () => {
+    // The negative half of the appliance guard: a developer's checkout must keep resolving binds
+    // relative to the repo and must not have its DOCKER_HOST rewritten out from under it.
+    stubEngineResolution(WSL_ENGINE);
+    process.chdir(makeCheckout());
+
+    const overrides = envOverridesForContext(resolveHubContext('local'));
+
+    expect(overrides.ENV_FILE).toBe('.env.local');
+    expect(overrides.ROOT_FOLDER_HOST).toBeUndefined();
+    expect(overrides.DOCKER_HOST).toBeUndefined();
+    expect(overrides.CI_HUB_DOCKER_PATH_STYLE).toBeUndefined();
+    expect(dockerEngine.resolveAndPinHubDockerEngine).not.toHaveBeenCalled();
+  });
+});
+
+// --- interactive seeding ---
+
+/** Values the real seeder cannot produce, so seeing one proves it came from the call under test. */
+const SEED_PASSWORD = 'sentinel-pw-8f3a2c';
+const SEED_IMAGE = 'ghcr.io/example-invalid/not-a-real-hub:sentinel-42';
+
+describe('ensureApplianceInstall', () => {
+  let exitSpy: ReturnType<typeof spyOnExit>;
+  let logSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    exitSpy = spyOnExit();
+    logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    seedAppliance.resolvePostgresPassword.mockResolvedValue(SEED_PASSWORD);
+  });
+
+  const boxText = () => stripAnsi((logSpy.mock.calls as unknown[][]).map((call) => String(call[0])).join('\n'));
+
+  it('never re-seeds an install that already exists', async () => {
+    // Re-seeding mints a new POSTGRES_PASSWORD and overwrites the env file, locking the CLI out of
+    // the Postgres volume the desktop app already initialized.
+    const { dataDir } = makeApplianceHost({ seeded: true });
+    const { ensureApplianceInstall } = await loadFreshHubContext();
+
+    await ensureApplianceInstall();
+
+    expect(seedAppliance.seedApplianceInstall).not.toHaveBeenCalled();
+    expect(seedAppliance.resolvePostgresPassword).not.toHaveBeenCalled();
+    expect(exitSpy).not.toHaveBeenCalled();
+    expect(boxText()).toContain('Targeting prod install');
+    expect(boxText()).toContain(dataDir);
+    expect(boxText()).not.toContain('Creating a fresh install');
+  });
+
+  it('seeds a fresh install with the resolved password and reports the image', async () => {
+    const { dataDir } = makeApplianceHost();
+    seedAppliance.seedApplianceInstall.mockReturnValue({
+      dataDir,
+      envFilePath: join(dataDir, PRIMARY_ENV_NAME),
+      composePath: join(dataDir, 'docker-compose.prod.yml'),
+      hubImage: SEED_IMAGE,
+    });
+    const { ensureApplianceInstall } = await loadFreshHubContext();
+
+    await ensureApplianceInstall();
+
+    expect(seedAppliance.seedApplianceInstall).toHaveBeenCalledWith({ dataDir, postgresPassword: SEED_PASSWORD });
+    expect(exitSpy).not.toHaveBeenCalled();
+    expect(boxText()).toContain(`Creating a fresh install at ${dataDir}`);
+    expect(boxText()).toContain('Fresh Hub install created');
+    expect(boxText()).toContain(SEED_IMAGE);
+  });
+
+  /**
+   * The TTY gate decides whether resolvePostgresPassword may prompt. Hardcoding it true makes a
+   * non-interactive `cihub up` — CI, or the run the desktop app spawns — block forever on a prompt
+   * nobody can answer, which reads as a hung install rather than an error. Both directions are
+   * pinned because only asserting the false case would leave `isTty: false` hardcoded, silently
+   * turning the interactive path into a "set POSTGRES_PASSWORD" failure for real operators.
+   */
+  it.each([
+    { stdin: false, stdout: false, expected: false, label: 'neither stream is a TTY' },
+    { stdin: true, stdout: false, expected: false, label: 'only stdin is a TTY' },
+    { stdin: false, stdout: true, expected: false, label: 'only stdout is a TTY' },
+    { stdin: true, stdout: true, expected: true, label: 'both streams are TTYs' },
+  ])('passes isTty $expected to the password resolver when $label', async ({ stdin, stdout, expected }) => {
+    const { dataDir } = makeApplianceHost();
+    seedAppliance.seedApplianceInstall.mockReturnValue({
+      dataDir,
+      envFilePath: join(dataDir, PRIMARY_ENV_NAME),
+      composePath: join(dataDir, 'docker-compose.prod.yml'),
+      hubImage: SEED_IMAGE,
+    });
+    const stdinDescriptor = Object.getOwnPropertyDescriptor(process.stdin, 'isTTY');
+    const stdoutDescriptor = Object.getOwnPropertyDescriptor(process.stdout, 'isTTY');
+    Object.defineProperty(process.stdin, 'isTTY', { configurable: true, value: stdin });
+    Object.defineProperty(process.stdout, 'isTTY', { configurable: true, value: stdout });
+
+    try {
+      const { ensureApplianceInstall } = await loadFreshHubContext();
+      await ensureApplianceInstall();
+    } finally {
+      if (stdinDescriptor) Object.defineProperty(process.stdin, 'isTTY', stdinDescriptor);
+      if (stdoutDescriptor) Object.defineProperty(process.stdout, 'isTTY', stdoutDescriptor);
+    }
+
+    expect(seedAppliance.resolvePostgresPassword).toHaveBeenCalledWith({ env: process.env, isTty: expected });
+  });
+
+  it('exits 2 when seeding fails, pointing at the data dir', async () => {
+    const { dataDir } = makeApplianceHost();
+    seedAppliance.seedApplianceInstall.mockImplementation(() => {
+      throw new Error('could not find docker-compose.prod.yml in test');
+    });
+    const { ensureApplianceInstall } = await loadFreshHubContext();
+
+    await expect(ensureApplianceInstall()).rejects.toThrow('process.exit');
+    // 2 is the "operator must act" code the lifecycle gates use; 1 means an engine fault.
+    expect(exitSpy).toHaveBeenCalledWith(2);
+    expect(exitSpy).not.toHaveBeenCalledWith(1);
+    expect(boxText()).toContain('Could not create Hub install');
+    expect(boxText()).toContain('could not find docker-compose.prod.yml in test');
+    expect(boxText()).toContain(`Expected prod data at: ${dataDir}`);
   });
 });
