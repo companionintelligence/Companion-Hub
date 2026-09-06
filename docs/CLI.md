@@ -395,6 +395,56 @@ cihub uninstall [--yes]    # full machine cleanup of CI-Hub runtime state
 
 ---
 
+## Implementation map
+
+The command surface is stable; this is where each part lives, for anyone changing it.
+
+`bin/cihub.cjs` → `scripts/start.ts` → `runCli()` in `scripts/lib/cli-dispatch.ts`, which matches
+`argv[0]` and calls the module that owns the handler. There is no argument-parsing library; flag
+normalization is in `scripts/lib/cli-args.ts`.
+
+| Module | Commands |
+|---|---|
+| `cli-lifecycle.ts` | `up`, `setup`, `config` |
+| `cli-teardown.ts` | `down`, `restart`, `recreate`, `clean`, `reset` |
+| `cli-doctor.ts` | `status`, `logs`, `doctor`, `uninstall` |
+| `cli-register.ts` | `register`, `device-id` |
+| `cli-app.ts` | `app` |
+| `cli-models.ts` | `models`, `mcp`, `public-web` |
+| `cli-pool.ts` | `pool` |
+| `cli-api-key.ts` | `api-key` |
+| `cli-update.ts` | `version`, `update`, `connect` |
+| `cli-wizard.ts` | `wizard` |
+| `catalog-submit.ts` | `login`, `logout`, `submit` |
+
+Shared pieces: `cli-args.ts` (flags and env resolution), `cli-repo-context.ts` (checkout vs packaged
+appliance), `hub-context.ts` (env file, compose files, and working directory for the resolved
+context), `cli-prompt.ts` (every confirmation, so the non-TTY refusal is worded the same everywhere),
+`cli-proc.ts` (process execution), `cli-ui.ts` (colors, boxes, help and man rendering),
+`cli-compose-env.ts` (env file and compose profile handling), `docker-engine.ts` (engine discovery
+and pinning).
+
+`scripts/cihub-cli.ts` is a re-export facade kept so `scripts/__tests__/cihub-cli.test.ts` has one
+stable import site. New code should import from the owning module instead.
+
+### Adding a command
+
+1. Add the handler to the module that owns that command group, or a new `scripts/lib/cli-<name>.ts`.
+2. Route it in `cli-dispatch.ts`.
+3. Add it to `commandSections` in `cli-ui.ts` so it appears in `--help` and `man`.
+4. Test the handler in `scripts/__tests__/`, and the routing in `cli-dispatch.test.ts`.
+
+Retired commands stay routed to `printRemovedCommand` with their replacement rather than being
+deleted, so an old script fails with guidance instead of "unknown command".
+
+### Two distributions
+
+`bin/cihub.cjs` runs the TypeScript through `tsx` at each invocation — that is the npm install.
+`pnpm run build:cli` (`scripts/build-standalone-cli.cjs`) instead bundles it with Bun into a single
+executable for six targets, which is what the desktop app bundles and installs onto `PATH`.
+
+---
+
 ## Environments
 
 All commands accept an optional `[env]` argument:
