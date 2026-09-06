@@ -70,7 +70,20 @@ export interface MemoryBudget {
 
 // ─── Model Registry ─────────────────────────────────────────────────────────
 
-export type InferenceBackendType = 'ollama' | 'vllm' | 'lemonade' | 'mtplx' | 'dspark' | 'lucebox';
+/**
+ * Every local inference backend, in the order status/listing endpoints report them.
+ *
+ * The single source of truth: {@link InferenceBackendType} is *derived* from this tuple rather than
+ * declared beside it, so the union and the list cannot drift. Callers that need to walk every
+ * backend must iterate this instead of writing their own literal array — the hand-maintained copies
+ * this replaced were all typed `InferenceBackendType[]` (or built from injected instances), which
+ * accepts a *subset* without complaint, so a newly added backend silently vanished from
+ * `getStatus().backends`, the discovered-model list, `hub_list_inference_backends`, and pool
+ * candidate selection with no compile error anywhere.
+ */
+export const INFERENCE_BACKEND_TYPES = ['ollama', 'vllm', 'lemonade', 'mtplx', 'dspark', 'lucebox'] as const;
+
+export type InferenceBackendType = (typeof INFERENCE_BACKEND_TYPES)[number];
 
 export type ModelModality = 'llm' | 'tts' | 'stt' | 'image-gen' | 'embedding';
 export type ModelPurpose = 'general' | 'coding' | 'reasoning' | 'fast' | 'voice' | 'transcription' | 'image' | 'embedding';
