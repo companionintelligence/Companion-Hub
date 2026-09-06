@@ -28,4 +28,8 @@ pnpm install
 pnpm run local
 ```
 
+`pnpm install` needs a `NODE_AUTH_TOKEN` for the private `@companionintelligence` scope, and the
+desktop app needs GTK/WebKit headers. Both failures and their fixes are in
+[`docs/DEVELOPMENT_SETUP.md`](docs/DEVELOPMENT_SETUP.md).
+
 See [`CLAUDE.md`](CLAUDE.md) for day-to-day development commands.
