@@ -21,7 +21,7 @@ const buildContainer = readWorkflow('build-container.yml');
 const desktopRelease = readWorkflow('desktop-release.yml');
 const dockerfile = fs.readFileSync(path.join(repoRoot, 'Dockerfile'), 'utf-8');
 const updaterScript = fs.readFileSync(path.join(repoRoot, 'scripts/updater/update.sh'), 'utf-8');
-const desktopHubManager = fs.readFileSync(path.join(repoRoot, 'packages/desktop/src-tauri/src/hub_manager.rs'), 'utf-8');
+const desktopHubLifecycle = fs.readFileSync(path.join(repoRoot, 'packages/desktop/src-tauri/src/hub_manager/lifecycle.rs'), 'utf-8');
 
 const GATE_JOB = 'verify-anonymous-pull:';
 
@@ -234,14 +234,22 @@ describe('Hub service rename upgrade compatibility', () => {
   });
 
   it('removes renamed service orphans on every desktop start and stop path', () => {
-    const startAt = desktopHubManager.indexOf('fn start_hub_inner');
-    const pullAt = desktopHubManager.indexOf('pub fn pull_hub_images', startAt);
-    const stopForUpdateAt = desktopHubManager.indexOf('pub fn stop_hub_for_update');
-    const stopAt = desktopHubManager.indexOf('pub fn stop_hub(', stopForUpdateAt);
-    const stopManagedAppsAt = desktopHubManager.indexOf('pub fn stop_managed_app_containers', stopAt);
-    const start = desktopHubManager.slice(startAt, pullAt);
-    const stopForUpdate = desktopHubManager.slice(stopForUpdateAt, stopAt);
-    const stop = desktopHubManager.slice(stopAt, stopManagedAppsAt);
+    // Slice one function out of lifecycle.rs, asserting the marker exists first. A missing marker
+    // makes indexOf return -1, and slice(a, -1) then runs to the end of the file — every
+    // `toMatch` below would pass on some unrelated function's body. That is not hypothetical: the
+    // end marker here used to be `pub fn pull_hub_images`, a name that has never existed in this
+    // repo, so the `start` region silently covered everything after start_hub_inner.
+    const region = (from: string, to: string) => {
+      const start = desktopHubLifecycle.indexOf(from);
+      expect(start, `marker not found in lifecycle.rs: ${from}`).toBeGreaterThanOrEqual(0);
+      const end = desktopHubLifecycle.indexOf(to, start + from.length);
+      expect(end, `marker not found after ${from} in lifecycle.rs: ${to}`).toBeGreaterThan(start);
+      return desktopHubLifecycle.slice(start, end);
+    };
+
+    const start = region('fn start_hub_inner', 'pub(crate) fn persist_config_hash');
+    const stopForUpdate = region('pub fn stop_hub_for_update', 'pub fn stop_hub(');
+    const stop = region('pub fn stop_hub(', 'pub fn stop_managed_app_containers');
 
     expect(start).toMatch(/"up"\.to_string\(\),\s*"-d"\.to_string\(\),\s*"--remove-orphans"\.to_string\(\)/);
     expect(start).toMatch(/"up",\s*"-d",\s*"--remove-orphans",\s*HUB_QUEUE/);
