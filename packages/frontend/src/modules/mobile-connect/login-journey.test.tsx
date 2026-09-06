@@ -18,6 +18,7 @@ import { render, screen, userEvent as user } from '@/tests/test-utils';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createRoutesStub } from 'react-router';
 import ConnectPage, { clientLoader as connectLoader } from './pages/connect-page';
+import ConnectAdvancedPage, { clientLoader as advancedLoader } from './pages/connect-advanced-page';
 import type { HubDevice } from './portal-client';
 
 // ── Stateful mobile-connection boundary ────────────────────────────────────
@@ -81,6 +82,7 @@ function HomeScreen() {
 function renderJourney(initial = '/connect') {
   const Stub = createRoutesStub([
     { path: '/connect', Component: ConnectPage, loader: connectLoader },
+    { path: '/connect/advanced', Component: ConnectAdvancedPage, loader: advancedLoader },
     { path: '/login', Component: HubLoginScreen },
     { path: '/', Component: HomeScreen },
   ]);
@@ -100,6 +102,8 @@ beforeEach(() => {
   resumePendingOidcLogin.mockReset();
   resumePendingOidcLogin.mockResolvedValue(null);
   toastError.mockClear();
+  localStorage.clear();
+  sessionStorage.clear();
 });
 
 describe('mobile login journey', () => {
@@ -108,10 +112,14 @@ describe('mobile login journey', () => {
     listHubDevices.mockResolvedValue(DEVICES);
     renderJourney();
 
-    // Lands on the connect screen.
-    expect(await screen.findByText('Connect to your Hub')).toBeInTheDocument();
+    // Lands on the splash — logo + Log in, not email.
+    expect(await screen.findByTestId('oidc-login-btn')).toBeInTheDocument();
+    expect(screen.queryByPlaceholderText('you@example.com')).not.toBeInTheDocument();
 
-    // Sign in with email.
+    // Email lives under Advanced.
+    await user.click(screen.getByTestId('advanced-link'));
+    expect(await screen.findByPlaceholderText('you@example.com')).toBeInTheDocument();
+
     await user.type(screen.getByPlaceholderText('you@example.com'), 'you@example.com');
     await user.type(screen.getByPlaceholderText('Password'), 'pw');
     await user.click(screen.getByRole('button', { name: /sign in with email/i }));
@@ -152,7 +160,7 @@ describe('mobile login journey', () => {
     renderJourney('/connect');
     // clientLoader sees a chosen Hub → redirects to that Hub's /login.
     expect(await screen.findByTestId('hub-login-screen')).toBeInTheDocument();
-    expect(screen.queryByText('Connect to your Hub')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('oidc-login-btn')).not.toBeInTheDocument();
   });
 
   it('web/desktop never see the mobile-only connect screen', async () => {
@@ -165,6 +173,7 @@ describe('mobile login journey', () => {
     signInToPortal.mockRejectedValue(new Error('Invalid credentials'));
     renderJourney();
 
+    await user.click(await screen.findByTestId('advanced-link'));
     await user.type(await screen.findByPlaceholderText('you@example.com'), 'a@b.c');
     await user.type(screen.getByPlaceholderText('Password'), 'wrong');
     await user.click(screen.getByRole('button', { name: /sign in with email/i }));
@@ -181,6 +190,7 @@ describe('mobile login journey', () => {
     listHubDevices.mockResolvedValue(DEVICES);
     renderJourney();
 
+    await user.click(await screen.findByTestId('advanced-link'));
     await user.type(await screen.findByPlaceholderText('you@example.com'), 'a@b.c');
     await user.type(screen.getByPlaceholderText('Password'), 'pw');
     await user.click(screen.getByRole('button', { name: /sign in with email/i }));
