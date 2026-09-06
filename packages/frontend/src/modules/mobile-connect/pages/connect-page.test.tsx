@@ -74,6 +74,7 @@ beforeEach(() => {
   initMobileConnection.mockResolvedValue({ isMobile: true, hubBaseUrl: null });
   isMobileClient.mockReturnValue(true);
   localStorage.clear();
+  sessionStorage.clear();
 });
 
 describe('ConnectPage clientLoader (connect ↔ /login handoff guard)', () => {
@@ -105,64 +106,25 @@ describe('ConnectPage clientLoader (connect ↔ /login handoff guard)', () => {
 });
 
 describe('ConnectPage', () => {
-  it('shows the OIDC button and the email fallback form', () => {
+  it('shows the CI logo, Log in, and Advanced — not email or a URL field', () => {
     renderPage();
-    expect(screen.getByTestId('oidc-login-btn')).toBeInTheDocument();
-    expect(screen.getByPlaceholderText('you@example.com')).toBeInTheDocument();
-    expect(screen.getByPlaceholderText('Password')).toBeInTheDocument();
+    expect(screen.getByTestId('oidc-login-btn')).toHaveTextContent('Log in');
+    expect(screen.getByTestId('advanced-link')).toBeInTheDocument();
+    expect(screen.queryByPlaceholderText('you@example.com')).not.toBeInTheDocument();
+    expect(screen.queryByPlaceholderText('Password')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Companion URL')).not.toBeInTheDocument();
+  });
+
+  it('Advanced opens the advanced screen', async () => {
+    renderPage();
+    await user.click(screen.getByTestId('advanced-link'));
+    expect(navigate).toHaveBeenCalledWith('/connect/advanced');
   });
 
   it('resolves every i18n key (no raw MOBILE_CONNECT_* leaks through)', () => {
     const { container } = renderPage();
-    expect(screen.getByText('Connect to your Hub')).toBeInTheDocument();
+    expect(screen.getByText('Log in')).toBeInTheDocument();
     expect(container.textContent).not.toMatch(/MOBILE_CONNECT_/);
-  });
-
-  it('email sign-in loads the Hub list and disables unreachable Hubs', async () => {
-    signInToPortal.mockResolvedValue({ token: 'tok', cookie: null });
-    listHubDevices.mockResolvedValue(devices);
-    renderPage();
-
-    await user.type(screen.getByPlaceholderText('you@example.com'), 'you@example.com');
-    await user.type(screen.getByPlaceholderText('Password'), 'pw');
-    await user.click(screen.getByRole('button', { name: /sign in with email/i }));
-
-    expect(await screen.findByText('Apple Hub')).toBeInTheDocument();
-    expect(signInToPortal).toHaveBeenCalledWith('you@example.com', 'pw', expect.any(String));
-
-    expect(screen.getByTestId('hub-row-reg-1')).toBeEnabled();
-    expect(screen.getByTestId('hub-row-reg-2')).toBeDisabled(); // no hubUrl → unreachable
-    expect(screen.getByText('unreachable')).toBeInTheDocument();
-  });
-
-  it('email sign-in failure surfaces an error toast and stays on the form', async () => {
-    signInToPortal.mockRejectedValue(new Error('Invalid credentials'));
-    renderPage();
-
-    await user.type(screen.getByPlaceholderText('you@example.com'), 'a@b.c');
-    await user.type(screen.getByPlaceholderText('Password'), 'wrong');
-    await user.click(screen.getByRole('button', { name: /sign in with email/i }));
-
-    await vi.waitFor(() => expect(toastError).toHaveBeenCalledWith('Invalid credentials'));
-    expect(listHubDevices).not.toHaveBeenCalled();
-    // Still on the sign-in step (no picker rendered).
-    expect(screen.getByPlaceholderText('you@example.com')).toBeInTheDocument();
-    expect(screen.queryByTestId('hub-row-reg-1')).not.toBeInTheDocument();
-  });
-
-  it('connecting to a reachable Hub applies the connection then hands off to /login', async () => {
-    signInToPortal.mockResolvedValue({ token: 'tok', cookie: null });
-    listHubDevices.mockResolvedValue(devices);
-    renderPage();
-    await user.type(screen.getByPlaceholderText('you@example.com'), 'a@b.c');
-    await user.type(screen.getByPlaceholderText('Password'), 'pw');
-    await user.click(screen.getByRole('button', { name: /sign in with email/i }));
-    await user.click(await screen.findByTestId('hub-row-reg-1'));
-
-    // The chosen Hub is applied (baseUrl + native fetch + session wiring) *before*
-    // the login handoff, so /login's POST reaches the remote Hub.
-    expect(setHubConnection).toHaveBeenCalledWith('https://hub-apple.ci.computer');
-    expect(navigate).toHaveBeenCalledWith('/login', { replace: true });
   });
 
   it('resumes a cold-start OIDC callback on mount and shows the Hub picker', async () => {
@@ -172,6 +134,15 @@ describe('ConnectPage', () => {
 
     expect(await screen.findByText('Apple Hub')).toBeInTheDocument();
     expect(listHubDevices).toHaveBeenCalledWith({ token: 'AT', cookie: null, kind: 'oauth' }, expect.any(String));
+  });
+
+  it('resumes email Portal auth stored by Advanced and shows the Hub picker', async () => {
+    sessionStorage.setItem('ci-hub.portalAuth', JSON.stringify({ token: 'sess', cookie: null, kind: 'session' }));
+    listHubDevices.mockResolvedValue(devices);
+    renderPage();
+
+    expect(await screen.findByText('Apple Hub')).toBeInTheDocument();
+    expect(listHubDevices).toHaveBeenCalledWith({ token: 'sess', cookie: null, kind: 'session' }, expect.any(String));
   });
 
   it('OIDC sign-in remembers the Portal email from the id_token', async () => {
@@ -202,8 +173,18 @@ describe('ConnectPage', () => {
     await user.click(screen.getByTestId('oidc-login-btn'));
 
     expect(await screen.findByText('Apple Hub')).toBeInTheDocument();
-    // The OIDC access token is forwarded to the Portal device listing.
     expect(listHubDevices).toHaveBeenCalledWith({ token: 'AT', cookie: null, kind: 'oauth' }, expect.any(String));
+  });
+
+  it('connecting to a reachable Hub applies the connection then hands off to /login', async () => {
+    loginWithPortalOidc.mockResolvedValue({ accessToken: 'AT', idToken: null, tokenType: 'Bearer', expiresIn: 3600 });
+    listHubDevices.mockResolvedValue(devices);
+    renderPage();
+    await user.click(screen.getByTestId('oidc-login-btn'));
+    await user.click(await screen.findByTestId('hub-row-reg-1'));
+
+    expect(setHubConnection).toHaveBeenCalledWith('https://hub-apple.ci.computer');
+    expect(navigate).toHaveBeenCalledWith('/login', { replace: true });
   });
 
   it('OIDC failure (not a cancel) surfaces an error toast', async () => {
@@ -213,12 +194,11 @@ describe('ConnectPage', () => {
     await user.click(screen.getByTestId('oidc-login-btn'));
 
     await vi.waitFor(() => expect(toastError).toHaveBeenCalledWith('Token exchange failed (400)'));
-    // Back on the form (no picker).
-    expect(await screen.findByPlaceholderText('you@example.com')).toBeInTheDocument();
+    expect(await screen.findByTestId('oidc-login-btn')).toBeInTheDocument();
+    expect(screen.queryByTestId('hub-row-reg-1')).not.toBeInTheDocument();
   });
 
   it('OIDC flow shows a cancel affordance and aborts cleanly', async () => {
-    // Resolve/reject only when the caller aborts via the AbortSignal.
     loginWithPortalOidc.mockImplementation(
       (_url: string, opts: { signal: AbortSignal }) =>
         new Promise((_resolve, reject) => {
@@ -230,13 +210,12 @@ describe('ConnectPage', () => {
     await user.click(screen.getByTestId('oidc-login-btn'));
     const cancel = await screen.findByTestId('cancel-oidc-btn');
     expect(cancel).toBeInTheDocument();
+    expect(screen.queryByTestId('advanced-link')).not.toBeInTheDocument();
 
     await user.click(cancel);
 
-    // After cancel the form returns (no error toast, no crash).
-    expect(await screen.findByPlaceholderText('you@example.com')).toBeInTheDocument();
+    expect(await screen.findByTestId('oidc-login-btn')).toBeInTheDocument();
     expect(screen.queryByTestId('cancel-oidc-btn')).not.toBeInTheDocument();
-    // A user-initiated cancel must stay quiet — no error toast.
     expect(toastError).not.toHaveBeenCalled();
   });
 });
