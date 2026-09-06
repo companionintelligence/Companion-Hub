@@ -12,6 +12,13 @@ export interface PortalSsoState {
   redirectUrl: string | null;
   hubOrigin: string;
   desktop: boolean;
+  /**
+   * Which desktop build started this flow, carried across the browser round trip
+   * so the callback can pick the right return scheme. Optional because states
+   * issued before this field existed are still in flight; absent reads as
+   * 'packaged', which is the safe default (see resolvePortalDesktopDeepLinkScheme).
+   */
+  desktopChannel?: DesktopChannel;
 }
 
 export interface PortalDesktopExchange {
@@ -75,19 +82,44 @@ export function shouldHandoffPortalLoginToDesktop(input: { desktop: boolean; hub
   return isLoopbackHubOrigin(input.hubOrigin) && input.desktopAppPresent;
 }
 
-/** Loopback desktop dev uses cihub-dev:// so macOS does not steal cihub:// from the installed app. */
-export function resolvePortalDesktopDeepLinkScheme(hubOrigin?: string | null): 'cihub' | 'cihub-dev' {
-  return hubOrigin && isLoopbackHubOrigin(hubOrigin) ? 'cihub-dev' : 'cihub';
+/**
+ * Which URL scheme the browser should hand the session back on.
+ *
+ * THE CLIENT DECLARES THIS. It used to be inferred as "loopback origin ⇒ dev
+ * build", which is false in the one case that matters: the PACKAGED desktop app
+ * also serves its UI from http://127.0.0.1:<apiPort> (desktop/src-tauri main.rs
+ * get_hub_api_url_command, reached via bootstrap.js). So every production sign-in
+ * was classified as dev and handed back `cihub-dev://auth?token=…`.
+ *
+ * cihub-dev is the scheme the DEV shell claims exclusively (scripts/launch-tauri-
+ * desktop.ts publishes identifier computer.ci.app.hub.dev declaring only that
+ * scheme) and that no installer registers — distribution/chocolatey registers
+ * only `cihub`. So the return link either had no OS handler at all, or on a
+ * machine with a dev build present was routed to the wrong binary.
+ *
+ * Defaulting to `cihub` is the safe direction: the packaged app declares BOTH
+ * schemes (tauri.conf.json), so a dev shell that fails to pass the flag still
+ * gets a link its own binary can handle.
+ */
+export function resolvePortalDesktopDeepLinkScheme(channel?: DesktopChannel | null): 'cihub' | 'cihub-dev' {
+  return channel === 'dev' ? 'cihub-dev' : 'cihub';
 }
 
-export function buildPortalDesktopDeepLink(token: string, hubOrigin?: string | null): string {
-  const url = new URL(`${resolvePortalDesktopDeepLinkScheme(hubOrigin)}://auth`);
+/** Which desktop build asked for the handoff. Sent by the client, never inferred. */
+export type DesktopChannel = 'dev' | 'packaged';
+
+export function parseDesktopChannel(raw?: string | null): DesktopChannel {
+  return raw === 'dev' ? 'dev' : 'packaged';
+}
+
+export function buildPortalDesktopDeepLink(token: string, channel?: DesktopChannel | null): string {
+  const url = new URL(`${resolvePortalDesktopDeepLinkScheme(channel)}://auth`);
   url.searchParams.set('token', token);
   return url.toString();
 }
 
-export function buildPortalDesktopErrorDeepLink(errorCode: PortalSsoErrorCode, hubOrigin?: string | null): string {
-  const url = new URL(`${resolvePortalDesktopDeepLinkScheme(hubOrigin)}://auth`);
+export function buildPortalDesktopErrorDeepLink(errorCode: PortalSsoErrorCode, channel?: DesktopChannel | null): string {
+  const url = new URL(`${resolvePortalDesktopDeepLinkScheme(channel)}://auth`);
   url.searchParams.set('error', errorCode);
   return url.toString();
 }
@@ -103,11 +135,14 @@ export function resolveRequestOriginFallback(req: Request): string {
 export function buildPortalSsoErrorRedirectUrl(input: {
   hubOrigin?: string | null;
   desktop?: boolean;
+  desktopChannel?: DesktopChannel | null;
   errorCode: PortalSsoErrorCode;
   fallbackOrigin: string;
 }): string {
   if (input.desktop) {
-    return buildPortalDesktopErrorDeepLink(input.errorCode, input.hubOrigin ?? input.fallbackOrigin);
+    // The channel, not the origin — see resolvePortalDesktopDeepLinkScheme. An
+    // error handed back on an unregistered scheme is as lost as a session is.
+    return buildPortalDesktopErrorDeepLink(input.errorCode, input.desktopChannel);
   }
 
   const base = input.hubOrigin || input.fallbackOrigin;
