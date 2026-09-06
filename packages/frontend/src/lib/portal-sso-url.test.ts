@@ -99,8 +99,9 @@ describe('buildPortalSsoStartUrl — platform matrix', () => {
         isMobileClient: false,
         configuredApiBaseUrl: 'http://localhost:5002',
         pageOrigin: 'http://localhost:5005',
+        isDevBuild: true,
       }),
-    ).toBe('http://localhost:5005/api/auth/portal/start?desktop=1');
+    ).toBe('http://localhost:5005/api/auth/portal/start?desktop=1&desktop_channel=dev');
   });
 
   it('packaged desktop: Hub API + desktop handoff', () => {
@@ -111,6 +112,7 @@ describe('buildPortalSsoStartUrl — platform matrix', () => {
         isMobileClient: false,
         configuredApiBaseUrl: 'http://127.0.0.1:5002',
         pageOrigin: 'https://tauri.localhost',
+        isDevBuild: false,
       }),
     ).toBe('http://127.0.0.1:5002/api/auth/portal/start?desktop=1');
   });
