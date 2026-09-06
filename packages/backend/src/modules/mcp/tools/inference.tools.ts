@@ -8,6 +8,7 @@ import { ModelPullerService } from '@/modules/inference/model-puller.service';
 import { InferenceRouterService } from '@/modules/inference/inference-router.service';
 import { CloudFallbackService } from '@/modules/inference/cloud-fallback.service';
 import { InferenceBackendRegistry } from '@/modules/inference/backends/backend-registry';
+import { INFERENCE_BACKEND_TYPES } from '@ci-hub/common/types';
 import type { InferenceBackendType, CloudProviderType } from '@ci-hub/common/types';
 
 @Injectable()
@@ -82,7 +83,7 @@ export class InferenceTools implements OnModuleInit {
       inputSchema: {
         type: 'object',
         properties: {
-          backend: { type: 'string', enum: ['ollama', 'vllm', 'lemonade', 'mtplx', 'dspark', 'lucebox'], description: 'Backend type to check' },
+          backend: { type: 'string', enum: [...INFERENCE_BACKEND_TYPES], description: 'Backend type to check' },
         },
         required: ['backend'],
       },
@@ -100,7 +101,7 @@ export class InferenceTools implements OnModuleInit {
       inputSchema: {
         type: 'object',
         properties: {
-          backend: { type: 'string', enum: ['ollama', 'vllm', 'lemonade', 'mtplx', 'dspark', 'lucebox'], description: 'Backend type to check' },
+          backend: { type: 'string', enum: [...INFERENCE_BACKEND_TYPES], description: 'Backend type to check' },
         },
         required: ['backend'],
       },

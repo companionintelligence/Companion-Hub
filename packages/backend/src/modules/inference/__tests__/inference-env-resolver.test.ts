@@ -15,7 +15,7 @@ import { DsparkBackend } from '../backends/dspark.backend';
 import { LuceboxBackend } from '../backends/lucebox.backend';
 import { CloudFallbackService } from '../cloud-fallback.service';
 import { HubPoolPeerService } from '@/modules/hub-pool/hub-pool-peer.service';
-import type { CloudProviderConfig, CuratedModel, HardwareProfile } from '@ci-hub/common/types';
+import type { CloudProviderConfig, CuratedModel, HardwareProfile, InferenceBackendType } from '@ci-hub/common/types';
 
 const OLLAMA_BASE_URL = 'http://host.docker.internal:11434';
 
@@ -340,6 +340,36 @@ describe('InferenceEnvResolver', () => {
     const env = await service.resolve();
 
     expect(env.CI_LLM_API_KEY).toBe('managed-dspark-key');
+  });
+
+  it('falls back to Ollama when the stored preference names a backend that does not exist', async () => {
+    // settings.json is read off disk and typed by assertion, never validated, so a retired or
+    // mistyped `inferenceBackend` arrives here intact — and `?? 'ollama'` only ever covered the
+    // *absent* case. The registry used to hand back undefined behind a non-optional type and the
+    // failure surfaced at `.healthCheck()`; it now throws, so this resolver branches on tryGet.
+    // Every app install/start runs through here, so one bad character in a hand-edited file must
+    // not stop every installed app from getting its CI_* env.
+    config.getInferencePreferences.mockReturnValue({
+      preferredBackend: 'llamacpp' as InferenceBackendType,
+      preferredModel: null,
+      preferredEmbeddingModel: null,
+      preferredVisionModel: null,
+    });
+
+    const env = await service.resolve();
+
+    // Asserting the whole Ollama shape, not merely that it did not throw: the fallback has to move
+    // the backend *type* as well as the instance. `backendType` feeds BACKEND_API_KEY, the catalog
+    // filter, and CI_INFERENCE_BACKEND, so leaving 'llamacpp' in place would hand apps an undefined
+    // API key and a filter no curated model can match.
+    expect(env.CI_INFERENCE_BACKEND).toBe('ollama');
+    expect(env.CI_LLM_BASE_URL).toBe(`${OLLAMA_BASE_URL}/v1`);
+    expect(env.CI_LLM_API_KEY).toBe('ollama');
+    expect(env.OLLAMA_HOST).toBe(OLLAMA_BASE_URL);
+    expect(env.CI_CHAT_MODEL).toBe('hermes4:70b');
+    // The operator only finds the typo if the log names it. Error, not warn: this silently
+    // re-points every installed app's inference backend, API key, and catalog filter.
+    expect(logger.error).toHaveBeenCalledWith(expect.stringContaining("'llamacpp'"));
   });
 
   describe('vLLM backend with split-backend embeddings', () => {
