@@ -41,6 +41,18 @@ export async function runComposeWithNetworkRecovery(
   maxAttempts = 3,
   signal?: AbortSignal,
 ): Promise<void> {
+  // Precondition, checked before any Docker work: a maxAttempts below 1 skips the retry loop
+  // entirely, so the function fell through to the final throw with `lastError` never assigned and
+  // reported the literal text "undefined". In a log that is indistinguishable from a compose
+  // failure, while in fact nothing was ever attempted. Integer, not merely finite: a fractional
+  // value like 2.5 passes `attempt <= maxAttempts` on the last pass but leaves `attempt <
+  // maxAttempts` true, so the loop exits through the final throw and rethrows the RAW Docker error
+  // instead of the translated overlap error every integer path produces. NaN and Infinity are
+  // rejected for related reasons — NaN fails every comparison, Infinity would retry forever.
+  if (!Number.isInteger(maxAttempts) || maxAttempts < 1) {
+    throw new Error(`runComposeWithNetworkRecovery requires maxAttempts >= 1, received ${maxAttempts}`);
+  }
+
   const { moduleRef } = deps;
   const dockerService = moduleRef.get(DockerService, { strict: false });
   const subnetManager = moduleRef.get(SubnetManagerService, { strict: false });
