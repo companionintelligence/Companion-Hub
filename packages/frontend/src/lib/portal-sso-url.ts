@@ -95,6 +95,14 @@ export function buildPortalSsoStartUrl(input: {
   configuredApiBaseUrl?: string | null;
   pageOrigin: string;
   redirectUrl?: string | null;
+  /**
+   * Is this the DEV desktop shell rather than a packaged install?
+   *
+   * An explicit input, not a read of `import.meta.env.DEV` inside the function,
+   * so a test can model a packaged build. It defaults to the build flag, so real
+   * callers do not pass it.
+   */
+  isDevBuild?: boolean;
 }): string {
   const baseUrl = resolvePortalSsoBaseUrl({
     remoteHubUrl: input.remoteHubUrl,
@@ -119,7 +127,8 @@ export function buildPortalSsoStartUrl(input: {
     // build, so import.meta.env.DEV separates them at build time.
     // Desktop only: mobile shells are a different binary with their own scheme
     // registration, and the loopback-vs-dev confusion this fixes is desktop's.
-    if (input.isTauriDesktop && import.meta.env.DEV) {
+    const isDevBuild = input.isDevBuild ?? import.meta.env.DEV;
+    if (input.isTauriDesktop && isDevBuild) {
       url.searchParams.set('desktop_channel', 'dev');
     }
   }
