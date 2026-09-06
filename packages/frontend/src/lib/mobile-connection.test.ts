@@ -101,6 +101,13 @@ describe('isMobileUserAgent', () => {
     expect(m.needsRemoteHubConnect()).toBe(false);
   });
 
+  it('isCloudConnectPath covers /connect and nested advanced', async () => {
+    const m = await freshModule();
+    expect(m.isCloudConnectPath('/connect')).toBe(true);
+    expect(m.isCloudConnectPath('/connect/advanced')).toBe(true);
+    expect(m.isCloudConnectPath('/login')).toBe(false);
+  });
+
   it('does not treat a narrow Mac/Linux/Windows window as a phone', async () => {
     setTauri(false);
     setUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X)');

@@ -1,5 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { DEFAULT_PORTAL_URL, listHubDevices, signInToPortal } from './portal-client';
+import {
+  DEFAULT_PORTAL_URL,
+  listHubDevices,
+  persistPortalUrl,
+  readPersistedPortalUrl,
+  readStoredPortalAuth,
+  signInToPortal,
+  writePortalAuth,
+} from './portal-client';
 
 const httpFetch = vi.fn();
 vi.mock('@tauri-apps/plugin-http', () => ({
@@ -15,6 +23,8 @@ function json(body: unknown, init?: ResponseInit): Response {
 
 beforeEach(() => {
   httpFetch.mockReset();
+  localStorage.clear();
+  sessionStorage.clear();
 });
 
 describe('signInToPortal', () => {
@@ -139,5 +149,24 @@ describe('listHubDevices', () => {
     ]);
     expect(devices).toHaveLength(1);
     expect(devices[0]?.hubUrl).toBe('https://hub-x.ci.computer');
+  });
+});
+
+describe('persisted Portal URL and auth', () => {
+  it('round-trips a custom Portal URL', () => {
+    expect(readPersistedPortalUrl()).toBe('https://hub.ci.computer');
+    expect(persistPortalUrl('https://hub.example.test/')).toBe('https://hub.example.test');
+    expect(readPersistedPortalUrl()).toBe('https://hub.example.test');
+  });
+
+  it('does not restore the internal dev cloud host as the Companion URL', () => {
+    localStorage.setItem('ci-hub.portalUrl', 'https://hub.companionintelligence.com');
+    expect(readPersistedPortalUrl()).toBe('https://hub.ci.computer');
+  });
+
+  it('round-trips Portal auth used by Advanced → /connect', () => {
+    expect(readStoredPortalAuth()).toBeNull();
+    writePortalAuth({ token: 'tok', cookie: null, kind: 'session' });
+    expect(readStoredPortalAuth()).toEqual({ token: 'tok', cookie: null, kind: 'session' });
   });
 });
