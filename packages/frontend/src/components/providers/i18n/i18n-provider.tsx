@@ -15,7 +15,7 @@ function initI18n() {
   if (i18nInitialized) return;
   i18nInitialized = true;
 
-  const mobile = isMobileClient();
+  const mobile = isMobileClient() || import.meta.env.VITE_HUB_RUNTIME === 'mobile';
   const chain = i18n.use(initReactI18next);
 
   // A phone talking to a remote Hub must not wait on `/api/i18n` — that fetch
