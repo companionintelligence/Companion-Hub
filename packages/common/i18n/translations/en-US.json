@@ -524,6 +524,7 @@
   "AUTH_LOGIN_COMPANION_ACCOUNT_BUTTON": "Sign in using your CI Account",
   "AUTH_LOGIN_COMPANION_ACCOUNT_BUTTON_AS": "Sign in as {{email}}",
   "AUTH_LOGIN_COMPANION_ACCOUNT_HINT": "Opens CI Account sign-in in your browser.",
+  "AUTH_LOGIN_COMPANION_ACCOUNT_HINT_IN_APP": "Signs in with your CI Account, here in the app.",
   "AUTH_LOGIN_COMPANION_ACCOUNT_EMAIL_HINT": "Sign in with the email and password for your CI Account.",
   "AUTH_LOGIN_LOCAL_ADMIN_ACCOUNT": "your local admin account",
   "AUTH_PORTAL_ERROR_ACCOUNT_MISMATCH": "Your CI Account email does not match the operator email on this Hub. Sign in with the correct account or use local credentials.",
