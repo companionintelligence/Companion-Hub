@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import type { InferenceBackendType } from '@ci-hub/common/types';
+import { INFERENCE_BACKEND_TYPES, type InferenceBackendType } from '@ci-hub/common/types';
 import type { InferenceBackend } from './backend.interface';
 // Value imports, not `import type`: Nest resolves these constructor params through
 // emitDecoratorMetadata's design:paramtypes, and a type-only import erases them to undefined.
@@ -46,5 +46,23 @@ export class InferenceBackendRegistry {
 
   get(type: InferenceBackendType): InferenceBackend {
     return this.byType[type];
+  }
+
+  /**
+   * Every backend paired with its type, in {@link INFERENCE_BACKEND_TYPES} order.
+   *
+   * The counterpart to {@link get} for the callers that walk *all* backends rather than resolving
+   * one. Those each kept their own six-element literal — `['ollama', …] as InferenceBackendType[]`
+   * in the router, an array of the six injected instances in the MCP tools, `ALL_BACKEND_TYPES` in
+   * the pool proxy — and every one of them was a subtype of `InferenceBackendType[]` however short
+   * it got, so omitting a newly added backend was invisible to the compiler. Deriving the walk from
+   * the source tuple makes the omission impossible rather than merely unlikely.
+   *
+   * Yields the type as a string from that tuple, never `backend.type` off the instance: test doubles
+   * are `mock<OllamaBackend>()` proxies whose `type` property is undefined, so reading it would turn
+   * a passing `backends.find((b) => b.type === 'ollama')` into a silent miss.
+   */
+  entries(): readonly (readonly [InferenceBackendType, InferenceBackend])[] {
+    return INFERENCE_BACKEND_TYPES.map((type) => [type, this.byType[type]] as const);
   }
 }

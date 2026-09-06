@@ -15,7 +15,7 @@ import {
 } from '@nestjs/common';
 import type { Request, Response } from 'express';
 import { ApiTags } from '@nestjs/swagger';
-import type { InferenceBackendType } from '@ci-hub/common/types';
+import { INFERENCE_BACKEND_TYPES, type InferenceBackendType } from '@ci-hub/common/types';
 import { AuthGuard } from '@/modules/auth/auth.guard';
 import { InternalNetworkGuard } from '@/modules/auth/internal-network.guard';
 import { TailscaleService } from '@/modules/tailscale/tailscale.service';
@@ -25,7 +25,7 @@ import { PoolAppGuard } from './guards/pool-app.guard';
 import { PoolPeerGuard } from './guards/pool-peer.guard';
 import { HubPoolPeerService } from './hub-pool-peer.service';
 import { HubPoolRoutingLogService } from './hub-pool-routing-log.service';
-import { ALL_BACKEND_TYPES, PoolProxyService } from './hub-pool-proxy.service';
+import { PoolProxyService } from './hub-pool-proxy.service';
 import { IncomingPairingRequestBody, PairingConfirmBody, PairPeerBody, RoutingLogQueryDto, UpdateHubPoolPreferencesBody } from './hub-pool.dto';
 import { toPublicPeer } from './hub-pool.types';
 
@@ -342,7 +342,9 @@ export class HubPoolController {
       return;
     }
     const backendHeader = req.header('x-hub-pool-backend');
-    const backend = (ALL_BACKEND_TYPES as string[]).includes(backendHeader ?? '') ? (backendHeader as InferenceBackendType) : undefined;
+    const backend = (INFERENCE_BACKEND_TYPES as readonly string[]).includes(backendHeader ?? '')
+      ? (backendHeader as InferenceBackendType)
+      : undefined;
     if (!backend) {
       res.status(400).json({ error: 'Missing or invalid X-Hub-Pool-Backend header' });
       return;

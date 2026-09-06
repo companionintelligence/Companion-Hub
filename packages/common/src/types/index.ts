@@ -38,6 +38,7 @@ export {
   selectCustomDomain,
 } from '../public-web/custom-domains.js';
 export { buildTailscaleNodeFqdn, buildTailscalePortHost, buildTailscalePortUrl, buildTailscaleWebIdentity } from '../tailscale/identity.js';
+export { INFERENCE_BACKEND_TYPES } from './inference.js';
 export type {
   HardwareProfile,
   HardwareTier,
