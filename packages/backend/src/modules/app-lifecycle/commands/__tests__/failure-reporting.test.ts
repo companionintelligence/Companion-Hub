@@ -266,6 +266,25 @@ describe('reportAndTranslateAppError — error reporting side effect', () => {
     expect(reported[0]?.errorCode).toBeUndefined();
   });
 
+  it('reports an unclassified Error verbatim and invents no errorCode for it', async () => {
+    const { moduleRef, reported } = createHarness();
+
+    await reportAndTranslateAppError(moduleRef, new Error('no space left on device'), 'urn:store:immich', 'start');
+
+    // ErrorReportingService keys off errorCode first and only then falls back to regexes over this
+    // message (see USER_ENVIRONMENT_PATTERNS — 'no space left on device' is one of them). A canned
+    // summary here would strand a diagnosable failure as unclassified, and an invented code would
+    // file it under a root cause nobody diagnosed.
+    expect(reported).toEqual([
+      {
+        appUrn: 'urn:store:immich',
+        phase: 'start',
+        message: 'no space left on device',
+        errorCode: undefined,
+      },
+    ]);
+  });
+
   it('reports the generic wrapper text for a non-Error throwable', async () => {
     const { moduleRef, reported } = createHarness();
 
@@ -314,8 +333,21 @@ describe('reportAndTranslateAppError — error reporting side effect', () => {
     expect(result.errorCode).toBe(ROCM_KFD_MISSING_CODE);
   });
 
+  it('touches DI at all only once an event maps to a phase, so an unwired container costs an unmapped event nothing', async () => {
+    const { moduleRef, reported, lookups } = createHarness({ serviceAvailable: false });
+
+    const result = await reportAndTranslateAppError(moduleRef, new Error(ROCM_DEVICE_MESSAGE), 'urn:store:comfyui', 'update');
+
+    // The phase guard has to run BEFORE the container lookup. Resolve first and an unmapped event
+    // in a worker module that never wired in core error-reporting would throw a
+    // UnknownElementException for a report it was never going to send anyway.
+    expect(lookups).toEqual([]);
+    expect(reported).toEqual([]);
+    expect(result.errorCode).toBe(ROCM_KFD_MISSING_CODE);
+  });
+
   it('swallows a throwing reporter, keeps the translated result intact, and logs a warning', async () => {
-    const { moduleRef, warnings } = createHarness({ reporterThrows: new Error('sentry transport down') });
+    const { moduleRef, warnings, lookups } = createHarness({ reporterThrows: new Error('sentry transport down') });
 
     // This used to assert the opposite — the throw escaping — to pin the unguarded call as a known
     // hazard. reportAppFailure is now wrapped: the classified result is the queue's only channel
@@ -331,10 +363,20 @@ describe('reportAndTranslateAppError — error reporting side effect', () => {
       settingsPath: ROCM_KFD_MISSING_SETTINGS_PATH,
     });
     expect(warnings).toHaveLength(1);
-    // The warning has to carry the transport error and the app it was reporting on, or a silently
-    // blinded Sentry pipeline looks identical to one that simply had nothing to report.
+    // The warning has to carry the transport error, the app it was reporting on and the phase that
+    // went unreported, or a silently blinded Sentry pipeline looks identical to one that simply had
+    // nothing to report — and 'install' vs 'start' is what says whether the gap is in the install
+    // funnel or in day-to-day supervision.
     expect(warnings[0]).toContain('sentry transport down');
     expect(warnings[0]).toContain('urn:store:comfyui');
+    expect(warnings[0]).toContain('install');
+    // The fallback logger is resolved non-strictly for the same reason the reporter is: a
+    // worker-scoped module would fail a strict lookup, and since that throw is swallowed too, a
+    // strict lookup here would silently erase the only remaining trace of the dropped report.
+    expect(lookups).toEqual([
+      { token: ErrorReportingService, options: { strict: false } },
+      { token: LoggerService, options: { strict: false } },
+    ]);
   });
 
   it('still returns the translated result when the reporter throws and no logger is registered', async () => {
