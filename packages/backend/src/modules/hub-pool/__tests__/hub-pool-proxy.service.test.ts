@@ -10,6 +10,7 @@ import { LemonadeBackend } from '@/modules/inference/backends/lemonade.backend';
 import { MtplxBackend } from '@/modules/inference/backends/mtplx.backend';
 import { DsparkBackend } from '@/modules/inference/backends/dspark.backend';
 import { LuceboxBackend } from '@/modules/inference/backends/lucebox.backend';
+import { InferenceBackendRegistry } from '@/modules/inference/backends/backend-registry';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { DEFAULT_POOL_HEALTH_POLL_SECONDS, DEFAULT_POOL_LOCAL_AFFINITY, type HubPoolPreferences } from '@/common/helpers/hub-pool';
 import { HubPoolPeerService } from '../hub-pool-peer.service';
@@ -149,12 +150,9 @@ describe('PoolProxyService', () => {
     loadService = new HubPoolLoadService();
     routingLog = new HubPoolRoutingLogService();
     service = new PoolProxyService(
-      ollama,
-      vllm,
-      lemonade,
-      mtplx,
-      dspark,
-      lucebox,
+      // The real registry over the same six mocks, not a mock registry: a mocked `entries()` would
+      // return undefined and quietly drop every local candidate.
+      new InferenceBackendRegistry(ollama, vllm, lemonade, mtplx, dspark, lucebox),
       peerService,
       tailscaleService,
       loadService,
