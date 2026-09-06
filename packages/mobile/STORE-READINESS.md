@@ -99,7 +99,14 @@ Fixed as part of this prep — no action needed:
 
 **c) iPad.** The project ships `TARGETED_DEVICE_FAMILY="1,2"` and declares iPad orientations, so review **will** run it on iPad and iPad screenshots are mandatory — with no tablet layout work done (responsive Tailwind only). Either budget an iPad pass or set iPhone-only. Same question for the Leanback/AndroidTV launcher category in the Android manifest.
 
-**d) Sentry on store builds.** Now enabled in CI mobile builds. `sendDefaultPii: true` + `setUser(device_id)` means the privacy labels must declare Diagnostics (incl. IP) linked to the user. Either accept that, or set `sendDefaultPii: false` for mobile before filling the forms. **Decide before submitting** — changing it later means re-declaring.
+**d) Sentry on store builds.** ⚠️ *This decision was already made in code — the
+doc previously said the opposite.* `sendDefaultPii` is **`false`**
+(`packages/frontend/src/lib/sentry.ts:306`, with the comment "No PII, matching the
+rest of the fleet"), so no IP or PII is attached. What still reaches Sentry is
+`setUser(device_id)`, **browser tracing** and **Session Replay** (masked text,
+blocked media) — see `sentry.ts:296-299`. That is more than "errors only", so the
+privacy answers must still declare **Diagnostics**; the open question is only
+whether Replay stays on for store builds, not whether PII is sent.
 
 **e) Sign in with Apple (4.8) — currently N/A.** Login is exclusively to our own service (CI-Portal better-auth: email/password + passkey + its own OIDC, **no** social providers). Own-account systems are exempt. ⚠️ If the Portal login page ever gains a third-party social button, 4.8 attaches immediately and Sign in with Apple becomes mandatory.
 
