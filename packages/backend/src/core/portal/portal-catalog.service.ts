@@ -7,6 +7,14 @@ import axios from 'axios';
 import { createHash } from 'node:crypto';
 import { CI_MARKETPLACE_STORE_SLUG } from './portal.constants';
 import { PortalClientService } from './portal-client.service';
+import {
+  alternativeSlugsMatchingSearch,
+  parseAlternativesCatalog,
+  parseReplaces,
+  searchAliasTextByAppId,
+  textMatchesSearch,
+  type StoreSearchCatalog,
+} from './store-search';
 
 type PortalCatalogApp = {
   id: string;
@@ -41,6 +49,7 @@ type PortalCatalogApp = {
   mcp?: unknown;
   screenshots?: string[];
   demo_video?: string;
+  replaces?: string[];
 };
 
 const HUB_MANAGED_MARKETPLACE_APP_IDS = new Set(['cloudflared', 'cloudflare-tunnel']);
@@ -49,11 +58,16 @@ function isHubManagedMarketplaceApp(slug: string): boolean {
   return HUB_MANAGED_MARKETPLACE_APP_IDS.has(slug.trim().toLowerCase());
 }
 
+function appReplacesMatch(app: { replaces: string[] }, query: string): boolean {
+  return app.replaces.some((name) => textMatchesSearch(name, query));
+}
+
 export type PortalCatalogEntry = {
   id: string;
   urn: AppUrn;
   name: string;
   short_desc: string;
+  replaces: string[];
   icon?: string | null;
   categories: string[];
   deprecated: boolean;
@@ -74,6 +88,9 @@ export type PortalCatalogUpdateInfo = {
 export class PortalCatalogService {
   private cache: PortalCatalogEntry[] | null = null;
   private cacheUpdatedAt = 0;
+  private alternativesCache: StoreSearchCatalog | null = null;
+  private alternativesCacheUpdatedAt = 0;
+  private alternativesInflight: Promise<StoreSearchCatalog> | null = null;
   private readonly cacheTtlMs = 1000 * 60 * 15;
   private inflightFetch: Promise<PortalCatalogEntry[]> | null = null;
   /** True when `inflightFetch` was started with Portal cache-busting. */
@@ -89,9 +106,43 @@ export class PortalCatalogService {
   invalidateCache() {
     this.cache = null;
     this.cacheUpdatedAt = 0;
+    this.alternativesCache = null;
+    this.alternativesCacheUpdatedAt = 0;
+    this.alternativesInflight = null;
     this.cacheGeneration += 1;
     this.inflightFetch = null;
     this.inflightBypassCache = false;
+  }
+
+  private async getAlternativesCatalog(): Promise<StoreSearchCatalog> {
+    if (this.alternativesCache && Date.now() - this.alternativesCacheUpdatedAt < this.cacheTtlMs) {
+      return this.alternativesCache;
+    }
+    if (this.alternativesInflight) {
+      return this.alternativesInflight;
+    }
+
+    const fetch = (async () => {
+      try {
+        const parsed = parseAlternativesCatalog(await this.portalClient.fetchStoreAlternatives());
+        this.alternativesCache = parsed;
+        this.alternativesCacheUpdatedAt = Date.now();
+        return parsed;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        this.logger.warn(`Portal alternatives fetch failed: ${message}`);
+        return this.alternativesCache ?? {};
+      } finally {
+        this.alternativesInflight = null;
+      }
+    })();
+
+    this.alternativesInflight = fetch;
+    return fetch;
+  }
+
+  async getSearchAliasTextByAppId(): Promise<Map<string, string>> {
+    return searchAliasTextByAppId(await this.getAlternativesCatalog());
   }
 
   private mapPortalApp(app: PortalCatalogApp): PortalCatalogEntry | null {
@@ -112,6 +163,7 @@ export class PortalCatalogService {
       urn: `${slug}:${CI_MARKETPLACE_STORE_SLUG}` as AppUrn,
       name,
       short_desc,
+      replaces: parseReplaces(app.replaces),
       icon: app.icon ?? null,
       categories: categories.size > 0 ? [...categories] : ['utilities'],
       deprecated: Boolean(app.deprecated),
@@ -190,14 +242,25 @@ export class PortalCatalogService {
     }
 
     if (search?.trim()) {
-      const q = search.trim().toLowerCase();
-      filtered = filtered.filter(
-        (app) =>
-          app.name.toLowerCase().includes(q) || app.short_desc.toLowerCase().includes(q) || app.categories.some((c) => c.toLowerCase().includes(q)),
-      );
+      const q = search.trim();
+      const aliasSlugs = new Set(alternativeSlugsMatchingSearch(await this.getAlternativesCatalog(), q));
+      filtered = filtered.filter((app) => {
+        const replacesHit = app.replaces.some((name) => textMatchesSearch(name, q));
+        if (replacesHit || aliasSlugs.has(app.id)) return true;
+        if (textMatchesSearch(app.id, q) || textMatchesSearch(app.name, q) || textMatchesSearch(app.short_desc, q)) {
+          return true;
+        }
+        return app.categories.some((category) => textMatchesSearch(category, q));
+      });
+      filtered = filtered.sort((a, b) => {
+        const aReplaces = appReplacesMatch(a, q) || aliasSlugs.has(a.id);
+        const bReplaces = appReplacesMatch(b, q) || aliasSlugs.has(b.id);
+        if (aReplaces !== bReplaces) return aReplaces ? -1 : 1;
+        return a.urn.localeCompare(b.urn);
+      });
+    } else {
+      filtered = filtered.sort((a, b) => a.urn.localeCompare(b.urn));
     }
-
-    filtered = filtered.sort((a, b) => a.urn.localeCompare(b.urn));
 
     const start = cursor
       ? Math.max(
@@ -285,6 +348,7 @@ export class PortalCatalogService {
       available: app.available !== false,
       deprecated: Boolean(app.deprecated),
       short_desc,
+      replaces: parseReplaces(app.replaces),
       description: markdownDescription?.trim() || '',
       categories: categories.length > 0 ? categories : ['utilities'],
       // MCP / no_gui listings are not HTTP apps — omit the fake default port.

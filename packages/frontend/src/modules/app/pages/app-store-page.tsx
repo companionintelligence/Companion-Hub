@@ -6,36 +6,25 @@ import { invalidateStoreCatalogQueries } from '@/lib/invalidate-store-catalog-qu
 import { pullAppStores } from '@/api-client/sdk.gen';
 import { EmptyPage } from '@/components/empty-page/empty-page';
 import { Button } from '@/components/ui/Button';
-import { Card, CardHeader, CardTitle } from '@/components/ui/Card';
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/Table/Table';
+import { Card } from '@/components/ui/Card';
 import { useInfiniteScroll } from '@/lib/hooks/use-infinite-scroll';
 import { usePortalCatalog } from '@/lib/hooks/use-portal-catalog';
 import { FeaturedStoreView } from '@/modules/app/components/featured-store-view/featured-store-view';
+import { AlternativesCatalog } from '@/modules/app/components/alternatives-catalog/alternatives-catalog';
 import { AppStoreSearchInput } from '@/modules/app/components/app-store-search-input/app-store-search-input';
 import { useRegistrationStatus } from '@/lib/hooks/use-registration-status';
 import { AppCard } from '@/modules/app/components/app-card/app-card';
 import { getCategoryLabel } from '@/modules/app/helpers/category-label';
-import { iconForCategory, colorSchemeForCategory } from '@/modules/app/helpers/table-helpers';
+import { iconForCategory } from '@/modules/app/helpers/table-helpers';
+import { filterAlternativesBySearch } from '@/lib/store-search';
 import { useAppStoreState } from '@/stores/app-store';
 import { keepPreviousData, useInfiniteQuery, useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import clsx from 'clsx';
-import { ArrowRight, ArrowLeftRight, LayoutGrid, Loader2, RefreshCw, Store } from 'lucide-react';
+import { ArrowLeftRight, LayoutGrid, Loader2, RefreshCw, Store } from 'lucide-react';
 import { useCallback, useEffect, useState, useMemo, useRef } from 'react';
-import { Navigate, useParams, Link, useSearchParams } from 'react-router';
+import { Navigate, useParams, useSearchParams } from 'react-router';
 import { useTranslation } from 'react-i18next';
 import toast from 'react-hot-toast';
-
-interface AltEntry {
-  name: string;
-  icon: string | null;
-  url: string | null;
-  appSlug?: string;
-}
-
-interface AltItem {
-  proprietary: AltEntry[];
-  alternatives: AltEntry[];
-}
 
 const SKELETONS = Array.from({ length: 12 }, (_, i) => `skeleton-${i}`);
 const MARKETPLACE_SEARCH_STALE_MS = 5 * 60_000;
@@ -148,7 +137,7 @@ export default () => {
     isError: isAlternativesDataError,
     alternativesError: alternativesDataError,
     refetchAlternatives,
-  } = usePortalCatalog({}, { enableConfig: false, enableListings: false, enableAlternatives: isAlternativesView });
+  } = usePortalCatalog({}, { enableConfig: false, enableListings: false, enableAlternatives: isAlternativesView || Boolean(search.trim()) });
 
   // Redirect whenever the backend reports the hub is not operational
   // (`registered === false`, e.g. paired/provisioning/unregistered).
@@ -176,11 +165,6 @@ export default () => {
 
   const ciCloudStore = appStores?.appStores?.find((s) => s.slug === 'ci-marketplace' || s.name === 'CI Marketplace');
   const marketplaceSlug = ciCloudStore?.slug ?? storeId ?? 'ci-marketplace';
-
-  // Portal links any alternative with a curated `appSlug`. Catalog listings stay visible
-  // across architectures; install is gated on the app detail page when the Hub arch
-  // is unsupported. Trust Portal's slug for alternative links.
-  const isAlternativeInStore = useCallback((alt: AltEntry) => Boolean(alt.appSlug), []);
 
   // Sync ?store= query param to Zustand, or fall back to first available store
   useEffect(() => {
@@ -249,25 +233,9 @@ export default () => {
     isFetching: isFetchingNextPage || isFetching,
   });
 
-  // Filter alternatives by search query (source: portal `/api/store/alternatives`)
-  const filteredAlts = useMemo(() => {
-    const alts = alternativesData ?? {};
-    if (!search) return alts;
-    const q = search.toLowerCase();
-    const result: Record<string, AltItem[]> = {};
-    for (const [cat, items] of Object.entries(alts)) {
-      const filtered = (items as AltItem[]).filter((item) => {
-        const propMatch = item.proprietary.some((p) => p.name.toLowerCase().includes(q));
-        const altMatch = item.alternatives.some((a) => a.name.toLowerCase().includes(q));
-        const catMatch = cat.toLowerCase().includes(q);
-        return propMatch || altMatch || catMatch;
-      });
-      if (filtered.length > 0) {
-        result[cat] = filtered;
-      }
-    }
-    return result;
-  }, [search, alternativesData]);
+  const filteredAlts = useMemo(() => filterAlternativesBySearch(alternativesData ?? {}, search), [search, alternativesData]);
+  const hasAlternativeMatches = Object.keys(filteredAlts).length > 0;
+  const showSearchAlternatives = Boolean(search.trim()) && !isFeaturedView && !isAlternativesView && hasAlternativeMatches;
 
   if (params.storeId) {
     return <Navigate to={`/store?store=${params.storeId}`} />;
@@ -389,130 +357,50 @@ export default () => {
               </button>
             </div>
           )}
-          {!isAlternativesDataLoading && !isAlternativesDataError && Object.keys(filteredAlts).length === 0 ? (
+          {!isAlternativesDataLoading && !isAlternativesDataError && !hasAlternativeMatches ? (
             <EmptyPage title="APP_STORE_NO_RESULTS" subtitle="APP_STORE_NO_RESULTS_SUBTITLE" />
           ) : !isAlternativesDataLoading && !isAlternativesDataError ? (
-            Object.entries(filteredAlts).map(([altCategory, items]) => {
-              const categoryInfo = iconForCategory.find((c) => c.id === altCategory);
-              const Icon = categoryInfo?.icon;
-              const color = colorSchemeForCategory[altCategory] || 'blue';
-
-              return (
-                <Card key={altCategory} className="overflow-hidden">
-                  <CardHeader className="border-b bg-muted/30 px-3 py-3 sm:px-6 sm:py-4">
-                    <div className="flex items-center gap-2">
-                      {Icon && <Icon className={clsx('h-5 w-5', `text-${color}`)} />}
-                      <CardTitle className="capitalize text-base">{altCategory}</CardTitle>
-                    </div>
-                  </CardHeader>
-                  {/* The tighter mobile cell padding is part of the arrow fix, not cosmetics: with the
-                      default `p-4` this table's min-content still exceeded the card at 360px, so an
-                      un-crushable arrow simply moved off the right edge of the scroller instead of
-                      disappearing inside the pill. `px-2` buys back the 32px that makes it fit. */}
-                  <div className="w-full overflow-x-auto">
-                    <Table>
-                      <TableHeader>
-                        <TableRow className="bg-muted/20 hover:bg-muted/20">
-                          <TableHead className="w-1/2 px-2 font-semibold sm:px-4">{t('APP_STORE_PROPRIETARY')}</TableHead>
-                          <TableHead className="w-1/2 px-2 font-semibold sm:px-4">{t('APP_STORE_OPEN_SOURCE_ALTERNATIVES')}</TableHead>
-                        </TableRow>
-                      </TableHeader>
-                      <TableBody>
-                        {(items as AltItem[]).map((item, index) => (
-                          // biome-ignore lint/suspicious/noArrayIndexKey: Static list
-                          <TableRow key={index}>
-                            <TableCell className="px-2 py-3 sm:px-4">
-                              <div className="flex flex-wrap gap-2">
-                                {item.proprietary.map((prop) => (
-                                  <div
-                                    key={prop.name}
-                                    className="flex items-center gap-2 rounded-full bg-muted/50 px-3 py-1.5 text-sm"
-                                    title={prop.name}
-                                  >
-                                    {prop.icon && (
-                                      <img src={prop.icon} alt={prop.name} className="h-5 w-5 rounded-full object-cover" loading="lazy" />
-                                    )}
-                                    <span className="font-medium">{prop.name}</span>
-                                  </div>
-                                ))}
-                              </div>
-                            </TableCell>
-                            <TableCell className="px-2 py-3 sm:px-4">
-                              <div className="flex flex-wrap gap-2">
-                                {item.alternatives.map((alt) => {
-                                  const isInStore = isAlternativeInStore(alt);
-                                  if (isInStore) {
-                                    return (
-                                      <Link
-                                        key={alt.name}
-                                        to={`/store/${marketplaceSlug}/${alt.appSlug}`}
-                                        className="flex items-center gap-2 rounded-full bg-primary/10 px-3 py-1.5 text-sm font-medium text-primary transition-colors hover:bg-primary/20"
-                                      >
-                                        {alt.icon && (
-                                          <img src={alt.icon} alt={alt.name} className="h-5 w-5 rounded-full object-cover" loading="lazy" />
-                                        )}
-                                        {alt.name}
-                                        {/* `shrink-0` is load-bearing: an <svg> carries UA `overflow: hidden`, so its
-                                            `min-width: auto` resolves to 0 (CSS Flexbox 4.5) and the arrow is the one
-                                            child of this pill that flex can crush to nothing. At 360px it did exactly
-                                            that — 55 of 113 arrows, some to 0px — while the sibling <img> and "Soon"
-                                            <span> kept their size, because `overflow: visible` earns them a
-                                            content-based minimum. */}
-                                        <ArrowRight className="h-3 w-3 shrink-0" />
-                                      </Link>
-                                    );
-                                  }
-                                  return (
-                                    <div
-                                      key={alt.name}
-                                      className="flex cursor-not-allowed items-center gap-2 rounded-full bg-muted/30 px-3 py-1.5 text-sm text-muted-foreground"
-                                    >
-                                      {alt.icon && (
-                                        <img src={alt.icon} alt={alt.name} className="h-5 w-5 rounded-full object-cover grayscale" loading="lazy" />
-                                      )}
-                                      {alt.name}
-                                      <span className="rounded-full bg-muted/50 px-1.5 py-0.5 text-xs">{t('ONBOARDING_SOON')}</span>
-                                    </div>
-                                  );
-                                })}
-                              </div>
-                            </TableCell>
-                          </TableRow>
-                        ))}
-                      </TableBody>
-                    </Table>
-                  </div>
-                </Card>
-              );
-            })
+            <AlternativesCatalog alternatives={filteredAlts} marketplaceSlug={marketplaceSlug} />
           ) : null}
         </div>
-      ) : !apps?.length && !isLoading ? (
+      ) : !apps?.length && !isLoading && !showSearchAlternatives ? (
         <EmptyPage title="APP_STORE_NO_RESULTS" subtitle="APP_STORE_NO_RESULTS_SUBTITLE" />
       ) : (
-        <div className="grid min-w-0 grid-cols-1 gap-6 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4">
-          {isLoading && !apps.length
-            ? SKELETONS.map((key) => (
-                <AppCard
-                  key={key}
-                  // biome-ignore lint/suspicious/noExplicitAny: Mock data for skeleton
-                  app={{ urn: 'loading:loading', name: '', short_desc: '', categories: [] } as any}
-                  isLoading={true}
-                />
-              ))
-            : apps.map((app, i) => {
-                const isLastElement = apps.length === i + 1;
-                return (
-                  <div ref={isLastElement ? lastElementRef : null} key={app.urn}>
-                    <AppCard app={app} isLoading={false} isInstalled={installedAppUrns.has(app.urn)} />
-                  </div>
-                );
-              })}
-          {isFetchingNextPage && (
-            <div className="col-span-full text-center p-4">
-              <Loader2 role="img" aria-label={t('COMMON_LOADING')} className="h-8 w-8 animate-spin text-primary" />
+        <div className="space-y-8">
+          {showSearchAlternatives ? (
+            <AlternativesCatalog
+              alternatives={filteredAlts}
+              marketplaceSlug={marketplaceSlug}
+              title={t('APP_STORE_ALTERNATIVES')}
+              subtitle={t('APP_STORE_ALTERNATIVES_SUBTITLE')}
+            />
+          ) : null}
+          {apps.length > 0 || isLoading ? (
+            <div className="grid min-w-0 grid-cols-1 gap-6 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4">
+              {isLoading && !apps.length
+                ? SKELETONS.map((key) => (
+                    <AppCard
+                      key={key}
+                      // biome-ignore lint/suspicious/noExplicitAny: Mock data for skeleton
+                      app={{ urn: 'loading:loading', name: '', short_desc: '', categories: [] } as any}
+                      isLoading={true}
+                    />
+                  ))
+                : apps.map((app, i) => {
+                    const isLastElement = apps.length === i + 1;
+                    return (
+                      <div ref={isLastElement ? lastElementRef : null} key={app.urn}>
+                        <AppCard app={app} isLoading={false} isInstalled={installedAppUrns.has(app.urn)} />
+                      </div>
+                    );
+                  })}
+              {isFetchingNextPage && (
+                <div className="col-span-full text-center p-4">
+                  <Loader2 role="img" aria-label={t('COMMON_LOADING')} className="h-8 w-8 animate-spin text-primary" />
+                </div>
+              )}
             </div>
-          )}
+          ) : null}
         </div>
       )}
     </div>
