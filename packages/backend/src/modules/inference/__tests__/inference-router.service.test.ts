@@ -4,6 +4,7 @@ import { HardwareInspectorService } from '../hardware-inspector.service';
 import { ModelRegistryService } from '../model-registry.service';
 import { MemoryManagerService } from '../memory-manager.service';
 import { CloudFallbackService } from '../cloud-fallback.service';
+import { InferenceBackendRegistry } from '../backends/backend-registry';
 import { OllamaBackend } from '../backends/ollama.backend';
 import { VllmBackend } from '../backends/vllm.backend';
 import { LemonadeBackend } from '../backends/lemonade.backend';
@@ -86,6 +87,7 @@ describe('InferenceRouterService', () => {
         { provide: MtplxBackend, useValue: mtplxBackend },
         { provide: DsparkBackend, useValue: dsparkBackend },
         { provide: LuceboxBackend, useValue: luceboxBackend },
+        InferenceBackendRegistry,
       ],
     }).compile();
 
