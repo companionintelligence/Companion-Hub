@@ -1,48 +1,33 @@
 /**
- * CLI command dispatcher — keeps `cihub-cli.ts` focused on handlers and UX helpers.
+ * CLI command dispatcher: maps argv to a handler in the `cli-*` command modules.
+ *
+ * Handlers are imported from the module that owns them rather than through a shared surface,
+ * so adding a command touches this file and that module only.
  */
+import { runCatalogLogin, runCatalogLogout, runCatalogSubmit } from './catalog-submit.js';
 import {
-  allowedEnvs,
-  BASE_COMMAND,
-  cleanHub,
-  confirmDestructiveAction,
-  doctorHub,
-  downHub,
-  type HubEnv,
-  isApplianceMode,
-  logsHub,
   normalizeCliArgs,
   normalizeDetachedFlag,
   normalizeRegisterFlags,
-  resolveUpStartMode,
-  printConfig,
-  printMessageBox,
   printRemovedCommand,
-  recreateHub,
-  registerHub,
-  renderHelp,
-  renderManPage,
-  renderVersion,
-  resetHub,
   resolveEnvFromArgs,
-  restartHub,
-  runApiKeyCommand,
-  runConnectCommand,
-  runAppCommand,
-  runHostUpdate,
-  runModelsCommand,
-  runPoolCommand,
-  runPublicWebCommand,
-  runWizard,
-  setMcpState,
-  setupHub,
-  showDeviceId,
-  showStatus,
-  startHub,
-  uninstallHub,
+  resolveUpStartMode,
   usageAndExit,
-} from '../cihub-cli.js';
-import { runCatalogLogin, runCatalogLogout, runCatalogSubmit } from './catalog-submit.js';
+} from './cli-args.js';
+import { runApiKeyCommand } from './cli-api-key.js';
+import { runAppCommand } from './cli-app.js';
+import { doctorHub, logsHub, showStatus, uninstallHub } from './cli-doctor.js';
+import { printConfig, setupHub, startHub } from './cli-lifecycle.js';
+import { runModelsCommand, runPublicWebCommand, setMcpState } from './cli-models.js';
+import { runPoolCommand } from './cli-pool.js';
+import { confirmDestructiveAction } from './cli-prompt.js';
+import { registerHub, showDeviceId } from './cli-register.js';
+import { isApplianceMode } from './cli-repo-context.js';
+import { cleanHub, downHub, recreateHub, resetHub, restartHub } from './cli-teardown.js';
+import { allowedEnvs, BASE_COMMAND, type HubEnv } from './cli-types.js';
+import { printMessageBox, renderHelp, renderManPage } from './cli-ui.js';
+import { renderVersion, runConnectCommand, runHostUpdate } from './cli-update.js';
+import { runWizard } from './cli-wizard.js';
 
 export async function runCli(rawArgs: string[]) {
   const args = normalizeCliArgs(rawArgs);
