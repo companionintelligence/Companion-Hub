@@ -6,6 +6,7 @@ import { ConfigurationService } from '@/core/config/configuration.service';
 import { InferenceEnvResolver } from '../inference-env-resolver';
 import { ModelRegistryService } from '../model-registry.service';
 import { HardwareInspectorService } from '../hardware-inspector.service';
+import { InferenceBackendRegistry } from '../backends/backend-registry';
 import { OllamaBackend } from '../backends/ollama.backend';
 import { VllmBackend } from '../backends/vllm.backend';
 import { LemonadeBackend } from '../backends/lemonade.backend';
@@ -159,6 +160,7 @@ describe('InferenceEnvResolver', () => {
         { provide: MtplxBackend, useValue: mtplxBackend },
         { provide: DsparkBackend, useValue: dsparkBackend },
         { provide: LuceboxBackend, useValue: luceboxBackend },
+        InferenceBackendRegistry,
         { provide: CloudFallbackService, useValue: cloudFallback },
         { provide: HubPoolPeerService, useValue: hubPoolPeerService },
       ],

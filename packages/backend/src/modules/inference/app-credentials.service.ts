@@ -5,13 +5,8 @@ import { HardwareInspectorService } from './hardware-inspector.service';
 import { ModelRegistryService } from './model-registry.service';
 import { ModelPullerService } from './model-puller.service';
 import { CloudFallbackService } from './cloud-fallback.service';
+import { InferenceBackendRegistry } from './backends/backend-registry';
 import { OllamaBackend } from './backends/ollama.backend';
-import { VllmBackend } from './backends/vllm.backend';
-import { LemonadeBackend } from './backends/lemonade.backend';
-import { MtplxBackend } from './backends/mtplx.backend';
-import { DsparkBackend } from './backends/dspark.backend';
-import { LuceboxBackend } from './backends/lucebox.backend';
-import type { InferenceBackend } from './backends/backend.interface';
 import type { CuratedModel, HardwareProfile, HardwareTier, InferenceBackendType } from '@ci-hub/common/types';
 import { isCatalogModelInstalled, isServedModelForCatalog } from './model-availability.util';
 import { appMinContextLength, recommendContextLength } from './context-length.util';
@@ -102,30 +97,9 @@ export class AppCredentialsService {
     private readonly modelPuller: ModelPullerService,
     private readonly cloudFallback: CloudFallbackService,
     private readonly ollamaBackend: OllamaBackend,
-    private readonly vllmBackend: VllmBackend,
-    private readonly lemonadeBackend: LemonadeBackend,
-    private readonly mtplxBackend: MtplxBackend,
-    private readonly dsparkBackend: DsparkBackend,
-    private readonly luceboxBackend: LuceboxBackend,
     private readonly configurationService: ConfigurationService,
+    private readonly backends: InferenceBackendRegistry,
   ) {}
-
-  private getBackend(type: InferenceBackendType): InferenceBackend {
-    switch (type) {
-      case 'ollama':
-        return this.ollamaBackend;
-      case 'vllm':
-        return this.vllmBackend;
-      case 'lemonade':
-        return this.lemonadeBackend;
-      case 'mtplx':
-        return this.mtplxBackend;
-      case 'dspark':
-        return this.dsparkBackend;
-      case 'lucebox':
-        return this.luceboxBackend;
-    }
-  }
 
   isSupported(slug: string): slug is AppSlug {
     return (SUPPORTED_APP_SLUGS as readonly string[]).includes(slug);
@@ -167,7 +141,7 @@ export class AppCredentialsService {
     const profile = await this.hardwareInspector.getProfile();
     const preferences = this.configurationService.getInferencePreferences();
     const backendType = preferences.preferredBackend ?? 'ollama';
-    const backend = this.getBackend(backendType);
+    const backend = this.backends.get(backendType);
 
     // Apps talk to the active backend directly via its own OpenAI-compatible surface, not the Hub.
     const backendBaseUrl = backend.getBaseUrl();
