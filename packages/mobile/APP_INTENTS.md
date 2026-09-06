@@ -31,7 +31,7 @@ useAppIntentDeepLinks() (frontend)  ──►  resolveIntentNavigation()  ──
 | Connect a Hub | `cihub://intent/connect` | "Connect a Hub in Companion Hub" |
 | Switch Hub | `cihub://intent/switch` | "Switch Hub in Companion Hub" |
 | Open Hub Settings | `cihub://intent/settings` | "Open Companion Hub settings" |
-| Open a Specific Hub | `cihub://intent/open?hub=<name>` | "Open _Apple Hub_ in Companion Hub" |
+| Open a Specific Hub | `cihub://intent/open?hub=<name>` | "Open Hub in Companion Hub" — the shipped phrase is **not** parameterized (a `\(\.$hubName)` phrase needs an AppEntity/AppEnum; see the NOTE at `CompanionHubAppIntents.swift:182-192`). The hub name is supplied in the intent UI, not spoken in the trigger phrase |
 
 "Open a Specific Hub" takes the Hub name as a parameter. The name is matched
 **in the frontend** (`src/lib/app-intents.ts → matchHubByName`) against the
