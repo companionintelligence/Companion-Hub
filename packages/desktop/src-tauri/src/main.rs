@@ -1199,10 +1199,10 @@ fn extract_install_intent(url: &str) -> Option<DesktopInstallIntentPayload> {
 #[cfg(test)]
 mod tests {
     use super::{
-        deep_link_urls_from_payload, extract_install_intent, extract_pairing_code, extract_portal_auth,
-        launch_mode_from_args, sanitize_download_filename, stack_dev_mode_enabled,
-        stack_dev_override_paths, validate_open_path, LaunchMode, STACK_DEV_COMPOSE_PATH_ENV,
-        STACK_DEV_ENV, STACK_DEV_ENV_PATH_ENV,
+        deep_link_urls_from_payload, extract_install_intent, extract_pairing_code,
+        extract_portal_auth, launch_mode_from_args, sanitize_download_filename,
+        stack_dev_mode_enabled, stack_dev_override_paths, validate_open_path, LaunchMode,
+        STACK_DEV_COMPOSE_PATH_ENV, STACK_DEV_ENV, STACK_DEV_ENV_PATH_ENV,
     };
     use std::path::{Path, PathBuf};
 

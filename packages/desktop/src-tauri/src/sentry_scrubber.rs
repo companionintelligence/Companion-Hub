@@ -280,7 +280,10 @@ pub fn scrub_event(mut event: Event<'static>) -> Event<'static> {
             .map(|(key, value)| {
                 let scrubbed = if is_sensitive_key(key) {
                     "[Filtered]".to_string()
-                } else if matches!(key.to_ascii_lowercase().as_str(), "referer" | "referrer" | "location") {
+                } else if matches!(
+                    key.to_ascii_lowercase().as_str(),
+                    "referer" | "referrer" | "location"
+                ) {
                     scrub_url(value)
                 } else {
                     scrub_string(value)
@@ -309,10 +312,15 @@ mod tests {
     #[test]
     fn collapses_home_directories_including_windows() {
         assert_eq!(
-            scrub_string("Cannot connect to the Docker daemon at unix:///Users/liam/.docker/run/docker.sock"),
+            scrub_string(
+                "Cannot connect to the Docker daemon at unix:///Users/liam/.docker/run/docker.sock"
+            ),
             "Cannot connect to the Docker daemon at unix://~/.docker/run/docker.sock"
         );
-        assert_eq!(scrub_string("/home/ci/.local/share/companion-hub"), "~/.local/share/companion-hub");
+        assert_eq!(
+            scrub_string("/home/ci/.local/share/companion-hub"),
+            "~/.local/share/companion-hub"
+        );
         // Windows must win over the macOS pattern, or a stranded `C:~/…` is left.
         assert_eq!(scrub_string(r"C:\Users\liam\AppData"), "~\\AppData");
         assert_eq!(scrub_string("C:/Users/liam/AppData"), "~/AppData");
@@ -329,8 +337,14 @@ mod tests {
 
     #[test]
     fn strips_query_and_fragment_from_urls() {
-        assert_eq!(scrub_url("https://hub.local/api/apps?q=secret#frag"), "https://hub.local/api/apps");
-        assert_eq!(scrub_url("https://hub.local/api/apps"), "https://hub.local/api/apps");
+        assert_eq!(
+            scrub_url("https://hub.local/api/apps?q=secret#frag"),
+            "https://hub.local/api/apps"
+        );
+        assert_eq!(
+            scrub_url("https://hub.local/api/apps"),
+            "https://hub.local/api/apps"
+        );
     }
 
     #[test]
@@ -343,7 +357,10 @@ mod tests {
 
         let scrubbed = scrub_event(event);
         let message = scrubbed.message.expect("message");
-        assert!(!message.contains("bennett"), "OS account name survived: {message}");
+        assert!(
+            !message.contains("bennett"),
+            "OS account name survived: {message}"
+        );
         assert!(message.contains("~/.docker/run/docker.sock"));
     }
 
@@ -362,7 +379,9 @@ mod tests {
             id: Some("device-abc".to_string()),
             email: Some("liam@example.com".to_string()),
             username: Some("liam".to_string()),
-            ip_address: Some(sentry::protocol::IpAddress::Exact("203.0.113.42".parse().unwrap())),
+            ip_address: Some(sentry::protocol::IpAddress::Exact(
+                "203.0.113.42".parse().unwrap(),
+            )),
             ..Default::default()
         });
 
@@ -377,20 +396,31 @@ mod tests {
     fn filters_sensitive_breadcrumb_data_by_key_and_by_value() {
         let mut breadcrumb = Breadcrumb::default();
         breadcrumb.message = Some("fetch /Users/liam/x".to_string());
-        breadcrumb.data.insert("token".to_string(), Value::String("bare-secret-value".to_string()));
-        breadcrumb
-            .data
-            .insert("http.query".to_string(), Value::String("?token=SUPERSECRET&api_key=KEY".to_string()));
-        breadcrumb
-            .data
-            .insert("url".to_string(), Value::String("https://hub.local/api/apps?q=private".to_string()));
+        breadcrumb.data.insert(
+            "token".to_string(),
+            Value::String("bare-secret-value".to_string()),
+        );
+        breadcrumb.data.insert(
+            "http.query".to_string(),
+            Value::String("?token=SUPERSECRET&api_key=KEY".to_string()),
+        );
+        breadcrumb.data.insert(
+            "url".to_string(),
+            Value::String("https://hub.local/api/apps?q=private".to_string()),
+        );
 
         let scrubbed = scrub_breadcrumb(breadcrumb);
 
         // A bare credential value matches no secret pattern — the KEY is the
         // only signal, which is why data is key-checked and not just scrubbed.
-        assert_eq!(scrubbed.data["token"], Value::String("[Filtered]".to_string()));
-        assert_eq!(scrubbed.data["http.query"], Value::String("[Filtered]".to_string()));
+        assert_eq!(
+            scrubbed.data["token"],
+            Value::String("[Filtered]".to_string())
+        );
+        assert_eq!(
+            scrubbed.data["http.query"],
+            Value::String("[Filtered]".to_string())
+        );
         assert_eq!(
             scrubbed.data["url"],
             Value::String("https://hub.local/api/apps".to_string())
@@ -401,14 +431,24 @@ mod tests {
     #[test]
     fn scrubs_stack_frames_and_extra() {
         let mut event = Event::default();
-        event.extra.insert("api_key".to_string(), Value::String("bare-value".to_string()));
-        event
-            .extra
-            .insert("detail".to_string(), Value::String("/Users/liam/notes".to_string()));
+        event.extra.insert(
+            "api_key".to_string(),
+            Value::String("bare-value".to_string()),
+        );
+        event.extra.insert(
+            "detail".to_string(),
+            Value::String("/Users/liam/notes".to_string()),
+        );
 
         let scrubbed = scrub_event(event);
-        assert_eq!(scrubbed.extra["api_key"], Value::String("[Filtered]".to_string()));
-        assert_eq!(scrubbed.extra["detail"], Value::String("~/notes".to_string()));
+        assert_eq!(
+            scrubbed.extra["api_key"],
+            Value::String("[Filtered]".to_string())
+        );
+        assert_eq!(
+            scrubbed.extra["detail"],
+            Value::String("~/notes".to_string())
+        );
     }
 
     #[test]
