@@ -206,6 +206,38 @@ describe('AppStorePage — multi-store UX', () => {
     expect(screen.getByTestId('navigate-to')).toHaveTextContent('/store?store=community');
   });
 
+  it('shows matching alternatives in catalog search for a proprietary name', () => {
+    mockUsePortalCatalog.mockReturnValue({
+      alternatives: {
+        data: [
+          {
+            proprietary: [{ name: 'Google Drive', icon: '', url: null }],
+            alternatives: [{ name: 'Nextcloud', icon: '', url: 'https://nextcloud.com/', appSlug: 'nextcloud' }],
+          },
+        ],
+      },
+      isLoading: false,
+      isError: false,
+      alternativesError: undefined,
+      refetchAlternatives: vi.fn(),
+    });
+
+    setupQueries([{ slug: 'ci-marketplace', name: 'CI Marketplace', enabled: true, url: '', hash: '', branch: 'main' }]);
+    mockStoreState.category = undefined;
+    mockStoreState.search = 'google drive';
+    mockStoreState.storeId = 'ci-marketplace';
+
+    render(
+      <MemoryRouter>
+        <AppStorePage />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByText('Google Drive')).toBeInTheDocument();
+    const link = screen.getByRole('link', { name: /Nextcloud/i });
+    expect(link).toHaveAttribute('href', '/store/ci-marketplace/nextcloud');
+  });
+
   it('links curated alternatives (including OnlyOffice) to /store/<slug>/<appSlug>', () => {
     mockUsePortalCatalog.mockReturnValue({
       alternatives: {
