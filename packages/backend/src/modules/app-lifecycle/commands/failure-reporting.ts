@@ -1,4 +1,5 @@
 import { type AppFailurePhase, ErrorReportingService } from '@/core/error-reporting/error-reporting.service';
+import { LoggerService } from '@/core/logger/logger.service';
 import type { ModuleRef } from '@nestjs/core';
 import {
   type AppCommandFailureResult,
@@ -68,18 +69,46 @@ export async function reportAndTranslateAppError(moduleRef: ModuleRef, err: unkn
  * Sentry as unclassified depending on timing.
  */
 function reportCommandFailure(moduleRef: ModuleRef, appId: string, event: string, message: string, errorCode?: string): void {
-  const errorReportingService = moduleRef.get(ErrorReportingService, { strict: false });
   const phase = mapEventToFailurePhase(event);
   if (!phase) {
     return;
   }
 
-  errorReportingService?.reportAppFailure({
-    appUrn: appId,
-    phase,
-    message,
-    errorCode,
-  });
+  try {
+    // Resolution is inside the try, not above it. ModuleRef.get throws UnknownElementException for
+    // an unregistered token — `strict: false` widens the search, it does not make the lookup
+    // optional and it never yields undefined. Resolving outside would leave the more likely half of
+    // this hazard open: a worker context that never wired in the core error-reporting module would
+    // throw here and destroy the classified result exactly as a transport failure used to.
+    const errorReportingService = moduleRef.get(ErrorReportingService, { strict: false });
+    errorReportingService?.reportAppFailure({
+      appUrn: appId,
+      phase,
+      message,
+      errorCode,
+    });
+  } catch (reportErr) {
+    // Telemetry must never change control flow here. The classified AppCommandFailureResult the
+    // caller is about to return is the queue's only channel for reporting the real failure, so
+    // letting a reporting-transport exception escape would replace an actionable, translated
+    // failure with a raw Sentry error and strand the caller. Losing the report is the cheaper loss.
+    warnDroppedFailureReport(moduleRef, appId, phase, reportErr);
+  }
+}
+
+/**
+ * Best-effort note that a failure report was dropped. The logger is optional for the same reason
+ * ErrorReportingService is (worker contexts that never wired in the core module), and resolving it
+ * must not throw either — an exception from this path would leak straight back out of the swallow
+ * above and re-create the hazard it exists to contain.
+ */
+function warnDroppedFailureReport(moduleRef: ModuleRef, appId: string, phase: AppFailurePhase, reportErr: unknown): void {
+  try {
+    const logger = moduleRef.get(LoggerService, { strict: false });
+    logger?.warn(`Failed to report ${phase} failure for ${appId} to error reporting: ${reportErr}`);
+  } catch {
+    // No logger to complain to; the real failure still travels back in the returned result.
+  }
 }
 
 function mapEventToFailurePhase(event: string): AppFailurePhase | null {
