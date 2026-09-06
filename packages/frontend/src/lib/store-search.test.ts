@@ -23,6 +23,13 @@ const alts: AltsCategory = {
   ],
 };
 
+// Narrowed once here so the tests below need no non-null assertions:
+// AltsCategory's keys are optional, but this fixture always populates `data`.
+const [firstDataEntry] = alts.data ?? [];
+if (!firstDataEntry) {
+  throw new Error('store-search test fixture is missing alts.data[0]');
+}
+
 describe('store-search', () => {
   it('matches a proprietary phrase to its open-source alternatives', () => {
     expect(alternativeSlugsMatchingSearch(alts, 'google drive')).toEqual(['nextcloud', 'seafile']);
@@ -31,7 +38,7 @@ describe('store-search', () => {
 
   it('matches tokens so "drive" still finds the Google Drive pairing', () => {
     expect(textMatchesSearch('Google Drive', 'drive')).toBe(true);
-    expect(alternativeEntryMatchesSearch(alts.data![0]!, 'data', 'drive')).toBe(true);
+    expect(alternativeEntryMatchesSearch(firstDataEntry, 'data', 'drive')).toBe(true);
   });
 
   it('matches alternative names and slugs in the same listing', () => {
