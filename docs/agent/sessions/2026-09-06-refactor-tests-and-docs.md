@@ -77,23 +77,40 @@ regenerated `docs/agent/TEST_INVENTORY.md`.
 
 ## Open items / handoff
 
-**Three latent hazards found while writing tests. Each is characterized by a passing test that
-documents today's behavior, so changing it will be a deliberate act, not a surprise:**
+**Three latent hazards found while writing tests — all three are now FIXED in a follow-up commit,
+`fix: close the three latent hazards the test pass surfaced`. Each was first characterized by a
+passing test, which is what made the fix a deliberate, reviewable change rather than a guess:**
 
-1. `commands/failure-reporting.ts` — `reportCommandFailure` calls `errorReportingService?.reportAppFailure`
-   unguarded. A reporting transport that throws propagates out of `reportAndTranslateAppError` and
-   destroys the classified `AppCommandFailureResult` the queue worker was about to reply with; the
-   caller gets a raw transport error instead of the failure. Wrapping it in try/catch is a one-line
-   fix, but it changes what the queue sees.
-2. `inference/backends/backend-registry.ts` — `get(type)` declares a non-optional `InferenceBackend`
-   return, yet returns `undefined` for any string outside the union. Three call sites feed it data
-   rather than literals (`model-puller` from catalog rows, `mcp/tools/inference.tools.ts` from
-   request bodies, `hub-pool-proxy` from DB columns), so a stale backend name yields a downstream
-   `TypeError` instead of a typed error. Returning `InferenceBackend | undefined` pushes the check to
-   those three.
-3. `commands/network-recovery.ts` — with `maxAttempts = 0` the loop never runs and the function
-   throws `Error("undefined")`, because `lastError` is still undefined and `String(undefined)`
-   becomes the message. Either reject `maxAttempts < 1` up front or drop the final throw.
+1. `commands/failure-reporting.ts` — `reportCommandFailure` called `reportAppFailure` unguarded, so a
+   throwing reporting transport propagated out of `reportAndTranslateAppError` and destroyed the
+   classified `AppCommandFailureResult` the queue was about to reply with. **Fixed:** the call *and*
+   the provider resolution are inside a try/catch, and the dropped report is logged as a warning.
+   Resolution had to move inside too — see the `ModuleRef.get` note below.
+2. `inference/backends/backend-registry.ts` — `get(type)` declared a non-optional `InferenceBackend`
+   return yet yielded `undefined` for any string outside the union, so a bad value became a
+   downstream `TypeError` rather than a typed error. **Fixed:** `get` throws
+   `UnknownInferenceBackendError`, a new `tryGet` returns `| undefined` for callers with a fallback,
+   and `entries()` resolves through `get` rather than repeating the same lie. The two
+   settings-sourced callers use `tryGet` and degrade to Ollama at error level. Every route into the
+   registry is validated today, so the throw is defense in depth — worth saying plainly, because an
+   earlier draft of the message named sources that validation already closes.
+3. `commands/network-recovery.ts` — with `maxAttempts = 0` the loop never ran and the function threw
+   `Error("undefined")` from an unassigned `lastError`. **Fixed:** a precondition rejects a
+   non-integer or sub-1 `maxAttempts` before any Docker work. Integer rather than merely finite: a
+   fractional `2.5` would otherwise exit the loop through the final throw and rethrow the raw Docker
+   error instead of the translated overlap error every integer path produces.
+
+Two things the fix pass turned up that are worth carrying forward:
+
+- `ModuleRef.get(token, { strict: false })` **throws** `UnknownElementException` for an unregistered
+  token; it never resolves to `undefined` (see `@nestjs/core/injector/instance-links-host.js`). The
+  `?.` optional chains on that call throughout this module are therefore inert for the unregistered
+  case. Only the one on the failure-reporting path was corrected, since the rest are registered in
+  practice — but the pattern reads as defensive and is not.
+- `configuration.service.ts` wraps settings parsing in `catch (_e) { // ignore }`, so a settings
+  object that fails validation is discarded **whole** rather than partially. Deriving `app.dto.ts`'s
+  backend enum from the source tuple removes the drift that would have triggered it, but the
+  swallow itself is still there and would hide any future settings-schema mismatch.
 
 **`cargo test` remains blocked** — the Tauri Linux stack is not installed. The full apt line is now
 in `docs/DEVELOPMENT_SETUP.md`. Stage 1a (splitting `hub_manager.rs`, 11,338 lines) still should not
