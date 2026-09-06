@@ -15,6 +15,7 @@ import { RocmInstallerService } from '../rocm-installer.service';
 import { AppCredentialsService } from '../app-credentials.service';
 import type { HardwareProfile, InferenceStatus } from '@ci-hub/common/types';
 import { ConfigurationService } from '@/core/config/configuration.service';
+import { InferenceBackendRegistry } from '../backends/backend-registry';
 import { OllamaBackend } from '../backends/ollama.backend';
 import { VllmBackend } from '../backends/vllm.backend';
 import { LemonadeBackend } from '../backends/lemonade.backend';
@@ -98,6 +99,7 @@ describe('InferenceController — onboarding-profile', () => {
         { provide: MtplxBackend, useValue: mock<MtplxBackend>() },
         { provide: DsparkBackend, useValue: mock<DsparkBackend>() },
         { provide: LuceboxBackend, useValue: mock<LuceboxBackend>() },
+        InferenceBackendRegistry,
         { provide: LoggerService, useValue: mock<LoggerService>() },
       ],
     }).compile();

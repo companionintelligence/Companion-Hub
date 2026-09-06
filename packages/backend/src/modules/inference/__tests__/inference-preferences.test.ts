@@ -19,6 +19,7 @@ import { OllamaInstallerService } from '../ollama-installer.service';
 import { RocmInstallerService } from '../rocm-installer.service';
 import { AppCredentialsService } from '../app-credentials.service';
 import { inferencePreferencesSchema } from '../inference.dto';
+import { InferenceBackendRegistry } from '../backends/backend-registry';
 import { OllamaBackend } from '../backends/ollama.backend';
 import { VllmBackend } from '../backends/vllm.backend';
 import { LemonadeBackend } from '../backends/lemonade.backend';
@@ -53,6 +54,7 @@ describe('InferenceController — preferences', () => {
         { provide: MtplxBackend, useValue: mock<MtplxBackend>() },
         { provide: DsparkBackend, useValue: mock<DsparkBackend>() },
         { provide: LuceboxBackend, useValue: mock<LuceboxBackend>() },
+        InferenceBackendRegistry,
         { provide: LoggerService, useValue: mock<LoggerService>() },
       ],
     }).compile();
