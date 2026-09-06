@@ -179,7 +179,7 @@ describe('LoginPage', () => {
 
     expect(mockLoginForm).toHaveBeenCalledWith(
       expect.objectContaining({
-        portalSsoHref: 'http://localhost:5002/api/auth/portal/start?desktop=1',
+        portalSsoHref: 'http://localhost:5002/api/auth/portal/start?desktop=1&desktop_channel=dev',
         openPortalSsoExternally: false,
       }),
     );
@@ -197,7 +197,7 @@ describe('LoginPage', () => {
 
     expect(mockLoginForm).toHaveBeenCalledWith(
       expect.objectContaining({
-        portalSsoHref: 'http://localhost:5005/api/auth/portal/start?desktop=1',
+        portalSsoHref: 'http://localhost:5005/api/auth/portal/start?desktop=1&desktop_channel=dev',
         openPortalSsoExternally: false,
       }),
     );

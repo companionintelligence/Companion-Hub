@@ -3,6 +3,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   buildPortalDesktopDeepLink,
   buildPortalDesktopErrorDeepLink,
+  parseDesktopChannel,
+  resolvePortalDesktopDeepLinkScheme,
   buildPortalSsoErrorRedirectUrl,
   exchangePortalAuthorizationCode,
   fetchPortalSessionEmail,
@@ -51,12 +53,29 @@ describe('portal-sso helpers', () => {
 
   it('builds the Tauri deep link for desktop auth handoff', () => {
     expect(buildPortalDesktopDeepLink('handoff-token')).toBe('cihub://auth?token=handoff-token');
-    expect(buildPortalDesktopDeepLink('handoff-token', 'http://127.0.0.1:5002')).toBe('cihub-dev://auth?token=handoff-token');
+    expect(buildPortalDesktopDeepLink('handoff-token', 'dev')).toBe('cihub-dev://auth?token=handoff-token');
+  });
+
+  // The packaged app also serves its UI from loopback, so a loopback origin must
+  // NOT imply the dev scheme: that handed every production sign-in back on
+  // cihub-dev://, which no installer registers.
+  it('keeps the packaged scheme for a loopback hub origin', () => {
+    expect(buildPortalDesktopDeepLink('handoff-token', 'packaged')).toBe('cihub://auth?token=handoff-token');
+    expect(resolvePortalDesktopDeepLinkScheme('packaged')).toBe('cihub');
+    expect(resolvePortalDesktopDeepLinkScheme(null)).toBe('cihub');
+    expect(resolvePortalDesktopDeepLinkScheme('dev')).toBe('cihub-dev');
+  });
+
+  it('treats an unknown or missing channel as packaged', () => {
+    expect(parseDesktopChannel('dev')).toBe('dev');
+    expect(parseDesktopChannel('packaged')).toBe('packaged');
+    expect(parseDesktopChannel(undefined)).toBe('packaged');
+    expect(parseDesktopChannel('nonsense')).toBe('packaged');
   });
 
   it('builds the Tauri deep link for desktop auth errors', () => {
     expect(buildPortalDesktopErrorDeepLink('callback_error')).toBe('cihub://auth?error=callback_error');
-    expect(buildPortalDesktopErrorDeepLink('callback_error', 'http://localhost:5002')).toBe('cihub-dev://auth?error=callback_error');
+    expect(buildPortalDesktopErrorDeepLink('callback_error', 'dev')).toBe('cihub-dev://auth?error=callback_error');
   });
 
   it('redirects browser portal errors to the login page', () => {
@@ -75,6 +94,7 @@ describe('portal-sso helpers', () => {
       buildPortalSsoErrorRedirectUrl({
         hubOrigin: 'http://localhost:5002',
         desktop: true,
+        desktopChannel: 'dev',
         errorCode: 'account_mismatch',
         fallbackOrigin: 'http://localhost:5002',
       }),
