@@ -7601,6 +7601,14 @@
                     "short_desc": {
                       "type": "string"
                     },
+                    "replaces": {
+                      "default": [],
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    },
                     "author": {
                       "type": "string"
                     },
@@ -8501,6 +8509,7 @@
                     "version",
                     "cihub_app_version",
                     "short_desc",
+                    "replaces",
                     "author",
                     "source",
                     "force_expose",
@@ -8785,6 +8794,14 @@
                     "short_desc": {
                       "type": "string"
                     },
+                    "replaces": {
+                      "default": [],
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    },
                     "author": {
                       "type": "string"
                     },
@@ -9685,6 +9702,7 @@
                     "version",
                     "cihub_app_version",
                     "short_desc",
+                    "replaces",
                     "author",
                     "source",
                     "force_expose",
@@ -10100,6 +10118,14 @@
               },
               "short_desc": {
                 "type": "string"
+              },
+              "replaces": {
+                "default": [],
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
               },
               "author": {
                 "type": "string"
@@ -11001,6 +11027,7 @@
               "version",
               "cihub_app_version",
               "short_desc",
+              "replaces",
               "author",
               "source",
               "force_expose",
