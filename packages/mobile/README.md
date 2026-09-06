@@ -19,7 +19,10 @@ Portal (hub.ci.computer)            Appliance Hub (hub-<dev>-<org>.ci.computer)
 ```
 
 The native shell (`src-tauri`) only captures the `cihub://` deep links (Portal
-SSO + pairing) and exposes the Tauri HTTP/store/os/notification/opener plugins.
+SSO + pairing) and exposes the Tauri HTTP/store/os/deep-link/opener plugins.
+(`tauri-plugin-notification` was deliberately **removed** — it dragged
+POST_NOTIFICATIONS/RECEIVE_BOOT_COMPLETED/WAKE_LOCK into the Android manifest
+with zero callers. Re-add it alongside the push epic, see ROADMAP.md.)
 All Hub auth (portal SSO, password, TOTP) is reused from the existing frontend.
 
 ## First-time setup
@@ -107,10 +110,14 @@ Screenshot, install and launch work without it.
 pnpm install                       # pulls @tauri-apps/cli
 pnpm --filter frontend build       # produce dist/client (also done by turbo)
 
-pnpm --filter mobile android:init  # generate gen/android (once)
+# ⚠️ The gen/ project sources are COMMITTED. `*:init` regenerates them and will
+# clobber the checked-in Xcode/Gradle config (privacy manifest wiring, scene
+# manifest, ATS keys, signingConfig). You do NOT need it on a normal checkout —
+# only when intentionally re-scaffolding, and then review the diff.
+pnpm --filter mobile android:init  # RE-generate gen/android (clobbers committed config)
 pnpm --filter mobile android:dev   # run on an emulator/device
 
-pnpm --filter mobile ios:init      # generate gen/apple (once, macOS + Xcode)
+pnpm --filter mobile ios:init      # RE-generate gen/apple (same caveat)
 pnpm --filter mobile ios:dev       # run in the Simulator
 ```
 
@@ -156,17 +163,24 @@ IPHONEOS_DEPLOYMENT_TARGET=16.0 \
 
 The mobile app builds in CI the same way the desktop app does — via
 [`.github/workflows/mobile-build.yml`](../../.github/workflows/mobile-build.yml)
-(the mobile counterpart to `desktop-build.yml`). It has two jobs:
+(the mobile counterpart to `desktop-build.yml`). It has **four** jobs — two that
+always run, and two release lanes that skip cleanly until their signing secrets
+exist:
 
 | Job | Runner | Produces | Artifact |
 |-----|--------|----------|----------|
 | **android** | `ubuntu-22.04` | `tauri android build --apk --debug` → installable universal **debug APK** | `companion-hub-android-debug-apk` |
 | **ios** | `macos-latest` | `tauri ios build --target aarch64-sim` → unsigned **iOS Simulator `.app`** | `companion-hub-ios-sim-app` |
+| **android-release** | `ubuntu-22.04` | signed **AAB** for Play — needs the 4 `ANDROID_KEY_*` secrets | `companion-hub-android-release-aab` |
+| **ios-release** | `macos-latest` | signed **IPA** for App Store Connect — needs the 4 `APPLE_*` secrets | `companion-hub-ios-release-ipa` |
 
 **Triggers**
 - **Manually:** GitHub → **Actions → Mobile Build → Run workflow** (`workflow_dispatch`).
-- **Automatically:** on push to `dev` that touches `packages/mobile/**`,
-  `packages/frontend/**`, `packages/common/**`, or the workflow file.
+- ~~**Automatically:** on push to `dev`~~ — **currently disabled.** The workflow
+  carries `# TEMPORARY (Actions credit): automatic push triggers disabled.` and
+  `on:` is `workflow_dispatch` only, so **nothing builds on merge**. Re-enable the
+  `push` block when Actions credit recovers. Until then a green `dev` proves
+  nothing about mobile; build locally or dispatch the workflow by hand.
 
 **Get the builds:** open the workflow run → **Summary** → download the artifact
 zips. Then:
@@ -198,11 +212,19 @@ leak):
   (which `app/build.gradle.kts` picks up to wire `signingConfigs.release`), and
   runs `tauri android build --aab`. Without the secrets the job skips cleanly.
   Trigger it from **Actions → Mobile Build → Run workflow**.
-- **iOS IPA** — add an Apple Developer signing cert + provisioning profile as
-  secrets (e.g. via `apple-actions/import-codesign-certs`), set
-  `bundle.iOS.developmentTeam` / `APPLE_DEVELOPMENT_TEAM`, and run
-  `tauri ios build --export-method app-store-connect` (or `ad-hoc`) on a device
-  target instead of `--target aarch64-sim`.
+- **iOS IPA** — the `ios-release` job already does all of this; you only supply
+  secrets. It imports the cert into a throwaway keychain (`security import`, not
+  `apple-actions/import-codesign-certs`), installs the provisioning profile,
+  stamps a monotonic `CFBundleVersion`, and builds with
+  `--export-method app-store-connect`. Set `APPLE_CERTIFICATE_BASE64`,
+  `APPLE_CERTIFICATE_PASSWORD`, `APPLE_PROVISIONING_PROFILE_BASE64` and
+  `APPLE_DEVELOPMENT_TEAM`; add the three `APPSTORE_API_*` secrets to also push
+  to TestFlight. Without them the job skips cleanly. See
+  [`STORE-READINESS.md`](./STORE-READINESS.md).
+
+  > ⚠️ **Unproven.** The lane has never completed a signed build — every
+  > `workflow_dispatch` run so far skipped it for missing secrets, so its first
+  > real run should be treated as a debugging session, not a release.
 
 ## Building iOS on Xcode 27
 
