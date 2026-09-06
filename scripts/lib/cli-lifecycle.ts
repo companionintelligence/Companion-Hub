@@ -63,7 +63,7 @@ async function runDockerComposeUp(
   const maxAttempts = 3;
   let currentEnvOverrides: Record<string, string | undefined> = { ...envOverrides };
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    const result = await runDockerComposeUpOnce(upArgs, { detached, envOverrides: currentEnvOverrides, cwd });
+    const result = await runDockerComposeUpOnce(upArgs, { envOverrides: currentEnvOverrides, cwd });
     if (result.status === 0) return;
 
     const combined = `${result.stdout || ''}\n${result.stderr || ''}`.trim();
