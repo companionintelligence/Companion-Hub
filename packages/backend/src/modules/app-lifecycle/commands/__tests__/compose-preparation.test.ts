@@ -309,6 +309,42 @@ describe('prepareAppComposeDir', () => {
       expect(lastComposeCall()).toMatchObject({ domain: 'settings.example', localDomain: 'settings.local' });
     });
 
+    it('builds on the configured domains when the app has no env file yet', async () => {
+      const { stubs, moduleRef, docker } = createHarness();
+      // First install: generateEnvFile has not run, so the manager reports the path with no content.
+      stubs.appFilesManager.getAppEnv.mockResolvedValue({ path: APP_ENV_PATH, content: null });
+
+      await prepareAppComposeDir(moduleRef, docker, APP_URN, makeForm());
+
+      // Parsing that absent content as a string throws, which the outer catch turns into a compose
+      // failure — an app would be unable to reach its very first build.
+      expect(lastConstruction()).toMatchObject({ domain: 'settings.example', localDomain: 'settings.local' });
+      expect(lastComposeCall().envFilePath).toBe(APP_ENV_PATH);
+    });
+
+    it('reads the domains through configService.get when the config service exposes no snapshot', async () => {
+      const { stubs, moduleRef, docker } = createHarness();
+      // A ConfigurationService without getConfig (older builds, and a partially booted container)
+      // must still resolve domains rather than throwing before the shaped catch block is reachable.
+      Reflect.deleteProperty(stubs.configService, 'getConfig');
+      stubs.appFilesManager.getAppEnv.mockResolvedValue({ path: APP_ENV_PATH, content: '# generated' });
+      stubs.configService.get.mockImplementation((key: string) => {
+        if (key === 'architecture') return 'amd64';
+        if (key === 'directories') return { appDataDir: '/data/app-data' };
+        if (key === 'domain') return 'get-domain.example';
+        if (key === 'localDomain') return 'get-local.example';
+        // Only localDomain is set here, so each value has to come from its own key: the domain from
+        // the config rung and the localDomain from the userSettings rung.
+        if (key === 'userSettings') return { localDomain: 'get-settings.local' };
+        return undefined;
+      });
+
+      await prepareAppComposeDir(moduleRef, docker, APP_URN, makeForm());
+
+      expect(lastConstruction()).toMatchObject({ domain: 'get-domain.example', localDomain: 'get-settings.local' });
+      expect(lastComposeCall()).toMatchObject({ domain: 'get-domain.example', localDomain: 'get-settings.local' });
+    });
+
     it('falls back to the global config when neither the app env nor userSettings names a domain', async () => {
       const { stubs, moduleRef, docker } = createHarness();
       stubs.appFilesManager.getAppEnv.mockResolvedValue({ path: APP_ENV_PATH, content: '' });
@@ -441,6 +477,19 @@ describe('prepareAppComposeDir', () => {
       expect(lastComposeCall().publicHostname).toBe(PLATFORM_PUBLIC_HOSTNAME);
       expect(stubs.logger.warn).toHaveBeenCalledWith(expect.stringContaining(APP_URN));
       expect(stubs.logger.warn).toHaveBeenCalledWith(expect.stringContaining('db connection lost'));
+    });
+
+    it('drops the hub and org segments when the device is not yet registered', async () => {
+      const { stubs, moduleRef, docker } = createHarness();
+      stubs.registrationService.getDeviceRegistrationInfo.mockResolvedValue(null);
+
+      await prepareAppComposeDir(moduleRef, docker, APP_URN, cloudflareForm());
+
+      const call = lastComposeCall();
+      // Apps get installed before the hub finishes claiming an org; treating the registration as
+      // guaranteed here turns that window into a compose generation failure.
+      expect(call.originHostname).toBe('nextcloud.hub.lan');
+      expect(call.publicHostname).toBe('nextcloud.companion.example');
     });
 
     it('skips hostname computation entirely when the app publishes a host port', async () => {
@@ -640,6 +689,18 @@ describe('prepareAppComposeDir', () => {
   });
 
   describe('stale container pruning', () => {
+    it('prunes only the containers labelled for this app, under both label schemes', async () => {
+      const { stubs, moduleRef, docker } = createHarness();
+
+      await prepareAppComposeDir(moduleRef, docker, APP_URN, makeForm());
+
+      // Pruning is destructive and its result is only logged: a filter that dropped the URN, or
+      // carried another app's, would reap containers this install does not own and nothing here
+      // would fail.
+      expect(stubs.docker.pruneContainers).toHaveBeenNthCalledWith(1, { filters: { label: [`ci-hub.appurn=${APP_URN}`] } });
+      expect(stubs.docker.pruneContainers).toHaveBeenNthCalledWith(2, { filters: { label: [`ci-os-hub.appurn=${APP_URN}`] } });
+    });
+
     it('reports both the current and legacy label prunes as one total', async () => {
       const { stubs, moduleRef, docker } = createHarness();
       stubs.docker.pruneContainers.mockImplementation(async (options: { filters: { label: string[] } }) => {
@@ -666,6 +727,22 @@ describe('prepareAppComposeDir', () => {
       await prepareAppComposeDir(moduleRef, docker, APP_URN, makeForm());
 
       expect(stubs.logger.info).toHaveBeenCalledWith('Pruned containers:', ['current-1'], 'Space reclaimed:', 4, 'MB');
+    });
+
+    it('keeps going when the current-label prune fails', async () => {
+      const { stubs, moduleRef, docker } = createHarness();
+      stubs.docker.pruneContainers.mockImplementation(async (options: { filters: { label: string[] } }) => {
+        const label = options.filters.label[0] ?? '';
+        if (label.startsWith('ci-hub.appurn=')) throw new Error('docker daemon restarting');
+        return { ContainersDeleted: ['legacy-1'], SpaceReclaimed: 2 * 1024 * 1024 };
+      });
+
+      await prepareAppComposeDir(moduleRef, docker, APP_URN, makeForm());
+
+      // This prune runs before the try block, so an unguarded rejection escapes as a raw Dockerode
+      // error and aborts a rebuild that never needed the prune to succeed.
+      expect(stubs.logger.info).toHaveBeenCalledWith('Pruned containers:', ['legacy-1'], 'Space reclaimed:', 2, 'MB');
+      expect(stubs.appFilesManager.writeDockerComposeYml).toHaveBeenCalledWith(APP_URN, builderSpy.output);
     });
 
     it('keeps going when the legacy-label prune fails', async () => {
