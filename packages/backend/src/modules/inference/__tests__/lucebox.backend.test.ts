@@ -3,6 +3,7 @@ import axios from 'axios';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
 import { LoggerService } from '@/core/logger/logger.service';
+import { type DeviceGroupProbe, resolveAmdDeviceGroupIds } from '../backends/amd-device-groups.util';
 import {
   assertLuceboxImageSupportsArch,
   isRocmLegacyBrokenArch,
@@ -11,9 +12,7 @@ import {
   LUCEBOX_ROCM_IMAGE,
   LUCEBOX_ROCM_LEGACY_IMAGE,
   LuceboxBackend,
-  type DeviceGroupProbe,
   normalizeLuceboxBaseUrl,
-  resolveAmdDeviceGroupIds,
   resolveLuceboxProbeUrl,
   resolveLuceboxRocmImage,
 } from '../backends/lucebox.backend';
