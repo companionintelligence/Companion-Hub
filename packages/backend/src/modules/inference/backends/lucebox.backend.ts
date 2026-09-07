@@ -1,7 +1,7 @@
-import { readdirSync, statSync } from 'node:fs';
 import { Injectable } from '@nestjs/common';
 import { LoggerService } from '@/core/logger/logger.service';
 import type { BackendHealthStatus, BackendModelInfo, PullProgress } from '@ci-hub/common/types';
+import { type DeviceGroupProbe, resolveAmdDeviceGroupIds } from './amd-device-groups.util';
 import type { InferenceBackend } from './backend.interface';
 import { detectHubContainer } from './vllm.backend';
 import { OpenAiCompatibleClient } from './openai-compatible.client';
@@ -109,55 +109,6 @@ export function resolveLuceboxRocmImage(_gpuArch?: string): string {
   // parameter is kept so callers can pass what they detected and so
   // `assertLuceboxImageSupportsArch` can still reject an explicit bad pin.
   return LUCEBOX_ROCM_IMAGE;
-}
-
-/** Injection seam so the GID derivation is testable off an AMD host. */
-export interface DeviceGroupProbe {
-  readdirSync: (path: string) => string[];
-  statSync: (path: string) => { gid: number };
-}
-
-const DEFAULT_DEVICE_PROBE: DeviceGroupProbe = {
-  readdirSync: (path) => readdirSync(path),
-  statSync: (path) => statSync(path),
-};
-
-/**
- * Derive the numeric host GIDs that own the GPU device nodes.
- *
- * `group_add: ['video', 'render']` is a latent failure: Docker resolves those *names* against
- * the **container's** `/etc/group`, where `render` is typically GID 109, while the host group
- * that actually owns `/dev/kfd` is site-specific (990 across this fleet). The container then
- * joins a group that grants nothing and every GPU open fails with EACCES. Statting the very
- * device nodes the service mounts gives the correct numbers on any host.
- */
-export function resolveAmdDeviceGroupIds(probe: DeviceGroupProbe = DEFAULT_DEVICE_PROBE): number[] {
-  const gids = new Set<number>();
-
-  const add = (path: string): void => {
-    try {
-      const { gid } = probe.statSync(path);
-      if (Number.isInteger(gid)) gids.add(gid);
-    } catch {
-      // Device absent on this host — the remaining nodes still describe the groups we need.
-    }
-  };
-
-  add('/dev/kfd');
-
-  let entries: string[] = [];
-  try {
-    entries = probe.readdirSync('/dev/dri');
-  } catch {
-    entries = [];
-  }
-  for (const entry of entries) {
-    // Nodes are `card0`/`card1` (video) and `renderD128` (render); which index exists varies
-    // per host, so enumerate rather than assuming `card1`/`renderD129`.
-    if (/^(?:card|renderD)\d+$/.test(entry)) add(`/dev/dri/${entry}`);
-  }
-
-  return [...gids].sort((a, b) => a - b);
 }
 
 /** Extra deployment hints beyond the shared `{ rocmReady, unifiedMemory }` pair. */
