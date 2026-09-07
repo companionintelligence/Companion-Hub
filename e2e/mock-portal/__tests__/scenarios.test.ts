@@ -43,6 +43,16 @@ describe('buildRoutes', () => {
       assert.strictEqual(result.status, 200);
     });
 
+    it('allows email sign-up and returns a portal token', () => {
+      const handler = routes['POST /api/auth/sign-up/email'];
+      assert.ok(handler);
+      const result = handler(dummyUrl, { email: 'new@example.com', password: 'SecurePass123!', name: 'New' });
+      assert.strictEqual(result.status, 200);
+      const body = result.body as { token?: string; user?: { email?: string } };
+      assert.strictEqual(body.token, 'mock-portal-session');
+      assert.strictEqual(body.user?.email, 'new@example.com');
+    });
+
     it('reports device as registered', () => {
       const handler = routes['GET /api/devices/registration-status'];
       assert.ok(handler);

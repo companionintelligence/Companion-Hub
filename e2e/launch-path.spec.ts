@@ -10,6 +10,7 @@ import { expect, test } from '@playwright/test';
 import { createTestUser, loginUser } from './fixtures/fixtures';
 import { freshUnregistered, locallyReady, publiclyDelayed, degradedHub } from './fixtures/hub-states';
 import { firstInstallPath, appLifecycleReconciliation, multiStore } from './fixtures/scenarios';
+import { testUser } from './helpers/constants';
 import {
   verifyAppStoreNames,
   verifyAppStorePage,
@@ -24,6 +25,8 @@ import {
   verifyRegistrationStatus,
   verifySeededAppStores,
 } from './helpers/verification';
+
+const firstUserPassword = 'SecurePass123!';
 
 test.describe('Hub State: Fresh Unregistered', () => {
   test.beforeEach(async () => {
@@ -136,12 +139,12 @@ test.describe('Scenario: First Install Path', () => {
 
   test('can complete first-user registration', async ({ page }) => {
     await page.goto('/register');
-    await page.getByPlaceholder('you@example.com').fill('admin@test.local');
-    await page.getByPlaceholder('Enter your password').fill('SecurePass123!');
-    await page.getByPlaceholder('Confirm your password').fill('SecurePass123!');
-    await page.getByRole('button', { name: 'Register' }).click();
+    await page.getByPlaceholder('you@example.com').fill(testUser.email);
+    await page.getByPlaceholder('Enter your password').fill(firstUserPassword);
+    await page.getByPlaceholder('Confirm your password').fill(firstUserPassword);
+    await page.getByRole('button', { name: 'Create Local Admin User' }).click();
 
-    await expect(page.getByRole('heading', { name: 'Set Up Your Hub' })).toBeVisible({ timeout: 15000 });
+    await expect(page.getByRole('heading', { name: 'Set Up Companion Hub' })).toBeVisible({ timeout: 15000 });
   });
 });
 
