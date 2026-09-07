@@ -82,6 +82,21 @@ export function isRocmLegacyBrokenArch(gpuArch: string): boolean {
 }
 
 /**
+ * The one sentence that explains this failure, so the guard below and the supervision diagnosis in
+ * `supervision/backend-failure-diagnosis.ts` say the same thing rather than two paraphrases that
+ * drift apart. `arch` is whatever the caller can honestly name: an exact LLVM target when one was
+ * detected, or the family (`gfx115x`) when the evidence is the segfault itself — nothing in this
+ * repo produces a `gfx*` string at runtime, so a diagnosis reached from a crashing container has
+ * only the family to offer.
+ */
+export function luceboxRocmLegacyImageMessage(arch: string): string {
+  return (
+    `Lucebox image ${LUCEBOX_ROCM_LEGACY_IMAGE} ships ROCm 6.4.1, which SIGSEGVs on the first hipMemcpy for ${arch} ` +
+    `(RDNA 3.5 / Strix Halo). Use ${LUCEBOX_ROCM_IMAGE} (ROCm 7.2.2) for this GPU.`
+  );
+}
+
+/**
  * Guard the image-tag/GPU-arch pairing. Pinning the ROCm 6.4.1 tag on an RDNA 3.5 part
  * produces a container that starts, passes `/health`, and then dies inside the first
  * generation — an expensive failure to diagnose from the outside, so refuse it up front.
@@ -91,10 +106,7 @@ export function assertLuceboxImageSupportsArch(image: string, gpuArch?: string):
   if (!arch || !isRocmLegacyBrokenArch(arch)) return;
   if (image.trim() !== LUCEBOX_ROCM_LEGACY_IMAGE) return;
 
-  throw new Error(
-    `Lucebox image ${LUCEBOX_ROCM_LEGACY_IMAGE} ships ROCm 6.4.1, which SIGSEGVs on the first hipMemcpy for ${arch} ` +
-      `(RDNA 3.5 / Strix Halo). Use ${LUCEBOX_ROCM_IMAGE} (ROCm 7.2.2) for this GPU.`,
-  );
+  throw new Error(luceboxRocmLegacyImageMessage(arch));
 }
 
 /**
