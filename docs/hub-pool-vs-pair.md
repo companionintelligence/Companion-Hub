@@ -20,7 +20,7 @@ are concentrated in discovery, trust, and the load signal.
 | No eligible owner → local 502 | "returns an actionable local 502 without sending the request to an engine" | `candidates.length === 0` → 502 |
 | **No third-node relay** | "A peer request is served, not re-routed… never re-enters candidate selection" | `forwardToLocalBackendAndRespond()` calls the backend directly |
 | Network membership ≠ authorization | mTLS on peer surfaces regardless of LAN | `PoolPeerGuard` required even though the tailnet already gates reachability |
-| Unmeasured node ranks neutral, never idle | missing telemetry = "neutral pressure of 1" | `UNKNOWN_PEER_LOAD = 1` |
+| Unmeasured node ranks neutral, never idle | missing telemetry = "neutral pressure of 1" | `UNKNOWN_PEER_LOAD = 1`, and `UNKNOWN_PRESSURE = 1` on the pressure band |
 | Dispatcher reserves its own choice | "adds the requests it has just dispatched itself to its own estimate and reserves its choice before forwarding" | `loadService.acquire(key)` runs *before* `forward()` |
 
 The third-node prohibition is the most striking convergence: both codebases implement it the same
@@ -69,16 +69,28 @@ PAIR ranks on **pending work + GPU pressure**:
 - GPU utilization mapped to "0–3 pressure units at 40%, 70%, and 85%", with hysteresis against thrashing
 - sort by *pending + pressure*, then *pressure*, then node ID
 
-Hub Pool ranks on **queue depth + hardware tier**:
-- `score` = in-flight requests, plus a `poolLocalAffinity` handicap applied to peers
-- tie-break `tierRank` (high → medium → low → cpu-only → insufficient); local is `-1`, never out-ranked on hardware
+Hub Pool ranks on **queue depth + GPU pressure + hardware tier**:
+- `score` = in-flight requests, plus `poolPressureWeight × pressure`, plus a `poolLocalAffinity` handicap applied to peers
+- tie-break `pressure` (only when `poolPressureWeight` is non-zero), then `tierRank` (high → medium → low → cpu-only → insufficient); local is `-1`, never out-ranked on hardware
 - stable sort, so ties keep insertion order
 
-**We have no GPU-utilization signal at all.** This is acknowledged in `hub-pool.types.ts`:
-`HardwareInspectorService` "reports a static hardware profile, not counters". A Hub node running a
-long generation at 100% GPU and one sitting idle look identical to our ranker if their in-flight
-counts match — and in-flight count is a poor proxy, because one 8k-token generation and one one-token
-completion both count as 1.
+**The GPU-pressure gap is now partly closed, on the same 0–3 shape.** See
+[GPU pressure](hub-pool.md#gpu-pressure-a-second-load-signal-amd-only-and-off-by-default). Two
+caveats keep it from being parity:
+
+- **It is AMD-only.** `gpu_busy_percent` from DRM sysfs is the only live utilization counter the Hub
+  container can reach; `nvidia-smi` is not in the Alpine image and the Docker socket is mounted `:ro`
+  deliberately. NVIDIA and Apple nodes report nothing and rank mid-band until someone writes the
+  documented host-file probe. PAIR runs on a fleet where every node can answer.
+- **It ships off** (`poolPressureWeight = 0`) and needs a `/sys` bind mount this repo does not
+  install, because the band is unvalidated on real fleet hardware. Where it is not enabled, the
+  paragraph this replaces still describes the behaviour: a node running a long generation at 100% GPU
+  and one sitting idle look identical if their in-flight counts match, and in-flight count is a poor
+  proxy because one 8k-token generation and one one-token completion both count as 1.
+
+What did carry over cleanly is PAIR's shape: the 40/70/85 thresholds, the hysteresis deadband, the
+`pending + pressure` score, and above all the rule that a node with no telemetry ranks at a neutral
+pressure of 1 rather than at 0.
 
 Conversely, **PAIR explicitly does not consider "GPU model, available memory, model warmness, or how
 expensive a request looks"** — and we *do* carry hardware tier as a tie-break, which on a fleet as
@@ -132,9 +144,11 @@ dispatch, ordered failover, streaming, no relay chaining, no retry of genuine cl
 is *better instrumented* and better suited to a heterogeneous fleet. It is behind PAIR in two places
 that matter:
 
-1. **No GPU-pressure signal.** This is the highest-value gap. PAIR's smoothed 0–3 band with
-   hysteresis is a well-shaped design worth copying more or less directly; the blocker is that
-   nothing in the Hub currently samples GPU utilization over time.
+1. **GPU-pressure signal only on AMD, and off by default.** The smoothed 0–3 band with hysteresis
+   now exists and is wired into ranking, but the only source that can feed it is the amdgpu driver's
+   `gpu_busy_percent`, and enabling it takes a `/sys` mount plus a settings change on each node. On
+   an NVIDIA or Apple node the gap is unchanged, and closing it needs a host-side writer for the
+   documented `gpu_pressure.json` probe rather than any further work in the Hub.
 2. **No manual pinning.** Cheap to add — a request header or per-app setting consulted ahead of the
    ranker, mirroring PAIR's priority order.
 

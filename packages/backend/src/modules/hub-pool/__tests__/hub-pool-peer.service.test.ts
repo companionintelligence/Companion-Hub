@@ -9,7 +9,13 @@ import { InferenceRouterService } from '@/modules/inference/inference-router.ser
 import type { InferenceStatus } from '@ci-hub/common/types';
 import type { HubPoolPeer } from '@/core/database/drizzle/types';
 import { ConfigurationService } from '@/core/config/configuration.service';
-import { DEFAULT_POOL_HEALTH_POLL_SECONDS, DEFAULT_POOL_LOCAL_AFFINITY, type HubPoolPreferences } from '@/common/helpers/hub-pool';
+import {
+  DEFAULT_POOL_HEALTH_POLL_SECONDS,
+  DEFAULT_POOL_LOCAL_AFFINITY,
+  DEFAULT_POOL_PRESSURE_WEIGHT,
+  type HubPoolPreferences,
+} from '@/common/helpers/hub-pool';
+import { HubPoolPressureService } from '../hub-pool-pressure.service';
 import { HubPoolPeerRepository } from '../hub-pool-peer.repository';
 import { HubPoolPeerService } from '../hub-pool-peer.service';
 import { HubPoolLoadService, LOCAL_CANDIDATE_KEY } from '../hub-pool-load.service';
@@ -46,6 +52,7 @@ describe('HubPoolPeerService', () => {
   let inferenceRouter: MockProxy<InferenceRouterService>;
   let configuration: MockProxy<ConfigurationService>;
   let loadService: HubPoolLoadService;
+  let pressureService: MockProxy<HubPoolPressureService>;
   let service: HubPoolPeerService;
 
   /** Repoint the persisted settings, as a settings PATCH would. */
@@ -56,6 +63,7 @@ describe('HubPoolPeerService', () => {
       poolInboundEnabled: true,
       poolLocalAffinity: DEFAULT_POOL_LOCAL_AFFINITY,
       poolHealthPollSeconds: DEFAULT_POOL_HEALTH_POLL_SECONDS,
+      poolPressureWeight: DEFAULT_POOL_PRESSURE_WEIGHT,
       ...overrides,
     });
   }
@@ -87,6 +95,11 @@ describe('HubPoolPeerService', () => {
     });
 
     loadService = new HubPoolLoadService();
+    pressureService = mock<HubPoolPressureService>();
+    // Unmeasured is the DEFAULT here on purpose: it is what every non-AMD node reports, so the
+    // whole existing suite exercises the neutral path unless a test opts into a band.
+    pressureService.band.mockReturnValue(null);
+    pressureService.source.mockReturnValue(null);
     service = new HubPoolPeerService(
       mock<LoggerService>(),
       repo,
@@ -96,6 +109,7 @@ describe('HubPoolPeerService', () => {
       inferenceRouter,
       loadService,
       configuration,
+      pressureService,
     );
     global.fetch = vi.fn();
   });
@@ -591,6 +605,169 @@ describe('HubPoolPeerService', () => {
       setPoolPreferences({ poolOutboundEnabled: false });
 
       expect(service.inboundRefusal(mockPeer({ enabled: true }))).toBeNull();
+    });
+  });
+
+  describe('GPU pressure on the wire and in the status payload', () => {
+    beforeEach(() => {
+      inferenceRouter.getStatus.mockResolvedValue({
+        hardwareTier: 'high',
+        backends: [{ type: 'ollama', running: true, healthy: true, url: 'http://ollama:11434', modelsLoaded: 1 }],
+        models: [],
+        memoryBudget: { totalVramMb: 24576, totalRamMb: 65536, systemReservedRamMb: 8192, dockerOverheadMb: 2048, availableForModelsMb: 20480 },
+      } as unknown as InferenceStatus);
+      inferenceRouter.listModels.mockResolvedValue([
+        {
+          id: 'llama3.2:3b',
+          object: 'model',
+          created: 0,
+          owned_by: 'local:ollama',
+          state: 'loaded',
+          backend: 'ollama',
+          modality: ['text'],
+          local: true,
+        },
+      ] as never);
+    });
+
+    describe('getOwnCapabilities', () => {
+      it('publishes the band and the source that produced it when this node measured one', async () => {
+        pressureService.band.mockReturnValue(2);
+        pressureService.source.mockReturnValue('amd-drm');
+
+        const capabilities = await service.getOwnCapabilities();
+
+        expect(capabilities.gpuPressure).toBe(2);
+        expect(capabilities.gpuPressureSource).toBe('amd-drm');
+      });
+
+      it('OMITS the keys entirely when unmeasured, rather than publishing 0', async () => {
+        pressureService.band.mockReturnValue(null);
+        pressureService.source.mockReturnValue(null);
+
+        const capabilities = await service.getOwnCapabilities();
+
+        // Absence and idleness must not share an encoding on the wire either. A peer reading a
+        // missing key applies UNKNOWN_PRESSURE; it would have taken a literal 0 at face value and
+        // ranked this node as the most attractive candidate in the pool.
+        expect(capabilities).not.toHaveProperty('gpuPressure');
+        expect(capabilities).not.toHaveProperty('gpuPressureSource');
+      });
+
+      it('publishes a measured band of 0, which is a claim and not an absence', async () => {
+        pressureService.band.mockReturnValue(0);
+        pressureService.source.mockReturnValue('amd-drm');
+
+        const capabilities = await service.getOwnCapabilities();
+
+        expect(capabilities.gpuPressure).toBe(0);
+      });
+
+      it('is not swallowed by the inventory cache — a moving band moves inside the TTL', async () => {
+        pressureService.band.mockReturnValue(0);
+        pressureService.source.mockReturnValue('amd-drm');
+        const first = await service.getOwnCapabilities();
+
+        pressureService.band.mockReturnValue(3);
+        const second = await service.getOwnCapabilities();
+
+        // Same guarantee `inFlightRequests` already has: only the expensive inventory is cached,
+        // because a stale load figure is the one thing that actually mis-routes work.
+        expect(first.gpuPressure).toBe(0);
+        expect(second.gpuPressure).toBe(3);
+        expect(inferenceRouter.getStatus).toHaveBeenCalledTimes(1);
+      });
+
+      it('still publishes the band while refusing inbound work', async () => {
+        pressureService.band.mockReturnValue(1);
+        pressureService.source.mockReturnValue('amd-drm');
+
+        const capabilities = await service.getOwnCapabilities(false);
+
+        // The refusal empties the inventory, not the live counters: the peer must keep seeing a
+        // healthy machine so its health poll keeps succeeding.
+        expect(capabilities.backends).toEqual([]);
+        expect(capabilities.gpuPressure).toBe(1);
+      });
+    });
+
+    describe('getPoolStatus', () => {
+      function peerWith(id: string, capabilities: Record<string, unknown>, lastSeenAt = new Date().toISOString()): HubPoolPeer {
+        return mockPeer({ id, status: 'connected', lastSeenAt, lastCapabilities: capabilities as unknown as Record<string, unknown> });
+      }
+
+      const baseCapabilities = { hardwareTier: 'high', backends: [], updatedAt: new Date().toISOString() };
+
+      it('reports this node own band and source', async () => {
+        pressureService.band.mockReturnValue(2);
+        pressureService.source.mockReturnValue('host-file');
+        repo.listAll.mockResolvedValue([]);
+
+        const status = await service.getPoolStatus();
+
+        expect(status.localNode.gpuPressure).toBe(2);
+        expect(status.localNode.gpuPressureSource).toBe('host-file');
+      });
+
+      it('still reports the band when the local inventory could not be built', async () => {
+        pressureService.band.mockReturnValue(3);
+        pressureService.source.mockReturnValue('amd-drm');
+        inferenceRouter.getStatus.mockRejectedValue(new Error('ollama is down'));
+        repo.listAll.mockResolvedValue([]);
+
+        const status = await service.getPoolStatus();
+
+        // A down backend must not take the pressure reading with it — during an incident that
+        // number is one of the few things on the card still worth reading.
+        expect(status.localNode.capabilitiesError).toContain('ollama is down');
+        expect(status.localNode.gpuPressure).toBe(3);
+      });
+
+      it('reports a peer effective band, not the raw jsonb', async () => {
+        repo.listAll.mockResolvedValue([peerWith('p1', { ...baseCapabilities, gpuPressure: 2 })]);
+
+        const status = await service.getPoolStatus();
+
+        expect(status.peers[0]?.gpuPressure).toBe(2);
+      });
+
+      it('shows null for a peer that reported nothing', async () => {
+        repo.listAll.mockResolvedValue([peerWith('p1', baseCapabilities)]);
+
+        const status = await service.getPoolStatus();
+
+        expect(status.peers[0]?.gpuPressure).toBeNull();
+        expect(status.peers[0]?.gpuPressure).not.toBe(0);
+      });
+
+      it('shows null for a stale snapshot, matching what routing would do with it', async () => {
+        const stale = peerWith('p1', { ...baseCapabilities, gpuPressure: 0 }, new Date(Date.now() - 10 * 60_000).toISOString());
+        repo.listAll.mockResolvedValue([stale]);
+
+        const status = await service.getPoolStatus();
+
+        expect(status.peers[0]?.gpuPressure).toBeNull();
+      });
+
+      it.each([-5, 99, 1.5, 'low', null])('shows null for the hostile value %s', async (hostile) => {
+        repo.listAll.mockResolvedValue([peerWith('p1', { ...baseCapabilities, gpuPressure: hostile })]);
+
+        const status = await service.getPoolStatus();
+
+        expect(status.peers[0]?.gpuPressure).toBeNull();
+      });
+
+      it('shows the forwarded-work floor rather than the peer own optimistic 0', async () => {
+        repo.listAll.mockResolvedValue([peerWith('p1', { ...baseCapabilities, gpuPressure: 0 })]);
+        loadService.acquire('p1');
+        loadService.acquire('p1');
+
+        const status = await service.getPoolStatus();
+
+        // The same floor `PoolProxyService` applies. If the card showed 0 while routing believed 2,
+        // an operator debugging a hot node would be reading a number nothing acts on.
+        expect(status.peers[0]?.gpuPressure).toBe(2);
+      });
     });
   });
 

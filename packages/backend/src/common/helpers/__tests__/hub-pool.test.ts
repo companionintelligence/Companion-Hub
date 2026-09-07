@@ -1,7 +1,15 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  DEFAULT_POOL_PRESSURE_WEIGHT,
+  MAX_POOL_PRESSURE_WEIGHT,
+  MAX_PRESSURE_BAND,
+  MIN_POOL_PRESSURE_WEIGHT,
+  UNKNOWN_PRESSURE,
+  clampPressureBand,
   describeHubPoolDisabled,
   describeHubPoolInboundRefused,
+  effectivePeerPressureBand,
+  isCapabilitiesSnapshotFresh,
   isHubPoolEnabled,
   normalizePeerFqdn,
   resolveHubPoolDirections,
@@ -184,5 +192,125 @@ describe('resolveHubPoolDirections', () => {
     expect(describeHubPoolInboundRefused('inbound_disabled')).toContain('inbound pooling');
     expect(describeHubPoolInboundRefused('peer_disabled')).toContain('this peer');
     expect(describeHubPoolInboundRefused('inbound_disabled')).not.toContain('HUB_POOL_USER_DISABLED');
+  });
+});
+
+describe('GPU-pressure helpers', () => {
+  describe('clampPressureBand', () => {
+    it.each([0, 1, 2, 3])('accepts the in-range band %i', (band) => {
+      expect(clampPressureBand(band)).toBe(band);
+    });
+
+    it.each([
+      ['a negative band', -1],
+      ['a large negative band', -5],
+      ['an out-of-range band', 4],
+      ['a wildly out-of-range band', 99],
+      ['a fraction', 1.5],
+      ['a numeric string', '2'],
+      ['a word', 'low'],
+      ['null', null],
+      ['undefined', undefined],
+      ['NaN', Number.NaN],
+      ['Infinity', Number.POSITIVE_INFINITY],
+      ['an object', { band: 0 }],
+      ['an array', [0]],
+      ['true', true],
+    ])('rejects %s', (_label, raw) => {
+      // These arrive inside `last_capabilities`, which is jsonb a paired peer fully controls, and
+      // rows can predate any write-side check — so the clamp has to live on the READ path.
+      expect(clampPressureBand(raw)).toBeNull();
+    });
+
+    it('never maps a rejected value to 0, which would make it the most attractive candidate', () => {
+      expect(clampPressureBand(-5)).not.toBe(0);
+      expect(clampPressureBand('idle')).not.toBe(0);
+    });
+  });
+
+  describe('UNKNOWN_PRESSURE', () => {
+    it('is mid-band, not idle — an unmeasured node must never outrank one known to be idle', () => {
+      expect(UNKNOWN_PRESSURE).toBe(1);
+      expect(UNKNOWN_PRESSURE).toBeGreaterThan(0);
+      expect(UNKNOWN_PRESSURE).toBeLessThan(MAX_PRESSURE_BAND);
+    });
+  });
+
+  describe('isCapabilitiesSnapshotFresh', () => {
+    const now = Date.parse('2026-09-07T12:00:00.000Z');
+
+    it('accepts a snapshot inside the window', () => {
+      expect(isCapabilitiesSnapshotFresh(new Date(now - 10_000).toISOString(), 90_000, now)).toBe(true);
+    });
+
+    it('rejects one past the window', () => {
+      expect(isCapabilitiesSnapshotFresh(new Date(now - 91_000).toISOString(), 90_000, now)).toBe(false);
+    });
+
+    it('rejects a peer that has never been seen', () => {
+      expect(isCapabilitiesSnapshotFresh(null, 90_000, now)).toBe(false);
+    });
+
+    it('rejects an unparseable timestamp rather than treating it as now', () => {
+      expect(isCapabilitiesSnapshotFresh('not a date', 90_000, now)).toBe(false);
+    });
+  });
+
+  describe('effectivePeerPressureBand', () => {
+    it('returns a fresh, valid band unchanged', () => {
+      expect(effectivePeerPressureBand({ reported: 2, snapshotFresh: true, forwardedInFlight: 0 })).toBe(2);
+    });
+
+    it('returns null when the peer reported nothing and we have forwarded nothing', () => {
+      const band = effectivePeerPressureBand({ reported: undefined, snapshotFresh: true, forwardedInFlight: 0 });
+
+      // Callers turn this into UNKNOWN_PRESSURE. Returning 0 here is the single defect that would
+      // make silence the winning strategy for every node in the pool.
+      expect(band).toBeNull();
+      expect(band).not.toBe(0);
+    });
+
+    it('returns a measured 0, which is a claim and not an absence', () => {
+      expect(effectivePeerPressureBand({ reported: 0, snapshotFresh: true, forwardedInFlight: 0 })).toBe(0);
+    });
+
+    it('discards the claim of a stale snapshot', () => {
+      expect(effectivePeerPressureBand({ reported: 0, snapshotFresh: false, forwardedInFlight: 0 })).toBeNull();
+    });
+
+    it('floors the band by what we have forwarded, so a peer cannot pin itself at 0', () => {
+      // Mirrors `peerLoad`'s max(): what we handed the peer is the one part of its load we observe
+      // ourselves, and a peer running two of our requests is not idle whatever it claims.
+      expect(effectivePeerPressureBand({ reported: 0, snapshotFresh: true, forwardedInFlight: 2 })).toBe(2);
+    });
+
+    it('keeps the floor even when the snapshot is stale, exactly as peerLoad does', () => {
+      expect(effectivePeerPressureBand({ reported: 0, snapshotFresh: false, forwardedInFlight: 3 })).toBe(3);
+    });
+
+    it('takes the larger of claim and floor rather than their sum', () => {
+      // Both numbers describe the same work from different vantage points; adding them would
+      // double-count and drive an ordinary two-request peer straight to saturated.
+      expect(effectivePeerPressureBand({ reported: 3, snapshotFresh: true, forwardedInFlight: 1 })).toBe(3);
+    });
+
+    it('caps the floor at the top band rather than running off the scale', () => {
+      expect(effectivePeerPressureBand({ reported: 0, snapshotFresh: true, forwardedInFlight: 50 })).toBe(MAX_PRESSURE_BAND);
+    });
+
+    it.each([-5, 99, 1.5, 'low', null, Number.NaN])('ignores the hostile claim %s while honouring the floor', (hostile) => {
+      expect(effectivePeerPressureBand({ reported: hostile, snapshotFresh: true, forwardedInFlight: 0 })).toBeNull();
+      expect(effectivePeerPressureBand({ reported: hostile, snapshotFresh: true, forwardedInFlight: 2 })).toBe(2);
+    });
+  });
+
+  describe('DEFAULT_POOL_PRESSURE_WEIGHT', () => {
+    it('is 0, which is what removes the key from the comparator entirely', () => {
+      // The default is not "small enough not to matter" — it is arithmetically absent, which is why
+      // a fresh Hub ranks byte-identically to the build before this feature existed.
+      expect(DEFAULT_POOL_PRESSURE_WEIGHT).toBe(0);
+      expect(MIN_POOL_PRESSURE_WEIGHT).toBe(0);
+      expect(MAX_POOL_PRESSURE_WEIGHT).toBe(MAX_PRESSURE_BAND);
+    });
   });
 });

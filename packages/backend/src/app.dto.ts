@@ -6,8 +6,10 @@ import { optionalMemoryLimitSchema } from '@/common/validation/memory-limit';
 import {
   MAX_POOL_HEALTH_POLL_SECONDS,
   MAX_POOL_LOCAL_AFFINITY,
+  MAX_POOL_PRESSURE_WEIGHT,
   MIN_POOL_HEALTH_POLL_SECONDS,
   MIN_POOL_LOCAL_AFFINITY,
+  MIN_POOL_PRESSURE_WEIGHT,
 } from '@/common/helpers/hub-pool';
 
 import { INFERENCE_BACKEND_TYPES } from '@ci-hub/common/types';
@@ -35,6 +37,10 @@ const poolLocalAffinitySchema = z
 const poolHealthPollSecondsSchema = z
   .union([z.number().int(), z.string().transform(Number)])
   .pipe(z.number().int().min(MIN_POOL_HEALTH_POLL_SECONDS).max(MAX_POOL_HEALTH_POLL_SECONDS));
+
+const poolPressureWeightSchema = z
+  .union([z.number().int(), z.string().transform(Number)])
+  .pipe(z.number().int().min(MIN_POOL_PRESSURE_WEIGHT).max(MAX_POOL_PRESSURE_WEIGHT));
 
 export const settingsSchema = z.object({
   advancedSettings: z.boolean(),
@@ -94,6 +100,7 @@ export const settingsSchema = z.object({
   // re-applies the strict bounds, so choosing such a value still gets a 400.
   hubPoolLocalAffinity: poolLocalAffinitySchema.optional().catch(undefined),
   hubPoolHealthPollSeconds: poolHealthPollSecondsSchema.optional().catch(undefined),
+  hubPoolPressureWeight: poolPressureWeightSchema.optional().catch(undefined),
   inferenceCloudProviders: z
     .array(
       z.object({
@@ -225,6 +232,7 @@ export class UserSettingsBody extends createZodDto(
       .optional(),
     hubPoolLocalAffinity: poolLocalAffinitySchema.optional(),
     hubPoolHealthPollSeconds: poolHealthPollSecondsSchema.optional(),
+    hubPoolPressureWeight: poolPressureWeightSchema.optional(),
   }),
 ) {}
 

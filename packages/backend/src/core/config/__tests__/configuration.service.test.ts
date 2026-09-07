@@ -89,6 +89,7 @@ describe('ConfigurationService Hub Pool preferences', () => {
         poolInboundEnabled: boolean;
         poolLocalAffinity: number;
         poolHealthPollSeconds: number;
+        poolPressureWeight: number;
       };
       setHubPoolPreferences: (p: Record<string, unknown>) => Promise<unknown>;
     };
@@ -107,6 +108,9 @@ describe('ConfigurationService Hub Pool preferences', () => {
       poolInboundEnabled: true,
       poolLocalAffinity: 1,
       poolHealthPollSeconds: 30,
+      // 0 is what makes the pressure signal a no-op until an operator opts in: at 0 the band is not
+      // in the ranking comparator at all, so a fresh Hub ranks byte-identically to the build before it.
+      poolPressureWeight: 0,
     });
   });
 
@@ -150,21 +154,44 @@ describe('ConfigurationService Hub Pool preferences', () => {
 
     expect(svc.mergeSettingsToDisk).not.toHaveBeenCalled();
   });
+
+  it('round-trips the pressure weight without touching the other pool fields', async () => {
+    const svc = makePoolService();
+
+    await svc.setHubPoolPreferences({ poolPressureWeight: 2 });
+
+    expect(svc.mergeSettingsToDisk.mock.calls[0][0]).toEqual({ hubPoolPressureWeight: 2 });
+  });
+
+  it('keeps a persisted pressure weight of 0 rather than reading it as unset', () => {
+    const svc = makePoolService();
+    svc.config.userSettings = { hubPoolPressureWeight: 0 };
+
+    // The meaningful-zero case again: 0 is the shipped default AND a value an operator can choose
+    // deliberately after trying a higher one, so a `||` fallback would be indistinguishable.
+    expect(svc.getHubPoolPreferences()).toMatchObject({ poolPressureWeight: 0 });
+  });
 });
 
 describe('settingsSchema — Hub Pool fields', () => {
   it('accepts the numeric knobs as strings, as a form would submit them', () => {
-    const parsed = settingsSchema.partial().safeParse({ hubPoolLocalAffinity: '4', hubPoolHealthPollSeconds: '60' });
+    const parsed = settingsSchema.partial().safeParse({ hubPoolLocalAffinity: '4', hubPoolHealthPollSeconds: '60', hubPoolPressureWeight: '2' });
 
     expect(parsed.success).toBe(true);
-    expect(parsed.data).toEqual({ hubPoolLocalAffinity: 4, hubPoolHealthPollSeconds: 60 });
+    expect(parsed.data).toEqual({ hubPoolLocalAffinity: 4, hubPoolHealthPollSeconds: 60, hubPoolPressureWeight: 2 });
   });
 
   it('degrades out-of-range tuning to the default instead of failing the parse boot depends on', () => {
     // The write path (UserSettingsBody / UpdateHubPoolPreferencesBody) is what refuses these with a
     // 400; this schema also parses settings.json before Nest exists, where a throw is a crash loop.
     // The bound checks themselves live in src/__tests__/app.dto.test.ts.
-    for (const persisted of [{ hubPoolLocalAffinity: -1 }, { hubPoolHealthPollSeconds: 1 }, { hubPoolHealthPollSeconds: 9999 }]) {
+    for (const persisted of [
+      { hubPoolLocalAffinity: -1 },
+      { hubPoolHealthPollSeconds: 1 },
+      { hubPoolHealthPollSeconds: 9999 },
+      { hubPoolPressureWeight: -1 },
+      { hubPoolPressureWeight: 4 },
+    ]) {
       const parsed = settingsSchema.partial().safeParse(persisted);
 
       expect(parsed.success).toBe(true);

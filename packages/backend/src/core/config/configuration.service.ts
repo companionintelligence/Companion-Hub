@@ -3,7 +3,12 @@ import path from 'node:path';
 import { type UserSettingsBody, parsePersistedSettings } from '@/app.dto';
 import { APP_DATA_DIR, APP_DIR, ARCHITECTURES, DATA_DIR, DEFAULT_LOCAL_DOMAIN } from '@/common/constants';
 import { ensureSettingsJsonReady, writeSettingsJsonFile } from '@/common/helpers/env-helpers';
-import { DEFAULT_POOL_HEALTH_POLL_SECONDS, DEFAULT_POOL_LOCAL_AFFINITY, type HubPoolPreferences } from '@/common/helpers/hub-pool';
+import {
+  DEFAULT_POOL_HEALTH_POLL_SECONDS,
+  DEFAULT_POOL_LOCAL_AFFINITY,
+  DEFAULT_POOL_PRESSURE_WEIGHT,
+  type HubPoolPreferences,
+} from '@/common/helpers/hub-pool';
 import { readPortalInternalUrlOverride, resolveOutboundPortalBaseUrl } from '@/common/helpers/portal-url';
 import { TranslatableError } from '@/common/error/translatable-error';
 import { scrubString } from '@/core/error-reporting/sentry-scrubber';
@@ -107,6 +112,7 @@ type PersistedSettingsValues = {
   hubPoolInboundEnabled: boolean | undefined;
   hubPoolLocalAffinity: number | undefined;
   hubPoolHealthPollSeconds: number | undefined;
+  hubPoolPressureWeight: number | undefined;
 };
 
 const EMPTY_PERSISTED_SETTINGS: PersistedSettingsValues = {
@@ -130,6 +136,7 @@ const EMPTY_PERSISTED_SETTINGS: PersistedSettingsValues = {
   hubPoolInboundEnabled: undefined,
   hubPoolLocalAffinity: undefined,
   hubPoolHealthPollSeconds: undefined,
+  hubPoolPressureWeight: undefined,
 };
 
 @Injectable()
@@ -211,6 +218,7 @@ export class ConfigurationService {
       hubPoolInboundEnabled: settings.hubPoolInboundEnabled,
       hubPoolLocalAffinity: settings.hubPoolLocalAffinity,
       hubPoolHealthPollSeconds: settings.hubPoolHealthPollSeconds,
+      hubPoolPressureWeight: settings.hubPoolPressureWeight,
     };
   }
 
@@ -304,6 +312,7 @@ export class ConfigurationService {
         hubPoolInboundEnabled: settingsValues.hubPoolInboundEnabled,
         hubPoolLocalAffinity: settingsValues.hubPoolLocalAffinity,
         hubPoolHealthPollSeconds: settingsValues.hubPoolHealthPollSeconds,
+        hubPoolPressureWeight: settingsValues.hubPoolPressureWeight,
         experimental: {
           insecureCookie: env.data.EXPERIMENTAL_INSECURE_COOKIE,
         },
@@ -468,6 +477,7 @@ export class ConfigurationService {
       poolInboundEnabled: this.config.userSettings.hubPoolInboundEnabled ?? true,
       poolLocalAffinity: this.config.userSettings.hubPoolLocalAffinity ?? DEFAULT_POOL_LOCAL_AFFINITY,
       poolHealthPollSeconds: this.config.userSettings.hubPoolHealthPollSeconds ?? DEFAULT_POOL_HEALTH_POLL_SECONDS,
+      poolPressureWeight: this.config.userSettings.hubPoolPressureWeight ?? DEFAULT_POOL_PRESSURE_WEIGHT,
     };
   }
 
@@ -479,6 +489,7 @@ export class ConfigurationService {
       hubPoolInboundEnabled?: boolean;
       hubPoolLocalAffinity?: number;
       hubPoolHealthPollSeconds?: number;
+      hubPoolPressureWeight?: number;
     } = {};
     if (preferences.poolEnabled !== undefined) {
       settings.hubPoolEnabled = preferences.poolEnabled;
@@ -494,6 +505,9 @@ export class ConfigurationService {
     }
     if (preferences.poolHealthPollSeconds !== undefined) {
       settings.hubPoolHealthPollSeconds = preferences.poolHealthPollSeconds;
+    }
+    if (preferences.poolPressureWeight !== undefined) {
+      settings.hubPoolPressureWeight = preferences.poolPressureWeight;
     }
     // A no-op PATCH must not rewrite settings.json: every write is a read-modify-write of the whole
     // file with no locking, so an empty one can still clobber a concurrent inference-preferences save.

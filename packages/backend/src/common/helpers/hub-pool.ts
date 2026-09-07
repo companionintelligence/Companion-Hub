@@ -172,6 +172,87 @@ export const MIN_POOL_LOCAL_AFFINITY = 0;
 /** Above this the local node effectively never hands off, which is indistinguishable from disabling the pool — use the kill switch for that instead. */
 export const MAX_POOL_LOCAL_AFFINITY = 20;
 
+/**
+ * The GPU-pressure band a node is assumed to be at when nothing could measure it.
+ *
+ * Deliberately not 0, and for exactly the reason `UNKNOWN_PEER_LOAD` is not 0: the pool must never
+ * be able to make a node MORE attractive by failing to report. On this fleet most nodes cannot
+ * measure at all (the signal is AMD-only), so "unmeasured" is the common case, not the exception —
+ * if it read as idle the default deployment would route every tie to whichever machine knows least
+ * about itself. Mid-band is the only honest answer to "I don't know".
+ */
+export const UNKNOWN_PRESSURE = 1;
+
+/** Bands run 0 (idle) to 3 (saturated), matching the shape NVIDIA's PAIR publishes. */
+export const MAX_PRESSURE_BAND = 3;
+
+/**
+ * A peer's self-reported band, reduced to something the ranker may use, or `null` for "unmeasured".
+ *
+ * This runs on the READ path, not only where the value is written, because `last_capabilities` is
+ * free-form jsonb a paired peer fully controls and rows can predate any write-side check. `-5`,
+ * `99`, `1.5`, `'low'`, `null`, `NaN` and a missing key all land on `null` here, which every caller
+ * then reads as {@link UNKNOWN_PRESSURE}. Same never-optimistic rule `tierRank` already applies to
+ * an unrecognised `hardwareTier`.
+ */
+export function clampPressureBand(raw: unknown): number | null {
+  return typeof raw === 'number' && Number.isInteger(raw) && raw >= 0 && raw <= MAX_PRESSURE_BAND ? raw : null;
+}
+
+/**
+ * Whether a peer's cached capability snapshot is recent enough to believe.
+ *
+ * Judged on `lastSeenAt`, stamped by OUR clock when the probe succeeded, never on the peer's own
+ * `capabilities.updatedAt` — comparing another machine's clock to ours would read skew as staleness
+ * (or, worse, staleness as freshness). Extracted here so the queue-depth reader and the pressure
+ * reader cannot drift apart on what "stale" means; they are two fields of one snapshot.
+ */
+export function isCapabilitiesSnapshotFresh(lastSeenAt: string | null, freshnessMs: number, now: number = Date.now()): boolean {
+  const observedAt = lastSeenAt ? Date.parse(lastSeenAt) : Number.NaN;
+  return Number.isFinite(observedAt) && now - observedAt <= freshnessMs;
+}
+
+/**
+ * The pressure band this node will actually rank a peer at, or `null` when nothing is known.
+ *
+ * Mirrors {@link clampPressureBand} and `PoolProxyService.peerLoad` in one place so `/pool/status`
+ * shows the operator the number routing actually believes, rather than the raw jsonb.
+ *
+ * `forwardedInFlight` is the floor, and it is the whole anti-gaming story: the band is otherwise
+ * purely self-reported, so a peer that pins `gpuPressure: 0` forever would win every tie forever.
+ * What we have handed it and not yet finished reading is the one part of its GPU load we can
+ * observe ourselves — a peer running three of our requests is not at band 0 whatever it claims.
+ * Taking the larger of the two (rather than the sum) is the same reasoning as `peerLoad`: both
+ * numbers describe the same work from different vantage points.
+ *
+ * A stale snapshot discards the peer's claim but keeps the floor, again exactly as `peerLoad` does.
+ */
+export function effectivePeerPressureBand(params: { reported: unknown; snapshotFresh: boolean; forwardedInFlight: number }): number | null {
+  const claimed = params.snapshotFresh ? clampPressureBand(params.reported) : null;
+  const floor = Math.min(MAX_PRESSURE_BAND, Math.max(0, Math.trunc(params.forwardedInFlight) || 0));
+  if (claimed === null && floor === 0) {
+    return null;
+  }
+  return Math.max(claimed ?? 0, floor);
+}
+
+/**
+ * How much the 0-3 GPU-pressure band contributes to a candidate's score.
+ *
+ * Zero, deliberately, and that is not timidity: at 0 the pressure key is not in the comparator at
+ * all and the score term vanishes, so ranking is bit-for-bit what the previous build produced on
+ * every node — measured or not. The band is unvalidated on real fleet hardware, and the honest
+ * order is to ship the measurement, watch `/pool/status` for a week, then flip the default.
+ *
+ * At 1 this is PAIR verbatim (`pending + pressure`), which is what lets the pool move work off a
+ * node whose queue is empty but whose GPU is committed to something that never came through the
+ * pool — ComfyUI, a direct `ollama run`, another orchestrator on a shared host engine.
+ */
+export const DEFAULT_POOL_PRESSURE_WEIGHT = 0;
+export const MIN_POOL_PRESSURE_WEIGHT = 0;
+/** Above 3 one band outweighs the entire 0-3 scale plus a full queue, which is a kill switch spelled badly. */
+export const MAX_POOL_PRESSURE_WEIGHT = 3;
+
 /** How often each `connected`/`unreachable` peer is probed for capabilities. */
 export const DEFAULT_POOL_HEALTH_POLL_SECONDS = 30;
 /** Below this the probes cost more than the routing accuracy they buy, and an 8s probe timeout would start overlapping ticks. */
@@ -200,6 +281,8 @@ export interface HubPoolPreferences {
   poolInboundEnabled: boolean;
   poolLocalAffinity: number;
   poolHealthPollSeconds: number;
+  /** How heavily the GPU-pressure band counts in candidate ranking. 0 (the default) keeps ranking byte-identical to the pre-pressure build. */
+  poolPressureWeight: number;
 }
 
 const MAX_FQDN_LENGTH = 253;

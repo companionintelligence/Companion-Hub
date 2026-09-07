@@ -10,7 +10,13 @@ import { TailscaleService } from '@/modules/tailscale/tailscale.service';
 import { TailscaleAdminApiService } from '@/modules/tailscale/tailscale-admin-api.service';
 import { InferenceRouterService } from '@/modules/inference/inference-router.service';
 import type { HubPoolPeer, NewHubPoolPeer } from '@/core/database/drizzle/types';
-import { DEFAULT_POOL_HEALTH_POLL_SECONDS, DEFAULT_POOL_LOCAL_AFFINITY, type HubPoolPreferences } from '@/common/helpers/hub-pool';
+import {
+  DEFAULT_POOL_HEALTH_POLL_SECONDS,
+  DEFAULT_POOL_LOCAL_AFFINITY,
+  DEFAULT_POOL_PRESSURE_WEIGHT,
+  type HubPoolPreferences,
+} from '@/common/helpers/hub-pool';
+import { HubPoolPressureService } from '../hub-pool-pressure.service';
 import { HubPoolPeerRepository } from '../hub-pool-peer.repository';
 import { HubPoolPeerService } from '../hub-pool-peer.service';
 import { HubPoolLoadService } from '../hub-pool-load.service';
@@ -146,6 +152,7 @@ function buildNode(fqdn: string, models: string[]): Node {
     poolInboundEnabled: true,
     poolLocalAffinity: DEFAULT_POOL_LOCAL_AFFINITY,
     poolHealthPollSeconds: DEFAULT_POOL_HEALTH_POLL_SECONDS,
+    poolPressureWeight: DEFAULT_POOL_PRESSURE_WEIGHT,
   };
   configuration.getHubPoolPreferences.mockImplementation(() => ({ ...preferences }));
 
@@ -211,6 +218,9 @@ function buildNode(fqdn: string, models: string[]): Node {
   );
 
   const repoAsReal = repo as unknown as HubPoolPeerRepository;
+  const pressureService = mock<HubPoolPressureService>();
+  pressureService.band.mockReturnValue(null);
+  pressureService.source.mockReturnValue(null);
   const service = new HubPoolPeerService(
     mock<LoggerService>(),
     repoAsReal,
@@ -220,6 +230,7 @@ function buildNode(fqdn: string, models: string[]): Node {
     inferenceRouter,
     new HubPoolLoadService(),
     configuration,
+    pressureService,
   );
   const controller = new HubPoolController(service, mock<PoolProxyService>(), tailscaleService, configuration, new HubPoolRoutingLogService());
 
@@ -229,6 +240,11 @@ function buildNode(fqdn: string, models: string[]): Node {
     service,
     controller,
     guard: new PoolPeerGuard(repoAsReal),
+    /** Make this node report a measured band, as its sampler would. */
+    setGpuPressure(band: number | null, source: 'host-file' | 'amd-drm' | null = band === null ? null : 'amd-drm') {
+      pressureService.band.mockReturnValue(band);
+      pressureService.source.mockReturnValue(source);
+    },
     configuration,
     setPoolEnabled(enabled: boolean) {
       preferences.poolEnabled = enabled;
@@ -693,6 +709,70 @@ describe('Hub Pool across two nodes', () => {
       expect(cachedOn(beta)).toMatchObject({ acceptingWork: true });
       expect(cachedOn(beta).backends[0]?.modelsLoaded).toContain(SHARED_MODEL);
       expect(token).toBeTruthy();
+    });
+  });
+
+  describe('GPU pressure across the wire', () => {
+    /** What `refreshOnePeer` cached about the other node on its last poll. */
+    function cachedOn(node: Node): PoolPeerCapabilities {
+      return node.repo.only().lastCapabilities as unknown as PoolPeerCapabilities;
+    }
+
+    it('carries a measured band from core through /capabilities into beta’s cached snapshot', async () => {
+      await pairNodes();
+      core.setGpuPressure(2);
+
+      await beta.poll();
+
+      // No new route, no migration: the band rides the existing authenticated capabilities probe and
+      // lands in the `last_capabilities` jsonb column that already exists.
+      expect(cachedOn(beta)).toMatchObject({ gpuPressure: 2, gpuPressureSource: 'amd-drm' });
+    });
+
+    it('leaves the keys off the wire entirely when core cannot measure', async () => {
+      await pairNodes();
+      core.setGpuPressure(null);
+
+      await beta.poll();
+
+      // Beta then ranks core at UNKNOWN_PRESSURE. Sending 0 here would have told beta that a node
+      // which has no GPU counter at all is the idlest machine in the pool.
+      expect(cachedOn(beta)).not.toHaveProperty('gpuPressure');
+      expect(cachedOn(beta)).not.toHaveProperty('gpuPressureSource');
+    });
+
+    it('surfaces the peer band on beta’s own status card', async () => {
+      await pairNodes();
+      core.setGpuPressure(3);
+      await beta.poll();
+
+      const status = await beta.service.getPoolStatus();
+
+      expect(status.peers[0]?.gpuPressure).toBe(3);
+    });
+
+    it('reports null for the peer while beta itself has never measured anything', async () => {
+      await pairNodes();
+      core.setGpuPressure(null);
+      await beta.poll();
+
+      const status = await beta.service.getPoolStatus();
+
+      expect(status.peers[0]?.gpuPressure).toBeNull();
+      expect(status.localNode.gpuPressure).toBeNull();
+    });
+
+    it('is unaffected by a peer on an older build, whose payload simply omits the key', async () => {
+      await pairNodes();
+      core.setGpuPressure(null);
+
+      await beta.poll();
+      const status = await beta.service.getPoolStatus();
+
+      // Compatibility runs both ways: an older peer omits the field and ranks neutral, and a newer
+      // peer's extra keys are ignored by an older node's structural read of `capabilities.backends`.
+      expect(cachedOn(beta).backends[0]?.modelsLoaded).toContain(SHARED_MODEL);
+      expect(status.peers[0]?.status).toBe('connected');
     });
   });
 });

@@ -2,8 +2,10 @@ import { createZodDto } from '@/common/zod-dto';
 import {
   MAX_POOL_HEALTH_POLL_SECONDS,
   MAX_POOL_LOCAL_AFFINITY,
+  MAX_POOL_PRESSURE_WEIGHT,
   MIN_POOL_HEALTH_POLL_SECONDS,
   MIN_POOL_LOCAL_AFFINITY,
+  MIN_POOL_PRESSURE_WEIGHT,
   normalizePeerFqdn,
 } from '@/common/helpers/hub-pool';
 import { ROUTING_LOG_CAPACITY } from './hub-pool-routing-log.service';
@@ -71,6 +73,16 @@ const hubPoolPreferencesSchema = z.object({
   poolLocalAffinity: z.number().int().min(MIN_POOL_LOCAL_AFFINITY).max(MAX_POOL_LOCAL_AFFINITY).optional(),
   /** Seconds between peer capability probes. Also sets how long a peer's snapshot stays trusted (three polls). */
   poolHealthPollSeconds: z.number().int().min(MIN_POOL_HEALTH_POLL_SECONDS).max(MAX_POOL_HEALTH_POLL_SECONDS).optional(),
+  /**
+   * How heavily the 0-3 GPU-pressure band counts when ranking candidates. 0 (the default) removes it
+   * from ranking entirely and is byte-identical to the pre-pressure build; 1 is PAIR's
+   * `pending + pressure`, which is what lets the pool move work off a node whose queue is empty but
+   * whose GPU is committed to something that never came through the pool.
+   *
+   * `.optional()`, never `.default()`: `zodSchemaToOpenApiComponent` promotes a defaulted field into
+   * `required`, which would make every PATCH have to send it. The default is applied in the service.
+   */
+  poolPressureWeight: z.number().int().min(MIN_POOL_PRESSURE_WEIGHT).max(MAX_POOL_PRESSURE_WEIGHT).optional(),
 });
 export class UpdateHubPoolPreferencesBody extends createZodDto(hubPoolPreferencesSchema) {}
 

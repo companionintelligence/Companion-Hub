@@ -18,7 +18,14 @@ function poolStatus(overrides: Partial<PoolStatus> = {}): PoolStatus {
     reason: 'no_peers',
     routingActive: false,
     directions: { outbound: { enabled: true, disabledBy: null }, inbound: { enabled: true, disabledBy: null } },
-    settings: { poolEnabled: true, poolOutboundEnabled: true, poolInboundEnabled: true, poolLocalAffinity: 1, poolHealthPollSeconds: 30 },
+    settings: {
+      poolEnabled: true,
+      poolOutboundEnabled: true,
+      poolInboundEnabled: true,
+      poolLocalAffinity: 1,
+      poolHealthPollSeconds: 30,
+      poolPressureWeight: 0,
+    },
     tailscaleAdminApiConfigured: false,
     localNode: {
       nodeFqdn: 'self-hub.example-tailnet.ts.net',
@@ -94,7 +101,14 @@ describe('HubPoolController', () => {
 
   describe('settings', () => {
     it('reads the persisted preferences without touching the peer table', async () => {
-      const stored = { poolEnabled: false, poolOutboundEnabled: true, poolInboundEnabled: false, poolLocalAffinity: 3, poolHealthPollSeconds: 45 };
+      const stored = {
+        poolEnabled: false,
+        poolOutboundEnabled: true,
+        poolInboundEnabled: false,
+        poolLocalAffinity: 3,
+        poolHealthPollSeconds: 45,
+        poolPressureWeight: 0,
+      };
       configuration.getHubPoolPreferences.mockReturnValue(stored);
 
       await expect(controller.getPoolSettings()).resolves.toEqual(stored);
@@ -107,6 +121,7 @@ describe('HubPoolController', () => {
         poolInboundEnabled: true,
         poolLocalAffinity: 0,
         poolHealthPollSeconds: 30,
+        poolPressureWeight: 0,
       });
 
       await controller.updatePoolSettings({ poolLocalAffinity: 0 });
@@ -121,6 +136,7 @@ describe('HubPoolController', () => {
         poolInboundEnabled: false,
         poolLocalAffinity: 1,
         poolHealthPollSeconds: 30,
+        poolPressureWeight: 0,
       });
 
       await controller.updatePoolSettings({ poolInboundEnabled: false });
