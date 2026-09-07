@@ -102,4 +102,31 @@ describe('AppDetailsTabs — compatibility surfacing', () => {
 
     expect(screen.queryByTestId('app-architectures')).not.toBeInTheDocument();
   });
+
+  it('displays accelerator requirements before install', () => {
+    render(
+      <AppDetailsTabs
+        info={makeInfo({
+          gpu_requirements: {
+            type: 'cuda',
+            optional: false,
+            host_platforms: ['linux', 'windows'],
+            minimum_vram_gb: 8,
+          },
+        })}
+        metadata={defaultMetadata}
+      />,
+    );
+
+    const gpuRow = screen.getByTestId('app-gpu-requirements');
+    expect(gpuRow).toHaveTextContent('CUDA');
+    expect(gpuRow).toHaveTextContent('ONBOARDING_BADGE_REQUIRED');
+    expect(gpuRow).toHaveTextContent('8 GB ONBOARDING_VRAM');
+  });
+
+  it('does not render an accelerator row for CPU-only apps', () => {
+    render(<AppDetailsTabs info={makeInfo({ gpu_requirements: undefined })} metadata={defaultMetadata} />);
+
+    expect(screen.queryByTestId('app-gpu-requirements')).not.toBeInTheDocument();
+  });
 });

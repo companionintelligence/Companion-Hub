@@ -5,7 +5,7 @@
 > **Key paths:** `packages/frontend/src/components/hub-status/`, `packages/frontend/src/modules/`, `packages/frontend/src/lib/`
 > **Commands:** `cd packages/frontend && pnpm test`, `pnpm run local` (root, port 5004/5005)
 > **Owner persona:** code-quality + maintainability
-> **Last updated:** 2026-09-04 (compact FTUE rows and public-web drift repair action)
+> **Last updated:** 2026-09-07 (marketplace GPU compatibility disclosure)
 > **Related:** docs/system/desktop.md, docs/DESKTOP-UI-ARCHITECTURE.md, docs/system/e2e.md
 
 ---
@@ -20,6 +20,14 @@ packages/frontend/
   src/api-client/       Generated OpenAPI client + TanStack Query hooks
   routes/               React Router route definitions
 ```
+
+## Marketplace compatibility disclosure
+
+The app-details information panel renders the optional `gpu_requirements` block
+from the Marketplace manifest. It shows the accelerator type, whether the GPU
+is required or optional, supported host platforms, and the declared minimum
+VRAM before the user starts an install. This is a disclosure layer; lifecycle
+preflight remains the enforcement point for host-device availability.
 
 ## Hub status gate
 
