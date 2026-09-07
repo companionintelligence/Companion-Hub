@@ -41,6 +41,7 @@ Follow the [Google developer documentation style guide](https://developers.googl
 | [`CLI.md`](CLI.md) | `cihub` CLI |
 | [`private-vpn.md`](private-vpn.md) | Tailscale private VPN |
 | [`hub-pool.md`](hub-pool.md) | Multi-Hub inference pooling over Tailscale |
+| [`inference-supervision.md`](inference-supervision.md) | Observing inference backends and Compose-wide crash loops — and why the Hub never restarts one |
 | [`hub-pool-fleet-testing.md`](hub-pool-fleet-testing.md) | Two-node validation plan for Hub Pool |
 | [`hub-pool-vs-pair.md`](hub-pool-vs-pair.md) | Hub Pool compared with NVIDIA Personal-AI-Router |
 | [`ci-cd-pipeline.md`](ci-cd-pipeline.md) | Historical multi-env deploy notes |

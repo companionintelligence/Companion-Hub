@@ -100,10 +100,14 @@ const commandSections: { title: string; entries: CommandEntry[] }[] = [
       { command: `${BASE_COMMAND} pool pair <node> [--name <label>] [--yes]`, description: 'Send a pairing request to a peer (it must approve)' },
       { command: `${BASE_COMMAND} pool approve|reject <id> [--yes]`, description: 'Act on a pending inbound pairing request' },
       { command: `${BASE_COMMAND} pool unpair <id> [--yes]`, description: 'Remove a peer and revoke both tokens' },
+      {
+        command: `${BASE_COMMAND} pool peer-enable|peer-disable <id> [--yes]`,
+        description: 'Take one peer in or out of the pool (the pairing and both tokens are kept)',
+      },
       { command: `${BASE_COMMAND} pool log [env] [--limit N]`, description: 'Recent routing decisions, with failovers called out' },
       {
-        command: `${BASE_COMMAND} pool enable|disable [env] [--yes]`,
-        description: 'Flip the persisted pool kill switch (HUB_POOL_USER_DISABLED wins)',
+        command: `${BASE_COMMAND} pool enable|disable [env] [--outbound|--inbound] [--yes]`,
+        description: 'Flip the persisted pool kill switch, or just one direction (the .env override wins)',
       },
     ],
   },

@@ -1,6 +1,7 @@
-import { relations } from 'drizzle-orm';
+import { relations, sql } from 'drizzle-orm';
 import {
   boolean,
+  check,
   customType,
   index,
   integer,
@@ -418,27 +419,105 @@ const poolPeerCapabilities = customType<{ data: Record<string, unknown>; driverD
  * Both are null while a pairing is still `pending` on the side that has not
  * yet issued/received its half of the handshake.
  */
-export const hubPoolPeer = pgTable('hub_pool_peer', {
-  id: uuid('id').defaultRandom().primaryKey().notNull(),
-  // Populated when the peer was discovered via the Tailscale Admin API; null for a peer
-  // that only ever arrived as an inbound pairing request (its nodeFqdn is still the trust anchor).
-  tailscaleDeviceId: varchar('tailscale_device_id'),
-  nodeFqdn: varchar('node_fqdn').notNull().unique(),
-  displayName: varchar('display_name'),
-  // 'outbound': we initiated pairing with this peer. 'inbound': this peer asked to pair with us.
-  // Only 'inbound' + 'pending' rows show an Approve/Reject action in the operator UI.
-  direction: varchar('direction').notNull(),
-  // 'pending' (handshake not yet complete) | 'connected' | 'unreachable' | 'rejected'
-  status: varchar('status').default('pending').notNull(),
-  consecutiveFailures: integer('consecutive_failures').default(0).notNull(),
-  lastSeenAt: timestamp('last_seen_at', { mode: 'string' }),
-  // Cached { backends, models, hardwareTier } from this peer's last GET /inference/pool/capabilities poll.
-  lastCapabilities: poolPeerCapabilities('last_capabilities'),
-  verifyTokenHash: varchar('verify_token_hash'),
-  presentTokenEncrypted: text('present_token_encrypted'),
-  createdAt: timestamp('created_at', { mode: 'string' }).defaultNow().notNull(),
-  updatedAt: timestamp('updated_at', { mode: 'string' }).defaultNow().notNull(),
-});
+export const hubPoolPeer = pgTable(
+  'hub_pool_peer',
+  {
+    id: uuid('id').defaultRandom().primaryKey().notNull(),
+    // Populated when the peer was discovered via the Tailscale Admin API; null for a peer
+    // that only ever arrived as an inbound pairing request (its nodeFqdn is still the trust anchor).
+    tailscaleDeviceId: varchar('tailscale_device_id'),
+    nodeFqdn: varchar('node_fqdn').notNull().unique(),
+    displayName: varchar('display_name'),
+    // 'outbound': we initiated pairing with this peer. 'inbound': this peer asked to pair with us.
+    // Only 'inbound' + 'pending' rows show an Approve/Reject action in the operator UI.
+    direction: varchar('direction').notNull(),
+    // 'pending' (handshake not yet complete) | 'connected' | 'unreachable'.
+    // 'rejected' was retired in 0059: nothing ever wrote it, and shipping it alongside `enabled`
+    // would have meant two overlapping "not in play" concepts for an operator to tell apart.
+    // Rejecting a request deletes the row (`rejectPairing`); taking a live peer out of routing
+    // sets `enabled = false` and keeps its status honest.
+    status: varchar('status').default('pending').notNull(),
+    /**
+     * Per-peer kill switch: `false` means this node and that node exchange no work in either
+     * direction — the peer is dropped from our outbound candidate list, and its capability probes
+     * and `/local/*` forwards are refused — while the pairing, both directional tokens and the
+     * health poll are left completely intact, so re-enabling is instant and needs no re-approval.
+     *
+     * DEFAULT true is the whole migration for existing rows.
+     *
+     * Deliberately NOT consulted by `listConnectedPeers()`: that answers `hasConnectedPeers()`,
+     * which `inference-env-resolver.ts` bakes into an app's `CI_LLM_BASE_URL` at INSTALL time, so
+     * filtering there would permanently repoint every app created while a peer was disabled. The
+     * filter lives on the request path, in `PoolProxyService.buildCandidateList`.
+     */
+    enabled: boolean('enabled').default(true).notNull(),
+    consecutiveFailures: integer('consecutive_failures').default(0).notNull(),
+    lastSeenAt: timestamp('last_seen_at', { mode: 'string' }),
+    // Cached { backends, models, hardwareTier } from this peer's last GET /inference/pool/capabilities poll.
+    lastCapabilities: poolPeerCapabilities('last_capabilities'),
+    verifyTokenHash: varchar('verify_token_hash'),
+    presentTokenEncrypted: text('present_token_encrypted'),
+    // ── Peer identity (reserved; written by the signed-request/PIN-pairing work, not yet by this build) ──
+    // Landed here rather than in a later migration because four separate features want columns on
+    // this one table, and four hand-written ALTERs racing for the same journal tail is the silent
+    // no-op the migration notes warn about. Every column is nullable, so a row this build creates
+    // is byte-identical to one 0058 created.
+    /**
+     * The peer's stable pool node UUID, pinned at pairing. Survives a rename, which is what makes
+     * it the durable correlator `node_fqdn` cannot be. Learned only from an authenticated exchange.
+     */
+    peerNodeUuid: text('peer_node_uuid'),
+    /** The peer's Ed25519 public key (SPKI DER, base64). Public data, so unlike the token columns it is stored in the clear. */
+    peerPublicKey: text('peer_public_key'),
+    /**
+     * While set and in the future, a row that has moved to signed requests still accepts the legacy
+     * bearer token, so a lost upgrade response self-heals instead of stranding the pairing.
+     */
+    bearerGraceUntil: timestamp('bearer_grace_until', { withTimezone: true, mode: 'string' }),
+    /**
+     * When a correctly signed request from this peer was last *observed*. The grace window above is
+     * closed by this, not by a clock: the point is evidence that the peer really did upgrade.
+     */
+    signedSeenAt: timestamp('signed_seen_at', { withTimezone: true, mode: 'string' }),
+    createdAt: timestamp('created_at', { mode: 'string' }).defaultNow().notNull(),
+    updatedAt: timestamp('updated_at', { mode: 'string' }).defaultNow().notNull(),
+  },
+  (table) => [
+    // Partial, so the column stays nullable and every pre-identity row is exempt: one row per
+    // identity, without making "no UUID yet" collide with itself.
+    uniqueIndex('hub_pool_peer_node_uuid_uidx').on(table.peerNodeUuid).where(sql`${table.peerNodeUuid} IS NOT NULL`),
+  ],
+);
+
+/**
+ * This node's own pool identity: one row, id `'self'`.
+ *
+ * Reserved for the signed-peer-request work — nothing in this build reads or writes it. It ships
+ * now for the same reason the `hub_pool_peer` identity columns do: the table has to exist before
+ * the feature that fills it, and it must not arrive as a second migration racing this one.
+ *
+ * `privateKeyEncrypted` is the only secret this Hub holds for pooling; the peers' halves are public
+ * keys. Encrypted at rest through `EncryptionService` (salt = `nodeUuid`), matching the
+ * `presentTokenEncrypted` pattern on `hub_pool_peer`.
+ */
+export const hubPoolIdentity = pgTable(
+  'hub_pool_identity',
+  {
+    id: varchar('id').primaryKey().default('self').notNull(),
+    nodeUuid: uuid('node_uuid').notNull().unique(),
+    /** SPKI DER, base64. */
+    publicKey: text('public_key').notNull(),
+    /** PKCS8 DER, base64, through `EncryptionService`. */
+    privateKeyEncrypted: text('private_key_encrypted').notNull(),
+    algorithm: varchar('algorithm').default('ed25519').notNull(),
+    createdAt: timestamp('created_at', { mode: 'string' }).defaultNow().notNull(),
+    /** Set when the keypair was replaced; the `nodeUuid` deliberately survives a rotation. */
+    rotatedAt: timestamp('rotated_at', { mode: 'string' }),
+  },
+  // A singleton by constraint rather than by convention: a second identity row would silently give
+  // this node two public keys, and every peer has pinned exactly one of them.
+  (table) => [check('hub_pool_identity_singleton', sql`${table.id} = 'self'`)],
+);
 
 const lifecycleJobMetadata = customType<{ data: Record<string, unknown>; driverData: string }>({
   dataType() {

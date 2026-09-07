@@ -36,6 +36,7 @@ import { buildMtplxRemediation, resolveMtplxProbeUrl, MtplxBackend } from './bac
 import { buildDsparkRemediation, DsparkBackend, resolveDsparkProbeUrl } from './backends/dspark.backend';
 import { LuceboxBackend } from './backends/lucebox.backend';
 import { resolveInstalledCatalogIds, resolveInstalledCatalogIdsFromServedModels } from './model-availability.util';
+import { BackendObserverService } from './supervision/backend-observer.service';
 
 /**
  * Inference controller — exposes Ollama/backend provisioning + management.
@@ -70,6 +71,7 @@ export class InferenceController {
     private readonly moduleRef: ModuleRef,
     readonly _logger: LoggerService,
     private readonly backends: InferenceBackendRegistry,
+    private readonly backendObserver: BackendObserverService,
   ) {}
 
   private getRecommendedBackend(profile: HardwareProfile): InferenceBackendType {
@@ -217,6 +219,23 @@ export class InferenceController {
   @Get('status')
   async getStatus() {
     return this.router.getStatus();
+  }
+
+  /**
+   * What the Hub can see about each inference backend's *process*, and any container the local
+   * Docker daemon is restarting in a loop.
+   *
+   * Read-only in the strongest sense available: there is no companion POST. The Hub never restarts,
+   * stops or starts an inference backend, so there is no action for this route to offer — see
+   * `common/helpers/inference-supervision.ts` for why that is the feature rather than a gap. The
+   * report is served from memory and issues no probe of its own; when
+   * `inferenceSupervisionMode` is `'off'` (the default) it reports exactly that, with no
+   * observations behind it.
+   */
+  @UseGuards(AuthGuard)
+  @Get('supervision')
+  getSupervision() {
+    return this.backendObserver.getReport();
   }
 
   @UseGuards(AuthGuard)
