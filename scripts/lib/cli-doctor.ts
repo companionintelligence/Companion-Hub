@@ -91,7 +91,7 @@ export async function uninstallHub(force: boolean) {
   );
 }
 
-function findComposeName(keyword: string): string {
+export function findComposeName(keyword: string): string {
   const { stdout } = runCapture('docker', [
     'ps',
     '--filter',
