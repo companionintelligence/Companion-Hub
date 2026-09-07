@@ -3257,6 +3257,65 @@
         ]
       }
     },
+    "/api/inference/pool/pins": {
+      "post": {
+        "operationId": "upsertPoolPin",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpsertPoolPinBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Hub Pool"
+        ]
+      },
+      "delete": {
+        "operationId": "deletePoolPin",
+        "parameters": [
+          {
+            "name": "scope",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "default",
+                "model"
+              ]
+            }
+          },
+          {
+            "name": "model",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Hub Pool"
+        ]
+      }
+    },
     "/api/inference/pool/peers": {
       "get": {
         "operationId": "listPeers",
@@ -6566,6 +6625,50 @@
                 "minimum": 0,
                 "maximum": 3
               },
+              "hubPoolPins": {
+                "maxItems": 64,
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "scope": {
+                      "type": "string",
+                      "enum": [
+                        "default",
+                        "model"
+                      ]
+                    },
+                    "model": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 200
+                    },
+                    "targetKind": {
+                      "type": "string",
+                      "enum": [
+                        "local",
+                        "peer"
+                      ]
+                    },
+                    "peerId": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "mode": {
+                      "type": "string",
+                      "enum": [
+                        "prefer"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "scope",
+                    "targetKind",
+                    "mode"
+                  ],
+                  "additionalProperties": false
+                }
+              },
               "inferenceCloudProviders": {
                 "type": "array",
                 "items": {
@@ -6987,6 +7090,50 @@
             "type": "integer",
             "minimum": 0,
             "maximum": 3
+          },
+          "hubPoolPins": {
+            "maxItems": 64,
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "scope": {
+                  "type": "string",
+                  "enum": [
+                    "default",
+                    "model"
+                  ]
+                },
+                "model": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200
+                },
+                "targetKind": {
+                  "type": "string",
+                  "enum": [
+                    "local",
+                    "peer"
+                  ]
+                },
+                "peerId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "mode": {
+                  "type": "string",
+                  "enum": [
+                    "prefer"
+                  ]
+                }
+              },
+              "required": [
+                "scope",
+                "targetKind",
+                "mode"
+              ],
+              "additionalProperties": false
+            }
           },
           "inferenceCloudProviders": {
             "type": "array",
@@ -11981,6 +12128,46 @@
         },
         "additionalProperties": false
       },
+      "UpsertPoolPinBody": {
+        "type": "object",
+        "properties": {
+          "scope": {
+            "type": "string",
+            "enum": [
+              "default",
+              "model"
+            ]
+          },
+          "model": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "targetKind": {
+            "type": "string",
+            "enum": [
+              "local",
+              "peer"
+            ]
+          },
+          "targetPeerId": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "prefer"
+            ]
+          }
+        },
+        "required": [
+          "scope",
+          "targetKind"
+        ],
+        "additionalProperties": false
+      },
       "ProbePeerAddressBody": {
         "type": "object",
         "properties": {
@@ -15267,6 +15454,27 @@
             "maximum": 200
           }
         },
+        "additionalProperties": false
+      },
+      "DeletePoolPinQuery": {
+        "type": "object",
+        "properties": {
+          "scope": {
+            "type": "string",
+            "enum": [
+              "default",
+              "model"
+            ]
+          },
+          "model": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          }
+        },
+        "required": [
+          "scope"
+        ],
         "additionalProperties": false
       },
       "MetadataDto": {

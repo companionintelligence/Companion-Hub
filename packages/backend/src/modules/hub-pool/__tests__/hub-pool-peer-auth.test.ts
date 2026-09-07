@@ -237,3 +237,47 @@ describe('hub pool peer signing', () => {
     });
   });
 });
+
+describe('PeerNonceCache sweeper lifecycle', () => {
+  /**
+   * The cache owns its own timer, rather than `PoolPeerGuard` arming one at module init.
+   *
+   * That inversion is what makes the cost proportional to use: a Hub with no pool peers never
+   * receives a signed request, so it never stores a nonce, so it never holds an interval. The
+   * previous shape swept an empty map every 30s on every appliance in the fleet, forever.
+   */
+  it('is disarmed until a nonce is stored, and disarms itself once the last one expires', () => {
+    const cache = new PeerNonceCache();
+    expect(cache.isSweeping()).toBe(false);
+
+    expect(cache.remember('nonce-1', 1_000, 0)).toBe('ok');
+    expect(cache.isSweeping()).toBe(true);
+
+    cache.prune(2_000);
+
+    expect(cache.size()).toBe(0);
+    expect(cache.isSweeping()).toBe(false);
+    cache.stopSweeper();
+  });
+
+  it('stays armed while any nonce is still inside its replay window', () => {
+    const cache = new PeerNonceCache();
+    cache.remember('expiring', 1_000, 0);
+    cache.remember('still-live', 9_000, 0);
+
+    cache.prune(2_000);
+
+    expect(cache.size()).toBe(1);
+    expect(cache.isSweeping()).toBe(true);
+    cache.stopSweeper();
+  });
+
+  it('still rejects a replay after a sweep cycle has come and gone', () => {
+    const cache = new PeerNonceCache();
+    cache.remember('nonce-1', 10_000, 0);
+
+    // Lazy arming must not weaken the guarantee the cache exists for.
+    expect(cache.remember('nonce-1', 10_000, 1_000)).toBe('replay');
+    cache.stopSweeper();
+  });
+});

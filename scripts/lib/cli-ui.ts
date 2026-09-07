@@ -104,6 +104,11 @@ const commandSections: { title: string; entries: CommandEntry[] }[] = [
         command: `${BASE_COMMAND} pool peer-enable|peer-disable <id> [--yes]`,
         description: 'Take one peer in or out of the pool (the pairing and both tokens are kept)',
       },
+      {
+        command: `${BASE_COMMAND} pool pin <node|local> [--model M] [--yes]`,
+        description: 'Prefer one node for a model (or for everything); a pin reorders, it never forces',
+      },
+      { command: `${BASE_COMMAND} pool unpin [--model M] [--yes]`, description: 'Remove that preference and go back to ranking by load' },
       { command: `${BASE_COMMAND} pool log [env] [--limit N]`, description: 'Recent routing decisions, with failovers called out' },
       {
         command: `${BASE_COMMAND} pool enable|disable [env] [--outbound|--inbound] [--yes]`,

@@ -10,6 +10,11 @@ import {
   MIN_POOL_HEALTH_POLL_SECONDS,
   MIN_POOL_LOCAL_AFFINITY,
   MIN_POOL_PRESSURE_WEIGHT,
+  MAX_POOL_PINS,
+  MAX_PINNED_MODEL_LENGTH,
+  POOL_PIN_MODES,
+  POOL_PIN_SCOPES,
+  POOL_PIN_TARGET_KINDS,
 } from '@/common/helpers/hub-pool';
 import { INFERENCE_SUPERVISION_MODES, MAX_SUPERVISION_POLL_SECONDS, MIN_SUPERVISION_POLL_SECONDS } from '@/common/helpers/inference-supervision';
 
@@ -46,6 +51,28 @@ const poolPressureWeightSchema = z
 const inferenceSupervisionPollSecondsSchema = z
   .union([z.number().int(), z.string().transform(Number)])
   .pipe(z.number().int().min(MIN_SUPERVISION_POLL_SECONDS).max(MAX_SUPERVISION_POLL_SECONDS));
+
+/**
+ * Manual routing pins, as persisted.
+ *
+ * Read-path only, and `.catch(undefined)` on the whole array for the same reason the two numeric
+ * knobs use it: settings.json is parsed at boot, before Nest exists, and a pin written by a build
+ * that knew a mode or a scope this one does not must degrade to "no pins" rather than crash-loop a
+ * Hub whose UI is the only way to fix it. The strict version is enforced on the write path by
+ * `UpsertPoolPinBody`, where a bad value is a 400 at the moment it is chosen.
+ */
+const poolPinSchema = z
+  .object({
+    scope: z.enum(POOL_PIN_SCOPES),
+    model: z.string().trim().min(1).max(MAX_PINNED_MODEL_LENGTH).optional(),
+    targetKind: z.enum(POOL_PIN_TARGET_KINDS),
+    peerId: z.string().trim().min(1).optional(),
+    mode: z.enum(POOL_PIN_MODES),
+  })
+  .refine((pin) => (pin.scope === 'model') === (pin.model !== undefined))
+  .refine((pin) => (pin.targetKind === 'peer') === (pin.peerId !== undefined));
+
+const poolPinsSchema = z.array(poolPinSchema).max(MAX_POOL_PINS);
 
 export const settingsSchema = z.object({
   advancedSettings: z.boolean(),
@@ -118,6 +145,9 @@ export const settingsSchema = z.object({
   // by a future build degrades to the default here instead of failing the parse that boot depends on.
   inferenceSupervisionMode: z.enum(INFERENCE_SUPERVISION_MODES).optional().catch(undefined),
   inferenceSupervisionPollSeconds: inferenceSupervisionPollSecondsSchema.optional().catch(undefined),
+  // Manual routing pins. Absent (and an unparseable array) means none, which routes exactly as a
+  // build without pinning does.
+  hubPoolPins: poolPinsSchema.optional().catch(undefined),
   inferenceCloudProviders: z
     .array(
       z.object({
@@ -251,6 +281,7 @@ export class UserSettingsBody extends createZodDto(
     hubPoolHealthPollSeconds: poolHealthPollSecondsSchema.optional(),
     hubPoolPressureWeight: poolPressureWeightSchema.optional(),
     inferenceSupervisionPollSeconds: inferenceSupervisionPollSecondsSchema.optional(),
+    hubPoolPins: poolPinsSchema.optional(),
   }),
 ) {}
 

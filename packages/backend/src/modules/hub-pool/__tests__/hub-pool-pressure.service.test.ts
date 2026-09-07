@@ -4,8 +4,6 @@ import type { HardwareProfile } from '@ci-hub/common/types';
 import { LoggerService } from '@/core/logger/logger.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { HardwareInspectorService } from '@/modules/inference/hardware-inspector.service';
-import type { HubPoolPeer } from '@/core/database/drizzle/types';
-import { HubPoolPeerRepository } from '../hub-pool-peer.repository';
 import { HubPoolPressureService } from '../hub-pool-pressure.service';
 import { readAmdDrmOccupancy } from '../gpu-pressure-sources';
 
@@ -40,13 +38,15 @@ describe('HubPoolPressureService', () => {
   let logger: MockProxy<LoggerService>;
   let filesystem: MockProxy<FilesystemService>;
   let hardwareInspector: MockProxy<HardwareInspectorService>;
-  let repo: MockProxy<HubPoolPeerRepository>;
   let service: HubPoolPressureService;
   const drmSpy = vi.mocked(readAmdDrmOccupancy);
 
-  /** The band only exists to be compared with a peer's, so sampling is gated on there being one. */
+  /**
+   * The band only exists to be compared with a peer's, so the sampler is armed by the health tick
+   * when it sees one — not by module init, and not by a periodic query of its own.
+   */
   function withConnectedPeer(): void {
-    repo.listByStatuses.mockResolvedValue([{ id: 'peer-1' } as HubPoolPeer]);
+    service.setPoolActive(true);
   }
 
   /** Drive N sampler ticks, each 10s apart, awaiting the async work each one starts. */
@@ -61,17 +61,14 @@ describe('HubPoolPressureService', () => {
     logger = mock<LoggerService>();
     filesystem = mock<FilesystemService>();
     hardwareInspector = mock<HardwareInspectorService>();
-    repo = mock<HubPoolPeerRepository>();
 
     // The fleet default everywhere below unless a test says otherwise: no host file, an AMD card.
     filesystem.readJsonFile.mockResolvedValue(null);
     hardwareInspector.getProfile.mockResolvedValue(amdProfile());
-    repo.listByStatuses.mockResolvedValue([]);
     drmSpy.mockReset();
     drmSpy.mockResolvedValue(null);
 
-    service = new HubPoolPressureService(logger, filesystem, hardwareInspector, repo);
-    service.onModuleInit();
+    service = new HubPoolPressureService(logger, filesystem, hardwareInspector);
   });
 
   afterEach(() => {
@@ -130,12 +127,18 @@ describe('HubPoolPressureService', () => {
   });
 
   describe('sampling cost on a peerless Hub', () => {
+    it('arms no timer at all until a peer connects', async () => {
+      // The cost this pins. The overwhelming majority of deployments are single-node, and the
+      // previous shape armed a 10s self-rescheduling timer on every one of them that then ran an
+      // indexed SELECT forever just to re-learn there was nobody to compare a band against.
+      // `poolEnabled` DEFAULTS TRUE, so gating on it would have gated nothing.
+      expect(service.isSampling()).toBe(false);
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
     it('does no source I/O at all while nothing is paired', async () => {
       await tick(6);
 
-      // The overwhelming majority of deployments are single-node. Gating on peers rather than on
-      // `poolEnabled` (which DEFAULTS TRUE, so would have gated nothing) is what keeps this feature
-      // free on them: one indexed SELECT per tick and not one file read.
       expect(filesystem.readJsonFile).not.toHaveBeenCalled();
       expect(drmSpy).not.toHaveBeenCalled();
       expect(hardwareInspector.getProfile).not.toHaveBeenCalled();
@@ -150,7 +153,35 @@ describe('HubPoolPressureService', () => {
       drmSpy.mockResolvedValue(0.5);
       await tick(2);
 
+      expect(service.isSampling()).toBe(true);
       expect(service.band()).toBe(1);
+    });
+
+    it('disarms again when the last peer goes away, and forgets the band it measured', async () => {
+      withConnectedPeer();
+      drmSpy.mockResolvedValue(0.95);
+      await tick(3);
+      expect(service.band()).toBe(3);
+
+      service.setPoolActive(false);
+
+      expect(service.isSampling()).toBe(false);
+      expect(vi.getTimerCount()).toBe(0);
+      // Not merely stale — cleared. A band carried over from the last time this node had a peer is a
+      // claim about a GPU nobody has measured since.
+      expect(service.band()).toBeNull();
+
+      drmSpy.mockClear();
+      await tick(6);
+      expect(drmSpy).not.toHaveBeenCalled();
+    });
+
+    it('is idempotent, because the health tick calls it on every single poll', async () => {
+      withConnectedPeer();
+      withConnectedPeer();
+      withConnectedPeer();
+
+      expect(vi.getTimerCount()).toBe(1);
     });
 
     it('never calls rescan(), which would re-fork nvidia-smi and rocm-smi on a 10s loop', async () => {
@@ -331,12 +362,24 @@ describe('HubPoolPressureService', () => {
   });
 
   describe('lifecycle', () => {
-    it('does not throw out of onModuleInit', () => {
-      const fresh = new HubPoolPressureService(logger, filesystem, hardwareInspector, repo);
+    it('has no module-init hook to throw out of, and costs nothing until told there is a peer', () => {
+      const fresh = new HubPoolPressureService(logger, filesystem, hardwareInspector);
 
-      // A throw here crash-loops the whole appliance, peerless single-node Hubs included.
-      expect(() => fresh.onModuleInit()).not.toThrow();
+      // A throw at boot crash-loops the whole appliance, peerless single-node Hubs included. There
+      // is now nothing at boot at all: construction alone must not arm anything.
+      expect(fresh.isSampling()).toBe(false);
+      expect(vi.getTimerCount()).toBe(0);
       fresh.onModuleDestroy();
+    });
+
+    it('refuses to re-arm after destruction, so a late health tick cannot resurrect the loop', async () => {
+      service.onModuleDestroy();
+
+      service.setPoolActive(true);
+
+      expect(service.isSampling()).toBe(false);
+      await tick(3);
+      expect(drmSpy).not.toHaveBeenCalled();
     });
 
     it('stops sampling after onModuleDestroy', async () => {
