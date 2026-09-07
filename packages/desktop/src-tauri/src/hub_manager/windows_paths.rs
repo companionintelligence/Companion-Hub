@@ -2,16 +2,6 @@
 
 use super::*;
 
-/// How a Windows host path must be rendered for the active Docker backend's bind
-/// mounts. The two backends resolve host paths through entirely different layers:
-///
-/// - **Docker Desktop** shares the Windows filesystem into its VM, translating the
-///   MSYS `/c/Users/...` form (and `C:\...`) back to the real Windows file.
-/// - **Docker Engine running natively inside WSL2** has no such translation: its
-///   filesystem *is* the WSL Linux root, where Windows drives are visible only under
-///   `/mnt/<drive>/...`. A `/c/...` source does not exist there, so the daemon
-///   silently creates an empty directory at that path and bind-mounts it — turning
-///   every config/env *file* into a *directory* inside the container (EISDIR).
 /// Name of the docker CLI context the in-app WSL2-engine installer creates and
 /// activates (`docker context use …`, see `wsl2_engine_user_script`). Also the
 /// primary daemon-independent signal for Windows bind-mount style detection — keep
@@ -22,6 +12,16 @@ use super::*;
 #[cfg(any(test, target_os = "windows"))]
 pub(crate) const DOCKER_CONTEXT_WSL_ENGINE: &str = "wsl-engine";
 
+/// How a Windows host path must be rendered for the active Docker backend's bind
+/// mounts. The two backends resolve host paths through entirely different layers:
+///
+/// - **Docker Desktop** shares the Windows filesystem into its VM, translating the
+///   MSYS `/c/Users/...` form (and `C:\...`) back to the real Windows file.
+/// - **Docker Engine running natively inside WSL2** has no such translation: its
+///   filesystem *is* the WSL Linux root, where Windows drives are visible only under
+///   `/mnt/<drive>/...`. A `/c/...` source does not exist there, so the daemon
+///   silently creates an empty directory at that path and bind-mounts it — turning
+///   every config/env *file* into a *directory* inside the container (EISDIR).
 #[cfg(any(windows, test))]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum WindowsDockerHostStyle {
