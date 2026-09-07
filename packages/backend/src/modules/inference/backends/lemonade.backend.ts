@@ -3,7 +3,24 @@ import { LoggerService } from '@/core/logger/logger.service';
 import type { InferenceBackend } from './backend.interface';
 import type { BackendHealthStatus, BackendModelInfo, PullProgress } from '@ci-hub/common/types';
 import axios from 'axios';
+// Shared with the Lucebox backend: both mount the same AMD device nodes and so need the same
+// host GIDs. Defined there rather than duplicated here — see that module for the full rationale.
+import { type DeviceGroupProbe, resolveAmdDeviceGroupIds } from './lucebox.backend';
 import { OpenAiCompatibleClient } from './openai-compatible.client';
+
+/** Extra deployment hints beyond the shared `{ rocmReady, unifiedMemory }` pair. */
+export interface LemonadeComposeOptions {
+  rocmReady?: boolean;
+  unifiedMemory?: boolean;
+  /**
+   * Numeric host GIDs owning `/dev/kfd` and `/dev/dri/*`; derived from `/dev` when omitted.
+   * Supply these when generating the config somewhere other than the GPU host, where the
+   * device nodes cannot be statted.
+   */
+  groupIds?: number[];
+  /** Test seam for {@link resolveAmdDeviceGroupIds}. */
+  deviceProbe?: DeviceGroupProbe;
+}
 
 @Injectable()
 export class LemonadeBackend implements InferenceBackend {
@@ -93,7 +110,11 @@ export class LemonadeBackend implements InferenceBackend {
     return 'ghcr.io/lemonade-sdk/lemonade-server:latest';
   }
 
-  getComposeConfig(gpuVendor: string): Record<string, unknown> {
+  /**
+   * `options.groupIds` / `options.deviceProbe` only affect the `amd` branch; see the comment
+   * there for why group *names* cannot be used.
+   */
+  getComposeConfig(gpuVendor: string, options?: LemonadeComposeOptions): Record<string, unknown> {
     const base: Record<string, unknown> = {
       image: this.getDockerImage(),
       container_name: 'ci-hub-lemonade',
@@ -110,7 +131,28 @@ export class LemonadeBackend implements InferenceBackend {
       };
     } else if (gpuVendor === 'amd') {
       base.devices = ['/dev/kfd', '/dev/dri'];
-      base.group_add = ['video', 'render'];
+
+      // `group_add: ['video', 'render']` is a silent failure: Docker resolves those *names*
+      // against the **container's** /etc/group (render is typically GID 109), not the host's,
+      // where the group owning /dev/kfd and /dev/dri/renderD128 is site-specific — 990 across
+      // the Strix Halo fleet, with video at 44. The container joined a group granting nothing
+      // and every GPU device open failed with EACCES. Stat the nodes the service actually
+      // mounts instead; that is correct on any host.
+      const groupIds = options?.groupIds ?? resolveAmdDeviceGroupIds(options?.deviceProbe);
+      if (groupIds.length > 0) {
+        base.group_add = groupIds.map(String);
+      } else {
+        // Unlike Lucebox — GPU-only, so a permission-less config is worthless and it throws —
+        // Lemonade also serves on CPU and on the Ryzen AI NPU (see detectNpu), and its container
+        // runs as root (note the /root/.lemonade data volume), where Docker's default
+        // CAP_DAC_OVERRIDE makes group membership not the only path to the device nodes. Emitting
+        // no `group_add` keeps the deployment viable and honest; emitting the names would not.
+        this.logger.warn(
+          '[Lemonade] Could not derive host GIDs for /dev/kfd and /dev/dri, so the AMD compose config omits group_add. ' +
+            'If the container is run as a non-root user it will fail to open the GPU devices — generate this on the GPU ' +
+            'host, or pass groupIds explicitly.',
+        );
+      }
     }
 
     return base;
