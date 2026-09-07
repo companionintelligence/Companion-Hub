@@ -36,7 +36,7 @@ UUID, cluster membership, ports and a ranked address list, plus manual direct-ad
 Eviction tolerates "three consecutive misses".
 
 Hub Pool queries the **Tailscale Admin API** for tailnet devices, then probes each candidate's
-`GET /inference/pool/identify` to confirm it is a Hub.
+`GET /inference/pool/identify` to confirm it is a Hub (which is all that route discloses — see §2).
 
 - PAIR works on any flat LAN with zero external dependency; it is confined to one broadcast domain.
 - Hub Pool spans LAN, WAN and NAT for free, and inherits WireGuard transport encryption — but is
@@ -44,23 +44,36 @@ Hub Pool queries the **Tailscale Admin API** for tailnet devices, then probes ea
 
 Neither is strictly better. PAIR's is more self-contained; ours reaches machines PAIR cannot.
 
-### 2. Trust bootstrap — PIN/mTLS vs pairing handshake + bearer tokens
+### 2. Trust bootstrap — PIN/mTLS vs PIN + pinned Ed25519 identity
 
 PAIR: six-digit PIN bootstraps **mutual TLS**; each node holds a stable UUID and self-signed leaf
 certificate, and "pairing pins each side's certificate against the other's UUID". It multiplexes
 plaintext loopback and TLS on one port by sniffing the first byte (`0x16` = TLS handshake).
 
-Hub Pool: pairing handshake issues **directional bearer tokens**, stored sha256-hashed
-(`verify_token_hash`) and compared with `timingSafeEqual`; transport security is WireGuard's.
+Hub Pool now has **the same identity model on a different carrier**: a six-digit PIN authenticates the
+pairing request, each node holds a stable pool UUID and an Ed25519 keypair, and pairing pins each
+side's *public key* against the other's UUID. Requests carry a signature over method, path, both
+UUIDs, the sender's claimed name, a timestamp and a single-use nonce, rather than a bearer token. The
+gap that remains is a carrier difference, not a model difference: PAIR authenticates the transport,
+we authenticate the request. See [`hub-pool.md` → Peer identity](hub-pool.md#peer-identity-pin-pairing-and-signed-requests).
 
-**PAIR's peer authentication is cryptographically stronger** — mTLS binds identity to a pinned
-certificate, ours binds it to a shared secret that the receiving node stores hashed. Ours is simpler
-and rides a transport that is already authenticated and encrypted per-device. The honest reading:
-PAIR must do mTLS because its transport is an untrusted LAN; we can lean on the tailnet, and would
-need something closer to PAIR's model if Hub Pool ever ran off-tailnet.
+**Signatures are the stronger half of what mTLS was buying**: the verifier stores only public data, so
+a stolen database yields nothing that authenticates anywhere — where the original directional bearer
+tokens meant every Hub held, for every peer, an encrypted copy of a secret that authenticated it to
+that peer. X.509 was deliberately deferred rather than built: it needs a new dependency to mint a
+leaf (Node can parse certificates but not create them), a raw-TCP Tailscale Serve forward that
+`getServeStatus` cannot currently see or reconcile, and a rewrite of the whole outbound peer client
+away from global `fetch`, which accepts no client certificate. It buys nothing extra while Hub Pool
+runs on a tailnet.
 
-One point in our favour: PAIR's telemetry surface is "plaintext HTTP, not authenticated". Hub Pool
-has no unauthenticated peer surface.
+**The first-byte multiplexing was rejected outright, not deferred.** Peers reach a Hub on port 443,
+which is `tailscale serve --https`; tailscaled terminates the TLS and forwards *plaintext* to the Nest
+process, so a peer's ClientHello never reaches our socket and there is no first byte to sniff. PAIR
+needs the trick because it owns its listener; we do not own ours.
+
+One point in our favour throughout: PAIR's telemetry surface is "plaintext HTTP, not authenticated".
+Hub Pool's only unauthenticated peer surface is `GET /identify`, which answers
+`{ isCiHub: true, poolProtocol: 2 }` and nothing else.
 
 ### 3. The load signal — **the one real capability gap**
 

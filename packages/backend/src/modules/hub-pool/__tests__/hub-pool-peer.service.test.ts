@@ -1,4 +1,4 @@
-import { BadRequestException, ForbiddenException, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, NotFoundException, ServiceUnavailableException, UnauthorizedException } from '@nestjs/common';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
 import { LoggerService } from '@/core/logger/logger.service';
@@ -13,6 +13,9 @@ import { DEFAULT_POOL_HEALTH_POLL_SECONDS, DEFAULT_POOL_LOCAL_AFFINITY, type Hub
 import { HubPoolPeerRepository } from '../hub-pool-peer.repository';
 import { HubPoolPeerService } from '../hub-pool-peer.service';
 import { HubPoolLoadService, LOCAL_CANDIDATE_KEY } from '../hub-pool-load.service';
+import { HubPoolIdentityService } from '../hub-pool-identity.service';
+import { HubPoolPairingPinService } from '../hub-pool-pairing-pin.service';
+import { generatePoolKeyPair, privateKeyFromBase64 } from '../hub-pool-peer-auth';
 
 function mockPeer(overrides: Partial<HubPoolPeer> = {}): HubPoolPeer {
   return {
@@ -46,6 +49,8 @@ describe('HubPoolPeerService', () => {
   let inferenceRouter: MockProxy<InferenceRouterService>;
   let configuration: MockProxy<ConfigurationService>;
   let loadService: HubPoolLoadService;
+  let identity: MockProxy<HubPoolIdentityService>;
+  let pairingPins: HubPoolPairingPinService;
   let service: HubPoolPeerService;
 
   /** Repoint the persisted settings, as a settings PATCH would. */
@@ -56,6 +61,7 @@ describe('HubPoolPeerService', () => {
       poolInboundEnabled: true,
       poolLocalAffinity: DEFAULT_POOL_LOCAL_AFFINITY,
       poolHealthPollSeconds: DEFAULT_POOL_HEALTH_POLL_SECONDS,
+      poolRequireSignedPeers: false,
       ...overrides,
     });
   }
@@ -87,6 +93,14 @@ describe('HubPoolPeerService', () => {
     });
 
     loadService = new HubPoolLoadService();
+    identity = mock<HubPoolIdentityService>();
+    // Default: this node has no usable identity, so every existing assertion still exercises the
+    // bearer path byte-for-byte. The signed tests opt in with `giveSelfAnIdentity()`.
+    identity.get.mockResolvedValue(null);
+    identity.canSign.mockResolvedValue(false);
+    identity.summary.mockResolvedValue({ nodeUuid: null, publicKeyFingerprint: null, identityError: null });
+    identity.takeObservedPeerFqdn.mockReturnValue(undefined);
+    pairingPins = new HubPoolPairingPinService(mock<LoggerService>());
     service = new HubPoolPeerService(
       mock<LoggerService>(),
       repo,
@@ -96,6 +110,8 @@ describe('HubPoolPeerService', () => {
       inferenceRouter,
       loadService,
       configuration,
+      identity,
+      pairingPins,
     );
     global.fetch = vi.fn();
   });
@@ -224,7 +240,9 @@ describe('HubPoolPeerService', () => {
         Array.from({ length: 20 }, (_, i) => mockPeer({ id: `pending-${i}`, nodeFqdn: `mine-${i}.tailxyz.ts.net`, direction: 'outbound' })),
       );
 
-      await expect(service.receivePairingRequest('requester.tailxyz.ts.net', undefined, 'raw-token-value')).resolves.toBeUndefined();
+      // `{}` rather than `undefined`: the handler now answers with this node's identity on a
+      // PIN-verified request, and with an empty object on every protocol-1 one.
+      await expect(service.receivePairingRequest('requester.tailxyz.ts.net', undefined, 'raw-token-value')).resolves.toEqual({});
 
       expect(repo.create).toHaveBeenCalled();
     });
@@ -798,6 +816,151 @@ describe('HubPoolPeerService', () => {
 
       expect(tailscaleAdminApi.listDevices).not.toHaveBeenCalled();
       expect(global.fetch).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('peerAuthHeaders — the single place either credential is attached', () => {
+    const SELF_UUID = '11111111-1111-4111-8111-111111111111';
+    const PEER_UUID = '22222222-2222-4222-8222-222222222222';
+    const keys = generatePoolKeyPair();
+
+    /** Give this node a usable identity, as a booted Hub would have. */
+    function giveSelfAnIdentity(): void {
+      identity.get.mockResolvedValue({ nodeUuid: SELF_UUID, publicKey: keys.publicKey, privateKey: privateKeyFromBase64(keys.privateKey) });
+      identity.canSign.mockResolvedValue(true);
+    }
+
+    it('signs for a pinned peer, and never sends a bearer token alongside a signature', async () => {
+      giveSelfAnIdentity();
+      const peer = mockPeer({ status: 'connected', peerNodeUuid: PEER_UUID, peerPublicKey: keys.publicKey });
+
+      const headers = await service.peerAuthHeaders(peer, 'GET', '/api/inference/pool/capabilities');
+
+      expect(headers['X-Hub-Pool-Node']).toBe(SELF_UUID);
+      expect(headers['X-Hub-Pool-Signature']).toMatch(/^v1\.ed25519\./);
+      expect(headers).not.toHaveProperty('Authorization');
+    });
+
+    it('falls back to the bearer token for a peer that has not been pinned yet', async () => {
+      giveSelfAnIdentity();
+
+      const headers = await service.peerAuthHeaders(mockPeer({ status: 'connected' }), 'GET', '/api/inference/pool/capabilities');
+
+      expect(headers.Authorization).toBe('Bearer peer-token');
+      expect(headers).not.toHaveProperty('X-Hub-Pool-Signature');
+    });
+
+    it('falls back to the bearer token when this node cannot sign, which keeps a broken JWT_SECRET routing', async () => {
+      // `privateKey: null` is a regenerated `.env` over a retained volume — an ordinary reinstall.
+      identity.get.mockResolvedValue({ nodeUuid: SELF_UUID, publicKey: keys.publicKey, privateKey: null });
+      const peer = mockPeer({ status: 'connected', peerNodeUuid: PEER_UUID, peerPublicKey: keys.publicKey });
+
+      const headers = await service.peerAuthHeaders(peer, 'GET', '/api/inference/pool/capabilities');
+
+      expect(headers.Authorization).toBe('Bearer peer-token');
+    });
+
+    it('keeps presenting the bearer token while the grace window is live', async () => {
+      giveSelfAnIdentity();
+      // The side that learned the peer's key from a REQUEST cannot know its own reply arrived, so
+      // the peer may still be on tokens — signing at it would strand the pairing.
+      const peer = mockPeer({
+        status: 'connected',
+        peerNodeUuid: PEER_UUID,
+        peerPublicKey: keys.publicKey,
+        bearerGraceUntil: new Date(Date.now() + 600_000).toISOString(),
+      });
+
+      const headers = await service.peerAuthHeaders(peer, 'GET', '/api/inference/pool/capabilities');
+
+      expect(headers.Authorization).toBe('Bearer peer-token');
+    });
+
+    it('signs once the grace window has closed', async () => {
+      giveSelfAnIdentity();
+      const peer = mockPeer({
+        status: 'connected',
+        peerNodeUuid: PEER_UUID,
+        peerPublicKey: keys.publicKey,
+        bearerGraceUntil: new Date(Date.now() - 1).toISOString(),
+      });
+
+      const headers = await service.peerAuthHeaders(peer, 'GET', '/api/inference/pool/capabilities');
+
+      expect(headers['X-Hub-Pool-Signature']).toMatch(/^v1\.ed25519\./);
+    });
+
+    it('refuses to emit a bearer token at all when this node requires signed peers', async () => {
+      setPoolPreferences({ poolRequireSignedPeers: true });
+
+      // The client half of the no-downgrade switch: the guard refuses to ACCEPT one, and this
+      // refuses to SEND one, so the two rules cannot drift apart.
+      await expect(service.peerAuthHeaders(mockPeer({ status: 'connected' }), 'GET', '/api/inference/pool/capabilities')).rejects.toThrow(
+        ForbiddenException,
+      );
+    });
+  });
+
+  describe('pairing PIN gating', () => {
+    it('refuses to mint a PIN while pooling is switched off', () => {
+      setPoolPreferences({ poolEnabled: false });
+
+      expect(() => service.mintPairingPin()).toThrow(ServiceUnavailableException);
+    });
+
+    it('rejects a pairing request carrying a wrong PIN before creating anything', async () => {
+      repo.findByNodeFqdn.mockResolvedValue(undefined);
+      service.mintPairingPin();
+
+      await expect(service.receivePairingRequest('requester.tailxyz.ts.net', undefined, 'raw-token-value', { pin: '000000' })).rejects.toThrow(
+        UnauthorizedException,
+      );
+
+      // Nothing created, nothing looked up: the PIN check runs ahead of both, so a wrong guess
+      // cannot even reveal whether a row for that name already exists.
+      expect(repo.create).not.toHaveBeenCalled();
+      expect(repo.findByNodeFqdn).not.toHaveBeenCalled();
+    });
+
+    it('pins the caller’s identity and answers with its own once the PIN verifies', async () => {
+      const keys = generatePoolKeyPair();
+      identity.get.mockResolvedValue({
+        nodeUuid: '11111111-1111-4111-8111-111111111111',
+        publicKey: keys.publicKey,
+        privateKey: privateKeyFromBase64(keys.privateKey),
+      });
+      repo.findByNodeFqdn.mockResolvedValue(undefined);
+      repo.create.mockImplementation(async (data) => mockPeer(data as Partial<HubPoolPeer>));
+      repo.update.mockImplementation(async (_id, data) => mockPeer(data as Partial<HubPoolPeer>));
+      const { pin } = service.mintPairingPin();
+
+      const answer = await service.receivePairingRequest('requester.tailxyz.ts.net', undefined, 'raw-token-value', {
+        pin,
+        fromNodeUuid: '22222222-2222-4222-8222-222222222222',
+        fromPublicKey: keys.publicKey,
+      });
+
+      // Pending, not connected: a PIN authenticates the request, not the operator's decision.
+      expect(repo.create).toHaveBeenCalledWith(expect.objectContaining({ status: 'pending', direction: 'inbound' }));
+      expect(repo.update).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({ peerNodeUuid: '22222222-2222-4222-8222-222222222222', peerPublicKey: keys.publicKey }),
+      );
+      expect(answer).toEqual({ nodeUuid: '11111111-1111-4111-8111-111111111111', publicKey: keys.publicKey });
+    });
+
+    it('stores no identity claim on a request that carried no PIN', async () => {
+      repo.findByNodeFqdn.mockResolvedValue(undefined);
+      repo.create.mockImplementation(async (data) => mockPeer(data as Partial<HubPoolPeer>));
+
+      await service.receivePairingRequest('requester.tailxyz.ts.net', undefined, 'raw-token-value', {
+        fromNodeUuid: '22222222-2222-4222-8222-222222222222',
+        fromPublicKey: 'whatever-the-caller-said',
+      });
+
+      // An unauthenticated identity claim is exactly the anonymous write the PIN exists to close;
+      // the legacy flow pins on `pair/confirm` instead, which PoolPeerGuard has authenticated.
+      expect(repo.update).not.toHaveBeenCalled();
     });
   });
 });

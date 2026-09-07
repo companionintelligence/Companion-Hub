@@ -79,6 +79,12 @@ export class PoolProxyService {
   constructor(
     private readonly backends: InferenceBackendRegistry,
     private readonly peerService: HubPoolPeerService,
+    /**
+     * Retained after the outbound credential moved into `HubPoolPeerService.peerAuthHeaders`, which
+     * resolves this node's own name itself. Kept so the positional constructor shape every pool test
+     * file builds does not shift for a removal nothing needs.
+     */
+    // biome-ignore lint/correctness/noUnusedPrivateClassMembers: kept for the positional constructor shape (see above)
     private readonly tailscaleService: TailscaleService,
     private readonly loadService: HubPoolLoadService,
     private readonly configuration: ConfigurationService,
@@ -559,20 +565,24 @@ export class PoolProxyService {
     if (!peer) {
       throw new Error(`Peer ${candidate.peerId} is no longer paired`);
     }
-    const [token, selfStatus] = await Promise.all([this.peerService.getPresentToken(peer), this.tailscaleService.getStatusCached()]);
-    const url = `https://${peer.nodeFqdn}/api/inference/pool/local${path}`;
+    const requestPath = `/api/inference/pool/local${path}`;
+    const url = `https://${peer.nodeFqdn}${requestPath}`;
+    // One helper for the credential, whichever kind it is — see `HubPoolPeerService.peerAuthHeaders`.
+    // The body is passed but deliberately not hashed on this path: `poolRequestSignsBody` excludes
+    // `/local/*`, because the recipient UUID, nonce and timestamp already make a captured request
+    // unreplayable, and canonicalizing a megabyte embeddings batch per hop is not affordable here.
+    const authHeaders = await this.peerService.peerAuthHeaders(peer, method, requestPath, body);
     return this.fetchWithConnectTimeout(url, {
       method,
       headers: {
         'Content-Type': 'application/json',
-        'X-Hub-Pool-Peer': selfStatus.nodeFqdn ?? '',
         // Tells the peer's `/inference/pool/local/*` handler which of ITS OWN backends to hit —
         // it can't infer this from the path alone, and must not re-run candidate selection itself.
         'X-Hub-Pool-Backend': candidate.backend,
         // Lets the receiver credit the outcome to the right model without parsing the body it
         // promises not to read. Same reason as the header above: the path alone doesn't carry it.
         'X-Hub-Pool-Model': model,
-        Authorization: `Bearer ${token}`,
+        ...authHeaders,
       },
       body: method === 'GET' ? undefined : JSON.stringify(body),
     });

@@ -94,6 +94,10 @@ export const settingsSchema = z.object({
   // re-applies the strict bounds, so choosing such a value still gets a 400.
   hubPoolLocalAffinity: poolLocalAffinitySchema.optional().catch(undefined),
   hubPoolHealthPollSeconds: poolHealthPollSecondsSchema.optional().catch(undefined),
+  // Opt-IN, unlike every other pool switch: it refuses the legacy bearer-token branch, so absent
+  // (and false) has to mean "keep accepting it" or upgrading one node of a fleet would strand the
+  // rest. See `HubPoolPreferences.poolRequireSignedPeers`.
+  hubPoolRequireSignedPeers: z.boolean().optional(),
   inferenceCloudProviders: z
     .array(
       z.object({

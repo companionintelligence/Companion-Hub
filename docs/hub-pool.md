@@ -60,10 +60,134 @@ Per-peer disable keeps the pairing, both directional tokens and the health poll 
 - **`GET /api/inference/pool/status`** (session auth) answers the whole question in one call: `enabled` / `disabledBy` / `reason` (`active`, `no_peers`, `partially_disabled`, `disabled_by_env`, `disabled_by_setting`), `directions` (each of `outbound`/`inbound` with its own `enabled`/`disabledBy`), `routingActive` — which now means outbound is on **and** at least one connected, *enabled* peer exists — the persisted `settings`, `tailscaleAdminApiConfigured` (whether discovery can work at all — the boolean only, never the credentials), this node's identity, queue depth and per-backend model inventory, and every peer with its status, `lastSeenAt`, `consecutiveFailures`, cached backends/models, and the number of requests currently forwarded to it. Peer rows go through `toPublicPeer`, so the token columns cannot appear. It is cheap enough to poll: one `SELECT`, in-memory counters, the 30s-cached Tailscale status, and a 20s-cached local inventory — it never runs peer discovery (a Tailscale OAuth exchange plus an HTTPS probe per tailnet device) and never re-probes peers.
 - **`GET /api/inference/pool/routing-log?limit=`** (session auth) returns the last 200 routing decisions, newest first: timestamp, direction, path, model, the node that served it, how many candidates were ranked, which attempt won, the chain of nodes that were tried and rejected before it, outcome, upstream status and time to response headers. A request that failed over is **one** entry carrying `failedOverFrom`, not one per attempt. Inbound entries record work a *peer* forwarded to this node's engines, attributed to the peer the guard authenticated. It is bounded, in-memory and process-local — no database table, and nothing survives a restart — and it records metadata only: never a prompt, a request body, or a response.
 
+## Peer identity: PIN pairing and signed requests
+
+Each Hub has a stable **pool node UUID** and an **Ed25519 keypair**, minted once and kept in
+`hub_pool_identity` (one row, id `self`). The UUID never changes — not on a rename, a tailnet move
+or a re-registration — and the private key is the only pool secret this Hub holds: for every peer it
+stores a *public* key and nothing else. That is the substantive improvement over the original
+directional bearer tokens, where every Hub held, for every peer, an encrypted copy of a secret that
+authenticated it to that peer.
+
+**Pairing pins the peer's UUID to its public key (trust on first use, pinned thereafter).** Once
+pinned, requests carry a signature instead of a token:
+
+```
+X-Hub-Pool-Node:      <sender's pool node UUID>     ← the lookup key
+X-Hub-Pool-Peer:      <sender's own nodeFqdn>
+X-Hub-Pool-Timestamp: <unix ms>
+X-Hub-Pool-Nonce:     <16 random bytes, base64url>
+X-Hub-Pool-Signature: v1.ed25519.<base64url>
+```
+
+The signature covers a fixed preamble, the method, the path, the sender's UUID, the sender's claimed
+FQDN, **this node's UUID as the sender has it pinned**, the timestamp and the nonce — plus a
+canonical hash of the body on the control routes (`/pair/*`). The recipient line is what makes a
+captured signature non-transferable to another peer; the nonce, kept in a bounded single-use cache
+inside a ±300s skew window, is what makes it non-replayable. The body hash is deliberately **not**
+included on `/local/*`: the recipient UUID, nonce and timestamp already make a captured forwarding
+request unusable, and canonicalizing a megabyte embeddings batch on every hop is not affordable on
+the streaming path.
+
+### The PIN, and what it actually buys
+
+`POST /pair/request` is the module's only unauthenticated write. Without a PIN it will create a
+`pending` row — and store a caller-supplied token as this Hub's outbound credential — for anyone who
+can name a plausible FQDN, because the tailnet-membership check degrades to a no-op whenever the
+Tailscale Admin API is unconfigured or unreachable. **With a PIN, a wrong guess creates nothing**: no
+pending slot, no planted outbound token, no pinned identity.
+
+Generate one on the receiving Hub (**Settings → Network → Hub Pool → Pairing PIN**, or the mint
+route) and type it into the initiating Hub next to the address. Six digits, ten minutes, single use,
+five wrong attempts destroy it, and a source that keeps guessing is refused with a 429 on the same
+strike-and-backoff limiter the inference module uses for unservable models. Wrong, expired,
+already-used and none-outstanding all answer with the *same* 401 — telling a caller whether a PIN is
+even outstanding would make the space searchable in two steps. The digits are returned exactly once,
+by the mint call; `GET /pool/status` reports only `pairingPin: { active, expiresAt }`.
+
+A PIN authenticates the *request*, not the operator's decision. The row still lands **pending** and
+still needs a confirm, which now renders the requester's FQDN *and* its key fingerprint side by side.
+A PIN read aloud or over a shoulder therefore gets an unintended node into an approval list, never
+into the pool.
+
+Pairing **without** a PIN behaves exactly as it did before: same flow, same 20-row ceiling, same
+24-hour sweep. The identity exchange still happens, but on `/pair/confirm`, which `PoolPeerGuard` has
+already authenticated — so a legacy pairing ends up pinned too, without an unauthenticated identity
+claim ever being stored.
+
+### Upgrading an existing bearer pairing
+
+A pairing that predates this ships unchanged and keeps working: every new column is nullable, and the
+legacy branch of `PoolPeerGuard` is the same code it was. The upgrade then rides the existing health
+poll — a peer still on tokens reports its `nodeUuid` on the (authenticated) `capabilities` response,
+and the poller calls `POST /pair/upgrade` with the bearer token it is about to retire.
+
+This is a **transfer of an existing trust relationship onto a stronger carrier**, not a fresh
+trust-on-first-use bootstrap. It is exactly as trustworthy as the pairing it inherits, and it does not
+launder a pairing that was bad to begin with.
+
+The crossover is bounded and self-healing:
+
+- The side that learns the peer's key from a **response** knows the peer has its key, and signs from
+  then on.
+- The side that learns it from a **request** cannot know its own reply arrived, so it keeps
+  presenting its bearer token and opens `bearer_grace_until` — by default ten minutes, or four health
+  polls, whichever is longer.
+- The moment a correctly signed request from that peer is *observed*, `signed_seen_at` is stamped,
+  both token columns are nulled and the grace window is cleared. An old database backup then holds
+  tokens that authenticate nowhere.
+- If the window closes with no signed request ever seen, the pinned key is **rolled back** rather
+  than enforced, and the exchange is retried on a later tick. Enforcing it would lock out a peer that
+  is behaving correctly.
+
+The no-downgrade rule is therefore keyed on evidence, not on a clock: a bearer token is refused only
+for a row whose key is pinned **and** which has been seen signing. `poolRequireSignedPeers` (default
+**false**) removes the legacy branch outright, on the guard and on the outbound client alike — flip it
+only once `GET /pool/status` shows every peer with `authMode: 'signed'`, because on a mixed fleet it
+is an outage.
+
+### Identity, addresses and rotation
+
+Identity beats address. A signed peer that turns up under a new MagicDNS name has *moved*: the name
+change is authenticated by the signature that carried it, recorded, and applied by the health tick —
+never written from inside the guard, because `node_fqdn` is UNIQUE and a collision there would turn an
+authenticated request into a 500 and permanently redirect this Hub's outbound pool traffic. This fixes
+a live defect: a rename used to break a pairing permanently, with the poll simply failing forever.
+
+`POST /pool/identity/rotate` mints a new keypair, keeps the UUID, and **unpairs every peer** —
+every one of them has pinned the old key and there is no signed-rotation message in this protocol. It
+runs in two phases: the unpair calls go out first, signed with the key that is about to be destroyed,
+and the response names the peers that could not be reached so the operator knows which Hubs still
+hold a stale row.
+
+### Failure modes, and why none of them is fatal
+
+`EncryptionService` derives its key from `JWT_SECRET`, so a regenerated `.env` over a retained
+Postgres volume — an ordinary reinstall — leaves the stored private key undecryptable. That must never
+be fatal, and it is not:
+
+- Identity load is lazy, retried, and **never throws out of `onModuleInit`**. A throw there would
+  crash-loop every appliance running this build, peerless single-node ones included.
+- `node_uuid` and `public_key` are stored in the clear, so such a Hub can still *verify* its peers
+  (verification needs only their public keys and this node's own UUID) while it can no longer *sign*.
+  It falls back to the bearer token and keeps routing.
+- The row is **never silently re-minted**. A new public key would unpair the whole fleet to work
+  around a recoverable environment problem.
+- The reason appears as `localNode.identity.identityError` on `/pool/status`, exactly the way a down
+  inference backend already appears as `capabilitiesError`.
+
+### What `/identify` no longer says
+
+`GET /api/inference/pool/identify` is unauthenticated and reachable through the Cloudflare tunnel. It
+now answers `{ isCiHub: true, poolProtocol: 2 }` and nothing else — the MagicDNS name it used to
+return was consumed by nobody, and the node UUID and public key live on the guard-protected
+`capabilities` route instead. A UUID whose whole purpose is surviving renames is a durable
+correlator, which is the last thing to publish on an open endpoint.
+
 ## What guards what
 
 - **`POST /pair/request`** is the one unauthenticated write — a would-be peer has no credential yet by definition. It is therefore the most constrained: the kill switch blocks it outright; `fromNodeFqdn` must be a bare hostname (a scheme, credentials, port, path or IP literal is refused, because that value is interpolated into every later `https://<fqdn>/api/...` call this Hub makes to the peer, including the one that carries a freshly issued token); the name must belong to this tailnet whenever `TAILSCALE_OAUTH_CLIENT_ID`/`SECRET` let the Hub check (with no credential, or with the Admin API unreachable, the check degrades to a warning rather than blocking a legitimate request); at most 20 inbound requests may await approval at once; and an unanswered request expires after 24 hours, so a squatted name cannot block pairing with the real device indefinitely.
-- **`/pair/confirm`, `/pair/reject`, `/pair/unpair`, `/capabilities`, `/local/*`** require `PoolPeerGuard`: `X-Hub-Pool-Peer: <caller's own FQDN>` plus the bearer token *this* Hub issued that peer.
+- **`/pair/confirm`, `/pair/reject`, `/pair/unpair`, `/pair/upgrade`, `/capabilities`, `/local/*`** require `PoolPeerGuard`, which admits a caller two ways: an Ed25519 signature over the request, resolved by the caller's pinned pool UUID (preferred — see [Peer identity](#peer-identity-pin-pairing-and-signed-requests)), or the legacy `X-Hub-Pool-Peer: <caller's own FQDN>` plus the bearer token *this* Hub issued that peer. The bearer branch is refused for a row that has been observed signing, and refused outright when `poolRequireSignedPeers` is on.
 - **`/peers/*`** are operator routes behind the normal session `AuthGuard`.
 - **The app-facing `/v1/*` and `/api/*` proxy routes** are reachable only from inside the appliance. `InternalNetworkGuard` checks the source IP, and `PoolAppGuard` additionally refuses anything carrying reverse-proxy provenance (`cf-ray` and friends, or an `X-Forwarded-For` hop that is not private) — because behind the Cloudflare tunnel `request.ip` is the proxy's own private address unless `HUB_TRUST_PROXY` is set, and these routes spend GPU time on every paired node. Apps reach the proxy container-to-container and carry none of those headers. Note this is an origin check, not caller authentication: an app that only declares `hub_integration.inference` is issued no Hub-managed key, so there is no per-app credential to bind to. Any container on the Hub's Docker network can use the pool.
 
@@ -72,7 +196,7 @@ Per-peer disable keeps the pairing, both directional tokens and the health poll 
 1. On each participating Hub, confirm **Settings → Network** shows Tailscale connected.
 2. On at least one Hub, set the Tailscale OAuth client env vars above and restart.
 3. Open **Settings → Network → Hub Pool**. Discoverable devices on the tailnet that identify as CI-Hub nodes appear with a **Pair** button. Without the OAuth credential the section says so and names the two variables, rather than showing an empty list — a Hub with no credential can still be paired *with*, it just cannot enumerate the tailnet itself.
-4. On the *other* Hub, a pending inbound request appears with **Approve** / **Reject**, identified by the requester's FQDN.
+4. On the *other* Hub, a pending inbound request appears with **Approve** / **Reject**, identified by the requester's FQDN and — when the request carried a pairing PIN — its key fingerprint, which is the value to compare against that Hub's own **Pairing PIN** card.
 5. Once connected, both Hubs' **Hub Pool** sections show whether pooling is actually routing (and if not, which of the two kill switches is responsible), the `poolEnabled` and `poolLocalAffinity` controls, each peer's status / last-seen / queue depth / hardware tier / engines, the merged list of models the pool can serve and which nodes hold each, and the recent routing decisions with failovers called out.
 
 A peer shown **unreachable** needs no operator action: it is skipped while it fails probes and rejoins on the next successful one. Unpairing is for removing a Hub from the pool, not for recovering one.

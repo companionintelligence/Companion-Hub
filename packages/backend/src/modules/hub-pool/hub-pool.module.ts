@@ -5,6 +5,9 @@ import { TailscaleModule } from '@/modules/tailscale/tailscale.module';
 import { InferenceModule } from '@/modules/inference/inference.module';
 import { HubPoolController } from './hub-pool.controller';
 import { HubPoolPeerRepository } from './hub-pool-peer.repository';
+import { HubPoolIdentityRepository } from './hub-pool-identity.repository';
+import { HubPoolIdentityService } from './hub-pool-identity.service';
+import { HubPoolPairingPinService } from './hub-pool-pairing-pin.service';
 import { HubPoolPeerService } from './hub-pool-peer.service';
 import { HubPoolLoadService } from './hub-pool-load.service';
 import { HubPoolRoutingLogService } from './hub-pool-routing-log.service';
@@ -19,7 +22,18 @@ import { PoolPeerGuard } from './guards/pool-peer.guard';
 @Module({
   imports: [LoggerModule, EncryptionModule, TailscaleModule, forwardRef(() => InferenceModule)],
   controllers: [HubPoolController],
-  providers: [HubPoolPeerRepository, HubPoolLoadService, HubPoolRoutingLogService, HubPoolPeerService, PoolProxyService, PoolAppGuard, PoolPeerGuard],
+  providers: [
+    HubPoolPeerRepository,
+    HubPoolIdentityRepository,
+    HubPoolIdentityService,
+    HubPoolPairingPinService,
+    HubPoolLoadService,
+    HubPoolRoutingLogService,
+    HubPoolPeerService,
+    PoolProxyService,
+    PoolAppGuard,
+    PoolPeerGuard,
+  ],
   exports: [HubPoolPeerService, PoolProxyService],
 })
 export class HubPoolModule {}

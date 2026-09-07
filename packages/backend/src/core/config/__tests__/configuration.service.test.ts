@@ -107,7 +107,18 @@ describe('ConfigurationService Hub Pool preferences', () => {
       poolInboundEnabled: true,
       poolLocalAffinity: 1,
       poolHealthPollSeconds: 30,
+      // The one pool switch that is opt-IN: it removes the bearer branch older peers depend on, so
+      // absent has to resolve to false or upgrading one node of a fleet would strand the rest.
+      poolRequireSignedPeers: false,
     });
+  });
+
+  it('persists the signed-peers requirement and reports it back', async () => {
+    const svc = makePoolService();
+
+    await svc.setHubPoolPreferences({ poolRequireSignedPeers: true });
+
+    expect(svc.mergeSettingsToDisk).toHaveBeenCalledWith(expect.objectContaining({ hubPoolRequireSignedPeers: true }));
   });
 
   it('keeps a persisted directional false, and keeps the two axes independent', () => {

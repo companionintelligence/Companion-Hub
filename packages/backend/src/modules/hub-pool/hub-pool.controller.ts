@@ -26,7 +26,15 @@ import { PoolPeerGuard } from './guards/pool-peer.guard';
 import { HubPoolPeerService } from './hub-pool-peer.service';
 import { HubPoolRoutingLogService } from './hub-pool-routing-log.service';
 import { PoolProxyService } from './hub-pool-proxy.service';
-import { IncomingPairingRequestBody, PairingConfirmBody, PairPeerBody, RoutingLogQueryDto, UpdateHubPoolPreferencesBody } from './hub-pool.dto';
+import {
+  IncomingPairingRequestBody,
+  PairingConfirmBody,
+  PairingUpgradeBody,
+  PairPeerBody,
+  RoutingLogQueryDto,
+  UpdateHubPoolPreferencesBody,
+} from './hub-pool.dto';
+import { POOL_PROTOCOL_VERSION } from './hub-pool-peer-auth';
 import { toPublicPeer } from './hub-pool.types';
 
 /**
@@ -47,6 +55,11 @@ export class HubPoolController {
   constructor(
     private readonly peerService: HubPoolPeerService,
     private readonly proxyService: PoolProxyService,
+    /**
+     * Retained after `identify` stopped disclosing this node's MagicDNS name. Kept so the positional
+     * constructor shape every pool test file builds does not shift for a removal nothing needs.
+     */
+    // biome-ignore lint/correctness/noUnusedPrivateClassMembers: kept for the positional constructor shape (see above)
     private readonly tailscaleService: TailscaleService,
     private readonly configuration: ConfigurationService,
     private readonly routingLog: HubPoolRoutingLogService,
@@ -54,10 +67,22 @@ export class HubPoolController {
 
   // ── Discovery / identification ──────────────────────────────────────────
 
+  /**
+   * The only unauthenticated route in the module that is not a write, and the only one published
+   * through the Cloudflare tunnel.
+   *
+   * It answers exactly two things: that this is a CI-Hub, and which pool protocol it speaks.
+   * `nodeFqdn` used to be here and has been removed — a caller already knows the name it dialled,
+   * so nothing needed it, and the MagicDNS name is not something an unauthenticated endpoint should
+   * hand out. The node UUID and public key are deliberately NOT here either: they live on
+   * `GET capabilities`, behind {@link PoolPeerGuard}. A UUID whose entire purpose is surviving
+   * renames is a durable correlator, which is the last thing to publish on an open endpoint.
+   *
+   * `isCiHub` stays, because `listDiscoverableDevices` on every already-deployed Hub reads it.
+   */
   @Get('identify')
   async identify() {
-    const status = await this.tailscaleService.getStatusCached();
-    return { isCiHub: true, nodeFqdn: status.nodeFqdn };
+    return { isCiHub: true, poolProtocol: POOL_PROTOCOL_VERSION };
   }
 
   // ── Operator-facing status, settings and observability ──────────────────
@@ -114,7 +139,48 @@ export class HubPoolController {
   @UseGuards(AuthGuard)
   @Post('peers/pair')
   async pairPeer(@Body() body: PairPeerBody) {
-    return toPublicPeer(await this.peerService.initiatePairing(body.nodeFqdn, body.displayName));
+    return toPublicPeer(await this.peerService.initiatePairing(body.nodeFqdn, body.displayName, body.pin));
+  }
+
+  // ── Pairing PIN and node identity (operator-facing) ──────────────────────
+
+  /**
+   * Mint a pairing PIN. THE ONLY place the digits are ever returned — `GET status` reports whether
+   * one is outstanding and when it expires, never its value, so the UI can render a countdown
+   * without the PIN becoming re-servable to anyone who can poll.
+   */
+  @UseGuards(AuthGuard)
+  @Post('pairing-pin')
+  async mintPairingPin() {
+    const minted = this.peerService.mintPairingPin();
+    // The identity summary directly, not through `getPoolStatus` — that builds this node's whole
+    // model inventory, which minting a PIN has no reason to pay for.
+    return { ...minted, ...(await this.peerService.identitySummary()) };
+  }
+
+  @UseGuards(AuthGuard)
+  @Delete('pairing-pin')
+  async cancelPairingPin() {
+    this.peerService.cancelPairingPin();
+    return { cancelled: true };
+  }
+
+  /** Run the bearer→signed exchange for one peer now, rather than waiting for the health poll to reach it. */
+  @UseGuards(AuthGuard)
+  @Post('peers/:id/upgrade')
+  async upgradePeer(@Param('id') id: string) {
+    return toPublicPeer(await this.peerService.upgradePeerToSigned(id));
+  }
+
+  /**
+   * New keypair, same node UUID — and every peer unpaired, because they have all pinned the old key
+   * and there is no signed-rotation message in this protocol. The response names the peers that
+   * could not be reached, which are the ones an operator has to clear by hand on the far side.
+   */
+  @UseGuards(AuthGuard)
+  @Post('identity/rotate')
+  async rotateIdentity() {
+    return this.peerService.rotateIdentity();
   }
 
   @UseGuards(AuthGuard)
@@ -160,10 +226,23 @@ export class HubPoolController {
 
   // ── Peer-to-peer pairing handshake (see HubPoolPeerService) ─────────────
 
+  /**
+   * The module's only unauthenticated write, and the one the PIN exists for.
+   *
+   * With a PIN: the identity claim is authenticated, so it is pinned, and this node answers with its
+   * own identity — but the row still lands `pending`. A PIN authenticates the request; it does not
+   * stand in for the operator seeing who is asking (see `receivePairingRequest`).
+   * Without one: byte-for-byte today's behaviour, which is what keeps a mixed-version fleet pairing.
+   */
   @Post('pair/request')
-  async handlePairingRequest(@Body() body: IncomingPairingRequestBody) {
-    await this.peerService.receivePairingRequest(body.fromNodeFqdn, body.fromDisplayName, body.token);
-    return { received: true };
+  async handlePairingRequest(@Req() req: Request, @Body() body: IncomingPairingRequestBody) {
+    const identity = await this.peerService.receivePairingRequest(body.fromNodeFqdn, body.fromDisplayName, body.token, {
+      fromNodeUuid: body.fromNodeUuid,
+      fromPublicKey: body.fromPublicKey,
+      pin: body.pin,
+      source: { ip: req.ip },
+    });
+    return { received: true, ...identity };
   }
 
   @UseGuards(PoolPeerGuard)
@@ -172,8 +251,26 @@ export class HubPoolController {
     if (!req.poolPeer) {
       throw new ForbiddenException('Pool peer not resolved');
     }
-    await this.peerService.confirmPairing(req.poolPeer, body.token);
-    return { confirmed: true };
+    const identity = await this.peerService.confirmPairing(req.poolPeer, body.token, {
+      fromNodeUuid: body.fromNodeUuid,
+      fromPublicKey: body.fromPublicKey,
+    });
+    return { confirmed: true, ...identity };
+  }
+
+  /**
+   * Bearer→signed identity exchange, authenticated by {@link PoolPeerGuard} — i.e. by the very
+   * credential it retires. This is a transfer of an existing trust relationship onto a stronger
+   * carrier, not a fresh trust-on-first-use bootstrap: it is exactly as trustworthy as the pairing
+   * it inherits, and no more.
+   */
+  @UseGuards(PoolPeerGuard)
+  @Post('pair/upgrade')
+  async handlePairingUpgrade(@Req() req: Request, @Body() body: PairingUpgradeBody) {
+    if (!req.poolPeer) {
+      throw new ForbiddenException('Pool peer not resolved');
+    }
+    return this.peerService.handleUpgradeRequest(req.poolPeer, { nodeUuid: body.nodeUuid, publicKey: body.publicKey });
   }
 
   /** Guarded like `pair/unpair`: an anonymous caller could otherwise delete any pending outbound row by naming it, and the operator would see the pairing silently disappear. */

@@ -200,6 +200,27 @@ export interface HubPoolPreferences {
   poolInboundEnabled: boolean;
   poolLocalAffinity: number;
   poolHealthPollSeconds: number;
+  /**
+   * Refuse the legacy bearer-token branch outright, on the guard AND on the outbound client.
+   *
+   * The explicit "no downgrade path" switch, and DEFAULT FALSE because turning it on across a
+   * mixed-version fleet is an outage: any peer that has not yet completed the bearer→signed upgrade
+   * stops authenticating in both directions the moment it is set. Flip it once
+   * `GET /inference/pool/status` shows every peer with `authMode: 'signed'`.
+   */
+  poolRequireSignedPeers: boolean;
+}
+
+/**
+ * How long a row that has just pinned a peer's key keeps honouring that peer's bearer token while
+ * waiting for evidence the peer really did upgrade.
+ *
+ * Derived from the poll cadence rather than fixed, so an operator who slowed the health poll to its
+ * 300s maximum still gets four polls' worth of chances before the pinning is rolled back and
+ * retried. The 10-minute floor is what a default-cadence fleet gets.
+ */
+export function bearerUpgradeGraceMs(poolHealthPollSeconds: number): number {
+  return Math.max(600_000, poolHealthPollSeconds * 1000 * 4);
 }
 
 const MAX_FQDN_LENGTH = 253;

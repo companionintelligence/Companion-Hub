@@ -358,4 +358,104 @@ describe('HubPoolController', () => {
       expect(proxyService.proxyRequest).not.toHaveBeenCalled();
     });
   });
+
+  describe('peer identity routes', () => {
+    it('answers identify with the protocol version and nothing else', async () => {
+      // Published through the Cloudflare tunnel. It used to return this node's full MagicDNS name,
+      // which nothing consumed; the UUID and public key deliberately live behind PoolPeerGuard on
+      // `GET capabilities`, because a UUID that survives renames is a durable correlator.
+      expect(await controller.identify()).toEqual({ isCiHub: true, poolProtocol: 2 });
+    });
+
+    it('returns the PIN digits exactly once, alongside the fingerprint the far side will show', async () => {
+      peerService.mintPairingPin.mockReturnValue({ pin: '123456', expiresAt: '2026-01-01T00:10:00.000Z' });
+      peerService.identitySummary.mockResolvedValue({ nodeUuid: 'self-uuid', publicKeyFingerprint: 'aa:bb', identityError: null });
+
+      expect(await controller.mintPairingPin()).toEqual({
+        pin: '123456',
+        expiresAt: '2026-01-01T00:10:00.000Z',
+        nodeUuid: 'self-uuid',
+        publicKeyFingerprint: 'aa:bb',
+        identityError: null,
+      });
+      // Minting must not pay for this node's whole model inventory.
+      expect(peerService.getPoolStatus).not.toHaveBeenCalled();
+    });
+
+    it('cancels an outstanding PIN', async () => {
+      expect(await controller.cancelPairingPin()).toEqual({ cancelled: true });
+      expect(peerService.cancelPairingPin).toHaveBeenCalled();
+    });
+
+    it('passes the operator’s PIN through to the pairing call', async () => {
+      peerService.initiatePairing.mockResolvedValue({ id: 'peer-1', nodeFqdn: 'hub-b.example-tailnet.ts.net' } as HubPoolPeer);
+
+      await controller.pairPeer({ nodeFqdn: 'hub-b.example-tailnet.ts.net', displayName: 'Beta', pin: '123456' } as never);
+
+      expect(peerService.initiatePairing).toHaveBeenCalledWith('hub-b.example-tailnet.ts.net', 'Beta', '123456');
+    });
+
+    it('reports the source IP on an inbound pairing request, so the cooldown has something to key on', async () => {
+      peerService.receivePairingRequest.mockResolvedValue({});
+      const req = { ip: '100.64.0.7' } as unknown as Request;
+
+      const answer = await controller.handlePairingRequest(req, {
+        fromNodeFqdn: 'hub-b.example-tailnet.ts.net',
+        token: 'a'.repeat(32),
+        pin: '123456',
+        fromNodeUuid: 'peer-uuid',
+        fromPublicKey: 'peer-key',
+      } as never);
+
+      expect(answer).toEqual({ received: true });
+      expect(peerService.receivePairingRequest).toHaveBeenCalledWith('hub-b.example-tailnet.ts.net', undefined, 'a'.repeat(32), {
+        fromNodeUuid: 'peer-uuid',
+        fromPublicKey: 'peer-key',
+        pin: '123456',
+        source: { ip: '100.64.0.7' },
+      });
+    });
+
+    it('folds this node’s identity into the pairing answer when the PIN verified', async () => {
+      peerService.receivePairingRequest.mockResolvedValue({ nodeUuid: 'self-uuid', publicKey: 'self-key' });
+
+      const answer = await controller.handlePairingRequest(
+        { ip: '100.64.0.7' } as unknown as Request,
+        {
+          fromNodeFqdn: 'hub-b.example-tailnet.ts.net',
+          token: 'a'.repeat(32),
+          pin: '123456',
+        } as never,
+      );
+
+      expect(answer).toEqual({ received: true, nodeUuid: 'self-uuid', publicKey: 'self-key' });
+    });
+
+    it('refuses an upgrade the guard did not resolve a peer for', async () => {
+      const req = { poolPeer: undefined } as unknown as Request;
+
+      await expect(controller.handlePairingUpgrade(req, { nodeUuid: 'u', publicKey: 'k' } as never)).rejects.toThrow(ForbiddenException);
+    });
+
+    it('answers an upgrade with this node’s identity', async () => {
+      peerService.handleUpgradeRequest.mockResolvedValue({ nodeUuid: 'self-uuid', publicKey: 'self-key' });
+      const req = peerRequest({ id: 'peer-1', status: 'connected' });
+
+      const answer = await controller.handlePairingUpgrade(req, { nodeUuid: 'peer-uuid', publicKey: 'peer-key' } as never);
+
+      expect(answer).toEqual({ nodeUuid: 'self-uuid', publicKey: 'self-key' });
+      expect(peerService.handleUpgradeRequest).toHaveBeenCalledWith(req.poolPeer, { nodeUuid: 'peer-uuid', publicKey: 'peer-key' });
+    });
+
+    it('names the peers a rotation could not reach', async () => {
+      peerService.rotateIdentity.mockResolvedValue({
+        nodeUuid: 'self-uuid',
+        publicKeyFingerprint: 'cc:dd',
+        unpaired: ['hub-b.example-tailnet.ts.net'],
+        unreachable: ['hub-c.example-tailnet.ts.net'],
+      });
+
+      await expect(controller.rotateIdentity()).resolves.toMatchObject({ unreachable: ['hub-c.example-tailnet.ts.net'] });
+    });
+  });
 });

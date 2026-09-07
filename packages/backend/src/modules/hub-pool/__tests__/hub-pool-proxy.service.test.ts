@@ -499,6 +499,54 @@ describe('PoolProxyService', () => {
   });
 
   describe('proxyRequest', () => {
+    it('attaches whatever credential peerAuthHeaders produced, and nothing of its own', async () => {
+      // One helper decides between the signature and the bearer token, on both sides of the wire.
+      // The proxy must not second-guess it: a hand-built `Authorization` here is exactly how the
+      // client rule and the guard's no-downgrade rule would drift apart.
+      const peer = mockPeer({ lastCapabilities: capabilitiesWithModel('llama3.2:3b') as unknown as Record<string, unknown> });
+      peerService.listConnectedPeers.mockResolvedValue([peer]);
+      peerService.getPeerById.mockResolvedValue(peer);
+      peerService.peerAuthHeaders.mockResolvedValue({
+        'X-Hub-Pool-Node': 'a-node-uuid',
+        'X-Hub-Pool-Peer': 'self-hub.tailxyz.ts.net',
+        'X-Hub-Pool-Signature': 'v1.ed25519.zzz',
+      });
+
+      const fetchMock = vi.mocked(global.fetch);
+      fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), { status: 200, headers: { 'content-type': 'application/json' } }));
+
+      const res = createMockResponse();
+      await service.proxyRequest({ path: '/v1/chat/completions', method: 'POST', body: { model: 'llama3.2:3b' }, model: 'llama3.2:3b', res });
+
+      const headers = (fetchMock.mock.calls[0]?.[1]?.headers ?? {}) as Record<string, string>;
+      expect(headers['X-Hub-Pool-Signature']).toBe('v1.ed25519.zzz');
+      expect(headers).not.toHaveProperty('Authorization');
+      // The two routing headers the receiving handler cannot infer from the path are still ours.
+      expect(headers['X-Hub-Pool-Backend']).toBe('ollama');
+      expect(headers['X-Hub-Pool-Model']).toBe('llama3.2:3b');
+      // Signed over the `/api`-prefixed path the peer will actually see, query already stripped.
+      expect(peerService.peerAuthHeaders).toHaveBeenCalledWith(peer, 'POST', '/api/inference/pool/local/v1/chat/completions', {
+        model: 'llama3.2:3b',
+      });
+    });
+
+    it('still sends a bearer-only peer exactly what it sent before', async () => {
+      const peer = mockPeer({ lastCapabilities: capabilitiesWithModel('llama3.2:3b') as unknown as Record<string, unknown> });
+      peerService.listConnectedPeers.mockResolvedValue([peer]);
+      peerService.getPeerById.mockResolvedValue(peer);
+      peerService.peerAuthHeaders.mockResolvedValue({ 'X-Hub-Pool-Peer': 'self-hub.tailxyz.ts.net', Authorization: 'Bearer raw-token' });
+
+      const fetchMock = vi.mocked(global.fetch);
+      fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), { status: 200, headers: { 'content-type': 'application/json' } }));
+
+      const res = createMockResponse();
+      await service.proxyRequest({ path: '/v1/chat/completions', method: 'POST', body: { model: 'llama3.2:3b' }, model: 'llama3.2:3b', res });
+
+      const headers = (fetchMock.mock.calls[0]?.[1]?.headers ?? {}) as Record<string, string>;
+      expect(headers.Authorization).toBe('Bearer raw-token');
+      expect(headers['X-Hub-Pool-Peer']).toBe('self-hub.tailxyz.ts.net');
+    });
+
     it('returns 502 when no candidate has the model', async () => {
       const res = createMockResponse();
 

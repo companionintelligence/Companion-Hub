@@ -2039,5 +2039,18 @@
   "HUB_POOL_CANCEL_REQUEST_SUCCESS": "Pairing request cancelled.",
   "HUB_POOL_CANCEL_REQUEST_ERROR": "Failed to cancel the pairing request.",
   "HUB_POOL_UNPAIR_CONFIRM": "Unpair {{name}}? This deletes the pairing and revokes both Hubs’ tokens, so neither node can route to the other until you pair again and the other Hub approves.",
-  "HUB_POOL_STATUS_ERROR": "Could not load the Hub Pool status. This page retries every 15 seconds; pooling itself keeps running either way."
+  "HUB_POOL_STATUS_ERROR": "Could not load the Hub Pool status. This page retries every 15 seconds; pooling itself keeps running either way.",
+  "HUB_POOL_PIN_TITLE": "Pairing PIN",
+  "HUB_POOL_PIN_HELP": "Generate a PIN here, then type it into the other Hub while pairing. A PIN authenticates the pairing request itself, so a request that arrives without one — or with a wrong one — creates nothing. You still confirm the peer below before any work is exchanged.",
+  "HUB_POOL_PIN_MINT_BUTTON": "Generate PIN",
+  "HUB_POOL_PIN_CANCEL_BUTTON": "Cancel PIN",
+  "HUB_POOL_PIN_NONE": "No pairing PIN outstanding.",
+  "HUB_POOL_PIN_ACTIVE_ELSEWHERE": "A pairing PIN is outstanding. The digits are shown only once, when it is generated — generate a new one to see a code.",
+  "HUB_POOL_PIN_INPUT_PLACEHOLDER": "PIN from the other Hub (optional)",
+  "HUB_POOL_PIN_MINT_ERROR": "Could not generate a pairing PIN",
+  "HUB_POOL_PIN_CANCEL_ERROR": "Could not cancel the pairing PIN",
+  "HUB_POOL_LOCAL_FINGERPRINT": "This node's key fingerprint: {{fingerprint}}",
+  "HUB_POOL_IDENTITY_ERROR": "This node cannot sign pool requests and is using its pairing tokens instead: {{error}}",
+  "HUB_POOL_PEER_FINGERPRINT": "Key fingerprint {{fingerprint}}",
+  "HUB_POOL_PEER_FINGERPRINT_UNVERIFIED": "No key — this request arrived without a pairing PIN, so the name is only a claim."
 }

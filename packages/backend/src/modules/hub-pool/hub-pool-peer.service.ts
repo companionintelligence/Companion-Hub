@@ -14,6 +14,7 @@ import {
 import { LoggerService } from '@/core/logger/logger.service';
 import { EncryptionService } from '@/core/encryption/encryption.service';
 import {
+  bearerUpgradeGraceMs,
   describeHubPoolDisabled,
   normalizePeerFqdn,
   resolveHubPoolDirections,
@@ -29,12 +30,17 @@ import { TailscaleAdminApiService, type TailscaleDevice } from '@/modules/tailsc
 import { InferenceRouterService } from '@/modules/inference/inference-router.service';
 import { HubPoolPeerRepository } from './hub-pool-peer.repository';
 import { HubPoolLoadService } from './hub-pool-load.service';
+import { HubPoolIdentityService } from './hub-pool-identity.service';
+import { HubPoolPairingPinService, type PinAttemptSource } from './hub-pool-pairing-pin.service';
+import { buildSignedPoolHeaders, POOL_PEER_HEADER, publicKeyFingerprint } from './hub-pool-peer-auth';
 import {
   toPublicPeer,
   type DiscoverablePoolPeer,
   type PoolPeerCapabilities,
   type PoolStatus,
+  type PoolIdentitySummary,
   type PoolStatusLocalNode,
+  type PoolStatusPeer,
   type PoolStatusReason,
 } from './hub-pool.types';
 
@@ -88,6 +94,8 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
     private readonly inferenceRouter: InferenceRouterService,
     private readonly loadService: HubPoolLoadService,
     private readonly configuration: ConfigurationService,
+    private readonly identity: HubPoolIdentityService,
+    private readonly pairingPins: HubPoolPairingPinService,
   ) {}
 
   onModuleInit(): void {
@@ -112,6 +120,7 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
     this.timerHandle = setTimeout(() => {
       void (async () => {
         try {
+          this.pairingPins.sweep();
           await Promise.all([this.refreshPeerHealth(), this.sweepExpiredPendingRequests()]);
         } catch (error) {
           this.logger.warn(`[HubPool] health tick failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -218,6 +227,58 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
+   * THE only place either peer credential is attached to an outbound request.
+   *
+   * Consolidating this is the highest-leverage part of the change: the credential used to be built
+   * at five separate call sites, and the guard's rule about which one is acceptable would have had
+   * to be restated — and kept in step — at every one of them. One helper means the client rule and
+   * the guard rule cannot drift apart.
+   *
+   * The choice, in order:
+   *   - Signed, whenever this node can sign and has the peer's key pinned. The normal case.
+   *   - Bearer, while `bearerGraceUntil` is live. Set only by the side that learned the peer's key
+   *     from a request it RECEIVED, which is the side that cannot know whether its own reply — the
+   *     one carrying this node's key — actually arrived. Presenting a signature the peer cannot
+   *     verify would strand the pairing; presenting the bearer costs one more poll.
+   *   - Bearer, when there is no identity to sign with (no key yet, or a private key this node can
+   *     no longer decrypt). This is the branch that keeps a mixed-version fleet, and a Hub with a
+   *     regenerated `.env`, routing.
+   *
+   * `poolRequireSignedPeers` removes the bearer branch entirely, on this side as well as the guard's.
+   */
+  async peerAuthHeaders(peer: HubPoolPeer, method: string, path: string, body?: unknown): Promise<Record<string, string>> {
+    const selfStatus = await this.tailscaleService.getStatusCached();
+    const self = await this.identity.get();
+    const requireSigned = this.configuration.getHubPoolPreferences().poolRequireSignedPeers;
+    const privateKey = self?.privateKey ?? null;
+    const recipientNodeUuid = peer.peerNodeUuid;
+    const graceLive = peer.bearerGraceUntil !== null && Date.parse(peer.bearerGraceUntil) > Date.now();
+
+    if (self && privateKey && recipientNodeUuid && peer.peerPublicKey && !(graceLive && peer.presentTokenEncrypted)) {
+      return buildSignedPoolHeaders(privateKey, {
+        method,
+        path,
+        senderNodeUuid: self.nodeUuid,
+        senderNodeFqdn: selfStatus.nodeFqdn ?? '',
+        recipientNodeUuid,
+        body,
+      });
+    }
+
+    if (requireSigned) {
+      throw new ForbiddenException(`This node requires signed pool peers and cannot yet sign requests to ${peer.nodeFqdn}`);
+    }
+
+    const token = await this.getPresentToken(peer);
+    return { [POOL_PEER_HEADER]: selfStatus.nodeFqdn ?? '', Authorization: `Bearer ${token}` };
+  }
+
+  /** How a peer authenticates to this node today, for the operator surfaces. */
+  private authModeOf(peer: HubPoolPeer): PoolStatusPeer['authMode'] {
+    return peer.peerNodeUuid && peer.peerPublicKey ? 'signed' : 'bearer';
+  }
+
+  /**
    * Tailnet devices that identify themselves as CI-Hub nodes (via their
    * already-published `/inference/pool/identify`) and aren't paired/pairing
    * with this Hub yet.
@@ -269,10 +330,11 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
    */
   async getPoolStatus(): Promise<PoolStatus> {
     const enabled = this.enabledState();
-    const [peers, selfStatus, localNode] = await Promise.all([
+    const [peers, selfStatus, localNode, identity] = await Promise.all([
       this.repo.listAll(),
       this.tailscaleService.getStatusCached(),
       this.buildLocalNodeStatus(),
+      this.identity.summary(),
     ]);
 
     const directions = this.directions();
@@ -302,8 +364,21 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
       routingActive: directions.outbound.enabled && usable > 0,
       settings: this.configuration.getHubPoolPreferences(),
       tailscaleAdminApiConfigured: this.tailscaleAdminApi.isConfigured(),
-      localNode: { ...localNode, nodeFqdn: selfStatus.nodeFqdn, tailnet: selfStatus.tailnet, tailscaleConnected: selfStatus.connected },
-      peers: peers.map((peer) => ({ ...toPublicPeer(peer), inFlightRequests: this.loadService.get(peer.id) })),
+      localNode: {
+        ...localNode,
+        nodeFqdn: selfStatus.nodeFqdn,
+        tailnet: selfStatus.tailnet,
+        tailscaleConnected: selfStatus.connected,
+        identity,
+      },
+      // `peerKeyFingerprint`, never the key: the fingerprint is what an operator compares across two
+      // screens when confirming a pairing, and the full key is only ever needed in-process.
+      peers: peers.map((peer) => ({
+        ...toPublicPeer(peer),
+        inFlightRequests: this.loadService.get(peer.id),
+        authMode: this.authModeOf(peer),
+        peerKeyFingerprint: publicKeyFingerprint(peer.peerPublicKey),
+      })),
       peerCounts: {
         total: peers.length,
         connected,
@@ -313,6 +388,7 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
         // says nothing about the lifecycle, so this deliberately overlaps the three counts above.
         disabled: peers.filter((p) => p.enabled === false).length,
       },
+      pairingPin: this.pairingPins.state(),
     };
   }
 
@@ -330,8 +406,15 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  /** Operator-initiated: pair with a candidate peer discovered above. */
-  async initiatePairing(rawNodeFqdn: string, displayName?: string): Promise<HubPoolPeer> {
+  /**
+   * Operator-initiated: pair with a candidate peer.
+   *
+   * The bearer token is still minted and still sent, because the peer may be on protocol 1 and
+   * because the legacy `pair/confirm` callback authenticates with it either way. `pin`, when the
+   * operator has one from the other Hub's screen, additionally carries this node's identity — and a
+   * peer that accepts it answers with its own, which is pinned here on the spot.
+   */
+  async initiatePairing(rawNodeFqdn: string, displayName?: string, pin?: string): Promise<HubPoolPeer> {
     const nodeFqdn = this.requireBareHostname(rawNodeFqdn);
     const existing = await this.repo.findByNodeFqdn(nodeFqdn);
     if (existing) {
@@ -351,21 +434,91 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
 
     try {
       const selfStatus = await this.tailscaleService.getStatusCached();
+      const self = await this.identity.get();
       const response = await fetch(`https://${nodeFqdn}/api/inference/pool/pair/request`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ fromNodeFqdn: selfStatus.nodeFqdn, fromDisplayName: selfStatus.hostname ?? undefined, token: rawToken }),
+        body: JSON.stringify({
+          fromNodeFqdn: selfStatus.nodeFqdn,
+          fromDisplayName: selfStatus.hostname ?? undefined,
+          token: rawToken,
+          // Only sent alongside a PIN. Without one the peer would be storing an identity claim it
+          // cannot authenticate, which is exactly the anonymous write the PIN exists to close.
+          ...(pin && self ? { fromNodeUuid: self.nodeUuid, fromPublicKey: self.publicKey, pin } : {}),
+        }),
         signal: AbortSignal.timeout(HANDSHAKE_TIMEOUT_MS),
       });
       if (!response.ok) {
         throw new Error(`Peer declined pairing request (${response.status})`);
       }
+      // A protocol-1 peer answers `{ received: true }` and this pins nothing, which is correct.
+      const answered = (await response.json().catch(() => ({}))) as { nodeUuid?: string; publicKey?: string };
+      const pinned = await this.pinPeerIdentity(row, answered, { setGrace: false });
+      return pinned ?? row;
     } catch (error) {
       await this.repo.delete(row.id);
       throw error;
     }
+  }
 
-    return row;
+  /**
+   * Store a peer's claimed identity on its row.
+   *
+   * `setGrace` says which side of the exchange this node was on, and it is the whole subtlety of
+   * the upgrade. Learning a peer's key from a REQUEST means this node still owes it a reply
+   * carrying this node's own key — a reply that may not arrive — so the peer may still be on the
+   * bearer token and the grace window has to be opened. Learning it from a RESPONSE means the peer
+   * has already processed this node's key, so no grace is needed and signing can start at once.
+   *
+   * Returns the updated row, or `null` when the claim was absent or unusable.
+   */
+  private async pinPeerIdentity(
+    peer: HubPoolPeer,
+    claim: { nodeUuid?: string; publicKey?: string },
+    options: { setGrace: boolean },
+  ): Promise<HubPoolPeer | null> {
+    if (!claim.nodeUuid || !claim.publicKey || publicKeyFingerprint(claim.publicKey) === null) {
+      return null;
+    }
+    const graceMs = bearerUpgradeGraceMs(this.configuration.getHubPoolPreferences().poolHealthPollSeconds);
+    try {
+      const updated = await this.repo.update(peer.id, {
+        peerNodeUuid: claim.nodeUuid,
+        peerPublicKey: claim.publicKey,
+        bearerGraceUntil: options.setGrace ? new Date(Date.now() + graceMs).toISOString() : null,
+      });
+      if (updated) {
+        this.logger.info(`[HubPool] pinned ${peer.nodeFqdn} to pool identity ${claim.nodeUuid} (${publicKeyFingerprint(claim.publicKey)})`);
+      }
+      return updated ?? null;
+    } catch (error) {
+      // The partial unique index on `peer_node_uuid`: another row already claims this identity.
+      // Logged rather than thrown, so a duplicate never fails a pairing that works fine on tokens.
+      this.logger.warn(
+        `[HubPool] could not pin ${peer.nodeFqdn} to pool identity ${claim.nodeUuid}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      return null;
+    }
+  }
+
+  /**
+   * This node's own identity, as a peer-facing claim. Empty when there is no usable identity yet.
+   *
+   * Two spellings, and they are not interchangeable: a claim travelling in a REQUEST body is
+   * `fromNodeUuid`/`fromPublicKey` (matching `fromNodeFqdn` alongside it), and one travelling in a
+   * RESPONSE body is the bare `nodeUuid`/`publicKey`. Sending the wrong one is silent — the
+   * receiving DTO's identity fields are optional by necessity, so the claim is simply dropped and
+   * the pairing quietly stays on bearer tokens.
+   */
+  private async ownIdentityClaim(): Promise<{ nodeUuid: string; publicKey: string } | Record<string, never>> {
+    const self = await this.identity.get();
+    return self ? { nodeUuid: self.nodeUuid, publicKey: self.publicKey } : {};
+  }
+
+  /** {@link ownIdentityClaim} in the shape a request body uses. */
+  private async ownIdentityClaimForRequest(): Promise<{ fromNodeUuid: string; fromPublicKey: string } | Record<string, never>> {
+    const self = await this.identity.get();
+    return self ? { fromNodeUuid: self.nodeUuid, fromPublicKey: self.publicKey } : {};
   }
 
   /**
@@ -374,7 +527,12 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
    * established trust is made here: the kill switch, the hostname shape, the
    * pending-row ceiling, and tailnet membership where the Admin API can attest it.
    */
-  async receivePairingRequest(rawFromNodeFqdn: string, fromDisplayName: string | undefined, token: string): Promise<void> {
+  async receivePairingRequest(
+    rawFromNodeFqdn: string,
+    fromDisplayName: string | undefined,
+    token: string,
+    claim: { fromNodeUuid?: string; fromPublicKey?: string; pin?: string; source?: PinAttemptSource } = {},
+  ): Promise<{ nodeUuid: string; publicKey: string } | Record<string, never>> {
     const enabled = this.enabledState();
     if (!enabled.enabled) {
       throw new ServiceUnavailableException(describeHubPoolDisabled(enabled.disabledBy));
@@ -382,10 +540,16 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
 
     const fromNodeFqdn = this.requireBareHostname(rawFromNodeFqdn);
 
+    // Before anything is created, and before the duplicate check: a wrong PIN must leave this node
+    // in exactly the state it was in, and must not reveal whether a row for that name exists.
+    if (claim.pin !== undefined) {
+      this.pairingPins.consume(claim.pin, { claimedFqdn: fromNodeFqdn, ...claim.source });
+    }
+
     const existing = await this.repo.findByNodeFqdn(fromNodeFqdn);
     if (existing) {
       this.logger.debug(`[HubPool] ignoring duplicate pairing request from ${fromNodeFqdn} (already have a ${existing.status} row)`);
-      return;
+      return {};
     }
 
     const pending = await this.repo.listByStatus('pending');
@@ -398,7 +562,7 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
 
     await this.assertTailnetMember(fromNodeFqdn);
 
-    await this.repo.create({
+    const row = await this.repo.create({
       nodeFqdn: fromNodeFqdn,
       displayName: fromDisplayName ?? null,
       direction: 'inbound',
@@ -407,6 +571,17 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
       presentTokenEncrypted: this.encryption.encrypt(token, fromNodeFqdn),
       tailscaleDeviceId: null,
     });
+
+    // The row lands `pending` either way — a PIN authenticates the REQUEST, it does not stand in for
+    // the operator seeing who is asking. A PIN read aloud, or over a shoulder, would otherwise get
+    // an unintended node fully connected and spending GPU with no name ever shown. The one thing the
+    // PIN does buy here is that the identity claim is now authenticated, so it can be pinned; the
+    // operator's confirm screen renders its fingerprint alongside the FQDN.
+    if (claim.pin === undefined) {
+      return {};
+    }
+    await this.pinPeerIdentity(row, { nodeUuid: claim.fromNodeUuid, publicKey: claim.fromPublicKey }, { setGrace: true });
+    return this.ownIdentityClaim();
   }
 
   private requireBareHostname(raw: string): string {
@@ -477,21 +652,21 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
     }
 
     try {
-      const presentToken = await this.getPresentToken(row);
       const selfStatus = await this.tailscaleService.getStatusCached();
-      const response = await fetch(`https://${row.nodeFqdn}/api/inference/pool/pair/confirm`, {
+      const body = { fromNodeFqdn: selfStatus.nodeFqdn, token: rawToken, ...(await this.ownIdentityClaimForRequest()) };
+      const path = '/api/inference/pool/pair/confirm';
+      const response = await fetch(`https://${row.nodeFqdn}${path}`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-Hub-Pool-Peer': selfStatus.nodeFqdn ?? '',
-          Authorization: `Bearer ${presentToken}`,
-        },
-        body: JSON.stringify({ fromNodeFqdn: selfStatus.nodeFqdn, token: rawToken }),
+        headers: { 'Content-Type': 'application/json', ...(await this.peerAuthHeaders(updated, 'POST', path, body)) },
+        body: JSON.stringify(body),
         signal: AbortSignal.timeout(HANDSHAKE_TIMEOUT_MS),
       });
       if (!response.ok) {
         throw new Error(`confirm callback returned ${response.status}`);
       }
+      // Learned from a RESPONSE, so no grace: the peer has already processed this node's key.
+      const answered = (await response.json().catch(() => ({}))) as { nodeUuid?: string; publicKey?: string };
+      await this.pinPeerIdentity(updated, answered, { setGrace: false });
     } catch (error) {
       // We're already connected on our side — the peer's row just stays 'pending'/'outbound'
       // until the operator retries pairing or removes it. Surfacing this as a thrown error would
@@ -514,13 +689,12 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
 
     try {
       // Authenticated like the unpair callback: the initiator only deletes its pending row for a
-      // caller that can present the token it issued in its own pair/request.
-      const presentToken = await this.getPresentToken(row);
-      const selfStatus = await this.tailscaleService.getStatusCached();
-      await fetch(`https://${row.nodeFqdn}/api/inference/pool/pair/reject`, {
+      // caller it can authenticate — the signature, or the token it issued in its own pair/request.
+      const path = '/api/inference/pool/pair/reject';
+      await fetch(`https://${row.nodeFqdn}${path}`, {
         method: 'POST',
         // No body: the peer identifies us from the guard headers, which is the only claim it should trust here.
-        headers: { 'X-Hub-Pool-Peer': selfStatus.nodeFqdn ?? '', Authorization: `Bearer ${presentToken}` },
+        headers: await this.peerAuthHeaders(row, 'POST', path),
         signal: AbortSignal.timeout(HANDSHAKE_TIMEOUT_MS),
       });
     } catch (error) {
@@ -528,12 +702,29 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  /** Inbound `POST /inference/pool/pair/confirm` — `guardedRow` is `request.poolPeer` from {@link PoolPeerGuard}. */
-  async confirmPairing(guardedRow: HubPoolPeer, rawToken: string): Promise<void> {
+  /**
+   * Inbound `POST /inference/pool/pair/confirm` — `guardedRow` is `request.poolPeer` from
+   * {@link PoolPeerGuard}, so the caller has already proved it holds the token this node issued.
+   *
+   * That is what makes this the right place for the legacy flow's identity exchange: the claim
+   * arrives authenticated, and the answer carries this node's own identity back over the same
+   * authenticated call. A pairing that never uses a PIN still ends up with both sides pinned.
+   */
+  async confirmPairing(
+    guardedRow: HubPoolPeer,
+    rawToken: string,
+    claim: { fromNodeUuid?: string; fromPublicKey?: string } = {},
+  ): Promise<{ nodeUuid: string; publicKey: string } | Record<string, never>> {
     if (guardedRow.direction !== 'outbound' || guardedRow.status !== 'pending') {
       throw new ConflictException('No pending outbound pairing awaiting confirmation for this peer');
     }
-    await this.repo.update(guardedRow.id, { status: 'connected', presentTokenEncrypted: this.encryption.encrypt(rawToken, guardedRow.nodeFqdn) });
+    const updated = await this.repo.update(guardedRow.id, {
+      status: 'connected',
+      presentTokenEncrypted: this.encryption.encrypt(rawToken, guardedRow.nodeFqdn),
+    });
+    // Learned from a REQUEST, so grace: the reply below carries this node's key and may not land.
+    await this.pinPeerIdentity(updated ?? guardedRow, { nodeUuid: claim.fromNodeUuid, publicKey: claim.fromPublicKey }, { setGrace: true });
+    return this.ownIdentityClaim();
   }
 
   /** Inbound `POST /inference/pool/pair/reject` — `guardedRow` is `request.poolPeer` from {@link PoolPeerGuard}: the decliner proved it holds the token we issued in our own pair/request. */
@@ -553,12 +744,11 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
     // Best-effort, like rejectPairing: without it the peer keeps our row for up to three health
     // polls (~90s) and keeps forwarding us work we now answer with a 401 from PoolPeerGuard.
     try {
-      const presentToken = await this.getPresentToken(row);
-      const selfStatus = await this.tailscaleService.getStatusCached();
-      await fetch(`https://${row.nodeFqdn}/api/inference/pool/pair/unpair`, {
+      const path = '/api/inference/pool/pair/unpair';
+      await fetch(`https://${row.nodeFqdn}${path}`, {
         method: 'POST',
         // No body: the peer identifies us from the guard headers, which is the only claim it should trust here.
-        headers: { 'X-Hub-Pool-Peer': selfStatus.nodeFqdn ?? '', Authorization: `Bearer ${presentToken}` },
+        headers: await this.peerAuthHeaders(row, 'POST', path),
         signal: AbortSignal.timeout(HANDSHAKE_TIMEOUT_MS),
       });
     } catch (error) {
@@ -595,11 +785,16 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
    * a perfectly healthy machine as unreachable.
    */
   async getOwnCapabilities(acceptingWork = true): Promise<PoolPeerCapabilities> {
-    const inventory = await this.getOwnInventory();
+    const [inventory, self] = await Promise.all([this.getOwnInventory(), this.identity.get()]);
     return {
       hardwareTier: inventory.hardwareTier,
       backends: acceptingWork ? inventory.backends : [],
       acceptingWork,
+      // This node's pool UUID, on a route the peer had to authenticate to reach. It is what tells a
+      // still-bearer peer that an identity upgrade is available, and it is deliberately NOT on the
+      // unauthenticated `/identify` probe: that route is published through the Cloudflare tunnel,
+      // and a UUID whose whole point is surviving renames is a durable correlator.
+      ...(self ? { nodeUuid: self.nodeUuid } : {}),
       // Never cached: this is the whole point of the snapshot for a ranking peer, and a stale
       // figure would tell it we are idle while our engines are saturated.
       inFlightRequests: this.loadService.localInFlight(),
@@ -647,6 +842,216 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
     return createHash('sha256').update(rawToken).digest('hex');
   }
 
+  // ── Bearer → signed migration ───────────────────────────────────────────
+
+  /**
+   * Inbound `POST /inference/pool/pair/upgrade` — `guardedRow` is `request.poolPeer`, so this is
+   * authenticated by exactly the credential it retires.
+   *
+   * That framing matters and belongs in the docs as much as here: this is a TRANSFER of an existing
+   * trust relationship onto a stronger carrier, not a fresh trust-on-first-use bootstrap. It is
+   * precisely as trustworthy as the pairing it inherits, and it does not launder a pairing that was
+   * bad to begin with.
+   */
+  async handleUpgradeRequest(
+    guardedRow: HubPoolPeer,
+    claim: { nodeUuid?: string; publicKey?: string },
+  ): Promise<{ nodeUuid: string; publicKey: string } | Record<string, never>> {
+    // Learned from a REQUEST, so grace: if the reply below is lost the caller retries next tick and
+    // is still accepted, because its bearer token is still honoured inside the window.
+    await this.pinPeerIdentity(guardedRow, claim, { setGrace: true });
+    return this.ownIdentityClaim();
+  }
+
+  /** Operator-forced upgrade for one peer, instead of waiting for the health poll to get to it. */
+  async upgradePeerToSigned(id: string): Promise<HubPoolPeer> {
+    const peer = await this.repo.findById(id);
+    if (!peer) {
+      throw new NotFoundException('No pool peer with that id');
+    }
+    if (!(await this.identity.canSign())) {
+      throw new ServiceUnavailableException('This node has no usable pool identity to upgrade with');
+    }
+    const upgraded = await this.exchangeIdentityWith(peer);
+    if (!upgraded) {
+      throw new ServiceUnavailableException(`${peer.nodeFqdn} did not complete the identity exchange`);
+    }
+    return upgraded;
+  }
+
+  /**
+   * Ride the health poll: a peer still on the bearer token, which has just told us its pool UUID on
+   * an authenticated `capabilities` response, gets upgraded on the spot.
+   *
+   * Deliberately driven by `capabilities.nodeUuid` and not by the unauthenticated `/identify`
+   * probe. `/identify` is published through the Cloudflare tunnel; a UUID is a durable correlator
+   * and does not belong on it, and reading protocol support from a route an attacker can answer
+   * would let it steer this decision.
+   */
+  private async upgradeToSignedIfPossible(peer: HubPoolPeer, capabilities: PoolPeerCapabilities): Promise<void> {
+    if (peer.peerPublicKey || !capabilities.nodeUuid || !(await this.identity.canSign())) {
+      return;
+    }
+    await this.exchangeIdentityWith(peer);
+  }
+
+  private async exchangeIdentityWith(peer: HubPoolPeer): Promise<HubPoolPeer | null> {
+    const claim = await this.ownIdentityClaim();
+    if (!('nodeUuid' in claim)) {
+      return null;
+    }
+    try {
+      const path = '/api/inference/pool/pair/upgrade';
+      const response = await fetch(`https://${peer.nodeFqdn}${path}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(await this.peerAuthHeaders(peer, 'POST', path, claim)) },
+        body: JSON.stringify(claim),
+        signal: AbortSignal.timeout(HANDSHAKE_TIMEOUT_MS),
+      });
+      if (!response.ok) {
+        throw new Error(`upgrade returned ${response.status}`);
+      }
+      const answered = (await response.json()) as { nodeUuid?: string; publicKey?: string };
+      // Learned from a RESPONSE: the peer has our key, so this side can sign immediately.
+      return await this.pinPeerIdentity(peer, answered, { setGrace: false });
+    } catch (error) {
+      // Non-fatal by design: the pairing keeps working on tokens and the next tick tries again.
+      this.logger.debug(
+        `[HubPool] identity upgrade with ${peer.nodeFqdn} did not complete: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      return null;
+    }
+  }
+
+  /**
+   * Settle a row that has pinned a peer's key but is still carrying bearer tokens.
+   *
+   * Two outcomes, and the trigger for each is the point of the design:
+   *   - EVIDENCE (`signedSeenAt` set by the guard): the peer really did upgrade, so both token
+   *     columns are nulled and the grace window is cleared. From then on an old database backup
+   *     holds tokens that authenticate nowhere.
+   *   - NO EVIDENCE by the end of the window: the upgrade did not take on the far side. The pinning
+   *     is rolled BACK rather than enforced — enforcing it would lock out a peer that is still, and
+   *     correctly, presenting its bearer token. The next tick re-attempts the exchange.
+   */
+  private async reconcileBearerGrace(peer: HubPoolPeer): Promise<HubPoolPeer | null> {
+    if (!peer.peerPublicKey) {
+      return null;
+    }
+
+    if (peer.signedSeenAt) {
+      if (!peer.verifyTokenHash && !peer.presentTokenEncrypted && !peer.bearerGraceUntil) {
+        return null;
+      }
+      this.logger.info(`[HubPool] ${peer.nodeFqdn} is authenticating with its pinned key; retiring both bearer tokens for that peer`);
+      return (await this.repo.update(peer.id, { verifyTokenHash: null, presentTokenEncrypted: null, bearerGraceUntil: null })) ?? null;
+    }
+
+    if (peer.bearerGraceUntil && Date.parse(peer.bearerGraceUntil) <= Date.now()) {
+      this.logger.warn(
+        `[HubPool] ${peer.nodeFqdn} never presented a signed request within the upgrade window; rolling the pinned key back and retrying`,
+      );
+      return (await this.repo.update(peer.id, { peerNodeUuid: null, peerPublicKey: null, bearerGraceUntil: null })) ?? null;
+    }
+
+    return null;
+  }
+
+  /**
+   * Apply a name change the guard authenticated. Identity beats address: a signed peer arriving
+   * under a different FQDN has MOVED, and today a MagicDNS rename breaks a pairing permanently
+   * because `node_fqdn` is the unique key and the poll simply starts failing with no way back.
+   *
+   * Wrapped, because `node_fqdn` is UNIQUE and the new name may already belong to another row.
+   */
+  private async applyObservedFqdn(peer: HubPoolPeer): Promise<HubPoolPeer | null> {
+    const observed = this.identity.takeObservedPeerFqdn(peer.id);
+    if (!observed || observed === peer.nodeFqdn) {
+      return null;
+    }
+    try {
+      const updated = await this.repo.update(peer.id, { nodeFqdn: observed });
+      this.logger.info(`[HubPool] peer ${peer.peerNodeUuid} moved from ${peer.nodeFqdn} to ${observed}; following the identity`);
+      return updated ?? null;
+    } catch (error) {
+      this.logger.warn(
+        `[HubPool] could not follow ${peer.nodeFqdn} to its new name ${observed}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      return null;
+    }
+  }
+
+  // ── Identity rotation ───────────────────────────────────────────────────
+
+  /**
+   * Replace this node's keypair, keeping its UUID, and unpair every peer.
+   *
+   * Destructive on purpose: every peer has pinned the old key and v1 has no signed-rotation
+   * message, so there is nothing this node could send afterwards that a peer would believe. A
+   * rotation path a compromised key could also drive would be worse than no rotation path.
+   *
+   * Two phases, in this order and not the other: the unpair calls go out FIRST, signed with the key
+   * that is about to be destroyed, because once it is gone they cannot be authenticated at all. The
+   * result names the peers that were not reached, so the operator knows which Hubs still hold a
+   * stale row they will have to clear by hand.
+   */
+  async rotateIdentity(): Promise<{ nodeUuid: string; publicKeyFingerprint: string | null; unpaired: string[]; unreachable: string[] }> {
+    const peers = await this.repo.listAll();
+    const unpaired: string[] = [];
+    const unreachable: string[] = [];
+
+    for (const peer of peers) {
+      try {
+        const path = '/api/inference/pool/pair/unpair';
+        const response = await fetch(`https://${peer.nodeFqdn}${path}`, {
+          method: 'POST',
+          headers: await this.peerAuthHeaders(peer, 'POST', path),
+          signal: AbortSignal.timeout(HANDSHAKE_TIMEOUT_MS),
+        });
+        if (!response.ok) {
+          throw new Error(`unpair returned ${response.status}`);
+        }
+        unpaired.push(peer.nodeFqdn);
+      } catch (error) {
+        this.logger.warn(
+          `[HubPool] could not tell ${peer.nodeFqdn} about the identity rotation: ${error instanceof Error ? error.message : String(error)}`,
+        );
+        unreachable.push(peer.nodeFqdn);
+      }
+    }
+
+    const rotated = await this.identity.rotate();
+    for (const peer of peers) {
+      await this.repo.delete(peer.id);
+    }
+    return {
+      nodeUuid: rotated.nodeUuid,
+      publicKeyFingerprint: publicKeyFingerprint(rotated.publicKey),
+      unpaired,
+      unreachable,
+    };
+  }
+
+  // ── Pairing PIN (operator-facing) ───────────────────────────────────────
+
+  /** Mint a pairing PIN. Refused while pooling is off, like every other pairing surface. */
+  mintPairingPin(): { pin: string; expiresAt: string } {
+    const enabled = this.enabledState();
+    if (!enabled.enabled) {
+      throw new ServiceUnavailableException(describeHubPoolDisabled(enabled.disabledBy));
+    }
+    return this.pairingPins.mint();
+  }
+
+  cancelPairingPin(): void {
+    this.pairingPins.cancel();
+  }
+
+  /** This node's UUID + key fingerprint, for the operator surfaces. Never the private key. */
+  async identitySummary(): Promise<PoolIdentitySummary> {
+    return this.identity.summary();
+  }
+
   private async refreshPeerHealth(): Promise<void> {
     // 'unreachable' rows are polled too: the peer may have come back (rebooted, network healed,
     // or HUB_POOL_USER_DISABLED removed), and nothing else in the system would ever re-probe it.
@@ -660,17 +1065,19 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
 
   private async refreshOnePeer(peer: HubPoolPeer): Promise<void> {
     try {
-      const token = await this.getPresentToken(peer);
-      const selfStatus = await this.tailscaleService.getStatusCached();
-      const response = await fetch(`https://${peer.nodeFqdn}/api/inference/pool/capabilities`, {
-        headers: { 'X-Hub-Pool-Peer': selfStatus.nodeFqdn ?? '', Authorization: `Bearer ${token}` },
+      // Every FQDN-column write for this peer happens here, on the poll, and never in the guard:
+      // `node_fqdn` is UNIQUE, so a collision has to be able to log instead of failing a request.
+      const current = (await this.applyObservedFqdn(peer)) ?? peer;
+      const path = '/api/inference/pool/capabilities';
+      const response = await fetch(`https://${current.nodeFqdn}${path}`, {
+        headers: await this.peerAuthHeaders(current, 'GET', path),
         signal: AbortSignal.timeout(CAPABILITIES_PROBE_TIMEOUT_MS),
       });
       if (!response.ok) {
         throw new Error(`capabilities probe returned ${response.status}`);
       }
       const capabilities = (await response.json()) as PoolPeerCapabilities;
-      await this.repo.update(peer.id, {
+      const refreshed = await this.repo.update(current.id, {
         // A successful probe is the only recovery path back out of 'unreachable' — without this the
         // row would stay excluded from routing forever and Unpair would be the operator's only move.
         status: 'connected',
@@ -678,6 +1085,8 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
         lastSeenAt: new Date().toISOString(),
         lastCapabilities: capabilities as unknown as Record<string, unknown>,
       });
+      const settled = (await this.reconcileBearerGrace(refreshed ?? current)) ?? refreshed ?? current;
+      await this.upgradeToSignedIfPossible(settled, capabilities);
     } catch (error) {
       const failures = peer.consecutiveFailures + 1;
       this.logger.warn(

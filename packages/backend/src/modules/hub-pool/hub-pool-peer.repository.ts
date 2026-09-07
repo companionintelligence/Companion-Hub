@@ -24,6 +24,17 @@ export class HubPoolPeerRepository {
     return this.db.query.hubPoolPeer.findFirst({ where: eq(hubPoolPeer.nodeFqdn, nodeFqdn) });
   }
 
+  /**
+   * Resolve a peer by its pinned pool UUID — the lookup the signed-request guard uses.
+   *
+   * Backed by the partial unique index from migration 0059, so at most one row can ever answer.
+   * Unlike {@link findByNodeFqdn} this survives the peer being renamed, which is the entire point
+   * of storing a UUID alongside the address.
+   */
+  async findByNodeUuid(peerNodeUuid: string): Promise<HubPoolPeer | undefined> {
+    return this.db.query.hubPoolPeer.findFirst({ where: eq(hubPoolPeer.peerNodeUuid, peerNodeUuid) });
+  }
+
   async listAll(): Promise<HubPoolPeer[]> {
     return this.db.query.hubPoolPeer.findMany();
   }

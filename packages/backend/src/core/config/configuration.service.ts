@@ -107,6 +107,7 @@ type PersistedSettingsValues = {
   hubPoolInboundEnabled: boolean | undefined;
   hubPoolLocalAffinity: number | undefined;
   hubPoolHealthPollSeconds: number | undefined;
+  hubPoolRequireSignedPeers: boolean | undefined;
 };
 
 const EMPTY_PERSISTED_SETTINGS: PersistedSettingsValues = {
@@ -130,6 +131,7 @@ const EMPTY_PERSISTED_SETTINGS: PersistedSettingsValues = {
   hubPoolInboundEnabled: undefined,
   hubPoolLocalAffinity: undefined,
   hubPoolHealthPollSeconds: undefined,
+  hubPoolRequireSignedPeers: undefined,
 };
 
 @Injectable()
@@ -211,6 +213,7 @@ export class ConfigurationService {
       hubPoolInboundEnabled: settings.hubPoolInboundEnabled,
       hubPoolLocalAffinity: settings.hubPoolLocalAffinity,
       hubPoolHealthPollSeconds: settings.hubPoolHealthPollSeconds,
+      hubPoolRequireSignedPeers: settings.hubPoolRequireSignedPeers,
     };
   }
 
@@ -304,6 +307,7 @@ export class ConfigurationService {
         hubPoolInboundEnabled: settingsValues.hubPoolInboundEnabled,
         hubPoolLocalAffinity: settingsValues.hubPoolLocalAffinity,
         hubPoolHealthPollSeconds: settingsValues.hubPoolHealthPollSeconds,
+        hubPoolRequireSignedPeers: settingsValues.hubPoolRequireSignedPeers,
         experimental: {
           insecureCookie: env.data.EXPERIMENTAL_INSECURE_COOKIE,
         },
@@ -468,6 +472,9 @@ export class ConfigurationService {
       poolInboundEnabled: this.config.userSettings.hubPoolInboundEnabled ?? true,
       poolLocalAffinity: this.config.userSettings.hubPoolLocalAffinity ?? DEFAULT_POOL_LOCAL_AFFINITY,
       poolHealthPollSeconds: this.config.userSettings.hubPoolHealthPollSeconds ?? DEFAULT_POOL_HEALTH_POLL_SECONDS,
+      // `?? false`, not `?? true`: this is the one pool switch that is opt-IN, because it removes a
+      // code path older peers still depend on. See `HubPoolPreferences.poolRequireSignedPeers`.
+      poolRequireSignedPeers: this.config.userSettings.hubPoolRequireSignedPeers ?? false,
     };
   }
 
@@ -479,6 +486,7 @@ export class ConfigurationService {
       hubPoolInboundEnabled?: boolean;
       hubPoolLocalAffinity?: number;
       hubPoolHealthPollSeconds?: number;
+      hubPoolRequireSignedPeers?: boolean;
     } = {};
     if (preferences.poolEnabled !== undefined) {
       settings.hubPoolEnabled = preferences.poolEnabled;
@@ -494,6 +502,9 @@ export class ConfigurationService {
     }
     if (preferences.poolHealthPollSeconds !== undefined) {
       settings.hubPoolHealthPollSeconds = preferences.poolHealthPollSeconds;
+    }
+    if (preferences.poolRequireSignedPeers !== undefined) {
+      settings.hubPoolRequireSignedPeers = preferences.poolRequireSignedPeers;
     }
     // A no-op PATCH must not rewrite settings.json: every write is a read-modify-write of the whole
     // file with no locking, so an empty one can still clobber a concurrent inference-preferences save.

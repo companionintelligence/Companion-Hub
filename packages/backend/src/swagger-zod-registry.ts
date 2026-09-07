@@ -66,7 +66,7 @@ import {
   UpdateInferencePreferencesBody,
   UpdateRocmInstallStateBody,
 } from './modules/inference/inference.dto';
-import { RoutingLogQueryDto, UpdateHubPoolPreferencesBody } from './modules/hub-pool/hub-pool.dto';
+import { PairingUpgradeBody, RoutingLogQueryDto, UpdateHubPoolPreferencesBody } from './modules/hub-pool/hub-pool.dto';
 import { EditLinkBodyDto, LinkBodyDto, LinksDto } from './modules/links/dto/links.dto';
 import {
   AllAppStoresDto,
@@ -155,6 +155,7 @@ export const SWAGGER_ZOD_DTOS: ZodDto[] = [
   RuntimeModelsQueryDto,
   UpdateInferencePreferencesBody,
   UpdateRocmInstallStateBody,
+  PairingUpgradeBody,
   UpdateHubPoolPreferencesBody,
   RoutingLogQueryDto,
   EditLinkBodyDto,

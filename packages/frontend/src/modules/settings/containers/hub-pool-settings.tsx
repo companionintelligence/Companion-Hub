@@ -58,6 +58,10 @@ interface PoolPeer {
   lastSeenAt: string | null;
   lastCapabilities: PoolPeerCapabilities | null;
   inFlightRequests: number;
+  /** How this peer authenticates to us: the original token, or a pinned Ed25519 key. */
+  authMode?: 'bearer' | 'signed';
+  /** A short hash of the peer's pinned public key. Never the key — the fingerprint is what a human compares. */
+  peerKeyFingerprint?: string | null;
 }
 
 interface PoolSettings {
@@ -66,6 +70,21 @@ interface PoolSettings {
   poolInboundEnabled: boolean;
   poolLocalAffinity: number;
   poolHealthPollSeconds: number;
+  poolRequireSignedPeers: boolean;
+}
+
+/** This node's own pool identity. Never the private key — only the UUID and a short fingerprint. */
+interface PoolIdentitySummary {
+  nodeUuid: string | null;
+  publicKeyFingerprint: string | null;
+  /** Why identity is unusable, when it is — surfaced the same way `capabilitiesError` is. */
+  identityError: string | null;
+}
+
+/** An outstanding pairing PIN. The digits are returned exactly once, by the mint call, and never here. */
+interface PoolPairingPinState {
+  active: boolean;
+  expiresAt: string | null;
 }
 
 interface PoolEnabledState {
@@ -89,9 +108,11 @@ interface PoolStatus {
     hardwareTier: string | null;
     backends: PoolBackendCapability[];
     capabilitiesError: string | null;
+    identity?: PoolIdentitySummary;
   };
   peers: PoolPeer[];
   peerCounts: { total: number; connected: number; pending: number; unreachable: number; disabled: number };
+  pairingPin?: PoolPairingPinState;
   routing: { recorded: number; capacity: number; served: number; failed: number; failovers: number; lastAt: string | null };
 }
 
@@ -266,10 +287,14 @@ export const HubPoolSection = () => {
     onError: () => toast.error(t('HUB_POOL_SETTINGS_ERROR')),
   });
 
+  /* The PIN an operator read off the OTHER Hub's screen. Optional: without one this is the
+     pre-existing request/approve flow, which is what keeps a mixed-version fleet pairing at all. */
+  const [pairingPinInput, setPairingPinInput] = useState('');
   const pairMutation = useMutation({
-    mutationFn: (nodeFqdn: string) => pairPeer({ body: { nodeFqdn } }),
+    mutationFn: (nodeFqdn: string) => pairPeer({ body: { nodeFqdn, ...(/^\d{6}$/.test(pairingPinInput) ? { pin: pairingPinInput } : {}) } as never }),
     onSuccess: () => {
       toast.success(t('HUB_POOL_PAIR_SUCCESS'));
+      setPairingPinInput('');
       invalidatePool();
     },
     onError: () => toast.error(t('HUB_POOL_PAIR_ERROR')),
@@ -330,6 +355,31 @@ export const HubPoolSection = () => {
       invalidatePool();
     },
     onError: () => toast.error(t('HUB_POOL_PEER_TOGGLE_ERROR')),
+  });
+
+  /* Pairing PIN. Through the generated client's low-level verbs for the same reason as the two
+     blocks above: the routes are new and `packages/frontend/src/api-client/*` is regenerated from
+     swagger.json after this lands. The mint RESPONSE is the only place the digits ever appear —
+     `GET status` reports `pairingPin: { active, expiresAt }` and never the value, so polling can
+     render the countdown without the PIN becoming re-servable. */
+  const [mintedPin, setMintedPin] = useState<string | null>(null);
+  const mintPinMutation = useMutation({
+    mutationFn: () => client.post({ url: '/api/inference/pool/pairing-pin' }),
+    onSuccess: (response) => {
+      // Cast rather than a generic: the low-level client types every response as `unknown` until
+      // swagger.json and the api-client are regenerated. `hub-pool.controller.ts` is the contract.
+      setMintedPin((response.data as { pin?: string } | undefined)?.pin ?? null);
+      invalidatePool();
+    },
+    onError: () => toast.error(t('HUB_POOL_PIN_MINT_ERROR')),
+  });
+  const cancelPinMutation = useMutation({
+    mutationFn: () => client.delete({ url: '/api/inference/pool/pairing-pin' }),
+    onSuccess: () => {
+      setMintedPin(null);
+      invalidatePool();
+    },
+    onError: () => toast.error(t('HUB_POOL_PIN_CANCEL_ERROR')),
   });
 
   /* Same DELETE as Unpair, split out only so the toasts match what the operator did: cancelling
@@ -712,6 +762,65 @@ export const HubPoolSection = () => {
           )}
         </Block>
 
+        {/* ── Pairing PIN and this node's identity ────────────────────── */}
+        <Block title={t('HUB_POOL_PIN_TITLE')} help={t('HUB_POOL_PIN_HELP')}>
+          <div className="space-y-3">
+            {status.localNode.identity?.identityError ? (
+              /* Surfaced exactly the way `capabilitiesError` is: identity bootstrap degrades and
+                 reports rather than throwing, so a Hub whose JWT_SECRET was regenerated over a
+                 retained volume still boots, still verifies its peers, and says why it cannot sign. */
+              <p data-testid="hub-pool-identity-error" className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs">
+                {t('HUB_POOL_IDENTITY_ERROR', { error: status.localNode.identity.identityError })}
+              </p>
+            ) : (
+              <p className="font-mono text-xs text-muted-foreground" data-testid="hub-pool-local-fingerprint">
+                {t('HUB_POOL_LOCAL_FINGERPRINT', { fingerprint: status.localNode.identity?.publicKeyFingerprint ?? '—' })}
+              </p>
+            )}
+
+            {mintedPin ? (
+              <div className="flex items-center justify-between gap-3 rounded-md border px-3 py-2">
+                {/* The only place the digits are ever rendered: they came back from the mint call and
+                    are held in this component's state, never re-fetched. A reload loses them, which
+                    is correct — the operator mints a new one. */}
+                <span className="font-mono text-2xl tracking-[0.3em]" data-testid="hub-pool-minted-pin">
+                  {mintedPin}
+                </span>
+                <Button type="button" size="sm" variant="outline" disabled={demoMode} onClick={() => cancelPinMutation.mutate()}>
+                  {t('HUB_POOL_PIN_CANCEL_BUTTON')}
+                </Button>
+              </div>
+            ) : (
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-xs text-muted-foreground" data-testid="hub-pool-pin-state">
+                  {status.pairingPin?.active ? t('HUB_POOL_PIN_ACTIVE_ELSEWHERE') : t('HUB_POOL_PIN_NONE')}
+                </span>
+                <Button
+                  type="button"
+                  size="sm"
+                  data-testid="hub-pool-mint-pin-btn"
+                  disabled={demoMode}
+                  loading={mintPinMutation.isPending}
+                  onClick={() => mintPinMutation.mutate()}
+                >
+                  {t('HUB_POOL_PIN_MINT_BUTTON')}
+                </Button>
+              </div>
+            )}
+
+            {/* Entered on the OTHER Hub, next to the address being paired. Left blank, pairing
+                behaves exactly as it did before this shipped. */}
+            <Input
+              value={pairingPinInput}
+              inputMode="numeric"
+              maxLength={6}
+              data-testid="hub-pool-pin-input"
+              placeholder={t('HUB_POOL_PIN_INPUT_PLACEHOLDER')}
+              onChange={(event) => setPairingPinInput(event.target.value.replace(/\D/g, '').slice(0, 6))}
+            />
+          </div>
+        </Block>
+
         {/* ── Discovery and pairing ───────────────────────────────────── */}
         <Block title={t('HUB_POOL_DISCOVERABLE_TITLE')} help={t('HUB_POOL_DISCOVERABLE_HELP')}>
           {status.tailscaleAdminApiConfigured ? (
@@ -761,6 +870,16 @@ export const HubPoolSection = () => {
                       {peer.nodeFqdn}
                     </span>
                     {peer.displayName ? <span className="block truncate text-xs text-muted-foreground">{peer.displayName}</span> : null}
+                    {/* The other half of the confirmation. A PIN-authenticated request arrives with the
+                        requester's key already pinned, so the operator can compare this fingerprint
+                        against the one shown on that Hub's own screen before approving. Absent means
+                        the request carried no PIN — i.e. an unauthenticated claim of a name, which is
+                        exactly the case the PIN exists to close. */}
+                    <span className="block truncate font-mono text-[11px] text-muted-foreground" data-testid="hub-pool-pending-fingerprint">
+                      {peer.peerKeyFingerprint
+                        ? t('HUB_POOL_PEER_FINGERPRINT', { fingerprint: peer.peerKeyFingerprint })
+                        : t('HUB_POOL_PEER_FINGERPRINT_UNVERIFIED')}
+                    </span>
                   </div>
                   <div className="flex shrink-0 gap-2">
                     <Button

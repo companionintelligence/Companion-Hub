@@ -13,12 +13,16 @@ import type { HubPoolPeer, NewHubPoolPeer } from '@/core/database/drizzle/types'
 import { DEFAULT_POOL_HEALTH_POLL_SECONDS, DEFAULT_POOL_LOCAL_AFFINITY, type HubPoolPreferences } from '@/common/helpers/hub-pool';
 import { HubPoolPeerRepository } from '../hub-pool-peer.repository';
 import { HubPoolPeerService } from '../hub-pool-peer.service';
+import { HubPoolIdentityRepository, type HubPoolIdentityRow } from '../hub-pool-identity.repository';
+import { HubPoolIdentityService } from '../hub-pool-identity.service';
+import { HubPoolPairingPinService } from '../hub-pool-pairing-pin.service';
 import { HubPoolLoadService } from '../hub-pool-load.service';
 import { HubPoolRoutingLogService } from '../hub-pool-routing-log.service';
 import { PoolProxyService } from '../hub-pool-proxy.service';
 import { HubPoolController } from '../hub-pool.controller';
 import { PoolPeerGuard } from '../guards/pool-peer.guard';
 import type { PoolPeerCapabilities } from '../hub-pool.types';
+import { publicKeyFingerprint } from '../hub-pool-peer-auth';
 
 /**
  * The pairing handshake is the one part of Hub Pool whose correctness lives *between* two machines:
@@ -87,6 +91,11 @@ class FakePeerRepository {
     return [...this.rows.values()].find((row) => row.nodeFqdn === nodeFqdn);
   }
 
+  /** Backed by the partial unique index in migration 0059, which {@link update} enforces below. */
+  async findByNodeUuid(peerNodeUuid: string): Promise<HubPoolPeer | undefined> {
+    return [...this.rows.values()].find((row) => row.peerNodeUuid === peerNodeUuid);
+  }
+
   async listAll(): Promise<HubPoolPeer[]> {
     return [...this.rows.values()];
   }
@@ -103,6 +112,14 @@ class FakePeerRepository {
     const existing = this.rows.get(id);
     if (!existing) return undefined;
     const next = { ...existing, ...(data as Partial<HubPoolPeer>), updatedAt: new Date().toISOString() };
+    // Both unique constraints, enforced here so "follow a renamed peer" and "pin an identity" are
+    // only real tests if a collision would actually have thrown in Postgres.
+    if ([...this.rows.values()].some((row) => row.id !== id && row.nodeFqdn === next.nodeFqdn)) {
+      throw new Error('duplicate key value violates unique constraint "hub_pool_peer_node_fqdn_unique"');
+    }
+    if (next.peerNodeUuid && [...this.rows.values()].some((row) => row.id !== id && row.peerNodeUuid === next.peerNodeUuid)) {
+      throw new Error('duplicate key value violates unique constraint "hub_pool_peer_node_uuid_uidx"');
+    }
     this.rows.set(id, next);
     return next;
   }
@@ -121,12 +138,32 @@ class FakePeerRepository {
   }
 }
 
+/** In-memory `hub_pool_identity`. One row, and `insertIfAbsent` really is a no-op when it is taken. */
+class FakeIdentityRepository {
+  row: HubPoolIdentityRow | undefined;
+
+  async get(): Promise<HubPoolIdentityRow | undefined> {
+    return this.row;
+  }
+
+  async insertIfAbsent(values: Omit<HubPoolIdentityRow, 'id' | 'createdAt' | 'rotatedAt'>): Promise<void> {
+    this.row ??= { id: 'self', createdAt: new Date().toISOString(), rotatedAt: null, ...values };
+  }
+
+  async replaceKeys(publicKey: string, privateKeyEncrypted: string): Promise<void> {
+    if (this.row) {
+      this.row = { ...this.row, publicKey, privateKeyEncrypted, rotatedAt: new Date().toISOString() };
+    }
+  }
+}
+
 interface Node {
   fqdn: string;
   repo: FakePeerRepository;
   service: HubPoolPeerService;
   controller: HubPoolController;
   guard: PoolPeerGuard;
+  identity: HubPoolIdentityService;
   configuration: MockProxy<ConfigurationService>;
   setPoolEnabled(enabled: boolean): void;
   setInboundEnabled(enabled: boolean): void;
@@ -135,6 +172,8 @@ interface Node {
   setPeerEnabled(id: string, enabled: boolean): Promise<void>;
   /** Runs one health-poll tick, as the module's own timer would. */
   poll(): Promise<void>;
+  /** Give this node a new MagicDNS name, as a tailnet rename would — routing and self-report together. */
+  rename(fqdn: string): void;
 }
 
 function buildNode(fqdn: string, models: string[]): Node {
@@ -146,6 +185,7 @@ function buildNode(fqdn: string, models: string[]): Node {
     poolInboundEnabled: true,
     poolLocalAffinity: DEFAULT_POOL_LOCAL_AFFINITY,
     poolHealthPollSeconds: DEFAULT_POOL_HEALTH_POLL_SECONDS,
+    poolRequireSignedPeers: false,
   };
   configuration.getHubPoolPreferences.mockImplementation(() => ({ ...preferences }));
 
@@ -160,19 +200,20 @@ function buildNode(fqdn: string, models: string[]): Node {
   });
 
   const tailscaleService = mock<TailscaleService>();
-  tailscaleService.getStatusCached.mockResolvedValue({
+  let selfFqdn = fqdn;
+  tailscaleService.getStatusCached.mockImplementation(async () => ({
     installed: true,
     connected: true,
     version: '1.90.0',
-    hostname: fqdn.split('.')[0] as string,
-    nodeFqdn: fqdn,
+    hostname: selfFqdn.split('.')[0] as string,
+    nodeFqdn: selfFqdn,
     tailnet: TAILNET,
     ip: '100.64.0.1',
     supportsServices: true,
     httpsAvailable: true,
     backendState: 'Running',
     authUrl: null,
-  });
+  }));
 
   const tailscaleAdminApi = mock<TailscaleAdminApiService>();
   tailscaleAdminApi.isConfigured.mockReturnValue(false);
@@ -211,6 +252,14 @@ function buildNode(fqdn: string, models: string[]): Node {
   );
 
   const repoAsReal = repo as unknown as HubPoolPeerRepository;
+  // A real identity service over a fake table: the keypair, the encryption round-trip and the
+  // "never re-mint" rule are all part of what these two nodes are testing.
+  const identity = new HubPoolIdentityService(
+    mock<LoggerService>(),
+    new FakeIdentityRepository() as unknown as HubPoolIdentityRepository,
+    encryption,
+  );
+  const pairingPins = new HubPoolPairingPinService(mock<LoggerService>());
   const service = new HubPoolPeerService(
     mock<LoggerService>(),
     repoAsReal,
@@ -220,15 +269,18 @@ function buildNode(fqdn: string, models: string[]): Node {
     inferenceRouter,
     new HubPoolLoadService(),
     configuration,
+    identity,
+    pairingPins,
   );
   const controller = new HubPoolController(service, mock<PoolProxyService>(), tailscaleService, configuration, new HubPoolRoutingLogService());
 
-  return {
+  const built: Node = {
     fqdn,
     repo,
     service,
     controller,
-    guard: new PoolPeerGuard(repoAsReal),
+    guard: new PoolPeerGuard(repoAsReal, identity, configuration, mock<LoggerService>()),
+    identity,
     configuration,
     setPoolEnabled(enabled: boolean) {
       preferences.poolEnabled = enabled;
@@ -243,7 +295,13 @@ function buildNode(fqdn: string, models: string[]): Node {
       await service.setPeerEnabled(id, enabled);
     },
     poll: () => (service as unknown as { refreshPeerHealth: () => Promise<void> }).refreshPeerHealth(),
+    rename(next: string) {
+      selfFqdn = next;
+      node.fqdn = next;
+    },
   };
+  const node = built;
+  return node;
 }
 
 function headerLookup(init: RequestInit | undefined): (name: string) => string | undefined {
@@ -280,11 +338,22 @@ function installFetchRouter(nodes: Node[], options: { offline?: Set<string> } = 
 
     const header = headerLookup(init);
     const body = init?.body ? (JSON.parse(init.body as string) as Record<string, string>) : {};
-    const request = { header, poolPeer: undefined } as unknown as Request;
+    // `method`, `originalUrl` and `body` are what the signature covers, so the fake request has to
+    // carry them or a signed call would verify against the wrong message here and only here.
+    const request = {
+      header,
+      poolPeer: undefined,
+      method: (init?.method ?? 'GET').toUpperCase(),
+      originalUrl: url.pathname,
+      url: url.pathname,
+      path: url.pathname,
+      body,
+      ip: '100.64.0.9',
+    } as unknown as Request;
     const path = url.pathname.replace('/api/inference/pool', '');
 
     if (path === '/pair/request') {
-      return toResponse(() => node.controller.handlePairingRequest(body as never));
+      return toResponse(() => node.controller.handlePairingRequest(request, body as never));
     }
 
     // Everything below is peer-facing, so the real guard decides whether the caller gets in at all.
@@ -297,6 +366,8 @@ function installFetchRouter(nodes: Node[], options: { offline?: Set<string> } = 
           return node.controller.handlePairingReject(request);
         case '/pair/unpair':
           return node.controller.handlePairingUnpair(request);
+        case '/pair/upgrade':
+          return node.controller.handlePairingUpgrade(request, body as never);
         case '/capabilities':
           return node.controller.capabilities(request);
         default:
@@ -388,6 +459,212 @@ describe('Hub Pool across two nodes', () => {
 
       expect(beta.repo.rows.size).toBe(1);
       expect(beta.repo.only().id).toBe(betaRowId);
+    });
+  });
+
+  describe('peer identity: PIN pairing, pinning and the bearer upgrade', () => {
+    /** What each node cached about the other on its last successful capability probe. */
+    function cached(node: Node): PoolPeerCapabilities {
+      return node.repo.only().lastCapabilities as unknown as PoolPeerCapabilities;
+    }
+
+    /** Wind a row back to what migration 0058 left behind: paired, tokens only, nothing pinned. */
+    async function rewindToBearerOnly(node: Node): Promise<void> {
+      await node.repo.update(node.repo.only().id, { peerNodeUuid: null, peerPublicKey: null, bearerGraceUntil: null, signedSeenAt: null });
+    }
+
+    /**
+     * Run health ticks until both sides have settled onto signatures.
+     *
+     * Three rounds, and the cost is inherent rather than incidental: the upgrade responder keeps
+     * presenting its bearer token until it has *seen* the initiator sign, so each side needs one
+     * tick to exchange keys, one to be observed signing, and one to retire its tokens.
+     */
+    async function converge(): Promise<void> {
+      for (let round = 0; round < 3; round += 1) {
+        await core.poll();
+        await beta.poll();
+      }
+    }
+
+    it('pins each side to the other’s key on a plain protocol-1 pairing, over the authenticated confirm call', async () => {
+      await pairNodes();
+
+      // No PIN anywhere here: the identity claims travel on `pair/confirm`, which PoolPeerGuard has
+      // already authenticated, so the legacy request/approve flow ends up pinned too.
+      expect(core.repo.only().peerNodeUuid).toBe((await beta.service.identitySummary()).nodeUuid);
+      expect(beta.repo.only().peerNodeUuid).toBe((await core.service.identitySummary()).nodeUuid);
+      expect(core.repo.only().peerPublicKey).toBeTruthy();
+      expect(beta.repo.only().peerPublicKey).toBeTruthy();
+    });
+
+    it('pairs with a PIN, pins both identities, and still lands PENDING for the operator to confirm', async () => {
+      const { pin } = beta.service.mintPairingPin();
+
+      await core.service.initiatePairing(BETA_FQDN, 'Beta Hub', pin);
+
+      // Q3: a PIN authenticates the REQUEST; it does not stand in for the operator seeing who is
+      // asking. A PIN read aloud, or over a shoulder, must not get a node connected and spending GPU.
+      const betaRow = beta.repo.only();
+      expect(betaRow).toMatchObject({ status: 'pending', direction: 'inbound' });
+      // …but the claim IS authenticated now, so the confirm screen can show a real fingerprint.
+      expect(betaRow.peerNodeUuid).toBe((await core.service.identitySummary()).nodeUuid);
+      expect(publicKeyFingerprint(betaRow.peerPublicKey)).toBe((await core.service.identitySummary()).publicKeyFingerprint);
+      // And core learned beta's identity from beta's answer, inside the TLS session core opened.
+      expect(publicKeyFingerprint(core.repo.only().peerPublicKey)).toBe((await beta.service.identitySummary()).publicKeyFingerprint);
+
+      await beta.service.approvePairing(betaRow.id);
+      expect(beta.repo.only().status).toBe('connected');
+      expect(core.repo.only().status).toBe('connected');
+    });
+
+    it('reports an outstanding PIN without ever re-serving the digits', async () => {
+      const { pin, expiresAt } = beta.service.mintPairingPin();
+
+      const status = await beta.service.getPoolStatus();
+
+      expect(status.pairingPin).toEqual({ active: true, expiresAt });
+      expect(JSON.stringify(status)).not.toContain(pin);
+    });
+
+    it('leaves NOTHING on either side when the PIN is wrong', async () => {
+      beta.service.mintPairingPin();
+
+      await expect(core.service.initiatePairing(BETA_FQDN, 'Beta Hub', '000000')).rejects.toThrow(/401/);
+
+      // The whole point of the PIN: a bad request creates no pending slot and plants no outbound
+      // token, so it can neither squat the approval list nor 401 beta's real calls to core forever.
+      expect(beta.repo.rows.size).toBe(0);
+      expect(core.repo.rows.size).toBe(0);
+    });
+
+    it('refuses a PIN that has already been spent', async () => {
+      const { pin } = beta.service.mintPairingPin();
+      await core.service.initiatePairing(BETA_FQDN, 'Beta Hub', pin);
+      await beta.service.approvePairing(beta.repo.only().id);
+      await core.service.removePeer(core.repo.only().id);
+
+      await expect(core.service.initiatePairing(BETA_FQDN, 'Beta Hub', pin)).rejects.toThrow(/401/);
+    });
+
+    it('upgrades an existing bearer pairing to signatures off the health tick, and both sides converge', async () => {
+      await pairNodes();
+      await rewindToBearerOnly(core);
+      await rewindToBearerOnly(beta);
+
+      await core.poll();
+
+      // Core initiated the exchange, so it learned beta's key from a RESPONSE and can sign at once;
+      // beta learned core's from a REQUEST and keeps presenting its bearer token until it sees core
+      // sign, because its own reply carrying its key may never have arrived.
+      expect(core.repo.only().peerPublicKey).toBeTruthy();
+      expect(beta.repo.only().peerPublicKey).toBeTruthy();
+      expect(beta.repo.only().bearerGraceUntil).not.toBeNull();
+
+      await converge();
+
+      // Once each side has observed the other signing, both bearer tokens are retired — an old
+      // database backup then holds tokens that authenticate nowhere.
+      expect(core.repo.only()).toMatchObject({ verifyTokenHash: null, presentTokenEncrypted: null, bearerGraceUntil: null });
+      expect(beta.repo.only()).toMatchObject({ verifyTokenHash: null, presentTokenEncrypted: null, bearerGraceUntil: null });
+      expect(cached(core).backends[0]?.modelsLoaded).toContain(BETA_ONLY_MODEL);
+    });
+
+    it('keeps routing while only one side has upgraded, which is the whole mixed-fleet requirement', async () => {
+      await pairNodes();
+      await rewindToBearerOnly(core);
+      await rewindToBearerOnly(beta);
+
+      // Core upgrades; beta is left on the bearer token for a full extra round of polls.
+      await core.poll();
+      await core.poll();
+
+      expect(core.repo.only().status).toBe('connected');
+      expect(beta.repo.only().status).toBe('connected');
+      expect(cached(core).backends[0]?.modelsLoaded).toContain(BETA_ONLY_MODEL);
+    });
+
+    it('rolls a pinned key back when the far side never signs, instead of locking the peer out', async () => {
+      await pairNodes();
+      // A grace window that has already closed with no signed request ever observed.
+      await beta.repo.update(beta.repo.only().id, { signedSeenAt: null, bearerGraceUntil: new Date(Date.now() - 1).toISOString() });
+
+      await beta.poll();
+
+      // Rolled back, not enforced: enforcing would 401 a peer that is behaving correctly, and the
+      // key can always be re-learned over the same authenticated channel on a later tick.
+      expect(beta.repo.only()).toMatchObject({ peerNodeUuid: null, peerPublicKey: null, bearerGraceUntil: null, status: 'connected' });
+    });
+
+    it('follows a renamed peer by identity, which a bearer-only pairing could never do', async () => {
+      await pairNodes();
+      await converge();
+
+      // Beta gets a new MagicDNS name. Core still holds the old one, so core's own poll can no
+      // longer reach it — but beta's next signed call carries the new name, authenticated.
+      const renamed = 'hub-b2.example-tailnet.ts.net';
+      beta.rename(renamed);
+
+      await beta.poll();
+      await core.poll();
+
+      expect(core.repo.only().nodeFqdn).toBe(renamed);
+      expect(cached(core).backends[0]?.modelsLoaded).toContain(BETA_ONLY_MODEL);
+    });
+
+    it('rotates this node’s key, tells every peer first, and only then drops the rows', async () => {
+      await pairNodes();
+      const before = await core.service.identitySummary();
+
+      const result = await core.service.rotateIdentity();
+
+      // The unpair goes out BEFORE the key is destroyed — afterwards there is nothing core could
+      // send that beta would believe.
+      expect(result.unpaired).toEqual([BETA_FQDN]);
+      expect(result.unreachable).toEqual([]);
+      expect(result.nodeUuid).toBe(before.nodeUuid);
+      expect(result.publicKeyFingerprint).not.toBe(before.publicKeyFingerprint);
+      expect(core.repo.rows.size).toBe(0);
+      expect(beta.repo.rows.size).toBe(0);
+    });
+
+    it('names the peers a rotation could not reach, so the operator knows which rows are stale', async () => {
+      await pairNodes();
+      offline.add(BETA_FQDN);
+
+      const result = await core.service.rotateIdentity();
+
+      expect(result.unreachable).toEqual([BETA_FQDN]);
+      expect(result.unpaired).toEqual([]);
+      // Core's rows go either way: after the rotation it has no key with which to say anything else.
+      expect(core.repo.rows.size).toBe(0);
+    });
+
+    it('does not disclose this node’s name, UUID or key on the unauthenticated identify probe', async () => {
+      await pairNodes();
+
+      expect(await core.controller.identify()).toEqual({ isCiHub: true, poolProtocol: 2 });
+
+      // The UUID lives on the guarded capabilities route instead — beta had to authenticate for it.
+      await beta.poll();
+      expect(cached(beta).nodeUuid).toBe((await core.service.identitySummary()).nodeUuid);
+    });
+
+    it('refuses a bearer token once the peer has been observed signing — the no-downgrade rule, end to end', async () => {
+      await pairNodes();
+      await converge();
+
+      // Both sides have retired their tokens by now, so re-planting one and presenting it is exactly
+      // the downgrade an attacker with an old backup would attempt.
+      const coreRow = core.repo.only();
+      await beta.repo.update(beta.repo.only().id, { verifyTokenHash: hashToken('resurrected-token') });
+      await core.repo.update(coreRow.id, { presentTokenEncrypted: `ENC(${coreRow.nodeFqdn}):resurrected-token`, peerPublicKey: null });
+
+      await core.poll();
+
+      // Core can no longer sign to beta (it dropped the pinned key), so it falls back to the token —
+      // and beta refuses it, because it has seen core sign.
+      expect(core.repo.only().consecutiveFailures).toBe(1);
     });
   });
 
