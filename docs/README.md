@@ -42,6 +42,7 @@ Follow the [Google developer documentation style guide](https://developers.googl
 | [`private-vpn.md`](private-vpn.md) | Tailscale private VPN |
 | [`hub-pool.md`](hub-pool.md) | Multi-Hub inference pooling over Tailscale |
 | [`hub-pool-fleet-testing.md`](hub-pool-fleet-testing.md) | Two-node validation plan for Hub Pool |
+| [`hub-pool-vs-pair.md`](hub-pool-vs-pair.md) | Hub Pool compared with NVIDIA Personal-AI-Router |
 | [`ci-cd-pipeline.md`](ci-cd-pipeline.md) | Historical multi-env deploy notes |
 | [`dns-cache-analysis.md`](dns-cache-analysis.md) | Desktop DNS NXDOMAIN investigation |
 
