@@ -1,4 +1,3 @@
-import { readdirSync, statSync } from 'node:fs';
 import { Injectable } from '@nestjs/common';
 import { LoggerService } from '@/core/logger/logger.service';
 import type { BackendHealthStatus, BackendModelInfo, PullProgress } from '@ci-hub/common/types';
