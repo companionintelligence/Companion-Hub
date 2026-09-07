@@ -3,9 +3,9 @@ import { LoggerService } from '@/core/logger/logger.service';
 import type { InferenceBackend } from './backend.interface';
 import type { BackendHealthStatus, BackendModelInfo, PullProgress } from '@ci-hub/common/types';
 import axios from 'axios';
-// Shared with the Lucebox backend: both mount the same AMD device nodes and so need the same
-// host GIDs. Defined there rather than duplicated here — see that module for the full rationale.
-import { type DeviceGroupProbe, resolveAmdDeviceGroupIds } from './lucebox.backend';
+// Shared with the Lucebox and Ollama backends: all three mount the same AMD device nodes and so
+// need the same host GIDs. See that module for the full rationale.
+import { type DeviceGroupProbe, resolveAmdDeviceGroupIds } from './amd-device-groups.util';
 import { OpenAiCompatibleClient } from './openai-compatible.client';
 
 /** Extra deployment hints beyond the shared `{ rocmReady, unifiedMemory }` pair. */

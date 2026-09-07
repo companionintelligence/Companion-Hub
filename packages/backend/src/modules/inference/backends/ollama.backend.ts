@@ -3,6 +3,9 @@ import { LoggerService } from '@/core/logger/logger.service';
 import type { InferenceBackend } from './backend.interface';
 import type { BackendHealthStatus, BackendModelInfo, PullProgress } from '@ci-hub/common/types';
 import axios from 'axios';
+// Shared with the Lucebox and Lemonade backends: all three mount the same AMD device nodes and
+// so need the same host GIDs. See that module for the full rationale.
+import { type DeviceGroupProbe, resolveAmdDeviceGroupIds } from './amd-device-groups.util';
 
 /** Candidate Ollama URLs ordered by likelihood inside a Docker container. */
 const OLLAMA_FALLBACK_URLS = [
@@ -10,6 +13,20 @@ const OLLAMA_FALLBACK_URLS = [
   'http://172.17.0.1:11434', // default Docker bridge gateway (Linux)
   'http://localhost:11434',
 ];
+
+/** Extra deployment hints beyond the shared `{ rocmReady, unifiedMemory }` pair. */
+export interface OllamaComposeOptions {
+  rocmReady?: boolean;
+  unifiedMemory?: boolean;
+  /**
+   * Numeric host GIDs owning `/dev/kfd` and `/dev/dri/*`; derived from `/dev` when omitted.
+   * Supply these when generating the config somewhere other than the GPU host, where the
+   * device nodes cannot be statted.
+   */
+  groupIds?: number[];
+  /** Test seam for {@link resolveAmdDeviceGroupIds}. */
+  deviceProbe?: DeviceGroupProbe;
+}
 
 @Injectable()
 export class OllamaBackend implements InferenceBackend {
@@ -268,8 +285,11 @@ export class OllamaBackend implements InferenceBackend {
    * instead of the small carved-out VRAM window unified-memory APUs expose by default — mirroring
    * the community amd-strix-halo-toolboxes / llama-vulkan-strix setups. Discrete AMD GPUs have
    * real dedicated VRAM, so this must NOT be set for them.
+   *
+   * `options.groupIds` / `options.deviceProbe` only affect the `amd` branch; see the comment
+   * there for why group *names* cannot be used.
    */
-  getComposeConfig(gpuVendor: string, options?: { rocmReady?: boolean; unifiedMemory?: boolean }): Record<string, unknown> {
+  getComposeConfig(gpuVendor: string, options?: OllamaComposeOptions): Record<string, unknown> {
     const base: Record<string, unknown> = {
       image: this.getDockerImage(options),
       container_name: 'ci-hub-ollama',
@@ -287,7 +307,35 @@ export class OllamaBackend implements InferenceBackend {
       base.runtime = 'nvidia';
     } else if (gpuVendor === 'amd') {
       base.devices = ['/dev/kfd', '/dev/dri'];
-      base.group_add = ['video', 'render'];
+
+      // `group_add: ['video', 'render']` is a silent failure: Docker resolves those *names*
+      // against the **container's** /etc/group (render is typically GID 109), not the host's,
+      // where the group owning /dev/kfd and /dev/dri/renderD128 is site-specific — 990 across
+      // the Strix Halo fleet, with video at 44. The container joined a group granting nothing
+      // and every GPU device open failed with EACCES, which on this backend reads as Ollama
+      // silently running on CPU. Stat the nodes the service actually mounts instead.
+      const groupIds = options?.groupIds ?? resolveAmdDeviceGroupIds(options?.deviceProbe);
+      if (groupIds.length > 0) {
+        base.group_add = groupIds.map(String);
+      } else {
+        // Degrade like Lemonade rather than throw like Lucebox. Lucebox is GPU-only, so a
+        // permission-less config is worthless and refusing to emit one costs nothing. Ollama is
+        // the default backend and the most widely deployed, it serves perfectly well on CPU, and
+        // its container runs as root (note the /root/.ollama volume) where Docker's default
+        // CAP_DAC_OVERRIDE means group membership is not the only path to the device nodes. This
+        // method is itself built on degrading rather than failing — an AMD host without working
+        // ROCm passthrough gets the Vulkan-bundled default tag out of getDockerImage above, not
+        // an error — so throwing here would contradict its own posture, and would
+        // turn "the GPU may be unavailable" into "no config at all" for any caller evaluating
+        // this away from the GPU host. What it never does is emit the names: a group that
+        // silently grants nothing is worse than no group at all.
+        this.logger.warn(
+          '[Ollama] Could not derive host GIDs for /dev/kfd and /dev/dri, so the AMD compose config omits group_add. ' +
+            'If the container is run as a non-root user it will fail to open the GPU devices and fall back to CPU — ' +
+            'generate this on the GPU host, or pass groupIds explicitly.',
+        );
+      }
+
       if (!options?.rocmReady && options?.unifiedMemory) {
         base.environment = { GGML_VK_PREFER_HOST_MEMORY: '1' };
       }

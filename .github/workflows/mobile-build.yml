@@ -13,10 +13,16 @@ name: Mobile Build
 # secrets (Google Play upload key / Apple Developer cert + provisioning profile);
 # see the "Release signing" section in packages/mobile/README.md.
 
-# TEMPORARY (Actions credit): automatic push triggers disabled.
-# Re-enable when credits recover. Manual: gh workflow run mobile-build.yml
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - dev
+    paths:
+      - 'packages/mobile/**'
+      - 'packages/frontend/**'
+      - 'packages/common/**'
+      - '.github/workflows/mobile-build.yml'
 
 concurrency:
   group: mobile-${{ github.ref }}
@@ -290,16 +296,24 @@ jobs:
         id: findapp
         run: |
           APP="$(find ~/Library/Developer/Xcode/DerivedData -type d -path '*Build/Products/*-iphonesimulator/*.app' -maxdepth 6 2>/dev/null | head -1)"
+          # A build that produced no .app is a FAILED build, not an empty one.
+          # This step used to just record an empty output, the upload was skipped
+          # by `if: ... != ''`, and the job went green having shipped nothing --
+          # indistinguishable from a real success. The ios-release lane below
+          # already gets this right; this is the same guard.
+          if [ -z "$APP" ]; then
+            echo "::error::No iOS Simulator .app produced — check the build step log."
+            exit 1
+          fi
           echo "Found: $APP"
           echo "app=$APP" >> "$GITHUB_OUTPUT"
 
       - name: Upload iOS Simulator app
-        if: steps.findapp.outputs.app != ''
         uses: actions/upload-artifact@v7
         with:
           name: companion-hub-ios-sim-app
           path: ${{ steps.findapp.outputs.app }}
-          if-no-files-found: warn
+          if-no-files-found: error
 
   # ── iOS release IPA (App Store Connect / TestFlight) ─────────────────────
   # Skipped entirely until the Apple signing secrets exist, so it never reds
