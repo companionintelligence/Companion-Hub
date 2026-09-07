@@ -301,7 +301,9 @@ it"; the PIN-gated exchange answers "and this is who it is".
 ## Operator workflow
 
 1. On each participating Hub, confirm **Settings → Network** shows Tailscale connected.
-2. Find the other Hub, by either route — they produce the same candidate list and a node found both ways appears once:
+2. Find the other Hub, by either route. **The two are not interchangeable**: tailnet enumeration learns a node's
+   name, so its candidates can be paired with from the UI, whereas an address probe deliberately learns no name —
+   `/identify` does not disclose one — so pairing by address needs a PIN and happens from the CLI:
    - **By address, no credential needed:** `cihub pool probe 192.168.1.42` (or `192.168.1.42:5002`, or a hostname) confirms a Hub is there; `cihub pool pair 192.168.1.42 --pin <digits>` pairs with it, using a PIN minted on that Hub. See [Finding a peer by address](#finding-a-peer-by-address) for what each half does and does not do.
    - **By tailnet enumeration:** set the Tailscale OAuth client env vars above on at least one Hub and restart.
 3. Open **Settings → Network → Hub Pool**. Tailnet candidates appear with a **Pair** button — a Hub found by address is not in that list (it has no name to show yet) and is paired with from the CLI. Without the OAuth credential the tailnet half of the section says so and names the two variables, rather than showing an empty list — a Hub with no credential can still be paired *with*, and can still find peers by address; it just cannot enumerate the tailnet itself.
