@@ -38,6 +38,7 @@ APP_BASE_WSS_ORIGIN=ws://127.0.0.1:9040
   "version": "5.12.2",
   "cihub_app_version": 1,
   "short_desc": "Quibusdam spero turbo agnosco tenax careo autem.",
+  "replaces": [],
   "author": "Tyreek.Muller",
   "source": "https://extroverted-jazz.org",
   "website": "https://burly-swordfish.name",
@@ -81,18 +82,25 @@ APP_BASE_WSS_ORIGIN=ws://127.0.0.1:9040
     networks:
       test2_test_network:
         gw_priority: 0
-      ci-os-hub_network:
+      ci-hub_network:
         gw_priority: 1
+      ci-os-hub_network:
+        gw_priority: 0
     environment:
       TEST: test
     ports:
       - \${APP_PORT}:80
     labels:
+      ci-hub.managed: true
+      ci-hub.appurn: test2:test
       ci-os-hub.managed: true
       ci-os-hub.appurn: test2:test
     env_file:
       - /app-data/test/test2/app.env
 networks:
+  ci-hub_network:
+    name: ci-hub_network
+    external: true
   ci-os-hub_network:
     name: ci-os-hub_network
     external: true
@@ -117,6 +125,7 @@ networks:
   "version": "5.12.2",
   "cihub_app_version": 1,
   "short_desc": "Quibusdam spero turbo agnosco tenax careo autem.",
+  "replaces": [],
   "author": "Tyreek.Muller",
   "source": "https://extroverted-jazz.org",
   "website": "https://burly-swordfish.name",
@@ -196,6 +205,7 @@ APP_BASE_WSS_ORIGIN=ws://127.0.0.1:3041
   "version": "0.8.15",
   "cihub_app_version": 1,
   "short_desc": "Surculus perferendis suppono commodi conturbo calco claudeo quos aliquam.",
+  "replaces": [],
   "author": "Katlyn_Kassulke",
   "source": "https://growing-rationale.info/",
   "website": "https://international-kettledrum.info/",
@@ -239,18 +249,25 @@ APP_BASE_WSS_ORIGIN=ws://127.0.0.1:3041
     networks:
       test_test_network:
         gw_priority: 0
-      ci-os-hub_network:
+      ci-hub_network:
         gw_priority: 1
+      ci-os-hub_network:
+        gw_priority: 0
     environment:
       TEST: test
     ports:
       - \${APP_PORT}:80
     labels:
+      ci-hub.managed: true
+      ci-hub.appurn: test:test
       ci-os-hub.managed: true
       ci-os-hub.appurn: test:test
     env_file:
       - /app-data/test/test/app.env
 networks:
+  ci-hub_network:
+    name: ci-hub_network
+    external: true
   ci-os-hub_network:
     name: ci-os-hub_network
     external: true
@@ -275,6 +292,7 @@ networks:
   "version": "0.8.15",
   "cihub_app_version": 1,
   "short_desc": "Surculus perferendis suppono commodi conturbo calco claudeo quos aliquam.",
+  "replaces": [],
   "author": "Katlyn_Kassulke",
   "source": "https://growing-rationale.info/",
   "website": "https://international-kettledrum.info/",
@@ -402,6 +420,7 @@ APP_BASE_WSS_ORIGIN=ws://127.0.0.1:4868
   "version": "6.5.7",
   "cihub_app_version": 2,
   "short_desc": "Clarus ratione acquiro valens acceptus antepono tergiversatio.",
+  "replaces": [],
   "author": "Dock_Bergstrom",
   "source": "https://cautious-department.com/",
   "website": "https://scary-vista.org/",
@@ -445,18 +464,25 @@ APP_BASE_WSS_ORIGIN=ws://127.0.0.1:4868
     networks:
       app1_test_network:
         gw_priority: 0
-      ci-os-hub_network:
+      ci-hub_network:
         gw_priority: 1
+      ci-os-hub_network:
+        gw_priority: 0
     environment:
       TEST: test
     ports:
       - \${APP_PORT}:80
     labels:
+      ci-hub.managed: true
+      ci-hub.appurn: app1:test
       ci-os-hub.managed: true
       ci-os-hub.appurn: app1:test
     env_file:
       - /app-data/test/app1/app.env
 networks:
+  ci-hub_network:
+    name: ci-hub_network
+    external: true
   ci-os-hub_network:
     name: ci-os-hub_network
     external: true
@@ -480,6 +506,7 @@ networks:
   "version": "3.14.0",
   "cihub_app_version": 2,
   "short_desc": "Natus ambulo subseco solvo admiratio textor earum cursim tertius.",
+  "replaces": [],
   "author": "Colleen_Koss",
   "source": "https://our-cricket.net",
   "website": "https://long-conservative.com/",
@@ -523,18 +550,25 @@ networks:
     networks:
       app2_test_network:
         gw_priority: 0
-      ci-os-hub_network:
+      ci-hub_network:
         gw_priority: 1
+      ci-os-hub_network:
+        gw_priority: 0
     environment:
       TEST: test
     ports:
       - \${APP_PORT}:80
     labels:
+      ci-hub.managed: true
+      ci-hub.appurn: app2:test
       ci-os-hub.managed: true
       ci-os-hub.appurn: app2:test
     env_file:
       - /app-data/test/app2/app.env
 networks:
+  ci-hub_network:
+    name: ci-hub_network
+    external: true
   ci-os-hub_network:
     name: ci-os-hub_network
     external: true
@@ -558,6 +592,7 @@ networks:
   "version": "7.0.1",
   "cihub_app_version": 4,
   "short_desc": "Mollitia solvo coadunatio curatio.",
+  "replaces": [],
   "author": "Scarlett94",
   "source": "https://cluttered-necklace.biz",
   "website": "https://violent-morning.org/",
@@ -601,18 +636,25 @@ networks:
     networks:
       app3_test_network:
         gw_priority: 0
-      ci-os-hub_network:
+      ci-hub_network:
         gw_priority: 1
+      ci-os-hub_network:
+        gw_priority: 0
     environment:
       TEST: test
     ports:
       - \${APP_PORT}:80
     labels:
+      ci-hub.managed: true
+      ci-hub.appurn: app3:test
       ci-os-hub.managed: true
       ci-os-hub.appurn: app3:test
     env_file:
       - /app-data/test/app3/app.env
 networks:
+  ci-hub_network:
+    name: ci-hub_network
+    external: true
   ci-os-hub_network:
     name: ci-os-hub_network
     external: true
@@ -637,6 +679,7 @@ networks:
   "version": "6.5.7",
   "cihub_app_version": 2,
   "short_desc": "Clarus ratione acquiro valens acceptus antepono tergiversatio.",
+  "replaces": [],
   "author": "Dock_Bergstrom",
   "source": "https://cautious-department.com/",
   "website": "https://scary-vista.org/",
@@ -685,6 +728,7 @@ networks:
   "version": "3.14.0",
   "cihub_app_version": 2,
   "short_desc": "Natus ambulo subseco solvo admiratio textor earum cursim tertius.",
+  "replaces": [],
   "author": "Colleen_Koss",
   "source": "https://our-cricket.net",
   "website": "https://long-conservative.com/",
@@ -733,6 +777,7 @@ networks:
   "version": "7.0.1",
   "cihub_app_version": 4,
   "short_desc": "Mollitia solvo coadunatio curatio.",
+  "replaces": [],
   "author": "Scarlett94",
   "source": "https://cluttered-necklace.biz",
   "website": "https://violent-morning.org/",
