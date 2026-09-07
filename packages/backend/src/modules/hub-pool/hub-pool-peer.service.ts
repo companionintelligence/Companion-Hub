@@ -38,6 +38,7 @@ import { HubPoolPairingPinService, type PinAttemptSource } from './hub-pool-pair
 import { buildSignedPoolHeaders, MIN_PAIR_BY_ADDRESS_PROTOCOL, POOL_PEER_HEADER, publicKeyFingerprint } from './hub-pool-peer-auth';
 import { HubPoolPressureService } from './hub-pool-pressure.service';
 import {
+  resolveStatusPins,
   toPublicPeer,
   type DiscoverablePoolPeer,
   type PoolPairingAnswer,
@@ -342,13 +343,15 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
   /**
    * Everything the operator UI and CLI need in one poll: whether pooling is on and why, whether
    * discovery is even possible, this node's own identity and inventory, and every peer with its
-   * live queue depth.
+   * live queue depth — plus the operator's routing pins, each resolved to a node name and to
+   * whether it can take work right now.
    *
    * Deliberately cheap enough to poll: one `listAll()` SELECT, in-memory counters, two env reads,
    * the 30s-cached Tailscale status, and the {@link OWN_INVENTORY_TTL_MS}-cached local inventory.
    * It never calls `listDiscoverableDevices` (a Tailscale OAuth exchange plus an HTTPS probe per
    * tailnet device, all uncached) and never re-probes peers — peer capabilities are read from the
-   * `lastCapabilities` the health poll already cached.
+   * `lastCapabilities` the health poll already cached. Pins add no query at all: they live in
+   * settings.json, and their availability is computed from the peers and inventory already loaded.
    */
   async getPoolStatus(): Promise<PoolStatus> {
     const enabled = this.enabledState();
@@ -418,6 +421,9 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
         // says nothing about the lifecycle, so this deliberately overlaps the three counts above.
         disabled: peers.filter((p) => p.enabled === false).length,
       },
+      // Resolved from the peers and the local inventory this call already loaded — no extra query,
+      // and the availability shown is the one routing would actually see.
+      pins: resolveStatusPins(this.configuration.getHubPoolPreferences().poolPins, peers, localNode.backends),
       pairingPin: this.pairingPins.state(),
     };
   }

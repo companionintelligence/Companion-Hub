@@ -68,6 +68,7 @@ describe('HubPoolPeerService', () => {
       poolInboundEnabled: true,
       poolLocalAffinity: DEFAULT_POOL_LOCAL_AFFINITY,
       poolHealthPollSeconds: DEFAULT_POOL_HEALTH_POLL_SECONDS,
+      poolPins: [],
       poolRequireSignedPeers: false,
       poolPressureWeight: DEFAULT_POOL_PRESSURE_WEIGHT,
       ...overrides,

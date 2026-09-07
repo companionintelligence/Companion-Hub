@@ -136,6 +136,8 @@ describe('renderHelp', () => {
       expect(rendered).toContain('pool unpair');
       expect(rendered).toContain('pool log');
       expect(rendered).toContain('pool enable|disable');
+      expect(rendered).toContain('pool pin');
+      expect(rendered).toContain('pool unpin');
     }
   });
 
@@ -1016,6 +1018,7 @@ describe('parsePoolArgs', () => {
       pin: undefined,
       limit: undefined,
       axis: 'both',
+      model: undefined,
       yes: false,
       env: 'local',
     });
@@ -1068,6 +1071,29 @@ describe('parsePoolArgs', () => {
     exitSpy.mockRestore();
     logSpy.mockRestore();
     errSpy.mockRestore();
+  });
+
+  it('reads --model in both forms for pin and unpin, and nowhere else', () => {
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => {
+      throw new Error('exit');
+    });
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    expect(parsePoolArgs(['pin', 'local', '--model', 'llama3.2:3b'])).toMatchObject({ subcommand: 'pin', target: 'local', model: 'llama3.2:3b' });
+    // Verbatim: a model id is compared case-sensitively against the engine's inventory.
+    expect(parsePoolArgs(['unpin', '--model=hf.co/Org/Repo:Q4_K_M']).model).toBe('hf.co/Org/Repo:Q4_K_M');
+    expect(parsePoolArgs(['unpin']).model).toBeUndefined();
+    expect(() => parsePoolArgs(['status', '--model', 'llama3.2:3b'])).toThrow();
+
+    exitSpy.mockRestore();
+    logSpy.mockRestore();
+    errSpy.mockRestore();
+  });
+
+  it('takes the pin target before the env, and unpin takes no target', () => {
+    expect(parsePoolArgs(['pin', POOL_PEER_FQDN, 'dev', '--yes'])).toMatchObject({ target: POOL_PEER_FQDN, env: 'dev', yes: true });
+    expect(parsePoolArgs(['unpin', 'dev'])).toMatchObject({ subcommand: 'unpin', target: undefined, env: 'dev' });
   });
 
   it('accepts --limit in both forms', () => {

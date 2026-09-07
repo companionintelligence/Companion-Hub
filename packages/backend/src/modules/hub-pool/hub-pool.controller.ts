@@ -27,7 +27,9 @@ import { HubPoolPeerService } from './hub-pool-peer.service';
 import { HubPoolRoutingLogService } from './hub-pool-routing-log.service';
 import { PoolProxyService } from './hub-pool-proxy.service';
 import { HubPoolDiscoveryService } from './hub-pool-discovery.service';
+import { HubPoolPinService } from './hub-pool-pin.service';
 import {
+  DeletePoolPinQuery,
   IncomingPairingRequestBody,
   PairingConfirmBody,
   PairingUpgradeBody,
@@ -35,6 +37,7 @@ import {
   ProbePeerAddressBody,
   RoutingLogQueryDto,
   UpdateHubPoolPreferencesBody,
+  UpsertPoolPinBody,
 } from './hub-pool.dto';
 import { POOL_PROTOCOL_VERSION } from './hub-pool-peer-auth';
 import { toPublicPeer } from './hub-pool.types';
@@ -68,6 +71,9 @@ export class HubPoolController {
     // Appended last on purpose: every pool test file constructs this controller positionally, so a
     // new parameter anywhere else silently re-binds the existing ones.
     private readonly discoveryService: HubPoolDiscoveryService,
+    // Appended after `discoveryService` for the same reason it was: every pool test file constructs
+    // this controller positionally.
+    private readonly pinService: HubPoolPinService,
   ) {}
 
   // ── Discovery / identification ──────────────────────────────────────────
@@ -130,6 +136,36 @@ export class HubPoolController {
   @Get('routing-log')
   async getPoolRoutingLog(@Query() query: RoutingLogQueryDto) {
     return { entries: this.routingLog.list(query.limit), summary: this.routingLog.summary() };
+  }
+
+  // ── Operator-facing routing pins ────────────────────────────────────────
+
+  /**
+   * Add or replace a routing pin.
+   *
+   * Upsert by POST, because `(scope, model)` is the key an operator edits and a pin has no id — pins
+   * live in settings.json, not in a table. There is no GET: `/status` reports every pin with its
+   * target resolved and `targetAvailable` computed, which is the form anything rendering them needs.
+   *
+   * Takes effect on the very next pooled request, like every other pool setting, with no app restart.
+   */
+  @UseGuards(AuthGuard)
+  @Post('pins')
+  async upsertPoolPin(@Body() body: UpsertPoolPinBody) {
+    return { pins: await this.pinService.upsert(body) };
+  }
+
+  /**
+   * Remove a routing pin, addressed by `?scope=` (+ `?model=` for a model pin).
+   *
+   * Query rather than a path parameter because model ids contain `/` and `:`, which Nest would split
+   * a path param on. Removing a pin that is not there succeeds: the operator asked for a state, and
+   * that state now holds.
+   */
+  @UseGuards(AuthGuard)
+  @Delete('pins')
+  async deletePoolPin(@Query() query: DeletePoolPinQuery) {
+    return { pins: await this.pinService.remove(query.scope, query.model) };
   }
 
   // ── Operator-facing peer management ─────────────────────────────────────

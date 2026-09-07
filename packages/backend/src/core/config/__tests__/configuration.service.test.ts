@@ -90,6 +90,7 @@ describe('ConfigurationService Hub Pool preferences', () => {
         poolLocalAffinity: number;
         poolHealthPollSeconds: number;
         poolPressureWeight: number;
+        poolPins: unknown[];
       };
       setHubPoolPreferences: (p: Record<string, unknown>) => Promise<unknown>;
     };
@@ -114,6 +115,9 @@ describe('ConfigurationService Hub Pool preferences', () => {
       // 0 is what makes the pressure signal a no-op until an operator opts in: at 0 the band is not
       // in the ranking comparator at all, so a fresh Hub ranks byte-identically to the build before it.
       poolPressureWeight: 0,
+      // No pins until an operator sets one, so the ranker alone decides — which is the whole
+      // "peerless single-node Hub is unaffected" guarantee, held at its source.
+      poolPins: [],
     });
   });
 
