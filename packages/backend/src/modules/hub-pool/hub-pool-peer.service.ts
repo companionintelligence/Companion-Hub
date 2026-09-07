@@ -35,11 +35,13 @@ import { HubPoolPeerRepository } from './hub-pool-peer.repository';
 import { HubPoolLoadService } from './hub-pool-load.service';
 import { HubPoolIdentityService } from './hub-pool-identity.service';
 import { HubPoolPairingPinService, type PinAttemptSource } from './hub-pool-pairing-pin.service';
-import { buildSignedPoolHeaders, POOL_PEER_HEADER, publicKeyFingerprint } from './hub-pool-peer-auth';
+import { buildSignedPoolHeaders, MIN_PAIR_BY_ADDRESS_PROTOCOL, POOL_PEER_HEADER, publicKeyFingerprint } from './hub-pool-peer-auth';
 import { HubPoolPressureService } from './hub-pool-pressure.service';
 import {
+  resolveStatusPins,
   toPublicPeer,
   type DiscoverablePoolPeer,
+  type PoolPairingAnswer,
   type PoolPeerCapabilities,
   type PoolStatus,
   type PoolIdentitySummary,
@@ -47,6 +49,22 @@ import {
   type PoolStatusPeer,
   type PoolStatusReason,
 } from './hub-pool.types';
+
+/**
+ * The reason a peer gave for declining a pairing request, when it gave one.
+ *
+ * Nest serializes an `HttpException` as `{ message, statusCode }`; `error` is the fallback shape.
+ * Bounded, because this string is authored by the far end and ends up in an operator-facing message.
+ */
+async function peerRefusalDetail(response: Response): Promise<string | null> {
+  try {
+    const body = (await response.json()) as { message?: unknown; error?: unknown };
+    const detail = typeof body.message === 'string' ? body.message : typeof body.error === 'string' ? body.error : null;
+    return detail ? detail.slice(0, 200) : null;
+  } catch {
+    return null;
+  }
+}
 
 /** Consecutive failed capability probes before a connected peer is marked unreachable (matches the 3-strikes convention in registration.service.ts). */
 const UNREACHABLE_THRESHOLD = 3;
@@ -325,13 +343,15 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
   /**
    * Everything the operator UI and CLI need in one poll: whether pooling is on and why, whether
    * discovery is even possible, this node's own identity and inventory, and every peer with its
-   * live queue depth.
+   * live queue depth — plus the operator's routing pins, each resolved to a node name and to
+   * whether it can take work right now.
    *
    * Deliberately cheap enough to poll: one `listAll()` SELECT, in-memory counters, two env reads,
    * the 30s-cached Tailscale status, and the {@link OWN_INVENTORY_TTL_MS}-cached local inventory.
    * It never calls `listDiscoverableDevices` (a Tailscale OAuth exchange plus an HTTPS probe per
    * tailnet device, all uncached) and never re-probes peers — peer capabilities are read from the
-   * `lastCapabilities` the health poll already cached.
+   * `lastCapabilities` the health poll already cached. Pins add no query at all: they live in
+   * settings.json, and their availability is computed from the peers and inventory already loaded.
    */
   async getPoolStatus(): Promise<PoolStatus> {
     const enabled = this.enabledState();
@@ -401,6 +421,9 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
         // says nothing about the lifecycle, so this deliberately overlaps the three counts above.
         disabled: peers.filter((p) => p.enabled === false).length,
       },
+      // Resolved from the peers and the local inventory this call already loaded — no extra query,
+      // and the availability shown is the one routing would actually see.
+      pins: resolveStatusPins(this.configuration.getHubPoolPreferences().poolPins, peers, localNode.backends),
       pairingPin: this.pairingPins.state(),
     };
   }
@@ -474,32 +497,113 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
     });
 
     try {
-      const selfStatus = await this.tailscaleService.getStatusCached();
-      const self = await this.identity.get();
-      const response = await fetch(`https://${nodeFqdn}/api/inference/pool/pair/request`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          fromNodeFqdn: selfStatus.nodeFqdn,
-          fromDisplayName: selfStatus.hostname ?? undefined,
-          token: rawToken,
-          // Only sent alongside a PIN. Without one the peer would be storing an identity claim it
-          // cannot authenticate, which is exactly the anonymous write the PIN exists to close.
-          ...(pin && self ? { fromNodeUuid: self.nodeUuid, fromPublicKey: self.publicKey, pin } : {}),
-        }),
-        signal: AbortSignal.timeout(HANDSHAKE_TIMEOUT_MS),
-      });
-      if (!response.ok) {
-        throw new Error(`Peer declined pairing request (${response.status})`);
-      }
+      const answered = await this.sendPairingRequest(`https://${nodeFqdn}/api/inference/pool/pair/request`, rawToken, pin);
       // A protocol-1 peer answers `{ received: true }` and this pins nothing, which is correct.
-      const answered = (await response.json().catch(() => ({}))) as { nodeUuid?: string; publicKey?: string };
       const pinned = await this.pinPeerIdentity(row, answered, { setGrace: false });
       return pinned ?? row;
     } catch (error) {
       await this.repo.delete(row.id);
       throw error;
     }
+  }
+
+  /**
+   * Operator-initiated: pair with a Hub found at an address rather than by name.
+   *
+   * This is the half of "find a peer by address" that the unauthenticated probe cannot do.
+   * `GET /identify` answers `{ isCiHub, poolProtocol }` and nothing else — the MagicDNS name was
+   * taken off it because it is published through the Cloudflare tunnel — so the address alone can
+   * never name the node, and a peer row keyed on `node_fqdn` cannot be built from it.
+   *
+   * The PIN is what closes that gap. The operator mints one on the far Hub's own screen; presenting
+   * it here authenticates the request, and the far side's answer carries the name (plus its
+   * identity) back. So the name still comes from the node itself, exactly as before, but only to a
+   * caller that has demonstrably been in front of it.
+   *
+   * The row is created AFTER the exchange, unlike {@link initiatePairing}, for the obvious reason:
+   * until the answer lands there is no name to key it on. `address` is used once, to reach the
+   * handshake, and is never stored — pairing callbacks, the health poll and every proxied request go
+   * to `https://<fqdn>` as they always have.
+   */
+  async initiatePairingAtAddress(origin: string, displayName: string | undefined, pin: string): Promise<HubPoolPeer> {
+    const selfFqdn = await this.selfNodeFqdn();
+    if (!selfFqdn) {
+      // Checked here rather than letting the peer 400 on `fromNodeFqdn`: the peer's approval callback
+      // dials `https://<our name>`, so a Hub with no tailnet name cannot complete a pairing it starts.
+      throw new BadRequestException(
+        'This Hub has not joined a tailnet yet, so a peer would have no name to answer on. Run `cihub tailscale up` here first.',
+      );
+    }
+
+    const rawToken = randomBytes(32).toString('hex');
+    const answered = await this.sendPairingRequest(`${origin}/api/inference/pool/pair/request`, rawToken, pin);
+
+    const nodeFqdn = answered.nodeFqdn ? normalizePeerFqdn(answered.nodeFqdn) : null;
+    if (!nodeFqdn) {
+      // Either a protocol-1 Hub (which ignores the PIN and answers `{ received: true }`) or one that
+      // has not joined a tailnet. Both are "there is no name to dial", which is the same verdict the
+      // old probe gave — just reached at the point where the answer actually exists.
+      throw new BadRequestException(
+        `The Hub at ${origin} did not answer with a tailnet name. It has to be on a tailnet, and on pool protocol ${MIN_PAIR_BY_ADDRESS_PROTOCOL} or later, before it can be paired with by address.`,
+      );
+    }
+    if (nodeFqdn === selfFqdn) {
+      throw new ConflictException(`${origin} is this Hub`);
+    }
+    const existing = await this.repo.findByNodeFqdn(nodeFqdn);
+    if (existing) {
+      throw new ConflictException(`Already paired or pairing with ${nodeFqdn}`);
+    }
+
+    const row = await this.repo.create({
+      nodeFqdn,
+      displayName: displayName ?? null,
+      direction: 'outbound',
+      status: 'pending',
+      verifyTokenHash: this.hashToken(rawToken),
+      presentTokenEncrypted: null,
+      tailscaleDeviceId: null,
+    });
+    const pinned = await this.pinPeerIdentity(row, answered, { setGrace: false });
+    return pinned ?? row;
+  }
+
+  /**
+   * POST one `pair/request` and return whatever identity the far side answered with.
+   *
+   * Shared by both entry points so the body is assembled in exactly one place: the two differ only
+   * in the URL they dial and in whether a PIN is optional.
+   */
+  private async sendPairingRequest(url: string, rawToken: string, pin: string | undefined): Promise<PoolPairingAnswer> {
+    const selfStatus = await this.tailscaleService.getStatusCached();
+    const self = await this.identity.get();
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        fromNodeFqdn: selfStatus.nodeFqdn,
+        fromDisplayName: selfStatus.hostname ?? undefined,
+        token: rawToken,
+        ...(pin ? { pin } : {}),
+        // The identity claim rides ONLY alongside a PIN: without one the peer would be storing a
+        // claim it cannot authenticate, which is exactly the anonymous write the PIN exists to
+        // close. A PIN with no local identity yet still goes on its own — the PIN is what
+        // authenticates the request, not what the request carries.
+        ...(pin && self ? { fromNodeUuid: self.nodeUuid, fromPublicKey: self.publicKey } : {}),
+      }),
+      signal: AbortSignal.timeout(HANDSHAKE_TIMEOUT_MS),
+    });
+    if (!response.ok) {
+      // A refused PIN is the one failure an operator can act on, and a bare status code hides it.
+      if (pin !== undefined && (response.status === 401 || response.status === 403)) {
+        throw new Error(`Peer refused the pairing PIN (${response.status}). Mint a fresh one on that Hub — a PIN is single-use and expires.`);
+      }
+      // Carry the peer's own reason through when it gave one. Pairing by address is the case that
+      // needs it: the operator typed an address and has no other way to see what is at the far end.
+      const detail = await peerRefusalDetail(response);
+      throw new Error(`Peer declined pairing request (${response.status})${detail ? `: ${detail}` : ''}`);
+    }
+    return (await response.json().catch(() => ({}))) as PoolPairingAnswer;
   }
 
   /**
@@ -585,7 +689,7 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
     fromDisplayName: string | undefined,
     token: string,
     claim: { fromNodeUuid?: string; fromPublicKey?: string; pin?: string; source?: PinAttemptSource } = {},
-  ): Promise<{ nodeUuid: string; publicKey: string } | Record<string, never>> {
+  ): Promise<PoolPairingAnswer> {
     const enabled = this.enabledState();
     if (!enabled.enabled) {
       throw new ServiceUnavailableException(describeHubPoolDisabled(enabled.disabledBy));
@@ -599,10 +703,24 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
       this.pairingPins.consume(claim.pin, { claimedFqdn: fromNodeFqdn, ...claim.source });
     }
 
+    // A Hub must never pair with itself, and the receiver is the one party that knows its own name
+    // for certain — the initiator only learns it from the answer below, by which point an inbound
+    // row would already exist. Refusing here is what keeps a self-probe from leaving a phantom
+    // pending request behind. Checked after the PIN so the answer still does not depend on state.
+    const selfFqdn = await this.selfNodeFqdn();
+    if (selfFqdn && selfFqdn === fromNodeFqdn) {
+      throw new BadRequestException('That address is this Hub — a Hub cannot pair with itself');
+    }
+
     const existing = await this.repo.findByNodeFqdn(fromNodeFqdn);
     if (existing) {
       this.logger.debug(`[HubPool] ignoring duplicate pairing request from ${fromNodeFqdn} (already have a ${existing.status} row)`);
-      return {};
+      // A verified PIN gets the same answer here as it would on a fresh request, deliberately. It
+      // is what the caller is entitled to either way, and answering differently would have made
+      // this route tell a PIN holder whether a row for that name exists — the very thing the
+      // ordering above (consume the PIN before the lookup) exists to avoid. It is also what lets an
+      // initiator pairing by address report "already paired with <name>" instead of a shrug.
+      return claim.pin === undefined ? {} : this.ownPairingAnswer();
     }
 
     const pending = await this.repo.listByStatus('pending');
@@ -634,7 +752,40 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
       return {};
     }
     await this.pinPeerIdentity(row, { nodeUuid: claim.fromNodeUuid, publicKey: claim.fromPublicKey }, { setGrace: true });
-    return this.ownIdentityClaim();
+    return this.ownPairingAnswer();
+  }
+
+  /**
+   * What a PIN-authenticated `pair/request` is answered with.
+   *
+   * This node's identity, plus the one thing `GET /identify` deliberately no longer discloses: its
+   * MagicDNS name. That single field is what makes pairing by address work — an initiator that
+   * reached this Hub at `192.168.1.42` has no other way to learn the name every later call must be
+   * addressed to — and the PIN is precisely the boundary it sits behind. An anonymous caller on the
+   * tunnel-published `/identify` still learns nothing but the protocol version.
+   *
+   * Best-effort on the name: a Tailscale CLI that is briefly unavailable answers with the identity
+   * halves alone rather than failing a pairing request over it.
+   */
+  private async ownPairingAnswer(): Promise<PoolPairingAnswer> {
+    const nodeFqdn = await this.selfNodeFqdn();
+    return { ...(nodeFqdn ? { nodeFqdn } : {}), ...(await this.ownIdentityClaim()) };
+  }
+
+  /**
+   * This node's own MagicDNS name, canonicalized, or `null` when it has none.
+   *
+   * Never allowed to throw, for the same reason {@link tailnetSuffix} is not: a Tailscale CLI that is
+   * briefly unavailable must not turn an inbound pairing request into a 500.
+   */
+  private async selfNodeFqdn(): Promise<string | null> {
+    try {
+      const selfStatus = await this.tailscaleService.getStatusCached();
+      return selfStatus.nodeFqdn ? normalizePeerFqdn(selfStatus.nodeFqdn) : null;
+    } catch (error) {
+      this.logger.warn(`[HubPool] could not read this node's own tailnet name: ${error instanceof Error ? error.message : String(error)}`);
+      return null;
+    }
   }
 
   private requireBareHostname(raw: string): string {
@@ -1165,6 +1316,11 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
     // a machine that is up, and re-enabling one is instant instead of costing three polls. The
     // probe is a GET of the peer's inventory — it spends no GPU on either side.
     const peers = await this.repo.listByStatuses(['connected', 'unreachable']);
+    // The pressure sampler's arm/disarm signal, taken from the rows this tick already had to read.
+    // It is deliberately driven from here rather than from a second periodic query of its own: a
+    // peerless Hub — nearly all of them — should pay nothing at all for a signal that only exists to
+    // be compared against a peer's.
+    this.pressureService.setPoolActive(peers.some((peer) => peer.status === 'connected'));
     await Promise.all(peers.map((peer) => this.refreshOnePeer(peer)));
   }
 

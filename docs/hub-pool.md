@@ -31,7 +31,24 @@ Persisted in `settings.json` and editable over `GET`/`PATCH /api/inference/pool/
 | `poolInboundEnabled` | `true` | — | Whether this Hub may **serve** peers' work. Off: peers see a healthy node advertising an empty inventory and `acceptingWork: false`, and route elsewhere; this Hub keeps using them. |
 | `poolLocalAffinity` | `1` | 0–20 | Queued-request head start the local node gets over a peer. `0` ranks purely by queue depth — with local still taking an *exact* tie, since serving here costs no hop and reuses a warm cache; higher values make handoff rarer (stickier to local). |
 | `poolHealthPollSeconds` | `30` | 10–300 | Seconds between peer capability probes. Also sets how long a peer's snapshot stays trusted — three polls — so slowing the cadence does not silently mark every peer stale. |
+| `poolPins` | `[]` | — | Operator routing pins — see [Manual routing pins](#manual-routing-pins). Written through `POST`/`DELETE /api/inference/pool/pins`, not through this PATCH. Empty means the ranker alone decides. |
 | `poolPressureWeight` | `0` | 0–3 | How heavily the 0–3 GPU-pressure band counts in ranking. `0` (the default) removes it from the comparator entirely, so ranking is byte-identical to the build before pressure existed; `1` is `pending + pressure`, which is what lets the pool move work off a node whose queue is empty but whose GPU is busy. See [GPU pressure](#gpu-pressure-a-second-load-signal-amd-only-and-off-by-default). |
+
+## Manual routing pins
+
+An operator preference for where a model runs: `cihub pool pin core-1.example-tailnet.ts.net --model llama3.2:3b`, `cihub pool pin local`, or the Routing pins block in Settings → Network → Hub Pool. Stored in `settings.json` alongside the settings above — **no table, no migration** — so a pin takes effect on the next pooled request with no restart and costs no query on the inference path.
+
+**A pin reorders; it never forces.** `prefer` is the only mode. The pinned node's candidates are moved to the front of the list the ranker already produced, and every other candidate stays behind them in ranked order, so failover is exactly what it was. Three things follow:
+
+- A pin **cannot resurrect** a node the pool excluded: an unreachable or disabled peer, a peer that answered 401/403 and had its cached capabilities dropped, a peer that says `acceptingWork: false`, or a local backend caught unable to serve the model. The pin filters a finished list.
+- A pin whose target has no candidate is a **silent no-op** — the request routes exactly as it would unpinned. That covers a pinned node that is down, and one that was unpaired while the pin still named it (the pin is left in place and simply stops matching).
+- A pin can never make inference fail. The 502 for a model nothing can serve names the pin, and says in the same breath that a pin is not what caused it.
+
+Scopes: one pin per exact model id, plus one pool-wide default. A model pin wins over the default and they never stack; the model string is compared **verbatim and case-sensitively**, because that is how candidate matching reads the engine inventory.
+
+**A hard `require` mode was designed and cut.** With a default-scope `require` pin at a peer, every app still discovers *this* node's model list from the local-only listing routes and would then get an unfailoverable 502 for every model the peer lacks — embeddings included, since the embedding host points at the same pool URL. It also turns a peer outage into a 15-second hang per request for the whole 90 s–15 min window before the unreachable threshold trips, while the pin still reads as healthy. Nothing anyone asked for needed it.
+
+`GET /api/inference/pool/status` reports every pin with its target resolved to a node name and `targetAvailable` computed from the same predicates routing uses — which is the only place a pin that has quietly stopped applying is visible. `POST /api/inference/pool/pins` upserts one (the key is `(scope, model)`, not an id); `DELETE /api/inference/pool/pins?scope=model&model=<id>` removes it, addressed by query because model ids contain `/` and `:`.
 
 ## GPU pressure: a second load signal, AMD-only and off by default
 
@@ -121,7 +138,7 @@ Per-peer disable keeps the pairing, both directional tokens and the health poll 
 ## Operator status and routing log
 
 - **`GET /api/inference/pool/status`** (session auth) answers the whole question in one call: `enabled` / `disabledBy` / `reason` (`active`, `no_peers`, `partially_disabled`, `disabled_by_env`, `disabled_by_setting`), `directions` (each of `outbound`/`inbound` with its own `enabled`/`disabledBy`), `routingActive` — which now means outbound is on **and** at least one connected, *enabled* peer exists — the persisted `settings`, `tailscaleAdminApiConfigured` (whether discovery can work at all — the boolean only, never the credentials), this node's identity, queue depth and per-backend model inventory, and every peer with its status, `lastSeenAt`, `consecutiveFailures`, cached backends/models, and the number of requests currently forwarded to it. Peer rows go through `toPublicPeer`, so the token columns cannot appear. It is cheap enough to poll: one `SELECT`, in-memory counters, the 30s-cached Tailscale status, and a 20s-cached local inventory — it never runs peer discovery (a Tailscale OAuth exchange plus an HTTPS probe per tailnet device) and never re-probes peers.
-- **`GET /api/inference/pool/routing-log?limit=`** (session auth) returns the last 200 routing decisions, newest first: timestamp, direction, path, model, the node that served it, how many candidates were ranked, which attempt won, the chain of nodes that were tried and rejected before it, outcome, upstream status and time to response headers. A request that failed over is **one** entry carrying `failedOverFrom`, not one per attempt. Inbound entries record work a *peer* forwarded to this node's engines, attributed to the peer the guard authenticated. It is bounded, in-memory and process-local — no database table, and nothing survives a restart — and it records metadata only: never a prompt, a request body, or a response.
+- **`GET /api/inference/pool/routing-log?limit=`** (session auth) returns the last 200 routing decisions, newest first: timestamp, direction, path, model, the node that served it, how many candidates were ranked, which attempt won, the chain of nodes that were tried and rejected before it, outcome, upstream status and time to response headers, and `pin` — the shape of the operator pin that ordered the candidates, or `null` (always `null` inbound: a peer's forward is never re-routed). A request that failed over is **one** entry carrying `failedOverFrom`, not one per attempt. Inbound entries record work a *peer* forwarded to this node's engines, attributed to the peer the guard authenticated. It is bounded, in-memory and process-local — no database table, and nothing survives a restart — and it records metadata only: never a prompt, a request body, or a response.
 
 ## Peer identity: PIN pairing and signed requests
 
@@ -257,13 +274,22 @@ be fatal, and it is not:
 - The reason appears as `localNode.identity.identityError` on `/pool/status`, exactly the way a down
   inference backend already appears as `capabilitiesError`.
 
-### What `/identify` no longer says
+### What `/identify` no longer says, and where the name went instead
 
 `GET /api/inference/pool/identify` is unauthenticated and reachable through the Cloudflare tunnel. It
-now answers `{ isCiHub: true, poolProtocol: 2 }` and nothing else — the MagicDNS name it used to
-return was consumed by nobody, and the node UUID and public key live on the guard-protected
-`capabilities` route instead. A UUID whose whole purpose is surviving renames is a durable
-correlator, which is the last thing to publish on an open endpoint.
+now answers `{ isCiHub: true, poolProtocol: 2 }` and nothing else. The node UUID and public key live
+on the guard-protected `capabilities` route instead — a UUID whose whole purpose is surviving renames
+is a durable correlator, which is the last thing to publish on an open endpoint.
+
+The MagicDNS name was **moved, not deleted**, and the difference matters: something does consume it.
+`cihub pool probe` exists so two Hubs on one LAN can pair with no Tailscale OAuth client, and a peer
+row is keyed on `node_fqdn`, so pairing by address is impossible unless the address can somehow
+produce a name. It is disclosed in the reply to a `POST /pair/request` **that carried a valid pairing
+PIN** — that is, to a caller that has demonstrably been in front of the other Hub's screen. An
+anonymous caller on the tunnel-published endpoint still learns nothing but the protocol version.
+
+That boundary is the whole design. The probe answers "is there a CI-Hub here, and can I pair with
+it"; the PIN-gated exchange answers "and this is who it is".
 
 ## What guards what
 
@@ -275,10 +301,12 @@ correlator, which is the last thing to publish on an open endpoint.
 ## Operator workflow
 
 1. On each participating Hub, confirm **Settings → Network** shows Tailscale connected.
-2. Find the other Hub, by either route — they produce the same candidate list and a node found both ways appears once:
-   - **By address, no credential needed:** `cihub pool probe 192.168.1.42` (or `192.168.1.42:5002`, or a hostname). See below for what it does and does not do.
+2. Find the other Hub, by either route. **The two are not interchangeable**: tailnet enumeration learns a node's
+   name, so its candidates can be paired with from the UI, whereas an address probe deliberately learns no name —
+   `/identify` does not disclose one — so pairing by address needs a PIN and happens from the CLI:
+   - **By address, no credential needed:** `cihub pool probe 192.168.1.42` (or `192.168.1.42:5002`, or a hostname) confirms a Hub is there; `cihub pool pair 192.168.1.42 --pin <digits>` pairs with it, using a PIN minted on that Hub. See [Finding a peer by address](#finding-a-peer-by-address) for what each half does and does not do.
    - **By tailnet enumeration:** set the Tailscale OAuth client env vars above on at least one Hub and restart.
-3. Open **Settings → Network → Hub Pool**. Candidates that identify as CI-Hub nodes appear with a **Pair** button. Without the OAuth credential the tailnet half of the section says so and names the two variables, rather than showing an empty list — a Hub with no credential can still be paired *with*, and can still find peers by address; it just cannot enumerate the tailnet itself.
+3. Open **Settings → Network → Hub Pool**. Tailnet candidates appear with a **Pair** button — a Hub found by address is not in that list (it has no name to show yet) and is paired with from the CLI. Without the OAuth credential the tailnet half of the section says so and names the two variables, rather than showing an empty list — a Hub with no credential can still be paired *with*, and can still find peers by address; it just cannot enumerate the tailnet itself.
 4. On the *other* Hub, a pending inbound request appears with **Approve** / **Reject**, identified by the requester's FQDN and — when the request carried a pairing PIN — its key fingerprint, which is the value to compare against that Hub's own **Pairing PIN** card.
 5. Once connected, both Hubs' **Hub Pool** sections show whether pooling is actually routing (and if not, which of the two kill switches is responsible), the `poolEnabled` and `poolLocalAffinity` controls, each peer's status / last-seen / queue depth / hardware tier / engines, the merged list of models the pool can serve and which nodes hold each, and the recent routing decisions with failovers called out.
 
@@ -291,18 +319,60 @@ Every step above is also available headlessly through `cihub pool` — `status`,
 
 ## Finding a peer by address
 
-`cihub pool probe <address>` (and `POST /inference/pool/peers/probe`) exists so that two Hubs on one LAN can find each other without anyone having to go and create a Tailscale OAuth client first. It is worth being precise about what it is, because the obvious reading is wrong:
+`cihub pool probe <address>` and `cihub pool pair <address> --pin <digits>` (`POST
+/inference/pool/peers/probe` and `POST /inference/pool/peers/pair`) exist so that two Hubs on one LAN
+can find each other without anyone having to go and create a Tailscale OAuth client first. It is
+worth being precise about what each half does, because the obvious reading is wrong:
 
-**An address is a directory lookup, never a transport.** The probe asks `GET /api/inference/pool/identify` at the address and keeps exactly one thing: the node's tailnet FQDN. The address is then discarded. Pairing, the health poll and every proxied request still go to `https://<fqdn>` — same real TLS, same bearer tokens, same WireGuard transport. There is no new pairing path and no second trust model. This is why `normalizePeerFqdn` still refuses IP literals for anything that gets *stored*.
+**The probe cannot name the node, and does not try.** It asks `GET /api/inference/pool/identify` at
+the address and learns exactly two things: that a CI-Hub is there, and which pool protocol it speaks.
+That endpoint is published through the Cloudflare tunnel and deliberately reports no MagicDNS name
+(see [What `/identify` no longer says](#what-identify-no-longer-says-and-where-the-name-went-instead)),
+so the probe is a *diagnostic*, not a directory lookup.
+
+**The PIN-gated pairing exchange is what names it.** The operator mints a PIN on the other Hub
+(`cihub pool pairing-pin`, ten minutes, single-use) and pairs by address with it. The PIN
+authenticates the request, and the answer carries that Hub's tailnet FQDN along with its node UUID
+and public key. The row is keyed on the FQDN, and from that moment the address is discarded:
+pairing callbacks, the health poll and every proxied request go to `https://<fqdn>` — same real TLS,
+same credentials, same WireGuard transport. There is no LAN peer transport and no second trust model.
+This is why `normalizePeerFqdn` still refuses IP literals for anything that gets *stored*.
+
+```
+on hub-b:  cihub pool pairing-pin          # six digits, ten minutes
+on hub-a:  cihub pool probe 192.168.1.42   # optional: confirm something is there
+on hub-a:  cihub pool pair 192.168.1.42 --pin 123456
+on hub-b:  cihub pool peers && cihub pool approve <id>
+```
 
 Consequences worth knowing:
 
-- A Hub found at an address but not joined to a tailnet is reported as **found, not pairable**, with that reason. There is no name to dial, so there is nothing to pair with.
-- The probe refuses any address that is not RFC1918, CGNAT or IPv6 ULA, and a hostname is refused if *any* address it resolves to is public. Loopback and link-local are refused too — `169.254.0.0/16` contains the cloud metadata endpoint, and pooling with yourself over loopback is meaningless. (`isPrivateOrLocalIp`, which allows both, is for `InternalNetworkGuard`, whose question is "did this come from inside".)
-- With no explicit port, it tries the Hub API port then the dev port. It cannot know the published port: every compose file sets `API_PORT: 5002` in the container's own environment while publishing `${API_PORT:-5002}` on the host, so a Hub that moved its published port has to be probed as `<address>:<port>`.
-- A probed candidate is remembered **in memory only** and is dropped after three consecutive unanswered discovery refreshes — the same three-strike convention `refreshPeerHealth` uses, so one asleep laptop never costs a retype. A restart clears the list; a *paired* peer is never touched by this, its liveness stays entirely the health poll's business.
+- **A probed address is never remembered as a pairing candidate.** `GET peers/discoverable` lists
+  only nodes that have a tailnet name, because pairing from that list means handing a `nodeFqdn` to
+  `peers/pair`. Holding unnamed rows there would mean a second identity space beside `node_fqdn`,
+  keyed on something an unauthenticated responder chose — exactly what the peer table refuses to do
+  everywhere else. Pairing by address is a single operator act, not a directory entry.
+- **A Hub on an older pool protocol cannot be paired with by address.** It ignores the PIN and
+  answers `{ received: true }`, so it can never disclose a name. The probe reports that up front
+  rather than letting the operator discover it from a failed pairing; pair by MagicDNS name instead.
+- **A Hub cannot pair with itself**, and the *receiver* is what enforces it — it is the one party
+  that knows its own name for certain, and refusing there is what stops a self-probe leaving a
+  phantom inbound request behind.
+- The probe refuses any address that is not RFC1918, CGNAT or IPv6 ULA, and a hostname is refused if
+  *any* address it resolves to is public. Loopback and link-local are refused too — `169.254.0.0/16`
+  contains the cloud metadata endpoint. (`isPrivateOrLocalIp`, which allows both, is for
+  `InternalNetworkGuard`, whose question is "did this come from inside".) The check is re-run before
+  the pairing request, because that is the call that actually carries a credential outbound.
+- With no explicit port, it tries the Hub API port then the dev port. It cannot know the published
+  port: every compose file sets `API_PORT: 5002` in the container's own environment while publishing
+  `${API_PORT:-5002}` on the host, so a Hub that moved its published port has to be named as
+  `<address>:<port>`.
 
-**Inbound pairing now checks the tailnet suffix even with no OAuth credential.** `receivePairingRequest` refuses a `fromNodeFqdn` that is not a name on this node's own tailnet, read from the local Tailscale CLI. Previously the whole membership check was skipped whenever the Admin API was unconfigured — which is exactly the credential-less configuration this feature creates. A Hub that has not joined a tailnet at all still accepts pairing, since it has nothing to compare against.
+**Inbound pairing checks the tailnet suffix even with no OAuth credential.** `receivePairingRequest`
+refuses a `fromNodeFqdn` that is not a name on this node's own tailnet, read from the local Tailscale
+CLI. Previously the whole membership check was skipped whenever the Admin API was unconfigured —
+which is exactly the credential-less configuration this feature creates. A Hub that has not joined a
+tailnet at all still accepts pairing, since it has nothing to compare against.
 
 ## A claimed UUID is not an identity
 
@@ -314,17 +384,15 @@ not have separate answers to "who is this node": a second, differently-derived U
 "renamed" and "different machine" indistinguishable again, which is the exact problem the column
 exists to solve.
 
-What discovery adds is a rule about UUIDs it did *not* authenticate. Anything that can reach a Hub
-can claim any UUID it likes on the unauthenticated `/identify` probe, so a claimed UUID is carried
-as `claimedNodeUuid` — a distinct type from the authenticated column, so the two cannot be confused
-at a call site — and candidate deduplication keys on the normalized FQDN, a name the tailnet control
-plane also attests. Keying the merge on a claimed UUID would let a hostile LAN device suppress a real
-node from the operator's candidate list simply by claiming that node's UUID.
+The rule that keeps that true is simply that **nothing unauthenticated ever supplies a UUID**.
+`/identify` reports none, so there is no such thing as a "claimed" node UUID for the Hub to carry
+around and be careful with — the type that used to exist for one was removed rather than left as a
+field nothing could ever fill. Every value that reaches `peer_node_uuid` came from a route
+`PoolPeerGuard` authenticated, or from a `pair/request` that carried a valid PIN.
 
-The same asymmetry runs the other way: `peer_node_uuid` is only ever written from a route
-`PoolPeerGuard` authenticated, and only ever together with the public key that makes it verifiable.
-A UUID with no key beside it would be a lookup key the guard could resolve and then refuse — a
-half-pinned row that reads as identity and is not.
+The same asymmetry runs the other way: `peer_node_uuid` is only ever written together with the public
+key that makes it verifiable. A UUID with no key beside it would be a lookup key the guard could
+resolve and then refuse — a half-pinned row that reads as identity and is not.
 
 ## Endpoints an app sees through the proxy
 

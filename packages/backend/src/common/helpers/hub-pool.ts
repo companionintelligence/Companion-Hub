@@ -292,6 +292,11 @@ export interface HubPoolPreferences {
   poolRequireSignedPeers: boolean;
   /** How heavily the GPU-pressure band counts in candidate ranking. 0 (the default) keeps ranking byte-identical to the pre-pressure build. */
   poolPressureWeight: number;
+  /**
+   * Operator routing overrides, newest last. Empty (the default) means the ranker decides alone and
+   * routing is byte-identical to a build without pinning — see {@link resolvePinFor}.
+   */
+  poolPins: HubPoolPin[];
 }
 
 /**
@@ -392,4 +397,104 @@ export function callerSourceIp(
     }
   }
   return headers['x-forwarded-for'] ? undefined : request.ip;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Manual node pinning
+//
+// An operator's routing preference: "send this model to core-1", "keep everything here". Stored in
+// `HubPoolPreferences` (settings.json) rather than a table, and read on the request path like every
+// other pool setting, so a change takes effect on the next request with no app restart and no
+// per-request database read on the inference hot path.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** A pin's reach: the pool-wide fallback, or one exact model id. */
+export type PoolPinScope = 'default' | 'model';
+
+/**
+ * How hard a pin binds — `prefer` and nothing else, and that is a decision rather than a first
+ * increment.
+ *
+ * A hard `require` was designed and cut. With a default-scope `require` pin at a peer, every app
+ * still discovers *this* node's model list from `proxyLocalOnlyRequest` (`/v1/models`, `/api/tags`)
+ * and then gets an unfailoverable 502 for every model the peer does not have — embeddings included,
+ * because `CI_OLLAMA_EMBED_HOST` points at the same pool URL. It also converts a peer outage into a
+ * 15-second hang per request for the whole 90 s-15 min window before the
+ * unreachable threshold trips, while the pin still reads as healthy on the status card. `prefer`
+ * covers every use case anyone has asked for and cannot take inference down.
+ */
+export type PoolPinMode = 'prefer';
+
+/** The only mode there is. Named so the DTO, the service default and the UI cannot drift. */
+export const DEFAULT_POOL_PIN_MODE: PoolPinMode = 'prefer';
+export const POOL_PIN_MODES = ['prefer'] as const;
+export const POOL_PIN_SCOPES = ['default', 'model'] as const;
+export const POOL_PIN_TARGET_KINDS = ['local', 'peer'] as const;
+
+/** Model ids are long (`hf.co/org/repo:Q4_K_M`); this is a sanity bound on what lands in settings.json, not a grammar. */
+export const MAX_PINNED_MODEL_LENGTH = 200;
+/**
+ * How many pins settings.json will hold. Pins are rewritten as one array by a read-modify-write of
+ * the whole settings file, so the list has to stay small; one pin per model an operator actually
+ * cares about is well inside this.
+ */
+export const MAX_POOL_PINS = 64;
+
+/** Where a pin points. `local` is this node — which has no peer row, which is why a peer column could never have expressed it. */
+export type PoolPinTargetKind = 'local' | 'peer';
+
+/**
+ * An operator's routing preference for one model, or for everything.
+ *
+ * Deliberately NOT a table row: a pin has no lifecycle of its own, and an FK to `hub_pool_peer`
+ * would have made a remote peer's `handleRemoteUnpair` silently delete this operator's routing
+ * policy. A pin whose target is gone is a `filter` that matches nothing — see `applyPin` — so a
+ * dangling reference costs a no-op and a warning on the status card, not an error.
+ */
+export interface HubPoolPin {
+  scope: PoolPinScope;
+  /** Set exactly when `scope === 'model'`. Stored verbatim: model ids are case-sensitive and contain `:` and `/`. */
+  model?: string;
+  targetKind: PoolPinTargetKind;
+  /** Set exactly when `targetKind === 'peer'`; the `hub_pool_peer.id` uuid. */
+  peerId?: string;
+  mode: PoolPinMode;
+}
+
+/**
+ * The pin that governs `model`, or `null`.
+ *
+ * A model pin wins over the default pin and they never stack: two pins for one request would need a
+ * precedence rule between two operator decisions that both say "this node", and the model-specific
+ * one is unambiguously the more specific intent. Comparison is verbatim and case-sensitive, because
+ * candidate matching is `modelsLoaded.includes(model)` in both `localCandidates` and
+ * `peerCandidates` — normalizing here would make pins that look right silently never match.
+ */
+export function resolvePinFor(pins: readonly HubPoolPin[] | undefined, model: string): HubPoolPin | null {
+  if (!pins?.length) {
+    return null;
+  }
+  return pins.find((pin) => pin.scope === 'model' && pin.model === model) ?? pins.find((pin) => pin.scope === 'default') ?? null;
+}
+
+/** Whether two pins address the same thing — the identity an upsert replaces on, standing in for the unique index a table would have had. */
+export function samePinTarget(a: Pick<HubPoolPin, 'scope' | 'model'>, b: Pick<HubPoolPin, 'scope' | 'model'>): boolean {
+  return a.scope === b.scope && (a.scope === 'default' || a.model === b.model);
+}
+
+/** Upsert by `(scope, model)`, preserving list order so the settings card does not reshuffle under an edit. */
+export function upsertPoolPin(pins: readonly HubPoolPin[], pin: HubPoolPin): HubPoolPin[] {
+  const existing = pins.findIndex((candidate) => samePinTarget(candidate, pin));
+  if (existing === -1) {
+    return [...pins, pin];
+  }
+  const next = [...pins];
+  next[existing] = pin;
+  return next;
+}
+
+/** Remove the pin addressing `(scope, model)`. Returns the same array identity when nothing matched, so a no-op DELETE never rewrites settings.json. */
+export function removePoolPin(pins: readonly HubPoolPin[], scope: PoolPinScope, model?: string): HubPoolPin[] {
+  const next = pins.filter((pin) => !samePinTarget(pin, { scope, model }));
+  return next.length === pins.length ? [...pins] : next;
 }

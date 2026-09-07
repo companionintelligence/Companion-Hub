@@ -1,6 +1,6 @@
 import type { InferenceBackendType } from '@ci-hub/common/types';
 import type { HubPoolPeer } from '@/core/database/drizzle/types';
-import type { HubPoolDirectionalState, HubPoolDisabledBy, HubPoolPreferences } from '@/common/helpers/hub-pool';
+import type { HubPoolDirectionalState, HubPoolDisabledBy, HubPoolPin, HubPoolPreferences } from '@/common/helpers/hub-pool';
 
 /** One backend's live model availability on a node, as reported by `GET /inference/pool/capabilities`. */
 export interface PoolPeerBackendCapability {
@@ -75,33 +75,12 @@ export interface PoolPeerCapabilities {
  */
 export type PoolPressureSource = 'host-file' | 'amd-drm';
 
-/** A pin's reach: the pool-wide fallback, or one specific model id. */
-export type PoolPinScope = 'default' | 'model';
-
 /**
- * How hard a pin binds. `prefer` only, by decision: a hard `require` makes every model the pinned
- * node lacks an unfailoverable 502, including embeddings, because apps discover the model list from
- * this node while routing to another.
+ * The pin types themselves live in `common/helpers/hub-pool.ts`, next to `HubPoolPreferences`,
+ * because that is where a pin is actually stored — settings.json, not a table. Re-exported here so
+ * the module's consumers keep one import for the pool contract.
  */
-export type PoolPinMode = 'prefer';
-
-/** Where a pin points. `local` is this node; `peer` carries the `hub_pool_peer.id`. */
-export type PoolPinTargetKind = 'local' | 'peer';
-
-/**
- * An operator's routing preference for a model. Stored in `HubPoolPreferences` (settings.json), not
- * a table: a dangling target is a `filter` no-op, and a row would have needed an FK whose CASCADE
- * would let a remote peer's unpair destroy this operator's routing policy.
- */
-export interface HubPoolPin {
-  scope: PoolPinScope;
-  /** Set exactly when `scope === 'model'`. Stored verbatim — model ids are case-sensitive and contain `:` and `/`. */
-  model?: string;
-  targetKind: PoolPinTargetKind;
-  /** Set exactly when `targetKind === 'peer'`. */
-  peerId?: string;
-  mode: PoolPinMode;
-}
+export type { HubPoolPin, PoolPinMode, PoolPinScope, PoolPinTargetKind } from '@/common/helpers/hub-pool';
 
 /** A pin as `/pool/status` reports it: the stored pin plus whether its target can serve right now. */
 export interface PoolStatusPin extends HubPoolPin {
@@ -153,45 +132,68 @@ export interface PoolCandidate {
   backend: InferenceBackendType;
 }
 
-/** Discoverable Tailscale device that identified itself as a CI-Hub node and isn't paired yet. */
+/**
+ * Discoverable Tailscale device that identified itself as a CI-Hub node and isn't paired yet.
+ *
+ * Every entry here is *named*, and the name is one the tailnet control plane attests. That is the
+ * whole contract: a candidate the operator can hand straight to `POST peers/pair` as a `nodeFqdn`.
+ * An address found by `POST peers/probe` is deliberately NOT one of these — `/identify` discloses no
+ * name, so a probed address has nothing to put in this shape, and inventing an unnamed candidate
+ * would be a second identity space next to `node_fqdn`. Pairing by address goes through the
+ * PIN-gated exchange instead; see {@link PoolProbeResult}.
+ */
 export interface DiscoverablePoolPeer {
   tailscaleDeviceId: string;
   nodeFqdn: string;
   hostname: string;
-  /**
-   * How this candidate was found. Absent means the Tailscale Admin API. A badge rather than a nullable
-   * `tailscaleDeviceId`, because widening that field is a type error on the CLI's `sanitizeForBox`
-   * and a duplicate React key in the settings list.
-   */
-  source?: 'tailscale' | 'lan-probe';
-  /**
-   * A UUID the candidate *claims*, from an unauthenticated probe. Typed distinctly from
-   * `hub_pool_peer.peer_node_uuid` on purpose — an externally-sourced UUID is a hint for the
-   * operator, never an identity key to match a pinned row against.
-   */
-  claimedNodeUuid?: string;
 }
 
-/** Why a manually probed address is not offered as a pairing candidate. `null` when it is. */
-export type PoolProbeReason = 'unreachable' | 'not_a_hub' | 'no_tailnet_fqdn' | 'already_paired' | 'self';
+/**
+ * Why a manually probed address cannot be paired with. `null` when it can.
+ *
+ * There is deliberately no `self`, `already_paired` or `no_tailnet_fqdn` value here: all three are
+ * answers about *which node* is at the address, and the unauthenticated probe is not told. They are
+ * decided at pairing time, in `HubPoolPeerService.initiatePairingAtAddress`, which does learn the
+ * name.
+ */
+export type PoolProbeReason = 'unreachable' | 'not_a_hub' | 'protocol_too_old';
 
 /**
  * What `POST /inference/pool/peers/probe` found at an operator-typed address.
  *
- * `nodeFqdn` is the only durable thing here: the address is a directory lookup and is discarded once
- * this answers. Pairing then goes through the existing `POST peers/pair` with that FQDN, so manual
- * entry adds no new pairing path and no new trust — it only removes the Tailscale OAuth credential
- * from the list of things an operator must have before two Hubs can find each other.
+ * It answers one question — "is there a CI-Hub here, and does it speak a protocol this node can
+ * pair with" — and that is all `GET /identify` will tell an unauthenticated caller. It does NOT
+ * name the node: the MagicDNS name was removed from that endpoint because it is published through
+ * the Cloudflare tunnel, and it is disclosed instead in the reply to a pairing request that carried
+ * the PIN minted on the far Hub's own screen.
+ *
+ * So the operator flow is: probe to confirm something is there, mint a PIN on that Hub, then
+ * `POST peers/pair {address, pin}` — which is where the name is learned and the row is keyed.
  */
 export interface PoolProbeResult {
   /** The address as probed, echoed back so a UI can label the row without re-parsing what was typed. */
   address: string;
   isCiHub: boolean;
-  nodeFqdn: string | null;
-  hostname: string | null;
-  alreadyPaired: boolean;
+  /** The pool protocol version the node answered with, or `null` when nothing answered. */
+  poolProtocol: number | null;
+  /** Whether `POST peers/pair {address, pin}` can be used against this address. */
   pairable: boolean;
   reason: PoolProbeReason | null;
+}
+
+/**
+ * The reply to a `POST /pair/request` that carried a valid PIN.
+ *
+ * `nodeFqdn` is the field that makes pairing-by-address possible at all, and the PIN is exactly what
+ * gates it: a caller that proved it read six digits off this Hub's screen may learn its MagicDNS
+ * name; an anonymous caller on `/identify` may not. Every field is optional — a protocol-1 peer
+ * answers a bare `{ received: true }`, and a Hub with no tailnet or no usable identity answers with
+ * whichever halves it has.
+ */
+export interface PoolPairingAnswer {
+  nodeFqdn?: string;
+  nodeUuid?: string;
+  publicKey?: string;
 }
 
 /**
@@ -289,8 +291,54 @@ export interface PoolStatus {
   peers: PoolStatusPeer[];
   /** `disabled` counts rows the operator switched off, at any status — it is a routing decision, not a lifecycle one, so it overlaps the others. */
   peerCounts: { total: number; connected: number; pending: number; unreachable: number; disabled: number };
-  /** Reserved for manual node pinning: the operator's routing preferences, with target availability resolved. */
-  pins?: PoolStatusPin[];
+  /** The operator's routing preferences, with each target resolved to a name and to whether it can serve right now. */
+  pins: PoolStatusPin[];
   /** Whether a pairing PIN is outstanding, and until when. Never the digits. */
   pairingPin?: PoolPairingPinState;
+}
+
+/**
+ * Resolve stored pins for `/pool/status`: each one's target named, and whether it can actually take
+ * work right now.
+ *
+ * `targetAvailable` is the whole reason this is computed rather than echoing settings.json. A pin is
+ * set once and forgotten, and every way it can quietly stop applying is invisible from the stored
+ * value alone — the peer went unreachable, the operator disabled it, the far side switched inbound
+ * off, someone unpaired it while the pin still names it, or the pinned node simply does not have the
+ * model any more. `prefer` makes all of those a silent no-op on the request path (see `applyPin`),
+ * which is the right behaviour for inference and the wrong behaviour for an operator with no
+ * explanation. This is the explanation.
+ *
+ * Same predicates the ranker uses, on purpose: `status === 'connected'`, `enabled !== false`,
+ * `acceptingWork !== false`, a healthy backend holding the model. A status card that answers a
+ * different question from the one routing asks is worse than no status card.
+ */
+export function resolveStatusPins(
+  pins: readonly HubPoolPin[],
+  peers: readonly HubPoolPeer[],
+  localBackends: readonly PoolPeerBackendCapability[],
+): PoolStatusPin[] {
+  const hasModel = (backends: readonly PoolPeerBackendCapability[], model: string | undefined) =>
+    // A default-scope pin names no model, so there is nothing to check: any healthy backend will do.
+    backends.some((backend) => backend.healthy && (model === undefined || backend.modelsLoaded.includes(model)));
+
+  return pins.map((pin) => {
+    if (pin.targetKind === 'local') {
+      return { ...pin, nodeFqdn: null, targetAvailable: hasModel(localBackends, pin.model) };
+    }
+    const peer = peers.find((row) => row.id === pin.peerId);
+    const capabilities = (peer?.lastCapabilities as unknown as PoolPeerCapabilities | null) ?? null;
+    return {
+      ...pin,
+      // `null` when the peer is gone: the UI renders "no longer paired" rather than a bare uuid.
+      nodeFqdn: peer?.nodeFqdn ?? null,
+      targetAvailable:
+        peer !== undefined &&
+        peer.status === 'connected' &&
+        peer.enabled !== false &&
+        capabilities !== null &&
+        capabilities.acceptingWork !== false &&
+        hasModel(capabilities.backends, pin.model),
+    };
+  });
 }

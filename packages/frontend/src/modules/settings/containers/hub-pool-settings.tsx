@@ -8,11 +8,12 @@ import {
   updatePoolSettingsMutation,
 } from '@/api-client/@tanstack/react-query.gen';
 import { client } from '@/api-client/client.gen';
-import { approvePeer, pairPeer, rejectPeer, removePeer } from '@/api-client/sdk.gen';
+import { approvePeer, deletePoolPin, pairPeer, rejectPeer, removePeer, upsertPoolPin } from '@/api-client/sdk.gen';
 import { Button } from '@/components/ui/Button';
 import { Card, CardContent } from '@/components/ui/Card';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/Dialog';
 import { Input } from '@/components/ui/Input';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/Select';
 import { Switch } from '@/components/ui/Switch';
 import { useDemoMode } from '@/lib/hooks/use-demo-mode';
 import { cn } from '@/lib/utils';
@@ -64,6 +65,21 @@ interface PoolPeer {
   peerKeyFingerprint?: string | null;
 }
 
+/**
+ * An operator routing pin, as `/status` reports it. `targetAvailable` is the field this card exists
+ * to surface: a `prefer` pin never errors, so a pin at a node that is unreachable, disabled,
+ * unpaired, or simply no longer holding the model is invisible everywhere else.
+ */
+interface PoolPin {
+  scope: 'default' | 'model';
+  model?: string;
+  targetKind: 'local' | 'peer';
+  peerId?: string;
+  mode: 'prefer';
+  nodeFqdn: string | null;
+  targetAvailable: boolean;
+}
+
 interface PoolSettings {
   poolEnabled: boolean;
   poolOutboundEnabled: boolean;
@@ -112,6 +128,8 @@ interface PoolStatus {
   };
   peers: PoolPeer[];
   peerCounts: { total: number; connected: number; pending: number; unreachable: number; disabled: number };
+  /** Optional here, unlike on the backend, so a stale cached payload cannot blank the whole card. */
+  pins?: PoolPin[];
   pairingPin?: PoolPairingPinState;
   routing: { recorded: number; capacity: number; served: number; failed: number; failovers: number; lastAt: string | null };
 }
@@ -130,6 +148,8 @@ interface PoolRoutingRecord {
   outcome: 'served' | 'failed';
   status: number | null;
   durationMs: number;
+  /** Which pin shaped this decision, if any. */
+  pin?: { scope: 'default' | 'model'; mode: 'prefer'; targetKind: 'local' | 'peer' } | null;
 }
 
 interface PoolRoutingLog {
@@ -137,13 +157,18 @@ interface PoolRoutingLog {
   summary: { recorded: number; capacity: number; served: number; failed: number; failovers: number; lastAt: string | null };
 }
 
+/**
+ * An unpaired node this Hub can offer to pair with **by name**, from the Tailscale directory.
+ *
+ * A Hub found by LAN address is deliberately not in here: `GET /identify` is unauthenticated and
+ * reports no MagicDNS name, so an address has no name to hand the Pair button. Those are paired with
+ * from the CLI, where the operator also supplies the PIN that makes the far side disclose its name —
+ * `cihub pool pair <address> --pin <digits>`.
+ */
 interface DiscoverablePoolPeer {
-  /** Empty for a candidate found by a manual address probe — there is no Tailscale device behind it. */
   tailscaleDeviceId: string;
   nodeFqdn: string;
   hostname: string;
-  /** How this candidate was found. Absent on a Hub running an older build. */
-  source?: 'tailscale' | 'lan-probe';
 }
 
 /** How many routing decisions to render. The buffer holds 200; an operator reads the recent ones. */
@@ -290,6 +315,36 @@ export const HubPoolSection = () => {
     onError: () => toast.error(t('HUB_POOL_SETTINGS_ERROR')),
   });
 
+  /* The pin being composed: `''` as the model means the pool-wide default pin, and `'local'` as the
+     node means this Hub, which has no peer id because it has no peer row. */
+  const [pinDraft, setPinDraft] = useState<{ model: string; node: string }>({ model: '', node: 'local' });
+
+  const pinMutation = useMutation({
+    mutationFn: (pin: { model: string; node: string }) =>
+      upsertPoolPin({
+        body: {
+          scope: pin.model ? 'model' : 'default',
+          ...(pin.model ? { model: pin.model } : {}),
+          ...(pin.node === 'local' ? { targetKind: 'local' } : { targetKind: 'peer', targetPeerId: pin.node }),
+        } as never,
+      }),
+    onSuccess: () => {
+      setPinDraft({ model: '', node: 'local' });
+      toast.success(t('HUB_POOL_PINS_SAVED'));
+      invalidatePool();
+    },
+    onError: () => toast.error(t('HUB_POOL_PINS_ERROR')),
+  });
+
+  const unpinMutation = useMutation({
+    mutationFn: (pin: PoolPin) => deletePoolPin({ query: { scope: pin.scope, ...(pin.model ? { model: pin.model } : {}) } as never }),
+    onSuccess: () => {
+      toast.success(t('HUB_POOL_PINS_REMOVED'));
+      invalidatePool();
+    },
+    onError: () => toast.error(t('HUB_POOL_PINS_ERROR')),
+  });
+
   /* The PIN an operator read off the OTHER Hub's screen. Optional: without one this is the
      pre-existing request/approve flow, which is what keeps a mixed-version fleet pairing at all. */
   const [pairingPinInput, setPairingPinInput] = useState('');
@@ -425,6 +480,13 @@ export const HubPoolSection = () => {
   const pendingInbound = status.peers.filter((peer) => peer.direction === 'inbound' && peer.status === 'pending');
   const pendingOutbound = status.peers.filter((peer) => peer.direction === 'outbound' && peer.status === 'pending');
   const paired = status.peers.filter((peer) => peer.status === 'connected' || peer.status === 'unreachable');
+  const pins = status.pins ?? [];
+  // Every node an operator can pin to: this Hub, plus each peer that is actually in the pairing (a
+  // pending request is not a routing target yet).
+  const pinnableNodes = status.peers.filter((peer) => peer.status !== 'pending');
+  const pinnedPeerIds = new Set(pins.filter((pin) => pin.targetKind === 'peer').map((pin) => pin.peerId));
+  const describePinScope = (pin: PoolPin) => pin.model ?? t('HUB_POOL_PINS_ALL_MODELS');
+  const describePinTarget = (pin: PoolPin) => (pin.targetKind === 'local' ? localLabel : (pin.nodeFqdn ?? t('HUB_POOL_PINS_UNPAIRED')));
 
   const form = draft ?? { poolLocalAffinity: status.settings.poolLocalAffinity, poolHealthPollSeconds: status.settings.poolHealthPollSeconds };
   const formDirty =
@@ -609,6 +671,100 @@ export const HubPoolSection = () => {
           </div>
         </Block>
 
+        {/* ── Routing pins ────────────────────────────────────────────── */}
+        {/* Directly under Controls, because a pin overrides the local-affinity knob above it. */}
+        <Block title={t('HUB_POOL_PINS_TITLE')} help={t('HUB_POOL_PINS_HELP')}>
+          <div className="space-y-3">
+            {pins.length ? (
+              <ul className="space-y-2">
+                {pins.map((pin) => (
+                  <li
+                    key={`${pin.scope}-${pin.model ?? ''}`}
+                    data-testid="hub-pool-pin"
+                    className="flex flex-wrap items-center justify-between gap-2 rounded-md border px-3 py-2 text-sm"
+                  >
+                    <span className="min-w-0 space-y-0.5">
+                      <span className="block truncate font-mono text-xs" title={describePinScope(pin)}>
+                        {describePinScope(pin)}
+                      </span>
+                      <span className="block text-xs text-muted-foreground">{describePinTarget(pin)}</span>
+                    </span>
+                    <span className="flex items-center gap-2">
+                      {/* The whole reason this list is rendered from `/status` rather than from the
+                          stored settings: a soft pin fails silently, so "doing nothing right now"
+                          has to be visible or it is never discovered. */}
+                      {pin.targetAvailable ? null : (
+                        <span
+                          data-testid="hub-pool-pin-unavailable"
+                          className="rounded-full border border-warning/40 bg-warning/10 px-2.5 py-1 text-xs font-medium text-warning"
+                        >
+                          {t('HUB_POOL_PINS_UNAVAILABLE')}
+                        </span>
+                      )}
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        data-testid="hub-pool-pin-remove"
+                        disabled={demoMode}
+                        loading={unpinMutation.isPending && unpinMutation.variables === pin}
+                        onClick={() => unpinMutation.mutate(pin)}
+                      >
+                        {t('HUB_POOL_PINS_REMOVE_BUTTON')}
+                      </Button>
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="text-sm text-muted-foreground">{t('HUB_POOL_PINS_EMPTY')}</p>
+            )}
+
+            <div className="grid gap-3 sm:grid-cols-[1fr_1fr_auto] sm:items-end">
+              {/* Populated from the same merged inventory the "What the pool can serve" block below
+                  renders, so an operator can only pin a model the pool has actually seen. */}
+              <Select value={pinDraft.model} onValueChange={(model: string) => setPinDraft({ ...pinDraft, model: model === '*' ? '' : model })}>
+                <SelectTrigger name="hub-pool-pin-model" data-testid="hub-pool-pin-model" label={t('HUB_POOL_PINS_MODEL_LABEL')}>
+                  <SelectValue placeholder={t('HUB_POOL_PINS_ALL_MODELS')} />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="*">{t('HUB_POOL_PINS_ALL_MODELS')}</SelectItem>
+                  {models.map((entry) => (
+                    <SelectItem key={entry.model} value={entry.model}>
+                      {entry.model}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+
+              <Select value={pinDraft.node} onValueChange={(node: string) => setPinDraft({ ...pinDraft, node })}>
+                <SelectTrigger name="hub-pool-pin-node" data-testid="hub-pool-pin-node" label={t('HUB_POOL_PINS_NODE_LABEL')}>
+                  <SelectValue placeholder={localLabel} />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="local">{localLabel}</SelectItem>
+                  {pinnableNodes.map((peer) => (
+                    <SelectItem key={peer.id} value={peer.id}>
+                      {peerLabel(peer)}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+
+              <Button
+                type="button"
+                size="sm"
+                data-testid="hub-pool-pin-add"
+                disabled={demoMode}
+                loading={pinMutation.isPending}
+                onClick={() => pinMutation.mutate(pinDraft)}
+              >
+                {t('HUB_POOL_PINS_ADD_BUTTON')}
+              </Button>
+            </div>
+          </div>
+        </Block>
+
         {/* ── The pool ────────────────────────────────────────────────── */}
         <Block title={t('HUB_POOL_CONNECTED_TITLE')} help={t('HUB_POOL_CONNECTED_HELP')}>
           {paired.length ? (
@@ -750,6 +906,13 @@ export const HubPoolSection = () => {
                         {entry.outcome === 'served' ? t('HUB_POOL_ROUTING_DURATION', { ms: entry.durationMs }) : t('HUB_POOL_ROUTING_FAILED_LABEL')}
                       </span>
                     </div>
+                    {/* Named on the row it shaped: an operator seeing everything land on one node
+                        cannot otherwise tell a pin from the ranker having decided the same thing. */}
+                    {entry.pin ? (
+                      <p data-testid="hub-pool-routing-pinned" className="text-muted-foreground">
+                        {t('HUB_POOL_ROUTING_PINNED')}
+                      </p>
+                    ) : null}
                     {/* One entry per request, so a failover is a chain here, not a run of rows. */}
                     {entry.failedOverFrom.length ? (
                       <p data-testid="hub-pool-routing-failover" className="text-warning">
@@ -830,10 +993,8 @@ export const HubPoolSection = () => {
             discoverable?.length ? (
               <ul className="space-y-2">
                 {discoverable.map((device) => (
-                  // Keyed on the FQDN, not the Tailscale device id: a candidate found by address
-                  // has no device id, so keying on that gives every one of them the same key and
-                  // React reconciles all but one row away. The FQDN is unique across the merged list
-                  // by construction — it is what the backend deduplicates on.
+                  // Keyed on the FQDN, not the Tailscale device id: the FQDN is unique across this
+                  // list by construction, and it is the value the Pair button posts.
                   <li key={device.nodeFqdn} className="flex items-center justify-between gap-3 rounded-md border px-3 py-2">
                     <span className="min-w-0 truncate font-mono text-xs" title={device.nodeFqdn}>
                       {device.hostname}
@@ -953,6 +1114,13 @@ export const HubPoolSection = () => {
           </DialogHeader>
           <DialogDescription className="py-2">
             {unpairTarget ? t('HUB_POOL_UNPAIR_CONFIRM', { name: peerLabel(unpairTarget) }) : null}
+            {/* A pin naming this peer is not deleted with it — it simply stops matching anything, so
+                say so here rather than letting routing quietly go back to the ranker unexplained. */}
+            {unpairTarget && pinnedPeerIds.has(unpairTarget.id) ? (
+              <span data-testid="hub-pool-unpair-pins-warning" className="mt-2 block">
+                {t('HUB_POOL_UNPAIR_CONFIRM_PINS')}
+              </span>
+            ) : null}
           </DialogDescription>
           <DialogFooter>
             <Button variant="ghost" onClick={() => setUnpairTarget(null)} disabled={removeMutation.isPending}>
