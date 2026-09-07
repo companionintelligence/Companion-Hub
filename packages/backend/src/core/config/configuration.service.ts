@@ -3,7 +3,12 @@ import path from 'node:path';
 import { type UserSettingsBody, parsePersistedSettings } from '@/app.dto';
 import { APP_DATA_DIR, APP_DIR, ARCHITECTURES, DATA_DIR, DEFAULT_LOCAL_DOMAIN } from '@/common/constants';
 import { ensureSettingsJsonReady, writeSettingsJsonFile } from '@/common/helpers/env-helpers';
-import { DEFAULT_POOL_HEALTH_POLL_SECONDS, DEFAULT_POOL_LOCAL_AFFINITY, type HubPoolPreferences } from '@/common/helpers/hub-pool';
+import {
+  DEFAULT_POOL_HEALTH_POLL_SECONDS,
+  DEFAULT_POOL_LOCAL_AFFINITY,
+  DEFAULT_POOL_PRESSURE_WEIGHT,
+  type HubPoolPreferences,
+} from '@/common/helpers/hub-pool';
 import { readPortalInternalUrlOverride, resolveOutboundPortalBaseUrl } from '@/common/helpers/portal-url';
 import { TranslatableError } from '@/common/error/translatable-error';
 import { scrubString } from '@/core/error-reporting/sentry-scrubber';
@@ -108,6 +113,7 @@ type PersistedSettingsValues = {
   hubPoolLocalAffinity: number | undefined;
   hubPoolHealthPollSeconds: number | undefined;
   hubPoolRequireSignedPeers: boolean | undefined;
+  hubPoolPressureWeight: number | undefined;
 };
 
 const EMPTY_PERSISTED_SETTINGS: PersistedSettingsValues = {
@@ -132,6 +138,7 @@ const EMPTY_PERSISTED_SETTINGS: PersistedSettingsValues = {
   hubPoolLocalAffinity: undefined,
   hubPoolHealthPollSeconds: undefined,
   hubPoolRequireSignedPeers: undefined,
+  hubPoolPressureWeight: undefined,
 };
 
 @Injectable()
@@ -214,6 +221,7 @@ export class ConfigurationService {
       hubPoolLocalAffinity: settings.hubPoolLocalAffinity,
       hubPoolHealthPollSeconds: settings.hubPoolHealthPollSeconds,
       hubPoolRequireSignedPeers: settings.hubPoolRequireSignedPeers,
+      hubPoolPressureWeight: settings.hubPoolPressureWeight,
     };
   }
 
@@ -308,6 +316,7 @@ export class ConfigurationService {
         hubPoolLocalAffinity: settingsValues.hubPoolLocalAffinity,
         hubPoolHealthPollSeconds: settingsValues.hubPoolHealthPollSeconds,
         hubPoolRequireSignedPeers: settingsValues.hubPoolRequireSignedPeers,
+        hubPoolPressureWeight: settingsValues.hubPoolPressureWeight,
         experimental: {
           insecureCookie: env.data.EXPERIMENTAL_INSECURE_COOKIE,
         },
@@ -475,6 +484,7 @@ export class ConfigurationService {
       // `?? false`, not `?? true`: this is the one pool switch that is opt-IN, because it removes a
       // code path older peers still depend on. See `HubPoolPreferences.poolRequireSignedPeers`.
       poolRequireSignedPeers: this.config.userSettings.hubPoolRequireSignedPeers ?? false,
+      poolPressureWeight: this.config.userSettings.hubPoolPressureWeight ?? DEFAULT_POOL_PRESSURE_WEIGHT,
     };
   }
 
@@ -487,6 +497,7 @@ export class ConfigurationService {
       hubPoolLocalAffinity?: number;
       hubPoolHealthPollSeconds?: number;
       hubPoolRequireSignedPeers?: boolean;
+      hubPoolPressureWeight?: number;
     } = {};
     if (preferences.poolEnabled !== undefined) {
       settings.hubPoolEnabled = preferences.poolEnabled;
@@ -505,6 +516,9 @@ export class ConfigurationService {
     }
     if (preferences.poolRequireSignedPeers !== undefined) {
       settings.hubPoolRequireSignedPeers = preferences.poolRequireSignedPeers;
+    }
+    if (preferences.poolPressureWeight !== undefined) {
+      settings.hubPoolPressureWeight = preferences.poolPressureWeight;
     }
     // A no-op PATCH must not rewrite settings.json: every write is a read-modify-write of the whole
     // file with no locking, so an empty one can still clobber a concurrent inference-preferences save.

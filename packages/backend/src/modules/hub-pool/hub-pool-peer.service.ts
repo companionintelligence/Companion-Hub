@@ -15,7 +15,10 @@ import { LoggerService } from '@/core/logger/logger.service';
 import { EncryptionService } from '@/core/encryption/encryption.service';
 import {
   bearerUpgradeGraceMs,
+  CAPABILITIES_FRESHNESS_POLLS,
   describeHubPoolDisabled,
+  effectivePeerPressureBand,
+  isCapabilitiesSnapshotFresh,
   normalizePeerFqdn,
   resolveHubPoolDirections,
   resolveHubPoolEnabled,
@@ -33,6 +36,7 @@ import { HubPoolLoadService } from './hub-pool-load.service';
 import { HubPoolIdentityService } from './hub-pool-identity.service';
 import { HubPoolPairingPinService, type PinAttemptSource } from './hub-pool-pairing-pin.service';
 import { buildSignedPoolHeaders, POOL_PEER_HEADER, publicKeyFingerprint } from './hub-pool-peer-auth';
+import { HubPoolPressureService } from './hub-pool-pressure.service';
 import {
   toPublicPeer,
   type DiscoverablePoolPeer,
@@ -96,6 +100,7 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
     private readonly configuration: ConfigurationService,
     private readonly identity: HubPoolIdentityService,
     private readonly pairingPins: HubPoolPairingPinService,
+    private readonly pressureService: HubPoolPressureService,
   ) {}
 
   onModuleInit(): void {
@@ -382,6 +387,10 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
         inFlightRequests: this.loadService.get(peer.id),
         authMode: this.authModeOf(peer),
         peerKeyFingerprint: publicKeyFingerprint(peer.peerPublicKey),
+        // The EFFECTIVE band the ranker would use — freshness applied, hostile values clamped, our
+        // own forwarded count as a floor — not the raw jsonb. Showing the operator a number routing
+        // does not believe is how a status page becomes a liability during an incident.
+        gpuPressure: this.effectivePeerPressure(peer),
       })),
       peerCounts: {
         total: peers.length,
@@ -396,17 +405,45 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
     };
   }
 
+  /**
+   * The pressure band this node would actually rank a peer at, for `/pool/status`.
+   *
+   * Shares `effectivePeerPressureBand` and the freshness rule with `PoolProxyService.peerPressure`
+   * rather than re-deriving them here: they are the same decision, and two copies is how the number
+   * on the operator's screen quietly stops matching the number routing used.
+   */
+  private effectivePeerPressure(peer: HubPoolPeer): number | null {
+    const capabilities = peer.lastCapabilities as unknown as PoolPeerCapabilities | null;
+    const freshnessMs = this.configuration.getHubPoolPreferences().poolHealthPollSeconds * 1000 * CAPABILITIES_FRESHNESS_POLLS;
+    return effectivePeerPressureBand({
+      reported: capabilities?.gpuPressure,
+      snapshotFresh: isCapabilitiesSnapshotFresh(peer.lastSeenAt, freshnessMs),
+      forwardedInFlight: this.loadService.get(peer.id),
+    });
+  }
+
   private async buildLocalNodeStatus(): Promise<Omit<PoolStatusLocalNode, 'nodeFqdn' | 'tailnet' | 'tailscaleConnected'>> {
     const inFlightRequests = this.loadService.localInFlight();
+    // Read outside the try: a down backend must not take the pressure band with it, and this is a
+    // field read on an in-memory sampler that cannot throw.
+    const gpuPressure = this.pressureService.band();
+    const gpuPressureSource = this.pressureService.source();
     try {
       const inventory = await this.getOwnInventory();
-      return { inFlightRequests, hardwareTier: inventory.hardwareTier, backends: inventory.backends, capabilitiesError: null };
+      return {
+        inFlightRequests,
+        hardwareTier: inventory.hardwareTier,
+        backends: inventory.backends,
+        capabilitiesError: null,
+        gpuPressure,
+        gpuPressureSource,
+      };
     } catch (error) {
       // A down backend must not take the status card with it — the pairing and kill-switch halves
       // of this payload are exactly what an operator needs while inference is broken.
       const message = error instanceof Error ? error.message : String(error);
       this.logger.warn(`[HubPool] could not build local capabilities for pool status: ${message}`);
-      return { inFlightRequests, hardwareTier: null, backends: [], capabilitiesError: message };
+      return { inFlightRequests, hardwareTier: null, backends: [], capabilitiesError: message, gpuPressure, gpuPressureSource };
     }
   }
 
@@ -841,6 +878,8 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
    */
   async getOwnCapabilities(acceptingWork = true): Promise<PoolPeerCapabilities> {
     const [inventory, self] = await Promise.all([this.getOwnInventory(), this.identity.get()]);
+    const gpuPressure = this.pressureService.band();
+    const gpuPressureSource = this.pressureService.source();
     return {
       hardwareTier: inventory.hardwareTier,
       backends: acceptingWork ? inventory.backends : [],
@@ -855,8 +894,15 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
       // simply omits the field and is told about the upgrade on a later probe.
       ...(self ? { nodeUuid: self.nodeUuid } : {}),
       // Never cached: this is the whole point of the snapshot for a ranking peer, and a stale
-      // figure would tell it we are idle while our engines are saturated.
+      // figure would tell it we are idle while our engines are saturated. The pressure band is in
+      // this same uncached half and for the same reason — the OWN_INVENTORY_TTL_MS cache must not
+      // be allowed to swallow a live counter.
       inFlightRequests: this.loadService.localInFlight(),
+      // Spread rather than assigned: an unmeasured node omits the keys ENTIRELY rather than sending
+      // 0. Absence and idleness must not share an encoding on the wire either — a peer reading this
+      // turns a missing key into UNKNOWN_PRESSURE, and would have taken a 0 at face value.
+      ...(gpuPressure === null ? {} : { gpuPressure }),
+      ...(gpuPressureSource === null ? {} : { gpuPressureSource }),
       updatedAt: new Date().toISOString(),
     };
   }

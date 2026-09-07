@@ -7,10 +7,18 @@ import { INFERENCE_BACKEND_TYPES, type InferenceBackendType } from '@ci-hub/comm
 import { TailscaleService } from '@/modules/tailscale/tailscale.service';
 import { InferenceBackendRegistry } from '@/modules/inference/backends/backend-registry';
 import { ConfigurationService } from '@/core/config/configuration.service';
-import { CAPABILITIES_FRESHNESS_POLLS, resolveHubPoolDirections, type HubPoolDirectionalState } from '@/common/helpers/hub-pool';
+import {
+  CAPABILITIES_FRESHNESS_POLLS,
+  UNKNOWN_PRESSURE,
+  effectivePeerPressureBand,
+  isCapabilitiesSnapshotFresh,
+  resolveHubPoolDirections,
+  type HubPoolDirectionalState,
+} from '@/common/helpers/hub-pool';
 import { HubPoolPeerService } from './hub-pool-peer.service';
 import { HubPoolLoadService, LOCAL_CANDIDATE_KEY } from './hub-pool-load.service';
 import { HubPoolRoutingLogService, type PoolRoutingOutcome } from './hub-pool-routing-log.service';
+import { HubPoolPressureService } from './hub-pool-pressure.service';
 import type { HubPoolPeer } from '@/core/database/drizzle/types';
 import type { PoolCandidate, PoolPeerCapabilities } from './hub-pool.types';
 
@@ -46,11 +54,16 @@ const UNKNOWN_TIER_RANK: number = TIER_RANK.low;
  */
 const LOCAL_TIER_RANK = -1;
 
-/** A candidate plus the two ordering keys {@link PoolProxyService.buildCandidateList} sorts on. */
+/** A candidate plus the three ordering keys {@link PoolProxyService.buildCandidateList} sorts on. */
 interface RankedCandidate {
   candidate: PoolCandidate;
-  /** Queue depth, already carrying the local-affinity handicap for peers. Lower is better. */
+  /** Queue depth, already carrying the local-affinity handicap for peers and the weighted pressure term. Lower is better. */
   score: number;
+  /**
+   * GPU-pressure band 0-3, with {@link UNKNOWN_PRESSURE} standing in for "unmeasured". Read as a
+   * tie-break only, and only when `poolPressureWeight` is non-zero — see the comparator.
+   */
+  pressure: number;
   tierRank: number;
 }
 
@@ -89,11 +102,17 @@ export class PoolProxyService {
     private readonly loadService: HubPoolLoadService,
     private readonly configuration: ConfigurationService,
     private readonly routingLog: HubPoolRoutingLogService,
+    private readonly pressureService: HubPoolPressureService,
   ) {}
 
   /** Read per request, not cached: a settings PATCH must change routing on the next request, not on the next restart. */
   private localAffinity(): number {
     return this.configuration.getHubPoolPreferences().poolLocalAffinity;
+  }
+
+  /** Read per request, like {@link localAffinity}. `0` (the default) takes pressure out of ranking entirely — see {@link buildCandidateList}. */
+  private pressureWeight(): number {
+    return this.configuration.getHubPoolPreferences().poolPressureWeight;
   }
 
   /** How old a peer's capability snapshot may be before its self-reported load is discarded, derived from the configured poll cadence so retuning one retunes the other. */
@@ -121,17 +140,34 @@ export class PoolProxyService {
    *
    * This is also where the outbound kill switch and the per-peer switch are applied — on the
    * REQUEST path, deliberately not inside `listConnectedPeers()`; see {@link usablePeers}.
+   *
+   * GPU pressure enters in two places and BOTH vanish at `poolPressureWeight = 0`, which is the
+   * shipped default: the weighted term drops out of `score` arithmetically, and the pressure key is
+   * not evaluated by the comparator at all. That is why the default is byte-identical to the
+   * previous build by construction rather than by an argument about what can be measured — it holds
+   * even on a node whose band is a real, moving number.
+   *
+   * Above zero, a node that cannot measure ranks at {@link UNKNOWN_PRESSURE}, never at 0. This is
+   * the invariant the whole feature turns on: most of the fleet cannot measure, and if silence read
+   * as "idle" the pool would systematically route to whichever machine knows least about itself.
    */
   async buildCandidateList(model: string): Promise<PoolCandidate[]> {
     const [local, peers] = await Promise.all([this.localCandidates(model), this.usablePeers()]);
-    const localScore = this.loadService.localInFlight();
+    const weight = this.pressureWeight();
+    const localPressure = this.pressureService.band() ?? UNKNOWN_PRESSURE;
+    const localScore = this.loadService.localInFlight() + weight * localPressure;
     const ranked: RankedCandidate[] = [
-      ...local.map((candidate) => ({ candidate, score: localScore, tierRank: LOCAL_TIER_RANK })),
-      ...this.peerCandidates(model, peers),
+      ...local.map((candidate) => ({ candidate, score: localScore, pressure: localPressure, tierRank: LOCAL_TIER_RANK })),
+      ...this.peerCandidates(model, peers, weight),
     ];
-    // Stable sort: candidates that tie on both keys keep insertion order — local backends in
+    // Stable sort: candidates that tie on every key keep insertion order — local backends in
     // INFERENCE_BACKEND_TYPES order, then peers in the order the repository returned them.
-    return ranked.sort((a, b) => a.score - b.score || a.tierRank - b.tierRank).map((entry) => entry.candidate);
+    //
+    // `weight ? … : 0` rather than always comparing: at weight 0 the middle key must not exist, or a
+    // measured node would start winning ties that a static hardware tier decides today.
+    return ranked
+      .sort((a, b) => a.score - b.score || (weight ? a.pressure - b.pressure : 0) || a.tierRank - b.tierRank)
+      .map((entry) => entry.candidate);
   }
 
   async proxyRequest(params: { path: string; method: string; body: unknown; model: string; res: Response }): Promise<void> {
@@ -496,7 +532,7 @@ export class PoolProxyService {
     return (await this.peerService.listConnectedPeers()).filter((peer) => peer.enabled !== false);
   }
 
-  private peerCandidates(model: string, peers: HubPoolPeer[]): RankedCandidate[] {
+  private peerCandidates(model: string, peers: HubPoolPeer[], weight: number): RankedCandidate[] {
     const candidates: RankedCandidate[] = [];
     for (const peer of peers) {
       const capabilities = peer.lastCapabilities as unknown as PoolPeerCapabilities | null;
@@ -508,9 +544,11 @@ export class PoolProxyService {
       if (capabilities.acceptingWork === false) continue;
       const match = capabilities.backends.find((b) => b.healthy && b.modelsLoaded.includes(model));
       if (match) {
+        const pressure = this.peerPressure(peer, capabilities) ?? UNKNOWN_PRESSURE;
         candidates.push({
           candidate: { peerId: peer.id, nodeFqdn: peer.nodeFqdn, backend: match.type },
-          score: this.peerLoad(peer, capabilities) + this.localAffinity(),
+          score: this.peerLoad(peer, capabilities) + weight * pressure + this.localAffinity(),
+          pressure,
           tierRank: this.tierRank(capabilities.hardwareTier),
         });
       }
@@ -535,14 +573,33 @@ export class PoolProxyService {
 
   /** Self-reported queue depth, or {@link UNKNOWN_PEER_LOAD} when the snapshot is stale or carries no figure. */
   private reportedPeerLoad(peer: HubPoolPeer, capabilities: PoolPeerCapabilities): number {
-    // Freshness is judged on lastSeenAt, stamped by OUR clock when the probe succeeded, not on
-    // capabilities.updatedAt, which is the peer's — comparing another machine's clock to ours would
-    // read skew as staleness (or, worse, staleness as freshness).
-    const observedAt = peer.lastSeenAt ? Date.parse(peer.lastSeenAt) : Number.NaN;
-    if (!Number.isFinite(observedAt) || Date.now() - observedAt > this.capabilitiesFreshnessMs()) {
+    // Freshness comes from the shared helper so that load and pressure — two fields of one snapshot
+    // — can never drift apart on what "stale" means. It is judged on lastSeenAt, stamped by OUR
+    // clock when the probe succeeded, not on capabilities.updatedAt, which is the peer's.
+    if (!this.isSnapshotFresh(peer)) {
       return UNKNOWN_PEER_LOAD;
     }
     return capabilities.inFlightRequests ?? UNKNOWN_PEER_LOAD;
+  }
+
+  private isSnapshotFresh(peer: HubPoolPeer): boolean {
+    return isCapabilitiesSnapshotFresh(peer.lastSeenAt, this.capabilitiesFreshnessMs());
+  }
+
+  /**
+   * A peer's effective pressure band, or `null` when nothing about its GPU is known.
+   *
+   * Every decision here lives in `effectivePeerPressureBand`, deliberately: `lastCapabilities` is
+   * jsonb a paired peer fully controls, so the hostile-value clamp and the "what we have forwarded
+   * is a floor" anti-gaming rule have to be the same code `/pool/status` shows the operator.
+   * Otherwise the status card would print a number routing does not believe.
+   */
+  private peerPressure(peer: HubPoolPeer, capabilities: PoolPeerCapabilities): number | null {
+    return effectivePeerPressureBand({
+      reported: capabilities.gpuPressure,
+      snapshotFresh: this.isSnapshotFresh(peer),
+      forwardedInFlight: this.loadService.get(peer.id),
+    });
   }
 
   private async callBackend(backend: InferenceBackendType, path: string, method: string, body: unknown): Promise<globalThis.Response> {

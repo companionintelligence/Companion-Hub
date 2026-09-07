@@ -9,7 +9,7 @@ This complements, and does not replace, the existing single-node model recommend
 - **Discovery**: the Hub with `TAILSCALE_OAUTH_CLIENT_ID` / `TAILSCALE_OAUTH_CLIENT_SECRET` configured can list tailnet devices via the Tailscale Admin API, then probes each one's `GET /api/inference/pool/identify` (already reachable over the tailnet the same way the Hub's own dashboard is) to find which devices are CI-Hub nodes.
 - **Pairing**: a two-way handshake — the requesting Hub sends a token to the candidate; the candidate's operator approves or rejects in **Settings → Network → Hub Pool**; on approval, the candidate issues its own token back. Each side ends up trusting the other with one bearer token per direction (see `hub_pool_peer` in `schema.ts` for the exact model). Rejecting, or never approving, leaves nothing paired. Rejecting and unpairing both send a best-effort *authenticated* notification — the caller presents the token the other side issued it — so the other Hub drops its half immediately instead of forwarding work to a node that will now reject it.
 - **Routing**: once at least one peer is `connected`, every app using `hub_integration.inference` is routed through this Hub's own pool proxy (`/api/inference/pool/*`) instead of a directly-resolved backend URL — this is a global switch, not a per-app setting. With zero connected peers, nothing changes: a single-node Hub behaves exactly as it did before this feature existed.
-- **Ranking**: local backends and connected peers go into a **single** list ordered by queue depth — in-flight inference requests — so a saturated Hub hands work to an idle peer instead of queueing behind itself. The local node gets a deliberate head start of `poolLocalAffinity` queued requests (default 1): a follow-up turn served here reuses the prompt prefix and KV cache the previous turn left resident, while the same turn sent to a peer re-processes the prompt cold — so work only leaves this node once a peer is at least that much emptier. A peer's queue depth is the larger of the two views this Hub has of it: the `inFlightRequests` figure the peer published at its last health poll, and what this Hub has forwarded it since. Both count the same requests, and neither vantage point sees all of them — the peer's snapshot includes work from apps and nodes we cannot observe, our own counter covers the up-to-one-poll the snapshot missed. A snapshot older than three health polls (90 seconds at the default cadence) is discarded and the peer ranks as mid-load: an unmeasured node must never be mistaken for an idle one. Peers that tie on queue depth are ordered by the hardware tier they report.
+- **Ranking**: local backends and connected peers go into a **single** list ordered by queue depth — in-flight inference requests — so a saturated Hub hands work to an idle peer instead of queueing behind itself. The local node gets a deliberate head start of `poolLocalAffinity` queued requests (default 1): a follow-up turn served here reuses the prompt prefix and KV cache the previous turn left resident, while the same turn sent to a peer re-processes the prompt cold — so work only leaves this node once a peer is at least that much emptier. A peer's queue depth is the larger of the two views this Hub has of it: the `inFlightRequests` figure the peer published at its last health poll, and what this Hub has forwarded it since. Both count the same requests, and neither vantage point sees all of them — the peer's snapshot includes work from apps and nodes we cannot observe, our own counter covers the up-to-one-poll the snapshot missed. A snapshot older than three health polls (90 seconds at the default cadence) is discarded and the peer ranks as mid-load: an unmeasured node must never be mistaken for an idle one. Peers that tie on queue depth are ordered by the hardware tier they report, unless `poolPressureWeight` is non-zero, in which case a [GPU-pressure band](#gpu-pressure-a-second-load-signal-amd-only-and-off-by-default) is consulted first — an unmeasured node ranking mid-band, never idle.
 - **Failover**: the proxy tries candidates in the ranked order above. It fails over on a connection error, a timeout waiting for response headers, a 5xx, or a 408/429 — never on an ordinary 4xx, since retrying a malformed request on a different machine wouldn't help. A peer additionally gets failed over on 401/403/404: those come from the peer's *own* pairing checks (it stopped trusting our token, or was unpaired from its side) and say nothing about the app's request, so the request moves to the next node and that peer's cached capabilities are dropped until its next successful health poll. Failover stops as soon as a response is committed — once status and headers have gone to the app, a stream that then dies is left to die rather than restarted on another node.
 - **Recovery**: a peer that fails three consecutive health polls is marked `unreachable` and stops being offered as a candidate, but it keeps being polled — the first successful probe puts it straight back to `connected`. No operator action is needed, and unpairing is never the way to fix a node that was merely offline.
 
@@ -31,6 +31,69 @@ Persisted in `settings.json` and editable over `GET`/`PATCH /api/inference/pool/
 | `poolInboundEnabled` | `true` | — | Whether this Hub may **serve** peers' work. Off: peers see a healthy node advertising an empty inventory and `acceptingWork: false`, and route elsewhere; this Hub keeps using them. |
 | `poolLocalAffinity` | `1` | 0–20 | Queued-request head start the local node gets over a peer. `0` ranks purely by queue depth — with local still taking an *exact* tie, since serving here costs no hop and reuses a warm cache; higher values make handoff rarer (stickier to local). |
 | `poolHealthPollSeconds` | `30` | 10–300 | Seconds between peer capability probes. Also sets how long a peer's snapshot stays trusted — three polls — so slowing the cadence does not silently mark every peer stale. |
+| `poolPressureWeight` | `0` | 0–3 | How heavily the 0–3 GPU-pressure band counts in ranking. `0` (the default) removes it from the comparator entirely, so ranking is byte-identical to the build before pressure existed; `1` is `pending + pressure`, which is what lets the pool move work off a node whose queue is empty but whose GPU is busy. See [GPU pressure](#gpu-pressure-a-second-load-signal-amd-only-and-off-by-default). |
+
+## GPU pressure: a second load signal, AMD-only and off by default
+
+Queue depth answers "how much work has this node accepted". It does not answer "is this machine's GPU already committed" — a card saturated by ComfyUI, a direct `ollama run`, or another orchestrator sharing the same host engine is invisible to every queue counter in the system, and that node still advertises an empty queue.
+
+The **pressure band** is a second, independent signal for exactly that question: an integer `0`–`3`, or **absent** meaning *unmeasured*.
+
+### How it is measured
+
+A sampler takes one reading every 10 seconds, entirely off the request path — ranking a request reads an in-memory number and forks nothing. Sources are tried in order and the first that answers wins:
+
+| Source | What it reads | Status |
+|---|---|---|
+| `host-file` | `busyPercent` from `/data/state/hardware/gpu_pressure.json` | **Nothing in this repo writes this file.** It is the extension seam for vendors the Hub container cannot see. |
+| `amd-drm` | `gpu_busy_percent` from `/host/sys/class/drm/card*/device` | Works wherever the host `/sys` is mounted — see *Enabling the AMD source* below. |
+
+Readings are smoothed with an EWMA (α = 0.4) and quantised with a 5-point deadband (enter a band at 0.40/0.70/0.85 occupancy, leave it at 0.35/0.65/0.80), so a value oscillating across a boundary does not flap the number every peer is ranking on. Rises may skip bands; falls walk down one at a time.
+
+Sampling only runs while this node has at least one **connected peer** — the band exists to be compared against another node's, so a single-node Hub does one indexed `SELECT` every ten seconds and no file reads at all.
+
+**Why AMD only, and why the other sources were cut.** `gpu_busy_percent` is the amdgpu driver's own duty-cycle counter and is the one number available here that actually tracks whether the device is working. The reviewed design also carried two VRAM-residency sources — Ollama's `/api/ps`, and a CPU-spill fraction. Both were removed: resident weights read the same whether an engine is generating or idling out its `keep_alive`, so a band built on them would have rated the *coldest* node the least busy, which is precisely the inversion `poolLocalAffinity` exists to price. NVIDIA and Apple nodes therefore report **nothing**, which is honest, until someone writes the host file. Adding a vendor is a writer change (a desktop timer, or a systemd timer on a fleet node) plus nothing at all in the Hub.
+
+### Absent means neutral, never idle
+
+This is the property the whole feature turns on, and it holds end to end:
+
+- A node that cannot measure **omits** `gpuPressure` from its capabilities payload rather than sending `0`. Absence and idleness do not share an encoding on the wire.
+- A reader turns an absent, stale, or invalid band into `UNKNOWN_PRESSURE = 1` — mid-band, deliberately not `0`, exactly as `UNKNOWN_PEER_LOAD` already works for queue depth.
+- A peer's band is discarded entirely once its snapshot is older than three health polls, and clamped to `null` unless it is an integer in `0..3`. `last_capabilities` is JSON a paired peer fully controls.
+- A peer's self-reported band is **floored** by what this node has forwarded there and not yet finished reading. Otherwise a peer that hardcodes `gpuPressure: 0` wins every tie forever and the band becomes an attack surface rather than a signal.
+
+On a fleet where most nodes cannot measure, the alternative — reading silence as "idle" — would systematically route work to whichever machine knows least about itself.
+
+### How it enters ranking
+
+`poolPressureWeight` defaults to **`0`**, and at `0` the band is *arithmetically absent*: the score term vanishes and the pressure key is not evaluated by the comparator at all. Ranking on a fresh Hub is byte-for-byte what it was before this feature existed — by construction, not by an argument about what can be measured.
+
+At `1` the score is PAIR's `pending + pressure`, plus the usual local-affinity handicap on peers. That is what lets a node whose queue is empty but whose GPU is committed hand work to a calmer peer. A band is worth one queued request per unit of weight, so a materially shorter queue still wins.
+
+**Do not try to read latency out of this number.** `docs/fleet-benchmark-results.md` §1.1 shows paired throughput ratios swinging 1.57–3.65× on a code prompt and ~1.0× on a prose prompt, on identical hardware, model and build. A 0–3 band cannot predict time-to-first-token and is not intended to. It answers one question — *is this machine's GPU already committed?* — and is used only as an ordering key.
+
+### Enabling the AMD source
+
+The reader ships; the mount does not. `/host/sys` is not bind-mounted by any compose file in this repo, so **out of the box every node reports no band and ranks neutral**, which is the same no-op the default weight already guarantees.
+
+To enable it on a Linux AMD node, add one line to the `ci-hub` service's `volumes:` and recreate the container:
+
+```yaml
+      - /sys:/host/sys:ro
+```
+
+It must be `/sys`, not `/sys/class/drm`: `card*/device` is a symlink into `/sys/devices/…`, so a narrower mount yields dangling links. The mount is read-only and exposes kernel device metadata rather than data — materially less powerful than the Docker socket already mounted alongside it — but it is a real container-posture change, which is why it is an operator decision rather than a default. It is deliberately not in `docker-compose.prod.yml`: a new unconditional bind mount is the one part of this feature that could stop a Hub booting, peerless single-node ones included, and it has not been verified against Docker Desktop on macOS and Windows where the same compose file runs.
+
+Then set the weight, on each node that should act on it:
+
+```bash
+curl -X PATCH .../api/inference/pool/settings -d '{"poolPressureWeight": 1}'
+```
+
+### End-to-end lag
+
+A change on one node reaches another node's ranking through: the EWMA (~30 s to 64% of a step), then that peer's next capability poll (`poolHealthPollSeconds`, 30 s by default). Worst case is roughly **90 seconds at the default cadence, and about 5 minutes at the 300 s maximum**. The band is a steady-state signal about a machine, not a per-request measurement.
 
 ## Kill switches: three levels, one precedence
 
@@ -280,7 +343,7 @@ Apps using `hub_integration.inference` get `CI_LLM_BASE_URL`, `OLLAMA_HOST` and 
 - Peer health is polled on an interval (`poolHealthPollSeconds`, 30s by default) rather than pushed, so a peer that just went down may still be offered as a candidate until the next poll — the per-request failover is what actually protects a live request in that gap.
 - The routing log holds the last 200 decisions in memory and is gone on restart. There is still no persisted history of *anything* else: no pairing lifecycle (rejected and expired rows are hard-deleted), no per-peer request totals, and no record of why a peer became unreachable beyond the current strike count.
 - Time-to-headers is the only latency figure recorded. Token counts and tokens-per-second are not available: the response body is piped through untouched, and counting tokens would mean parsing the stream the proxy deliberately never reads.
-- Queue depth is the only load signal. The Hub has no live GPU-utilization or VRAM-pressure telemetry to rank on — `HardwareInspectorService` reports a static hardware profile, not counters — so a peer whose GPU is busy with work that never went through the pool still reports an empty queue. Reported hardware tier only breaks ties between equally queued peers; it does not deprioritize a slow GPU that happens to be idle.
+- Queue depth is the only load signal **that is on by default**. The [GPU-pressure band](#gpu-pressure-a-second-load-signal-amd-only-and-off-by-default) covers the case queue depth cannot see — a GPU busy with work that never went through the pool — but it is AMD-only, needs a `/sys` mount this repo does not ship, and `poolPressureWeight` defaults to `0`. Until an operator turns both on, a peer whose card is saturated by ComfyUI still reports an empty queue. Reported hardware tier only breaks ties between equally queued peers; it does not deprioritize a slow GPU that happens to be idle.
 - Queue depths are per-process and reset when a Hub restarts, so for the first moments after a restart every node looks idle to itself. The peer-side freshness rule covers the other direction (a peer that has gone quiet ranks as mid-load), but nothing corrects a node's view of its own load.
 - A node's model inventory is what it has on **disk**, not what is resident in VRAM — Ollama's `/api/tags`, for one, lists every pulled model. A candidate that must cold-load the model therefore ranks alongside one already holding it warm; the local head start hedges this for the common follow-up-turn case, it does not fix it. What the inventory no longer does is hide a model the node cannot load **at all**: see the note below.
 

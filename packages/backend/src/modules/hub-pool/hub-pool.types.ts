@@ -32,11 +32,16 @@ export interface PoolPeerCapabilities {
    */
   acceptingWork?: boolean;
   /**
-   * Reserved for the GPU-pressure load signal: a smoothed 0-3 band of real device busy-ness.
-   * ABSENT means unmeasured, which ranks neutral — never idle. Nothing in this build sets it.
+   * Smoothed 0-3 band of the answering node's real GPU busy-ness.
+   *
+   * ABSENT means unmeasured, and a reader must turn that into `UNKNOWN_PRESSURE` (mid-band), never
+   * into 0. The distinction is the whole contract: the signal is AMD-only, so most nodes on a real
+   * fleet legitimately omit it, and if silence read as "idle" every tie would go to whichever
+   * machine knows least about itself. A node that cannot measure omits the key rather than sending
+   * 0 for exactly that reason — absence and idleness do not share an encoding on the wire.
    */
   gpuPressure?: number;
-  /** Reserved, alongside {@link gpuPressure}: which measurement produced the band. */
+  /** Which measurement produced {@link gpuPressure}. For the operator surfaces only; never read by the ranker. */
   gpuPressureSource?: PoolPressureSource;
   /**
    * The answering node's stable pool UUID — the one row of `hub_pool_identity` — learned only from
@@ -57,8 +62,18 @@ export interface PoolPeerCapabilities {
 // optional wherever it touches a live payload, so nothing has to populate it and no default moves.
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** Which measurement produced a node's GPU-pressure band. AMD-only today; every other node reports none. */
-export type PoolPressureSource = 'host-file' | 'amd-drm' | 'engine-vram';
+/**
+ * Which measurement produced a node's GPU-pressure band.
+ *
+ * AMD-only, and that is a decision rather than a gap. `amd-drm` reads the amdgpu driver's own
+ * duty-cycle counter, which is the one number the Hub container can reach that actually answers "is
+ * this GPU committed right now". `host-file` is the extension seam for everything else — nothing in
+ * this repo writes it, so NVIDIA and Apple nodes report no source at all and rank neutral, which is
+ * honest. The reviewed design also carried an engine-VRAM-residency source; it was cut because
+ * residency reads the same whether an engine is generating or idling out its `keep_alive`, so it
+ * would have ranked the COLDEST node as the least busy one.
+ */
+export type PoolPressureSource = 'host-file' | 'amd-drm';
 
 /** A pin's reach: the pool-wide fallback, or one specific model id. */
 export type PoolPinScope = 'default' | 'model';
@@ -212,7 +227,12 @@ export interface PoolStatusPeer extends PublicHubPoolPeer {
   authMode?: PoolPeerAuthMode;
   /** A short hash of the peer's pinned public key, for the operator to compare across two screens. Never the key. */
   peerKeyFingerprint?: string | null;
-  /** Reserved for the load signal: the peer's effective (freshness-applied, floored) 0-3 band, or `null` when unmeasured. */
+  /**
+   * The peer's EFFECTIVE 0-3 band — freshness applied, hostile values clamped, and floored by what
+   * this node has forwarded there — or `null` when nothing about its GPU is known. Deliberately not
+   * the raw jsonb: a status card showing a number routing does not believe is a liability during an
+   * incident, which is when it is read.
+   */
   gpuPressure?: number | null;
 }
 
@@ -228,9 +248,9 @@ export interface PoolStatusLocalNode {
   capabilitiesError: string | null;
   /** This node's UUID, key fingerprint, and why identity is unusable when it is. */
   identity?: PoolIdentitySummary;
-  /** Reserved for the load signal: this node's own 0-3 pressure band, or `null` when unmeasured. */
+  /** This node's own smoothed 0-3 pressure band, or `null` when nothing here could measure it. */
   gpuPressure?: number | null;
-  /** Reserved, alongside {@link gpuPressure}. */
+  /** Which source produced {@link gpuPressure}, or `null` when it is unmeasured. */
   gpuPressureSource?: PoolPressureSource | null;
   /** Reserved for backend supervision: what the observer has seen, per backend. Observe-only. */
   supervision?: BackendSupervisionSummary[];
