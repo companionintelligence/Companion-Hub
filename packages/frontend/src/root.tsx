@@ -399,7 +399,7 @@ async function runClientLoader(request: Request) {
 
   // Root path: determine where to send the user
   if (!userResult.data?.isConfigured) {
-    return redirect('/login');
+    return redirect('/register');
   }
 
   if (!userResult.data?.isLoggedIn && !userResult.data?.isGuestDashboardEnabled) {
