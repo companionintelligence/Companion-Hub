@@ -7,29 +7,48 @@ use crate::hub_manager::*;
 
 #[test]
 fn hub_watchdog_decision() {
-    assert!(!crate::hub_manager::should_trigger_hub_watchdog(
-        2, None, false, false
+    use crate::hub_manager::{decide_hub_watchdog_action, HubWatchdogAction};
+    // `docker_available` is passed explicitly — probing the real daemon would make this
+    // test fail on any machine without Docker installed.
+    assert_eq!(
+        decide_hub_watchdog_action(2, None, false, false, false, true),
+        HubWatchdogAction::None
+    );
+    assert_eq!(
+        decide_hub_watchdog_action(3, None, false, false, false, true),
+        HubWatchdogAction::StartHub
+    );
+    assert_eq!(
+        decide_hub_watchdog_action(3, None, true, false, false, true),
+        HubWatchdogAction::None
+    );
+    assert_eq!(
+        decide_hub_watchdog_action(3, None, false, true, false, true),
+        HubWatchdogAction::None
+    );
+    assert_eq!(
+        decide_hub_watchdog_action(3, Some(60), false, false, false, true),
+        HubWatchdogAction::None
+    );
+    assert_eq!(
+        decide_hub_watchdog_action(3, Some(301), false, false, false, true),
+        HubWatchdogAction::StartHub
+    );
+}
+
+#[test]
+fn hub_watchdog_wrapper_reports_only_start_hub() {
+    use crate::hub_manager::should_trigger_hub_watchdog_for;
+    // The wrapper adds nothing but the StartHub -> true mapping (it always passes
+    // `api_container_up: false`); exercised through the pure form so the Docker probe
+    // stays out of the test.
+    assert!(should_trigger_hub_watchdog_for(3, None, false, false, true));
+    assert!(!should_trigger_hub_watchdog_for(
+        2, None, false, false, true
     ));
-    assert!(crate::hub_manager::should_trigger_hub_watchdog(
-        3, None, false, false
-    ));
-    assert!(!crate::hub_manager::should_trigger_hub_watchdog(
-        3, None, true, false
-    ));
-    assert!(!crate::hub_manager::should_trigger_hub_watchdog(
-        3, None, false, true
-    ));
-    assert!(!crate::hub_manager::should_trigger_hub_watchdog(
-        3,
-        Some(60),
-        false,
-        false
-    ));
-    assert!(crate::hub_manager::should_trigger_hub_watchdog(
-        3,
-        Some(301),
-        false,
-        false
+    // Docker missing: report false rather than asking for a start_hub that cannot run.
+    assert!(!should_trigger_hub_watchdog_for(
+        3, None, false, false, false
     ));
 }
 

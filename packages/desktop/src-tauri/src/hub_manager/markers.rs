@@ -235,6 +235,24 @@ pub fn should_trigger_hub_watchdog(
     user_stopped: bool,
     start_failed: bool,
 ) -> bool {
+    should_trigger_hub_watchdog_for(
+        consecutive_health_failures,
+        cooldown_elapsed_secs,
+        user_stopped,
+        start_failed,
+        is_docker_available(),
+    )
+}
+
+/// Pure form of [`should_trigger_hub_watchdog`] (unit-tested): takes `docker_available`
+/// instead of probing the daemon, so tests do not need Docker on the machine.
+pub(crate) fn should_trigger_hub_watchdog_for(
+    consecutive_health_failures: u32,
+    cooldown_elapsed_secs: Option<u64>,
+    user_stopped: bool,
+    start_failed: bool,
+    docker_available: bool,
+) -> bool {
     matches!(
         decide_hub_watchdog_action(
             consecutive_health_failures,
@@ -242,7 +260,7 @@ pub fn should_trigger_hub_watchdog(
             user_stopped,
             start_failed,
             false,
-            is_docker_available(),
+            docker_available,
         ),
         HubWatchdogAction::StartHub
     )
