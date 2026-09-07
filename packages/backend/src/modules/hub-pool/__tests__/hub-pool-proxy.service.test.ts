@@ -179,6 +179,53 @@ describe('PoolProxyService', () => {
       expect(candidates).toEqual([]);
     });
 
+    /**
+     * The fleet node this guards against: core-4 answered `GET /api/tags` 200 listing `gemma3:1b`
+     * while every `POST /api/generate` for it returned HTTP 500 `model failed to load`. Selecting
+     * on the inventory alone made it a first-choice candidate for a model it failed 100% of
+     * requests for — and the same claim went to every peer as this node's advertised capabilities.
+     */
+    it('excludes a local backend that lists the model but has been unable to serve it', async () => {
+      ollama.healthCheck.mockResolvedValue({
+        running: true,
+        healthy: true,
+        modelsLoaded: ['gemma3:1b'],
+        unservableModels: ['gemma3:1b'],
+      });
+
+      const candidates = await service.buildCandidateList('gemma3:1b');
+
+      expect(candidates).toEqual([]);
+    });
+
+    it('still offers a backend for the models it CAN serve', async () => {
+      ollama.healthCheck.mockResolvedValue({
+        running: true,
+        healthy: true,
+        modelsLoaded: ['gemma3:1b', 'llama3.2:3b'],
+        unservableModels: ['gemma3:1b'],
+      });
+
+      // A node that cannot fit one model is still the right place for the ones it can fit.
+      expect(await service.buildCandidateList('llama3.2:3b')).toEqual([{ peerId: null, nodeFqdn: null, backend: 'ollama' }]);
+    });
+
+    it('hands the request to a peer when the local engine cannot serve the model it lists', async () => {
+      ollama.healthCheck.mockResolvedValue({
+        running: true,
+        healthy: true,
+        modelsLoaded: ['gemma3:1b'],
+        unservableModels: ['gemma3:1b'],
+      });
+      peerService.listConnectedPeers.mockResolvedValue([
+        mockPeer({ lastCapabilities: capabilitiesWithModel('gemma3:1b') as unknown as Record<string, unknown> }),
+      ]);
+
+      const candidates = await service.buildCandidateList('gemma3:1b');
+
+      expect(candidates).toEqual([{ peerId: 'peer-1', nodeFqdn: 'peer-hub.tailxyz.ts.net', backend: 'ollama' }]);
+    });
+
     it('includes a connected peer whose cached capabilities report the model', async () => {
       const peer = mockPeer({ lastCapabilities: capabilitiesWithModel('llama3.2:3b') as unknown as Record<string, unknown> });
       peerService.listConnectedPeers.mockResolvedValue([peer]);
@@ -504,6 +551,80 @@ describe('PoolProxyService', () => {
       expect(res.status).toHaveBeenCalledWith(200);
       expect(res.json).not.toHaveBeenCalled();
       expect(destroySpy).toHaveBeenCalled();
+    });
+  });
+
+  /**
+   * A live request is the only thing that finds out whether a model can actually be served — the
+   * health poll cannot, because the only proof is a generation, and generating on every poll would
+   * pull every listed model into VRAM on the poll cadence. So what the request learns is fed back
+   * to the engine that answered, and the next candidate list knows it.
+   */
+  describe('serving-capability feedback to the local engine', () => {
+    const MODEL = 'gemma3:1b';
+
+    /** The local Ollama lists the model; whether it can serve it is what these tests are about. */
+    function localHasModel(): void {
+      ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL] });
+    }
+
+    async function proxy(res = createMockResponse()): Promise<void> {
+      await service.proxyRequest({ path: '/v1/chat/completions', method: 'POST', body: { model: MODEL }, model: MODEL, res });
+    }
+
+    it('reports a 5xx back to the engine that produced it', async () => {
+      localHasModel();
+      vi.mocked(global.fetch).mockResolvedValue(new Response('model failed to load', { status: 500 }));
+
+      await proxy();
+
+      expect(ollama.noteServingFailure).toHaveBeenCalledWith(MODEL, 'HTTP 500');
+    });
+
+    it('does not blame the model for a 429', async () => {
+      localHasModel();
+      vi.mocked(global.fetch).mockResolvedValue(new Response('busy', { status: 429 }));
+
+      await proxy();
+
+      // 429 and 408 fail over too, but they are the engine talking about its queue, not about the
+      // model. Withholding a model because the node was briefly busy turns shedding into an outage.
+      expect(ollama.noteServingFailure).not.toHaveBeenCalled();
+    });
+
+    it('does not blame the model for a caller 4xx', async () => {
+      localHasModel();
+      vi.mocked(global.fetch).mockResolvedValue(new Response(JSON.stringify({ error: 'bad request' }), { status: 400 }));
+
+      await proxy();
+
+      expect(ollama.noteServingFailure).not.toHaveBeenCalled();
+      // A 4xx is the engine's verdict on the request, not proof the model runs, so it clears nothing either.
+      expect(ollama.noteServingSuccess).not.toHaveBeenCalled();
+    });
+
+    it('clears the record when the engine actually serves the model', async () => {
+      localHasModel();
+      vi.mocked(global.fetch).mockResolvedValue(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+
+      await proxy();
+
+      expect(ollama.noteServingSuccess).toHaveBeenCalledWith(MODEL);
+    });
+
+    it('does not charge the local engine for a peer 5xx', async () => {
+      // The local node has nothing to do with this request, and a 500 relayed through a peer says
+      // nothing about which of THAT node's backends failed — the peer corrects its own capabilities.
+      const peer = mockPeer({ lastCapabilities: capabilitiesWithModel(MODEL) as unknown as Record<string, unknown> });
+      peerService.listConnectedPeers.mockResolvedValue([peer]);
+      peerService.getPeerById.mockResolvedValue(peer);
+      peerService.getPresentToken.mockResolvedValue('raw-token');
+      vi.mocked(global.fetch).mockResolvedValue(new Response('server error', { status: 500 }));
+
+      await proxy();
+
+      expect(ollama.noteServingFailure).not.toHaveBeenCalled();
+      expect(ollama.noteServingSuccess).not.toHaveBeenCalled();
     });
   });
 

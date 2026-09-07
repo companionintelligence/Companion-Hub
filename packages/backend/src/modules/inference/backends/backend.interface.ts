@@ -34,6 +34,22 @@ export interface InferenceBackend {
   isModelLoaded(modelId: string): Promise<boolean>;
 
   /**
+   * Tell the backend that a request it accepted for `modelId` failed in a way that suggests it
+   * cannot serve that model — pass only server-side rejections, never connection errors (those are
+   * the whole backend being down, which `healthCheck` already reports).
+   *
+   * Optional because it is a *feedback* channel, not a capability: a backend that implements it
+   * feeds the observation back into `healthCheck().unservableModels` so routing stops choosing it,
+   * and one that does not simply keeps offering the model. The alternative — proving serveability
+   * from the health check itself — means generating on every poll, which would load every listed
+   * model into VRAM on the poll cadence.
+   */
+  noteServingFailure?(modelId: string, reason: string): void;
+
+  /** The counterpart: `modelId` was served, so clear whatever {@link noteServingFailure} accumulated. */
+  noteServingSuccess?(modelId: string): void;
+
+  /**
    * Get the Docker image for this backend. Some implementations accept additional GPU-runtime
    * hints beyond the base signature — e.g. OllamaBackend's `{ rocmReady, unifiedMemory }` selects
    * between its ROCm and Vulkan-fallback tags for AMD GPUs — see the implementing class.

@@ -149,6 +149,9 @@ export class PoolProxyService {
       this.loadService.acquire(key);
       try {
         const upstream = await this.forward(candidate, path, method, body);
+        // Before the failover branch, so both outcomes teach the local engine the same thing: a
+        // live request is the only place the pool ever learns whether a model actually serves.
+        this.noteLocalServing(candidate, model, upstream.status);
         if (this.shouldFailover(candidate, upstream.status)) {
           lastError = new Error(`${candidate.nodeFqdn ?? 'local'} returned ${upstream.status}`);
           failedOverFrom.push(nodeLabel);
@@ -229,6 +232,32 @@ export class PoolProxyService {
       return true;
     }
     return candidate.peerId === null ? TRANSPORT_4XX.has(status) : PEER_TRANSPORT_4XX.has(status);
+  }
+
+  /**
+   * Feed a local engine's own answer back into its serving-capability signal, so the next
+   * `localCandidates` knows something this request found out and no health poll could.
+   *
+   * Only 5xx counts as a failure. 408 and 429 fail over too, but they are the engine saying "not
+   * now" about its queue, not "not ever" about the model — withholding a model because the node
+   * was briefly busy would turn load shedding into an outage. Peers are skipped entirely: a peer's
+   * capabilities are its own to correct (see {@link noteRejectedCandidate}), and a 500 relayed
+   * through it says nothing about which of ITS backends failed.
+   */
+  private noteLocalServing(candidate: PoolCandidate, model: string, status: number): void {
+    if (candidate.peerId !== null) {
+      return;
+    }
+    const backend = this.backends.tryGet(candidate.backend);
+    if (status >= 500) {
+      backend?.noteServingFailure?.(model, `HTTP ${status}`);
+      return;
+    }
+    if (status < 400) {
+      // A 4xx is the engine's verdict on the *request*, not proof the model can run, so only a
+      // clean response clears the record.
+      backend?.noteServingSuccess?.(model);
+    }
   }
 
   /** A peer that 401/403s no longer treats us as paired, so its cached model list is stale — stop offering it until the next successful health probe. */
@@ -350,14 +379,30 @@ export class PoolProxyService {
     this.respondUncommitted(res, 502, { error: `No local backend able to serve ${path}` });
   }
 
+  /**
+   * This node's own backends that can serve `model`.
+   *
+   * "Has it" and "can serve it" are separate questions, and the inventory only answers the first:
+   * `health.modelsLoaded` is what the engine has on **disk**. A fleet node was found answering
+   * `/api/tags` 200 with `gemma3:1b` while every `/api/generate` for it returned HTTP 500 `model
+   * failed to load` — on the inventory alone that node was a first-choice candidate for a model it
+   * could not serve once, and it advertised the same claim to every peer. So a model the backend
+   * has withheld (see `BackendHealthStatus.unservableModels`) is dropped here even though it is
+   * sitting right there in the inventory.
+   */
   private async localCandidates(model: string): Promise<PoolCandidate[]> {
     const results = await Promise.all(
       this.backends.entries().map(async ([type, backend]): Promise<PoolCandidate | null> => {
         try {
           const health = await backend.healthCheck();
-          if (health.running && health.healthy && health.modelsLoaded.includes(model)) {
-            return { peerId: null, nodeFqdn: null, backend: type };
+          if (!health.running || !health.healthy || !health.modelsLoaded.includes(model)) {
+            return null;
           }
+          if (health.unservableModels?.includes(model)) {
+            this.logger.debug(`[PoolProxy] local ${type} lists "${model}" but has been unable to serve it; not offering it as a candidate`);
+            return null;
+          }
+          return { peerId: null, nodeFqdn: null, backend: type };
         } catch (error) {
           this.logger.debug(`[PoolProxy] local ${type} health check failed: ${error instanceof Error ? error.message : String(error)}`);
         }

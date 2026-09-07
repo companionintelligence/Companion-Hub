@@ -532,11 +532,18 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
       const [status, models] = await Promise.all([this.inferenceRouter.getStatus(), this.inferenceRouter.listModels()]);
       const inventory: OwnInventory = {
         hardwareTier: status.hardwareTier,
-        backends: status.backends.map((b) => ({
-          type: b.type,
-          healthy: b.healthy,
-          modelsLoaded: models.filter((m) => m.backend === b.type && m.local && m.state !== 'available').map((m) => m.id),
-        })),
+        backends: status.backends.map((b) => {
+          // What we publish here is what every peer ranks us on, so a model this node has been
+          // caught unable to serve must not appear in it. Advertising it would send us other
+          // nodes' work for a model that fails on arrival — and unlike a local mis-route, the peer
+          // has no way to find that out until it has already handed over the request.
+          const unservable = new Set(b.unservableModels ?? []);
+          return {
+            type: b.type,
+            healthy: b.healthy,
+            modelsLoaded: models.filter((m) => m.backend === b.type && m.local && m.state !== 'available' && !unservable.has(m.id)).map((m) => m.id),
+          };
+        }),
       };
       this.ownInventoryCache = { value: inventory, expiresAt: Date.now() + OWN_INVENTORY_TTL_MS };
       return inventory;
