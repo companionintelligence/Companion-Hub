@@ -26,6 +26,7 @@ function preferences(overrides: Partial<HubPoolPreferences> = {}): HubPoolPrefer
     poolInboundEnabled: true,
     poolLocalAffinity: DEFAULT_POOL_LOCAL_AFFINITY,
     poolHealthPollSeconds: DEFAULT_POOL_HEALTH_POLL_SECONDS,
+    poolPins: [],
     poolRequireSignedPeers: false,
     ...overrides,
   };

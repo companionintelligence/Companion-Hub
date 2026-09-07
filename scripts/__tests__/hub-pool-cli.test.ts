@@ -10,8 +10,11 @@ import {
   formatPoolPeersLines,
   formatPoolProbeLines,
   formatPoolRoutingLogLines,
+  formatPoolPinLines,
   formatPoolStatusLines,
   formatPoolTimestamp,
+  deletePoolPin,
+  setPoolPin,
   probePoolAddress,
   resolvePoolPeerTarget,
   runPoolDiscover,
@@ -371,5 +374,117 @@ describe('hub-pool-cli requests', () => {
     hubApiFetch.mockResolvedValue({});
     await unpairPoolPeer('.env.local', 'a/b');
     expect(hubApiFetch.mock.calls[0]?.[1]).toBe('/inference/pool/peers/a%2Fb');
+  });
+});
+
+describe('hub-pool-cli pins', () => {
+  beforeEach(() => {
+    hubApiFetch.mockReset();
+  });
+
+  it('prints nothing at all when no pin is set, and on a Hub that predates pinning', () => {
+    expect(formatPoolPinLines([])).toEqual([]);
+    expect(formatPoolPinLines(undefined)).toEqual([]);
+  });
+
+  it('names each pin, its target, and says which are not doing anything', () => {
+    const text = formatPoolPinLines([
+      { scope: 'default', targetKind: 'local', mode: 'prefer', nodeFqdn: null, targetAvailable: true },
+      { scope: 'model', model: 'llama3.2:3b', targetKind: 'peer', peerId: 'peer-1', mode: 'prefer', nodeFqdn: PEER_A, targetAvailable: false },
+    ]).join('\n');
+
+    expect(text).toContain('all models');
+    expect(text).toContain('this Hub');
+    expect(text).toContain('llama3.2:3b');
+    expect(text).toContain(PEER_A);
+    expect(text).toContain('not usable right now');
+    // The one thing an operator must not conclude from a red pin: that inference is broken.
+    expect(text).toContain('can never take inference down');
+  });
+
+  it('says the peer is gone rather than printing a bare uuid for an unpaired target', () => {
+    const text = formatPoolPinLines([
+      {
+        scope: 'default',
+        targetKind: 'peer',
+        peerId: '11111111-2222-3333-4444-555555555555',
+        mode: 'prefer',
+        nodeFqdn: null,
+        targetAvailable: false,
+      },
+    ]).join('\n');
+
+    expect(text).toContain('no longer paired');
+  });
+
+  it('folds the pins into pool status, and leaves the status of a pinless Hub unchanged', () => {
+    const pinned = formatPoolStatusLines(
+      status({ pins: [{ scope: 'default', targetKind: 'local', mode: 'prefer', nodeFqdn: null, targetAvailable: true }] }),
+    ).join('\n');
+    expect(pinned).toContain('Pins');
+
+    // A Hub with no pins — including one running a build that has never heard of them — renders
+    // exactly what it rendered before.
+    expect(formatPoolStatusLines(status())).toEqual(formatPoolStatusLines(status({ pins: [] })));
+    expect(formatPoolStatusLines(status()).join('\n')).not.toContain('Pins');
+  });
+
+  it('marks a routing-log row that a pin shaped, and leaves the others alone', () => {
+    const log: PoolRoutingLogResponse = {
+      summary: { recorded: 2, capacity: 200, served: 2, failed: 0, failovers: 0, lastAt: '2026-09-05T10:00:01.000Z' },
+      entries: [
+        {
+          at: '2026-09-05T10:00:01.000Z',
+          direction: 'outbound',
+          path: '/v1/chat/completions',
+          model: 'llama3.2:3b',
+          node: PEER_A,
+          peerId: 'peer-1',
+          backend: 'ollama',
+          candidates: 2,
+          attempt: 1,
+          failedOverFrom: [],
+          outcome: 'served',
+          status: 200,
+          durationMs: 12,
+          pin: { scope: 'model', mode: 'prefer', targetKind: 'peer' },
+        },
+        {
+          at: '2026-09-05T10:00:00.000Z',
+          direction: 'outbound',
+          path: '/v1/chat/completions',
+          model: 'llama3.2:3b',
+          node: 'local',
+          peerId: null,
+          backend: 'ollama',
+          candidates: 2,
+          attempt: 1,
+          failedOverFrom: [],
+          outcome: 'served',
+          status: 200,
+          durationMs: 9,
+        },
+      ],
+    };
+
+    const text = formatPoolRoutingLogLines(log).join('\n');
+
+    expect(text.match(/pinned/g)).toHaveLength(1);
+    expect(text).toContain('pinned (this model → peer)');
+  });
+
+  it('posts an upsert and deletes by query, so a model id with a slash is addressable', async () => {
+    hubApiFetch.mockResolvedValue({ pins: [] });
+
+    await setPoolPin('.env.local', { scope: 'model', model: 'hf.co/org/repo:Q4_K_M', targetKind: 'peer', targetPeerId: 'peer-1' });
+    await deletePoolPin('.env.local', 'model', 'hf.co/org/repo:Q4_K_M');
+    await deletePoolPin('.env.local', 'default');
+
+    expect(hubApiFetch.mock.calls[0]?.[1]).toBe('/inference/pool/pins');
+    expect((hubApiFetch.mock.calls[0]?.[2] as RequestInit).body).toContain('hf.co/org/repo:Q4_K_M');
+    expect((hubApiFetch.mock.calls[0]?.[2] as RequestInit).signal).toBeInstanceOf(AbortSignal);
+    expect(hubApiFetch.mock.calls[1]?.[1]).toBe('/inference/pool/pins?scope=model&model=hf.co%2Forg%2Frepo%3AQ4_K_M');
+    expect((hubApiFetch.mock.calls[1]?.[2] as RequestInit).method).toBe('DELETE');
+    expect(hubApiFetch.mock.calls[2]?.[1]).toBe('/inference/pool/pins?scope=default');
   });
 });

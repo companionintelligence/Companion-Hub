@@ -13,11 +13,13 @@ import {
   effectivePeerPressureBand,
   isCapabilitiesSnapshotFresh,
   resolveHubPoolDirections,
+  resolvePinFor,
   type HubPoolDirectionalState,
+  type HubPoolPin,
 } from '@/common/helpers/hub-pool';
 import { HubPoolPeerService } from './hub-pool-peer.service';
 import { HubPoolLoadService, LOCAL_CANDIDATE_KEY } from './hub-pool-load.service';
-import { HubPoolRoutingLogService, type PoolRoutingOutcome } from './hub-pool-routing-log.service';
+import { HubPoolRoutingLogService, type PoolRoutingOutcome, type PoolRoutingPin } from './hub-pool-routing-log.service';
 import { HubPoolPressureService } from './hub-pool-pressure.service';
 import type { HubPoolPeer } from '@/core/database/drizzle/types';
 import type { PoolCandidate, PoolPeerCapabilities } from './hub-pool.types';
@@ -65,6 +67,63 @@ interface RankedCandidate {
    */
   pressure: number;
   tierRank: number;
+}
+
+/**
+ * Move the pinned node's candidates to the front of an already-ranked list.
+ *
+ * Three properties, and they are the reason a pin is applied here rather than inside the ranker:
+ *
+ * 1. **A pin reorders; it never resurrects.** This filters a list that has already been built, so no
+ *    pin can re-admit a node that was excluded for a reason: an unreachable or disabled peer (never
+ *    in `usablePeers`), a peer whose cached capabilities were dropped after it answered 401/403, a
+ *    peer that said `acceptingWork: false`, or a model a local backend has been caught unable to
+ *    serve (`unservableModels`). Pinning is a preference over healthy candidates, not a way to force
+ *    a request onto a broken engine.
+ * 2. **A pin whose target has no candidate is a silent no-op**, not an error: the list comes back
+ *    byte-identical, and the request routes exactly as it would with no pin at all. That is what
+ *    makes an unreachable pinned node, or one that was unpaired while a pin still names it, a
+ *    non-event for inference — the status card is where it is reported, not the request path.
+ * 3. **Failover is untouched.** Every other candidate is still behind the pinned one, in the order
+ *    the ranker produced, so the pin costs one position rather than the whole failover walk.
+ *
+ * Pure and exported for its own test: this is the entire behavioural change pinning makes.
+ */
+export function applyPin(ordered: PoolCandidate[], pin: HubPoolPin | null): PoolCandidate[] {
+  if (!pin) {
+    return ordered;
+  }
+  const matches = (candidate: PoolCandidate) => (pin.targetKind === 'local' ? candidate.peerId === null : candidate.peerId === pin.peerId);
+  const pinned = ordered.filter(matches);
+  // Identity-preserving when nothing matched, so "pinned node cannot serve this" and "no pin" are
+  // the same list rather than two code paths that could drift.
+  return pinned.length === 0 ? ordered : [...pinned, ...ordered.filter((candidate) => !matches(candidate))];
+}
+
+/** The pin, reduced to the metadata the routing log may hold. Never the model or the peer id — the record already carries both. */
+export function describePinForLog(pin: HubPoolPin | null): PoolRoutingPin | null {
+  return pin ? { scope: pin.scope, mode: pin.mode, targetKind: pin.targetKind } : null;
+}
+
+/**
+ * The 502 for "nothing can serve this model", said differently when a pin is in force.
+ *
+ * Worth the extra sentence because a pin is exactly the state an operator sets once and forgets: the
+ * unpinned message sends them to look at model inventory, which is right, while the pinned one has
+ * to also say that a routing preference is in play — even though, `prefer` being soft, the pin is
+ * not what caused this. Deliberately does NOT name the peer: resolving a name here would mean a
+ * database read on an error path, and the pin is on the status card either way.
+ */
+export function describeNoCandidates(model: string, pin: HubPoolPin | null): string {
+  const base = `No pool node currently has model "${model}" available.`;
+  if (!pin) {
+    return base;
+  }
+  const target = pin.targetKind === 'local' ? 'this Hub' : 'a peer';
+  const scope = pin.scope === 'model' ? `"${model}" is pinned` : 'Routing is pinned';
+  // "either" is load-bearing: a prefer pin never removes a candidate, so the pinned node not being
+  // able to serve the model is one fact about an empty list, not the cause of it.
+  return `${base} ${scope} to ${target}, which cannot serve it either — the pin only reorders candidates, so this is an inventory problem, not a pin one.`;
 }
 
 /**
@@ -150,8 +209,24 @@ export class PoolProxyService {
    * Above zero, a node that cannot measure ranks at {@link UNKNOWN_PRESSURE}, never at 0. This is
    * the invariant the whole feature turns on: most of the fleet cannot measure, and if silence read
    * as "idle" the pool would systematically route to whichever machine knows least about itself.
+   *
+   * An operator pin is applied LAST, to the finished list — see {@link applyPin}. It reorders; it
+   * cannot admit a node the steps above excluded.
    */
   async buildCandidateList(model: string): Promise<PoolCandidate[]> {
+    return (await this.rankCandidates(model)).candidates;
+  }
+
+  /**
+   * {@link buildCandidateList} plus the pin that shaped the order, for the callers that need to say
+   * *why* — the routing log and the 502 message.
+   *
+   * Split this way rather than having `proxyRequest` re-read the pin: two reads of a settings value
+   * that a PATCH can change between them would let the log claim a pin that never applied.
+   * `buildCandidateList` stays as the thin wrapper it always was, because it is the shape every
+   * candidate-ordering test asserts against.
+   */
+  private async rankCandidates(model: string): Promise<{ candidates: PoolCandidate[]; pin: HubPoolPin | null }> {
     const [local, peers] = await Promise.all([this.localCandidates(model), this.usablePeers()]);
     const weight = this.pressureWeight();
     const localPressure = this.pressureService.band() ?? UNKNOWN_PRESSURE;
@@ -165,15 +240,19 @@ export class PoolProxyService {
     //
     // `weight ? … : 0` rather than always comparing: at weight 0 the middle key must not exist, or a
     // measured node would start winning ties that a static hardware tier decides today.
-    return ranked
+    const ordered = ranked
       .sort((a, b) => a.score - b.score || (weight ? a.pressure - b.pressure : 0) || a.tierRank - b.tierRank)
       .map((entry) => entry.candidate);
+    // Read from the same in-memory settings object every other pool knob comes from, so a pin takes
+    // effect on the next request and costs no query on the inference hot path.
+    const pin = resolvePinFor(this.configuration.getHubPoolPreferences().poolPins, model);
+    return { candidates: applyPin(ordered, pin), pin };
   }
 
   async proxyRequest(params: { path: string; method: string; body: unknown; model: string; res: Response }): Promise<void> {
     const { path, method, body, model, res } = params;
     const startedAt = Date.now();
-    const candidates = await this.buildCandidateList(model);
+    const { candidates, pin } = await this.rankCandidates(model);
     // Nodes a candidate rejected before one answered. Non-empty in the finished record is exactly
     // what makes it a failover, so the whole chain is one entry rather than one per attempt.
     const failedOverFrom: string[] = [];
@@ -190,11 +269,12 @@ export class PoolProxyService {
         candidates: 0,
         attempt: 0,
         failedOverFrom,
+        pin: describePinForLog(pin),
         outcome: 'failed',
         status: null,
         durationMs: Date.now() - startedAt,
       });
-      res.status(502).json({ error: `No pool node currently has model "${model}" available.` });
+      res.status(502).json({ error: describeNoCandidates(model, pin) });
       return;
     }
 
@@ -229,6 +309,7 @@ export class PoolProxyService {
           candidates: candidates.length,
           attempt: index + 1,
           failedOverFrom: [...failedOverFrom],
+          pin: describePinForLog(pin),
           outcome: 'served',
           status: upstream.status,
           durationMs: Date.now() - startedAt,
@@ -267,6 +348,7 @@ export class PoolProxyService {
       candidates: candidates.length,
       attempt: candidates.length,
       failedOverFrom: [...failedOverFrom],
+      pin: describePinForLog(pin),
       outcome: 'failed',
       status: null,
       durationMs: Date.now() - startedAt,
@@ -439,6 +521,9 @@ export class PoolProxyService {
       candidates: 1,
       attempt: 1,
       failedOverFrom: [],
+      // Always null: a pin is THIS Hub's policy for work it originates. Work a peer forwards us is
+      // never re-routed (see `forwardToLocalBackendAndRespond`), so no pin can have shaped it.
+      pin: null,
       outcome: outcome ?? (status !== null && status < 500 ? 'served' : 'failed'),
       status,
       durationMs: Date.now() - startedAt,

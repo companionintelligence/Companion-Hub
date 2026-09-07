@@ -10,6 +10,11 @@ import {
   MIN_POOL_HEALTH_POLL_SECONDS,
   MIN_POOL_LOCAL_AFFINITY,
   MIN_POOL_PRESSURE_WEIGHT,
+  MAX_POOL_PINS,
+  MAX_PINNED_MODEL_LENGTH,
+  POOL_PIN_MODES,
+  POOL_PIN_SCOPES,
+  POOL_PIN_TARGET_KINDS,
 } from '@/common/helpers/hub-pool';
 
 import { INFERENCE_BACKEND_TYPES } from '@ci-hub/common/types';
@@ -41,6 +46,28 @@ const poolHealthPollSecondsSchema = z
 const poolPressureWeightSchema = z
   .union([z.number().int(), z.string().transform(Number)])
   .pipe(z.number().int().min(MIN_POOL_PRESSURE_WEIGHT).max(MAX_POOL_PRESSURE_WEIGHT));
+
+/**
+ * Manual routing pins, as persisted.
+ *
+ * Read-path only, and `.catch(undefined)` on the whole array for the same reason the two numeric
+ * knobs use it: settings.json is parsed at boot, before Nest exists, and a pin written by a build
+ * that knew a mode or a scope this one does not must degrade to "no pins" rather than crash-loop a
+ * Hub whose UI is the only way to fix it. The strict version is enforced on the write path by
+ * `UpsertPoolPinBody`, where a bad value is a 400 at the moment it is chosen.
+ */
+const poolPinSchema = z
+  .object({
+    scope: z.enum(POOL_PIN_SCOPES),
+    model: z.string().trim().min(1).max(MAX_PINNED_MODEL_LENGTH).optional(),
+    targetKind: z.enum(POOL_PIN_TARGET_KINDS),
+    peerId: z.string().trim().min(1).optional(),
+    mode: z.enum(POOL_PIN_MODES),
+  })
+  .refine((pin) => (pin.scope === 'model') === (pin.model !== undefined))
+  .refine((pin) => (pin.targetKind === 'peer') === (pin.peerId !== undefined));
+
+const poolPinsSchema = z.array(poolPinSchema).max(MAX_POOL_PINS);
 
 export const settingsSchema = z.object({
   advancedSettings: z.boolean(),
@@ -105,6 +132,9 @@ export const settingsSchema = z.object({
   // rest. See `HubPoolPreferences.poolRequireSignedPeers`.
   hubPoolRequireSignedPeers: z.boolean().optional(),
   hubPoolPressureWeight: poolPressureWeightSchema.optional().catch(undefined),
+  // Manual routing pins. Absent (and an unparseable array) means none, which routes exactly as a
+  // build without pinning does.
+  hubPoolPins: poolPinsSchema.optional().catch(undefined),
   inferenceCloudProviders: z
     .array(
       z.object({
@@ -237,6 +267,7 @@ export class UserSettingsBody extends createZodDto(
     hubPoolLocalAffinity: poolLocalAffinitySchema.optional(),
     hubPoolHealthPollSeconds: poolHealthPollSecondsSchema.optional(),
     hubPoolPressureWeight: poolPressureWeightSchema.optional(),
+    hubPoolPins: poolPinsSchema.optional(),
   }),
 ) {}
 

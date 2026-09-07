@@ -59,6 +59,21 @@ export interface PoolRoutingSummary {
   lastAt: string | null;
 }
 
+/** A pin's reach and how hard it binds. `prefer` is the only mode: see `hub-pool.types.ts`. */
+export type PoolPinScope = 'default' | 'model';
+export type PoolPinTargetKind = 'local' | 'peer';
+
+/** A pin as `/inference/pool/status` reports it, with its target resolved. Absent on a Hub predating pinning. */
+export interface PoolStatusPin {
+  scope: PoolPinScope;
+  model?: string;
+  targetKind: PoolPinTargetKind;
+  peerId?: string;
+  mode: 'prefer';
+  nodeFqdn: string | null;
+  targetAvailable: boolean;
+}
+
 export interface PoolStatusResponse {
   enabled: boolean;
   disabledBy: 'env' | 'setting' | null;
@@ -84,6 +99,8 @@ export interface PoolStatusResponse {
   };
   peers: PoolPeerRow[];
   peerCounts: { total: number; connected: number; pending: number; unreachable: number; disabled: number };
+  /** Optional so this CLI keeps parsing a Hub that predates pinning, where the key is simply absent. */
+  pins?: PoolStatusPin[];
   routing: PoolRoutingSummary;
 }
 
@@ -129,6 +146,8 @@ export interface PoolRoutingRecord {
   outcome: 'served' | 'failed';
   status: number | null;
   durationMs: number;
+  /** Which operator pin shaped this decision, if any. Absent on a Hub predating pinning. */
+  pin?: { scope: PoolPinScope; mode: 'prefer'; targetKind: PoolPinTargetKind } | null;
 }
 
 export interface PoolRoutingLogResponse {
@@ -205,6 +224,30 @@ export async function rejectPoolPeer(envFileName: string, id: string): Promise<v
 
 export async function unpairPoolPeer(envFileName: string, id: string): Promise<void> {
   await hubApiFetch(envFileName, `/inference/pool/peers/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+    signal: AbortSignal.timeout(POOL_MUTATION_TIMEOUT_MS),
+  });
+}
+
+/**
+ * Set (or replace) a routing pin. Upsert by POST, because `(scope, model)` is the key an operator
+ * edits — pins have no ids; they live in the Hub's settings.json, not in a table.
+ */
+export async function setPoolPin(
+  envFileName: string,
+  pin: { scope: PoolPinScope; model?: string; targetKind: PoolPinTargetKind; targetPeerId?: string },
+): Promise<{ pins: PoolStatusPin[] }> {
+  return hubApiFetch(envFileName, '/inference/pool/pins', {
+    method: 'POST',
+    body: JSON.stringify(pin),
+    signal: AbortSignal.timeout(POOL_MUTATION_TIMEOUT_MS),
+  });
+}
+
+/** Remove a routing pin. Addressed by query, not path: a model id contains `/` and `:`. */
+export async function deletePoolPin(envFileName: string, scope: PoolPinScope, model?: string): Promise<{ pins: PoolStatusPin[] }> {
+  const query = scope === 'model' ? `?scope=model&model=${encodeURIComponent(model as string)}` : '?scope=default';
+  return hubApiFetch(envFileName, `/inference/pool/pins${query}`, {
     method: 'DELETE',
     signal: AbortSignal.timeout(POOL_MUTATION_TIMEOUT_MS),
   });
@@ -442,12 +485,41 @@ export function formatPoolStatusLines(status: PoolStatusResponse): string[] {
     lines.push(`  Engines    ${FAIL} ${sanitizeForBox(status.localNode.capabilitiesError)}`);
   }
 
+  lines.push(...formatPoolPinLines(status.pins));
+
   lines.push('', 'Peers', ...formatPoolPeerTable(status.peers).map((line) => `  ${line}`));
 
   if (status.peers.some((peer) => peer.direction === 'inbound' && peer.status === 'pending')) {
     lines.push('', PENDING_INBOUND_HINT);
   }
 
+  return lines;
+}
+
+/**
+ * The Pins block of `cihub pool status`, and the only place pins are listed — status answers the
+ * whole question, so there is no `pool pins` subcommand to keep in step with it.
+ *
+ * `targetAvailable: false` is called out rather than shown as a flag, because a pin that is quietly
+ * doing nothing is the failure mode of the whole feature: `prefer` never errors, so a pin at an
+ * unreachable or unpaired node is invisible everywhere else.
+ */
+export function formatPoolPinLines(pins: PoolStatusPin[] | undefined): string[] {
+  if (!pins || pins.length === 0) {
+    return [];
+  }
+  const lines = ['', 'Pins'];
+  for (const pin of pins) {
+    const target = pin.targetKind === 'local' ? 'this Hub' : (pin.nodeFqdn ?? `peer ${shortId(pin.peerId ?? '')} (no longer paired)`);
+    const scope = pin.scope === 'model' ? sanitizeForBox(pin.model ?? '?') : 'all models';
+    lines.push(
+      `  ${pin.targetAvailable ? OK : FAIL} ${cell(scope, 34)} → ${sanitizeForBox(target)}${pin.targetAvailable ? '' : '  (not usable right now)'}`,
+    );
+  }
+  lines.push(
+    '  Pins are a preference, not a rule: if the pinned node cannot serve a request it is ranked',
+    '  normally, so a pin can never take inference down. Remove one with: cihub pool unpin',
+  );
   return lines;
 }
 
@@ -590,6 +662,11 @@ export function formatPoolRoutingLogLines(log: PoolRoutingLogResponse): string[]
         `${outcome}${status}`,
       ].join(' '),
     );
+    // Named on the row it shaped: an operator seeing everything land on one node cannot otherwise
+    // tell a pin from the ranker having decided the same thing.
+    if (entry.pin) {
+      lines.push(`  ↳ pinned (${entry.pin.scope === 'model' ? 'this model' : 'all models'} → ${entry.pin.targetKind})`);
+    }
     // The chain, not a count: which nodes refused is the whole point of reading this log.
     if (entry.failedOverFrom.length > 0) {
       lines.push(`  ↳ failed over from ${entry.failedOverFrom.map(sanitizeForBox).join(', ')}`);

@@ -9,6 +9,7 @@ import { HubPoolPeerService } from '../hub-pool-peer.service';
 import { HubPoolRoutingLogService } from '../hub-pool-routing-log.service';
 import { PoolProxyService } from '../hub-pool-proxy.service';
 import { HubPoolDiscoveryService } from '../hub-pool-discovery.service';
+import { HubPoolPinService } from '../hub-pool-pin.service';
 import { HubPoolController } from '../hub-pool.controller';
 import type { PoolStatus } from '../hub-pool.types';
 
@@ -25,6 +26,7 @@ function poolStatus(overrides: Partial<PoolStatus> = {}): PoolStatus {
       poolInboundEnabled: true,
       poolLocalAffinity: 1,
       poolHealthPollSeconds: 30,
+      poolPins: [],
       poolPressureWeight: 0,
     },
     tailscaleAdminApiConfigured: false,
@@ -39,6 +41,7 @@ function poolStatus(overrides: Partial<PoolStatus> = {}): PoolStatus {
     },
     peers: [],
     peerCounts: { total: 0, connected: 0, pending: 0, unreachable: 0, disabled: 0 },
+    pins: [],
     ...overrides,
   };
 }
@@ -63,6 +66,7 @@ describe('HubPoolController', () => {
   let configuration: MockProxy<ConfigurationService>;
   let routingLog: HubPoolRoutingLogService;
   let discoveryService: MockProxy<HubPoolDiscoveryService>;
+  let pinService: MockProxy<HubPoolPinService>;
   let controller: HubPoolController;
 
   beforeEach(() => {
@@ -73,7 +77,8 @@ describe('HubPoolController', () => {
     peerService.inboundRefusal.mockReturnValue(null);
     routingLog = new HubPoolRoutingLogService();
     discoveryService = mock<HubPoolDiscoveryService>();
-    controller = new HubPoolController(peerService, proxyService, mock<TailscaleService>(), configuration, routingLog, discoveryService);
+    pinService = mock<HubPoolPinService>();
+    controller = new HubPoolController(peerService, proxyService, mock<TailscaleService>(), configuration, routingLog, discoveryService, pinService);
   });
 
   describe('manual peer entry', () => {
@@ -525,6 +530,37 @@ describe('HubPoolController', () => {
       });
 
       await expect(controller.rotateIdentity()).resolves.toMatchObject({ unreachable: ['hub-c.example-tailnet.ts.net'] });
+    });
+  });
+
+  /**
+   * The two pin routes are thin on purpose — every decision is in `HubPoolPinService` — so these
+   * assert the wiring the service tests cannot: that the model is passed through verbatim, and that
+   * a DELETE is addressed by query rather than by a path parameter a model id would break.
+   */
+  describe('routing pins', () => {
+    it('passes an upsert straight through and answers with the stored list', async () => {
+      const pins = [{ scope: 'model' as const, model: 'hf.co/org/repo:Q4_K_M', targetKind: 'local' as const, mode: 'prefer' as const }];
+      pinService.upsert.mockResolvedValue(pins);
+
+      const body = { scope: 'model', model: 'hf.co/org/repo:Q4_K_M', targetKind: 'local' } as never;
+      await expect(controller.upsertPoolPin(body)).resolves.toEqual({ pins });
+      expect(pinService.upsert).toHaveBeenCalledWith(body);
+    });
+
+    it('removes the pin named by the query, model ids with slashes included', async () => {
+      pinService.remove.mockResolvedValue([]);
+
+      await expect(controller.deletePoolPin({ scope: 'model', model: 'hf.co/org/repo:Q4_K_M' } as never)).resolves.toEqual({ pins: [] });
+      expect(pinService.remove).toHaveBeenCalledWith('model', 'hf.co/org/repo:Q4_K_M');
+    });
+
+    it('removes the pool-wide pin when the query names no model', async () => {
+      pinService.remove.mockResolvedValue([]);
+
+      await controller.deletePoolPin({ scope: 'default' } as never);
+
+      expect(pinService.remove).toHaveBeenCalledWith('default', undefined);
     });
   });
 });
