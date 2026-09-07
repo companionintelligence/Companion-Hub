@@ -6,6 +6,7 @@ import axios from 'axios';
 // Shared with the Lucebox and Lemonade backends: all three mount the same AMD device nodes and
 // so need the same host GIDs. See that module for the full rationale.
 import { type DeviceGroupProbe, resolveAmdDeviceGroupIds } from './amd-device-groups.util';
+import { QUARANTINE_STRIKES, ServingQuarantine } from './serving-quarantine';
 
 /** Candidate Ollama URLs ordered by likelihood inside a Docker container. */
 const OLLAMA_FALLBACK_URLS = [
@@ -35,6 +36,12 @@ export class OllamaBackend implements InferenceBackend {
   /** Resolved URL after probing — updated once on first successful contact. */
   private resolvedUrl: string;
   private urlResolved = false;
+  /**
+   * Models this Ollama has listed but failed to serve. `/api/tags` cannot answer that question and
+   * the only thing that can — asking it to generate — is exactly what a health poll must not do,
+   * so the answer is accumulated from the requests that ran anyway. See {@link ServingQuarantine}.
+   */
+  private readonly quarantine = new ServingQuarantine();
 
   constructor(private readonly logger: LoggerService) {
     // OLLAMA_URL is injected by docker-compose as http://host.docker.internal:11434 (the Hub
@@ -95,15 +102,30 @@ export class OllamaBackend implements InferenceBackend {
     return this.resolvedUrl;
   }
 
+  /**
+   * Reachability plus inventory — and, separately, which of that inventory this Ollama has been
+   * caught unable to serve.
+   *
+   * `running`/`healthy` still mean only "the daemon answered", and `modelsLoaded` still means only
+   * "on disk": both are what `/api/tags` can actually tell us, and the Hub's install and pull
+   * decisions depend on them keeping that meaning. What changed is that they are no longer the
+   * whole health contract. `/api/tags` will list a model whose every `/api/generate` returns
+   * `model failed to load` — a real fleet node did exactly that — so callers choosing where to send
+   * work must subtract {@link BackendHealthStatus.unservableModels} before they route.
+   */
   async healthCheck(): Promise<BackendHealthStatus> {
     try {
       const url = await this.resolveUrl();
       const response = await axios.get(`${url}/api/tags`, { timeout: 5000 });
       const models = response.data?.models ?? [];
+      const unservableModels = await this.reconcileQuarantine(url);
       return {
         running: true,
         healthy: true,
         modelsLoaded: models.map((m: { name: string }) => m.name),
+        // Omitted rather than empty, so a node with nothing withheld reports exactly what it did
+        // before this signal existed.
+        ...(unservableModels.length > 0 ? { unservableModels } : {}),
       };
     } catch (err) {
       this.invalidateResolvedUrl();
@@ -114,6 +136,72 @@ export class OllamaBackend implements InferenceBackend {
         error: err instanceof Error ? err.message : String(err),
       };
     }
+  }
+
+  /**
+   * Currently withheld models, after giving any of them that Ollama reports **resident** their
+   * release. `/api/ps` is the one place the engine speaks about VRAM rather than disk, so a model
+   * listed there is proof of the exact thing we withheld it for lacking — and it costs nothing to
+   * ask, no load, no generation.
+   *
+   * Skipped while the quarantine is tracking nothing at all, which is the overwhelmingly common
+   * case: a node that has never failed to serve keeps its single-request health poll.
+   *
+   * Note the guard is `isEmpty()`, not "is anything withheld" — a model keeps its entry for the
+   * whole strike window after a single failure, so one strike that never reached the withhold
+   * threshold still costs one extra `/api/ps` per poll until the window closes.
+   */
+  private async reconcileQuarantine(url: string): Promise<string[]> {
+    if (this.quarantine.isEmpty()) {
+      return [];
+    }
+    try {
+      const response = await axios.get(`${url}/api/ps`, { timeout: 5000 });
+      const resident: Array<{ name: string }> = response.data?.models ?? [];
+      for (const withheld of this.quarantine.list()) {
+        if (resident.some((m) => this.matchesModel(m.name, withheld))) {
+          this.noteServingSuccess(withheld);
+        }
+      }
+    } catch (err) {
+      // The inventory call above already succeeded, so this is a `/api/ps` problem, not a down
+      // engine. Keeping the existing verdict is the safe read: it decays on its own.
+      this.logger.debug(`[Ollama] Could not read /api/ps to re-check withheld models: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    return this.quarantine.list();
+  }
+
+  /** Ollama reports fully-qualified tags (`gemma3:1b`); callers may hold either that or the bare name. */
+  private matchesModel(reportedName: string, modelId: string): boolean {
+    return reportedName === modelId || reportedName.startsWith(modelId);
+  }
+
+  /**
+   * Record that a request for `modelId` failed in a way that says this engine cannot serve it —
+   * the caller's own verdict, since the engine will not volunteer one. Callers should pass only
+   * server-side rejections: a connection error means the whole daemon is unreachable, which
+   * `healthCheck` already reports, and holding a model responsible for it would outlive the outage.
+   */
+  noteServingFailure(modelId: string, reason: string): void {
+    this.recordServingFailure(modelId, reason);
+  }
+
+  /** Record that `modelId` was served. Clears its strikes and its backoff — recovery must not have to wait out a penalty. */
+  noteServingSuccess(modelId: string): void {
+    if (this.quarantine.recordSuccess(modelId)) {
+      this.logger.info(`[Ollama] Model ${modelId} served again — no longer withheld from routing`);
+    }
+  }
+
+  private recordServingFailure(modelId: string, reason: string, weight?: number): void {
+    const decision = this.quarantine.recordFailure(modelId, reason, weight);
+    if (decision.withheld) {
+      this.logger.warn(
+        `[Ollama] Model ${modelId} is listed by /api/tags but failed to serve (${reason}); withholding it from routing for ${Math.round(decision.forMs / 1000)}s`,
+      );
+      return;
+    }
+    this.logger.debug(`[Ollama] Model ${modelId} failed to serve (${reason}); strike ${decision.strikes} of ${QUARANTINE_STRIKES}`);
   }
 
   async listModels(): Promise<BackendModelInfo[]> {
@@ -228,9 +316,18 @@ export class OllamaBackend implements InferenceBackend {
         await axios.post(`${url}/api/generate`, { model: modelId, prompt: '', keep_alive: -1 }, { timeout: 120000 });
       }
       this.logger.info(`[Ollama] Model loaded and pinned: ${modelId}`);
+      // The strongest proof available that this model serves here — it just did the hard part.
+      this.noteServingSuccess(modelId);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       this.logger.error(`[Ollama] Failed to load model ${modelId}: ${msg}`);
+      // A load that the *engine* rejected is decisive on its own: this request asked it to do
+      // nothing but load the model, so there is no other reading. A transport failure is not —
+      // that is the daemon being unreachable, which healthCheck reports, and pinning it on the
+      // model would outlive the outage.
+      if (axios.isAxiosError(err) && err.response) {
+        this.recordServingFailure(modelId, `load returned HTTP ${err.response.status}`, QUARANTINE_STRIKES);
+      }
       this.invalidateResolvedUrl();
       throw err;
     }
@@ -259,7 +356,7 @@ export class OllamaBackend implements InferenceBackend {
       const url = await this.resolveUrl();
       const response = await axios.get(`${url}/api/ps`, { timeout: 5000 });
       const models = response.data?.models ?? [];
-      return models.some((m: { name: string }) => m.name === modelId || m.name.startsWith(modelId));
+      return models.some((m: { name: string }) => this.matchesModel(m.name, modelId));
     } catch {
       this.invalidateResolvedUrl();
       return false;

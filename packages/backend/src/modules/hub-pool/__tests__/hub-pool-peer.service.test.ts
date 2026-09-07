@@ -6,6 +6,7 @@ import { EncryptionService } from '@/core/encryption/encryption.service';
 import { TailscaleService } from '@/modules/tailscale/tailscale.service';
 import { TailscaleAdminApiService } from '@/modules/tailscale/tailscale-admin-api.service';
 import { InferenceRouterService } from '@/modules/inference/inference-router.service';
+import type { InferenceStatus } from '@ci-hub/common/types';
 import type { HubPoolPeer } from '@/core/database/drizzle/types';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { DEFAULT_POOL_HEALTH_POLL_SECONDS, DEFAULT_POOL_LOCAL_AFFINITY, type HubPoolPreferences } from '@/common/helpers/hub-pool';
@@ -433,8 +434,11 @@ describe('HubPoolPeerService', () => {
   });
 
   describe('getOwnCapabilities', () => {
+    /** Held so a test can vary one field of the status without restating the whole shape. */
+    let ownStatus: InferenceStatus;
+
     beforeEach(() => {
-      inferenceRouter.getStatus.mockResolvedValue({
+      ownStatus = {
         hardwareTier: 'high',
         backends: [{ type: 'ollama', running: true, healthy: true, url: 'http://ollama:11434', modelsLoaded: 1 }],
         models: [],
@@ -452,7 +456,8 @@ describe('HubPoolPeerService', () => {
           pinnedRamMb: 0,
         },
         cloudProviders: [],
-      });
+      };
+      inferenceRouter.getStatus.mockResolvedValue(ownStatus);
       inferenceRouter.listModels.mockResolvedValue([
         {
           id: 'llama3.2:3b',
@@ -477,6 +482,20 @@ describe('HubPoolPeerService', () => {
       // polling peer can only count the work it forwarded itself.
       expect(capabilities.inFlightRequests).toBe(2);
       expect(capabilities.backends).toEqual([{ type: 'ollama', healthy: true, modelsLoaded: ['llama3.2:3b'] }]);
+    });
+
+    it('does not advertise a model the local engine has been unable to serve', async () => {
+      inferenceRouter.getStatus.mockResolvedValue({
+        ...ownStatus,
+        backends: ownStatus.backends.map((b) => ({ ...b, unservableModels: ['llama3.2:3b'] })),
+      });
+
+      const capabilities = await service.getOwnCapabilities();
+
+      // This snapshot is what every peer ranks us on. Advertising a model that fails on arrival
+      // sends us other nodes' work for it, and unlike a local mis-route the peer cannot find out
+      // until it has already handed the request over.
+      expect(capabilities.backends).toEqual([{ type: 'ollama', healthy: true, modelsLoaded: [] }]);
     });
 
     it('reports an idle node as zero rather than omitting the figure', async () => {
