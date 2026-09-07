@@ -94,6 +94,13 @@ describe('iOS store readiness', () => {
     expect(pngHasAlpha('gen/apple/Assets.xcassets/AppIcon.appiconset/AppIcon-512@2x.png')).toBe(false);
     expect(pngHasAlpha('icons/ios/AppIcon-512@2x.png')).toBe(false);
   });
+
+  it('declares associated-domains for Universal Links', () => {
+    const entitlements = read('gen/apple/ci-os-hub-mobile_iOS/ci-os-hub-mobile_iOS.entitlements');
+    expect(entitlements).toContain('com.apple.developer.associated-domains');
+    expect(entitlements).toContain('<string>applinks:hub.ci.computer</string>');
+    expect(entitlements).toContain('<string>applinks:hub.companionintelligence.com</string>');
+  });
 });
 
 // ── Android ─────────────────────────────────────────────────────────────────
@@ -139,6 +146,12 @@ describe('Android store readiness', () => {
   it('targets an API level Play still accepts for new uploads', () => {
     const target = Number(gradle.match(/targetSdk\s*=\s*(\d+)/)?.[1]);
     expect(target).toBeGreaterThanOrEqual(35);
+  });
+
+  it('declares autoVerify intent-filter for Android App Links', () => {
+    expect(manifest).toMatch(/<intent-filter\s+android:autoVerify="true">/);
+    expect(manifest).toMatch(/android:scheme="https"\s+android:host="hub\.ci\.computer"\s+android:pathPrefix="\/auth"/);
+    expect(manifest).toMatch(/android:scheme="https"\s+android:host="hub\.companionintelligence\.com"\s+android:pathPrefix="\/auth"/);
   });
 });
 

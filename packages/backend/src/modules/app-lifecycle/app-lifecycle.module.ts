@@ -23,6 +23,7 @@ import { ExposureSyncService } from './exposure-sync.service';
 import { AppOperationRegistry } from './app-operation-registry';
 import { AppStatusSyncService } from './app-status-sync.service';
 import { PortalModule } from '@/core/portal/portal.module';
+import { LifecycleJobService } from './lifecycle-job.service';
 
 @Module({
   imports: [
@@ -51,8 +52,17 @@ import { PortalModule } from '@/core/portal/portal.module';
     AppOperationRegistry,
     AppStatusSyncService,
     AppRehydrationService,
+    LifecycleJobService,
   ],
   controllers: [AppLifecycleController],
-  exports: [AppLifecycleService, AppInstallValidator, ExposureSyncService, AppOperationRegistry, AppStatusSyncService, AppRehydrationService],
+  exports: [
+    AppLifecycleService,
+    AppInstallValidator,
+    ExposureSyncService,
+    AppOperationRegistry,
+    AppStatusSyncService,
+    AppRehydrationService,
+    LifecycleJobService,
+  ],
 })
 export class AppLifecycleModule {}
