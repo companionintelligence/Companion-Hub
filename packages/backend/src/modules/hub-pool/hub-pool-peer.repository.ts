@@ -36,9 +36,9 @@ export class HubPoolPeerRepository {
    * on a 30-second timer rather than an exception on a health poll.
    *
    * The value is only ever one learned through an authenticated route (`/capabilities`,
-   * `/pair/confirm`, `/pair/upgrade`). A UUID from the unauthenticated `/identify` probe is a claim
-   * anything on the network can make and must never reach this column — see
-   * `DiscoverablePoolPeer.claimedNodeUuid`, which is typed apart from it for exactly that reason.
+   * `/pair/confirm`, `/pair/upgrade`, or a `/pair/request` that carried a valid PIN). The
+   * unauthenticated `/identify` discloses no UUID at all, precisely so that nothing on the network
+   * can hand this column a value of its choosing.
    */
   async findByNodeUuid(peerNodeUuid: string): Promise<HubPoolPeer | undefined> {
     return this.db.query.hubPoolPeer.findFirst({ where: eq(hubPoolPeer.peerNodeUuid, peerNodeUuid) });

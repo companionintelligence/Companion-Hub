@@ -50,6 +50,16 @@ export const POOL_MESSAGE_PREAMBLE = 'ci-hub-pool-v1';
 export const POOL_PROTOCOL_VERSION = 2;
 
 /**
+ * Lowest protocol version that can be paired with *by address*.
+ *
+ * Pairing by address needs the far side to answer a PIN-authenticated `pair/request` with its own
+ * MagicDNS name — the name `/identify` deliberately no longer discloses. A protocol-1 node ignores
+ * the PIN, answers `{ received: true }`, and leaves the initiator with nothing to key a row on, so
+ * the probe says so up front instead of letting the operator find out by failing to pair.
+ */
+export const MIN_PAIR_BY_ADDRESS_PROTOCOL = 2;
+
+/**
  * Accepted clock skew. Deliberately generous: peers are separate machines with no shared NTP
  * guarantee, and the module already refuses to compare a peer's clock to ours anywhere else
  * (`PoolProxyService.reportedPeerLoad`). The single-use nonce, not the window, is what makes a
@@ -297,7 +307,10 @@ export class PeerNonceCache {
   private readonly seen = new Map<string, number>();
   private sweeper: NodeJS.Timeout | null = null;
 
-  constructor(private readonly max: number = PEER_NONCE_CACHE_MAX) {}
+  constructor(
+    private readonly max: number = PEER_NONCE_CACHE_MAX,
+    private readonly sweepIntervalMs: number = PEER_NONCE_SWEEP_MS,
+  ) {}
 
   remember(nonce: string, expiresAt: number, now: number = Date.now()): 'ok' | 'replay' | 'full' {
     if (this.seen.has(nonce)) {
@@ -310,15 +323,28 @@ export class PeerNonceCache {
       }
     }
     this.seen.set(nonce, expiresAt);
+    // Armed by the first nonce, not by module init. The overwhelming majority of Hubs have no pool
+    // peer and therefore never reach this line, and a timer that only ever sweeps an empty map is a
+    // cost every one of them would otherwise pay forever for a feature they do not use.
+    this.startSweeper();
     return 'ok';
   }
 
-  /** Drop entries whose replay window has closed. Cheap, and the only thing the sweeper does. */
+  /**
+   * Drop entries whose replay window has closed. Cheap, and the only thing the sweeper does.
+   *
+   * Disarms itself once the map is empty: with no entries there is nothing to expire, and the next
+   * {@link remember} re-arms it. That is what keeps a Hub whose peers went quiet from holding a
+   * timer open for the rest of the process's life.
+   */
   prune(now: number = Date.now()): void {
     for (const [nonce, expiresAt] of this.seen) {
       if (expiresAt <= now) {
         this.seen.delete(nonce);
       }
+    }
+    if (this.seen.size === 0) {
+      this.stopSweeper();
     }
   }
 
@@ -326,11 +352,16 @@ export class PeerNonceCache {
     return this.seen.size;
   }
 
+  /** Whether the periodic sweep is currently armed. For tests that pin what a peerless Hub costs. */
+  isSweeping(): boolean {
+    return this.sweeper !== null;
+  }
+
   /**
    * Start the periodic sweep. `unref()`d so it can never be the reason a process refuses to exit —
    * this cache is an optimisation over pruning on insert, not a service anything waits for.
    */
-  startSweeper(intervalMs: number = PEER_NONCE_SWEEP_MS): void {
+  startSweeper(intervalMs: number = this.sweepIntervalMs): void {
     if (this.sweeper) {
       return;
     }

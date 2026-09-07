@@ -9,6 +9,7 @@ import { HubPoolPeerService } from '../hub-pool-peer.service';
 import { HubPoolRoutingLogService } from '../hub-pool-routing-log.service';
 import { PoolProxyService } from '../hub-pool-proxy.service';
 import { HubPoolDiscoveryService } from '../hub-pool-discovery.service';
+import { HubPoolPinService } from '../hub-pool-pin.service';
 import { HubPoolController } from '../hub-pool.controller';
 import type { PoolStatus } from '../hub-pool.types';
 
@@ -25,6 +26,7 @@ function poolStatus(overrides: Partial<PoolStatus> = {}): PoolStatus {
       poolInboundEnabled: true,
       poolLocalAffinity: 1,
       poolHealthPollSeconds: 30,
+      poolPins: [],
       poolPressureWeight: 0,
     },
     tailscaleAdminApiConfigured: false,
@@ -39,6 +41,7 @@ function poolStatus(overrides: Partial<PoolStatus> = {}): PoolStatus {
     },
     peers: [],
     peerCounts: { total: 0, connected: 0, pending: 0, unreachable: 0, disabled: 0 },
+    pins: [],
     ...overrides,
   };
 }
@@ -63,6 +66,7 @@ describe('HubPoolController', () => {
   let configuration: MockProxy<ConfigurationService>;
   let routingLog: HubPoolRoutingLogService;
   let discoveryService: MockProxy<HubPoolDiscoveryService>;
+  let pinService: MockProxy<HubPoolPinService>;
   let controller: HubPoolController;
 
   beforeEach(() => {
@@ -73,31 +77,30 @@ describe('HubPoolController', () => {
     peerService.inboundRefusal.mockReturnValue(null);
     routingLog = new HubPoolRoutingLogService();
     discoveryService = mock<HubPoolDiscoveryService>();
-    controller = new HubPoolController(peerService, proxyService, mock<TailscaleService>(), configuration, routingLog, discoveryService);
+    pinService = mock<HubPoolPinService>();
+    controller = new HubPoolController(peerService, proxyService, mock<TailscaleService>(), configuration, routingLog, discoveryService, pinService);
   });
 
   describe('manual peer entry', () => {
-    it('serves the merged candidate list, not the Tailscale-only one', async () => {
-      // The route keeps its shape and its name; what changed underneath is that a manually probed
-      // node now appears alongside a Tailscale-discovered one, deduplicated.
+    it('serves only named candidates — an address has no name to offer', async () => {
+      // The discoverable list is consumed by handing `nodeFqdn` to `peers/pair`, so every entry has
+      // to have one. A probed address does not: `/identify` discloses no name. Those are paired with
+      // through the address form of `peers/pair` instead.
       discoveryService.listDiscoverableNodes.mockResolvedValue([
-        { tailscaleDeviceId: 'ts-1', nodeFqdn: 'remote.tailxyz.ts.net', hostname: 'remote', source: 'tailscale' },
-        { tailscaleDeviceId: '', nodeFqdn: 'lan-box.tailxyz.ts.net', hostname: 'lan-box', source: 'lan-probe' },
+        { tailscaleDeviceId: 'ts-1', nodeFqdn: 'remote.tailxyz.ts.net', hostname: 'remote' },
       ]);
 
       const result = await controller.listDiscoverable();
 
-      expect(result).toHaveLength(2);
+      expect(result).toEqual([{ tailscaleDeviceId: 'ts-1', nodeFqdn: 'remote.tailxyz.ts.net', hostname: 'remote' }]);
       expect(peerService.listDiscoverableDevices).not.toHaveBeenCalled();
     });
 
-    it('probes an operator-typed address and reports the FQDN pairing will use', async () => {
+    it('probes an operator-typed address and reports reachability and protocol, not a name', async () => {
       discoveryService.probeAddress.mockResolvedValue({
         address: '192.168.1.42',
         isCiHub: true,
-        nodeFqdn: 'lan-box.tailxyz.ts.net',
-        hostname: 'lan-box',
-        alreadyPaired: false,
+        poolProtocol: 2,
         pairable: true,
         reason: null,
       });
@@ -105,18 +108,26 @@ describe('HubPoolController', () => {
       const result = await controller.probePeerAddress({ address: '192.168.1.42' });
 
       expect(discoveryService.probeAddress).toHaveBeenCalledWith('192.168.1.42');
-      expect(result).toMatchObject({ pairable: true, nodeFqdn: 'lan-box.tailxyz.ts.net' });
+      expect(result).toEqual({ address: '192.168.1.42', isCiHub: true, poolProtocol: 2, pairable: true, reason: null });
     });
 
-    it('adds no new pairing path — the operator still pairs by FQDN', async () => {
-      // Manual entry is a directory lookup. The address is discarded; `peers/pair` is unchanged, so
-      // there is no second trust model to keep correct.
+    it('pairs by address through the PIN-gated exchange, which is what learns the name', async () => {
+      discoveryService.pairAtAddress.mockResolvedValue({ nodeFqdn: 'lan-box.tailxyz.ts.net' } as never);
+
+      await controller.pairPeer({ address: '192.168.1.42:5002', pin: '123456', displayName: 'LAN box' } as never);
+
+      expect(discoveryService.pairAtAddress).toHaveBeenCalledWith('192.168.1.42:5002', 'LAN box', '123456');
+      expect(peerService.initiatePairing).not.toHaveBeenCalled();
+    });
+
+    it('leaves the by-name pairing path exactly as it was', async () => {
       peerService.initiatePairing.mockResolvedValue({ nodeFqdn: 'lan-box.tailxyz.ts.net' } as never);
 
-      await controller.pairPeer({ nodeFqdn: 'lan-box.tailxyz.ts.net' });
+      await controller.pairPeer({ nodeFqdn: 'lan-box.tailxyz.ts.net' } as never);
 
-      // Third argument is the optional pairing PIN (Group C); manual entry does not supply one.
+      // Third argument is the optional pairing PIN (Group C); a by-name pairing need not supply one.
       expect(peerService.initiatePairing).toHaveBeenCalledWith('lan-box.tailxyz.ts.net', undefined, undefined);
+      expect(discoveryService.pairAtAddress).not.toHaveBeenCalled();
     });
   });
 
@@ -519,6 +530,37 @@ describe('HubPoolController', () => {
       });
 
       await expect(controller.rotateIdentity()).resolves.toMatchObject({ unreachable: ['hub-c.example-tailnet.ts.net'] });
+    });
+  });
+
+  /**
+   * The two pin routes are thin on purpose — every decision is in `HubPoolPinService` — so these
+   * assert the wiring the service tests cannot: that the model is passed through verbatim, and that
+   * a DELETE is addressed by query rather than by a path parameter a model id would break.
+   */
+  describe('routing pins', () => {
+    it('passes an upsert straight through and answers with the stored list', async () => {
+      const pins = [{ scope: 'model' as const, model: 'hf.co/org/repo:Q4_K_M', targetKind: 'local' as const, mode: 'prefer' as const }];
+      pinService.upsert.mockResolvedValue(pins);
+
+      const body = { scope: 'model', model: 'hf.co/org/repo:Q4_K_M', targetKind: 'local' } as never;
+      await expect(controller.upsertPoolPin(body)).resolves.toEqual({ pins });
+      expect(pinService.upsert).toHaveBeenCalledWith(body);
+    });
+
+    it('removes the pin named by the query, model ids with slashes included', async () => {
+      pinService.remove.mockResolvedValue([]);
+
+      await expect(controller.deletePoolPin({ scope: 'model', model: 'hf.co/org/repo:Q4_K_M' } as never)).resolves.toEqual({ pins: [] });
+      expect(pinService.remove).toHaveBeenCalledWith('model', 'hf.co/org/repo:Q4_K_M');
+    });
+
+    it('removes the pool-wide pin when the query names no model', async () => {
+      pinService.remove.mockResolvedValue([]);
+
+      await controller.deletePoolPin({ scope: 'default' } as never);
+
+      expect(pinService.remove).toHaveBeenCalledWith('default', undefined);
     });
   });
 });

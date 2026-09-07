@@ -129,6 +129,7 @@ describe('PoolProxyService', () => {
       poolInboundEnabled: true,
       poolLocalAffinity: DEFAULT_POOL_LOCAL_AFFINITY,
       poolHealthPollSeconds: DEFAULT_POOL_HEALTH_POLL_SECONDS,
+      poolPins: [],
       poolPressureWeight: DEFAULT_POOL_PRESSURE_WEIGHT,
       ...overrides,
     });
@@ -1288,6 +1289,158 @@ describe('PoolProxyService', () => {
       const serialized = JSON.stringify(routingLog.list());
       expect(serialized).not.toContain('my private prompt');
       expect(serialized).not.toContain('the answer');
+    });
+  });
+
+  /**
+   * Manual routing pins. `prefer` is the only mode there is, so every test here is ultimately about
+   * the same property: a pin changes the ORDER of an already-built candidate list and can never
+   * change its membership.
+   */
+  describe('manual routing pins', () => {
+    const MODEL = 'llama3.2:3b';
+    const localPin = { scope: 'default', targetKind: 'local', mode: 'prefer' } as const;
+
+    beforeEach(() => {
+      ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL] });
+    });
+
+    it('puts the pinned peer first even though the ranker would have chosen the idle local node', async () => {
+      // No local queue at all, so without the pin local wins on score AND on tier rank.
+      peerService.listConnectedPeers.mockResolvedValue([peerServing('peer-busy', MODEL, { inFlightRequests: 5 })]);
+      setPoolPreferences({ poolPins: [{ scope: 'default', targetKind: 'peer', peerId: 'peer-busy', mode: 'prefer' }] });
+
+      expect(await service.buildCandidateList(MODEL)).toEqual([
+        { peerId: 'peer-busy', nodeFqdn: 'peer-busy.tailxyz.ts.net', backend: 'ollama' },
+        { peerId: null, nodeFqdn: null, backend: 'ollama' },
+      ]);
+    });
+
+    it('keeps every other candidate behind the pinned one, in ranked order, so failover still works', async () => {
+      peerService.listConnectedPeers.mockResolvedValue([
+        peerServing('peer-busy', MODEL, { inFlightRequests: 9 }),
+        peerServing('peer-idle', MODEL, { inFlightRequests: 0 }),
+      ]);
+      loadService.acquire(LOCAL_CANDIDATE_KEY);
+      loadService.acquire(LOCAL_CANDIDATE_KEY);
+      loadService.acquire(LOCAL_CANDIDATE_KEY);
+      setPoolPreferences({ poolPins: [{ scope: 'default', targetKind: 'peer', peerId: 'peer-busy', mode: 'prefer' }] });
+
+      expect((await service.buildCandidateList(MODEL)).map((candidate) => candidate.peerId)).toEqual(['peer-busy', 'peer-idle', null]);
+    });
+
+    it('applies a model pin over the default pin, and only to that model', async () => {
+      peerService.listConnectedPeers.mockResolvedValue([peerServing('peer-a', MODEL, { inFlightRequests: 0 })]);
+      setPoolPreferences({
+        poolPins: [
+          { scope: 'default', targetKind: 'peer', peerId: 'peer-a', mode: 'prefer' },
+          { scope: 'model', model: MODEL, targetKind: 'local', mode: 'prefer' },
+        ],
+      });
+      loadService.acquire(LOCAL_CANDIDATE_KEY);
+
+      // The model pin wins for this model...
+      expect((await service.buildCandidateList(MODEL)).map((candidate) => candidate.peerId)).toEqual([null, 'peer-a']);
+
+      // ...and the default pin still governs a model it does not name.
+      ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['other:1b'] });
+      peerService.listConnectedPeers.mockResolvedValue([peerServing('peer-a', 'other:1b', { inFlightRequests: 0 })]);
+      expect((await service.buildCandidateList('other:1b')).map((candidate) => candidate.peerId)).toEqual(['peer-a', null]);
+    });
+
+    it('matches a model pin verbatim: a case variant is a different model and does not apply', async () => {
+      peerService.listConnectedPeers.mockResolvedValue([peerServing('peer-a', MODEL, { inFlightRequests: 0 })]);
+      // Two queued locally against an idle peer clears the affinity head start, so the peer wins on
+      // score alone — the ranking a pin would have had to override.
+      loadService.acquire(LOCAL_CANDIDATE_KEY);
+      loadService.acquire(LOCAL_CANDIDATE_KEY);
+      setPoolPreferences({ poolPins: [{ scope: 'model', model: 'Llama3.2:3B', targetKind: 'peer', peerId: 'peer-a', mode: 'prefer' }] });
+
+      // Local is loaded, the peer is idle — but no pin applies, so this is the plain ranking.
+      expect((await service.buildCandidateList(MODEL)).map((candidate) => candidate.peerId)).toEqual(['peer-a', null]);
+    });
+
+    /**
+     * The pin cannot resurrect an excluded node — the single most important property of applying it
+     * to the finished list. An unreachable peer never reaches `usablePeers`, so a pin naming it is a
+     * no-op rather than a way to force work onto a node the module has decided is down.
+     */
+    it('is a silent no-op when the pinned peer is unreachable, and the request still routes locally', async () => {
+      peerService.listConnectedPeers.mockResolvedValue([]);
+      setPoolPreferences({ poolPins: [{ scope: 'default', targetKind: 'peer', peerId: 'peer-gone', mode: 'prefer' }] });
+
+      expect(await service.buildCandidateList(MODEL)).toEqual([{ peerId: null, nodeFqdn: null, backend: 'ollama' }]);
+    });
+
+    it('is a silent no-op when the pinned peer was unpaired while the pin still named it', async () => {
+      peerService.listConnectedPeers.mockResolvedValue([peerServing('peer-still-here', MODEL, { inFlightRequests: 0 })]);
+      setPoolPreferences({ poolPins: [{ scope: 'default', targetKind: 'peer', peerId: 'peer-deleted', mode: 'prefer' }] });
+
+      // The surviving peer is still ranked normally: a dangling pin removes nothing.
+      expect((await service.buildCandidateList(MODEL)).map((candidate) => candidate.peerId)).toEqual([null, 'peer-still-here']);
+    });
+
+    it('never re-admits a local backend that has been unable to serve the model, even pinned to local', async () => {
+      ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL], unservableModels: [MODEL] });
+      peerService.listConnectedPeers.mockResolvedValue([peerServing('peer-a', MODEL, { inFlightRequests: 0 })]);
+      setPoolPreferences({ poolPins: [localPin] });
+
+      expect((await service.buildCandidateList(MODEL)).map((candidate) => candidate.peerId)).toEqual(['peer-a']);
+    });
+
+    it('records the pin that shaped the decision, and nothing about the model or peer it names', async () => {
+      peerService.listConnectedPeers.mockResolvedValue([]);
+      setPoolPreferences({ poolPins: [localPin] });
+      vi.mocked(global.fetch).mockResolvedValue(new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } }));
+
+      await service.proxyRequest({ path: '/v1/chat/completions', method: 'POST', body: { model: MODEL }, model: MODEL, res: createMockResponse() });
+
+      expect(routingLog.list()[0]?.pin).toEqual({ scope: 'default', mode: 'prefer', targetKind: 'local' });
+    });
+
+    it('leaves the routing-log pin null when no pin is set', async () => {
+      peerService.listConnectedPeers.mockResolvedValue([]);
+      vi.mocked(global.fetch).mockResolvedValue(new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } }));
+
+      await service.proxyRequest({ path: '/v1/chat/completions', method: 'POST', body: { model: MODEL }, model: MODEL, res: createMockResponse() });
+
+      expect(routingLog.list()[0]?.pin).toBeNull();
+    });
+
+    it('says a pin is in force in the 502 for a model nothing can serve', async () => {
+      ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [] });
+      peerService.listConnectedPeers.mockResolvedValue([]);
+      setPoolPreferences({ poolPins: [{ scope: 'model', model: 'missing:1b', targetKind: 'local', mode: 'prefer' }] });
+      const res = createMockResponse();
+
+      await service.proxyRequest({ path: '/v1/chat/completions', method: 'POST', body: { model: 'missing:1b' }, model: 'missing:1b', res });
+
+      const body = vi.mocked(res.json).mock.calls[0]?.[0] as { error: string };
+      expect(body.error).toContain('pinned to this Hub');
+      // Still says the real problem is inventory: a prefer pin cannot be the reason a list is empty.
+      expect(body.error).toContain('inventory problem');
+    });
+
+    /**
+     * The regression that matters most for this feature, asserted rather than argued: a Hub with no
+     * peers routes byte-identically with the pin machinery present. Both the empty-pins case and a
+     * stale pin left over from a fleet that no longer exists.
+     */
+    it('leaves a peerless single-node Hub untouched, pins or no pins', async () => {
+      peerService.listConnectedPeers.mockResolvedValue([]);
+      vllm.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL] });
+      const expected = [
+        { peerId: null, nodeFqdn: null, backend: 'ollama' },
+        { peerId: null, nodeFqdn: null, backend: 'vllm' },
+      ];
+
+      expect(await service.buildCandidateList(MODEL)).toEqual(expected);
+
+      setPoolPreferences({ poolPins: [localPin] });
+      expect(await service.buildCandidateList(MODEL)).toEqual(expected);
+
+      setPoolPreferences({ poolPins: [{ scope: 'default', targetKind: 'peer', peerId: 'peer-from-a-past-life', mode: 'prefer' }] });
+      expect(await service.buildCandidateList(MODEL)).toEqual(expected);
     });
   });
 

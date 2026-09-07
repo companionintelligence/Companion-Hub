@@ -9,7 +9,7 @@ import {
   RuntimeModelsQueryDto,
   VllmStatusQueryDto,
 } from '@/modules/inference/inference.dto';
-import { RoutingLogQueryDto } from '@/modules/hub-pool/hub-pool.dto';
+import { DeletePoolPinQuery, RoutingLogQueryDto } from '@/modules/hub-pool/hub-pool.dto';
 import { StreamAppLogsQueryDto, StreamHubLogsQueryDto } from '@/core/sse/dto/sse.dto';
 
 const availableDomainSchema = z.object({
@@ -81,6 +81,7 @@ export const OPERATION_QUERY_DTOS: Record<string, ZodDto> = {
   searchApps: SearchAppsQueryDto,
   getRuntimeModels: RuntimeModelsQueryDto,
   getPoolRoutingLog: RoutingLogQueryDto,
+  deletePoolPin: DeletePoolPinQuery,
   getOnboardingProfile: OnboardingProfileQueryDto,
   getVllmStatus: VllmStatusQueryDto,
   getMtplxStatus: MtplxStatusQueryDto,

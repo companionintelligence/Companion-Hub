@@ -2052,5 +2052,20 @@
   "HUB_POOL_LOCAL_FINGERPRINT": "This node's key fingerprint: {{fingerprint}}",
   "HUB_POOL_IDENTITY_ERROR": "This node cannot sign pool requests and is using its pairing tokens instead: {{error}}",
   "HUB_POOL_PEER_FINGERPRINT": "Key fingerprint {{fingerprint}}",
-  "HUB_POOL_PEER_FINGERPRINT_UNVERIFIED": "No key — this request arrived without a pairing PIN, so the name is only a claim."
+  "HUB_POOL_PEER_FINGERPRINT_UNVERIFIED": "No key — this request arrived without a pairing PIN, so the name is only a claim.",
+  "HUB_POOL_PINS_TITLE": "Routing pins",
+  "HUB_POOL_PINS_HELP": "Prefer one node for a model, or for everything. A pin only moves that node to the front of the candidates — if it cannot serve a request the pool ranks normally, so a pin can never take inference down.",
+  "HUB_POOL_PINS_EMPTY": "No pins. Requests go to whichever node has the model and the shortest queue.",
+  "HUB_POOL_PINS_ALL_MODELS": "Every model",
+  "HUB_POOL_PINS_MODEL_LABEL": "Model",
+  "HUB_POOL_PINS_NODE_LABEL": "Prefer this node",
+  "HUB_POOL_PINS_ADD_BUTTON": "Pin",
+  "HUB_POOL_PINS_REMOVE_BUTTON": "Remove",
+  "HUB_POOL_PINS_UNAVAILABLE": "Not applying right now",
+  "HUB_POOL_PINS_UNPAIRED": "A Hub that is no longer paired",
+  "HUB_POOL_PINS_SAVED": "Pin saved — it applies to the next request.",
+  "HUB_POOL_PINS_REMOVED": "Pin removed.",
+  "HUB_POOL_PINS_ERROR": "Could not change the pin.",
+  "HUB_POOL_ROUTING_PINNED": "Ordered by an operator pin",
+  "HUB_POOL_UNPAIR_CONFIRM_PINS": "A routing pin points at this peer. It is left in place and simply stops applying — remove it under Routing pins."
 }
