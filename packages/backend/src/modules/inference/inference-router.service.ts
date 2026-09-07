@@ -6,6 +6,7 @@ import { ModelRegistryService } from './model-registry.service';
 import { MemoryManagerService } from './memory-manager.service';
 import { CloudFallbackService } from './cloud-fallback.service';
 import { InferenceBackendRegistry } from './backends/backend-registry';
+import { resolveInstalledCatalogIds } from './model-availability.util';
 
 /**
  * Inference router — read-only view over the local backends + cloud key store.
@@ -34,12 +35,14 @@ export class InferenceRouterService {
     const backends = await Promise.all(
       this.backends.entries().map(async ([type, backend]) => {
         const health = await backend.healthCheck();
+        const unservableModels = this.inBothIdSpaces(health.unservableModels ?? []);
         return {
           type,
           running: health.running,
           healthy: health.healthy,
           url: backend.getBaseUrl(),
           modelsLoaded: health.modelsLoaded.length,
+          ...(unservableModels.length > 0 ? { unservableModels } : {}),
         };
       }),
     );
@@ -60,6 +63,23 @@ export class InferenceRouterService {
       memoryBudget: budget,
       cloudProviders,
     };
+  }
+
+  /**
+   * Engine-native model ids plus the catalog ids they map onto, de-duplicated.
+   *
+   * A backend reports withheld models in its own id space (`gemma3:1b`), while everything built on
+   * the catalog — the pool's advertised inventory above all — speaks catalog ids (`gemma3-1b`).
+   * Neither consumer carries a lookup table, and the mapping lives here, next to the registry that
+   * owns it, so the status carries both and either side can filter with a plain `includes`.
+   */
+  private inBothIdSpaces(backendModelIds: string[]): string[] {
+    if (backendModelIds.length === 0) {
+      return [];
+    }
+    // Exact-id backends (vLLM and friends) fall through the same helper unharmed: its first test is
+    // equality, and only the Ollama tag suffixes below that are Ollama-shaped.
+    return [...new Set([...backendModelIds, ...resolveInstalledCatalogIds(this.modelRegistry.getCatalog(), backendModelIds)])];
   }
 
   /** List all available models (local + cloud) */

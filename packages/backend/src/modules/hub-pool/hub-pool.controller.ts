@@ -349,8 +349,11 @@ export class HubPoolController {
       res.status(400).json({ error: 'Missing or invalid X-Hub-Pool-Backend header' });
       return;
     }
+    // Unlike the backend header this is advisory: it only attributes the serving outcome to a
+    // model, so an absent or bogus value costs a strike, never the forward.
+    const model = req.header('x-hub-pool-model') || undefined;
     // The peer's FQDN comes from its `hub_pool_peer` row, not the caller-supplied header, so the
     // routing log records who the guard actually authenticated rather than who claimed to call.
-    await this.proxyService.forwardToLocalBackendAndRespond(backend, path, method, body, res, peer.nodeFqdn);
+    await this.proxyService.forwardToLocalBackendAndRespond(backend, path, method, body, res, peer.nodeFqdn, model);
   }
 }
