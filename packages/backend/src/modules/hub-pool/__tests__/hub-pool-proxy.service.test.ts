@@ -626,6 +626,56 @@ describe('PoolProxyService', () => {
       expect(ollama.noteServingFailure).not.toHaveBeenCalled();
       expect(ollama.noteServingSuccess).not.toHaveBeenCalled();
     });
+
+    /**
+     * A node serving only peer traffic never runs `proxyRequest`, so before the inbound path fed
+     * the quarantine it earned no strikes at all: it withheld nothing and kept advertising a model
+     * it could not load to the very peers deciding to send it more. That is exactly the shape of
+     * fleet node core-4, which answers `/api/tags` with a model whose every generate 500s.
+     */
+    it('records a 5xx from a peer-forwarded request against the model', async () => {
+      vi.mocked(global.fetch).mockResolvedValue(new Response('model failed to load', { status: 500 }));
+
+      await service.forwardToLocalBackendAndRespond(
+        'ollama',
+        '/api/chat',
+        'POST',
+        { model: MODEL },
+        createMockResponse(),
+        'peer.example.ts.net',
+        MODEL,
+      );
+
+      expect(ollama.noteServingFailure).toHaveBeenCalledWith(MODEL, 'HTTP 500');
+    });
+
+    it('clears the record when a peer-forwarded request succeeds', async () => {
+      vi.mocked(global.fetch).mockResolvedValue(new Response('ok', { status: 200 }));
+
+      await service.forwardToLocalBackendAndRespond(
+        'ollama',
+        '/api/chat',
+        'POST',
+        { model: MODEL },
+        createMockResponse(),
+        'peer.example.ts.net',
+        MODEL,
+      );
+
+      expect(ollama.noteServingSuccess).toHaveBeenCalledWith(MODEL);
+    });
+
+    it('still forwards when the peer sends no model header', async () => {
+      vi.mocked(global.fetch).mockResolvedValue(new Response('model failed to load', { status: 500 }));
+
+      // An older peer won't send `X-Hub-Pool-Model`. Losing the strike is acceptable; refusing the
+      // forward over a missing attribution header would not be.
+      await expect(
+        service.forwardToLocalBackendAndRespond('ollama', '/api/chat', 'POST', { model: MODEL }, createMockResponse(), 'peer.example.ts.net'),
+      ).resolves.not.toThrow();
+
+      expect(ollama.noteServingFailure).not.toHaveBeenCalled();
+    });
   });
 
   /**

@@ -144,8 +144,12 @@ export class OllamaBackend implements InferenceBackend {
    * listed there is proof of the exact thing we withheld it for lacking — and it costs nothing to
    * ask, no load, no generation.
    *
-   * Skipped entirely when nothing is withheld, which is the overwhelmingly common case: the health
-   * poll keeps its single request until this node has actually failed to serve something.
+   * Skipped while the quarantine is tracking nothing at all, which is the overwhelmingly common
+   * case: a node that has never failed to serve keeps its single-request health poll.
+   *
+   * Note the guard is `isEmpty()`, not "is anything withheld" — a model keeps its entry for the
+   * whole strike window after a single failure, so one strike that never reached the withhold
+   * threshold still costs one extra `/api/ps` per poll until the window closes.
    */
   private async reconcileQuarantine(url: string): Promise<string[]> {
     if (this.quarantine.isEmpty()) {

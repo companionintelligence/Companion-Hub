@@ -148,7 +148,7 @@ export class PoolProxyService {
       const nodeLabel = candidate.nodeFqdn ?? LOCAL_CANDIDATE_KEY;
       this.loadService.acquire(key);
       try {
-        const upstream = await this.forward(candidate, path, method, body);
+        const upstream = await this.forward(candidate, path, method, body, model);
         // Before the failover branch, so both outcomes teach the local engine the same thing: a
         // live request is the only place the pool ever learns whether a model actually serves.
         this.noteLocalServing(candidate, model, upstream.status);
@@ -248,7 +248,18 @@ export class PoolProxyService {
     if (candidate.peerId !== null) {
       return;
     }
-    const backend = this.backends.tryGet(candidate.backend);
+    this.noteLocalServingOutcome(candidate.backend, model, status);
+  }
+
+  /**
+   * The rule itself, shared by the outbound path ({@link noteLocalServing}) and the peer-facing
+   * inbound forward, so a model's serving record does not depend on which door the request came in.
+   */
+  private noteLocalServingOutcome(backendType: InferenceBackendType, model: string | undefined, status: number): void {
+    if (!model) {
+      return;
+    }
+    const backend = this.backends.tryGet(backendType);
     if (status >= 500) {
       backend?.noteServingFailure?.(model, `HTTP ${status}`);
       return;
@@ -298,6 +309,8 @@ export class PoolProxyService {
     res: Response,
     /** FQDN of the peer that sent us this work, for the routing log. Optional so the log is never what breaks a forward. */
     fromPeerFqdn?: string,
+    /** Model the peer asked for, from `X-Hub-Pool-Model`. Optional: an older peer won't send it, and a missing model only costs us the strike, never the forward. */
+    model?: string,
   ): Promise<void> {
     // Counted like a locally-routed request: a peer's forwarded work occupies this node's engine
     // exactly as its own apps' does, and a node busy serving the pool must not report itself idle
@@ -313,6 +326,10 @@ export class PoolProxyService {
       // spending my GPU time" — the sender's own log only covers what it sent.
       this.recordInbound(backend, path, fromPeerFqdn, upstream.status, startedAt);
       recorded = true;
+      // A peer's forward is the only evidence an inbound-only node ever gets that one of its own
+      // models cannot run: nothing here goes through `proxyRequest`, so without this the node
+      // earns no strikes, withholds nothing, and keeps advertising the dead model to its peers.
+      this.noteLocalServingOutcome(backend, model, upstream.status);
       await this.pipeResponse(upstream, res);
     } catch (error) {
       if (!recorded) {
@@ -467,7 +484,7 @@ export class PoolProxyService {
     });
   }
 
-  private async forward(candidate: PoolCandidate, path: string, method: string, body: unknown): Promise<globalThis.Response> {
+  private async forward(candidate: PoolCandidate, path: string, method: string, body: unknown, model: string): Promise<globalThis.Response> {
     if (candidate.peerId === null) {
       return this.callBackend(candidate.backend, path, method, body);
     }
@@ -486,6 +503,9 @@ export class PoolProxyService {
         // Tells the peer's `/inference/pool/local/*` handler which of ITS OWN backends to hit —
         // it can't infer this from the path alone, and must not re-run candidate selection itself.
         'X-Hub-Pool-Backend': candidate.backend,
+        // Lets the receiver credit the outcome to the right model without parsing the body it
+        // promises not to read. Same reason as the header above: the path alone doesn't carry it.
+        'X-Hub-Pool-Model': model,
         Authorization: `Bearer ${token}`,
       },
       body: method === 'GET' ? undefined : JSON.stringify(body),
