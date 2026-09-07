@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import { MemoryRouter } from 'react-router';
-import type { AppInfo } from '@/types/app.types';
+import type { AppInfo, FormField } from '@/types/app.types';
 import { InstallForm } from './install-form';
 import { useAppContext } from '@/context/app-context';
 import { TranslatableError } from '@/types/error.types';
@@ -1475,6 +1475,126 @@ describe('InstallForm', () => {
 
     expect(getEnableAuthSwitch()).toBeInTheDocument(); // the switch itself still renders
     expect(screen.queryByText('APP_INSTALL_FORM_ENABLE_AUTH_RECOMMENDED')).not.toBeInTheDocument();
+  });
+
+  // Regression coverage for CI-Hub #972: update-settings-dialog.tsx renders this same InstallForm
+  // for the Edit Settings flow and passes `initialValues={{ ...config }}` — the app's LIVE env
+  // values, including any auto-generated credential (`type: 'random'` in the catalog schema, e.g.
+  // nextcloud's NEXTCLOUD_DB_PASSWORD or keila's SECRET_KEY_BASE). Before the fix, the
+  // initialValues-seeding effect wrote every key into react-hook-form state with no type filter,
+  // so a live secret ended up in getValues() and therefore in both the "Export config" download
+  // and the "recently used" localStorage cache. These tests exercise that exact flow — a `random`
+  // field (not `password`, which was already covered) present in `initialValues` — and assert the
+  // secret reaches neither surface.
+  describe('Edit Settings flow never leaks a live random-type secret (CI-Hub #972)', () => {
+    const SECRET_VALUE = 'auto-generated-db-secret-abc123';
+    const RANDOM_FIELD = {
+      env_variable: 'DB_PASSWORD',
+      label: 'Database Password',
+      type: 'random',
+      required: false,
+    } as unknown as FormField;
+
+    // Mirrors update-settings-dialog.tsx: `initialValues={{ ...config }}`.
+    const editInitialValues = { DB_PASSWORD: SECRET_VALUE };
+
+    const editInfo = {
+      id: 'nextcloud',
+      urn: 'nextcloud:store',
+      form_fields: [RANDOM_FIELD],
+      exposable: false,
+      dynamic_config: false,
+    } as unknown as AppInfo;
+
+    beforeEach(() => {
+      localStorage.clear();
+      // cloudflareAvailable/tailscaleAvailable both false so exposureMode resolves to 'local' and
+      // exposedLocal is false — keeps submit validation from requiring a subdomain, which is
+      // unrelated to what this test is checking.
+      vi.mocked(useAppContext).mockReturnValue({
+        userSettings: {
+          ciHubOrganizationSlug: undefined,
+          localDomain: 'ci.lan',
+          domain: 'example.com',
+          maxBackups: 5,
+          guestDashboard: false,
+        },
+        user: { advancedMode: true },
+        isProduction: true,
+        cloudflareAvailable: false,
+        tailscaleAvailable: false,
+      } as unknown as ReturnType<typeof useAppContext>);
+    });
+
+    // jsdom's `Blob` in this environment has no `.text()`, so a real Blob's content can't be read
+    // back directly. Stub the global `Blob` constructor (same `vi.stubGlobal`/`unstubAllGlobals`
+    // pattern used elsewhere in this repo, e.g. hub-status.test.tsx) with one that just records the
+    // parts it was constructed with — `handleExportConfig` only ever passes the Blob straight to
+    // the mocked `URL.createObjectURL`, so nothing else needs it to behave like a real Blob.
+    class RecordingBlob {
+      parts: unknown[];
+      type?: string;
+      constructor(parts: unknown[], options?: { type?: string }) {
+        this.parts = parts;
+        this.type = options?.type;
+      }
+    }
+
+    afterEach(() => {
+      vi.unstubAllGlobals();
+    });
+
+    it('never puts the live secret into the exported install-config file', () => {
+      vi.stubGlobal('Blob', RecordingBlob);
+      const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+      const createObjectUrlSpy = vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:test-export');
+      vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
+
+      render(
+        <MemoryRouter>
+          <InstallForm info={editInfo} onSubmit={vi.fn()} formId="test-form" formFields={[RANDOM_FIELD]} initialValues={editInitialValues} />
+        </MemoryRouter>,
+      );
+
+      fireEvent.click(screen.getByRole('button', { name: /APP_INSTALL_FORM_EXPORT_CONFIG/ }));
+
+      expect(createObjectUrlSpy).toHaveBeenCalledOnce();
+      const exportedBlob = createObjectUrlSpy.mock.calls[0]?.[0] as unknown as RecordingBlob;
+      const exportedText = exportedBlob.parts.join('');
+
+      expect(exportedText).not.toContain(SECRET_VALUE);
+      expect(exportedText).not.toContain('DB_PASSWORD');
+      expect(clickSpy).toHaveBeenCalledOnce();
+    });
+
+    it('never writes the live secret to the "recently used" localStorage cache on submit', async () => {
+      const onSubmit = vi.fn();
+
+      const { container } = render(
+        <MemoryRouter>
+          <InstallForm info={editInfo} onSubmit={onSubmit} formId="test-form" formFields={[RANDOM_FIELD]} initialValues={editInitialValues} />
+        </MemoryRouter>,
+      );
+
+      const form = container.querySelector('form');
+      expect(form).not.toBeNull();
+
+      // RHF's submit handler runs the (async) `validate` function before calling onSubmit, so the
+      // resulting state updates (recordLastUsedConfig + setRecentConfigs) land on a later
+      // microtask — wrap in `act` and wait for them rather than asserting synchronously.
+      await act(async () => {
+        fireEvent.submit(form as HTMLFormElement);
+      });
+
+      await waitFor(() => {
+        expect(onSubmit).toHaveBeenCalledOnce();
+      });
+
+      const raw = localStorage.getItem('ci-hub:last-install-configs:nextcloud');
+      expect(raw).not.toBeNull();
+      expect(raw).not.toContain(SECRET_VALUE);
+      expect(raw).not.toContain('DB_PASSWORD');
+    });
   });
 });
 

@@ -414,6 +414,73 @@ export const APP_CATEGORIES = [
 export type AppCategory = (typeof APP_CATEGORIES)[number];
 export const ARCHITECTURES = ['arm64', 'amd64'] as const;
 
+/**
+ * Accelerator requirements published by CI-Marketplace.
+ *
+ * This is deliberately metadata, not a claim that every host can satisfy the
+ * requirement. Lifecycle preflight still validates the effective compose
+ * devices; preserving the block here lets Hub surfaces explain the constraint
+ * before an install starts instead of silently dropping it during parsing.
+ */
+export const gpuRequirementsSchema = z
+  .object({
+    type: z.enum(['cuda', 'rocm', 'oneapi']),
+    optional: z.boolean(),
+    host_platforms: z.enum(['linux', 'windows']).array().min(1),
+    host_devices: z
+      .string()
+      .regex(/^\/dev\/[A-Za-z0-9._/-]+$/)
+      .array()
+      .min(1)
+      .optional(),
+    minimum_vram_gb: z.number().positive().optional(),
+    recommended_vram_gb: z.number().positive().optional(),
+  })
+  .superRefine((requirements, ctx) => {
+    if (new Set(requirements.host_platforms).size !== requirements.host_platforms.length) {
+      ctx.addIssue({ code: 'custom', path: ['host_platforms'], message: 'host_platforms must not contain duplicates' });
+    }
+    if (requirements.host_devices && new Set(requirements.host_devices).size !== requirements.host_devices.length) {
+      ctx.addIssue({ code: 'custom', path: ['host_devices'], message: 'host_devices must not contain duplicates' });
+    }
+
+    if (requirements.recommended_vram_gb !== undefined && requirements.minimum_vram_gb !== undefined) {
+      if (requirements.recommended_vram_gb < requirements.minimum_vram_gb) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['recommended_vram_gb'],
+          message: 'recommended_vram_gb must be greater than or equal to minimum_vram_gb',
+        });
+      }
+    }
+
+    if (requirements.type === 'cuda' && requirements.host_devices !== undefined) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['host_devices'],
+        message: 'CUDA uses the NVIDIA runtime and must not declare host_devices',
+      });
+    }
+
+    if (requirements.type !== 'cuda') {
+      if (!requirements.host_devices || requirements.host_devices.length === 0) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['host_devices'],
+          message: `${requirements.type} requires at least one host device`,
+        });
+      }
+      if (requirements.host_platforms.length !== 1 || requirements.host_platforms[0] !== 'linux') {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['host_platforms'],
+          message: `${requirements.type} is supported on Linux hosts only`,
+        });
+      }
+    }
+  });
+export type GpuRequirements = z.output<typeof gpuRequirementsSchema>;
+
 export const FIELD_TYPES = ['text', 'password', 'email', 'number', 'fqdn', 'ip', 'fqdnip', 'url', 'app_base_url', 'random', 'boolean'] as const;
 export type FieldType = (typeof FIELD_TYPES)[number];
 
@@ -440,6 +507,17 @@ export const formFieldSchema = z.object({
   trailing_slash: z.boolean().optional(),
 });
 
+function normalizeReplaces(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const names: string[] = [];
+  for (const item of value) {
+    if (typeof item !== 'string') continue;
+    const name = item.trim();
+    if (name) names.push(name);
+  }
+  return names;
+}
+
 /** Accept legacy CIHub field names when parsing app config.json from stores or backups. */
 function normalizeAppInfoInput(input: unknown): unknown {
   if (!input || typeof input !== 'object' || Array.isArray(input)) return input;
@@ -450,6 +528,9 @@ function normalizeAppInfoInput(input: unknown): unknown {
       typeof raw.cihub_app_version === 'number' ? raw.cihub_app_version : typeof raw.cihub_version === 'number' ? raw.cihub_version : 1,
     min_hub_version:
       typeof raw.min_hub_version === 'string' ? raw.min_hub_version : typeof raw.min_cihub_version === 'string' ? raw.min_cihub_version : undefined,
+    // Late-added field: missing, null, or junk must not fail the whole app parse
+    // or the store hides the listing. Coerce to [] and keep the app visible.
+    replaces: normalizeReplaces(raw.replaces),
   };
 }
 
@@ -464,6 +545,18 @@ export const appInfoObjectSchema = z.object({
   version: z.string().optional().default('latest'),
   cihub_app_version: z.number().optional().default(1),
   short_desc: z.string(),
+  /**
+   * Popular proprietary products this app replaces (e.g. Nextcloud →
+   * "Google Drive", "Dropbox"). Indexed by store search. Do not stuff these
+   * into `short_desc` — that field is human copy, not a synonym list.
+   *
+   * Missing/null/junk tolerance lives in `normalizeAppInfoInput`, which coerces
+   * this to an array before the field is reached — so keep the field strict.
+   * Do not add `.nullable()`: it widens the parsed type to `string[] | null`,
+   * forcing null checks on a case that cannot occur, and a `.transform()` to
+   * undo that would erase `replaces` from the generated OpenAPI/JSON schemas.
+   */
+  replaces: z.array(z.string().min(1)).optional().default([]),
   author: z.string(),
   source: z.string(),
   website: z.string().optional(),
@@ -476,6 +569,8 @@ export const appInfoObjectSchema = z.object({
   exposable: z.boolean().optional().default(true),
   no_gui: z.boolean().optional().default(false),
   supported_architectures: z.enum(ARCHITECTURES).array().default(['amd64', 'arm64']),
+  /** Optional accelerator requirements from the Marketplace manifest. */
+  gpu_requirements: gpuRequirementsSchema.optional(),
   uid: z.number().optional(),
   gid: z.number().optional(),
   dynamic_config: z.boolean().optional().default(true),

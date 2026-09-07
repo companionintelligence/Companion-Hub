@@ -28,6 +28,7 @@ import {
   MtplxStatusQueryDto,
   DsparkStatusQueryDto,
 } from './inference.dto';
+import { InferenceBackendRegistry } from './backends/backend-registry';
 import { OllamaBackend } from './backends/ollama.backend';
 import { buildVllmRemediation, resolveVllmProbeUrl, VLLM_PROBE_API_KEY_HEADER, VllmBackend } from './backends/vllm.backend';
 import { LemonadeBackend } from './backends/lemonade.backend';
@@ -35,7 +36,7 @@ import { buildMtplxRemediation, resolveMtplxProbeUrl, MtplxBackend } from './bac
 import { buildDsparkRemediation, DsparkBackend, resolveDsparkProbeUrl } from './backends/dspark.backend';
 import { LuceboxBackend } from './backends/lucebox.backend';
 import { resolveInstalledCatalogIds, resolveInstalledCatalogIdsFromServedModels } from './model-availability.util';
-import type { InferenceBackend } from './backends/backend.interface';
+import { BackendObserverService } from './supervision/backend-observer.service';
 
 /**
  * Inference controller — exposes Ollama/backend provisioning + management.
@@ -69,30 +70,9 @@ export class InferenceController {
     private readonly luceboxBackend: LuceboxBackend,
     private readonly moduleRef: ModuleRef,
     readonly _logger: LoggerService,
+    private readonly backends: InferenceBackendRegistry,
+    private readonly backendObserver: BackendObserverService,
   ) {}
-
-  /**
-   * Exhaustive backend lookup. Deliberately a `switch` on the union rather than a ternary chain:
-   * the previous `backend === 'ollama' ? … : backend === 'vllm' ? … : this.lemonadeBackend` shape
-   * silently handed back Lemonade for any newly added backend type, and the compiler could not
-   * see it. A missing `case` here is a build error instead.
-   */
-  private getBackendService(type: InferenceBackendType): InferenceBackend {
-    switch (type) {
-      case 'ollama':
-        return this.ollamaBackend;
-      case 'vllm':
-        return this.vllmBackend;
-      case 'lemonade':
-        return this.lemonadeBackend;
-      case 'mtplx':
-        return this.mtplxBackend;
-      case 'dspark':
-        return this.dsparkBackend;
-      case 'lucebox':
-        return this.luceboxBackend;
-    }
-  }
 
   private getRecommendedBackend(profile: HardwareProfile): InferenceBackendType {
     // AMD GPUs (including the Strix Halo APU) always recommend Ollama, whether or not ROCm is
@@ -211,7 +191,7 @@ export class InferenceController {
   @Get('models/runtime')
   async getRuntimeModels(@Query() query: RuntimeModelsQueryDto) {
     const backend = query.backend;
-    const backendService = this.getBackendService(backend);
+    const backendService = this.backends.get(backend);
 
     const health = await backendService.healthCheck();
     if (!health.running || !health.healthy) {
@@ -239,6 +219,23 @@ export class InferenceController {
   @Get('status')
   async getStatus() {
     return this.router.getStatus();
+  }
+
+  /**
+   * What the Hub can see about each inference backend's *process*, and any container the local
+   * Docker daemon is restarting in a loop.
+   *
+   * Read-only in the strongest sense available: there is no companion POST. The Hub never restarts,
+   * stops or starts an inference backend, so there is no action for this route to offer — see
+   * `common/helpers/inference-supervision.ts` for why that is the feature rather than a gap. The
+   * report is served from memory and issues no probe of its own; when
+   * `inferenceSupervisionMode` is `'off'` (the default) it reports exactly that, with no
+   * observations behind it.
+   */
+  @UseGuards(AuthGuard)
+  @Get('supervision')
+  getSupervision() {
+    return this.backendObserver.getReport();
   }
 
   @UseGuards(AuthGuard)

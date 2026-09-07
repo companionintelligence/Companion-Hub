@@ -13,7 +13,6 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # Known-oversized files, with their size when the ratchet was introduced.
 # Remove an entry once its file is under BUDGET — never raise a number.
 ALLOW="
-src/hub_manager.rs
 src/updater.rs
 src/inference_runners.rs
 src/main.rs

@@ -70,7 +70,20 @@ export interface MemoryBudget {
 
 // ─── Model Registry ─────────────────────────────────────────────────────────
 
-export type InferenceBackendType = 'ollama' | 'vllm' | 'lemonade' | 'mtplx' | 'dspark' | 'lucebox';
+/**
+ * Every local inference backend, in the order status/listing endpoints report them.
+ *
+ * The single source of truth: {@link InferenceBackendType} is *derived* from this tuple rather than
+ * declared beside it, so the union and the list cannot drift. Callers that need to walk every
+ * backend must iterate this instead of writing their own literal array — the hand-maintained copies
+ * this replaced were all typed `InferenceBackendType[]` (or built from injected instances), which
+ * accepts a *subset* without complaint, so a newly added backend silently vanished from
+ * `getStatus().backends`, the discovered-model list, `hub_list_inference_backends`, and pool
+ * candidate selection with no compile error anywhere.
+ */
+export const INFERENCE_BACKEND_TYPES = ['ollama', 'vllm', 'lemonade', 'mtplx', 'dspark', 'lucebox'] as const;
+
+export type InferenceBackendType = (typeof INFERENCE_BACKEND_TYPES)[number];
 
 export type ModelModality = 'llm' | 'tts' | 'stt' | 'image-gen' | 'embedding';
 export type ModelPurpose = 'general' | 'coding' | 'reasoning' | 'fast' | 'voice' | 'transcription' | 'image' | 'embedding';
@@ -205,6 +218,13 @@ export interface InferenceStatus {
     healthy: boolean;
     url: string;
     modelsLoaded: number;
+    /**
+     * Models this backend is currently withholding because it was observed unable to serve them
+     * (see `BackendHealthStatus.unservableModels`). Carried in BOTH id spaces — the engine-native
+     * id and, where it maps onto the catalog, the catalog id — because the consumers hold one or
+     * the other and none of them has a lookup table. Absent when nothing is withheld.
+     */
+    unservableModels?: string[];
   }>;
   models: InferenceModelInfo[];
   memoryBudget: MemoryBudget;
@@ -220,7 +240,24 @@ export interface InferenceStatus {
 export interface BackendHealthStatus {
   running: boolean;
   healthy: boolean;
+  /**
+   * The backend's model *inventory* — what it has on disk and would accept a request for. It is
+   * NOT proof that any of them can be served: Ollama's `/api/tags` happily lists a model whose
+   * every `/api/generate` answers `model failed to load`. Read {@link unservableModels} alongside
+   * it before routing work anywhere.
+   */
   modelsLoaded: string[];
+  /**
+   * Ids from {@link modelsLoaded} the backend has actually been observed failing to serve, and is
+   * withholding until that observation decays. Absent (rather than empty) when nothing is
+   * withheld, so the common case is byte-identical to what this type carried before.
+   *
+   * This is the serving-capability half of the health contract, deliberately kept apart from
+   * `modelsLoaded`: the inventory drives "is it installed" questions (the model puller, the
+   * catalog's installed badge) that must keep seeing a model that is on disk but currently
+   * unloadable, while routing must not.
+   */
+  unservableModels?: string[];
   error?: string;
 }
 

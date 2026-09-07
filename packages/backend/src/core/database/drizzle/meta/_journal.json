@@ -414,6 +414,13 @@
       "when": 1780900000000,
       "tag": "0058_hub_pool_peer",
       "breakpoints": true
+    },
+    {
+      "idx": 59,
+      "version": "7",
+      "when": 1781000000000,
+      "tag": "0059_hub_pool_peer_v2",
+      "breakpoints": true
     }
   ]
 }

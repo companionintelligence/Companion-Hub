@@ -233,6 +233,119 @@ this one carefully.
 
 Leave the pair **connected** for the rest of the plan.
 
+### 2.7 The bearer → signed upgrade, on the pairing you already have
+
+**Precondition:** section 2.6 left the pair `connected`. Both nodes are running this build.
+
+The upgrade rides the health poll, so it needs at most three poll intervals (~90s at the default
+cadence) to settle on both sides.
+
+```bash
+core$ cihub pool status <env> | grep -i 'auth\|fingerprint'
+beta$ cihub pool status <env> | grep -i 'auth\|fingerprint'
+```
+
+**Expected** — every peer row reports `authMode: signed` with a key fingerprint, on both nodes.
+
+**PASS** both sides show `signed`, and routing (section 3) still works unchanged.
+**FAIL** either side still shows `bearer` after three polls. Record which side, and whether its peer row
+has `bearer_grace_until` set — a row whose grace window closes with no signed request observed is
+*rolled back* to bearer on purpose and retried, so a node that oscillates between the two is the
+symptom to report, not a node that simply has not converged yet.
+
+Then confirm the old credential is actually gone:
+
+```bash
+core$ docker exec ci-hub-db psql -U <user> -d <db> -c \
+  "select node_fqdn, peer_node_uuid is not null as pinned, verify_token_hash is null as verify_cleared, present_token_encrypted is null as present_cleared, signed_seen_at is not null as seen_signing from hub_pool_peer;"
+```
+
+**PASS** `pinned`, `verify_cleared`, `present_cleared` and `seen_signing` are all `t`.
+**FAIL** a row that is `pinned` and `seen_signing` but still holds a token. That is a dormant secret the
+sweep should have cleared on the tick after the first signed request; report it with the row.
+
+### 2.8 PIN pairing end to end
+
+**Precondition:** unpair first, so there is no existing row.
+
+```bash
+core$ cihub pool unpair <beta-node> <env>
+```
+
+On **beta**, open Settings → Network → Hub Pool → **Pairing PIN** and press **Generate PIN**. Note the
+six digits and beta's own key fingerprint shown above it.
+
+On **core**, type that PIN into the PIN field next to the address and pair.
+
+**Expected** — beta shows a *pending* inbound request (not a connected peer), carrying core's FQDN and
+core's key fingerprint. Core's Hub Pool card shows beta's fingerprint on its outbound pending row.
+
+**PASS** the fingerprint beta renders for core matches the one core's own card reports for itself, and
+vice versa. Approve on beta; both sides go `connected` with `authMode: signed` immediately — no
+upgrade poll needed.
+**FAIL** the row lands `connected` without an approval. A PIN authenticates the *request*; it must never
+stand in for the operator seeing who is asking.
+
+### 2.9 A wrong PIN creates nothing, and says nothing
+
+**Precondition:** unpair first. Generate a fresh PIN on beta but do **not** use it.
+
+```bash
+core$ cihub pool pair <beta-node> <env>   # then enter 000000, or any wrong six digits, in the UI
+beta$ cihub pool peers <env>
+```
+
+**Expected** — core's pairing call fails with `401 Invalid or expired pairing PIN`, and beta has **no**
+row at all.
+
+**PASS** `beta` reports `No paired peers`, and repeating the wrong guess four more times produces the
+same 401 each time, then a `429` on the sixth from the same source.
+**FAIL** a pending row appears on beta, or the error text differs between a wrong PIN, an expired one and
+none outstanding. Any difference there is an oracle: it makes the six-digit space searchable in two
+steps instead of one. Record the exact strings.
+
+Now confirm the PIN itself is single use: generate a new PIN, pair successfully, unpair, and try to
+pair again with the *same* digits.
+
+**PASS** the second attempt is refused.
+**FAIL** it succeeds. A PIN read aloud or seen in a support screenshot must not pair a second node.
+
+### 2.10 A renamed node keeps routing
+
+**Precondition:** the pair is `connected` and both sides report `authMode: signed` (2.7 or 2.8).
+
+Rename **beta** in the Tailscale admin console, then wait for MagicDNS to propagate and for beta's Hub
+to pick up its new name (restart beta's Hub if impatient).
+
+```bash
+beta$ cihub pool status <env>
+core$ cihub pool peers <env>
+```
+
+**Expected** — beta's next signed call to core carries the new name; core follows the identity and
+rewrites `node_fqdn` on its own health tick.
+
+**PASS** core lists beta under the new FQDN and routing (section 3) still works.
+**FAIL** core keeps the old name and its probes fail. On a bearer-only pairing this was permanent and
+Unpair was the only recovery — which is the defect the pinned UUID exists to fix, so this one is worth
+recording carefully either way.
+
+### 2.11 Identity rotation unpairs, and says who it could not tell
+
+**Precondition:** the pair is `connected`. Run this LAST in section 2 — it is destructive.
+
+Call `POST /api/inference/pool/identity/rotate` on core (session auth).
+
+**Expected** — the response names beta under `unpaired`, and both nodes end with no peer rows.
+
+**PASS** `unpaired: ["<beta-node>"]`, `unreachable: []`, and `cihub pool peers` is empty on both sides.
+**FAIL** beta still holds a row for core. The unpair calls go out *before* the old key is destroyed
+precisely so this cannot happen; if it does, note whether beta was reachable at the time — a peer that
+was down is expected to appear under `unreachable` and to need clearing by hand.
+
+Re-pair (2.6 or 2.8) before continuing.
+
+
 ---
 
 ## 3. Routing
@@ -537,6 +650,59 @@ core$ cihub pool peers <env>       # within one poll interval
 
 **PASS** beta returns to `connected` on its own, and a `<model-beta>` request routes there again.
 **FAIL** recovery needs an unpair/re-pair.
+
+### 7.4 Inbound only: beta stops serving but keeps using core
+
+The asymmetry the directional switches exist for. Unlike the master switch, beta must stay **healthy**
+on core's status card throughout — this is "not right now", not "I have left the pool".
+
+```bash
+beta$ cihub pool disable --inbound <env> --yes
+core$ cihub pool status <env>       # within one poll interval
+core$ curl -s http://localhost:<core hub port>/api/inference/pool/api/chat \
+        -d '{"model":"<model-beta>","messages":[{"role":"user","content":"hi"}],"stream":false}'
+beta$ cihub pool status <env>
+```
+
+**PASS** core still shows beta `connected` with `consecutiveFailures 0` and lists it under "Not accepting
+work from this node"; the `<model-beta>` request fails on core with the 502 (no node has it) rather than
+being sent to beta; beta's own status still shows core serving, and beta can still route its work to core.
+**FAIL** core marks beta `unreachable`, or beta stops using core as well.
+
+```bash
+beta$ cihub pool enable --inbound <env> --yes
+core$ cihub pool status <env>       # within one poll interval
+```
+
+**PASS** routing to beta resumes on the next poll with no re-approval.
+
+### 7.5 Outbound only: core stops sending but keeps serving
+
+```bash
+core$ cihub pool disable --outbound <env> --yes
+core$ curl -s http://localhost:<core hub port>/api/inference/pool/api/chat \
+        -d '{"model":"<model-beta>","messages":[{"role":"user","content":"hi"}],"stream":false}'
+beta$ cihub pool status <env>
+```
+
+**PASS** core answers 502 for the beta-only model instead of forwarding it, while beta's status still
+shows core `connected` and serving; work beta sends to core is still served.
+**FAIL** core still forwards, or beta sees core as unreachable / not accepting work.
+
+Re-enable with `cihub pool enable --outbound <env> --yes`.
+
+### 7.6 Per-peer: take one node out of the pool without unpairing
+
+```bash
+core$ cihub pool peers <env>                          # note beta's id prefix
+core$ cihub pool peer-disable <id> <env> --yes
+core$ cihub pool peers <env>
+```
+
+**PASS** beta prints as `connected/off`, core keeps polling it successfully, no work moves in either
+direction, and both directional tokens survive — `cihub pool peer-enable <id>` restores routing with no
+approval on beta.
+**FAIL** the pairing is gone, beta goes `unreachable`, or re-enabling needs a re-pair.
 
 ---
 

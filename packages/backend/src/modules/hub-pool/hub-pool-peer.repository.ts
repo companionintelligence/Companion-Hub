@@ -24,6 +24,26 @@ export class HubPoolPeerRepository {
     return this.db.query.hubPoolPeer.findFirst({ where: eq(hubPoolPeer.nodeFqdn, nodeFqdn) });
   }
 
+  /**
+   * Resolve a peer by its pinned pool UUID — the lookup the signed-request guard uses.
+   *
+   * Backed by the partial unique index from migration 0059, so at most one row can ever answer.
+   * Unlike {@link findByNodeFqdn} this survives the peer being renamed, which is the entire point
+   * of storing a UUID alongside the address.
+   *
+   * The same index is why this read also exists on the *write* side: `pinPeerIdentity` uses it to
+   * turn a would-be 23505 — the same machine paired twice under two names — into a logged warning
+   * on a 30-second timer rather than an exception on a health poll.
+   *
+   * The value is only ever one learned through an authenticated route (`/capabilities`,
+   * `/pair/confirm`, `/pair/upgrade`, or a `/pair/request` that carried a valid PIN). The
+   * unauthenticated `/identify` discloses no UUID at all, precisely so that nothing on the network
+   * can hand this column a value of its choosing.
+   */
+  async findByNodeUuid(peerNodeUuid: string): Promise<HubPoolPeer | undefined> {
+    return this.db.query.hubPoolPeer.findFirst({ where: eq(hubPoolPeer.peerNodeUuid, peerNodeUuid) });
+  }
+
   async listAll(): Promise<HubPoolPeer[]> {
     return this.db.query.hubPoolPeer.findMany();
   }

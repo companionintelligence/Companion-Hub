@@ -3,6 +3,7 @@ import { clearDatabase, seedOrganization } from '../helpers/db';
 import { testUser } from '../helpers/constants';
 
 const BACKEND_URL = `http://localhost:${process.env.BACKEND_PORT || '3000'}`;
+const firstUserPassword = 'SecurePass123!';
 
 /**
  * E2E tests for the onboarding AI setup flow.
@@ -20,12 +21,12 @@ const BACKEND_URL = `http://localhost:${process.env.BACKEND_PORT || '3000'}`;
 async function registerAndStartOnboarding(page: import('@playwright/test').Page) {
   await page.goto('/register');
   await page.getByPlaceholder('you@example.com').fill(testUser.email);
-  await page.getByPlaceholder('Enter your password').fill(testUser.password);
-  await page.getByPlaceholder('Confirm your password').fill(testUser.password);
-  await page.getByRole('button', { name: 'Register' }).click();
+  await page.getByPlaceholder('Enter your password').fill(firstUserPassword);
+  await page.getByPlaceholder('Confirm your password').fill(firstUserPassword);
+  await page.getByRole('button', { name: 'Create Local Admin User' }).click();
 
   // Wait for the onboarding wizard to appear
-  await expect(page.getByText('Set Up Your Hub')).toBeVisible({ timeout: 15000 });
+  await expect(page.getByRole('heading', { name: 'Set Up Companion Hub' })).toBeVisible({ timeout: 15000 });
 }
 
 /** Advance through Welcome → Discover to reach the AI Setup step. */

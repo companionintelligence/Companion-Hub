@@ -53,6 +53,7 @@ const poolApi = {
   fetchPoolStatus: vi.fn(),
   fetchPoolPeers: vi.fn(),
   setPoolEnabledSetting: vi.fn(),
+  setPoolPeerEnabled: vi.fn(),
   unpairPoolPeer: vi.fn(),
 };
 let poolApiKey: string | undefined = 'device-key';
@@ -62,6 +63,7 @@ vi.mock('../hub-pool-cli', async (importOriginal) => ({
   fetchPoolStatus: (...args: unknown[]) => poolApi.fetchPoolStatus(...args),
   fetchPoolPeers: (...args: unknown[]) => poolApi.fetchPoolPeers(...args),
   setPoolEnabledSetting: (...args: unknown[]) => poolApi.setPoolEnabledSetting(...args),
+  setPoolPeerEnabled: (...args: unknown[]) => poolApi.setPoolPeerEnabled(...args),
   unpairPoolPeer: (...args: unknown[]) => poolApi.unpairPoolPeer(...args),
 }));
 
@@ -134,6 +136,8 @@ describe('renderHelp', () => {
       expect(rendered).toContain('pool unpair');
       expect(rendered).toContain('pool log');
       expect(rendered).toContain('pool enable|disable');
+      expect(rendered).toContain('pool pin');
+      expect(rendered).toContain('pool unpin');
     }
   });
 
@@ -1011,10 +1015,30 @@ describe('parsePoolArgs', () => {
       subcommand: 'status',
       target: undefined,
       displayName: undefined,
+      pin: undefined,
       limit: undefined,
+      axis: 'both',
+      model: undefined,
       yes: false,
       env: 'local',
     });
+  });
+
+  it('reads --outbound / --inbound into the axis, defaulting to the master switch', () => {
+    expect(parsePoolArgs(['disable']).axis).toBe('both');
+    expect(parsePoolArgs(['disable', '--outbound']).axis).toBe('outbound');
+    expect(parsePoolArgs(['enable', '--inbound']).axis).toBe('inbound');
+  });
+
+  it('rejects a direction flag where it would silently do nothing', () => {
+    // Naming both would have to mean "the master", which passing neither already means.
+    expect(() => parsePoolArgs(['disable', '--outbound', '--inbound'])).toThrow();
+    expect(() => parsePoolArgs(['status', '--outbound'])).toThrow();
+  });
+
+  it('takes a peer reference for the per-peer switches, before the optional env', () => {
+    const parsed = parsePoolArgs(['peer-disable', 'aaaaaaaa', 'dev', '--yes']);
+    expect(parsed).toMatchObject({ subcommand: 'peer-disable', target: 'aaaaaaaa', env: 'dev', yes: true });
   });
 
   it('reads the env argument after a targetless subcommand', () => {
@@ -1024,6 +1048,52 @@ describe('parsePoolArgs', () => {
   it('takes the peer reference before the env for target subcommands', () => {
     const parsed = parsePoolArgs(['pair', POOL_PEER_FQDN, 'dev', '--name', 'Studio', '--yes']);
     expect(parsed).toMatchObject({ subcommand: 'pair', target: POOL_PEER_FQDN, displayName: 'Studio', yes: true, env: 'dev' });
+  });
+
+  it('reads --pin in both forms, for pairing with a Hub found by address', () => {
+    // An address can reach the other Hub but cannot name it — `/identify` reports no MagicDNS name —
+    // so the PIN is what makes the answer carry one.
+    expect(parsePoolArgs(['pair', '192.168.1.42:5002', '--pin', '123456']).pin).toBe('123456');
+    expect(parsePoolArgs(['pair', '192.168.1.42', '--pin=004200']).pin).toBe('004200');
+  });
+
+  it('rejects a PIN that is not six digits, and one on a subcommand that has no use for it', () => {
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => {
+      throw new Error('exit');
+    });
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    // A leading zero is legal, a five-digit value is not, and a PIN on `status` is a typo.
+    expect(() => parsePoolArgs(['pair', '192.168.1.42', '--pin', '12345'])).toThrow();
+    expect(() => parsePoolArgs(['status', '--pin', '123456'])).toThrow();
+
+    exitSpy.mockRestore();
+    logSpy.mockRestore();
+    errSpy.mockRestore();
+  });
+
+  it('reads --model in both forms for pin and unpin, and nowhere else', () => {
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => {
+      throw new Error('exit');
+    });
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    expect(parsePoolArgs(['pin', 'local', '--model', 'llama3.2:3b'])).toMatchObject({ subcommand: 'pin', target: 'local', model: 'llama3.2:3b' });
+    // Verbatim: a model id is compared case-sensitively against the engine's inventory.
+    expect(parsePoolArgs(['unpin', '--model=hf.co/Org/Repo:Q4_K_M']).model).toBe('hf.co/Org/Repo:Q4_K_M');
+    expect(parsePoolArgs(['unpin']).model).toBeUndefined();
+    expect(() => parsePoolArgs(['status', '--model', 'llama3.2:3b'])).toThrow();
+
+    exitSpy.mockRestore();
+    logSpy.mockRestore();
+    errSpy.mockRestore();
+  });
+
+  it('takes the pin target before the env, and unpin takes no target', () => {
+    expect(parsePoolArgs(['pin', POOL_PEER_FQDN, 'dev', '--yes'])).toMatchObject({ target: POOL_PEER_FQDN, env: 'dev', yes: true });
+    expect(parsePoolArgs(['unpin', 'dev'])).toMatchObject({ subcommand: 'unpin', target: undefined, env: 'dev' });
   });
 
   it('accepts --limit in both forms', () => {
@@ -1073,6 +1143,7 @@ describe('runPoolCommand', () => {
     poolApi.fetchPoolStatus.mockReset();
     poolApi.fetchPoolPeers.mockReset();
     poolApi.setPoolEnabledSetting.mockReset();
+    poolApi.setPoolPeerEnabled.mockReset();
     poolApi.unpairPoolPeer.mockReset();
     // Non-TTY is the CI/agent case: the confirmation gate must refuse rather than hang on a prompt.
     Object.defineProperty(process.stdin, 'isTTY', { value: false, configurable: true });
@@ -1133,24 +1204,108 @@ describe('runPoolCommand', () => {
     expect(boxText()).toContain('Peer unpaired');
   });
 
+  it('takes one peer out of the pool without revoking anything, and says so', async () => {
+    poolApi.fetchPoolPeers.mockResolvedValue([
+      {
+        id: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
+        nodeFqdn: POOL_PEER_FQDN,
+        direction: 'outbound',
+        status: 'connected',
+        enabled: true,
+        consecutiveFailures: 0,
+        lastSeenAt: null,
+        lastCapabilities: null,
+        displayName: null,
+      },
+    ]);
+
+    await runPoolCommand(['peer-disable', 'aaaaaaaa', '--yes']);
+
+    expect(poolApi.setPoolPeerEnabled).toHaveBeenCalledWith('.env.local', 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', false);
+    // The copy must not blur disable and unpair: one is reversible, the other revokes both tokens.
+    const text = boxText();
+    expect(text).toContain('Peer disabled');
+    expect(text).toContain('NOT a revocation');
+    expect(poolApi.unpairPoolPeer).not.toHaveBeenCalled();
+  });
+
   it('says plainly that the .env override wins when enabling under HUB_POOL_USER_DISABLED', async () => {
     poolApi.fetchPoolStatus.mockResolvedValue({
       enabled: false,
       disabledBy: 'env',
       reason: 'disabled_by_env',
       routingActive: false,
-      settings: { poolEnabled: false, poolLocalAffinity: 1, poolHealthPollSeconds: 30 },
-      peerCounts: { total: 0, connected: 0, pending: 0, unreachable: 0 },
+      directions: { outbound: { enabled: false, disabledBy: 'env' }, inbound: { enabled: false, disabledBy: 'env' } },
+      settings: { poolEnabled: false, poolOutboundEnabled: true, poolInboundEnabled: true, poolLocalAffinity: 1, poolHealthPollSeconds: 30 },
+      peerCounts: { total: 0, connected: 0, pending: 0, unreachable: 0, disabled: 0 },
     });
-    poolApi.setPoolEnabledSetting.mockResolvedValue({ poolEnabled: true, poolLocalAffinity: 1, poolHealthPollSeconds: 30 });
+    poolApi.setPoolEnabledSetting.mockResolvedValue({
+      poolEnabled: true,
+      poolOutboundEnabled: true,
+      poolInboundEnabled: true,
+      poolLocalAffinity: 1,
+      poolHealthPollSeconds: 30,
+    });
 
     await runPoolCommand(['enable', '--yes']);
 
-    expect(poolApi.setPoolEnabledSetting).toHaveBeenCalledWith('.env.local', true);
+    expect(poolApi.setPoolEnabledSetting).toHaveBeenCalledWith('.env.local', true, 'both');
     const text = boxText();
     expect(text).toContain('this changed nothing in effect');
     expect(text).toContain('HUB_POOL_USER_DISABLED=true');
     expect(text).toContain('cihub restart local');
+  });
+
+  it('sends only the named direction, so `pool disable --outbound` keeps this Hub serving', async () => {
+    poolApi.fetchPoolStatus.mockResolvedValue({
+      enabled: true,
+      disabledBy: null,
+      directions: { outbound: { enabled: true, disabledBy: null }, inbound: { enabled: true, disabledBy: null } },
+      reason: 'active',
+      routingActive: true,
+      settings: { poolEnabled: true, poolOutboundEnabled: true, poolInboundEnabled: true, poolLocalAffinity: 1, poolHealthPollSeconds: 30 },
+      peerCounts: { total: 1, connected: 1, pending: 0, unreachable: 0, disabled: 0 },
+    });
+    poolApi.setPoolEnabledSetting.mockResolvedValue({
+      poolEnabled: true,
+      poolOutboundEnabled: false,
+      poolInboundEnabled: true,
+      poolLocalAffinity: 1,
+      poolHealthPollSeconds: 30,
+    });
+
+    await runPoolCommand(['disable', '--outbound', '--yes']);
+
+    expect(poolApi.setPoolEnabledSetting).toHaveBeenCalledWith('.env.local', false, 'outbound');
+    const text = boxText();
+    expect(text).toContain('peers may still send work here');
+  });
+
+  it('refuses to claim success for one direction its own .env variable already forces off', async () => {
+    poolApi.fetchPoolStatus.mockResolvedValue({
+      enabled: true,
+      disabledBy: null,
+      directions: { outbound: { enabled: false, disabledBy: 'env' }, inbound: { enabled: true, disabledBy: null } },
+      reason: 'partially_disabled',
+      routingActive: false,
+      settings: { poolEnabled: true, poolOutboundEnabled: false, poolInboundEnabled: true, poolLocalAffinity: 1, poolHealthPollSeconds: 30 },
+      peerCounts: { total: 1, connected: 1, pending: 0, unreachable: 0, disabled: 0 },
+    });
+    poolApi.setPoolEnabledSetting.mockResolvedValue({
+      poolEnabled: true,
+      poolOutboundEnabled: true,
+      poolInboundEnabled: true,
+      poolLocalAffinity: 1,
+      poolHealthPollSeconds: 30,
+    });
+
+    await runPoolCommand(['enable', '--outbound', '--yes']);
+
+    const text = boxText();
+    expect(text).toContain('this changed nothing in effect');
+    expect(text).toContain('HUB_POOL_OUTBOUND_DISABLED=true');
+    // Not the master variable: that one is not what has to change here.
+    expect(text).not.toContain('HUB_POOL_USER_DISABLED=true');
   });
 
   it('reports an enable that actually takes effect without the override warning', async () => {
@@ -1159,10 +1314,17 @@ describe('runPoolCommand', () => {
       disabledBy: 'setting',
       reason: 'disabled_by_setting',
       routingActive: false,
-      settings: { poolEnabled: false, poolLocalAffinity: 1, poolHealthPollSeconds: 30 },
-      peerCounts: { total: 1, connected: 1, pending: 0, unreachable: 0 },
+      directions: { outbound: { enabled: false, disabledBy: 'setting' }, inbound: { enabled: false, disabledBy: 'setting' } },
+      settings: { poolEnabled: false, poolOutboundEnabled: true, poolInboundEnabled: true, poolLocalAffinity: 1, poolHealthPollSeconds: 30 },
+      peerCounts: { total: 1, connected: 1, pending: 0, unreachable: 0, disabled: 0 },
     });
-    poolApi.setPoolEnabledSetting.mockResolvedValue({ poolEnabled: true, poolLocalAffinity: 1, poolHealthPollSeconds: 30 });
+    poolApi.setPoolEnabledSetting.mockResolvedValue({
+      poolEnabled: true,
+      poolOutboundEnabled: true,
+      poolInboundEnabled: true,
+      poolLocalAffinity: 1,
+      poolHealthPollSeconds: 30,
+    });
 
     await runPoolCommand(['enable', '--yes']);
 

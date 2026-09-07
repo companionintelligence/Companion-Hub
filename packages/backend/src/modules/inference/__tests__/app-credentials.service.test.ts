@@ -7,6 +7,7 @@ import { HardwareInspectorService } from '../hardware-inspector.service';
 import { ModelRegistryService } from '../model-registry.service';
 import { ModelPullerService } from '../model-puller.service';
 import { CloudFallbackService } from '../cloud-fallback.service';
+import { InferenceBackendRegistry } from '../backends/backend-registry';
 import { OllamaBackend } from '../backends/ollama.backend';
 import { VllmBackend } from '../backends/vllm.backend';
 import { MtplxBackend } from '../backends/mtplx.backend';
@@ -15,7 +16,7 @@ import { DsparkBackend } from '../backends/dspark.backend';
 import { LuceboxBackend } from '../backends/lucebox.backend';
 import { LoggerService } from '@/core/logger/logger.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
-import type { CloudProviderConfig, CuratedModel, HardwareProfile } from '@ci-hub/common/types';
+import type { CloudProviderConfig, CuratedModel, HardwareProfile, InferenceBackendType } from '@ci-hub/common/types';
 import { cloudProviderManagedKeys } from '../cloud-provider-env';
 
 const OLLAMA_BASE_URL = 'http://ci-hub-ollama:11434';
@@ -167,6 +168,7 @@ describe('AppCredentialsService', () => {
         { provide: MtplxBackend, useValue: mtplxBackend },
         { provide: DsparkBackend, useValue: dsparkBackend },
         { provide: LuceboxBackend, useValue: luceboxBackend },
+        InferenceBackendRegistry,
         { provide: ConfigurationService, useValue: configurationService },
       ],
     }).compile();
@@ -310,6 +312,35 @@ describe('AppCredentialsService', () => {
 
       expect(config.chatModelId).toBeNull();
       expect(config.env.DEFAULT_MODEL).toBeUndefined();
+    });
+
+    it('falls back to Ollama when the stored preference names a backend that does not exist', async () => {
+      // settings.json is read off disk and typed by assertion, never validated, so a retired or
+      // mistyped `inferenceBackend` reaches the registry intact — `?? 'ollama'` only ever covered
+      // the *absent* case. The registry used to return undefined behind a non-optional type and die
+      // at `.healthCheck()`; it now throws, so this service branches on tryGet instead. Every
+      // installed app fetches its credentials through here, so a stale settings.json must not take
+      // credential resolution down Hub-wide.
+      configurationService.getInferencePreferences.mockReturnValue({
+        preferredBackend: 'llamacpp' as InferenceBackendType,
+        preferredModel: null,
+        preferredEmbeddingModel: null,
+        preferredVisionModel: null,
+      });
+      ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['hermes4:70b'] });
+      service.invalidateCache();
+
+      const config = await service.getCredentials('hermes-agent');
+
+      // The fallback moves the backend *type*, not just the instance: `provider` is reported to the
+      // app, and the same value indexes BACKEND_API_KEY, so leaving 'llamacpp' in place would ship
+      // an undefined HERMES_OPENAI_API_KEY.
+      expect(config.provider).toBe('ollama');
+      expect(config.endpointUrl).toBe(OLLAMA_OPENAI_URL);
+      expect(config.env.HERMES_OPENAI_API_KEY).toBe('ollama');
+      expect(config.chatModelId).toBe('hermes4:70b');
+      // The operator only finds the typo if the log names it.
+      expect(logger.error).toHaveBeenCalledWith(expect.stringContaining("'llamacpp'"));
     });
   });
 

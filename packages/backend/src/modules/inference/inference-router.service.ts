@@ -1,17 +1,12 @@
 import { Injectable } from '@nestjs/common';
 import { LoggerService } from '@/core/logger/logger.service';
-import type { InferenceBackendType, InferenceModelInfo, InferenceStatus } from '@ci-hub/common/types';
+import type { InferenceModelInfo, InferenceStatus } from '@ci-hub/common/types';
 import { HardwareInspectorService } from './hardware-inspector.service';
 import { ModelRegistryService } from './model-registry.service';
 import { MemoryManagerService } from './memory-manager.service';
 import { CloudFallbackService } from './cloud-fallback.service';
-import { OllamaBackend } from './backends/ollama.backend';
-import { VllmBackend } from './backends/vllm.backend';
-import { LemonadeBackend } from './backends/lemonade.backend';
-import { MtplxBackend } from './backends/mtplx.backend';
-import { DsparkBackend } from './backends/dspark.backend';
-import { LuceboxBackend } from './backends/lucebox.backend';
-import type { InferenceBackend } from './backends/backend.interface';
+import { InferenceBackendRegistry } from './backends/backend-registry';
+import { resolveInstalledCatalogIds } from './model-availability.util';
 
 /**
  * Inference router — read-only view over the local backends + cloud key store.
@@ -29,30 +24,8 @@ export class InferenceRouterService {
     private readonly modelRegistry: ModelRegistryService,
     private readonly memoryManager: MemoryManagerService,
     private readonly cloudFallback: CloudFallbackService,
-    private readonly ollamaBackend: OllamaBackend,
-    private readonly vllmBackend: VllmBackend,
-    private readonly lemonadeBackend: LemonadeBackend,
-    private readonly mtplxBackend: MtplxBackend,
-    private readonly dsparkBackend: DsparkBackend,
-    private readonly luceboxBackend: LuceboxBackend,
+    private readonly backends: InferenceBackendRegistry,
   ) {}
-
-  private getBackend(type: InferenceBackendType): InferenceBackend {
-    switch (type) {
-      case 'ollama':
-        return this.ollamaBackend;
-      case 'vllm':
-        return this.vllmBackend;
-      case 'lemonade':
-        return this.lemonadeBackend;
-      case 'mtplx':
-        return this.mtplxBackend;
-      case 'dspark':
-        return this.dsparkBackend;
-      case 'lucebox':
-        return this.luceboxBackend;
-    }
-  }
 
   /** Get full inference status for MCP / API */
   async getStatus(): Promise<InferenceStatus> {
@@ -60,15 +33,16 @@ export class InferenceRouterService {
     const budget = this.memoryManager.calculateBudget(profile);
 
     const backends = await Promise.all(
-      (['ollama', 'vllm', 'lemonade', 'mtplx', 'dspark', 'lucebox'] as InferenceBackendType[]).map(async (type) => {
-        const backend = this.getBackend(type);
+      this.backends.entries().map(async ([type, backend]) => {
         const health = await backend.healthCheck();
+        const unservableModels = this.inBothIdSpaces(health.unservableModels ?? []);
         return {
           type,
           running: health.running,
           healthy: health.healthy,
           url: backend.getBaseUrl(),
           modelsLoaded: health.modelsLoaded.length,
+          ...(unservableModels.length > 0 ? { unservableModels } : {}),
         };
       }),
     );
@@ -89,6 +63,23 @@ export class InferenceRouterService {
       memoryBudget: budget,
       cloudProviders,
     };
+  }
+
+  /**
+   * Engine-native model ids plus the catalog ids they map onto, de-duplicated.
+   *
+   * A backend reports withheld models in its own id space (`gemma3:1b`), while everything built on
+   * the catalog — the pool's advertised inventory above all — speaks catalog ids (`gemma3-1b`).
+   * Neither consumer carries a lookup table, and the mapping lives here, next to the registry that
+   * owns it, so the status carries both and either side can filter with a plain `includes`.
+   */
+  private inBothIdSpaces(backendModelIds: string[]): string[] {
+    if (backendModelIds.length === 0) {
+      return [];
+    }
+    // Exact-id backends (vLLM and friends) fall through the same helper unharmed: its first test is
+    // equality, and only the Ollama tag suffixes below that are Ollama-shaped.
+    return [...new Set([...backendModelIds, ...resolveInstalledCatalogIds(this.modelRegistry.getCatalog(), backendModelIds)])];
   }
 
   /** List all available models (local + cloud) */
@@ -151,8 +142,7 @@ export class InferenceRouterService {
 
     // Discovered models from backends (not in curated catalog or tracked)
     const knownIds = new Set(models.map((m) => m.id));
-    for (const backendType of ['ollama', 'vllm', 'lemonade', 'mtplx', 'dspark', 'lucebox'] as InferenceBackendType[]) {
-      const backend = this.getBackend(backendType);
+    for (const [backendType, backend] of this.backends.entries()) {
       const health = await backend.healthCheck();
       if (health.running && health.healthy) {
         for (const modelName of health.modelsLoaded) {

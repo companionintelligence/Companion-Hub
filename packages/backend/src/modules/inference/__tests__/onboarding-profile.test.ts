@@ -15,6 +15,8 @@ import { RocmInstallerService } from '../rocm-installer.service';
 import { AppCredentialsService } from '../app-credentials.service';
 import type { HardwareProfile, InferenceStatus } from '@ci-hub/common/types';
 import { ConfigurationService } from '@/core/config/configuration.service';
+import { InferenceBackendRegistry } from '../backends/backend-registry';
+import { BackendObserverService } from '../supervision/backend-observer.service';
 import { OllamaBackend } from '../backends/ollama.backend';
 import { VllmBackend } from '../backends/vllm.backend';
 import { LemonadeBackend } from '../backends/lemonade.backend';
@@ -98,6 +100,10 @@ describe('InferenceController — onboarding-profile', () => {
         { provide: MtplxBackend, useValue: mock<MtplxBackend>() },
         { provide: DsparkBackend, useValue: mock<DsparkBackend>() },
         { provide: LuceboxBackend, useValue: mock<LuceboxBackend>() },
+        InferenceBackendRegistry,
+        // The controller exposes GET inference/supervision, which reads this service's in-memory
+        // report. Mocked here: nothing in these suites exercises observation.
+        { provide: BackendObserverService, useValue: mock<BackendObserverService>() },
         { provide: LoggerService, useValue: mock<LoggerService>() },
       ],
     }).compile();

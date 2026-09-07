@@ -83,8 +83,19 @@ export type AppContextDto = {
         inferenceMtplxUrl?: string;
         inferenceDsparkUrl?: string;
         hubPoolEnabled?: boolean;
+        hubPoolOutboundEnabled?: boolean;
+        hubPoolInboundEnabled?: boolean;
         hubPoolLocalAffinity?: number;
         hubPoolHealthPollSeconds?: number;
+        hubPoolRequireSignedPeers?: boolean;
+        hubPoolPressureWeight?: number;
+        hubPoolPins?: Array<{
+            scope: 'default' | 'model';
+            model?: string;
+            targetKind: 'local' | 'peer';
+            peerId?: string;
+            mode: 'prefer';
+        }>;
         inferenceCloudProviders?: Array<{
             provider: 'openai' | 'anthropic' | 'google' | 'github-copilot';
             apiKey?: string;
@@ -168,8 +179,19 @@ export type UserSettingsBody = {
     inferenceMtplxUrl?: string;
     inferenceDsparkUrl?: string;
     hubPoolEnabled?: boolean;
+    hubPoolOutboundEnabled?: boolean;
+    hubPoolInboundEnabled?: boolean;
     hubPoolLocalAffinity?: number;
     hubPoolHealthPollSeconds?: number;
+    hubPoolRequireSignedPeers?: boolean;
+    hubPoolPressureWeight?: number;
+    hubPoolPins?: Array<{
+        scope: 'default' | 'model';
+        model?: string;
+        targetKind: 'local' | 'peer';
+        peerId?: string;
+        mode: 'prefer';
+    }>;
     inferenceCloudProviders?: Array<{
         provider: 'openai' | 'anthropic' | 'google' | 'github-copilot';
         apiKey?: string;
@@ -397,6 +419,7 @@ export type MyAppsDto = {
             version: string;
             cihub_app_version: number;
             short_desc: string;
+            replaces: Array<string>;
             author: string;
             source: string;
             website?: string;
@@ -643,6 +666,7 @@ export type GuestAppsDto = {
             version: string;
             cihub_app_version: number;
             short_desc: string;
+            replaces: Array<string>;
             author: string;
             source: string;
             website?: string;
@@ -918,6 +942,7 @@ export type GetAppDto = {
         version: string;
         cihub_app_version: number;
         short_desc: string;
+        replaces: Array<string>;
         author: string;
         source: string;
         website?: string;
@@ -1263,8 +1288,24 @@ export type UpdateRocmInstallStateBody = {
 
 export type UpdateHubPoolPreferencesBody = {
     poolEnabled?: boolean;
+    poolOutboundEnabled?: boolean;
+    poolInboundEnabled?: boolean;
     poolLocalAffinity?: number;
     poolHealthPollSeconds?: number;
+    poolRequireSignedPeers?: boolean;
+    poolPressureWeight?: number;
+};
+
+export type UpsertPoolPinBody = {
+    scope: 'default' | 'model';
+    model?: string;
+    targetKind: 'local' | 'peer';
+    targetPeerId?: string;
+    mode?: 'prefer';
+};
+
+export type ProbePeerAddressBody = {
+    address: string;
 };
 
 export type PairPeerBody = {
@@ -1277,6 +1318,11 @@ export type IncomingPairingRequestBody = {
 
 export type PairingConfirmBody = {
     [key: string]: unknown;
+};
+
+export type PairingUpgradeBody = {
+    nodeUuid: string;
+    publicKey: string;
 };
 
 export type CreateApiKeyBody = {
@@ -1976,6 +2022,11 @@ export type RuntimeModelsQueryDto = {
 
 export type RoutingLogQueryDto = {
     limit?: number;
+};
+
+export type DeletePoolPinQuery = {
+    scope: 'default' | 'model';
+    model?: string;
 };
 
 export type MetadataDto = {
@@ -2964,6 +3015,7 @@ export type StartPortalLoginData = {
     query: {
         redirect_url: string;
         desktop: string;
+        desktop_channel: string;
     };
     url: '/api/auth/portal/start';
 };
@@ -3987,6 +4039,31 @@ export type GetPoolRoutingLogResponses = {
     200: unknown;
 };
 
+export type DeletePoolPinData = {
+    body?: never;
+    path?: never;
+    query: {
+        scope: 'default' | 'model';
+        model?: string;
+    };
+    url: '/api/inference/pool/pins';
+};
+
+export type DeletePoolPinResponses = {
+    200: unknown;
+};
+
+export type UpsertPoolPinData = {
+    body: UpsertPoolPinBody;
+    path?: never;
+    query?: never;
+    url: '/api/inference/pool/pins';
+};
+
+export type UpsertPoolPinResponses = {
+    201: unknown;
+};
+
 export type ListPeersData = {
     body?: never;
     path?: never;
@@ -4009,6 +4086,17 @@ export type ListDiscoverableResponses = {
     200: unknown;
 };
 
+export type ProbePeerAddressData = {
+    body: ProbePeerAddressBody;
+    path?: never;
+    query?: never;
+    url: '/api/inference/pool/peers/probe';
+};
+
+export type ProbePeerAddressResponses = {
+    201: unknown;
+};
+
 export type PairPeerData = {
     body: PairPeerBody;
     path?: never;
@@ -4017,6 +4105,52 @@ export type PairPeerData = {
 };
 
 export type PairPeerResponses = {
+    201: unknown;
+};
+
+export type CancelPairingPinData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/inference/pool/pairing-pin';
+};
+
+export type CancelPairingPinResponses = {
+    200: unknown;
+};
+
+export type MintPairingPinData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/inference/pool/pairing-pin';
+};
+
+export type MintPairingPinResponses = {
+    201: unknown;
+};
+
+export type UpgradePeerData = {
+    body?: never;
+    path: {
+        id: string;
+    };
+    query?: never;
+    url: '/api/inference/pool/peers/{id}/upgrade';
+};
+
+export type UpgradePeerResponses = {
+    201: unknown;
+};
+
+export type RotateIdentityData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/inference/pool/identity/rotate';
+};
+
+export type RotateIdentityResponses = {
     201: unknown;
 };
 
@@ -4043,6 +4177,32 @@ export type RejectPeerData = {
 };
 
 export type RejectPeerResponses = {
+    201: unknown;
+};
+
+export type EnablePeerData = {
+    body?: never;
+    path: {
+        id: string;
+    };
+    query?: never;
+    url: '/api/inference/pool/peers/{id}/enable';
+};
+
+export type EnablePeerResponses = {
+    201: unknown;
+};
+
+export type DisablePeerData = {
+    body?: never;
+    path: {
+        id: string;
+    };
+    query?: never;
+    url: '/api/inference/pool/peers/{id}/disable';
+};
+
+export type DisablePeerResponses = {
     201: unknown;
 };
 
@@ -4078,6 +4238,17 @@ export type HandlePairingConfirmData = {
 };
 
 export type HandlePairingConfirmResponses = {
+    201: unknown;
+};
+
+export type HandlePairingUpgradeData = {
+    body: PairingUpgradeBody;
+    path?: never;
+    query?: never;
+    url: '/api/inference/pool/pair/upgrade';
+};
+
+export type HandlePairingUpgradeResponses = {
     201: unknown;
 };
 

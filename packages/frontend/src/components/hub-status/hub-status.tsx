@@ -7,7 +7,7 @@ import { useMemo, useState, useEffect, useCallback, useRef, type ReactNode } fro
 import { useRevalidator } from 'react-router';
 import { useAppIntentDeepLinks } from '@/hooks/use-app-intent-deep-links';
 import { useDeepLinkPairCapture } from '@/hooks/use-deep-link-pair-capture';
-import { isMobileClient, isTauriMobileSync } from '@/lib/mobile-connection';
+import { isMobileClient, isTauriMobileSync, isCloudConnectPath } from '@/lib/mobile-connection';
 import { SetupCard } from '@/components/setup/setup-card';
 import { SetupPageShell } from '@/components/setup/setup-page-shell';
 import { HintText } from '@/components/ui/field-hint/field-hint';
@@ -934,8 +934,8 @@ export function HubStatus({ children }: HubStatusProps) {
   // reachability is handled by the connect flow and the normal app loaders.
   // /connect must never be replaced by the local-Hub spinner — that is the
   // one-second flash then black screen on the iOS Simulator.
-  const onConnectScreen = typeof window !== 'undefined' && window.location.pathname === '/connect';
-  if (!isTauri || isTauriMobileSync() || isMobileClient() || onConnectScreen) return <>{children}</>;
+  const onConnectScreen = typeof window !== 'undefined' && isCloudConnectPath(window.location.pathname);
+  if (!isTauri || isTauriMobileSync() || isMobileClient() || onConnectScreen || import.meta.env.VITE_HUB_RUNTIME === 'mobile') return <>{children}</>;
 
   // Dark placeholder while the first hub status poll runs (avoids blank flash)
   if (status === null) {

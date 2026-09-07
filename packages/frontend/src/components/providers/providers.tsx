@@ -44,12 +44,42 @@ export const Providers = ({ children }: PropsWithChildren) => {
     if (typeof window === 'undefined' || !('__TAURI_INTERNALS__' in window)) return;
 
     const handleClick = (e: MouseEvent) => {
+      // Let the webview handle anything it already handles: a modified click is
+      // the user asking for a new tab/window, and a non-primary button is not a
+      // navigation at all.
+      if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
       const anchor = (e.target as Element).closest('a');
       if (!anchor) return;
       const href = anchor.getAttribute('href');
-      if (!href?.startsWith('http')) return;
+      if (!href) return;
+
+      let target: URL;
+      try {
+        target = new URL(href, window.location.href);
+      } catch {
+        return;
+      }
+      // Only http(s) goes to the system browser. mailto:, tel: and the app's own
+      // cihub:// links are left alone.
+      if (target.protocol !== 'http:' && target.protocol !== 'https:') return;
+
+      // SAME-ORIGIN LINKS ARE NOT EXTERNAL, and this is the whole bug.
+      //
+      // The test used to be href.startsWith('http'), which is true of every
+      // absolute URL — including the app's own. The packaged shell serves the Hub
+      // UI from http://127.0.0.1:<apiPort>, and buildPortalSsoStartUrl always
+      // produces an ABSOLUTE url against that same origin, so the "Continue with
+      // CI Account" anchor was absolute, same-origin, and got shipped to the
+      // system browser instead of navigating in-app. hub-auth-flow.ts states the
+      // opposite contract for desktop-hub-sso: sign in via a normal <a href> and
+      // never hand it to the browser.
+      //
+      // It only broke in a BUILT app: under `tauri dev` the page is the Vite dev
+      // server, so the Hub API is cross-origin and this test happened to be right.
+      if (target.origin === window.location.origin) return;
+
       e.preventDefault();
-      openExternal(href);
+      void openExternal(target.href);
     };
 
     document.addEventListener('click', handleClick);

@@ -10,8 +10,15 @@ import { LemonadeBackend } from '@/modules/inference/backends/lemonade.backend';
 import { MtplxBackend } from '@/modules/inference/backends/mtplx.backend';
 import { DsparkBackend } from '@/modules/inference/backends/dspark.backend';
 import { LuceboxBackend } from '@/modules/inference/backends/lucebox.backend';
+import { InferenceBackendRegistry } from '@/modules/inference/backends/backend-registry';
 import { ConfigurationService } from '@/core/config/configuration.service';
-import { DEFAULT_POOL_HEALTH_POLL_SECONDS, DEFAULT_POOL_LOCAL_AFFINITY, type HubPoolPreferences } from '@/common/helpers/hub-pool';
+import {
+  DEFAULT_POOL_HEALTH_POLL_SECONDS,
+  DEFAULT_POOL_LOCAL_AFFINITY,
+  DEFAULT_POOL_PRESSURE_WEIGHT,
+  type HubPoolPreferences,
+} from '@/common/helpers/hub-pool';
+import { HubPoolPressureService } from '../hub-pool-pressure.service';
 import { HubPoolPeerService } from '../hub-pool-peer.service';
 import { HubPoolLoadService, LOCAL_CANDIDATE_KEY } from '../hub-pool-load.service';
 import { HubPoolRoutingLogService } from '../hub-pool-routing-log.service';
@@ -26,11 +33,16 @@ function mockPeer(overrides: Partial<HubPoolPeer> = {}): HubPoolPeer {
     displayName: 'Peer Hub',
     direction: 'outbound',
     status: 'connected',
+    enabled: true,
     consecutiveFailures: 0,
     lastSeenAt: new Date().toISOString(),
     lastCapabilities: null,
     verifyTokenHash: 'hash',
     presentTokenEncrypted: 'encrypted',
+    peerNodeUuid: null,
+    peerPublicKey: null,
+    bearerGraceUntil: null,
+    signedSeenAt: null,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
     ...overrides,
@@ -50,7 +62,7 @@ function capabilitiesWithModel(model: string, overrides: Partial<PoolPeerCapabil
 function peerServing(
   id: string,
   model: string,
-  options: { inFlightRequests?: number; hardwareTier?: string; lastSeenAt?: string } = {},
+  options: { inFlightRequests?: number; hardwareTier?: string; lastSeenAt?: string; gpuPressure?: unknown } = {},
 ): HubPoolPeer {
   return mockPeer({
     id,
@@ -59,6 +71,9 @@ function peerServing(
     lastCapabilities: capabilitiesWithModel(model, {
       inFlightRequests: options.inFlightRequests,
       ...(options.hardwareTier ? { hardwareTier: options.hardwareTier } : {}),
+      // `unknown`, not `number`: the whole point of the peerPressure clamp is that this arrives as
+      // free-form jsonb a paired peer controls, so the hostile cases have to be expressible here.
+      ...('gpuPressure' in options ? { gpuPressure: options.gpuPressure as number } : {}),
     }) as unknown as Record<string, unknown>,
   });
 }
@@ -103,14 +118,19 @@ describe('PoolProxyService', () => {
   let loadService: HubPoolLoadService;
   // Real too: the ring buffer's contents are the assertion in the routing-log tests.
   let routingLog: HubPoolRoutingLogService;
+  let pressureService: MockProxy<HubPoolPressureService>;
   let service: PoolProxyService;
 
   /** Repoint the settings the proxy reads per request, as a settings PATCH would. */
   function setPoolPreferences(overrides: Partial<HubPoolPreferences>): void {
     configuration.getHubPoolPreferences.mockReturnValue({
       poolEnabled: true,
+      poolOutboundEnabled: true,
+      poolInboundEnabled: true,
       poolLocalAffinity: DEFAULT_POOL_LOCAL_AFFINITY,
       poolHealthPollSeconds: DEFAULT_POOL_HEALTH_POLL_SECONDS,
+      poolPins: [],
+      poolPressureWeight: DEFAULT_POOL_PRESSURE_WEIGHT,
       ...overrides,
     });
   }
@@ -148,18 +168,20 @@ describe('PoolProxyService', () => {
 
     loadService = new HubPoolLoadService();
     routingLog = new HubPoolRoutingLogService();
+    pressureService = mock<HubPoolPressureService>();
+    // The fleet default: this node cannot measure its GPU, so it ranks neutral.
+    pressureService.band.mockReturnValue(null);
+    pressureService.source.mockReturnValue(null);
     service = new PoolProxyService(
-      ollama,
-      vllm,
-      lemonade,
-      mtplx,
-      dspark,
-      lucebox,
+      // The real registry over the same six mocks, not a mock registry: a mocked `entries()` would
+      // return undefined and quietly drop every local candidate.
+      new InferenceBackendRegistry(ollama, vllm, lemonade, mtplx, dspark, lucebox),
       peerService,
       tailscaleService,
       loadService,
       configuration,
       routingLog,
+      pressureService,
     );
     global.fetch = vi.fn();
   });
@@ -181,6 +203,53 @@ describe('PoolProxyService', () => {
       expect(candidates).toEqual([]);
     });
 
+    /**
+     * The fleet node this guards against: core-4 answered `GET /api/tags` 200 listing `gemma3:1b`
+     * while every `POST /api/generate` for it returned HTTP 500 `model failed to load`. Selecting
+     * on the inventory alone made it a first-choice candidate for a model it failed 100% of
+     * requests for — and the same claim went to every peer as this node's advertised capabilities.
+     */
+    it('excludes a local backend that lists the model but has been unable to serve it', async () => {
+      ollama.healthCheck.mockResolvedValue({
+        running: true,
+        healthy: true,
+        modelsLoaded: ['gemma3:1b'],
+        unservableModels: ['gemma3:1b'],
+      });
+
+      const candidates = await service.buildCandidateList('gemma3:1b');
+
+      expect(candidates).toEqual([]);
+    });
+
+    it('still offers a backend for the models it CAN serve', async () => {
+      ollama.healthCheck.mockResolvedValue({
+        running: true,
+        healthy: true,
+        modelsLoaded: ['gemma3:1b', 'llama3.2:3b'],
+        unservableModels: ['gemma3:1b'],
+      });
+
+      // A node that cannot fit one model is still the right place for the ones it can fit.
+      expect(await service.buildCandidateList('llama3.2:3b')).toEqual([{ peerId: null, nodeFqdn: null, backend: 'ollama' }]);
+    });
+
+    it('hands the request to a peer when the local engine cannot serve the model it lists', async () => {
+      ollama.healthCheck.mockResolvedValue({
+        running: true,
+        healthy: true,
+        modelsLoaded: ['gemma3:1b'],
+        unservableModels: ['gemma3:1b'],
+      });
+      peerService.listConnectedPeers.mockResolvedValue([
+        mockPeer({ lastCapabilities: capabilitiesWithModel('gemma3:1b') as unknown as Record<string, unknown> }),
+      ]);
+
+      const candidates = await service.buildCandidateList('gemma3:1b');
+
+      expect(candidates).toEqual([{ peerId: 'peer-1', nodeFqdn: 'peer-hub.tailxyz.ts.net', backend: 'ollama' }]);
+    });
+
     it('includes a connected peer whose cached capabilities report the model', async () => {
       const peer = mockPeer({ lastCapabilities: capabilitiesWithModel('llama3.2:3b') as unknown as Record<string, unknown> });
       peerService.listConnectedPeers.mockResolvedValue([peer]);
@@ -188,6 +257,91 @@ describe('PoolProxyService', () => {
       const candidates = await service.buildCandidateList('llama3.2:3b');
 
       expect(candidates).toEqual([{ peerId: 'peer-1', nodeFqdn: 'peer-hub.tailxyz.ts.net', backend: 'ollama' }]);
+    });
+  });
+
+  /**
+   * The outbound half of the kill switch, plus the per-peer one.
+   *
+   * Both are applied HERE and not in `HubPoolPeerService.listConnectedPeers`, which is why these
+   * tests assert that `listConnectedPeers` is still consulted (and so still returns the peer) while
+   * the candidate list comes back local-only. Gating the service method instead would flip
+   * `hasConnectedPeers()`, which `inference-env-resolver.ts` bakes into an app's `CI_LLM_BASE_URL`
+   * at install time — permanently repointing every app created while the switch was off.
+   */
+  describe('outbound and per-peer kill switches', () => {
+    const MODEL = 'llama3.2:3b';
+
+    beforeEach(() => {
+      ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL] });
+    });
+
+    it('produces a local-only candidate list when outbound pooling is off', async () => {
+      peerService.listConnectedPeers.mockResolvedValue([peerServing('peer-idle', MODEL, { inFlightRequests: 0 })]);
+      loadService.acquire(LOCAL_CANDIDATE_KEY);
+      loadService.acquire(LOCAL_CANDIDATE_KEY);
+      // Loaded enough that the peer would win outright if the switch were not in force.
+
+      setPoolPreferences({ poolOutboundEnabled: false });
+
+      expect(await service.buildCandidateList(MODEL)).toEqual([{ peerId: null, nodeFqdn: null, backend: 'ollama' }]);
+    });
+
+    it('returns the actionable 502 rather than shipping the request out when outbound is off and the model is not local', async () => {
+      ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['some-other-model'] });
+      peerService.listConnectedPeers.mockResolvedValue([peerServing('peer-idle', MODEL, { inFlightRequests: 0 })]);
+      setPoolPreferences({ poolOutboundEnabled: false });
+      const res = createMockResponse();
+
+      await service.proxyRequest({ path: '/v1/chat/completions', method: 'POST', body: { model: MODEL }, model: MODEL, res });
+
+      expect(res.status).toHaveBeenCalledWith(502);
+      expect(global.fetch).not.toHaveBeenCalled();
+    });
+
+    it('drops one disabled peer while a second, enabled peer is still ranked', async () => {
+      const disabled = peerServing('peer-off', MODEL, { inFlightRequests: 0 });
+      peerService.listConnectedPeers.mockResolvedValue([{ ...disabled, enabled: false }, peerServing('peer-on', MODEL, { inFlightRequests: 0 })]);
+      loadService.acquire(LOCAL_CANDIDATE_KEY);
+      loadService.acquire(LOCAL_CANDIDATE_KEY);
+
+      const candidates = await service.buildCandidateList(MODEL);
+
+      expect(candidates.map((c) => c.peerId)).toEqual(['peer-on', null]);
+    });
+
+    it('skips a peer that says it is not accepting work, on the flag and not on an empty inventory', async () => {
+      // A peer with inbound switched off publishes `acceptingWork: false` AND an empty inventory.
+      // Asserting on a peer that still lists the model proves the flag itself is what we honour —
+      // the empty list is only the fallback an older sender has.
+      const refusing = peerServing('peer-refusing', MODEL, { inFlightRequests: 0 });
+      peerService.listConnectedPeers.mockResolvedValue([
+        {
+          ...refusing,
+          lastCapabilities: capabilitiesWithModel(MODEL, { inFlightRequests: 0, acceptingWork: false }) as unknown as Record<string, unknown>,
+        },
+      ]);
+      loadService.acquire(LOCAL_CANDIDATE_KEY);
+      loadService.acquire(LOCAL_CANDIDATE_KEY);
+
+      expect(await service.buildCandidateList(MODEL)).toEqual([{ peerId: null, nodeFqdn: null, backend: 'ollama' }]);
+    });
+
+    it('treats an absent acceptingWork as yes, so a peer on an older build still receives work', async () => {
+      peerService.listConnectedPeers.mockResolvedValue([peerServing('peer-old', MODEL, { inFlightRequests: 0 })]);
+      loadService.acquire(LOCAL_CANDIDATE_KEY);
+      loadService.acquire(LOCAL_CANDIDATE_KEY);
+
+      expect((await service.buildCandidateList(MODEL)).map((c) => c.peerId)).toEqual(['peer-old', null]);
+    });
+
+    it('ranks exactly as before when both switches are at their defaults', async () => {
+      // The single-node/untouched-settings guarantee, asserted on the ranking itself.
+      peerService.listConnectedPeers.mockResolvedValue([peerServing('peer-idle', MODEL, { inFlightRequests: 0 })]);
+      loadService.acquire(LOCAL_CANDIDATE_KEY);
+      loadService.acquire(LOCAL_CANDIDATE_KEY);
+
+      expect((await service.buildCandidateList(MODEL)).map((c) => c.peerId)).toEqual(['peer-idle', null]);
     });
   });
 
@@ -361,7 +515,248 @@ describe('PoolProxyService', () => {
     });
   });
 
+  describe('GPU-pressure ranking', () => {
+    const MODEL = 'llama3.2:3b';
+
+    /** Every ranking assertion below is about the pressure key, so keep local out of the list. */
+    function withoutLocalCandidate(): void {
+      ollama.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [] });
+    }
+
+    describe('the default (poolPressureWeight = 0) changes nothing', () => {
+      it('does not reorder a tie that pressure would otherwise decide', async () => {
+        // Same two peers, same everything except the band. At weight 0 the pressure key is not in
+        // the comparator at all, so the static hardware tier still decides — and 'low' still loses.
+        const calmButSlow = peerServing('peer-calm', MODEL, { inFlightRequests: 0, hardwareTier: 'low', gpuPressure: 0 });
+        const busyButFast = peerServing('peer-busy', MODEL, { inFlightRequests: 0, hardwareTier: 'high', gpuPressure: 3 });
+        peerService.listConnectedPeers.mockResolvedValue([calmButSlow, busyButFast]);
+        withoutLocalCandidate();
+
+        const candidates = await service.buildCandidateList(MODEL);
+
+        expect(candidates.map((c) => c.peerId)).toEqual(['peer-busy', 'peer-calm']);
+      });
+
+      it('keeps local first even when local is saturated and a peer reports band 0', async () => {
+        ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL] });
+        pressureService.band.mockReturnValue(3);
+        peerService.listConnectedPeers.mockResolvedValue([peerServing('peer-calm', MODEL, { inFlightRequests: 0, gpuPressure: 0 })]);
+
+        const candidates = await service.buildCandidateList(MODEL);
+
+        // Byte-identical to the pre-pressure build: local scores 0, the peer scores 0 + affinity 1.
+        expect(candidates[0]).toEqual({ peerId: null, nodeFqdn: null, backend: 'ollama' });
+      });
+    });
+
+    describe('an unmeasured node ranks NEUTRAL, never idle', () => {
+      it('does not let a silent peer outrank one that reported band 0', async () => {
+        setPoolPreferences({ poolPressureWeight: 1 });
+        const silent = peerServing('peer-silent', MODEL, { inFlightRequests: 0 });
+        const measuredIdle = peerServing('peer-idle', MODEL, { inFlightRequests: 0, gpuPressure: 0 });
+        peerService.listConnectedPeers.mockResolvedValue([silent, measuredIdle]);
+        withoutLocalCandidate();
+
+        const candidates = await service.buildCandidateList(MODEL);
+
+        // THE invariant of this feature. Silence is worth UNKNOWN_PRESSURE (1), so a node that
+        // measured itself idle beats one that said nothing. If absence read as 0, the pool would
+        // systematically prefer whichever machine knows least about itself — and on this fleet most
+        // nodes cannot measure at all, so that is the common case rather than the exception.
+        expect(candidates.map((c) => c.peerId)).toEqual(['peer-idle', 'peer-silent']);
+      });
+
+      it('ranks a silent peer AHEAD of one that reported band 2, so silence is mid and not worst', async () => {
+        setPoolPreferences({ poolPressureWeight: 1 });
+        const loaded = peerServing('peer-loaded', MODEL, { inFlightRequests: 0, gpuPressure: 2 });
+        const silent = peerServing('peer-silent', MODEL, { inFlightRequests: 0 });
+        peerService.listConnectedPeers.mockResolvedValue([loaded, silent]);
+        withoutLocalCandidate();
+
+        const candidates = await service.buildCandidateList(MODEL);
+
+        expect(candidates.map((c) => c.peerId)).toEqual(['peer-silent', 'peer-loaded']);
+      });
+
+      it('treats a local node that cannot measure as neutral rather than idle', async () => {
+        setPoolPreferences({ poolPressureWeight: 1, poolLocalAffinity: 0 });
+        ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL] });
+        pressureService.band.mockReturnValue(null);
+        peerService.listConnectedPeers.mockResolvedValue([peerServing('peer-idle', MODEL, { inFlightRequests: 0, gpuPressure: 0 })]);
+
+        const candidates = await service.buildCandidateList(MODEL);
+
+        // Local is unmeasured (1) against a peer that measured 0, and with affinity out of the way
+        // the measured-idle peer wins. The sending side of the same invariant: this node does not
+        // get to call itself idle just because it has no counter.
+        expect(candidates[0]?.peerId).toBe('peer-idle');
+      });
+
+      it('discards a stale peer band, leaving it neutral rather than believing its 0', async () => {
+        setPoolPreferences({ poolPressureWeight: 1 });
+        const stale = peerServing('peer-stale', MODEL, {
+          inFlightRequests: 0,
+          gpuPressure: 0,
+          lastSeenAt: new Date(Date.now() - 5 * 60_000).toISOString(),
+        });
+        const fresh = peerServing('peer-fresh', MODEL, { inFlightRequests: 0, gpuPressure: 0 });
+        peerService.listConnectedPeers.mockResolvedValue([stale, fresh]);
+        withoutLocalCandidate();
+
+        const candidates = await service.buildCandidateList(MODEL);
+
+        // Staleness makes the whole snapshot unbelievable, load and pressure alike — and a stale 0
+        // is exactly the value a wedged node keeps advertising while its card burns.
+        expect(candidates.map((c) => c.peerId)).toEqual(['peer-fresh', 'peer-stale']);
+      });
+    });
+
+    describe('with the weight turned on', () => {
+      beforeEach(() => setPoolPreferences({ poolPressureWeight: 1 }));
+
+      it('prefers the calmer of two equally queued peers', async () => {
+        const calm = peerServing('peer-calm', MODEL, { inFlightRequests: 0, gpuPressure: 0 });
+        const busy = peerServing('peer-busy', MODEL, { inFlightRequests: 0, gpuPressure: 3 });
+        peerService.listConnectedPeers.mockResolvedValue([busy, calm]);
+        withoutLocalCandidate();
+
+        const candidates = await service.buildCandidateList(MODEL);
+
+        expect(candidates.map((c) => c.peerId)).toEqual(['peer-calm', 'peer-busy']);
+      });
+
+      it('does not let a calm peer outrank one with a materially shorter queue', async () => {
+        const calmButQueued = peerServing('peer-queued', MODEL, { inFlightRequests: 4, gpuPressure: 0 });
+        const busyButFree = peerServing('peer-free', MODEL, { inFlightRequests: 0, gpuPressure: 3 });
+        peerService.listConnectedPeers.mockResolvedValue([calmButQueued, busyButFree]);
+        withoutLocalCandidate();
+
+        const candidates = await service.buildCandidateList(MODEL);
+
+        // Queue depth is work already accepted; pressure is a statement about the device. At weight
+        // 1 a full band is worth three queued requests, and four of them still outweighs it.
+        expect(candidates.map((c) => c.peerId)).toEqual(['peer-free', 'peer-queued']);
+      });
+
+      it('hands work to a calm peer when this node is queue-idle but its GPU is committed', async () => {
+        ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL] });
+        pressureService.band.mockReturnValue(3);
+        peerService.listConnectedPeers.mockResolvedValue([peerServing('peer-calm', MODEL, { inFlightRequests: 0, gpuPressure: 0 })]);
+
+        const candidates = await service.buildCandidateList(MODEL);
+
+        // Local: 0 queued + 1x3 pressure = 3. Peer: 0 + 1x0 + affinity 1 = 1. This is the case the
+        // feature exists for — a GPU busy with work that never came through the pool (ComfyUI, a
+        // direct `ollama run`, another orchestrator) is invisible to every queue counter we have.
+        expect(candidates[0]?.peerId).toBe('peer-calm');
+      });
+
+      it('applies a weight change on the next request, not the next restart', async () => {
+        const calm = peerServing('peer-calm', MODEL, { inFlightRequests: 0, gpuPressure: 0, hardwareTier: 'low' });
+        const busy = peerServing('peer-busy', MODEL, { inFlightRequests: 0, gpuPressure: 3, hardwareTier: 'high' });
+        peerService.listConnectedPeers.mockResolvedValue([calm, busy]);
+        withoutLocalCandidate();
+
+        setPoolPreferences({ poolPressureWeight: 0 });
+        const before = await service.buildCandidateList(MODEL);
+        setPoolPreferences({ poolPressureWeight: 1 });
+        const after = await service.buildCandidateList(MODEL);
+
+        expect(before.map((c) => c.peerId)).toEqual(['peer-busy', 'peer-calm']);
+        expect(after.map((c) => c.peerId)).toEqual(['peer-calm', 'peer-busy']);
+      });
+    });
+
+    describe('a paired peer controls this value, so it is clamped on the read path', () => {
+      beforeEach(() => setPoolPreferences({ poolPressureWeight: 1 }));
+
+      it.each([
+        ['a negative band', -5],
+        ['an out-of-range band', 99],
+        ['a fractional band', 1.5],
+        ['a string', 'low'],
+        ['null', null],
+        ['NaN', Number.NaN],
+      ])('clamps %s to neutral, so it cannot win a tie', async (_label, hostile) => {
+        const liar = peerServing('peer-liar', MODEL, { inFlightRequests: 0, gpuPressure: hostile });
+        const honest = peerServing('peer-honest', MODEL, { inFlightRequests: 0, gpuPressure: 0 });
+        peerService.listConnectedPeers.mockResolvedValue([liar, honest]);
+        withoutLocalCandidate();
+
+        const candidates = await service.buildCandidateList(MODEL);
+
+        // The negative one matters most: used raw it would beat every honest 0 forever, and it costs
+        // a peer nothing to send. Everything hostile lands on UNKNOWN_PRESSURE instead.
+        expect(candidates.map((c) => c.peerId)).toEqual(['peer-honest', 'peer-liar']);
+      });
+
+      it('floors a self-reported 0 by what this node has actually forwarded there', async () => {
+        const pinnedAtZero = peerServing('peer-lying', MODEL, { inFlightRequests: 0, gpuPressure: 0 });
+        const honest = peerServing('peer-honest', MODEL, { inFlightRequests: 0, gpuPressure: 1 });
+        peerService.listConnectedPeers.mockResolvedValue([pinnedAtZero, honest]);
+        withoutLocalCandidate();
+        // Two requests of ours are running there right now. Whatever it claims, it is not idle.
+        loadService.acquire('peer-lying');
+        loadService.acquire('peer-lying');
+
+        const candidates = await service.buildCandidateList(MODEL);
+
+        // Without the floor, a peer that hardcodes gpuPressure: 0 wins every tie forever and the
+        // band is an attack surface rather than a signal.
+        expect(candidates.map((c) => c.peerId)).toEqual(['peer-honest', 'peer-lying']);
+      });
+    });
+  });
+
   describe('proxyRequest', () => {
+    it('attaches whatever credential peerAuthHeaders produced, and nothing of its own', async () => {
+      // One helper decides between the signature and the bearer token, on both sides of the wire.
+      // The proxy must not second-guess it: a hand-built `Authorization` here is exactly how the
+      // client rule and the guard's no-downgrade rule would drift apart.
+      const peer = mockPeer({ lastCapabilities: capabilitiesWithModel('llama3.2:3b') as unknown as Record<string, unknown> });
+      peerService.listConnectedPeers.mockResolvedValue([peer]);
+      peerService.getPeerById.mockResolvedValue(peer);
+      peerService.peerAuthHeaders.mockResolvedValue({
+        'X-Hub-Pool-Node': 'a-node-uuid',
+        'X-Hub-Pool-Peer': 'self-hub.tailxyz.ts.net',
+        'X-Hub-Pool-Signature': 'v1.ed25519.zzz',
+      });
+
+      const fetchMock = vi.mocked(global.fetch);
+      fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), { status: 200, headers: { 'content-type': 'application/json' } }));
+
+      const res = createMockResponse();
+      await service.proxyRequest({ path: '/v1/chat/completions', method: 'POST', body: { model: 'llama3.2:3b' }, model: 'llama3.2:3b', res });
+
+      const headers = (fetchMock.mock.calls[0]?.[1]?.headers ?? {}) as Record<string, string>;
+      expect(headers['X-Hub-Pool-Signature']).toBe('v1.ed25519.zzz');
+      expect(headers).not.toHaveProperty('Authorization');
+      // The two routing headers the receiving handler cannot infer from the path are still ours.
+      expect(headers['X-Hub-Pool-Backend']).toBe('ollama');
+      expect(headers['X-Hub-Pool-Model']).toBe('llama3.2:3b');
+      // Signed over the `/api`-prefixed path the peer will actually see, query already stripped.
+      expect(peerService.peerAuthHeaders).toHaveBeenCalledWith(peer, 'POST', '/api/inference/pool/local/v1/chat/completions', {
+        model: 'llama3.2:3b',
+      });
+    });
+
+    it('still sends a bearer-only peer exactly what it sent before', async () => {
+      const peer = mockPeer({ lastCapabilities: capabilitiesWithModel('llama3.2:3b') as unknown as Record<string, unknown> });
+      peerService.listConnectedPeers.mockResolvedValue([peer]);
+      peerService.getPeerById.mockResolvedValue(peer);
+      peerService.peerAuthHeaders.mockResolvedValue({ 'X-Hub-Pool-Peer': 'self-hub.tailxyz.ts.net', Authorization: 'Bearer raw-token' });
+
+      const fetchMock = vi.mocked(global.fetch);
+      fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), { status: 200, headers: { 'content-type': 'application/json' } }));
+
+      const res = createMockResponse();
+      await service.proxyRequest({ path: '/v1/chat/completions', method: 'POST', body: { model: 'llama3.2:3b' }, model: 'llama3.2:3b', res });
+
+      const headers = (fetchMock.mock.calls[0]?.[1]?.headers ?? {}) as Record<string, string>;
+      expect(headers.Authorization).toBe('Bearer raw-token');
+      expect(headers['X-Hub-Pool-Peer']).toBe('self-hub.tailxyz.ts.net');
+    });
+
     it('returns 502 when no candidate has the model', async () => {
       const res = createMockResponse();
 
@@ -506,6 +901,130 @@ describe('PoolProxyService', () => {
       expect(res.status).toHaveBeenCalledWith(200);
       expect(res.json).not.toHaveBeenCalled();
       expect(destroySpy).toHaveBeenCalled();
+    });
+  });
+
+  /**
+   * A live request is the only thing that finds out whether a model can actually be served — the
+   * health poll cannot, because the only proof is a generation, and generating on every poll would
+   * pull every listed model into VRAM on the poll cadence. So what the request learns is fed back
+   * to the engine that answered, and the next candidate list knows it.
+   */
+  describe('serving-capability feedback to the local engine', () => {
+    const MODEL = 'gemma3:1b';
+
+    /** The local Ollama lists the model; whether it can serve it is what these tests are about. */
+    function localHasModel(): void {
+      ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL] });
+    }
+
+    async function proxy(res = createMockResponse()): Promise<void> {
+      await service.proxyRequest({ path: '/v1/chat/completions', method: 'POST', body: { model: MODEL }, model: MODEL, res });
+    }
+
+    it('reports a 5xx back to the engine that produced it', async () => {
+      localHasModel();
+      vi.mocked(global.fetch).mockResolvedValue(new Response('model failed to load', { status: 500 }));
+
+      await proxy();
+
+      expect(ollama.noteServingFailure).toHaveBeenCalledWith(MODEL, 'HTTP 500');
+    });
+
+    it('does not blame the model for a 429', async () => {
+      localHasModel();
+      vi.mocked(global.fetch).mockResolvedValue(new Response('busy', { status: 429 }));
+
+      await proxy();
+
+      // 429 and 408 fail over too, but they are the engine talking about its queue, not about the
+      // model. Withholding a model because the node was briefly busy turns shedding into an outage.
+      expect(ollama.noteServingFailure).not.toHaveBeenCalled();
+    });
+
+    it('does not blame the model for a caller 4xx', async () => {
+      localHasModel();
+      vi.mocked(global.fetch).mockResolvedValue(new Response(JSON.stringify({ error: 'bad request' }), { status: 400 }));
+
+      await proxy();
+
+      expect(ollama.noteServingFailure).not.toHaveBeenCalled();
+      // A 4xx is the engine's verdict on the request, not proof the model runs, so it clears nothing either.
+      expect(ollama.noteServingSuccess).not.toHaveBeenCalled();
+    });
+
+    it('clears the record when the engine actually serves the model', async () => {
+      localHasModel();
+      vi.mocked(global.fetch).mockResolvedValue(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+
+      await proxy();
+
+      expect(ollama.noteServingSuccess).toHaveBeenCalledWith(MODEL);
+    });
+
+    it('does not charge the local engine for a peer 5xx', async () => {
+      // The local node has nothing to do with this request, and a 500 relayed through a peer says
+      // nothing about which of THAT node's backends failed — the peer corrects its own capabilities.
+      const peer = mockPeer({ lastCapabilities: capabilitiesWithModel(MODEL) as unknown as Record<string, unknown> });
+      peerService.listConnectedPeers.mockResolvedValue([peer]);
+      peerService.getPeerById.mockResolvedValue(peer);
+      peerService.getPresentToken.mockResolvedValue('raw-token');
+      vi.mocked(global.fetch).mockResolvedValue(new Response('server error', { status: 500 }));
+
+      await proxy();
+
+      expect(ollama.noteServingFailure).not.toHaveBeenCalled();
+      expect(ollama.noteServingSuccess).not.toHaveBeenCalled();
+    });
+
+    /**
+     * A node serving only peer traffic never runs `proxyRequest`, so before the inbound path fed
+     * the quarantine it earned no strikes at all: it withheld nothing and kept advertising a model
+     * it could not load to the very peers deciding to send it more. That is exactly the shape of
+     * fleet node core-4, which answers `/api/tags` with a model whose every generate 500s.
+     */
+    it('records a 5xx from a peer-forwarded request against the model', async () => {
+      vi.mocked(global.fetch).mockResolvedValue(new Response('model failed to load', { status: 500 }));
+
+      await service.forwardToLocalBackendAndRespond(
+        'ollama',
+        '/api/chat',
+        'POST',
+        { model: MODEL },
+        createMockResponse(),
+        'peer.example.ts.net',
+        MODEL,
+      );
+
+      expect(ollama.noteServingFailure).toHaveBeenCalledWith(MODEL, 'HTTP 500');
+    });
+
+    it('clears the record when a peer-forwarded request succeeds', async () => {
+      vi.mocked(global.fetch).mockResolvedValue(new Response('ok', { status: 200 }));
+
+      await service.forwardToLocalBackendAndRespond(
+        'ollama',
+        '/api/chat',
+        'POST',
+        { model: MODEL },
+        createMockResponse(),
+        'peer.example.ts.net',
+        MODEL,
+      );
+
+      expect(ollama.noteServingSuccess).toHaveBeenCalledWith(MODEL);
+    });
+
+    it('still forwards when the peer sends no model header', async () => {
+      vi.mocked(global.fetch).mockResolvedValue(new Response('model failed to load', { status: 500 }));
+
+      // An older peer won't send `X-Hub-Pool-Model`. Losing the strike is acceptable; refusing the
+      // forward over a missing attribution header would not be.
+      await expect(
+        service.forwardToLocalBackendAndRespond('ollama', '/api/chat', 'POST', { model: MODEL }, createMockResponse(), 'peer.example.ts.net'),
+      ).resolves.not.toThrow();
+
+      expect(ollama.noteServingFailure).not.toHaveBeenCalled();
     });
   });
 
@@ -770,6 +1289,158 @@ describe('PoolProxyService', () => {
       const serialized = JSON.stringify(routingLog.list());
       expect(serialized).not.toContain('my private prompt');
       expect(serialized).not.toContain('the answer');
+    });
+  });
+
+  /**
+   * Manual routing pins. `prefer` is the only mode there is, so every test here is ultimately about
+   * the same property: a pin changes the ORDER of an already-built candidate list and can never
+   * change its membership.
+   */
+  describe('manual routing pins', () => {
+    const MODEL = 'llama3.2:3b';
+    const localPin = { scope: 'default', targetKind: 'local', mode: 'prefer' } as const;
+
+    beforeEach(() => {
+      ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL] });
+    });
+
+    it('puts the pinned peer first even though the ranker would have chosen the idle local node', async () => {
+      // No local queue at all, so without the pin local wins on score AND on tier rank.
+      peerService.listConnectedPeers.mockResolvedValue([peerServing('peer-busy', MODEL, { inFlightRequests: 5 })]);
+      setPoolPreferences({ poolPins: [{ scope: 'default', targetKind: 'peer', peerId: 'peer-busy', mode: 'prefer' }] });
+
+      expect(await service.buildCandidateList(MODEL)).toEqual([
+        { peerId: 'peer-busy', nodeFqdn: 'peer-busy.tailxyz.ts.net', backend: 'ollama' },
+        { peerId: null, nodeFqdn: null, backend: 'ollama' },
+      ]);
+    });
+
+    it('keeps every other candidate behind the pinned one, in ranked order, so failover still works', async () => {
+      peerService.listConnectedPeers.mockResolvedValue([
+        peerServing('peer-busy', MODEL, { inFlightRequests: 9 }),
+        peerServing('peer-idle', MODEL, { inFlightRequests: 0 }),
+      ]);
+      loadService.acquire(LOCAL_CANDIDATE_KEY);
+      loadService.acquire(LOCAL_CANDIDATE_KEY);
+      loadService.acquire(LOCAL_CANDIDATE_KEY);
+      setPoolPreferences({ poolPins: [{ scope: 'default', targetKind: 'peer', peerId: 'peer-busy', mode: 'prefer' }] });
+
+      expect((await service.buildCandidateList(MODEL)).map((candidate) => candidate.peerId)).toEqual(['peer-busy', 'peer-idle', null]);
+    });
+
+    it('applies a model pin over the default pin, and only to that model', async () => {
+      peerService.listConnectedPeers.mockResolvedValue([peerServing('peer-a', MODEL, { inFlightRequests: 0 })]);
+      setPoolPreferences({
+        poolPins: [
+          { scope: 'default', targetKind: 'peer', peerId: 'peer-a', mode: 'prefer' },
+          { scope: 'model', model: MODEL, targetKind: 'local', mode: 'prefer' },
+        ],
+      });
+      loadService.acquire(LOCAL_CANDIDATE_KEY);
+
+      // The model pin wins for this model...
+      expect((await service.buildCandidateList(MODEL)).map((candidate) => candidate.peerId)).toEqual([null, 'peer-a']);
+
+      // ...and the default pin still governs a model it does not name.
+      ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['other:1b'] });
+      peerService.listConnectedPeers.mockResolvedValue([peerServing('peer-a', 'other:1b', { inFlightRequests: 0 })]);
+      expect((await service.buildCandidateList('other:1b')).map((candidate) => candidate.peerId)).toEqual(['peer-a', null]);
+    });
+
+    it('matches a model pin verbatim: a case variant is a different model and does not apply', async () => {
+      peerService.listConnectedPeers.mockResolvedValue([peerServing('peer-a', MODEL, { inFlightRequests: 0 })]);
+      // Two queued locally against an idle peer clears the affinity head start, so the peer wins on
+      // score alone — the ranking a pin would have had to override.
+      loadService.acquire(LOCAL_CANDIDATE_KEY);
+      loadService.acquire(LOCAL_CANDIDATE_KEY);
+      setPoolPreferences({ poolPins: [{ scope: 'model', model: 'Llama3.2:3B', targetKind: 'peer', peerId: 'peer-a', mode: 'prefer' }] });
+
+      // Local is loaded, the peer is idle — but no pin applies, so this is the plain ranking.
+      expect((await service.buildCandidateList(MODEL)).map((candidate) => candidate.peerId)).toEqual(['peer-a', null]);
+    });
+
+    /**
+     * The pin cannot resurrect an excluded node — the single most important property of applying it
+     * to the finished list. An unreachable peer never reaches `usablePeers`, so a pin naming it is a
+     * no-op rather than a way to force work onto a node the module has decided is down.
+     */
+    it('is a silent no-op when the pinned peer is unreachable, and the request still routes locally', async () => {
+      peerService.listConnectedPeers.mockResolvedValue([]);
+      setPoolPreferences({ poolPins: [{ scope: 'default', targetKind: 'peer', peerId: 'peer-gone', mode: 'prefer' }] });
+
+      expect(await service.buildCandidateList(MODEL)).toEqual([{ peerId: null, nodeFqdn: null, backend: 'ollama' }]);
+    });
+
+    it('is a silent no-op when the pinned peer was unpaired while the pin still named it', async () => {
+      peerService.listConnectedPeers.mockResolvedValue([peerServing('peer-still-here', MODEL, { inFlightRequests: 0 })]);
+      setPoolPreferences({ poolPins: [{ scope: 'default', targetKind: 'peer', peerId: 'peer-deleted', mode: 'prefer' }] });
+
+      // The surviving peer is still ranked normally: a dangling pin removes nothing.
+      expect((await service.buildCandidateList(MODEL)).map((candidate) => candidate.peerId)).toEqual([null, 'peer-still-here']);
+    });
+
+    it('never re-admits a local backend that has been unable to serve the model, even pinned to local', async () => {
+      ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL], unservableModels: [MODEL] });
+      peerService.listConnectedPeers.mockResolvedValue([peerServing('peer-a', MODEL, { inFlightRequests: 0 })]);
+      setPoolPreferences({ poolPins: [localPin] });
+
+      expect((await service.buildCandidateList(MODEL)).map((candidate) => candidate.peerId)).toEqual(['peer-a']);
+    });
+
+    it('records the pin that shaped the decision, and nothing about the model or peer it names', async () => {
+      peerService.listConnectedPeers.mockResolvedValue([]);
+      setPoolPreferences({ poolPins: [localPin] });
+      vi.mocked(global.fetch).mockResolvedValue(new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } }));
+
+      await service.proxyRequest({ path: '/v1/chat/completions', method: 'POST', body: { model: MODEL }, model: MODEL, res: createMockResponse() });
+
+      expect(routingLog.list()[0]?.pin).toEqual({ scope: 'default', mode: 'prefer', targetKind: 'local' });
+    });
+
+    it('leaves the routing-log pin null when no pin is set', async () => {
+      peerService.listConnectedPeers.mockResolvedValue([]);
+      vi.mocked(global.fetch).mockResolvedValue(new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } }));
+
+      await service.proxyRequest({ path: '/v1/chat/completions', method: 'POST', body: { model: MODEL }, model: MODEL, res: createMockResponse() });
+
+      expect(routingLog.list()[0]?.pin).toBeNull();
+    });
+
+    it('says a pin is in force in the 502 for a model nothing can serve', async () => {
+      ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [] });
+      peerService.listConnectedPeers.mockResolvedValue([]);
+      setPoolPreferences({ poolPins: [{ scope: 'model', model: 'missing:1b', targetKind: 'local', mode: 'prefer' }] });
+      const res = createMockResponse();
+
+      await service.proxyRequest({ path: '/v1/chat/completions', method: 'POST', body: { model: 'missing:1b' }, model: 'missing:1b', res });
+
+      const body = vi.mocked(res.json).mock.calls[0]?.[0] as { error: string };
+      expect(body.error).toContain('pinned to this Hub');
+      // Still says the real problem is inventory: a prefer pin cannot be the reason a list is empty.
+      expect(body.error).toContain('inventory problem');
+    });
+
+    /**
+     * The regression that matters most for this feature, asserted rather than argued: a Hub with no
+     * peers routes byte-identically with the pin machinery present. Both the empty-pins case and a
+     * stale pin left over from a fleet that no longer exists.
+     */
+    it('leaves a peerless single-node Hub untouched, pins or no pins', async () => {
+      peerService.listConnectedPeers.mockResolvedValue([]);
+      vllm.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL] });
+      const expected = [
+        { peerId: null, nodeFqdn: null, backend: 'ollama' },
+        { peerId: null, nodeFqdn: null, backend: 'vllm' },
+      ];
+
+      expect(await service.buildCandidateList(MODEL)).toEqual(expected);
+
+      setPoolPreferences({ poolPins: [localPin] });
+      expect(await service.buildCandidateList(MODEL)).toEqual(expected);
+
+      setPoolPreferences({ poolPins: [{ scope: 'default', targetKind: 'peer', peerId: 'peer-from-a-past-life', mode: 'prefer' }] });
+      expect(await service.buildCandidateList(MODEL)).toEqual(expected);
     });
   });
 

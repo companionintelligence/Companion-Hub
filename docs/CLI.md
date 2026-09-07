@@ -320,19 +320,26 @@ Hub Pool**. See [`hub-pool.md`](./hub-pool.md) for how pooling works.
 ```bash
 cihub pool status [env]                       # is pooling routing, and why or why not
 cihub pool peers [env]                        # paired peers: status, last seen, queue depth, models
-cihub pool discover [env]                     # unpaired CI-Hub nodes on the tailnet
+cihub pool discover [env]                     # unpaired CI-Hub nodes, from every source
+cihub pool probe <address> [env]              # is there a CI-Hub at this LAN address?
+cihub pool pairing-pin [env]                  # mint the six digits the other Hub will need
 cihub pool pair <node> [--name <label>]       # send a pairing request (the other Hub must approve)
+cihub pool pair <address> --pin <digits>      # ...or pair by LAN address, no OAuth credential needed
 cihub pool approve <id>                       # accept a pending inbound request
 cihub pool reject <id>                        # refuse one
 cihub pool unpair <id>                        # remove a peer and revoke both tokens
 cihub pool log [env] [--limit N]              # recent routing decisions, failovers marked
 cihub pool enable [env] | cihub pool disable  # flip the persisted kill switch
+cihub pool enable --outbound | --inbound      # ...or just one direction
+cihub pool peer-enable <id> | peer-disable    # take one peer in or out of the pool
 ```
 
 | Flag | Effect |
 | ---- | ------ |
 | `--yes` | Skip the confirmation prompt. Required for `pair`/`approve`/`reject`/`unpair`/`enable`/`disable` on a non-interactive terminal |
 | `--name <label>` | `pair` only: a display label for the peer |
+| `--model <id>` | `pin`/`unpin` only: which model the pin covers. Omit it for the pool-wide pin. Compared verbatim against the engine's inventory, so case matters |
+| `--pin <digits>` | `pair` only: the six digits minted on the *other* Hub. Required when the target is an address |
 | `--limit N` | `log` only: how many decisions to show, 1–200 (default: all 200 retained) |
 
 **It runs on the Hub it manages.** Every call goes to `http://127.0.0.1:<API_PORT>` — `cihub pool` on
@@ -348,16 +355,53 @@ here.
 ### Identifying a peer
 
 `approve`, `reject` and `unpair` take the 8-character `ID` from the peers table, the full row uuid, or
-the peer's FQDN. An ambiguous prefix is refused rather than guessed. `pair` takes the MagicDNS name a
-peer publishes on the tailnet (`hub-b.example-tailnet.ts.net`) — a scheme, port, path or IP address is
-rejected before the request is sent.
+the peer's FQDN. An ambiguous prefix is refused rather than guessed.
+
+`pair` takes either the MagicDNS name a peer publishes on the tailnet
+(`hub-b.example-tailnet.ts.net`), or a LAN address with `--pin`. Anything that is not a plausible
+MagicDNS name is read as an address, and an address without a PIN is refused with the reason: an
+address can reach the other Hub but cannot *name* it, and a peer is stored under its tailnet name.
 
 ### `cihub pool discover`
 
-Discovery needs a Tailscale OAuth client (`TAILSCALE_OAUTH_CLIENT_ID` / `TAILSCALE_OAUTH_CLIENT_SECRET`,
-`devices:core:read`). Without one the command **says so and names the variables** rather than printing
-an empty table — an important distinction, because a Hub with no credential can still be paired *with*
-by a Hub that has one, and pools normally once paired.
+Lists every unpaired candidate the tailnet directory knows about. A Hub found with `cihub pool probe`
+is **not** here and never will be: entries are paired with by handing their name to `pool pair`, and
+an address has no name until the PIN exchange produces one.
+
+A Tailscale OAuth client (`TAILSCALE_OAUTH_CLIENT_ID` / `TAILSCALE_OAUTH_CLIENT_SECRET`,
+`devices:core:read`) enumerates the whole tailnet at once and is worth having when a pool spans
+several networks. It is **optional**: without one, the empty-list output points at `cihub pool probe`
+first and names the variables second.
+
+### `cihub pool probe` and pairing by address
+
+```
+cihub pool probe 192.168.1.42
+cihub pool probe 192.168.1.42:5010     # a Hub that moved its published API port
+cihub pool probe mini-pc.lan
+```
+
+Asks whether a CI-Hub is at that address and which pool protocol it speaks. It does **not** report a
+name, and the output says so: `GET /api/inference/pool/identify` is unauthenticated and reachable
+through the public tunnel, so it discloses no MagicDNS name to anybody.
+
+The name comes from pairing, gated on a PIN:
+
+```
+on the other Hub:  cihub pool pairing-pin              # six digits, ten minutes, single-use
+here:              cihub pool pair 192.168.1.42 --pin 123456
+```
+
+The PIN authenticates the request; the reply carries that Hub's tailnet name (and its node UUID and
+public key, so the pairing starts out signed rather than on a bearer token). The peer is stored under
+that name, and every pooled request goes to `https://<name>` with the same TLS and the same
+credentials. The address was only ever a way to reach the handshake.
+
+Refused: any address that is not RFC1918, CGNAT or IPv6 ULA; a hostname where *any* resolved address
+is public; loopback and link-local. With no explicit port it tries 5002 then 3000, and cannot infer a
+published port that was moved — name it if so. A Hub running an older pool protocol is reported as
+found-but-not-pairable-by-address, because it cannot answer a PIN with its name; pair with it by
+MagicDNS name instead.
 
 ### `cihub pool log`
 
@@ -372,13 +416,32 @@ generation.
 
 ### `cihub pool enable` / `disable`
 
-These write the persisted `poolEnabled` setting through the Hub API; they take effect on the next request,
-with no restart. **`HUB_POOL_USER_DISABLED=true` in the env file wins.** Under that override, `enable`
-saves the setting and then says plainly that nothing changed in effect, naming the file to edit and the
-restart needed — it never reports success it did not deliver.
+With no flag these write the persisted **master** `poolEnabled` setting through the Hub API; they take
+effect on the next request, with no restart. **`HUB_POOL_USER_DISABLED=true` in the env file wins.** Under
+that override, `enable` saves the setting and then says plainly that nothing changed in effect, naming the
+file to edit and the restart needed — it never reports success it did not deliver.
 
 Disabling keeps existing pairings. Peers mark this node unreachable while it is off and pick it back up
 on their next successful health poll.
+
+`--outbound` and `--inbound` write one half instead, each with its own env override
+(`HUB_POOL_OUTBOUND_DISABLED`, `HUB_POOL_INBOUND_DISABLED`) and the same refusal to claim a success it did
+not deliver. Pass at most one; passing neither is what "the master switch" means.
+
+- `disable --outbound` stops this Hub sending work to peers. Peers may still send work here, and a request
+  this node cannot serve now fails locally with the usual 502 instead of being shipped out.
+- `disable --inbound` stops this Hub serving peers' work while it keeps using them. Peers see a healthy
+  node advertising an empty inventory — **not** an unreachable one — and route elsewhere.
+
+`cihub pool status` prints both directions with the switch actually responsible for each.
+
+### `cihub pool peer-enable` / `peer-disable`
+
+Take one peer in or out of the pool. Symmetric: no work moves in either direction with a disabled peer.
+The pairing, both directional tokens and the health poll are kept, so re-enabling is instant and needs no
+approval from the other side — and disabled peers keep being polled, so the status card stays honest about
+a machine that is up. It is therefore **not** a revocation; `cihub pool unpair` is. Disabled peers print as
+`connected/off` in the peer table.
 
 ---
 
@@ -392,6 +455,56 @@ cihub uninstall [--yes]    # full machine cleanup of CI-Hub runtime state
 ```
 
 `reset` is the environment-focused cleanup path. `uninstall` is the full machine cleanup path.
+
+---
+
+## Implementation map
+
+The command surface is stable; this is where each part lives, for anyone changing it.
+
+`bin/cihub.cjs` → `scripts/start.ts` → `runCli()` in `scripts/lib/cli-dispatch.ts`, which matches
+`argv[0]` and calls the module that owns the handler. There is no argument-parsing library; flag
+normalization is in `scripts/lib/cli-args.ts`.
+
+| Module | Commands |
+|---|---|
+| `cli-lifecycle.ts` | `up`, `setup`, `config` |
+| `cli-teardown.ts` | `down`, `restart`, `recreate`, `clean`, `reset` |
+| `cli-doctor.ts` | `status`, `logs`, `doctor`, `uninstall` |
+| `cli-register.ts` | `register`, `device-id` |
+| `cli-app.ts` | `app` |
+| `cli-models.ts` | `models`, `mcp`, `public-web` |
+| `cli-pool.ts` | `pool` |
+| `cli-api-key.ts` | `api-key` |
+| `cli-update.ts` | `version`, `update`, `connect` |
+| `cli-wizard.ts` | `wizard` |
+| `catalog-submit.ts` | `login`, `logout`, `submit` |
+
+Shared pieces: `cli-args.ts` (flags and env resolution), `cli-repo-context.ts` (checkout vs packaged
+appliance), `hub-context.ts` (env file, compose files, and working directory for the resolved
+context), `cli-prompt.ts` (every confirmation, so the non-TTY refusal is worded the same everywhere),
+`cli-proc.ts` (process execution), `cli-ui.ts` (colors, boxes, help and man rendering),
+`cli-compose-env.ts` (env file and compose profile handling), `docker-engine.ts` (engine discovery
+and pinning).
+
+`scripts/cihub-cli.ts` is a re-export facade kept so `scripts/__tests__/cihub-cli.test.ts` has one
+stable import site. New code should import from the owning module instead.
+
+### Adding a command
+
+1. Add the handler to the module that owns that command group, or a new `scripts/lib/cli-<name>.ts`.
+2. Route it in `cli-dispatch.ts`.
+3. Add it to `commandSections` in `cli-ui.ts` so it appears in `--help` and `man`.
+4. Test the handler in `scripts/__tests__/`, and the routing in `cli-dispatch.test.ts`.
+
+Retired commands stay routed to `printRemovedCommand` with their replacement rather than being
+deleted, so an old script fails with guidance instead of "unknown command".
+
+### Two distributions
+
+`bin/cihub.cjs` runs the TypeScript through `tsx` at each invocation — that is the npm install.
+`pnpm run build:cli` (`scripts/build-standalone-cli.cjs`) instead bundles it with Bun into a single
+executable for six targets, which is what the desktop app bundles and installs onto `PATH`.
 
 ---
 
