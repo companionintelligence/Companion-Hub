@@ -59,6 +59,7 @@ import { ApiKeyService } from '@/modules/api-keys/api-key.service';
 import { MemoryConnectionService } from '@/modules/memory-connect/memory-connection.service';
 import { PortalCatalogService } from '@/core/portal/portal-catalog.service';
 import { PortalClientService } from '@/core/portal/portal-client.service';
+import { MarketplaceEntitlementService } from '@/core/portal/marketplace-entitlement.service';
 
 let db: TestDatabase;
 const DB_NAME = 'applifecycletest';
@@ -107,6 +108,7 @@ describe('App lifecycle', () => {
   const appRuntimeMonitorService = mock<AppRuntimeMonitorService>();
   const portalCatalogService = mock<PortalCatalogService>();
   const portalClientService = mock<PortalClientService>();
+  const marketplaceEntitlementService = mock<MarketplaceEntitlementService>();
 
   // Create AppStoreRepository manually to ensure we use the real implementation with the correct databaseService reference
   const appStoreRepository = new AppStoreRepository(databaseService, reposHelpers);
@@ -158,6 +160,9 @@ describe('App lifecycle', () => {
     portalCatalogService.searchCatalog.mockResolvedValue(null);
     portalClientService.fetchStoreAlternatives.mockResolvedValue([]);
     portalClientService.fetchStoreListings.mockResolvedValue([]);
+    marketplaceEntitlementService.assertForInstall.mockResolvedValue(undefined);
+    marketplaceEntitlementService.assertForStart.mockResolvedValue(undefined);
+    marketplaceEntitlementService.assertForUpdate.mockResolvedValue(undefined);
     // Best-effort arch check: null = registry unreachable, do not block install in tests.
     imageSizeService.verifyAppArchitecture.mockResolvedValue(null);
     appRuntimeMonitorService.getAppRuntimeHealth.mockResolvedValue({
@@ -318,6 +323,10 @@ describe('App lifecycle', () => {
         {
           provide: PortalClientService,
           useValue: portalClientService,
+        },
+        {
+          provide: MarketplaceEntitlementService,
+          useValue: marketplaceEntitlementService,
         },
       ],
     }).compile();

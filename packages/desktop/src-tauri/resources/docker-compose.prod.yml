@@ -151,6 +151,24 @@ services:
       - /etc/localtime:/etc/localtime:ro
       - /etc/timezone:/etc/timezone:ro
       - /etc/machine-id:/etc/machine-id:ro
+      # Hub Pool needs this node's Tailscale identity: `nodeFqdn` is how a peer
+      # addresses us, and TailscaleService.resolveStrategy() can only get it by
+      # running the host's CLI against the host's tailscaled socket. Neither was
+      # mounted, so on every Tailscale host the Hub reported `notInstalled`,
+      # `/inference/pool/identify` returned `nodeFqdn: null`, and pairing could
+      # never complete. The `hub-tailscale` sidecar below is not a substitute --
+      # it sits behind the `private-vpn` profile and needs TAILSCALE_AUTHKEY.
+      #
+      # The socket is mounted READ-WRITE deliberately: isSocketAvailable() probes
+      # it with R_OK|W_OK, and the tailscaled protocol writes. A `:ro` mount here
+      # looks right and silently defeats the whole thing.
+      #
+      # Both are optional by design. On a host with no Tailscale, Docker creates
+      # empty paths, the socket probe fails, and the Hub degrades to exactly the
+      # no-VPN behaviour it has today -- so this is safe on every host. Override
+      # the source paths where the distro puts them elsewhere.
+      - ${TAILSCALE_SOCKET_DIR:-/var/run/tailscale}:/var/run/tailscale
+      - ${TAILSCALE_BINARY:-/usr/bin/tailscale}:/usr/bin/tailscale:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
     # Resolver patience (#933): the Hub resolves sibling containers (ci-hub-db, ci-hub-queue,
