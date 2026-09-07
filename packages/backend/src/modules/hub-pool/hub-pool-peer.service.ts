@@ -369,6 +369,10 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
         nodeFqdn: selfStatus.nodeFqdn,
         tailnet: selfStatus.tailnet,
         tailscaleConnected: selfStatus.connected,
+        // After the first load this is a cache read — `HubPoolIdentityService.summary()` memoizes,
+        // and a Hub whose identity is broken pays one query a minute at most. That is what keeps
+        // `getPoolStatus`'s "cheap enough for the UI to poll" promise, and the whole status card
+        // usable, without ever putting a probe or a keygen on this path.
         identity,
       },
       // `peerKeyFingerprint`, never the key: the fingerprint is what an operator compares across two
@@ -482,6 +486,18 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
     }
     const graceMs = bearerUpgradeGraceMs(this.configuration.getHubPoolPreferences().poolHealthPollSeconds);
     try {
+      // Pre-check the partial UNIQUE index rather than letting it raise. The catch below is still
+      // the backstop, but a 23505 string tells an operator nothing; this case has exactly one cause
+      // and exactly one remedy, and both belong in the log line. Left alone rather than merged:
+      // both rows may hold live tokens, and silently deleting an operator's pairing is not this
+      // poll's decision to make.
+      const collision = await this.repo.findByNodeUuid(claim.nodeUuid);
+      if (collision && collision.id !== peer.id) {
+        this.logger.warn(
+          `[HubPool] ${peer.nodeFqdn} and ${collision.nodeFqdn} report the same node UUID — the same machine appears to be paired twice. Unpair one.`,
+        );
+        return null;
+      }
       const updated = await this.repo.update(peer.id, {
         peerNodeUuid: claim.nodeUuid,
         peerPublicKey: claim.publicKey,
@@ -595,11 +611,27 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
   /**
    * Refuses a pairing request from a name that is not on this tailnet.
    *
-   * Degrades to a no-op when the Admin API credential is absent or unhealthy: it
-   * is explicitly optional (see `docs/hub-pool.md`), and a Hub that cannot
-   * discover peers must still be able to accept pairing from one that can.
+   * Two checks, in order of what the node actually knows:
+   *
+   * 1. **The MagicDNS suffix**, which needs no credential at all — `TailscaleStatus.tailnet` comes
+   *    from the local CLI. This is the one that matters now that peers can be found without a
+   *    Tailscale OAuth client: previously the whole method returned immediately when the Admin API
+   *    was unconfigured, so a credential-less Hub — the exact configuration manual peer entry
+   *    exists to serve — had no membership check on either side of the handshake.
+   * 2. **Admin API device membership**, when a credential is configured. Strictly stronger, since a
+   *    suffix is only a string.
+   *
+   * Still degrades to a no-op when this node has no tailnet of its own: a Hub that never joined one
+   * has nothing to compare against, and refusing there would break pairing on a configuration that
+   * works today.
    */
   private async assertTailnetMember(nodeFqdn: string): Promise<void> {
+    const selfTailnet = await this.tailnetSuffix();
+    if (selfTailnet && !nodeFqdn.endsWith(`.${selfTailnet}`)) {
+      this.logger.warn(`[HubPool] rejecting pairing request from ${nodeFqdn}: not a name on this tailnet (${selfTailnet})`);
+      throw new ForbiddenException('Pairing requests are only accepted from devices on this tailnet');
+    }
+
     if (!this.tailscaleAdminApi.isConfigured()) {
       return;
     }
@@ -621,6 +653,29 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
     if (!devices.some((device) => normalizePeerFqdn(device.name) === nodeFqdn)) {
       this.logger.warn(`[HubPool] rejecting pairing request from ${nodeFqdn}: not a device on this tailnet`);
       throw new ForbiddenException('Pairing requests are only accepted from devices on this tailnet');
+    }
+  }
+
+  /**
+   * This node's own MagicDNS suffix, or `null` when it has none.
+   *
+   * Read through the 30s-cached status and never allowed to throw: a Tailscale CLI that is briefly
+   * unavailable must not turn every inbound pairing request into a 500. An unknown suffix means the
+   * suffix check is skipped, which is the same "accept on the operator's judgement" posture the
+   * Admin API leg already takes when it cannot reach the API.
+   */
+  private async tailnetSuffix(): Promise<string | null> {
+    try {
+      const status = await this.tailscaleService.getStatusCached();
+      return status.tailnet
+        ? status.tailnet
+            .trim()
+            .toLowerCase()
+            .replace(/^\.+|\.+$/g, '') || null
+        : null;
+    } catch (error) {
+      this.logger.warn(`[HubPool] could not read this node's tailnet: ${error instanceof Error ? error.message : String(error)}`);
+      return null;
     }
   }
 
@@ -794,6 +849,10 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
       // still-bearer peer that an identity upgrade is available, and it is deliberately NOT on the
       // unauthenticated `/identify` probe: that route is published through the Cloudflare tunnel,
       // and a UUID whose whole point is surviving renames is a durable correlator.
+      //
+      // Read through the identity cache, which is a single memoized database row and never any
+      // hardware probing — this answers every peer's 30s poll, and a node with no usable identity
+      // simply omits the field and is told about the upgrade on a later probe.
       ...(self ? { nodeUuid: self.nodeUuid } : {}),
       // Never cached: this is the whole point of the snapshot for a ranking peer, and a stale
       // figure would tell it we are idle while our engines are saturated.
@@ -1085,6 +1144,13 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
         lastSeenAt: new Date().toISOString(),
         lastCapabilities: capabilities as unknown as Record<string, unknown>,
       });
+      // Both of these are deliberately SEPARATE writes, after the health write has already
+      // committed. `peer_node_uuid` carries a partial UNIQUE index (migration 0059), so pinning one
+      // can raise a 23505 when the same physical node is somehow paired twice. Folding that into
+      // the health write above would send the error into the catch below, where it would count as a
+      // failed probe — and three ticks later a perfectly healthy peer would be marked `unreachable`
+      // by a uniqueness conflict that has nothing to do with its health. `pinPeerIdentity` swallows
+      // it instead, and warns.
       const settled = (await this.reconcileBearerGrace(refreshed ?? current)) ?? refreshed ?? current;
       await this.upgradeToSignedIfPossible(settled, capabilities);
     } catch (error) {

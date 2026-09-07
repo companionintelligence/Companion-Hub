@@ -258,3 +258,55 @@ export function normalizePeerFqdn(raw: string): string | null {
 
   return candidate;
 }
+
+/**
+ * Headers a reverse proxy in front of the Hub adds and a caller cannot remove.
+ *
+ * `cf-ray` is already the Hub's established "arrived through the Cloudflare tunnel" signal (see
+ * `AuthController.isTunnelRequest`); the rest are the same marker under Cloudflare's other names.
+ * `x-forwarded-for` is deliberately NOT in this list — it is caller-controlled, so its presence
+ * proves nothing on its own and callers handle it with their own rules ({@link PoolAppGuard} walks
+ * every hop; {@link callerSourceIp} treats it as one more reason not to trust `req.ip`).
+ */
+export const TUNNEL_MARKER_HEADERS = ['cf-ray', 'cf-connecting-ip', 'cf-visitor', 'true-client-ip'] as const;
+
+/**
+ * The caller's own address, or `undefined` when this Hub cannot honestly say what it is.
+ *
+ * `request.ip` is NOT the caller behind Traefik or the Cloudflare tunnel: it is the proxy's own
+ * private address, because Express `trust proxy` is left unset by default (`HUB_TRUST_PROXY`, see
+ * main.ts, and the same caveat is written on `InternalNetworkGuard` and `PoolAppGuard`). A
+ * "per-source" rate limit keyed on that value is keyed on ONE value for every caller in the world —
+ * a global limit wearing a per-source costume. For the pairing PIN that is worse than useless: the
+ * PIN's real defence is its own attempt ceiling, and a global lockout would hand any caller that
+ * can reach the tunnel a way to stop the operator pairing at all, which is exactly the failure mode
+ * `HubPoolPairingPinService` says it is avoiding.
+ *
+ * So the address is returned only in the two cases where it really is the caller's:
+ *   - `HUB_TRUST_PROXY` is set — Express has resolved the forwarded chain, so `request.ip` IS the
+ *     client, and this becomes the meaningful defence-in-depth the variable exists to enable.
+ *   - the request carries no proxy provenance at all — nothing sat in front of it, so `request.ip`
+ *     is the client. This is the LAN and tailnet case, which is how pool peers actually arrive.
+ *
+ * Otherwise: `undefined`, and the caller keys its limiter on whatever else it has. Refusing to
+ * guess is the point — a wrong key is not a weaker limit, it is a different limit on a different
+ * thing.
+ */
+export function callerSourceIp(
+  request: { ip?: string; headers?: Record<string, string | string[] | undefined> },
+  trustProxy: string | undefined = process.env.HUB_TRUST_PROXY,
+): string | undefined {
+  if (!request.ip) {
+    return undefined;
+  }
+  if (trustProxy?.trim()) {
+    return request.ip;
+  }
+  const headers = request.headers ?? {};
+  for (const header of TUNNEL_MARKER_HEADERS) {
+    if (headers[header]) {
+      return undefined;
+    }
+  }
+  return headers['x-forwarded-for'] ? undefined : request.ip;
+}

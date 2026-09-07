@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  callerSourceIp,
   describeHubPoolDisabled,
   describeHubPoolInboundRefused,
   isHubPoolEnabled,
@@ -184,5 +185,42 @@ describe('resolveHubPoolDirections', () => {
     expect(describeHubPoolInboundRefused('inbound_disabled')).toContain('inbound pooling');
     expect(describeHubPoolInboundRefused('peer_disabled')).toContain('this peer');
     expect(describeHubPoolInboundRefused('inbound_disabled')).not.toContain('HUB_POOL_USER_DISABLED');
+  });
+});
+
+describe('callerSourceIp — the only address a per-source limiter may key on', () => {
+  /** A request as Express hands it over: `ip` already resolved, headers as received. */
+  function req(ip: string | undefined, headers: Record<string, string> = {}) {
+    return { ip, headers };
+  }
+
+  it('returns the address when nothing sat in front of the request', () => {
+    // The LAN / tailnet case, which is how pool peers actually arrive.
+    expect(callerSourceIp(req('100.64.0.7'), undefined)).toBe('100.64.0.7');
+  });
+
+  it('refuses the address when the request came through the Cloudflare tunnel', () => {
+    // `req.ip` here is the tunnel's own private address — the SAME value for every caller on earth,
+    // so keying a "per-source" cooldown on it would silently make it a global one.
+    expect(callerSourceIp(req('172.18.0.4', { 'cf-ray': 'abc123-LHR' }), undefined)).toBeUndefined();
+    expect(callerSourceIp(req('172.18.0.4', { 'cf-connecting-ip': '203.0.113.9' }), undefined)).toBeUndefined();
+  });
+
+  it('refuses the address when any proxy forwarded the request', () => {
+    expect(callerSourceIp(req('172.18.0.4', { 'x-forwarded-for': '203.0.113.9' }), undefined)).toBeUndefined();
+  });
+
+  it('trusts the address once HUB_TRUST_PROXY is set, because Express has then resolved the chain', () => {
+    // The whole point of the variable: with it set, `req.ip` IS the client, and the IP key becomes
+    // the meaningful defence-in-depth it was always meant to be.
+    expect(callerSourceIp(req('203.0.113.9', { 'x-forwarded-for': '203.0.113.9, 172.18.0.4' }), '1')).toBe('203.0.113.9');
+  });
+
+  it('returns nothing when there is no address at all, rather than a bucket named "undefined"', () => {
+    expect(callerSourceIp(req(undefined), undefined)).toBeUndefined();
+  });
+
+  it('tolerates a request object with no headers', () => {
+    expect(callerSourceIp({ ip: '100.64.0.7' }, undefined)).toBe('100.64.0.7');
   });
 });

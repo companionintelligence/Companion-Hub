@@ -1,5 +1,5 @@
 import { type KeyObject, randomUUID } from 'node:crypto';
-import { Injectable, type OnModuleInit } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { EncryptionService } from '@/core/encryption/encryption.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { HubPoolIdentityRepository } from './hub-pool-identity.repository';
@@ -34,20 +34,37 @@ export interface LoadedPoolIdentity {
  * Owns `hub_pool_identity`: this node's stable UUID and its Ed25519 keypair, plus the "identity
  * beats address" bookkeeping that goes with them.
  *
- * THE INIT CONTRACT, which is the single most consequential rule in this service: **this must never
- * throw out of `onModuleInit`.** `EncryptionService` derives its key from the `JWT_SECRET`
- * environment variable, and a regenerated `.env` over a retained Postgres volume is an ordinary
- * reinstall — not an exotic failure. A throw here would crash-loop every appliance running this
- * build, including single-node Hubs that have never had a peer and never will. So the load is
- * lazy, memoized, retried on a timer, and every failure degrades to `identityError` on
- * `/pool/status` exactly the way a down inference backend already degrades to `capabilitiesError`.
+ * THE LOAD CONTRACT, which is the single most consequential rule in this service: **establishing an
+ * identity must never be able to fail a caller that did not ask for one.** `EncryptionService`
+ * derives its key from the `JWT_SECRET` environment variable, and a regenerated `.env` over a
+ * retained Postgres volume is an ordinary reinstall — not an exotic failure. A throw out of the
+ * load would take down whatever touched it first, on every appliance running this build, including
+ * single-node Hubs that have never had a peer and never will. So the load is lazy, memoized,
+ * retried on a timer, and every failure degrades to `identityError` on `/pool/status` exactly the
+ * way a down inference backend already degrades to `capabilitiesError`.
  *
  * The second rule: an undecryptable row is **never** silently re-minted. Re-minting would hand this
  * node a new public key while every peer still has the old one pinned, turning a recoverable
  * "fix your .env" into an unrecoverable fleet-wide unpair.
+ *
+ * The third rule, and the reason there is deliberately no `onModuleInit` here: **a Hub with no
+ * peers does none of this work at all.** An earlier revision warmed the cache at boot with a
+ * fire-and-forget `get()`, on the theory that it cost nothing. It does not. `EncryptionService`
+ * derives its AES key with `pbkdf2Sync(..., 100_000, ...)` — measured at **42.8 ms** on the
+ * reference appliance — and every boot paid it: the first for the encrypt behind the mint, every
+ * later one for the decrypt in {@link materialize}. That is a synchronous 43 ms hold on the event
+ * loop, during startup, on single-node Hubs that have never had a peer and never will, for a
+ * subsystem they do not use.
+ *
+ * So the load is purely demand-driven. Every caller is already async and already awaits something
+ * slower: `peerAuthHeaders` is about to make a network request, `getOwnCapabilities` already fans
+ * out to the inference router, `PoolPeerGuard` is authenticating a request that crossed a WAN, and
+ * `summary()` is a UI poll. Each pays the 43 ms once, on the first call, off the boot path — and a
+ * Hub whose Hub Pool settings page is never opened and whose peers list is empty never mints an
+ * identity in the first place.
  */
 @Injectable()
-export class HubPoolIdentityService implements OnModuleInit {
+export class HubPoolIdentityService {
   private cached: LoadedPoolIdentity | null = null;
   private loading: Promise<LoadedPoolIdentity | null> | null = null;
   private retryAfter = 0;
@@ -68,12 +85,6 @@ export class HubPoolIdentityService implements OnModuleInit {
     private readonly repo: HubPoolIdentityRepository,
     private readonly encryption: EncryptionService,
   ) {}
-
-  onModuleInit(): void {
-    // Fire and forget, and swallow: warming the cache at boot means the first pairing does not pay
-    // for the keygen, but nothing about this node's ability to start may depend on it succeeding.
-    void this.get().catch(() => undefined);
-  }
 
   /** The loaded identity, or `null` when it could not be established. Never rejects. */
   async get(): Promise<LoadedPoolIdentity | null> {

@@ -276,6 +276,62 @@ describe('HubPoolPeerService', () => {
 
       expect(repo.create).toHaveBeenCalled();
     });
+
+    it('refuses a name outside this tailnet even with NO Admin API credential configured', async () => {
+      // The check that matters now that peers can be found without a Tailscale OAuth client.
+      // Previously `assertTailnetMember` returned immediately when the Admin API was unconfigured,
+      // so the credential-less configuration — the exact one manual peer entry exists to serve —
+      // had no membership check on either side of the handshake. `TailscaleStatus.tailnet` comes
+      // from the local CLI and needs no credential at all.
+      repo.findByNodeFqdn.mockResolvedValue(undefined);
+      tailscaleAdminApi.isConfigured.mockReturnValue(false);
+
+      await expect(service.receivePairingRequest('impostor.evil-tailnet.ts.net', undefined, 'raw-token-value')).rejects.toThrow(ForbiddenException);
+
+      expect(repo.create).not.toHaveBeenCalled();
+    });
+
+    it('accepts a name on this tailnet with no Admin API credential configured', async () => {
+      repo.findByNodeFqdn.mockResolvedValue(undefined);
+      tailscaleAdminApi.isConfigured.mockReturnValue(false);
+
+      await service.receivePairingRequest('requester.tailxyz.ts.net', undefined, 'raw-token-value');
+
+      expect(repo.create).toHaveBeenCalled();
+    });
+
+    it('does not refuse a suffix look-alike by accident', async () => {
+      // `evil-tailxyz.ts.net` ends with the same characters as `tailxyz.ts.net` but is a different
+      // tailnet — the check is on a dot-anchored suffix, not a substring.
+      repo.findByNodeFqdn.mockResolvedValue(undefined);
+      tailscaleAdminApi.isConfigured.mockReturnValue(false);
+
+      await expect(service.receivePairingRequest('impostor.evil-tailxyz.ts.net', undefined, 'raw-token-value')).rejects.toThrow(ForbiddenException);
+    });
+
+    it('still accepts pairing on a Hub that has no tailnet of its own', async () => {
+      // A Hub that never joined a tailnet has nothing to compare against. Refusing there would
+      // break a configuration that works today, so the check degrades to a no-op.
+      repo.findByNodeFqdn.mockResolvedValue(undefined);
+      tailscaleAdminApi.isConfigured.mockReturnValue(false);
+      tailscaleService.getStatusCached.mockResolvedValue({
+        installed: false,
+        connected: false,
+        version: null,
+        hostname: null,
+        nodeFqdn: null,
+        tailnet: null,
+        ip: null,
+        supportsServices: false,
+        httpsAvailable: false,
+        backendState: null,
+        authUrl: null,
+      });
+
+      await service.receivePairingRequest('requester.some-other.ts.net', undefined, 'raw-token-value');
+
+      expect(repo.create).toHaveBeenCalled();
+    });
   });
 
   describe('pending request expiry', () => {
@@ -961,6 +1017,142 @@ describe('HubPoolPeerService', () => {
       // An unauthenticated identity claim is exactly the anonymous write the PIN exists to close;
       // the legacy flow pins on `pair/confirm` instead, which PoolPeerGuard has authenticated.
       expect(repo.update).not.toHaveBeenCalled();
+    });
+  });
+
+  /**
+   * Group E's `HubPoolNodeIdentityService` derived a *second* node UUID for the same node, from
+   * `resolveDeviceId`. Unified onto `HubPoolIdentityService`, which owns `hub_pool_identity` and
+   * the keypair: one node, one UUID, and trust and discovery agree on it. These are E's assertions
+   * re-pointed at the surviving service — the behaviour they pin down is what mattered, not which
+   * class produced it.
+   */
+  describe('stable node identity, as peers and the operator see it', () => {
+    const SELF_UUID = '11111111-1111-4111-8111-111111111111';
+    const PEER_UUID = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
+    const keys = generatePoolKeyPair();
+
+    /** The capabilities body a peer answers with. */
+    function capabilitiesResponse(body: Record<string, unknown> = {}): Response {
+      return new Response(JSON.stringify({ hardwareTier: 'high', backends: [], updatedAt: new Date().toISOString(), ...body }), { status: 200 });
+    }
+
+    function refresh(peer: HubPoolPeer): Promise<void> {
+      return (service as unknown as { refreshOnePeer: (p: HubPoolPeer) => Promise<void> }).refreshOnePeer(peer);
+    }
+
+    function giveSelfAnIdentity(): void {
+      identity.get.mockResolvedValue({ nodeUuid: SELF_UUID, publicKey: keys.publicKey, privateKey: privateKeyFromBase64(keys.privateKey) });
+      identity.canSign.mockResolvedValue(true);
+      identity.summary.mockResolvedValue({ nodeUuid: SELF_UUID, publicKeyFingerprint: 'ab:cd', identityError: null });
+    }
+
+    beforeEach(() => {
+      inferenceRouter.getStatus.mockResolvedValue({ hardwareTier: 'high', backends: [] } as unknown as InferenceStatus);
+      inferenceRouter.listModels.mockResolvedValue([]);
+    });
+
+    it("tells peers this node's UUID — the persisted one, the same value the guard verifies against", async () => {
+      giveSelfAnIdentity();
+
+      expect((await service.getOwnCapabilities()).nodeUuid).toBe(SELF_UUID);
+    });
+
+    it('omits nodeUuid entirely when this node has no usable identity, which is every pre-identity build', async () => {
+      // `identity.get` resolves null by default — a Hub whose identity could not be established
+      // tells peers no UUID, learns none from them, and reports none. Byte-for-byte the old shape.
+      repo.listAll.mockResolvedValue([]);
+
+      expect(await service.getOwnCapabilities()).not.toHaveProperty('nodeUuid');
+      expect((await service.getPoolStatus()).localNode.identity).toEqual({
+        nodeUuid: null,
+        publicKeyFingerprint: null,
+        identityError: null,
+      });
+    });
+
+    it('surfaces the identity through pool status without triggering any discovery I/O', async () => {
+      giveSelfAnIdentity();
+      repo.listAll.mockResolvedValue([]);
+
+      const status = await service.getPoolStatus();
+
+      expect(status.localNode.identity).toEqual({ nodeUuid: SELF_UUID, publicKeyFingerprint: 'ab:cd', identityError: null });
+      expect(tailscaleAdminApi.listDevices).not.toHaveBeenCalled();
+      expect(global.fetch).not.toHaveBeenCalled();
+    });
+
+    it("learns a peer's UUID from the authenticated capabilities response, never from /identify", async () => {
+      giveSelfAnIdentity();
+      const peer = mockPeer({ status: 'connected', presentTokenEncrypted: 'ENC:token' });
+      repo.update.mockImplementation(async (_id, data) => mockPeer(data as Partial<HubPoolPeer>));
+      vi.mocked(global.fetch)
+        .mockResolvedValueOnce(capabilitiesResponse({ nodeUuid: PEER_UUID }))
+        .mockResolvedValue(new Response(JSON.stringify({ nodeUuid: PEER_UUID, publicKey: keys.publicKey }), { status: 200 }));
+
+      await refresh(peer);
+
+      // Pinned together with the public key, which is the only shape `peer_node_uuid` ever holds:
+      // the guard resolves a row by UUID and then verifies with the key beside it.
+      expect(repo.update).toHaveBeenCalledWith(peer.id, expect.objectContaining({ peerNodeUuid: PEER_UUID, peerPublicKey: keys.publicKey }));
+    });
+
+    it('does not attempt an upgrade for a peer whose key it already holds', async () => {
+      giveSelfAnIdentity();
+      const peer = mockPeer({ status: 'connected', presentTokenEncrypted: 'ENC:token', peerNodeUuid: PEER_UUID, peerPublicKey: keys.publicKey });
+      vi.mocked(global.fetch).mockResolvedValue(capabilitiesResponse({ nodeUuid: PEER_UUID }));
+
+      await refresh(peer);
+
+      // One call: the capabilities probe. No second round trip to `pair/upgrade`.
+      expect(vi.mocked(global.fetch)).toHaveBeenCalledTimes(1);
+    });
+
+    it('ignores a peer that reports no UUID, which is every pre-identity build', async () => {
+      giveSelfAnIdentity();
+      const peer = mockPeer({ status: 'connected', presentTokenEncrypted: 'ENC:token' });
+      vi.mocked(global.fetch).mockResolvedValue(capabilitiesResponse());
+
+      await refresh(peer);
+
+      expect(vi.mocked(global.fetch)).toHaveBeenCalledTimes(1);
+      expect(repo.update).toHaveBeenCalledTimes(1);
+    });
+
+    it('warns rather than merging when the same machine is paired twice under two names', async () => {
+      giveSelfAnIdentity();
+      const peer = mockPeer({ id: 'peer-1', status: 'connected', presentTokenEncrypted: 'ENC:token' });
+      repo.findByNodeUuid.mockResolvedValue(mockPeer({ id: 'peer-2', nodeFqdn: 'same-box-renamed.tailxyz.ts.net' }));
+      repo.update.mockImplementation(async (_id, data) => mockPeer(data as Partial<HubPoolPeer>));
+      vi.mocked(global.fetch)
+        .mockResolvedValueOnce(capabilitiesResponse({ nodeUuid: PEER_UUID }))
+        .mockResolvedValue(new Response(JSON.stringify({ nodeUuid: PEER_UUID, publicKey: keys.publicKey }), { status: 200 }));
+
+      await refresh(peer);
+
+      // Both rows may hold live tokens; silently deleting an operator's pairing is not this poll's
+      // decision to make.
+      expect(repo.update).not.toHaveBeenCalledWith('peer-1', expect.objectContaining({ peerNodeUuid: expect.anything() }));
+      expect(repo.delete).not.toHaveBeenCalled();
+    });
+
+    it('writes the UUID separately from the health write, so a unique violation cannot mark a healthy peer unreachable', async () => {
+      // `peer_node_uuid` carries a partial UNIQUE index (migration 0059). Folding the pin into the
+      // health write would send a 23505 into the failure branch, and three ticks later a perfectly
+      // healthy peer would be `unreachable` because of a uniqueness conflict.
+      giveSelfAnIdentity();
+      const peer = mockPeer({ id: 'peer-1', status: 'connected', consecutiveFailures: 0, presentTokenEncrypted: 'ENC:token' });
+      repo.update.mockImplementation(async (_id, data) =>
+        'peerNodeUuid' in data ? Promise.reject(new Error('duplicate key value violates unique constraint')) : mockPeer(data as Partial<HubPoolPeer>),
+      );
+      vi.mocked(global.fetch)
+        .mockResolvedValueOnce(capabilitiesResponse({ nodeUuid: PEER_UUID }))
+        .mockResolvedValue(new Response(JSON.stringify({ nodeUuid: PEER_UUID, publicKey: keys.publicKey }), { status: 200 }));
+
+      await refresh(peer);
+
+      expect(repo.update).toHaveBeenCalledWith(peer.id, expect.objectContaining({ status: 'connected', consecutiveFailures: 0 }));
+      expect(repo.update).not.toHaveBeenCalledWith(peer.id, expect.objectContaining({ status: 'unreachable' }));
     });
   });
 });

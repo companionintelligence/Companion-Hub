@@ -12,9 +12,11 @@ import {
   fetchPoolRoutingLog,
   fetchPoolStatus,
   formatPoolPeersLines,
+  formatPoolProbeLines,
   formatPoolRoutingLogLines,
   formatPoolStatusLines,
   pairPoolPeer,
+  probePoolAddress,
   rejectPoolPeer,
   resolvePoolPeerTarget,
   runPoolDiscover,
@@ -35,6 +37,7 @@ export const POOL_SUBCOMMANDS = [
   'status',
   'peers',
   'discover',
+  'probe',
   'pair',
   'approve',
   'reject',
@@ -48,7 +51,7 @@ export const POOL_SUBCOMMANDS = [
 export type PoolSubcommand = (typeof POOL_SUBCOMMANDS)[number];
 
 /** Subcommands taking a peer reference before the optional [env], so the env parser never sees it. */
-const POOL_TARGET_SUBCOMMANDS: readonly PoolSubcommand[] = ['pair', 'approve', 'reject', 'unpair', 'peer-enable', 'peer-disable'];
+const POOL_TARGET_SUBCOMMANDS: readonly PoolSubcommand[] = ['probe', 'pair', 'approve', 'reject', 'unpair', 'peer-enable', 'peer-disable'];
 
 const POOL_USAGE = `Usage: ${BASE_COMMAND} pool <${POOL_SUBCOMMANDS.join('|')}> [env]`;
 
@@ -213,6 +216,17 @@ export async function runPoolCommand(args: string[]) {
     if (parsed.subcommand === 'discover') {
       const { lines, configured } = await runPoolDiscover(envFile);
       printMessageBox(`Hub Pool discovery  [${env}]`, lines, configured ? 'cyan' : 'yellow');
+      return;
+    }
+
+    if (parsed.subcommand === 'probe') {
+      if (!parsed.target) {
+        usageAndExit(`${BASE_COMMAND} pool probe <address> [env] — e.g. ${BASE_COMMAND} pool probe 192.168.1.42`);
+      }
+      // Deliberately NOT run through `isPlausiblePeerFqdn`: that check exists to reject the shapes
+      // this command is for. The backend parses the address, and its errors name the exact problem.
+      const result = await probePoolAddress(envFile, parsed.target);
+      printMessageBox(`Hub Pool probe  [${env}]`, formatPoolProbeLines(result), result.pairable ? 'green' : result.isCiHub ? 'yellow' : 'red');
       return;
     }
 

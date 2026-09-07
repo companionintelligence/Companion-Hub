@@ -48,6 +48,20 @@ describe('HubPoolIdentityService', () => {
     });
   });
 
+  it('does no work at all until something asks for an identity', () => {
+    // The peerless-Hub contract. `EncryptionService.encrypt`/`decrypt` each run
+    // `pbkdf2Sync(..., 100_000, ...)` — measured at 42.8 ms — so a warm at construction time would
+    // hold the event loop for 43 ms on every boot of every appliance, pooling or not. There is
+    // deliberately no `onModuleInit`; a Hub with no peers, whose Hub Pool page is never opened,
+    // never mints an identity and never touches the KDF.
+    build();
+
+    expect(repo.inserts).toBe(0);
+    expect(repo.row).toBeUndefined();
+    expect(encryption.encrypt).not.toHaveBeenCalled();
+    expect(encryption.decrypt).not.toHaveBeenCalled();
+  });
+
   it('mints one identity and reuses it across a restart', async () => {
     const first = await build().get();
     expect(first?.nodeUuid).toMatch(/^[0-9a-f-]{36}$/);
@@ -96,10 +110,9 @@ describe('HubPoolIdentityService', () => {
       return build();
     }
 
-    it('does not throw out of onModuleInit — a crash-loop here would take down peerless Hubs too', async () => {
+    it('never rejects out of get() — a throw here would take down peerless Hubs too', async () => {
       const service = await withUndecryptableKey();
 
-      expect(() => service.onModuleInit()).not.toThrow();
       await expect(service.get()).resolves.not.toBeNull();
     });
 

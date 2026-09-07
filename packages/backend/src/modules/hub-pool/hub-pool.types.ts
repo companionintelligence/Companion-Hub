@@ -39,8 +39,9 @@ export interface PoolPeerCapabilities {
   /** Reserved, alongside {@link gpuPressure}: which measurement produced the band. */
   gpuPressureSource?: PoolPressureSource;
   /**
-   * Reserved for peer identity: the answering node's stable pool UUID, learned only from this
-   * authenticated response and never from the unauthenticated `/identify` probe.
+   * The answering node's stable pool UUID — the one row of `hub_pool_identity` — learned only from
+   * this authenticated response and never from the unauthenticated `/identify` probe. Absent from a
+   * node whose identity could not be established, which is also every pre-identity build.
    */
   nodeUuid?: string;
   updatedAt: string;
@@ -105,9 +106,9 @@ export interface PoolIdentitySummary {
   publicKeyFingerprint: string | null;
   /**
    * Why the identity is unusable, when it is. Surfaced exactly as `capabilitiesError` already is:
-   * identity bootstrap must degrade and report, never throw out of `onModuleInit` — the encryption
-   * key is derived from an env secret, so a regenerated `.env` over a retained volume would
-   * otherwise crash-loop every appliance, peerless ones included.
+   * identity bootstrap must degrade and report, never throw at its caller — the encryption key is
+   * derived from an env secret, so a regenerated `.env` over a retained volume would otherwise take
+   * down whatever touched pooling first, on every appliance, peerless ones included.
    */
   identityError: string | null;
 }
@@ -143,18 +144,39 @@ export interface DiscoverablePoolPeer {
   nodeFqdn: string;
   hostname: string;
   /**
-   * Reserved for LAN discovery: how this candidate was found. Absent means the Tailscale Admin
-   * API, which is the only source in this build. A badge rather than a nullable
+   * How this candidate was found. Absent means the Tailscale Admin API. A badge rather than a nullable
    * `tailscaleDeviceId`, because widening that field is a type error on the CLI's `sanitizeForBox`
    * and a duplicate React key in the settings list.
    */
   source?: 'tailscale' | 'lan-probe';
   /**
-   * Reserved: a UUID the candidate *claims*, from an unauthenticated probe. Typed distinctly from
+   * A UUID the candidate *claims*, from an unauthenticated probe. Typed distinctly from
    * `hub_pool_peer.peer_node_uuid` on purpose — an externally-sourced UUID is a hint for the
    * operator, never an identity key to match a pinned row against.
    */
   claimedNodeUuid?: string;
+}
+
+/** Why a manually probed address is not offered as a pairing candidate. `null` when it is. */
+export type PoolProbeReason = 'unreachable' | 'not_a_hub' | 'no_tailnet_fqdn' | 'already_paired' | 'self';
+
+/**
+ * What `POST /inference/pool/peers/probe` found at an operator-typed address.
+ *
+ * `nodeFqdn` is the only durable thing here: the address is a directory lookup and is discarded once
+ * this answers. Pairing then goes through the existing `POST peers/pair` with that FQDN, so manual
+ * entry adds no new pairing path and no new trust — it only removes the Tailscale OAuth credential
+ * from the list of things an operator must have before two Hubs can find each other.
+ */
+export interface PoolProbeResult {
+  /** The address as probed, echoed back so a UI can label the row without re-parsing what was typed. */
+  address: string;
+  isCiHub: boolean;
+  nodeFqdn: string | null;
+  hostname: string | null;
+  alreadyPaired: boolean;
+  pairable: boolean;
+  reason: PoolProbeReason | null;
 }
 
 /**
@@ -186,9 +208,9 @@ export type PoolPeerStatus = 'pending' | 'connected' | 'unreachable';
 export interface PoolStatusPeer extends PublicHubPoolPeer {
   /** Requests this node has forwarded to the peer and not yet finished reading. A live gauge reset by a restart, never a total. */
   inFlightRequests: number;
-  /** Reserved for peer identity: how this peer authenticates to us today. */
+  /** How this peer authenticates to us today. */
   authMode?: PoolPeerAuthMode;
-  /** Reserved: a short hash of the peer's pinned public key, for the operator to compare across two screens. */
+  /** A short hash of the peer's pinned public key, for the operator to compare across two screens. Never the key. */
   peerKeyFingerprint?: string | null;
   /** Reserved for the load signal: the peer's effective (freshness-applied, floored) 0-3 band, or `null` when unmeasured. */
   gpuPressure?: number | null;
@@ -204,7 +226,7 @@ export interface PoolStatusLocalNode {
   backends: PoolPeerBackendCapability[];
   /** Why the local inventory is empty, when it is — a down backend must read differently from a node with no models. */
   capabilitiesError: string | null;
-  /** Reserved for peer identity: this node's UUID, key fingerprint, and why identity is unusable when it is. */
+  /** This node's UUID, key fingerprint, and why identity is unusable when it is. */
   identity?: PoolIdentitySummary;
   /** Reserved for the load signal: this node's own 0-3 pressure band, or `null` when unmeasured. */
   gpuPressure?: number | null;
@@ -249,6 +271,6 @@ export interface PoolStatus {
   peerCounts: { total: number; connected: number; pending: number; unreachable: number; disabled: number };
   /** Reserved for manual node pinning: the operator's routing preferences, with target availability resolved. */
   pins?: PoolStatusPin[];
-  /** Reserved for PIN pairing: whether a pairing PIN is outstanding. Never the digits. */
+  /** Whether a pairing PIN is outstanding, and until when. Never the digits. */
   pairingPin?: PoolPairingPinState;
 }
