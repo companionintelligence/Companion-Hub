@@ -25,6 +25,7 @@ import { HubPoolPairingPinService } from '../hub-pool-pairing-pin.service';
 import { HubPoolLoadService } from '../hub-pool-load.service';
 import { HubPoolRoutingLogService } from '../hub-pool-routing-log.service';
 import { PoolProxyService } from '../hub-pool-proxy.service';
+import { HubPoolDiscoveryService } from '../hub-pool-discovery.service';
 import { HubPoolController } from '../hub-pool.controller';
 import { PoolPeerGuard } from '../guards/pool-peer.guard';
 import type { PoolPeerCapabilities } from '../hub-pool.types';
@@ -45,6 +46,8 @@ import { publicKeyFingerprint } from '../hub-pool-peer-auth';
 
 const CORE_FQDN = 'hub-a.example-tailnet.ts.net';
 const BETA_FQDN = 'hub-b.example-tailnet.ts.net';
+/** Beta as an operator finds it on the LAN, with no Tailscale OAuth client anywhere in the picture. */
+const BETA_ADDRESS = '192.168.1.42:5002';
 const TAILNET = 'example-tailnet.ts.net';
 const SHARED_MODEL = 'llama3.2:3b';
 const BETA_ONLY_MODEL = 'qwen3:0.6b';
@@ -283,7 +286,18 @@ function buildNode(fqdn: string, models: string[]): Node {
     pairingPins,
     pressureService,
   );
-  const controller = new HubPoolController(service, mock<PoolProxyService>(), tailscaleService, configuration, new HubPoolRoutingLogService());
+  // A REAL discovery service over the real peer service: pairing by address runs the address parse,
+  // the private-address check, the `/identify` probe and the PIN handshake for real, which is the
+  // only way this file can catch the two halves drifting apart again.
+  const discovery = new HubPoolDiscoveryService(mock<LoggerService>(), service);
+  const controller = new HubPoolController(
+    service,
+    mock<PoolProxyService>(),
+    tailscaleService,
+    configuration,
+    new HubPoolRoutingLogService(),
+    discovery,
+  );
 
   const built: Node = {
     fqdn,
@@ -341,13 +355,15 @@ function toResponse(handler: () => Promise<unknown>): Promise<Response> {
  * Routes `https://<fqdn>/api/inference/pool/...` to that node's real controller, through its real
  * guard. Anything else — an unreachable node, an unknown route — rejects the way `fetch` would.
  */
-function installFetchRouter(nodes: Node[], options: { offline?: Set<string> } = {}): void {
+function installFetchRouter(nodes: Node[], options: { offline?: Set<string>; addresses?: Map<string, Node> } = {}): void {
   global.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const url = new URL(String(input));
     if (options.offline?.has(url.hostname)) {
       throw new TypeError('fetch failed');
     }
-    const node = nodes.find((candidate) => candidate.fqdn === url.hostname);
+    // `addresses` is the LAN half: a node reachable at `192.168.1.42:5002` and NOT by name, which is
+    // the configuration pairing-by-address exists for.
+    const node = nodes.find((candidate) => candidate.fqdn === url.hostname) ?? options.addresses?.get(url.host);
     if (!node) {
       throw new TypeError(`fetch failed: no route to ${url.hostname}`);
     }
@@ -367,6 +383,10 @@ function installFetchRouter(nodes: Node[], options: { offline?: Set<string> } = 
       ip: '100.64.0.9',
     } as unknown as Request;
     const path = url.pathname.replace('/api/inference/pool', '');
+
+    if (path === '/identify') {
+      return toResponse(() => node.controller.identify());
+    }
 
     if (path === '/pair/request') {
       return toResponse(() => node.controller.handlePairingRequest(request, body as never));
@@ -397,6 +417,8 @@ describe('Hub Pool across two nodes', () => {
   let core: Node;
   let beta: Node;
   let offline: Set<string>;
+  /** Nodes reachable only at a LAN authority — no MagicDNS route to them at all. */
+  let addresses: Map<string, Node>;
 
   /** Core initiates, beta approves — the whole operator flow, end to end. */
   async function pairNodes(): Promise<void> {
@@ -408,7 +430,8 @@ describe('Hub Pool across two nodes', () => {
     core = buildNode(CORE_FQDN, [SHARED_MODEL]);
     beta = buildNode(BETA_FQDN, [SHARED_MODEL, BETA_ONLY_MODEL]);
     offline = new Set<string>();
-    installFetchRouter([core, beta], { offline });
+    addresses = new Map<string, Node>();
+    installFetchRouter([core, beta], { offline, addresses });
   });
 
   describe('pairing handshake', () => {
@@ -681,6 +704,88 @@ describe('Hub Pool across two nodes', () => {
       // Core can no longer sign to beta (it dropped the pinned key), so it falls back to the token —
       // and beta refuses it, because it has seen core sign.
       expect(core.repo.only().consecutiveFailures).toBe(1);
+    });
+  });
+
+  describe('pairing by address', () => {
+    /**
+     * The end-to-end shape of "find a peer by address" after `/identify` stopped disclosing this
+     * node's MagicDNS name.
+     *
+     * Beta is reachable ONLY at a LAN authority here — `addresses`, not the FQDN router — so nothing
+     * in this flow can quietly fall back to a name core already knew. The name has to come out of
+     * the PIN-gated exchange or the pairing cannot complete at all.
+     */
+    it('learns the peer’s tailnet name from the PIN exchange and keys the row on it', async () => {
+      addresses.set(BETA_ADDRESS, beta);
+      const { pin } = beta.service.mintPairingPin();
+
+      const paired = await core.controller.pairPeer({ address: BETA_ADDRESS, displayName: 'Beta Hub', pin } as never);
+
+      // The address is used once, to reach the handshake. What gets stored is the name.
+      expect(paired).toMatchObject({ nodeFqdn: BETA_FQDN, direction: 'outbound', status: 'pending' });
+      expect(core.repo.only().nodeFqdn).toBe(BETA_FQDN);
+      // ...and the identity that came back on the same authenticated answer is pinned, so this
+      // pairing starts out signed rather than on a bearer token.
+      expect(core.repo.only().peerNodeUuid).toBe((await beta.service.identitySummary()).nodeUuid);
+    });
+
+    it('completes through approval, so an address-found peer routes like any other', async () => {
+      addresses.set(BETA_ADDRESS, beta);
+      const { pin } = beta.service.mintPairingPin();
+
+      await core.controller.pairPeer({ address: BETA_ADDRESS, displayName: 'Beta Hub', pin } as never);
+      await beta.service.approvePairing(beta.repo.only().id);
+
+      expect(core.repo.only()).toMatchObject({ nodeFqdn: BETA_FQDN, status: 'connected' });
+      expect(beta.repo.only()).toMatchObject({ nodeFqdn: CORE_FQDN, status: 'connected' });
+    });
+
+    it('refuses a wrong PIN and leaves neither node holding a row', async () => {
+      addresses.set(BETA_ADDRESS, beta);
+      beta.service.mintPairingPin();
+
+      await expect(core.controller.pairPeer({ address: BETA_ADDRESS, pin: '000000' } as never)).rejects.toThrow(/PIN/);
+
+      expect(core.repo.rows.size).toBe(0);
+      expect(beta.repo.rows.size).toBe(0);
+    });
+
+    it('does not disclose the name to a pairing request that carried no PIN', async () => {
+      // The privacy half of the same decision: the name moved behind the PIN, it did not merely move
+      // off `/identify`. An anonymous `pair/request` still gets today's bare acknowledgement.
+      const answer = await beta.service.receivePairingRequest(CORE_FQDN, 'Core', 'a'.repeat(64), {});
+
+      expect(answer).toEqual({});
+    });
+
+    it('answers a PIN-authenticated request with the name, and only then', async () => {
+      const { pin } = beta.service.mintPairingPin();
+
+      const answer = await beta.service.receivePairingRequest(CORE_FQDN, 'Core', 'a'.repeat(64), { pin });
+
+      expect(answer.nodeFqdn).toBe(BETA_FQDN);
+      expect(answer.nodeUuid).toBe((await beta.service.identitySummary()).nodeUuid);
+    });
+
+    it('refuses to pair with itself, and leaves no phantom request behind', async () => {
+      // The old probe caught this by comparing FQDNs `/identify` had told it. The receiver now
+      // catches it instead — it is the one party that knows its own name for certain, and catching
+      // it there is what stops a self-probe creating an inbound row from itself.
+      addresses.set(BETA_ADDRESS, core);
+      const { pin } = core.service.mintPairingPin();
+
+      await expect(core.controller.pairPeer({ address: BETA_ADDRESS, pin } as never)).rejects.toThrow(/itself/);
+      expect(core.repo.rows.size).toBe(0);
+    });
+
+    it('reports an already-paired node by name instead of creating a second row', async () => {
+      addresses.set(BETA_ADDRESS, beta);
+      await pairNodes();
+      const { pin } = beta.service.mintPairingPin();
+
+      await expect(core.controller.pairPeer({ address: BETA_ADDRESS, pin } as never)).rejects.toThrow(BETA_FQDN);
+      expect(core.repo.rows.size).toBe(1);
     });
   });
 

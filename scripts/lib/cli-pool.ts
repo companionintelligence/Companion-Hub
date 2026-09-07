@@ -59,6 +59,8 @@ export interface ParsedPoolArgs {
   subcommand: PoolSubcommand;
   target?: string;
   displayName?: string;
+  /** `pair` only: the six digits minted on the OTHER Hub, and the only way to pair by address. */
+  pin?: string;
   limit?: number;
   /** Which switch `enable`/`disable` writes. `both` (the default) is the master switch, i.e. today's behaviour. */
   axis: PoolEnableAxis;
@@ -73,6 +75,7 @@ export interface ParsedPoolArgs {
 export function parsePoolArgs(args: string[]): ParsedPoolArgs {
   let yes = false;
   let displayName: string | undefined;
+  let pin: string | undefined;
   let limit: number | undefined;
   let axis: PoolEnableAxis = 'both';
   const positional: string[] = [];
@@ -93,12 +96,17 @@ export function parsePoolArgs(args: string[]): ParsedPoolArgs {
       axis = next;
       continue;
     }
-    if (arg === '--name' || arg === '--limit') {
+    if (arg === '--name' || arg === '--limit' || arg === '--pin') {
       const next = args[i + 1];
       if (!next || next.startsWith('--')) usageAndExit(`Missing value for ${arg}. ${POOL_USAGE}`);
       if (arg === '--name') displayName = next;
+      else if (arg === '--pin') pin = parsePairingPin(next);
       else limit = parsePoolLimit(next);
       i += 1;
+      continue;
+    }
+    if (arg.startsWith('--pin=')) {
+      pin = parsePairingPin(arg.slice('--pin='.length));
       continue;
     }
     if (arg.startsWith('--name=')) {
@@ -122,9 +130,22 @@ export function parsePoolArgs(args: string[]): ParsedPoolArgs {
     usageAndExit(`--${axis} only applies to \`${BASE_COMMAND} pool enable\` and \`${BASE_COMMAND} pool disable\`.`);
   }
 
+  if (pin !== undefined && subcommand !== 'pair') {
+    usageAndExit(`--pin only applies to \`${BASE_COMMAND} pool pair\`.`);
+  }
+
   const takesTarget = POOL_TARGET_SUBCOMMANDS.includes(subcommand);
   const target = takesTarget ? positional[1] : undefined;
-  return { subcommand, target, displayName, limit, axis, yes, env: resolveEnvFromArgs(positional.slice(takesTarget ? 2 : 1)) };
+  return { subcommand, target, displayName, pin, limit, axis, yes, env: resolveEnvFromArgs(positional.slice(takesTarget ? 2 : 1)) };
+}
+
+/** Exactly six digits, checked here so a typo is a usage error rather than a 400 from the Hub. */
+function parsePairingPin(raw: string): string {
+  const trimmed = raw.trim();
+  if (!/^\d{6}$/.test(trimmed)) {
+    usageAndExit('A pairing PIN is exactly six digits, as shown by `cihub pool pairing-pin` on the other Hub.');
+  }
+  return trimmed;
 }
 
 /** Matches the backend's `RoutingLogQueryDto` bounds so a bad value fails here rather than as a 400. */
@@ -317,19 +338,30 @@ async function runPoolPeerMutation(ctx: HubContext, parsed: ParsedPoolArgs) {
   if (!parsed.target) {
     usageAndExit(
       parsed.subcommand === 'pair'
-        ? `Usage: ${BASE_COMMAND} pool pair <node-fqdn> [env] [--name <label>] [--yes]`
+        ? `Usage: ${BASE_COMMAND} pool pair <node-fqdn|address> [env] [--pin <digits>] [--name <label>] [--yes]`
         : `Usage: ${BASE_COMMAND} pool ${parsed.subcommand} <id|node-fqdn> [env] [--yes]`,
     );
   }
 
   if (parsed.subcommand === 'pair') {
-    if (!isPlausiblePeerFqdn(parsed.target)) {
+    // Two shapes, told apart by whether the target looks like a MagicDNS name. An address needs a
+    // PIN, because the far Hub only discloses its tailnet name — the name the row is keyed on — to a
+    // request carrying one; `/identify` reports no name to anybody.
+    const byName = isPlausiblePeerFqdn(parsed.target);
+    if (!byName && parsed.pin === undefined) {
       printMessageBox(
-        'Not a peer hostname',
+        'Pairing by address needs a PIN',
         [
-          `"${sanitizeForBox(parsed.target)}" is not a MagicDNS name.`,
-          'Pass the bare hostname a peer publishes on the tailnet — no scheme, port or path,',
-          'and not an IP address: e.g. hub-b.example-tailnet.ts.net',
+          `"${sanitizeForBox(parsed.target)}" is not a MagicDNS name, so it is being read as an address.`,
+          '',
+          'An address can reach the other Hub but cannot name it: /identify is unauthenticated and',
+          'reports no MagicDNS name. The name comes back in the answer to a PIN-authenticated',
+          'pairing request, so pairing by address needs the PIN from that Hub:',
+          '',
+          '  on that Hub:  cihub pool pairing-pin',
+          `  then here:    ${BASE_COMMAND} pool pair ${sanitizeForBox(parsed.target)} --pin <digits>`,
+          '',
+          'Or pass the bare tailnet hostname instead: e.g. hub-b.example-tailnet.ts.net',
         ],
         'red',
       );
@@ -345,7 +377,7 @@ async function runPoolPeerMutation(ctx: HubContext, parsed: ParsedPoolArgs) {
       printMessageBox('Pairing cancelled', ['No pairing request was sent.'], 'yellow');
       return;
     }
-    const peer = await pairPoolPeer(envFile, parsed.target, parsed.displayName);
+    const peer = await pairPoolPeer(envFile, byName ? { nodeFqdn: parsed.target } : { address: parsed.target }, parsed.displayName, parsed.pin);
     printMessageBox(
       `Pairing requested  [${env}]`,
       [

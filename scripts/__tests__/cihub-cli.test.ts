@@ -1013,6 +1013,7 @@ describe('parsePoolArgs', () => {
       subcommand: 'status',
       target: undefined,
       displayName: undefined,
+      pin: undefined,
       limit: undefined,
       axis: 'both',
       yes: false,
@@ -1044,6 +1045,29 @@ describe('parsePoolArgs', () => {
   it('takes the peer reference before the env for target subcommands', () => {
     const parsed = parsePoolArgs(['pair', POOL_PEER_FQDN, 'dev', '--name', 'Studio', '--yes']);
     expect(parsed).toMatchObject({ subcommand: 'pair', target: POOL_PEER_FQDN, displayName: 'Studio', yes: true, env: 'dev' });
+  });
+
+  it('reads --pin in both forms, for pairing with a Hub found by address', () => {
+    // An address can reach the other Hub but cannot name it — `/identify` reports no MagicDNS name —
+    // so the PIN is what makes the answer carry one.
+    expect(parsePoolArgs(['pair', '192.168.1.42:5002', '--pin', '123456']).pin).toBe('123456');
+    expect(parsePoolArgs(['pair', '192.168.1.42', '--pin=004200']).pin).toBe('004200');
+  });
+
+  it('rejects a PIN that is not six digits, and one on a subcommand that has no use for it', () => {
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => {
+      throw new Error('exit');
+    });
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    // A leading zero is legal, a five-digit value is not, and a PIN on `status` is a typo.
+    expect(() => parsePoolArgs(['pair', '192.168.1.42', '--pin', '12345'])).toThrow();
+    expect(() => parsePoolArgs(['status', '--pin', '123456'])).toThrow();
+
+    exitSpy.mockRestore();
+    logSpy.mockRestore();
+    errSpy.mockRestore();
   });
 
   it('accepts --limit in both forms', () => {

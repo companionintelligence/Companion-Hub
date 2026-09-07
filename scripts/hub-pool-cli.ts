@@ -87,24 +87,32 @@ export interface PoolStatusResponse {
   routing: PoolRoutingSummary;
 }
 
+/**
+ * An unpaired node the Hub can offer to pair with **by name**.
+ *
+ * Every entry has a tailnet name, because pairing from this list hands `nodeFqdn` to `pool pair`. A
+ * Hub found by address is not in here — `/identify` discloses no name — and is paired with directly:
+ * `cihub pool pair <address> --pin <digits>`.
+ */
 export interface DiscoverablePoolPeer {
-  /** Empty for a candidate found by a manual address probe — there is no Tailscale device behind it. */
   tailscaleDeviceId: string;
   nodeFqdn: string;
   hostname: string;
-  /** How this candidate was found. Absent on a peer running an older build. */
-  source?: 'tailscale' | 'lan-probe';
 }
 
-/** What `POST /inference/pool/peers/probe` found at an operator-typed address. */
+/**
+ * What `POST /inference/pool/peers/probe` found at an operator-typed address.
+ *
+ * Reachability and protocol only. It deliberately does not name the node: `/identify` is
+ * unauthenticated and reachable through the Cloudflare tunnel, so the MagicDNS name lives behind the
+ * pairing PIN instead.
+ */
 export interface PoolProbeResult {
   address: string;
   isCiHub: boolean;
-  nodeFqdn: string | null;
-  hostname: string | null;
-  alreadyPaired: boolean;
+  poolProtocol: number | null;
   pairable: boolean;
-  reason: 'unreachable' | 'not_a_hub' | 'no_tailnet_fqdn' | 'already_paired' | 'self' | null;
+  reason: 'unreachable' | 'not_a_hub' | 'protocol_too_old' | null;
 }
 
 export interface PoolRoutingRecord {
@@ -160,10 +168,21 @@ export async function fetchPoolRoutingLog(envFileName: string, limit?: number): 
   });
 }
 
-export async function pairPoolPeer(envFileName: string, nodeFqdn: string, displayName?: string): Promise<PoolPeerRow> {
+/**
+ * Send a pairing request, by tailnet name or by LAN address.
+ *
+ * `address` requires `pin`: the far Hub only discloses its tailnet name — the name the row is keyed
+ * on and every later call is addressed to — to a request carrying the PIN minted on its own screen.
+ */
+export async function pairPoolPeer(
+  envFileName: string,
+  target: { nodeFqdn: string } | { address: string },
+  displayName?: string,
+  pin?: string,
+): Promise<PoolPeerRow> {
   return hubApiFetch<PoolPeerRow>(envFileName, '/inference/pool/peers/pair', {
     method: 'POST',
-    body: JSON.stringify(displayName ? { nodeFqdn, displayName } : { nodeFqdn }),
+    body: JSON.stringify({ ...target, ...(displayName ? { displayName } : {}), ...(pin ? { pin } : {}) }),
     signal: AbortSignal.timeout(POOL_MUTATION_TIMEOUT_MS),
   });
 }
@@ -448,8 +467,10 @@ export function formatPoolDiscoverLines(devices: DiscoverablePoolPeer[], tailsca
     return [
       'No unpaired CI-Hub nodes found.',
       '',
-      'Add one by address:  cihub pool probe <address>',
-      '  e.g. 192.168.1.42, 192.168.1.42:5002, or a hostname on this LAN.',
+      'Find one by address:  cihub pool probe <address>',
+      '  e.g. 192.168.1.42, 192.168.1.42:5002, or a hostname on this LAN. A Hub found that',
+      '  way is paired with directly — it never appears in this list, because an address is',
+      '  not a name: cihub pool pair <address> --pin <digits>',
       '',
       ...(tailscaleAdminApiConfigured
         ? ['Tailnet enumeration is configured, and found nothing unpaired.']
@@ -465,15 +486,13 @@ export function formatPoolDiscoverLines(devices: DiscoverablePoolPeer[], tailsca
   }
 
   const lines = [
-    `${cell('NODE', DISCOVER_WIDTHS[0])} ${cell('HOSTNAME', DISCOVER_WIDTHS[1])} ${cell('FOUND VIA', 10)} TAILSCALE DEVICE`,
-    ruleRow([...DISCOVER_WIDTHS, 10, 'TAILSCALE DEVICE'.length]),
+    `${cell('NODE', DISCOVER_WIDTHS[0])} ${cell('HOSTNAME', DISCOVER_WIDTHS[1])} TAILSCALE DEVICE`,
+    ruleRow([...DISCOVER_WIDTHS, 'TAILSCALE DEVICE'.length]),
   ];
   for (const device of devices) {
-    // Every string on this row is authored off-box, and box output is ANSI-injectable — so all of
-    // them go through sanitizeForBox, not just the ones that used to come from the Admin API.
+    // Every string on this row is authored off-box, and box output is ANSI-injectable.
     lines.push(
-      `${cell(device.nodeFqdn, DISCOVER_WIDTHS[0])} ${cell(device.hostname, DISCOVER_WIDTHS[1])} ` +
-        `${cell(device.source === 'lan-probe' ? 'address' : 'tailnet', 10)} ${sanitizeForBox(device.tailscaleDeviceId || '-')}`,
+      `${cell(device.nodeFqdn, DISCOVER_WIDTHS[0])} ${cell(device.hostname, DISCOVER_WIDTHS[1])} ${sanitizeForBox(device.tailscaleDeviceId || '-')}`,
     );
   }
   lines.push('', 'Pair one with: cihub pool pair <node>');
@@ -483,9 +502,10 @@ export function formatPoolDiscoverLines(devices: DiscoverablePoolPeer[], tailsca
 /**
  * A probe result as the operator reads it.
  *
- * Every branch names what to do next, and the success branch says explicitly that pairing goes to
- * the tailnet name rather than the address typed — which is the one thing about this feature it
- * would be easy and costly to misunderstand.
+ * Every branch names what to do next, and the success branch is explicit that the node has not been
+ * *named* — only found. That is the one thing about this command it would be easy and costly to
+ * misunderstand: the address alone can never produce a peer, because the tailnet name a peer row is
+ * keyed on is only disclosed to a pairing request carrying that Hub's PIN.
  */
 export function formatPoolProbeLines(result: PoolProbeResult): string[] {
   const address = sanitizeForBox(result.address);
@@ -500,31 +520,30 @@ export function formatPoolProbeLines(result: PoolProbeResult): string[] {
       ];
     case 'not_a_hub':
       return [`${FAIL} Something answered at ${address}, but it is not a CI-Hub.`];
-    case 'no_tailnet_fqdn':
+    case 'protocol_too_old':
       return [
-        `${PENDING} Found a CI-Hub at ${address}, but it has not joined a tailnet.`,
+        `${PENDING} Found a CI-Hub at ${address}, but it speaks an older pool protocol.`,
         '',
-        'Pooling reaches peers over the tailnet, so that node has to join one before it',
-        'can be paired with. On that Hub: cihub tailscale up',
+        'Pairing by address needs the far Hub to answer a PIN with its tailnet name, which',
+        'that build cannot do. Upgrade it, or pair by its MagicDNS name instead:',
+        '  cihub pool pair <node-fqdn>',
       ];
-    case 'self':
-      return [`${PENDING} ${address} is this Hub.`];
-    case 'already_paired':
-      return [`${OK} ${sanitizeForBox(result.nodeFqdn ?? address)} is already paired — see: cihub pool peers`];
     default:
       break;
   }
 
-  const nodeFqdn = sanitizeForBox(result.nodeFqdn ?? '');
   return [
-    `${OK} Found ${sanitizeForBox(result.hostname ?? nodeFqdn)} at ${address}.`,
+    `${OK} There is a CI-Hub at ${address}, speaking pool protocol ${result.poolProtocol ?? '?'}.`,
     '',
-    `  Node       ${nodeFqdn}`,
+    'It is not named here, and that is deliberate: /identify is unauthenticated and reachable',
+    'through the public tunnel, so it reports no MagicDNS name. Pair to learn it.',
     '',
-    `Pair with it: cihub pool pair ${nodeFqdn}`,
+    'On THAT Hub:  cihub pool pairing-pin',
+    `Then here:    cihub pool pair ${address} --pin <digits>`,
     '',
-    'Pairing and every pooled request go to that tailnet name, not to the address you',
-    'typed — same TLS, same tokens. The address was only used to look the name up.',
+    'The PIN authenticates the request; the answer carries the tailnet name, and that is what',
+    'the peer is stored as. Every pooled request then goes to https://<name> — same TLS, same',
+    'credentials. The address was only ever a way to reach the handshake.',
   ];
 }
 

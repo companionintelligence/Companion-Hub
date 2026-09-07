@@ -1,5 +1,5 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
-import { type CanActivate, type ExecutionContext, Injectable, type OnModuleDestroy, type OnModuleInit, UnauthorizedException } from '@nestjs/common';
+import { type CanActivate, type ExecutionContext, Injectable, type OnModuleDestroy, UnauthorizedException } from '@nestjs/common';
 import type { Request } from 'express';
 import type { HubPoolPeer } from '@/core/database/drizzle/types';
 import { normalizePeerFqdn } from '@/common/helpers/hub-pool';
@@ -52,7 +52,7 @@ const REFUSED = 'Invalid pool peer credentials';
  * collision instead of failing a request.
  */
 @Injectable()
-export class PoolPeerGuard implements CanActivate, OnModuleInit, OnModuleDestroy {
+export class PoolPeerGuard implements CanActivate, OnModuleDestroy {
   private readonly nonces = new PeerNonceCache();
 
   constructor(
@@ -62,12 +62,21 @@ export class PoolPeerGuard implements CanActivate, OnModuleInit, OnModuleDestroy
     private readonly logger: LoggerService,
   ) {}
 
-  onModuleInit(): void {
-    this.nonces.startSweeper();
-  }
-
+  /**
+   * There is deliberately no `onModuleInit` arming the nonce sweeper.
+   *
+   * The cache arms its own timer on the first nonce it stores and disarms it again once the last one
+   * expires ({@link PeerNonceCache}), so a Hub with no pool peers — which is nearly all of them —
+   * runs no interval for this guard at all, instead of sweeping an empty map every 30s forever.
+   * `hasNonceSweeper()` exists so a test can pin that rather than the comment claiming it.
+   */
   onModuleDestroy(): void {
     this.nonces.stopSweeper();
+  }
+
+  /** Whether this guard is currently holding a nonce-sweep timer. Test seam for the peerless-cost assertion. */
+  hasNonceSweeper(): boolean {
+    return this.nonces.isSweeping();
   }
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
