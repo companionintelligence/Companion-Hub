@@ -1359,6 +1359,14 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "desktop_channel",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {

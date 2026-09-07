@@ -30,10 +30,13 @@ describe('store-search', () => {
   });
 
   it('matches tokens so "drive" still finds the Google Drive pairing', () => {
+    const dataEntry = alts.data?.[0];
+    if (!dataEntry) {
+      throw new Error('Expected data alternatives fixture');
+    }
+
     expect(textMatchesSearch('Google Drive', 'drive')).toBe(true);
-    const [firstAlternative] = alts.data ?? [];
-    expect(firstAlternative).toBeDefined();
-    expect(alternativeEntryMatchesSearch(firstAlternative as NonNullable<typeof firstAlternative>, 'data', 'drive')).toBe(true);
+    expect(alternativeEntryMatchesSearch(dataEntry, 'data', 'drive')).toBe(true);
   });
 
   it('matches alternative names and slugs in the same listing', () => {

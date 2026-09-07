@@ -51,6 +51,19 @@ const signInWithEmail: RouteHandler = (_url, body) => {
   return { body: { user: { id: 'test-portal-user', email, emailVerified: true }, token: 'mock-portal-session' }, status: 200 };
 };
 
+const signUpWithEmail: RouteHandler = (_url, body) => {
+  const creds = (body ?? {}) as { email?: unknown; password?: unknown; name?: unknown };
+  const email = typeof creds.email === 'string' ? creds.email.trim().toLowerCase() : '';
+  const password = typeof creds.password === 'string' ? creds.password : '';
+  const name = typeof creds.name === 'string' && creds.name.trim() ? creds.name.trim() : email.split('@')[0];
+
+  if (!email?.includes('@') || password.length < 8) {
+    return { body: { code: 'INVALID_SIGN_UP', message: 'Invalid sign-up request' }, status: 400 };
+  }
+
+  return { body: { user: { id: 'test-portal-user', email, name, emailVerified: true }, token: 'mock-portal-session' }, status: 200 };
+};
+
 /**
  * Device liveness ping. `RegistrationService.validateRegistration` posts here on a
  * loop; three non-2xx answers drive the Hub into the `degraded` provisioning phase,
@@ -63,6 +76,7 @@ const baseRoutes: RouteMap = {
   'GET /v2/': () => ({ body: {}, status: 200 }),
   'GET /v2/ci-hub/tags/list': () => ({ body: { name: 'ci-hub', tags: ['1.0.0'] }, status: 200 }),
   'POST /api/auth/sign-in/email': signInWithEmail,
+  'POST /api/auth/sign-up/email': signUpWithEmail,
   'POST /api/devices/check-in': deviceCheckIn,
 };
 
