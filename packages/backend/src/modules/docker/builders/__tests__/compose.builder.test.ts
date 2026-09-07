@@ -809,3 +809,136 @@ describe('DockerComposeBuilder resource limits', () => {
     expect(parsed.services.nginx.deploy).toBeUndefined();
   });
 });
+
+describe('DockerComposeBuilder network sandboxing and defense-in-depth', () => {
+  let builder: DockerComposeBuilder;
+
+  beforeEach(() => {
+    builder = new DockerComposeBuilder('example.com', 'ci.lan');
+  });
+
+  it('adds security_opt: ["no-new-privileges:true"] when configured via setSecurityOpt', async () => {
+    builder.setSecurityOpt(['no-new-privileges:true']);
+
+    const service: ServiceInput = {
+      name: 'web',
+      image: 'nginx:alpine',
+      internalPort: 80,
+    };
+
+    const compose = await builder.getDockerCompose([service], {}, urn, subnet);
+    const parsed = yaml.parse(compose);
+
+    expect(parsed.services.web.security_opt).toEqual(['no-new-privileges:true']);
+  });
+
+  it('merges container security_opt with service-declared options without duplicates', async () => {
+    builder.setSecurityOpt(['no-new-privileges:true']);
+
+    const service: ServiceInput = {
+      name: 'web',
+      image: 'nginx:alpine',
+      internalPort: 80,
+      securityOpt: ['apparmor:unconfined', 'no-new-privileges:true'],
+    };
+
+    const compose = await builder.getDockerCompose([service], {}, urn, subnet);
+    const parsed = yaml.parse(compose);
+
+    expect(parsed.services.web.security_opt).toEqual(['apparmor:unconfined', 'no-new-privileges:true']);
+  });
+
+  it('provides network isolation to block internal infrastructure hosts and ports', async () => {
+    builder.setNetworkIsolation({
+      isolateInternalInfrastructure: true,
+      blockInternalHosts: true,
+    });
+
+    const service: ServiceInput = {
+      name: 'web',
+      image: 'nginx:alpine',
+      internalPort: 80,
+    };
+
+    const compose = await builder.getDockerCompose([service], {}, urn, subnet);
+    const parsed = yaml.parse(compose);
+
+    // Extra hosts should contain 127.0.0.1 null-routes for internal infrastructure
+    expect(parsed.services.web.extra_hosts).toContain('ci-hub-db:127.0.0.1');
+    expect(parsed.services.web.extra_hosts).toContain('ci-hub-queue:127.0.0.1');
+    expect(parsed.services.web.extra_hosts).toContain('postgres:127.0.0.1');
+    expect(parsed.services.web.extra_hosts).toContain('rabbitmq:127.0.0.1');
+
+    // Automatically includes no-new-privileges when isolation is active
+    expect(parsed.services.web.security_opt).toContain('no-new-privileges:true');
+  });
+
+  it('rejects containers binding directly to Postgres port 6543 under network isolation', async () => {
+    builder.setNetworkIsolation(true);
+
+    const service: ServiceInput = {
+      name: 'malicious-postgres-connect',
+      image: 'alpine:latest',
+      internalPort: 6543,
+    };
+
+    await expect(builder.getDockerCompose([service], {}, urn, subnet)).rejects.toThrow(/cannot bind to internal infrastructure port 6543/);
+  });
+
+  it('rejects containers binding directly to RabbitMQ port 5672 under network isolation', async () => {
+    builder.setNetworkIsolation(true);
+
+    const service: ServiceInput = {
+      name: 'malicious-rabbitmq-connect',
+      image: 'alpine:latest',
+      internalPort: 5672,
+    };
+
+    await expect(builder.getDockerCompose([service], {}, urn, subnet)).rejects.toThrow(/cannot bind to internal infrastructure port 5672/);
+  });
+
+  it('supports internal: true and disableMainNetwork for complete network isolation', async () => {
+    builder.setNetworkIsolation({
+      internal: true,
+      disableMainNetwork: true,
+    });
+
+    const service: ServiceInput = {
+      name: 'isolated-service',
+      image: 'alpine:latest',
+      isMain: true,
+    };
+
+    const compose = await builder.getDockerCompose([service], {}, urn, subnet);
+    const parsed = yaml.parse(compose);
+
+    // App network should have internal: true
+    expect(parsed.networks['nginx_store-id_network'].internal).toBe(true);
+
+    // Main hub networks should not be included
+    expect(parsed.networks['ci-hub_network']).toBeUndefined();
+    expect(parsed.networks['ci-os-hub_network']).toBeUndefined();
+    expect(parsed.services['isolated-service'].networks['ci-hub_network']).toBeUndefined();
+  });
+
+  it('accepts options object via constructor and getDockerCompose', async () => {
+    const customBuilder = new DockerComposeBuilder('example.com', 'ci.lan', true, {
+      securityOpt: ['no-new-privileges:true'],
+      networkIsolation: {
+        blockInternalHosts: true,
+      },
+    });
+
+    const service: ServiceInput = {
+      name: 'web',
+      image: 'nginx:alpine',
+      internalPort: 80,
+    };
+
+    const compose = await customBuilder.getDockerCompose([service], {}, urn, subnet);
+    const parsed = yaml.parse(compose);
+
+    expect(parsed.services.web.security_opt).toContain('no-new-privileges:true');
+    expect(parsed.services.web.extra_hosts).toContain('ci-hub-db:127.0.0.1');
+  });
+});

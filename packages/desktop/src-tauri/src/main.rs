@@ -141,6 +141,28 @@ async fn start_hub_command(
         })?
 }
 
+/// Restart the Hub by stopping (if running) and starting the compose stack.
+#[tauri::command]
+async fn restart_hub_command(
+    state: tauri::State<'_, hub_manager::HubPaths>,
+) -> Result<String, String> {
+    let compose = state.compose_path.clone();
+    let env = state.env_path.clone();
+    let data = state.data_dir.clone();
+    tokio::task::spawn_blocking(move || {
+        let _ = hub_manager::stop_hub_for_update(&compose, &env);
+        hub_manager::start_hub(&compose, &env, &data)
+    })
+    .await
+    .map_err(|e| {
+        if e.is_panic() {
+            format!("restart_hub task panicked: {}", e)
+        } else {
+            format!("restart_hub task was cancelled: {}", e)
+        }
+    })?
+}
+
 #[tauri::command]
 fn is_stack_dev_mode_command() -> bool {
     stack_dev_mode_enabled()
@@ -502,6 +524,7 @@ pub fn run() {
             check_hub_status,
             discover_hubs,
             start_hub_command,
+            restart_hub_command,
             is_stack_dev_mode_command,
             check_docker_available,
             check_docker_access_command,

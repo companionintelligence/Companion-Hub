@@ -439,3 +439,40 @@ export const hubPoolPeer = pgTable('hub_pool_peer', {
   createdAt: timestamp('created_at', { mode: 'string' }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { mode: 'string' }).defaultNow().notNull(),
 });
+
+const lifecycleJobMetadata = customType<{ data: Record<string, unknown>; driverData: string }>({
+  dataType() {
+    return 'jsonb';
+  },
+  toDriver(value: Record<string, unknown>): string {
+    return JSON.stringify(value ?? {});
+  },
+  fromDriver(value: unknown): Record<string, unknown> {
+    if (typeof value === 'string') {
+      try {
+        return JSON.parse(value);
+      } catch {
+        return {};
+      }
+    }
+    return (value as Record<string, unknown>) ?? {};
+  },
+});
+
+/**
+ * Durable task state machine tracking app lifecycle operations (install, start, stop, update, etc.).
+ * Persists job progress, error state, execution timestamps, and arbitrary metadata across Hub restarts.
+ */
+export const lifecycleJob = pgTable('lifecycle_job', {
+  id: uuid('id').defaultRandom().primaryKey().notNull(),
+  appUrn: varchar('app_urn'),
+  operation: varchar('operation').notNull(),
+  status: varchar('status').notNull(),
+  progressPercent: integer('progress_percent'),
+  error: text('error'),
+  metadata: lifecycleJobMetadata('metadata'),
+  startedAt: timestamp('started_at', { mode: 'string' }),
+  finishedAt: timestamp('finished_at', { mode: 'string' }),
+  createdAt: timestamp('created_at', { mode: 'string' }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { mode: 'string' }).defaultNow().notNull(),
+});

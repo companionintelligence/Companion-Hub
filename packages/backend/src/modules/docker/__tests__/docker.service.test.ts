@@ -955,4 +955,211 @@ describe('DockerService', () => {
       expect(child_process.spawn).toHaveBeenCalledWith('docker', expect.arrayContaining(['busybox:1.36']), { stdio: 'pipe' });
     });
   });
+
+  describe('createPreUpdateVolumeSnapshot', () => {
+    const testUrn = 'test-app:test-store' as any;
+
+    beforeEach(() => {
+      appFilesManager.getAppPaths.mockReturnValue({
+        appDataDir: '/data/app-data/test-store/test-app',
+        appInstalledDir: '/data/apps/test-store/test-app',
+      } as any);
+      dockerode.listContainers.mockResolvedValue([]);
+      dockerode.listVolumes.mockResolvedValue({ Volumes: [] } as any);
+    });
+
+    it('snapshots app data directory and registers docker volumes when data exists', async () => {
+      filesystemService.pathExists.mockResolvedValue(true);
+      filesystemService.createDirectory.mockResolvedValue(true);
+      filesystemService.copyDirectory.mockResolvedValue(true);
+
+      dockerode.listContainers.mockResolvedValue([
+        {
+          Id: 'c1',
+          Mounts: [
+            {
+              Type: 'volume',
+              Name: 'test-app_dbdata',
+              Source: '/var/lib/docker/volumes/test-app_dbdata/_data',
+              Destination: '/var/lib/postgresql/data',
+            },
+          ],
+        } as any,
+      ]);
+
+      dockerode.listVolumes.mockResolvedValue({
+        Volumes: [
+          {
+            Name: 'test-app_dbdata',
+            Mountpoint: '/var/lib/docker/volumes/test-app_dbdata/_data',
+          } as any,
+        ],
+      } as any);
+
+      const result = await service.createPreUpdateVolumeSnapshot(testUrn);
+
+      expect(result.success).toBe(true);
+      expect(result.appUrn).toBe(testUrn);
+      expect(result.snapshotPath).toContain('snapshots');
+      expect(filesystemService.createDirectory).toHaveBeenCalled();
+      expect(filesystemService.copyDirectory).toHaveBeenCalledWith('/data/app-data/test-store/test-app', expect.stringContaining('snapshots'));
+      expect(result.volumes.some((v) => v.type === 'bind')).toBe(true);
+      expect(result.volumes.some((v) => v.name === 'test-app_dbdata')).toBe(true);
+    });
+
+    it('succeeds gracefully when app data directory does not exist yet', async () => {
+      filesystemService.pathExists.mockResolvedValue(false);
+
+      const result = await service.createPreUpdateVolumeSnapshot(testUrn);
+
+      expect(result.success).toBe(true);
+      expect(result.snapshotPath).toBeUndefined();
+      expect(filesystemService.copyDirectory).not.toHaveBeenCalled();
+    });
+
+    it('handles container listing errors without throwing', async () => {
+      filesystemService.pathExists.mockResolvedValue(false);
+      dockerode.listContainers.mockRejectedValue(new Error('Docker daemon unavailable'));
+
+      const result = await service.createPreUpdateVolumeSnapshot(testUrn);
+
+      expect(result.success).toBe(true);
+      expect(loggerService.warn).toHaveBeenCalledWith(expect.stringContaining('Failed to list containers'));
+    });
+  });
+
+  describe('verifyContainerHealthProbe', () => {
+    const testUrn = 'test-app:test-store' as any;
+
+    it('returns ok and healthy when all containers with health checks are healthy', async () => {
+      dockerode.listContainers.mockResolvedValue([
+        {
+          Id: 'c1',
+          Names: ['/test-app-web'],
+          State: 'running',
+          Status: 'Up 2 minutes (healthy)',
+        } as any,
+      ]);
+
+      const mockContainer = {
+        inspect: vi.fn().mockResolvedValue({
+          State: {
+            Status: 'running',
+            Running: true,
+            Health: {
+              Status: 'healthy',
+              FailingStreak: 0,
+              Log: [{ Output: 'HTTP 200 OK' }],
+            },
+          },
+        }),
+      };
+      dockerode.getContainer.mockReturnValue(mockContainer as any);
+
+      const result = await service.verifyContainerHealthProbe(testUrn);
+
+      expect(result.ok).toBe(true);
+      expect(result.healthy).toBe(true);
+      expect(result.containers[0].healthStatus).toBe('healthy');
+      expect(result.message).toContain('passed health probes');
+    });
+
+    it('returns unhealthy when a container health check reports unhealthy', async () => {
+      dockerode.listContainers.mockResolvedValue([
+        {
+          Id: 'c1',
+          Names: ['/test-app-db'],
+          State: 'running',
+          Status: 'Up 1 minute (unhealthy)',
+        } as any,
+      ]);
+
+      const mockContainer = {
+        inspect: vi.fn().mockResolvedValue({
+          State: {
+            Status: 'running',
+            Running: true,
+            Health: {
+              Status: 'unhealthy',
+              FailingStreak: 5,
+              Log: [{ Output: 'Connection refused' }],
+            },
+          },
+        }),
+      };
+      dockerode.getContainer.mockReturnValue(mockContainer as any);
+
+      const result = await service.verifyContainerHealthProbe(testUrn);
+
+      expect(result.ok).toBe(false);
+      expect(result.healthy).toBe(false);
+      expect(result.containers[0].healthStatus).toBe('unhealthy');
+      expect(result.message).toContain('Health probe failed');
+    });
+
+    it('considers containers without a health check healthy if they are running', async () => {
+      dockerode.listContainers.mockResolvedValue([
+        {
+          Id: 'c2',
+          Names: ['/test-app-worker'],
+          State: 'running',
+          Status: 'Up 30 seconds',
+        } as any,
+      ]);
+
+      const mockContainer = {
+        inspect: vi.fn().mockResolvedValue({
+          State: {
+            Status: 'running',
+            Running: true,
+          },
+        }),
+      };
+      dockerode.getContainer.mockReturnValue(mockContainer as any);
+
+      const result = await service.verifyContainerHealthProbe(testUrn);
+
+      expect(result.ok).toBe(true);
+      expect(result.healthy).toBe(true);
+      expect(result.containers[0].hasHealthCheck).toBe(false);
+      expect(result.containers[0].state).toBe('running');
+    });
+
+    it('considers containers without a health check unhealthy if they are exited/stopped', async () => {
+      dockerode.listContainers.mockResolvedValue([
+        {
+          Id: 'c3',
+          Names: ['/test-app-crashed'],
+          State: 'exited',
+          Status: 'Exited (1) 5 seconds ago',
+        } as any,
+      ]);
+
+      const mockContainer = {
+        inspect: vi.fn().mockResolvedValue({
+          State: {
+            Status: 'exited',
+            Running: false,
+          },
+        }),
+      };
+      dockerode.getContainer.mockReturnValue(mockContainer as any);
+
+      const result = await service.verifyContainerHealthProbe(testUrn);
+
+      expect(result.ok).toBe(false);
+      expect(result.healthy).toBe(false);
+      expect(result.message).toContain('Health probe failed');
+    });
+
+    it('returns not ok when no containers exist for the app', async () => {
+      dockerode.listContainers.mockResolvedValue([]);
+
+      const result = await service.verifyContainerHealthProbe(testUrn);
+
+      expect(result.ok).toBe(false);
+      expect(result.healthy).toBe(false);
+      expect(result.message).toContain('No containers found');
+    });
+  });
 });
