@@ -55,7 +55,7 @@ export type InferenceSupervisionMode = (typeof INFERENCE_SUPERVISION_MODES)[numb
  *
  * A peerless single-node Hub that never opts in must therefore pay nothing at all: no timer, no
  * Docker call, no probe, no boot work. That is asserted directly in
- * `__tests__/backend-supervisor.service.test.ts`.
+ * `src/modules/inference/__tests__/backend-observer.service.test.ts`.
  */
 export const DEFAULT_INFERENCE_SUPERVISION_MODE: InferenceSupervisionMode = 'off';
 
@@ -111,12 +111,18 @@ export function clampSupervisionPollSeconds(seconds: number | undefined): number
 }
 
 /**
- * The Hub's own Docker Compose project name, as written by
- * `DockerReadFacade.getHubRuntimeStats()` and by the compose files. The restart sweep is scoped to
- * this label rather than to the inference backends, which is the only reason it can see the
- * failure it was built for — `hub-tailscale` is a Hub stack service, not an inference engine.
+ * The Hub's own Docker Compose project name. The restart sweep is scoped to this label rather
+ * than to the inference backends, which is the only reason it can see the failure it was built
+ * for — `hub-tailscale` is a Hub stack service, not an inference engine.
+ *
+ * Read through the same env-with-fallback the rest of the repo uses (`docker.service.ts:452`,
+ * `:1375`, `system-update.service.ts:166`). Hard-coding the literal would make the sweep match
+ * ZERO containers on any Hub that sets the override — silently, since a label filter that
+ * matches nothing is indistinguishable from a healthy stack.
  */
-export const HUB_COMPOSE_PROJECT = 'ci-hub';
+export function hubComposeProject(): string {
+  return process.env.CI_HUB_COMPOSE_PROJECT_NAME || 'ci-hub';
+}
 
 /**
  * Restarts accumulated *while this Hub was watching* that mean dockerd is looping a container.
@@ -128,12 +134,19 @@ export const EXTERNAL_RESTART_ALARM = 5;
 /**
  * Absolute `RestartCount` that is an alarm on its own, with no history required.
  *
- * This is the half that would have caught the real incident. A delta-based alarm needs a baseline,
- * and a Hub that has just started has none — which is exactly the "supervisor with no memory across
- * its own restarts" property that let 97,000 restarts accumulate unnoticed. dockerd's
- * `RestartCount` is itself durable, so a container at 11,463 is legible on the very first sweep
- * after boot, before any delta exists. Fifty is far above anything an ordinary lifetime produces
- * and far below the counts these loops reach within a day.
+ * A delta-based alarm needs a baseline, and a Hub that has just started has none — which is exactly
+ * the "supervisor with no memory across its own restarts" property that let five-figure restart
+ * counts accumulate unnoticed. dockerd's `RestartCount` is itself durable, so a container at 11,463
+ * is legible on the very first sweep after boot, before any delta exists. Fifty is far above
+ * anything an ordinary lifetime produces and far below the counts these loops reach within a day.
+ *
+ * **This does NOT cover the ~97,000-restart ollama incident**, and it is worth being exact about
+ * why: that was *systemd* restarting a **host** daemon. A host process is resolved as
+ * `kind: 'host-process'`, its `restartCount` is null, and `reportLoopingContainers` never sees it —
+ * so no alarm can fire, at any count. What this rule covers is the same shape inside dockerd, of
+ * which `hub-tailscale` at 11,463 is a real fleet example. Closing the host-daemon gap needs a
+ * restart counter this process can read (systemd's `NRestarts`), which the Hub container cannot
+ * reach today.
  */
 export const ABSOLUTE_RESTART_ALARM = 50;
 

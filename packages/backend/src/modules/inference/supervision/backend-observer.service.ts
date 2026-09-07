@@ -3,7 +3,7 @@ import type { InferenceBackendType } from '@ci-hub/common/types';
 import { INFERENCE_BACKEND_TYPES } from '@ci-hub/common/types';
 import {
   clampSupervisionPollSeconds,
-  HUB_COMPOSE_PROJECT,
+  hubComposeProject,
   resolveInferenceSupervisionMode,
   SUPERVISION_GPU_VENDOR_TTL_MS,
 } from '@/common/helpers/inference-supervision';
@@ -412,7 +412,7 @@ export class BackendObserverService implements OnModuleInit, OnModuleDestroy {
     }
     try {
       const containers = await this.dockerRead.inspectSupervisionCandidates({
-        composeProject: HUB_COMPOSE_PROJECT,
+        composeProject: hubComposeProject(),
         containerNames: [...names],
       });
       this.dockerError = null;

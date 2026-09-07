@@ -199,6 +199,25 @@ describe('BackendObserverService — the external crash-loop alarm', () => {
     );
   });
 
+  it('honours CI_HUB_COMPOSE_PROJECT_NAME, so the sweep does not silently match nothing', async () => {
+    // The rest of the repo reads this override (docker.service.ts:452, :1375,
+    // system-update.service.ts:166). Hard-coding 'ci-hub' here would make the label filter match
+    // ZERO containers on a Hub that sets it — and a filter that matches nothing looks exactly like
+    // a healthy stack, so the alarm's headline capability would vanish with no error.
+    const previous = process.env.CI_HUB_COMPOSE_PROJECT_NAME;
+    process.env.CI_HUB_COMPOSE_PROJECT_NAME = 'ci-hub-staging';
+    try {
+      const { service, dockerRead } = harness({ mode: 'observe' });
+
+      await service.sweepOnce();
+
+      expect(dockerRead.inspectSupervisionCandidates).toHaveBeenCalledWith(expect.objectContaining({ composeProject: 'ci-hub-staging' }));
+    } finally {
+      if (previous === undefined) delete process.env.CI_HUB_COMPOSE_PROJECT_NAME;
+      else process.env.CI_HUB_COMPOSE_PROJECT_NAME = previous;
+    }
+  });
+
   it('tells someone about a Hub stack service dockerd is looping', async () => {
     // The real incident's silhouette: `hub-tailscale` at RestartCount=11463, respawning every ~60 s
     // through an entire measurement window, with nobody aware. It is not an inference backend, so
