@@ -3285,6 +3285,30 @@
         ]
       }
     },
+    "/api/inference/pool/peers/probe": {
+      "post": {
+        "operationId": "probePeerAddress",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProbePeerAddressBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Hub Pool"
+        ]
+      }
+    },
     "/api/inference/pool/peers/pair": {
       "post": {
         "operationId": "pairPeer",
@@ -3299,6 +3323,69 @@
             }
           }
         },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Hub Pool"
+        ]
+      }
+    },
+    "/api/inference/pool/pairing-pin": {
+      "post": {
+        "operationId": "mintPairingPin",
+        "parameters": [],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Hub Pool"
+        ]
+      },
+      "delete": {
+        "operationId": "cancelPairingPin",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Hub Pool"
+        ]
+      }
+    },
+    "/api/inference/pool/peers/{id}/upgrade": {
+      "post": {
+        "operationId": "upgradePeer",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Hub Pool"
+        ]
+      }
+    },
+    "/api/inference/pool/identity/rotate": {
+      "post": {
+        "operationId": "rotateIdentity",
+        "parameters": [],
         "responses": {
           "201": {
             "description": ""
@@ -3335,6 +3422,52 @@
     "/api/inference/pool/peers/{id}/reject": {
       "post": {
         "operationId": "rejectPeer",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Hub Pool"
+        ]
+      }
+    },
+    "/api/inference/pool/peers/{id}/enable": {
+      "post": {
+        "operationId": "enablePeer",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Hub Pool"
+        ]
+      }
+    },
+    "/api/inference/pool/peers/{id}/disable": {
+      "post": {
+        "operationId": "disablePeer",
         "parameters": [
           {
             "name": "id",
@@ -3412,6 +3545,30 @@
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/PairingConfirmBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Hub Pool"
+        ]
+      }
+    },
+    "/api/inference/pool/pair/upgrade": {
+      "post": {
+        "operationId": "handlePairingUpgrade",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PairingUpgradeBody"
               }
             }
           }
@@ -6385,6 +6542,12 @@
               "hubPoolEnabled": {
                 "type": "boolean"
               },
+              "hubPoolOutboundEnabled": {
+                "type": "boolean"
+              },
+              "hubPoolInboundEnabled": {
+                "type": "boolean"
+              },
               "hubPoolLocalAffinity": {
                 "type": "integer",
                 "minimum": 0,
@@ -6394,6 +6557,14 @@
                 "type": "integer",
                 "minimum": 10,
                 "maximum": 300
+              },
+              "hubPoolRequireSignedPeers": {
+                "type": "boolean"
+              },
+              "hubPoolPressureWeight": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 3
               },
               "inferenceCloudProviders": {
                 "type": "array",
@@ -6793,6 +6964,12 @@
           "hubPoolEnabled": {
             "type": "boolean"
           },
+          "hubPoolOutboundEnabled": {
+            "type": "boolean"
+          },
+          "hubPoolInboundEnabled": {
+            "type": "boolean"
+          },
           "hubPoolLocalAffinity": {
             "type": "integer",
             "minimum": 0,
@@ -6802,6 +6979,14 @@
             "type": "integer",
             "minimum": 10,
             "maximum": 300
+          },
+          "hubPoolRequireSignedPeers": {
+            "type": "boolean"
+          },
+          "hubPoolPressureWeight": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 3
           },
           "inferenceCloudProviders": {
             "type": "array",
@@ -11769,6 +11954,12 @@
           "poolEnabled": {
             "type": "boolean"
           },
+          "poolOutboundEnabled": {
+            "type": "boolean"
+          },
+          "poolInboundEnabled": {
+            "type": "boolean"
+          },
           "poolLocalAffinity": {
             "type": "integer",
             "minimum": 0,
@@ -11778,8 +11969,30 @@
             "type": "integer",
             "minimum": 10,
             "maximum": 300
+          },
+          "poolRequireSignedPeers": {
+            "type": "boolean"
+          },
+          "poolPressureWeight": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 3
           }
         },
+        "additionalProperties": false
+      },
+      "ProbePeerAddressBody": {
+        "type": "object",
+        "properties": {
+          "address": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 300
+          }
+        },
+        "required": [
+          "address"
+        ],
         "additionalProperties": false
       },
       "PairPeerBody": {
@@ -11793,6 +12006,26 @@
       "PairingConfirmBody": {
         "type": "object",
         "properties": {}
+      },
+      "PairingUpgradeBody": {
+        "type": "object",
+        "properties": {
+          "nodeUuid": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          },
+          "publicKey": {
+            "type": "string",
+            "minLength": 32,
+            "maxLength": 256
+          }
+        },
+        "required": [
+          "nodeUuid",
+          "publicKey"
+        ],
+        "additionalProperties": false
       },
       "CreateApiKeyBody": {
         "type": "object",

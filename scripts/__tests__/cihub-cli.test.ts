@@ -53,6 +53,7 @@ const poolApi = {
   fetchPoolStatus: vi.fn(),
   fetchPoolPeers: vi.fn(),
   setPoolEnabledSetting: vi.fn(),
+  setPoolPeerEnabled: vi.fn(),
   unpairPoolPeer: vi.fn(),
 };
 let poolApiKey: string | undefined = 'device-key';
@@ -62,6 +63,7 @@ vi.mock('../hub-pool-cli', async (importOriginal) => ({
   fetchPoolStatus: (...args: unknown[]) => poolApi.fetchPoolStatus(...args),
   fetchPoolPeers: (...args: unknown[]) => poolApi.fetchPoolPeers(...args),
   setPoolEnabledSetting: (...args: unknown[]) => poolApi.setPoolEnabledSetting(...args),
+  setPoolPeerEnabled: (...args: unknown[]) => poolApi.setPoolPeerEnabled(...args),
   unpairPoolPeer: (...args: unknown[]) => poolApi.unpairPoolPeer(...args),
 }));
 
@@ -1012,9 +1014,27 @@ describe('parsePoolArgs', () => {
       target: undefined,
       displayName: undefined,
       limit: undefined,
+      axis: 'both',
       yes: false,
       env: 'local',
     });
+  });
+
+  it('reads --outbound / --inbound into the axis, defaulting to the master switch', () => {
+    expect(parsePoolArgs(['disable']).axis).toBe('both');
+    expect(parsePoolArgs(['disable', '--outbound']).axis).toBe('outbound');
+    expect(parsePoolArgs(['enable', '--inbound']).axis).toBe('inbound');
+  });
+
+  it('rejects a direction flag where it would silently do nothing', () => {
+    // Naming both would have to mean "the master", which passing neither already means.
+    expect(() => parsePoolArgs(['disable', '--outbound', '--inbound'])).toThrow();
+    expect(() => parsePoolArgs(['status', '--outbound'])).toThrow();
+  });
+
+  it('takes a peer reference for the per-peer switches, before the optional env', () => {
+    const parsed = parsePoolArgs(['peer-disable', 'aaaaaaaa', 'dev', '--yes']);
+    expect(parsed).toMatchObject({ subcommand: 'peer-disable', target: 'aaaaaaaa', env: 'dev', yes: true });
   });
 
   it('reads the env argument after a targetless subcommand', () => {
@@ -1073,6 +1093,7 @@ describe('runPoolCommand', () => {
     poolApi.fetchPoolStatus.mockReset();
     poolApi.fetchPoolPeers.mockReset();
     poolApi.setPoolEnabledSetting.mockReset();
+    poolApi.setPoolPeerEnabled.mockReset();
     poolApi.unpairPoolPeer.mockReset();
     // Non-TTY is the CI/agent case: the confirmation gate must refuse rather than hang on a prompt.
     Object.defineProperty(process.stdin, 'isTTY', { value: false, configurable: true });
@@ -1133,24 +1154,108 @@ describe('runPoolCommand', () => {
     expect(boxText()).toContain('Peer unpaired');
   });
 
+  it('takes one peer out of the pool without revoking anything, and says so', async () => {
+    poolApi.fetchPoolPeers.mockResolvedValue([
+      {
+        id: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
+        nodeFqdn: POOL_PEER_FQDN,
+        direction: 'outbound',
+        status: 'connected',
+        enabled: true,
+        consecutiveFailures: 0,
+        lastSeenAt: null,
+        lastCapabilities: null,
+        displayName: null,
+      },
+    ]);
+
+    await runPoolCommand(['peer-disable', 'aaaaaaaa', '--yes']);
+
+    expect(poolApi.setPoolPeerEnabled).toHaveBeenCalledWith('.env.local', 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee', false);
+    // The copy must not blur disable and unpair: one is reversible, the other revokes both tokens.
+    const text = boxText();
+    expect(text).toContain('Peer disabled');
+    expect(text).toContain('NOT a revocation');
+    expect(poolApi.unpairPoolPeer).not.toHaveBeenCalled();
+  });
+
   it('says plainly that the .env override wins when enabling under HUB_POOL_USER_DISABLED', async () => {
     poolApi.fetchPoolStatus.mockResolvedValue({
       enabled: false,
       disabledBy: 'env',
       reason: 'disabled_by_env',
       routingActive: false,
-      settings: { poolEnabled: false, poolLocalAffinity: 1, poolHealthPollSeconds: 30 },
-      peerCounts: { total: 0, connected: 0, pending: 0, unreachable: 0 },
+      directions: { outbound: { enabled: false, disabledBy: 'env' }, inbound: { enabled: false, disabledBy: 'env' } },
+      settings: { poolEnabled: false, poolOutboundEnabled: true, poolInboundEnabled: true, poolLocalAffinity: 1, poolHealthPollSeconds: 30 },
+      peerCounts: { total: 0, connected: 0, pending: 0, unreachable: 0, disabled: 0 },
     });
-    poolApi.setPoolEnabledSetting.mockResolvedValue({ poolEnabled: true, poolLocalAffinity: 1, poolHealthPollSeconds: 30 });
+    poolApi.setPoolEnabledSetting.mockResolvedValue({
+      poolEnabled: true,
+      poolOutboundEnabled: true,
+      poolInboundEnabled: true,
+      poolLocalAffinity: 1,
+      poolHealthPollSeconds: 30,
+    });
 
     await runPoolCommand(['enable', '--yes']);
 
-    expect(poolApi.setPoolEnabledSetting).toHaveBeenCalledWith('.env.local', true);
+    expect(poolApi.setPoolEnabledSetting).toHaveBeenCalledWith('.env.local', true, 'both');
     const text = boxText();
     expect(text).toContain('this changed nothing in effect');
     expect(text).toContain('HUB_POOL_USER_DISABLED=true');
     expect(text).toContain('cihub restart local');
+  });
+
+  it('sends only the named direction, so `pool disable --outbound` keeps this Hub serving', async () => {
+    poolApi.fetchPoolStatus.mockResolvedValue({
+      enabled: true,
+      disabledBy: null,
+      directions: { outbound: { enabled: true, disabledBy: null }, inbound: { enabled: true, disabledBy: null } },
+      reason: 'active',
+      routingActive: true,
+      settings: { poolEnabled: true, poolOutboundEnabled: true, poolInboundEnabled: true, poolLocalAffinity: 1, poolHealthPollSeconds: 30 },
+      peerCounts: { total: 1, connected: 1, pending: 0, unreachable: 0, disabled: 0 },
+    });
+    poolApi.setPoolEnabledSetting.mockResolvedValue({
+      poolEnabled: true,
+      poolOutboundEnabled: false,
+      poolInboundEnabled: true,
+      poolLocalAffinity: 1,
+      poolHealthPollSeconds: 30,
+    });
+
+    await runPoolCommand(['disable', '--outbound', '--yes']);
+
+    expect(poolApi.setPoolEnabledSetting).toHaveBeenCalledWith('.env.local', false, 'outbound');
+    const text = boxText();
+    expect(text).toContain('peers may still send work here');
+  });
+
+  it('refuses to claim success for one direction its own .env variable already forces off', async () => {
+    poolApi.fetchPoolStatus.mockResolvedValue({
+      enabled: true,
+      disabledBy: null,
+      directions: { outbound: { enabled: false, disabledBy: 'env' }, inbound: { enabled: true, disabledBy: null } },
+      reason: 'partially_disabled',
+      routingActive: false,
+      settings: { poolEnabled: true, poolOutboundEnabled: false, poolInboundEnabled: true, poolLocalAffinity: 1, poolHealthPollSeconds: 30 },
+      peerCounts: { total: 1, connected: 1, pending: 0, unreachable: 0, disabled: 0 },
+    });
+    poolApi.setPoolEnabledSetting.mockResolvedValue({
+      poolEnabled: true,
+      poolOutboundEnabled: true,
+      poolInboundEnabled: true,
+      poolLocalAffinity: 1,
+      poolHealthPollSeconds: 30,
+    });
+
+    await runPoolCommand(['enable', '--outbound', '--yes']);
+
+    const text = boxText();
+    expect(text).toContain('this changed nothing in effect');
+    expect(text).toContain('HUB_POOL_OUTBOUND_DISABLED=true');
+    // Not the master variable: that one is not what has to change here.
+    expect(text).not.toContain('HUB_POOL_USER_DISABLED=true');
   });
 
   it('reports an enable that actually takes effect without the override warning', async () => {
@@ -1159,10 +1264,17 @@ describe('runPoolCommand', () => {
       disabledBy: 'setting',
       reason: 'disabled_by_setting',
       routingActive: false,
-      settings: { poolEnabled: false, poolLocalAffinity: 1, poolHealthPollSeconds: 30 },
-      peerCounts: { total: 1, connected: 1, pending: 0, unreachable: 0 },
+      directions: { outbound: { enabled: false, disabledBy: 'setting' }, inbound: { enabled: false, disabledBy: 'setting' } },
+      settings: { poolEnabled: false, poolOutboundEnabled: true, poolInboundEnabled: true, poolLocalAffinity: 1, poolHealthPollSeconds: 30 },
+      peerCounts: { total: 1, connected: 1, pending: 0, unreachable: 0, disabled: 0 },
     });
-    poolApi.setPoolEnabledSetting.mockResolvedValue({ poolEnabled: true, poolLocalAffinity: 1, poolHealthPollSeconds: 30 });
+    poolApi.setPoolEnabledSetting.mockResolvedValue({
+      poolEnabled: true,
+      poolOutboundEnabled: true,
+      poolInboundEnabled: true,
+      poolLocalAffinity: 1,
+      poolHealthPollSeconds: 30,
+    });
 
     await runPoolCommand(['enable', '--yes']);
 

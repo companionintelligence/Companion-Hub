@@ -21,7 +21,7 @@ export interface SignedConnectHeaders {
   [CONNECT_SIGNATURE_HEADER]: string;
 }
 
-function sha256Hex(value: string): string {
+export function sha256Hex(value: string): string {
   return crypto.createHash('sha256').update(value).digest('hex');
 }
 
@@ -59,9 +59,29 @@ export function canonicalizeBody(body: unknown): string {
   return JSON.stringify(walk(body ?? {}));
 }
 
+/**
+ * Hash of {@link canonicalizeBody}. Split out because the Hub Pool peer signer signs a different
+ * set of lines over the same body hash, and re-deriving "sorted-keys JSON, then sha256" in a second
+ * place is exactly how two signers drift apart on a shared-reference or key-ordering edge case.
+ */
+export function canonicalBodyHash(body: unknown): string {
+  return sha256Hex(canonicalizeBody(body));
+}
+
+/**
+ * Join canonical message lines. One line per field, newline-separated, no JSON — so a value that
+ * happens to contain the delimiter of some other encoding cannot smuggle a field boundary.
+ *
+ * Shared with the Hub Pool peer signer (`hub-pool-peer-auth.ts`), which signs a longer line list
+ * with a different key type. The framing lives here so both messages are framed identically.
+ */
+export function joinCanonicalLines(lines: readonly string[]): string {
+  return lines.join('\n');
+}
+
 /** The canonical string that both sides sign. Must match the verifier. */
 export function buildConnectMessage(method: string, path: string, timestampMs: number, nonce: string, body: unknown): string {
-  return [method.toUpperCase(), path, String(timestampMs), nonce, sha256Hex(canonicalizeBody(body))].join('\n');
+  return joinCanonicalLines([method.toUpperCase(), path, String(timestampMs), nonce, canonicalBodyHash(body)]);
 }
 
 /**

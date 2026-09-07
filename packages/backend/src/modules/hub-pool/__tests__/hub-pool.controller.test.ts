@@ -8,6 +8,7 @@ import { TailscaleService } from '@/modules/tailscale/tailscale.service';
 import { HubPoolPeerService } from '../hub-pool-peer.service';
 import { HubPoolRoutingLogService } from '../hub-pool-routing-log.service';
 import { PoolProxyService } from '../hub-pool-proxy.service';
+import { HubPoolDiscoveryService } from '../hub-pool-discovery.service';
 import { HubPoolController } from '../hub-pool.controller';
 import type { PoolStatus } from '../hub-pool.types';
 
@@ -17,7 +18,15 @@ function poolStatus(overrides: Partial<PoolStatus> = {}): PoolStatus {
     disabledBy: null,
     reason: 'no_peers',
     routingActive: false,
-    settings: { poolEnabled: true, poolLocalAffinity: 1, poolHealthPollSeconds: 30 },
+    directions: { outbound: { enabled: true, disabledBy: null }, inbound: { enabled: true, disabledBy: null } },
+    settings: {
+      poolEnabled: true,
+      poolOutboundEnabled: true,
+      poolInboundEnabled: true,
+      poolLocalAffinity: 1,
+      poolHealthPollSeconds: 30,
+      poolPressureWeight: 0,
+    },
     tailscaleAdminApiConfigured: false,
     localNode: {
       nodeFqdn: 'self-hub.example-tailnet.ts.net',
@@ -29,7 +38,7 @@ function poolStatus(overrides: Partial<PoolStatus> = {}): PoolStatus {
       capabilitiesError: null,
     },
     peers: [],
-    peerCounts: { total: 0, connected: 0, pending: 0, unreachable: 0 },
+    peerCounts: { total: 0, connected: 0, pending: 0, unreachable: 0, disabled: 0 },
     ...overrides,
   };
 }
@@ -53,14 +62,62 @@ describe('HubPoolController', () => {
   let proxyService: MockProxy<PoolProxyService>;
   let configuration: MockProxy<ConfigurationService>;
   let routingLog: HubPoolRoutingLogService;
+  let discoveryService: MockProxy<HubPoolDiscoveryService>;
   let controller: HubPoolController;
 
   beforeEach(() => {
     peerService = mock<HubPoolPeerService>();
     proxyService = mock<PoolProxyService>();
     configuration = mock<ConfigurationService>();
+    // The default for every test that is not about the switches: this node serves the caller.
+    peerService.inboundRefusal.mockReturnValue(null);
     routingLog = new HubPoolRoutingLogService();
-    controller = new HubPoolController(peerService, proxyService, mock<TailscaleService>(), configuration, routingLog);
+    discoveryService = mock<HubPoolDiscoveryService>();
+    controller = new HubPoolController(peerService, proxyService, mock<TailscaleService>(), configuration, routingLog, discoveryService);
+  });
+
+  describe('manual peer entry', () => {
+    it('serves the merged candidate list, not the Tailscale-only one', async () => {
+      // The route keeps its shape and its name; what changed underneath is that a manually probed
+      // node now appears alongside a Tailscale-discovered one, deduplicated.
+      discoveryService.listDiscoverableNodes.mockResolvedValue([
+        { tailscaleDeviceId: 'ts-1', nodeFqdn: 'remote.tailxyz.ts.net', hostname: 'remote', source: 'tailscale' },
+        { tailscaleDeviceId: '', nodeFqdn: 'lan-box.tailxyz.ts.net', hostname: 'lan-box', source: 'lan-probe' },
+      ]);
+
+      const result = await controller.listDiscoverable();
+
+      expect(result).toHaveLength(2);
+      expect(peerService.listDiscoverableDevices).not.toHaveBeenCalled();
+    });
+
+    it('probes an operator-typed address and reports the FQDN pairing will use', async () => {
+      discoveryService.probeAddress.mockResolvedValue({
+        address: '192.168.1.42',
+        isCiHub: true,
+        nodeFqdn: 'lan-box.tailxyz.ts.net',
+        hostname: 'lan-box',
+        alreadyPaired: false,
+        pairable: true,
+        reason: null,
+      });
+
+      const result = await controller.probePeerAddress({ address: '192.168.1.42' });
+
+      expect(discoveryService.probeAddress).toHaveBeenCalledWith('192.168.1.42');
+      expect(result).toMatchObject({ pairable: true, nodeFqdn: 'lan-box.tailxyz.ts.net' });
+    });
+
+    it('adds no new pairing path — the operator still pairs by FQDN', async () => {
+      // Manual entry is a directory lookup. The address is discarded; `peers/pair` is unchanged, so
+      // there is no second trust model to keep correct.
+      peerService.initiatePairing.mockResolvedValue({ nodeFqdn: 'lan-box.tailxyz.ts.net' } as never);
+
+      await controller.pairPeer({ nodeFqdn: 'lan-box.tailxyz.ts.net' });
+
+      // Third argument is the optional pairing PIN (Group C); manual entry does not supply one.
+      expect(peerService.initiatePairing).toHaveBeenCalledWith('lan-box.tailxyz.ts.net', undefined, undefined);
+    });
   });
 
   describe('GET status', () => {
@@ -91,17 +148,47 @@ describe('HubPoolController', () => {
 
   describe('settings', () => {
     it('reads the persisted preferences without touching the peer table', async () => {
-      configuration.getHubPoolPreferences.mockReturnValue({ poolEnabled: false, poolLocalAffinity: 3, poolHealthPollSeconds: 45 });
+      const stored = {
+        poolEnabled: false,
+        poolOutboundEnabled: true,
+        poolInboundEnabled: false,
+        poolLocalAffinity: 3,
+        poolHealthPollSeconds: 45,
+        poolPressureWeight: 0,
+      };
+      configuration.getHubPoolPreferences.mockReturnValue(stored);
 
-      await expect(controller.getPoolSettings()).resolves.toEqual({ poolEnabled: false, poolLocalAffinity: 3, poolHealthPollSeconds: 45 });
+      await expect(controller.getPoolSettings()).resolves.toEqual(stored);
     });
 
     it('passes a partial PATCH straight through, so an omitted field stays unchanged', async () => {
-      configuration.setHubPoolPreferences.mockResolvedValue({ poolEnabled: true, poolLocalAffinity: 0, poolHealthPollSeconds: 30 });
+      configuration.setHubPoolPreferences.mockResolvedValue({
+        poolEnabled: true,
+        poolOutboundEnabled: true,
+        poolInboundEnabled: true,
+        poolLocalAffinity: 0,
+        poolHealthPollSeconds: 30,
+        poolPressureWeight: 0,
+      });
 
       await controller.updatePoolSettings({ poolLocalAffinity: 0 });
 
       expect(configuration.setHubPoolPreferences).toHaveBeenCalledWith({ poolLocalAffinity: 0 });
+    });
+
+    it('round-trips a single directional switch without resending the rest', async () => {
+      configuration.setHubPoolPreferences.mockResolvedValue({
+        poolEnabled: true,
+        poolOutboundEnabled: true,
+        poolInboundEnabled: false,
+        poolLocalAffinity: 1,
+        poolHealthPollSeconds: 30,
+        poolPressureWeight: 0,
+      });
+
+      await controller.updatePoolSettings({ poolInboundEnabled: false });
+
+      expect(configuration.setHubPoolPreferences).toHaveBeenCalledWith({ poolInboundEnabled: false });
     });
   });
 
@@ -148,6 +235,43 @@ describe('HubPoolController', () => {
       // PoolPeerGuard deliberately admits a pending row so /pair/confirm can use it, so this handler
       // is the only thing standing between a half-finished pairing and this node's inventory.
       await expect(controller.capabilities(peerRequest({ status }))).rejects.toThrow(ForbiddenException);
+      expect(peerService.getOwnCapabilities).not.toHaveBeenCalled();
+    });
+
+    /**
+     * The asymmetry between the master switch and the two finer ones, asserted on both sides.
+     * Master-off means "I have left the pool" and must keep failing the probe outright; inbound-off
+     * and a per-peer disable mean "still here, not serving", and a 503 there would show a healthy
+     * machine as unreachable on both dashboards and cost three polls to come back from.
+     */
+    it.each([
+      ['inbound pooling is off', 'inbound_disabled'],
+      ['this peer is disabled here', 'peer_disabled'],
+    ] as const)('answers 200 with acceptingWork: false when %s', async (_label, refusal) => {
+      peerService.enabledState.mockReturnValue({ enabled: true, disabledBy: null });
+      peerService.inboundRefusal.mockReturnValue(refusal);
+
+      await controller.capabilities(peerRequest({ status: 'connected' }));
+
+      // The argument, not the return: `getOwnCapabilities(false)` is what empties the inventory and
+      // sets the flag, and the peer's health poll still succeeds.
+      expect(peerService.getOwnCapabilities).toHaveBeenCalledWith(false);
+    });
+
+    it('serves the real inventory when nothing is refusing', async () => {
+      peerService.enabledState.mockReturnValue({ enabled: true, disabledBy: null });
+      peerService.inboundRefusal.mockReturnValue(null);
+
+      await controller.capabilities(peerRequest({ status: 'connected' }));
+
+      expect(peerService.getOwnCapabilities).toHaveBeenCalledWith(true);
+    });
+
+    it('keeps the 503 for the master switch, ahead of any inbound refusal', async () => {
+      peerService.enabledState.mockReturnValue({ enabled: false, disabledBy: 'env' });
+      peerService.inboundRefusal.mockReturnValue('inbound_disabled');
+
+      await expect(controller.capabilities(peerRequest({ status: 'connected' }))).rejects.toThrow(ServiceUnavailableException);
       expect(peerService.getOwnCapabilities).not.toHaveBeenCalled();
     });
   });
@@ -208,6 +332,43 @@ describe('HubPoolController', () => {
       expect(proxyService.forwardToLocalBackendAndRespond).not.toHaveBeenCalled();
     });
 
+    /**
+     * 503, never 403. `shouldFailover` retries a >= 500 on the sender's next candidate, whereas
+     * `noteRejectedCandidate` reads 401/403 as "this peer no longer considers us paired" and drops
+     * its cached capabilities — which would make a temporary local policy decision look like a
+     * broken pairing and invalidate a healthy one on every request.
+     */
+    it.each([
+      ['inbound pooling is off', 'inbound_disabled'],
+      ['the peer is disabled here', 'peer_disabled'],
+    ] as const)('answers a forward with 503 when %s, so the sender fails over', async (_label, refusal) => {
+      const res = mockResponse();
+      peerService.inboundRefusal.mockReturnValue(refusal);
+
+      await controller.localOllamaChat(
+        peerRequest({ nodeFqdn: 'hub-b.example-tailnet.ts.net', status: 'connected' }, { 'x-hub-pool-backend': 'ollama' }),
+        body,
+        res,
+      );
+
+      expect(res.status).toHaveBeenCalledWith(503);
+      expect(res.status).not.toHaveBeenCalledWith(403);
+      expect(proxyService.forwardToLocalBackendAndRespond).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['a refusal', 'inbound_disabled' as const, 503, { nodeFqdn: 'hub-b.example-tailnet.ts.net', status: 'connected' }],
+      ['an unconnected peer', null, 403, { nodeFqdn: 'hub-b.example-tailnet.ts.net', status: 'pending' }],
+    ])('records %s in the routing log, so the serving side can say why a peer got nothing', async (_label, refusal, status, peer) => {
+      peerService.inboundRefusal.mockReturnValue(refusal);
+
+      await controller.localOllamaChat(peerRequest(peer, { 'x-hub-pool-backend': 'ollama' }), body, mockResponse());
+
+      expect(proxyService.recordRefusedInboundForward).toHaveBeenCalledWith(
+        expect.objectContaining({ path: '/api/chat', fromPeerFqdn: 'hub-b.example-tailnet.ts.net', status }),
+      );
+    });
+
     it.each([
       ['no backend header', {}],
       ['a backend this build does not have', { 'x-hub-pool-backend': 'not-a-backend' }],
@@ -258,6 +419,106 @@ describe('HubPoolController', () => {
 
       expect(proxyService.proxyLocalOnlyRequest).toHaveBeenCalledWith(path, 'GET', undefined, expect.anything());
       expect(proxyService.proxyRequest).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('peer identity routes', () => {
+    it('answers identify with the protocol version and nothing else', async () => {
+      // Published through the Cloudflare tunnel. It used to return this node's full MagicDNS name,
+      // which nothing consumed; the UUID and public key deliberately live behind PoolPeerGuard on
+      // `GET capabilities`, because a UUID that survives renames is a durable correlator.
+      expect(await controller.identify()).toEqual({ isCiHub: true, poolProtocol: 2 });
+    });
+
+    it('returns the PIN digits exactly once, alongside the fingerprint the far side will show', async () => {
+      peerService.mintPairingPin.mockReturnValue({ pin: '123456', expiresAt: '2026-01-01T00:10:00.000Z' });
+      peerService.identitySummary.mockResolvedValue({ nodeUuid: 'self-uuid', publicKeyFingerprint: 'aa:bb', identityError: null });
+
+      expect(await controller.mintPairingPin()).toEqual({
+        pin: '123456',
+        expiresAt: '2026-01-01T00:10:00.000Z',
+        nodeUuid: 'self-uuid',
+        publicKeyFingerprint: 'aa:bb',
+        identityError: null,
+      });
+      // Minting must not pay for this node's whole model inventory.
+      expect(peerService.getPoolStatus).not.toHaveBeenCalled();
+    });
+
+    it('cancels an outstanding PIN', async () => {
+      expect(await controller.cancelPairingPin()).toEqual({ cancelled: true });
+      expect(peerService.cancelPairingPin).toHaveBeenCalled();
+    });
+
+    it('passes the operator’s PIN through to the pairing call', async () => {
+      peerService.initiatePairing.mockResolvedValue({ id: 'peer-1', nodeFqdn: 'hub-b.example-tailnet.ts.net' } as HubPoolPeer);
+
+      await controller.pairPeer({ nodeFqdn: 'hub-b.example-tailnet.ts.net', displayName: 'Beta', pin: '123456' } as never);
+
+      expect(peerService.initiatePairing).toHaveBeenCalledWith('hub-b.example-tailnet.ts.net', 'Beta', '123456');
+    });
+
+    it('reports the source IP on an inbound pairing request, so the cooldown has something to key on', async () => {
+      peerService.receivePairingRequest.mockResolvedValue({});
+      const req = { ip: '100.64.0.7' } as unknown as Request;
+
+      const answer = await controller.handlePairingRequest(req, {
+        fromNodeFqdn: 'hub-b.example-tailnet.ts.net',
+        token: 'a'.repeat(32),
+        pin: '123456',
+        fromNodeUuid: 'peer-uuid',
+        fromPublicKey: 'peer-key',
+      } as never);
+
+      expect(answer).toEqual({ received: true });
+      expect(peerService.receivePairingRequest).toHaveBeenCalledWith('hub-b.example-tailnet.ts.net', undefined, 'a'.repeat(32), {
+        fromNodeUuid: 'peer-uuid',
+        fromPublicKey: 'peer-key',
+        pin: '123456',
+        source: { ip: '100.64.0.7' },
+      });
+    });
+
+    it('folds this node’s identity into the pairing answer when the PIN verified', async () => {
+      peerService.receivePairingRequest.mockResolvedValue({ nodeUuid: 'self-uuid', publicKey: 'self-key' });
+
+      const answer = await controller.handlePairingRequest(
+        { ip: '100.64.0.7' } as unknown as Request,
+        {
+          fromNodeFqdn: 'hub-b.example-tailnet.ts.net',
+          token: 'a'.repeat(32),
+          pin: '123456',
+        } as never,
+      );
+
+      expect(answer).toEqual({ received: true, nodeUuid: 'self-uuid', publicKey: 'self-key' });
+    });
+
+    it('refuses an upgrade the guard did not resolve a peer for', async () => {
+      const req = { poolPeer: undefined } as unknown as Request;
+
+      await expect(controller.handlePairingUpgrade(req, { nodeUuid: 'u', publicKey: 'k' } as never)).rejects.toThrow(ForbiddenException);
+    });
+
+    it('answers an upgrade with this node’s identity', async () => {
+      peerService.handleUpgradeRequest.mockResolvedValue({ nodeUuid: 'self-uuid', publicKey: 'self-key' });
+      const req = peerRequest({ id: 'peer-1', status: 'connected' });
+
+      const answer = await controller.handlePairingUpgrade(req, { nodeUuid: 'peer-uuid', publicKey: 'peer-key' } as never);
+
+      expect(answer).toEqual({ nodeUuid: 'self-uuid', publicKey: 'self-key' });
+      expect(peerService.handleUpgradeRequest).toHaveBeenCalledWith(req.poolPeer, { nodeUuid: 'peer-uuid', publicKey: 'peer-key' });
+    });
+
+    it('names the peers a rotation could not reach', async () => {
+      peerService.rotateIdentity.mockResolvedValue({
+        nodeUuid: 'self-uuid',
+        publicKeyFingerprint: 'cc:dd',
+        unpaired: ['hub-b.example-tailnet.ts.net'],
+        unreachable: ['hub-c.example-tailnet.ts.net'],
+      });
+
+      await expect(controller.rotateIdentity()).resolves.toMatchObject({ unreachable: ['hub-c.example-tailnet.ts.net'] });
     });
   });
 });

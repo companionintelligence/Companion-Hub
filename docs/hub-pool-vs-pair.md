@@ -20,7 +20,7 @@ are concentrated in discovery, trust, and the load signal.
 | No eligible owner → local 502 | "returns an actionable local 502 without sending the request to an engine" | `candidates.length === 0` → 502 |
 | **No third-node relay** | "A peer request is served, not re-routed… never re-enters candidate selection" | `forwardToLocalBackendAndRespond()` calls the backend directly |
 | Network membership ≠ authorization | mTLS on peer surfaces regardless of LAN | `PoolPeerGuard` required even though the tailnet already gates reachability |
-| Unmeasured node ranks neutral, never idle | missing telemetry = "neutral pressure of 1" | `UNKNOWN_PEER_LOAD = 1` |
+| Unmeasured node ranks neutral, never idle | missing telemetry = "neutral pressure of 1" | `UNKNOWN_PEER_LOAD = 1`, and `UNKNOWN_PRESSURE = 1` on the pressure band |
 | Dispatcher reserves its own choice | "adds the requests it has just dispatched itself to its own estimate and reserves its choice before forwarding" | `loadService.acquire(key)` runs *before* `forward()` |
 
 The third-node prohibition is the most striking convergence: both codebases implement it the same
@@ -36,7 +36,7 @@ UUID, cluster membership, ports and a ranked address list, plus manual direct-ad
 Eviction tolerates "three consecutive misses".
 
 Hub Pool queries the **Tailscale Admin API** for tailnet devices, then probes each candidate's
-`GET /inference/pool/identify` to confirm it is a Hub.
+`GET /inference/pool/identify` to confirm it is a Hub (which is all that route discloses — see §2).
 
 - PAIR works on any flat LAN with zero external dependency; it is confined to one broadcast domain.
 - Hub Pool spans LAN, WAN and NAT for free, and inherits WireGuard transport encryption — but is
@@ -44,23 +44,36 @@ Hub Pool queries the **Tailscale Admin API** for tailnet devices, then probes ea
 
 Neither is strictly better. PAIR's is more self-contained; ours reaches machines PAIR cannot.
 
-### 2. Trust bootstrap — PIN/mTLS vs pairing handshake + bearer tokens
+### 2. Trust bootstrap — PIN/mTLS vs PIN + pinned Ed25519 identity
 
 PAIR: six-digit PIN bootstraps **mutual TLS**; each node holds a stable UUID and self-signed leaf
 certificate, and "pairing pins each side's certificate against the other's UUID". It multiplexes
 plaintext loopback and TLS on one port by sniffing the first byte (`0x16` = TLS handshake).
 
-Hub Pool: pairing handshake issues **directional bearer tokens**, stored sha256-hashed
-(`verify_token_hash`) and compared with `timingSafeEqual`; transport security is WireGuard's.
+Hub Pool now has **the same identity model on a different carrier**: a six-digit PIN authenticates the
+pairing request, each node holds a stable pool UUID and an Ed25519 keypair, and pairing pins each
+side's *public key* against the other's UUID. Requests carry a signature over method, path, both
+UUIDs, the sender's claimed name, a timestamp and a single-use nonce, rather than a bearer token. The
+gap that remains is a carrier difference, not a model difference: PAIR authenticates the transport,
+we authenticate the request. See [`hub-pool.md` → Peer identity](hub-pool.md#peer-identity-pin-pairing-and-signed-requests).
 
-**PAIR's peer authentication is cryptographically stronger** — mTLS binds identity to a pinned
-certificate, ours binds it to a shared secret that the receiving node stores hashed. Ours is simpler
-and rides a transport that is already authenticated and encrypted per-device. The honest reading:
-PAIR must do mTLS because its transport is an untrusted LAN; we can lean on the tailnet, and would
-need something closer to PAIR's model if Hub Pool ever ran off-tailnet.
+**Signatures are the stronger half of what mTLS was buying**: the verifier stores only public data, so
+a stolen database yields nothing that authenticates anywhere — where the original directional bearer
+tokens meant every Hub held, for every peer, an encrypted copy of a secret that authenticated it to
+that peer. X.509 was deliberately deferred rather than built: it needs a new dependency to mint a
+leaf (Node can parse certificates but not create them), a raw-TCP Tailscale Serve forward that
+`getServeStatus` cannot currently see or reconcile, and a rewrite of the whole outbound peer client
+away from global `fetch`, which accepts no client certificate. It buys nothing extra while Hub Pool
+runs on a tailnet.
 
-One point in our favour: PAIR's telemetry surface is "plaintext HTTP, not authenticated". Hub Pool
-has no unauthenticated peer surface.
+**The first-byte multiplexing was rejected outright, not deferred.** Peers reach a Hub on port 443,
+which is `tailscale serve --https`; tailscaled terminates the TLS and forwards *plaintext* to the Nest
+process, so a peer's ClientHello never reaches our socket and there is no first byte to sniff. PAIR
+needs the trick because it owns its listener; we do not own ours.
+
+One point in our favour throughout: PAIR's telemetry surface is "plaintext HTTP, not authenticated".
+Hub Pool's only unauthenticated peer surface is `GET /identify`, which answers
+`{ isCiHub: true, poolProtocol: 2 }` and nothing else.
 
 ### 3. The load signal — **the one real capability gap**
 
@@ -69,16 +82,28 @@ PAIR ranks on **pending work + GPU pressure**:
 - GPU utilization mapped to "0–3 pressure units at 40%, 70%, and 85%", with hysteresis against thrashing
 - sort by *pending + pressure*, then *pressure*, then node ID
 
-Hub Pool ranks on **queue depth + hardware tier**:
-- `score` = in-flight requests, plus a `poolLocalAffinity` handicap applied to peers
-- tie-break `tierRank` (high → medium → low → cpu-only → insufficient); local is `-1`, never out-ranked on hardware
+Hub Pool ranks on **queue depth + GPU pressure + hardware tier**:
+- `score` = in-flight requests, plus `poolPressureWeight × pressure`, plus a `poolLocalAffinity` handicap applied to peers
+- tie-break `pressure` (only when `poolPressureWeight` is non-zero), then `tierRank` (high → medium → low → cpu-only → insufficient); local is `-1`, never out-ranked on hardware
 - stable sort, so ties keep insertion order
 
-**We have no GPU-utilization signal at all.** This is acknowledged in `hub-pool.types.ts`:
-`HardwareInspectorService` "reports a static hardware profile, not counters". A Hub node running a
-long generation at 100% GPU and one sitting idle look identical to our ranker if their in-flight
-counts match — and in-flight count is a poor proxy, because one 8k-token generation and one one-token
-completion both count as 1.
+**The GPU-pressure gap is now partly closed, on the same 0–3 shape.** See
+[GPU pressure](hub-pool.md#gpu-pressure-a-second-load-signal-amd-only-and-off-by-default). Two
+caveats keep it from being parity:
+
+- **It is AMD-only.** `gpu_busy_percent` from DRM sysfs is the only live utilization counter the Hub
+  container can reach; `nvidia-smi` is not in the Alpine image and the Docker socket is mounted `:ro`
+  deliberately. NVIDIA and Apple nodes report nothing and rank mid-band until someone writes the
+  documented host-file probe. PAIR runs on a fleet where every node can answer.
+- **It ships off** (`poolPressureWeight = 0`) and needs a `/sys` bind mount this repo does not
+  install, because the band is unvalidated on real fleet hardware. Where it is not enabled, the
+  paragraph this replaces still describes the behaviour: a node running a long generation at 100% GPU
+  and one sitting idle look identical if their in-flight counts match, and in-flight count is a poor
+  proxy because one 8k-token generation and one one-token completion both count as 1.
+
+What did carry over cleanly is PAIR's shape: the 40/70/85 thresholds, the hysteresis deadband, the
+`pending + pressure` score, and above all the rule that a node with no telemetry ranks at a neutral
+pressure of 1 rather than at 0.
 
 Conversely, **PAIR explicitly does not consider "GPU model, available memory, model warmness, or how
 expensive a request looks"** — and we *do* carry hardware tier as a tie-break, which on a fleet as
@@ -119,8 +144,11 @@ mid-answer.
 - **Hardware tier in ranking** (above).
 - **Operator-tunable local affinity** as an explicit setting rather than an artifact of list order,
   readable per-request so a settings change takes effect on the next request, not the next restart.
-- **Two independent kill switches** (`poolEnabled`, `HUB_POOL_USER_DISABLED`), and total inertness on a
-  Hub with no peers.
+- **Layered kill switches**: a master pair (`poolEnabled`, `HUB_POOL_USER_DISABLED`), an independent
+  switch per direction (`poolOutboundEnabled` / `poolInboundEnabled`, each with its own env override),
+  and one per peer (`hub_pool_peer.enabled`) — so "I will give but not take", and "everyone except that
+  node", are single toggles rather than an unpair. All of them keep pairings and tokens intact, and all
+  of them are inert on a Hub with no peers.
 
 ## Verdict
 
@@ -129,9 +157,11 @@ dispatch, ordered failover, streaming, no relay chaining, no retry of genuine cl
 is *better instrumented* and better suited to a heterogeneous fleet. It is behind PAIR in two places
 that matter:
 
-1. **No GPU-pressure signal.** This is the highest-value gap. PAIR's smoothed 0–3 band with
-   hysteresis is a well-shaped design worth copying more or less directly; the blocker is that
-   nothing in the Hub currently samples GPU utilization over time.
+1. **GPU-pressure signal only on AMD, and off by default.** The smoothed 0–3 band with hysteresis
+   now exists and is wired into ranking, but the only source that can feed it is the amdgpu driver's
+   `gpu_busy_percent`, and enabling it takes a `/sys` mount plus a settings change on each node. On
+   an NVIDIA or Apple node the gap is unchanged, and closing it needs a host-side writer for the
+   documented `gpu_pressure.json` probe rather than any further work in the Hub.
 2. **No manual pinning.** Cheap to add — a request header or per-app setting consulted ahead of the
    ranker, mirroring PAIR's priority order.
 

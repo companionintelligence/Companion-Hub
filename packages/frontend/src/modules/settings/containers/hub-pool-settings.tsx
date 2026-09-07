@@ -7,6 +7,7 @@ import {
   poolStatusQueryKey,
   updatePoolSettingsMutation,
 } from '@/api-client/@tanstack/react-query.gen';
+import { client } from '@/api-client/client.gen';
 import { approvePeer, pairPeer, rejectPeer, removePeer } from '@/api-client/sdk.gen';
 import { Button } from '@/components/ui/Button';
 import { Card, CardContent } from '@/components/ui/Card';
@@ -37,10 +38,13 @@ interface PoolPeerCapabilities {
   hardwareTier: string;
   backends: PoolBackendCapability[];
   inFlightRequests?: number;
+  /** The far side told us it is not taking work right now. Absent on a peer running an older build. */
+  acceptingWork?: boolean;
   updatedAt: string;
 }
 
-type PoolPeerStatus = 'pending' | 'connected' | 'unreachable' | 'rejected';
+/* 'rejected' was retired in migration 0059 — nothing ever wrote it, and it overlapped `enabled`. */
+type PoolPeerStatus = 'pending' | 'connected' | 'unreachable';
 
 interface PoolPeer {
   id: string;
@@ -48,22 +52,51 @@ interface PoolPeer {
   displayName: string | null;
   direction: 'inbound' | 'outbound';
   status: PoolPeerStatus;
+  /** Per-peer kill switch. Not a lifecycle state: a disabled peer can be `connected` and healthy. */
+  enabled: boolean;
   consecutiveFailures: number;
   lastSeenAt: string | null;
   lastCapabilities: PoolPeerCapabilities | null;
   inFlightRequests: number;
+  /** How this peer authenticates to us: the original token, or a pinned Ed25519 key. */
+  authMode?: 'bearer' | 'signed';
+  /** A short hash of the peer's pinned public key. Never the key — the fingerprint is what a human compares. */
+  peerKeyFingerprint?: string | null;
 }
 
 interface PoolSettings {
   poolEnabled: boolean;
+  poolOutboundEnabled: boolean;
+  poolInboundEnabled: boolean;
   poolLocalAffinity: number;
   poolHealthPollSeconds: number;
+  poolRequireSignedPeers: boolean;
+}
+
+/** This node's own pool identity. Never the private key — only the UUID and a short fingerprint. */
+interface PoolIdentitySummary {
+  nodeUuid: string | null;
+  publicKeyFingerprint: string | null;
+  /** Why identity is unusable, when it is — surfaced the same way `capabilitiesError` is. */
+  identityError: string | null;
+}
+
+/** An outstanding pairing PIN. The digits are returned exactly once, by the mint call, and never here. */
+interface PoolPairingPinState {
+  active: boolean;
+  expiresAt: string | null;
+}
+
+interface PoolEnabledState {
+  enabled: boolean;
+  disabledBy: 'env' | 'setting' | null;
 }
 
 interface PoolStatus {
   enabled: boolean;
   disabledBy: 'env' | 'setting' | null;
-  reason: 'active' | 'no_peers' | 'disabled_by_env' | 'disabled_by_setting';
+  directions: { outbound: PoolEnabledState; inbound: PoolEnabledState };
+  reason: 'active' | 'no_peers' | 'partially_disabled' | 'disabled_by_env' | 'disabled_by_setting';
   routingActive: boolean;
   settings: PoolSettings;
   tailscaleAdminApiConfigured: boolean;
@@ -75,9 +108,11 @@ interface PoolStatus {
     hardwareTier: string | null;
     backends: PoolBackendCapability[];
     capabilitiesError: string | null;
+    identity?: PoolIdentitySummary;
   };
   peers: PoolPeer[];
-  peerCounts: { total: number; connected: number; pending: number; unreachable: number };
+  peerCounts: { total: number; connected: number; pending: number; unreachable: number; disabled: number };
+  pairingPin?: PoolPairingPinState;
   routing: { recorded: number; capacity: number; served: number; failed: number; failovers: number; lastAt: string | null };
 }
 
@@ -103,9 +138,12 @@ interface PoolRoutingLog {
 }
 
 interface DiscoverablePoolPeer {
+  /** Empty for a candidate found by a manual address probe — there is no Tailscale device behind it. */
   tailscaleDeviceId: string;
   nodeFqdn: string;
   hostname: string;
+  /** How this candidate was found. Absent on a Hub running an older build. */
+  source?: 'tailscale' | 'lan-probe';
 }
 
 /** How many routing decisions to render. The buffer holds 200; an operator reads the recent ones. */
@@ -121,7 +159,20 @@ const peerLabel = (peer: { displayName: string | null; nodeFqdn: string }) => pe
 
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
 
-const PeerStatusBadge = ({ status, t }: { status: PoolPeerStatus; t: Translate }) => {
+const PeerStatusBadge = ({ status, enabled, t }: { status: PoolPeerStatus; enabled: boolean; t: Translate }) => {
+  // Shown instead of, not beside, the lifecycle badge: a peer the operator switched off must not
+  // read as "connected" at a glance, whatever the health poll says about it.
+  if (!enabled) {
+    return (
+      <span
+        data-testid="hub-pool-peer-disabled-badge"
+        className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-border/70 bg-muted/40 px-2.5 py-1 text-xs font-medium text-muted-foreground"
+      >
+        <span className="h-1.5 w-1.5 rounded-full bg-muted-foreground" />
+        {t('HUB_POOL_STATUS_DISABLED')}
+      </span>
+    );
+  }
   if (status === 'connected') {
     return <StatusBadge connected label={t('HUB_POOL_STATUS_CONNECTED')} />;
   }
@@ -239,10 +290,14 @@ export const HubPoolSection = () => {
     onError: () => toast.error(t('HUB_POOL_SETTINGS_ERROR')),
   });
 
+  /* The PIN an operator read off the OTHER Hub's screen. Optional: without one this is the
+     pre-existing request/approve flow, which is what keeps a mixed-version fleet pairing at all. */
+  const [pairingPinInput, setPairingPinInput] = useState('');
   const pairMutation = useMutation({
-    mutationFn: (nodeFqdn: string) => pairPeer({ body: { nodeFqdn } }),
+    mutationFn: (nodeFqdn: string) => pairPeer({ body: { nodeFqdn, ...(/^\d{6}$/.test(pairingPinInput) ? { pin: pairingPinInput } : {}) } as never }),
     onSuccess: () => {
       toast.success(t('HUB_POOL_PAIR_SUCCESS'));
+      setPairingPinInput('');
       invalidatePool();
     },
     onError: () => toast.error(t('HUB_POOL_PAIR_ERROR')),
@@ -276,6 +331,60 @@ export const HubPoolSection = () => {
     onError: () => toast.error(t('HUB_POOL_UNPAIR_ERROR')),
   });
 
+  /* The two new directional switches. Sent through the generated client's low-level `patch` rather
+     than `updatePoolSettingsMutation`: `UpdateHubPoolPreferencesBody` in the generated types does
+     not carry these fields until swagger.json and the api-client are regenerated, which happens
+     after this lands. Same route, same body shape — fold it back into `settingsMutation` once
+     codegen has run. */
+  const directionMutation = useMutation({
+    mutationFn: (body: { poolOutboundEnabled?: boolean; poolInboundEnabled?: boolean }) =>
+      client.patch({ url: '/api/inference/pool/settings', body }),
+    onSuccess: () => {
+      toast.success(t('HUB_POOL_SETTINGS_SAVED'));
+      invalidatePool();
+    },
+    onError: () => toast.error(t('HUB_POOL_SETTINGS_ERROR')),
+  });
+
+  /* The two per-peer verbs. Called through the generated client's low-level `post` rather than a
+     named SDK function: `packages/frontend/src/api-client/*` is regenerated from swagger.json after
+     this lands, so the typed `enablePeer`/`disablePeer` helpers do not exist yet. Swap this for
+     them once codegen has run — the URL is the contract either way. */
+  const peerEnabledMutation = useMutation({
+    mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) =>
+      client.post({ url: `/api/inference/pool/peers/${encodeURIComponent(id)}/${enabled ? 'enable' : 'disable'}` }),
+    onSuccess: (_data, variables) => {
+      toast.success(variables.enabled ? t('HUB_POOL_PEER_ENABLED') : t('HUB_POOL_PEER_DISABLED'));
+      invalidatePool();
+    },
+    onError: () => toast.error(t('HUB_POOL_PEER_TOGGLE_ERROR')),
+  });
+
+  /* Pairing PIN. Through the generated client's low-level verbs for the same reason as the two
+     blocks above: the routes are new and `packages/frontend/src/api-client/*` is regenerated from
+     swagger.json after this lands. The mint RESPONSE is the only place the digits ever appear —
+     `GET status` reports `pairingPin: { active, expiresAt }` and never the value, so polling can
+     render the countdown without the PIN becoming re-servable. */
+  const [mintedPin, setMintedPin] = useState<string | null>(null);
+  const mintPinMutation = useMutation({
+    mutationFn: () => client.post({ url: '/api/inference/pool/pairing-pin' }),
+    onSuccess: (response) => {
+      // Cast rather than a generic: the low-level client types every response as `unknown` until
+      // swagger.json and the api-client are regenerated. `hub-pool.controller.ts` is the contract.
+      setMintedPin((response.data as { pin?: string } | undefined)?.pin ?? null);
+      invalidatePool();
+    },
+    onError: () => toast.error(t('HUB_POOL_PIN_MINT_ERROR')),
+  });
+  const cancelPinMutation = useMutation({
+    mutationFn: () => client.delete({ url: '/api/inference/pool/pairing-pin' }),
+    onSuccess: () => {
+      setMintedPin(null);
+      invalidatePool();
+    },
+    onError: () => toast.error(t('HUB_POOL_PIN_CANCEL_ERROR')),
+  });
+
   /* Same DELETE as Unpair, split out only so the toasts match what the operator did: cancelling
      an unanswered outbound request is not the same event as tearing down a live pairing. */
   const cancelRequestMutation = useMutation({
@@ -307,6 +416,10 @@ export const HubPoolSection = () => {
   }
 
   const envLocked = status.disabledBy === 'env';
+  // Each direction has its own .env override, and only its own switch is uncontrollable because of
+  // it — the master lock above already disables everything.
+  const outboundEnvLocked = !envLocked && status.directions.outbound.disabledBy === 'env';
+  const inboundEnvLocked = !envLocked && status.directions.inbound.disabledBy === 'env';
   const localLabel = t('HUB_POOL_LOCAL_NODE_LABEL');
   const models = mergePoolModels(status, localLabel);
   const pendingInbound = status.peers.filter((peer) => peer.direction === 'inbound' && peer.status === 'pending');
@@ -320,6 +433,7 @@ export const HubPoolSection = () => {
   const reasonCopy: Record<PoolStatus['reason'], string> = {
     active: t('HUB_POOL_REASON_ACTIVE'),
     no_peers: t('HUB_POOL_REASON_NO_PEERS'),
+    partially_disabled: t('HUB_POOL_REASON_PARTIAL'),
     disabled_by_setting: t('HUB_POOL_REASON_DISABLED_SETTING'),
     disabled_by_env: t('HUB_POOL_REASON_DISABLED_ENV'),
   };
@@ -379,6 +493,7 @@ export const HubPoolSection = () => {
                 connected: status.peerCounts.connected,
                 pending: status.peerCounts.pending,
                 unreachable: status.peerCounts.unreachable,
+                disabled: status.peerCounts.disabled,
               })}
             />
             <Detail
@@ -412,6 +527,35 @@ export const HubPoolSection = () => {
                 label={t('HUB_POOL_TOGGLE_LABEL')}
               />
               <p className="text-xs text-muted-foreground">{envLocked ? t('HUB_POOL_TOGGLE_ENV_LOCKED') : t('HUB_POOL_TOGGLE_HELP')}</p>
+            </div>
+
+            {/* The two halves, below the master and indented under it. Each renders the PERSISTED
+                value, like the master above, so an env override shows what is stored while the
+                state banner explains what is actually in force. */}
+            <div className="space-y-4 border-l pl-4">
+              <div className="space-y-1.5">
+                <Switch
+                  name="hubPoolOutboundEnabled"
+                  data-testid="hub-pool-outbound-toggle"
+                  checked={status.settings.poolOutboundEnabled}
+                  disabled={demoMode || envLocked || outboundEnvLocked || !status.settings.poolEnabled || directionMutation.isPending}
+                  onCheckedChange={(checked: boolean) => directionMutation.mutate({ poolOutboundEnabled: checked })}
+                  label={t('HUB_POOL_OUTBOUND_LABEL')}
+                />
+                <p className="text-xs text-muted-foreground">{outboundEnvLocked ? t('HUB_POOL_OUTBOUND_ENV_LOCKED') : t('HUB_POOL_OUTBOUND_HELP')}</p>
+              </div>
+
+              <div className="space-y-1.5">
+                <Switch
+                  name="hubPoolInboundEnabled"
+                  data-testid="hub-pool-inbound-toggle"
+                  checked={status.settings.poolInboundEnabled}
+                  disabled={demoMode || envLocked || inboundEnvLocked || !status.settings.poolEnabled || directionMutation.isPending}
+                  onCheckedChange={(checked: boolean) => directionMutation.mutate({ poolInboundEnabled: checked })}
+                  label={t('HUB_POOL_INBOUND_LABEL')}
+                />
+                <p className="text-xs text-muted-foreground">{inboundEnvLocked ? t('HUB_POOL_INBOUND_ENV_LOCKED') : t('HUB_POOL_INBOUND_HELP')}</p>
+              </div>
             </div>
 
             <div className="grid gap-4 sm:grid-cols-2">
@@ -475,27 +619,50 @@ export const HubPoolSection = () => {
                     <div className="min-w-0 space-y-1">
                       <div className="flex flex-wrap items-center gap-2">
                         <span className="truncate text-sm font-medium">{peerLabel(peer)}</span>
-                        <PeerStatusBadge status={peer.status} t={t} />
+                        <PeerStatusBadge status={peer.status} enabled={peer.enabled} t={t} />
+                        {/* The far side's decision, not ours: it is up and answering, it just will
+                            not serve us. Without this its empty model list reads as a broken node. */}
+                        {peer.enabled && peer.lastCapabilities?.acceptingWork === false ? (
+                          <span
+                            data-testid="hub-pool-peer-not-accepting"
+                            className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-border/70 bg-muted/30 px-2.5 py-1 text-xs font-medium text-muted-foreground"
+                          >
+                            {t('HUB_POOL_PEER_NOT_ACCEPTING')}
+                          </span>
+                        ) : null}
                       </div>
                       {/* The FQDN is the identity the token was issued to; the display name is only a label. */}
                       <span className="block truncate font-mono text-xs text-muted-foreground" title={peer.nodeFqdn}>
                         {peer.nodeFqdn}
                       </span>
                     </div>
-                    {/* Confirmed in a dialog like Re-register device: it deletes the peer and revokes
-                        both directional tokens, so recovering means a full two-sided re-pair. */}
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="outline"
-                      intent="danger"
-                      data-testid="hub-pool-unpair-btn"
-                      disabled={demoMode}
-                      loading={removeMutation.isPending && removeMutation.variables === peer.id}
-                      onClick={() => setUnpairTarget(peer)}
-                    >
-                      {t('HUB_POOL_UNPAIR_BUTTON')}
-                    </Button>
+                    <div className="flex shrink-0 items-center gap-3">
+                      {/* Instantly reversible and NOT a revocation: both tokens and the pairing
+                          survive, so this needs no confirmation dialog and no re-approval from the
+                          other side. Unpair, beside it, is the one that revokes. */}
+                      <Switch
+                        name={`hub-pool-peer-enabled-${peer.id}`}
+                        data-testid="hub-pool-peer-toggle"
+                        checked={peer.enabled}
+                        disabled={demoMode || peerEnabledMutation.isPending}
+                        onCheckedChange={(checked: boolean) => peerEnabledMutation.mutate({ id: peer.id, enabled: checked })}
+                        label={t('HUB_POOL_PEER_TOGGLE_LABEL')}
+                      />
+                      {/* Confirmed in a dialog like Re-register device: it deletes the peer and revokes
+                          both directional tokens, so recovering means a full two-sided re-pair. */}
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        intent="danger"
+                        data-testid="hub-pool-unpair-btn"
+                        disabled={demoMode}
+                        loading={removeMutation.isPending && removeMutation.variables === peer.id}
+                        onClick={() => setUnpairTarget(peer)}
+                      >
+                        {t('HUB_POOL_UNPAIR_BUTTON')}
+                      </Button>
+                    </div>
                   </div>
 
                   <dl className="grid grid-cols-2 gap-2 text-xs sm:grid-cols-4">
@@ -598,13 +765,76 @@ export const HubPoolSection = () => {
           )}
         </Block>
 
+        {/* ── Pairing PIN and this node's identity ────────────────────── */}
+        <Block title={t('HUB_POOL_PIN_TITLE')} help={t('HUB_POOL_PIN_HELP')}>
+          <div className="space-y-3">
+            {status.localNode.identity?.identityError ? (
+              /* Surfaced exactly the way `capabilitiesError` is: identity bootstrap degrades and
+                 reports rather than throwing, so a Hub whose JWT_SECRET was regenerated over a
+                 retained volume still boots, still verifies its peers, and says why it cannot sign. */
+              <p data-testid="hub-pool-identity-error" className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs">
+                {t('HUB_POOL_IDENTITY_ERROR', { error: status.localNode.identity.identityError })}
+              </p>
+            ) : (
+              <p className="font-mono text-xs text-muted-foreground" data-testid="hub-pool-local-fingerprint">
+                {t('HUB_POOL_LOCAL_FINGERPRINT', { fingerprint: status.localNode.identity?.publicKeyFingerprint ?? '—' })}
+              </p>
+            )}
+
+            {mintedPin ? (
+              <div className="flex items-center justify-between gap-3 rounded-md border px-3 py-2">
+                {/* The only place the digits are ever rendered: they came back from the mint call and
+                    are held in this component's state, never re-fetched. A reload loses them, which
+                    is correct — the operator mints a new one. */}
+                <span className="font-mono text-2xl tracking-[0.3em]" data-testid="hub-pool-minted-pin">
+                  {mintedPin}
+                </span>
+                <Button type="button" size="sm" variant="outline" disabled={demoMode} onClick={() => cancelPinMutation.mutate()}>
+                  {t('HUB_POOL_PIN_CANCEL_BUTTON')}
+                </Button>
+              </div>
+            ) : (
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-xs text-muted-foreground" data-testid="hub-pool-pin-state">
+                  {status.pairingPin?.active ? t('HUB_POOL_PIN_ACTIVE_ELSEWHERE') : t('HUB_POOL_PIN_NONE')}
+                </span>
+                <Button
+                  type="button"
+                  size="sm"
+                  data-testid="hub-pool-mint-pin-btn"
+                  disabled={demoMode}
+                  loading={mintPinMutation.isPending}
+                  onClick={() => mintPinMutation.mutate()}
+                >
+                  {t('HUB_POOL_PIN_MINT_BUTTON')}
+                </Button>
+              </div>
+            )}
+
+            {/* Entered on the OTHER Hub, next to the address being paired. Left blank, pairing
+                behaves exactly as it did before this shipped. */}
+            <Input
+              value={pairingPinInput}
+              inputMode="numeric"
+              maxLength={6}
+              data-testid="hub-pool-pin-input"
+              placeholder={t('HUB_POOL_PIN_INPUT_PLACEHOLDER')}
+              onChange={(event) => setPairingPinInput(event.target.value.replace(/\D/g, '').slice(0, 6))}
+            />
+          </div>
+        </Block>
+
         {/* ── Discovery and pairing ───────────────────────────────────── */}
         <Block title={t('HUB_POOL_DISCOVERABLE_TITLE')} help={t('HUB_POOL_DISCOVERABLE_HELP')}>
-          {status.tailscaleAdminApiConfigured ? (
+          {status.tailscaleAdminApiConfigured || discoverable?.length ? (
             discoverable?.length ? (
               <ul className="space-y-2">
                 {discoverable.map((device) => (
-                  <li key={device.tailscaleDeviceId} className="flex items-center justify-between gap-3 rounded-md border px-3 py-2">
+                  // Keyed on the FQDN, not the Tailscale device id: a candidate found by address
+                  // has no device id, so keying on that gives every one of them the same key and
+                  // React reconciles all but one row away. The FQDN is unique across the merged list
+                  // by construction — it is what the backend deduplicates on.
+                  <li key={device.nodeFqdn} className="flex items-center justify-between gap-3 rounded-md border px-3 py-2">
                     <span className="min-w-0 truncate font-mono text-xs" title={device.nodeFqdn}>
                       {device.hostname}
                     </span>
@@ -647,6 +877,16 @@ export const HubPoolSection = () => {
                       {peer.nodeFqdn}
                     </span>
                     {peer.displayName ? <span className="block truncate text-xs text-muted-foreground">{peer.displayName}</span> : null}
+                    {/* The other half of the confirmation. A PIN-authenticated request arrives with the
+                        requester's key already pinned, so the operator can compare this fingerprint
+                        against the one shown on that Hub's own screen before approving. Absent means
+                        the request carried no PIN — i.e. an unauthenticated claim of a name, which is
+                        exactly the case the PIN exists to close. */}
+                    <span className="block truncate font-mono text-[11px] text-muted-foreground" data-testid="hub-pool-pending-fingerprint">
+                      {peer.peerKeyFingerprint
+                        ? t('HUB_POOL_PEER_FINGERPRINT', { fingerprint: peer.peerKeyFingerprint })
+                        : t('HUB_POOL_PEER_FINGERPRINT_UNVERIFIED')}
+                    </span>
                   </div>
                   <div className="flex shrink-0 gap-2">
                     <Button

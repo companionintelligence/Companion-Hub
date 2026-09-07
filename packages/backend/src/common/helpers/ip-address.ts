@@ -51,3 +51,38 @@ export function isPrivateOrLocalIp(ip: string, options?: { includeUnspecified?: 
   if (a === 192 && b === 168) return true;
   return false;
 }
+
+/**
+ * Whether an address may be the target of a manual pool-peer probe.
+ *
+ * Deliberately NOT {@link isPrivateOrLocalIp}, which is the allowlist for `InternalNetworkGuard`
+ * and whose question is "did this come from inside". That one answers true for `127.0.0.1`/`::1`
+ * and for the whole of `169.254.0.0/16` — which contains the cloud metadata endpoint
+ * `169.254.169.254`. Pooling with a peer over loopback or link-local is meaningless, so allowing
+ * them buys nothing and turns an operator-authenticated route into a loopback/metadata prober whose
+ * response timing distinguishes an open port from a closed one.
+ *
+ * Allowed: RFC1918, RFC6598 CGNAT (where Tailscale puts every tailnet node), and IPv6 ULA.
+ * Refused: loopback, link-local (v4 and v6), the unspecified address, and everything public.
+ */
+export function isPoolProbeTarget(ip: string): boolean {
+  const normalized = normalizeIpLiteral(ip);
+  if (!normalized) return false;
+
+  if (normalized === '::1' || normalized === '127.0.0.1' || normalized === '::') return false;
+  if (normalized.startsWith('fe80:')) return false;
+  // fc00::/7 — the IPv6 equivalent of RFC1918, and the only v6 range a LAN peer plausibly sits in.
+  if (normalized.startsWith('fc') || normalized.startsWith('fd')) return true;
+  if (!isIP(normalized)) return false;
+
+  const parts = normalized.split('.').map(Number);
+  // Any remaining IPv6 address is global unicast, so it is not a pool target.
+  if (parts.length !== 4 || parts.some((n) => Number.isNaN(n))) return false;
+
+  const [a, b = -1] = parts;
+  if (a === 10) return true;
+  if (a === 100 && b >= 64 && b <= 127) return true;
+  if (a === 172 && b >= 16 && b <= 31) return true;
+  if (a === 192 && b === 168) return true;
+  return false;
+}
