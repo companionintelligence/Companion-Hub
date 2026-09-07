@@ -482,8 +482,14 @@ export const appInfoObjectSchema = z.object({
    * Popular proprietary products this app replaces (e.g. Nextcloud →
    * "Google Drive", "Dropbox"). Indexed by store search. Do not stuff these
    * into `short_desc` — that field is human copy, not a synonym list.
+   *
+   * Missing/null/junk tolerance lives in `normalizeAppInfoInput`, which coerces
+   * this to an array before the field is reached — so keep the field strict.
+   * Do not add `.nullable()`: it widens the parsed type to `string[] | null`,
+   * forcing null checks on a case that cannot occur, and a `.transform()` to
+   * undo that would erase `replaces` from the generated OpenAPI/JSON schemas.
    */
-  replaces: z.array(z.string().min(1)).optional().nullable().default([]),
+  replaces: z.array(z.string().min(1)).optional().default([]),
   author: z.string(),
   source: z.string(),
   website: z.string().optional(),

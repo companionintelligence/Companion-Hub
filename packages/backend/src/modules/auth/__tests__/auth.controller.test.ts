@@ -1132,7 +1132,7 @@ describe('AuthController', () => {
 
       await authController.portalCallback(req, res, 'auth-code', 'state-123');
 
-      expect(res.redirect).toHaveBeenCalledWith('cihub-dev://auth?error=callback_error');
+      expect(res.redirect).toHaveBeenCalledWith('cihub://auth?error=callback_error');
     });
 
     it('redirects browser flows to the login page with a portal_error query param', async () => {
@@ -1196,7 +1196,7 @@ describe('AuthController', () => {
       const returned = await authController.portalCallback(req, res, 'auth-code', 'state-123');
 
       expect(returned).toBeUndefined();
-      expect(res.send).toHaveBeenCalledWith(expect.stringContaining('cihub-dev://auth?token='));
+      expect(res.send).toHaveBeenCalledWith(expect.stringContaining('cihub://auth?token='));
       expect(res.redirect).not.toHaveBeenCalled();
       expect(cache.set).toHaveBeenCalledWith(expect.stringMatching(/^portal_sso_desktop:/), expect.any(String), 60);
     });
@@ -1246,7 +1246,7 @@ describe('AuthController', () => {
 
       await authController.portalCallback(req, res, 'auth-code', 'state-123');
 
-      expect(res.send).toHaveBeenCalledWith(expect.stringContaining('cihub-dev://auth?token='));
+      expect(res.send).toHaveBeenCalledWith(expect.stringContaining('cihub://auth?token='));
       expect(res.redirect).not.toHaveBeenCalled();
     });
   });
@@ -1266,7 +1266,7 @@ describe('AuthController', () => {
 
       await authController.startPortalLogin(req, res, undefined, '1');
 
-      expect(res.redirect).toHaveBeenCalledWith('cihub-dev://auth?error=not_configured');
+      expect(res.redirect).toHaveBeenCalledWith('cihub://auth?error=not_configured');
     });
   });
 

@@ -25,7 +25,7 @@ export function packageVersion(): string {
   }
 }
 
-const envFileMap: Record<HubEnv, string> = {
+export const envFileMap: Record<HubEnv, string> = {
   local: '.env.local',
   dev: '.env.dev',
   staging: '.env.staging',

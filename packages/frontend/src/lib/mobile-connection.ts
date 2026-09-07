@@ -184,6 +184,11 @@ export function needsRemoteHubConnect(): boolean {
   return usesCloudConnect() && !getHubBaseUrlSync();
 }
 
+/** `/connect` and nested cloud-connect screens such as `/connect/advanced`. */
+export function isCloudConnectPath(pathname: string): boolean {
+  return pathname === '/connect' || pathname.startsWith('/connect/');
+}
+
 /**
  * Detect a Tauri *mobile* webview synchronously from the user agent. This avoids
  * an async round-trip to the OS plugin during the very first root loader run —

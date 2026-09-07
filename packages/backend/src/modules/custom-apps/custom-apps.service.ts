@@ -146,6 +146,7 @@ export class CustomAppService {
       categories: ['utilities'],
       description: `Custom application: ${name}`,
       short_desc: 'User-created custom app',
+      replaces: [],
       author: 'User',
       source: '',
       website: '',

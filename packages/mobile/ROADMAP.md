@@ -15,7 +15,7 @@ appliance chosen from the cloud device picker. Everything mobile is gated by
 | Capability | State |
 |---|---|
 | Connect flow (Portal sign-in → pick Hub → Hub login) | ✅ Shipped, 49 tests incl. a routed login-journey suite |
-| `cihub://` deep links (SSO callback, pairing, intents) | ✅ Works end-to-end on both platforms (verified on-device) |
+| `cihub://` deep links (SSO callback, pairing, intents) | ✅ Works end-to-end on **simulator + emulator**. *Not* verified on physical hardware — see the TestFlight row below |
 | iOS App Intents (Siri/Shortcuts/Spotlight/Action Button) | ✅ 5 intents + AppShortcutsProvider, verified in `Metadata.appintents` |
 | CI builds (APK + iOS sim `.app`; secrets-gated AAB) | ✅ `mobile-build.yml` |
 | Sentry | 🟡 JS enabled + correctly tagged; **no Rust panic hook, no source maps** |
@@ -107,7 +107,7 @@ fits the threat model given a persisted session token. Cargo dep + capability +
 - **i18n the Portal error paths** — timeouts surface as raw English / browser `TimeoutError` strings; add keys + inline errors instead of toast-only.
 - **Custom Portal URLs** silently fail — the Advanced field accepts any host, but the http capability allowlist only covers `*.ci.computer` + corporate domains + RFC1918 (and is missing `172.16/12`). Widen, or catch the denial and say so.
 - **Tablet/TV decision** (see STORE-READINESS §4c).
-- **Keep telemetry error-only.** There is zero analytics tooling (`tracesSampleRate: 0`, no PostHog/Plausible). For a privacy-first brand that's the right default — codify it so store privacy answers stay consistent.
+- **Keep telemetry lean.** There is no product-analytics tooling (no PostHog/Plausible), but it is **not** error-only today: `sentry.ts:296-299` enables `browserTracingIntegration()` and `replayIntegration()` (Session Replay, text masked / media blocked), and `tracesSampleRate` is read from `VITE_SENTRY_TRACES_SAMPLE_RATE` rather than pinned to 0. For a privacy-first brand that's the right default — codify it so store privacy answers stay consistent.
 
 ---
 

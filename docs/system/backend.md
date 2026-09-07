@@ -5,7 +5,7 @@
 > **Key paths:** `packages/backend/src/modules/`, `packages/backend/src/database/`, `packages/backend/src/queue/`
 > **Commands:** `cd packages/backend && pnpm test`, `pnpm run test:integration` (root)
 > **Owner persona:** maintainability + security (see REVIEW_PERSONAS.md)
-> **Last updated:** 2026-09-04 (managed host-inference credentials)
+> **Last updated:** 2026-09-06 (lifecycle command modules, inference backend registry)
 > **Related:** docs/system/e2e.md, docs/ARCHITECTURE.md
 
 ---
@@ -53,6 +53,48 @@ The probe reports "supported" on any error **by design** — the opposite would 
 data directory into an empty named volume over what may be a transient IO failure. For the same
 reason the redirect is keyed off the filesystem rather than applied everywhere: on Linux and macOS
 bind mounts keep working and existing data stays exactly where it is.
+
+## App lifecycle command structure
+
+`AppLifecycleCommandFactory` builds one command object per operation (`commands/install-app-command.ts`,
+`start-app-command.ts`, and eight more). They all extend `AppLifecycleCommand` in `commands/command.ts`,
+which used to also carry the four steps they share. Those now live in their own modules:
+
+| Module | Step |
+|---|---|
+| `commands/compose-preparation.ts` | Renders the app's `docker-compose.yml` from its manifest — architecture overrides, exposure hostnames, resource limits, subnet |
+| `commands/host-device-preflight.ts` | Fails fast when a manifest wants `/dev/kfd` or `/dev/kvm` the host cannot provide |
+| `commands/network-recovery.ts` | Runs compose, retrying with a fresh subnet when Docker reports an overlapping bridge range |
+| `commands/failure-reporting.ts` | Turns a thrown error into the structured result the queue replies with, and reports it |
+
+`AppLifecycleCommand` keeps a thin wrapper for each. The wrappers are load-bearing: subclasses call
+them as `this.<name>()` and tests install instance spies over them, so the members have to stay on
+the prototype for that dispatch to work. For the same reason `runComposeWithNetworkRecovery` receives
+`ensureAppDir` and `removeStaleAppNetworks` as bound callbacks instead of importing them — a direct
+import would bypass instance overrides.
+
+Each module is tested directly in `commands/__tests__/`, which was not possible while they were
+protected methods.
+
+## Inference backend registry
+
+`InferenceBackendRegistry` (`modules/inference/backends/backend-registry.ts`) is the single mapping
+from `InferenceBackendType` to a backend instance. `get(type)` resolves one; `entries()` walks all
+six in `INFERENCE_BACKEND_TYPES` order.
+
+It replaced five byte-identical private `getBackend` switches in `model-puller`,
+`inference-env-resolver`, `inference-router`, `app-credentials`, and the controller. Two details are
+deliberate and easy to undo by accident:
+
+- The map is a `Record` keyed by the union, not a `Map`. A missing backend is then a build error,
+  and unlike an index signature it is not widened to `| undefined` by `noUncheckedIndexedAccess`.
+- The six backend classes are **value** imports, not `import type`. Nest resolves constructor
+  parameters through `emitDecoratorMetadata`'s `design:paramtypes`, so a type-only import erases them
+  to `undefined` at runtime with no compile error — and Biome's `useImportType` is off for this
+  package, so nothing would flag it.
+
+`entries()` yields the type as the string from the source tuple rather than reading `backend.type`
+off the instance, because test doubles are mock proxies whose `type` is undefined.
 
 ## Database
 
@@ -110,7 +152,7 @@ only CI-Cloud knows whether a hostname really routes here.
   `app.config`, which every later lifecycle command replays as `form` — so a correction that only
   looked at the app's existing env would never run for a UI install.
 - Two more consumers must follow the same binding, because they are what an app or a browser
-  actually sees: Traefik's `X-Forwarded-Host` middleware (`commands/command.ts` →
+  actually sees: Traefik's `X-Forwarded-Host` middleware (`commands/compose-preparation.ts` →
   `traefik-labels.builder.ts`), which frameworks that trust proxy headers use instead of the env,
   and the forward-auth host map (`modules/auth`), which the edge-SSO return URL is built from.
 - Restarts are asymmetric. A **first** bind reaches a running app via `pendingRestart` + an SSE
