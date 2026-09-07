@@ -9,6 +9,7 @@ import {
   DEFAULT_POOL_PRESSURE_WEIGHT,
   type HubPoolPreferences,
 } from '@/common/helpers/hub-pool';
+import type { InferenceSupervisionMode } from '@/common/helpers/inference-supervision';
 import { readPortalInternalUrlOverride, resolveOutboundPortalBaseUrl } from '@/common/helpers/portal-url';
 import { TranslatableError } from '@/common/error/translatable-error';
 import { scrubString } from '@/core/error-reporting/sentry-scrubber';
@@ -114,6 +115,8 @@ type PersistedSettingsValues = {
   hubPoolHealthPollSeconds: number | undefined;
   hubPoolRequireSignedPeers: boolean | undefined;
   hubPoolPressureWeight: number | undefined;
+  inferenceSupervisionMode: InferenceSupervisionMode | undefined;
+  inferenceSupervisionPollSeconds: number | undefined;
 };
 
 const EMPTY_PERSISTED_SETTINGS: PersistedSettingsValues = {
@@ -139,6 +142,8 @@ const EMPTY_PERSISTED_SETTINGS: PersistedSettingsValues = {
   hubPoolHealthPollSeconds: undefined,
   hubPoolRequireSignedPeers: undefined,
   hubPoolPressureWeight: undefined,
+  inferenceSupervisionMode: undefined,
+  inferenceSupervisionPollSeconds: undefined,
 };
 
 @Injectable()
@@ -222,6 +227,8 @@ export class ConfigurationService {
       hubPoolHealthPollSeconds: settings.hubPoolHealthPollSeconds,
       hubPoolRequireSignedPeers: settings.hubPoolRequireSignedPeers,
       hubPoolPressureWeight: settings.hubPoolPressureWeight,
+      inferenceSupervisionMode: settings.inferenceSupervisionMode,
+      inferenceSupervisionPollSeconds: settings.inferenceSupervisionPollSeconds,
     };
   }
 
@@ -317,6 +324,8 @@ export class ConfigurationService {
         hubPoolHealthPollSeconds: settingsValues.hubPoolHealthPollSeconds,
         hubPoolRequireSignedPeers: settingsValues.hubPoolRequireSignedPeers,
         hubPoolPressureWeight: settingsValues.hubPoolPressureWeight,
+        inferenceSupervisionMode: settingsValues.inferenceSupervisionMode,
+        inferenceSupervisionPollSeconds: settingsValues.inferenceSupervisionPollSeconds,
         experimental: {
           insecureCookie: env.data.EXPERIMENTAL_INSECURE_COOKIE,
         },
@@ -526,6 +535,20 @@ export class ConfigurationService {
       await this.setUserSettings(settings);
     }
     return this.getHubPoolPreferences();
+  }
+
+  /**
+   * Inference-backend observation mode as persisted. `undefined` means the operator has never
+   * chosen, which `resolveInferenceSupervisionMode` reads as `'off'` — the default is opt-in
+   * precisely so an untouched appliance keeps doing no polling at all.
+   */
+  public getInferenceSupervisionMode(): InferenceSupervisionMode | undefined {
+    return this.config.userSettings.inferenceSupervisionMode;
+  }
+
+  /** Persisted observation interval in seconds; `undefined` falls back to DEFAULT_SUPERVISION_POLL_SECONDS. */
+  public getInferenceSupervisionPollSeconds(): number | undefined {
+    return this.config.userSettings.inferenceSupervisionPollSeconds;
   }
 
   public getInferenceCloudProviders(): CloudProviderConfig[] {

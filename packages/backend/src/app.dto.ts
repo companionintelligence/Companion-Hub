@@ -11,6 +11,7 @@ import {
   MIN_POOL_LOCAL_AFFINITY,
   MIN_POOL_PRESSURE_WEIGHT,
 } from '@/common/helpers/hub-pool';
+import { INFERENCE_SUPERVISION_MODES, MAX_SUPERVISION_POLL_SECONDS, MIN_SUPERVISION_POLL_SECONDS } from '@/common/helpers/inference-supervision';
 
 import { INFERENCE_BACKEND_TYPES } from '@ci-hub/common/types';
 import { userSchema } from './modules/user/dto/user.dto';
@@ -41,6 +42,10 @@ const poolHealthPollSecondsSchema = z
 const poolPressureWeightSchema = z
   .union([z.number().int(), z.string().transform(Number)])
   .pipe(z.number().int().min(MIN_POOL_PRESSURE_WEIGHT).max(MAX_POOL_PRESSURE_WEIGHT));
+/** Same read/write split as the two pool knobs above, for the inference observation interval. */
+const inferenceSupervisionPollSecondsSchema = z
+  .union([z.number().int(), z.string().transform(Number)])
+  .pipe(z.number().int().min(MIN_SUPERVISION_POLL_SECONDS).max(MAX_SUPERVISION_POLL_SECONDS));
 
 export const settingsSchema = z.object({
   advancedSettings: z.boolean(),
@@ -105,6 +110,14 @@ export const settingsSchema = z.object({
   // rest. See `HubPoolPreferences.poolRequireSignedPeers`.
   hubPoolRequireSignedPeers: z.boolean().optional(),
   hubPoolPressureWeight: poolPressureWeightSchema.optional().catch(undefined),
+  // Inference-backend observation. Opt-IN, unlike the pool switches: absent means `'off'`, which is
+  // the only value that costs a deployed Hub literally nothing — no timer, no probe, no boot work.
+  // `CI_HUB_INFERENCE_SUPERVISION_DISABLED=true` in the environment overrides it
+  // (resolveInferenceSupervisionMode). The enum has no "restart things" member by design; see
+  // common/helpers/inference-supervision.ts. `.catch(undefined)` on the read path so a value written
+  // by a future build degrades to the default here instead of failing the parse that boot depends on.
+  inferenceSupervisionMode: z.enum(INFERENCE_SUPERVISION_MODES).optional().catch(undefined),
+  inferenceSupervisionPollSeconds: inferenceSupervisionPollSecondsSchema.optional().catch(undefined),
   inferenceCloudProviders: z
     .array(
       z.object({
@@ -237,6 +250,7 @@ export class UserSettingsBody extends createZodDto(
     hubPoolLocalAffinity: poolLocalAffinitySchema.optional(),
     hubPoolHealthPollSeconds: poolHealthPollSecondsSchema.optional(),
     hubPoolPressureWeight: poolPressureWeightSchema.optional(),
+    inferenceSupervisionPollSeconds: inferenceSupervisionPollSecondsSchema.optional(),
   }),
 ) {}
 
