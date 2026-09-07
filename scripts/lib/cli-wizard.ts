@@ -25,7 +25,7 @@ import { isFirstRun } from './hub-context.js';
 
 // --- wizard ---
 
-export function resolveWizardEnvInput(value: string, fallback: HubEnv = 'local'): HubEnv {
+function tryResolveWizardEnvInput(value: string, fallback: HubEnv = 'local'): HubEnv | null {
   const n = value.trim().toLowerCase();
   const map: Record<string, HubEnv> = {
     '': fallback,
@@ -38,12 +38,21 @@ export function resolveWizardEnvInput(value: string, fallback: HubEnv = 'local')
     '4': 'prod',
     prod: 'prod',
   };
-  const env = map[n];
+  return map[n] ?? null;
+}
+
+/**
+ * Exit-on-invalid wrapper. Kept because it is the contract callers outside the wizard rely on;
+ * inside the wizard, {@link promptUntilValid} re-asks instead, since abandoning a guided flow over
+ * one mistyped digit is not a usage error.
+ */
+export function resolveWizardEnvInput(value: string, fallback: HubEnv = 'local'): HubEnv {
+  const env = tryResolveWizardEnvInput(value, fallback);
   if (!env) usageAndExit(`Unknown env: ${value}`);
   return env;
 }
 
-export function resolveWizardActionInput(value: string) {
+function tryResolveWizardActionInput(value: string): string | null {
   const n = value.trim().toLowerCase();
   const map: Record<string, string> = {
     '': 'setup',
@@ -68,9 +77,47 @@ export function resolveWizardActionInput(value: string) {
     '10': 'restart',
     restart: 'restart',
   };
-  const action = map[n];
+  return map[n] ?? null;
+}
+
+/** Exit-on-invalid wrapper — see {@link resolveWizardEnvInput}. */
+export function resolveWizardActionInput(value: string) {
+  const action = tryResolveWizardActionInput(value);
   if (!action) usageAndExit(`Unknown wizard action: ${value}`);
   return action;
+}
+
+/** Answers that abandon the wizard. Quitting a guided flow is a choice, not a usage error. */
+const WIZARD_QUIT_ANSWERS = new Set(['q', 'quit', 'exit']);
+
+/**
+ * Ask until the answer parses, rather than exiting on the first typo.
+ *
+ * Both menu prompts used to run their answer straight through the exit-on-invalid resolver, so a
+ * single stray keystroke at "Environment [1-4]" ended the guided first-run flow with a usage error
+ * and the operator started over. `registerHub` already had the right shape for this — it loops on a
+ * bad pairing code — so this follows it.
+ *
+ * `attempts` is a backstop, not a policy: runWizard refuses a non-TTY stdin up front, but if the
+ * stream ends mid-flow `rl.question` resolves empty forever, and an unbounded loop would spin.
+ */
+export async function promptUntilValid<T>(
+  rl: { question: (prompt: string) => Promise<string> },
+  label: string,
+  parse: (answer: string) => T | null,
+  attempts = 5,
+): Promise<T> {
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    const answer = (await rl.question(label)).trim();
+    if (WIZARD_QUIT_ANSWERS.has(answer.toLowerCase())) {
+      console.log(colorize('  Wizard cancelled.', 'yellow'));
+      process.exit(0);
+    }
+    const parsed = parse(answer);
+    if (parsed !== null) return parsed;
+    console.log(colorize(`  "${answer}" is not one of the options. Enter a number from the list, or q to quit.`, 'yellow'));
+  }
+  usageAndExit(`No valid answer for "${label.trim()}" after ${attempts} attempts.`);
 }
 
 export async function runWizard(defaultEnv: HubEnv = 'local') {
@@ -117,8 +164,7 @@ export async function runWizard(defaultEnv: HubEnv = 'local') {
       ],
       'cyan',
     );
-    const envAnswer = await rl.question('  Environment [1-4, default 1]: ');
-    const env = resolveWizardEnvInput(envAnswer, defaultEnv);
+    const env = await promptUntilValid(rl, '  Environment [1-4, default 1]: ', (answer) => tryResolveWizardEnvInput(answer, defaultEnv));
     if (firstRun) console.log(renderStep(1, FTUE_STEPS, `Environment: ${bold(env)}`, 'done'));
 
     if (firstRun) {
@@ -219,8 +265,7 @@ export async function runWizard(defaultEnv: HubEnv = 'local') {
       ],
       'cyan',
     );
-    const actionAnswer = await rl.question('  Action [1-10, default 1]: ');
-    const action = resolveWizardActionInput(actionAnswer);
+    const action = await promptUntilValid(rl, '  Action [1-10, default 1]: ', tryResolveWizardActionInput);
 
     if (action === 'setup') return await setupHub(env);
     if (action === 'up') {
