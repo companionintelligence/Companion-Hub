@@ -59,11 +59,17 @@ class FakePeerRepository {
       id: randomUUID(),
       tailscaleDeviceId: null,
       displayName: null,
+      // Mirrors the column's NOT NULL DEFAULT true: a freshly paired peer is in routing.
+      enabled: true,
       consecutiveFailures: 0,
       lastSeenAt: null,
       lastCapabilities: null,
       verifyTokenHash: null,
       presentTokenEncrypted: null,
+      peerNodeUuid: null,
+      peerPublicKey: null,
+      bearerGraceUntil: null,
+      signedSeenAt: null,
       status: 'pending',
       createdAt: now,
       updatedAt: now,
@@ -123,6 +129,10 @@ interface Node {
   guard: PoolPeerGuard;
   configuration: MockProxy<ConfigurationService>;
   setPoolEnabled(enabled: boolean): void;
+  setInboundEnabled(enabled: boolean): void;
+  setOutboundEnabled(enabled: boolean): void;
+  /** Take one peer of this node out of the pool, as the operator switch does. */
+  setPeerEnabled(id: string, enabled: boolean): Promise<void>;
   /** Runs one health-poll tick, as the module's own timer would. */
   poll(): Promise<void>;
 }
@@ -132,6 +142,8 @@ function buildNode(fqdn: string, models: string[]): Node {
   const configuration = mock<ConfigurationService>();
   const preferences: HubPoolPreferences = {
     poolEnabled: true,
+    poolOutboundEnabled: true,
+    poolInboundEnabled: true,
     poolLocalAffinity: DEFAULT_POOL_LOCAL_AFFINITY,
     poolHealthPollSeconds: DEFAULT_POOL_HEALTH_POLL_SECONDS,
   };
@@ -220,6 +232,15 @@ function buildNode(fqdn: string, models: string[]): Node {
     configuration,
     setPoolEnabled(enabled: boolean) {
       preferences.poolEnabled = enabled;
+    },
+    setInboundEnabled(enabled: boolean) {
+      preferences.poolInboundEnabled = enabled;
+    },
+    setOutboundEnabled(enabled: boolean) {
+      preferences.poolOutboundEnabled = enabled;
+    },
+    setPeerEnabled: async (id: string, enabled: boolean) => {
+      await service.setPeerEnabled(id, enabled);
     },
     poll: () => (service as unknown as { refreshPeerHealth: () => Promise<void> }).refreshPeerHealth(),
   };
@@ -550,6 +571,128 @@ describe('Hub Pool across two nodes', () => {
       await expect(core.service.initiatePairing(BETA_FQDN)).rejects.toThrow();
 
       expect(beta.repo.rows.size).toBe(0);
+    });
+  });
+
+  /**
+   * The directional and per-peer switches, across the wire — which is the only place their point is
+   * visible. Each one is asymmetric by design: what it means locally and what the node at the other
+   * end observes are different, and a single-node test cannot tell those apart.
+   */
+  describe('directional and per-peer kill switches', () => {
+    /** What `refreshOnePeer` cached about the other node on its last poll. */
+    function cachedOn(node: Node): PoolPeerCapabilities {
+      return node.repo.only().lastCapabilities as unknown as PoolPeerCapabilities;
+    }
+
+    /**
+     * A `local/*` forward from core to beta, through beta's REAL guard and controller. Driven
+     * directly rather than through the fetch router because `local/*` is the one peer-facing route
+     * the router does not carry — it takes an Express `Response` the router has nothing to give it.
+     */
+    async function betaLocalForward(coreToken: string): Promise<number> {
+      let statusCode = 0;
+      const res = {
+        status(code: number) {
+          statusCode = code;
+          return this;
+        },
+        json() {
+          return this;
+        },
+      };
+      const request = {
+        poolPeer: undefined,
+        header: (name: string) =>
+          ({ 'x-hub-pool-peer': CORE_FQDN, authorization: `Bearer ${coreToken}`, 'x-hub-pool-backend': 'ollama' })[name.toLowerCase()],
+      } as unknown as Request;
+      await beta.guard.canActivate({ switchToHttp: () => ({ getRequest: () => request }) } as never);
+      await beta.controller.localOllamaChat(request, { model: SHARED_MODEL }, res as never);
+      return statusCode;
+    }
+
+    it('lets beta stop serving while still using core — the asymmetry the feature exists for', async () => {
+      await pairNodes();
+      beta.setInboundEnabled(false);
+
+      await core.poll();
+      await beta.poll();
+
+      // Core still polls beta successfully — beta is up, so it must not read as unreachable.
+      expect(core.repo.only()).toMatchObject({ status: 'connected', consecutiveFailures: 0 });
+      expect(cachedOn(core)).toMatchObject({ acceptingWork: false, backends: [], hardwareTier: 'high' });
+      // ...and beta's own view of core is untouched: it keeps sending work out.
+      expect(cachedOn(beta)).toMatchObject({ acceptingWork: true });
+      expect(cachedOn(beta).backends[0]?.modelsLoaded).toContain(SHARED_MODEL);
+    });
+
+    it('refuses a forward from a peer it is not serving with 503, so the sender fails over', async () => {
+      await pairNodes();
+      beta.setInboundEnabled(false);
+      const token = await core.service.getPresentToken(core.repo.only());
+
+      // Never 403: that is what the sender reads as "it no longer considers us paired", which would
+      // drop a healthy pairing's cached capabilities on every request.
+      expect(await betaLocalForward(token)).toBe(503);
+    });
+
+    it('keeps accepting new pairing requests with inbound off, because pairing is a trust decision', async () => {
+      beta.setInboundEnabled(false);
+
+      await core.service.initiatePairing(BETA_FQDN);
+
+      expect(beta.repo.only()).toMatchObject({ direction: 'inbound', status: 'pending' });
+    });
+
+    it('takes one peer out of the pool from beta’s side, in both directions, without touching the pairing', async () => {
+      await pairNodes();
+      await beta.setPeerEnabled(beta.repo.only().id, false);
+      const token = await core.service.getPresentToken(core.repo.only());
+
+      await core.poll();
+
+      expect(cachedOn(core)).toMatchObject({ acceptingWork: false, backends: [] });
+      expect(await betaLocalForward(token)).toBe(503);
+      // The pairing and both tokens survive — this is not a revocation.
+      expect(core.repo.only()).toMatchObject({ status: 'connected', consecutiveFailures: 0 });
+      expect(beta.repo.only().presentTokenEncrypted).toBeTruthy();
+    });
+
+    it('restores routing within one poll of the switch going back on, with no re-approval', async () => {
+      await pairNodes();
+      beta.setInboundEnabled(false);
+      await core.poll();
+      expect(cachedOn(core).backends).toEqual([]);
+
+      beta.setInboundEnabled(true);
+      await core.poll();
+
+      expect(cachedOn(core)).toMatchObject({ acceptingWork: true });
+      expect(cachedOn(core).backends[0]?.modelsLoaded).toContain(BETA_ONLY_MODEL);
+    });
+
+    it('keeps polling a disabled peer, so the status card stays honest and re-enabling is instant', async () => {
+      await pairNodes();
+      await core.setPeerEnabled(core.repo.only().id, false);
+
+      await core.poll();
+
+      // Disabling is a routing decision; it must not make a live machine look down.
+      expect(core.repo.only()).toMatchObject({ status: 'connected', enabled: false, consecutiveFailures: 0 });
+      expect(cachedOn(core).backends[0]?.modelsLoaded).toContain(BETA_ONLY_MODEL);
+    });
+
+    it('leaves core’s inbound serving alone when core stops SENDING work', async () => {
+      await pairNodes();
+      core.setOutboundEnabled(false);
+      const token = await beta.service.getPresentToken(beta.repo.only());
+
+      await beta.poll();
+
+      // Outbound is about what this node sends; beta must still see a fully serving core.
+      expect(cachedOn(beta)).toMatchObject({ acceptingWork: true });
+      expect(cachedOn(beta).backends[0]?.modelsLoaded).toContain(SHARED_MODEL);
+      expect(token).toBeTruthy();
     });
   });
 });

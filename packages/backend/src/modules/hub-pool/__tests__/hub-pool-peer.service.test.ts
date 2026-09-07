@@ -1,4 +1,4 @@
-import { BadRequestException, ForbiddenException, ServiceUnavailableException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
 import { LoggerService } from '@/core/logger/logger.service';
@@ -22,11 +22,16 @@ function mockPeer(overrides: Partial<HubPoolPeer> = {}): HubPoolPeer {
     displayName: 'Peer Hub',
     direction: 'inbound',
     status: 'pending',
+    enabled: true,
     consecutiveFailures: 0,
     lastSeenAt: null,
     lastCapabilities: null,
     verifyTokenHash: null,
     presentTokenEncrypted: 'ENC:peer-token',
+    peerNodeUuid: null,
+    peerPublicKey: null,
+    bearerGraceUntil: null,
+    signedSeenAt: null,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
     ...overrides,
@@ -47,6 +52,8 @@ describe('HubPoolPeerService', () => {
   function setPoolPreferences(overrides: Partial<HubPoolPreferences>): void {
     configuration.getHubPoolPreferences.mockReturnValue({
       poolEnabled: true,
+      poolOutboundEnabled: true,
+      poolInboundEnabled: true,
       poolLocalAffinity: DEFAULT_POOL_LOCAL_AFFINITY,
       poolHealthPollSeconds: DEFAULT_POOL_HEALTH_POLL_SECONDS,
       ...overrides,
@@ -525,6 +532,122 @@ describe('HubPoolPeerService', () => {
     });
   });
 
+  /**
+   * The install-time defect fence.
+   *
+   * `hasConnectedPeers()` is consulted ONCE per app, at install time, by
+   * `inference-env-resolver.ts` when it decides whether that app's `CI_LLM_BASE_URL` points at the
+   * pool proxy or straight at a backend. If either kill switch reached `listConnectedPeers()`, an
+   * app created while the switch was off would be pointed away from the pool permanently, and
+   * turning the switch back on would not bring it back. The routing filter lives in
+   * `PoolProxyService.buildCandidateList` instead.
+   */
+  describe('listConnectedPeers is not a routing decision', () => {
+    it('returns a disabled peer, because the row is still a connected peer', async () => {
+      repo.listByStatus.mockResolvedValue([mockPeer({ id: 'p1', status: 'connected', enabled: false })]);
+
+      expect((await service.listConnectedPeers()).map((p) => p.id)).toEqual(['p1']);
+    });
+
+    it('keeps hasConnectedPeers true with outbound off, so no app is repointed at a backend URL', async () => {
+      repo.listByStatus.mockResolvedValue([mockPeer({ id: 'p1', status: 'connected' })]);
+      setPoolPreferences({ poolOutboundEnabled: false });
+
+      expect(await service.hasConnectedPeers()).toBe(true);
+    });
+
+    it('keeps hasConnectedPeers true when every peer is disabled, for the same reason', async () => {
+      repo.listByStatus.mockResolvedValue([mockPeer({ id: 'p1', status: 'connected', enabled: false })]);
+
+      expect(await service.hasConnectedPeers()).toBe(true);
+    });
+
+    it('still goes false under the MASTER switch, which is the documented "this Hub has left the pool"', async () => {
+      repo.listByStatus.mockResolvedValue([mockPeer({ id: 'p1', status: 'connected' })]);
+      setPoolPreferences({ poolEnabled: false });
+
+      expect(await service.hasConnectedPeers()).toBe(false);
+    });
+  });
+
+  describe('inboundRefusal', () => {
+    it('serves normally at the defaults', () => {
+      expect(service.inboundRefusal(mockPeer({ status: 'connected' }))).toBeNull();
+    });
+
+    it('names the per-peer switch ahead of the direction, since that is the one to flip', () => {
+      setPoolPreferences({ poolInboundEnabled: false });
+
+      expect(service.inboundRefusal(mockPeer({ enabled: false }))).toBe('peer_disabled');
+    });
+
+    it('refuses every peer when inbound pooling is off', () => {
+      setPoolPreferences({ poolInboundEnabled: false });
+
+      expect(service.inboundRefusal(mockPeer({ enabled: true }))).toBe('inbound_disabled');
+    });
+
+    it('is unaffected by the OUTBOUND switch — a node that stops sending still serves', () => {
+      setPoolPreferences({ poolOutboundEnabled: false });
+
+      expect(service.inboundRefusal(mockPeer({ enabled: true }))).toBeNull();
+    });
+  });
+
+  describe('setPeerEnabled', () => {
+    it('writes only the flag, leaving the pairing and both tokens untouched', async () => {
+      repo.update.mockResolvedValue(mockPeer({ id: 'p1', enabled: false }));
+
+      await service.setPeerEnabled('p1', false);
+
+      expect(repo.update).toHaveBeenCalledWith('p1', { enabled: false });
+    });
+
+    it('404s a peer that is gone rather than reporting a silent success', async () => {
+      repo.update.mockResolvedValue(undefined);
+
+      await expect(service.setPeerEnabled('missing', true)).rejects.toThrow(NotFoundException);
+    });
+  });
+
+  describe('getOwnCapabilities under an inbound refusal', () => {
+    beforeEach(() => {
+      inferenceRouter.getStatus.mockResolvedValue({
+        hardwareTier: 'high',
+        backends: [{ type: 'ollama', running: true, healthy: true, url: 'http://ollama:11434', modelsLoaded: 1 }],
+      } as unknown as InferenceStatus);
+      inferenceRouter.listModels.mockResolvedValue([
+        {
+          id: 'llama3.2:3b',
+          object: 'model',
+          created: 0,
+          owned_by: 'local:ollama',
+          state: 'loaded',
+          backend: 'ollama',
+          modality: ['text'],
+          local: true,
+        },
+      ] as never);
+    });
+
+    it('publishes an empty inventory and acceptingWork: false, while staying honest about tier and load', async () => {
+      loadService.acquire(LOCAL_CANDIDATE_KEY);
+
+      const capabilities = await service.getOwnCapabilities(false);
+
+      // Both halves matter: a current peer skips on the flag, an older one on the empty list. The
+      // live figures keep the peer's health poll succeeding, so it does NOT mark this node down.
+      expect(capabilities).toMatchObject({ acceptingWork: false, backends: [], hardwareTier: 'high', inFlightRequests: 1 });
+    });
+
+    it('advertises the real inventory when it is serving, which is the default', async () => {
+      const capabilities = await service.getOwnCapabilities();
+
+      expect(capabilities.acceptingWork).toBe(true);
+      expect(capabilities.backends[0]?.modelsLoaded).toEqual(['llama3.2:3b']);
+    });
+  });
+
   describe('getPoolStatus', () => {
     beforeEach(() => {
       inferenceRouter.getStatus.mockRejectedValue(new Error('ollama unreachable'));
@@ -582,7 +705,7 @@ describe('HubPoolPeerService', () => {
 
       const status = await service.getPoolStatus();
 
-      expect(status.peerCounts).toEqual({ total: 3, connected: 1, pending: 1, unreachable: 1 });
+      expect(status.peerCounts).toEqual({ total: 3, connected: 1, pending: 1, unreachable: 1, disabled: 0 });
       expect(status.peers.map((p) => [p.id, p.inFlightRequests])).toEqual([
         ['p-connected', 2],
         ['p-pending', 0],
@@ -609,6 +732,65 @@ describe('HubPoolPeerService', () => {
       // while inference is broken, so a dead backend must not 500 the whole card.
       expect(status.localNode).toMatchObject({ hardwareTier: null, backends: [], capabilitiesError: 'ollama unreachable' });
       expect(status.localNode.nodeFqdn).toBe('self-hub.tailxyz.ts.net');
+    });
+
+    it('reports each direction and what is holding it off, so the UI can name the right switch', async () => {
+      setPoolPreferences({ poolOutboundEnabled: false });
+      vi.stubEnv('HUB_POOL_INBOUND_DISABLED', 'true');
+
+      const status = await service.getPoolStatus();
+
+      expect(status.directions).toEqual({
+        outbound: { enabled: false, disabledBy: 'setting' },
+        inbound: { enabled: false, disabledBy: 'env' },
+      });
+      // The MASTER switch is untouched by either — it is a different question with different copy.
+      expect(status).toMatchObject({ enabled: true, disabledBy: null });
+    });
+
+    it('refuses to call itself active when a direction is off', async () => {
+      // A node with inbound off serves nothing; "active" there is the lie an operator would spend
+      // an hour debugging.
+      repo.listAll.mockResolvedValue([mockPeer({ id: 'p1', status: 'connected' })]);
+      setPoolPreferences({ poolInboundEnabled: false });
+
+      const status = await service.getPoolStatus();
+
+      expect(status.reason).toBe('partially_disabled');
+      // Outbound is still on and a usable peer exists, so this Hub IS routing its own work.
+      expect(status.routingActive).toBe(true);
+    });
+
+    it('is not routingActive when outbound is off, even with a connected peer', async () => {
+      repo.listAll.mockResolvedValue([mockPeer({ id: 'p1', status: 'connected' })]);
+      setPoolPreferences({ poolOutboundEnabled: false });
+
+      expect(await service.getPoolStatus()).toMatchObject({ reason: 'partially_disabled', routingActive: false });
+    });
+
+    it('counts disabled peers and stops calling itself active when every connected peer is off', async () => {
+      repo.listAll.mockResolvedValue([
+        mockPeer({ id: 'p1', nodeFqdn: 'a.example-tailnet.ts.net', status: 'connected', enabled: false }),
+        mockPeer({ id: 'p2', nodeFqdn: 'b.example-tailnet.ts.net', status: 'pending', enabled: false }),
+      ]);
+
+      const status = await service.getPoolStatus();
+
+      // `disabled` deliberately overlaps the lifecycle counts: it is a routing decision, not a status.
+      expect(status.peerCounts).toEqual({ total: 2, connected: 1, pending: 1, unreachable: 0, disabled: 2 });
+      expect(status).toMatchObject({ reason: 'partially_disabled', routingActive: false });
+    });
+
+    it('still says no_peers, not partially_disabled, when nothing is paired at all', async () => {
+      expect(await service.getPoolStatus()).toMatchObject({ reason: 'no_peers', routingActive: false });
+    });
+
+    it('reports the master switch, not partially_disabled, when both are in play', async () => {
+      // The operator has one thing to change; naming the finer state would send them to the wrong control.
+      repo.listAll.mockResolvedValue([mockPeer({ id: 'p1', status: 'connected' })]);
+      setPoolPreferences({ poolEnabled: false, poolInboundEnabled: false });
+
+      expect(await service.getPoolStatus()).toMatchObject({ reason: 'disabled_by_setting', routingActive: false });
     });
 
     it('never triggers peer discovery, which is a Tailscale OAuth exchange plus a probe per device', async () => {

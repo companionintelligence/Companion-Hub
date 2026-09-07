@@ -54,7 +54,20 @@ const hubPoolPreferencesSchema = z.object({
    * it, and `GET /inference/pool/status` reports which of the two is in force.
    */
   poolEnabled: z.boolean().optional(),
-  /** Queued-request head start the local node gets over a peer. 0 = pure least-loaded; higher = stickier to local. */
+  /**
+   * Stop sending work TO peers. Apps here are then served by this node's own engines, and get the
+   * existing actionable 502 when it cannot serve the model — the request is never shipped out.
+   * `HUB_POOL_OUTBOUND_DISABLED=true` in the environment still overrides it.
+   */
+  poolOutboundEnabled: z.boolean().optional(),
+  /**
+   * Stop serving work FOR peers, while still using them. Peers see a healthy node advertising an
+   * empty inventory and `acceptingWork: false`, not an unreachable one — this is "not right now",
+   * not "I have left the pool", which is what the master switch means.
+   * `HUB_POOL_INBOUND_DISABLED=true` in the environment still overrides it.
+   */
+  poolInboundEnabled: z.boolean().optional(),
+  /** Queued-request head start the local node gets over a peer. 0 = least-loaded (local still wins an exact tie); higher = stickier to local. */
   poolLocalAffinity: z.number().int().min(MIN_POOL_LOCAL_AFFINITY).max(MAX_POOL_LOCAL_AFFINITY).optional(),
   /** Seconds between peer capability probes. Also sets how long a peer's snapshot stays trusted (three polls). */
   poolHealthPollSeconds: z.number().int().min(MIN_POOL_HEALTH_POLL_SECONDS).max(MAX_POOL_HEALTH_POLL_SECONDS).optional(),

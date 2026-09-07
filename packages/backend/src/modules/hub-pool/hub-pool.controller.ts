@@ -20,7 +20,7 @@ import { AuthGuard } from '@/modules/auth/auth.guard';
 import { InternalNetworkGuard } from '@/modules/auth/internal-network.guard';
 import { TailscaleService } from '@/modules/tailscale/tailscale.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
-import { describeHubPoolDisabled } from '@/common/helpers/hub-pool';
+import { describeHubPoolDisabled, describeHubPoolInboundRefused } from '@/common/helpers/hub-pool';
 import { PoolAppGuard } from './guards/pool-app.guard';
 import { PoolPeerGuard } from './guards/pool-peer.guard';
 import { HubPoolPeerService } from './hub-pool-peer.service';
@@ -130,6 +130,27 @@ export class HubPoolController {
     return { success: true };
   }
 
+  /**
+   * Per-peer kill switch. Two verbs rather than one PATCH carrying a boolean, matching
+   * `approve`/`reject` above: the operator surfaces are all "do this to that peer", and a body with
+   * a single field would be the only one in this controller.
+   *
+   * Reversible and symmetric — no work in either direction while disabled, but the pairing and both
+   * tokens survive, so re-enabling needs no approval from the other side. Unpair is still the only
+   * thing that revokes a credential.
+   */
+  @UseGuards(AuthGuard)
+  @Post('peers/:id/enable')
+  async enablePeer(@Param('id') id: string) {
+    return toPublicPeer(await this.peerService.setPeerEnabled(id, true));
+  }
+
+  @UseGuards(AuthGuard)
+  @Post('peers/:id/disable')
+  async disablePeer(@Param('id') id: string) {
+    return toPublicPeer(await this.peerService.setPeerEnabled(id, false));
+  }
+
   @UseGuards(AuthGuard)
   @Delete('peers/:id')
   async removePeer(@Param('id') id: string) {
@@ -179,6 +200,20 @@ export class HubPoolController {
 
   // ── Peer-facing: this node's capabilities ───────────────────────────────
 
+  /**
+   * Branch order matters, and is fixed:
+   *   1. {@link PoolPeerGuard} — is this a paired peer at all (401)?
+   *   2. master kill switch — 503, so the caller's probe fails and marks this node unreachable.
+   *   3. row not `connected` — 403, the half-finished-pairing case the guard deliberately admits.
+   *   4. inbound off, or this peer disabled — 200 with an empty inventory and `acceptingWork: false`.
+   *
+   * The asymmetry between 2 and 4 is the whole design, not an oversight to tidy up later. The
+   * master switch means "I have left the pool": a hard failure is correct, and the caller marking
+   * this node unreachable after three strikes is documented, tested behaviour. The finer switches
+   * mean "I am still in the pool, still using you, just not serving right now" — the machine is up
+   * and answering, so a 503 there would show a healthy node as broken on both dashboards and cost
+   * three polls to come back from.
+   */
   @UseGuards(PoolPeerGuard)
   @Get('capabilities')
   async capabilities(@Req() req: Request) {
@@ -191,7 +226,7 @@ export class HubPoolController {
     if (req.poolPeer?.status !== 'connected') {
       throw new ForbiddenException('Peer is not connected');
     }
-    return this.peerService.getOwnCapabilities();
+    return this.peerService.getOwnCapabilities(this.peerService.inboundRefusal(req.poolPeer) === null);
   }
 
   // ── App-facing proxy (local Docker network apps only; PoolAppGuard additionally rejects tunnel-forwarded traffic) ──
@@ -338,7 +373,21 @@ export class HubPoolController {
   private async forwardLocal(req: Request, path: string, method: string, body: unknown, res: Response): Promise<void> {
     const peer = req.poolPeer;
     if (!peer || peer.status !== 'connected') {
+      this.proxyService.recordRefusedInboundForward({ backend: null, path, fromPeerFqdn: peer?.nodeFqdn, status: 403 });
       res.status(403).json({ error: 'Peer is not connected' });
+      return;
+    }
+    // The capabilities probe already told this peer we are not accepting work, but it may be acting
+    // on a snapshot up to one poll old — this covers that window.
+    //
+    // 503, never 403: `shouldFailover` treats >= 500 as retryable, so the sender simply moves to its
+    // next candidate, whereas `noteRejectedCandidate` reads 401/403 as "it no longer considers us
+    // paired" and drops the peer's cached capabilities. Answering 403 for a temporary local policy
+    // decision would make a healthy pairing repeatedly invalidate itself.
+    const refusal = this.peerService.inboundRefusal(peer);
+    if (refusal) {
+      this.proxyService.recordRefusedInboundForward({ backend: null, path, fromPeerFqdn: peer.nodeFqdn, status: 503 });
+      res.status(503).json({ error: describeHubPoolInboundRefused(refusal) });
       return;
     }
     const backendHeader = req.header('x-hub-pool-backend');

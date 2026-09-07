@@ -13,7 +13,15 @@ import {
 } from '@nestjs/common';
 import { LoggerService } from '@/core/logger/logger.service';
 import { EncryptionService } from '@/core/encryption/encryption.service';
-import { describeHubPoolDisabled, normalizePeerFqdn, resolveHubPoolEnabled, type HubPoolEnabledState } from '@/common/helpers/hub-pool';
+import {
+  describeHubPoolDisabled,
+  normalizePeerFqdn,
+  resolveHubPoolDirections,
+  resolveHubPoolEnabled,
+  type HubPoolDirectionalState,
+  type HubPoolEnabledState,
+  type HubPoolInboundRefusal,
+} from '@/common/helpers/hub-pool';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import type { HubPoolPeer } from '@/core/database/drizzle/types';
 import { TailscaleService } from '@/modules/tailscale/tailscale.service';
@@ -119,9 +127,18 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
     return this.configuration.getHubPoolPreferences().poolHealthPollSeconds * 1000;
   }
 
-  /** Effective kill-switch state: the `.env` override, then the persisted setting. */
+  /** Effective master kill-switch state: the `.env` override, then the persisted setting. */
   enabledState(): HubPoolEnabledState {
     return resolveHubPoolEnabled(this.configuration.getHubPoolPreferences().poolEnabled);
+  }
+
+  /**
+   * Effective state of each half of pooling. Read per call, never cached — a settings PATCH must
+   * take effect on the next request, and `resolveHubPoolDirections` is the single place the
+   * precedence between the master, the two env vars and the two persisted flags is decided.
+   */
+  directions(): HubPoolDirectionalState {
+    return resolveHubPoolDirections(this.configuration.getHubPoolPreferences());
   }
 
   async listPeers(): Promise<HubPoolPeer[]> {
@@ -132,6 +149,18 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
     return this.repo.findById(id);
   }
 
+  /**
+   * Every `connected` peer row, kill switches NOT applied.
+   *
+   * Deliberately unfiltered, and this is load-bearing. Its only two callers ask different
+   * questions: `PoolProxyService.buildCandidateList` asks "where may this request go right now",
+   * and `hasConnectedPeers()` asks "does this Hub have peers at all" — an answer
+   * `inference-env-resolver.ts` bakes into an app's `CI_LLM_BASE_URL` at INSTALL time. Filtering
+   * the outbound switch or a per-peer disable in here would make every app created during a
+   * temporary routing decision point permanently at a direct backend URL, surviving the switch
+   * being turned back on. The routing filter therefore lives on the request path, in
+   * `PoolProxyService`; see its `usablePeers()`.
+   */
   async listConnectedPeers(): Promise<HubPoolPeer[]> {
     return this.repo.listByStatus('connected');
   }
@@ -141,6 +170,43 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
       return false;
     }
     return (await this.listConnectedPeers()).length > 0;
+  }
+
+  /**
+   * Why this node is refusing to serve `peer`'s work right now, or `null` when it will serve.
+   *
+   * Only the two finer switches land here. The master switch is handled before this, and answers
+   * 503 on the capability probe so peers mark this node unreachable — that is "I have left the
+   * pool". These two mean "still here, still using you, just not serving", which must leave the
+   * peer's health poll succeeding and its `lastSeenAt` fresh.
+   */
+  inboundRefusal(peer: HubPoolPeer): HubPoolInboundRefusal | null {
+    // `=== false`, not truthiness: the column is NOT NULL DEFAULT true, so only an explicit
+    // operator decision may refuse a peer — never a row that somehow reaches us without the field.
+    if (peer.enabled === false) {
+      return 'peer_disabled';
+    }
+    return this.directions().inbound.enabled ? null : 'inbound_disabled';
+  }
+
+  /**
+   * Operator switch: take one peer in or out of routing, in both directions at once.
+   *
+   * Symmetric by decision — one checkbox, one meaning. A 2×N space of per-peer directional
+   * switches is not something an operator can hold in their head, and the two global axes already
+   * express the only asymmetry anyone has asked for ("I will give but not take").
+   *
+   * Pairing, both directional tokens and the health poll are untouched, so this is instantly
+   * reversible and needs no re-approval. It is therefore NOT a revocation: an operator who wants
+   * the token gone must still Unpair, and the UI copy has to keep the two apart.
+   */
+  async setPeerEnabled(id: string, enabled: boolean): Promise<HubPoolPeer> {
+    const updated = await this.repo.update(id, { enabled });
+    if (!updated) {
+      throw new NotFoundException('No pool peer with that id');
+    }
+    this.logger.info(`[HubPool] peer ${updated.nodeFqdn} ${enabled ? 'enabled' : 'disabled'} for pooling by the operator`);
+    return updated;
   }
 
   /** Raw bearer token this Hub presents when calling `peer` — decrypted on demand, never cached. */
@@ -209,11 +275,21 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
       this.buildLocalNodeStatus(),
     ]);
 
+    const directions = this.directions();
     const connected = peers.filter((p) => p.status === 'connected').length;
+    // Peers this node would actually send work to. Reduces to `connected` when nothing is disabled,
+    // which is what keeps every default byte-identical to the previous build.
+    const usable = peers.filter((p) => p.status === 'connected' && p.enabled !== false).length;
+    // A node with a direction switched off, or with every connected peer individually disabled, is
+    // NOT 'active' — it half-participates, and saying "active" there is exactly the lie an operator
+    // would debug for an hour. `no_peers` still means "nothing is paired", not "nothing is usable".
+    const partiallyDisabled = !directions.outbound.enabled || !directions.inbound.enabled || (connected > 0 && usable === 0);
     const reason: PoolStatusReason = enabled.enabled
-      ? connected > 0
-        ? 'active'
-        : 'no_peers'
+      ? partiallyDisabled
+        ? 'partially_disabled'
+        : connected > 0
+          ? 'active'
+          : 'no_peers'
       : enabled.disabledBy === 'env'
         ? 'disabled_by_env'
         : 'disabled_by_setting';
@@ -221,8 +297,9 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
     return {
       enabled: enabled.enabled,
       disabledBy: enabled.disabledBy,
+      directions,
       reason,
-      routingActive: enabled.enabled && connected > 0,
+      routingActive: directions.outbound.enabled && usable > 0,
       settings: this.configuration.getHubPoolPreferences(),
       tailscaleAdminApiConfigured: this.tailscaleAdminApi.isConfigured(),
       localNode: { ...localNode, nodeFqdn: selfStatus.nodeFqdn, tailnet: selfStatus.tailnet, tailscaleConnected: selfStatus.connected },
@@ -232,6 +309,9 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
         connected,
         pending: peers.filter((p) => p.status === 'pending').length,
         unreachable: peers.filter((p) => p.status === 'unreachable').length,
+        // Counted across every status, not just `connected`: disabling is a routing decision and
+        // says nothing about the lifecycle, so this deliberately overlaps the three counts above.
+        disabled: peers.filter((p) => p.enabled === false).length,
       },
     };
   }
@@ -506,11 +586,20 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
    * `inFlightRequests` is what makes a peer's ranking of us more than a guess: without it a node
    * saturated by its own apps looks identical to an idle one, since the polling peer can only count
    * the work it forwarded itself.
+   *
+   * `acceptingWork: false` (inbound off, or this caller's row disabled) publishes an EMPTY
+   * inventory alongside the real tier and queue depth. Both halves matter: the flag is what a
+   * current peer skips on, and the empty inventory is what an older peer — which does not know the
+   * flag — falls back to, since a node with no models matches nothing in its candidate list. The
+   * live figures stay honest so the peer's health poll keeps succeeding and neither dashboard shows
+   * a perfectly healthy machine as unreachable.
    */
-  async getOwnCapabilities(): Promise<PoolPeerCapabilities> {
+  async getOwnCapabilities(acceptingWork = true): Promise<PoolPeerCapabilities> {
     const inventory = await this.getOwnInventory();
     return {
-      ...inventory,
+      hardwareTier: inventory.hardwareTier,
+      backends: acceptingWork ? inventory.backends : [],
+      acceptingWork,
       // Never cached: this is the whole point of the snapshot for a ranking peer, and a stale
       // figure would tell it we are idle while our engines are saturated.
       inFlightRequests: this.loadService.localInFlight(),
@@ -561,6 +650,10 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
   private async refreshPeerHealth(): Promise<void> {
     // 'unreachable' rows are polled too: the peer may have come back (rebooted, network healed,
     // or HUB_POOL_USER_DISABLED removed), and nothing else in the system would ever re-probe it.
+    //
+    // Disabled peers are polled as well, and that is deliberate: the status card stays honest about
+    // a machine that is up, and re-enabling one is instant instead of costing three polls. The
+    // probe is a GET of the peer's inventory — it spends no GPU on either side.
     const peers = await this.repo.listByStatuses(['connected', 'unreachable']);
     await Promise.all(peers.map((peer) => this.refreshOnePeer(peer)));
   }

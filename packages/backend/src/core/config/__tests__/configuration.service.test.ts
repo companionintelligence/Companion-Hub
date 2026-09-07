@@ -83,7 +83,13 @@ describe('ConfigurationService Hub Pool preferences', () => {
       config: { demoMode: boolean; userSettings: Record<string, unknown> };
       mergeSettingsToDisk: ReturnType<typeof vi.fn>;
       logger: { warn: ReturnType<typeof vi.fn>; error: ReturnType<typeof vi.fn>; info: ReturnType<typeof vi.fn> };
-      getHubPoolPreferences: () => { poolEnabled: boolean; poolLocalAffinity: number; poolHealthPollSeconds: number };
+      getHubPoolPreferences: () => {
+        poolEnabled: boolean;
+        poolOutboundEnabled: boolean;
+        poolInboundEnabled: boolean;
+        poolLocalAffinity: number;
+        poolHealthPollSeconds: number;
+      };
       setHubPoolPreferences: (p: Record<string, unknown>) => Promise<unknown>;
     };
     svc.logger = { warn: vi.fn(), error: vi.fn(), info: vi.fn() };
@@ -93,7 +99,30 @@ describe('ConfigurationService Hub Pool preferences', () => {
   }
 
   it('falls back to the defaults before anything has been persisted', () => {
-    expect(makePoolService().getHubPoolPreferences()).toEqual({ poolEnabled: true, poolLocalAffinity: 1, poolHealthPollSeconds: 30 });
+    // Both directional switches are opt-out too: absent means on, so an untouched settings.json
+    // resolves to exactly the behaviour of the build before they existed.
+    expect(makePoolService().getHubPoolPreferences()).toEqual({
+      poolEnabled: true,
+      poolOutboundEnabled: true,
+      poolInboundEnabled: true,
+      poolLocalAffinity: 1,
+      poolHealthPollSeconds: 30,
+    });
+  });
+
+  it('keeps a persisted directional false, and keeps the two axes independent', () => {
+    const svc = makePoolService();
+    svc.config.userSettings = { hubPoolOutboundEnabled: false };
+
+    expect(svc.getHubPoolPreferences()).toMatchObject({ poolEnabled: true, poolOutboundEnabled: false, poolInboundEnabled: true });
+  });
+
+  it('persists one direction without touching the other', async () => {
+    const svc = makePoolService();
+
+    await svc.setHubPoolPreferences({ poolInboundEnabled: false });
+
+    expect(svc.mergeSettingsToDisk.mock.calls[0][0]).toEqual({ hubPoolInboundEnabled: false });
   });
 
   it('keeps a persisted false rather than reading it as unset', () => {

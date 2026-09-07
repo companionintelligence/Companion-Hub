@@ -17,7 +17,8 @@ function poolStatus(overrides: Partial<PoolStatus> = {}): PoolStatus {
     disabledBy: null,
     reason: 'no_peers',
     routingActive: false,
-    settings: { poolEnabled: true, poolLocalAffinity: 1, poolHealthPollSeconds: 30 },
+    directions: { outbound: { enabled: true, disabledBy: null }, inbound: { enabled: true, disabledBy: null } },
+    settings: { poolEnabled: true, poolOutboundEnabled: true, poolInboundEnabled: true, poolLocalAffinity: 1, poolHealthPollSeconds: 30 },
     tailscaleAdminApiConfigured: false,
     localNode: {
       nodeFqdn: 'self-hub.example-tailnet.ts.net',
@@ -29,7 +30,7 @@ function poolStatus(overrides: Partial<PoolStatus> = {}): PoolStatus {
       capabilitiesError: null,
     },
     peers: [],
-    peerCounts: { total: 0, connected: 0, pending: 0, unreachable: 0 },
+    peerCounts: { total: 0, connected: 0, pending: 0, unreachable: 0, disabled: 0 },
     ...overrides,
   };
 }
@@ -59,6 +60,8 @@ describe('HubPoolController', () => {
     peerService = mock<HubPoolPeerService>();
     proxyService = mock<PoolProxyService>();
     configuration = mock<ConfigurationService>();
+    // The default for every test that is not about the switches: this node serves the caller.
+    peerService.inboundRefusal.mockReturnValue(null);
     routingLog = new HubPoolRoutingLogService();
     controller = new HubPoolController(peerService, proxyService, mock<TailscaleService>(), configuration, routingLog);
   });
@@ -91,17 +94,38 @@ describe('HubPoolController', () => {
 
   describe('settings', () => {
     it('reads the persisted preferences without touching the peer table', async () => {
-      configuration.getHubPoolPreferences.mockReturnValue({ poolEnabled: false, poolLocalAffinity: 3, poolHealthPollSeconds: 45 });
+      const stored = { poolEnabled: false, poolOutboundEnabled: true, poolInboundEnabled: false, poolLocalAffinity: 3, poolHealthPollSeconds: 45 };
+      configuration.getHubPoolPreferences.mockReturnValue(stored);
 
-      await expect(controller.getPoolSettings()).resolves.toEqual({ poolEnabled: false, poolLocalAffinity: 3, poolHealthPollSeconds: 45 });
+      await expect(controller.getPoolSettings()).resolves.toEqual(stored);
     });
 
     it('passes a partial PATCH straight through, so an omitted field stays unchanged', async () => {
-      configuration.setHubPoolPreferences.mockResolvedValue({ poolEnabled: true, poolLocalAffinity: 0, poolHealthPollSeconds: 30 });
+      configuration.setHubPoolPreferences.mockResolvedValue({
+        poolEnabled: true,
+        poolOutboundEnabled: true,
+        poolInboundEnabled: true,
+        poolLocalAffinity: 0,
+        poolHealthPollSeconds: 30,
+      });
 
       await controller.updatePoolSettings({ poolLocalAffinity: 0 });
 
       expect(configuration.setHubPoolPreferences).toHaveBeenCalledWith({ poolLocalAffinity: 0 });
+    });
+
+    it('round-trips a single directional switch without resending the rest', async () => {
+      configuration.setHubPoolPreferences.mockResolvedValue({
+        poolEnabled: true,
+        poolOutboundEnabled: true,
+        poolInboundEnabled: false,
+        poolLocalAffinity: 1,
+        poolHealthPollSeconds: 30,
+      });
+
+      await controller.updatePoolSettings({ poolInboundEnabled: false });
+
+      expect(configuration.setHubPoolPreferences).toHaveBeenCalledWith({ poolInboundEnabled: false });
     });
   });
 
@@ -148,6 +172,43 @@ describe('HubPoolController', () => {
       // PoolPeerGuard deliberately admits a pending row so /pair/confirm can use it, so this handler
       // is the only thing standing between a half-finished pairing and this node's inventory.
       await expect(controller.capabilities(peerRequest({ status }))).rejects.toThrow(ForbiddenException);
+      expect(peerService.getOwnCapabilities).not.toHaveBeenCalled();
+    });
+
+    /**
+     * The asymmetry between the master switch and the two finer ones, asserted on both sides.
+     * Master-off means "I have left the pool" and must keep failing the probe outright; inbound-off
+     * and a per-peer disable mean "still here, not serving", and a 503 there would show a healthy
+     * machine as unreachable on both dashboards and cost three polls to come back from.
+     */
+    it.each([
+      ['inbound pooling is off', 'inbound_disabled'],
+      ['this peer is disabled here', 'peer_disabled'],
+    ] as const)('answers 200 with acceptingWork: false when %s', async (_label, refusal) => {
+      peerService.enabledState.mockReturnValue({ enabled: true, disabledBy: null });
+      peerService.inboundRefusal.mockReturnValue(refusal);
+
+      await controller.capabilities(peerRequest({ status: 'connected' }));
+
+      // The argument, not the return: `getOwnCapabilities(false)` is what empties the inventory and
+      // sets the flag, and the peer's health poll still succeeds.
+      expect(peerService.getOwnCapabilities).toHaveBeenCalledWith(false);
+    });
+
+    it('serves the real inventory when nothing is refusing', async () => {
+      peerService.enabledState.mockReturnValue({ enabled: true, disabledBy: null });
+      peerService.inboundRefusal.mockReturnValue(null);
+
+      await controller.capabilities(peerRequest({ status: 'connected' }));
+
+      expect(peerService.getOwnCapabilities).toHaveBeenCalledWith(true);
+    });
+
+    it('keeps the 503 for the master switch, ahead of any inbound refusal', async () => {
+      peerService.enabledState.mockReturnValue({ enabled: false, disabledBy: 'env' });
+      peerService.inboundRefusal.mockReturnValue('inbound_disabled');
+
+      await expect(controller.capabilities(peerRequest({ status: 'connected' }))).rejects.toThrow(ServiceUnavailableException);
       expect(peerService.getOwnCapabilities).not.toHaveBeenCalled();
     });
   });
@@ -206,6 +267,43 @@ describe('HubPoolController', () => {
 
       expect(res.status).toHaveBeenCalledWith(403);
       expect(proxyService.forwardToLocalBackendAndRespond).not.toHaveBeenCalled();
+    });
+
+    /**
+     * 503, never 403. `shouldFailover` retries a >= 500 on the sender's next candidate, whereas
+     * `noteRejectedCandidate` reads 401/403 as "this peer no longer considers us paired" and drops
+     * its cached capabilities — which would make a temporary local policy decision look like a
+     * broken pairing and invalidate a healthy one on every request.
+     */
+    it.each([
+      ['inbound pooling is off', 'inbound_disabled'],
+      ['the peer is disabled here', 'peer_disabled'],
+    ] as const)('answers a forward with 503 when %s, so the sender fails over', async (_label, refusal) => {
+      const res = mockResponse();
+      peerService.inboundRefusal.mockReturnValue(refusal);
+
+      await controller.localOllamaChat(
+        peerRequest({ nodeFqdn: 'hub-b.example-tailnet.ts.net', status: 'connected' }, { 'x-hub-pool-backend': 'ollama' }),
+        body,
+        res,
+      );
+
+      expect(res.status).toHaveBeenCalledWith(503);
+      expect(res.status).not.toHaveBeenCalledWith(403);
+      expect(proxyService.forwardToLocalBackendAndRespond).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['a refusal', 'inbound_disabled' as const, 503, { nodeFqdn: 'hub-b.example-tailnet.ts.net', status: 'connected' }],
+      ['an unconnected peer', null, 403, { nodeFqdn: 'hub-b.example-tailnet.ts.net', status: 'pending' }],
+    ])('records %s in the routing log, so the serving side can say why a peer got nothing', async (_label, refusal, status, peer) => {
+      peerService.inboundRefusal.mockReturnValue(refusal);
+
+      await controller.localOllamaChat(peerRequest(peer, { 'x-hub-pool-backend': 'ollama' }), body, mockResponse());
+
+      expect(proxyService.recordRefusedInboundForward).toHaveBeenCalledWith(
+        expect.objectContaining({ path: '/api/chat', fromPeerFqdn: 'hub-b.example-tailnet.ts.net', status }),
+      );
     });
 
     it.each([

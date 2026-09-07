@@ -27,11 +27,16 @@ function mockPeer(overrides: Partial<HubPoolPeer> = {}): HubPoolPeer {
     displayName: 'Peer Hub',
     direction: 'outbound',
     status: 'connected',
+    enabled: true,
     consecutiveFailures: 0,
     lastSeenAt: new Date().toISOString(),
     lastCapabilities: null,
     verifyTokenHash: 'hash',
     presentTokenEncrypted: 'encrypted',
+    peerNodeUuid: null,
+    peerPublicKey: null,
+    bearerGraceUntil: null,
+    signedSeenAt: null,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
     ...overrides,
@@ -110,6 +115,8 @@ describe('PoolProxyService', () => {
   function setPoolPreferences(overrides: Partial<HubPoolPreferences>): void {
     configuration.getHubPoolPreferences.mockReturnValue({
       poolEnabled: true,
+      poolOutboundEnabled: true,
+      poolInboundEnabled: true,
       poolLocalAffinity: DEFAULT_POOL_LOCAL_AFFINITY,
       poolHealthPollSeconds: DEFAULT_POOL_HEALTH_POLL_SECONDS,
       ...overrides,
@@ -233,6 +240,91 @@ describe('PoolProxyService', () => {
       const candidates = await service.buildCandidateList('llama3.2:3b');
 
       expect(candidates).toEqual([{ peerId: 'peer-1', nodeFqdn: 'peer-hub.tailxyz.ts.net', backend: 'ollama' }]);
+    });
+  });
+
+  /**
+   * The outbound half of the kill switch, plus the per-peer one.
+   *
+   * Both are applied HERE and not in `HubPoolPeerService.listConnectedPeers`, which is why these
+   * tests assert that `listConnectedPeers` is still consulted (and so still returns the peer) while
+   * the candidate list comes back local-only. Gating the service method instead would flip
+   * `hasConnectedPeers()`, which `inference-env-resolver.ts` bakes into an app's `CI_LLM_BASE_URL`
+   * at install time — permanently repointing every app created while the switch was off.
+   */
+  describe('outbound and per-peer kill switches', () => {
+    const MODEL = 'llama3.2:3b';
+
+    beforeEach(() => {
+      ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: [MODEL] });
+    });
+
+    it('produces a local-only candidate list when outbound pooling is off', async () => {
+      peerService.listConnectedPeers.mockResolvedValue([peerServing('peer-idle', MODEL, { inFlightRequests: 0 })]);
+      loadService.acquire(LOCAL_CANDIDATE_KEY);
+      loadService.acquire(LOCAL_CANDIDATE_KEY);
+      // Loaded enough that the peer would win outright if the switch were not in force.
+
+      setPoolPreferences({ poolOutboundEnabled: false });
+
+      expect(await service.buildCandidateList(MODEL)).toEqual([{ peerId: null, nodeFqdn: null, backend: 'ollama' }]);
+    });
+
+    it('returns the actionable 502 rather than shipping the request out when outbound is off and the model is not local', async () => {
+      ollama.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['some-other-model'] });
+      peerService.listConnectedPeers.mockResolvedValue([peerServing('peer-idle', MODEL, { inFlightRequests: 0 })]);
+      setPoolPreferences({ poolOutboundEnabled: false });
+      const res = createMockResponse();
+
+      await service.proxyRequest({ path: '/v1/chat/completions', method: 'POST', body: { model: MODEL }, model: MODEL, res });
+
+      expect(res.status).toHaveBeenCalledWith(502);
+      expect(global.fetch).not.toHaveBeenCalled();
+    });
+
+    it('drops one disabled peer while a second, enabled peer is still ranked', async () => {
+      const disabled = peerServing('peer-off', MODEL, { inFlightRequests: 0 });
+      peerService.listConnectedPeers.mockResolvedValue([{ ...disabled, enabled: false }, peerServing('peer-on', MODEL, { inFlightRequests: 0 })]);
+      loadService.acquire(LOCAL_CANDIDATE_KEY);
+      loadService.acquire(LOCAL_CANDIDATE_KEY);
+
+      const candidates = await service.buildCandidateList(MODEL);
+
+      expect(candidates.map((c) => c.peerId)).toEqual(['peer-on', null]);
+    });
+
+    it('skips a peer that says it is not accepting work, on the flag and not on an empty inventory', async () => {
+      // A peer with inbound switched off publishes `acceptingWork: false` AND an empty inventory.
+      // Asserting on a peer that still lists the model proves the flag itself is what we honour —
+      // the empty list is only the fallback an older sender has.
+      const refusing = peerServing('peer-refusing', MODEL, { inFlightRequests: 0 });
+      peerService.listConnectedPeers.mockResolvedValue([
+        {
+          ...refusing,
+          lastCapabilities: capabilitiesWithModel(MODEL, { inFlightRequests: 0, acceptingWork: false }) as unknown as Record<string, unknown>,
+        },
+      ]);
+      loadService.acquire(LOCAL_CANDIDATE_KEY);
+      loadService.acquire(LOCAL_CANDIDATE_KEY);
+
+      expect(await service.buildCandidateList(MODEL)).toEqual([{ peerId: null, nodeFqdn: null, backend: 'ollama' }]);
+    });
+
+    it('treats an absent acceptingWork as yes, so a peer on an older build still receives work', async () => {
+      peerService.listConnectedPeers.mockResolvedValue([peerServing('peer-old', MODEL, { inFlightRequests: 0 })]);
+      loadService.acquire(LOCAL_CANDIDATE_KEY);
+      loadService.acquire(LOCAL_CANDIDATE_KEY);
+
+      expect((await service.buildCandidateList(MODEL)).map((c) => c.peerId)).toEqual(['peer-old', null]);
+    });
+
+    it('ranks exactly as before when both switches are at their defaults', async () => {
+      // The single-node/untouched-settings guarantee, asserted on the ranking itself.
+      peerService.listConnectedPeers.mockResolvedValue([peerServing('peer-idle', MODEL, { inFlightRequests: 0 })]);
+      loadService.acquire(LOCAL_CANDIDATE_KEY);
+      loadService.acquire(LOCAL_CANDIDATE_KEY);
+
+      expect((await service.buildCandidateList(MODEL)).map((c) => c.peerId)).toEqual(['peer-idle', null]);
     });
   });
 

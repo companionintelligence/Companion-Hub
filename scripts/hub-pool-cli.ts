@@ -19,8 +19,15 @@ const POOL_GET_TIMEOUT_MS = 10_000;
 /** Pairing is a two-way handshake with a peer that may be offline, so it gets the POST budget, not the GET one. */
 const POOL_MUTATION_TIMEOUT_MS = 30_000;
 
-export type PoolPeerStatus = 'pending' | 'connected' | 'unreachable' | 'rejected';
-export type PoolStatusReason = 'active' | 'no_peers' | 'disabled_by_env' | 'disabled_by_setting';
+/** 'rejected' was retired in migration 0059 — nothing ever wrote it, and it overlapped `enabled`. */
+export type PoolPeerStatus = 'pending' | 'connected' | 'unreachable';
+export type PoolStatusReason = 'active' | 'no_peers' | 'partially_disabled' | 'disabled_by_env' | 'disabled_by_setting';
+
+/** One side of the kill switch, as `/status` reports it. */
+export interface PoolEnabledState {
+  enabled: boolean;
+  disabledBy: 'env' | 'setting' | null;
+}
 
 export interface PoolBackendCapability {
   type: string;
@@ -34,9 +41,11 @@ export interface PoolPeerRow {
   displayName: string | null;
   direction: 'inbound' | 'outbound';
   status: PoolPeerStatus;
+  /** Per-peer kill switch. Absent on a Hub predating it, where every peer is in the pool. */
+  enabled?: boolean;
   consecutiveFailures: number;
   lastSeenAt: string | null;
-  lastCapabilities: { hardwareTier?: string; backends?: PoolBackendCapability[]; inFlightRequests?: number } | null;
+  lastCapabilities: { hardwareTier?: string; backends?: PoolBackendCapability[]; inFlightRequests?: number; acceptingWork?: boolean } | null;
   /** Present on `/status` rows only: what this node currently has forwarded to the peer. */
   inFlightRequests?: number;
 }
@@ -53,9 +62,16 @@ export interface PoolRoutingSummary {
 export interface PoolStatusResponse {
   enabled: boolean;
   disabledBy: 'env' | 'setting' | null;
+  directions: { outbound: PoolEnabledState; inbound: PoolEnabledState };
   reason: PoolStatusReason;
   routingActive: boolean;
-  settings: { poolEnabled: boolean; poolLocalAffinity: number; poolHealthPollSeconds: number };
+  settings: {
+    poolEnabled: boolean;
+    poolOutboundEnabled: boolean;
+    poolInboundEnabled: boolean;
+    poolLocalAffinity: number;
+    poolHealthPollSeconds: number;
+  };
   tailscaleAdminApiConfigured: boolean;
   localNode: {
     nodeFqdn: string | null;
@@ -67,7 +83,7 @@ export interface PoolStatusResponse {
     capabilitiesError: string | null;
   };
   peers: PoolPeerRow[];
-  peerCounts: { total: number; connected: number; pending: number; unreachable: number };
+  peerCounts: { total: number; connected: number; pending: number; unreachable: number; disabled: number };
   routing: PoolRoutingSummary;
 }
 
@@ -153,13 +169,33 @@ export async function unpairPoolPeer(envFileName: string, id: string): Promise<v
   });
 }
 
+/** Which switch(es) `cihub pool enable|disable` should write. `both` is the default and is today's behaviour. */
+export type PoolEnableAxis = 'both' | 'outbound' | 'inbound';
+
+/**
+ * PATCHes only the switch(es) the operator named. `both` writes the MASTER switch, not the two
+ * directional ones: turning pooling off has always meant the master, and rewriting the directional
+ * flags here would silently discard an operator's asymmetric setup on the next `pool enable`.
+ */
 export async function setPoolEnabledSetting(
   envFileName: string,
   poolEnabled: boolean,
-): Promise<{ poolEnabled: boolean; poolLocalAffinity: number; poolHealthPollSeconds: number }> {
+  axis: PoolEnableAxis = 'both',
+): Promise<PoolStatusResponse['settings']> {
+  const body =
+    axis === 'outbound' ? { poolOutboundEnabled: poolEnabled } : axis === 'inbound' ? { poolInboundEnabled: poolEnabled } : { poolEnabled };
   return hubApiFetch(envFileName, '/inference/pool/settings', {
     method: 'PATCH',
-    body: JSON.stringify({ poolEnabled }),
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(POOL_MUTATION_TIMEOUT_MS),
+  });
+}
+
+/** Per-peer kill switch. Reversible and symmetric: the pairing and both tokens survive. */
+export async function setPoolPeerEnabled(envFileName: string, id: string, enabled: boolean): Promise<PoolPeerRow> {
+  return hubApiFetch<PoolPeerRow>(envFileName, `/inference/pool/peers/${encodeURIComponent(id)}/${enabled ? 'enable' : 'disable'}`, {
+    method: 'POST',
+    body: '{}',
     signal: AbortSignal.timeout(POOL_MUTATION_TIMEOUT_MS),
   });
 }
@@ -222,7 +258,12 @@ export function formatPoolPeerTable(peers: PoolPeerRow[]): string[] {
   for (const peer of peers) {
     // Strikes are what decide whether a peer is still offered as a candidate, so they belong next to
     // the status rather than in a footnote — "connected 2/3" is a peer about to drop out.
-    const status = peer.consecutiveFailures > 0 ? `${peer.status} ${peer.consecutiveFailures}/3` : peer.status;
+    //
+    // `disabled` replaces the lifecycle word rather than sitting beside it: a peer the operator
+    // switched off exchanges no work whatever its health poll says, and printing "connected" for it
+    // is the one thing this table must not do. `!== false` so a Hub predating the column reads as in.
+    const lifecycle = peer.enabled === false ? `${peer.status}/off` : peer.status;
+    const status = peer.consecutiveFailures > 0 ? `${lifecycle} ${peer.consecutiveFailures}/3` : lifecycle;
     const queue = peer.inFlightRequests ?? peer.lastCapabilities?.inFlightRequests;
     lines.push(
       [
@@ -260,11 +301,22 @@ export function formatPoolPeerModelLines(peers: PoolPeerRow[]): string[] {
 }
 
 const PENDING_INBOUND_HINT = 'Pending inbound requests: approve with `cihub pool approve <id>` or reject with `cihub pool reject <id>`.';
+const DISABLED_PEER_HINT =
+  'Peers marked `/off` exchange no work with this node. The pairing and both tokens are kept — put one back with `cihub pool peer-enable <id>`.';
 
 export function formatPoolPeersLines(peers: PoolPeerRow[]): string[] {
   const lines = [...formatPoolPeerTable(peers), ...formatPoolPeerModelLines(peers)];
   if (peers.some((peer) => peer.direction === 'inbound' && peer.status === 'pending')) {
     lines.push('', PENDING_INBOUND_HINT);
+  }
+  if (peers.some((peer) => peer.enabled === false)) {
+    lines.push('', DISABLED_PEER_HINT);
+  }
+  // The far side's own decision, not this operator's — worth naming, because such a peer polls
+  // healthy while advertising nothing, which otherwise reads as a broken node.
+  const notAccepting = peers.filter((peer) => peer.enabled !== false && peer.lastCapabilities?.acceptingWork === false);
+  if (notAccepting.length > 0) {
+    lines.push('', `Not accepting work from this node: ${notAccepting.map((peer) => sanitizeForBox(peer.nodeFqdn)).join(', ')}`);
   }
   return lines;
 }
@@ -297,6 +349,8 @@ function describePoolReason(status: PoolStatusResponse): string {
       return `${OK} active — apps on this Hub are routed through the pool`;
     case 'no_peers':
       return `${PENDING} enabled, not routing — no connected peers, so this Hub resolves inference locally`;
+    case 'partially_disabled':
+      return `${PENDING} partly disabled — pooling is on, but a direction is switched off or every peer is disabled (see below)`;
     case 'disabled_by_env':
       return `${FAIL} disabled — HUB_POOL_USER_DISABLED=true in this Hub's .env (the .env wins over the setting)`;
     case 'disabled_by_setting':
@@ -306,18 +360,31 @@ function describePoolReason(status: PoolStatusResponse): string {
   }
 }
 
+/**
+ * One direction's effective state, naming the switch actually responsible. An operator told to edit
+ * the `.env` when the real cause is the stored setting goes looking in the wrong file — the same
+ * reason `describeHubPoolDisabled` exists on the backend.
+ */
+function describeDirection(what: string, state: PoolEnabledState, envVar: string, flag: string): string {
+  if (state.enabled) return `${OK} ${what}`;
+  if (state.disabledBy === 'env') return `${FAIL} not ${what} — ${envVar}=true in this Hub's .env (the .env wins over the setting)`;
+  return `${FAIL} not ${what} — turned off in settings (re-enable with: cihub pool enable ${flag})`;
+}
+
 export function formatPoolStatusLines(status: PoolStatusResponse): string[] {
   const counts = status.peerCounts;
   const routing = status.routing;
   const lines = [
     `Pooling      ${describePoolReason(status)}`,
-    `Peers        ${counts.total} total · ${counts.connected} connected · ${counts.pending} pending · ${counts.unreachable} unreachable`,
+    `Outbound     ${describeDirection('sending work to peers', status.directions.outbound, 'HUB_POOL_OUTBOUND_DISABLED', '--outbound')}`,
+    `Inbound      ${describeDirection('serving work for peers', status.directions.inbound, 'HUB_POOL_INBOUND_DISABLED', '--inbound')}`,
+    `Peers        ${counts.total} total · ${counts.connected} connected · ${counts.pending} pending · ${counts.unreachable} unreachable · ${counts.disabled} disabled`,
     `Discovery    ${
       status.tailscaleAdminApiConfigured
         ? 'Tailscale Admin API configured — cihub pool discover can enumerate the tailnet'
         : 'not configured — this Hub cannot enumerate the tailnet (it can still be paired with)'
     }`,
-    `Settings     poolEnabled=${status.settings.poolEnabled} · localAffinity=${status.settings.poolLocalAffinity} · healthPoll=${status.settings.poolHealthPollSeconds}s`,
+    `Settings     poolEnabled=${status.settings.poolEnabled} · outbound=${status.settings.poolOutboundEnabled} · inbound=${status.settings.poolInboundEnabled} · localAffinity=${status.settings.poolLocalAffinity} · healthPoll=${status.settings.poolHealthPollSeconds}s`,
     `Routing log  ${routing.recorded}/${routing.capacity} recorded · ${routing.served} served · ${routing.failed} failed · ${routing.failovers} failover(s)`,
     '',
     'This node',

@@ -103,6 +103,8 @@ type PersistedSettingsValues = {
   inferenceDsparkUrl: string | undefined;
   inferenceCloudProviders: CloudProviderConfig[] | undefined;
   hubPoolEnabled: boolean | undefined;
+  hubPoolOutboundEnabled: boolean | undefined;
+  hubPoolInboundEnabled: boolean | undefined;
   hubPoolLocalAffinity: number | undefined;
   hubPoolHealthPollSeconds: number | undefined;
 };
@@ -124,6 +126,8 @@ const EMPTY_PERSISTED_SETTINGS: PersistedSettingsValues = {
   inferenceDsparkUrl: undefined,
   inferenceCloudProviders: undefined,
   hubPoolEnabled: undefined,
+  hubPoolOutboundEnabled: undefined,
+  hubPoolInboundEnabled: undefined,
   hubPoolLocalAffinity: undefined,
   hubPoolHealthPollSeconds: undefined,
 };
@@ -203,6 +207,8 @@ export class ConfigurationService {
       inferenceDsparkUrl: settings.inferenceDsparkUrl,
       inferenceCloudProviders: settings.inferenceCloudProviders,
       hubPoolEnabled: settings.hubPoolEnabled,
+      hubPoolOutboundEnabled: settings.hubPoolOutboundEnabled,
+      hubPoolInboundEnabled: settings.hubPoolInboundEnabled,
       hubPoolLocalAffinity: settings.hubPoolLocalAffinity,
       hubPoolHealthPollSeconds: settings.hubPoolHealthPollSeconds,
     };
@@ -294,6 +300,8 @@ export class ConfigurationService {
         // off) mean the same thing to routing but different things to the UI, which distinguishes
         // "on by default" from "you disabled this here".
         hubPoolEnabled: settingsValues.hubPoolEnabled,
+        hubPoolOutboundEnabled: settingsValues.hubPoolOutboundEnabled,
+        hubPoolInboundEnabled: settingsValues.hubPoolInboundEnabled,
         hubPoolLocalAffinity: settingsValues.hubPoolLocalAffinity,
         hubPoolHealthPollSeconds: settingsValues.hubPoolHealthPollSeconds,
         experimental: {
@@ -456,6 +464,8 @@ export class ConfigurationService {
   public getHubPoolPreferences(): HubPoolPreferences {
     return {
       poolEnabled: this.config.userSettings.hubPoolEnabled ?? true,
+      poolOutboundEnabled: this.config.userSettings.hubPoolOutboundEnabled ?? true,
+      poolInboundEnabled: this.config.userSettings.hubPoolInboundEnabled ?? true,
       poolLocalAffinity: this.config.userSettings.hubPoolLocalAffinity ?? DEFAULT_POOL_LOCAL_AFFINITY,
       poolHealthPollSeconds: this.config.userSettings.hubPoolHealthPollSeconds ?? DEFAULT_POOL_HEALTH_POLL_SECONDS,
     };
@@ -463,9 +473,21 @@ export class ConfigurationService {
 
   /** Persist Hub Pool tuning. Every field is optional and `undefined` leaves it unchanged; there is no "clear" state because each has a real default. */
   public async setHubPoolPreferences(preferences: Partial<HubPoolPreferences>): Promise<HubPoolPreferences> {
-    const settings: { hubPoolEnabled?: boolean; hubPoolLocalAffinity?: number; hubPoolHealthPollSeconds?: number } = {};
+    const settings: {
+      hubPoolEnabled?: boolean;
+      hubPoolOutboundEnabled?: boolean;
+      hubPoolInboundEnabled?: boolean;
+      hubPoolLocalAffinity?: number;
+      hubPoolHealthPollSeconds?: number;
+    } = {};
     if (preferences.poolEnabled !== undefined) {
       settings.hubPoolEnabled = preferences.poolEnabled;
+    }
+    if (preferences.poolOutboundEnabled !== undefined) {
+      settings.hubPoolOutboundEnabled = preferences.poolOutboundEnabled;
+    }
+    if (preferences.poolInboundEnabled !== undefined) {
+      settings.hubPoolInboundEnabled = preferences.poolInboundEnabled;
     }
     if (preferences.poolLocalAffinity !== undefined) {
       settings.hubPoolLocalAffinity = preferences.poolLocalAffinity;

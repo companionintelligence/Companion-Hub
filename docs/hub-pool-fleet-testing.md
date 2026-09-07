@@ -538,6 +538,59 @@ core$ cihub pool peers <env>       # within one poll interval
 **PASS** beta returns to `connected` on its own, and a `<model-beta>` request routes there again.
 **FAIL** recovery needs an unpair/re-pair.
 
+### 7.4 Inbound only: beta stops serving but keeps using core
+
+The asymmetry the directional switches exist for. Unlike the master switch, beta must stay **healthy**
+on core's status card throughout — this is "not right now", not "I have left the pool".
+
+```bash
+beta$ cihub pool disable --inbound <env> --yes
+core$ cihub pool status <env>       # within one poll interval
+core$ curl -s http://localhost:<core hub port>/api/inference/pool/api/chat \
+        -d '{"model":"<model-beta>","messages":[{"role":"user","content":"hi"}],"stream":false}'
+beta$ cihub pool status <env>
+```
+
+**PASS** core still shows beta `connected` with `consecutiveFailures 0` and lists it under "Not accepting
+work from this node"; the `<model-beta>` request fails on core with the 502 (no node has it) rather than
+being sent to beta; beta's own status still shows core serving, and beta can still route its work to core.
+**FAIL** core marks beta `unreachable`, or beta stops using core as well.
+
+```bash
+beta$ cihub pool enable --inbound <env> --yes
+core$ cihub pool status <env>       # within one poll interval
+```
+
+**PASS** routing to beta resumes on the next poll with no re-approval.
+
+### 7.5 Outbound only: core stops sending but keeps serving
+
+```bash
+core$ cihub pool disable --outbound <env> --yes
+core$ curl -s http://localhost:<core hub port>/api/inference/pool/api/chat \
+        -d '{"model":"<model-beta>","messages":[{"role":"user","content":"hi"}],"stream":false}'
+beta$ cihub pool status <env>
+```
+
+**PASS** core answers 502 for the beta-only model instead of forwarding it, while beta's status still
+shows core `connected` and serving; work beta sends to core is still served.
+**FAIL** core still forwards, or beta sees core as unreachable / not accepting work.
+
+Re-enable with `cihub pool enable --outbound <env> --yes`.
+
+### 7.6 Per-peer: take one node out of the pool without unpairing
+
+```bash
+core$ cihub pool peers <env>                          # note beta's id prefix
+core$ cihub pool peer-disable <id> <env> --yes
+core$ cihub pool peers <env>
+```
+
+**PASS** beta prints as `connected/off`, core keeps polling it successfully, no work moves in either
+direction, and both directional tokens survive — `cihub pool peer-enable <id>` restores routing with no
+approval on beta.
+**FAIL** the pairing is gone, beta goes `unreachable`, or re-enabling needs a re-pair.
+
 ---
 
 ## 8. Native API coverage

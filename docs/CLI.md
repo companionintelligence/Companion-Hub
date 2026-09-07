@@ -327,6 +327,8 @@ cihub pool reject <id>                        # refuse one
 cihub pool unpair <id>                        # remove a peer and revoke both tokens
 cihub pool log [env] [--limit N]              # recent routing decisions, failovers marked
 cihub pool enable [env] | cihub pool disable  # flip the persisted kill switch
+cihub pool enable --outbound | --inbound      # ...or just one direction
+cihub pool peer-enable <id> | peer-disable    # take one peer in or out of the pool
 ```
 
 | Flag | Effect |
@@ -372,13 +374,32 @@ generation.
 
 ### `cihub pool enable` / `disable`
 
-These write the persisted `poolEnabled` setting through the Hub API; they take effect on the next request,
-with no restart. **`HUB_POOL_USER_DISABLED=true` in the env file wins.** Under that override, `enable`
-saves the setting and then says plainly that nothing changed in effect, naming the file to edit and the
-restart needed — it never reports success it did not deliver.
+With no flag these write the persisted **master** `poolEnabled` setting through the Hub API; they take
+effect on the next request, with no restart. **`HUB_POOL_USER_DISABLED=true` in the env file wins.** Under
+that override, `enable` saves the setting and then says plainly that nothing changed in effect, naming the
+file to edit and the restart needed — it never reports success it did not deliver.
 
 Disabling keeps existing pairings. Peers mark this node unreachable while it is off and pick it back up
 on their next successful health poll.
+
+`--outbound` and `--inbound` write one half instead, each with its own env override
+(`HUB_POOL_OUTBOUND_DISABLED`, `HUB_POOL_INBOUND_DISABLED`) and the same refusal to claim a success it did
+not deliver. Pass at most one; passing neither is what "the master switch" means.
+
+- `disable --outbound` stops this Hub sending work to peers. Peers may still send work here, and a request
+  this node cannot serve now fails locally with the usual 502 instead of being shipped out.
+- `disable --inbound` stops this Hub serving peers' work while it keeps using them. Peers see a healthy
+  node advertising an empty inventory — **not** an unreachable one — and route elsewhere.
+
+`cihub pool status` prints both directions with the switch actually responsible for each.
+
+### `cihub pool peer-enable` / `peer-disable`
+
+Take one peer in or out of the pool. Symmetric: no work moves in either direction with a disabled peer.
+The pairing, both directional tokens and the health poll are kept, so re-enabling is instant and needs no
+approval from the other side — and disabled peers keep being polled, so the status card stays honest about
+a machine that is up. It is therefore **not** a revocation; `cihub pool unpair` is. Disabled peers print as
+`connected/off` in the peer table.
 
 ---
 

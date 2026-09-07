@@ -83,6 +83,11 @@ export const settingsSchema = z.object({
   // half of the kill switch; `HUB_POOL_USER_DISABLED=true` in the environment still overrides it
   // (see resolveHubPoolEnabled). Absent numeric values fall back to the DEFAULT_POOL_* constants.
   hubPoolEnabled: z.boolean().optional(),
+  // The two directional switches, both opt-out like the master above: absent means on, so an
+  // untouched settings.json resolves to exactly today's behaviour on both axes.
+  // `HUB_POOL_OUTBOUND_DISABLED` / `HUB_POOL_INBOUND_DISABLED` override them (resolveHubPoolDirections).
+  hubPoolOutboundEnabled: z.boolean().optional(),
+  hubPoolInboundEnabled: z.boolean().optional(),
   // `.catch(undefined)` is the read-path half of the split described above the two schemas: an
   // out-of-range persisted value is dropped here and resolves to the DEFAULT_POOL_* constant in
   // `getHubPoolPreferences`, instead of failing the parse that boot depends on. `UserSettingsBody`

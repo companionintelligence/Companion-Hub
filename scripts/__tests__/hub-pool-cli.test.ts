@@ -33,6 +33,7 @@ function peer(overrides: Partial<PoolPeerRow> = {}): PoolPeerRow {
     displayName: null,
     direction: 'outbound',
     status: 'connected',
+    enabled: true,
     consecutiveFailures: 0,
     lastSeenAt: '2026-09-05T10:00:01.000Z',
     lastCapabilities: { hardwareTier: 'high', backends: [{ type: 'ollama', healthy: true, modelsLoaded: ['llama3', 'qwen3'] }] },
@@ -45,9 +46,10 @@ function status(overrides: Partial<PoolStatusResponse> = {}): PoolStatusResponse
   return {
     enabled: true,
     disabledBy: null,
+    directions: { outbound: { enabled: true, disabledBy: null }, inbound: { enabled: true, disabledBy: null } },
     reason: 'active',
     routingActive: true,
-    settings: { poolEnabled: true, poolLocalAffinity: 1, poolHealthPollSeconds: 30 },
+    settings: { poolEnabled: true, poolOutboundEnabled: true, poolInboundEnabled: true, poolLocalAffinity: 1, poolHealthPollSeconds: 30 },
     tailscaleAdminApiConfigured: true,
     localNode: {
       nodeFqdn: 'hub-a.example-tailnet.ts.net',
@@ -59,7 +61,7 @@ function status(overrides: Partial<PoolStatusResponse> = {}): PoolStatusResponse
       capabilitiesError: null,
     },
     peers: [peer()],
-    peerCounts: { total: 1, connected: 1, pending: 0, unreachable: 0 },
+    peerCounts: { total: 1, connected: 1, pending: 0, unreachable: 0, disabled: 0 },
     routing: { recorded: 3, capacity: 200, served: 2, failed: 1, failovers: 1, lastAt: '2026-09-05T10:00:01.000Z' },
     ...overrides,
   };
@@ -75,8 +77,8 @@ describe('hub-pool-cli formatters', () => {
     const text = lines.join('\n');
 
     expect(text).toContain('Pooling      ✓ active');
-    expect(text).toContain('1 total · 1 connected · 0 pending · 0 unreachable');
-    expect(text).toContain('poolEnabled=true · localAffinity=1 · healthPoll=30s');
+    expect(text).toContain('1 total · 1 connected · 0 pending · 0 unreachable · 0 disabled');
+    expect(text).toContain('poolEnabled=true · outbound=true · inbound=true · localAffinity=1 · healthPoll=30s');
     expect(text).toContain('hub-a.example-tailnet.ts.net');
     expect(text).toContain('tailnet example-tailnet.ts.net');
     expect(text).toContain('ollama ✓ 1');
@@ -84,6 +86,32 @@ describe('hub-pool-cli formatters', () => {
     expect(text).toContain('hub-b.example-tailnet.ts.net');
     expect(text).toContain('2026-09-05 10:00:01Z');
     expect(text).toContain('ollama ✓ 2');
+  });
+
+  it('renders each direction and names the switch actually holding it off', () => {
+    const text = formatPoolStatusLines(
+      status({
+        reason: 'partially_disabled',
+        routingActive: false,
+        directions: { outbound: { enabled: false, disabledBy: 'setting' }, inbound: { enabled: false, disabledBy: 'env' } },
+        settings: { poolEnabled: true, poolOutboundEnabled: false, poolInboundEnabled: true, poolLocalAffinity: 1, poolHealthPollSeconds: 30 },
+      }),
+    ).join('\n');
+
+    expect(text).toContain('partly disabled');
+    // Each line points at the thing that actually has to change, per direction.
+    expect(text).toContain('cihub pool enable --outbound');
+    expect(text).toContain('HUB_POOL_INBOUND_DISABLED=true');
+    expect(text).toContain('poolEnabled=true · outbound=false · inbound=true');
+  });
+
+  it('marks a disabled peer instead of printing "connected" for a node that exchanges no work', () => {
+    const text = formatPoolStatusLines(
+      status({ peers: [peer({ enabled: false })], peerCounts: { total: 1, connected: 1, pending: 0, unreachable: 0, disabled: 1 } }),
+    ).join('\n');
+
+    expect(text).toContain('connected/off');
+    expect(text).toContain('1 disabled');
   });
 
   it('names the env override rather than reporting a plain "off"', () => {
@@ -94,7 +122,12 @@ describe('hub-pool-cli formatters', () => {
 
   it('separates "enabled but no peers" from "disabled"', () => {
     const text = formatPoolStatusLines(
-      status({ reason: 'no_peers', routingActive: false, peers: [], peerCounts: { total: 0, connected: 0, pending: 0, unreachable: 0 } }),
+      status({
+        reason: 'no_peers',
+        routingActive: false,
+        peers: [],
+        peerCounts: { total: 0, connected: 0, pending: 0, unreachable: 0, disabled: 0 },
+      }),
     ).join('\n');
     expect(text).toContain('enabled, not routing');
     expect(text).toContain('No paired peers');

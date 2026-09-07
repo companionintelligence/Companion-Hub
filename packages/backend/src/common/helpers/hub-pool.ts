@@ -7,6 +7,36 @@ export interface HubPoolEnabledState {
 }
 
 /**
+ * The two halves of pooling, which an operator can now switch independently.
+ *
+ * They are genuinely different decisions and were only ever coupled because there was one switch:
+ * "stop spending my peers' GPU" (outbound) and "stop spending mine on my peers" (inbound) are the
+ * two things people actually ask for, and a node that gives without taking is the normal shape of a
+ * heterogeneous fleet.
+ */
+export type HubPoolDirection = 'outbound' | 'inbound';
+
+export interface HubPoolDirectionalState {
+  /** Whether this node may send work TO peers. */
+  outbound: HubPoolEnabledState;
+  /** Whether this node may serve work FOR peers. */
+  inbound: HubPoolEnabledState;
+}
+
+/**
+ * Environment overrides, one per switch. Read straight from `process.env` like
+ * `HUB_POOL_USER_DISABLED`: the hub `.env` is loaded wholesale into the backend container
+ * (`env_file` in docker-compose.prod.yml), so no compose change is needed to add one.
+ *
+ * None of them may be projected into `.env` by `generateSystemEnvFile`, for the reason documented
+ * on {@link resolveHubPoolEnabled}: env-first precedence would make the flag permanent and the
+ * operator could never switch it back from the UI.
+ */
+export const HUB_POOL_DISABLED_ENV_VAR = 'HUB_POOL_USER_DISABLED';
+export const HUB_POOL_OUTBOUND_DISABLED_ENV_VAR = 'HUB_POOL_OUTBOUND_DISABLED';
+export const HUB_POOL_INBOUND_DISABLED_ENV_VAR = 'HUB_POOL_INBOUND_DISABLED';
+
+/**
  * Multi-Hub inference pooling kill switch. Existing pairing state is unaffected —
  * this gates whether a connected peer is treated as usable
  * (`HubPoolPeerService.hasConnectedPeers`), whether this node still answers peer
@@ -27,7 +57,7 @@ export interface HubPoolEnabledState {
  * the UI once the flag had been written to disk.
  */
 export function resolveHubPoolEnabled(persistedEnabled: boolean | undefined): HubPoolEnabledState {
-  if (process.env.HUB_POOL_USER_DISABLED === 'true') {
+  if (process.env[HUB_POOL_DISABLED_ENV_VAR] === 'true') {
     return { enabled: false, disabledBy: 'env' };
   }
   if (persistedEnabled === false) {
@@ -42,6 +72,48 @@ export function isHubPoolEnabled(persistedEnabled?: boolean): boolean {
 }
 
 /**
+ * The effective state of each direction, and this file is the ONLY place that decides it.
+ *
+ * Precedence, highest first, per direction:
+ *  1. `HUB_POOL_USER_DISABLED=true` — master, both directions off, `disabledBy: 'env'`.
+ *  2. persisted `poolEnabled === false` — master, both directions off, `disabledBy: 'setting'`.
+ *  3. `HUB_POOL_{OUTBOUND,INBOUND}_DISABLED=true` — that direction off, `'env'`.
+ *  4. persisted `pool{Outbound,Inbound}Enabled === false` — that direction off, `'setting'`.
+ *  5. otherwise on.
+ *
+ * The master short-circuits both directions rather than being folded in per-axis, so an operator
+ * who turns pooling off never has to reason about what the directional switches were left at. Every
+ * new switch is opt-out (`undefined` = on), so an untouched `settings.json` and an untouched `.env`
+ * resolve to exactly today's behaviour on both axes.
+ *
+ * Callers must not re-derive any of this: `HubPoolPeerService.directions()` and
+ * `PoolProxyService` both read the answer from here, and the truth table is pinned in
+ * `__tests__/hub-pool.test.ts`.
+ */
+export function resolveHubPoolDirections(
+  prefs: Pick<HubPoolPreferences, 'poolEnabled' | 'poolOutboundEnabled' | 'poolInboundEnabled'>,
+): HubPoolDirectionalState {
+  const master = resolveHubPoolEnabled(prefs.poolEnabled);
+  if (!master.enabled) {
+    return { outbound: { ...master }, inbound: { ...master } };
+  }
+  return {
+    outbound: resolveDirection(HUB_POOL_OUTBOUND_DISABLED_ENV_VAR, prefs.poolOutboundEnabled),
+    inbound: resolveDirection(HUB_POOL_INBOUND_DISABLED_ENV_VAR, prefs.poolInboundEnabled),
+  };
+}
+
+function resolveDirection(envVar: string, persisted: boolean | undefined): HubPoolEnabledState {
+  if (process.env[envVar] === 'true') {
+    return { enabled: false, disabledBy: 'env' };
+  }
+  if (persisted === false) {
+    return { enabled: false, disabledBy: 'setting' };
+  }
+  return { enabled: true, disabledBy: null };
+}
+
+/**
  * Message for a 503 refusing a peer because pooling is off here. Names the switch that is actually
  * responsible: an operator told "set HUB_POOL_USER_DISABLED" when the real cause is the UI toggle
  * would go looking in the wrong file.
@@ -49,8 +121,26 @@ export function isHubPoolEnabled(persistedEnabled?: boolean): boolean {
 export function describeHubPoolDisabled(disabledBy: HubPoolDisabledBy | null): string {
   return disabledBy === 'setting'
     ? 'Hub pooling is disabled on this node (turned off in Settings → Network → Hub Pool)'
-    : 'Hub pooling is disabled on this node (HUB_POOL_USER_DISABLED)';
+    : `Hub pooling is disabled on this node (${HUB_POOL_DISABLED_ENV_VAR})`;
 }
+
+/**
+ * Why this node is refusing a peer's *work* while still being in the pool.
+ *
+ * Deliberately worded apart from {@link describeHubPoolDisabled}: the master switch means "I have
+ * left the pool" and answers 503 on the capability probe so peers mark this node unreachable, while
+ * these two mean "I am still here, still using you, just not serving right now" — which is a live,
+ * healthy node the peer must keep polling. The 503 on `/local/*` exists only so a request already
+ * in flight against a cached snapshot fails over instead of hanging.
+ */
+export function describeHubPoolInboundRefused(reason: HubPoolInboundRefusal): string {
+  return reason === 'peer_disabled'
+    ? 'This node is not exchanging work with your node right now (the operator disabled this peer here)'
+    : 'This node is not accepting pooled work right now (inbound pooling is switched off here)';
+}
+
+/** Which of the two finer switches is refusing a peer's work. Never the master, which 503s instead. */
+export type HubPoolInboundRefusal = 'inbound_disabled' | 'peer_disabled';
 
 /**
  * The head start the local node gets over a peer, in queued requests.
@@ -58,10 +148,26 @@ export function describeHubPoolDisabled(disabledBy: HubPoolDisabledBy | null): s
  * This is a real advantage, not favouritism: a follow-up turn served here reuses the prompt prefix
  * and KV cache the previous turn left resident, while the same turn sent to a peer re-processes the
  * whole prompt cold. One queued request is roughly what that re-processing costs, so work only
- * leaves this node once a peer is at least that much emptier. 0 makes the pool a pure least-loaded
- * balancer; higher values make handoff rarer (stickier to local).
+ * leaves this node once a peer is at least that much emptier. Higher values make handoff rarer
+ * (stickier to local).
+ *
+ * At 0 the pool ranks purely by queue depth, with one documented exception: an *exact* score tie
+ * still goes to local, because `LOCAL_TIER_RANK` beats every peer tier. That is the right
+ * behaviour — a free local node has no hop and a warm cache — but it is a tie-break, not a
+ * handicap, so "0 = pure least-loaded" overstated it and this says what actually happens.
  */
 export const DEFAULT_POOL_LOCAL_AFFINITY = 1;
+/**
+ * Stays at 0 for now, deliberately.
+ *
+ * A negative floor ("this node is the weak one — prefer the peer") is the one thing the scale
+ * cannot express, and the formula already handles it: `peerScore = peerLoad + affinity` sorts
+ * negatives correctly with no ranking change at all. What blocks it is the rollback direction. The
+ * bounds are build constants, so a Hub that saved -5 and then rolls back one build would have
+ * persisted a value the older build rejects, and the settings-parse hardening that degrades such a
+ * value to the default fixes forwards, not backwards. Widen this one release after that degrade is
+ * on every fleet node; nobody has asked to prefer peers over local, so waiting costs nothing.
+ */
 export const MIN_POOL_LOCAL_AFFINITY = 0;
 /** Above this the local node effectively never hands off, which is indistinguishable from disabling the pool — use the kill switch for that instead. */
 export const MAX_POOL_LOCAL_AFFINITY = 20;
@@ -85,6 +191,13 @@ export const CAPABILITIES_FRESHNESS_POLLS = 3;
 export interface HubPoolPreferences {
   /** The persisted half of the kill switch only — pass it through {@link resolveHubPoolEnabled} to get the effective state. */
   poolEnabled: boolean;
+  /**
+   * The persisted half of the outbound switch only. Absent in `settings.json` means on, and the
+   * master switch above overrides it — resolve both through {@link resolveHubPoolDirections}.
+   */
+  poolOutboundEnabled: boolean;
+  /** The persisted half of the inbound switch only. Same resolution rule as `poolOutboundEnabled`. */
+  poolInboundEnabled: boolean;
   poolLocalAffinity: number;
   poolHealthPollSeconds: number;
 }

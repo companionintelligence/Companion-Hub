@@ -119,8 +119,11 @@ mid-answer.
 - **Hardware tier in ranking** (above).
 - **Operator-tunable local affinity** as an explicit setting rather than an artifact of list order,
   readable per-request so a settings change takes effect on the next request, not the next restart.
-- **Two independent kill switches** (`poolEnabled`, `HUB_POOL_USER_DISABLED`), and total inertness on a
-  Hub with no peers.
+- **Layered kill switches**: a master pair (`poolEnabled`, `HUB_POOL_USER_DISABLED`), an independent
+  switch per direction (`poolOutboundEnabled` / `poolInboundEnabled`, each with its own env override),
+  and one per peer (`hub_pool_peer.enabled`) — so "I will give but not take", and "everyone except that
+  node", are single toggles rather than an unpair. All of them keep pairings and tokens intact, and all
+  of them are inert on a Hub with no peers.
 
 ## Verdict
 
