@@ -133,6 +133,10 @@ function nameOf(error: unknown): string {
   return error instanceof Error ? error.name : `not an Error: ${String(error)}`;
 }
 
+function messageOf(error: unknown): string {
+  return error instanceof Error ? error.message : `not an Error: ${String(error)}`;
+}
+
 describe('runComposeWithNetworkRecovery', () => {
   it('runs compose once and clears stale networks before it', async () => {
     const harness = createHarness();
@@ -152,6 +156,25 @@ describe('runComposeWithNetworkRecovery', () => {
     await runComposeWithNetworkRecovery(harness.deps, APP_URN, FORM, COMMAND, 3, controller.signal);
 
     expect(harness.composeApp).toHaveBeenCalledWith(APP_URN, COMMAND, controller.signal);
+  });
+
+  // `toHaveBeenCalledWith` is satisfied by any one matching call, so the assertion above still holds
+  // if the signal is threaded on the first attempt and dropped on the retries. That is the dangerous
+  // half: a retry is exactly when a user gets bored and cancels, and a retried `docker compose`
+  // spawned without the signal keeps running after the abort. Every call is pinned here instead.
+  it('keeps forwarding the abort signal on every retried attempt', async () => {
+    const harness = createHarness();
+    const controller = new AbortController();
+    harness.failComposeOnce(new Error(OVERLAP_MESSAGE));
+    harness.failComposeOnce(new Error(OVERLAP_MESSAGE));
+
+    await runComposeWithNetworkRecovery(harness.deps, APP_URN, FORM, COMMAND, 3, controller.signal);
+
+    expect(harness.composeApp.mock.calls).toEqual([
+      [APP_URN, COMMAND, controller.signal],
+      [APP_URN, COMMAND, controller.signal],
+      [APP_URN, COMMAND, controller.signal],
+    ]);
   });
 
   it('releases the subnet and regenerates compose excluding the failed subnet before retrying', async () => {
@@ -215,6 +238,32 @@ describe('runComposeWithNetworkRecovery', () => {
     expect(harness.composeApp).toHaveBeenCalledTimes(1);
     expect(harness.ensureAppDir).not.toHaveBeenCalled();
     expect(harness.releaseSubnet).not.toHaveBeenCalled();
+  });
+
+  // Behaviour change: a below-1 maxAttempts used to run the loop zero times and then throw
+  // `new Error(String(lastError))` over a `lastError` that was never assigned, so the caller and the
+  // log got the bare word "undefined" for a call that had touched nothing — unreadable as either a
+  // compose failure or a bad argument. It is now rejected as a precondition, naming the value it
+  // got. Exact message equality, not a substring: the point of the fix is that the text is
+  // diagnostic, so a regression back to "undefined" has to fail here.
+  // The non-integer cases are why the guard tests `Number.isInteger` and not merely `>= 1`. A
+  // fractional 2.5 satisfies both loop conditions on the way in but leaves `attempt < maxAttempts`
+  // true on the final pass, so no attempt ever takes the translating branch: the loop falls out of
+  // the bottom and rethrows the RAW Docker text, quietly stripping the errorCode the frontend keys
+  // its message off — the one bound that behaves differently from every integer. Infinity is worse
+  // still, retrying until the queue worker is killed.
+  it.each([0, -1, Number.NaN, 2.5, Number.POSITIVE_INFINITY])('rejects a maxAttempts of %s before doing any work', async (maxAttempts) => {
+    const harness = createHarness();
+
+    const error = await runComposeWithNetworkRecovery(harness.deps, APP_URN, FORM, COMMAND, maxAttempts).catch((err: unknown) => err);
+
+    expect(messageOf(error)).toBe(`runComposeWithNetworkRecovery requires maxAttempts >= 1, received ${maxAttempts}`);
+    // The guard sits ahead of every side effect, so a rejected call leaves Docker untouched rather
+    // than tearing down the app's networks on its way out.
+    expect(harness.removeStaleAppNetworks).not.toHaveBeenCalled();
+    expect(harness.composeApp).not.toHaveBeenCalled();
+    expect(harness.releaseSubnet).not.toHaveBeenCalled();
+    expect(harness.ensureAppDir).not.toHaveBeenCalled();
   });
 
   it('translates an exhausted overlap into a network_overlap error naming only the conflicting ranges', async () => {

@@ -1,4 +1,4 @@
-import { spawn, spawnSync, type SpawnSyncReturns } from 'node:child_process';
+import { spawn, type SpawnSyncReturns } from 'node:child_process';
 
 export const COMPOSE_OUTPUT_BUFFER_LIMIT = 8192;
 
@@ -19,15 +19,20 @@ export function isHostPortBindConflict(output: string): boolean {
   );
 }
 
-function runDockerComposeDetached(args: string[], envOverrides: Record<string, string | undefined>, cwd?: string): DockerComposeUpResult {
-  return spawnSync('docker', args, {
-    encoding: 'utf-8',
-    env: { ...process.env, ...envOverrides },
-    cwd,
-  });
-}
-
-function runDockerComposeAttached(args: string[], envOverrides: Record<string, string | undefined>, cwd?: string): Promise<DockerComposeUpResult> {
+/**
+ * Run `docker compose up`, echoing output as it arrives and keeping the tail for the caller.
+ *
+ * Detached runs used to go through `spawnSync` with no `stdio`, which defaults to 'pipe' — so the
+ * CLI swallowed every byte of a `docker compose up -d --build` and printed nothing until it
+ * finished. That is the shipped default: `resolveUpStartMode` returns 'detached' for any appliance
+ * install, which is the packaged binary the desktop app puts on PATH. The result was minutes of
+ * silence through image pulls and a cold build, indistinguishable from a hang.
+ *
+ * `-d` is already in `args` when the caller wants a detached run, so the only thing the two modes
+ * ever needed to differ in was the argv — not how the process is spawned. One implementation now
+ * serves both.
+ */
+function runDockerCompose(args: string[], envOverrides: Record<string, string | undefined>, cwd?: string): Promise<DockerComposeUpResult> {
   return new Promise((resolve) => {
     let buffer = '';
     const child = spawn('docker', args, {
@@ -78,9 +83,7 @@ function runDockerComposeAttached(args: string[], envOverrides: Record<string, s
 
 export async function runDockerComposeUpOnce(
   args: string[],
-  options: { detached: boolean; envOverrides: Record<string, string | undefined>; cwd?: string },
+  options: { envOverrides: Record<string, string | undefined>; cwd?: string },
 ): Promise<DockerComposeUpResult> {
-  return options.detached
-    ? runDockerComposeDetached(args, options.envOverrides, options.cwd)
-    : runDockerComposeAttached(args, options.envOverrides, options.cwd);
+  return runDockerCompose(args, options.envOverrides, options.cwd);
 }

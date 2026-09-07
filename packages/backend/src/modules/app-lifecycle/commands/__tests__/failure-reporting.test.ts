@@ -1,4 +1,5 @@
 import { type AppFailureContext, ErrorReportingService } from '@/core/error-reporting/error-reporting.service';
+import { LoggerService } from '@/core/logger/logger.service';
 import type { ModuleRef } from '@nestjs/core';
 import { describe, expect, it } from 'vitest';
 import {
@@ -21,38 +22,61 @@ type Harness = {
   moduleRef: ModuleRef;
   /** Every context handed to ErrorReportingService.reportAppFailure, in call order. */
   reported: AppFailureContext[];
+  /** Every message passed to LoggerService.warn, in call order. */
+  warnings: string[];
   lookups: ModuleRefLookup[];
 };
 
 /**
- * Records what the reporting side effect actually received. `serviceAvailable: false` models the
- * documented tolerance for `moduleRef.get(...)` resolving to nothing (worker contexts where the
- * core error-reporting module was never wired in) — the optional chain must swallow it.
- * `reporterThrows` models a reporting transport that blows up mid-call.
+ * Records what the reporting side effect actually received.
+ *
+ * `serviceAvailable: false` models a worker context that never wired in the core error-reporting
+ * module. Nest's `ModuleRef.get` THROWS `UnknownElementException` for an unregistered token — see
+ * @nestjs/core/injector/instance-links-host.js — so this option makes the lookup throw rather than
+ * resolve to undefined. An earlier version of this harness returned undefined, which no Nest
+ * container can actually produce, and so asserted tolerance for a state that never occurs while the
+ * real unregistered case went uncovered.
+ *
+ * `reporterThrows` models a reporting transport that blows up mid-call. `loggerUnavailable` models
+ * the same unregistered-token throw for the fallback logger, so the warning path cannot itself
+ * become the escape hatch.
  */
-function createHarness(options: { serviceAvailable?: boolean; reporterThrows?: Error } = {}): Harness {
+function createHarness(options: { serviceAvailable?: boolean; reporterThrows?: Error; loggerUnavailable?: boolean } = {}): Harness {
   const reported: AppFailureContext[] = [];
+  const warnings: string[] = [];
   const lookups: ModuleRefLookup[] = [];
-  const service =
-    options.serviceAvailable === false
-      ? undefined
-      : {
-          reportAppFailure: (context: AppFailureContext): void => {
-            if (options.reporterThrows) {
-              throw options.reporterThrows;
-            }
-            reported.push(context);
-          },
-        };
+  const service = {
+    reportAppFailure: (context: AppFailureContext): void => {
+      if (options.reporterThrows) {
+        throw options.reporterThrows;
+      }
+      reported.push(context);
+    },
+  };
+
+  const logger = {
+    warn: (...message: unknown[]): void => {
+      warnings.push(message.map(String).join(' '));
+    },
+  };
 
   const moduleRef = {
     get: (token: unknown, getOptions?: unknown): unknown => {
       lookups.push({ token, options: getOptions });
+      if (token === LoggerService) {
+        if (options.loggerUnavailable) {
+          throw new Error('Nest could not find LoggerService element');
+        }
+        return logger;
+      }
+      if (options.serviceAvailable === false) {
+        throw new Error('Nest could not find ErrorReportingService element');
+      }
       return service;
     },
   } as unknown as ModuleRef;
 
-  return { moduleRef, reported, lookups };
+  return { moduleRef, reported, warnings, lookups };
 }
 
 const DOCKER_OVERLAP_MESSAGE = 'Error response from daemon: invalid pool request: Pool overlaps with other one on this address space 10.128.10.0/24';
@@ -242,6 +266,25 @@ describe('reportAndTranslateAppError — error reporting side effect', () => {
     expect(reported[0]?.errorCode).toBeUndefined();
   });
 
+  it('reports an unclassified Error verbatim and invents no errorCode for it', async () => {
+    const { moduleRef, reported } = createHarness();
+
+    await reportAndTranslateAppError(moduleRef, new Error('no space left on device'), 'urn:store:immich', 'start');
+
+    // ErrorReportingService keys off errorCode first and only then falls back to regexes over this
+    // message (see USER_ENVIRONMENT_PATTERNS — 'no space left on device' is one of them). A canned
+    // summary here would strand a diagnosable failure as unclassified, and an invented code would
+    // file it under a root cause nobody diagnosed.
+    expect(reported).toEqual([
+      {
+        appUrn: 'urn:store:immich',
+        phase: 'start',
+        message: 'no space left on device',
+        errorCode: undefined,
+      },
+    ]);
+  });
+
   it('reports the generic wrapper text for a non-Error throwable', async () => {
     const { moduleRef, reported } = createHarness();
 
@@ -290,18 +333,66 @@ describe('reportAndTranslateAppError — error reporting side effect', () => {
     expect(result.errorCode).toBe(ROCM_KFD_MISSING_CODE);
   });
 
-  it('lets a throwing reporter escape, losing the translated result the queue was about to reply with', async () => {
-    const { moduleRef } = createHarness({ reporterThrows: new Error('sentry transport down') });
+  it('touches DI at all only once an event maps to a phase, so an unwired container costs an unmapped event nothing', async () => {
+    const { moduleRef, reported, lookups } = createHarness({ serviceAvailable: false });
 
-    // Pins today's unguarded call: reportAppFailure is contracted never to throw, so nothing
-    // wraps it. Should that contract ever break, the queue worker gets a raw transport error
-    // instead of the classified failure — make that trade an explicit decision, not a surprise.
-    await expect(reportAndTranslateAppError(moduleRef, new Error(ROCM_DEVICE_MESSAGE), 'urn:store:comfyui', 'install')).rejects.toThrow(
-      'sentry transport down',
-    );
+    const result = await reportAndTranslateAppError(moduleRef, new Error(ROCM_DEVICE_MESSAGE), 'urn:store:comfyui', 'update');
+
+    // The phase guard has to run BEFORE the container lookup. Resolve first and an unmapped event
+    // in a worker module that never wired in core error-reporting would throw a
+    // UnknownElementException for a report it was never going to send anyway.
+    expect(lookups).toEqual([]);
+    expect(reported).toEqual([]);
+    expect(result.errorCode).toBe(ROCM_KFD_MISSING_CODE);
   });
 
-  it('still returns a translated result when ErrorReportingService is not registered', async () => {
+  it('swallows a throwing reporter, keeps the translated result intact, and logs a warning', async () => {
+    const { moduleRef, warnings, lookups } = createHarness({ reporterThrows: new Error('sentry transport down') });
+
+    // This used to assert the opposite — the throw escaping — to pin the unguarded call as a known
+    // hazard. reportAppFailure is now wrapped: the classified result is the queue's only channel
+    // for the real failure, so a broken telemetry transport must not destroy it. The dropped report
+    // is downgraded to a warning, which is the whole trade being made.
+    const result = await reportAndTranslateAppError(moduleRef, new Error(ROCM_DEVICE_MESSAGE), 'urn:store:comfyui', 'install');
+
+    expect(result).toEqual({
+      success: false,
+      message: ROCM_KFD_MISSING_USER_MESSAGE,
+      errorCode: ROCM_KFD_MISSING_CODE,
+      errorDetail: ROCM_KFD_MISSING_DETAIL,
+      settingsPath: ROCM_KFD_MISSING_SETTINGS_PATH,
+    });
+    expect(warnings).toHaveLength(1);
+    // The warning has to carry the transport error, the app it was reporting on and the phase that
+    // went unreported, or a silently blinded Sentry pipeline looks identical to one that simply had
+    // nothing to report — and 'install' vs 'start' is what says whether the gap is in the install
+    // funnel or in day-to-day supervision.
+    expect(warnings[0]).toContain('sentry transport down');
+    expect(warnings[0]).toContain('urn:store:comfyui');
+    expect(warnings[0]).toContain('install');
+    // The fallback logger is resolved non-strictly for the same reason the reporter is: a
+    // worker-scoped module would fail a strict lookup, and since that throw is swallowed too, a
+    // strict lookup here would silently erase the only remaining trace of the dropped report.
+    expect(lookups).toEqual([
+      { token: ErrorReportingService, options: { strict: false } },
+      { token: LoggerService, options: { strict: false } },
+    ]);
+  });
+
+  it('still returns the translated result when the reporter throws and no logger is registered', async () => {
+    const { moduleRef } = createHarness({ reporterThrows: new Error('sentry transport down'), loggerUnavailable: true });
+
+    // The fallback warning must not reintroduce the hazard it exists to report: in a worker module
+    // without the core logger, resolving LoggerService throws, and that exception has to stay
+    // inside the swallow too.
+    const result = await reportAndTranslateAppError(moduleRef, new Error(DOCKER_OVERLAP_MESSAGE), 'urn:store:immich', 'start');
+
+    expect(result.errorCode).toBe(NETWORK_OVERLAP_CODE);
+  });
+
+  // Previously this asserted tolerance for `moduleRef.get` returning undefined, a state Nest cannot
+  // produce; the unregistered case actually throws, and used to destroy the classified result.
+  it('still returns a translated result when resolving ErrorReportingService throws', async () => {
     const { moduleRef } = createHarness({ serviceAvailable: false });
 
     const result = await reportAndTranslateAppError(moduleRef, new Error(DOCKER_OVERLAP_MESSAGE), 'urn:store:immich', 'start');

@@ -8,6 +8,7 @@ import { resolvePortalSessionHint } from '@/lib/portal-session-hint';
 import { hubAuthFlowPolicy, resolveHubAuthFlow } from '@/lib/hub-auth-flow';
 import { isTauriDesktopApp } from '@/lib/hub-runtime-mode';
 import { clearHubConnection, getHubBaseUrlSync, isMobileClient, usesCloudConnect } from '@/lib/mobile-connection';
+import { shouldTimeBoxMobileLoads } from '@/lib/use-mobile-load-timeout';
 import { buildPortalSsoStartUrl } from '@/lib/portal-sso-url';
 import { followSafeRedirect } from '@/lib/safe-redirect';
 import { useUserContext } from '@/context/user-context';
@@ -26,15 +27,14 @@ export async function clientLoader({ request }: { request: Request }) {
   try {
     // A phone talking to a remote Hub must not wait forever on user-context.
     // ios:dev often has no native HTTP yet; a hung GET leaves a blank /login.
-    const user =
-      isMobileClient() && getHubBaseUrlSync()
-        ? await Promise.race([
-            userContext(),
-            new Promise<null>((resolve) => {
-              globalThis.setTimeout(() => resolve(null), 5000);
-            }),
-          ])
-        : await userContext();
+    const user = shouldTimeBoxMobileLoads()
+      ? await Promise.race([
+          userContext(),
+          new Promise<null>((resolve) => {
+            globalThis.setTimeout(() => resolve(null), 5000);
+          }),
+        ])
+      : await userContext();
     if (!user) {
       return null;
     }
