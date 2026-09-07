@@ -76,6 +76,28 @@ Verify before rebuilding:
 pkg-config --exists gtk+-3.0 webkit2gtk-4.1 dbus-1 && echo ok
 ```
 
+### Testing the Rust without the headers
+
+Most of the desktop crate never touches Tauri — `hub_manager` (the Docker/host engine),
+`docker_engine`, `port_manager`, `hub_env`, `hub_names`, `error_reporting`, and `sentry_scrubber`
+contain no `tauri::` reference between them. This script copies those into a scratch crate with only
+their real dependencies and runs their tests there, so you can verify a change without the GUI stack:
+
+```bash
+packages/desktop/src-tauri/scripts/test-without-gui.sh
+```
+
+Pass a git ref to test that instead of the working tree, which is how you compare a refactor against
+the commit it started from:
+
+```bash
+packages/desktop/src-tauri/scripts/test-without-gui.sh origin/dev
+```
+
+It covers 155 of the crate's tests. `main.rs`, `tray.rs`, and `commands/` are genuinely Tauri-coupled
+and still need the full toolchain, so treat this as a fast local gate rather than a replacement for
+`desktop-tests.yml`.
+
 Building the desktop app for release needs a few more (`patchelf`, `libfuse2`, `rpm`,
 `xdg-utils`); see [`desktop-build.yml`](../.github/workflows/desktop-build.yml).
 

@@ -1439,7 +1439,9 @@ mod tests {
 
     #[test]
     fn trusted_url_accepts_configured_cdn_host() {
-        assert!(is_trusted_download_url(&cdn_url("v0.2.18/windows/x64/setup.exe")));
+        assert!(is_trusted_download_url(&cdn_url(
+            "v0.2.18/windows/x64/setup.exe"
+        )));
     }
 
     #[test]
@@ -1729,7 +1731,9 @@ mod tests {
         };
         let artifact = resolve_download_artifact(&manifest, &UpdateSource::default_cdn())
             .expect("artifact for current platform");
-        assert!(artifact.url.starts_with(&format!("{}/", default_update_cdn_base())));
+        assert!(artifact
+            .url
+            .starts_with(&format!("{}/", default_update_cdn_base())));
     }
 
     #[test]
