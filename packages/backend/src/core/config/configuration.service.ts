@@ -4,6 +4,7 @@ import { type UserSettingsBody, parsePersistedSettings } from '@/app.dto';
 import { APP_DATA_DIR, APP_DIR, ARCHITECTURES, DATA_DIR, DEFAULT_LOCAL_DOMAIN } from '@/common/constants';
 import { ensureSettingsJsonReady, writeSettingsJsonFile } from '@/common/helpers/env-helpers';
 import { DEFAULT_POOL_HEALTH_POLL_SECONDS, DEFAULT_POOL_LOCAL_AFFINITY, type HubPoolPreferences } from '@/common/helpers/hub-pool';
+import type { InferenceSupervisionMode } from '@/common/helpers/inference-supervision';
 import { readPortalInternalUrlOverride, resolveOutboundPortalBaseUrl } from '@/common/helpers/portal-url';
 import { TranslatableError } from '@/common/error/translatable-error';
 import { scrubString } from '@/core/error-reporting/sentry-scrubber';
@@ -108,6 +109,8 @@ type PersistedSettingsValues = {
   hubPoolLocalAffinity: number | undefined;
   hubPoolHealthPollSeconds: number | undefined;
   hubPoolRequireSignedPeers: boolean | undefined;
+  inferenceSupervisionMode: InferenceSupervisionMode | undefined;
+  inferenceSupervisionPollSeconds: number | undefined;
 };
 
 const EMPTY_PERSISTED_SETTINGS: PersistedSettingsValues = {
@@ -132,6 +135,8 @@ const EMPTY_PERSISTED_SETTINGS: PersistedSettingsValues = {
   hubPoolLocalAffinity: undefined,
   hubPoolHealthPollSeconds: undefined,
   hubPoolRequireSignedPeers: undefined,
+  inferenceSupervisionMode: undefined,
+  inferenceSupervisionPollSeconds: undefined,
 };
 
 @Injectable()
@@ -214,6 +219,8 @@ export class ConfigurationService {
       hubPoolLocalAffinity: settings.hubPoolLocalAffinity,
       hubPoolHealthPollSeconds: settings.hubPoolHealthPollSeconds,
       hubPoolRequireSignedPeers: settings.hubPoolRequireSignedPeers,
+      inferenceSupervisionMode: settings.inferenceSupervisionMode,
+      inferenceSupervisionPollSeconds: settings.inferenceSupervisionPollSeconds,
     };
   }
 
@@ -308,6 +315,8 @@ export class ConfigurationService {
         hubPoolLocalAffinity: settingsValues.hubPoolLocalAffinity,
         hubPoolHealthPollSeconds: settingsValues.hubPoolHealthPollSeconds,
         hubPoolRequireSignedPeers: settingsValues.hubPoolRequireSignedPeers,
+        inferenceSupervisionMode: settingsValues.inferenceSupervisionMode,
+        inferenceSupervisionPollSeconds: settingsValues.inferenceSupervisionPollSeconds,
         experimental: {
           insecureCookie: env.data.EXPERIMENTAL_INSECURE_COOKIE,
         },
@@ -512,6 +521,20 @@ export class ConfigurationService {
       await this.setUserSettings(settings);
     }
     return this.getHubPoolPreferences();
+  }
+
+  /**
+   * Inference-backend observation mode as persisted. `undefined` means the operator has never
+   * chosen, which `resolveInferenceSupervisionMode` reads as `'off'` — the default is opt-in
+   * precisely so an untouched appliance keeps doing no polling at all.
+   */
+  public getInferenceSupervisionMode(): InferenceSupervisionMode | undefined {
+    return this.config.userSettings.inferenceSupervisionMode;
+  }
+
+  /** Persisted observation interval in seconds; `undefined` falls back to DEFAULT_SUPERVISION_POLL_SECONDS. */
+  public getInferenceSupervisionPollSeconds(): number | undefined {
+    return this.config.userSettings.inferenceSupervisionPollSeconds;
   }
 
   public getInferenceCloudProviders(): CloudProviderConfig[] {
