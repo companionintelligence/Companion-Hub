@@ -5,12 +5,28 @@
  * command modules can share one parsing contract instead of each re-reading argv.
  */
 import { allowedEnvs, BASE_COMMAND, type HubEnv, type RegisterHubOptions, type StartMode } from './cli-types.js';
-import { bold, colorize, printMessageBox, renderHelp, STEP_ICONS } from './cli-ui.js';
+import { bold, colorize, printMessageBox, STEP_ICONS } from './cli-ui.js';
 import { isApplianceMode } from './cli-repo-context.js';
 
+/**
+ * Two lines pointing at the real reference, not the reference itself: `renderHelp()` is ~99 rows, so
+ * dumping it here pushed the one-line error off the top of a standard 24-row terminal.
+ */
+const USAGE_HINT_ENTRIES: { command: string; description: string }[] = [
+  { command: `${BASE_COMMAND} --help`, description: 'Full command reference' },
+  { command: `${BASE_COMMAND} man`, description: 'Manual-style command reference' },
+];
+
+/**
+ * Exit with a usage error. The hint prints *before* the message so the message is the last thing
+ * left on screen — on a short terminal that is the only line the caller is guaranteed to still see.
+ */
 export function usageAndExit(message?: string, code = 2): never {
+  const width = Math.max(...USAGE_HINT_ENTRIES.map((entry) => entry.command.length));
+  for (const entry of USAGE_HINT_ENTRIES) {
+    console.error(`  ${colorize(entry.command.padEnd(width), 'green')}  ${entry.description}`);
+  }
   if (message) console.error(colorize(`  ${STEP_ICONS.fail} ${message}`, 'red'));
-  console.error(renderHelp());
   process.exit(code);
 }
 
