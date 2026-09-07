@@ -444,9 +444,11 @@ describe('runCli unknown commands', () => {
 
     expect(mocks.calls).toEqual<Dispatch[]>([]);
     expect(exitSpy).toHaveBeenCalledWith(2);
+    // usageAndExit writes to stderr so a piped stdout is not polluted, and points at the full
+    // reference rather than reprinting it — see cli-args.test.ts for the short-terminal contract.
     expect(errorText()).toContain('Unknown command: frobnicate');
-    // usageAndExit prints help on stderr so a piped stdout is not polluted with it.
-    expect(errorText()).toContain('Quick start');
+    expect(errorText()).toContain('cihub --help');
+    expect(logSpy).not.toHaveBeenCalled();
   });
 });
 
