@@ -320,13 +320,16 @@ Hub Pool**. See [`hub-pool.md`](./hub-pool.md) for how pooling works.
 ```bash
 cihub pool status [env]                       # is pooling routing, and why or why not
 cihub pool peers [env]                        # paired peers: status, last seen, queue depth, models
-cihub pool discover [env]                     # unpaired CI-Hub nodes on the tailnet
+cihub pool discover [env]                     # unpaired CI-Hub nodes, from every source
+cihub pool probe <address> [env]               # find a Hub by LAN address (no OAuth credential needed)
 cihub pool pair <node> [--name <label>]       # send a pairing request (the other Hub must approve)
 cihub pool approve <id>                       # accept a pending inbound request
 cihub pool reject <id>                        # refuse one
 cihub pool unpair <id>                        # remove a peer and revoke both tokens
 cihub pool log [env] [--limit N]              # recent routing decisions, failovers marked
 cihub pool enable [env] | cihub pool disable  # flip the persisted kill switch
+cihub pool enable --outbound | --inbound      # ...or just one direction
+cihub pool peer-enable <id> | peer-disable    # take one peer in or out of the pool
 ```
 
 | Flag | Effect |
@@ -354,10 +357,31 @@ rejected before the request is sent.
 
 ### `cihub pool discover`
 
-Discovery needs a Tailscale OAuth client (`TAILSCALE_OAUTH_CLIENT_ID` / `TAILSCALE_OAUTH_CLIENT_SECRET`,
-`devices:core:read`). Without one the command **says so and names the variables** rather than printing
-an empty table — an important distinction, because a Hub with no credential can still be paired *with*
-by a Hub that has one, and pools normally once paired.
+Lists every unpaired candidate, from both sources, with a `FOUND VIA` column saying which. A node
+reachable both ways is listed once.
+
+A Tailscale OAuth client (`TAILSCALE_OAUTH_CLIENT_ID` / `TAILSCALE_OAUTH_CLIENT_SECRET`,
+`devices:core:read`) enumerates the whole tailnet at once and is worth having when a pool spans
+several networks. It is **optional**: without one, the empty-list output points at `cihub pool probe`
+first and names the variables second.
+
+### `cihub pool probe`
+
+```
+cihub pool probe 192.168.1.42
+cihub pool probe 192.168.1.42:5010     # a Hub that moved its published API port
+cihub pool probe mini-pc.lan
+```
+
+Asks what is at that address and prints the node's **tailnet FQDN** to pair with. The address is a
+directory lookup and nothing more — it is discarded, and pairing plus every pooled request still go to
+`https://<fqdn>` with the same TLS and the same tokens. There is no LAN peer transport and no second
+trust model.
+
+Refused: any address that is not RFC1918, CGNAT or IPv6 ULA; a hostname where *any* resolved address is
+public; loopback and link-local. With no explicit port it tries 5002 then 3000, and cannot infer a
+published port that was moved — name it if so. A Hub found this way but not joined to a tailnet is
+reported as found-but-not-pairable, because there is no name to dial.
 
 ### `cihub pool log`
 
@@ -372,13 +396,32 @@ generation.
 
 ### `cihub pool enable` / `disable`
 
-These write the persisted `poolEnabled` setting through the Hub API; they take effect on the next request,
-with no restart. **`HUB_POOL_USER_DISABLED=true` in the env file wins.** Under that override, `enable`
-saves the setting and then says plainly that nothing changed in effect, naming the file to edit and the
-restart needed — it never reports success it did not deliver.
+With no flag these write the persisted **master** `poolEnabled` setting through the Hub API; they take
+effect on the next request, with no restart. **`HUB_POOL_USER_DISABLED=true` in the env file wins.** Under
+that override, `enable` saves the setting and then says plainly that nothing changed in effect, naming the
+file to edit and the restart needed — it never reports success it did not deliver.
 
 Disabling keeps existing pairings. Peers mark this node unreachable while it is off and pick it back up
 on their next successful health poll.
+
+`--outbound` and `--inbound` write one half instead, each with its own env override
+(`HUB_POOL_OUTBOUND_DISABLED`, `HUB_POOL_INBOUND_DISABLED`) and the same refusal to claim a success it did
+not deliver. Pass at most one; passing neither is what "the master switch" means.
+
+- `disable --outbound` stops this Hub sending work to peers. Peers may still send work here, and a request
+  this node cannot serve now fails locally with the usual 502 instead of being shipped out.
+- `disable --inbound` stops this Hub serving peers' work while it keeps using them. Peers see a healthy
+  node advertising an empty inventory — **not** an unreachable one — and route elsewhere.
+
+`cihub pool status` prints both directions with the switch actually responsible for each.
+
+### `cihub pool peer-enable` / `peer-disable`
+
+Take one peer in or out of the pool. Symmetric: no work moves in either direction with a disabled peer.
+The pairing, both directional tokens and the health poll are kept, so re-enabling is instant and needs no
+approval from the other side — and disabled peers keep being polled, so the status card stays honest about
+a machine that is up. It is therefore **not** a revocation; `cihub pool unpair` is. Disabled peers print as
+`connected/off` in the peer table.
 
 ---
 
