@@ -4,34 +4,16 @@ import { isIP } from 'node:net';
  * Manual peer entry: parsing and port selection for an operator-typed address.
  *
  * Deliberately a separate module from `@/common/helpers/hub-pool`, whose `normalizePeerFqdn` exists
- * to *reject* exactly these shapes. An address is legal in precisely one place — a one-shot,
- * operator-authenticated probe that is discarded once `/identify` has answered — and keeping the two
- * vocabularies in separate files is what stops an address ever being mistaken for a stored peer name.
- */
-
-/**
- * Consecutive discovery refreshes a manually-probed candidate may go unanswered before it is
- * dropped from the list.
+ * to *reject* exactly these shapes. An address is legal in precisely two places — the
+ * operator-authenticated probe, and the PIN-gated pairing request that probe leads to — and it is
+ * discarded as soon as the far side has answered with its tailnet name. Keeping the two vocabularies
+ * in separate files is what stops an address ever being mistaken for a stored peer name.
  *
- * Three, matching `UNREACHABLE_THRESHOLD` in `hub-pool-peer.service.ts` and the same convention in
- * `registration.service.ts` — one lost answer must never evict, and an operator who typed an
- * address should not have to retype it because a laptop was asleep for one refresh.
- *
- * It applies ONLY to unpaired candidates. A paired peer's liveness is `refreshPeerHealth`'s own
- * three strikes; letting a failed LAN probe unpair a healthy node would be a regression on a
- * deployed subsystem.
+ * There is deliberately no candidate cache here any more, and so no miss threshold and no ceiling on
+ * remembered entries. Those existed to age out addresses held in a *named* candidate list; since
+ * `/identify` no longer discloses a name, an address never becomes a named candidate at all, and a
+ * cache of unnamed ones would be a second identity space next to `node_fqdn`.
  */
-export const POOL_PROBE_MISS_THRESHOLD = 3;
-
-/**
- * Ceiling on remembered manual candidates.
- *
- * Same reasoning as `MAX_PENDING_INBOUND_REQUESTS` (hub-pool-peer.service.ts): rows sourced from
- * outside this process must not be an unbounded write primitive. These are operator-authenticated
- * rather than anonymous, so the cap is a sanity bound rather than a defence — but an unbounded
- * in-memory map that only ever grows is a leak whoever writes the next feature inherits.
- */
-export const MAX_MANUAL_POOL_CANDIDATES = 20;
 
 /** Longest address string accepted, so a pathological input never reaches the parser's regexes. */
 const MAX_PROBE_INPUT_LENGTH = 300;

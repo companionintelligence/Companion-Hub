@@ -77,11 +77,16 @@ export class HubPoolController {
    * through the Cloudflare tunnel.
    *
    * It answers exactly two things: that this is a CI-Hub, and which pool protocol it speaks.
-   * `nodeFqdn` used to be here and has been removed — a caller already knows the name it dialled,
-   * so nothing needed it, and the MagicDNS name is not something an unauthenticated endpoint should
-   * hand out. The node UUID and public key are deliberately NOT here either: they live on
-   * `GET capabilities`, behind {@link PoolPeerGuard}. A UUID whose entire purpose is surviving
-   * renames is a durable correlator, which is the last thing to publish on an open endpoint.
+   * `nodeFqdn` used to be here and has been removed: the MagicDNS name is not something an endpoint
+   * on the open internet should hand out. The node UUID and public key are deliberately NOT here
+   * either — they live on `GET capabilities`, behind {@link PoolPeerGuard}. A UUID whose entire
+   * purpose is surviving renames is a durable correlator, which is the last thing to publish on an
+   * open endpoint.
+   *
+   * The name is not simply gone, though: `POST peers/probe` needs it to be *learnable*, or pairing
+   * by address cannot work at all. It is disclosed in the reply to a `pair/request` that carried a
+   * valid pairing PIN — i.e. to a caller that has demonstrably been in front of this Hub's screen.
+   * That is the boundary the trim moved the name behind, not a deletion.
    *
    * `isCiHub` stays, because `listDiscoverableDevices` on every already-deployed Hub reads it.
    */
@@ -136,11 +141,11 @@ export class HubPoolController {
   }
 
   /**
-   * Pairing candidates from every source this node has, merged and deduplicated on `nodeFqdn`.
+   * Pairing candidates this node can offer **by name** — the Tailscale Admin API directory.
    *
-   * Tailscale Admin API discovery is unchanged and still the primary source — it is what lets a pool
-   * span networks. Manually probed addresses are folded in alongside it, so a node found both ways
-   * is offered once.
+   * A Hub found by address is not in here and cannot be: entries are consumed by handing `nodeFqdn`
+   * to `peers/pair`, and the unauthenticated probe is told no name. Those are paired with through
+   * `peers/pair` in its address form instead. See `HubPoolDiscoveryService`.
    */
   @UseGuards(AuthGuard)
   @Get('peers/discoverable')
@@ -149,12 +154,12 @@ export class HubPoolController {
   }
 
   /**
-   * Look up one operator-typed address and report what is there.
+   * Ask one operator-typed address what is there.
    *
-   * This is what makes pairing possible without a Tailscale OAuth client: the operator types a LAN
-   * address once and gets back the node's tailnet FQDN, which the existing `peers/pair` then uses.
-   * The address itself is never stored and never becomes a transport — see
-   * `HubPoolDiscoveryService`.
+   * A diagnostic, not a directory lookup: it reports reachable / is-a-CI-Hub / which pool protocol,
+   * because that is everything `GET identify` will tell an unauthenticated caller. It deliberately
+   * does not name the node — see `identify` above for why — so the operator's next step is to mint a
+   * PIN on that Hub and `POST peers/pair { address, pin }`, which is where the name is learned.
    */
   @UseGuards(AuthGuard)
   @Post('peers/probe')
@@ -162,10 +167,22 @@ export class HubPoolController {
     return this.discoveryService.probeAddress(body.address);
   }
 
+  /**
+   * Start pairing, by tailnet name or by address.
+   *
+   * The two differ in where the peer's name comes from, and that is the whole distinction: a
+   * `nodeFqdn` was attested by the tailnet control plane before this Hub ever dialled anything,
+   * while an `address` is only a way to reach the handshake — the name arrives in the far side's
+   * reply to a request carrying the PIN minted on its own screen. The DTO enforces exactly one of
+   * the two, and a PIN alongside `address`.
+   */
   @UseGuards(AuthGuard)
   @Post('peers/pair')
   async pairPeer(@Body() body: PairPeerBody) {
-    return toPublicPeer(await this.peerService.initiatePairing(body.nodeFqdn, body.displayName, body.pin));
+    const peer = body.address
+      ? await this.discoveryService.pairAtAddress(body.address, body.displayName, body.pin as string)
+      : await this.peerService.initiatePairing(body.nodeFqdn as string, body.displayName, body.pin);
+    return toPublicPeer(peer);
   }
 
   // ── Pairing PIN and node identity (operator-facing) ──────────────────────

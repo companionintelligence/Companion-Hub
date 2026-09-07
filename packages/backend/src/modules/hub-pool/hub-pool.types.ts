@@ -153,45 +153,68 @@ export interface PoolCandidate {
   backend: InferenceBackendType;
 }
 
-/** Discoverable Tailscale device that identified itself as a CI-Hub node and isn't paired yet. */
+/**
+ * Discoverable Tailscale device that identified itself as a CI-Hub node and isn't paired yet.
+ *
+ * Every entry here is *named*, and the name is one the tailnet control plane attests. That is the
+ * whole contract: a candidate the operator can hand straight to `POST peers/pair` as a `nodeFqdn`.
+ * An address found by `POST peers/probe` is deliberately NOT one of these — `/identify` discloses no
+ * name, so a probed address has nothing to put in this shape, and inventing an unnamed candidate
+ * would be a second identity space next to `node_fqdn`. Pairing by address goes through the
+ * PIN-gated exchange instead; see {@link PoolProbeResult}.
+ */
 export interface DiscoverablePoolPeer {
   tailscaleDeviceId: string;
   nodeFqdn: string;
   hostname: string;
-  /**
-   * How this candidate was found. Absent means the Tailscale Admin API. A badge rather than a nullable
-   * `tailscaleDeviceId`, because widening that field is a type error on the CLI's `sanitizeForBox`
-   * and a duplicate React key in the settings list.
-   */
-  source?: 'tailscale' | 'lan-probe';
-  /**
-   * A UUID the candidate *claims*, from an unauthenticated probe. Typed distinctly from
-   * `hub_pool_peer.peer_node_uuid` on purpose — an externally-sourced UUID is a hint for the
-   * operator, never an identity key to match a pinned row against.
-   */
-  claimedNodeUuid?: string;
 }
 
-/** Why a manually probed address is not offered as a pairing candidate. `null` when it is. */
-export type PoolProbeReason = 'unreachable' | 'not_a_hub' | 'no_tailnet_fqdn' | 'already_paired' | 'self';
+/**
+ * Why a manually probed address cannot be paired with. `null` when it can.
+ *
+ * There is deliberately no `self`, `already_paired` or `no_tailnet_fqdn` value here: all three are
+ * answers about *which node* is at the address, and the unauthenticated probe is not told. They are
+ * decided at pairing time, in `HubPoolPeerService.initiatePairingAtAddress`, which does learn the
+ * name.
+ */
+export type PoolProbeReason = 'unreachable' | 'not_a_hub' | 'protocol_too_old';
 
 /**
  * What `POST /inference/pool/peers/probe` found at an operator-typed address.
  *
- * `nodeFqdn` is the only durable thing here: the address is a directory lookup and is discarded once
- * this answers. Pairing then goes through the existing `POST peers/pair` with that FQDN, so manual
- * entry adds no new pairing path and no new trust — it only removes the Tailscale OAuth credential
- * from the list of things an operator must have before two Hubs can find each other.
+ * It answers one question — "is there a CI-Hub here, and does it speak a protocol this node can
+ * pair with" — and that is all `GET /identify` will tell an unauthenticated caller. It does NOT
+ * name the node: the MagicDNS name was removed from that endpoint because it is published through
+ * the Cloudflare tunnel, and it is disclosed instead in the reply to a pairing request that carried
+ * the PIN minted on the far Hub's own screen.
+ *
+ * So the operator flow is: probe to confirm something is there, mint a PIN on that Hub, then
+ * `POST peers/pair {address, pin}` — which is where the name is learned and the row is keyed.
  */
 export interface PoolProbeResult {
   /** The address as probed, echoed back so a UI can label the row without re-parsing what was typed. */
   address: string;
   isCiHub: boolean;
-  nodeFqdn: string | null;
-  hostname: string | null;
-  alreadyPaired: boolean;
+  /** The pool protocol version the node answered with, or `null` when nothing answered. */
+  poolProtocol: number | null;
+  /** Whether `POST peers/pair {address, pin}` can be used against this address. */
   pairable: boolean;
   reason: PoolProbeReason | null;
+}
+
+/**
+ * The reply to a `POST /pair/request` that carried a valid PIN.
+ *
+ * `nodeFqdn` is the field that makes pairing-by-address possible at all, and the PIN is exactly what
+ * gates it: a caller that proved it read six digits off this Hub's screen may learn its MagicDNS
+ * name; an anonymous caller on `/identify` may not. Every field is optional — a protocol-1 peer
+ * answers a bare `{ received: true }`, and a Hub with no tailnet or no usable identity answers with
+ * whichever halves it has.
+ */
+export interface PoolPairingAnswer {
+  nodeFqdn?: string;
+  nodeUuid?: string;
+  publicKey?: string;
 }
 
 /**

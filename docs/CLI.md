@@ -321,8 +321,10 @@ Hub Pool**. See [`hub-pool.md`](./hub-pool.md) for how pooling works.
 cihub pool status [env]                       # is pooling routing, and why or why not
 cihub pool peers [env]                        # paired peers: status, last seen, queue depth, models
 cihub pool discover [env]                     # unpaired CI-Hub nodes, from every source
-cihub pool probe <address> [env]               # find a Hub by LAN address (no OAuth credential needed)
+cihub pool probe <address> [env]              # is there a CI-Hub at this LAN address?
+cihub pool pairing-pin [env]                  # mint the six digits the other Hub will need
 cihub pool pair <node> [--name <label>]       # send a pairing request (the other Hub must approve)
+cihub pool pair <address> --pin <digits>      # ...or pair by LAN address, no OAuth credential needed
 cihub pool approve <id>                       # accept a pending inbound request
 cihub pool reject <id>                        # refuse one
 cihub pool unpair <id>                        # remove a peer and revoke both tokens
@@ -336,6 +338,7 @@ cihub pool peer-enable <id> | peer-disable    # take one peer in or out of the p
 | ---- | ------ |
 | `--yes` | Skip the confirmation prompt. Required for `pair`/`approve`/`reject`/`unpair`/`enable`/`disable` on a non-interactive terminal |
 | `--name <label>` | `pair` only: a display label for the peer |
+| `--pin <digits>` | `pair` only: the six digits minted on the *other* Hub. Required when the target is an address |
 | `--limit N` | `log` only: how many decisions to show, 1–200 (default: all 200 retained) |
 
 **It runs on the Hub it manages.** Every call goes to `http://127.0.0.1:<API_PORT>` — `cihub pool` on
@@ -351,21 +354,25 @@ here.
 ### Identifying a peer
 
 `approve`, `reject` and `unpair` take the 8-character `ID` from the peers table, the full row uuid, or
-the peer's FQDN. An ambiguous prefix is refused rather than guessed. `pair` takes the MagicDNS name a
-peer publishes on the tailnet (`hub-b.example-tailnet.ts.net`) — a scheme, port, path or IP address is
-rejected before the request is sent.
+the peer's FQDN. An ambiguous prefix is refused rather than guessed.
+
+`pair` takes either the MagicDNS name a peer publishes on the tailnet
+(`hub-b.example-tailnet.ts.net`), or a LAN address with `--pin`. Anything that is not a plausible
+MagicDNS name is read as an address, and an address without a PIN is refused with the reason: an
+address can reach the other Hub but cannot *name* it, and a peer is stored under its tailnet name.
 
 ### `cihub pool discover`
 
-Lists every unpaired candidate, from both sources, with a `FOUND VIA` column saying which. A node
-reachable both ways is listed once.
+Lists every unpaired candidate the tailnet directory knows about. A Hub found with `cihub pool probe`
+is **not** here and never will be: entries are paired with by handing their name to `pool pair`, and
+an address has no name until the PIN exchange produces one.
 
 A Tailscale OAuth client (`TAILSCALE_OAUTH_CLIENT_ID` / `TAILSCALE_OAUTH_CLIENT_SECRET`,
 `devices:core:read`) enumerates the whole tailnet at once and is worth having when a pool spans
 several networks. It is **optional**: without one, the empty-list output points at `cihub pool probe`
 first and names the variables second.
 
-### `cihub pool probe`
+### `cihub pool probe` and pairing by address
 
 ```
 cihub pool probe 192.168.1.42
@@ -373,15 +380,27 @@ cihub pool probe 192.168.1.42:5010     # a Hub that moved its published API port
 cihub pool probe mini-pc.lan
 ```
 
-Asks what is at that address and prints the node's **tailnet FQDN** to pair with. The address is a
-directory lookup and nothing more — it is discarded, and pairing plus every pooled request still go to
-`https://<fqdn>` with the same TLS and the same tokens. There is no LAN peer transport and no second
-trust model.
+Asks whether a CI-Hub is at that address and which pool protocol it speaks. It does **not** report a
+name, and the output says so: `GET /api/inference/pool/identify` is unauthenticated and reachable
+through the public tunnel, so it discloses no MagicDNS name to anybody.
 
-Refused: any address that is not RFC1918, CGNAT or IPv6 ULA; a hostname where *any* resolved address is
-public; loopback and link-local. With no explicit port it tries 5002 then 3000, and cannot infer a
-published port that was moved — name it if so. A Hub found this way but not joined to a tailnet is
-reported as found-but-not-pairable, because there is no name to dial.
+The name comes from pairing, gated on a PIN:
+
+```
+on the other Hub:  cihub pool pairing-pin              # six digits, ten minutes, single-use
+here:              cihub pool pair 192.168.1.42 --pin 123456
+```
+
+The PIN authenticates the request; the reply carries that Hub's tailnet name (and its node UUID and
+public key, so the pairing starts out signed rather than on a bearer token). The peer is stored under
+that name, and every pooled request goes to `https://<name>` with the same TLS and the same
+credentials. The address was only ever a way to reach the handshake.
+
+Refused: any address that is not RFC1918, CGNAT or IPv6 ULA; a hostname where *any* resolved address
+is public; loopback and link-local. With no explicit port it tries 5002 then 3000, and cannot infer a
+published port that was moved — name it if so. A Hub running an older pool protocol is reported as
+found-but-not-pairable-by-address, because it cannot answer a PIN with its name; pair with it by
+MagicDNS name instead.
 
 ### `cihub pool log`
 

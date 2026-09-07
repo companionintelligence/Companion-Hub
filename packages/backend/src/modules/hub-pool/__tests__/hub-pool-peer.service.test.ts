@@ -1179,7 +1179,25 @@ describe('HubPoolPeerService', () => {
         expect.any(String),
         expect.objectContaining({ peerNodeUuid: '22222222-2222-4222-8222-222222222222', peerPublicKey: keys.publicKey }),
       );
-      expect(answer).toEqual({ nodeUuid: '11111111-1111-4111-8111-111111111111', publicKey: keys.publicKey });
+      // The name is in here, and this is the only route that discloses it: `GET /identify` is
+      // unauthenticated and no longer does. Without it a Hub found by address could never be named,
+      // and `POST peers/pair { address, pin }` would have nothing to key a row on.
+      expect(answer).toEqual({
+        nodeFqdn: 'self-hub.tailxyz.ts.net',
+        nodeUuid: '11111111-1111-4111-8111-111111111111',
+        publicKey: keys.publicKey,
+      });
+    });
+
+    it('discloses nothing at all to a pairing request that carried no PIN', async () => {
+      repo.findByNodeFqdn.mockResolvedValue(undefined);
+      repo.create.mockImplementation(async (data) => mockPeer(data as Partial<HubPoolPeer>));
+
+      const answer = await service.receivePairingRequest('requester.tailxyz.ts.net', undefined, 'raw-token-value', {});
+
+      // The PIN is the disclosure boundary for this node's MagicDNS name, not merely the trigger for
+      // pinning an identity. An anonymous caller gets today's bare acknowledgement.
+      expect(answer).toEqual({});
     });
 
     it('stores no identity claim on a request that carried no PIN', async () => {

@@ -21,6 +21,17 @@ const peerFqdnSchema = z
   .trim()
   .refine((value) => normalizePeerFqdn(value) !== null, { message: 'Must be a bare hostname (no scheme, credentials, port, path or IP literal)' });
 
+/**
+ * An operator-typed peer address, for the discovery probe and for pairing by address.
+ *
+ * Deliberately NOT `peerFqdnSchema`: that schema exists to reject exactly these shapes, because an
+ * address must never be *stored* as a peer name. This value is used to reach one handshake and then
+ * discarded — the real parse and the private-address check are `parseProbeTarget` and
+ * `isPoolProbeTarget`, which produce messages naming the specific problem. This is the length bound,
+ * not the grammar.
+ */
+const probeAddressSchema = z.string().trim().min(1).max(300);
+
 /** Exactly six digits. Never trimmed to a number: a PIN can legitimately start with a zero. */
 const pairingPinSchema = z
   .string()
@@ -36,15 +47,36 @@ const peerPublicKeySchema = z.string().trim().min(32).max(256);
 /** A pool node UUID as it appears in a body. `.uuid()` because the column is `uuid`, and a non-UUID could never match a row. */
 const peerNodeUuidSchema = z.uuid();
 
-const pairPeerSchema = z.object({
-  nodeFqdn: peerFqdnSchema,
-  displayName: z.string().trim().min(1).optional(),
-  /**
-   * The PIN minted on the peer's own screen. Optional: without it this is the pre-existing
-   * request/approve flow, unchanged, which is what keeps a mixed-version fleet pairing at all.
-   */
-  pin: pairingPinSchema.optional(),
-});
+/**
+ * Two ways to name what to pair with, and exactly one of them per request.
+ *
+ * `nodeFqdn` is the original: a MagicDNS name, from the tailnet directory or typed by the operator.
+ * `address` is for a Hub found with `POST peers/probe`, which cannot report a name — `/identify` is
+ * unauthenticated and no longer discloses one — so the name is learned from the far side's reply to
+ * a PIN-authenticated pairing request. That is why `pin` is *required* with `address` and optional
+ * with `nodeFqdn`: without it there is no answer carrying a name, and nothing to key the row on.
+ *
+ * `address` is deliberately NOT `peerFqdnSchema`, which exists to reject exactly these shapes. It is
+ * parsed by `parseProbeTarget` and never stored — see `HubPoolDiscoveryService`.
+ */
+const pairPeerSchema = z
+  .object({
+    nodeFqdn: peerFqdnSchema.optional(),
+    address: probeAddressSchema.optional(),
+    displayName: z.string().trim().min(1).optional(),
+    /**
+     * The PIN minted on the peer's own screen. Optional with `nodeFqdn`: without it that is the
+     * pre-existing request/approve flow, unchanged, which is what keeps a mixed-version fleet
+     * pairing at all. Mandatory with `address`.
+     */
+    pin: pairingPinSchema.optional(),
+  })
+  .refine((body) => (body.nodeFqdn === undefined) !== (body.address === undefined), {
+    message: "Send either nodeFqdn (a peer's tailnet name) or address (a LAN address to pair with), not both and not neither",
+  })
+  .refine((body) => body.address === undefined || body.pin !== undefined, {
+    message: 'Pairing by address needs the six-digit PIN minted on the other Hub — its tailnet name is only disclosed to a caller that presents one',
+  });
 export class PairPeerBody extends createZodDto(pairPeerSchema) {}
 
 // ── Peer-to-peer wire bodies (no operator auth on `request` — trust isn't established yet) ──
@@ -135,17 +167,8 @@ const hubPoolPreferencesSchema = z.object({
 });
 export class UpdateHubPoolPreferencesBody extends createZodDto(hubPoolPreferencesSchema) {}
 
-/**
- * An operator-typed peer address for the one-shot discovery probe.
- *
- * Deliberately NOT `peerFqdnSchema`: that schema exists to reject exactly these shapes, because an
- * address must never be *stored* as a peer name. This value is used once, from an
- * operator-authenticated route, and discarded as soon as `/identify` has named the node — the real
- * parse and the private-address check are `parseProbeTarget` and `isPoolProbeTarget`, which produce
- * messages naming the specific problem. This is the length bound, not the grammar.
- */
 const probePeerAddressSchema = z.object({
-  address: z.string().trim().min(1).max(300),
+  address: probeAddressSchema,
 });
 export class ProbePeerAddressBody extends createZodDto(probePeerAddressSchema) {}
 

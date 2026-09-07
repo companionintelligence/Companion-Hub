@@ -77,27 +77,25 @@ describe('HubPoolController', () => {
   });
 
   describe('manual peer entry', () => {
-    it('serves the merged candidate list, not the Tailscale-only one', async () => {
-      // The route keeps its shape and its name; what changed underneath is that a manually probed
-      // node now appears alongside a Tailscale-discovered one, deduplicated.
+    it('serves only named candidates — an address has no name to offer', async () => {
+      // The discoverable list is consumed by handing `nodeFqdn` to `peers/pair`, so every entry has
+      // to have one. A probed address does not: `/identify` discloses no name. Those are paired with
+      // through the address form of `peers/pair` instead.
       discoveryService.listDiscoverableNodes.mockResolvedValue([
-        { tailscaleDeviceId: 'ts-1', nodeFqdn: 'remote.tailxyz.ts.net', hostname: 'remote', source: 'tailscale' },
-        { tailscaleDeviceId: '', nodeFqdn: 'lan-box.tailxyz.ts.net', hostname: 'lan-box', source: 'lan-probe' },
+        { tailscaleDeviceId: 'ts-1', nodeFqdn: 'remote.tailxyz.ts.net', hostname: 'remote' },
       ]);
 
       const result = await controller.listDiscoverable();
 
-      expect(result).toHaveLength(2);
+      expect(result).toEqual([{ tailscaleDeviceId: 'ts-1', nodeFqdn: 'remote.tailxyz.ts.net', hostname: 'remote' }]);
       expect(peerService.listDiscoverableDevices).not.toHaveBeenCalled();
     });
 
-    it('probes an operator-typed address and reports the FQDN pairing will use', async () => {
+    it('probes an operator-typed address and reports reachability and protocol, not a name', async () => {
       discoveryService.probeAddress.mockResolvedValue({
         address: '192.168.1.42',
         isCiHub: true,
-        nodeFqdn: 'lan-box.tailxyz.ts.net',
-        hostname: 'lan-box',
-        alreadyPaired: false,
+        poolProtocol: 2,
         pairable: true,
         reason: null,
       });
@@ -105,18 +103,26 @@ describe('HubPoolController', () => {
       const result = await controller.probePeerAddress({ address: '192.168.1.42' });
 
       expect(discoveryService.probeAddress).toHaveBeenCalledWith('192.168.1.42');
-      expect(result).toMatchObject({ pairable: true, nodeFqdn: 'lan-box.tailxyz.ts.net' });
+      expect(result).toEqual({ address: '192.168.1.42', isCiHub: true, poolProtocol: 2, pairable: true, reason: null });
     });
 
-    it('adds no new pairing path — the operator still pairs by FQDN', async () => {
-      // Manual entry is a directory lookup. The address is discarded; `peers/pair` is unchanged, so
-      // there is no second trust model to keep correct.
+    it('pairs by address through the PIN-gated exchange, which is what learns the name', async () => {
+      discoveryService.pairAtAddress.mockResolvedValue({ nodeFqdn: 'lan-box.tailxyz.ts.net' } as never);
+
+      await controller.pairPeer({ address: '192.168.1.42:5002', pin: '123456', displayName: 'LAN box' } as never);
+
+      expect(discoveryService.pairAtAddress).toHaveBeenCalledWith('192.168.1.42:5002', 'LAN box', '123456');
+      expect(peerService.initiatePairing).not.toHaveBeenCalled();
+    });
+
+    it('leaves the by-name pairing path exactly as it was', async () => {
       peerService.initiatePairing.mockResolvedValue({ nodeFqdn: 'lan-box.tailxyz.ts.net' } as never);
 
-      await controller.pairPeer({ nodeFqdn: 'lan-box.tailxyz.ts.net' });
+      await controller.pairPeer({ nodeFqdn: 'lan-box.tailxyz.ts.net' } as never);
 
-      // Third argument is the optional pairing PIN (Group C); manual entry does not supply one.
+      // Third argument is the optional pairing PIN (Group C); a by-name pairing need not supply one.
       expect(peerService.initiatePairing).toHaveBeenCalledWith('lan-box.tailxyz.ts.net', undefined, undefined);
+      expect(discoveryService.pairAtAddress).not.toHaveBeenCalled();
     });
   });
 

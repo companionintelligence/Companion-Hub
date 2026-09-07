@@ -137,13 +137,18 @@ interface PoolRoutingLog {
   summary: { recorded: number; capacity: number; served: number; failed: number; failovers: number; lastAt: string | null };
 }
 
+/**
+ * An unpaired node this Hub can offer to pair with **by name**, from the Tailscale directory.
+ *
+ * A Hub found by LAN address is deliberately not in here: `GET /identify` is unauthenticated and
+ * reports no MagicDNS name, so an address has no name to hand the Pair button. Those are paired with
+ * from the CLI, where the operator also supplies the PIN that makes the far side disclose its name —
+ * `cihub pool pair <address> --pin <digits>`.
+ */
 interface DiscoverablePoolPeer {
-  /** Empty for a candidate found by a manual address probe — there is no Tailscale device behind it. */
   tailscaleDeviceId: string;
   nodeFqdn: string;
   hostname: string;
-  /** How this candidate was found. Absent on a Hub running an older build. */
-  source?: 'tailscale' | 'lan-probe';
 }
 
 /** How many routing decisions to render. The buffer holds 200; an operator reads the recent ones. */
@@ -830,10 +835,8 @@ export const HubPoolSection = () => {
             discoverable?.length ? (
               <ul className="space-y-2">
                 {discoverable.map((device) => (
-                  // Keyed on the FQDN, not the Tailscale device id: a candidate found by address
-                  // has no device id, so keying on that gives every one of them the same key and
-                  // React reconciles all but one row away. The FQDN is unique across the merged list
-                  // by construction — it is what the backend deduplicates on.
+                  // Keyed on the FQDN, not the Tailscale device id: the FQDN is unique across this
+                  // list by construction, and it is the value the Pair button posts.
                   <li key={device.nodeFqdn} className="flex items-center justify-between gap-3 rounded-md border px-3 py-2">
                     <span className="min-w-0 truncate font-mono text-xs" title={device.nodeFqdn}>
                       {device.hostname}
