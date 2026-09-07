@@ -3,6 +3,7 @@ import { InferenceRouterService } from '../inference-router.service';
 import { HardwareInspectorService } from '../hardware-inspector.service';
 import { ModelRegistryService } from '../model-registry.service';
 import { MemoryManagerService } from '../memory-manager.service';
+import { ModelPullerService } from '../model-puller.service';
 import { CloudFallbackService } from '../cloud-fallback.service';
 import { InferenceBackendRegistry } from '../backends/backend-registry';
 import { OllamaBackend } from '../backends/ollama.backend';
@@ -22,6 +23,7 @@ describe('InferenceRouterService', () => {
   let hardwareInspector: MockProxy<HardwareInspectorService>;
   let modelRegistry: MockProxy<ModelRegistryService>;
   let memoryManager: MockProxy<MemoryManagerService>;
+  let modelPuller: MockProxy<ModelPullerService>;
   let cloudFallback: MockProxy<CloudFallbackService>;
   let ollamaBackend: MockProxy<OllamaBackend>;
   let vllmBackend: MockProxy<VllmBackend>;
@@ -44,6 +46,7 @@ describe('InferenceRouterService', () => {
     hardwareInspector = mock<HardwareInspectorService>();
     modelRegistry = mock<ModelRegistryService>();
     memoryManager = mock<MemoryManagerService>();
+    modelPuller = mock<ModelPullerService>();
     cloudFallback = mock<CloudFallbackService>();
     ollamaBackend = mock<OllamaBackend>();
     vllmBackend = mock<VllmBackend>();
@@ -80,6 +83,7 @@ describe('InferenceRouterService', () => {
         { provide: HardwareInspectorService, useValue: hardwareInspector },
         { provide: ModelRegistryService, useValue: modelRegistry },
         { provide: MemoryManagerService, useValue: memoryManager },
+        { provide: ModelPullerService, useValue: modelPuller },
         { provide: CloudFallbackService, useValue: cloudFallback },
         { provide: OllamaBackend, useValue: ollamaBackend },
         { provide: VllmBackend, useValue: vllmBackend },
@@ -95,8 +99,8 @@ describe('InferenceRouterService', () => {
   });
 
   // ─── Model listing ────────────────────────────────────────────────
-  // The router no longer proxies requests — it only surfaces the merged model
-  // list + backend health for the management endpoints and credentials service.
+  // The router surfaces the merged model list + backend health and routes
+  // inference requests through local backends or cloud fallback.
 
   describe('Model listing', () => {
     it('SHALL return merged model lists from all backends + cloud', async () => {

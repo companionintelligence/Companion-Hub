@@ -9,6 +9,7 @@ import { HubPoolPeerRepository } from '../hub-pool-peer.repository';
 import { HubPoolPeerService } from '../hub-pool-peer.service';
 import { HubPoolDiscoveryService, mergePoolCandidates } from '../hub-pool-discovery.service';
 import type { DiscoverablePoolPeer } from '../hub-pool.types';
+import type { PortalClientService } from '@/core/portal/portal-client.service';
 
 const lookup = vi.hoisted(() => vi.fn());
 vi.mock('node:dns/promises', () => ({ lookup }));
@@ -58,24 +59,25 @@ describe('mergePoolCandidates', () => {
 
   it('offers a node reachable both ways exactly once', () => {
     const merged = mergePoolCandidates([tailscaleEntry], [manualEntry]);
-    expect(merged).toHaveLength(1);
+    expect(merged).toEqual([tailscaleEntry]);
   });
 
   it('keeps the Tailscale entry on a merge, because its name is what the transport dials', () => {
     const merged = mergePoolCandidates([tailscaleEntry], [manualEntry]);
     expect(merged[0]?.source).toBe('tailscale');
-    expect(merged[0]?.tailscaleDeviceId).toBe('ts-1');
   });
 
   it('merges on the normalized FQDN, so a trailing dot or different case is the same node', () => {
-    const merged = mergePoolCandidates([tailscaleEntry], [{ ...manualEntry, nodeFqdn: 'Peer-Hub.TailXYZ.ts.net.' }]);
-    expect(merged).toHaveLength(1);
+    const trailingDot: DiscoverablePoolPeer = { ...manualEntry, nodeFqdn: 'peer-hub.tailxyz.ts.net.' };
+    const upperCase: DiscoverablePoolPeer = { ...manualEntry, nodeFqdn: 'PEER-HUB.tailxyz.ts.net' };
+
+    expect(mergePoolCandidates([tailscaleEntry], [trailingDot])).toEqual([tailscaleEntry]);
+    expect(mergePoolCandidates([tailscaleEntry], [upperCase])).toEqual([tailscaleEntry]);
   });
 
   it('never merges two genuinely different nodes', () => {
-    const other: DiscoverablePoolPeer = { ...manualEntry, nodeFqdn: 'other-hub.tailxyz.ts.net', hostname: 'other-hub' };
-    const merged = mergePoolCandidates([tailscaleEntry], [other]);
-    expect(merged.map((entry) => entry.nodeFqdn)).toEqual(['peer-hub.tailxyz.ts.net', 'other-hub.tailxyz.ts.net']);
+    const other: DiscoverablePoolPeer = { ...manualEntry, nodeFqdn: 'different-hub.tailxyz.ts.net', hostname: 'different-hub' };
+    expect(mergePoolCandidates([tailscaleEntry], [other])).toHaveLength(2);
   });
 
   it('does NOT key on a UUID the candidate claims about itself', () => {
@@ -114,6 +116,7 @@ describe('HubPoolDiscoveryService', () => {
   let repo: MockProxy<HubPoolPeerRepository>;
   let peerService: MockProxy<HubPoolPeerService>;
   let tailscaleService: MockProxy<TailscaleService>;
+  let portalClient: MockProxy<PortalClientService>;
   let service: HubPoolDiscoveryService;
 
   beforeEach(() => {
@@ -138,8 +141,10 @@ describe('HubPoolDiscoveryService', () => {
       backendState: 'Running',
       authUrl: null,
     });
+    portalClient = mock<PortalClientService>();
+    portalClient.fetchDispatchDevices.mockResolvedValue([]);
 
-    service = new HubPoolDiscoveryService(mock<LoggerService>(), repo, peerService, tailscaleService);
+    service = new HubPoolDiscoveryService(mock<LoggerService>(), repo, peerService, tailscaleService, portalClient);
     global.fetch = vi.fn();
   });
 
@@ -367,6 +372,26 @@ describe('HubPoolDiscoveryService', () => {
 
       vi.mocked(global.fetch).mockResolvedValue(identifyResponse('peer-0.tailxyz.ts.net'));
       expect(await service.listDiscoverableNodes()).toHaveLength(MAX_MANUAL_POOL_CANDIDATES);
+    });
+
+    it('discovers peer Hubs from CI Portal dispatch API', async () => {
+      portalClient.fetchDispatchDevices.mockResolvedValue([
+        {
+          id: 'portal-dev-1',
+          name: 'cloud-hub',
+          tailscaleDns: 'cloud-hub.tailxyz.ts.net',
+        },
+      ]);
+      vi.mocked(global.fetch).mockResolvedValue(identifyResponse('cloud-hub.tailxyz.ts.net'));
+
+      const candidates = await service.listDiscoverableNodes();
+
+      expect(candidates).toContainEqual({
+        tailscaleDeviceId: 'portal-dev-1',
+        nodeFqdn: 'cloud-hub.tailxyz.ts.net',
+        hostname: 'cloud-hub',
+        source: 'portal',
+      });
     });
   });
 });

@@ -940,6 +940,13 @@ export class AppHelpers {
 
     envMap.delete('APP_PUBLIC_DOMAIN');
 
+    // Give every app a stable inference URL that auto-upgrades to pooled
+    // routing when Hub peers are connected. Apps can use this instead of
+    // talking to the backend container directly.
+    const hubContainer = hubContainerName();
+    const hubPort = process.env.API_PORT || '3000';
+    envMap.set('HUB_INFERENCE_URL', `http://${hubContainer}:${hubPort}/api/inference/v1`);
+
     await this.appFilesManager.writeAppEnv(appUrn, this.envUtils.envMapToString(envMap));
   };
 }

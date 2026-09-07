@@ -289,18 +289,49 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
    * with this Hub yet.
    */
   async listDiscoverableDevices(): Promise<DiscoverablePoolPeer[]> {
-    if (!this.tailscaleAdminApi.isConfigured()) {
-      return [];
-    }
-
     const selfStatus = await this.tailscaleService.getStatusCached();
-    if (!selfStatus.tailnet) {
+    if (!selfStatus.connected && !this.tailscaleAdminApi.isConfigured()) {
       return [];
     }
 
-    const [devices, existingPeers] = await Promise.all([this.tailscaleAdminApi.listDevices(selfStatus.tailnet), this.repo.listAll()]);
+    const candidateMap = new Map<string, { id: string; name: string; hostname: string }>();
+
+    // 1. From local Tailscale daemon peer map (zero-config, no OAuth needed)
+    for (const peer of selfStatus.peers ?? []) {
+      if (peer.nodeFqdn && peer.nodeFqdn !== selfStatus.nodeFqdn) {
+        candidateMap.set(peer.nodeFqdn, {
+          id: peer.id ?? '',
+          name: peer.nodeFqdn,
+          hostname: peer.hostname ?? peer.nodeFqdn,
+        });
+      }
+    }
+
+    // 2. From Tailscale Admin API (if configured)
+    if (this.tailscaleAdminApi.isConfigured() && selfStatus.tailnet) {
+      try {
+        const adminDevices = await this.tailscaleAdminApi.listDevices(selfStatus.tailnet);
+        for (const device of adminDevices) {
+          if (device.name && device.name !== selfStatus.nodeFqdn) {
+            candidateMap.set(device.name, {
+              id: device.id,
+              name: device.name,
+              hostname: device.hostname,
+            });
+          }
+        }
+      } catch (error) {
+        this.logger.debug(`[HubPool] Admin API listDevices failed: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+
+    if (candidateMap.size === 0) {
+      return [];
+    }
+
+    const existingPeers = await this.repo.listAll();
     const known = new Set(existingPeers.map((p) => p.nodeFqdn));
-    const candidates = devices.filter((d) => d.name && d.name !== selfStatus.nodeFqdn && !known.has(d.name));
+    const candidates = [...candidateMap.values()].filter((d) => d.name && !known.has(d.name));
 
     const probed = await Promise.all(
       candidates.map(async (device): Promise<DiscoverablePoolPeer | null> => {

@@ -163,7 +163,7 @@ export interface DiscoverablePoolPeer {
    * `tailscaleDeviceId`, because widening that field is a type error on the CLI's `sanitizeForBox`
    * and a duplicate React key in the settings list.
    */
-  source?: 'tailscale' | 'lan-probe';
+  source?: 'tailscale' | 'lan-probe' | 'portal';
   /**
    * A UUID the candidate *claims*, from an unauthenticated probe. Typed distinctly from
    * `hub_pool_peer.peer_node_uuid` on purpose — an externally-sourced UUID is a hint for the

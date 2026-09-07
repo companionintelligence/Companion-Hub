@@ -1,7 +1,9 @@
-import { Body, Controller, ConflictException, Get, Headers, Param, Patch, Post, Query, Res, UseGuards } from '@nestjs/common';
+import { Body, Controller, ConflictException, Get, Headers, Inject, Param, Patch, Post, Query, Res, UseGuards, forwardRef } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
 import type { Response } from 'express';
 import { ApiHeader, ApiTags } from '@nestjs/swagger';
+import { PoolProxyService } from '@/modules/hub-pool/hub-pool-proxy.service';
+import { HubPoolPeerService } from '@/modules/hub-pool/hub-pool-peer.service';
 import { TranslatableError } from '@/common/error/translatable-error';
 import { DemoModeGuard } from '@/common/guards/demo-mode.guard';
 import { InferenceRouterService } from './inference-router.service';
@@ -39,13 +41,12 @@ import { resolveInstalledCatalogIds, resolveInstalledCatalogIdsFromServedModels 
 import { BackendObserverService } from './supervision/backend-observer.service';
 
 /**
- * Inference controller — exposes Ollama/backend provisioning + management.
+ * Inference controller — exposes Ollama/backend provisioning + management,
+ * and OpenAI-compatible `/v1` proxy routes for Hub-managed apps.
  *
- * The Hub does NOT proxy inference requests. Apps talk to the Ollama container
- * (its own OpenAI-compatible `/v1` or native protocol), a host-managed backend
- * such as vLLM or speculative inference, or a cloud provider directly. This controller provisions Ollama (install/pull/catalog/hardware),
- * stores the operator's cloud-provider keys, and distributes connection info to
- * apps via the credentials endpoints below.
+ * When the Hub has connected pool peers, `/v1` routes delegate to
+ * `PoolProxyService.proxyRequest()` for cross-node pooled inference.
+ * Otherwise they route through the local `InferenceRouterService`.
  */
 @ApiTags('Inference')
 @Controller('inference')
@@ -72,6 +73,8 @@ export class InferenceController {
     readonly _logger: LoggerService,
     private readonly backends: InferenceBackendRegistry,
     private readonly backendObserver: BackendObserverService,
+    @Inject(forwardRef(() => PoolProxyService)) private readonly poolProxy: PoolProxyService,
+    @Inject(forwardRef(() => HubPoolPeerService)) private readonly poolPeers: HubPoolPeerService,
   ) {}
 
   private getRecommendedBackend(profile: HardwareProfile): InferenceBackendType {
@@ -143,6 +146,102 @@ export class InferenceController {
       }
     } catch (e) {
       this._logger.error('Failed to trigger AI app restarts after inference config update', e);
+    }
+  }
+
+  // ─── OpenAI-compatible v1 proxy ─────────────────────────────────────
+  // Apps set HUB_INFERENCE_URL to http://<hub>:<port>/api/inference/v1.
+  // When pool peers are connected, requests auto-upgrade to cross-node
+  // pooled routing via PoolProxyService. Otherwise, the local
+  // InferenceRouterService handles them directly.
+
+  @UseGuards(InternalNetworkGuard)
+  @Post('v1/chat/completions')
+  async v1ChatCompletions(@Body() body: Record<string, unknown>, @Res() res: Response) {
+    const model = (body.model as string) || 'auto';
+    if (await this.poolPeers.hasConnectedPeers()) {
+      return this.poolProxy.proxyRequest({ path: '/v1/chat/completions', method: 'POST', body, model, res });
+    }
+    try {
+      const result = await this.router.routeChatCompletion(body);
+      if (result.stream) {
+        res.setHeader('Content-Type', 'text/event-stream');
+        res.setHeader('Cache-Control', 'no-cache');
+        res.setHeader('Connection', 'keep-alive');
+        if (result.headers) {
+          for (const [key, value] of Object.entries(result.headers)) {
+            res.setHeader(key, value);
+          }
+        }
+        result.stream.pipe(res);
+      } else {
+        res.json(result.data);
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      res.status(502).json({ error: { message: msg, type: 'server_error' } });
+    }
+  }
+
+  @UseGuards(InternalNetworkGuard)
+  @Post('v1/completions')
+  v1Completions(@Res() res: Response) {
+    res.status(400).json({
+      error: { message: 'Legacy completions endpoint is not supported. Use /v1/chat/completions instead.', type: 'invalid_request_error' },
+    });
+  }
+
+  @UseGuards(InternalNetworkGuard)
+  @Post('v1/embeddings')
+  async v1Embeddings(@Body() body: Record<string, unknown>, @Res() res: Response) {
+    const model = (body.model as string) || '';
+    if (await this.poolPeers.hasConnectedPeers()) {
+      return this.poolProxy.proxyRequest({ path: '/v1/embeddings', method: 'POST', body, model, res });
+    }
+    try {
+      const result = await this.router.routeEmbeddings(body);
+      res.json(result.data);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      res.status(502).json({ error: { message: msg, type: 'server_error' } });
+    }
+  }
+
+  @UseGuards(InternalNetworkGuard)
+  @Get('v1/models')
+  async v1Models(@Res() res: Response) {
+    try {
+      const models = await this.router.listModels();
+      res.json({ object: 'list', data: models });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      res.status(502).json({ error: { message: msg, type: 'server_error' } });
+    }
+  }
+
+  @UseGuards(InternalNetworkGuard)
+  @Post('v1/audio/speech')
+  async v1AudioSpeech(@Body() body: Record<string, unknown>, @Res() res: Response) {
+    try {
+      const result = await this.router.routeTts(body);
+      res.setHeader('Content-Type', 'audio/mpeg');
+      res.send(result.data);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      res.status(502).json({ error: { message: msg, type: 'server_error' } });
+    }
+  }
+
+  @UseGuards(InternalNetworkGuard)
+  @Post('v1/audio/transcriptions')
+  async v1AudioTranscriptions(@Body() body: Record<string, unknown>, @Res() res: Response) {
+    try {
+      // STT expects FormData but we receive the raw body here; pass through
+      const result = await this.router.routeStt(body as unknown as FormData);
+      res.json(result.data);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      res.status(502).json({ error: { message: msg, type: 'server_error' } });
     }
   }
 
@@ -667,10 +766,10 @@ export class InferenceController {
   }
 
   // ─── App Credentials ──────────────────────────────────────────────────
-  // Hub-managed sibling apps (currently hermes-agent and openclaw) query these endpoints
-  // on container start to discover where to send inference DIRECTLY — the Ollama
-  // container's OpenAI-compatible /v1 (or a cloud provider endpoint+key). The Hub
-  // distributes connection info only; it never proxies the requests.
+  // Hub-managed sibling apps may query these endpoints to discover backend
+  // connection info. Apps can also use the v1 proxy routes above (mounted
+  // at /api/inference/v1) which automatically route through the pool when
+  // peers are connected.
 
   @UseGuards(InternalNetworkGuard)
   @Get('apps/:slug/credentials')

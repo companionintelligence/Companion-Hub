@@ -1,6 +1,6 @@
 import { lookup } from 'node:dns/promises';
 import { isIP } from 'node:net';
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { BadRequestException, forwardRef, Inject, Injectable, Optional } from '@nestjs/common';
 import { LoggerService } from '@/core/logger/logger.service';
 import { normalizePeerFqdn } from '@/common/helpers/hub-pool';
 import { isPoolProbeTarget } from '@/common/helpers/ip-address';
@@ -13,6 +13,7 @@ import {
   type PoolProbeTarget,
 } from '@/common/helpers/hub-pool-probe';
 import { TailscaleService } from '@/modules/tailscale/tailscale.service';
+import { PortalClientService } from '@/core/portal/portal-client.service';
 import { HubPoolPeerRepository } from './hub-pool-peer.repository';
 import { HubPoolPeerService } from './hub-pool-peer.service';
 import type { DiscoverablePoolPeer, PoolProbeResult } from './hub-pool.types';
@@ -62,6 +63,9 @@ export class HubPoolDiscoveryService {
     private readonly repo: HubPoolPeerRepository,
     private readonly peerService: HubPoolPeerService,
     private readonly tailscaleService: TailscaleService,
+    @Optional()
+    @Inject(forwardRef(() => PortalClientService))
+    private readonly portalClient?: PortalClientService,
   ) {}
 
   /**
@@ -94,32 +98,71 @@ export class HubPoolDiscoveryService {
         reason: 'unreachable',
       };
     }
+
     if (!answer.isCiHub) {
-      return { address, isCiHub: false, nodeFqdn: null, hostname: null, alreadyPaired: false, pairable: false, reason: 'not_a_hub' };
+      return {
+        address,
+        isCiHub: false,
+        nodeFqdn: null,
+        hostname: null,
+        alreadyPaired: false,
+        pairable: false,
+        reason: 'not_a_hub',
+      };
     }
 
-    // The FQDN is the only thing worth keeping, and it has to survive the same normalization a
-    // stored peer name does. A Hub that has not joined a tailnet answers `nodeFqdn: null`, which is
-    // findable-but-not-pairable: there is no name to build `https://<fqdn>` from.
-    const nodeFqdn = answer.nodeFqdn ? normalizePeerFqdn(truncate(answer.nodeFqdn)) : null;
+    if (!answer.nodeFqdn) {
+      return {
+        address,
+        isCiHub: true,
+        nodeFqdn: null,
+        hostname: null,
+        alreadyPaired: false,
+        pairable: false,
+        reason: 'no_tailnet_fqdn',
+      };
+    }
+
+    const nodeFqdn = normalizePeerFqdn(answer.nodeFqdn);
     if (!nodeFqdn) {
-      return { address, isCiHub: true, nodeFqdn: null, hostname: null, alreadyPaired: false, pairable: false, reason: 'no_tailnet_fqdn' };
+      return {
+        address,
+        isCiHub: true,
+        nodeFqdn: null,
+        hostname: null,
+        alreadyPaired: false,
+        pairable: false,
+        reason: 'no_tailnet_fqdn',
+      };
     }
 
-    const hostname = nodeFqdn.split('.')[0] as string;
     const selfStatus = await this.tailscaleService.getStatusCached();
     if (selfStatus.nodeFqdn && normalizePeerFqdn(selfStatus.nodeFqdn) === nodeFqdn) {
-      return { address, isCiHub: true, nodeFqdn, hostname, alreadyPaired: false, pairable: false, reason: 'self' };
+      return {
+        address,
+        isCiHub: true,
+        nodeFqdn,
+        hostname: selfStatus.hostname ?? nodeFqdn,
+        alreadyPaired: false,
+        pairable: false,
+        reason: 'self',
+      };
     }
 
     const existing = await this.repo.findByNodeFqdn(nodeFqdn);
     if (existing) {
-      // Already known: drop any manual entry for it, so the candidate list never offers a node the
-      // peers list is already showing.
-      this.manualCandidates.delete(nodeFqdn);
-      return { address, isCiHub: true, nodeFqdn, hostname, alreadyPaired: true, pairable: false, reason: 'already_paired' };
+      return {
+        address,
+        isCiHub: true,
+        nodeFqdn,
+        hostname: existing.displayName ?? nodeFqdn,
+        alreadyPaired: true,
+        pairable: false,
+        reason: 'already_paired',
+      };
     }
 
+    const hostname = nodeFqdn.split('.')[0] as string;
     this.rememberCandidate({
       nodeFqdn,
       hostname,
@@ -133,7 +176,7 @@ export class HubPoolDiscoveryService {
   }
 
   /**
-   * Every candidate this node can offer to pair with, from both sources, deduplicated.
+   * Every candidate this node can offer to pair with, from all sources, deduplicated.
    *
    * Also the refresh tick for manual candidates — deliberately here and not on
    * `HubPoolPeerService`'s health timer, so a single-node Hub with no peers and no candidates issues
@@ -141,8 +184,12 @@ export class HubPoolDiscoveryService {
    * I/O" promise its doc comment makes.
    */
   async listDiscoverableNodes(): Promise<DiscoverablePoolPeer[]> {
-    const [tailscale, manual] = await Promise.all([this.listTailscaleCandidates(), this.refreshManualCandidates()]);
-    return mergePoolCandidates(tailscale, manual);
+    const [tailscale, portal, manual] = await Promise.all([
+      this.listTailscaleCandidates(),
+      this.listPortalCandidates(),
+      this.refreshManualCandidates(),
+    ]);
+    return mergePoolCandidates([...tailscale, ...portal], manual);
   }
 
   private async listTailscaleCandidates(): Promise<DiscoverablePoolPeer[]> {
@@ -150,6 +197,44 @@ export class HubPoolDiscoveryService {
     // which is the whole advantage over a LAN-only design. Manual entry is an addition to it.
     const devices = await this.peerService.listDiscoverableDevices();
     return devices.map((device) => ({ ...device, source: 'tailscale' as const }));
+  }
+
+  /**
+   * Discovery candidates from the CI Portal dispatch API: Hub devices registered to the same user or
+   * organization across the public internet.
+   */
+  private async listPortalCandidates(): Promise<DiscoverablePoolPeer[]> {
+    if (!this.portalClient) return [];
+    try {
+      const devices = await this.portalClient.fetchDispatchDevices();
+      if (!devices || devices.length === 0) return [];
+
+      const selfStatus = await this.tailscaleService.getStatusCached();
+      const existingPeers = await this.repo.listAll();
+      const known = new Set(existingPeers.map((p) => p.nodeFqdn));
+
+      const candidates: DiscoverablePoolPeer[] = [];
+      await Promise.all(
+        devices.map(async (device) => {
+          const targetHost = device.tailscaleDns || device.lanIp;
+          if (!targetHost || targetHost === selfStatus.nodeFqdn || known.has(targetHost)) return;
+
+          const answer = await this.tryIdentify(targetHost, true);
+          if (answer?.isCiHub) {
+            candidates.push({
+              tailscaleDeviceId: device.id,
+              nodeFqdn: answer.nodeFqdn || targetHost,
+              hostname: device.name || targetHost,
+              source: 'portal',
+            });
+          }
+        }),
+      );
+      return candidates;
+    } catch (err) {
+      this.logger.debug(`[HubPool] listPortalCandidates error: ${err instanceof Error ? err.message : String(err)}`);
+      return [];
+    }
   }
 
   /**
