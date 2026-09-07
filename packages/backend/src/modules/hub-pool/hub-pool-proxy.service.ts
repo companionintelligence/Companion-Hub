@@ -7,10 +7,18 @@ import { INFERENCE_BACKEND_TYPES, type InferenceBackendType } from '@ci-hub/comm
 import { TailscaleService } from '@/modules/tailscale/tailscale.service';
 import { InferenceBackendRegistry } from '@/modules/inference/backends/backend-registry';
 import { ConfigurationService } from '@/core/config/configuration.service';
-import { CAPABILITIES_FRESHNESS_POLLS } from '@/common/helpers/hub-pool';
+import {
+  CAPABILITIES_FRESHNESS_POLLS,
+  UNKNOWN_PRESSURE,
+  effectivePeerPressureBand,
+  isCapabilitiesSnapshotFresh,
+  resolveHubPoolDirections,
+  type HubPoolDirectionalState,
+} from '@/common/helpers/hub-pool';
 import { HubPoolPeerService } from './hub-pool-peer.service';
 import { HubPoolLoadService, LOCAL_CANDIDATE_KEY } from './hub-pool-load.service';
-import { HubPoolRoutingLogService } from './hub-pool-routing-log.service';
+import { HubPoolRoutingLogService, type PoolRoutingOutcome } from './hub-pool-routing-log.service';
+import { HubPoolPressureService } from './hub-pool-pressure.service';
 import type { HubPoolPeer } from '@/core/database/drizzle/types';
 import type { PoolCandidate, PoolPeerCapabilities } from './hub-pool.types';
 
@@ -38,17 +46,24 @@ const TIER_RANK = { high: 0, medium: 1, low: 2, 'cpu-only': 3, insufficient: 4 }
 /** A tier string this build doesn't recognise (an older or newer peer) ranks with 'low' — unknown is never optimistic. */
 const UNKNOWN_TIER_RANK: number = TIER_RANK.low;
 /**
- * The local node is never out-ranked on hardware: local-vs-peer is decided entirely by
- * {@link LOCAL_AFFINITY_REQUESTS}, and reading this node's own tier would put a hardware probe on
- * the request path for a value that only breaks ties.
+ * The local node is never out-ranked on hardware: local-vs-peer is decided entirely by the
+ * operator's `poolLocalAffinity` setting, and reading this node's own tier would put a hardware
+ * probe on the request path for a value that only breaks ties. At an exact score tie this is also
+ * why local wins — a free local node has no hop and a warm cache — which is what `affinity = 0`
+ * actually means, as opposed to the "pure least-loaded" the docs used to claim.
  */
 const LOCAL_TIER_RANK = -1;
 
-/** A candidate plus the two ordering keys {@link PoolProxyService.buildCandidateList} sorts on. */
+/** A candidate plus the three ordering keys {@link PoolProxyService.buildCandidateList} sorts on. */
 interface RankedCandidate {
   candidate: PoolCandidate;
-  /** Queue depth, already carrying the local-affinity handicap for peers. Lower is better. */
+  /** Queue depth, already carrying the local-affinity handicap for peers and the weighted pressure term. Lower is better. */
   score: number;
+  /**
+   * GPU-pressure band 0-3, with {@link UNKNOWN_PRESSURE} standing in for "unmeasured". Read as a
+   * tie-break only, and only when `poolPressureWeight` is non-zero — see the comparator.
+   */
+  pressure: number;
   tierRank: number;
 }
 
@@ -77,10 +92,17 @@ export class PoolProxyService {
   constructor(
     private readonly backends: InferenceBackendRegistry,
     private readonly peerService: HubPoolPeerService,
+    /**
+     * Retained after the outbound credential moved into `HubPoolPeerService.peerAuthHeaders`, which
+     * resolves this node's own name itself. Kept so the positional constructor shape every pool test
+     * file builds does not shift for a removal nothing needs.
+     */
+    // biome-ignore lint/correctness/noUnusedPrivateClassMembers: kept for the positional constructor shape (see above)
     private readonly tailscaleService: TailscaleService,
     private readonly loadService: HubPoolLoadService,
     private readonly configuration: ConfigurationService,
     private readonly routingLog: HubPoolRoutingLogService,
+    private readonly pressureService: HubPoolPressureService,
   ) {}
 
   /** Read per request, not cached: a settings PATCH must change routing on the next request, not on the next restart. */
@@ -88,9 +110,24 @@ export class PoolProxyService {
     return this.configuration.getHubPoolPreferences().poolLocalAffinity;
   }
 
+  /** Read per request, like {@link localAffinity}. `0` (the default) takes pressure out of ranking entirely — see {@link buildCandidateList}. */
+  private pressureWeight(): number {
+    return this.configuration.getHubPoolPreferences().poolPressureWeight;
+  }
+
   /** How old a peer's capability snapshot may be before its self-reported load is discarded, derived from the configured poll cadence so retuning one retunes the other. */
   private capabilitiesFreshnessMs(): number {
     return this.configuration.getHubPoolPreferences().poolHealthPollSeconds * 1000 * CAPABILITIES_FRESHNESS_POLLS;
+  }
+
+  /**
+   * Read per request, like {@link localAffinity}: flipping a direction must change routing on the
+   * next request, not the next restart. Resolved through the shared helper rather than through
+   * `HubPoolPeerService`, so there is exactly one place that knows the precedence between the
+   * master switch, the two env overrides and the two persisted flags.
+   */
+  private directions(): HubPoolDirectionalState {
+    return resolveHubPoolDirections(this.configuration.getHubPoolPreferences());
   }
 
   /**
@@ -100,17 +137,37 @@ export class PoolProxyService {
    * replaced — made the pool a failover list rather than a balancer: a local backend that merely
    * *had* the model always sorted first, whatever its queue looked like, so the one scenario
    * pooling exists for (this node saturated, a peer idle) could never route away.
+   *
+   * This is also where the outbound kill switch and the per-peer switch are applied — on the
+   * REQUEST path, deliberately not inside `listConnectedPeers()`; see {@link usablePeers}.
+   *
+   * GPU pressure enters in two places and BOTH vanish at `poolPressureWeight = 0`, which is the
+   * shipped default: the weighted term drops out of `score` arithmetically, and the pressure key is
+   * not evaluated by the comparator at all. That is why the default is byte-identical to the
+   * previous build by construction rather than by an argument about what can be measured — it holds
+   * even on a node whose band is a real, moving number.
+   *
+   * Above zero, a node that cannot measure ranks at {@link UNKNOWN_PRESSURE}, never at 0. This is
+   * the invariant the whole feature turns on: most of the fleet cannot measure, and if silence read
+   * as "idle" the pool would systematically route to whichever machine knows least about itself.
    */
   async buildCandidateList(model: string): Promise<PoolCandidate[]> {
-    const [local, peers] = await Promise.all([this.localCandidates(model), this.peerService.listConnectedPeers()]);
-    const localScore = this.loadService.localInFlight();
+    const [local, peers] = await Promise.all([this.localCandidates(model), this.usablePeers()]);
+    const weight = this.pressureWeight();
+    const localPressure = this.pressureService.band() ?? UNKNOWN_PRESSURE;
+    const localScore = this.loadService.localInFlight() + weight * localPressure;
     const ranked: RankedCandidate[] = [
-      ...local.map((candidate) => ({ candidate, score: localScore, tierRank: LOCAL_TIER_RANK })),
-      ...this.peerCandidates(model, peers),
+      ...local.map((candidate) => ({ candidate, score: localScore, pressure: localPressure, tierRank: LOCAL_TIER_RANK })),
+      ...this.peerCandidates(model, peers, weight),
     ];
-    // Stable sort: candidates that tie on both keys keep insertion order — local backends in
+    // Stable sort: candidates that tie on every key keep insertion order — local backends in
     // INFERENCE_BACKEND_TYPES order, then peers in the order the repository returned them.
-    return ranked.sort((a, b) => a.score - b.score || a.tierRank - b.tierRank).map((entry) => entry.candidate);
+    //
+    // `weight ? … : 0` rather than always comparing: at weight 0 the middle key must not exist, or a
+    // measured node would start winning ties that a static hardware tier decides today.
+    return ranked
+      .sort((a, b) => a.score - b.score || (weight ? a.pressure - b.pressure : 0) || a.tierRank - b.tierRank)
+      .map((entry) => entry.candidate);
   }
 
   async proxyRequest(params: { path: string; method: string; body: unknown; model: string; res: Response }): Promise<void> {
@@ -341,12 +398,33 @@ export class PoolProxyService {
     }
   }
 
+  /**
+   * Record a peer forward this node refused before any backend saw it — an unconnected peer (403),
+   * inbound pooling switched off, or that peer disabled here (503).
+   *
+   * Without this the refusal is invisible on the serving side: `recordInbound` is only reachable
+   * once a backend has been called, so "why is my peer getting nothing from this node" had no
+   * answer anywhere an operator can read. The sending node's own log shows the failover; this is
+   * the other half of that story.
+   */
+  recordRefusedInboundForward(params: {
+    backend: InferenceBackendType | null;
+    path: string;
+    fromPeerFqdn: string | undefined;
+    status: number;
+  }): void {
+    // 'failed' explicitly: nothing was served, and the status is a 4xx that the served-path rule
+    // below would otherwise read as success.
+    this.recordInbound(params.backend, params.path, params.fromPeerFqdn, params.status, Date.now(), 'failed');
+  }
+
   private recordInbound(
-    backend: InferenceBackendType,
+    backend: InferenceBackendType | null,
     path: string,
     fromPeerFqdn: string | undefined,
     status: number | null,
     startedAt: number,
+    outcome?: PoolRoutingOutcome,
   ): void {
     this.routingLog.record({
       at: new Date().toISOString(),
@@ -361,7 +439,7 @@ export class PoolProxyService {
       candidates: 1,
       attempt: 1,
       failedOverFrom: [],
-      outcome: status !== null && status < 500 ? 'served' : 'failed',
+      outcome: outcome ?? (status !== null && status < 500 ? 'served' : 'failed'),
       status,
       durationMs: Date.now() - startedAt,
     });
@@ -429,16 +507,48 @@ export class PoolProxyService {
     return results.filter((c): c is PoolCandidate => c !== null);
   }
 
-  private peerCandidates(model: string, peers: HubPoolPeer[]): RankedCandidate[] {
+  /**
+   * The connected peers this node may send work to right now: the outbound kill switch, then each
+   * peer's own switch.
+   *
+   * This filter lives here, on the request path, and NOT in `HubPoolPeerService.listConnectedPeers`
+   * — which is the obvious place and is the wrong one. That method also answers
+   * `hasConnectedPeers()`, which `inference-env-resolver.ts` consults once, at app INSTALL time, to
+   * decide whether an app's `CI_LLM_BASE_URL` points at this proxy or straight at a backend. Gating
+   * it there would mean every app created while outbound was off is permanently pointed away from
+   * the pool, and turning the switch back on would not bring it back — a routing preference would
+   * have silently become an app's baked-in configuration.
+   *
+   * Consequences here are all intended and all reversible: candidate selection produces local
+   * candidates only, and if this node cannot serve the model the caller gets the existing
+   * actionable 502 rather than the request being shipped out.
+   */
+  private async usablePeers(): Promise<HubPoolPeer[]> {
+    if (!this.directions().outbound.enabled) {
+      return [];
+    }
+    // `!== false`, not truthiness: the column is NOT NULL DEFAULT true, so only an explicit
+    // operator decision may remove a peer from routing — never a row that somehow lacks the field.
+    return (await this.peerService.listConnectedPeers()).filter((peer) => peer.enabled !== false);
+  }
+
+  private peerCandidates(model: string, peers: HubPoolPeer[], weight: number): RankedCandidate[] {
     const candidates: RankedCandidate[] = [];
     for (const peer of peers) {
       const capabilities = peer.lastCapabilities as unknown as PoolPeerCapabilities | null;
       if (!capabilities) continue;
+      // Skipped on the flag itself, not on an empty inventory: a peer that has switched inbound off
+      // (or disabled us) is a healthy machine we keep polling successfully, and an empty `backends`
+      // is pixel-identical to one whose engines are simply down. `undefined` means a peer on an
+      // older build, which never refuses, so absence must read as "yes".
+      if (capabilities.acceptingWork === false) continue;
       const match = capabilities.backends.find((b) => b.healthy && b.modelsLoaded.includes(model));
       if (match) {
+        const pressure = this.peerPressure(peer, capabilities) ?? UNKNOWN_PRESSURE;
         candidates.push({
           candidate: { peerId: peer.id, nodeFqdn: peer.nodeFqdn, backend: match.type },
-          score: this.peerLoad(peer, capabilities) + this.localAffinity(),
+          score: this.peerLoad(peer, capabilities) + weight * pressure + this.localAffinity(),
+          pressure,
           tierRank: this.tierRank(capabilities.hardwareTier),
         });
       }
@@ -463,14 +573,33 @@ export class PoolProxyService {
 
   /** Self-reported queue depth, or {@link UNKNOWN_PEER_LOAD} when the snapshot is stale or carries no figure. */
   private reportedPeerLoad(peer: HubPoolPeer, capabilities: PoolPeerCapabilities): number {
-    // Freshness is judged on lastSeenAt, stamped by OUR clock when the probe succeeded, not on
-    // capabilities.updatedAt, which is the peer's — comparing another machine's clock to ours would
-    // read skew as staleness (or, worse, staleness as freshness).
-    const observedAt = peer.lastSeenAt ? Date.parse(peer.lastSeenAt) : Number.NaN;
-    if (!Number.isFinite(observedAt) || Date.now() - observedAt > this.capabilitiesFreshnessMs()) {
+    // Freshness comes from the shared helper so that load and pressure — two fields of one snapshot
+    // — can never drift apart on what "stale" means. It is judged on lastSeenAt, stamped by OUR
+    // clock when the probe succeeded, not on capabilities.updatedAt, which is the peer's.
+    if (!this.isSnapshotFresh(peer)) {
       return UNKNOWN_PEER_LOAD;
     }
     return capabilities.inFlightRequests ?? UNKNOWN_PEER_LOAD;
+  }
+
+  private isSnapshotFresh(peer: HubPoolPeer): boolean {
+    return isCapabilitiesSnapshotFresh(peer.lastSeenAt, this.capabilitiesFreshnessMs());
+  }
+
+  /**
+   * A peer's effective pressure band, or `null` when nothing about its GPU is known.
+   *
+   * Every decision here lives in `effectivePeerPressureBand`, deliberately: `lastCapabilities` is
+   * jsonb a paired peer fully controls, so the hostile-value clamp and the "what we have forwarded
+   * is a floor" anti-gaming rule have to be the same code `/pool/status` shows the operator.
+   * Otherwise the status card would print a number routing does not believe.
+   */
+  private peerPressure(peer: HubPoolPeer, capabilities: PoolPeerCapabilities): number | null {
+    return effectivePeerPressureBand({
+      reported: capabilities.gpuPressure,
+      snapshotFresh: this.isSnapshotFresh(peer),
+      forwardedInFlight: this.loadService.get(peer.id),
+    });
   }
 
   private async callBackend(backend: InferenceBackendType, path: string, method: string, body: unknown): Promise<globalThis.Response> {
@@ -493,20 +622,24 @@ export class PoolProxyService {
     if (!peer) {
       throw new Error(`Peer ${candidate.peerId} is no longer paired`);
     }
-    const [token, selfStatus] = await Promise.all([this.peerService.getPresentToken(peer), this.tailscaleService.getStatusCached()]);
-    const url = `https://${peer.nodeFqdn}/api/inference/pool/local${path}`;
+    const requestPath = `/api/inference/pool/local${path}`;
+    const url = `https://${peer.nodeFqdn}${requestPath}`;
+    // One helper for the credential, whichever kind it is — see `HubPoolPeerService.peerAuthHeaders`.
+    // The body is passed but deliberately not hashed on this path: `poolRequestSignsBody` excludes
+    // `/local/*`, because the recipient UUID, nonce and timestamp already make a captured request
+    // unreplayable, and canonicalizing a megabyte embeddings batch per hop is not affordable here.
+    const authHeaders = await this.peerService.peerAuthHeaders(peer, method, requestPath, body);
     return this.fetchWithConnectTimeout(url, {
       method,
       headers: {
         'Content-Type': 'application/json',
-        'X-Hub-Pool-Peer': selfStatus.nodeFqdn ?? '',
         // Tells the peer's `/inference/pool/local/*` handler which of ITS OWN backends to hit —
         // it can't infer this from the path alone, and must not re-run candidate selection itself.
         'X-Hub-Pool-Backend': candidate.backend,
         // Lets the receiver credit the outcome to the right model without parsing the body it
         // promises not to read. Same reason as the header above: the path alone doesn't carry it.
         'X-Hub-Pool-Model': model,
-        Authorization: `Bearer ${token}`,
+        ...authHeaders,
       },
       body: method === 'GET' ? undefined : JSON.stringify(body),
     });

@@ -196,6 +196,9 @@ function makeInfo(overrides: Partial<AppInfo> = {}): AppInfo {
     source: 'https://github.com/test/test-app',
     version: '1.0.0',
     cihub_app_version: 1,
+    // Required on the generated `AppInfo`: the schema defaults it to `[]`, and `.default()` makes a
+    // field required in the OpenAPI output even though a manifest may omit it.
+    replaces: [],
     available: true,
     deprecated: false,
     port: 3000,

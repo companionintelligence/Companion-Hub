@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { settingsSchema } from '@/app.dto';
+import { parsePersistedSettings } from '@/app.dto';
 import { type LogLevel, LoggerService } from '@/core/logger/logger.service';
 import { EnvUtils } from '@/modules/env/env.utils';
 import dotenv from 'dotenv';
@@ -363,12 +363,21 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
 
   const settingsFile = await fs.promises.readFile(settingsFilePath, 'utf-8');
 
-  const settings = settingsSchema.partial().safeParse(JSON.parse(settingsFile));
+  // One unusable field must not abort the boot. This function runs before Nest exists (main.ts
+  // calls it first), so a throw here is a crash loop with no UI to fix it from and no route to the
+  // file that caused it — and every field it feeds already has an environment value or a default
+  // behind it. Drop what cannot be read, name it in the log, and carry on with the rest.
+  const settings = parsePersistedSettings(JSON.parse(settingsFile));
 
-  if (!settings.success) {
-    throw new Error(`Invalid settings.json file: ${settings.error.message}`);
+  if (settings.unreadable) {
+    logger.warn(
+      'settings.json does not contain a JSON object. Ignoring it for this boot and resolving every value from the environment and defaults.',
+    );
+  } else if (settings.invalidKeys.length > 0) {
+    logger.warn(`Ignoring unusable settings.json field(s): ${settings.invalidKeys.join(', ')}. Every other field was applied.`);
   }
-  const settingsData = settings.data;
+
+  const settingsData = settings.settings;
 
   await generateSeed();
 

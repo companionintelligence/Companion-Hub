@@ -62,7 +62,8 @@ const poolStatus = () => ({
   disabledBy: null,
   reason: 'no_peers',
   routingActive: false,
-  settings: { poolEnabled: true, poolLocalAffinity: 1, poolHealthPollSeconds: 30 },
+  directions: { outbound: { enabled: true, disabledBy: null }, inbound: { enabled: true, disabledBy: null } },
+  settings: { poolEnabled: true, poolOutboundEnabled: true, poolInboundEnabled: true, poolLocalAffinity: 1, poolHealthPollSeconds: 30 },
   tailscaleAdminApiConfigured: true,
   localNode: {
     nodeFqdn: 'hub-a.example-tailnet.ts.net',
@@ -74,7 +75,7 @@ const poolStatus = () => ({
     capabilitiesError: null,
   },
   peers: [],
-  peerCounts: { total: 0, connected: 0, pending: 0, unreachable: 0 },
+  peerCounts: { total: 0, connected: 0, pending: 0, unreachable: 0, disabled: 0 },
   routing: { recorded: 0, capacity: 200, served: 0, failed: 0, failovers: 0, lastAt: null },
 });
 
