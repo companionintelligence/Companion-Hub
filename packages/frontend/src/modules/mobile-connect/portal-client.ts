@@ -42,6 +42,10 @@ export interface HubDevice {
   /** Fully-qualified appliance Hub URL, e.g. https://hub-cp-apple-acme.ci.computer */
   hubUrl: string | null;
   organizationId?: string;
+  /** Optional LAN IP address advertised by device or local network discovery. */
+  lanIp?: string | null;
+  /** Optional direct LAN base URL (e.g. http://192.168.1.50:5002). */
+  lanUrl?: string | null;
 }
 
 async function nativeFetch(): Promise<typeof fetch> {

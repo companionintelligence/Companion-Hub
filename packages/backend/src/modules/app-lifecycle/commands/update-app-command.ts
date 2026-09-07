@@ -1,3 +1,4 @@
+import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { AgentNotifyService } from '@/modules/agent-notify/agent-notify.service';
 import { AppFilesManager } from '@/modules/apps/app-files-manager';
@@ -37,12 +38,18 @@ export class UpdateAppCommand extends AppLifecycleCommand {
       return this.handleAppError(err, appUrn, 'update_error');
     }
 
+    let backupFile: string | undefined;
+    let snapshotResult: Awaited<ReturnType<DockerService['createPreUpdateVolumeSnapshot']>> | undefined;
+
     try {
       await this.assertMarketplaceEntitlement(appUrn, 'update');
       if (this.performBackup) {
         await dockerService.composeApp(appUrn, 'stop');
-        await backupManager.backupApp(appUrn);
+        const backupRes = await backupManager.backupApp(appUrn);
+        backupFile = backupRes?.filename;
       }
+
+      snapshotResult = await dockerService.createPreUpdateVolumeSnapshot(appUrn);
 
       logger.info(`Updating app ${appUrn}`);
       await this.ensureAppDir(appUrn, form);
@@ -61,6 +68,36 @@ export class UpdateAppCommand extends AppLifecycleCommand {
       await this.ensureAppDir(appUrn, form);
 
       await dockerService.composeApp(appUrn, 'pull');
+      await dockerService.composeApp(appUrn, 'up --detach --force-recreate --remove-orphans');
+
+      const probeResult = await dockerService.verifyContainerHealthProbe(appUrn, { maxAttempts: 5, delayMs: 2000 });
+      if (!probeResult.healthy) {
+        logger.error(`Post-update health check failed for app ${appUrn}: ${probeResult.message}. Initiating auto-rollback...`);
+        if (backupFile) {
+          try {
+            await dockerService.composeApp(appUrn, 'down --remove-orphans');
+            await backupManager.restoreApp(appUrn, backupFile);
+            await dockerService.composeApp(appUrn, 'up --detach --force-recreate --remove-orphans');
+            logger.info(`Successfully rolled back ${appUrn} to backup ${backupFile}`);
+          } catch (rollbackErr) {
+            logger.error(`Failed to rollback ${appUrn} from backup: ${rollbackErr}`);
+          }
+        } else if (snapshotResult?.snapshotPath) {
+          try {
+            await dockerService.composeApp(appUrn, 'down --remove-orphans');
+            const { appDataDir } = appFilesManager.getAppPaths(appUrn);
+            const filesystem = this.moduleRef.get(FilesystemService, { strict: false });
+            if (filesystem && (await filesystem.pathExists(snapshotResult.snapshotPath))) {
+              await filesystem.copyDirectory(snapshotResult.snapshotPath, appDataDir);
+              await dockerService.composeApp(appUrn, 'up --detach --force-recreate --remove-orphans');
+              logger.info(`Successfully rolled back ${appUrn} app data from snapshot ${snapshotResult.snapshotId}`);
+            }
+          } catch (snapshotErr) {
+            logger.error(`Failed to restore ${appUrn} from volume snapshot: ${snapshotErr}`);
+          }
+        }
+        throw new Error(`Update failed health probe: ${probeResult.message}`);
+      }
 
       // The update just replaced the app's config.json, which is where the wake endpoint
       // and port come from. Without re-registering, the Hub would keep POSTing to the URL

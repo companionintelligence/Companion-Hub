@@ -5,11 +5,13 @@ import { InstallPipelineTracker } from './install-pipeline.tracker';
 import { pLimit } from '@/common/helpers/file-helpers';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
-import { Injectable } from '@nestjs/common';
+import { Injectable, Optional } from '@nestjs/common';
+import { ModuleRef } from '@nestjs/core';
 import { CURRENT_SCHEMA_VERSION, parseComposeJson } from '@ci-hub/common/schemas';
 import type { AppUrn } from '@ci-hub/common/types';
 import { MarketplaceService } from '../marketplace/marketplace.service';
 import { PortAllocationRepository } from '../network/port-allocation.repository';
+import { LifecycleJobService } from '../app-lifecycle/lifecycle-job.service';
 import { AppFilesManager } from './app-files-manager';
 import { AppsRepository } from './apps.repository';
 
@@ -29,6 +31,7 @@ export class AppsReadService {
     private readonly configurationService: ConfigurationService,
     private readonly portAllocationRepository: PortAllocationRepository,
     private readonly installPipelineTracker: InstallPipelineTracker,
+    @Optional() private readonly moduleRef?: ModuleRef,
   ) {}
 
   public async populateAppInfo(apps: AppList) {
@@ -155,7 +158,25 @@ export class AppsReadService {
   /** Active install (Docker pipeline) and apps waiting in the install queue. */
   public async getInstallQueueState() {
     const installing = await this.appsRepository.getAppsByStatus('installing');
-    const activeUrn = this.installPipelineTracker.getActive();
+    let activeUrn = this.installPipelineTracker.getActive();
+
+    if (!activeUrn && this.moduleRef) {
+      try {
+        const lifecycleJobService = this.moduleRef.get(LifecycleJobService, { strict: false });
+        if (lifecycleJobService) {
+          const activeJobs = await lifecycleJobService.listJobs({
+            operation: 'install',
+            status: 'running',
+            limit: 1,
+          });
+          if (activeJobs[0]?.appUrn) {
+            activeUrn = activeJobs[0].appUrn as AppUrn;
+          }
+        }
+      } catch {
+        // Best effort
+      }
+    }
 
     const entries = await Promise.all(
       installing.map(async (app) => {

@@ -3,6 +3,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { publishHubsToIntents } from '@/lib/app-intents';
 import { hubAuthFlowPolicy, readHubAuthFlow } from '@/lib/hub-auth-flow';
 import { initMobileConnection, setHubConnection, usesCloudConnect } from '@/lib/mobile-connection';
+import { resolveHubConnection } from '@/lib/lan-direct-connect';
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import toast from 'react-hot-toast';
@@ -167,7 +168,17 @@ export default function ConnectPage() {
     if (!device.hubUrl) return;
     setConnectingId(device.id);
     try {
-      await setHubConnection(device.hubUrl);
+      const lanCandidate = device.lanUrl || device.lanIp;
+      if (lanCandidate) {
+        const resolved = await resolveHubConnection({
+          lanAddress: lanCandidate,
+          remoteTunnelUrl: device.hubUrl,
+          timeoutMs: 1200,
+        });
+        await setHubConnection(resolved.baseUrl);
+      } else {
+        await setHubConnection(device.hubUrl);
+      }
       navigate('/login', { replace: true });
     } catch (err) {
       toast.error(err instanceof Error ? err.message : t('MOBILE_CONNECT_CONNECT_FAILED'));
