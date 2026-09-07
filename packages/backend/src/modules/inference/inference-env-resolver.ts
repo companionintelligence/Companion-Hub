@@ -6,10 +6,12 @@ import { HubPoolPeerService } from '@/modules/hub-pool/hub-pool-peer.service';
 import { ModelRegistryService } from './model-registry.service';
 import { HardwareInspectorService } from './hardware-inspector.service';
 import { InferenceBackendRegistry } from './backends/backend-registry';
+import type { InferenceBackend } from './backends/backend.interface';
 import { OllamaBackend } from './backends/ollama.backend';
 import { CloudFallbackService } from './cloud-fallback.service';
 import { recommendContextLength } from './context-length.util';
 import { isCatalogModelInstalled, isServedModelForCatalog } from './model-availability.util';
+import { INFERENCE_BACKEND_TYPES } from '@ci-hub/common/types';
 import type { CuratedModel, InferenceBackendType } from '@ci-hub/common/types';
 
 /** Fallback keys for backends that do not expose a configured or desktop-managed key. */
@@ -98,8 +100,7 @@ export class InferenceEnvResolver {
     const fallbackCloud = cloudProviders[0];
 
     const preferences = this.config.getInferencePreferences();
-    const backendType = preferences.preferredBackend ?? 'ollama';
-    const backend = this.backends.get(backendType);
+    const { backendType, backend } = this.resolvePreferredBackend(preferences.preferredBackend);
 
     const backendHealth = await backend.healthCheck().catch((err) => {
       const message = err instanceof Error ? err.message : String(err);
@@ -274,6 +275,33 @@ export class InferenceEnvResolver {
     );
 
     return env;
+  }
+
+  /**
+   * The active backend, paired with the type string that names it.
+   *
+   * Mirrors `AppCredentialsService.resolvePreferredBackend`, for the same reason: `preferredBackend`
+   * comes from settings.json, which is read off disk and typed by assertion rather than validated,
+   * so `?? 'ollama'` catches an absent preference but not a retired or mistyped one. The registry
+   * now throws on those instead of returning undefined behind a non-optional type, and this resolver
+   * runs on every app install/start — a stale settings.json must not stop every app from getting its
+   * `CI_*` env. Degrade to Ollama and name the rejected value in the warning.
+   *
+   * The fallback also has to move `backendType`, not just the instance: it feeds BACKEND_API_KEY,
+   * the catalog filter, and the emitted CI_INFERENCE_BACKEND, so leaving the bad string in place
+   * would hand apps an undefined API key and an unmatchable backend filter.
+   */
+  private resolvePreferredBackend(preferred: InferenceBackendType | null): { backendType: InferenceBackendType; backend: InferenceBackend } {
+    const requested = preferred ?? 'ollama';
+    const backend = this.backends.tryGet(requested);
+    if (backend) {
+      return { backendType: requested, backend };
+    }
+    this.logger.error(
+      `[InferenceEnvResolver] stored inference backend '${requested}' is not a known backend; falling back to ollama. ` +
+        `Valid backends: ${INFERENCE_BACKEND_TYPES.join(', ')}.`,
+    );
+    return { backendType: 'ollama', backend: this.ollamaBackend };
   }
 
   /** True when the model is on disk on the active backend or tracked as pulled/loaded/pinned in the registry. */

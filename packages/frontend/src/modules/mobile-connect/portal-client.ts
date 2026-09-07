@@ -12,12 +12,15 @@
  */
 
 const PRODUCTION_PORTAL_URL = 'https://hub.ci.computer';
-const DEVELOPMENT_PORTAL_URL = 'https://hub.companionintelligence.com';
 
 function portalUrlFromEnv(): string {
   const baked = (import.meta.env.CI_CLOUD_URL as string | undefined)?.trim();
-  if (baked) return baked.replace(/\/+$/, '');
-  return import.meta.env.CI_HUB_ENVIRONMENT === 'production' ? PRODUCTION_PORTAL_URL : DEVELOPMENT_PORTAL_URL;
+  if (baked) {
+    const next = baked.replace(/\/+$/, '');
+    // Internal/dev cloud host is not the user-facing Companion URL.
+    if (next && !next.includes('companionintelligence.com')) return next;
+  }
+  return PRODUCTION_PORTAL_URL;
 }
 
 export const DEFAULT_PORTAL_URL = portalUrlFromEnv();
@@ -55,6 +58,56 @@ async function nativeFetch(): Promise<typeof fetch> {
 
 function normalizePortalUrl(url: string): string {
   return url.trim().replace(/\/+$/, '') || DEFAULT_PORTAL_URL;
+}
+
+const PORTAL_URL_STORAGE_KEY = 'ci-hub.portalUrl';
+const PORTAL_AUTH_STORAGE_KEY = 'ci-hub.portalAuth';
+
+/** Portal Hub URL for the next Safari OIDC hop. Independent of the chosen appliance. */
+export function readPersistedPortalUrl(): string {
+  try {
+    const stored = typeof localStorage === 'undefined' ? null : localStorage.getItem(PORTAL_URL_STORAGE_KEY);
+    if (stored && !stored.includes('companionintelligence.com')) {
+      return normalizePortalUrl(stored);
+    }
+    return DEFAULT_PORTAL_URL;
+  } catch {
+    return DEFAULT_PORTAL_URL;
+  }
+}
+
+export function persistPortalUrl(url: string): string {
+  const next = normalizePortalUrl(url);
+  try {
+    localStorage.setItem(PORTAL_URL_STORAGE_KEY, next);
+  } catch {
+    /* private mode / quota */
+  }
+  return next;
+}
+
+export function writePortalAuth(auth: PortalAuth): void {
+  try {
+    sessionStorage.setItem(PORTAL_AUTH_STORAGE_KEY, JSON.stringify(auth));
+  } catch {
+    /* ignore */
+  }
+}
+
+export function readStoredPortalAuth(): PortalAuth | null {
+  try {
+    const raw = sessionStorage.getItem(PORTAL_AUTH_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as PortalAuth;
+    if (!(parsed.token || parsed.cookie)) return null;
+    return {
+      token: parsed.token ?? null,
+      cookie: parsed.cookie ?? null,
+      kind: parsed.kind === 'oauth' ? 'oauth' : 'session',
+    };
+  } catch {
+    return null;
+  }
 }
 
 /** Keep just the better-auth session cookie pair from a Set-Cookie header. */

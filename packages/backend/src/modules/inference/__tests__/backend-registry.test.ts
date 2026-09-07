@@ -1,7 +1,7 @@
 import { INFERENCE_BACKEND_TYPES, type InferenceBackendType } from '@ci-hub/common/types';
 import { Test } from '@nestjs/testing';
 import { describe, expect, it, vi } from 'vitest';
-import { InferenceBackendRegistry } from '../backends/backend-registry';
+import { InferenceBackendRegistry, UnknownInferenceBackendError } from '../backends/backend-registry';
 import type { InferenceBackend } from '../backends/backend.interface';
 import { DsparkBackend } from '../backends/dspark.backend';
 import { LemonadeBackend } from '../backends/lemonade.backend';
@@ -69,16 +69,74 @@ describe('InferenceBackendRegistry', () => {
       expect(new Set(resolved).size).toBe(INFERENCE_BACKEND_TYPES.length);
     });
 
-    it('returns undefined for a type outside the union instead of falling back to a default backend', () => {
+    it('throws a named error carrying the bad value and the valid set, for a type outside the union', () => {
       const registry = buildRegistry(makeBackends());
 
-      // The compiler cannot police the callers that feed `get` values sourced from data rather than
-      // from literals — a curated catalog row in model-puller, a request body in the MCP tools, a DB
-      // column in the pool proxy. A `?? this.lemonadeBackend` cushion would route a stale or retired
-      // backend name to Lemonade and pull the wrong model: exactly the silent misroute the ternary
-      // chain used to cause. Absent wiring has to read as absent.
+      // This test used to assert `get` *returned* undefined. That was written to characterize the
+      // hazard, not to bless it: the compiler cannot police the callers that feed `get` values
+      // sourced from data rather than from literals — settings.json read off disk and typed by
+      // assertion, a curated catalog row in model-puller, a DB column in the pool proxy — so
+      // undefined behind a non-optional return type surfaced three frames later as
+      // `Cannot read properties of undefined (reading 'healthCheck')`, naming neither the bad value
+      // nor the lookup that produced it. The lookup now fails at the boundary instead.
+      //
+      // The old comment's point still stands, and is why this is a throw rather than a
+      // `?? this.lemonadeBackend` cushion: silently routing a retired backend name to Lemonade
+      // would pull the wrong model. Absent wiring still reads as absent — it just says so on time.
       const staleCatalogValue: string = 'llamacpp';
-      expect(registry.get(staleCatalogValue as InferenceBackendType)).toBeUndefined();
+
+      expect(() => registry.get(staleCatalogValue as InferenceBackendType)).toThrow(UnknownInferenceBackendError);
+      // Both halves of the message are load-bearing: the frame that catches this is never the frame
+      // that produced the string, so the error has to carry the rejected value *and* the valid set.
+      expect(() => registry.get(staleCatalogValue as InferenceBackendType)).toThrow(/'llamacpp'/);
+      expect(() => registry.get(staleCatalogValue as InferenceBackendType)).toThrow(new RegExp(INFERENCE_BACKEND_TYPES.join(', ')));
+    });
+
+    it('names itself and carries the rejected value on the error object, not only in the message prose', () => {
+      const registry = buildRegistry(makeBackends());
+
+      // The test above pins the human half of the contract; this pins the machine half, which no
+      // message regex and no `instanceof` can reach. Every route out of the registry that does not
+      // branch on `tryGet` ends at MainExceptionFilter as a 500, and that filter scrubs the response
+      // body to `INTERNAL_SERVER_ERROR` — so the logged and Sentry-captured exception is the only
+      // artifact left holding the bad value. Sentry groups that by `name`: without `this.name` the
+      // class collapses into generic `Error` and the group is unreadable, and without the `readonly`
+      // on the constructor parameter the only way back to the rejected string is re-parsing English.
+      const staleCatalogValue: string = 'llamacpp';
+
+      let caught: unknown;
+      try {
+        registry.get(staleCatalogValue as InferenceBackendType);
+      } catch (error) {
+        caught = error;
+      }
+
+      expect(caught).toBeInstanceOf(UnknownInferenceBackendError);
+      expect(caught).toMatchObject({ name: 'UnknownInferenceBackendError', requestedType: staleCatalogValue });
+    });
+  });
+
+  describe('tryGet', () => {
+    it.each([...INFERENCE_BACKEND_TYPES])('resolves %s to the same instance get returns', (type) => {
+      const backends = makeBackends();
+      const registry = buildRegistry(backends);
+
+      // Anchored to the injected instance as well as to `get`, so a tryGet that read some other
+      // map — or a `get` reimplemented off tryGet incorrectly — cannot pass by agreeing with itself.
+      expect(registry.tryGet(type)).toBe(backends[type]);
+      expect(registry.tryGet(type)).toBe(registry.get(type));
+    });
+
+    it('returns undefined for a type outside the union, so a caller can fall back deliberately', () => {
+      const registry = buildRegistry(makeBackends());
+
+      // The branch-instead-of-catch door for the two callers that resolve an operator preference
+      // out of settings.json (app-credentials, inference-env-resolver). A stale value there must
+      // degrade to Ollama with a warning rather than break credential/env resolution for every
+      // installed app, and catching an exception to steer normal control flow reads worse.
+      const staleSettingsValue: string = 'llamacpp';
+
+      expect(registry.tryGet(staleSettingsValue as InferenceBackendType)).toBeUndefined();
     });
   });
 
@@ -90,35 +148,51 @@ describe('InferenceBackendRegistry', () => {
       expect(buildRegistry(backends).entries()).toStrictEqual(expected);
     });
 
-    it('walks the source tuple, not the constructor record, so an unwired new type still surfaces', async () => {
+    it('walks the source tuple, not the constructor record', async () => {
       // The record literal is written in tuple order, so `Object.entries(this.byType)` is
       // indistinguishable from the real walk under the real tuple. Only a tuple that disagrees with
-      // the record — reordered, and one type longer — can tell the two implementations apart, and a
-      // frozen `as const` export cannot be reordered in place. Hence the re-import under a mock.
-      const reorderedWithNewType = ['lucebox', 'mtplx', 'dspark', 'lemonade', 'vllm', 'ollama', 'nemo'] as const;
+      // the record can tell the two implementations apart, and a frozen `as const` export cannot be
+      // reordered in place. Hence the re-import under a mock.
+      const reordered = ['lucebox', 'mtplx', 'dspark', 'lemonade', 'vllm', 'ollama'] as const;
 
       vi.resetModules();
       vi.doMock('@ci-hub/common/types', async (importOriginal) => ({
         ...(await importOriginal<typeof import('@ci-hub/common/types')>()),
-        INFERENCE_BACKEND_TYPES: reorderedWithNewType,
+        INFERENCE_BACKEND_TYPES: reordered,
       }));
 
       try {
         const { InferenceBackendRegistry: ReloadedRegistry } = await import('../backends/backend-registry');
         const backends = makeBackends();
 
-        expect(buildRegistry(backends, ReloadedRegistry).entries()).toStrictEqual([
-          ['lucebox', backends.lucebox],
-          ['mtplx', backends.mtplx],
-          ['dspark', backends.dspark],
-          ['lemonade', backends.lemonade],
-          ['vllm', backends.vllm],
-          ['ollama', backends.ollama],
-          // The seventh backend nobody wired into the constructor. It has to land here as a loud
-          // unwired pair; dropping out of the walk is the failure mode the six hand-written literal
-          // arrays had, and the whole reason this method derives itself from the tuple.
-          ['nemo', undefined],
-        ]);
+        expect(buildRegistry(backends, ReloadedRegistry).entries()).toStrictEqual(reordered.map((type) => [type, backends[type]]));
+      } finally {
+        vi.doUnmock('@ci-hub/common/types');
+        vi.resetModules();
+      }
+    });
+
+    it('throws by name for a tuple type nobody wired into the constructor', async () => {
+      // A seventh backend added to the union but not to the registry. entries() resolves through
+      // get(), so the omission surfaces as a named error rather than an `undefined` the return type
+      // says cannot be there. What it must never do is drop out of the walk silently — that is the
+      // failure mode the hand-written literal arrays had, and the reason this derives from the tuple.
+      // Unreachable in practice: the Record makes an unwired type a compile error. This is the
+      // runtime tripwire behind that.
+      const withUnwiredType = [...INFERENCE_BACKEND_TYPES, 'nemo'] as const;
+
+      vi.resetModules();
+      vi.doMock('@ci-hub/common/types', async (importOriginal) => ({
+        ...(await importOriginal<typeof import('@ci-hub/common/types')>()),
+        INFERENCE_BACKEND_TYPES: withUnwiredType,
+      }));
+
+      try {
+        const { InferenceBackendRegistry: ReloadedRegistry, UnknownInferenceBackendError } = await import('../backends/backend-registry');
+        const registry = buildRegistry(makeBackends(), ReloadedRegistry);
+
+        expect(() => registry.entries()).toThrow(UnknownInferenceBackendError);
+        expect(() => registry.entries()).toThrow("Unknown inference backend 'nemo'");
       } finally {
         vi.doUnmock('@ci-hub/common/types');
         vi.resetModules();
