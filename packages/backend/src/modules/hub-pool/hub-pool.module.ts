@@ -9,6 +9,8 @@ import { HubPoolPeerService } from './hub-pool-peer.service';
 import { HubPoolLoadService } from './hub-pool-load.service';
 import { HubPoolRoutingLogService } from './hub-pool-routing-log.service';
 import { PoolProxyService } from './hub-pool-proxy.service';
+import { HubPoolNodeIdentityService } from './hub-pool-node-identity.service';
+import { HubPoolDiscoveryService } from './hub-pool-discovery.service';
 import { PoolAppGuard } from './guards/pool-app.guard';
 import { PoolPeerGuard } from './guards/pool-peer.guard';
 
@@ -19,7 +21,17 @@ import { PoolPeerGuard } from './guards/pool-peer.guard';
 @Module({
   imports: [LoggerModule, EncryptionModule, TailscaleModule, forwardRef(() => InferenceModule)],
   controllers: [HubPoolController],
-  providers: [HubPoolPeerRepository, HubPoolLoadService, HubPoolRoutingLogService, HubPoolPeerService, PoolProxyService, PoolAppGuard, PoolPeerGuard],
+  providers: [
+    HubPoolPeerRepository,
+    HubPoolLoadService,
+    HubPoolRoutingLogService,
+    HubPoolNodeIdentityService,
+    HubPoolPeerService,
+    HubPoolDiscoveryService,
+    PoolProxyService,
+    PoolAppGuard,
+    PoolPeerGuard,
+  ],
   exports: [HubPoolPeerService, PoolProxyService],
 })
 export class HubPoolModule {}

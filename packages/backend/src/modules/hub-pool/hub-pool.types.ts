@@ -157,6 +157,28 @@ export interface DiscoverablePoolPeer {
   claimedNodeUuid?: string;
 }
 
+/** Why a manually probed address is not offered as a pairing candidate. `null` when it is. */
+export type PoolProbeReason = 'unreachable' | 'not_a_hub' | 'no_tailnet_fqdn' | 'already_paired' | 'self';
+
+/**
+ * What `POST /inference/pool/peers/probe` found at an operator-typed address.
+ *
+ * `nodeFqdn` is the only durable thing here: the address is a directory lookup and is discarded once
+ * this answers. Pairing then goes through the existing `POST peers/pair` with that FQDN, so manual
+ * entry adds no new pairing path and no new trust — it only removes the Tailscale OAuth credential
+ * from the list of things an operator must have before two Hubs can find each other.
+ */
+export interface PoolProbeResult {
+  /** The address as probed, echoed back so a UI can label the row without re-parsing what was typed. */
+  address: string;
+  isCiHub: boolean;
+  nodeFqdn: string | null;
+  hostname: string | null;
+  alreadyPaired: boolean;
+  pairable: boolean;
+  reason: PoolProbeReason | null;
+}
+
 /**
  * `hub_pool_peer` shape safe to send to the operator UI — everything except the
  * token material (`verifyTokenHash`, `presentTokenEncrypted`). Neither value

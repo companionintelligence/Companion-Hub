@@ -2,14 +2,17 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   type DiscoverablePoolPeer,
   type PoolPeerRow,
+  type PoolProbeResult,
   type PoolRoutingLogResponse,
   type PoolStatusResponse,
   formatPoolDiscoverLines,
   formatPoolPeerTable,
   formatPoolPeersLines,
+  formatPoolProbeLines,
   formatPoolRoutingLogLines,
   formatPoolStatusLines,
   formatPoolTimestamp,
+  probePoolAddress,
   resolvePoolPeerTarget,
   runPoolDiscover,
   setPoolEnabledSetting,
@@ -221,19 +224,28 @@ describe('hub-pool-cli discovery', () => {
     hubApiFetch.mockReset();
   });
 
-  it('explains the missing Tailscale Admin API credential and never calls the discovery route', async () => {
-    hubApiFetch.mockResolvedValueOnce(status({ tailscaleAdminApiConfigured: false }));
+  it('still asks for the candidate list with no Admin API credential, because manual entries come back on it', async () => {
+    // Deliberately changed: this used to short-circuit on `tailscaleAdminApiConfigured: false`,
+    // back when that credential was the only source of candidates. A node added with
+    // `cihub pool probe` is returned by the same route, so short-circuiting made manual entries
+    // invisible on exactly the Hubs that have no credential — the ones the feature is for.
+    hubApiFetch.mockResolvedValueOnce(status({ tailscaleAdminApiConfigured: false })).mockResolvedValueOnce([]);
 
     const result = await runPoolDiscover('.env.local');
 
     expect(result.configured).toBe(false);
-    expect(hubApiFetch).toHaveBeenCalledTimes(1);
-    expect(hubApiFetch.mock.calls[0]?.[1]).toBe('/inference/pool/status');
-    const text = result.lines.join('\n');
-    expect(text).toContain('Peer discovery is not configured');
+    expect(hubApiFetch.mock.calls[1]?.[1]).toBe('/inference/pool/peers/discoverable');
+  });
+
+  it('offers manual entry first and the OAuth credential second when nothing is found', async () => {
+    hubApiFetch.mockResolvedValueOnce(status({ tailscaleAdminApiConfigured: false })).mockResolvedValueOnce([]);
+
+    const text = (await runPoolDiscover('.env.local')).lines.join('\n');
+
+    expect(text).toContain('cihub pool probe <address>');
     expect(text).toContain('TAILSCALE_OAUTH_CLIENT_ID');
-    expect(text).toContain('can still be');
-    expect(text).not.toContain('No unpaired CI-Hub nodes');
+    // The credential stays genuinely optional, and the copy has to keep saying so.
+    expect(text).toContain('pools normally without it');
   });
 
   it('distinguishes a configured-but-empty tailnet from the unconfigured case', async () => {
@@ -243,7 +255,7 @@ describe('hub-pool-cli discovery', () => {
 
     expect(result.configured).toBe(true);
     expect(hubApiFetch.mock.calls[1]?.[1]).toBe('/inference/pool/peers/discoverable');
-    expect(result.lines.join('\n')).toContain('No unpaired CI-Hub nodes found on this tailnet.');
+    expect(result.lines.join('\n')).toContain('Tailnet enumeration is configured, and found nothing unpaired.');
   });
 
   it('lists discoverable devices with the pair hint', () => {
@@ -251,6 +263,92 @@ describe('hub-pool-cli discovery', () => {
     const text = formatPoolDiscoverLines(devices, true).join('\n');
     expect(text).toContain(PEER_A);
     expect(text).toContain('cihub pool pair <node>');
+  });
+
+  it('says how each candidate was found, rather than printing a blank device id', () => {
+    const devices: DiscoverablePoolPeer[] = [
+      { tailscaleDeviceId: 'dev-1', nodeFqdn: PEER_A, hostname: 'hub-b', source: 'tailscale' },
+      { tailscaleDeviceId: '', nodeFqdn: 'lan-box.example-tailnet.ts.net', hostname: 'lan-box', source: 'lan-probe' },
+    ];
+
+    const text = formatPoolDiscoverLines(devices, true).join('\n');
+
+    expect(text).toContain('FOUND VIA');
+    expect(text).toContain('tailnet');
+    expect(text).toContain('address');
+    expect(text).toContain('-');
+  });
+
+  it('renders an off-box hostname through sanitizeForBox', () => {
+    // Box output is ANSI-injectable, and every string on a candidate row is authored off-box now
+    // that one of the sources is "whatever answered at an address the operator typed".
+    const devices: DiscoverablePoolPeer[] = [{ tailscaleDeviceId: '', nodeFqdn: PEER_A, hostname: '[31mred[0m', source: 'lan-probe' }];
+
+    expect(formatPoolDiscoverLines(devices, false).join('\n')).not.toContain('[31m');
+  });
+});
+
+describe('hub-pool-cli probe', () => {
+  beforeEach(() => {
+    hubApiFetch.mockReset();
+  });
+
+  function probeResult(overrides: Partial<PoolProbeResult> = {}): PoolProbeResult {
+    return {
+      address: '192.168.1.42',
+      isCiHub: true,
+      nodeFqdn: PEER_A,
+      hostname: 'hub-b',
+      alreadyPaired: false,
+      pairable: true,
+      reason: null,
+      ...overrides,
+    };
+  }
+
+  it('posts the address the operator typed, unmodified', async () => {
+    hubApiFetch.mockResolvedValueOnce(probeResult());
+
+    await probePoolAddress('.env.local', '192.168.1.42:5010');
+
+    expect(hubApiFetch.mock.calls[0]?.[1]).toBe('/inference/pool/peers/probe');
+    expect(JSON.parse((hubApiFetch.mock.calls[0]?.[2] as RequestInit).body as string)).toEqual({ address: '192.168.1.42:5010' });
+  });
+
+  it('hands back the tailnet name to pair with, and says the address is not the transport', () => {
+    const text = formatPoolProbeLines(probeResult()).join('\n');
+
+    expect(text).toContain(`cihub pool pair ${PEER_A}`);
+    // The one thing about this feature that would be easy and costly to misunderstand.
+    expect(text).toContain('not to the address you');
+  });
+
+  it('names the port fix when nothing answered', () => {
+    const text = formatPoolProbeLines(probeResult({ isCiHub: false, nodeFqdn: null, hostname: null, pairable: false, reason: 'unreachable' })).join(
+      '\n',
+    );
+
+    expect(text).toContain('cihub pool probe <address>:<port>');
+  });
+
+  it('tells a Hub with no tailnet apart from one that is simply absent', () => {
+    const text = formatPoolProbeLines(probeResult({ nodeFqdn: null, hostname: null, pairable: false, reason: 'no_tailnet_fqdn' })).join('\n');
+
+    expect(text).toContain('has not joined a tailnet');
+    expect(text).toContain('cihub tailscale up');
+  });
+
+  it('points an already-paired node at the peers list instead of offering to pair again', () => {
+    const text = formatPoolProbeLines(probeResult({ alreadyPaired: true, pairable: false, reason: 'already_paired' })).join('\n');
+
+    expect(text).toContain('already paired');
+    expect(text).toContain('cihub pool peers');
+  });
+
+  it('sanitizes the address it echoes back', () => {
+    const text = formatPoolProbeLines(probeResult({ address: '[31m192.168.1.42[0m' })).join('\n');
+
+    expect(text).not.toContain('[31m');
   });
 });
 

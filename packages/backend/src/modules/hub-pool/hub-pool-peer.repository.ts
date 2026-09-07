@@ -24,6 +24,17 @@ export class HubPoolPeerRepository {
     return this.db.query.hubPoolPeer.findFirst({ where: eq(hubPoolPeer.nodeFqdn, nodeFqdn) });
   }
 
+  /**
+   * The peer holding this stable node UUID, if any.
+   *
+   * Only ever called with a UUID learned from an authenticated `/capabilities` response — the column
+   * carries a partial UNIQUE index, so this is the read that turns a would-be 23505 on a 30-second
+   * timer into a logged warning about the same machine being paired twice.
+   */
+  async findByPeerNodeUuid(peerNodeUuid: string): Promise<HubPoolPeer | undefined> {
+    return this.db.query.hubPoolPeer.findFirst({ where: eq(hubPoolPeer.peerNodeUuid, peerNodeUuid) });
+  }
+
   async listAll(): Promise<HubPoolPeer[]> {
     return this.db.query.hubPoolPeer.findMany();
   }

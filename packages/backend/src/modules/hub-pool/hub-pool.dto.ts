@@ -74,6 +74,20 @@ const hubPoolPreferencesSchema = z.object({
 });
 export class UpdateHubPoolPreferencesBody extends createZodDto(hubPoolPreferencesSchema) {}
 
+/**
+ * An operator-typed peer address for the one-shot discovery probe.
+ *
+ * Deliberately NOT `peerFqdnSchema`: that schema exists to reject exactly these shapes, because an
+ * address must never be *stored* as a peer name. This value is used once, from an
+ * operator-authenticated route, and discarded as soon as `/identify` has named the node — the real
+ * parse and the private-address check are `parseProbeTarget` and `isPoolProbeTarget`, which produce
+ * messages naming the specific problem. This is the length bound, not the grammar.
+ */
+const probePeerAddressSchema = z.object({
+  address: z.string().trim().min(1).max(300),
+});
+export class ProbePeerAddressBody extends createZodDto(probePeerAddressSchema) {}
+
 const routingLogQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(ROUTING_LOG_CAPACITY).optional(),
 });

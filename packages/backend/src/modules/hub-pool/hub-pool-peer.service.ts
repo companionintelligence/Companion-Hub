@@ -7,6 +7,7 @@ import {
   Inject,
   Injectable,
   NotFoundException,
+  Optional,
   OnModuleDestroy,
   OnModuleInit,
   ServiceUnavailableException,
@@ -29,6 +30,7 @@ import { TailscaleAdminApiService, type TailscaleDevice } from '@/modules/tailsc
 import { InferenceRouterService } from '@/modules/inference/inference-router.service';
 import { HubPoolPeerRepository } from './hub-pool-peer.repository';
 import { HubPoolLoadService } from './hub-pool-load.service';
+import { HubPoolNodeIdentityService } from './hub-pool-node-identity.service';
 import {
   toPublicPeer,
   type DiscoverablePoolPeer,
@@ -88,6 +90,15 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
     private readonly inferenceRouter: InferenceRouterService,
     private readonly loadService: HubPoolLoadService,
     private readonly configuration: ConfigurationService,
+    /**
+     * Appended last and `@Optional()` on purpose.
+     *
+     * Every pool test file constructs this service positionally, so a parameter anywhere else
+     * silently re-binds the existing ones. `@Optional()` additionally means a construction that
+     * omits it still works: without a node identity this Hub simply tells peers no UUID and learns
+     * none from them, which is exactly how every pre-identity build behaved.
+     */
+    @Optional() private readonly nodeIdentity?: HubPoolNodeIdentityService,
   ) {}
 
   onModuleInit(): void {
@@ -302,7 +313,15 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
       routingActive: directions.outbound.enabled && usable > 0,
       settings: this.configuration.getHubPoolPreferences(),
       tailscaleAdminApiConfigured: this.tailscaleAdminApi.isConfigured(),
-      localNode: { ...localNode, nodeFqdn: selfStatus.nodeFqdn, tailnet: selfStatus.tailnet, tailscaleConnected: selfStatus.connected },
+      localNode: {
+        ...localNode,
+        nodeFqdn: selfStatus.nodeFqdn,
+        tailnet: selfStatus.tailnet,
+        tailscaleConnected: selfStatus.connected,
+        // In-memory read, no I/O — `getPoolStatus`'s doc comment above promises this call is cheap
+        // enough for the UI to poll, and that promise is what keeps the whole status card usable.
+        ...(this.nodeIdentity ? { identity: this.nodeIdentity.identitySummary() } : {}),
+      },
       peers: peers.map((peer) => ({ ...toPublicPeer(peer), inFlightRequests: this.loadService.get(peer.id) })),
       peerCounts: {
         total: peers.length,
@@ -420,11 +439,27 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
   /**
    * Refuses a pairing request from a name that is not on this tailnet.
    *
-   * Degrades to a no-op when the Admin API credential is absent or unhealthy: it
-   * is explicitly optional (see `docs/hub-pool.md`), and a Hub that cannot
-   * discover peers must still be able to accept pairing from one that can.
+   * Two checks, in order of what the node actually knows:
+   *
+   * 1. **The MagicDNS suffix**, which needs no credential at all — `TailscaleStatus.tailnet` comes
+   *    from the local CLI. This is the one that matters now that peers can be found without a
+   *    Tailscale OAuth client: previously the whole method returned immediately when the Admin API
+   *    was unconfigured, so a credential-less Hub — the exact configuration manual peer entry
+   *    exists to serve — had no membership check on either side of the handshake.
+   * 2. **Admin API device membership**, when a credential is configured. Strictly stronger, since a
+   *    suffix is only a string.
+   *
+   * Still degrades to a no-op when this node has no tailnet of its own: a Hub that never joined one
+   * has nothing to compare against, and refusing there would break pairing on a configuration that
+   * works today.
    */
   private async assertTailnetMember(nodeFqdn: string): Promise<void> {
+    const selfTailnet = await this.tailnetSuffix();
+    if (selfTailnet && !nodeFqdn.endsWith(`.${selfTailnet}`)) {
+      this.logger.warn(`[HubPool] rejecting pairing request from ${nodeFqdn}: not a name on this tailnet (${selfTailnet})`);
+      throw new ForbiddenException('Pairing requests are only accepted from devices on this tailnet');
+    }
+
     if (!this.tailscaleAdminApi.isConfigured()) {
       return;
     }
@@ -446,6 +481,29 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
     if (!devices.some((device) => normalizePeerFqdn(device.name) === nodeFqdn)) {
       this.logger.warn(`[HubPool] rejecting pairing request from ${nodeFqdn}: not a device on this tailnet`);
       throw new ForbiddenException('Pairing requests are only accepted from devices on this tailnet');
+    }
+  }
+
+  /**
+   * This node's own MagicDNS suffix, or `null` when it has none.
+   *
+   * Read through the 30s-cached status and never allowed to throw: a Tailscale CLI that is briefly
+   * unavailable must not turn every inbound pairing request into a 500. An unknown suffix means the
+   * suffix check is skipped, which is the same "accept on the operator's judgement" posture the
+   * Admin API leg already takes when it cannot reach the API.
+   */
+  private async tailnetSuffix(): Promise<string | null> {
+    try {
+      const status = await this.tailscaleService.getStatusCached();
+      return status.tailnet
+        ? status.tailnet
+            .trim()
+            .toLowerCase()
+            .replace(/^\.+|\.+$/g, '') || null
+        : null;
+    } catch (error) {
+      this.logger.warn(`[HubPool] could not read this node's tailnet: ${error instanceof Error ? error.message : String(error)}`);
+      return null;
     }
   }
 
@@ -600,6 +658,10 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
       hardwareTier: inventory.hardwareTier,
       backends: acceptingWork ? inventory.backends : [],
       acceptingWork,
+      // Only what is already resolved — `peekNodeUuid` never does I/O. This answers every peer's
+      // 30s probe, so it must not be the thing that waits on a `dmidecode` chain; a peer that gets
+      // no UUID on one probe simply learns it on the next.
+      ...(this.nodeIdentity?.peekNodeUuid() ? { nodeUuid: this.nodeIdentity.peekNodeUuid() as string } : {}),
       // Never cached: this is the whole point of the snapshot for a ranking peer, and a stale
       // figure would tell it we are idle while our engines are saturated.
       inFlightRequests: this.loadService.localInFlight(),
@@ -678,6 +740,14 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
         lastSeenAt: new Date().toISOString(),
         lastCapabilities: capabilities as unknown as Record<string, unknown>,
       });
+      // Deliberately a SECOND write, after the health write has already committed.
+      //
+      // `peer_node_uuid` carries a partial UNIQUE index (migration 0059), so writing one can raise a
+      // 23505 when the same physical node is somehow paired twice. Folding it into the write above
+      // would send that error into the catch below, where it would count as a failed probe — and
+      // three ticks later a perfectly healthy peer would be marked `unreachable` by a uniqueness
+      // conflict that has nothing to do with its health.
+      await this.learnPeerNodeUuid(peer, capabilities.nodeUuid);
     } catch (error) {
       const failures = peer.consecutiveFailures + 1;
       this.logger.warn(
@@ -687,6 +757,42 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
         consecutiveFailures: failures,
         status: failures >= UNREACHABLE_THRESHOLD ? 'unreachable' : peer.status,
       });
+    }
+  }
+
+  /**
+   * Record the stable UUID a peer reported, so that "this peer was renamed" becomes distinguishable
+   * from "this peer is gone".
+   *
+   * `node_fqdn` remains the unique key and the trust anchor — a MagicDNS name, which means renaming
+   * a device in the Tailscale console silently breaks a pairing today with no way to tell why. The
+   * UUID does not fix that; it makes it *diagnosable*, which is the whole of its job here.
+   *
+   * The value is only ever taken from a `/capabilities` response, which arrived through
+   * `PoolPeerGuard`. A UUID from the unauthenticated `/identify` probe is a claim anything on the
+   * network can make, and must never reach this column — see `DiscoverablePoolPeer.claimedNodeUuid`,
+   * which is typed apart from it for exactly that reason.
+   *
+   * Never throws: every failure here is a diagnostic loss, not a health signal.
+   */
+  private async learnPeerNodeUuid(peer: HubPoolPeer, reportedUuid: string | undefined): Promise<void> {
+    if (!reportedUuid || reportedUuid === peer.peerNodeUuid) {
+      return;
+    }
+    try {
+      const collision = await this.repo.findByPeerNodeUuid(reportedUuid);
+      if (collision && collision.id !== peer.id) {
+        // The same machine under two names. Left alone rather than merged: both rows may hold live
+        // tokens, and silently deleting an operator's pairing is not this poll's decision to make.
+        this.logger.warn(
+          `[HubPool] ${peer.nodeFqdn} and ${collision.nodeFqdn} report the same node UUID — the same machine appears to be paired twice. Unpair one.`,
+        );
+        return;
+      }
+      await this.repo.update(peer.id, { peerNodeUuid: reportedUuid });
+      this.logger.info(`[HubPool] learned node UUID for peer ${peer.nodeFqdn}`);
+    } catch (error) {
+      this.logger.warn(`[HubPool] could not record node UUID for ${peer.nodeFqdn}: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 }

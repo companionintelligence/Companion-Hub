@@ -88,9 +88,23 @@ export interface PoolStatusResponse {
 }
 
 export interface DiscoverablePoolPeer {
+  /** Empty for a candidate found by a manual address probe — there is no Tailscale device behind it. */
   tailscaleDeviceId: string;
   nodeFqdn: string;
   hostname: string;
+  /** How this candidate was found. Absent on a peer running an older build. */
+  source?: 'tailscale' | 'lan-probe';
+}
+
+/** What `POST /inference/pool/peers/probe` found at an operator-typed address. */
+export interface PoolProbeResult {
+  address: string;
+  isCiHub: boolean;
+  nodeFqdn: string | null;
+  hostname: string | null;
+  alreadyPaired: boolean;
+  pairable: boolean;
+  reason: 'unreachable' | 'not_a_hub' | 'no_tailnet_fqdn' | 'already_paired' | 'self' | null;
 }
 
 export interface PoolRoutingRecord {
@@ -127,6 +141,14 @@ export async function fetchPoolPeers(envFileName: string): Promise<PoolPeerRow[]
 /** One HTTPS probe per tailnet device on the backend, so it gets the mutation budget rather than the GET one. */
 export async function fetchDiscoverablePeers(envFileName: string): Promise<DiscoverablePoolPeer[]> {
   return hubApiFetch<DiscoverablePoolPeer[]>(envFileName, '/inference/pool/peers/discoverable', {
+    signal: AbortSignal.timeout(POOL_MUTATION_TIMEOUT_MS),
+  });
+}
+
+export async function probePoolAddress(envFileName: string, address: string): Promise<PoolProbeResult> {
+  return hubApiFetch<PoolProbeResult>(envFileName, '/inference/pool/peers/probe', {
+    method: 'POST',
+    body: JSON.stringify({ address }),
     signal: AbortSignal.timeout(POOL_MUTATION_TIMEOUT_MS),
   });
 }
@@ -419,21 +441,23 @@ const DISCOVER_WIDTHS = [34, 24] as const;
  * empty table for both: no Admin API credential means discovery could never have run.
  */
 export function formatPoolDiscoverLines(devices: DiscoverablePoolPeer[], tailscaleAdminApiConfigured: boolean): string[] {
-  if (!tailscaleAdminApiConfigured) {
-    return [
-      `${FAIL} Peer discovery is not configured on this Hub.`,
-      '',
-      'Set TAILSCALE_OAUTH_CLIENT_ID and TAILSCALE_OAUTH_CLIENT_SECRET (a Tailscale',
-      'OAuth client with the devices:core:read scope), then restart the Hub.',
-      '',
-      'This is only needed to enumerate the tailnet. Without it this Hub can still be',
-      'paired with by a Hub that has the credential, and pools normally once paired.',
-    ];
-  }
-
   if (devices.length === 0) {
+    // An empty list has two remedies now that the Admin API credential is not the only source, and
+    // the operator is told both. Manual entry goes first on purpose: it works today, on this Hub,
+    // with nothing to go and create in someone else's console.
     return [
-      'No unpaired CI-Hub nodes found on this tailnet.',
+      'No unpaired CI-Hub nodes found.',
+      '',
+      'Add one by address:  cihub pool probe <address>',
+      '  e.g. 192.168.1.42, 192.168.1.42:5002, or a hostname on this LAN.',
+      '',
+      ...(tailscaleAdminApiConfigured
+        ? ['Tailnet enumeration is configured, and found nothing unpaired.']
+        : [
+            `${PENDING} Tailnet enumeration is off. Set TAILSCALE_OAUTH_CLIENT_ID and`,
+            '  TAILSCALE_OAUTH_CLIENT_SECRET (devices:core:read) and restart to list the',
+            '  whole tailnet at once. It is optional — this Hub pools normally without it.',
+          ]),
       '',
       'Already-paired nodes are excluded — see: cihub pool peers',
       'A candidate only appears once its Hub is running and answers /api/inference/pool/identify.',
@@ -441,16 +465,67 @@ export function formatPoolDiscoverLines(devices: DiscoverablePoolPeer[], tailsca
   }
 
   const lines = [
-    `${cell('NODE', DISCOVER_WIDTHS[0])} ${cell('HOSTNAME', DISCOVER_WIDTHS[1])} TAILSCALE DEVICE`,
-    ruleRow([...DISCOVER_WIDTHS, 'TAILSCALE DEVICE'.length]),
+    `${cell('NODE', DISCOVER_WIDTHS[0])} ${cell('HOSTNAME', DISCOVER_WIDTHS[1])} ${cell('FOUND VIA', 10)} TAILSCALE DEVICE`,
+    ruleRow([...DISCOVER_WIDTHS, 10, 'TAILSCALE DEVICE'.length]),
   ];
   for (const device of devices) {
+    // Every string on this row is authored off-box, and box output is ANSI-injectable — so all of
+    // them go through sanitizeForBox, not just the ones that used to come from the Admin API.
     lines.push(
-      `${cell(device.nodeFqdn, DISCOVER_WIDTHS[0])} ${cell(device.hostname, DISCOVER_WIDTHS[1])} ${sanitizeForBox(device.tailscaleDeviceId)}`,
+      `${cell(device.nodeFqdn, DISCOVER_WIDTHS[0])} ${cell(device.hostname, DISCOVER_WIDTHS[1])} ` +
+        `${cell(device.source === 'lan-probe' ? 'address' : 'tailnet', 10)} ${sanitizeForBox(device.tailscaleDeviceId || '-')}`,
     );
   }
   lines.push('', 'Pair one with: cihub pool pair <node>');
   return lines;
+}
+
+/**
+ * A probe result as the operator reads it.
+ *
+ * Every branch names what to do next, and the success branch says explicitly that pairing goes to
+ * the tailnet name rather than the address typed — which is the one thing about this feature it
+ * would be easy and costly to misunderstand.
+ */
+export function formatPoolProbeLines(result: PoolProbeResult): string[] {
+  const address = sanitizeForBox(result.address);
+  switch (result.reason) {
+    case 'unreachable':
+      return [
+        `${FAIL} Nothing answered at ${address}.`,
+        '',
+        'Tried the Hub API port (5002, then 3000). If that Hub publishes a different one,',
+        'name it: cihub pool probe <address>:<port>',
+        'The peer Hub also has to be running.',
+      ];
+    case 'not_a_hub':
+      return [`${FAIL} Something answered at ${address}, but it is not a CI-Hub.`];
+    case 'no_tailnet_fqdn':
+      return [
+        `${PENDING} Found a CI-Hub at ${address}, but it has not joined a tailnet.`,
+        '',
+        'Pooling reaches peers over the tailnet, so that node has to join one before it',
+        'can be paired with. On that Hub: cihub tailscale up',
+      ];
+    case 'self':
+      return [`${PENDING} ${address} is this Hub.`];
+    case 'already_paired':
+      return [`${OK} ${sanitizeForBox(result.nodeFqdn ?? address)} is already paired — see: cihub pool peers`];
+    default:
+      break;
+  }
+
+  const nodeFqdn = sanitizeForBox(result.nodeFqdn ?? '');
+  return [
+    `${OK} Found ${sanitizeForBox(result.hostname ?? nodeFqdn)} at ${address}.`,
+    '',
+    `  Node       ${nodeFqdn}`,
+    '',
+    `Pair with it: cihub pool pair ${nodeFqdn}`,
+    '',
+    'Pairing and every pooled request go to that tailnet name, not to the address you',
+    'typed — same TLS, same tokens. The address was only used to look the name up.',
+  ];
 }
 
 // --- routing log ---
@@ -514,9 +589,11 @@ export function formatPoolRoutingLogLines(log: PoolRoutingLogResponse): string[]
  * boolean the UI uses.
  */
 export async function runPoolDiscover(envFileName: string): Promise<{ lines: string[]; configured: boolean }> {
-  const status = await fetchPoolStatus(envFileName);
-  if (!status.tailscaleAdminApiConfigured) {
-    return { lines: formatPoolDiscoverLines([], false), configured: false };
-  }
-  return { lines: formatPoolDiscoverLines(await fetchDiscoverablePeers(envFileName), true), configured: true };
+  // The candidate list is now fetched unconditionally. It used to be skipped when no Tailscale
+  // Admin API credential was configured, because that credential was the only source there was —
+  // but manually probed nodes come back from the same route, so skipping it made them invisible on
+  // exactly the Hubs that needed them. `configured` still reports only the credential, which is
+  // what colours the box and what the "how do I see the whole tailnet" hint keys on.
+  const [status, devices] = await Promise.all([fetchPoolStatus(envFileName), fetchDiscoverablePeers(envFileName)]);
+  return { lines: formatPoolDiscoverLines(devices, status.tailscaleAdminApiConfigured), configured: status.tailscaleAdminApiConfigured };
 }

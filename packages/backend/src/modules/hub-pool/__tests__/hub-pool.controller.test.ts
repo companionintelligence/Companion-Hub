@@ -8,6 +8,7 @@ import { TailscaleService } from '@/modules/tailscale/tailscale.service';
 import { HubPoolPeerService } from '../hub-pool-peer.service';
 import { HubPoolRoutingLogService } from '../hub-pool-routing-log.service';
 import { PoolProxyService } from '../hub-pool-proxy.service';
+import { HubPoolDiscoveryService } from '../hub-pool-discovery.service';
 import { HubPoolController } from '../hub-pool.controller';
 import type { PoolStatus } from '../hub-pool.types';
 
@@ -54,6 +55,7 @@ describe('HubPoolController', () => {
   let proxyService: MockProxy<PoolProxyService>;
   let configuration: MockProxy<ConfigurationService>;
   let routingLog: HubPoolRoutingLogService;
+  let discoveryService: MockProxy<HubPoolDiscoveryService>;
   let controller: HubPoolController;
 
   beforeEach(() => {
@@ -63,7 +65,51 @@ describe('HubPoolController', () => {
     // The default for every test that is not about the switches: this node serves the caller.
     peerService.inboundRefusal.mockReturnValue(null);
     routingLog = new HubPoolRoutingLogService();
-    controller = new HubPoolController(peerService, proxyService, mock<TailscaleService>(), configuration, routingLog);
+    discoveryService = mock<HubPoolDiscoveryService>();
+    controller = new HubPoolController(peerService, proxyService, mock<TailscaleService>(), configuration, routingLog, discoveryService);
+  });
+
+  describe('manual peer entry', () => {
+    it('serves the merged candidate list, not the Tailscale-only one', async () => {
+      // The route keeps its shape and its name; what changed underneath is that a manually probed
+      // node now appears alongside a Tailscale-discovered one, deduplicated.
+      discoveryService.listDiscoverableNodes.mockResolvedValue([
+        { tailscaleDeviceId: 'ts-1', nodeFqdn: 'remote.tailxyz.ts.net', hostname: 'remote', source: 'tailscale' },
+        { tailscaleDeviceId: '', nodeFqdn: 'lan-box.tailxyz.ts.net', hostname: 'lan-box', source: 'lan-probe' },
+      ]);
+
+      const result = await controller.listDiscoverable();
+
+      expect(result).toHaveLength(2);
+      expect(peerService.listDiscoverableDevices).not.toHaveBeenCalled();
+    });
+
+    it('probes an operator-typed address and reports the FQDN pairing will use', async () => {
+      discoveryService.probeAddress.mockResolvedValue({
+        address: '192.168.1.42',
+        isCiHub: true,
+        nodeFqdn: 'lan-box.tailxyz.ts.net',
+        hostname: 'lan-box',
+        alreadyPaired: false,
+        pairable: true,
+        reason: null,
+      });
+
+      const result = await controller.probePeerAddress({ address: '192.168.1.42' });
+
+      expect(discoveryService.probeAddress).toHaveBeenCalledWith('192.168.1.42');
+      expect(result).toMatchObject({ pairable: true, nodeFqdn: 'lan-box.tailxyz.ts.net' });
+    });
+
+    it('adds no new pairing path — the operator still pairs by FQDN', async () => {
+      // Manual entry is a directory lookup. The address is discarded; `peers/pair` is unchanged, so
+      // there is no second trust model to keep correct.
+      peerService.initiatePairing.mockResolvedValue({ nodeFqdn: 'lan-box.tailxyz.ts.net' } as never);
+
+      await controller.pairPeer({ nodeFqdn: 'lan-box.tailxyz.ts.net' });
+
+      expect(peerService.initiatePairing).toHaveBeenCalledWith('lan-box.tailxyz.ts.net', undefined);
+    });
   });
 
   describe('GET status', () => {
