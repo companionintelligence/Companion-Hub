@@ -22,6 +22,7 @@ export default defineConfig({
       '@': path.resolve(__dirname, './src'),
       '@ci-hub/common/schemas': path.resolve(__dirname, '../common/src/schemas/index.ts'),
       '@ci-hub/common/types': path.resolve(__dirname, '../common/src/types/index.ts'),
+      '@ci-hub/common/validation': path.resolve(__dirname, '../common/src/validation/index.ts'),
     },
   },
 });
