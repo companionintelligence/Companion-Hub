@@ -1,14 +1,7 @@
 import { type CanActivate, type ExecutionContext, ForbiddenException, Injectable } from '@nestjs/common';
 import type { Request } from 'express';
 import { isPrivateOrLocalIp, normalizeIpLiteral } from '@/common/helpers/ip-address';
-
-/**
- * Headers a reverse proxy in front of the Hub adds and a caller cannot remove.
- * `cf-ray` is already the Hub's established "arrived through the Cloudflare
- * tunnel" signal (see `AuthController.isTunnelRequest`); the rest are the same
- * marker under Cloudflare's other names.
- */
-const TUNNEL_MARKER_HEADERS = ['cf-ray', 'cf-connecting-ip', 'cf-visitor', 'true-client-ip'] as const;
+import { TUNNEL_MARKER_HEADERS } from '@/common/helpers/hub-pool';
 
 /**
  * Proves an app-facing pool request originated inside the appliance.

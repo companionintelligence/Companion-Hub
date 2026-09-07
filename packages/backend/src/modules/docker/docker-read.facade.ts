@@ -345,19 +345,7 @@ export class DockerReadFacade {
 
         if (isUnhealthy) {
           // Capture last 20 lines of logs
-          let logs = '';
-          try {
-            const logCmd = spawn('docker', ['logs', '--tail', '20', containerName]);
-            logs = await new Promise<string>((resolve, _reject) => {
-              const chunks: string[] = [];
-              logCmd.stdout.on('data', (data: Buffer) => chunks.push(String(data)));
-              logCmd.stderr.on('data', (data: Buffer) => chunks.push(String(data)));
-              logCmd.on('close', () => resolve(chunks.join('').trim()));
-              logCmd.on('error', () => resolve('(failed to capture logs)'));
-            });
-          } catch {
-            logs = '(failed to capture logs)';
-          }
+          const logs = await this.tailContainerLogs(containerName, 20);
 
           this.logger.warn(`[AppDiag] Container ${containerName} is ${status}`);
           if (logs) {
@@ -375,4 +363,193 @@ export class DockerReadFacade {
 
     return result;
   }
+
+  /**
+   * Last `lines` lines of a container's combined stdout/stderr, or a short marker when they could
+   * not be read. Never throws — every caller is a diagnostic path where a missing log tail must not
+   * become the failure being diagnosed.
+   *
+   * Shells out rather than using Dockerode's `logs()` because a non-TTY container's log stream is
+   * multiplexed with 8-byte frame headers that would need demultiplexing before the text is
+   * readable; the CLI has already done that. `diagnoseAppContainers` above and the inference
+   * observer share this one implementation.
+   */
+  public async tailContainerLogs(containerName: string, lines = 20): Promise<string> {
+    try {
+      const logCmd = spawn('docker', ['logs', '--tail', String(lines), containerName]);
+      return await new Promise<string>((resolve) => {
+        const chunks: string[] = [];
+        logCmd.stdout.on('data', (data: Buffer) => chunks.push(String(data)));
+        logCmd.stderr.on('data', (data: Buffer) => chunks.push(String(data)));
+        logCmd.on('close', () => resolve(chunks.join('').trim()));
+        logCmd.on('error', () => resolve('(failed to capture logs)'));
+      });
+    } catch {
+      return '(failed to capture logs)';
+    }
+  }
+
+  /**
+   * One sweep for the inference observer: every container in `composeProject`, plus any container
+   * whose name is in `containerNames`, inspected for the fields that carry crash-loop evidence.
+   *
+   * Both halves are needed and neither subsumes the other. The compose-project half is what makes
+   * the Hub's *own* stack legible — the fleet's worst observed loop was `hub-tailscale` at
+   * `RestartCount=11463`, which an inference-only scope structurally cannot see. The name half
+   * catches inference containers created outside compose, which on the fleet means
+   * `ci-hub-inference-lucebox`, started by the desktop app with a plain `docker run` and therefore
+   * carrying no compose labels at all.
+   *
+   * Read-only by construction: it lists and inspects. Never throws — a Docker daemon that is
+   * unreachable, slow, or not present at all yields an empty sweep and a logged warning, because
+   * the observer must degrade rather than take a route or a timer down with it.
+   */
+  public async inspectSupervisionCandidates(options: {
+    composeProject: string;
+    containerNames: readonly string[];
+  }): Promise<SupervisionContainerInspection[]> {
+    let summaries: Awaited<ReturnType<Dockerode['listContainers']>>;
+    try {
+      summaries = await withTimeout(this.docker.listContainers({ all: true }), DOCKER_INSPECT_TIMEOUT_MS, 'Docker list timed out');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.warn(`Inference supervision sweep could not list containers: ${message}`);
+      return [];
+    }
+
+    const wanted = new Set(options.containerNames);
+    const projectLabel = 'com.docker.compose.project';
+    const selected = summaries.filter((summary) => {
+      const inProject = summary.Labels?.[projectLabel] === options.composeProject;
+      const named = (summary.Names ?? []).some((name) => wanted.has(name.replace(/^\//, '')));
+      return inProject || named;
+    });
+
+    const limit = pLimit(5);
+    const inspected = await Promise.all(
+      selected.map((summary) =>
+        limit(async () => {
+          try {
+            const inspect = await withTimeout(
+              this.docker.getContainer(summary.Id).inspect(),
+              DOCKER_INSPECT_TIMEOUT_MS,
+              `Docker inspect timed out for ${summary.Id}`,
+            );
+            return toSupervisionContainerInspection(summary, inspect, options.composeProject);
+          } catch (error) {
+            if (this.isResourceMissingError(error)) {
+              // The container went away between the list and the inspect. Nothing to report.
+              return null;
+            }
+            const message = error instanceof Error ? error.message : String(error);
+            this.logger.warn(`Inference supervision sweep could not inspect ${summary.Id}: ${message}`);
+            return null;
+          }
+        }),
+      ),
+    );
+
+    return inspected.filter((entry): entry is SupervisionContainerInspection => entry !== null);
+  }
+
+  /**
+   * Count defunct processes inside a container, or `null` when the process table could not be read.
+   *
+   * Deliberately counts on the STAT column alone and never on "parent is PID 1": the fleet's
+   * lemonade containers accumulate defunct `llama-server` children whose PPID is the `lemond`
+   * supervisor, so an orphan test finds none of them. `docker top` reads the container's own PID
+   * namespace, which is the only place they look like what they are.
+   */
+  public async countContainerZombieProcesses(containerName: string): Promise<number | null> {
+    try {
+      const result = (await withTimeout(
+        this.docker.getContainer(containerName).top({ ps_args: '-eo pid,ppid,stat,comm' }) as Promise<{ Processes?: string[][] }>,
+        DOCKER_INSPECT_TIMEOUT_MS,
+        `Docker top timed out for ${containerName}`,
+      )) as { Processes?: string[][] };
+      const processes = result.Processes ?? [];
+      return processes.filter((row) => row.some((cell) => /^Z/.test(cell.trim()) || cell.includes('defunct'))).length;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.debug(`Could not read the process table of ${containerName}: ${message}`);
+      return null;
+    }
+  }
+}
+
+/** One container's crash-loop evidence, as produced by {@link DockerReadFacade.inspectSupervisionCandidates}. */
+export interface SupervisionContainerInspection {
+  id: string;
+  name: string;
+  /** `Config.Image` — the tag the container was created from, not the resolved image id. */
+  image: string;
+  state: string;
+  status: string;
+  running: boolean;
+  restartCount: number;
+  restartPolicy: string | null;
+  exitCode: number | null;
+  oomKilled: boolean;
+  startedAt: string | null;
+  finishedAt: string | null;
+  healthStatus: string | null;
+  ports: Array<{ hostPort: number | null; containerPort: number }>;
+  labels: Record<string, string>;
+  inHubComposeProject: boolean;
+}
+
+function toSupervisionContainerInspection(
+  summary: { Id: string; Names?: string[]; Labels?: Record<string, string> },
+  inspect: Dockerode.ContainerInspectInfo,
+  composeProject: string,
+): SupervisionContainerInspection {
+  const labels = inspect.Config?.Labels ?? summary.Labels ?? {};
+  const name = (inspect.Name ?? summary.Names?.[0] ?? summary.Id).replace(/^\//, '');
+  return {
+    id: summary.Id,
+    // `Config.Image` is the tag the container was created with, which is what a stale-image
+    // diagnosis has to compare against; the top-level `Image` field is a resolved sha256 id.
+    image: inspect.Config?.Image ?? '',
+    name,
+    state: inspect.State?.Status ?? 'unknown',
+    status: inspect.State?.Status ?? 'unknown',
+    running: inspect.State?.Running === true,
+    restartCount: typeof inspect.RestartCount === 'number' ? inspect.RestartCount : 0,
+    restartPolicy: inspect.HostConfig?.RestartPolicy?.Name || null,
+    exitCode: inspect.State?.Running ? null : (inspect.State?.ExitCode ?? null),
+    oomKilled: inspect.State?.OOMKilled === true,
+    startedAt: inspect.State?.StartedAt ?? null,
+    finishedAt: inspect.State?.FinishedAt ?? null,
+    healthStatus: inspect.State?.Health?.Status ?? null,
+    ports: parsePortBindings(inspect.NetworkSettings?.Ports),
+    labels,
+    inHubComposeProject: labels['com.docker.compose.project'] === composeProject,
+  };
+}
+
+/**
+ * `NetworkSettings.Ports` is `{ "8080/tcp": [{ HostIp, HostPort }] | null }`. A `null` value is a
+ * port the image exposes but nothing published — which is exactly the shape a compose-networked
+ * backend addressed by container name has, so it is kept with a `null` host port rather than
+ * dropped.
+ */
+function parsePortBindings(ports: Dockerode.ContainerInspectInfo['NetworkSettings']['Ports'] | undefined): Array<{
+  hostPort: number | null;
+  containerPort: number;
+}> {
+  if (!ports) return [];
+  const bindings: Array<{ hostPort: number | null; containerPort: number }> = [];
+  for (const [spec, hostBindings] of Object.entries(ports)) {
+    const containerPort = Number.parseInt(spec.split('/')[0] ?? '', 10);
+    if (!Number.isFinite(containerPort)) continue;
+    if (!hostBindings || hostBindings.length === 0) {
+      bindings.push({ hostPort: null, containerPort });
+      continue;
+    }
+    for (const binding of hostBindings) {
+      const hostPort = Number.parseInt(binding.HostPort ?? '', 10);
+      bindings.push({ hostPort: Number.isFinite(hostPort) ? hostPort : null, containerPort });
+    }
+  }
+  return bindings;
 }

@@ -13,6 +13,10 @@ const fixtures = vi.hoisted(() => ({
   discoverable: [] as Json[],
   routingLog: { entries: [] as Json[], summary: { recorded: 0, capacity: 200, served: 0, failed: 0, failovers: 0, lastAt: null } } as Json,
   updateSettings: vi.fn(async (_options: { body: Record<string, unknown> }) => ({})),
+  peerToggle: vi.fn(async (_options: { url: string }) => ({})),
+  patchSettings: vi.fn(async (_options: { url: string; body: Record<string, unknown> }) => ({})),
+  pinMint: vi.fn(async (_options: { url: string }) => ({ data: undefined }) as { data?: Record<string, unknown> }),
+  pinCancel: vi.fn(async (_options: { url: string }) => ({})),
 }));
 
 vi.mock('react-i18next', () => {
@@ -21,6 +25,17 @@ vi.mock('react-i18next', () => {
 });
 vi.mock('react-hot-toast', () => ({ default: { success: vi.fn(), error: vi.fn() } }));
 vi.mock('@/lib/hooks/use-demo-mode', () => ({ useDemoMode: () => false }));
+// The per-peer verbs and the two directional switches go through the generated client's low-level
+// post/patch until swagger.json and the api-client are regenerated; see hub-pool-settings.tsx.
+vi.mock('@/api-client/client.gen', () => ({
+  client: {
+    // Two different POSTs share this one method, so the fixture dispatches on the URL rather than
+    // letting a PIN mint show up in the per-peer toggle's call list.
+    post: (options: { url: string }) => (options.url.endsWith('/pairing-pin') ? fixtures.pinMint(options) : fixtures.peerToggle(options)),
+    delete: fixtures.pinCancel,
+    patch: fixtures.patchSettings,
+  },
+}));
 vi.mock('@/api-client/sdk.gen', () => ({
   pairPeer: vi.fn(),
   approvePeer: vi.fn(),
@@ -46,9 +61,10 @@ vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
 const baseStatus = (overrides: Json = {}): Json => ({
   enabled: true,
   disabledBy: null,
+  directions: { outbound: { enabled: true, disabledBy: null }, inbound: { enabled: true, disabledBy: null } },
   reason: 'active',
   routingActive: true,
-  settings: { poolEnabled: true, poolLocalAffinity: 1, poolHealthPollSeconds: 30 },
+  settings: { poolEnabled: true, poolOutboundEnabled: true, poolInboundEnabled: true, poolLocalAffinity: 1, poolHealthPollSeconds: 30 },
   tailscaleAdminApiConfigured: true,
   localNode: {
     nodeFqdn: 'hub-a.example-tailnet.ts.net',
@@ -58,9 +74,10 @@ const baseStatus = (overrides: Json = {}): Json => ({
     hardwareTier: 'workstation',
     backends: [{ type: 'ollama', healthy: true, modelsLoaded: ['llama3.2:3b'] }],
     capabilitiesError: null,
+    identity: { nodeUuid: 'self-uuid', publicKeyFingerprint: '11:22:33:44:55:66:77:88', identityError: null },
   },
   peers: [],
-  peerCounts: { total: 0, connected: 0, pending: 0, unreachable: 0 },
+  peerCounts: { total: 0, connected: 0, pending: 0, unreachable: 0, disabled: 0 },
   routing: { recorded: 0, capacity: 200, served: 0, failed: 0, failovers: 0, lastAt: null },
   ...overrides,
 });
@@ -71,6 +88,7 @@ const connectedPeer = (overrides: Json = {}): Json => ({
   displayName: 'Studio Hub',
   direction: 'outbound',
   status: 'connected',
+  enabled: true,
   consecutiveFailures: 0,
   lastSeenAt: '2026-09-05T10:00:00.000Z',
   lastCapabilities: {
@@ -79,6 +97,22 @@ const connectedPeer = (overrides: Json = {}): Json => ({
     updatedAt: '2026-09-05T10:00:00.000Z',
   },
   inFlightRequests: 2,
+  ...overrides,
+});
+
+/** An inbound request awaiting the operator's confirm — the surface the PIN feeds. */
+const pendingInboundPeer = (overrides: Json = {}): Json => ({
+  id: 'peer-pending',
+  nodeFqdn: 'hub-c.example-tailnet.ts.net',
+  displayName: 'Loft Hub',
+  direction: 'inbound',
+  status: 'pending',
+  enabled: true,
+  consecutiveFailures: 0,
+  lastSeenAt: null,
+  lastCapabilities: null,
+  inFlightRequests: 0,
+  authMode: 'signed',
   ...overrides,
 });
 
@@ -98,7 +132,102 @@ describe('HubPoolSection', () => {
     fixtures.discoverable = [];
     fixtures.routingLog = { entries: [], summary: { recorded: 0, capacity: 200, served: 0, failed: 0, failovers: 0, lastAt: null } };
     fixtures.updateSettings.mockClear();
+    fixtures.peerToggle.mockClear();
+    fixtures.patchSettings.mockClear();
+    fixtures.pinMint.mockClear();
+    fixtures.pinCancel.mockClear();
     vi.mocked(removePeer).mockClear();
+  });
+
+  describe('directional and per-peer kill switches', () => {
+    it('PATCHes only its own field, so the other switch is never resent', async () => {
+      renderSection();
+
+      await userEvent.click(await screen.findByTestId('hub-pool-inbound-toggle'));
+
+      expect(fixtures.patchSettings).toHaveBeenCalledWith(
+        expect.objectContaining({ url: '/api/inference/pool/settings', body: { poolInboundEnabled: false } }),
+      );
+    });
+
+    it('locks one direction to its own .env variable without touching the other', async () => {
+      fixtures.status = baseStatus({
+        directions: { outbound: { enabled: false, disabledBy: 'env' }, inbound: { enabled: true, disabledBy: null } },
+        reason: 'partially_disabled',
+        routingActive: false,
+      });
+
+      renderSection();
+
+      // Named per direction: an operator told to edit the wrong variable goes looking in the right
+      // file for the wrong line.
+      expect(await screen.findByText('HUB_POOL_OUTBOUND_ENV_LOCKED')).toBeTruthy();
+      expect((screen.getByTestId('hub-pool-outbound-toggle') as HTMLInputElement).disabled).toBe(true);
+      expect((screen.getByTestId('hub-pool-inbound-toggle') as HTMLInputElement).disabled).toBe(false);
+    });
+
+    it('disables both directions when the master switch is off, since neither can do anything', async () => {
+      fixtures.status = baseStatus({
+        enabled: false,
+        disabledBy: 'setting',
+        reason: 'disabled_by_setting',
+        routingActive: false,
+        directions: { outbound: { enabled: false, disabledBy: 'setting' }, inbound: { enabled: false, disabledBy: 'setting' } },
+        settings: { poolEnabled: false, poolOutboundEnabled: true, poolInboundEnabled: true, poolLocalAffinity: 1, poolHealthPollSeconds: 30 },
+      });
+
+      renderSection();
+
+      await waitFor(() => expect((screen.getByTestId('hub-pool-outbound-toggle') as HTMLInputElement).disabled).toBe(true));
+      expect((screen.getByTestId('hub-pool-inbound-toggle') as HTMLInputElement).disabled).toBe(true);
+    });
+
+    it('explains a partly disabled pool rather than claiming it is active', async () => {
+      fixtures.status = baseStatus({ reason: 'partially_disabled' });
+
+      renderSection();
+
+      const state = await screen.findByTestId('hub-pool-state');
+      expect(state.getAttribute('data-reason')).toBe('partially_disabled');
+      expect(state.textContent).toBe('HUB_POOL_REASON_PARTIAL');
+    });
+
+    it('takes one peer out of the pool by id, without the unpair confirmation', async () => {
+      fixtures.status = baseStatus({ peers: [connectedPeer()], peerCounts: { total: 1, connected: 1, pending: 0, unreachable: 0, disabled: 0 } });
+
+      renderSection();
+
+      await userEvent.click(await screen.findByTestId('hub-pool-peer-toggle'));
+
+      expect(fixtures.peerToggle).toHaveBeenCalledWith({ url: '/api/inference/pool/peers/peer-1/disable' });
+    });
+
+    it('never renders a disabled peer as connected', async () => {
+      fixtures.status = baseStatus({
+        peers: [connectedPeer({ enabled: false })],
+        peerCounts: { total: 1, connected: 1, pending: 0, unreachable: 0, disabled: 1 },
+      });
+
+      renderSection();
+
+      expect(await screen.findByTestId('hub-pool-peer-disabled-badge')).toBeTruthy();
+      expect(screen.queryByText('HUB_POOL_STATUS_CONNECTED')).toBeNull();
+    });
+
+    it('says a peer is refusing OUR work rather than showing it as a node with no models', async () => {
+      fixtures.status = baseStatus({
+        peers: [
+          connectedPeer({
+            lastCapabilities: { hardwareTier: 'server', backends: [], acceptingWork: false, updatedAt: '2026-09-05T10:00:00.000Z' },
+          }),
+        ],
+        peerCounts: { total: 1, connected: 1, pending: 0, unreachable: 0, disabled: 0 },
+      });
+
+      renderSection();
+
+      expect(await screen.findByTestId('hub-pool-peer-not-accepting')).toBeTruthy();
+    });
   });
 
   it('explains that pooling is on but idle when nothing is paired', async () => {
@@ -120,7 +249,14 @@ describe('HubPoolSection', () => {
       disabledBy: 'env',
       reason: 'disabled_by_env',
       routingActive: false,
-      settings: { poolEnabled: true, poolLocalAffinity: 1, poolHealthPollSeconds: 30 },
+      settings: {
+        poolEnabled: true,
+        poolOutboundEnabled: true,
+        poolInboundEnabled: true,
+        poolLocalAffinity: 1,
+        poolHealthPollSeconds: 30,
+        poolRequireSignedPeers: false,
+      },
     });
 
     renderSection();
@@ -321,5 +457,65 @@ describe('HubPoolSection', () => {
     const error = await screen.findByTestId('hub-pool-status-error');
     expect(error.textContent).toBe('HUB_POOL_STATUS_ERROR');
     expect(screen.queryByTestId('hub-pool-state')).toBeNull();
+  });
+
+  describe('pairing PIN and peer identity', () => {
+    it('renders the digits once, straight from the mint response and never from status', async () => {
+      fixtures.status = baseStatus();
+      fixtures.pinMint.mockResolvedValueOnce({ data: { pin: '481502', expiresAt: '2026-01-01T00:10:00.000Z' } });
+      renderSection();
+      await screen.findByTestId('hub-pool-mint-pin-btn');
+
+      await userEvent.click(screen.getByTestId('hub-pool-mint-pin-btn'));
+
+      expect(await screen.findByTestId('hub-pool-minted-pin')).toHaveTextContent('481502');
+      expect(fixtures.pinMint).toHaveBeenCalledWith(expect.objectContaining({ url: '/api/inference/pool/pairing-pin' }));
+    });
+
+    it('says a PIN is outstanding without ever re-showing it, which is what status reports', async () => {
+      // `GET status` carries `{ active, expiresAt }` and never the value, so a page reload — or any
+      // other operator polling the same endpoint — cannot recover a PIN it did not mint.
+      fixtures.status = baseStatus({ pairingPin: { active: true, expiresAt: '2026-01-01T00:10:00.000Z' } });
+      renderSection();
+
+      expect(await screen.findByTestId('hub-pool-pin-state')).toHaveTextContent('HUB_POOL_PIN_ACTIVE_ELSEWHERE');
+      expect(screen.queryByTestId('hub-pool-minted-pin')).not.toBeInTheDocument();
+    });
+
+    it('shows the requester’s key fingerprint on the confirm row, next to its FQDN', async () => {
+      // Q3: the PIN gets the identity pinned; the operator still confirms, and confirming needs
+      // both halves — the name it claims and the key it will actually authenticate with.
+      fixtures.status = baseStatus({
+        peers: [pendingInboundPeer({ peerKeyFingerprint: 'aa:bb:cc:dd:ee:ff:00:11' })],
+        peerCounts: { total: 1, connected: 0, pending: 1, unreachable: 0, disabled: 0 },
+      });
+      renderSection();
+
+      expect(await screen.findByTestId('hub-pool-pending-fqdn')).toHaveTextContent('hub-c.example-tailnet.ts.net');
+      expect(screen.getByTestId('hub-pool-pending-fingerprint')).toHaveTextContent('HUB_POOL_PEER_FINGERPRINT');
+    });
+
+    it('marks a request that arrived without a PIN as an unverified claim', async () => {
+      fixtures.status = baseStatus({
+        peers: [pendingInboundPeer({ peerKeyFingerprint: null })],
+        peerCounts: { total: 1, connected: 0, pending: 1, unreachable: 0, disabled: 0 },
+      });
+      renderSection();
+
+      expect(await screen.findByTestId('hub-pool-pending-fingerprint')).toHaveTextContent('HUB_POOL_PEER_FINGERPRINT_UNVERIFIED');
+    });
+
+    it('surfaces an unusable identity the way a down backend is surfaced, rather than hiding it', async () => {
+      fixtures.status = baseStatus({
+        localNode: {
+          ...(baseStatus().localNode as Json),
+          identity: { nodeUuid: 'self-uuid', publicKeyFingerprint: null, identityError: 'stored pool private key could not be decrypted' },
+        },
+      });
+      renderSection();
+
+      expect(await screen.findByTestId('hub-pool-identity-error')).toHaveTextContent('HUB_POOL_IDENTITY_ERROR');
+      expect(screen.queryByTestId('hub-pool-local-fingerprint')).not.toBeInTheDocument();
+    });
   });
 });

@@ -1,6 +1,6 @@
 import type { InferenceBackendType } from '@ci-hub/common/types';
 import type { HubPoolPeer } from '@/core/database/drizzle/types';
-import type { HubPoolDisabledBy, HubPoolPreferences } from '@/common/helpers/hub-pool';
+import type { HubPoolDirectionalState, HubPoolDisabledBy, HubPoolPreferences } from '@/common/helpers/hub-pool';
 
 /** One backend's live model availability on a node, as reported by `GET /inference/pool/capabilities`. */
 export interface PoolPeerBackendCapability {
@@ -22,7 +22,127 @@ export interface PoolPeerCapabilities {
    * the wire: an absent or stale value must read as "unknown", never as "idle".
    */
   inFlightRequests?: number;
+  /**
+   * Whether the answering node will actually take work from the caller right now.
+   *
+   * `false` is what inbound-off and a per-peer disable look like on the wire, and it is the flag
+   * `peerCandidates` skips on — explicitly, rather than inferring it from `backends: []`, which is
+   * pixel-identical to a node whose engines are simply down. Optional because a peer on an older
+   * build omits it; absent must read as "yes", since that is what every pre-switch build meant.
+   */
+  acceptingWork?: boolean;
+  /**
+   * Smoothed 0-3 band of the answering node's real GPU busy-ness.
+   *
+   * ABSENT means unmeasured, and a reader must turn that into `UNKNOWN_PRESSURE` (mid-band), never
+   * into 0. The distinction is the whole contract: the signal is AMD-only, so most nodes on a real
+   * fleet legitimately omit it, and if silence read as "idle" every tie would go to whichever
+   * machine knows least about itself. A node that cannot measure omits the key rather than sending
+   * 0 for exactly that reason — absence and idleness do not share an encoding on the wire.
+   */
+  gpuPressure?: number;
+  /** Which measurement produced {@link gpuPressure}. For the operator surfaces only; never read by the ranker. */
+  gpuPressureSource?: PoolPressureSource;
+  /**
+   * The answering node's stable pool UUID — the one row of `hub_pool_identity` — learned only from
+   * this authenticated response and never from the unauthenticated `/identify` probe. Absent from a
+   * node whose identity could not be established, which is also every pre-identity build.
+   */
+  nodeUuid?: string;
   updatedAt: string;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Reserved contract surface.
+//
+// The types below describe state this build does not produce. They live here, and ship now,
+// because five features land on this one module in sequence and each needs the shape of the next
+// one's payload to compose with it — a status field that appears and changes shape three times is
+// how the hand-mirrored frontend and CLI copies of `PoolStatus` silently drift. Everything is
+// optional wherever it touches a live payload, so nothing has to populate it and no default moves.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Which measurement produced a node's GPU-pressure band.
+ *
+ * AMD-only, and that is a decision rather than a gap. `amd-drm` reads the amdgpu driver's own
+ * duty-cycle counter, which is the one number the Hub container can reach that actually answers "is
+ * this GPU committed right now". `host-file` is the extension seam for everything else — nothing in
+ * this repo writes it, so NVIDIA and Apple nodes report no source at all and rank neutral, which is
+ * honest. The reviewed design also carried an engine-VRAM-residency source; it was cut because
+ * residency reads the same whether an engine is generating or idling out its `keep_alive`, so it
+ * would have ranked the COLDEST node as the least busy one.
+ */
+export type PoolPressureSource = 'host-file' | 'amd-drm';
+
+/** A pin's reach: the pool-wide fallback, or one specific model id. */
+export type PoolPinScope = 'default' | 'model';
+
+/**
+ * How hard a pin binds. `prefer` only, by decision: a hard `require` makes every model the pinned
+ * node lacks an unfailoverable 502, including embeddings, because apps discover the model list from
+ * this node while routing to another.
+ */
+export type PoolPinMode = 'prefer';
+
+/** Where a pin points. `local` is this node; `peer` carries the `hub_pool_peer.id`. */
+export type PoolPinTargetKind = 'local' | 'peer';
+
+/**
+ * An operator's routing preference for a model. Stored in `HubPoolPreferences` (settings.json), not
+ * a table: a dangling target is a `filter` no-op, and a row would have needed an FK whose CASCADE
+ * would let a remote peer's unpair destroy this operator's routing policy.
+ */
+export interface HubPoolPin {
+  scope: PoolPinScope;
+  /** Set exactly when `scope === 'model'`. Stored verbatim — model ids are case-sensitive and contain `:` and `/`. */
+  model?: string;
+  targetKind: PoolPinTargetKind;
+  /** Set exactly when `targetKind === 'peer'`. */
+  peerId?: string;
+  mode: PoolPinMode;
+}
+
+/** A pin as `/pool/status` reports it: the stored pin plus whether its target can serve right now. */
+export interface PoolStatusPin extends HubPoolPin {
+  /** The peer's FQDN, or `null` for a local pin — so the UI never has to resolve an id itself. */
+  nodeFqdn: string | null;
+  /** `false` when the pinned node is gone, disabled, unreachable, or lacks the model: a pin that is silently doing nothing must say so. */
+  targetAvailable: boolean;
+}
+
+/** How a peer authenticates to this node. `bearer` is the original token; `signed` is a pinned Ed25519 key. */
+export type PoolPeerAuthMode = 'bearer' | 'signed';
+
+/** This node's own pool identity, as the operator surfaces show it. Never the private key. */
+export interface PoolIdentitySummary {
+  nodeUuid: string | null;
+  /** A short hash of the public key, for the operator to compare across two screens. Never the key itself. */
+  publicKeyFingerprint: string | null;
+  /**
+   * Why the identity is unusable, when it is. Surfaced exactly as `capabilitiesError` already is:
+   * identity bootstrap must degrade and report, never throw at its caller — the encryption key is
+   * derived from an env secret, so a regenerated `.env` over a retained volume would otherwise take
+   * down whatever touched pooling first, on every appliance, peerless ones included.
+   */
+  identityError: string | null;
+}
+
+/** An outstanding pairing PIN, as `/pool/status` reports it. The digits are returned exactly once, at mint time, and never here. */
+export interface PoolPairingPinState {
+  active: boolean;
+  expiresAt: string | null;
+}
+
+/** What a backend's supervision watcher has observed. Observe-and-report only: the Hub never restarts an inference backend. */
+export interface BackendSupervisionSummary {
+  backend: InferenceBackendType;
+  /** How the backend is actually running, which decides what can be observed about it at all. */
+  targetKind: 'container' | 'host-process' | 'remote' | 'absent';
+  state: 'healthy' | 'unhealthy' | 'restart-looping' | 'unknown';
+  /** dockerd's own `RestartCount`, when the target is a container — the only signal that survives a Hub restart. */
+  observedRestartCount: number | null;
+  diagnosisCode: string | null;
 }
 
 /** A candidate node the proxy can route a request to for a given model. */
@@ -38,6 +158,40 @@ export interface DiscoverablePoolPeer {
   tailscaleDeviceId: string;
   nodeFqdn: string;
   hostname: string;
+  /**
+   * How this candidate was found. Absent means the Tailscale Admin API. A badge rather than a nullable
+   * `tailscaleDeviceId`, because widening that field is a type error on the CLI's `sanitizeForBox`
+   * and a duplicate React key in the settings list.
+   */
+  source?: 'tailscale' | 'lan-probe';
+  /**
+   * A UUID the candidate *claims*, from an unauthenticated probe. Typed distinctly from
+   * `hub_pool_peer.peer_node_uuid` on purpose — an externally-sourced UUID is a hint for the
+   * operator, never an identity key to match a pinned row against.
+   */
+  claimedNodeUuid?: string;
+}
+
+/** Why a manually probed address is not offered as a pairing candidate. `null` when it is. */
+export type PoolProbeReason = 'unreachable' | 'not_a_hub' | 'no_tailnet_fqdn' | 'already_paired' | 'self';
+
+/**
+ * What `POST /inference/pool/peers/probe` found at an operator-typed address.
+ *
+ * `nodeFqdn` is the only durable thing here: the address is a directory lookup and is discarded once
+ * this answers. Pairing then goes through the existing `POST peers/pair` with that FQDN, so manual
+ * entry adds no new pairing path and no new trust — it only removes the Tailscale OAuth credential
+ * from the list of things an operator must have before two Hubs can find each other.
+ */
+export interface PoolProbeResult {
+  /** The address as probed, echoed back so a UI can label the row without re-parsing what was typed. */
+  address: string;
+  isCiHub: boolean;
+  nodeFqdn: string | null;
+  hostname: string | null;
+  alreadyPaired: boolean;
+  pairable: boolean;
+  reason: PoolProbeReason | null;
 }
 
 /**
@@ -54,10 +208,32 @@ export function toPublicPeer(peer: HubPoolPeer): PublicHubPoolPeer {
   return publicFields;
 }
 
+/**
+ * The lifecycle values `hub_pool_peer.status` may hold.
+ *
+ * `'rejected'` was retired in migration 0059 — nothing ever wrote it, and keeping it alongside the
+ * `enabled` column would have shipped two overlapping "not in play" concepts. Rejecting a pairing
+ * request deletes the row; taking a live peer out of routing sets `enabled = false`. The column
+ * itself is a `varchar`, so this union is the contract the hand-mirrored frontend and CLI copies
+ * are kept honest against, not a database constraint.
+ */
+export type PoolPeerStatus = 'pending' | 'connected' | 'unreachable';
+
 /** A peer row plus what this node currently has in flight to it. Built from {@link toPublicPeer}, so the token columns cannot reach it. */
 export interface PoolStatusPeer extends PublicHubPoolPeer {
   /** Requests this node has forwarded to the peer and not yet finished reading. A live gauge reset by a restart, never a total. */
   inFlightRequests: number;
+  /** How this peer authenticates to us today. */
+  authMode?: PoolPeerAuthMode;
+  /** A short hash of the peer's pinned public key, for the operator to compare across two screens. Never the key. */
+  peerKeyFingerprint?: string | null;
+  /**
+   * The peer's EFFECTIVE 0-3 band — freshness applied, hostile values clamped, and floored by what
+   * this node has forwarded there — or `null` when nothing about its GPU is known. Deliberately not
+   * the raw jsonb: a status card showing a number routing does not believe is a liability during an
+   * incident, which is when it is read.
+   */
+  gpuPressure?: number | null;
 }
 
 export interface PoolStatusLocalNode {
@@ -70,21 +246,40 @@ export interface PoolStatusLocalNode {
   backends: PoolPeerBackendCapability[];
   /** Why the local inventory is empty, when it is — a down backend must read differently from a node with no models. */
   capabilitiesError: string | null;
+  /** This node's UUID, key fingerprint, and why identity is unusable when it is. */
+  identity?: PoolIdentitySummary;
+  /** This node's own smoothed 0-3 pressure band, or `null` when nothing here could measure it. */
+  gpuPressure?: number | null;
+  /** Which source produced {@link gpuPressure}, or `null` when it is unmeasured. */
+  gpuPressureSource?: PoolPressureSource | null;
+  /** Reserved for backend supervision: what the observer has seen, per backend. Observe-only. */
+  supervision?: BackendSupervisionSummary[];
 }
 
 /**
- * Why pooling is or isn't routing right now. `disabled_by_env` and `disabled_by_setting` are kept
- * apart on purpose: the UI must be able to say "your .env overrides this" rather than showing a
- * toggle that appears to do nothing.
+ * Why pooling is or isn't routing right now.
+ *
+ * `disabled_by_env` and `disabled_by_setting` are kept apart on purpose: the UI must be able to say
+ * "your .env overrides this" rather than showing a toggle that appears to do nothing.
+ *
+ * `partially_disabled` covers every state where pooling is nominally on but one half of it is not
+ * running — a direction switched off, or every connected peer individually disabled. It exists so
+ * that a node which currently serves nothing cannot report `active`; without it, switching inbound
+ * off would leave the badge, the state banner and the CLI all saying "routing normally".
  */
-export type PoolStatusReason = 'active' | 'no_peers' | 'disabled_by_env' | 'disabled_by_setting';
+export type PoolStatusReason = 'active' | 'no_peers' | 'partially_disabled' | 'disabled_by_env' | 'disabled_by_setting';
 
 export interface PoolStatus {
   /** Effective kill-switch state (env override applied). Not the same as `settings.poolEnabled`. */
   enabled: boolean;
   disabledBy: HubPoolDisabledBy | null;
+  /**
+   * Each half of pooling and what is holding it off. `enabled`/`disabledBy` above stay the MASTER
+   * switch, unchanged, so their existing consumers keep their meaning; this is the finer state.
+   */
+  directions: HubPoolDirectionalState;
   reason: PoolStatusReason;
-  /** Whether apps are actually being routed through the pool: enabled AND at least one connected peer. */
+  /** Whether apps are actually being routed through the pool: outbound on AND at least one connected, enabled peer. */
   routingActive: boolean;
   /** The persisted settings as stored, before the env override — what a settings form should render. */
   settings: HubPoolPreferences;
@@ -92,5 +287,10 @@ export interface PoolStatus {
   tailscaleAdminApiConfigured: boolean;
   localNode: PoolStatusLocalNode;
   peers: PoolStatusPeer[];
-  peerCounts: { total: number; connected: number; pending: number; unreachable: number };
+  /** `disabled` counts rows the operator switched off, at any status — it is a routing decision, not a lifecycle one, so it overlaps the others. */
+  peerCounts: { total: number; connected: number; pending: number; unreachable: number; disabled: number };
+  /** Reserved for manual node pinning: the operator's routing preferences, with target availability resolved. */
+  pins?: PoolStatusPin[];
+  /** Whether a pairing PIN is outstanding, and until when. Never the digits. */
+  pairingPin?: PoolPairingPinState;
 }

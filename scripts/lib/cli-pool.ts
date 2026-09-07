@@ -12,14 +12,18 @@ import {
   fetchPoolRoutingLog,
   fetchPoolStatus,
   formatPoolPeersLines,
+  formatPoolProbeLines,
   formatPoolRoutingLogLines,
   formatPoolStatusLines,
   pairPoolPeer,
+  probePoolAddress,
   rejectPoolPeer,
   resolvePoolPeerTarget,
   runPoolDiscover,
   setPoolEnabledSetting,
+  setPoolPeerEnabled,
   unpairPoolPeer,
+  type PoolEnableAxis,
 } from '../hub-pool-cli.js';
 import { readHubApiKey, resolveHubApiBase } from '../public-web-cli.js';
 import { resolveEnvFromArgs, usageAndExit } from './cli-args.js';
@@ -29,11 +33,25 @@ import { printMessageBox, sanitizeForBox, STEP_ICONS } from './cli-ui.js';
 import { type HubContext, resolveHubContext } from './hub-context.js';
 import { resolveRootFolderHost } from './paths.js';
 
-export const POOL_SUBCOMMANDS = ['status', 'peers', 'discover', 'pair', 'approve', 'reject', 'unpair', 'log', 'enable', 'disable'] as const;
+export const POOL_SUBCOMMANDS = [
+  'status',
+  'peers',
+  'discover',
+  'probe',
+  'pair',
+  'approve',
+  'reject',
+  'unpair',
+  'log',
+  'enable',
+  'disable',
+  'peer-enable',
+  'peer-disable',
+] as const;
 export type PoolSubcommand = (typeof POOL_SUBCOMMANDS)[number];
 
 /** Subcommands taking a peer reference before the optional [env], so the env parser never sees it. */
-const POOL_TARGET_SUBCOMMANDS: readonly PoolSubcommand[] = ['pair', 'approve', 'reject', 'unpair'];
+const POOL_TARGET_SUBCOMMANDS: readonly PoolSubcommand[] = ['probe', 'pair', 'approve', 'reject', 'unpair', 'peer-enable', 'peer-disable'];
 
 const POOL_USAGE = `Usage: ${BASE_COMMAND} pool <${POOL_SUBCOMMANDS.join('|')}> [env]`;
 
@@ -42,6 +60,8 @@ export interface ParsedPoolArgs {
   target?: string;
   displayName?: string;
   limit?: number;
+  /** Which switch `enable`/`disable` writes. `both` (the default) is the master switch, i.e. today's behaviour. */
+  axis: PoolEnableAxis;
   yes: boolean;
   env: HubEnv;
 }
@@ -54,12 +74,23 @@ export function parsePoolArgs(args: string[]): ParsedPoolArgs {
   let yes = false;
   let displayName: string | undefined;
   let limit: number | undefined;
+  let axis: PoolEnableAxis = 'both';
   const positional: string[] = [];
 
   for (let i = 0; i < args.length; i += 1) {
     const arg = args[i] as string;
     if (arg === '--yes') {
       yes = true;
+      continue;
+    }
+    if (arg === '--outbound' || arg === '--inbound') {
+      const next: PoolEnableAxis = arg === '--outbound' ? 'outbound' : 'inbound';
+      // Naming both would have to mean "the master", which is what passing neither already means —
+      // so rather than pick one silently, say so.
+      if (axis !== 'both' && axis !== next) {
+        usageAndExit('Pass at most one of --outbound / --inbound. Omit both to change the master switch.');
+      }
+      axis = next;
       continue;
     }
     if (arg === '--name' || arg === '--limit') {
@@ -87,9 +118,13 @@ export function parsePoolArgs(args: string[]): ParsedPoolArgs {
     usageAndExit(`Unknown pool subcommand: ${subcommand}. ${POOL_USAGE}`);
   }
 
+  if (axis !== 'both' && subcommand !== 'enable' && subcommand !== 'disable') {
+    usageAndExit(`--${axis} only applies to \`${BASE_COMMAND} pool enable\` and \`${BASE_COMMAND} pool disable\`.`);
+  }
+
   const takesTarget = POOL_TARGET_SUBCOMMANDS.includes(subcommand);
   const target = takesTarget ? positional[1] : undefined;
-  return { subcommand, target, displayName, limit, yes, env: resolveEnvFromArgs(positional.slice(takesTarget ? 2 : 1)) };
+  return { subcommand, target, displayName, limit, axis, yes, env: resolveEnvFromArgs(positional.slice(takesTarget ? 2 : 1)) };
 }
 
 /** Matches the backend's `RoutingLogQueryDto` bounds so a bad value fails here rather than as a 400. */
@@ -184,6 +219,17 @@ export async function runPoolCommand(args: string[]) {
       return;
     }
 
+    if (parsed.subcommand === 'probe') {
+      if (!parsed.target) {
+        usageAndExit(`${BASE_COMMAND} pool probe <address> [env] — e.g. ${BASE_COMMAND} pool probe 192.168.1.42`);
+      }
+      // Deliberately NOT run through `isPlausiblePeerFqdn`: that check exists to reject the shapes
+      // this command is for. The backend parses the address, and its errors name the exact problem.
+      const result = await probePoolAddress(envFile, parsed.target);
+      printMessageBox(`Hub Pool probe  [${env}]`, formatPoolProbeLines(result), result.pairable ? 'green' : result.isCiHub ? 'yellow' : 'red');
+      return;
+    }
+
     if (parsed.subcommand === 'log') {
       const log = await fetchPoolRoutingLog(envFile, parsed.limit);
       printMessageBox(`Hub Pool routing log  [${env}]`, formatPoolRoutingLogLines(log), log.summary.failed > 0 ? 'yellow' : 'cyan');
@@ -201,13 +247,24 @@ export async function runPoolCommand(args: string[]) {
   }
 }
 
+/** What each axis is called, which env var overrides it, and how `/status` reports its state. */
+const POOL_AXES: Record<
+  PoolEnableAxis,
+  { label: string; envVar: string; describe: (s: Awaited<ReturnType<typeof fetchPoolStatus>>) => { disabledBy: 'env' | 'setting' | null } }
+> = {
+  both: { label: 'Hub Pool', envVar: 'HUB_POOL_USER_DISABLED', describe: (s) => ({ disabledBy: s.disabledBy }) },
+  outbound: { label: 'Hub Pool outbound (sending work to peers)', envVar: 'HUB_POOL_OUTBOUND_DISABLED', describe: (s) => s.directions.outbound },
+  inbound: { label: 'Hub Pool inbound (serving work for peers)', envVar: 'HUB_POOL_INBOUND_DISABLED', describe: (s) => s.directions.inbound },
+};
+
 async function runPoolEnableCommand(ctx: HubContext, parsed: ParsedPoolArgs) {
   const enable = parsed.subcommand === 'enable';
+  const axis = POOL_AXES[parsed.axis];
   const status = await fetchPoolStatus(ctx.envFile);
   const confirmed = await confirmDestructiveAction(
-    `${enable ? 'Enabling' : 'Disabling'} Hub Pool`,
+    `${enable ? 'Enabling' : 'Disabling'} ${axis.label}`,
     parsed.yes,
-    `${enable ? 'Enable' : 'Disable'} Hub Pool routing on this node? [y/N]: `,
+    `${enable ? 'Enable' : 'Disable'} ${axis.label} on this node? [y/N]: `,
     'a state change',
   );
   if (!confirmed) {
@@ -215,21 +272,27 @@ async function runPoolEnableCommand(ctx: HubContext, parsed: ParsedPoolArgs) {
     return;
   }
 
-  const settings = await setPoolEnabledSetting(ctx.envFile, enable);
-  const lines = [`Stored setting  poolEnabled=${settings.poolEnabled}`];
+  const settings = await setPoolEnabledSetting(ctx.envFile, enable, parsed.axis);
+  const lines = [
+    `Stored setting  poolEnabled=${settings.poolEnabled} · outbound=${settings.poolOutboundEnabled} · inbound=${settings.poolInboundEnabled}`,
+  ];
 
-  // The env flag wins by design, so a `pool enable` under it must not read as success.
-  if (status.disabledBy === 'env') {
-    const envFileHasFlag = parseEnvFile(ctx.envFile).HUB_POOL_USER_DISABLED === 'true';
+  // The env flag wins by design, so a `pool enable` under it must not read as success. Checked per
+  // axis, and the master is checked first: with HUB_POOL_USER_DISABLED set, enabling one direction
+  // changes nothing either, and naming the directional variable would send the operator to the
+  // wrong line of the wrong file.
+  const blockedBy = status.disabledBy === 'env' ? POOL_AXES.both : axis.describe(status).disabledBy === 'env' ? axis : null;
+  if (blockedBy) {
+    const envFileHasFlag = parseEnvFile(ctx.envFile)[blockedBy.envVar] === 'true';
     lines.push(
       '',
-      `${STEP_ICONS.fail} Pooling is still off — this changed nothing in effect.`,
-      `HUB_POOL_USER_DISABLED=true${envFileHasFlag ? ` in ${ctx.envFile}` : " in this Hub's environment"} forces pooling off,`,
+      `${STEP_ICONS.fail} ${blockedBy === axis ? axis.label : 'Pooling'} is still off — this changed nothing in effect.`,
+      `${blockedBy.envVar}=true${envFileHasFlag ? ` in ${ctx.envFile}` : " in this Hub's environment"} forces it off,`,
       'and the .env override always wins over the stored setting.',
       '',
       `Remove that line, then: ${BASE_COMMAND} restart ${ctx.env}`,
     );
-    printMessageBox(enable ? 'Hub Pool setting saved (override in force)' : 'Hub Pool disabled', lines, 'yellow');
+    printMessageBox(enable ? `${axis.label} setting saved (override in force)` : `${axis.label} disabled`, lines, 'yellow');
     return;
   }
 
@@ -237,9 +300,16 @@ async function runPoolEnableCommand(ctx: HubContext, parsed: ParsedPoolArgs) {
     lines.push('', 'No connected peers yet, so inference still resolves locally.', `Find candidates with: ${BASE_COMMAND} pool discover`);
   }
   if (!enable) {
-    lines.push('', 'Existing pairings are kept. Peers will mark this node unreachable until it is re-enabled.');
+    lines.push(
+      '',
+      parsed.axis === 'both'
+        ? 'Existing pairings are kept. Peers will mark this node unreachable until it is re-enabled.'
+        : parsed.axis === 'outbound'
+          ? 'Existing pairings are kept, and peers may still send work here. Requests this node cannot serve now fail locally instead of being sent out.'
+          : 'Existing pairings are kept, and this node keeps using its peers. They see it as healthy but not taking work, so they route elsewhere.',
+    );
   }
-  printMessageBox(enable ? 'Hub Pool enabled' : 'Hub Pool disabled', lines, enable ? 'green' : 'yellow');
+  printMessageBox(enable ? `${axis.label} enabled` : `${axis.label} disabled`, lines, enable ? 'green' : 'yellow');
 }
 
 async function runPoolPeerMutation(ctx: HubContext, parsed: ParsedPoolArgs) {
@@ -300,7 +370,10 @@ async function runPoolPeerMutation(ctx: HubContext, parsed: ParsedPoolArgs) {
   }
   const peer = resolved.peer;
 
-  const prompts: Record<'approve' | 'reject' | 'unpair', { label: string; question: string; noun: string; done: string; lines: string[] }> = {
+  const prompts: Record<
+    'approve' | 'reject' | 'unpair' | 'peer-enable' | 'peer-disable',
+    { label: string; question: string; noun: string; done: string; lines: string[] }
+  > = {
     approve: {
       label: `Approving ${describePoolPeer(peer)}`,
       question: `Approve pairing with ${sanitizeForBox(peer.nodeFqdn)}? [y/N]: `,
@@ -325,8 +398,26 @@ async function runPoolPeerMutation(ctx: HubContext, parsed: ParsedPoolArgs) {
         'A peer that was merely offline recovers on its own — unpairing is not the fix for that.',
       ],
     },
+    'peer-enable': {
+      label: `Enabling ${describePoolPeer(peer)}`,
+      question: `Put ${sanitizeForBox(peer.nodeFqdn)} back in the pool? [y/N]: `,
+      noun: 'a state change',
+      done: 'Peer enabled',
+      lines: ['Work flows both ways with this peer again, from the next request and the next health poll.'],
+    },
+    'peer-disable': {
+      label: `Disabling ${describePoolPeer(peer)}`,
+      question: `Stop exchanging work with ${sanitizeForBox(peer.nodeFqdn)}? [y/N]: `,
+      noun: 'a state change',
+      done: 'Peer disabled',
+      lines: [
+        'No work moves in either direction with this peer while it is off.',
+        'This is NOT a revocation: the pairing and both tokens are kept, so re-enabling is instant',
+        `and needs no approval from the other side. To revoke, use \`${BASE_COMMAND} pool unpair <id>\`.`,
+      ],
+    },
   };
-  const plan = prompts[parsed.subcommand as 'approve' | 'reject' | 'unpair'];
+  const plan = prompts[parsed.subcommand as 'approve' | 'reject' | 'unpair' | 'peer-enable' | 'peer-disable'];
 
   if (!(await confirmDestructiveAction(plan.label, parsed.yes, plan.question, plan.noun))) {
     printMessageBox('Cancelled', ['Left the pairing untouched.'], 'yellow');
@@ -335,11 +426,13 @@ async function runPoolPeerMutation(ctx: HubContext, parsed: ParsedPoolArgs) {
 
   if (parsed.subcommand === 'approve') await approvePoolPeer(envFile, peer.id);
   else if (parsed.subcommand === 'reject') await rejectPoolPeer(envFile, peer.id);
+  else if (parsed.subcommand === 'peer-enable') await setPoolPeerEnabled(envFile, peer.id, true);
+  else if (parsed.subcommand === 'peer-disable') await setPoolPeerEnabled(envFile, peer.id, false);
   else await unpairPoolPeer(envFile, peer.id);
 
   printMessageBox(
     `${plan.done}  [${env}]`,
     [`Peer  ${sanitizeForBox(peer.nodeFqdn)}`, ...plan.lines],
-    parsed.subcommand === 'approve' ? 'green' : 'yellow',
+    parsed.subcommand === 'approve' || parsed.subcommand === 'peer-enable' ? 'green' : 'yellow',
   );
 }
