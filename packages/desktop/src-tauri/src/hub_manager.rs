@@ -2963,6 +2963,24 @@ pub fn should_trigger_hub_watchdog(
     user_stopped: bool,
     start_failed: bool,
 ) -> bool {
+    should_trigger_hub_watchdog_for(
+        consecutive_health_failures,
+        cooldown_elapsed_secs,
+        user_stopped,
+        start_failed,
+        is_docker_available(),
+    )
+}
+
+/// Pure form of [`should_trigger_hub_watchdog`] (unit-tested): takes `docker_available`
+/// instead of probing the daemon, so tests do not need Docker on the machine.
+pub(crate) fn should_trigger_hub_watchdog_for(
+    consecutive_health_failures: u32,
+    cooldown_elapsed_secs: Option<u64>,
+    user_stopped: bool,
+    start_failed: bool,
+    docker_available: bool,
+) -> bool {
     matches!(
         decide_hub_watchdog_action(
             consecutive_health_failures,
@@ -2970,7 +2988,7 @@ pub fn should_trigger_hub_watchdog(
             user_stopped,
             start_failed,
             false,
-            is_docker_available(),
+            docker_available,
         ),
         HubWatchdogAction::StartHub
     )
@@ -9805,21 +9823,48 @@ mod tests {
 
     #[test]
     fn hub_watchdog_decision() {
-        assert!(!super::should_trigger_hub_watchdog(2, None, false, false));
-        assert!(super::should_trigger_hub_watchdog(3, None, false, false));
-        assert!(!super::should_trigger_hub_watchdog(3, None, true, false));
-        assert!(!super::should_trigger_hub_watchdog(3, None, false, true));
-        assert!(!super::should_trigger_hub_watchdog(
-            3,
-            Some(60),
-            false,
-            false
+        use super::{decide_hub_watchdog_action, HubWatchdogAction};
+        // `docker_available` is passed explicitly — probing the real daemon would make this
+        // test fail on any machine without Docker installed.
+        assert_eq!(
+            decide_hub_watchdog_action(2, None, false, false, false, true),
+            HubWatchdogAction::None
+        );
+        assert_eq!(
+            decide_hub_watchdog_action(3, None, false, false, false, true),
+            HubWatchdogAction::StartHub
+        );
+        assert_eq!(
+            decide_hub_watchdog_action(3, None, true, false, false, true),
+            HubWatchdogAction::None
+        );
+        assert_eq!(
+            decide_hub_watchdog_action(3, None, false, true, false, true),
+            HubWatchdogAction::None
+        );
+        assert_eq!(
+            decide_hub_watchdog_action(3, Some(60), false, false, false, true),
+            HubWatchdogAction::None
+        );
+        assert_eq!(
+            decide_hub_watchdog_action(3, Some(301), false, false, false, true),
+            HubWatchdogAction::StartHub
+        );
+    }
+
+    #[test]
+    fn hub_watchdog_wrapper_reports_only_start_hub() {
+        use super::should_trigger_hub_watchdog_for;
+        // The wrapper adds nothing but the StartHub -> true mapping (it always passes
+        // `api_container_up: false`); exercised through the pure form so the Docker probe
+        // stays out of the test.
+        assert!(should_trigger_hub_watchdog_for(3, None, false, false, true));
+        assert!(!should_trigger_hub_watchdog_for(
+            2, None, false, false, true
         ));
-        assert!(super::should_trigger_hub_watchdog(
-            3,
-            Some(301),
-            false,
-            false
+        // Docker missing: report false rather than asking for a start_hub that cannot run.
+        assert!(!should_trigger_hub_watchdog_for(
+            3, None, false, false, false
         ));
     }
 
