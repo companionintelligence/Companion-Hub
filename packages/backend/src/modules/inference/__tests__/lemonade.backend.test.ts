@@ -1,6 +1,6 @@
 import { Test, type TestingModule } from '@nestjs/testing';
 import { LemonadeBackend } from '../backends/lemonade.backend';
-import type { DeviceGroupProbe } from '../backends/lucebox.backend';
+import type { DeviceGroupProbe } from '../backends/amd-device-groups.util';
 import { LoggerService } from '@/core/logger/logger.service';
 import { mock, type MockProxy } from 'vitest-mock-extended';
 import { vi, describe, it, expect, beforeEach } from 'vitest';
