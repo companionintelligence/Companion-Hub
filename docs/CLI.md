@@ -320,7 +320,8 @@ Hub Pool**. See [`hub-pool.md`](./hub-pool.md) for how pooling works.
 ```bash
 cihub pool status [env]                       # is pooling routing, and why or why not
 cihub pool peers [env]                        # paired peers: status, last seen, queue depth, models
-cihub pool discover [env]                     # unpaired CI-Hub nodes on the tailnet
+cihub pool discover [env]                     # unpaired CI-Hub nodes, from every source
+cihub pool probe <address> [env]               # find a Hub by LAN address (no OAuth credential needed)
 cihub pool pair <node> [--name <label>]       # send a pairing request (the other Hub must approve)
 cihub pool approve <id>                       # accept a pending inbound request
 cihub pool reject <id>                        # refuse one
@@ -356,10 +357,31 @@ rejected before the request is sent.
 
 ### `cihub pool discover`
 
-Discovery needs a Tailscale OAuth client (`TAILSCALE_OAUTH_CLIENT_ID` / `TAILSCALE_OAUTH_CLIENT_SECRET`,
-`devices:core:read`). Without one the command **says so and names the variables** rather than printing
-an empty table — an important distinction, because a Hub with no credential can still be paired *with*
-by a Hub that has one, and pools normally once paired.
+Lists every unpaired candidate, from both sources, with a `FOUND VIA` column saying which. A node
+reachable both ways is listed once.
+
+A Tailscale OAuth client (`TAILSCALE_OAUTH_CLIENT_ID` / `TAILSCALE_OAUTH_CLIENT_SECRET`,
+`devices:core:read`) enumerates the whole tailnet at once and is worth having when a pool spans
+several networks. It is **optional**: without one, the empty-list output points at `cihub pool probe`
+first and names the variables second.
+
+### `cihub pool probe`
+
+```
+cihub pool probe 192.168.1.42
+cihub pool probe 192.168.1.42:5010     # a Hub that moved its published API port
+cihub pool probe mini-pc.lan
+```
+
+Asks what is at that address and prints the node's **tailnet FQDN** to pair with. The address is a
+directory lookup and nothing more — it is discarded, and pairing plus every pooled request still go to
+`https://<fqdn>` with the same TLS and the same tokens. There is no LAN peer transport and no second
+trust model.
+
+Refused: any address that is not RFC1918, CGNAT or IPv6 ULA; a hostname where *any* resolved address is
+public; loopback and link-local. With no explicit port it tries 5002 then 3000, and cannot infer a
+published port that was moved — name it if so. A Hub found this way but not joined to a tailnet is
+reported as found-but-not-pairable, because there is no name to dial.
 
 ### `cihub pool log`
 

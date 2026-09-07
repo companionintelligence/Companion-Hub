@@ -9,14 +9,14 @@ This complements, and does not replace, the existing single-node model recommend
 - **Discovery**: the Hub with `TAILSCALE_OAUTH_CLIENT_ID` / `TAILSCALE_OAUTH_CLIENT_SECRET` configured can list tailnet devices via the Tailscale Admin API, then probes each one's `GET /api/inference/pool/identify` (already reachable over the tailnet the same way the Hub's own dashboard is) to find which devices are CI-Hub nodes.
 - **Pairing**: a two-way handshake — the requesting Hub sends a token to the candidate; the candidate's operator approves or rejects in **Settings → Network → Hub Pool**; on approval, the candidate issues its own token back. Each side ends up trusting the other with one bearer token per direction (see `hub_pool_peer` in `schema.ts` for the exact model). Rejecting, or never approving, leaves nothing paired. Rejecting and unpairing both send a best-effort *authenticated* notification — the caller presents the token the other side issued it — so the other Hub drops its half immediately instead of forwarding work to a node that will now reject it.
 - **Routing**: once at least one peer is `connected`, every app using `hub_integration.inference` is routed through this Hub's own pool proxy (`/api/inference/pool/*`) instead of a directly-resolved backend URL — this is a global switch, not a per-app setting. With zero connected peers, nothing changes: a single-node Hub behaves exactly as it did before this feature existed.
-- **Ranking**: local backends and connected peers go into a **single** list ordered by queue depth — in-flight inference requests — so a saturated Hub hands work to an idle peer instead of queueing behind itself. The local node gets a deliberate head start of `poolLocalAffinity` queued requests (default 1): a follow-up turn served here reuses the prompt prefix and KV cache the previous turn left resident, while the same turn sent to a peer re-processes the prompt cold — so work only leaves this node once a peer is at least that much emptier. A peer's queue depth is the larger of the two views this Hub has of it: the `inFlightRequests` figure the peer published at its last health poll, and what this Hub has forwarded it since. Both count the same requests, and neither vantage point sees all of them — the peer's snapshot includes work from apps and nodes we cannot observe, our own counter covers the up-to-one-poll the snapshot missed. A snapshot older than three health polls (90 seconds at the default cadence) is discarded and the peer ranks as mid-load: an unmeasured node must never be mistaken for an idle one. Peers that tie on queue depth are ordered by the hardware tier they report.
+- **Ranking**: local backends and connected peers go into a **single** list ordered by queue depth — in-flight inference requests — so a saturated Hub hands work to an idle peer instead of queueing behind itself. The local node gets a deliberate head start of `poolLocalAffinity` queued requests (default 1): a follow-up turn served here reuses the prompt prefix and KV cache the previous turn left resident, while the same turn sent to a peer re-processes the prompt cold — so work only leaves this node once a peer is at least that much emptier. A peer's queue depth is the larger of the two views this Hub has of it: the `inFlightRequests` figure the peer published at its last health poll, and what this Hub has forwarded it since. Both count the same requests, and neither vantage point sees all of them — the peer's snapshot includes work from apps and nodes we cannot observe, our own counter covers the up-to-one-poll the snapshot missed. A snapshot older than three health polls (90 seconds at the default cadence) is discarded and the peer ranks as mid-load: an unmeasured node must never be mistaken for an idle one. Peers that tie on queue depth are ordered by the hardware tier they report, unless `poolPressureWeight` is non-zero, in which case a [GPU-pressure band](#gpu-pressure-a-second-load-signal-amd-only-and-off-by-default) is consulted first — an unmeasured node ranking mid-band, never idle.
 - **Failover**: the proxy tries candidates in the ranked order above. It fails over on a connection error, a timeout waiting for response headers, a 5xx, or a 408/429 — never on an ordinary 4xx, since retrying a malformed request on a different machine wouldn't help. A peer additionally gets failed over on 401/403/404: those come from the peer's *own* pairing checks (it stopped trusting our token, or was unpaired from its side) and say nothing about the app's request, so the request moves to the next node and that peer's cached capabilities are dropped until its next successful health poll. Failover stops as soon as a response is committed — once status and headers have gone to the app, a stream that then dies is left to die rather than restarted on another node.
 - **Recovery**: a peer that fails three consecutive health polls is marked `unreachable` and stops being offered as a candidate, but it keeps being polled — the first successful probe puts it straight back to `connected`. No operator action is needed, and unpairing is never the way to fix a node that was merely offline.
 
 ## Required configuration
 
 - **Tailscale** must already be connected on every Hub that will participate (see [`private-vpn.md`](private-vpn.md)) — Hub Pool has no independent networking of its own.
-- **`TAILSCALE_OAUTH_CLIENT_ID`** / **`TAILSCALE_OAUTH_CLIENT_SECRET`**: an OAuth client from the Tailscale admin console with the `devices:core:read` scope, set on whichever Hub(s) should be able to *discover* candidate peers. A Hub without these can still be discovered and paired by another Hub that has them, and still participates fully in routing once paired — the credential is only needed for the discovery/listing step, not for pairing or serving traffic.
+- **`TAILSCALE_OAUTH_CLIENT_ID`** / **`TAILSCALE_OAUTH_CLIENT_SECRET`**: **optional.** An OAuth client from the Tailscale admin console with the `devices:core:read` scope, set on whichever Hub(s) should be able to enumerate the *whole tailnet* at once. It is no longer required to find a peer — `cihub pool probe <address>` (below) adds one by address with no credential at all — and it was never required for pairing or for serving traffic. Keep it when a pool spans several networks, which is where enumerating the tailnet earns its keep and where an address on one LAN tells you nothing about a node on another.
 - **`HUB_POOL_USER_DISABLED=true`**: explicit opt-out. Forces this Hub to behave as if it had no connected peers (routing reverts to direct/local resolution), makes it stop answering peer capability probes so paired Hubs naturally mark it unreachable, and makes it refuse new inbound pairing requests. Existing pairings are preserved: paired Hubs keep polling an unreachable peer, so within one poll of the flag being removed the pairing is back to `connected` on its own.
 - **`HUB_POOL_OUTBOUND_DISABLED=true`** / **`HUB_POOL_INBOUND_DISABLED=true`**: the same kind of operator-of-the-box override for one direction only. Each overrides its persisted setting below and is reported separately by `GET /inference/pool/status`. Like the master flag, neither is projected into `.env` by `generateSystemEnvFile`.
 
@@ -31,6 +31,69 @@ Persisted in `settings.json` and editable over `GET`/`PATCH /api/inference/pool/
 | `poolInboundEnabled` | `true` | — | Whether this Hub may **serve** peers' work. Off: peers see a healthy node advertising an empty inventory and `acceptingWork: false`, and route elsewhere; this Hub keeps using them. |
 | `poolLocalAffinity` | `1` | 0–20 | Queued-request head start the local node gets over a peer. `0` ranks purely by queue depth — with local still taking an *exact* tie, since serving here costs no hop and reuses a warm cache; higher values make handoff rarer (stickier to local). |
 | `poolHealthPollSeconds` | `30` | 10–300 | Seconds between peer capability probes. Also sets how long a peer's snapshot stays trusted — three polls — so slowing the cadence does not silently mark every peer stale. |
+| `poolPressureWeight` | `0` | 0–3 | How heavily the 0–3 GPU-pressure band counts in ranking. `0` (the default) removes it from the comparator entirely, so ranking is byte-identical to the build before pressure existed; `1` is `pending + pressure`, which is what lets the pool move work off a node whose queue is empty but whose GPU is busy. See [GPU pressure](#gpu-pressure-a-second-load-signal-amd-only-and-off-by-default). |
+
+## GPU pressure: a second load signal, AMD-only and off by default
+
+Queue depth answers "how much work has this node accepted". It does not answer "is this machine's GPU already committed" — a card saturated by ComfyUI, a direct `ollama run`, or another orchestrator sharing the same host engine is invisible to every queue counter in the system, and that node still advertises an empty queue.
+
+The **pressure band** is a second, independent signal for exactly that question: an integer `0`–`3`, or **absent** meaning *unmeasured*.
+
+### How it is measured
+
+A sampler takes one reading every 10 seconds, entirely off the request path — ranking a request reads an in-memory number and forks nothing. Sources are tried in order and the first that answers wins:
+
+| Source | What it reads | Status |
+|---|---|---|
+| `host-file` | `busyPercent` from `/data/state/hardware/gpu_pressure.json` | **Nothing in this repo writes this file.** It is the extension seam for vendors the Hub container cannot see. |
+| `amd-drm` | `gpu_busy_percent` from `/host/sys/class/drm/card*/device` | Works wherever the host `/sys` is mounted — see *Enabling the AMD source* below. |
+
+Readings are smoothed with an EWMA (α = 0.4) and quantised with a 5-point deadband (enter a band at 0.40/0.70/0.85 occupancy, leave it at 0.35/0.65/0.80), so a value oscillating across a boundary does not flap the number every peer is ranking on. Rises may skip bands; falls walk down one at a time.
+
+Sampling only runs while this node has at least one **connected peer** — the band exists to be compared against another node's, so a single-node Hub does one indexed `SELECT` every ten seconds and no file reads at all.
+
+**Why AMD only, and why the other sources were cut.** `gpu_busy_percent` is the amdgpu driver's own duty-cycle counter and is the one number available here that actually tracks whether the device is working. The reviewed design also carried two VRAM-residency sources — Ollama's `/api/ps`, and a CPU-spill fraction. Both were removed: resident weights read the same whether an engine is generating or idling out its `keep_alive`, so a band built on them would have rated the *coldest* node the least busy, which is precisely the inversion `poolLocalAffinity` exists to price. NVIDIA and Apple nodes therefore report **nothing**, which is honest, until someone writes the host file. Adding a vendor is a writer change (a desktop timer, or a systemd timer on a fleet node) plus nothing at all in the Hub.
+
+### Absent means neutral, never idle
+
+This is the property the whole feature turns on, and it holds end to end:
+
+- A node that cannot measure **omits** `gpuPressure` from its capabilities payload rather than sending `0`. Absence and idleness do not share an encoding on the wire.
+- A reader turns an absent, stale, or invalid band into `UNKNOWN_PRESSURE = 1` — mid-band, deliberately not `0`, exactly as `UNKNOWN_PEER_LOAD` already works for queue depth.
+- A peer's band is discarded entirely once its snapshot is older than three health polls, and clamped to `null` unless it is an integer in `0..3`. `last_capabilities` is JSON a paired peer fully controls.
+- A peer's self-reported band is **floored** by what this node has forwarded there and not yet finished reading. Otherwise a peer that hardcodes `gpuPressure: 0` wins every tie forever and the band becomes an attack surface rather than a signal.
+
+On a fleet where most nodes cannot measure, the alternative — reading silence as "idle" — would systematically route work to whichever machine knows least about itself.
+
+### How it enters ranking
+
+`poolPressureWeight` defaults to **`0`**, and at `0` the band is *arithmetically absent*: the score term vanishes and the pressure key is not evaluated by the comparator at all. Ranking on a fresh Hub is byte-for-byte what it was before this feature existed — by construction, not by an argument about what can be measured.
+
+At `1` the score is PAIR's `pending + pressure`, plus the usual local-affinity handicap on peers. That is what lets a node whose queue is empty but whose GPU is committed hand work to a calmer peer. A band is worth one queued request per unit of weight, so a materially shorter queue still wins.
+
+**Do not try to read latency out of this number.** `docs/fleet-benchmark-results.md` §1.1 shows paired throughput ratios swinging 1.57–3.65× on a code prompt and ~1.0× on a prose prompt, on identical hardware, model and build. A 0–3 band cannot predict time-to-first-token and is not intended to. It answers one question — *is this machine's GPU already committed?* — and is used only as an ordering key.
+
+### Enabling the AMD source
+
+The reader ships; the mount does not. `/host/sys` is not bind-mounted by any compose file in this repo, so **out of the box every node reports no band and ranks neutral**, which is the same no-op the default weight already guarantees.
+
+To enable it on a Linux AMD node, add one line to the `ci-hub` service's `volumes:` and recreate the container:
+
+```yaml
+      - /sys:/host/sys:ro
+```
+
+It must be `/sys`, not `/sys/class/drm`: `card*/device` is a symlink into `/sys/devices/…`, so a narrower mount yields dangling links. The mount is read-only and exposes kernel device metadata rather than data — materially less powerful than the Docker socket already mounted alongside it — but it is a real container-posture change, which is why it is an operator decision rather than a default. It is deliberately not in `docker-compose.prod.yml`: a new unconditional bind mount is the one part of this feature that could stop a Hub booting, peerless single-node ones included, and it has not been verified against Docker Desktop on macOS and Windows where the same compose file runs.
+
+Then set the weight, on each node that should act on it:
+
+```bash
+curl -X PATCH .../api/inference/pool/settings -d '{"poolPressureWeight": 1}'
+```
+
+### End-to-end lag
+
+A change on one node reaches another node's ranking through: the EWMA (~30 s to 64% of a step), then that peer's next capability poll (`poolHealthPollSeconds`, 30 s by default). Worst case is roughly **90 seconds at the default cadence, and about 5 minutes at the 300 s maximum**. The band is a steady-state signal about a machine, not a per-request measurement.
 
 ## Kill switches: three levels, one precedence
 
@@ -105,6 +168,18 @@ already-used and none-outstanding all answer with the *same* 401 — telling a c
 even outstanding would make the space searchable in two steps. The digits are returned exactly once,
 by the mint call; `GET /pool/status` reports only `pairingPin: { active, expiresAt }`.
 
+**What "a source" means, precisely.** The 429 limiter is keyed on the claimed FQDN and, *when the
+Hub can honestly identify it*, on the caller's IP. It usually cannot: Express `trust proxy` is unset
+by default, so behind Traefik or the Cloudflare tunnel `request.ip` is the proxy's own private
+address, identical for every caller in the world. Keying on that would not be a stricter limit but a
+different one — a global lockout, which would let anyone who can reach the tunnel stop the operator
+pairing at all. So the IP key is used only when the request carries no reverse-proxy provenance
+(the LAN and tailnet case, which is how peers actually arrive) or when `HUB_TRUST_PROXY` is set and
+Express has resolved the real client. Otherwise the cooldown runs on the claimed FQDN alone — which
+is trivially varied, and is why it was always the second layer. **The real bound on a PIN's exposure
+is the per-PIN ceiling: five wrong guesses destroy it, whoever makes them, so total exposure is
+5/10⁶ regardless of how many sources try.**
+
 A PIN authenticates the *request*, not the operator's decision. The row still lands **pending** and
 still needs a confirm, which now renders the requester's FQDN *and* its key fingerprint side by side.
 A PIN read aloud or over a shoulder therefore gets an unintended node into an approval list, never
@@ -166,8 +241,14 @@ hold a stale row.
 Postgres volume — an ordinary reinstall — leaves the stored private key undecryptable. That must never
 be fatal, and it is not:
 
-- Identity load is lazy, retried, and **never throws out of `onModuleInit`**. A throw there would
-  crash-loop every appliance running this build, peerless single-node ones included.
+- Identity load is lazy, memoized, retried on a timer, and **never rejects at its caller**. A throw
+  would take down whatever touched pooling first, on every appliance running this build, peerless
+  single-node ones included.
+- There is deliberately **no boot-time warm**. `EncryptionService` runs `pbkdf2Sync` at 100,000
+  iterations — measured at 42.8 ms — so warming the cache at startup held the event loop for 43 ms
+  on every boot of every Hub, pooling or not. A Hub with no peers whose Hub Pool page is never opened
+  now mints no identity at all. Each caller is already async and already awaiting something slower,
+  so it is paid once, on first use, off the boot path.
 - `node_uuid` and `public_key` are stored in the clear, so such a Hub can still *verify* its peers
   (verification needs only their public keys and this node's own UUID) while it can no longer *sign*.
   It falls back to the bearer token and keeps routing.
@@ -194,8 +275,10 @@ correlator, which is the last thing to publish on an open endpoint.
 ## Operator workflow
 
 1. On each participating Hub, confirm **Settings → Network** shows Tailscale connected.
-2. On at least one Hub, set the Tailscale OAuth client env vars above and restart.
-3. Open **Settings → Network → Hub Pool**. Discoverable devices on the tailnet that identify as CI-Hub nodes appear with a **Pair** button. Without the OAuth credential the section says so and names the two variables, rather than showing an empty list — a Hub with no credential can still be paired *with*, it just cannot enumerate the tailnet itself.
+2. Find the other Hub, by either route — they produce the same candidate list and a node found both ways appears once:
+   - **By address, no credential needed:** `cihub pool probe 192.168.1.42` (or `192.168.1.42:5002`, or a hostname). See below for what it does and does not do.
+   - **By tailnet enumeration:** set the Tailscale OAuth client env vars above on at least one Hub and restart.
+3. Open **Settings → Network → Hub Pool**. Candidates that identify as CI-Hub nodes appear with a **Pair** button. Without the OAuth credential the tailnet half of the section says so and names the two variables, rather than showing an empty list — a Hub with no credential can still be paired *with*, and can still find peers by address; it just cannot enumerate the tailnet itself.
 4. On the *other* Hub, a pending inbound request appears with **Approve** / **Reject**, identified by the requester's FQDN and — when the request carried a pairing PIN — its key fingerprint, which is the value to compare against that Hub's own **Pairing PIN** card.
 5. Once connected, both Hubs' **Hub Pool** sections show whether pooling is actually routing (and if not, which of the two kill switches is responsible), the `poolEnabled` and `poolLocalAffinity` controls, each peer's status / last-seen / queue depth / hardware tier / engines, the merged list of models the pool can serve and which nodes hold each, and the recent routing decisions with failovers called out.
 
@@ -204,7 +287,44 @@ A peer shown **unreachable** needs no operator action: it is skipped while it fa
 To validate a real two-node pool end to end — pairing, routing, load handoff, failover, recovery, the
 kill switch, and the security checks — follow [`hub-pool-fleet-testing.md`](hub-pool-fleet-testing.md).
 
-Every step above is also available headlessly through `cihub pool` — `status`, `peers`, `discover`, `pair`, `approve`, `reject`, `unpair`, `log`, `enable`, `disable` — which is the path for an SSH-only Hub or a coding agent. It hits the same endpoints with the Portal device key and runs on the Hub it manages, so approval still happens on the receiving Hub. See [`CLI.md` → Hub Pool](CLI.md#hub-pool).
+Every step above is also available headlessly through `cihub pool` — `status`, `peers`, `discover`, `probe`, `pair`, `approve`, `reject`, `unpair`, `log`, `enable`, `disable` — which is the path for an SSH-only Hub or a coding agent. It hits the same endpoints with the Portal device key and runs on the Hub it manages, so approval still happens on the receiving Hub. See [`CLI.md` → Hub Pool](CLI.md#hub-pool).
+
+## Finding a peer by address
+
+`cihub pool probe <address>` (and `POST /inference/pool/peers/probe`) exists so that two Hubs on one LAN can find each other without anyone having to go and create a Tailscale OAuth client first. It is worth being precise about what it is, because the obvious reading is wrong:
+
+**An address is a directory lookup, never a transport.** The probe asks `GET /api/inference/pool/identify` at the address and keeps exactly one thing: the node's tailnet FQDN. The address is then discarded. Pairing, the health poll and every proxied request still go to `https://<fqdn>` — same real TLS, same bearer tokens, same WireGuard transport. There is no new pairing path and no second trust model. This is why `normalizePeerFqdn` still refuses IP literals for anything that gets *stored*.
+
+Consequences worth knowing:
+
+- A Hub found at an address but not joined to a tailnet is reported as **found, not pairable**, with that reason. There is no name to dial, so there is nothing to pair with.
+- The probe refuses any address that is not RFC1918, CGNAT or IPv6 ULA, and a hostname is refused if *any* address it resolves to is public. Loopback and link-local are refused too — `169.254.0.0/16` contains the cloud metadata endpoint, and pooling with yourself over loopback is meaningless. (`isPrivateOrLocalIp`, which allows both, is for `InternalNetworkGuard`, whose question is "did this come from inside".)
+- With no explicit port, it tries the Hub API port then the dev port. It cannot know the published port: every compose file sets `API_PORT: 5002` in the container's own environment while publishing `${API_PORT:-5002}` on the host, so a Hub that moved its published port has to be probed as `<address>:<port>`.
+- A probed candidate is remembered **in memory only** and is dropped after three consecutive unanswered discovery refreshes — the same three-strike convention `refreshPeerHealth` uses, so one asleep laptop never costs a retype. A restart clears the list; a *paired* peer is never touched by this, its liveness stays entirely the health poll's business.
+
+**Inbound pairing now checks the tailnet suffix even with no OAuth credential.** `receivePairingRequest` refuses a `fromNodeFqdn` that is not a name on this node's own tailnet, read from the local Tailscale CLI. Previously the whole membership check was skipped whenever the Admin API was unconfigured — which is exactly the credential-less configuration this feature creates. A Hub that has not joined a tailnet at all still accepts pairing, since it has nothing to compare against.
+
+## A claimed UUID is not an identity
+
+There is exactly **one** node UUID per Hub, and it is the persisted one described under
+[Peer identity](#peer-identity-pin-pairing-and-signed-requests) — minted into `hub_pool_identity`
+alongside the Ed25519 keypair, reported to paired peers on the authenticated `/capabilities`
+response, and stored by them as `hub_pool_peer.peer_node_uuid`. Discovery and trust deliberately do
+not have separate answers to "who is this node": a second, differently-derived UUID would make
+"renamed" and "different machine" indistinguishable again, which is the exact problem the column
+exists to solve.
+
+What discovery adds is a rule about UUIDs it did *not* authenticate. Anything that can reach a Hub
+can claim any UUID it likes on the unauthenticated `/identify` probe, so a claimed UUID is carried
+as `claimedNodeUuid` — a distinct type from the authenticated column, so the two cannot be confused
+at a call site — and candidate deduplication keys on the normalized FQDN, a name the tailnet control
+plane also attests. Keying the merge on a claimed UUID would let a hostile LAN device suppress a real
+node from the operator's candidate list simply by claiming that node's UUID.
+
+The same asymmetry runs the other way: `peer_node_uuid` is only ever written from a route
+`PoolPeerGuard` authenticated, and only ever together with the public key that makes it verifiable.
+A UUID with no key beside it would be a lookup key the guard could resolve and then refuse — a
+half-pinned row that reads as identity and is not.
 
 ## Endpoints an app sees through the proxy
 
@@ -223,7 +343,7 @@ Apps using `hub_integration.inference` get `CI_LLM_BASE_URL`, `OLLAMA_HOST` and 
 - Peer health is polled on an interval (`poolHealthPollSeconds`, 30s by default) rather than pushed, so a peer that just went down may still be offered as a candidate until the next poll — the per-request failover is what actually protects a live request in that gap.
 - The routing log holds the last 200 decisions in memory and is gone on restart. There is still no persisted history of *anything* else: no pairing lifecycle (rejected and expired rows are hard-deleted), no per-peer request totals, and no record of why a peer became unreachable beyond the current strike count.
 - Time-to-headers is the only latency figure recorded. Token counts and tokens-per-second are not available: the response body is piped through untouched, and counting tokens would mean parsing the stream the proxy deliberately never reads.
-- Queue depth is the only load signal. The Hub has no live GPU-utilization or VRAM-pressure telemetry to rank on — `HardwareInspectorService` reports a static hardware profile, not counters — so a peer whose GPU is busy with work that never went through the pool still reports an empty queue. Reported hardware tier only breaks ties between equally queued peers; it does not deprioritize a slow GPU that happens to be idle.
+- Queue depth is the only load signal **that is on by default**. The [GPU-pressure band](#gpu-pressure-a-second-load-signal-amd-only-and-off-by-default) covers the case queue depth cannot see — a GPU busy with work that never went through the pool — but it is AMD-only, needs a `/sys` mount this repo does not ship, and `poolPressureWeight` defaults to `0`. Until an operator turns both on, a peer whose card is saturated by ComfyUI still reports an empty queue. Reported hardware tier only breaks ties between equally queued peers; it does not deprioritize a slow GPU that happens to be idle.
 - Queue depths are per-process and reset when a Hub restarts, so for the first moments after a restart every node looks idle to itself. The peer-side freshness rule covers the other direction (a peer that has gone quiet ranks as mid-load), but nothing corrects a node's view of its own load.
 - A node's model inventory is what it has on **disk**, not what is resident in VRAM — Ollama's `/api/tags`, for one, lists every pulled model. A candidate that must cold-load the model therefore ranks alongside one already holding it warm; the local head start hedges this for the common follow-up-turn case, it does not fix it. What the inventory no longer does is hide a model the node cannot load **at all**: see the note below.
 

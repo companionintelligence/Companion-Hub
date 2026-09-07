@@ -50,6 +50,15 @@ export interface PinAttemptSource {
  * hand-rolled one. Keyed independently on the claimed FQDN and on the source IP: trivially dodged
  * by varying the claimed name, which is exactly why it is the second layer and the per-PIN ceiling
  * is the first.
+ *
+ * The IP key is present only when the Hub can honestly identify the caller — see
+ * `callerSourceIp`. Behind Traefik or the Cloudflare tunnel, with `HUB_TRUST_PROXY` unset,
+ * `request.ip` is the proxy rather than the caller, so keying on it would produce ONE bucket shared
+ * by every caller on earth. That is not a stricter limit, it is a different one: a global lockout,
+ * which would let anyone who can reach the tunnel stop the operator pairing at all — precisely the
+ * failure this class's "no separate global rate limit" note exists to avoid. In that configuration
+ * the cooldown therefore runs on the claimed FQDN alone, and the per-PIN attempt ceiling above —
+ * which is source-independent by construction — remains the real bound on exposure.
  */
 @Injectable()
 export class HubPoolPairingPinService {

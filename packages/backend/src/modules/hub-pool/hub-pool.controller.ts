@@ -20,17 +20,19 @@ import { AuthGuard } from '@/modules/auth/auth.guard';
 import { InternalNetworkGuard } from '@/modules/auth/internal-network.guard';
 import { TailscaleService } from '@/modules/tailscale/tailscale.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
-import { describeHubPoolDisabled, describeHubPoolInboundRefused } from '@/common/helpers/hub-pool';
+import { callerSourceIp, describeHubPoolDisabled, describeHubPoolInboundRefused } from '@/common/helpers/hub-pool';
 import { PoolAppGuard } from './guards/pool-app.guard';
 import { PoolPeerGuard } from './guards/pool-peer.guard';
 import { HubPoolPeerService } from './hub-pool-peer.service';
 import { HubPoolRoutingLogService } from './hub-pool-routing-log.service';
 import { PoolProxyService } from './hub-pool-proxy.service';
+import { HubPoolDiscoveryService } from './hub-pool-discovery.service';
 import {
   IncomingPairingRequestBody,
   PairingConfirmBody,
   PairingUpgradeBody,
   PairPeerBody,
+  ProbePeerAddressBody,
   RoutingLogQueryDto,
   UpdateHubPoolPreferencesBody,
 } from './hub-pool.dto';
@@ -63,6 +65,9 @@ export class HubPoolController {
     private readonly tailscaleService: TailscaleService,
     private readonly configuration: ConfigurationService,
     private readonly routingLog: HubPoolRoutingLogService,
+    // Appended last on purpose: every pool test file constructs this controller positionally, so a
+    // new parameter anywhere else silently re-binds the existing ones.
+    private readonly discoveryService: HubPoolDiscoveryService,
   ) {}
 
   // ── Discovery / identification ──────────────────────────────────────────
@@ -130,10 +135,31 @@ export class HubPoolController {
     return (await this.peerService.listPeers()).map(toPublicPeer);
   }
 
+  /**
+   * Pairing candidates from every source this node has, merged and deduplicated on `nodeFqdn`.
+   *
+   * Tailscale Admin API discovery is unchanged and still the primary source — it is what lets a pool
+   * span networks. Manually probed addresses are folded in alongside it, so a node found both ways
+   * is offered once.
+   */
   @UseGuards(AuthGuard)
   @Get('peers/discoverable')
   async listDiscoverable() {
-    return this.peerService.listDiscoverableDevices();
+    return this.discoveryService.listDiscoverableNodes();
+  }
+
+  /**
+   * Look up one operator-typed address and report what is there.
+   *
+   * This is what makes pairing possible without a Tailscale OAuth client: the operator types a LAN
+   * address once and gets back the node's tailnet FQDN, which the existing `peers/pair` then uses.
+   * The address itself is never stored and never becomes a transport — see
+   * `HubPoolDiscoveryService`.
+   */
+  @UseGuards(AuthGuard)
+  @Post('peers/probe')
+  async probePeerAddress(@Body() body: ProbePeerAddressBody) {
+    return this.discoveryService.probeAddress(body.address);
   }
 
   @UseGuards(AuthGuard)
@@ -240,7 +266,12 @@ export class HubPoolController {
       fromNodeUuid: body.fromNodeUuid,
       fromPublicKey: body.fromPublicKey,
       pin: body.pin,
-      source: { ip: req.ip },
+      // `callerSourceIp`, not `req.ip`. Behind Traefik or the Cloudflare tunnel `req.ip` is the
+      // proxy, so keying the PIN cooldown on it would make a "per-source" limit global — and a
+      // global lockout on this route is a denial-of-pairing primitive, not a defence. The helper
+      // returns an address only when it really is the caller's; otherwise the cooldown falls back
+      // to the claimed FQDN key alone and the per-PIN attempt ceiling does the rest.
+      source: { ip: callerSourceIp(req) },
     });
     return { received: true, ...identity };
   }

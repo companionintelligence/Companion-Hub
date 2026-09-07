@@ -9,7 +9,13 @@ import { InferenceRouterService } from '@/modules/inference/inference-router.ser
 import type { InferenceStatus } from '@ci-hub/common/types';
 import type { HubPoolPeer } from '@/core/database/drizzle/types';
 import { ConfigurationService } from '@/core/config/configuration.service';
-import { DEFAULT_POOL_HEALTH_POLL_SECONDS, DEFAULT_POOL_LOCAL_AFFINITY, type HubPoolPreferences } from '@/common/helpers/hub-pool';
+import {
+  DEFAULT_POOL_HEALTH_POLL_SECONDS,
+  DEFAULT_POOL_LOCAL_AFFINITY,
+  DEFAULT_POOL_PRESSURE_WEIGHT,
+  type HubPoolPreferences,
+} from '@/common/helpers/hub-pool';
+import { HubPoolPressureService } from '../hub-pool-pressure.service';
 import { HubPoolPeerRepository } from '../hub-pool-peer.repository';
 import { HubPoolPeerService } from '../hub-pool-peer.service';
 import { HubPoolLoadService, LOCAL_CANDIDATE_KEY } from '../hub-pool-load.service';
@@ -51,6 +57,7 @@ describe('HubPoolPeerService', () => {
   let loadService: HubPoolLoadService;
   let identity: MockProxy<HubPoolIdentityService>;
   let pairingPins: HubPoolPairingPinService;
+  let pressureService: MockProxy<HubPoolPressureService>;
   let service: HubPoolPeerService;
 
   /** Repoint the persisted settings, as a settings PATCH would. */
@@ -62,6 +69,7 @@ describe('HubPoolPeerService', () => {
       poolLocalAffinity: DEFAULT_POOL_LOCAL_AFFINITY,
       poolHealthPollSeconds: DEFAULT_POOL_HEALTH_POLL_SECONDS,
       poolRequireSignedPeers: false,
+      poolPressureWeight: DEFAULT_POOL_PRESSURE_WEIGHT,
       ...overrides,
     });
   }
@@ -101,6 +109,11 @@ describe('HubPoolPeerService', () => {
     identity.summary.mockResolvedValue({ nodeUuid: null, publicKeyFingerprint: null, identityError: null });
     identity.takeObservedPeerFqdn.mockReturnValue(undefined);
     pairingPins = new HubPoolPairingPinService(mock<LoggerService>());
+    pressureService = mock<HubPoolPressureService>();
+    // Unmeasured is the DEFAULT here on purpose: it is what every non-AMD node reports, so the
+    // whole existing suite exercises the neutral path unless a test opts into a band.
+    pressureService.band.mockReturnValue(null);
+    pressureService.source.mockReturnValue(null);
     service = new HubPoolPeerService(
       mock<LoggerService>(),
       repo,
@@ -112,6 +125,7 @@ describe('HubPoolPeerService', () => {
       configuration,
       identity,
       pairingPins,
+      pressureService,
     );
     global.fetch = vi.fn();
   });
@@ -273,6 +287,62 @@ describe('HubPoolPeerService', () => {
       tailscaleAdminApi.listDevices.mockRejectedValue(new Error('502 from control plane'));
 
       await service.receivePairingRequest('requester.tailxyz.ts.net', undefined, 'raw-token-value');
+
+      expect(repo.create).toHaveBeenCalled();
+    });
+
+    it('refuses a name outside this tailnet even with NO Admin API credential configured', async () => {
+      // The check that matters now that peers can be found without a Tailscale OAuth client.
+      // Previously `assertTailnetMember` returned immediately when the Admin API was unconfigured,
+      // so the credential-less configuration — the exact one manual peer entry exists to serve —
+      // had no membership check on either side of the handshake. `TailscaleStatus.tailnet` comes
+      // from the local CLI and needs no credential at all.
+      repo.findByNodeFqdn.mockResolvedValue(undefined);
+      tailscaleAdminApi.isConfigured.mockReturnValue(false);
+
+      await expect(service.receivePairingRequest('impostor.evil-tailnet.ts.net', undefined, 'raw-token-value')).rejects.toThrow(ForbiddenException);
+
+      expect(repo.create).not.toHaveBeenCalled();
+    });
+
+    it('accepts a name on this tailnet with no Admin API credential configured', async () => {
+      repo.findByNodeFqdn.mockResolvedValue(undefined);
+      tailscaleAdminApi.isConfigured.mockReturnValue(false);
+
+      await service.receivePairingRequest('requester.tailxyz.ts.net', undefined, 'raw-token-value');
+
+      expect(repo.create).toHaveBeenCalled();
+    });
+
+    it('does not refuse a suffix look-alike by accident', async () => {
+      // `evil-tailxyz.ts.net` ends with the same characters as `tailxyz.ts.net` but is a different
+      // tailnet — the check is on a dot-anchored suffix, not a substring.
+      repo.findByNodeFqdn.mockResolvedValue(undefined);
+      tailscaleAdminApi.isConfigured.mockReturnValue(false);
+
+      await expect(service.receivePairingRequest('impostor.evil-tailxyz.ts.net', undefined, 'raw-token-value')).rejects.toThrow(ForbiddenException);
+    });
+
+    it('still accepts pairing on a Hub that has no tailnet of its own', async () => {
+      // A Hub that never joined a tailnet has nothing to compare against. Refusing there would
+      // break a configuration that works today, so the check degrades to a no-op.
+      repo.findByNodeFqdn.mockResolvedValue(undefined);
+      tailscaleAdminApi.isConfigured.mockReturnValue(false);
+      tailscaleService.getStatusCached.mockResolvedValue({
+        installed: false,
+        connected: false,
+        version: null,
+        hostname: null,
+        nodeFqdn: null,
+        tailnet: null,
+        ip: null,
+        supportsServices: false,
+        httpsAvailable: false,
+        backendState: null,
+        authUrl: null,
+      });
+
+      await service.receivePairingRequest('requester.some-other.ts.net', undefined, 'raw-token-value');
 
       expect(repo.create).toHaveBeenCalled();
     });
@@ -609,6 +679,169 @@ describe('HubPoolPeerService', () => {
       setPoolPreferences({ poolOutboundEnabled: false });
 
       expect(service.inboundRefusal(mockPeer({ enabled: true }))).toBeNull();
+    });
+  });
+
+  describe('GPU pressure on the wire and in the status payload', () => {
+    beforeEach(() => {
+      inferenceRouter.getStatus.mockResolvedValue({
+        hardwareTier: 'high',
+        backends: [{ type: 'ollama', running: true, healthy: true, url: 'http://ollama:11434', modelsLoaded: 1 }],
+        models: [],
+        memoryBudget: { totalVramMb: 24576, totalRamMb: 65536, systemReservedRamMb: 8192, dockerOverheadMb: 2048, availableForModelsMb: 20480 },
+      } as unknown as InferenceStatus);
+      inferenceRouter.listModels.mockResolvedValue([
+        {
+          id: 'llama3.2:3b',
+          object: 'model',
+          created: 0,
+          owned_by: 'local:ollama',
+          state: 'loaded',
+          backend: 'ollama',
+          modality: ['text'],
+          local: true,
+        },
+      ] as never);
+    });
+
+    describe('getOwnCapabilities', () => {
+      it('publishes the band and the source that produced it when this node measured one', async () => {
+        pressureService.band.mockReturnValue(2);
+        pressureService.source.mockReturnValue('amd-drm');
+
+        const capabilities = await service.getOwnCapabilities();
+
+        expect(capabilities.gpuPressure).toBe(2);
+        expect(capabilities.gpuPressureSource).toBe('amd-drm');
+      });
+
+      it('OMITS the keys entirely when unmeasured, rather than publishing 0', async () => {
+        pressureService.band.mockReturnValue(null);
+        pressureService.source.mockReturnValue(null);
+
+        const capabilities = await service.getOwnCapabilities();
+
+        // Absence and idleness must not share an encoding on the wire either. A peer reading a
+        // missing key applies UNKNOWN_PRESSURE; it would have taken a literal 0 at face value and
+        // ranked this node as the most attractive candidate in the pool.
+        expect(capabilities).not.toHaveProperty('gpuPressure');
+        expect(capabilities).not.toHaveProperty('gpuPressureSource');
+      });
+
+      it('publishes a measured band of 0, which is a claim and not an absence', async () => {
+        pressureService.band.mockReturnValue(0);
+        pressureService.source.mockReturnValue('amd-drm');
+
+        const capabilities = await service.getOwnCapabilities();
+
+        expect(capabilities.gpuPressure).toBe(0);
+      });
+
+      it('is not swallowed by the inventory cache — a moving band moves inside the TTL', async () => {
+        pressureService.band.mockReturnValue(0);
+        pressureService.source.mockReturnValue('amd-drm');
+        const first = await service.getOwnCapabilities();
+
+        pressureService.band.mockReturnValue(3);
+        const second = await service.getOwnCapabilities();
+
+        // Same guarantee `inFlightRequests` already has: only the expensive inventory is cached,
+        // because a stale load figure is the one thing that actually mis-routes work.
+        expect(first.gpuPressure).toBe(0);
+        expect(second.gpuPressure).toBe(3);
+        expect(inferenceRouter.getStatus).toHaveBeenCalledTimes(1);
+      });
+
+      it('still publishes the band while refusing inbound work', async () => {
+        pressureService.band.mockReturnValue(1);
+        pressureService.source.mockReturnValue('amd-drm');
+
+        const capabilities = await service.getOwnCapabilities(false);
+
+        // The refusal empties the inventory, not the live counters: the peer must keep seeing a
+        // healthy machine so its health poll keeps succeeding.
+        expect(capabilities.backends).toEqual([]);
+        expect(capabilities.gpuPressure).toBe(1);
+      });
+    });
+
+    describe('getPoolStatus', () => {
+      function peerWith(id: string, capabilities: Record<string, unknown>, lastSeenAt = new Date().toISOString()): HubPoolPeer {
+        return mockPeer({ id, status: 'connected', lastSeenAt, lastCapabilities: capabilities as unknown as Record<string, unknown> });
+      }
+
+      const baseCapabilities = { hardwareTier: 'high', backends: [], updatedAt: new Date().toISOString() };
+
+      it('reports this node own band and source', async () => {
+        pressureService.band.mockReturnValue(2);
+        pressureService.source.mockReturnValue('host-file');
+        repo.listAll.mockResolvedValue([]);
+
+        const status = await service.getPoolStatus();
+
+        expect(status.localNode.gpuPressure).toBe(2);
+        expect(status.localNode.gpuPressureSource).toBe('host-file');
+      });
+
+      it('still reports the band when the local inventory could not be built', async () => {
+        pressureService.band.mockReturnValue(3);
+        pressureService.source.mockReturnValue('amd-drm');
+        inferenceRouter.getStatus.mockRejectedValue(new Error('ollama is down'));
+        repo.listAll.mockResolvedValue([]);
+
+        const status = await service.getPoolStatus();
+
+        // A down backend must not take the pressure reading with it — during an incident that
+        // number is one of the few things on the card still worth reading.
+        expect(status.localNode.capabilitiesError).toContain('ollama is down');
+        expect(status.localNode.gpuPressure).toBe(3);
+      });
+
+      it('reports a peer effective band, not the raw jsonb', async () => {
+        repo.listAll.mockResolvedValue([peerWith('p1', { ...baseCapabilities, gpuPressure: 2 })]);
+
+        const status = await service.getPoolStatus();
+
+        expect(status.peers[0]?.gpuPressure).toBe(2);
+      });
+
+      it('shows null for a peer that reported nothing', async () => {
+        repo.listAll.mockResolvedValue([peerWith('p1', baseCapabilities)]);
+
+        const status = await service.getPoolStatus();
+
+        expect(status.peers[0]?.gpuPressure).toBeNull();
+        expect(status.peers[0]?.gpuPressure).not.toBe(0);
+      });
+
+      it('shows null for a stale snapshot, matching what routing would do with it', async () => {
+        const stale = peerWith('p1', { ...baseCapabilities, gpuPressure: 0 }, new Date(Date.now() - 10 * 60_000).toISOString());
+        repo.listAll.mockResolvedValue([stale]);
+
+        const status = await service.getPoolStatus();
+
+        expect(status.peers[0]?.gpuPressure).toBeNull();
+      });
+
+      it.each([-5, 99, 1.5, 'low', null])('shows null for the hostile value %s', async (hostile) => {
+        repo.listAll.mockResolvedValue([peerWith('p1', { ...baseCapabilities, gpuPressure: hostile })]);
+
+        const status = await service.getPoolStatus();
+
+        expect(status.peers[0]?.gpuPressure).toBeNull();
+      });
+
+      it('shows the forwarded-work floor rather than the peer own optimistic 0', async () => {
+        repo.listAll.mockResolvedValue([peerWith('p1', { ...baseCapabilities, gpuPressure: 0 })]);
+        loadService.acquire('p1');
+        loadService.acquire('p1');
+
+        const status = await service.getPoolStatus();
+
+        // The same floor `PoolProxyService` applies. If the card showed 0 while routing believed 2,
+        // an operator debugging a hot node would be reading a number nothing acts on.
+        expect(status.peers[0]?.gpuPressure).toBe(2);
+      });
     });
   });
 
@@ -961,6 +1194,142 @@ describe('HubPoolPeerService', () => {
       // An unauthenticated identity claim is exactly the anonymous write the PIN exists to close;
       // the legacy flow pins on `pair/confirm` instead, which PoolPeerGuard has authenticated.
       expect(repo.update).not.toHaveBeenCalled();
+    });
+  });
+
+  /**
+   * Group E's `HubPoolNodeIdentityService` derived a *second* node UUID for the same node, from
+   * `resolveDeviceId`. Unified onto `HubPoolIdentityService`, which owns `hub_pool_identity` and
+   * the keypair: one node, one UUID, and trust and discovery agree on it. These are E's assertions
+   * re-pointed at the surviving service — the behaviour they pin down is what mattered, not which
+   * class produced it.
+   */
+  describe('stable node identity, as peers and the operator see it', () => {
+    const SELF_UUID = '11111111-1111-4111-8111-111111111111';
+    const PEER_UUID = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
+    const keys = generatePoolKeyPair();
+
+    /** The capabilities body a peer answers with. */
+    function capabilitiesResponse(body: Record<string, unknown> = {}): Response {
+      return new Response(JSON.stringify({ hardwareTier: 'high', backends: [], updatedAt: new Date().toISOString(), ...body }), { status: 200 });
+    }
+
+    function refresh(peer: HubPoolPeer): Promise<void> {
+      return (service as unknown as { refreshOnePeer: (p: HubPoolPeer) => Promise<void> }).refreshOnePeer(peer);
+    }
+
+    function giveSelfAnIdentity(): void {
+      identity.get.mockResolvedValue({ nodeUuid: SELF_UUID, publicKey: keys.publicKey, privateKey: privateKeyFromBase64(keys.privateKey) });
+      identity.canSign.mockResolvedValue(true);
+      identity.summary.mockResolvedValue({ nodeUuid: SELF_UUID, publicKeyFingerprint: 'ab:cd', identityError: null });
+    }
+
+    beforeEach(() => {
+      inferenceRouter.getStatus.mockResolvedValue({ hardwareTier: 'high', backends: [] } as unknown as InferenceStatus);
+      inferenceRouter.listModels.mockResolvedValue([]);
+    });
+
+    it("tells peers this node's UUID — the persisted one, the same value the guard verifies against", async () => {
+      giveSelfAnIdentity();
+
+      expect((await service.getOwnCapabilities()).nodeUuid).toBe(SELF_UUID);
+    });
+
+    it('omits nodeUuid entirely when this node has no usable identity, which is every pre-identity build', async () => {
+      // `identity.get` resolves null by default — a Hub whose identity could not be established
+      // tells peers no UUID, learns none from them, and reports none. Byte-for-byte the old shape.
+      repo.listAll.mockResolvedValue([]);
+
+      expect(await service.getOwnCapabilities()).not.toHaveProperty('nodeUuid');
+      expect((await service.getPoolStatus()).localNode.identity).toEqual({
+        nodeUuid: null,
+        publicKeyFingerprint: null,
+        identityError: null,
+      });
+    });
+
+    it('surfaces the identity through pool status without triggering any discovery I/O', async () => {
+      giveSelfAnIdentity();
+      repo.listAll.mockResolvedValue([]);
+
+      const status = await service.getPoolStatus();
+
+      expect(status.localNode.identity).toEqual({ nodeUuid: SELF_UUID, publicKeyFingerprint: 'ab:cd', identityError: null });
+      expect(tailscaleAdminApi.listDevices).not.toHaveBeenCalled();
+      expect(global.fetch).not.toHaveBeenCalled();
+    });
+
+    it("learns a peer's UUID from the authenticated capabilities response, never from /identify", async () => {
+      giveSelfAnIdentity();
+      const peer = mockPeer({ status: 'connected', presentTokenEncrypted: 'ENC:token' });
+      repo.update.mockImplementation(async (_id, data) => mockPeer(data as Partial<HubPoolPeer>));
+      vi.mocked(global.fetch)
+        .mockResolvedValueOnce(capabilitiesResponse({ nodeUuid: PEER_UUID }))
+        .mockResolvedValue(new Response(JSON.stringify({ nodeUuid: PEER_UUID, publicKey: keys.publicKey }), { status: 200 }));
+
+      await refresh(peer);
+
+      // Pinned together with the public key, which is the only shape `peer_node_uuid` ever holds:
+      // the guard resolves a row by UUID and then verifies with the key beside it.
+      expect(repo.update).toHaveBeenCalledWith(peer.id, expect.objectContaining({ peerNodeUuid: PEER_UUID, peerPublicKey: keys.publicKey }));
+    });
+
+    it('does not attempt an upgrade for a peer whose key it already holds', async () => {
+      giveSelfAnIdentity();
+      const peer = mockPeer({ status: 'connected', presentTokenEncrypted: 'ENC:token', peerNodeUuid: PEER_UUID, peerPublicKey: keys.publicKey });
+      vi.mocked(global.fetch).mockResolvedValue(capabilitiesResponse({ nodeUuid: PEER_UUID }));
+
+      await refresh(peer);
+
+      // One call: the capabilities probe. No second round trip to `pair/upgrade`.
+      expect(vi.mocked(global.fetch)).toHaveBeenCalledTimes(1);
+    });
+
+    it('ignores a peer that reports no UUID, which is every pre-identity build', async () => {
+      giveSelfAnIdentity();
+      const peer = mockPeer({ status: 'connected', presentTokenEncrypted: 'ENC:token' });
+      vi.mocked(global.fetch).mockResolvedValue(capabilitiesResponse());
+
+      await refresh(peer);
+
+      expect(vi.mocked(global.fetch)).toHaveBeenCalledTimes(1);
+      expect(repo.update).toHaveBeenCalledTimes(1);
+    });
+
+    it('warns rather than merging when the same machine is paired twice under two names', async () => {
+      giveSelfAnIdentity();
+      const peer = mockPeer({ id: 'peer-1', status: 'connected', presentTokenEncrypted: 'ENC:token' });
+      repo.findByNodeUuid.mockResolvedValue(mockPeer({ id: 'peer-2', nodeFqdn: 'same-box-renamed.tailxyz.ts.net' }));
+      repo.update.mockImplementation(async (_id, data) => mockPeer(data as Partial<HubPoolPeer>));
+      vi.mocked(global.fetch)
+        .mockResolvedValueOnce(capabilitiesResponse({ nodeUuid: PEER_UUID }))
+        .mockResolvedValue(new Response(JSON.stringify({ nodeUuid: PEER_UUID, publicKey: keys.publicKey }), { status: 200 }));
+
+      await refresh(peer);
+
+      // Both rows may hold live tokens; silently deleting an operator's pairing is not this poll's
+      // decision to make.
+      expect(repo.update).not.toHaveBeenCalledWith('peer-1', expect.objectContaining({ peerNodeUuid: expect.anything() }));
+      expect(repo.delete).not.toHaveBeenCalled();
+    });
+
+    it('writes the UUID separately from the health write, so a unique violation cannot mark a healthy peer unreachable', async () => {
+      // `peer_node_uuid` carries a partial UNIQUE index (migration 0059). Folding the pin into the
+      // health write would send a 23505 into the failure branch, and three ticks later a perfectly
+      // healthy peer would be `unreachable` because of a uniqueness conflict.
+      giveSelfAnIdentity();
+      const peer = mockPeer({ id: 'peer-1', status: 'connected', consecutiveFailures: 0, presentTokenEncrypted: 'ENC:token' });
+      repo.update.mockImplementation(async (_id, data) =>
+        'peerNodeUuid' in data ? Promise.reject(new Error('duplicate key value violates unique constraint')) : mockPeer(data as Partial<HubPoolPeer>),
+      );
+      vi.mocked(global.fetch)
+        .mockResolvedValueOnce(capabilitiesResponse({ nodeUuid: PEER_UUID }))
+        .mockResolvedValue(new Response(JSON.stringify({ nodeUuid: PEER_UUID, publicKey: keys.publicKey }), { status: 200 }));
+
+      await refresh(peer);
+
+      expect(repo.update).toHaveBeenCalledWith(peer.id, expect.objectContaining({ status: 'connected', consecutiveFailures: 0 }));
+      expect(repo.update).not.toHaveBeenCalledWith(peer.id, expect.objectContaining({ status: 'unreachable' }));
     });
   });
 });

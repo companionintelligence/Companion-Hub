@@ -32,15 +32,21 @@ export interface PoolPeerCapabilities {
    */
   acceptingWork?: boolean;
   /**
-   * Reserved for the GPU-pressure load signal: a smoothed 0-3 band of real device busy-ness.
-   * ABSENT means unmeasured, which ranks neutral — never idle. Nothing in this build sets it.
+   * Smoothed 0-3 band of the answering node's real GPU busy-ness.
+   *
+   * ABSENT means unmeasured, and a reader must turn that into `UNKNOWN_PRESSURE` (mid-band), never
+   * into 0. The distinction is the whole contract: the signal is AMD-only, so most nodes on a real
+   * fleet legitimately omit it, and if silence read as "idle" every tie would go to whichever
+   * machine knows least about itself. A node that cannot measure omits the key rather than sending
+   * 0 for exactly that reason — absence and idleness do not share an encoding on the wire.
    */
   gpuPressure?: number;
-  /** Reserved, alongside {@link gpuPressure}: which measurement produced the band. */
+  /** Which measurement produced {@link gpuPressure}. For the operator surfaces only; never read by the ranker. */
   gpuPressureSource?: PoolPressureSource;
   /**
-   * Reserved for peer identity: the answering node's stable pool UUID, learned only from this
-   * authenticated response and never from the unauthenticated `/identify` probe.
+   * The answering node's stable pool UUID — the one row of `hub_pool_identity` — learned only from
+   * this authenticated response and never from the unauthenticated `/identify` probe. Absent from a
+   * node whose identity could not be established, which is also every pre-identity build.
    */
   nodeUuid?: string;
   updatedAt: string;
@@ -56,8 +62,18 @@ export interface PoolPeerCapabilities {
 // optional wherever it touches a live payload, so nothing has to populate it and no default moves.
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** Which measurement produced a node's GPU-pressure band. AMD-only today; every other node reports none. */
-export type PoolPressureSource = 'host-file' | 'amd-drm' | 'engine-vram';
+/**
+ * Which measurement produced a node's GPU-pressure band.
+ *
+ * AMD-only, and that is a decision rather than a gap. `amd-drm` reads the amdgpu driver's own
+ * duty-cycle counter, which is the one number the Hub container can reach that actually answers "is
+ * this GPU committed right now". `host-file` is the extension seam for everything else — nothing in
+ * this repo writes it, so NVIDIA and Apple nodes report no source at all and rank neutral, which is
+ * honest. The reviewed design also carried an engine-VRAM-residency source; it was cut because
+ * residency reads the same whether an engine is generating or idling out its `keep_alive`, so it
+ * would have ranked the COLDEST node as the least busy one.
+ */
+export type PoolPressureSource = 'host-file' | 'amd-drm';
 
 /** A pin's reach: the pool-wide fallback, or one specific model id. */
 export type PoolPinScope = 'default' | 'model';
@@ -105,9 +121,9 @@ export interface PoolIdentitySummary {
   publicKeyFingerprint: string | null;
   /**
    * Why the identity is unusable, when it is. Surfaced exactly as `capabilitiesError` already is:
-   * identity bootstrap must degrade and report, never throw out of `onModuleInit` — the encryption
-   * key is derived from an env secret, so a regenerated `.env` over a retained volume would
-   * otherwise crash-loop every appliance, peerless ones included.
+   * identity bootstrap must degrade and report, never throw at its caller — the encryption key is
+   * derived from an env secret, so a regenerated `.env` over a retained volume would otherwise take
+   * down whatever touched pooling first, on every appliance, peerless ones included.
    */
   identityError: string | null;
 }
@@ -143,18 +159,39 @@ export interface DiscoverablePoolPeer {
   nodeFqdn: string;
   hostname: string;
   /**
-   * Reserved for LAN discovery: how this candidate was found. Absent means the Tailscale Admin
-   * API, which is the only source in this build. A badge rather than a nullable
+   * How this candidate was found. Absent means the Tailscale Admin API. A badge rather than a nullable
    * `tailscaleDeviceId`, because widening that field is a type error on the CLI's `sanitizeForBox`
    * and a duplicate React key in the settings list.
    */
   source?: 'tailscale' | 'lan-probe';
   /**
-   * Reserved: a UUID the candidate *claims*, from an unauthenticated probe. Typed distinctly from
+   * A UUID the candidate *claims*, from an unauthenticated probe. Typed distinctly from
    * `hub_pool_peer.peer_node_uuid` on purpose — an externally-sourced UUID is a hint for the
    * operator, never an identity key to match a pinned row against.
    */
   claimedNodeUuid?: string;
+}
+
+/** Why a manually probed address is not offered as a pairing candidate. `null` when it is. */
+export type PoolProbeReason = 'unreachable' | 'not_a_hub' | 'no_tailnet_fqdn' | 'already_paired' | 'self';
+
+/**
+ * What `POST /inference/pool/peers/probe` found at an operator-typed address.
+ *
+ * `nodeFqdn` is the only durable thing here: the address is a directory lookup and is discarded once
+ * this answers. Pairing then goes through the existing `POST peers/pair` with that FQDN, so manual
+ * entry adds no new pairing path and no new trust — it only removes the Tailscale OAuth credential
+ * from the list of things an operator must have before two Hubs can find each other.
+ */
+export interface PoolProbeResult {
+  /** The address as probed, echoed back so a UI can label the row without re-parsing what was typed. */
+  address: string;
+  isCiHub: boolean;
+  nodeFqdn: string | null;
+  hostname: string | null;
+  alreadyPaired: boolean;
+  pairable: boolean;
+  reason: PoolProbeReason | null;
 }
 
 /**
@@ -186,11 +223,16 @@ export type PoolPeerStatus = 'pending' | 'connected' | 'unreachable';
 export interface PoolStatusPeer extends PublicHubPoolPeer {
   /** Requests this node has forwarded to the peer and not yet finished reading. A live gauge reset by a restart, never a total. */
   inFlightRequests: number;
-  /** Reserved for peer identity: how this peer authenticates to us today. */
+  /** How this peer authenticates to us today. */
   authMode?: PoolPeerAuthMode;
-  /** Reserved: a short hash of the peer's pinned public key, for the operator to compare across two screens. */
+  /** A short hash of the peer's pinned public key, for the operator to compare across two screens. Never the key. */
   peerKeyFingerprint?: string | null;
-  /** Reserved for the load signal: the peer's effective (freshness-applied, floored) 0-3 band, or `null` when unmeasured. */
+  /**
+   * The peer's EFFECTIVE 0-3 band — freshness applied, hostile values clamped, and floored by what
+   * this node has forwarded there — or `null` when nothing about its GPU is known. Deliberately not
+   * the raw jsonb: a status card showing a number routing does not believe is a liability during an
+   * incident, which is when it is read.
+   */
   gpuPressure?: number | null;
 }
 
@@ -204,11 +246,11 @@ export interface PoolStatusLocalNode {
   backends: PoolPeerBackendCapability[];
   /** Why the local inventory is empty, when it is — a down backend must read differently from a node with no models. */
   capabilitiesError: string | null;
-  /** Reserved for peer identity: this node's UUID, key fingerprint, and why identity is unusable when it is. */
+  /** This node's UUID, key fingerprint, and why identity is unusable when it is. */
   identity?: PoolIdentitySummary;
-  /** Reserved for the load signal: this node's own 0-3 pressure band, or `null` when unmeasured. */
+  /** This node's own smoothed 0-3 pressure band, or `null` when nothing here could measure it. */
   gpuPressure?: number | null;
-  /** Reserved, alongside {@link gpuPressure}. */
+  /** Which source produced {@link gpuPressure}, or `null` when it is unmeasured. */
   gpuPressureSource?: PoolPressureSource | null;
   /** Reserved for backend supervision: what the observer has seen, per backend. Observe-only. */
   supervision?: BackendSupervisionSummary[];
@@ -249,6 +291,6 @@ export interface PoolStatus {
   peerCounts: { total: number; connected: number; pending: number; unreachable: number; disabled: number };
   /** Reserved for manual node pinning: the operator's routing preferences, with target availability resolved. */
   pins?: PoolStatusPin[];
-  /** Reserved for PIN pairing: whether a pairing PIN is outstanding. Never the digits. */
+  /** Whether a pairing PIN is outstanding, and until when. Never the digits. */
   pairingPin?: PoolPairingPinState;
 }

@@ -6,8 +6,10 @@ import { optionalMemoryLimitSchema } from '@/common/validation/memory-limit';
 import {
   MAX_POOL_HEALTH_POLL_SECONDS,
   MAX_POOL_LOCAL_AFFINITY,
+  MAX_POOL_PRESSURE_WEIGHT,
   MIN_POOL_HEALTH_POLL_SECONDS,
   MIN_POOL_LOCAL_AFFINITY,
+  MIN_POOL_PRESSURE_WEIGHT,
 } from '@/common/helpers/hub-pool';
 import { INFERENCE_SUPERVISION_MODES, MAX_SUPERVISION_POLL_SECONDS, MIN_SUPERVISION_POLL_SECONDS } from '@/common/helpers/inference-supervision';
 
@@ -37,6 +39,9 @@ const poolHealthPollSecondsSchema = z
   .union([z.number().int(), z.string().transform(Number)])
   .pipe(z.number().int().min(MIN_POOL_HEALTH_POLL_SECONDS).max(MAX_POOL_HEALTH_POLL_SECONDS));
 
+const poolPressureWeightSchema = z
+  .union([z.number().int(), z.string().transform(Number)])
+  .pipe(z.number().int().min(MIN_POOL_PRESSURE_WEIGHT).max(MAX_POOL_PRESSURE_WEIGHT));
 /** Same read/write split as the two pool knobs above, for the inference observation interval. */
 const inferenceSupervisionPollSecondsSchema = z
   .union([z.number().int(), z.string().transform(Number)])
@@ -104,6 +109,7 @@ export const settingsSchema = z.object({
   // (and false) has to mean "keep accepting it" or upgrading one node of a fleet would strand the
   // rest. See `HubPoolPreferences.poolRequireSignedPeers`.
   hubPoolRequireSignedPeers: z.boolean().optional(),
+  hubPoolPressureWeight: poolPressureWeightSchema.optional().catch(undefined),
   // Inference-backend observation. Opt-IN, unlike the pool switches: absent means `'off'`, which is
   // the only value that costs a deployed Hub literally nothing — no timer, no probe, no boot work.
   // `CI_HUB_INFERENCE_SUPERVISION_DISABLED=true` in the environment overrides it
@@ -243,6 +249,7 @@ export class UserSettingsBody extends createZodDto(
       .optional(),
     hubPoolLocalAffinity: poolLocalAffinitySchema.optional(),
     hubPoolHealthPollSeconds: poolHealthPollSecondsSchema.optional(),
+    hubPoolPressureWeight: poolPressureWeightSchema.optional(),
     inferenceSupervisionPollSeconds: inferenceSupervisionPollSecondsSchema.optional(),
   }),
 ) {}

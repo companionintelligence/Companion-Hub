@@ -51,6 +51,8 @@ describe('settingsSchema — Hub Pool tuning (boot read path)', () => {
     ['hubPoolLocalAffinity', 999, 'above MAX_POOL_LOCAL_AFFINITY'],
     ['hubPoolHealthPollSeconds', 1, 'below MIN_POOL_HEALTH_POLL_SECONDS'],
     ['hubPoolHealthPollSeconds', 9999, 'above MAX_POOL_HEALTH_POLL_SECONDS'],
+    ['hubPoolPressureWeight', -1, 'below MIN_POOL_PRESSURE_WEIGHT'],
+    ['hubPoolPressureWeight', 4, 'above MAX_POOL_PRESSURE_WEIGHT'],
     ['hubPoolLocalAffinity', 'not a number', 'not numeric at all'],
   ])('MUST degrade a persisted %s of %s (%s) to the default rather than failing the parse', (key, value) => {
     const result = settingsSchema.partial().safeParse({ [key]: value });
@@ -86,6 +88,8 @@ describe('UserSettingsBody — Hub Pool tuning (write path)', () => {
     ['hubPoolLocalAffinity', 999],
     ['hubPoolHealthPollSeconds', 1],
     ['hubPoolHealthPollSeconds', 9999],
+    ['hubPoolPressureWeight', -1],
+    ['hubPoolPressureWeight', 4],
   ])('MUST reject %s = %s at the HTTP boundary', (key, value) => {
     expect(UserSettingsBody.schema.safeParse({ [key]: value }).success).toBe(false);
   });

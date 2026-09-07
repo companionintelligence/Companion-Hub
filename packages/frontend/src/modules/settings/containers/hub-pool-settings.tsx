@@ -138,9 +138,12 @@ interface PoolRoutingLog {
 }
 
 interface DiscoverablePoolPeer {
+  /** Empty for a candidate found by a manual address probe — there is no Tailscale device behind it. */
   tailscaleDeviceId: string;
   nodeFqdn: string;
   hostname: string;
+  /** How this candidate was found. Absent on a Hub running an older build. */
+  source?: 'tailscale' | 'lan-probe';
 }
 
 /** How many routing decisions to render. The buffer holds 200; an operator reads the recent ones. */
@@ -823,11 +826,15 @@ export const HubPoolSection = () => {
 
         {/* ── Discovery and pairing ───────────────────────────────────── */}
         <Block title={t('HUB_POOL_DISCOVERABLE_TITLE')} help={t('HUB_POOL_DISCOVERABLE_HELP')}>
-          {status.tailscaleAdminApiConfigured ? (
+          {status.tailscaleAdminApiConfigured || discoverable?.length ? (
             discoverable?.length ? (
               <ul className="space-y-2">
                 {discoverable.map((device) => (
-                  <li key={device.tailscaleDeviceId} className="flex items-center justify-between gap-3 rounded-md border px-3 py-2">
+                  // Keyed on the FQDN, not the Tailscale device id: a candidate found by address
+                  // has no device id, so keying on that gives every one of them the same key and
+                  // React reconciles all but one row away. The FQDN is unique across the merged list
+                  // by construction — it is what the backend deduplicates on.
+                  <li key={device.nodeFqdn} className="flex items-center justify-between gap-3 rounded-md border px-3 py-2">
                     <span className="min-w-0 truncate font-mono text-xs" title={device.nodeFqdn}>
                       {device.hostname}
                     </span>
