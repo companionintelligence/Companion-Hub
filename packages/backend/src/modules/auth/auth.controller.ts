@@ -62,6 +62,8 @@ import {
   resolveSameOriginRedirectUrl,
   resolveTrustedReturnOrigin,
   toDesktopRedirectPath,
+  parseDesktopChannel,
+  type DesktopChannel,
 } from './portal-sso';
 import { extractBearerToken, portalClaimsIdentity, verifyPortalIdToken } from './portal-token';
 import { sessionIdsFromRequest } from './auth.middleware';
@@ -406,14 +408,24 @@ export class AuthController {
 
   /** Desktop login returns through its deep link, while browser login returns to the initiating Hub origin. */
   @Get('/portal/start')
-  async startPortalLogin(@Req() req: Request, @Res() res: Response, @Query('redirect_url') redirectUrl?: string, @Query('desktop') desktop?: string) {
+  async startPortalLogin(
+    @Req() req: Request,
+    @Res() res: Response,
+    @Query('redirect_url') redirectUrl?: string,
+    @Query('desktop') desktop?: string,
+    @Query('desktop_channel') desktopChannel?: string,
+  ) {
     const isDesktop = desktop === '1' || desktop === 'true' || this.cache.get(PORTAL_DESKTOP_PRESENCE_CACHE_KEY) === '1';
+    // Declared by the client. Absent reads as 'packaged' — see
+    // resolvePortalDesktopDeepLinkScheme for why that is the safe default.
+    const channel = parseDesktopChannel(desktopChannel);
     const fallbackOrigin = resolveRequestOriginFallback(req);
     const redirectStartError = (errorCode: PortalSsoErrorCode, hubOrigin?: string | null) =>
       res.redirect(
         buildPortalSsoErrorRedirectUrl({
           hubOrigin: hubOrigin ?? null,
           desktop: isDesktop,
+          desktopChannel: channel,
           errorCode,
           fallbackOrigin,
         }),
@@ -437,7 +449,7 @@ export class AuthController {
     const codeVerifier = crypto.randomBytes(32).toString('base64url');
     const codeChallenge = crypto.createHash('sha256').update(codeVerifier).digest('base64url');
     // A short callback window limits stale PKCE state.
-    const portalState: PortalSsoState = { codeVerifier, redirectUrl: redirectUrl || null, hubOrigin, desktop: isDesktop };
+    const portalState: PortalSsoState = { codeVerifier, redirectUrl: redirectUrl || null, hubOrigin, desktop: isDesktop, desktopChannel: channel };
     this.cache.set(`portal_sso:${state}`, JSON.stringify(portalState), 10 * 60);
 
     const authorizeUrl = new URL('/api/auth/oauth2/authorize', portalBaseUrl);
@@ -456,12 +468,15 @@ export class AuthController {
   async portalCallback(@Req() req: Request, @Res({ passthrough: true }) res: Response, @Query('code') code?: string, @Query('state') state?: string) {
     const fallbackOrigin = resolveRequestOriginFallback(req);
     let desktop = false;
+    // Restored from the PKCE state below; 'packaged' until we know otherwise.
+    let desktopChannel: DesktopChannel = 'packaged';
     const redirectError = (hubOrigin: string | null, errorCode: PortalSsoErrorCode) => {
       // Returning the Express response under passthrough would serialize its circular socket and fail.
       res.redirect(
         buildPortalSsoErrorRedirectUrl({
           hubOrigin,
           desktop,
+          desktopChannel,
           errorCode,
           fallbackOrigin,
         }),
@@ -495,6 +510,7 @@ export class AuthController {
         redirectUrl = parsed.redirectUrl;
         hubOrigin = parsed.hubOrigin;
         desktop = parsed.desktop;
+        desktopChannel = parsed.desktopChannel ?? 'packaged';
       } catch {
         return redirectError(null, 'callback_error');
       }
@@ -562,7 +578,7 @@ export class AuthController {
           userId: operator.id,
         };
         this.cache.set(`portal_sso_desktop:${desktopToken}`, JSON.stringify(exchangePayload), 60);
-        const deepLink = buildPortalDesktopDeepLink(desktopToken, hubOrigin);
+        const deepLink = buildPortalDesktopDeepLink(desktopToken, desktopChannel);
         this.logger.info('Portal desktop handoff issued one-time token', { hubOrigin, redirectPath: exchangePayload.redirectPath });
         // Some browsers drop redirects to the desktop scheme, so serve a navigation page.
         // Do not return the Express response because passthrough would serialize it.

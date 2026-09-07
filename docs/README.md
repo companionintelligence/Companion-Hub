@@ -35,12 +35,14 @@ Follow the [Google developer documentation style guide](https://developers.googl
 | Doc | Audience |
 |-----|----------|
 | [`../README.md`](../README.md) | Anyone cloning the repo |
+| [`DEVELOPMENT_SETUP.md`](DEVELOPMENT_SETUP.md) | Prerequisites, the two installs that fail without them, and known-good test baselines |
 | [`License-FAQ.md`](License-FAQ.md) | License questions |
 | [`security/hub-portal-trust.md`](security/hub-portal-trust.md) | Hub ↔ Portal trust; marketplace needs a paired device key |
 | [`CLI.md`](CLI.md) | `cihub` CLI |
 | [`private-vpn.md`](private-vpn.md) | Tailscale private VPN |
 | [`hub-pool.md`](hub-pool.md) | Multi-Hub inference pooling over Tailscale |
 | [`hub-pool-fleet-testing.md`](hub-pool-fleet-testing.md) | Two-node validation plan for Hub Pool |
+| [`hub-pool-vs-pair.md`](hub-pool-vs-pair.md) | Hub Pool compared with NVIDIA Personal-AI-Router |
 | [`ci-cd-pipeline.md`](ci-cd-pipeline.md) | Historical multi-env deploy notes |
 | [`dns-cache-analysis.md`](dns-cache-analysis.md) | Desktop DNS NXDOMAIN investigation |
 

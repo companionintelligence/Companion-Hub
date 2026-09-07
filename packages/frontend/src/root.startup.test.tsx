@@ -15,6 +15,7 @@ vi.mock('./lib/mobile-connection', () => ({
   usesCloudConnect: () => isMobileClient(),
   getHubBaseUrlSync,
   needsRemoteHubConnect: () => isMobileClient() && !getHubBaseUrlSync(),
+  isCloudConnectPath: (pathname: string) => pathname === '/connect' || pathname.startsWith('/connect/'),
   initMobileConnection,
   clearHubConnection,
 }));

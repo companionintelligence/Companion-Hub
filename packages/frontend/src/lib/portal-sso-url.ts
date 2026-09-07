@@ -95,6 +95,14 @@ export function buildPortalSsoStartUrl(input: {
   configuredApiBaseUrl?: string | null;
   pageOrigin: string;
   redirectUrl?: string | null;
+  /**
+   * Is this the DEV desktop shell rather than a packaged install?
+   *
+   * An explicit input, not a read of `import.meta.env.DEV` inside the function,
+   * so a test can model a packaged build. It defaults to the build flag, so real
+   * callers do not pass it.
+   */
+  isDevBuild?: boolean;
 }): string {
   const baseUrl = resolvePortalSsoBaseUrl({
     remoteHubUrl: input.remoteHubUrl,
@@ -109,6 +117,20 @@ export function buildPortalSsoStartUrl(input: {
   }
   if (shouldUsePortalDesktopHandoff(input)) {
     url.searchParams.set('desktop', '1');
+    // WHICH BUILD IS ASKING, so the backend does not have to guess.
+    //
+    // It used to infer "dev" from the Hub origin being loopback — but the
+    // PACKAGED desktop app serves its UI from http://127.0.0.1:<apiPort> too, so
+    // production sign-ins were handed back `cihub-dev://`, a scheme no installer
+    // registers. The two shells differ here reliably: the dev shell loads the
+    // frontend from the Vite dev server, the packaged one loads a production
+    // build, so import.meta.env.DEV separates them at build time.
+    // Desktop only: mobile shells are a different binary with their own scheme
+    // registration, and the loopback-vs-dev confusion this fixes is desktop's.
+    const isDevBuild = input.isDevBuild ?? import.meta.env.DEV;
+    if (input.isTauriDesktop && isDevBuild) {
+      url.searchParams.set('desktop_channel', 'dev');
+    }
   }
   return url.toString();
 }

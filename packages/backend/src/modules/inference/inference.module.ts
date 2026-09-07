@@ -13,6 +13,7 @@ import { OllamaInstallerService } from './ollama-installer.service';
 import { RocmInstallerService } from './rocm-installer.service';
 import { AppCredentialsService } from './app-credentials.service';
 import { InferenceEnvResolver } from './inference-env-resolver';
+import { InferenceBackendRegistry } from './backends/backend-registry';
 import { OllamaBackend } from './backends/ollama.backend';
 import { VllmBackend } from './backends/vllm.backend';
 import { LemonadeBackend } from './backends/lemonade.backend';
@@ -41,6 +42,7 @@ import { InferenceController } from './inference.controller';
     MtplxBackend,
     DsparkBackend,
     LuceboxBackend,
+    InferenceBackendRegistry,
   ],
   exports: [
     HardwareInspectorService,
@@ -59,6 +61,7 @@ import { InferenceController } from './inference.controller';
     MtplxBackend,
     DsparkBackend,
     LuceboxBackend,
+    InferenceBackendRegistry,
   ],
 })
 export class InferenceModule {}

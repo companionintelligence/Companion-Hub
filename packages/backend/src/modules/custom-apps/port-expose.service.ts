@@ -386,6 +386,7 @@ export class PortExposeService {
       categories: ['utilities'],
       description: `Port-exposed workload: ${name}`,
       short_desc: 'User workload exposed on a host port',
+      replaces: [],
       author: 'User',
       source: '',
       website: '',

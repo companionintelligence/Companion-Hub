@@ -7,12 +7,8 @@ import { MemoryManagerService } from '@/modules/inference/memory-manager.service
 import { ModelPullerService } from '@/modules/inference/model-puller.service';
 import { InferenceRouterService } from '@/modules/inference/inference-router.service';
 import { CloudFallbackService } from '@/modules/inference/cloud-fallback.service';
-import { OllamaBackend } from '@/modules/inference/backends/ollama.backend';
-import { VllmBackend } from '@/modules/inference/backends/vllm.backend';
-import { LemonadeBackend } from '@/modules/inference/backends/lemonade.backend';
-import { MtplxBackend } from '@/modules/inference/backends/mtplx.backend';
-import { DsparkBackend } from '@/modules/inference/backends/dspark.backend';
-import { LuceboxBackend } from '@/modules/inference/backends/lucebox.backend';
+import { InferenceBackendRegistry } from '@/modules/inference/backends/backend-registry';
+import { INFERENCE_BACKEND_TYPES } from '@ci-hub/common/types';
 import type { InferenceBackendType, CloudProviderType } from '@ci-hub/common/types';
 
 @Injectable()
@@ -26,12 +22,7 @@ export class InferenceTools implements OnModuleInit {
     private readonly modelPuller: ModelPullerService,
     private readonly inferenceRouter: InferenceRouterService,
     private readonly cloudFallback: CloudFallbackService,
-    private readonly ollamaBackend: OllamaBackend,
-    private readonly vllmBackend: VllmBackend,
-    private readonly lemonadeBackend: LemonadeBackend,
-    private readonly mtplxBackend: MtplxBackend,
-    private readonly dsparkBackend: DsparkBackend,
-    private readonly luceboxBackend: LuceboxBackend,
+    private readonly backends: InferenceBackendRegistry,
   ) {}
 
   onModuleInit() {
@@ -57,12 +48,11 @@ export class InferenceTools implements OnModuleInit {
       description: 'List available inference backends (Ollama, vLLM, Lemonade, MTPLX, mlx-dspark, and Lucebox) and their current status.',
       inputSchema: { type: 'object', properties: {}, required: [] },
       handler: async () => {
-        const backends = [this.ollamaBackend, this.vllmBackend, this.lemonadeBackend, this.mtplxBackend, this.dsparkBackend, this.luceboxBackend];
         const results = await Promise.all(
-          backends.map(async (b) => {
+          this.backends.entries().map(async ([type, b]) => {
             const health = await b.healthCheck();
             return {
-              type: b.type,
+              type,
               baseUrl: b.getBaseUrl(),
               running: health.running,
               healthy: health.healthy,
@@ -93,7 +83,7 @@ export class InferenceTools implements OnModuleInit {
       inputSchema: {
         type: 'object',
         properties: {
-          backend: { type: 'string', enum: ['ollama', 'vllm', 'lemonade', 'mtplx', 'dspark', 'lucebox'], description: 'Backend type to check' },
+          backend: { type: 'string', enum: [...INFERENCE_BACKEND_TYPES], description: 'Backend type to check' },
         },
         required: ['backend'],
       },
@@ -111,7 +101,7 @@ export class InferenceTools implements OnModuleInit {
       inputSchema: {
         type: 'object',
         properties: {
-          backend: { type: 'string', enum: ['ollama', 'vllm', 'lemonade', 'mtplx', 'dspark', 'lucebox'], description: 'Backend type to check' },
+          backend: { type: 'string', enum: [...INFERENCE_BACKEND_TYPES], description: 'Backend type to check' },
         },
         required: ['backend'],
       },
@@ -339,7 +329,7 @@ export class InferenceTools implements OnModuleInit {
     baseUrl: string;
     message: string;
   }> {
-    const backend = this.backendFor(backendType);
+    const backend = this.backends.get(backendType);
     const health = await backend.healthCheck();
     // Naive `${action}ed` mis-conjugates "stop" → "stoped"; map to the correct past tense.
     const actionPastTense = action === 'stop' ? 'stopped' : 'started';
@@ -355,27 +345,5 @@ export class InferenceTools implements OnModuleInit {
         `Backend "${backendType}" is currently ${health.running ? 'running' : 'not running'}. ` +
         'Use the Hub AI settings to change backend or model configuration.',
     };
-  }
-
-  /** Resolve the injected backend instance for a backend type. */
-  private backendFor(
-    backendType: InferenceBackendType,
-  ): OllamaBackend | VllmBackend | LemonadeBackend | MtplxBackend | DsparkBackend | LuceboxBackend {
-    // Exhaustive on purpose — no `default:`. The previous default fell through to Ollama, so a
-    // newly added backend type silently reported Ollama's health under another backend's name.
-    switch (backendType) {
-      case 'ollama':
-        return this.ollamaBackend;
-      case 'vllm':
-        return this.vllmBackend;
-      case 'lemonade':
-        return this.lemonadeBackend;
-      case 'mtplx':
-        return this.mtplxBackend;
-      case 'dspark':
-        return this.dsparkBackend;
-      case 'lucebox':
-        return this.luceboxBackend;
-    }
   }
 }

@@ -18,7 +18,15 @@ import { clearStaleServerSession, getTauriSessionId } from '@/lib/api-fetch';
 import { refreshHubSessionIfDue, setServerSessionRefreshRecommendedAt } from '@/lib/hub-session-refresh';
 import { handleSessionExpired } from '@/lib/session-expired';
 import { isSessionExpiryExempt } from '@/lib/session-expiry-policy';
-import { getHubBaseUrlSync, initMobileConnection, isMobileClient, needsRemoteHubConnect, usesCloudConnect } from '@/lib/mobile-connection';
+import {
+  getHubBaseUrlSync,
+  initMobileConnection,
+  isCloudConnectPath,
+  isMobileClient,
+  needsRemoteHubConnect,
+  usesCloudConnect,
+} from '@/lib/mobile-connection';
+import { shouldTimeBoxMobileLoads } from '@/lib/use-mobile-load-timeout';
 import { installMobileLoadWatchdog } from '@/lib/mobile-load-watchdog';
 import type { RegistrationStatus } from './lib/registration-status';
 import { isRegistrationOperational, requiresDeviceRegistration, requiresPortalRePairing } from './lib/registration-status';
@@ -41,7 +49,7 @@ export function DesktopStartupFallback() {
   useEffect(() => {
     if (!isMobile || typeof window === 'undefined') return;
     const path = window.location.pathname;
-    if (path === '/connect' || path === '/login') return;
+    if (isCloudConnectPath(path) || path === '/login') return;
     window.location.replace(hasStoredHub ? '/login' : '/connect');
   }, [isMobile, hasStoredHub]);
 
@@ -146,7 +154,7 @@ client.interceptors.response.use(async (res) => {
 // Recompute at use-time after initMobileConnection — a module-init snapshot on
 // iOS `devUrl` (http://localhost:5005) looks like desktop-same-origin / browser
 // and skipped mobile init, leaving the app stuck on a local API that isn't there.
-const waitForMobileOrCrossOrigin = isMobileClient() || usesCrossOriginDesktopApi();
+const waitForMobileOrCrossOrigin = isMobileClient() || shouldTimeBoxMobileLoads() || usesCrossOriginDesktopApi();
 const credentialMode: RequestCredentials = usesCrossOriginDesktopApi() ? 'omit' : 'include';
 
 client.setConfig({
@@ -190,7 +198,15 @@ async function loadRegistrationLookup(): Promise<RegistrationLookup> {
   return { kind: 'unavailable' };
 }
 
-const AUTH_BOOTSTRAP_PATHS = new Set(['/login', '/register', '/connect', '/device-registration', '/reset-password', '/reset-password/confirm']);
+const AUTH_BOOTSTRAP_PATHS = new Set([
+  '/login',
+  '/register',
+  '/connect',
+  '/connect/advanced',
+  '/device-registration',
+  '/reset-password',
+  '/reset-password/confirm',
+]);
 
 /**
  * Skip re-running registration + user-context on warm authenticated navigations.
@@ -253,7 +269,7 @@ export async function clientLoader({ request }: Route.ActionArgs) {
       return raced;
     }
     const url = new URL(request.url);
-    if (url.pathname === '/connect' || url.pathname === '/login') {
+    if (isCloudConnectPath(url.pathname) || url.pathname === '/login') {
       return null;
     }
     return needsRemoteHubConnect() ? redirect('/connect') : redirect('/login');
@@ -274,7 +290,7 @@ async function runClientLoader(request: Request) {
   // to registration/user-context sends the app to /login against a missing
   // local API — that is the flash-then-blank screen on ios:dev.
   if (needsRemoteHubConnect()) {
-    if (url.pathname !== '/connect') {
+    if (!isCloudConnectPath(url.pathname)) {
       return redirect('/connect');
     }
     return null;
