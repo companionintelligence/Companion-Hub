@@ -176,11 +176,15 @@ exist:
 
 **Triggers**
 - **Manually:** GitHub → **Actions → Mobile Build → Run workflow** (`workflow_dispatch`).
-- ~~**Automatically:** on push to `dev`~~ — **currently disabled.** The workflow
-  carries `# TEMPORARY (Actions credit): automatic push triggers disabled.` and
-  `on:` is `workflow_dispatch` only, so **nothing builds on merge**. Re-enable the
-  `push` block when Actions credit recovers. Until then a green `dev` proves
-  nothing about mobile; build locally or dispatch the workflow by hand.
+- **Automatically:** on push to `dev` touching `packages/mobile/**`,
+  `packages/frontend/**`, `packages/common/**`, or the workflow file itself.
+
+  These triggers were disabled for six weeks — removed in passing by `91a67de58`,
+  a Docker-engine change, under a "TEMPORARY (Actions credit)" note — and restored
+  once a dispatched run proved `dev` still builds green on all four jobs.
+  `packages/frontend` is in the path list because the mobile shell loads that same
+  React app: a frontend-only change can break mobile without touching
+  `packages/mobile` at all.
 
 **Get the builds:** open the workflow run → **Summary** → download the artifact
 zips. Then:
