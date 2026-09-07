@@ -6,6 +6,7 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import type React from 'react';
 import { useEffect } from 'react';
 import { useForm } from 'react-hook-form';
+import toast from 'react-hot-toast';
 import { useTranslation } from 'react-i18next';
 import { Link } from 'react-router';
 import z from 'zod';
@@ -63,7 +64,15 @@ export const LoginForm: React.FC<IProps> = ({ loading, onSubmit, loginType, port
               variant="outline"
               className="h-10 w-full text-sm font-semibold"
               onClick={() => {
-                void openAuthInSystemBrowser(portalSsoHref);
+                // Do not discard the rejection. openAuthInSystemBrowser THROWS on
+                // an opener ACL/plugin failure rather than swallowing it, so a
+                // bare `void` turned that into a dead button with no toast, no
+                // console line and no UI change -- the same silent-failure shape
+                // that made the desktop sign-in button look broken.
+                openAuthInSystemBrowser(portalSsoHref).catch((error: unknown) => {
+                  console.error('login: the system opener refused the SSO URL', error);
+                  toast.error(t('COMMON_AN_ERROR_OCCURRED'));
+                });
               }}
             >
               {portalAccountEmail
