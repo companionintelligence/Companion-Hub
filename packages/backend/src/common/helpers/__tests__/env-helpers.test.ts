@@ -158,6 +158,46 @@ describe('env-helpers — resolve() priority chain', () => {
     expect(envMap.has('MCP_API_KEY')).toBe(false);
   });
 
+  it('MUST boot with an out-of-range persisted hubPoolLocalAffinity instead of refusing to start', async () => {
+    // settings.json used to be parsed all-or-nothing, so a value outside MIN/MAX_POOL_LOCAL_AFFINITY
+    // threw `Invalid settings.json file` out of the very first line of bootstrap(). Those bounds are
+    // build constants: a Hub that saved a value one build accepts and then rolls back to a build
+    // that does not would crash-loop, with no UI left to correct the value from.
+    delete process.env.DOMAIN;
+    setupMocks({ settingsJson: { hubPoolLocalAffinity: -1, guestDashboard: true }, dataEnv: 'DOMAIN=from-data' });
+
+    const envMap = await generateSystemEnvFile();
+
+    expect(envMap.get('DOMAIN')).toBe('from-data');
+  });
+
+  it('MUST apply every readable settings.json field when one unrelated field is unusable', async () => {
+    // The general case: any field a future build tightens. Only the bad field is lost.
+    delete process.env.GUEST_DASHBOARD;
+    delete process.env.DNS_IP;
+    setupMocks({ settingsJson: { dnsIp: 'not-an-ip', guestDashboard: true } });
+
+    const envMap = await generateSystemEnvFile();
+
+    expect(envMap.get('GUEST_DASHBOARD')).toBe('true');
+    expect(envMap.get('DNS_IP')).toBe('9.9.9.9');
+  });
+
+  it('MUST boot when settings.json holds something that is not a settings object at all', async () => {
+    delete process.env.DOMAIN;
+    (mockedFs.promises.readFile as any).mockImplementation(async (filePath: string) => {
+      const p = String(filePath);
+      if (p.includes('settings.json')) return '[]';
+      if (p.includes('.env')) return 'DOMAIN=from-data';
+      if (p.includes('seed')) return 'a'.repeat(64);
+      throw new Error(`Unexpected readFile: ${p}`);
+    });
+
+    const envMap = await generateSystemEnvFile();
+
+    expect(envMap.get('DOMAIN')).toBe('from-data');
+  });
+
   it('MUST put runtime JWT_SECRET in envMap via resolve()', async () => {
     process.env.JWT_SECRET = 'runtime-jwt-secret';
     setupMocks({ dataEnv: 'JWT_SECRET=from-data' });

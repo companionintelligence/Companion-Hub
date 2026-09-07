@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { type UserSettingsBody, settingsSchema } from '@/app.dto';
+import { type UserSettingsBody, parsePersistedSettings } from '@/app.dto';
 import { APP_DATA_DIR, APP_DIR, ARCHITECTURES, DATA_DIR, DEFAULT_LOCAL_DOMAIN } from '@/common/constants';
 import { ensureSettingsJsonReady, writeSettingsJsonFile } from '@/common/helpers/env-helpers';
 import { DEFAULT_POOL_HEALTH_POLL_SECONDS, DEFAULT_POOL_LOCAL_AFFINITY, type HubPoolPreferences } from '@/common/helpers/hub-pool';
@@ -81,6 +81,53 @@ function describeSettingsError(error: unknown): string {
   return scrubString(String(error));
 }
 
+/**
+ * The settings.json fields lifted straight out of the file because they have no `.env` equivalent.
+ * `ciHubApiKey` is the Hub's Portal credential; losing it looks exactly like an unregistered
+ * appliance, which is why this read must never be all-or-nothing.
+ */
+type PersistedSettingsValues = {
+  ciHubApiKey: string | null;
+  ciHubOrganizationId: string | null;
+  allowErrorMonitoring?: boolean;
+  defaultAppCpuLimit?: string;
+  defaultAppMemoryLimit?: string;
+  autoAllocateAppResources?: boolean;
+  inferenceBackend: InferenceBackendType | undefined;
+  inferenceModel: string | undefined;
+  inferenceEmbeddingModel: string | undefined;
+  inferenceVisionModel: string | undefined;
+  inferenceVllmApiKey: string | undefined;
+  inferenceVllmUrl: string | undefined;
+  inferenceMtplxUrl: string | undefined;
+  inferenceDsparkUrl: string | undefined;
+  inferenceCloudProviders: CloudProviderConfig[] | undefined;
+  hubPoolEnabled: boolean | undefined;
+  hubPoolLocalAffinity: number | undefined;
+  hubPoolHealthPollSeconds: number | undefined;
+};
+
+const EMPTY_PERSISTED_SETTINGS: PersistedSettingsValues = {
+  ciHubApiKey: null,
+  ciHubOrganizationId: null,
+  allowErrorMonitoring: undefined,
+  defaultAppCpuLimit: undefined,
+  defaultAppMemoryLimit: undefined,
+  autoAllocateAppResources: undefined,
+  inferenceBackend: undefined,
+  inferenceModel: undefined,
+  inferenceEmbeddingModel: undefined,
+  inferenceVisionModel: undefined,
+  inferenceVllmApiKey: undefined,
+  inferenceVllmUrl: undefined,
+  inferenceMtplxUrl: undefined,
+  inferenceDsparkUrl: undefined,
+  inferenceCloudProviders: undefined,
+  hubPoolEnabled: undefined,
+  hubPoolLocalAffinity: undefined,
+  hubPoolHealthPollSeconds: undefined,
+};
+
 @Injectable()
 export class ConfigurationService {
   private config: ReturnType<typeof this.configure>;
@@ -107,6 +154,60 @@ export class ConfigurationService {
     return this.envUtils.envStringToMap(envFile.toString());
   }
 
+  /**
+   * Lifts the settings.json fields that have no `.env` equivalent, field by field.
+   *
+   * A single unusable field must not cost the whole file. Parsing settings.json all-or-nothing
+   * meant one out-of-range number — a hand edit, or a value a newer build wrote and this one's
+   * bounds reject — booted the Hub with `ciHubApiKey: null` and every inference preference
+   * forgotten. That is indistinguishable from an unregistered appliance, it was silent (the parse
+   * failure was swallowed by an empty catch), and it self-perpetuated: the next settings write
+   * persisted the emptied values.
+   */
+  private readPersistedSettings(): PersistedSettingsValues {
+    const settingsPath = path.join(DATA_DIR, 'state', 'settings.json');
+
+    let raw: unknown;
+    try {
+      if (!fs.existsSync(settingsPath)) {
+        return { ...EMPTY_PERSISTED_SETTINGS };
+      }
+      raw = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+    } catch (error) {
+      this.logger.error(`Could not read ${settingsPath}; continuing without persisted settings: ${describeSettingsError(error)}`);
+      return { ...EMPTY_PERSISTED_SETTINGS };
+    }
+
+    const { settings, invalidKeys, unreadable } = parsePersistedSettings(raw);
+    if (unreadable) {
+      this.logger.error(`${settingsPath} does not contain a JSON object; continuing without persisted settings.`);
+    } else if (invalidKeys.length > 0) {
+      // Field names only — several of these fields hold credentials.
+      this.logger.warn(`Ignoring unusable settings.json field(s): ${invalidKeys.join(', ')}. Every other field was applied.`);
+    }
+
+    return {
+      ciHubApiKey: settings.ciHubApiKey || null,
+      ciHubOrganizationId: settings.ciHubOrganizationId || null,
+      allowErrorMonitoring: settings.allowErrorMonitoring,
+      defaultAppCpuLimit: settings.defaultAppCpuLimit?.trim() || undefined,
+      defaultAppMemoryLimit: settings.defaultAppMemoryLimit?.trim() || undefined,
+      autoAllocateAppResources: settings.autoAllocateAppResources,
+      inferenceBackend: settings.inferenceBackend,
+      inferenceModel: settings.inferenceModel,
+      inferenceEmbeddingModel: settings.inferenceEmbeddingModel,
+      inferenceVisionModel: settings.inferenceVisionModel,
+      inferenceVllmApiKey: settings.inferenceVllmApiKey,
+      inferenceVllmUrl: settings.inferenceVllmUrl,
+      inferenceMtplxUrl: settings.inferenceMtplxUrl,
+      inferenceDsparkUrl: settings.inferenceDsparkUrl,
+      inferenceCloudProviders: settings.inferenceCloudProviders,
+      hubPoolEnabled: settings.hubPoolEnabled,
+      hubPoolLocalAffinity: settings.hubPoolLocalAffinity,
+      hubPoolHealthPollSeconds: settings.hubPoolHealthPollSeconds,
+    };
+  }
+
   private configure() {
     const envMap = this.getEnvMap();
 
@@ -124,74 +225,7 @@ export class ConfigurationService {
     const { NODE_ENV } = process.env;
 
     // Load settings.json manually to get credentials, bypassing .env
-    let settingsValues: {
-      ciHubApiKey: string | null;
-      ciHubOrganizationId: string | null;
-      allowErrorMonitoring?: boolean;
-      defaultAppCpuLimit?: string;
-      defaultAppMemoryLimit?: string;
-      autoAllocateAppResources?: boolean;
-      inferenceBackend: InferenceBackendType | undefined;
-      inferenceModel: string | undefined;
-      inferenceEmbeddingModel: string | undefined;
-      inferenceVisionModel: string | undefined;
-      inferenceVllmApiKey: string | undefined;
-      inferenceVllmUrl: string | undefined;
-      inferenceMtplxUrl: string | undefined;
-      inferenceDsparkUrl: string | undefined;
-      inferenceCloudProviders: CloudProviderConfig[] | undefined;
-      hubPoolEnabled: boolean | undefined;
-      hubPoolLocalAffinity: number | undefined;
-      hubPoolHealthPollSeconds: number | undefined;
-    } = {
-      ciHubApiKey: null,
-      ciHubOrganizationId: null,
-      allowErrorMonitoring: undefined,
-      defaultAppCpuLimit: undefined,
-      defaultAppMemoryLimit: undefined,
-      autoAllocateAppResources: undefined,
-      inferenceBackend: undefined,
-      inferenceModel: undefined,
-      inferenceEmbeddingModel: undefined,
-      inferenceVisionModel: undefined,
-      inferenceVllmApiKey: undefined,
-      inferenceVllmUrl: undefined,
-      inferenceMtplxUrl: undefined,
-      inferenceDsparkUrl: undefined,
-      inferenceCloudProviders: undefined,
-      hubPoolEnabled: undefined,
-      hubPoolLocalAffinity: undefined,
-      hubPoolHealthPollSeconds: undefined,
-    };
-    try {
-      const settingsPath = path.join(DATA_DIR, 'state', 'settings.json');
-      if (fs.existsSync(settingsPath)) {
-        const parsed = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
-        const settings = settingsSchema.partial().parse(parsed);
-        settingsValues = {
-          ciHubApiKey: settings.ciHubApiKey || null,
-          ciHubOrganizationId: settings.ciHubOrganizationId || null,
-          allowErrorMonitoring: settings.allowErrorMonitoring,
-          defaultAppCpuLimit: settings.defaultAppCpuLimit?.trim() || undefined,
-          defaultAppMemoryLimit: settings.defaultAppMemoryLimit?.trim() || undefined,
-          autoAllocateAppResources: settings.autoAllocateAppResources,
-          inferenceBackend: settings.inferenceBackend,
-          inferenceModel: settings.inferenceModel,
-          inferenceEmbeddingModel: settings.inferenceEmbeddingModel,
-          inferenceVisionModel: settings.inferenceVisionModel,
-          inferenceVllmApiKey: settings.inferenceVllmApiKey,
-          inferenceVllmUrl: settings.inferenceVllmUrl,
-          inferenceMtplxUrl: settings.inferenceMtplxUrl,
-          inferenceDsparkUrl: settings.inferenceDsparkUrl,
-          inferenceCloudProviders: settings.inferenceCloudProviders,
-          hubPoolEnabled: settings.hubPoolEnabled,
-          hubPoolLocalAffinity: settings.hubPoolLocalAffinity,
-          hubPoolHealthPollSeconds: settings.hubPoolHealthPollSeconds,
-        };
-      }
-    } catch (_e) {
-      // ignore
-    }
+    const settingsValues = this.readPersistedSettings();
 
     return {
       database: {
@@ -331,16 +365,24 @@ export class ConfigurationService {
   }
 
   /** Read settings.json, merge in the given partial, and write it back. Disk-only — never mutates
-   *  the in-memory config (callers that want the runtime change apply it separately). */
+   *  the in-memory config (callers that want the runtime change apply it separately).
+   *
+   *  Unusable fields already on disk are dropped rather than refused. Refusing them made a single
+   *  out-of-range value 500 every settings write from then on, including the write that would have
+   *  corrected it — so the only way out was to edit the file by hand. Dropping is safe here because
+   *  the boot path already ignores those fields (see {@link parsePersistedSettings}); this just
+   *  stops carrying a value nothing can read forward. */
   private async mergeSettingsToDisk(settings: UserSettingsBody): Promise<void> {
     const settingsPath = path.join(DATA_DIR, 'state', 'settings.json');
     await ensureSettingsJsonReady(settingsPath);
     const fileContent = await fs.promises.readFile(settingsPath, 'utf8');
-    const currentSettingsResult = settingsSchema.partial().safeParse(JSON.parse(fileContent));
-    if (!currentSettingsResult.success) {
-      throw currentSettingsResult.error.message;
+    const current = parsePersistedSettings(JSON.parse(fileContent));
+    if (current.unreadable) {
+      this.logger.warn(`${settingsPath} does not contain a JSON object; replacing it with the settings being written.`);
+    } else if (current.invalidKeys.length > 0) {
+      this.logger.warn(`Dropping unusable settings.json field(s) while saving: ${current.invalidKeys.join(', ')}.`);
     }
-    await writeSettingsJsonFile(settingsPath, `${JSON.stringify({ ...currentSettingsResult.data, ...settings }, null, 2)}`);
+    await writeSettingsJsonFile(settingsPath, `${JSON.stringify({ ...current.settings, ...settings }, null, 2)}`);
   }
 
   public getInferencePreferences() {
