@@ -46,7 +46,11 @@ describe('LoginForm', () => {
     );
 
     expect(screen.getByRole('link', { name: 'AUTH_LOGIN_COMPANION_ACCOUNT_BUTTON' })).toHaveClass('h-10', 'w-full', 'font-semibold');
-    expect(screen.getByText('AUTH_LOGIN_COMPANION_ACCOUNT_HINT')).toBeInTheDocument();
+    // This is the <a href> branch — desktop-hub-sso, which signs in IN THE APP —
+    // so the hint must be the in-app one, not the "opens in your browser" line
+    // that belongs to the mobile flow.
+    expect(screen.getByText('AUTH_LOGIN_COMPANION_ACCOUNT_HINT_IN_APP')).toBeInTheDocument();
+    expect(screen.queryByText('AUTH_LOGIN_COMPANION_ACCOUNT_HINT')).not.toBeInTheDocument();
   });
 
   it('shows a personalized portal sign-in label when an account email is known', () => {
