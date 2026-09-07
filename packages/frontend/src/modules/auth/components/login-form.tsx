@@ -79,7 +79,13 @@ export const LoginForm: React.FC<IProps> = ({ loading, onSubmit, loginType, port
               </a>
             </Button>
           )}
-          <div className="text-xs text-muted-foreground text-center mt-2">{t('AUTH_LOGIN_COMPANION_ACCOUNT_HINT')}</div>
+          {/* The hint has to follow the branch above. Desktop signs in via the
+              <a href> IN THE APP (hub-auth-flow.ts, desktop-hub-sso), so telling
+              the user it opens their browser described the mobile flow and, once
+              the same-origin interception bug was fixed, was simply untrue. */}
+          <div className="text-xs text-muted-foreground text-center mt-2">
+            {t(openPortalSsoExternally ? 'AUTH_LOGIN_COMPANION_ACCOUNT_HINT' : 'AUTH_LOGIN_COMPANION_ACCOUNT_HINT_IN_APP')}
+          </div>
           <div className="my-4 h-px bg-border" />
         </div>
       ) : null}
