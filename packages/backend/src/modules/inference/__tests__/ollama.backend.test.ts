@@ -1,9 +1,10 @@
 import { Test, type TestingModule } from '@nestjs/testing';
 import { type DeviceGroupProbe } from '../backends/amd-device-groups.util';
 import { OllamaBackend } from '../backends/ollama.backend';
+import { BASE_QUARANTINE_MS } from '../backends/serving-quarantine';
 import { LoggerService } from '@/core/logger/logger.service';
 import { mock, type MockProxy } from 'vitest-mock-extended';
-import { vi, describe, it, expect, beforeEach } from 'vitest';
+import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { EventEmitter } from 'node:events';
 import axios from 'axios';
 
@@ -77,6 +78,190 @@ describe('OllamaBackend', () => {
       expect(health.running).toBe(false);
       expect(health.healthy).toBe(false);
       expect(health.error).toContain('ECONNREFUSED');
+    });
+  });
+
+  // ─── Serving capability vs. inventory ──────────────────────────────
+
+  /**
+   * Fleet node core-4, twice reproduced: `GET /api/tags` answers 200 and lists `gemma3:1b`, and
+   * `POST /api/generate` for that same model answers HTTP 500 `model failed to load, this may be
+   * due to resource limitations or an internal error`. On the inventory alone that node was a
+   * first-choice pool candidate for a model it failed 100% of requests for, and it advertised the
+   * same claim to every peer. These walk the signal that stops it.
+   */
+  describe('Serving capability (core-4: tags 200, generate 500)', () => {
+    const MODEL = 'gemma3:1b';
+
+    /** Route the mocked GET by path — the URL probe, the on-disk inventory, and the resident list are three different answers. */
+    function mockOllamaGet(options: { tags?: string[]; resident?: string[]; psFails?: boolean } = {}): void {
+      (axios.get as any) = vi.fn().mockImplementation(async (url: string) => {
+        if (url.includes('/api/ps')) {
+          if (options.psFails) throw new Error('connection reset by peer');
+          return { data: { models: (options.resident ?? []).map((name) => ({ name })) } };
+        }
+        if (url.includes('/api/tags')) {
+          return { data: { models: (options.tags ?? []).map((name) => ({ name })) } };
+        }
+        return { data: {} }; // /api/version, the reachability probe in resolveUrl()
+      });
+    }
+
+    /** An error shaped like the one axios throws for core-4's answer. */
+    function axiosRejection(status: number, error: string): Error {
+      return Object.assign(new Error(`Request failed with status code ${status}`), {
+        isAxiosError: true,
+        response: { status, data: { error } },
+      });
+    }
+
+    const psCalls = () => ((axios.get as any).mock.calls as [string][]).filter(([url]) => url.includes('/api/ps'));
+
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    it('withholds a model the inventory lists but the engine has proved it cannot serve', async () => {
+      mockOllamaGet({ tags: [MODEL], resident: [] });
+
+      // Two requests, both answered HTTP 500 — what core-4 does for every request it is sent.
+      backend.noteServingFailure(MODEL, 'HTTP 500');
+      backend.noteServingFailure(MODEL, 'HTTP 500');
+
+      const health = await backend.healthCheck();
+
+      // The daemon is up and the model IS on disk: both remain true, and the install badge and the
+      // model puller depend on them staying true.
+      expect(health.running).toBe(true);
+      expect(health.healthy).toBe(true);
+      expect(health.modelsLoaded).toContain(MODEL);
+      // What must change is where work is sent.
+      expect(health.unservableModels).toContain(MODEL);
+    });
+
+    it('does not withhold a model on a single failure', async () => {
+      mockOllamaGet({ tags: [MODEL] });
+
+      backend.noteServingFailure(MODEL, 'HTTP 500');
+
+      // One 5xx is a blip — an OOM under concurrency looks identical — and dropping a working model
+      // out of routing costs more than one more failed request does.
+      expect((await backend.healthCheck()).unservableModels).toBeUndefined();
+    });
+
+    it('leaves the health check at a single request while nothing is withheld', async () => {
+      mockOllamaGet({ tags: [MODEL] });
+
+      await backend.healthCheck();
+
+      // The whole point of learning this from live requests is that the poll stays cheap.
+      expect(psCalls()).toHaveLength(0);
+    });
+
+    it('releases a withheld model that Ollama reports resident in /api/ps', async () => {
+      // Resident means loaded in VRAM right now — proof of the exact thing it was withheld for
+      // lacking, and free to ask for.
+      mockOllamaGet({ tags: [MODEL], resident: [MODEL] });
+      backend.noteServingFailure(MODEL, 'HTTP 500');
+      backend.noteServingFailure(MODEL, 'HTTP 500');
+
+      const health = await backend.healthCheck();
+
+      expect(health.unservableModels).toBeUndefined();
+      expect(psCalls()).toHaveLength(1);
+      expect(loggerService.info).toHaveBeenCalledWith(expect.stringContaining(`Model ${MODEL} served again`));
+    });
+
+    it('keeps the verdict when /api/ps itself fails', async () => {
+      // The inventory call already succeeded, so this is a /api/ps problem, not a down engine —
+      // and the verdict decays on its own rather than needing this call to survive.
+      mockOllamaGet({ tags: [MODEL], psFails: true });
+      backend.noteServingFailure(MODEL, 'HTTP 500');
+      backend.noteServingFailure(MODEL, 'HTTP 500');
+
+      expect((await backend.healthCheck()).unservableModels).toContain(MODEL);
+    });
+
+    it('clears the record as soon as the model is served again', async () => {
+      mockOllamaGet({ tags: [MODEL] });
+      backend.noteServingFailure(MODEL, 'HTTP 500');
+      backend.noteServingFailure(MODEL, 'HTTP 500');
+
+      backend.noteServingSuccess(MODEL);
+
+      expect((await backend.healthCheck()).unservableModels).toBeUndefined();
+    });
+
+    it('withholds immediately when the engine rejects an explicit load', async () => {
+      mockOllamaGet({ tags: [MODEL] });
+      (axios.post as any) = vi
+        .fn()
+        .mockRejectedValue(axiosRejection(500, 'model failed to load, this may be due to resource limitations or an internal error'));
+      vi.spyOn(axios, 'isAxiosError').mockReturnValue(true);
+
+      await expect(backend.loadModel(MODEL)).rejects.toThrow('Request failed with status code 500');
+
+      // loadModel asks the engine to do nothing but load the model, so a server-side rejection
+      // there is the direct answer rather than a hint — no second strike needed.
+      expect((await backend.healthCheck()).unservableModels).toContain(MODEL);
+    });
+
+    it('does not blame the model when the load failed to reach the daemon at all', async () => {
+      mockOllamaGet({ tags: [MODEL] });
+      (axios.post as any) = vi.fn().mockRejectedValue(new Error('connect ECONNREFUSED 127.0.0.1:11434'));
+      vi.spyOn(axios, 'isAxiosError').mockReturnValue(false);
+
+      await expect(backend.loadModel(MODEL)).rejects.toThrow('ECONNREFUSED');
+
+      // That is the whole daemon being unreachable, which healthCheck already reports. Pinning it
+      // on the model would outlive the outage.
+      expect((await backend.healthCheck()).unservableModels).toBeUndefined();
+    });
+
+    it('clears the record when a load finally succeeds', async () => {
+      mockOllamaGet({ tags: [MODEL] });
+      backend.noteServingFailure(MODEL, 'HTTP 500');
+      backend.noteServingFailure(MODEL, 'HTTP 500');
+      (axios.post as any) = vi.fn().mockResolvedValue({ data: {} });
+
+      await backend.loadModel(MODEL);
+
+      // Recovery must not have to wait out a penalty earned before the operator fixed the box.
+      expect((await backend.healthCheck()).unservableModels).toBeUndefined();
+    });
+
+    it('offers the model again once the quarantine decays, and settles it on the re-probe', async () => {
+      vi.useFakeTimers();
+      try {
+        mockOllamaGet({ tags: [MODEL] });
+        backend.noteServingFailure(MODEL, 'HTTP 500');
+        backend.noteServingFailure(MODEL, 'HTTP 500');
+        expect((await backend.healthCheck()).unservableModels).toContain(MODEL);
+
+        vi.advanceTimersByTime(BASE_QUARANTINE_MS + 1_000);
+
+        // Withholding is never permanent: the entry expires and the next request is the re-probe.
+        expect((await backend.healthCheck()).unservableModels).toBeUndefined();
+
+        // That re-probe failing settles it on its own — the benefit of the doubt was spent already.
+        backend.noteServingFailure(MODEL, 'HTTP 500');
+
+        expect((await backend.healthCheck()).unservableModels).toContain(MODEL);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('withholds only the model that failed, not the rest of the inventory', async () => {
+      mockOllamaGet({ tags: [MODEL, 'qwen3:8b'] });
+      backend.noteServingFailure(MODEL, 'HTTP 500');
+      backend.noteServingFailure(MODEL, 'HTTP 500');
+
+      const health = await backend.healthCheck();
+
+      // A node that cannot fit one model is still the right place for the ones it can fit.
+      expect(health.unservableModels).toEqual([MODEL]);
+      expect(health.modelsLoaded).toEqual([MODEL, 'qwen3:8b']);
     });
   });
 

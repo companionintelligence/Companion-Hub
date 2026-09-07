@@ -148,7 +148,10 @@ export class PoolProxyService {
       const nodeLabel = candidate.nodeFqdn ?? LOCAL_CANDIDATE_KEY;
       this.loadService.acquire(key);
       try {
-        const upstream = await this.forward(candidate, path, method, body);
+        const upstream = await this.forward(candidate, path, method, body, model);
+        // Before the failover branch, so both outcomes teach the local engine the same thing: a
+        // live request is the only place the pool ever learns whether a model actually serves.
+        this.noteLocalServing(candidate, model, upstream.status);
         if (this.shouldFailover(candidate, upstream.status)) {
           lastError = new Error(`${candidate.nodeFqdn ?? 'local'} returned ${upstream.status}`);
           failedOverFrom.push(nodeLabel);
@@ -231,6 +234,43 @@ export class PoolProxyService {
     return candidate.peerId === null ? TRANSPORT_4XX.has(status) : PEER_TRANSPORT_4XX.has(status);
   }
 
+  /**
+   * Feed a local engine's own answer back into its serving-capability signal, so the next
+   * `localCandidates` knows something this request found out and no health poll could.
+   *
+   * Only 5xx counts as a failure. 408 and 429 fail over too, but they are the engine saying "not
+   * now" about its queue, not "not ever" about the model — withholding a model because the node
+   * was briefly busy would turn load shedding into an outage. Peers are skipped entirely: a peer's
+   * capabilities are its own to correct (see {@link noteRejectedCandidate}), and a 500 relayed
+   * through it says nothing about which of ITS backends failed.
+   */
+  private noteLocalServing(candidate: PoolCandidate, model: string, status: number): void {
+    if (candidate.peerId !== null) {
+      return;
+    }
+    this.noteLocalServingOutcome(candidate.backend, model, status);
+  }
+
+  /**
+   * The rule itself, shared by the outbound path ({@link noteLocalServing}) and the peer-facing
+   * inbound forward, so a model's serving record does not depend on which door the request came in.
+   */
+  private noteLocalServingOutcome(backendType: InferenceBackendType, model: string | undefined, status: number): void {
+    if (!model) {
+      return;
+    }
+    const backend = this.backends.tryGet(backendType);
+    if (status >= 500) {
+      backend?.noteServingFailure?.(model, `HTTP ${status}`);
+      return;
+    }
+    if (status < 400) {
+      // A 4xx is the engine's verdict on the *request*, not proof the model can run, so only a
+      // clean response clears the record.
+      backend?.noteServingSuccess?.(model);
+    }
+  }
+
   /** A peer that 401/403s no longer treats us as paired, so its cached model list is stale — stop offering it until the next successful health probe. */
   private async noteRejectedCandidate(candidate: PoolCandidate, status: number): Promise<void> {
     if (candidate.peerId === null || (status !== 401 && status !== 403)) {
@@ -269,6 +309,8 @@ export class PoolProxyService {
     res: Response,
     /** FQDN of the peer that sent us this work, for the routing log. Optional so the log is never what breaks a forward. */
     fromPeerFqdn?: string,
+    /** Model the peer asked for, from `X-Hub-Pool-Model`. Optional: an older peer won't send it, and a missing model only costs us the strike, never the forward. */
+    model?: string,
   ): Promise<void> {
     // Counted like a locally-routed request: a peer's forwarded work occupies this node's engine
     // exactly as its own apps' does, and a node busy serving the pool must not report itself idle
@@ -284,6 +326,10 @@ export class PoolProxyService {
       // spending my GPU time" — the sender's own log only covers what it sent.
       this.recordInbound(backend, path, fromPeerFqdn, upstream.status, startedAt);
       recorded = true;
+      // A peer's forward is the only evidence an inbound-only node ever gets that one of its own
+      // models cannot run: nothing here goes through `proxyRequest`, so without this the node
+      // earns no strikes, withholds nothing, and keeps advertising the dead model to its peers.
+      this.noteLocalServingOutcome(backend, model, upstream.status);
       await this.pipeResponse(upstream, res);
     } catch (error) {
       if (!recorded) {
@@ -350,14 +396,30 @@ export class PoolProxyService {
     this.respondUncommitted(res, 502, { error: `No local backend able to serve ${path}` });
   }
 
+  /**
+   * This node's own backends that can serve `model`.
+   *
+   * "Has it" and "can serve it" are separate questions, and the inventory only answers the first:
+   * `health.modelsLoaded` is what the engine has on **disk**. A fleet node was found answering
+   * `/api/tags` 200 with `gemma3:1b` while every `/api/generate` for it returned HTTP 500 `model
+   * failed to load` — on the inventory alone that node was a first-choice candidate for a model it
+   * could not serve once, and it advertised the same claim to every peer. So a model the backend
+   * has withheld (see `BackendHealthStatus.unservableModels`) is dropped here even though it is
+   * sitting right there in the inventory.
+   */
   private async localCandidates(model: string): Promise<PoolCandidate[]> {
     const results = await Promise.all(
       this.backends.entries().map(async ([type, backend]): Promise<PoolCandidate | null> => {
         try {
           const health = await backend.healthCheck();
-          if (health.running && health.healthy && health.modelsLoaded.includes(model)) {
-            return { peerId: null, nodeFqdn: null, backend: type };
+          if (!health.running || !health.healthy || !health.modelsLoaded.includes(model)) {
+            return null;
           }
+          if (health.unservableModels?.includes(model)) {
+            this.logger.debug(`[PoolProxy] local ${type} lists "${model}" but has been unable to serve it; not offering it as a candidate`);
+            return null;
+          }
+          return { peerId: null, nodeFqdn: null, backend: type };
         } catch (error) {
           this.logger.debug(`[PoolProxy] local ${type} health check failed: ${error instanceof Error ? error.message : String(error)}`);
         }
@@ -422,7 +484,7 @@ export class PoolProxyService {
     });
   }
 
-  private async forward(candidate: PoolCandidate, path: string, method: string, body: unknown): Promise<globalThis.Response> {
+  private async forward(candidate: PoolCandidate, path: string, method: string, body: unknown, model: string): Promise<globalThis.Response> {
     if (candidate.peerId === null) {
       return this.callBackend(candidate.backend, path, method, body);
     }
@@ -441,6 +503,9 @@ export class PoolProxyService {
         // Tells the peer's `/inference/pool/local/*` handler which of ITS OWN backends to hit —
         // it can't infer this from the path alone, and must not re-run candidate selection itself.
         'X-Hub-Pool-Backend': candidate.backend,
+        // Lets the receiver credit the outcome to the right model without parsing the body it
+        // promises not to read. Same reason as the header above: the path alone doesn't carry it.
+        'X-Hub-Pool-Model': model,
         Authorization: `Bearer ${token}`,
       },
       body: method === 'GET' ? undefined : JSON.stringify(body),

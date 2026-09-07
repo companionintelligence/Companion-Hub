@@ -178,6 +178,24 @@ describe('HubPoolController', () => {
         body,
         res,
         'hub-b.example-tailnet.ts.net',
+        undefined,
+      );
+    });
+
+    it('passes the model header through so the peer forward can be credited to a model', async () => {
+      const res = mockResponse();
+      const peer = { nodeFqdn: 'hub-b.example-tailnet.ts.net', status: 'connected' };
+
+      await controller.localOllamaChat(peerRequest(peer, { 'x-hub-pool-backend': 'ollama', 'x-hub-pool-model': 'llama3.2:3b' }), body, res);
+
+      expect(proxyService.forwardToLocalBackendAndRespond).toHaveBeenCalledWith(
+        'ollama',
+        '/api/chat',
+        'POST',
+        body,
+        res,
+        'hub-b.example-tailnet.ts.net',
+        'llama3.2:3b',
       );
     });
 
