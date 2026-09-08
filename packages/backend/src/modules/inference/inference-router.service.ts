@@ -39,7 +39,18 @@ export class InferenceRouterService {
    * sum of their stalls rather than the worst one.
    */
   private async probeBackends(): Promise<ProbedBackends> {
-    return Promise.all(this.backends.entries().map(async ([type, backend]) => [type, backend, await backend.healthCheck()] as const));
+    return Promise.all(
+      this.backends.entries().map(
+        async ([type, backend]) =>
+          [
+            type,
+            backend,
+            // Per backend, because the routing paths below fold into this sweep and each carried its
+            // own catch: one throwing backend must be skipped, not fail the whole request.
+            await backend.healthCheck().catch(() => ({ running: false, healthy: false, modelsLoaded: [] as string[] })),
+          ] as const,
+      ),
+    );
   }
 
   /** Get full inference status for MCP / API */
@@ -204,14 +215,20 @@ export class InferenceRouterService {
     return undefined;
   }
 
-  /** Resolve 'auto' model by also checking running backends */
-  async resolveAutoModel(): Promise<string | undefined> {
+  /**
+   * Resolve 'auto' model by also checking running backends.
+   *
+   * `probe` is a thunk, not a {@link ProbedBackends} value, so the common answer — a pinned or
+   * already-loaded model — still costs no health check at all, while a caller that needs the same
+   * sweep afterwards (see {@link routeChatCompletion}) can hand in a memoized one.
+   */
+  async resolveAutoModel(probe: () => Promise<ProbedBackends> = () => this.probeBackends()): Promise<string | undefined> {
     const defaultModel = this.getDefaultModel();
     if (defaultModel) return defaultModel;
 
-    // Check running backends for any available model
-    for (const [_, backend] of this.backends.entries()) {
-      const health = await backend.healthCheck().catch(() => ({ running: false, healthy: false, modelsLoaded: [] as string[] }));
+    // One concurrent sweep. Walking the registry with `await` per backend is what made a single
+    // unresolvable backend URL cost the sum of every stall rather than the worst one (#1287).
+    for (const [, , health] of await probe()) {
       if (health.running && health.healthy && health.modelsLoaded.length > 0) {
         return health.modelsLoaded[0];
       }
@@ -230,7 +247,13 @@ export class InferenceRouterService {
     const requestedModel = (body.model as string) || 'auto';
 
     // 1. Resolve "auto" to default pinned LLM
-    const resolvedModel = requestedModel === 'auto' ? await this.resolveAutoModel() : requestedModel;
+    // Memoized: the `auto` resolution and the direct-backend lookup in step 4 want the same sweep,
+    // and running it twice per chat request repeats the doubling #1287 took out of `getStatus()` —
+    // here on a hotter path. Lazy, so a request answered from the registry alone probes nothing.
+    let probed: ProbedBackends | undefined;
+    const probeOnce = async (): Promise<ProbedBackends> => (probed ??= await this.probeBackends());
+
+    const resolvedModel = requestedModel === 'auto' ? await this.resolveAutoModel(probeOnce) : requestedModel;
 
     if (!resolvedModel) {
       // No local model, try cloud
@@ -272,8 +295,7 @@ export class InferenceRouterService {
     }
 
     // 4. Check if model is directly available on a local backend (not tracked/curated)
-    for (const [backendType, backend] of this.backends.entries()) {
-      const health = await backend.healthCheck().catch(() => ({ running: false, healthy: false, modelsLoaded: [] as string[] }));
+    for (const [backendType, , health] of await probeOnce()) {
       if (health.running && health.healthy) {
         const modelNames = health.modelsLoaded;
         if (modelNames.some((m) => m === resolvedModel || m.startsWith(`${resolvedModel}:`))) {
