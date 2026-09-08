@@ -8,6 +8,7 @@ import path from 'node:path';
 import { parseEnvFile } from '../env-file.js';
 import {
   approvePoolPeer,
+  cancelPairingPin,
   deletePoolPin,
   fetchPoolPeers,
   fetchPoolRoutingLog,
@@ -16,6 +17,9 @@ import {
   formatPoolProbeLines,
   formatPoolRoutingLogLines,
   formatPoolStatusLines,
+  formatPairingPinCancelledLines,
+  formatPairingPinLines,
+  mintPairingPin,
   pairPoolPeer,
   probePoolAddress,
   rejectPoolPeer,
@@ -51,6 +55,10 @@ export const POOL_SUBCOMMANDS = [
   'peer-disable',
   'pin',
   'unpin',
+  // Four places in this repo and two in docs/CLI.md already tell the operator to run
+  // `cihub pool pairing-pin`; until now it was not a subcommand and exited as an unknown one.
+  'pairing-pin',
+  'cancel-pin',
 ] as const;
 export type PoolSubcommand = (typeof POOL_SUBCOMMANDS)[number];
 
@@ -260,6 +268,18 @@ export async function runPoolCommand(args: string[]) {
 
     if (parsed.subcommand === 'peers') {
       printMessageBox(`Hub Pool peers  [${env}]`, formatPoolPeersLines(await fetchPoolPeers(envFile)), 'cyan');
+      return;
+    }
+
+    if (parsed.subcommand === 'pairing-pin') {
+      const minted = await mintPairingPin(envFile);
+      printMessageBox(`Hub Pool pairing PIN  [${env}]`, formatPairingPinLines(minted), minted.identityError ? 'yellow' : 'green');
+      return;
+    }
+
+    if (parsed.subcommand === 'cancel-pin') {
+      await cancelPairingPin(envFile);
+      printMessageBox(`Hub Pool pairing PIN  [${env}]`, formatPairingPinCancelledLines(), 'cyan');
       return;
     }
 

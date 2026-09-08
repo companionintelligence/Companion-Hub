@@ -5,6 +5,8 @@ import {
   type PoolProbeResult,
   type PoolRoutingLogResponse,
   type PoolStatusResponse,
+  formatPairingPinCancelledLines,
+  formatPairingPinLines,
   formatPoolDiscoverLines,
   formatPoolPeerTable,
   formatPoolPeersLines,
@@ -498,5 +500,44 @@ describe('hub-pool-cli pins', () => {
     expect(hubApiFetch.mock.calls[1]?.[1]).toBe('/inference/pool/pins?scope=model&model=hf.co%2Forg%2Frepo%3AQ4_K_M');
     expect((hubApiFetch.mock.calls[1]?.[2] as RequestInit).method).toBe('DELETE');
     expect(hubApiFetch.mock.calls[2]?.[1]).toBe('/inference/pool/pins?scope=default');
+  });
+});
+
+describe('formatPairingPinLines', () => {
+  const minted = (over: Record<string, unknown> = {}) => ({
+    pin: '123456',
+    expiresAt: '2026-09-08T01:50:32.710Z',
+    nodeUuid: 'd5c2a2c9-78c0-4055-b8fb-779a219f9937',
+    publicKeyFingerprint: '82:e7:a9:48:8e:05:a8:9f',
+    identityError: null,
+    ...over,
+  });
+
+  /**
+   * `cihub pool pairing-pin` is named in four places in this repo and twice in docs/CLI.md, and
+   * until now was not a subcommand at all — an operator following the probe output's own
+   * instructions got "unknown subcommand". These assertions pin the output that instruction leads to.
+   */
+  it('shows the digits, the expiry and the exact command to run on the other Hub', () => {
+    const text = formatPairingPinLines(minted()).join('\n');
+
+    expect(text).toContain('123456');
+    expect(text).toContain('cihub pool pair <this-node-address> --pin 123456');
+    // Single-use and time-boxed are the two properties an operator must not have to guess at.
+    expect(text).toContain('Single-use');
+  });
+
+  it('shows the key fingerprint, so the far operator has something to compare', () => {
+    expect(formatPairingPinLines(minted()).join('\n')).toContain('82:e7:a9:48:8e:05:a8:9f');
+  });
+
+  it('surfaces an identity error rather than printing a PIN that cannot complete a handshake', () => {
+    const text = formatPairingPinLines(minted({ identityError: 'keypair unreadable', publicKeyFingerprint: null })).join('\n');
+
+    expect(text).toContain('keypair unreadable');
+  });
+
+  it('says what cancelling actually costs', () => {
+    expect(formatPairingPinCancelledLines().join('\n')).toContain('cancelled');
   });
 });

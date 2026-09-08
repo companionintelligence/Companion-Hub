@@ -165,6 +165,62 @@ export async function fetchPoolPeers(envFileName: string): Promise<PoolPeerRow[]
   return hubApiFetch<PoolPeerRow[]>(envFileName, '/inference/pool/peers', { signal: AbortSignal.timeout(POOL_GET_TIMEOUT_MS) });
 }
 
+/** What `POST pairing-pin` answers with: the digits, when they expire, and this node's identity. */
+export interface PoolPairingPinMint {
+  pin: string;
+  expiresAt: string;
+  nodeUuid?: string | null;
+  publicKeyFingerprint?: string | null;
+  identityError?: string | null;
+}
+
+/**
+ * Mint the six digits the other Hub needs to pair by address.
+ *
+ * The mutation budget, not the GET one: this writes the outstanding PIN. It is also the ONLY place
+ * the digits are ever returned — `pool status` reports that a PIN is outstanding and when it
+ * expires, never its value — so a caller that loses this output has to mint a new one.
+ */
+export async function mintPairingPin(envFileName: string): Promise<PoolPairingPinMint> {
+  return hubApiFetch<PoolPairingPinMint>(envFileName, '/inference/pool/pairing-pin', {
+    method: 'POST',
+    body: '{}',
+    signal: AbortSignal.timeout(POOL_MUTATION_TIMEOUT_MS),
+  });
+}
+
+/** Revoke the outstanding PIN before it expires on its own. */
+export async function cancelPairingPin(envFileName: string): Promise<{ cancelled: boolean }> {
+  return hubApiFetch<{ cancelled: boolean }>(envFileName, '/inference/pool/pairing-pin', {
+    method: 'DELETE',
+    signal: AbortSignal.timeout(POOL_MUTATION_TIMEOUT_MS),
+  });
+}
+
+/** Renders a freshly minted PIN, including the fingerprint the far operator should be shown. */
+export function formatPairingPinLines(minted: PoolPairingPinMint): string[] {
+  const lines = [
+    `${OK} Pairing PIN: ${sanitizeForBox(minted.pin)}`,
+    '',
+    `Expires ${formatPoolTimestamp(minted.expiresAt)}. Single-use, and only one is live at a time.`,
+    '',
+    'On the OTHER Hub:',
+    `  cihub pool pair <this-node-address> --pin ${sanitizeForBox(minted.pin)}`,
+  ];
+  if (minted.publicKeyFingerprint) {
+    lines.push('', `This node's key fingerprint is ${sanitizeForBox(minted.publicKeyFingerprint)} — compare it there.`);
+  }
+  if (minted.identityError) {
+    lines.push('', `${FAIL} This node could not load its own pool identity: ${sanitizeForBox(minted.identityError)}`);
+  }
+  return lines;
+}
+
+/** The cancel confirmation, kept here so the status glyphs stay private to this module. */
+export function formatPairingPinCancelledLines(): string[] {
+  return [`${OK} Outstanding pairing PIN cancelled.`, '', 'Nothing can pair by address to this Hub until a new one is minted.'];
+}
+
 /** One HTTPS probe per tailnet device on the backend, so it gets the mutation budget rather than the GET one. */
 export async function fetchDiscoverablePeers(envFileName: string): Promise<DiscoverablePoolPeer[]> {
   return hubApiFetch<DiscoverablePoolPeer[]>(envFileName, '/inference/pool/peers/discoverable', {
