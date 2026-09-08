@@ -160,6 +160,17 @@ export class HubPoolDiscoveryService {
    * the `peers/pair` this row exists to feed, and an unnamed candidate is exactly the second
    * identity space this module refuses to open. That Hub is paired with by address and PIN through
    * {@link pairAtAddress}, which does learn a name.
+   *
+   * Fixed 2026-09-08 (CI-Portal `GET /api/devices/pool-peers`, migration `0053_device_tailscale_dns`)
+   * — until then this leg returned nothing for two independent reasons, worth knowing if a fleet
+   * node still reports empty Portal candidates: `fetchDispatchDevices` called `GET
+   * <portal>/api/devices`, which is Portal's *session*-authenticated `ListDevices` (a device key is
+   * not a session, so every call 401ed and the failure was swallowed silently); and even past that,
+   * CI-Portal's `device` row had no field to carry a MagicDNS name in at all, so every row would
+   * have been dropped here regardless. `tailscaleDns` on a Portal-sourced row is now that device's
+   * own self-report from `CheckIn.ts` — Portal is a directory here, never an authority, which is why
+   * `tryIdentify` below still probes it exactly like a Tailscale-sourced candidate rather than
+   * trusting the name outright.
    */
   private async listPortalCandidates(): Promise<DiscoverablePoolPeer[]> {
     if (!this.portalClient) return [];

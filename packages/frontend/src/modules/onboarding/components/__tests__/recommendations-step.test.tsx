@@ -159,6 +159,7 @@ describe('RecommendationsStep (embedded emit)', () => {
     expect(screen.getByTestId('recommended-private-icon-google-workspace')).toBeInTheDocument();
     expect(screen.queryByText('ONBOARDING_RECOMMENDED_APPS_CLOUD_SUBSCRIPTION')).not.toBeInTheDocument();
     expect(screen.queryByText('APP_STORE_OPEN_SOURCE_ALTERNATIVES')).not.toBeInTheDocument();
+    expect(screen.queryByText('ONBOARDING_BROWSE_ALL_ALTERNATIVES')).not.toBeInTheDocument();
     expect(screen.queryByTestId('recommended-agent-selection')).not.toBeInTheDocument();
     expect(screen.queryByText('ONBOARDING_RECOMMENDED_APPS_COUNT_SUFFIX')).not.toBeInTheDocument();
     expect(screen.queryByTestId('recommended-app-unavailable')).not.toBeInTheDocument();

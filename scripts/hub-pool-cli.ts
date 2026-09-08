@@ -29,6 +29,26 @@ export interface PoolEnabledState {
   disabledBy: 'env' | 'setting' | null;
 }
 
+/** How a peer authenticates to this node. `signed` is the pinned-Ed25519 path; `bearer` is the legacy token. */
+export type PoolPeerAuthMode = 'bearer' | 'signed';
+
+/** This node's own pool identity, as `/status` reports it. Never the private key. */
+export interface PoolIdentitySummary {
+  nodeUuid: string | null;
+  publicKeyFingerprint: string | null;
+  /** Why identity is unusable, when it is. Reported rather than thrown — see `hub-pool.types.ts`. */
+  identityError: string | null;
+}
+
+/**
+ * Whether a pairing PIN is outstanding on this node, and until when. Never the digits: those are
+ * returned exactly once, by {@link mintPairingPin}, so polling `/status` can never re-serve them.
+ */
+export interface PoolPairingPinState {
+  active: boolean;
+  expiresAt: string | null;
+}
+
 export interface PoolBackendCapability {
   type: string;
   healthy: boolean;
@@ -48,6 +68,13 @@ export interface PoolPeerRow {
   lastCapabilities: { hardwareTier?: string; backends?: PoolBackendCapability[]; inFlightRequests?: number; acceptingWork?: boolean } | null;
   /** Present on `/status` rows only: what this node currently has forwarded to the peer. */
   inFlightRequests?: number;
+  /**
+   * How this peer authenticates to us today. Absent on a Hub predating pinned identities, which is
+   * read the same way as `'bearer'`: not yet upgraded.
+   */
+  authMode?: PoolPeerAuthMode;
+  /** A short hash of the peer's pinned public key, for an operator comparing two screens. Never the key. */
+  peerKeyFingerprint?: string | null;
 }
 
 export interface PoolRoutingSummary {
@@ -86,6 +113,9 @@ export interface PoolStatusResponse {
     poolInboundEnabled: boolean;
     poolLocalAffinity: number;
     poolHealthPollSeconds: number;
+    /** Optional so this CLI keeps parsing a Hub predating signed peers, where the key is simply absent. */
+    poolRequireSignedPeers?: boolean;
+    poolPressureWeight?: number;
   };
   tailscaleAdminApiConfigured: boolean;
   localNode: {
@@ -96,11 +126,15 @@ export interface PoolStatusResponse {
     hardwareTier: string | null;
     backends: PoolBackendCapability[];
     capabilitiesError: string | null;
+    /** This node's UUID and key fingerprint. Optional: absent on a Hub predating pinned identities. */
+    identity?: PoolIdentitySummary;
   };
   peers: PoolPeerRow[];
   peerCounts: { total: number; connected: number; pending: number; unreachable: number; disabled: number };
   /** Optional so this CLI keeps parsing a Hub that predates pinning, where the key is simply absent. */
   pins?: PoolStatusPin[];
+  /** Optional for the same reason: a Hub predating the PIN handshake reports nothing here. */
+  pairingPin?: PoolPairingPinState;
   routing: PoolRoutingSummary;
 }
 
@@ -198,14 +232,16 @@ export async function cancelPairingPin(envFileName: string): Promise<{ cancelled
 }
 
 /** Renders a freshly minted PIN, including the fingerprint the far operator should be shown. */
-export function formatPairingPinLines(minted: PoolPairingPinMint): string[] {
+export function formatPairingPinLines(minted: PoolPairingPinMint, localNodeFqdn?: string | null): string[] {
   const lines = [
     `${OK} Pairing PIN: ${sanitizeForBox(minted.pin)}`,
     '',
     `Expires ${formatPoolTimestamp(minted.expiresAt)}. Single-use, and only one is live at a time.`,
     '',
     'On the OTHER Hub:',
-    `  cihub pool pair <this-node-address> --pin ${sanitizeForBox(minted.pin)}`,
+    // The caller passes this node's name when `GET status` could supply one, so the line is
+    // copy-pasteable rather than a template. Any address that reaches this Hub works in its place.
+    `  cihub pool pair ${sanitizeForBox(localNodeFqdn ?? '<this-node-address>')} --pin ${sanitizeForBox(minted.pin)}`,
   ];
   if (minted.publicKeyFingerprint) {
     lines.push('', `This node's key fingerprint is ${sanitizeForBox(minted.publicKeyFingerprint)} — compare it there.`);
@@ -213,6 +249,9 @@ export function formatPairingPinLines(minted: PoolPairingPinMint): string[] {
   if (minted.identityError) {
     lines.push('', `${FAIL} This node could not load its own pool identity: ${sanitizeForBox(minted.identityError)}`);
   }
+  // Minting is not pre-approval: the request still lands as `pending` on this side. Worth saying,
+  // because handing someone a PIN feels like the consent step and is not.
+  lines.push('', 'The request still has to be approved here: cihub pool approve <id>');
   return lines;
 }
 
@@ -520,13 +559,17 @@ export function formatPoolStatusLines(status: PoolStatusResponse): string[] {
     `Inbound      ${describeDirection('serving work for peers', status.directions.inbound, 'HUB_POOL_INBOUND_DISABLED', '--inbound')}`,
     `Peers        ${counts.total} total · ${counts.connected} connected · ${counts.pending} pending · ${counts.unreachable} unreachable · ${counts.disabled} disabled`,
     // Names the one credential `GET status` reports on, and says so. The Tailscale daemon's peer map
-    // and the Portal registry also name candidates, need no credential, and are not in this response
-    // (the `Tailscale` line below and `localNode.tailnet` are as close as it gets — preconditions, not
-    // its result) — so this line must not read as "discovery is on" or "discovery is off".
+    // also names candidates, needs no credential, and is not in this response (the `Tailscale` line
+    // below and `localNode.tailnet` are as close as it gets — preconditions, not its result) — so
+    // this line must not read as "discovery is on" or "discovery is off".
+    //
+    // It deliberately no longer mentions CI account Hubs: the Portal directory is wired in but
+    // returns nothing (see `listPortalCandidates`), and promising it here sends an operator to look
+    // for candidates that cannot arrive.
     `Discovery    ${
       status.tailscaleAdminApiConfigured
         ? 'Tailscale Admin API configured — cihub pool discover can enumerate the whole tailnet'
-        : 'no Admin API credential — cihub pool discover still lists visible tailnet peers and any CI account Hubs'
+        : 'no Admin API credential — cihub pool discover still lists the tailnet peers this node can see'
     }`,
     `Settings     poolEnabled=${status.settings.poolEnabled} · outbound=${status.settings.poolOutboundEnabled} · inbound=${status.settings.poolInboundEnabled} · localAffinity=${status.settings.poolLocalAffinity} · healthPoll=${status.settings.poolHealthPollSeconds}s`,
     `Routing log  ${routing.recorded}/${routing.capacity} recorded · ${routing.served} served · ${routing.failed} failed · ${routing.failovers} failover(s)`,
@@ -539,6 +582,18 @@ export function formatPoolStatusLines(status: PoolStatusResponse): string[] {
     `  In flight  ${status.localNode.inFlightRequests} request(s) now`,
     `  Engines    ${formatEngines(status.localNode.backends)}`,
   ];
+
+  // The fingerprint an operator compares against the far Hub's screen during pairing. A broken
+  // identity is reported the same way `capabilitiesError` is: pooling still runs on bearer tokens,
+  // so this is a degradation to name, not a failure to hide.
+  if (status.localNode.identity?.publicKeyFingerprint) {
+    lines.push(`  Identity   ${sanitizeForBox(status.localNode.identity.publicKeyFingerprint)}`);
+  }
+  if (status.localNode.identity?.identityError) {
+    lines.push(`  Identity   ${FAIL} ${sanitizeForBox(status.localNode.identity.identityError)}  (peers stay on bearer tokens)`);
+  }
+
+  lines.push(...formatPairingPinStateLines(status.pairingPin));
 
   // An unreachable backend and a node with no models both show an empty inventory; only this says which.
   if (status.localNode.capabilitiesError) {
@@ -553,7 +608,57 @@ export function formatPoolStatusLines(status: PoolStatusResponse): string[] {
     lines.push('', PENDING_INBOUND_HINT);
   }
 
+  lines.push(...formatPeerAuthModeLines(status.peers, status.settings.poolRequireSignedPeers));
+
   return lines;
+}
+
+/**
+ * An outstanding PIN is a live, unauthenticated way into this node's pairing route, so `status` says
+ * when one exists — the mint is the only place it is ever shown, and an operator who walked away
+ * from a terminal has nothing else to check.
+ */
+export function formatPairingPinStateLines(pairingPin: PoolPairingPinState | undefined): string[] {
+  if (!pairingPin?.active) return [];
+  return [
+    `  Pairing    ${PENDING} PIN outstanding until ${formatPoolTimestamp(pairingPin.expiresAt)}`,
+    '             Revoke it early with: cihub pool cancel-pin',
+  ];
+}
+
+/**
+ * Which peers are still on the legacy bearer token.
+ *
+ * This is the precondition for `poolRequireSignedPeers`, and turning that on across a fleet where a
+ * peer has not upgraded takes both directions of that pairing down. The upgrade happens on a health
+ * poll on its own, so the actionable output is the list of peers not there yet — and, when there are
+ * none, that the switch is now safe to flip.
+ */
+export function formatPeerAuthModeLines(peers: PoolPeerRow[], requireSignedPeers: boolean | undefined): string[] {
+  // Peers that never completed pairing have no auth mode to report yet, so they are not evidence
+  // either way and must not hold back the "safe to flip" line.
+  const paired = peers.filter((peer) => peer.status !== 'pending');
+  if (paired.length === 0) return [];
+
+  const bearer = paired.filter((peer) => peer.authMode !== 'signed');
+  if (bearer.length === 0) {
+    return requireSignedPeers
+      ? ['', `Peer auth: ${OK} every peer is signed, and poolRequireSignedPeers is on.`]
+      : [
+          '',
+          `Peer auth: ${OK} every peer has upgraded to a pinned key.`,
+          '  Turning off the legacy bearer path is now safe: set poolRequireSignedPeers.',
+        ];
+  }
+
+  return [
+    '',
+    `Peer auth: ${PENDING} still on the legacy bearer token — ${bearer.map((peer) => sanitizeForBox(peer.nodeFqdn)).join(', ')}`,
+    '  The upgrade runs on a health poll by itself; no action is needed unless it stays.',
+    requireSignedPeers
+      ? `  ${FAIL} poolRequireSignedPeers is ON, so these peers are being refused in both directions.`
+      : '  Do not set poolRequireSignedPeers until this list is empty — it would cut them off.',
+  ];
 }
 
 /**
@@ -591,11 +696,12 @@ const DISCOVER_WIDTHS = [34, 24] as const;
  * The candidate table, or an empty state that names the sources and what each one needs.
  *
  * The Admin API — reported by `tailscaleAdminApiConfigured`, the one directory `GET status` speaks
- * to — is one of three: the local Tailscale daemon's peer map and the CI Portal device registry also
- * name candidates and need no credential. So the flag only selects a hint here — it is not the difference
- * between discovery having run and not having run, and the copy must not imply that it is. Nor may
- * the empty state claim a directory was consulted: an unregistered Hub never calls Portal, and a
- * Hub off the tailnet never reads a peer map.
+ * to — is one of three on paper: the local Tailscale daemon's peer map also names candidates and
+ * needs no credential, and the CI Portal device registry is wired in but returns nothing today (see
+ * `HubPoolDiscoveryService.listPortalCandidates`). So the flag only selects a hint here — it is not
+ * the difference between discovery having run and not having run, and the copy must not imply that
+ * it is. Nor may the empty state claim a directory was consulted: a Hub off the tailnet never reads
+ * a peer map.
  */
 export function formatPoolDiscoverLines(devices: DiscoverablePoolPeer[], tailscaleAdminApiConfigured: boolean): string[] {
   if (devices.length === 0) {
@@ -620,7 +726,8 @@ export function formatPoolDiscoverLines(devices: DiscoverablePoolPeer[], tailsca
       '',
       'Already-paired nodes are excluded — see: cihub pool peers',
       'A candidate only appears once its Hub is running and answers /api/inference/pool/identify.',
-      'A Hub your CI account knows only by LAN address is not listed: pairing needs a tailnet name.',
+      'Registering with CI Portal does not add candidates here: that directory names nodes by',
+      '  MagicDNS name, and Portal stores none.',
     ];
   }
 

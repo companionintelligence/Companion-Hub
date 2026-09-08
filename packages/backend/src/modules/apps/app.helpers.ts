@@ -220,7 +220,7 @@ export class AppHelpers {
    * @throws If the manifest is invalid or a required variable is missing.
    */
   public generateEnvFile = async (appUrn: AppUrn, form: AppEventFormInput) => {
-    const { internalIp, envFilePath, rootFolderHost, userSettings, ciHubApiKey } = this.config.getConfig();
+    const { internalIp, envFilePath, rootFolderHost, userSettings } = this.config.getConfig();
 
     const config = await this.appFilesManager.getInstalledAppInfo(appUrn);
 
@@ -261,11 +261,22 @@ export class AppHelpers {
       this.logger.warn('Unable to resolve HUB_DEVICE_ID for app env generation.', error);
     }
 
-    if (ciHubApiKey) {
-      envMap.set('HUB_API_KEY', ciHubApiKey);
-    } else {
-      envMap.delete('HUB_API_KEY');
-    }
+    // `HUB_API_KEY` is never issued to an app, and this delete is load-bearing rather than tidy-up.
+    //
+    // The value it used to carry is `ciHubApiKey`, the Hub's Portal device credential — which
+    // `AuthMiddleware` accepts as a bearer token and answers with `getFirstOperator()`. Setting it
+    // here handed every installed app, third-party images included, a credential that authenticates
+    // as the operator on every `AuthGuard` route: pool pairing, settings, app install and uninstall.
+    // It defeated the `HUB_ONLY_SECRET_ENV_VARS` denylist a few lines up by being added back after it.
+    //
+    // Apps that legitimately call the Hub already have a better credential, provisioned below:
+    // `HUB_MCP_API_KEY` for an MCP client and `HUB_APP_KEY` for a provenance-gated first-party
+    // consumer. Both are managed keys — hashed at rest, scoped to what that app declared, and revoked
+    // on uninstall. An app holding neither is an app with no business calling the Hub API.
+    //
+    // The delete is unconditional so an env inherited from `.env`, or one left in an existing
+    // `app.env` by a build that still set it, is stripped on the next regeneration.
+    envMap.delete('HUB_API_KEY');
 
     const { appName, appStoreId } = extractAppUrn(appUrn);
 

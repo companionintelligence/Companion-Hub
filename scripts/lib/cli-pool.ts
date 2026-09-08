@@ -15,10 +15,10 @@ import {
   fetchPoolStatus,
   formatPoolPeersLines,
   formatPoolProbeLines,
-  formatPoolRoutingLogLines,
-  formatPoolStatusLines,
   formatPairingPinCancelledLines,
   formatPairingPinLines,
+  formatPoolRoutingLogLines,
+  formatPoolStatusLines,
   mintPairingPin,
   pairPoolPeer,
   probePoolAddress,
@@ -31,16 +31,27 @@ import {
   unpairPoolPeer,
   type PoolEnableAxis,
 } from '../hub-pool-cli.js';
+import { readRunningImageIdentity, runPoolDoctorSection } from '../pool-diagnostics-cli.js';
 import { readHubApiKey, resolveHubApiBase } from '../public-web-cli.js';
 import { resolveEnvFromArgs, usageAndExit } from './cli-args.js';
 import { confirmDestructiveAction } from './cli-prompt.js';
+import { run, runCapture } from './cli-proc.js';
+import {
+  buildPoolUpdateComposeArgs,
+  composeFilesForPoolUpdate,
+  decideGitUpdate,
+  gatherGitUpdateFacts,
+  resolvePoolUpdateImage,
+} from './cli-pool-update.js';
 import { BASE_COMMAND, type HubEnv } from './cli-types.js';
-import { printMessageBox, sanitizeForBox, STEP_ICONS } from './cli-ui.js';
+import { cliFail, cliOk, cliWarn, dim, printMessageBox, sanitizeForBox, STEP_ICONS } from './cli-ui.js';
 import { type HubContext, resolveHubContext } from './hub-context.js';
 import { resolveRootFolderHost } from './paths.js';
 
 export const POOL_SUBCOMMANDS = [
   'status',
+  'doctor',
+  'update',
   'peers',
   'discover',
   'probe',
@@ -67,6 +78,9 @@ const POOL_TARGET_SUBCOMMANDS: readonly PoolSubcommand[] = ['probe', 'pair', 'ap
 
 const POOL_USAGE = `Usage: ${BASE_COMMAND} pool <${POOL_SUBCOMMANDS.join('|')}> [env]`;
 
+/** How long `pool doctor` runs before it starts narrating. Below this, the box arrives on its own. */
+const POOL_DOCTOR_PROGRESS_AFTER_MS = 3_000;
+
 export interface ParsedPoolArgs {
   subcommand: PoolSubcommand;
   target?: string;
@@ -78,6 +92,8 @@ export interface ParsedPoolArgs {
   axis: PoolEnableAxis;
   /** `pin`/`unpin` only: which model the pin covers. Absent means the pool-wide default pin. */
   model?: string;
+  /** `doctor` only: also measure non-streaming first-byte latency, which spends GPU time. */
+  checkLatency: boolean;
   yes: boolean;
   env: HubEnv;
 }
@@ -93,12 +109,17 @@ export function parsePoolArgs(args: string[]): ParsedPoolArgs {
   let limit: number | undefined;
   let axis: PoolEnableAxis = 'both';
   let model: string | undefined;
+  let checkLatency = false;
   const positional: string[] = [];
 
   for (let i = 0; i < args.length; i += 1) {
     const arg = args[i] as string;
     if (arg === '--yes') {
       yes = true;
+      continue;
+    }
+    if (arg === '--check-latency') {
+      checkLatency = true;
       continue;
     }
     if (arg === '--outbound' || arg === '--inbound') {
@@ -158,9 +179,24 @@ export function parsePoolArgs(args: string[]): ParsedPoolArgs {
     usageAndExit(`--model only applies to \`${BASE_COMMAND} pool pin\` and \`${BASE_COMMAND} pool unpin\`.`);
   }
 
+  if (checkLatency && subcommand !== 'doctor') {
+    usageAndExit(`--check-latency only applies to \`${BASE_COMMAND} pool doctor\`.`);
+  }
+
   const takesTarget = POOL_TARGET_SUBCOMMANDS.includes(subcommand);
   const target = takesTarget ? positional[1] : undefined;
-  return { subcommand, target, displayName, pin, limit, axis, model, yes, env: resolveEnvFromArgs(positional.slice(takesTarget ? 2 : 1)) };
+  return {
+    subcommand,
+    target,
+    displayName,
+    pin,
+    limit,
+    axis,
+    model,
+    checkLatency,
+    yes,
+    env: resolveEnvFromArgs(positional.slice(takesTarget ? 2 : 1)),
+  };
 }
 
 /**
@@ -244,6 +280,34 @@ export async function runPoolCommand(args: string[]) {
   const ctx = resolveHubContext(parsed.env);
   const { env, envFile } = ctx;
 
+  // Deliberately BEFORE the device-key gate below. `doctor` is the command an operator reaches for
+  // on a node that is not set up yet — a node with no key is one of the states it has to report on,
+  // not a reason to refuse to run.
+  if (parsed.subcommand === 'doctor') {
+    // B4 compares the routes the Hub serves against the commands THIS build has, so the list has to
+    // come from here — the doctor module cannot import it back without closing an import cycle.
+    const section = await runPoolDoctorSection(envFile, {
+      checkLatency: parsed.checkLatency,
+      env,
+      cliSubcommands: POOL_SUBCOMMANDS,
+      // Only once the run is visibly slow. On a healthy node the whole preflight is over in a second
+      // and five progress lines would be noise; on the node this command exists for it is minutes,
+      // and silence there reads as a hang.
+      onSectionDone: (line, elapsedMs) => {
+        if (elapsedMs >= POOL_DOCTOR_PROGRESS_AFTER_MS) console.log(dim(`  ${line}`));
+      },
+    });
+    printMessageBox(`Hub Pool doctor  [${env}]`, section.lines, section.issueCount > 0 ? 'yellow' : 'cyan');
+    return;
+  }
+
+  // Also before the device-key gate: the node most likely to need `pool update` — never started,
+  // or stuck on an old image — has no key yet either, and pulling/redeploying needs none.
+  if (parsed.subcommand === 'update') {
+    await runPoolUpdateCommand(ctx);
+    return;
+  }
+
   if (!readHubApiKey(envFile)) {
     printMessageBox(
       'Hub not paired',
@@ -273,7 +337,12 @@ export async function runPoolCommand(args: string[]) {
 
     if (parsed.subcommand === 'pairing-pin') {
       const minted = await mintPairingPin(envFile);
-      printMessageBox(`Hub Pool pairing PIN  [${env}]`, formatPairingPinLines(minted), minted.identityError ? 'yellow' : 'green');
+      // Best-effort: the name only makes the printed `pool pair` line copy-pasteable, so a Hub whose
+      // status call fails still gets its digits rather than an error.
+      const localNodeFqdn = await fetchPoolStatus(envFile)
+        .then((status) => status.localNode.nodeFqdn)
+        .catch(() => null);
+      printMessageBox(`Hub Pool pairing PIN  [${env}]`, formatPairingPinLines(minted, localNodeFqdn), minted.identityError ? 'yellow' : 'green');
       return;
     }
 
@@ -322,6 +391,73 @@ export async function runPoolCommand(args: string[]) {
   } catch (error) {
     poolErrorExit(error, envFile);
   }
+}
+
+/**
+ * Pull the published image and redeploy — no build toolchain, no GitHub Packages token. See
+ * cli-pool-update.ts for why this is a separate, narrow command instead of teaching `cihub up`
+ * to skip `--build`.
+ */
+async function runPoolUpdateCommand(ctx: HubContext): Promise<void> {
+  const lines: string[] = [];
+
+  const gitFacts = gatherGitUpdateFacts(ctx.cwd);
+  const gitDecision = decideGitUpdate(gitFacts);
+  if (gitDecision.action === 'pull') {
+    run('git', ['-C', ctx.cwd, 'fetch', 'origin', 'dev']);
+    run('git', ['-C', ctx.cwd, 'merge', '--ff-only', 'origin/dev']);
+    const sha = runCapture('git', ['-C', ctx.cwd, 'rev-parse', '--short', 'HEAD']).stdout;
+    lines.push(cliOk(`git checkout fast-forwarded to dev (${sha})`));
+  } else {
+    lines.push(cliWarn(`git checkout left untouched — ${gitDecision.reason}`));
+  }
+
+  const { files, overlayApplied } = composeFilesForPoolUpdate(ctx.cwd, ctx.composeFiles);
+  const image = resolvePoolUpdateImage(ctx.env, process.env.CI_HUB_IMAGE);
+  if (overlayApplied) {
+    lines.push(cliOk(`will pull ${image} (set CI_HUB_IMAGE to override)`));
+  } else {
+    lines.push(cliWarn(`no pull-image overlay found in ${ctx.cwd} — falling back to whatever ${ctx.composeFiles.join(', ')} already declares`));
+  }
+
+  const { pullArgs, upArgs } = buildPoolUpdateComposeArgs(ctx.envFile, files);
+  printMessageBox(`Hub Pool update  [${ctx.env}]`, [...lines, '', 'Pulling the published image, then redeploying...'], 'cyan');
+  const envOverrides = overlayApplied ? { CI_HUB_IMAGE: image } : {};
+  run('docker', pullArgs, envOverrides, ctx.cwd);
+  run('docker', upArgs, envOverrides, ctx.cwd);
+
+  // The env file may not carry API_PORT at all on an appliance install (the compose service
+  // `environment:` block sets it) — read it off the container that just started, same precedence
+  // `pool doctor`'s A1 uses, rather than assuming 5002.
+  const base = `http://127.0.0.1:${readRunningImageIdentity()?.config.apiPort ?? 5002}`;
+  let healthy = false;
+  for (let attempt = 0; attempt < 10 && !healthy; attempt += 1) {
+    if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, 2000));
+    try {
+      healthy = (await fetch(`${base}/api/health`, { signal: AbortSignal.timeout(3000) })).ok;
+    } catch {
+      // Not up yet — a redeploy can take a few seconds before the port answers.
+    }
+  }
+  if (!healthy) {
+    lines.push('', cliFail(`${base}/api/health did not answer after redeploy — check: ${BASE_COMMAND} logs ${ctx.env}`));
+    printMessageBox(`Hub Pool update  [${ctx.env}]`, lines, 'red');
+    return;
+  }
+  lines.push('', cliOk(`${base}/api/health answered — Hub is up`));
+
+  try {
+    const identify = await fetch(`${base}/api/inference/pool/identify`, { signal: AbortSignal.timeout(3000) });
+    const body = identify.ok ? ((await identify.json()) as { poolProtocol?: number }) : null;
+    lines.push(
+      typeof body?.poolProtocol === 'number'
+        ? cliOk(`pool protocol ${body.poolProtocol}`)
+        : cliWarn('answered identify but reported no poolProtocol — this build predates Hub Pool'),
+    );
+  } catch {
+    // identify is a bonus signal on top of health, not a requirement for a successful update.
+  }
+  printMessageBox(`Hub Pool update  [${ctx.env}]`, lines, 'green');
 }
 
 /** What each axis is called, which env var overrides it, and how `/status` reports its state. */

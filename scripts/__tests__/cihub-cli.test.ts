@@ -72,6 +72,14 @@ vi.mock('../public-web-cli', async (importOriginal) => ({
   readHubApiKey: () => poolApiKey,
 }));
 
+/** The doctor itself is covered in pool-diagnostics-cli.test.ts; what is under test here is the wiring. */
+const doctorSection = { lines: ['Hub Pool preflight  all 13 checks passed'], issueCount: 0, remediationCommands: [] as string[] };
+const runPoolDoctorSection = vi.fn(async (..._args: unknown[]) => doctorSection);
+vi.mock('../pool-diagnostics-cli', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../pool-diagnostics-cli')>()),
+  runPoolDoctorSection: (...args: unknown[]) => runPoolDoctorSection(...(args as [])),
+}));
+
 // --- banner ---
 
 describe('banner', () => {
@@ -95,19 +103,20 @@ describe('banner', () => {
     expect(plain).toContain('cihub man');
   });
 
-  it('box sections have no side | borders on content lines', () => {
+  it('box sections have no side borders on content lines', () => {
+    // `box()` frames with a top and bottom rule only (BOX_CHARS has no `vertical`), so a content
+    // line is a plain two-space indent. The guard is against a vertical border creeping back in and
+    // making every line width-dependent — it is NOT about question marks, which are ordinary text.
+    const VERTICAL = '\u2502';
     const plain = stripAnsi(renderHelp());
-    // Content lines should start with 2-space indent, not ?
     for (const line of plain.split('\n')) {
-      if (line.startsWith('  ') && !line.startsWith('  ?') && !line.startsWith('  ?')) {
-        expect(line.startsWith('?')).toBe(false);
-        expect(line.endsWith('?')).toBe(false);
-      }
+      expect(line.startsWith(VERTICAL)).toBe(false);
+      expect(line.trimEnd().endsWith(VERTICAL)).toBe(false);
     }
   });
 });
 
-// ??? help & man ???????????????????????????????????????????????????????????????
+// --- help & man ----------------------------------------------------------------------------------
 
 describe('renderHelp', () => {
   it('lists all command groups', () => {
@@ -294,7 +303,7 @@ describe('shouldRetryApkMirrorWithHostNetwork', () => {
   });
 });
 
-// ??? first-run detection ??????????????????????????????????????????????????????
+// --- first-run detection -------------------------------------------------------------------------
 
 describe('isFirstRun', () => {
   it('returns true when the env file does not exist', () => {
@@ -307,7 +316,7 @@ describe('isFirstRun', () => {
   });
 });
 
-// ??? repo-root guard ???????????????????????????????????????????????????????????
+// --- repo-root guard -----------------------------------------------------------------------------
 
 describe('isHubRepoRoot', () => {
   it('recognises the CI-Hub repo from its package.json name + scripts dir', () => {
@@ -453,7 +462,12 @@ describe('getComposeFiles', () => {
   });
 
   it('returns the prod compose file for dev and prod', () => {
-    expect(getComposeFiles('prod')).toEqual(['docker-compose.prod.yml']);
+    const prodFiles = getComposeFiles('prod');
+    if (existsSync('.env.prod') && /^CI_HUB_IMAGE=\S/m.test(readFileSync('.env.prod', 'utf-8'))) {
+      expect(prodFiles).toEqual(['docker-compose.prod.yml', 'docker-compose.dev-image.yml']);
+      return;
+    }
+    expect(prodFiles).toEqual(['docker-compose.prod.yml']);
   });
 
   it('layers dev-image on prod for dev when CI_HUB_IMAGE is set in .env.dev', () => {
@@ -473,7 +487,7 @@ describe('getComposeFiles', () => {
   });
 });
 
-// ??? env file round-trip ???????????????????????????????????????????????????????
+// --- env file round-trip -------------------------------------------------------------------------
 
 describe('parseEnvFile / upsertEnvVar', () => {
   const TMP = '.env.__vitest__';
@@ -519,7 +533,7 @@ describe('parseEnvFile / upsertEnvVar', () => {
   });
 });
 
-// ??? compose profiles / private-vpn ?????????????????????????????????????????????
+// --- compose profiles / private-vpn --------------------------------------------------------------
 
 describe('mergeComposeProfilesFromEnvFile', () => {
   const TMP = '.env.__vitest_vpn__';
@@ -1019,9 +1033,25 @@ describe('parsePoolArgs', () => {
       limit: undefined,
       axis: 'both',
       model: undefined,
+      checkLatency: false,
       yes: false,
       env: 'local',
     });
+  });
+
+  it('routes pairing-pin, the command the other Hub needs before it can pair by address', () => {
+    // It was documented, and named in `pool probe`'s own output, long before it was routed: a
+    // headless appliance with no dashboard has no other way to mint one.
+    expect(parsePoolArgs(['pairing-pin']).subcommand).toBe('pairing-pin');
+    expect(parsePoolArgs(['pairing-pin', 'dev']).env).toBe('dev');
+  });
+
+  it('routes cancel-pin as its own subcommand, not a flag on pairing-pin', () => {
+    // Revoking is spelled `cancel-pin` rather than `pairing-pin --cancel`; a stray `--cancel` is an
+    // unknown flag, so following an older note fails loudly instead of silently minting a PIN.
+    expect(parsePoolArgs(['cancel-pin']).subcommand).toBe('cancel-pin');
+    expect(parsePoolArgs(['cancel-pin', 'dev']).env).toBe('dev');
+    expect(() => parsePoolArgs(['pairing-pin', '--cancel'])).toThrow();
   });
 
   it('reads --outbound / --inbound into the axis, defaulting to the master switch', () => {
@@ -1043,6 +1073,19 @@ describe('parsePoolArgs', () => {
 
   it('reads the env argument after a targetless subcommand', () => {
     expect(parsePoolArgs(['peers', 'dev']).env).toBe('dev');
+  });
+
+  it('accepts doctor as a subcommand, and reads the env after it rather than a peer reference', () => {
+    // `doctor` must NOT be a target subcommand: if it were, `cihub pool doctor prod` would read
+    // `prod` as a peer to diagnose and then fall back to the local env.
+    expect(parsePoolArgs(['doctor', 'prod'])).toMatchObject({ subcommand: 'doctor', target: undefined, env: 'prod' });
+  });
+
+  it('reads --check-latency, and only for doctor', () => {
+    expect(parsePoolArgs(['doctor', '--check-latency']).checkLatency).toBe(true);
+    expect(parsePoolArgs(['doctor']).checkLatency).toBe(false);
+    // The flag spends GPU time; anywhere else it would silently do nothing.
+    expect(() => parsePoolArgs(['status', '--check-latency'])).toThrow();
   });
 
   it('takes the peer reference before the env for target subcommands', () => {
@@ -1162,6 +1205,52 @@ describe('runPoolCommand', () => {
   });
 
   const boxText = () => (logSpy.mock.calls as unknown[][]).map((call) => stripAnsi(String(call[0]))).join('\n');
+
+  /**
+   * The doctor runs BEFORE the device-key gate, deliberately: an unpaired node is one of the states
+   * it exists to report on, so gating it would print `Hub not paired` on precisely the node the
+   * operator is trying to diagnose.
+   */
+  it('runs the doctor on a node with no device key, instead of demanding one', async () => {
+    poolApiKey = undefined;
+    runPoolDoctorSection.mockReset().mockResolvedValue(doctorSection);
+
+    await runPoolCommand(['doctor', '--check-latency']);
+
+    expect(runPoolDoctorSection).toHaveBeenCalledTimes(1);
+    const [, options] = runPoolDoctorSection.mock.calls[0] as unknown as [string, { checkLatency: boolean; cliSubcommands: readonly string[] }];
+    expect(options.checkLatency).toBe(true);
+    // B4 compares the Hub's routes against THIS build's commands, which only the caller can supply.
+    expect(options.cliSubcommands).toContain('doctor');
+    expect(boxText()).toContain('Hub Pool preflight');
+    expect(boxText()).not.toContain('Hub not paired');
+    expect(exitSpy).not.toHaveBeenCalled();
+    poolApiKey = 'device-key';
+  });
+
+  /**
+   * The doctor's worst case is minutes of bounded-but-sequential probing on precisely the broken
+   * node it targets, and the box cannot be rendered until the last probe returns. Silence there
+   * reads as a hang. It narrates only once the run is visibly slow — on a healthy node the whole
+   * preflight is over in about a second and five progress lines would be noise.
+   */
+  it('narrates a slow doctor run, and stays quiet on a fast one', async () => {
+    runPoolDoctorSection.mockReset();
+    runPoolDoctorSection.mockImplementation(async (_envFile: unknown, options: unknown) => {
+      const { onSectionDone } = options as { onSectionDone?: (line: string, elapsedMs: number) => void };
+      onSectionDone?.('A  Can this node be a pool member at all? — 0.4s', 400);
+      onSectionDone?.('B  Version reconciliation — 61.0s', 61_000);
+      return { lines: ['Hub Pool preflight  all 13 checks passed'], issueCount: 0, remediationCommands: [] };
+    });
+
+    await runPoolCommand(['doctor']);
+
+    const printed = boxText();
+    expect(printed).toContain('B  Version reconciliation');
+    expect(printed).not.toContain('A  Can this node be a pool member');
+    // The report itself is still one box at the end, not a stream of half-checks.
+    expect(printed).toContain('Hub Pool preflight  all 13 checks passed');
+  });
 
   it('refuses a state change without --yes on a non-interactive terminal', async () => {
     poolApi.fetchPoolPeers.mockResolvedValue([

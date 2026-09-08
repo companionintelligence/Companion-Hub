@@ -6,7 +6,7 @@ This complements, and does not replace, the existing single-node model recommend
 
 ## How it fits together
 
-- **Discovery**: `GET /api/inference/pool/peers/discoverable` lists every unpaired node this Hub can *name*, from up to three directories — the local Tailscale daemon's peer map, the Tailscale Admin API when `TAILSCALE_OAUTH_CLIENT_ID` / `TAILSCALE_OAUTH_CLIENT_SECRET` are configured, and the CI Portal device registry on a registered Hub — and probes each unpaired candidate's `GET /api/inference/pool/identify` (reachable over the tailnet the same way the Hub's own dashboard is) to confirm it is a CI-Hub node. None of the three is required, and a node two of them both name is offered once. A Hub with no directory at all is found by address instead. See [Where pairing candidates come from](#where-pairing-candidates-come-from).
+- **Discovery**: `GET /api/inference/pool/peers/discoverable` lists every unpaired node this Hub can *name*, from up to three directories — the local Tailscale daemon's peer map, the Tailscale Admin API when `TAILSCALE_OAUTH_CLIENT_ID` / `TAILSCALE_OAUTH_CLIENT_SECRET` are configured, and the CI Portal device registry on a registered Hub (which [returns nothing today](#where-pairing-candidates-come-from)) — and probes each unpaired candidate's `GET /api/inference/pool/identify` (reachable over the tailnet the same way the Hub's own dashboard is) to confirm it is a CI-Hub node. None of the three is required, and a node two of them both name is offered once. A Hub with no directory at all is found by address instead. See [Where pairing candidates come from](#where-pairing-candidates-come-from).
 - **Pairing**: a two-way handshake — the requesting Hub sends a token to the candidate; the candidate's operator approves or rejects in **Settings → Network → Hub Pool**; on approval, the candidate issues its own token back. Each side ends up trusting the other with one bearer token per direction (see `hub_pool_peer` in `schema.ts` for the exact model). Rejecting, or never approving, leaves nothing paired. Rejecting and unpairing both send a best-effort *authenticated* notification — the caller presents the token the other side issued it — so the other Hub drops its half immediately instead of forwarding work to a node that will now reject it.
 - **Routing**: once at least one peer is `connected`, every app using `hub_integration.inference` is routed through this Hub's own pool proxy (`/api/inference/pool/*`) instead of a directly-resolved backend URL — this is a global switch, not a per-app setting. With zero connected peers, nothing changes: a single-node Hub behaves exactly as it did before this feature existed.
 - **Ranking**: local backends and connected peers go into a **single** list ordered by queue depth — in-flight inference requests — so a saturated Hub hands work to an idle peer instead of queueing behind itself. The local node gets a deliberate head start of `poolLocalAffinity` queued requests (default 1): a follow-up turn served here reuses the prompt prefix and KV cache the previous turn left resident, while the same turn sent to a peer re-processes the prompt cold — so work only leaves this node once a peer is at least that much emptier. A peer's queue depth is the larger of the two views this Hub has of it: the `inFlightRequests` figure the peer published at its last health poll, and what this Hub has forwarded it since. Both count the same requests, and neither vantage point sees all of them — the peer's snapshot includes work from apps and nodes we cannot observe, our own counter covers the up-to-one-poll the snapshot missed. A snapshot older than three health polls (90 seconds at the default cadence) is discarded and the peer ranks as mid-load: an unmeasured node must never be mistaken for an idle one. Peers that tie on queue depth are ordered by the hardware tier they report, unless `poolPressureWeight` is non-zero, in which case a [GPU-pressure band](#gpu-pressure-a-second-load-signal-amd-only-and-off-by-default) is consulted first — an unmeasured node ranking mid-band, never idle.
@@ -22,7 +22,7 @@ This complements, and does not replace, the existing single-node model recommend
 
 ## Operator settings
 
-Persisted in `settings.json` and editable over `GET`/`PATCH /api/inference/pool/settings`. All three take effect on the next request or poll — no restart, and no app is recreated, because every value is read on the Hub's own path rather than injected into an app's environment.
+Persisted in `settings.json` and editable over `GET`/`PATCH /api/inference/pool/settings`. Every one of them takes effect on the next request or poll — no restart, and no app is recreated, because each value is read on the Hub's own path rather than injected into an app's environment.
 
 | Setting | Default | Range | What it does |
 |---|---|---|---|
@@ -32,6 +32,7 @@ Persisted in `settings.json` and editable over `GET`/`PATCH /api/inference/pool/
 | `poolLocalAffinity` | `1` | 0–20 | Queued-request head start the local node gets over a peer. `0` ranks purely by queue depth — with local still taking an *exact* tie, since serving here costs no hop and reuses a warm cache; higher values make handoff rarer (stickier to local). |
 | `poolHealthPollSeconds` | `30` | 10–300 | Seconds between peer capability probes. Also sets how long a peer's snapshot stays trusted — three polls — so slowing the cadence does not silently mark every peer stale. |
 | `poolPins` | `[]` | — | Operator routing pins — see [Manual routing pins](#manual-routing-pins). Written through `POST`/`DELETE /api/inference/pool/pins`, not through this PATCH. Empty means the ranker alone decides. |
+| `poolRequireSignedPeers` | `false` | — | Refuse the legacy bearer-token path outright, on the inbound guard **and** the outbound client. **Default false on purpose:** setting it while any peer has not finished the bearer→signed upgrade takes both directions of that pairing down. Flip it only once every peer reports `authMode: signed` — `cihub pool status` names the ones that do not, and says when the switch has become safe. |
 | `poolPressureWeight` | `0` | 0–3 | How heavily the 0–3 GPU-pressure band counts in ranking. `0` (the default) removes it from the comparator entirely, so ranking is byte-identical to the build before pressure existed; `1` is `pending + pressure`, which is what lets the pool move work off a node whose queue is empty but whose GPU is busy. See [GPU pressure](#gpu-pressure-a-second-load-signal-amd-only-and-off-by-default). |
 
 ## Manual routing pins
@@ -305,7 +306,7 @@ it"; the PIN-gated exchange answers "and this is who it is".
 2. Find the other Hub, by either route. **The two are not interchangeable**: a directory learns a node's
    name, so its candidates can be paired with from the UI, whereas an address probe deliberately learns no name —
    `/identify` does not disclose one — so pairing by address needs a PIN and happens from the CLI:
-   - **By directory:** `cihub pool discover`, or the Discoverable devices list in the UI. On a tailnet-connected Hub this already works with no credential, and on a registered Hub it also lists the Hubs on your CI account. Set the Tailscale OAuth client env vars above to add the whole tailnet. See [Where pairing candidates come from](#where-pairing-candidates-come-from).
+   - **By directory:** `cihub pool discover`, or the Discoverable devices list in the UI. On a tailnet-connected Hub this already works with no credential. Set the Tailscale OAuth client env vars above to add the whole tailnet. (The CI Portal registry is wired in as a third directory but [returns nothing today](#where-pairing-candidates-come-from), so registering does not add candidates.) See [Where pairing candidates come from](#where-pairing-candidates-come-from).
    - **By address, no directory needed:** `cihub pool probe 192.168.1.42` (or `192.168.1.42:5002`, or a hostname) confirms a Hub is there; `cihub pool pair 192.168.1.42 --pin <digits>` pairs with it, using a PIN minted on that Hub. See [Finding a peer by address](#finding-a-peer-by-address) for what each half does and does not do.
 3. Open **Settings → Network → Hub Pool**. Named candidates appear with a **Pair** button — a Hub found by address is not in that list (it has no name to show yet) and is paired with from the CLI. With no OAuth credential and nothing to list, the section says which variables would add whole-tailnet enumeration rather than showing a bare empty list. It does not claim discovery is off, because it cannot: of the three directories, `GET status` reports only the Tailscale credential and `localNode.tailscaleConnected`, and says nothing at all about the Portal registry.
 4. On the *other* Hub, a pending inbound request appears with **Approve** / **Reject**, identified by the requester's FQDN and — when the request carried a pairing PIN — its key fingerprint, which is the value to compare against that Hub's own **Pairing PIN** card.
@@ -316,7 +317,7 @@ A peer shown **unreachable** needs no operator action: it is skipped while it fa
 To validate a real two-node pool end to end — pairing, routing, load handoff, failover, recovery, the
 kill switch, and the security checks — follow [`hub-pool-fleet-testing.md`](hub-pool-fleet-testing.md).
 
-Every step above is also available headlessly through `cihub pool` — `status`, `peers`, `discover`, `probe`, `pair`, `approve`, `reject`, `unpair`, `log`, `enable`, `disable` — which is the path for an SSH-only Hub or a coding agent. It hits the same endpoints with the Portal device key and runs on the Hub it manages, so approval still happens on the receiving Hub. See [`CLI.md` → Hub Pool](CLI.md#hub-pool).
+Every step above is also available headlessly through `cihub pool` — `status`, `peers`, `discover`, `probe`, `pairing-pin`, `pair`, `approve`, `reject`, `unpair`, `pin`, `unpin`, `log`, `enable`, `disable`, `peer-enable`, `peer-disable` — which is the path for an SSH-only Hub or a coding agent. It hits the same endpoints with the Portal device key and runs on the Hub it manages, so approval still happens on the receiving Hub. See [`CLI.md` → Hub Pool](CLI.md#hub-pool).
 
 ## Where pairing candidates come from
 
@@ -329,7 +330,7 @@ directories can supply one, and `HubPoolDiscoveryService` merges them:
 |---|---|---|
 | The local Tailscale daemon's peer map | Tailscale connected on this node | Every tailnet peer this node can see, with no credential at all |
 | The Tailscale Admin API | `TAILSCALE_OAUTH_CLIENT_ID` / `TAILSCALE_OAUTH_CLIENT_SECRET` (`devices:core:read`) | Every device on the tailnet, including ones the local daemon does not list |
-| The CI Portal device registry | A registered Hub (`cihub register`, so a Portal device key is on disk) | Hub devices registered to the same user or organization |
+| The CI Portal device registry | A registered Hub (`cihub register`, so a Portal device key is on disk) | Hub devices registered to the same user or organization — **but see below: this leg returns nothing today** |
 
 Every candidate is then probed at `https://<name>/api/inference/pool/identify`, and only a node that
 answers `isCiHub` is offered. Already-paired names are excluded before probing, and so is this node
@@ -344,6 +345,23 @@ without failing it. The Portal leg is the quiet one: `PortalClientService.fetchD
 ends `} catch { return []; }`, so the commonest Portal failure — unreachable, or a 4xx/5xx on
 `/devices` — produces no log line at any level, and an empty Portal directory is indistinguishable
 from a failed one. Only what escapes into `listPortalCandidates`'s own catch reaches debug.
+
+> **The Portal leg contributes no candidates today, for two independent reasons.** Plan around the
+> two Tailscale directories and `cihub pool probe`; registering with Portal does not help you find
+> pool peers.
+>
+> 1. **Auth.** `fetchDispatchDevices` calls `GET <portal>/api/devices` with the device key
+>    (`Authorization: Bearer <ciHubApiKey>` + `x-device-key`). That route is `ListDevices` behind
+>    Portal's `sessionMiddleware`, which authenticates a **browser session** via better-auth
+>    `getSession` — a device key is not a session, so the call is refused.
+> 2. **Shape.** `listPortalCandidates` names a candidate from `tailscaleDns` alone, and CI-Portal has
+>    no such field: the `device` table stores `device_id`, `api_key`, `name`, `slug`, `status`,
+>    `pairing_code` and `catalog_channel`, and nothing tailnet-shaped. Even with a session, every row
+>    would be skipped for having no MagicDNS name.
+>
+> Fixing it is a CI-Portal change (a device-key-authenticated device listing that carries a MagicDNS
+> name), not a Hub one. Until then the silent `catch` above is what makes it look like an empty
+> directory rather than a broken one — which is exactly why this note exists.
 
 **A node two directories both name is offered once.** `mergePoolCandidates` folds on the normalized
 FQDN — never on a UUID the far side claims, which would hand a hostile box a way to suppress a real

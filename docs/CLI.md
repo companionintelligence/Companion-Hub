@@ -319,6 +319,8 @@ Hub Pool**. See [`hub-pool.md`](./hub-pool.md) for how pooling works.
 
 ```bash
 cihub pool status [env]                       # is pooling routing, and why or why not
+cihub pool doctor [env] [--check-latency]     # preflight: can this node be a pool member, and will peers reach it
+cihub pool update [env]                       # pull the published image and redeploy — no build toolchain needed
 cihub pool peers [env]                        # paired peers: status, last seen, queue depth, models
 cihub pool discover [env]                     # unpaired CI-Hub nodes, from every source
 cihub pool probe <address> [env]              # is there a CI-Hub at this LAN address?
@@ -329,6 +331,8 @@ cihub pool pair <address> --pin <digits>      # ...or pair by LAN address, no OA
 cihub pool approve <id>                       # accept a pending inbound request
 cihub pool reject <id>                        # refuse one
 cihub pool unpair <id>                        # remove a peer and revoke both tokens
+cihub pool pin <node|local> [--model <id>]    # prefer one node for a model, or for everything
+cihub pool unpin [--model <id>]               # drop that preference and rank by load again
 cihub pool log [env] [--limit N]              # recent routing decisions, failovers marked
 cihub pool enable [env] | cihub pool disable  # flip the persisted kill switch
 cihub pool enable --outbound | --inbound      # ...or just one direction
@@ -342,6 +346,7 @@ cihub pool peer-enable <id> | peer-disable    # take one peer in or out of the p
 | `--model <id>` | `pin`/`unpin` only: which model the pin covers. Omit it for the pool-wide pin. Compared verbatim against the engine's inventory, so case matters |
 | `--pin <digits>` | `pair` only: the six digits minted on the *other* Hub. Required when the target is an address |
 | `--limit N` | `log` only: how many decisions to show, 1–200 (default: all 200 retained) |
+| `--check-latency` | `doctor` only: also measure non-streaming first-byte latency. Spends GPU time, so it is skipped otherwise |
 
 **It runs on the Hub it manages.** Every call goes to `http://127.0.0.1:<API_PORT>` — `cihub pool` on
 machine A cannot manage machine B, which matters more than usual for a feature about several Hubs.
@@ -352,6 +357,26 @@ received it**.
 `state/settings.json`. A Hub that has never run `cihub register` has none, and the command says so
 instead of returning a bare 401. A key from `cihub api-key create` is MCP-scoped and is *not* accepted
 here.
+
+### `cihub pool status`
+
+The whole operator picture for one node, and the only place pins, the outstanding PIN, and peer
+authentication modes are listed — there is no `pool pins` subcommand to keep in step with it.
+
+| Block | What it answers |
+| --- | --- |
+| `Pooling` / `Outbound` / `Inbound` | Whether work moves, in each direction, and which switch is responsible |
+| `Peers` / `Discovery` / `Settings` | Counts, whether the Tailscale Admin API credential is set, and the persisted settings |
+| `This node` | Name, tailnet, hardware tier, live queue depth, engines, and this node's pool **identity fingerprint** |
+| `Pairing` | Only when a PIN is outstanding: until when, and how to revoke it. Never the digits |
+| `Pins` | Each pin with its target resolved, and whether it can apply right now |
+| `Peers` table | Per peer: id prefix, name, direction, status (with strikes and `/off`), last seen, queue, engines |
+| `Peer auth` | Which peers are still on the legacy bearer token — the precondition for `poolRequireSignedPeers` |
+
+The `Peer auth` block exists because turning on `poolRequireSignedPeers` while any peer is still on a
+bearer token takes **both** directions of that pairing down. The upgrade runs on a health poll by
+itself, so the block names the peers not there yet, and says plainly when the switch has become safe
+to set. Peers that have not finished pairing are not counted either way.
 
 ### Identifying a peer
 
@@ -367,7 +392,13 @@ address can reach the other Hub but cannot *name* it, and a peer is stored under
 
 Lists every unpaired candidate this Hub can *name*, from up to three directories: the local Tailscale
 daemon's peer map, the Tailscale Admin API when a credential is configured, and the CI Portal device
-registry on a registered Hub. A node two of them both name is listed once. A Hub found with
+registry on a registered Hub. A node two of them both name is listed once.
+
+**In practice only the two Tailscale directories return anything.** The Portal leg is refused (it
+presents a device key to a route that wants a browser session) and would name nothing anyway (Portal
+stores no MagicDNS field), and it fails silently — so an empty list is not evidence your Hub is
+unregistered. See
+[`hub-pool.md` → Where pairing candidates come from](hub-pool.md#where-pairing-candidates-come-from). A Hub found with
 `cihub pool probe` is **not** here and never will be: entries are paired with by handing their name
 to `pool pair`, and an address has no name until the PIN exchange produces one.
 
@@ -415,6 +446,101 @@ is public; loopback and link-local. With no explicit port it tries 5002 then 300
 published port that was moved — name it if so. A Hub running an older pool protocol is reported as
 found-but-not-pairable-by-address, because it cannot answer a PIN with its name; pair with it by
 MagicDNS name instead.
+
+### `cihub pool pairing-pin`
+
+Mints the six digits that let another Hub pair with **this** one by address, and prints the
+`cihub pool pair` line to run on that other machine.
+
+```
+cihub pool pairing-pin   # mint: six digits, ten minutes, single use
+cihub pool cancel-pin    # revoke the outstanding PIN now
+```
+
+**It runs on the Hub that will receive the request** — the opposite side from every other pool
+command, and the one thing that is easy to get backwards. Mint here, type there.
+
+The digits are returned **once**, by this command. `cihub pool status` reports only that a PIN is
+outstanding and when it expires, so an operator who loses the digits mints a new one — and minting
+*replaces* the outstanding PIN rather than adding a second, which invalidates any digits still on
+screen elsewhere. A PIN also dies on its fifth wrong guess.
+
+The output includes this node's **key fingerprint**, because minting is the moment both machines are
+usually in front of the same person: the far Hub pins that key during the handshake and gets no
+second chance to check it. A Hub whose identity failed to bootstrap says so here instead, and pairs
+on a bearer token.
+
+Minting a PIN is **not** pre-approval. The inbound request still lands as `pending` and still needs
+`cihub pool approve <id>` on this Hub.
+
+Headless appliances need this command: pairing by address is the path that requires no Tailscale
+OAuth credential, and a machine with no dashboard has no other way to mint a PIN.
+
+### `cihub pool doctor`
+
+A preflight for the failures that are **silent**: the ones where the node keeps reporting itself healthy
+to its own operator while peers quietly stop using it. Every check traces to a failure a real fleet
+rollout hit. Read-only — it never pairs, unpairs, writes a setting, restarts anything, or moves a git ref
+— and it degrades rather than aborting, so it still produces a full report on a machine with no Docker, no
+Tailscale and no Hub. That machine is the one being set up.
+
+| Check | Question | The silent failure it catches |
+| ----- | -------- | ----------------------------- |
+| **A1** | Does the env file define `API_PORT` and `ROOT_FOLDER_HOST`? | A stub env file. Nothing downstream can recover them, and there is no non-interactive way to write one — so the fix printed is the literal lines to append |
+| **A2** | Does the Hub answer `GET /api/health`? | Told apart from "the port is held by something else", which needs a different fix |
+| **A3** | Does this **build** have Hub Pool, and which protocol? | Three outcomes, three meanings: `404` predates Hub Pool; `200` with no `poolProtocol` is protocol 1 and will not pair by address with a v2 node; `200` + `poolProtocol` reports the number |
+| **A4** | Can the container user write the data dirs? | Docker creates missing bind-mount sources as `root:root`; the Hub then dies `EACCES` on `/data/state/settings.json` with an unhealthy container and no operator-facing reason. Checked by `stat`, so it works with no Docker. A directory that could not be read is reported as unread, never as absent — and the recursive `chown` is withheld for a tree this run never saw |
+| **B1** | Does this checkout match the image the container runs? | A node sat on a July checkout while its container ran a build from dev tip, so its `cihub` answered `✗ Unknown command: pool` while its own Hub served the pool routes all day. Decided from the image's `org.opencontainers.image.revision` label where there is one; with no label it says only what two build dates can prove, and otherwise reports that it cannot correlate them — never a version comparison inferred from an ordering |
+| **B2** | Can this node even tell that it is behind? | A node that cannot `git fetch` has a **frozen** `origin/dev`, so `git rev-list --count HEAD..origin/dev` answers 0 forever. Measured on a fleet node: auth failed, the count read 0, HEAD was two months old. Asks the remote with `ls-remote` — read-only, and deliberately not a fetch, which would repair the condition being looked at — and reports behind as *unknown*, never as 0. Both sides of the difference are counted, so a checkout carrying local commits is called diverged and is not handed a `pull --ff-only` that git will refuse |
+| **B3** | Does the running container match what its compose declares? | A node took a new image under an appliance compose written months earlier and so was missing the host Tailscale socket and CLI that #1279 added: `/identify` returned `nodeFqdn: null`, pairing could never complete, and nothing reported the mismatch. Compared against the file the container was **created from**, found from its own `com.docker.compose.project.config_files` label — an appliance keeps its compose outside the repo — and each missing mount and backend URL var is named |
+| **B4** | Does the Hub this CLI drives serve every pool route this CLI calls? | GET pool routes are probed for existence (a `401` proves a route is there; only a `404` says it is not). One direction, because only one is observable: a CLI old enough to lag its Hub answers `✗ Unknown command: pool` and never reaches this check at all, so that skew is B1's to measure, not this one's |
+| **C1** | Is the tailnet up, and does this node have a MagicDNS name? | Peer callbacks are `https://<nodeFqdn>` with **no** fallback, so an unnamed node is unreachable however healthy it is |
+| **C2** | Is `tailscale serve` publishing this Hub? | `serve` needs an operator grant. Without it the Hub logs one line at boot and behaves normally forever while no peer can reach it. Decided from `tailscale serve status --json`, and it takes a handler at `/` on the `:443` listener proxying to this Hub's port — exactly the path a peer callback takes, so a `/hub` mount, another listener or a raw TCP forward is not accepted as publishing. A node cannot reach its own serve listener, so a self-probe that succeeds is used and one that fails decides nothing; the first HTTPS request after enabling serve blocks ~30s on cert issuance and is retried before it is reported |
+| **D1** | Does a **cold** capabilities build fit the 8 s peer probe budget? | Measured at 10.02 s on a real node: every peer probe timed out, the node went `unreachable` fleet-wide, nothing routed to it — and it reported `healthy` throughout. Prints a per-backend breakdown so the slow one is named |
+| **D2** | Do the backend URLs resolve, and resolve fast? | An unresolvable compose service name fails **instantly under curl** but blocks ~5 s in `getaddrinfo`, which is what the Hub actually uses. Two of those is the whole D1 budget. Probed with `dns.lookup` from inside the Hub container where one is running — the only vantage that tells a compose-internal name from a broken one. The URLs themselves are read from the container's environment, which is where compose sets them — with no container to read, an empty list is reported as *could not determine*, never as a pass |
+| **D3** | Non-streaming first-byte latency vs the 15 s peer connect timeout | A warm 27B model could not return **headers** in 15 s non-streaming while the identical streaming request answered in ~1 s. Measured against a model an engine is actually holding (`loaded`/`pinned`, text modality) — a model on disk would time its cold load, and an embedding model would answer 400 — and asks for a few hundred tokens, because the defect is buffering the whole completion and one token has nothing to buffer. Opt-in behind `--check-latency`; otherwise reported as skipped with the reason |
+| **E1** | Can the Hub container reach the host's inference backends? | The existing bridge section, reused unchanged: `ufw` silently blocked container→host Ollama on a node with 8 models and the Hub reported an empty inventory with no error |
+
+Section **B** is written to one rule: an unprovable claim is not made. Where the evidence supports only
+"the repo has commits the image cannot contain", that is what it prints; where it supports nothing, it says
+it cannot correlate the two and stops. A node that cannot read its upstream reports how far behind it is as
+*unknown* — repeating the frozen number is the bug, not the report.
+
+D1 is measured **cold** by construction: `getOwnInventory`'s 20 s TTL is below the ~30 s peer poll, so
+every real probe rebuilds the inventory too, and the routes the doctor times call straight through to the
+inference router with no cache in front. Both concurrent fan-outs are timed together, because that is what
+`Promise.all([getStatus(), listModels()])` actually costs.
+
+A verdict is one of five, and each has its own glyph: `✓` passed, `!` warned, `✗` failed, `?` could not
+be determined, `-` was skipped. Colour is never the difference, because it is stripped the moment the
+report is piped, redirected or pasted into a bug — which is how a fleet report travels. **Only decided
+failures count as issues** — "I could not look" and "I looked and it is broken" never share an encoding,
+or an unequipped machine reports a fleet-wide outage.
+
+A fault inside one section collapses that section alone: the others are still collected and printed, and
+the run counts an issue for the section it lost, so a half-collected report can never come out all-clear.
+Sections are announced as they land once a run passes three seconds, so a slow node shows progress rather
+than a frozen terminal.
+
+No secret is ever printed. The operator key is read from `<ROOT_FOLDER_HOST>/state/settings.json` to reach
+the authenticated routes behind the per-backend breakdown; it is never echoed, and neither is a PIN, a peer
+token, or any `TAILSCALE_OAUTH_*` value.
+
+### `cihub pool update`
+
+Pull `ghcr.io/companionintelligence/ci-hub:<env>` and redeploy. Unlike `cihub up`/`cihub setup`, this
+never passes `--build` — it exists for the fleet node that has no GitHub Packages token and therefore
+cannot build the image at all, which used to mean shipping a `docker save | docker load` by hand,
+per node, every update.
+
+It touches a git checkout only when doing so is certain to be lossless: a clean tree already on `dev`
+gets fast-forwarded (`git fetch` + `git merge --ff-only`); anything else — uncommitted changes, a
+different branch, no checkout at all — is left untouched and reported, never reset or stashed on your
+behalf. After the pull and redeploy it polls `/api/health` for up to ~20s, then reads `poolProtocol`
+off `/api/inference/pool/identify` so you know at a glance whether the redeploy landed and whether this
+build has Hub Pool at all.
+
+Runs before the device-key gate, like `doctor` — the node most likely to need it has no key yet either.
 
 ### `cihub pool log`
 
