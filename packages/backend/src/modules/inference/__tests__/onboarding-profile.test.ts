@@ -6,6 +6,8 @@ import { mock, type MockProxy } from 'vitest-mock-extended';
 import { InferenceController } from '../inference.controller';
 import { InferenceRouterService } from '../inference-router.service';
 import { HardwareInspectorService } from '../hardware-inspector.service';
+import { PoolProxyService } from '@/modules/hub-pool/hub-pool-proxy.service';
+import { HubPoolPeerService } from '@/modules/hub-pool/hub-pool-peer.service';
 import { MemoryManagerService } from '../memory-manager.service';
 import { ModelRegistryService } from '../model-registry.service';
 import { ModelPullerService } from '../model-puller.service';
@@ -104,6 +106,8 @@ describe('InferenceController — onboarding-profile', () => {
         // The controller exposes GET inference/supervision, which reads this service's in-memory
         // report. Mocked here: nothing in these suites exercises observation.
         { provide: BackendObserverService, useValue: mock<BackendObserverService>() },
+        { provide: PoolProxyService, useValue: mock<PoolProxyService>() },
+        { provide: HubPoolPeerService, useValue: mock<HubPoolPeerService>() },
         { provide: LoggerService, useValue: mock<LoggerService>() },
       ],
     }).compile();

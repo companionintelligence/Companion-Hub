@@ -174,4 +174,26 @@ describe('TelemetryFeedbackService', () => {
     expect(service.getAllReports()).toHaveLength(0);
     expect(service.getSummary().recentCount).toBe(0);
   });
+
+  it('manages auto-detection lifecycle timers', () => {
+    vi.useFakeTimers();
+    try {
+      const detectSpy = vi.spyOn(service, 'detectCrashLoops').mockResolvedValue([]);
+
+      service.startAutoDetection(1000);
+      vi.advanceTimersByTime(2500);
+      expect(detectSpy).toHaveBeenCalledTimes(2);
+
+      service.stopAutoDetection();
+      vi.advanceTimersByTime(2000);
+      expect(detectSpy).toHaveBeenCalledTimes(2);
+
+      service.startAutoDetection(1000);
+      service.onApplicationShutdown();
+      vi.advanceTimersByTime(2000);
+      expect(detectSpy).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

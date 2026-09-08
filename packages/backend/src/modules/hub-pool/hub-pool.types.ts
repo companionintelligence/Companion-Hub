@@ -133,19 +133,65 @@ export interface PoolCandidate {
 }
 
 /**
- * Discoverable Tailscale device that identified itself as a CI-Hub node and isn't paired yet.
+ * A node that identified itself as a CI-Hub and isn't paired yet.
  *
- * Every entry here is *named*, and the name is one the tailnet control plane attests. That is the
- * whole contract: a candidate the operator can hand straight to `POST peers/pair` as a `nodeFqdn`.
- * An address found by `POST peers/probe` is deliberately NOT one of these — `/identify` discloses no
+ * Every entry here is *named*, and the name comes from a directory that authenticates this Hub
+ * before answering: the tailnet control plane (Tailscale Admin API and the local daemon's peer map),
+ * or the CI Portal device registry. That is the whole contract — a candidate the operator can hand
+ * straight to `POST peers/pair` as a `nodeFqdn`.
+ *
+ * An address found by `POST peers/probe` is deliberately NOT one of these. `/identify` discloses no
  * name, so a probed address has nothing to put in this shape, and inventing an unnamed candidate
- * would be a second identity space next to `node_fqdn`. Pairing by address goes through the
- * PIN-gated exchange instead; see {@link PoolProbeResult}.
+ * would be a second identity space next to `node_fqdn` — keyed on something an unauthenticated
+ * responder chose. Pairing by address goes through the PIN-gated exchange instead; see
+ * {@link PoolProbeResult}.
  */
 export interface DiscoverablePoolPeer {
+  /**
+   * The naming directory's own id for this device: a Tailscale device id on a tailnet entry, the
+   * Portal device id on a Portal one. It is a display value and nothing more — `hub_pool_peer` is
+   * keyed on `nodeFqdn`, and every write of `tailscale_device_id` passes `null`.
+   *
+   * Empty string, never absent, so a consumer has a value to render without a null check. The CLI's
+   * discover table is the only surface that renders it at all (`sanitizeForBox(id || '-')`); the
+   * settings list shows the hostname and keys on the FQDN.
+   */
   tailscaleDeviceId: string;
   nodeFqdn: string;
   hostname: string;
+  /**
+   * `'portal'` on a candidate the CI Portal device registry named. Absent means the tailnet — the
+   * local Tailscale daemon's peer map, the Tailscale Admin API, or both — and absence is the *only*
+   * encoding of that: `listDiscoverableDevices` tags nothing, and the frontend and CLI copies of
+   * this shape carry no `source` field at all.
+   *
+   * Narrowed from `'tailscale' | 'lan-probe' | 'portal'` to the one member a producer can emit.
+   * `'tailscale'` was a second spelling of what absence already says, and a union that can state one
+   * fact two ways is eventually stated both ways by two different callers. `'lan-probe'` could never
+   * be produced at all: `/identify` discloses no name, so an address has nothing to put in this
+   * shape — the same reason {@link claimedNodeUuid} has no producer. Keeping the broader union would
+   * have meant tagging every tailnet entry to make it honest, which adds a field to a wire response
+   * that no reader has asked for.
+   *
+   * Nothing reads it yet. It is here for an operator surface that wants to say which directory named
+   * a node, and it is a badge of its own rather than something inferred from `tailscaleDeviceId`
+   * because that id is a display value both directories supply — an absent id would mean "this
+   * directory had no id for the node", never "the tailnet named this".
+   */
+  source?: 'portal';
+  /**
+   * A UUID the candidate *claims*, from an unauthenticated probe. Typed distinctly from
+   * `hub_pool_peer.peer_node_uuid` on purpose — an externally-sourced UUID is a hint for the
+   * operator, never an identity key to match a pinned row against.
+   *
+   * Reserved, in the sense the section header above describes: nothing populates it in this build.
+   * Its only producer was the LAN candidate cache, which went when `/identify` stopped disclosing a
+   * name — an unnamed responder cannot author a row here at all now. It stays because
+   * `mergePoolCandidates` is pinned against it: the rule that a claimed UUID is never a merge key
+   * has to remain testable, or the next source added here can quietly reintroduce the
+   * peer-suppression primitive it exists to forbid.
+   */
+  claimedNodeUuid?: string;
 }
 
 /**
@@ -311,7 +357,20 @@ export interface PoolStatus {
   routingActive: boolean;
   /** The persisted settings as stored, before the env override — what a settings form should render. */
   settings: HubPoolPreferences;
-  /** Whether TAILSCALE_OAUTH_CLIENT_ID/SECRET are set, i.e. whether peer discovery can work at all. Never the credentials themselves. */
+  /**
+   * Whether TAILSCALE_OAUTH_CLIENT_ID/SECRET are set, i.e. whether this Hub can enumerate the
+   * *whole* tailnet through the Tailscale Admin API. Never the credentials themselves.
+   *
+   * It is **not** a report on whether peer discovery works. The Admin API is one of three candidate
+   * directories, and the other two need no credential: the local Tailscale daemon's peer map, and
+   * the CI Portal device registry. Neither result is reported here. Two fields come close, and both
+   * are preconditions rather than results: {@link PoolStatusLocalNode.tailscaleConnected} for the
+   * daemon leg, and {@link PoolStatusLocalNode.tailnet} for this one — the Admin API leg runs only
+   * when a credential is set *and* that tailnet name is known. Nothing reports the Portal leg.
+   * A Hub reading `false` here may still be discovering peers; a Hub reading `true` with no tailnet
+   * enumerates nothing, since the Admin API is queried with the tailnet name the local daemon
+   * reports.
+   */
   tailscaleAdminApiConfigured: boolean;
   localNode: PoolStatusLocalNode;
   peers: PoolStatusPeer[];

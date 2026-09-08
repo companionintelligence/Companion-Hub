@@ -30,6 +30,7 @@ import { PortAllocationRepository } from '../../network/port-allocation.reposito
 import { ModuleRef } from '@nestjs/core';
 import { CloudflareClientService } from '../../cloudflare/cloudflare-client.service';
 import { TailscaleService } from '../../tailscale/tailscale.service';
+import { LifecycleJobService } from '../../app-lifecycle/lifecycle-job.service';
 
 describe('AppsService', () => {
   let service: AppsService;
@@ -40,6 +41,7 @@ describe('AppsService', () => {
   let configService: MockProxy<ConfigurationService>;
   let registrationService: MockProxy<RegistrationService>;
   let moduleRef: MockProxy<ModuleRef>;
+  let lifecycleJobService: MockProxy<LifecycleJobService>;
   let installPipelineTracker: InstallPipelineTracker;
 
   beforeEach(async () => {
@@ -57,6 +59,7 @@ describe('AppsService', () => {
         { provide: PortAllocationRepository, useValue: mock<PortAllocationRepository>() },
         { provide: InstallPipelineTracker, useValue: installPipelineTracker },
         { provide: RegistrationService, useValue: mock<RegistrationService>() },
+        { provide: LifecycleJobService, useValue: mock<LifecycleJobService>() },
         { provide: ModuleRef, useValue: mock<ModuleRef>() },
       ],
     }).compile();
@@ -68,8 +71,12 @@ describe('AppsService', () => {
     marketplaceService = module.get(MarketplaceService);
     configService = module.get(ConfigurationService);
     registrationService = module.get(RegistrationService);
+    lifecycleJobService = module.get(LifecycleJobService);
     moduleRef = module.get(ModuleRef);
     moduleRef.get.mockImplementation((token: unknown) => {
+      if (token === LifecycleJobService) {
+        return lifecycleJobService;
+      }
       if (token === CloudflareClientService) {
         return { getTunnelToken: () => 'token' } as any;
       }
@@ -197,6 +204,25 @@ describe('AppsService', () => {
         { urn: 'plane:ci-marketplace', name: 'Plane' },
         { urn: 'cloudreve:ci-marketplace', name: 'Cloudreve' },
       ]);
+    });
+
+    it('resolves active install from LifecycleJobService when pipeline tracker is idle', async () => {
+      appsRepository.getAppsByStatus.mockResolvedValue([
+        { id: 1, appName: 'plane', appStoreSlug: 'ci-marketplace', status: 'installing' },
+        { id: 2, appName: 'cloudreve', appStoreSlug: 'ci-marketplace', status: 'installing' },
+      ] as any);
+      appFilesManager.getInstalledAppInfo.mockResolvedValue(null);
+      marketplaceService.getAppInfoFromAppStore.mockImplementation(async (urn: AppUrn) => {
+        if (urn === 'plane:ci-marketplace') return { name: 'Plane' } as any;
+        return { name: 'Cloudreve' } as any;
+      });
+
+      lifecycleJobService.listJobs.mockResolvedValue([{ appUrn: 'plane:ci-marketplace' } as any]);
+
+      const result = await service.getInstallQueueState();
+
+      expect(result.active).toEqual({ urn: 'plane:ci-marketplace', name: 'Plane' });
+      expect(result.queued).toEqual([{ urn: 'cloudreve:ci-marketplace', name: 'Cloudreve' }]);
     });
   });
 

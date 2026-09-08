@@ -4,6 +4,7 @@ import { FilesystemModule } from '@/core/filesystem/filesystem.module';
 import { EncryptionModule } from '@/core/encryption/encryption.module';
 import { TailscaleModule } from '@/modules/tailscale/tailscale.module';
 import { InferenceModule } from '@/modules/inference/inference.module';
+import { PortalModule } from '@/core/portal/portal.module';
 import { HubPoolController } from './hub-pool.controller';
 import { HubPoolPeerRepository } from './hub-pool-peer.repository';
 import { HubPoolIdentityRepository } from './hub-pool-identity.repository';
@@ -24,7 +25,7 @@ import { PoolPeerGuard } from './guards/pool-peer.guard';
 // whether to route an app's CI_LLM_BASE_URL through the pool proxy) — same circular shape already
 // used between AppsModule and InferenceModule.
 @Module({
-  imports: [LoggerModule, FilesystemModule, EncryptionModule, TailscaleModule, forwardRef(() => InferenceModule)],
+  imports: [LoggerModule, FilesystemModule, EncryptionModule, TailscaleModule, forwardRef(() => InferenceModule), forwardRef(() => PortalModule)],
   controllers: [HubPoolController],
   providers: [
     HubPoolPeerRepository,
