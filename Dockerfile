@@ -125,6 +125,12 @@ ENV PATH="/app/node_modules/.bin:${PATH}"
 ARG CI_CLOUD_URL=""
 ENV CI_CLOUD_URL=${CI_CLOUD_URL}
 
+# This image serves the backend and the frontend bundle; it never ships the Tauri desktop app,
+# and this stage has no Rust/cargo-tauri toolchain. `pnpm run build` is the root `turbo run build`,
+# which includes `desktop#build` — since the desktop script stopped exiting 0 on a missing
+# toolchain, that hard-fails the image. Skip that one package explicitly rather than silently.
+ENV SKIP_DESKTOP_BUILD=1
+
 RUN pnpm run build
 
 RUN echo "CI_HUB_VERSION: ${CI_HUB_VERSION}"

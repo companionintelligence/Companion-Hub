@@ -10,8 +10,11 @@ import {
   formatPoolPeersLines,
   formatPoolProbeLines,
   formatPoolRoutingLogLines,
+  formatPoolPinLines,
   formatPoolStatusLines,
   formatPoolTimestamp,
+  deletePoolPin,
+  setPoolPin,
   probePoolAddress,
   resolvePoolPeerTarget,
   runPoolDiscover,
@@ -265,24 +268,18 @@ describe('hub-pool-cli discovery', () => {
     expect(text).toContain('cihub pool pair <node>');
   });
 
-  it('says how each candidate was found, rather than printing a blank device id', () => {
-    const devices: DiscoverablePoolPeer[] = [
-      { tailscaleDeviceId: 'dev-1', nodeFqdn: PEER_A, hostname: 'hub-b', source: 'tailscale' },
-      { tailscaleDeviceId: '', nodeFqdn: 'lan-box.example-tailnet.ts.net', hostname: 'lan-box', source: 'lan-probe' },
-    ];
+  it('points at pairing by address when the tailnet list is empty', () => {
+    const text = formatPoolDiscoverLines([], false).join('\n');
 
-    const text = formatPoolDiscoverLines(devices, true).join('\n');
-
-    expect(text).toContain('FOUND VIA');
-    expect(text).toContain('tailnet');
-    expect(text).toContain('address');
-    expect(text).toContain('-');
+    // A Hub found by address is never in this list — an address is not a name — so the empty state
+    // has to say how it IS paired with, PIN and all.
+    expect(text).toContain('cihub pool probe <address>');
+    expect(text).toContain('--pin');
   });
 
   it('renders an off-box hostname through sanitizeForBox', () => {
-    // Box output is ANSI-injectable, and every string on a candidate row is authored off-box now
-    // that one of the sources is "whatever answered at an address the operator typed".
-    const devices: DiscoverablePoolPeer[] = [{ tailscaleDeviceId: '', nodeFqdn: PEER_A, hostname: '[31mred[0m', source: 'lan-probe' }];
+    // Box output is ANSI-injectable, and every string on a candidate row is authored off-box.
+    const devices: DiscoverablePoolPeer[] = [{ tailscaleDeviceId: '', nodeFqdn: PEER_A, hostname: '[31mred[0m' }];
 
     expect(formatPoolDiscoverLines(devices, false).join('\n')).not.toContain('[31m');
   });
@@ -297,9 +294,7 @@ describe('hub-pool-cli probe', () => {
     return {
       address: '192.168.1.42',
       isCiHub: true,
-      nodeFqdn: PEER_A,
-      hostname: 'hub-b',
-      alreadyPaired: false,
+      poolProtocol: 2,
       pairable: true,
       reason: null,
       ...overrides,
@@ -315,34 +310,39 @@ describe('hub-pool-cli probe', () => {
     expect(JSON.parse((hubApiFetch.mock.calls[0]?.[2] as RequestInit).body as string)).toEqual({ address: '192.168.1.42:5010' });
   });
 
-  it('hands back the tailnet name to pair with, and says the address is not the transport', () => {
+  it('says the node was found but NOT named, and routes the operator through the PIN', () => {
     const text = formatPoolProbeLines(probeResult()).join('\n');
 
-    expect(text).toContain(`cihub pool pair ${PEER_A}`);
-    // The one thing about this feature that would be easy and costly to misunderstand.
-    expect(text).toContain('not to the address you');
+    // The one thing about this feature that would be easy and costly to misunderstand: the probe
+    // cannot name the node, so the output must not read as if it had.
+    expect(text).not.toContain(PEER_A);
+    expect(text).toContain('cihub pool pairing-pin');
+    expect(text).toContain('cihub pool pair 192.168.1.42 --pin');
+    expect(text).toContain('reach the handshake');
   });
 
   it('names the port fix when nothing answered', () => {
-    const text = formatPoolProbeLines(probeResult({ isCiHub: false, nodeFqdn: null, hostname: null, pairable: false, reason: 'unreachable' })).join(
-      '\n',
-    );
+    const text = formatPoolProbeLines(probeResult({ isCiHub: false, poolProtocol: null, pairable: false, reason: 'unreachable' })).join('\n');
 
     expect(text).toContain('cihub pool probe <address>:<port>');
   });
 
-  it('tells a Hub with no tailnet apart from one that is simply absent', () => {
-    const text = formatPoolProbeLines(probeResult({ nodeFqdn: null, hostname: null, pairable: false, reason: 'no_tailnet_fqdn' })).join('\n');
+  it('tells an old-protocol Hub apart from one that is simply absent, and names the way round it', () => {
+    // It cannot answer a PIN with its name, so pairing by address is impossible against it — but
+    // pairing by MagicDNS name still works, and that is the actionable half.
+    const text = formatPoolProbeLines(probeResult({ poolProtocol: null, pairable: false, reason: 'protocol_too_old' })).join('\n');
 
-    expect(text).toContain('has not joined a tailnet');
-    expect(text).toContain('cihub tailscale up');
+    expect(text).toContain('older pool protocol');
+    expect(text).toContain('cihub pool pair <node-fqdn>');
   });
 
-  it('points an already-paired node at the peers list instead of offering to pair again', () => {
-    const text = formatPoolProbeLines(probeResult({ alreadyPaired: true, pairable: false, reason: 'already_paired' })).join('\n');
-
-    expect(text).toContain('already paired');
-    expect(text).toContain('cihub pool peers');
+  it('never claims to know the node’s name, on any branch', () => {
+    // The regression guard for this whole feature: the probe result carries no name, so no branch
+    // of the operator output may imply one.
+    for (const reason of ['unreachable', 'not_a_hub', 'protocol_too_old', null] as const) {
+      const text = formatPoolProbeLines(probeResult({ reason, pairable: reason === null })).join('\n');
+      expect(text).not.toContain(PEER_A);
+    }
   });
 
   it('sanitizes the address it echoes back', () => {
@@ -374,5 +374,117 @@ describe('hub-pool-cli requests', () => {
     hubApiFetch.mockResolvedValue({});
     await unpairPoolPeer('.env.local', 'a/b');
     expect(hubApiFetch.mock.calls[0]?.[1]).toBe('/inference/pool/peers/a%2Fb');
+  });
+});
+
+describe('hub-pool-cli pins', () => {
+  beforeEach(() => {
+    hubApiFetch.mockReset();
+  });
+
+  it('prints nothing at all when no pin is set, and on a Hub that predates pinning', () => {
+    expect(formatPoolPinLines([])).toEqual([]);
+    expect(formatPoolPinLines(undefined)).toEqual([]);
+  });
+
+  it('names each pin, its target, and says which are not doing anything', () => {
+    const text = formatPoolPinLines([
+      { scope: 'default', targetKind: 'local', mode: 'prefer', nodeFqdn: null, targetAvailable: true },
+      { scope: 'model', model: 'llama3.2:3b', targetKind: 'peer', peerId: 'peer-1', mode: 'prefer', nodeFqdn: PEER_A, targetAvailable: false },
+    ]).join('\n');
+
+    expect(text).toContain('all models');
+    expect(text).toContain('this Hub');
+    expect(text).toContain('llama3.2:3b');
+    expect(text).toContain(PEER_A);
+    expect(text).toContain('not usable right now');
+    // The one thing an operator must not conclude from a red pin: that inference is broken.
+    expect(text).toContain('can never take inference down');
+  });
+
+  it('says the peer is gone rather than printing a bare uuid for an unpaired target', () => {
+    const text = formatPoolPinLines([
+      {
+        scope: 'default',
+        targetKind: 'peer',
+        peerId: '11111111-2222-3333-4444-555555555555',
+        mode: 'prefer',
+        nodeFqdn: null,
+        targetAvailable: false,
+      },
+    ]).join('\n');
+
+    expect(text).toContain('no longer paired');
+  });
+
+  it('folds the pins into pool status, and leaves the status of a pinless Hub unchanged', () => {
+    const pinned = formatPoolStatusLines(
+      status({ pins: [{ scope: 'default', targetKind: 'local', mode: 'prefer', nodeFqdn: null, targetAvailable: true }] }),
+    ).join('\n');
+    expect(pinned).toContain('Pins');
+
+    // A Hub with no pins — including one running a build that has never heard of them — renders
+    // exactly what it rendered before.
+    expect(formatPoolStatusLines(status())).toEqual(formatPoolStatusLines(status({ pins: [] })));
+    expect(formatPoolStatusLines(status()).join('\n')).not.toContain('Pins');
+  });
+
+  it('marks a routing-log row that a pin shaped, and leaves the others alone', () => {
+    const log: PoolRoutingLogResponse = {
+      summary: { recorded: 2, capacity: 200, served: 2, failed: 0, failovers: 0, lastAt: '2026-09-05T10:00:01.000Z' },
+      entries: [
+        {
+          at: '2026-09-05T10:00:01.000Z',
+          direction: 'outbound',
+          path: '/v1/chat/completions',
+          model: 'llama3.2:3b',
+          node: PEER_A,
+          peerId: 'peer-1',
+          backend: 'ollama',
+          candidates: 2,
+          attempt: 1,
+          failedOverFrom: [],
+          outcome: 'served',
+          status: 200,
+          durationMs: 12,
+          pin: { scope: 'model', mode: 'prefer', targetKind: 'peer' },
+        },
+        {
+          at: '2026-09-05T10:00:00.000Z',
+          direction: 'outbound',
+          path: '/v1/chat/completions',
+          model: 'llama3.2:3b',
+          node: 'local',
+          peerId: null,
+          backend: 'ollama',
+          candidates: 2,
+          attempt: 1,
+          failedOverFrom: [],
+          outcome: 'served',
+          status: 200,
+          durationMs: 9,
+        },
+      ],
+    };
+
+    const text = formatPoolRoutingLogLines(log).join('\n');
+
+    expect(text.match(/pinned/g)).toHaveLength(1);
+    expect(text).toContain('pinned (this model → peer)');
+  });
+
+  it('posts an upsert and deletes by query, so a model id with a slash is addressable', async () => {
+    hubApiFetch.mockResolvedValue({ pins: [] });
+
+    await setPoolPin('.env.local', { scope: 'model', model: 'hf.co/org/repo:Q4_K_M', targetKind: 'peer', targetPeerId: 'peer-1' });
+    await deletePoolPin('.env.local', 'model', 'hf.co/org/repo:Q4_K_M');
+    await deletePoolPin('.env.local', 'default');
+
+    expect(hubApiFetch.mock.calls[0]?.[1]).toBe('/inference/pool/pins');
+    expect((hubApiFetch.mock.calls[0]?.[2] as RequestInit).body).toContain('hf.co/org/repo:Q4_K_M');
+    expect((hubApiFetch.mock.calls[0]?.[2] as RequestInit).signal).toBeInstanceOf(AbortSignal);
+    expect(hubApiFetch.mock.calls[1]?.[1]).toBe('/inference/pool/pins?scope=model&model=hf.co%2Forg%2Frepo%3AQ4_K_M');
+    expect((hubApiFetch.mock.calls[1]?.[2] as RequestInit).method).toBe('DELETE');
+    expect(hubApiFetch.mock.calls[2]?.[1]).toBe('/inference/pool/pins?scope=default');
   });
 });

@@ -1,11 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import {
-  MAX_MANUAL_POOL_CANDIDATES,
-  POOL_PROBE_MISS_THRESHOLD,
-  formatProbeAuthority,
-  parseProbeTarget,
-  poolProbePortCandidates,
-} from '../hub-pool-probe';
+import { formatProbeAuthority, parseProbeTarget, poolProbePortCandidates } from '../hub-pool-probe';
 
 describe('parseProbeTarget', () => {
   it('accepts the shapes an operator actually types', () => {
@@ -79,14 +73,5 @@ describe('formatProbeAuthority', () => {
   it('brackets IPv6 and leaves everything else alone', () => {
     expect(formatProbeAuthority({ host: 'fd00::1', port: null, isIpv6: true }, 5002)).toBe('[fd00::1]:5002');
     expect(formatProbeAuthority({ host: '192.168.1.42', port: null, isIpv6: false }, 5002)).toBe('192.168.1.42:5002');
-  });
-});
-
-describe('pool discovery constants', () => {
-  it('keeps the 3-strike convention the rest of the module uses', () => {
-    // Same number as `UNREACHABLE_THRESHOLD` in hub-pool-peer.service.ts and the registration
-    // service's retry convention: one lost answer must never evict.
-    expect(POOL_PROBE_MISS_THRESHOLD).toBe(3);
-    expect(MAX_MANUAL_POOL_CANDIDATES).toBe(20);
   });
 });

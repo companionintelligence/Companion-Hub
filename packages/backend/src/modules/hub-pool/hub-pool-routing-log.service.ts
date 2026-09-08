@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import type { InferenceBackendType } from '@ci-hub/common/types';
+import type { PoolPinMode, PoolPinScope, PoolPinTargetKind } from '@/common/helpers/hub-pool';
 
 /** How many routing decisions are retained. ~200 bytes each, so the whole buffer is well under 100 KB. */
 export const ROUTING_LOG_CAPACITY = 200;
@@ -34,11 +35,27 @@ export interface PoolRoutingRecord {
   attempt: number;
   /** Nodes tried before this one, in order. Non-empty exactly when this was a failover. */
   failedOverFrom: string[];
+  /**
+   * The operator pin that shaped this decision's candidate order, or `null`.
+   *
+   * Without it an operator watching everything land on one node cannot tell a pin from the ranker
+   * doing its job — which is the single question this log exists to answer. Always `null` on
+   * `inbound` rows: a pin is this Hub's policy for work it originates, and a peer's forward is
+   * never re-routed.
+   */
+  pin: PoolRoutingPin | null;
   outcome: PoolRoutingOutcome;
   /** Upstream status once headers arrived; `null` when no candidate ever answered. */
   status: number | null;
   /** Time from the proxy receiving the request to response headers — including failed attempts — not the streamed generation, which continues afterwards. */
   durationMs: number;
+}
+
+/** A pin as the routing log records it: shape only, never the model or the peer id — the record already has both. */
+export interface PoolRoutingPin {
+  scope: PoolPinScope;
+  mode: PoolPinMode;
+  targetKind: PoolPinTargetKind;
 }
 
 export interface PoolRoutingSummary {

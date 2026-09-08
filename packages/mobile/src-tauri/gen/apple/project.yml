@@ -15,6 +15,7 @@ settingGroups:
     base:
       PRODUCT_NAME: Companion Hub
       PRODUCT_BUNDLE_IDENTIFIER: computer.ci.app.hub
+      DEVELOPMENT_TEAM: 68U45V853Y
 targetTemplates:
   app:
     type: application
