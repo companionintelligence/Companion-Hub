@@ -3,7 +3,16 @@ import { describe, expect, it, vi } from 'vitest';
 const runCapture = vi.hoisted(() => vi.fn());
 vi.mock('../lib/cli-proc.js', () => ({ runCapture }));
 
-import { buildPoolUpdateComposeArgs, decideGitUpdate, gatherGitUpdateFacts } from '../lib/cli-pool-update';
+const existsSync = vi.hoisted(() => vi.fn());
+vi.mock('node:fs', () => ({ existsSync }));
+
+import {
+  buildPoolUpdateComposeArgs,
+  composeFilesForPoolUpdate,
+  decideGitUpdate,
+  gatherGitUpdateFacts,
+  resolvePoolUpdateImage,
+} from '../lib/cli-pool-update';
 
 describe('decideGitUpdate', () => {
   it('skips a node with no git checkout at all — a pure appliance install', () => {
@@ -99,5 +108,46 @@ describe('buildPoolUpdateComposeArgs', () => {
     const { pullArgs } = buildPoolUpdateComposeArgs('.env.prod', ['a.yml', 'b.yml']);
     expect(pullArgs.filter((a) => a === '-f')).toHaveLength(2);
     expect(pullArgs).toEqual(expect.arrayContaining(['-f', 'a.yml', '-f', 'b.yml']));
+  });
+});
+
+describe('composeFilesForPoolUpdate', () => {
+  /**
+   * The bug this whole command exists to fix, reproduced directly: `docker-compose.prod.yml`
+   * declares `ci-hub` build-only, so without this overlay `docker compose pull` fetches nothing
+   * and `up` silently falls back to a from-source build — the regression a fleet update agent had
+   * to work around by hand on every node before this overlay existed.
+   */
+  it('appends the pull-image overlay when it is present at cwd', () => {
+    existsSync.mockReturnValue(true);
+    const result = composeFilesForPoolUpdate('/home/ci/devel/CI-Hub', ['docker-compose.prod.yml']);
+    expect(result).toEqual({ files: ['docker-compose.prod.yml', 'docker-compose.pull-image.yml'], overlayApplied: true });
+  });
+
+  it('leaves the base compose files untouched when the overlay is not there — an appliance data dir has its own seeded copies, never this file', () => {
+    existsSync.mockReturnValue(false);
+    const result = composeFilesForPoolUpdate('/data/companion-hub', ['/data/companion-hub/docker-compose.prod.yml']);
+    expect(result).toEqual({ files: ['/data/companion-hub/docker-compose.prod.yml'], overlayApplied: false });
+  });
+
+  it('checks for the overlay at the given cwd, not the process cwd', () => {
+    existsSync.mockReturnValue(true);
+    composeFilesForPoolUpdate('/home/ci/devel/CI-Hub', []);
+    expect(existsSync).toHaveBeenCalledWith('/home/ci/devel/CI-Hub/docker-compose.pull-image.yml');
+  });
+});
+
+describe('resolvePoolUpdateImage', () => {
+  it('defaults to the tag matching the environment being updated', () => {
+    expect(resolvePoolUpdateImage('dev', undefined)).toBe('ghcr.io/companionintelligence/ci-hub:dev');
+    expect(resolvePoolUpdateImage('prod', undefined)).toBe('ghcr.io/companionintelligence/ci-hub:prod');
+  });
+
+  it('respects an operator-set CI_HUB_IMAGE instead of guessing what a `prod`-shaped test fleet actually wants', () => {
+    expect(resolvePoolUpdateImage('prod', 'ghcr.io/companionintelligence/ci-hub:dev')).toBe('ghcr.io/companionintelligence/ci-hub:dev');
+  });
+
+  it('treats a blank CI_HUB_IMAGE (set but empty) the same as unset, not as a literal empty image name', () => {
+    expect(resolvePoolUpdateImage('dev', '   ')).toBe('ghcr.io/companionintelligence/ci-hub:dev');
   });
 });

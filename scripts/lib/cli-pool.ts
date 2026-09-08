@@ -36,7 +36,13 @@ import { readHubApiKey, resolveHubApiBase } from '../public-web-cli.js';
 import { resolveEnvFromArgs, usageAndExit } from './cli-args.js';
 import { confirmDestructiveAction } from './cli-prompt.js';
 import { run, runCapture } from './cli-proc.js';
-import { buildPoolUpdateComposeArgs, decideGitUpdate, gatherGitUpdateFacts } from './cli-pool-update.js';
+import {
+  buildPoolUpdateComposeArgs,
+  composeFilesForPoolUpdate,
+  decideGitUpdate,
+  gatherGitUpdateFacts,
+  resolvePoolUpdateImage,
+} from './cli-pool-update.js';
 import { BASE_COMMAND, type HubEnv } from './cli-types.js';
 import { cliFail, cliOk, cliWarn, dim, printMessageBox, sanitizeForBox, STEP_ICONS } from './cli-ui.js';
 import { type HubContext, resolveHubContext } from './hub-context.js';
@@ -406,10 +412,19 @@ async function runPoolUpdateCommand(ctx: HubContext): Promise<void> {
     lines.push(cliWarn(`git checkout left untouched — ${gitDecision.reason}`));
   }
 
-  const { pullArgs, upArgs } = buildPoolUpdateComposeArgs(ctx.envFile, ctx.composeFiles);
+  const { files, overlayApplied } = composeFilesForPoolUpdate(ctx.cwd, ctx.composeFiles);
+  const image = resolvePoolUpdateImage(ctx.env, process.env.CI_HUB_IMAGE);
+  if (overlayApplied) {
+    lines.push(cliOk(`will pull ${image} (set CI_HUB_IMAGE to override)`));
+  } else {
+    lines.push(cliWarn(`no pull-image overlay found in ${ctx.cwd} — falling back to whatever ${ctx.composeFiles.join(', ')} already declares`));
+  }
+
+  const { pullArgs, upArgs } = buildPoolUpdateComposeArgs(ctx.envFile, files);
   printMessageBox(`Hub Pool update  [${ctx.env}]`, [...lines, '', 'Pulling the published image, then redeploying...'], 'cyan');
-  run('docker', pullArgs, {}, ctx.cwd);
-  run('docker', upArgs, {}, ctx.cwd);
+  const envOverrides = overlayApplied ? { CI_HUB_IMAGE: image } : {};
+  run('docker', pullArgs, envOverrides, ctx.cwd);
+  run('docker', upArgs, envOverrides, ctx.cwd);
 
   // The env file may not carry API_PORT at all on an appliance install (the compose service
   // `environment:` block sets it) — read it off the container that just started, same precedence

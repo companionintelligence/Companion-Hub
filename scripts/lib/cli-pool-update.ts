@@ -10,8 +10,21 @@
  * verify. It never builds and never touches the git checkout beyond a fast-forward it is certain
  * cannot lose anything.
  */
+import { existsSync } from 'node:fs';
+import path from 'node:path';
 import { buildComposeBaseArgs } from './hub-context.js';
 import { runCapture } from './cli-proc.js';
+import type { HubEnv } from './cli-types.js';
+
+/**
+ * The one compose file this whole command exists to route around: `docker-compose.prod.yml`
+ * declares the `ci-hub` service `build:`-only, no `image:` at all, so `docker compose pull` has
+ * nothing to fetch and `up` falls back to a from-source build. `docker-compose.dev-image.yml`
+ * already solves this the same way but only for `env=dev` (see `getComposeFiles` in
+ * cli-compose-env.ts) — every real fleet node runs `prod`. This overlay is env-agnostic on
+ * purpose so `pool update` gets the same pull path regardless of which env it targets.
+ */
+const PULL_IMAGE_OVERLAY = 'docker-compose.pull-image.yml';
 
 export interface GitUpdateFacts {
   /** False outside a git checkout entirely, e.g. a pure appliance install. */
@@ -57,6 +70,31 @@ export function gatherGitUpdateFacts(cwd: string = process.cwd()): GitUpdateFact
   const branch = runCapture('git', ['-C', cwd, 'branch', '--show-current']).stdout || null;
   const dirty = runCapture('git', ['-C', cwd, 'status', '--porcelain']).stdout !== '';
   return { isRepo: true, branch, dirty };
+}
+
+/**
+ * Append the pull-image overlay when it is actually reachable from `cwd` — a bare relative
+ * filename, same convention `getComposeFiles` uses for every other compose file, so it resolves
+ * correctly for a checkout run from its own root. An appliance install's data dir has its own
+ * *seeded copies* of the base compose files and never this one, so absence here is expected on
+ * that path, not an error: skip it and let the caller report why, rather than handing `docker
+ * compose` a `-f` argument that does not exist.
+ */
+export function composeFilesForPoolUpdate(cwd: string, baseComposeFiles: string[]): { files: string[]; overlayApplied: boolean } {
+  if (!existsSync(path.join(cwd, PULL_IMAGE_OVERLAY))) return { files: baseComposeFiles, overlayApplied: false };
+  return { files: [...baseComposeFiles, PULL_IMAGE_OVERLAY], overlayApplied: true };
+}
+
+/**
+ * The image the overlay pulls. Respects an operator-set `CI_HUB_IMAGE` (the same variable
+ * `docker-compose.dev-image.yml` already reads) and otherwise defaults to the tag matching the
+ * environment being updated — `ghcr.io/companionintelligence/ci-hub:dev` for `pool update dev`,
+ * and so on. A fleet deliberately running `prod`-shaped compose with `dev`-tagged content (this
+ * project's own test fleet does) sets `CI_HUB_IMAGE` to override the default explicitly, rather
+ * than this command guessing which tag a `prod` env "really" means.
+ */
+export function resolvePoolUpdateImage(env: HubEnv, existingEnvValue: string | undefined): string {
+  return existingEnvValue?.trim() || `ghcr.io/companionintelligence/ci-hub:${env}`;
 }
 
 /** `docker compose ... pull` / `... up -d --remove-orphans`, sharing the same base args as every other lifecycle command. */
