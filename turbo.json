@@ -10,6 +10,7 @@
     "desktop#build": {
       "dependsOn": ["frontend#build", "^build"],
       "inputs": ["$TURBO_DEFAULT$", ".env*"],
+      "env": ["SKIP_DESKTOP_BUILD"],
       "outputs": [
         "src-tauri/target/release/bundle/**",
         "src-tauri/target/release/ci-os-hub-desktop",
