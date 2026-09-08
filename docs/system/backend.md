@@ -5,7 +5,7 @@
 > **Key paths:** `packages/backend/src/modules/`, `packages/backend/src/database/`, `packages/backend/src/queue/`
 > **Commands:** `cd packages/backend && pnpm test`, `pnpm run test:integration` (root)
 > **Owner persona:** maintainability + security (see REVIEW_PERSONAS.md)
-> **Last updated:** 2026-09-06 (lifecycle command modules, inference backend registry)
+> **Last updated:** 2026-09-07 (hub-pool module map; pool CLI types are hand-mirrored)
 > **Related:** docs/system/e2e.md, docs/ARCHITECTURE.md
 
 ---
@@ -31,6 +31,9 @@ packages/backend/
 | `sse` | Real-time status stream to frontend |
 | `mcp` | MCP server tools for agent apps |
 | `tailscale` / `cloudflare` | Optional sidecar integrations |
+| `inference` | Backend registry, model resolution, routing to a local engine |
+| `hub-pool` | Multi-Hub inference pooling: peer identity, pairing, discovery, ranking, and the proxy |
+| `registration` | Portal pairing, device ID, and registration-state drift |
 
 ## App volumes
 
@@ -95,6 +98,34 @@ deliberate and easy to undo by accident:
 
 `entries()` yields the type as the string from the source tuple rather than reading `backend.type`
 off the instance, because test doubles are mock proxies whose `type` is undefined.
+
+## Hub Pool
+
+`modules/hub-pool/` is the largest single module in the backend. It is worth knowing which service
+owns what before changing any of it — deep model in [`docs/hub-pool.md`](../hub-pool.md).
+
+| Service | Owns |
+|---|---|
+| `hub-pool-peer.service.ts` | Peer lifecycle: pairing, approval, health polling, capabilities, and `getPoolStatus` |
+| `hub-pool-proxy.service.ts` | The request path: candidate ranking, forwarding, and failover |
+| `hub-pool-discovery.service.ts` | Naming unpaired candidates, and the address probe |
+| `hub-pool-identity.service.ts` | This node's Ed25519 keypair and UUID |
+| `hub-pool-pairing-pin.service.ts` | The six-digit PIN: mint, consume, expiry, and the attempt ceiling |
+| `hub-pool-pin.service.ts` | Operator routing pins (a *different* pin — a preference, not a secret) |
+| `hub-pool-pressure.service.ts` | The GPU-pressure band sampler |
+| `hub-pool-routing-log.service.ts` | The in-memory last-200 routing decisions |
+
+Two traps in this module:
+
+- **Two things are called a pin.** `hub-pool-pairing-pin.service.ts` holds the six-digit pairing
+  secret; `hub-pool-pin.service.ts` holds operator routing preferences. They are unrelated.
+- **Discovery is not pollable.** Every leg probes the network, so `getPoolStatus` must never call it.
+
+The `cihub pool` CLI mirrors these routes in `scripts/hub-pool-cli.ts` (API calls plus pure
+formatters) and `scripts/lib/cli-pool.ts` (arg parsing and confirmation). The response types there
+are **hand-mirrored** from `hub-pool.types.ts`, because every pool route declares an empty response
+schema in `swagger.json` and the generated client types them as `unknown`. Adding a field to a pool
+status payload therefore does not reach the CLI on its own — update both.
 
 ## Database
 

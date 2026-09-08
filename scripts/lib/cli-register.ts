@@ -76,7 +76,11 @@ export async function registerHub(env: HubEnv, options: RegisterHubOptions = {})
   const apiBase = resolveRegisterApiBase(envFileName);
   const fallbackPortal = process.env.CI_CLOUD_URL || fileVars.CI_CLOUD_URL || CI_CLOUD_DEFAULT;
 
-  printMessageBox('Checking Hub', [`Waiting for backend at ${apiBase}?`, `If this hangs, start the stack first: ${BASE_COMMAND} up ${env}`], 'cyan');
+  printMessageBox(
+    'Checking Hub',
+    [`Waiting for backend at ${apiBase}\u2026`, `If this hangs, start the stack first: ${BASE_COMMAND} up ${env}`],
+    'cyan',
+  );
   const ready = await waitForHubApi(apiBase, 120_000);
   if (!ready) {
     printMessageBox(
@@ -161,7 +165,7 @@ export async function registerHub(env: HubEnv, options: RegisterHubOptions = {})
       '',
       '1. Sign in at the portal URL above (or create an account).',
       '2. Generate a 6-character pairing code for this device.',
-      '3. Enter the code below ? no browser access to this Hub is required.',
+      '3. Enter the code below \u2014 no browser access to this Hub is required.',
       '',
       'The Hub will provision your Cloudflare tunnel automatically after pairing.',
     ],
@@ -189,7 +193,7 @@ export async function registerHub(env: HubEnv, options: RegisterHubOptions = {})
     }
   }
 
-  printMessageBox('Pairing', ['Submitting pairing code to the Hub?'], 'cyan');
+  printMessageBox('Pairing', ['Submitting pairing code to the Hub\u2026'], 'cyan');
   const pairResult = await submitPairingCode(apiBase, pairingCode);
   if (!pairResult.success) {
     printMessageBox('Pairing failed', [pairResult.message || 'Unknown error'], 'red');
@@ -200,7 +204,7 @@ export async function registerHub(env: HubEnv, options: RegisterHubOptions = {})
   printMessageBox(
     'Pairing accepted',
     [
-      'Provisioning tunnel and DNS ? this usually takes 1?3 minutes.',
+      'Provisioning tunnel and DNS \u2014 this usually takes 1\u20133 minutes.',
       accessHint ? `${bold('hub url')}     ${colorize(accessHint, 'cyan')}` : '',
       '',
       'You can close this SSH session once provisioning completes.',
@@ -210,7 +214,7 @@ export async function registerHub(env: HubEnv, options: RegisterHubOptions = {})
 
   const finalStatus = await pollRegistrationComplete(apiBase, 300_000, (tick) => {
     if (tick.phase === 'provisioning' || tick.phase === 'paired') {
-      process.stdout.write(`${dim(`  ? phase ${tick.phase}`)}\n`);
+      process.stdout.write(`${dim(`  \u2022 phase ${tick.phase}`)}\n`);
     }
   });
 
@@ -233,7 +237,7 @@ export async function registerHub(env: HubEnv, options: RegisterHubOptions = {})
     'Registration complete',
     [
       `Phase: ${finalStatus.phase}`,
-      hubUrl ? `${bold('access')}      ${colorize(hubUrl, 'cyan')}` : 'Tunnel is active ? see cihub status for the public URL.',
+      hubUrl ? `${bold('access')}      ${colorize(hubUrl, 'cyan')}` : 'Tunnel is active \u2014 see cihub status for the public URL.',
       '',
       'Port forwarding is not required. Access the Hub from the provisioned URL above.',
     ],

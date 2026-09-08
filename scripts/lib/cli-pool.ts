@@ -15,10 +15,10 @@ import {
   fetchPoolStatus,
   formatPoolPeersLines,
   formatPoolProbeLines,
-  formatPoolRoutingLogLines,
-  formatPoolStatusLines,
   formatPairingPinCancelledLines,
   formatPairingPinLines,
+  formatPoolRoutingLogLines,
+  formatPoolStatusLines,
   mintPairingPin,
   pairPoolPeer,
   probePoolAddress,
@@ -321,7 +321,12 @@ export async function runPoolCommand(args: string[]) {
 
     if (parsed.subcommand === 'pairing-pin') {
       const minted = await mintPairingPin(envFile);
-      printMessageBox(`Hub Pool pairing PIN  [${env}]`, formatPairingPinLines(minted), minted.identityError ? 'yellow' : 'green');
+      // Best-effort: the name only makes the printed `pool pair` line copy-pasteable, so a Hub whose
+      // status call fails still gets its digits rather than an error.
+      const localNodeFqdn = await fetchPoolStatus(envFile)
+        .then((status) => status.localNode.nodeFqdn)
+        .catch(() => null);
+      printMessageBox(`Hub Pool pairing PIN  [${env}]`, formatPairingPinLines(minted, localNodeFqdn), minted.identityError ? 'yellow' : 'green');
       return;
     }
 

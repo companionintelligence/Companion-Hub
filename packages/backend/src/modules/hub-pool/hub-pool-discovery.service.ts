@@ -160,6 +160,22 @@ export class HubPoolDiscoveryService {
    * the `peers/pair` this row exists to feed, and an unnamed candidate is exactly the second
    * identity space this module refuses to open. That Hub is paired with by address and PIN through
    * {@link pairAtAddress}, which does learn a name.
+   *
+   * ⚠ THIS LEG RETURNS NOTHING TODAY, for two independent reasons — do not read an empty Portal
+   * directory as "no sibling devices registered":
+   *
+   *   1. `fetchDispatchDevices` calls `GET <portal>/api/devices` with the device key. That route is
+   *      Portal's `ListDevices` behind `sessionMiddleware`, which authenticates a BROWSER SESSION
+   *      via better-auth `getSession`. A device key is not a session, so the call is refused, and
+   *      `fetchDispatchDevices` ends `} catch { return []; }` — silently.
+   *   2. `tailscaleDns` is the only field that can name a candidate, and CI-Portal has no such
+   *      column: `device` holds `device_id`, `api_key`, `name`, `slug`, `status`, `pairing_code`
+   *      and `catalog_channel`. Even with a session, every row would be dropped above for having
+   *      no MagicDNS name.
+   *
+   * Both fixes are CI-Portal changes — a device-key-authenticated listing that carries a MagicDNS
+   * name — so this method is kept rather than deleted. See `docs/hub-pool.md` → Where pairing
+   * candidates come from.
    */
   private async listPortalCandidates(): Promise<DiscoverablePoolPeer[]> {
     if (!this.portalClient) return [];
