@@ -363,8 +363,10 @@ export interface PoolStatus {
    *
    * It is **not** a report on whether peer discovery works. The Admin API is one of three candidate
    * directories, and the other two need no credential: the local Tailscale daemon's peer map, and
-   * the CI Portal device registry. Neither of those is reported here — the closest this response
-   * comes is {@link PoolStatusLocalNode.tailscaleConnected}, which is the daemon leg's precondition.
+   * the CI Portal device registry. Neither result is reported here. Two fields come close, and both
+   * are preconditions rather than results: {@link PoolStatusLocalNode.tailscaleConnected} for the
+   * daemon leg, and {@link PoolStatusLocalNode.tailnet} for this one — the Admin API leg runs only
+   * when a credential is set *and* that tailnet name is known. Nothing reports the Portal leg.
    * A Hub reading `false` here may still be discovering peers; a Hub reading `true` with no tailnet
    * enumerates nothing, since the Admin API is queried with the tailnet name the local daemon
    * reports.

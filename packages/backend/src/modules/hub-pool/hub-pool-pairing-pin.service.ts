@@ -38,8 +38,9 @@ export interface PinAttemptSource {
  * `present_token_encrypted`, for anyone who can name a plausible FQDN *on this tailnet*.
  * `assertTailnetMember` refuses a name outside this node's MagicDNS suffix with no credential at all,
  * but a suffix is only a string: the device-membership check that would catch a fabricated one needs
- * a Tailscale Admin API credential that is optional, and the whole check degrades to a no-op when
- * this node has joined no tailnet, or when a configured Admin API is unreachable. With a PIN, a wrong
+ * a Tailscale Admin API credential that is optional. The whole check degrades to a no-op only when
+ * this node has joined no tailnet; when a configured Admin API is merely unreachable the suffix
+ * check has already run and it is the membership half alone that is skipped. With a PIN, a wrong
  * guess creates *nothing*: no pending slot, no planted outbound token, and no identity claim pinned.
  *
  * WHAT IT DOES NOT BUY: confidentiality (WireGuard and TLS already cover that), and it is not a

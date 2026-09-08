@@ -465,7 +465,7 @@ export function formatPoolStatusLines(status: PoolStatusResponse): string[] {
     `Peers        ${counts.total} total · ${counts.connected} connected · ${counts.pending} pending · ${counts.unreachable} unreachable · ${counts.disabled} disabled`,
     // Names the one credential `GET status` reports on, and says so. The Tailscale daemon's peer map
     // and the Portal registry also name candidates, need no credential, and are not in this response
-    // (the `Tailscale` line below is as close as it gets — that is the daemon leg's precondition, not
+    // (the `Tailscale` line below and `localNode.tailnet` are as close as it gets — preconditions, not
     // its result) — so this line must not read as "discovery is on" or "discovery is off".
     `Discovery    ${
       status.tailscaleAdminApiConfigured
