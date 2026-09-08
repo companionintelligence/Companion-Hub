@@ -1,5 +1,5 @@
 import type { InferInsertModel, InferSelectModel } from 'drizzle-orm';
-import { app, appStatusEnum, appStore, federatedIdentity, hostEventLog, hostTelemetrySample, hubPoolPeer, user } from './schema';
+import { app, appStatusEnum, appStore, federatedIdentity, hostEventLog, hostTelemetrySample, hubPoolPeer, lifecycleJob, user } from './schema';
 
 export const APP_STATUS = appStatusEnum.enumValues;
 export type AppStatus = (typeof APP_STATUS)[number];
@@ -24,3 +24,6 @@ export type NewHostEventLog = InferInsertModel<typeof hostEventLog>;
 
 export type HubPoolPeer = InferSelectModel<typeof hubPoolPeer>;
 export type NewHubPoolPeer = InferInsertModel<typeof hubPoolPeer>;
+
+export type LifecycleJob = InferSelectModel<typeof lifecycleJob>;
+export type NewLifecycleJob = InferInsertModel<typeof lifecycleJob>;

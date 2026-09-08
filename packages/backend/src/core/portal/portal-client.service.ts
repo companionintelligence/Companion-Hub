@@ -5,6 +5,56 @@ import { HttpStatus, Injectable } from '@nestjs/common';
 import axios, { type AxiosInstance } from 'axios';
 import type { PublicDnsFailure } from '@/modules/cloudflare/cloudflare-client.service';
 import type { TunnelCustomDomain } from '@ci-hub/common/types';
+import * as crypto from 'node:crypto';
+import type { KeyObject } from 'node:crypto';
+
+export const DEFAULT_OFFLINE_ENTITLEMENT_GRACE_MS = 7 * 24 * 60 * 60 * 1000;
+
+export interface OfflineEntitlementPayload {
+  appId: string;
+  appUrn?: string;
+  organizationId?: string;
+  orgId?: string;
+  deviceId?: string;
+  entitled?: boolean;
+  issuedAt?: string | number;
+  iat?: number;
+  expiresAt?: string | number;
+  exp?: number;
+  gracePeriodMs?: number;
+  gracePeriodSeconds?: number;
+  features?: string[];
+  [key: string]: unknown;
+}
+
+export interface VerifyOfflineEntitlementOptions {
+  publicKey?: string | KeyObject;
+  gracePeriodMs?: number;
+  currentTime?: number | Date | string;
+  expectedAppId?: string;
+  expectedDeviceId?: string;
+}
+
+export interface OfflineEntitlementVerificationResult {
+  valid: boolean;
+  entitled: boolean;
+  reason?:
+    | 'valid'
+    | 'grace_period'
+    | 'expired'
+    | 'invalid_signature'
+    | 'invalid_token'
+    | 'app_mismatch'
+    | 'device_mismatch'
+    | 'missing_public_key'
+    | 'invalid_key'
+    | string;
+  inGracePeriod: boolean;
+  payload?: OfflineEntitlementPayload;
+  expiresAt?: Date;
+  graceExpiresAt?: Date;
+  error?: string;
+}
 
 export type PortalStoreListingsParams = {
   category?: string;
@@ -418,4 +468,365 @@ export class PortalClientService {
   async postDeviceDeregister(deviceId: string): Promise<unknown> {
     return this.postJson('/devices/deregister', { device_id: deviceId }, { authenticated: true });
   }
+
+  /**
+   * Verify an Ed25519-signed offline entitlement token with grace period support.
+   *
+   * Validates:
+   * 1. Cryptographic Ed25519 signature against portal public key.
+   * 2. App identity matches expectedAppId if provided.
+   * 3. Device identity matches expectedDeviceId if provided.
+   * 4. Expiration timestamp (exp / expiresAt) against current time.
+   *    If expired, verifies whether current time is within grace period.
+   */
+  verifyOfflineEntitlementToken(
+    token: string | { payload: unknown; signature: string },
+    options: VerifyOfflineEntitlementOptions = {},
+  ): OfflineEntitlementVerificationResult {
+    let parsedKey: KeyObject;
+    try {
+      const configAny = this.configuration.getConfig() as Record<string, unknown>;
+      const configuredKey =
+        (typeof configAny.ciPortalPublicKey === 'string' ? configAny.ciPortalPublicKey : undefined) ??
+        (typeof configAny.portalPublicKey === 'string' ? configAny.portalPublicKey : undefined);
+
+      const keyInput = options.publicKey ?? configuredKey ?? process.env.PORTAL_ED25519_PUBLIC_KEY ?? process.env.CI_PORTAL_PUBLIC_KEY;
+
+      if (!keyInput) {
+        return {
+          valid: false,
+          entitled: false,
+          inGracePeriod: false,
+          reason: 'missing_public_key',
+          error: 'No Ed25519 public key provided or configured',
+        };
+      }
+      parsedKey = parseEd25519PublicKey(keyInput);
+    } catch (keyErr) {
+      return {
+        valid: false,
+        entitled: false,
+        inGracePeriod: false,
+        reason: 'invalid_key',
+        error: `Failed to parse public key: ${keyErr instanceof Error ? keyErr.message : String(keyErr)}`,
+      };
+    }
+
+    let parsedToken: { payload: OfflineEntitlementPayload; signedData: Buffer; signature: Buffer; altSignedData?: Buffer };
+    try {
+      if (typeof token === 'object' && token !== null && 'signature' in token) {
+        const rawPayload = (token as { payload: unknown; signature: string }).payload;
+        const payloadObj = (typeof rawPayload === 'string' ? JSON.parse(rawPayload) : rawPayload) as OfflineEntitlementPayload;
+        const signedData = Buffer.from(typeof rawPayload === 'string' ? rawPayload : JSON.stringify(rawPayload), 'utf8');
+        const sigStr = (token as { signature: string }).signature;
+        const signature = /^[0-9a-fA-F]{128}$/.test(sigStr) ? Buffer.from(sigStr, 'hex') : decodeBase64OrUrl(sigStr);
+        parsedToken = { payload: payloadObj, signedData, signature };
+      } else if (typeof token === 'string') {
+        const trimmed = token.trim();
+        const parts = trimmed.split('.');
+
+        if (parts.length === 3 && parts[0] && parts[1] && parts[2]) {
+          const payloadJson = decodeBase64OrUrl(parts[1]).toString('utf8');
+          const payload = JSON.parse(payloadJson) as OfflineEntitlementPayload;
+          const signedData = Buffer.from(`${parts[0]}.${parts[1]}`, 'utf8');
+          const signature = decodeBase64OrUrl(parts[2]);
+          parsedToken = { payload, signedData, signature };
+        } else if (parts.length === 2 && parts[0] && parts[1]) {
+          const payloadJson = decodeBase64OrUrl(parts[0]).toString('utf8');
+          const payload = JSON.parse(payloadJson) as OfflineEntitlementPayload;
+          const signedData = Buffer.from(parts[0], 'utf8');
+          const altSignedData = decodeBase64OrUrl(parts[0]);
+          const signature = decodeBase64OrUrl(parts[1]);
+          parsedToken = { payload, signedData, altSignedData, signature };
+        } else {
+          const parsed = JSON.parse(trimmed);
+          if (parsed && typeof parsed === 'object' && 'signature' in parsed) {
+            const rawPayload = parsed.payload;
+            const payloadObj = (typeof rawPayload === 'string' ? JSON.parse(rawPayload) : rawPayload) as OfflineEntitlementPayload;
+            const signedData = Buffer.from(typeof rawPayload === 'string' ? rawPayload : JSON.stringify(rawPayload), 'utf8');
+            const sigStr = parsed.signature;
+            const signature = /^[0-9a-fA-F]{128}$/.test(sigStr) ? Buffer.from(sigStr, 'hex') : decodeBase64OrUrl(sigStr);
+            parsedToken = { payload: payloadObj, signedData, signature };
+          } else {
+            throw new Error('Unrecognized token structure');
+          }
+        }
+      } else {
+        throw new Error('Invalid token type');
+      }
+    } catch (parseErr) {
+      return {
+        valid: false,
+        entitled: false,
+        inGracePeriod: false,
+        reason: 'invalid_token',
+        error: `Failed to parse token: ${parseErr instanceof Error ? parseErr.message : String(parseErr)}`,
+      };
+    }
+
+    const { payload, signedData, altSignedData, signature } = parsedToken as {
+      payload: OfflineEntitlementPayload;
+      signedData: Buffer;
+      altSignedData?: Buffer;
+      signature: Buffer;
+    };
+
+    // Cryptographic signature check
+    try {
+      let verified = crypto.verify(null, signedData, parsedKey, signature);
+      if (!verified && altSignedData) {
+        verified = crypto.verify(null, altSignedData, parsedKey, signature);
+      }
+      if (!verified) {
+        return {
+          valid: false,
+          entitled: false,
+          inGracePeriod: false,
+          reason: 'invalid_signature',
+          payload,
+          error: 'Ed25519 signature verification failed',
+        };
+      }
+    } catch (verifyErr) {
+      return {
+        valid: false,
+        entitled: false,
+        inGracePeriod: false,
+        reason: 'invalid_signature',
+        payload,
+        error: `Signature verification error: ${verifyErr instanceof Error ? verifyErr.message : String(verifyErr)}`,
+      };
+    }
+
+    // App ID match check
+    if (options.expectedAppId) {
+      const expected = options.expectedAppId;
+      const actual = payload.appId || payload.appUrn;
+      if (!actual) {
+        return {
+          valid: false,
+          entitled: false,
+          inGracePeriod: false,
+          reason: 'app_mismatch',
+          payload,
+          error: `Token contains no appId, expected ${expected}`,
+        };
+      }
+      const matches = actual === expected || actual.endsWith(`/${expected}`) || expected.endsWith(`/${actual}`);
+      if (!matches) {
+        return {
+          valid: false,
+          entitled: false,
+          inGracePeriod: false,
+          reason: 'app_mismatch',
+          payload,
+          error: `Token appId (${actual}) does not match expected appId (${expected})`,
+        };
+      }
+    }
+
+    // Device ID match check
+    if (options.expectedDeviceId && payload.deviceId && payload.deviceId !== options.expectedDeviceId) {
+      return {
+        valid: false,
+        entitled: false,
+        inGracePeriod: false,
+        reason: 'device_mismatch',
+        payload,
+        error: `Token deviceId (${payload.deviceId}) does not match expected (${options.expectedDeviceId})`,
+      };
+    }
+
+    // Expiration and Grace Period check
+    const expValue = payload.exp ?? payload.expiresAt;
+    if (expValue === undefined || expValue === null) {
+      return {
+        valid: true,
+        entitled: payload.entitled !== false,
+        inGracePeriod: false,
+        reason: 'valid',
+        payload,
+      };
+    }
+
+    let expMs: number;
+    if (typeof expValue === 'number') {
+      expMs = expValue < 10_000_000_000 ? expValue * 1000 : expValue;
+    } else {
+      expMs = Date.parse(String(expValue));
+    }
+
+    if (Number.isNaN(expMs)) {
+      return {
+        valid: false,
+        entitled: false,
+        inGracePeriod: false,
+        reason: 'invalid_token',
+        payload,
+        error: `Invalid expiration timestamp: ${expValue}`,
+      };
+    }
+
+    const expiresAt = new Date(expMs);
+    const gracePeriodMs =
+      options.gracePeriodMs ??
+      payload.gracePeriodMs ??
+      (payload.gracePeriodSeconds ? payload.gracePeriodSeconds * 1000 : DEFAULT_OFFLINE_ENTITLEMENT_GRACE_MS);
+    const graceExpiresAt = new Date(expMs + gracePeriodMs);
+
+    const now = options.currentTime
+      ? options.currentTime instanceof Date
+        ? options.currentTime.getTime()
+        : typeof options.currentTime === 'number'
+          ? options.currentTime
+          : Date.parse(String(options.currentTime))
+      : Date.now();
+
+    if (now <= expMs) {
+      return {
+        valid: true,
+        entitled: payload.entitled !== false,
+        inGracePeriod: false,
+        reason: 'valid',
+        payload,
+        expiresAt,
+        graceExpiresAt,
+      };
+    }
+
+    if (now <= expMs + gracePeriodMs) {
+      return {
+        valid: true,
+        entitled: payload.entitled !== false,
+        inGracePeriod: true,
+        reason: 'grace_period',
+        payload,
+        expiresAt,
+        graceExpiresAt,
+      };
+    }
+
+    return {
+      valid: false,
+      entitled: false,
+      inGracePeriod: false,
+      reason: 'expired',
+      payload,
+      expiresAt,
+      graceExpiresAt,
+      error: `Entitlement token expired at ${expiresAt.toISOString()} (grace period ended at ${graceExpiresAt.toISOString()})`,
+    };
+  }
+
+  createOfflineEntitlementToken(payload: OfflineEntitlementPayload, privateKey: string | KeyObject): string {
+    return createOfflineEntitlementToken(payload, privateKey);
+  }
+}
+
+/**
+ * Decode base64 or base64url string to Buffer.
+ */
+function decodeBase64OrUrl(str: string): Buffer {
+  let s = str.replace(/-/g, '+').replace(/_/g, '/');
+  while (s.length % 4) {
+    s += '=';
+  }
+  return Buffer.from(s, 'base64');
+}
+
+/**
+ * Parses an Ed25519 public key from PEM, JWK, raw 32-byte hex/base64, or KeyObject.
+ */
+export function parseEd25519PublicKey(keyInput: string | KeyObject): KeyObject {
+  if (typeof keyInput !== 'string') {
+    return keyInput;
+  }
+  const trimmed = keyInput.trim();
+  if (trimmed.startsWith('-----BEGIN')) {
+    return crypto.createPublicKey(trimmed);
+  }
+  if (trimmed.startsWith('{')) {
+    try {
+      return crypto.createPublicKey({ key: JSON.parse(trimmed), format: 'jwk' });
+    } catch {
+      // not JWK, fallback
+    }
+  }
+  let rawBuf: Buffer | null = null;
+  if (/^[0-9a-fA-F]{64}$/.test(trimmed)) {
+    rawBuf = Buffer.from(trimmed, 'hex');
+  } else {
+    try {
+      rawBuf = decodeBase64OrUrl(trimmed);
+    } catch {
+      return crypto.createPublicKey(trimmed);
+    }
+  }
+  if (rawBuf && rawBuf.length === 32) {
+    const spkiPrefix = Buffer.from('302a300506032b6570032100', 'hex');
+    return crypto.createPublicKey({ key: Buffer.concat([spkiPrefix, rawBuf]), format: 'der', type: 'spki' });
+  }
+  if (rawBuf && rawBuf.length === 44) {
+    return crypto.createPublicKey({ key: rawBuf, format: 'der', type: 'spki' });
+  }
+  return crypto.createPublicKey(trimmed);
+}
+
+/**
+ * Parses an Ed25519 private key from PEM, JWK, raw 32-byte hex/base64 seed, or KeyObject.
+ */
+export function parseEd25519PrivateKey(keyInput: string | KeyObject): KeyObject {
+  if (typeof keyInput !== 'string') {
+    return keyInput;
+  }
+  const trimmed = keyInput.trim();
+  if (trimmed.startsWith('-----BEGIN')) {
+    return crypto.createPrivateKey(trimmed);
+  }
+  if (trimmed.startsWith('{')) {
+    try {
+      return crypto.createPrivateKey({ key: JSON.parse(trimmed), format: 'jwk' });
+    } catch {
+      // not JWK, fallback
+    }
+  }
+  let rawBuf: Buffer | null = null;
+  if (/^[0-9a-fA-F]{64}$/.test(trimmed)) {
+    rawBuf = Buffer.from(trimmed, 'hex');
+  } else {
+    try {
+      rawBuf = decodeBase64OrUrl(trimmed);
+    } catch {
+      return crypto.createPrivateKey(trimmed);
+    }
+  }
+  if (rawBuf && rawBuf.length === 32) {
+    const pkcs8Prefix = Buffer.from('302e020100300506032b657004220420', 'hex');
+    return crypto.createPrivateKey({ key: Buffer.concat([pkcs8Prefix, rawBuf]), format: 'der', type: 'pkcs8' });
+  }
+  if (rawBuf && rawBuf.length === 48) {
+    return crypto.createPrivateKey({ key: rawBuf, format: 'der', type: 'pkcs8' });
+  }
+  return crypto.createPrivateKey(trimmed);
+}
+
+/**
+ * Creates and signs an Ed25519 offline entitlement token (JWT/JWS format).
+ */
+export function createOfflineEntitlementToken(payload: OfflineEntitlementPayload, privateKeyInput: string | KeyObject): string {
+  const privateKey = parseEd25519PrivateKey(privateKeyInput);
+  const header = { alg: 'EdDSA', typ: 'JWT' };
+
+  const b64url = (data: string | Buffer) => {
+    const buf = typeof data === 'string' ? Buffer.from(data, 'utf8') : data;
+    return buf.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  };
+
+  const headerB64 = b64url(JSON.stringify(header));
+  const payloadB64 = b64url(JSON.stringify(payload));
+  const signedData = Buffer.from(`${headerB64}.${payloadB64}`, 'utf8');
+  const signature = crypto.sign(null, signedData, privateKey);
+  const signatureB64 = b64url(signature);
+
+  return `${headerB64}.${payloadB64}.${signatureB64}`;
 }

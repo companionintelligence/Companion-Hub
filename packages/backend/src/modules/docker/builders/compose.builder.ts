@@ -15,11 +15,51 @@ import { TraefikLabelsBuilder } from './traefik-labels.builder';
 import { publishesHostPort } from '@/modules/apps/app-exposure.helpers';
 import { z } from 'zod';
 
+export const INTERNAL_INFRASTRUCTURE_PORTS = [6543, 5672] as const;
+export const INTERNAL_INFRASTRUCTURE_HOSTS = ['ci-hub-db', 'ci-hub-queue', 'ci-os-hub-queue', 'postgres', 'rabbitmq'] as const;
+export const DEFAULT_SECURITY_OPT = ['no-new-privileges:true'] as const;
+
+export interface NetworkIsolationOptions {
+  /**
+   * Whether to isolate marketplace containers from internal infrastructure (Postgres 6543, RabbitMQ 5672).
+   */
+  isolateInternalInfrastructure?: boolean;
+  /**
+   * Explicit infrastructure ports to block. Defaults to [6543, 5672].
+   */
+  blockedPorts?: number[];
+  /**
+   * Mark the application network as internal (`internal: true`).
+   */
+  internal?: boolean;
+  /**
+   * Prevent services from being added to the shared Hub main network.
+   */
+  disableMainNetwork?: boolean;
+  /**
+   * Whether to block internal infrastructure hosts by routing them to 127.0.0.1.
+   */
+  blockInternalHosts?: boolean;
+}
+
+export interface ComposeSecurityOptions {
+  noNewPrivileges?: boolean;
+  securityOpt?: string[];
+}
+
+export interface ComposeBuilderOptions {
+  networkIsolation?: NetworkIsolationOptions | boolean;
+  securityOptions?: ComposeSecurityOptions | string[] | boolean;
+  securityOpt?: string[];
+  security_opt?: string[];
+}
+
 interface Network {
   key: string;
   name: string;
   external: boolean;
   subnet?: string;
+  internal?: boolean;
   ipam?: {
     config: {
       subnet: string;
@@ -87,16 +127,82 @@ export class DockerComposeBuilder {
   private cloudflareOriginHostname?: string;
   private cloudflarePublicHostname?: string;
   private readonly posixPermissionsSupported: boolean;
+  private networkIsolationOptions?: NetworkIsolationOptions;
+  private securityOptions?: string[];
 
   /**
    * @param posixPermissionsSupported Whether the app-data filesystem can carry POSIX
    * ownership/permissions. False on Windows-backed host paths, where volumes marked
    * `requiresPosixPermissions` are mounted as named volumes instead. Defaults to true so callers
    * that cannot probe keep bind mounts.
+   * @param options Optional configuration for network isolation and container security options.
    */
-  constructor(_domain: string, localDomain: string, posixPermissionsSupported = true) {
+  constructor(_domain: string, localDomain: string, posixPermissionsSupported = true, options?: ComposeBuilderOptions) {
     this.localDomain = localDomain;
     this.posixPermissionsSupported = posixPermissionsSupported;
+    if (options) {
+      this.applyOptions(options);
+    }
+  }
+
+  public setNetworkIsolation(options?: NetworkIsolationOptions | boolean) {
+    if (typeof options === 'boolean') {
+      this.networkIsolationOptions = options
+        ? {
+            isolateInternalInfrastructure: true,
+            blockInternalHosts: true,
+            blockedPorts: [...INTERNAL_INFRASTRUCTURE_PORTS],
+          }
+        : undefined;
+    } else {
+      this.networkIsolationOptions = options;
+    }
+    return this;
+  }
+
+  public getNetworkIsolationOptions(): NetworkIsolationOptions | undefined {
+    return this.networkIsolationOptions;
+  }
+
+  public setSecurityOpt(securityOpt: string[]) {
+    this.securityOptions = securityOpt;
+    return this;
+  }
+
+  public setSecurityOptions(options: ComposeSecurityOptions | string[] | boolean) {
+    if (Array.isArray(options)) {
+      this.securityOptions = options;
+    } else if (typeof options === 'boolean') {
+      this.securityOptions = options ? [...DEFAULT_SECURITY_OPT] : undefined;
+    } else if (options && typeof options === 'object') {
+      const opts: string[] = [];
+      if (options.noNewPrivileges !== false) {
+        opts.push('no-new-privileges:true');
+      }
+      if (options.securityOpt) {
+        opts.push(...options.securityOpt);
+      }
+      this.securityOptions = opts;
+    }
+    return this;
+  }
+
+  public getSecurityOptions(): string[] | undefined {
+    return this.securityOptions;
+  }
+
+  public applyOptions(options: ComposeBuilderOptions) {
+    if (options.networkIsolation !== undefined) {
+      this.setNetworkIsolation(options.networkIsolation);
+    }
+    if (options.securityOpt) {
+      this.setSecurityOpt(options.securityOpt);
+    } else if (options.security_opt) {
+      this.setSecurityOpt(options.security_opt);
+    } else if (options.securityOptions !== undefined) {
+      this.setSecurityOptions(options.securityOptions);
+    }
+    return this;
   }
 
   addService(service: BuiltService) {
@@ -117,6 +223,10 @@ export class DockerComposeBuilder {
       name: network.name,
       external: network.external,
     };
+
+    if (network.internal !== undefined) {
+      networkConfig.internal = network.internal;
+    }
 
     if (network.subnet) {
       networkConfig.ipam = {
@@ -190,7 +300,7 @@ export class DockerComposeBuilder {
     return { ...volume, hostPath: undefined, volumeName };
   };
 
-  private buildService = (params: Service, form: AppEventFormInput, appUrn: AppUrn, envFile?: string) => {
+  private buildService = (params: Service, form: AppEventFormInput, appUrn: AppUrn, envFile?: string, options?: ComposeBuilderOptions) => {
     const { appName, appStoreId } = extractAppUrn(appUrn);
 
     const localDomain = this.localDomain;
@@ -223,6 +333,17 @@ export class DockerComposeBuilder {
       );
     }
 
+    // Network isolation check: reject connecting or binding to internal infrastructure ports
+    const isolation = this.networkIsolationOptions;
+    if (isolation?.isolateInternalInfrastructure) {
+      const blockedPorts = isolation.blockedPorts ?? [...INTERNAL_INFRASTRUCTURE_PORTS];
+      if (params.internalPort && blockedPorts.includes(Number(params.internalPort))) {
+        throw new Error(
+          `App "${appName}" service "${params.name}" cannot bind to internal infrastructure port ${params.internalPort} with network isolation enabled.`,
+        );
+      }
+    }
+
     // User-set form limits and app-manifest limits only. Auto-allocated
     // per-app defaults (50% RAM / 75% CPUs) must not be copied onto every
     // service — that cgroup-kills one container at half the host while the
@@ -248,6 +369,28 @@ export class DockerComposeBuilder {
           }
         : params.deploy;
 
+    // Defense-in-depth: resolve extra hosts to block direct connectivity to internal infrastructure hostnames
+    const extraHosts = [...(params.extraHosts ?? [])];
+    if (isolation?.isolateInternalInfrastructure || isolation?.blockInternalHosts) {
+      const blockedHostsEntries = INTERNAL_INFRASTRUCTURE_HOSTS.map((h) => `${h}:127.0.0.1`);
+      for (const entry of blockedHostsEntries) {
+        if (!extraHosts.includes(entry)) {
+          extraHosts.push(entry);
+        }
+      }
+    }
+
+    // Security options: merge params.securityOpt, this.securityOptions, and options.securityOpt
+    const effectiveSecurityOpt = Array.from(
+      new Set([
+        ...(params.securityOpt ?? []),
+        ...(this.securityOptions ?? []),
+        ...(options?.securityOpt ?? []),
+        ...(options?.security_opt ?? []),
+        ...(isolation?.isolateInternalInfrastructure ? DEFAULT_SECURITY_OPT : []),
+      ]),
+    );
+
     const service = new ServiceBuilder();
     service
       .setImage(params.image)
@@ -258,7 +401,7 @@ export class DockerComposeBuilder {
       .setDependsOn(params.dependsOn)
       .setVolumes(params.volumes?.map(this.resolveVolume))
       .setRestartPolicy(params.restart ?? 'unless-stopped')
-      .setExtraHosts(params.extraHosts)
+      .setExtraHosts(extraHosts.length > 0 ? extraHosts : undefined)
       .setUlimits(params.ulimits)
       .setPorts(params.addPorts)
       .setNetworkMode(params.networkMode)
@@ -276,7 +419,7 @@ export class DockerComposeBuilder {
       .setCapDrop(params.capDrop)
       .setLogging(params.logging)
       .setReadOnly(params.readOnly)
-      .setSecurityOpt(params.securityOpt)
+      .setSecurityOpt(effectiveSecurityOpt.length > 0 ? effectiveSecurityOpt : undefined)
       .setStopSignal(params.stopSignal)
       .setStopGracePeriod(params.stopGracePeriod)
       .setStdinOpen(params.stdinOpen)
@@ -289,7 +432,7 @@ export class DockerComposeBuilder {
       service.setEnvFile([envFile]);
     }
 
-    if (params.isMain || params.addToMainNetwork) {
+    if ((params.isMain || params.addToMainNetwork) && !isolation?.disableMainNetwork) {
       hubAppNetworkNames().forEach((networkName, index) => {
         service.setNetwork(networkName, index === 0 ? 1 : 0);
       });
@@ -339,7 +482,7 @@ export class DockerComposeBuilder {
     form: AppEventFormInput,
     appUrn: AppUrn,
     subnet: string,
-    _domain?: string,
+    domainOrOptions?: string | ComposeBuilderOptions,
     localDomain?: string,
     envFile?: string,
     cloudflareOriginHostname?: string,
@@ -347,7 +490,14 @@ export class DockerComposeBuilder {
     // Kept so callers can still pass UI recommendations; they are not applied.
     _defaultCpuLimit?: string,
     _defaultMemoryLimit?: string,
+    options?: ComposeBuilderOptions,
   ) {
+    if (typeof domainOrOptions === 'object' && domainOrOptions !== null) {
+      this.applyOptions(domainOrOptions);
+    } else if (options) {
+      this.applyOptions(options);
+    }
+
     const { appName, appStoreId } = extractAppUrn(appUrn);
 
     this.localDomain = localDomain || process.env.LOCAL_DOMAIN || DEFAULT_LOCAL_DOMAIN;
@@ -379,21 +529,25 @@ export class DockerComposeBuilder {
       return service;
     });
 
-    const myServices = fixedServices.map((service) => this.buildService(service, form, appUrn, envFile));
+    const myServices = fixedServices.map((service) => this.buildService(service, form, appUrn, envFile, options));
 
     const dockerCompose = this.addServices(myServices);
-    for (const networkName of hubAppNetworkNames()) {
-      dockerCompose.addNetwork({
-        key: networkName,
-        name: networkName,
-        external: true,
-      });
+    const isolation = this.networkIsolationOptions;
+    if (!isolation?.disableMainNetwork) {
+      for (const networkName of hubAppNetworkNames()) {
+        dockerCompose.addNetwork({
+          key: networkName,
+          name: networkName,
+          external: true,
+        });
+      }
     }
     dockerCompose.addNetwork({
       key: `${appName}_${appStoreId}_network`,
       name: `${appName}_${appStoreId}_network`,
       external: false,
       subnet,
+      internal: isolation?.internal,
     });
 
     return dockerCompose.build();
