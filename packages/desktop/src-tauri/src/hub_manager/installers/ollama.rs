@@ -1,7 +1,5 @@
 //! Ollama installation per platform, including inside a WSL2 distro.
 
-use crate::hub_manager::*;
-
 #[allow(unused_imports)]
 use super::*;
 
