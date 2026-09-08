@@ -1,7 +1,5 @@
 //! NVIDIA and AMD GPU probe caches.
 
-use crate::hub_manager::*;
-
 #[allow(unused_imports)]
 use super::*;
 
