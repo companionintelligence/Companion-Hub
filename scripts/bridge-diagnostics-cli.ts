@@ -19,6 +19,17 @@ import { parseEnvFile } from './env-file';
 /** Hub stack container that shares the network the checks must run from. */
 const HUB_CONTAINERS = ['ci-hub', 'ci-os-hub'] as const;
 
+/**
+ * Name of the running Hub container, or undefined when there is none.
+ *
+ * Exported because `pool-diagnostics-cli.ts` needs the same vantage point for its DNS timing: a
+ * compose service name resolves inside the container and nowhere else, so a host-side lookup cannot
+ * tell a broken URL from an internal one.
+ */
+export function resolveHubContainerName(): string | undefined {
+  return resolveHubContainer();
+}
+
 function resolveHubContainer(): string | undefined {
   for (const name of HUB_CONTAINERS) {
     const result = docker(['ps', '--filter', `name=^/${name}$`, '--filter', 'status=running', '--format', '{{.Names}}']);

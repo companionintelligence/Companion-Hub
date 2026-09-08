@@ -1019,6 +1019,7 @@ describe('parsePoolArgs', () => {
       limit: undefined,
       axis: 'both',
       model: undefined,
+      checkLatency: false,
       yes: false,
       env: 'local',
     });
