@@ -29,20 +29,30 @@ comment it as the specific mechanism that prevents chaining.
 
 ## Where they differ
 
-### 1. Discovery — mDNS vs Tailscale control plane
+### 1. Discovery — mDNS broadcast vs authenticated directories
 
 PAIR runs `nvpair-node-scanner`, advertising one `_nvpair-node._tcp` mDNS record per host carrying
 UUID, cluster membership, ports and a ranked address list, plus manual direct-address probing.
 Eviction tolerates "three consecutive misses".
 
-Hub Pool queries the **Tailscale Admin API** for tailnet devices, then probes each candidate's
-`GET /inference/pool/identify` to confirm it is a Hub (which is all that route discloses — see §2).
+Hub Pool asks directories that authenticate it first, and every one of them supplies a *name*: the
+local Tailscale daemon's peer map, the **Tailscale Admin API** when an OAuth client is configured,
+and the **CI Portal device registry** on a registered Hub. It then probes each candidate's
+`GET /inference/pool/identify` to confirm it is a Hub (which is all that route discloses — see §2), and
+merges the results on the normalized FQDN so a node two directories both name is offered once. Hub
+Pool also has PAIR's manual half: `cihub pool probe <address>` finds a Hub on the LAN with no
+directory at all, and a six-digit PIN turns that address into a name (§2).
 
 - PAIR works on any flat LAN with zero external dependency; it is confined to one broadcast domain.
 - Hub Pool spans LAN, WAN and NAT for free, and inherits WireGuard transport encryption — but is
-  inert without a tailnet, and needs `TAILSCALE_OAUTH_CLIENT_ID`/`_SECRET`.
+  inert without a tailnet. No credential is required for any of it: the daemon peer map and the
+  address probe both work on a Hub that has never seen an OAuth client.
+- The extra directories buy names, not reach. A Portal-registered Hub on a *different* tailnet is
+  dropped at the probe rather than listed, because pairing and every pooled request afterwards dial
+  `https://<fqdn>` over this node's own tailnet.
 
-Neither is strictly better. PAIR's is more self-contained; ours reaches machines PAIR cannot.
+Neither is strictly better. PAIR's is more self-contained; ours reaches machines PAIR cannot, and a
+broadcast domain is not one of its requirements.
 
 ### 2. Trust bootstrap — PIN/mTLS vs PIN + pinned Ed25519 identity
 

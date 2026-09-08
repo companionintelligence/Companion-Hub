@@ -96,7 +96,7 @@ const commandSections: { title: string; entries: CommandEntry[] }[] = [
     entries: [
       { command: `${BASE_COMMAND} pool status [env]`, description: 'Whether pooling is routing, this node, and every peer' },
       { command: `${BASE_COMMAND} pool peers [env]`, description: 'Paired peers with status, last seen, queue depth, and models' },
-      { command: `${BASE_COMMAND} pool discover [env]`, description: 'Unpaired CI-Hub nodes on the tailnet (needs the Tailscale OAuth client)' },
+      { command: `${BASE_COMMAND} pool discover [env]`, description: 'Unpaired CI-Hub nodes, from your tailnet and your CI account' },
       { command: `${BASE_COMMAND} pool pair <node> [--name <label>] [--yes]`, description: 'Send a pairing request to a peer (it must approve)' },
       { command: `${BASE_COMMAND} pool approve|reject <id> [--yes]`, description: 'Act on a pending inbound pairing request' },
       { command: `${BASE_COMMAND} pool unpair <id> [--yes]`, description: 'Remove a peer and revoke both tokens' },

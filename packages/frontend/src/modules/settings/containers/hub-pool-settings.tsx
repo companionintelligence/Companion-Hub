@@ -158,7 +158,11 @@ interface PoolRoutingLog {
 }
 
 /**
- * An unpaired node this Hub can offer to pair with **by name**, from the Tailscale directory.
+ * An unpaired node this Hub can offer to pair with **by name**, from any directory that can attest
+ * one: the tailnet (the local Tailscale daemon's peer map, plus the Admin API when a credential is
+ * configured) or the CI Portal device registry. The backend merges the two, so a node both know
+ * appears once; which directory named it is not rendered, and this shape deliberately omits the
+ * `source` badge the backend type carries.
  *
  * A Hub found by LAN address is deliberately not in here: `GET /identify` is unauthenticated and
  * reports no MagicDNS name, so an address has no name to hand the Pair button. Those are paired with
@@ -989,6 +993,11 @@ export const HubPoolSection = () => {
 
         {/* ── Discovery and pairing ───────────────────────────────────── */}
         <Block title={t('HUB_POOL_DISCOVERABLE_TITLE')} help={t('HUB_POOL_DISCOVERABLE_HELP')}>
+          {/* `tailscaleAdminApiConfigured` is the only discovery signal `GET status` carries, and it
+              covers one of three sources — the daemon peer map and the Portal registry need no
+              credential and are not reported at all. So this branch cannot mean "discovery is off",
+              and HUB_POOL_DISCOVERY_UNCONFIGURED must not claim it does: it is the empty state plus
+              the one hint the status response can honestly offer. */}
           {status.tailscaleAdminApiConfigured || discoverable?.length ? (
             discoverable?.length ? (
               <ul className="space-y-2">

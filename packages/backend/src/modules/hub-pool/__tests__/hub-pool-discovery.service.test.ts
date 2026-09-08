@@ -123,11 +123,13 @@ function realPeerService(options: { status: TailscaleStatus; adminApiConfigured:
 }
 
 describe('mergePoolCandidates', () => {
+  // Shaped exactly as `listDiscoverableDevices` emits one: no `source`, because absence is how a
+  // tailnet entry says it came from the tailnet. Tagging it here would test a shape no producer
+  // builds, and would have hidden that `'tailscale'` was a union member nothing could emit.
   const tailscaleEntry: DiscoverablePoolPeer = {
     tailscaleDeviceId: 'ts-1',
     nodeFqdn: 'peer-hub.tailxyz.ts.net',
     hostname: 'peer-hub',
-    source: 'tailscale',
   };
   const portalEntry: DiscoverablePoolPeer = {
     tailscaleDeviceId: '',
@@ -143,7 +145,9 @@ describe('mergePoolCandidates', () => {
 
   it('keeps the Tailscale entry on a merge, because its name is what the transport dials', () => {
     const merged = mergePoolCandidates([tailscaleEntry], [portalEntry]);
-    expect(merged[0]?.source).toBe('tailscale');
+    // The two entries differ only in `source`, so this is the whole discrimination: undefined is
+    // the tailnet entry, `'portal'` is the one that lost.
+    expect(merged[0]?.source).toBeUndefined();
   });
 
   it('merges on the normalized FQDN, so a trailing dot or different case is the same node', () => {

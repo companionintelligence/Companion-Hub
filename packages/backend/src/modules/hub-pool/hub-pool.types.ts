@@ -147,20 +147,37 @@ export interface PoolCandidate {
  * {@link PoolProbeResult}.
  */
 export interface DiscoverablePoolPeer {
+  /**
+   * The naming directory's own id for this device: a Tailscale device id on a tailnet entry, the
+   * Portal device id on a Portal one. It is a display value and nothing more — `hub_pool_peer` is
+   * keyed on `nodeFqdn`, and every write of `tailscale_device_id` passes `null`.
+   *
+   * Empty string, never absent, so the CLI's `sanitizeForBox` and the settings list keep a
+   * non-nullable field to render.
+   */
   tailscaleDeviceId: string;
   nodeFqdn: string;
   hostname: string;
   /**
-   * Which directory named this candidate. Absent means the tailnet, which is why nothing tags a
-   * Tailscale entry: absence is that value, and the frontend and CLI copies of this shape carry no
-   * `source` field at all.
+   * `'portal'` on a candidate the CI Portal device registry named. Absent means the tailnet — the
+   * local Tailscale daemon's peer map, the Tailscale Admin API, or both — and absence is the *only*
+   * encoding of that: `listDiscoverableDevices` tags nothing, and the frontend and CLI copies of
+   * this shape carry no `source` field at all.
    *
-   * A badge rather than a nullable `tailscaleDeviceId`, because widening that field is a type error
-   * on the CLI's `sanitizeForBox` and a duplicate React key in the settings list.
+   * Narrowed from `'tailscale' | 'lan-probe' | 'portal'` to the one member a producer can emit.
+   * `'tailscale'` was a second spelling of what absence already says, and a union that can state one
+   * fact two ways is eventually stated both ways by two different callers. `'lan-probe'` could never
+   * be produced at all: `/identify` discloses no name, so an address has nothing to put in this
+   * shape — the same reason {@link claimedNodeUuid} has no producer. Keeping the broader union would
+   * have meant tagging every tailnet entry to make it honest, which adds a field to a wire response
+   * that no reader has asked for.
    *
-   * `'lan-probe'` is reserved and currently unproduced — see the note on {@link claimedNodeUuid}.
+   * Nothing reads it yet. It is here for an operator surface that wants to say which directory
+   * named a node, and it is a badge rather than a nullable `tailscaleDeviceId` because widening that
+   * field is a type error on the CLI's `sanitizeForBox` and a duplicate React key in the settings
+   * list.
    */
-  source?: 'tailscale' | 'lan-probe' | 'portal';
+  source?: 'portal';
   /**
    * A UUID the candidate *claims*, from an unauthenticated probe. Typed distinctly from
    * `hub_pool_peer.peer_node_uuid` on purpose — an externally-sourced UUID is a hint for the

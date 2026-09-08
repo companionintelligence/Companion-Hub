@@ -227,11 +227,11 @@ describe('hub-pool-cli discovery', () => {
     hubApiFetch.mockReset();
   });
 
-  it('still asks for the candidate list with no Admin API credential, because manual entries come back on it', async () => {
+  it('still asks for the candidate list with no Admin API credential, because two sources need none', async () => {
     // Deliberately changed: this used to short-circuit on `tailscaleAdminApiConfigured: false`,
-    // back when that credential was the only source of candidates. A node added with
-    // `cihub pool probe` is returned by the same route, so short-circuiting made manual entries
-    // invisible on exactly the Hubs that have no credential — the ones the feature is for.
+    // back when that credential was the only source of candidates. The local Tailscale daemon's
+    // peer map and the CI Portal device registry both name candidates without it, so
+    // short-circuiting hid real candidates on exactly the Hubs that have no credential.
     hubApiFetch.mockResolvedValueOnce(status({ tailscaleAdminApiConfigured: false })).mockResolvedValueOnce([]);
 
     const result = await runPoolDiscover('.env.local');
@@ -258,7 +258,7 @@ describe('hub-pool-cli discovery', () => {
 
     expect(result.configured).toBe(true);
     expect(hubApiFetch.mock.calls[1]?.[1]).toBe('/inference/pool/peers/discoverable');
-    expect(result.lines.join('\n')).toContain('Tailnet enumeration is configured, and found nothing unpaired.');
+    expect(result.lines.join('\n')).toContain('Whole-tailnet enumeration is configured, and found nothing unpaired.');
   });
 
   it('lists discoverable devices with the pair hint', () => {
