@@ -330,6 +330,8 @@ cihub pool pair <address> --pin <digits>      # ...or pair by LAN address, no OA
 cihub pool approve <id>                       # accept a pending inbound request
 cihub pool reject <id>                        # refuse one
 cihub pool unpair <id>                        # remove a peer and revoke both tokens
+cihub pool pin <node|local> [--model <id>]    # prefer one node for a model, or for everything
+cihub pool unpin [--model <id>]               # drop that preference and rank by load again
 cihub pool log [env] [--limit N]              # recent routing decisions, failovers marked
 cihub pool enable [env] | cihub pool disable  # flip the persisted kill switch
 cihub pool enable --outbound | --inbound      # ...or just one direction
@@ -355,6 +357,26 @@ received it**.
 instead of returning a bare 401. A key from `cihub api-key create` is MCP-scoped and is *not* accepted
 here.
 
+### `cihub pool status`
+
+The whole operator picture for one node, and the only place pins, the outstanding PIN, and peer
+authentication modes are listed — there is no `pool pins` subcommand to keep in step with it.
+
+| Block | What it answers |
+| --- | --- |
+| `Pooling` / `Outbound` / `Inbound` | Whether work moves, in each direction, and which switch is responsible |
+| `Peers` / `Discovery` / `Settings` | Counts, whether the Tailscale Admin API credential is set, and the persisted settings |
+| `This node` | Name, tailnet, hardware tier, live queue depth, engines, and this node's pool **identity fingerprint** |
+| `Pairing` | Only when a PIN is outstanding: until when, and how to revoke it. Never the digits |
+| `Pins` | Each pin with its target resolved, and whether it can apply right now |
+| `Peers` table | Per peer: id prefix, name, direction, status (with strikes and `/off`), last seen, queue, engines |
+| `Peer auth` | Which peers are still on the legacy bearer token — the precondition for `poolRequireSignedPeers` |
+
+The `Peer auth` block exists because turning on `poolRequireSignedPeers` while any peer is still on a
+bearer token takes **both** directions of that pairing down. The upgrade runs on a health poll by
+itself, so the block names the peers not there yet, and says plainly when the switch has become safe
+to set. Peers that have not finished pairing are not counted either way.
+
 ### Identifying a peer
 
 `approve`, `reject` and `unpair` take the 8-character `ID` from the peers table, the full row uuid, or
@@ -369,7 +391,13 @@ address can reach the other Hub but cannot *name* it, and a peer is stored under
 
 Lists every unpaired candidate this Hub can *name*, from up to three directories: the local Tailscale
 daemon's peer map, the Tailscale Admin API when a credential is configured, and the CI Portal device
-registry on a registered Hub. A node two of them both name is listed once. A Hub found with
+registry on a registered Hub. A node two of them both name is listed once.
+
+**In practice only the two Tailscale directories return anything.** The Portal leg is refused (it
+presents a device key to a route that wants a browser session) and would name nothing anyway (Portal
+stores no MagicDNS field), and it fails silently — so an empty list is not evidence your Hub is
+unregistered. See
+[`hub-pool.md` → Where pairing candidates come from](hub-pool.md#where-pairing-candidates-come-from). A Hub found with
 `cihub pool probe` is **not** here and never will be: entries are paired with by handing their name
 to `pool pair`, and an address has no name until the PIN exchange produces one.
 
@@ -417,6 +445,35 @@ is public; loopback and link-local. With no explicit port it tries 5002 then 300
 published port that was moved — name it if so. A Hub running an older pool protocol is reported as
 found-but-not-pairable-by-address, because it cannot answer a PIN with its name; pair with it by
 MagicDNS name instead.
+
+### `cihub pool pairing-pin`
+
+Mints the six digits that let another Hub pair with **this** one by address, and prints the
+`cihub pool pair` line to run on that other machine.
+
+```
+cihub pool pairing-pin   # mint: six digits, ten minutes, single use
+cihub pool cancel-pin    # revoke the outstanding PIN now
+```
+
+**It runs on the Hub that will receive the request** — the opposite side from every other pool
+command, and the one thing that is easy to get backwards. Mint here, type there.
+
+The digits are returned **once**, by this command. `cihub pool status` reports only that a PIN is
+outstanding and when it expires, so an operator who loses the digits mints a new one — and minting
+*replaces* the outstanding PIN rather than adding a second, which invalidates any digits still on
+screen elsewhere. A PIN also dies on its fifth wrong guess.
+
+The output includes this node's **key fingerprint**, because minting is the moment both machines are
+usually in front of the same person: the far Hub pins that key during the handshake and gets no
+second chance to check it. A Hub whose identity failed to bootstrap says so here instead, and pairs
+on a bearer token.
+
+Minting a PIN is **not** pre-approval. The inbound request still lands as `pending` and still needs
+`cihub pool approve <id>` on this Hub.
+
+Headless appliances need this command: pairing by address is the path that requires no Tailscale
+OAuth credential, and a machine with no dashboard has no other way to mint a PIN.
 
 ### `cihub pool doctor`
 

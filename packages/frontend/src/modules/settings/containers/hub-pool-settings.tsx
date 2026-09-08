@@ -790,6 +790,20 @@ export const HubPoolSection = () => {
                             {t('HUB_POOL_PEER_NOT_ACCEPTING')}
                           </span>
                         ) : null}
+                        {/* Which peers are still on the legacy bearer token is the precondition for
+                            `poolRequireSignedPeers`: setting it while any peer has not upgraded takes
+                            both directions of that pairing down. The upgrade runs on a health poll by
+                            itself, so this is an indicator and not an action. `!== 'signed'` so a peer
+                            on a build predating pinned identities reads as not-yet, never as signed. */}
+                        {peer.status !== 'pending' && peer.authMode !== 'signed' ? (
+                          <span
+                            data-testid="hub-pool-peer-bearer"
+                            className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-border/70 bg-muted/30 px-2.5 py-1 text-xs font-medium text-muted-foreground"
+                            title={t('HUB_POOL_PEER_BEARER_HELP')}
+                          >
+                            {t('HUB_POOL_PEER_BEARER')}
+                          </span>
+                        ) : null}
                       </div>
                       {/* The FQDN is the identity the token was issued to; the display name is only a label. */}
                       <span className="block truncate font-mono text-xs text-muted-foreground" title={peer.nodeFqdn}>
