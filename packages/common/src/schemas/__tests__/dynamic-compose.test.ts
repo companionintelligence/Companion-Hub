@@ -248,6 +248,34 @@ schemas.forEach(({ name, serviceSchema, dynamicComposeSchema, safeParse }) => {
           const result = safeParse(serviceSchema, withVolume({ volumeName: 'etc', containerPath: '/etc/postgresql' }));
           expect(result.success).toBe(true);
         });
+
+        /*
+         * ⚠ THE REJECT-LIST IS A STRING COMPARISON, and nothing canonicalized
+         * before it ran. `normalizeCustomAppHostPath` collapsed separators and
+         * dropped a trailing slash and stopped there — it never resolved a `.`
+         * or `..` segment. So `/etc` was denied while every spelling below,
+         * each one character away and each mounting exactly the same directory,
+         * went straight through.
+         */
+        it.each([
+          ['/etc/../etc', 'climbs out and back'],
+          ['/./etc', 'has a leading dot segment'],
+          ['/var/../etc', 'reaches a denied path from an allowed one'],
+          ['/var/run/../run/docker.sock', 'reaches the docker socket the long way'],
+          ['/app-data/x/../../..', 'walks out to the root'],
+          ['${SOME_OTHER_VAR}/etc', 'expands to something we cannot check'],
+          ['${APP_DATA_DIR}/../../etc', 'escapes the app data dir it starts in'],
+        ])('should reject %j because it %s', (hostPath) => {
+          const result = safeParse(serviceSchema, withVolume({ hostPath, containerPath: '/mnt' }));
+          expect(result.success).toBe(false);
+        });
+
+        it('should still accept a plain path under the app data dir', () => {
+          // `${APP_DATA_DIR}` is substituted rather than rejected: it resolves to
+          // the app's own directory, which is on no reject-list.
+          const result = safeParse(serviceSchema, withVolume({ hostPath: '${APP_DATA_DIR}/data', containerPath: '/data' }));
+          expect(result.success).toBe(true);
+        });
       });
 
       describe('Command Configuration', () => {
@@ -1084,6 +1112,66 @@ describe('collectServiceSecurityViolations (install-sink app sandbox)', () => {
 
   it('allows privileged services when granted', () => {
     expect(collectServiceSecurityViolations({ privileged: true }, { privileged: true })).toHaveLength(0);
+  });
+
+  /*
+   * ⚠ REFUSING `privileged: true` WHILE ACCEPTING THESE WAS A SANDBOX THAT COULD
+   * BE STEPPED OVER RATHER THAN CLIMBED. Neither layer checked `capAdd`,
+   * `devices` or `securityOpt`, and each of them grants the same power the
+   * `privileged` refusal exists to withhold.
+   */
+  it('flags capabilities that are equivalent to privileged', () => {
+    for (const cap of ['SYS_ADMIN', 'SYS_MODULE', 'SYS_RAWIO', 'SYS_PTRACE', 'DAC_READ_SEARCH', 'MKNOD']) {
+      expect(collectServiceSecurityViolations({ capAdd: [cap] }).map((v) => v.message)).toContain('CUSTOM_APP_ERROR_CAP_ADD_NOT_ALLOWED');
+    }
+
+    // Docker accepts either spelling, so both have to be normalised.
+    expect(collectServiceSecurityViolations({ capAdd: ['cap_sys_admin'] })).toHaveLength(1);
+  });
+
+  it('allows the safe capability set without a grant, and a granted one with', () => {
+    expect(collectServiceSecurityViolations({ capAdd: ['NET_BIND_SERVICE', 'CHOWN'] })).toHaveLength(0);
+    expect(collectServiceSecurityViolations({ capAdd: ['SYS_ADMIN'] }, { capAdd: ['SYS_ADMIN'] })).toHaveLength(0);
+  });
+
+  it('flags securityOpt entries that switch confinement off', () => {
+    for (const opt of ['apparmor=unconfined', 'seccomp=unconfined', 'systempaths=unconfined', 'label:disable']) {
+      expect(collectServiceSecurityViolations({ securityOpt: [opt] }).map((v) => v.message)).toContain('CUSTOM_APP_ERROR_SECURITY_OPT_NOT_ALLOWED');
+    }
+  });
+
+  it('leaves securityOpt entries that tighten confinement alone', () => {
+    // Matched on the VALUE half, so a real profile and `no-new-privileges` pass.
+    expect(collectServiceSecurityViolations({ securityOpt: ['no-new-privileges:true', 'apparmor=my-profile'] })).toHaveLength(0);
+    expect(collectServiceSecurityViolations({ securityOpt: ['seccomp=unconfined'] }, { securityOpt: ['seccomp=unconfined'] })).toHaveLength(0);
+  });
+
+  it('flags a device that IS the host, not merely a device', () => {
+    // `devices` is `host:container[:perms]`, and only the host half escapes.
+    for (const device of ['/dev:/dev', '/dev/sda:/dev/sda', '/dev/nvme0n1:/dev/nvme0n1', '/dev/mem:/dev/mem']) {
+      expect(collectServiceSecurityViolations({ devices: [device] }).map((v) => v.message)).toContain('CUSTOM_APP_ERROR_DEVICE_NOT_ALLOWED');
+    }
+
+    expect(collectServiceSecurityViolations({ devices: ['/dev/../dev/sda:/dev/sda'] })).toHaveLength(1);
+  });
+
+  it('leaves the ordinary device passthroughs alone', () => {
+    /*
+     * ⚠ NARROWER THAN THE HOST-PATH REJECT-LIST ON PURPOSE. `/dev` is on that
+     * list, but passing a single character device through is what a Zigbee
+     * dongle, a GPU or a capture card needs — refusing them all would break real
+     * installs and buy nothing, because the escape is a device that IS the host.
+     */
+    expect(
+      collectServiceSecurityViolations({
+        devices: ['/dev/ttyUSB0:/dev/ttyUSB0', '/dev/dri:/dev/dri', '/dev/kfd:/dev/kfd', '/dev/video0:/dev/video0'],
+      }),
+    ).toHaveLength(0);
+  });
+
+  it('does not let devices become a second way to mount a denied directory', () => {
+    expect(collectServiceSecurityViolations({ devices: ['/etc:/host-etc'] }).map((v) => v.message)).toContain('CUSTOM_APP_ERROR_DEVICE_NOT_ALLOWED');
+    expect(collectServiceSecurityViolations({ devices: ['/dev/sda:/dev/sda'] }, { devices: ['/dev/sda'] })).toHaveLength(0);
   });
 
   it('flags host network and host pid namespaces', () => {

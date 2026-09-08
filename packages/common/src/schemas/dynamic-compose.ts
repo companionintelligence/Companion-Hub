@@ -41,6 +41,52 @@ function assertVolumeSource(volume: { hostPath?: string; volumeName?: string; re
   }
 }
 
+/**
+ * ⚠ THE REJECT-LIST IS A STRING COMPARISON, so anything that spells a denied
+ * path differently used to walk straight past it.
+ *
+ * `normalizeCustomAppHostPath` collapsed separators and dropped a trailing
+ * slash and stopped there: it never resolved a `.` or `..` segment. So `/etc`
+ * was denied while `/etc/../etc`, `/./etc` and `/var/../etc` were not — each is
+ * one character away from the denied form and mounts exactly the same
+ * directory. A `${...}` expansion is the same problem one layer later: the
+ * string checked here is not the string docker-compose eventually resolves.
+ *
+ * Both are REJECTED rather than resolved. A manifest has no legitimate need for
+ * a relative segment or an expansion in a host path — every real entry in the
+ * allowlist above is a plain absolute path — so accepting them and normalising
+ * would only mean guessing at what the author meant, on the one input where
+ * guessing wrong is a host escape.
+ */
+/**
+ * The one expansion a manifest may legitimately use.
+ *
+ * `${APP_DATA_DIR}` is substituted by the Hub with the app's OWN data
+ * directory, which is under the app-data root and therefore never a denied
+ * path. Substituting it here — rather than rejecting it — lets the reject-list
+ * see the shape of the rest of the path, so `${APP_DATA_DIR}/../../etc` is still
+ * caught by the dot-segment test below.
+ */
+const APP_DATA_DIR_EXPANSION = /\$\{?APP_DATA_DIR\}?/g;
+
+/** A stand-in for the app's own data directory: absolute, and on no reject-list. */
+const APP_DATA_DIR_PLACEHOLDER = '/app-data/__app__';
+
+function hasUnresolvableHostPathSyntax(hostPath: string): boolean {
+  const substituted = hostPath.replace(APP_DATA_DIR_EXPANSION, APP_DATA_DIR_PLACEHOLDER);
+
+  // Any OTHER expansion: the string checked here is not the string
+  // docker-compose eventually resolves, so there is nothing to check.
+  if (substituted.includes('$')) {
+    return true;
+  }
+
+  return substituted
+    .replace(/\\/g, '/')
+    .split('/')
+    .some((segment) => segment === '.' || segment === '..');
+}
+
 function normalizeCustomAppHostPath(hostPath: string): string {
   const normalized = hostPath.replace(/\\/g, '/').replace(/\/+/g, '/');
   if (normalized.length > 1 && normalized.endsWith('/')) {
@@ -50,7 +96,12 @@ function normalizeCustomAppHostPath(hostPath: string): string {
 }
 
 function isDeniedCustomAppHostPath(hostPath: string): boolean {
-  const normalized = normalizeCustomAppHostPath(hostPath);
+  // Unresolvable first: a path we cannot canonicalize is one we cannot clear.
+  if (hasUnresolvableHostPathSyntax(hostPath)) {
+    return true;
+  }
+
+  const normalized = normalizeCustomAppHostPath(hostPath.replace(APP_DATA_DIR_EXPANSION, APP_DATA_DIR_PLACEHOLDER));
   return DENIED_CUSTOM_APP_HOST_PATHS.some((denied) => normalized === denied || normalized.startsWith(`${denied}/`));
 }
 
@@ -96,6 +147,12 @@ export interface AppSecurityGrants {
   pidHost?: boolean;
   /** Denied host paths this app is explicitly permitted to bind. */
   hostPaths?: string[];
+  /** Linux capabilities beyond the safe set this app may add. */
+  capAdd?: string[];
+  /** Host devices this app may pass through, as the host half of `devices`. */
+  devices?: string[];
+  /** Confinement this app may switch off, as the literal `securityOpt` entry. */
+  securityOpt?: string[];
 }
 
 export const TRUSTED_APP_SECURITY_ALLOWLIST: Record<string, AppSecurityGrants> = {
@@ -134,6 +191,72 @@ interface SecurityCheckedService {
   networkMode?: string;
   pid?: string;
   volumes?: { hostPath?: string; volumeName?: string }[];
+  capAdd?: string[];
+  devices?: string[];
+  securityOpt?: string[];
+}
+
+/**
+ * Capabilities an ordinary app may add without a grant.
+ *
+ * ⚠ THE POINT OF BLOCKING `privileged` IS THE POWER IT CONFERS, AND `capAdd`
+ * CONFERS THE SAME POWER PIECEMEAL. `SYS_ADMIN` alone is close enough to
+ * privileged to be treated as equivalent by every container-security guide;
+ * `SYS_MODULE` loads kernel modules; `SYS_RAWIO` reaches raw devices;
+ * `SYS_PTRACE` reads other processes' memory; `DAC_READ_SEARCH` bypasses file
+ * permission checks; `MKNOD` creates device nodes. Refusing `privileged: true`
+ * while accepting any of these was a sandbox that could be stepped over rather
+ * than climbed.
+ *
+ * An allow-list, not a deny-list: the set of dangerous capabilities grows with
+ * the kernel, and the set an app legitimately needs does not.
+ */
+const SAFE_CAP_ADD = new Set(['NET_BIND_SERVICE', 'CHOWN', 'SETUID', 'SETGID', 'FOWNER', 'DAC_OVERRIDE', 'KILL']);
+
+/**
+ * `securityOpt` values that switch confinement OFF.
+ *
+ * Matched on the VALUE half so `apparmor=unconfined` is refused while
+ * `apparmor=my-profile` is not, and so `no-new-privileges` — which tightens
+ * rather than loosens — is unaffected.
+ */
+const CONFINEMENT_DISABLING_SECURITY_OPTS = /^(apparmor|seccomp|systempaths)\s*[:=]\s*unconfined$|^label\s*[:=]\s*disable$/i;
+
+/**
+ * Host devices no app may pass through without a grant.
+ *
+ * ⚠ DELIBERATELY NARROWER THAN THE HOST-PATH REJECT-LIST. `/dev` is on that
+ * list, but passing through a single character device under it is an ORDINARY
+ * thing for a self-hosted app to need — a Zigbee or Z-Wave dongle
+ * (`/dev/ttyUSB0`, `/dev/ttyACM0`), a GPU (`/dev/dri`, `/dev/kfd`), a capture
+ * card (`/dev/video0`). Refusing all of those would break real installs while
+ * buying nothing: the escape is not "a device" but a device that IS the host.
+ *
+ * What is refused: `/dev` itself or any other denied ROOT (which passes the
+ * whole tree), raw block devices (the disk the host filesystem is on, readable
+ * and writable byte by byte, whatever the file permissions say), and the memory
+ * and port devices.
+ */
+const DENIED_DEVICE_PATTERNS = [/^\/dev\/?$/, /^\/dev\/(sd|nvme|vd|hd|xvd|loop|dm-|md)/i, /^\/dev\/mapper\//i, /^\/dev\/(mem|kmem|port)$/i];
+
+function isDeniedDeviceHostPath(hostHalf: string): boolean {
+  if (hasUnresolvableHostPathSyntax(hostHalf)) {
+    return true;
+  }
+
+  const normalized = normalizeCustomAppHostPath(hostHalf);
+
+  if (DENIED_DEVICE_PATTERNS.some((pattern) => pattern.test(normalized))) {
+    return true;
+  }
+
+  // Anything OUTSIDE `/dev` is an ordinary host path and is held to the ordinary
+  // reject-list: `devices` must not become a second way to mount `/etc`.
+  if (!normalized.startsWith('/dev/')) {
+    return isDeniedCustomAppHostPath(hostHalf);
+  }
+
+  return false;
 }
 
 /**
@@ -153,6 +276,58 @@ export function collectServiceSecurityViolations(service: SecurityCheckedService
   }
   if (service.pid === 'host' && !grants?.pidHost) {
     violations.push({ path: ['pid'], message: 'CUSTOM_APP_ERROR_PID_HOST_NOT_ALLOWED' });
+  }
+
+  /*
+   * ⚠ THE AXES BELOW WERE CHECKED BY NEITHER LAYER, so the `privileged` refusal
+   * above was the front door of a building with the windows open.
+   *
+   * ⚠ A `privileged` GRANT SUBSUMES THEM. `privileged: true` already confers
+   * every capability, every device and no confinement — that is what it means —
+   * so refusing an audited privileged app's `capAdd` would be theatre, and would
+   * make the allowlist harder to read by requiring four entries to say one
+   * thing. An app granted `privileged` has been reviewed for exactly this.
+   */
+  if (grants?.privileged) {
+    return violations;
+  }
+
+  const grantedCaps = new Set((grants?.capAdd ?? []).map((cap) => cap.trim().toUpperCase()));
+  for (const [index, cap] of (service.capAdd ?? []).entries()) {
+    const normalized = cap.trim().toUpperCase().replace(/^CAP_/, '');
+
+    if (SAFE_CAP_ADD.has(normalized) || grantedCaps.has(normalized) || grantedCaps.has(cap.trim().toUpperCase())) {
+      continue;
+    }
+
+    violations.push({ path: ['capAdd', index], message: 'CUSTOM_APP_ERROR_CAP_ADD_NOT_ALLOWED', hostPath: cap });
+  }
+
+  const grantedSecurityOpts = new Set((grants?.securityOpt ?? []).map((opt) => opt.trim().toLowerCase()));
+  for (const [index, opt] of (service.securityOpt ?? []).entries()) {
+    if (!CONFINEMENT_DISABLING_SECURITY_OPTS.test(opt.trim())) {
+      continue;
+    }
+
+    if (grantedSecurityOpts.has(opt.trim().toLowerCase())) {
+      continue;
+    }
+
+    violations.push({ path: ['securityOpt', index], message: 'CUSTOM_APP_ERROR_SECURITY_OPT_NOT_ALLOWED', hostPath: opt });
+  }
+
+  const grantedDevices = new Set((grants?.devices ?? []).map(normalizeCustomAppHostPath));
+  for (const [index, device] of (service.devices ?? []).entries()) {
+    // `devices` is `host:container[:perms]`, and only the HOST half escapes.
+    const hostHalf = device.split(':')[0] ?? '';
+
+    if (grantedDevices.has(normalizeCustomAppHostPath(hostHalf))) {
+      continue;
+    }
+
+    if (isDeniedDeviceHostPath(hostHalf)) {
+      violations.push({ path: ['devices', index], message: 'CUSTOM_APP_ERROR_DEVICE_NOT_ALLOWED', hostPath: device });
+    }
   }
 
   const grantedPaths = new Set((grants?.hostPaths ?? []).map(normalizeCustomAppHostPath));
