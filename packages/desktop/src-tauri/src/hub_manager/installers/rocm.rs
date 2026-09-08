@@ -1,7 +1,5 @@
 //! AMD ROCm probe state and installation.
 
-use crate::hub_manager::*;
-
 #[allow(unused_imports)]
 use super::*;
 
