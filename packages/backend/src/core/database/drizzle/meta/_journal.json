@@ -421,6 +421,13 @@
       "when": 1781000000000,
       "tag": "0059_hub_pool_peer_v2",
       "breakpoints": true
+    },
+    {
+      "idx": 60,
+      "version": "7",
+      "when": 1781100000000,
+      "tag": "0060_lifecycle_job",
+      "breakpoints": true
     }
   ]
 }

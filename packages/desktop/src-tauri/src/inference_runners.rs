@@ -32,6 +32,7 @@ const STARTUP_WAIT: Duration = Duration::from_secs(45);
 const POLL_INTERVAL: Duration = Duration::from_millis(500);
 const API_KEY_BYTES: usize = 32;
 const MACOS_LAUNCH_AGENT_PREFIX: &str = "computer.ci.companion-hub.inference";
+const LINUX_SYSTEMD_SERVICE_PREFIX: &str = "computer.ci.companion-hub.inference";
 
 const DSPARK_PORT: u16 = 8080;
 const MTPLX_PORT: u16 = 8000;
@@ -122,6 +123,7 @@ pub fn install_and_start_inference_runners(
     let mut results = Vec::with_capacity(runners.len());
 
     reconcile_macos_launch_agents(data_dir, &runners);
+    reconcile_linux_systemd_services(data_dir, &runners);
 
     for runner in runners {
         let result = run_runner(data_dir, &runner);
@@ -897,6 +899,22 @@ fn reconcile_macos_launch_agents(data_dir: &Path, requested: &[String]) {
     let _ = (data_dir, requested);
 }
 
+fn reconcile_linux_systemd_services(data_dir: &Path, requested: &[String]) {
+    #[cfg(target_os = "linux")]
+    for runner in unselected_persistent_runners(requested) {
+        if let Err(error) = disable_linux_systemd_service(runner) {
+            append_runner_log(
+                data_dir,
+                runner,
+                &format!("warning: could not disable the unselected user service: {error}"),
+            );
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    let _ = (data_dir, requested);
+}
+
 fn unselected_persistent_runners(requested: &[String]) -> Vec<&'static str> {
     ["dspark", "mtplx"]
         .into_iter()
@@ -1070,6 +1088,142 @@ fn xml_escape(value: &str) -> String {
         .replace('\'', "&apos;")
 }
 
+fn systemd_service_name(runner: &str) -> String {
+    format!("{LINUX_SYSTEMD_SERVICE_PREFIX}.{runner}.service")
+}
+
+fn systemd_user_service_path(runner: &str) -> Result<PathBuf, String> {
+    let home = dirs::home_dir()
+        .ok_or_else(|| "The current user's home directory could not be resolved.".to_string())?;
+    let config_dir = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home.join(".config"));
+    Ok(config_dir
+        .join("systemd")
+        .join("user")
+        .join(systemd_service_name(runner)))
+}
+
+fn systemd_escape_arg(value: &str) -> String {
+    let escaped = value
+        .replace('%', "%%")
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"");
+    if escaped.is_empty()
+        || escaped.contains(|c: char| {
+            c.is_whitespace() || c == '"' || c == '\'' || c == '\\' || c == '=' || c == ';'
+        })
+    {
+        format!("\"{escaped}\"")
+    } else {
+        escaped
+    }
+}
+
+fn render_systemd_user_service(
+    runner: &str,
+    executable: &Path,
+    args: &[String],
+    log_path: &Path,
+) -> String {
+    let mut command_parts = Vec::with_capacity(args.len() + 1);
+    command_parts.push(systemd_escape_arg(&executable.display().to_string()));
+    command_parts.extend(args.iter().map(|arg| systemd_escape_arg(arg)));
+    let exec_start = command_parts.join(" ");
+
+    let log_path_str = log_path.display().to_string().replace('%', "%%");
+
+    format!(
+        "[Unit]\n\
+Description=Companion Hub inference runner ({runner})\n\
+After=network.target\n\n\
+[Service]\n\
+Type=simple\n\
+ExecStart={exec_start}\n\
+Restart=on-failure\n\
+RestartSec=10\n\
+Environment=\"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/bin\"\n\
+StandardOutput=append:{log_path_str}\n\
+StandardError=append:{log_path_str}\n\n\
+[Install]\n\
+WantedBy=default.target\n"
+    )
+}
+
+#[cfg(target_os = "linux")]
+fn run_systemctl(args: &[&str]) -> Result<(), String> {
+    let output = Command::new("systemctl")
+        .args(args)
+        .output()
+        .map_err(|error| format!("Could not run systemctl: {error}"))?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    if stderr.is_empty() {
+        Err(format!(
+            "systemctl {} exited with {}",
+            args.join(" "),
+            output.status
+        ))
+    } else {
+        Err(format!("systemctl {} failed: {stderr}", args.join(" ")))
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn disable_linux_systemd_service(runner: &str) -> Result<(), String> {
+    let path = systemd_user_service_path(runner)?;
+    if !path.exists() {
+        return Ok(());
+    }
+
+    let service_name = systemd_service_name(runner);
+    let _ = run_systemctl(&["--user", "disable", "--now", &service_name]);
+    let remove_result = fs::remove_file(&path)
+        .map_err(|error| format!("Could not remove {}: {error}", path.display()));
+    let _ = run_systemctl(&["--user", "daemon-reload"]);
+    let _ = run_systemctl(&["--user", "reset-failed", &service_name]);
+    remove_result
+}
+
+#[cfg(target_os = "linux")]
+fn start_linux_systemd_service(
+    runner: &str,
+    executable: &Path,
+    args: &[String],
+    log_path: &Path,
+) -> Result<(), String> {
+    let path = systemd_user_service_path(runner)?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| "Could not resolve the systemd user service directory.".to_string())?;
+    fs::create_dir_all(parent)
+        .map_err(|error| format!("Could not create {}: {error}", parent.display()))?;
+
+    let service = render_systemd_user_service(runner, executable, args, log_path);
+    let mut options = OpenOptions::new();
+    options.write(true).create(true).truncate(true).mode(0o644);
+    let mut file = options
+        .open(&path)
+        .map_err(|error| format!("Could not open {}: {error}", path.display()))?;
+    file.write_all(service.as_bytes())
+        .map_err(|error| format!("Could not write {}: {error}", path.display()))?;
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o644))
+        .map_err(|error| format!("Could not protect {}: {error}", path.display()))?;
+
+    let service_name = systemd_service_name(runner);
+    let _ = run_systemctl(&["--user", "stop", &service_name]);
+    let _ = run_systemctl(&["--user", "daemon-reload"]);
+    if let Err(error) = run_systemctl(&["--user", "enable", "--now", &service_name]) {
+        let _ = fs::remove_file(&path);
+        let _ = run_systemctl(&["--user", "daemon-reload"]);
+        return Err(error);
+    }
+
+    Ok(())
+}
+
 fn start_host_process(
     data_dir: &Path,
     runner: &str,
@@ -1159,6 +1313,39 @@ fn start_host_process(
                 runner,
                 &format!(
                     "warning: login service setup failed; falling back to this session: {error}"
+                ),
+            ),
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    if matches!(runner, "dspark" | "mtplx") {
+        match start_linux_systemd_service(runner, executable, args, &log_path) {
+            Ok(()) => {
+                if wait_for_http_authenticated(port, health_path, api_key, STARTUP_WAIT) {
+                    return success(
+                        runner,
+                        InferenceRunnerState::InstalledAndStarted,
+                        Some(endpoint.to_string()),
+                        Some(format!(
+                            "{runner} was installed and will restart automatically at login or after a crash."
+                        )),
+                    );
+                }
+                return success(
+                    runner,
+                    InferenceRunnerState::Installed,
+                    Some(endpoint.to_string()),
+                    Some(format!(
+                        "{runner} was installed as a user service; its API is still starting."
+                    )),
+                );
+            }
+            Err(error) => append_runner_log(
+                data_dir,
+                runner,
+                &format!(
+                    "warning: user service setup failed; falling back to this session: {error}"
                 ),
             ),
         }
@@ -1579,6 +1766,49 @@ mod tests {
         assert!(plist.contains("<key>RunAtLoad</key>"));
         assert!(plist.contains("<key>KeepAlive</key>"));
         assert!(plist.contains("<key>SuccessfulExit</key>"));
+    }
+
+    #[test]
+    fn systemd_user_service_restarts_and_escapes_program_arguments() {
+        let service = render_systemd_user_service(
+            "dspark",
+            Path::new("/tmp/runner & helper"),
+            &[
+                "serve".to_string(),
+                "--host".to_string(),
+                "0.0.0.0".to_string(),
+                "--port".to_string(),
+                "8080".to_string(),
+                "model<one>".to_string(),
+            ],
+            Path::new("/tmp/runner.log"),
+        );
+
+        assert!(service.contains("Description=Companion Hub inference runner (dspark)"));
+        assert!(service.contains(
+            "ExecStart=\"/tmp/runner & helper\" serve --host 0.0.0.0 --port 8080 model<one>"
+        ));
+        assert!(service.contains("Restart=on-failure"));
+        assert!(service.contains("RestartSec=10"));
+        assert!(service.contains("StandardOutput=append:/tmp/runner.log"));
+        assert!(service.contains("StandardError=append:/tmp/runner.log"));
+        assert!(service.contains("WantedBy=default.target"));
+    }
+
+    #[test]
+    fn systemd_service_name_and_path_match_convention() {
+        assert_eq!(
+            systemd_service_name("dspark"),
+            "computer.ci.companion-hub.inference.dspark.service"
+        );
+        assert_eq!(
+            systemd_service_name("mtplx"),
+            "computer.ci.companion-hub.inference.mtplx.service"
+        );
+
+        let path = systemd_user_service_path("dspark").expect("resolve path");
+        assert!(path
+            .ends_with(".config/systemd/user/computer.ci.companion-hub.inference.dspark.service"));
     }
 
     #[test]

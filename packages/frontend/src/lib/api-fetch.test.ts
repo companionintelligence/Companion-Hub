@@ -1,7 +1,4 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { client } from '@/api-client/client.gen';
-import { TAURI_SESSION_STORAGE_KEY, apiFetch, clearStaleTauriSession, getTauriSessionId, setTauriSessionId } from './api-fetch';
-import { resetActiveFetch, setActiveFetch } from './runtime-fetch';
 
 const { usesCrossOriginDesktopApi } = vi.hoisted(() => ({
   usesCrossOriginDesktopApi: vi.fn(() => false),
@@ -11,13 +8,71 @@ vi.mock('@/lib/hub-runtime-mode', () => ({
   usesCrossOriginDesktopApi,
 }));
 
+const { isTauriMobileSync, isMobileClient } = vi.hoisted(() => ({
+  isTauriMobileSync: vi.fn(() => false),
+  isMobileClient: vi.fn(() => false),
+}));
+
+vi.mock('@/lib/mobile-connection', () => ({
+  isTauriMobileSync,
+  isMobileClient,
+}));
+
+const { mockStoreData, mockStoreSet, mockStoreDelete, mockStoreSave } = vi.hoisted(() => {
+  const data: Record<string, unknown> = {};
+  return {
+    mockStoreData: data,
+    mockStoreSet: vi.fn(async (k: string, v: unknown) => {
+      data[k] = v;
+    }),
+    mockStoreDelete: vi.fn(async (k: string) => {
+      delete data[k];
+    }),
+    mockStoreSave: vi.fn(async () => {}),
+  };
+});
+
+vi.mock('@tauri-apps/api/core', () => ({
+  invoke: vi.fn(async () => ({})),
+}));
+
+vi.mock('@tauri-apps/plugin-store', () => ({
+  load: vi.fn(async () => ({
+    get: async (k: string) => mockStoreData[k] ?? null,
+    set: mockStoreSet,
+    delete: mockStoreDelete,
+    save: mockStoreSave,
+  })),
+}));
+
 const { handleSessionExpired } = vi.hoisted(() => ({ handleSessionExpired: vi.fn(async () => {}) }));
 vi.mock('@/lib/session-expired', () => ({ handleSessionExpired }));
+
+import { client } from '@/api-client/client.gen';
+import {
+  HUB_SESSION_ISSUED_AT_KEY,
+  TAURI_SESSION_STORAGE_KEY,
+  apiFetch,
+  clearMobileSession,
+  clearStaleTauriSession,
+  getTauriSessionId,
+  hydrateMobileSession,
+  resetMobileSessionStoreForTests,
+  setTauriSessionId,
+} from './api-fetch';
+import { resetActiveFetch, setActiveFetch } from './runtime-fetch';
 
 describe('api-fetch session storage', () => {
   beforeEach(() => {
     localStorage.clear();
     sessionStorage.clear();
+    for (const key of Object.keys(mockStoreData)) {
+      delete mockStoreData[key];
+    }
+    mockStoreSet.mockClear();
+    mockStoreDelete.mockClear();
+    isTauriMobileSync.mockReturnValue(false);
+    isMobileClient.mockReturnValue(false);
     usesCrossOriginDesktopApi.mockReturnValue(false);
     setTauriSessionId(null);
   });
@@ -71,6 +126,84 @@ describe('api-fetch session storage', () => {
     expect(getTauriSessionId()).toBeNull();
     expect(localStorage.getItem(TAURI_SESSION_STORAGE_KEY)).toBeNull();
     expect(sessionStorage.getItem(TAURI_SESSION_STORAGE_KEY)).toBeNull();
+  });
+});
+
+describe('api-fetch mobile secure session storage', () => {
+  beforeEach(async () => {
+    (window as unknown as { __TAURI_INTERNALS__: unknown }).__TAURI_INTERNALS__ = {
+      invoke: vi.fn(async () => ({})),
+    };
+    resetMobileSessionStoreForTests();
+    localStorage.clear();
+    sessionStorage.clear();
+    setTauriSessionId(null);
+    await clearMobileSession();
+    for (const key of Object.keys(mockStoreData)) {
+      delete mockStoreData[key];
+    }
+    mockStoreSet.mockClear();
+    mockStoreDelete.mockClear();
+    mockStoreSave.mockClear();
+    isTauriMobileSync.mockReturnValue(true);
+    isMobileClient.mockReturnValue(true);
+    usesCrossOriginDesktopApi.mockReturnValue(true);
+  });
+
+  afterEach(async () => {
+    setTauriSessionId(null);
+    await clearMobileSession();
+    resetMobileSessionStoreForTests();
+  });
+
+  it('persists session to Tauri store and keeps in-memory cache without plaintext localStorage', async () => {
+    setTauriSessionId('mobile-secure-token', 123456789);
+
+    expect(getTauriSessionId()).toBe('mobile-secure-token');
+    expect(localStorage.getItem(TAURI_SESSION_STORAGE_KEY)).toBeNull();
+
+    await vi.waitFor(() => {
+      expect(mockStoreSet).toHaveBeenCalledWith(TAURI_SESSION_STORAGE_KEY, 'mobile-secure-token');
+      expect(mockStoreSet).toHaveBeenCalledWith(HUB_SESSION_ISSUED_AT_KEY, '123456789');
+      expect(mockStoreSave).toHaveBeenCalled();
+    });
+  });
+
+  it('hydrates in-memory cache from Tauri store on cold start', async () => {
+    mockStoreData[TAURI_SESSION_STORAGE_KEY] = 'persisted-mobile-token';
+    mockStoreData[HUB_SESSION_ISSUED_AT_KEY] = '987654321';
+
+    const hydrated = await hydrateMobileSession();
+
+    expect(hydrated).toBe('persisted-mobile-token');
+    expect(getTauriSessionId()).toBe('persisted-mobile-token');
+  });
+
+  it('migrates legacy localStorage session into Tauri store on mobile hydration', async () => {
+    localStorage.setItem(TAURI_SESSION_STORAGE_KEY, 'legacy-mobile-token');
+
+    const hydrated = await hydrateMobileSession();
+
+    expect(hydrated).toBe('legacy-mobile-token');
+    expect(getTauriSessionId()).toBe('legacy-mobile-token');
+    expect(localStorage.getItem(TAURI_SESSION_STORAGE_KEY)).toBeNull();
+
+    await vi.waitFor(() => {
+      expect(mockStoreSet).toHaveBeenCalledWith(TAURI_SESSION_STORAGE_KEY, 'legacy-mobile-token');
+      expect(mockStoreSave).toHaveBeenCalled();
+    });
+  });
+
+  it('clears session from Tauri store when clearStaleTauriSession is called', async () => {
+    setTauriSessionId('mobile-token-to-clear');
+    clearStaleTauriSession();
+
+    expect(getTauriSessionId()).toBeNull();
+    await vi.waitFor(() => {
+      expect(mockStoreDelete).toHaveBeenCalledWith(TAURI_SESSION_STORAGE_KEY);
+      expect(mockStoreDelete).toHaveBeenCalledWith(HUB_SESSION_ISSUED_AT_KEY);
+      expect(mockStoreSave).toHaveBeenCalled();
+    });
   });
 });
 
