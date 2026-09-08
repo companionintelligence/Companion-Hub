@@ -261,6 +261,18 @@ describe('hub-pool-cli discovery', () => {
     expect(result.lines.join('\n')).toContain('Whole-tailnet enumeration is configured, and found nothing unpaired.');
   });
 
+  it('reports `found` from the candidate list, not from the Admin API credential', async () => {
+    // `found` is what colours the box, and yellow means a problem state in this CLI. A Hub with no
+    // credential that listed candidates from its daemon peer map or from Portal has no problem.
+    hubApiFetch
+      .mockResolvedValueOnce(status({ tailscaleAdminApiConfigured: false }))
+      .mockResolvedValueOnce([{ tailscaleDeviceId: '', nodeFqdn: PEER_A, hostname: 'hub-b' }]);
+
+    const result = await runPoolDiscover('.env.local');
+
+    expect(result).toMatchObject({ configured: false, found: true });
+  });
+
   it('lists discoverable devices with the pair hint', () => {
     const devices: DiscoverablePoolPeer[] = [{ tailscaleDeviceId: 'dev-1', nodeFqdn: PEER_A, hostname: 'hub-b' }];
     const text = formatPoolDiscoverLines(devices, true).join('\n');

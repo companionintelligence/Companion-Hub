@@ -993,11 +993,13 @@ export const HubPoolSection = () => {
 
         {/* ── Discovery and pairing ───────────────────────────────────── */}
         <Block title={t('HUB_POOL_DISCOVERABLE_TITLE')} help={t('HUB_POOL_DISCOVERABLE_HELP')}>
-          {/* `tailscaleAdminApiConfigured` is the only discovery signal `GET status` carries, and it
-              covers one of three sources — the daemon peer map and the Portal registry need no
-              credential and are not reported at all. So this branch cannot mean "discovery is off",
-              and HUB_POOL_DISCOVERY_UNCONFIGURED must not claim it does: it is the empty state plus
-              the one hint the status response can honestly offer. */}
+          {/* `tailscaleAdminApiConfigured` covers one of three sources: the daemon peer map and the
+              Portal registry need no credential, and neither is reported by `GET status` (the only
+              other discovery-adjacent field it carries is `localNode.tailscaleConnected`, rendered
+              above). So this branch cannot mean "discovery is off", and
+              HUB_POOL_DISCOVERY_UNCONFIGURED must not claim it does — nor that the list came back
+              empty, since `discoverable` is also undefined while its query is in flight or errored.
+              It is the one hint the status response can honestly offer, and nothing more. */}
           {status.tailscaleAdminApiConfigured || discoverable?.length ? (
             discoverable?.length ? (
               <ul className="space-y-2">

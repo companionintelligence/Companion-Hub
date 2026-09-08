@@ -377,7 +377,9 @@ a tailnet-connected Hub already lists the peers its own daemon can see. Without 
 empty-list output points at `cihub pool probe` first and names the variables second.
 
 The `Discovery` line in `cihub pool status` reports **only** the Tailscale credential, because that is
-the only discovery signal `GET status` carries. It is not a report on whether discovery works.
+the only candidate directory `GET status` reports on — the daemon peer map and the Portal registry are
+not in that response (the `Tailscale` line below it is the daemon leg's precondition, not its result).
+It is not a report on whether discovery works.
 
 A Hub your CI account knows only by LAN address is not listed: a peer is stored under its tailnet
 name, and an IP literal can never be one. Pair with it by address instead. See

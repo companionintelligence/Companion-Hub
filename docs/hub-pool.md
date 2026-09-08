@@ -1,6 +1,6 @@
 # Hub Pool (multi-Hub inference pooling)
 
-Hub Pool lets two or more CI-Hub devices you operate on the same tailnet share inference capacity: an app on one Hub can be served by whichever paired Hub has the requested model and the shortest queue, with automatic failover if a node stops responding. It builds entirely on the existing [Tailscale private VPN](private-vpn.md) integration — there is no separate peer protocol or certificate system to manage. More than one directory can *name* a candidate (see [Where pairing candidates come from](#where-pairing-candidates-come-from)), but the transport never changes: every peer is stored under its tailnet name and reached at `https://<fqdn>` over the tailnet.
+Hub Pool lets two or more CI-Hub devices you operate on the same tailnet share inference capacity: an app on one Hub can be served by whichever paired Hub has the requested model and the shortest queue, with automatic failover if a node stops responding. It builds entirely on the existing [Tailscale private VPN](private-vpn.md) integration — there is no separate discovery protocol or certificate system to manage. (Hub Pool does have a peer protocol of its own — a version-negotiated `/identify`, the PIN handshake and pinned Ed25519 identities, described below — but it rides the tailnet rather than replacing it.) More than one directory can *name* a candidate (see [Where pairing candidates come from](#where-pairing-candidates-come-from)), but the transport never changes: every peer is stored under its tailnet name and reached at `https://<fqdn>` over the tailnet.
 
 This complements, and does not replace, the existing single-node model recommendation described in [`MODEL_REGISTRY.md`](MODEL_REGISTRY.md): hardware-aware model selection still runs per node, unchanged. Hub Pool only changes *where* a resolved model actually runs once more than one Hub is paired.
 
@@ -137,7 +137,7 @@ Per-peer disable keeps the pairing, both directional tokens and the health poll 
 
 ## Operator status and routing log
 
-- **`GET /api/inference/pool/status`** (session auth) answers the whole question in one call: `enabled` / `disabledBy` / `reason` (`active`, `no_peers`, `partially_disabled`, `disabled_by_env`, `disabled_by_setting`), `directions` (each of `outbound`/`inbound` with its own `enabled`/`disabledBy`), `routingActive` — which now means outbound is on **and** at least one connected, *enabled* peer exists — the persisted `settings`, `tailscaleAdminApiConfigured` (whether this Hub can enumerate the *whole* tailnet — the boolean only, never the credentials; it is **not** a report on whether discovery works, since the daemon peer map and the Portal registry need no credential and are not reported here), this node's identity, queue depth and per-backend model inventory, and every peer with its status, `lastSeenAt`, `consecutiveFailures`, cached backends/models, and the number of requests currently forwarded to it. Peer rows go through `toPublicPeer`, so the token columns cannot appear. It is cheap enough to poll: one `SELECT`, in-memory counters, the 30s-cached Tailscale status, and a 20s-cached local inventory — it never runs peer discovery (an HTTPS probe per unpaired candidate, plus a Portal dispatch call and, with a credential, a Tailscale OAuth exchange) and never re-probes peers.
+- **`GET /api/inference/pool/status`** (session auth) answers the whole question in one call: `enabled` / `disabledBy` / `reason` (`active`, `no_peers`, `partially_disabled`, `disabled_by_env`, `disabled_by_setting`), `directions` (each of `outbound`/`inbound` with its own `enabled`/`disabledBy`), `routingActive` — which now means outbound is on **and** at least one connected, *enabled* peer exists — the persisted `settings`, `tailscaleAdminApiConfigured` (whether this Hub can enumerate the *whole* tailnet — the boolean only, never the credentials; it is **not** a report on whether discovery works, since the daemon peer map and the Portal registry need no credential and neither is reported here — `localNode.tailscaleConnected` is the only other discovery-adjacent field in the response, and it is the daemon leg's precondition rather than its result), this node's identity, queue depth and per-backend model inventory, and every peer with its status, `lastSeenAt`, `consecutiveFailures`, cached backends/models, and the number of requests currently forwarded to it. Peer rows go through `toPublicPeer`, so the token columns cannot appear. It is cheap enough to poll: one `SELECT`, in-memory counters, the 30s-cached Tailscale status, and a 20s-cached local inventory — it never runs peer discovery (an HTTPS probe per unpaired candidate, plus a Portal dispatch call and, with a credential, a Tailscale OAuth exchange) and never re-probes peers.
 - **`GET /api/inference/pool/routing-log?limit=`** (session auth) returns the last 200 routing decisions, newest first: timestamp, direction, path, model, the node that served it, how many candidates were ranked, which attempt won, the chain of nodes that were tried and rejected before it, outcome, upstream status and time to response headers, and `pin` — the shape of the operator pin that ordered the candidates, or `null` (always `null` inbound: a peer's forward is never re-routed). A request that failed over is **one** entry carrying `failedOverFrom`, not one per attempt. Inbound entries record work a *peer* forwarded to this node's engines, attributed to the peer the guard authenticated. It is bounded, in-memory and process-local — no database table, and nothing survives a restart — and it records metadata only: never a prompt, a request body, or a response.
 
 ## Peer identity: PIN pairing and signed requests
@@ -307,7 +307,7 @@ it"; the PIN-gated exchange answers "and this is who it is".
    `/identify` does not disclose one — so pairing by address needs a PIN and happens from the CLI:
    - **By directory:** `cihub pool discover`, or the Discoverable devices list in the UI. On a tailnet-connected Hub this already works with no credential, and on a registered Hub it also lists the Hubs on your CI account. Set the Tailscale OAuth client env vars above to add the whole tailnet. See [Where pairing candidates come from](#where-pairing-candidates-come-from).
    - **By address, no directory needed:** `cihub pool probe 192.168.1.42` (or `192.168.1.42:5002`, or a hostname) confirms a Hub is there; `cihub pool pair 192.168.1.42 --pin <digits>` pairs with it, using a PIN minted on that Hub. See [Finding a peer by address](#finding-a-peer-by-address) for what each half does and does not do.
-3. Open **Settings → Network → Hub Pool**. Named candidates appear with a **Pair** button — a Hub found by address is not in that list (it has no name to show yet) and is paired with from the CLI. When the list is empty and no OAuth credential is set, the section says which variables would add whole-tailnet enumeration rather than showing a bare empty list. It does not claim discovery is off, because it cannot: `GET status` reports the Tailscale credential and says nothing about the other two directories.
+3. Open **Settings → Network → Hub Pool**. Named candidates appear with a **Pair** button — a Hub found by address is not in that list (it has no name to show yet) and is paired with from the CLI. With no OAuth credential and nothing to list, the section says which variables would add whole-tailnet enumeration rather than showing a bare empty list. It does not claim discovery is off, because it cannot: of the three directories, `GET status` reports only the Tailscale credential and `localNode.tailscaleConnected`, and says nothing at all about the Portal registry.
 4. On the *other* Hub, a pending inbound request appears with **Approve** / **Reject**, identified by the requester's FQDN and — when the request carried a pairing PIN — its key fingerprint, which is the value to compare against that Hub's own **Pairing PIN** card.
 5. Once connected, both Hubs' **Hub Pool** sections show whether pooling is actually routing (and if not, which of the two kill switches is responsible), the `poolEnabled` and `poolLocalAffinity` controls, each peer's status / last-seen / queue depth / hardware tier / engines, the merged list of models the pool can serve and which nodes hold each, and the recent routing decisions with failovers called out.
 
@@ -337,8 +337,10 @@ itself. **None of the three is required.** A Hub with none of them still pairs, 
 
 The credential does not stand on its own: the Admin API is queried with the tailnet name the *local*
 daemon reports, so a Hub that has not joined a tailnet enumerates nothing from it however valid the
-OAuth client is. A directory that fails is logged at debug level and contributes nothing; the others
-still answer.
+OAuth client is. A directory that fails contributes nothing and the others still answer: the Admin
+API and Portal legs each catch their own failure and log it at debug level, and a `tailscale status`
+read that fails is logged at warn by `TailscaleService` and answers "not connected", which empties
+the daemon leg without failing it.
 
 **A node two directories both name is offered once.** `mergePoolCandidates` folds on the normalized
 FQDN — never on a UUID the far side claims, which would hand a hostile box a way to suppress a real
@@ -352,9 +354,12 @@ is a *name* — a MagicDNS name — and everything downstream still dials the ta
 probe, and then `https://<fqdn>` for pairing callbacks, health polls and proxied requests. Two
 consequences are worth knowing before you expect a device to appear:
 
-- **A device Portal knows only by LAN address is not listed.** `normalizePeerFqdn` refuses an IP
-  literal, so such a row could never survive the `peers/pair` it exists to feed. That Hub is paired
-  with by address and a PIN instead, which is the route that does learn a name.
+- **A device Portal knows only by LAN address is not listed.** `tailscaleDns` is the only field read
+  off a Portal row, so a device without one is skipped before anything is normalized — `lanIp`,
+  `lanUrl`, `hubUrl` and `tailscaleIp` are never consulted. `normalizePeerFqdn` is the second net,
+  refusing an IP literal should Portal ever put one in that field, because such a name could not
+  survive the `peers/pair` the row exists to feed. That Hub is paired with by address and a PIN
+  instead, which is the route that does learn a name.
 - **A device registered to the same account on a *different* tailnet is dropped at the probe**, not
   offered. Listing it would only move the failure to the pairing call. Pooling across networks would
   be a transport change — probing and pairing over Portal's `hubUrl` — not a discovery one, which is

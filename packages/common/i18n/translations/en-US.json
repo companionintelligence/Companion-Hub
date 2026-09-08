@@ -2033,7 +2033,7 @@
   "HUB_POOL_ROUTING_FAILED_LABEL": "No node served this",
   "HUB_POOL_ROUTING_FAILOVER": "Failed over from {{nodes}}",
   "HUB_POOL_DISCOVERABLE_HELP": "CI-Hub devices this Hub can name and has not paired with yet, from your tailnet and from the Hubs registered to your CI account.",
-  "HUB_POOL_DISCOVERY_UNCONFIGURED": "No unpaired CI-Hub devices found, and this Hub has no Tailscale API credential, so it cannot list your whole tailnet at once. It still names the tailnet peers its own Tailscale daemon can see, and the Hubs registered to your CI account. To enumerate the tailnet, set TAILSCALE_OAUTH_CLIENT_ID and TAILSCALE_OAUTH_CLIENT_SECRET in the Hub's .env and restart. Neither is needed to be paired with: another Hub's request appears below.",
+  "HUB_POOL_DISCOVERY_UNCONFIGURED": "This Hub has no Tailscale API credential, so it cannot list your whole tailnet at once. Discovery still asks the peers this Hub's own Tailscale daemon can see when it is connected to a tailnet, and the Hubs on your CI account when this Hub is registered to one — neither of those needs a credential. To enumerate the tailnet, set TAILSCALE_OAUTH_CLIENT_ID and TAILSCALE_OAUTH_CLIENT_SECRET in the Hub's .env and restart. The credential is not needed to be paired with: another Hub's request appears below.",
   "HUB_POOL_PENDING_HELP": "Pairing is two-way: approve a request here, and the other Hub approves yours.",
   "HUB_POOL_CANCEL_REQUEST_BUTTON": "Cancel request",
   "HUB_POOL_CANCEL_REQUEST_SUCCESS": "Pairing request cancelled.",

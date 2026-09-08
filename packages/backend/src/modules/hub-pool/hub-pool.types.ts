@@ -152,8 +152,9 @@ export interface DiscoverablePoolPeer {
    * Portal device id on a Portal one. It is a display value and nothing more — `hub_pool_peer` is
    * keyed on `nodeFqdn`, and every write of `tailscale_device_id` passes `null`.
    *
-   * Empty string, never absent, so the CLI's `sanitizeForBox` and the settings list keep a
-   * non-nullable field to render.
+   * Empty string, never absent, so a consumer has a value to render without a null check. The CLI's
+   * discover table is the only surface that renders it at all (`sanitizeForBox(id || '-')`); the
+   * settings list shows the hostname and keys on the FQDN.
    */
   tailscaleDeviceId: string;
   nodeFqdn: string;
@@ -172,10 +173,10 @@ export interface DiscoverablePoolPeer {
    * have meant tagging every tailnet entry to make it honest, which adds a field to a wire response
    * that no reader has asked for.
    *
-   * Nothing reads it yet. It is here for an operator surface that wants to say which directory
-   * named a node, and it is a badge rather than a nullable `tailscaleDeviceId` because widening that
-   * field is a type error on the CLI's `sanitizeForBox` and a duplicate React key in the settings
-   * list.
+   * Nothing reads it yet. It is here for an operator surface that wants to say which directory named
+   * a node, and it is a badge of its own rather than something inferred from `tailscaleDeviceId`
+   * because that id is a display value both directories supply — an absent id would mean "this
+   * directory had no id for the node", never "the tailnet named this".
    */
   source?: 'portal';
   /**
@@ -356,7 +357,18 @@ export interface PoolStatus {
   routingActive: boolean;
   /** The persisted settings as stored, before the env override — what a settings form should render. */
   settings: HubPoolPreferences;
-  /** Whether TAILSCALE_OAUTH_CLIENT_ID/SECRET are set, i.e. whether peer discovery can work at all. Never the credentials themselves. */
+  /**
+   * Whether TAILSCALE_OAUTH_CLIENT_ID/SECRET are set, i.e. whether this Hub can enumerate the
+   * *whole* tailnet through the Tailscale Admin API. Never the credentials themselves.
+   *
+   * It is **not** a report on whether peer discovery works. The Admin API is one of three candidate
+   * directories, and the other two need no credential: the local Tailscale daemon's peer map, and
+   * the CI Portal device registry. Neither of those is reported here — the closest this response
+   * comes is {@link PoolStatusLocalNode.tailscaleConnected}, which is the daemon leg's precondition.
+   * A Hub reading `false` here may still be discovering peers; a Hub reading `true` with no tailnet
+   * enumerates nothing, since the Admin API is queried with the tailnet name the local daemon
+   * reports.
+   */
   tailscaleAdminApiConfigured: boolean;
   localNode: PoolStatusLocalNode;
   peers: PoolStatusPeer[];

@@ -153,10 +153,13 @@ export class HubPoolDiscoveryService {
    * name — the two sources overlap heavily by design, and {@link mergePoolCandidates} keeps the
    * tailnet entry when they do.
    *
-   * A device Portal knows only by LAN address is skipped for a different reason: `normalizePeerFqdn`
-   * refuses an IP literal, so such a row could never survive the `peers/pair` it exists to feed, and
-   * an unnamed candidate is exactly the second identity space this module refuses to open. That Hub
-   * is paired with by address and PIN through {@link pairAtAddress}, which does learn a name.
+   * A device Portal knows only by LAN address is skipped for a different reason: `tailscaleDns` is
+   * the only field read, so a row without one is dropped before anything is normalized — `lanIp`,
+   * `lanUrl` and `tailscaleIp` are never consulted. `normalizePeerFqdn` is the second net, refusing
+   * an IP literal should Portal ever put one in that field, because such a name could not survive
+   * the `peers/pair` this row exists to feed, and an unnamed candidate is exactly the second
+   * identity space this module refuses to open. That Hub is paired with by address and PIN through
+   * {@link pairAtAddress}, which does learn a name.
    */
   private async listPortalCandidates(): Promise<DiscoverablePoolPeer[]> {
     if (!this.portalClient) return [];
