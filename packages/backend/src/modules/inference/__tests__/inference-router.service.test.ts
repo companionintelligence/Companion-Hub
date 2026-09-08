@@ -195,4 +195,46 @@ describe('InferenceRouterService', () => {
       expect(ollama?.url).toBe('http://ci-hub-ollama:11434');
     });
   });
+  describe('backend probing', () => {
+    /**
+     * Regression: `getStatus()` used to health-check every backend twice — once in its own parallel
+     * fan-out, then again inside `listModels()`, which walked the registry with `await` in a `for`
+     * loop. On a node with one backend whose URL does not resolve, Node's `getaddrinfo` blocks for
+     * the resolver timeout, so that doubling turned a 5s stall into 10s and blew the 8s budget in
+     * `HubPoolPeerService`'s capabilities probe — the peer went permanently unreachable and nothing
+     * routed to it.
+     */
+    it('health-checks each backend exactly once per getStatus(), not twice', async () => {
+      const status = await service.getStatus();
+
+      expect(status.backends).toHaveLength(6);
+      for (const backend of [ollamaBackend, vllmBackend, lemonadeBackend, mtplxBackend, dsparkBackend, luceboxBackend]) {
+        expect(backend.healthCheck).toHaveBeenCalledTimes(1);
+      }
+    });
+
+    it('probes backends concurrently, so one stalled backend costs its own latency and not the sum', async () => {
+      const STALL_MS = 40;
+      let inFlight = 0;
+      let peakInFlight = 0;
+      for (const backend of [ollamaBackend, vllmBackend, lemonadeBackend, mtplxBackend, dsparkBackend, luceboxBackend]) {
+        backend.healthCheck.mockImplementation(async () => {
+          inFlight += 1;
+          peakInFlight = Math.max(peakInFlight, inFlight);
+          await new Promise((resolve) => setTimeout(resolve, STALL_MS));
+          inFlight -= 1;
+          return { running: false, healthy: false, modelsLoaded: [] };
+        });
+      }
+
+      const startedAt = Date.now();
+      await service.listModels();
+      const elapsed = Date.now() - startedAt;
+
+      // All six overlap. Sequential would be ~6 x STALL_MS; assert well under that rather than
+      // pinning a wall-clock figure a slow CI box would flake on.
+      expect(peakInFlight).toBe(6);
+      expect(elapsed).toBeLessThan(STALL_MS * 4);
+    });
+  });
 });
