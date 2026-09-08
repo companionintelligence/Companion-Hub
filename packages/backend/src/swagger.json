@@ -360,89 +360,9 @@
     "/api/registration/callback": {
       "post": {
         "operationId": "handleCallbackPost",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "description": "Registration completed successfully"
-          },
-          "400": {
-            "description": "Invalid callback data"
-          }
-        },
-        "summary": "Handle registration callback from CI Cloud (preferred — secrets in body)",
-        "tags": [
-          "Registration"
-        ]
-      },
-      "get": {
-        "operationId": "handleCallback",
         "parameters": [
           {
-            "name": "device_id",
-            "required": true,
-            "in": "query",
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "organization_id",
-            "required": true,
-            "in": "query",
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "organization_name",
-            "required": true,
-            "in": "query",
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "slug",
-            "required": true,
-            "in": "query",
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "subdomain",
-            "required": true,
-            "in": "query",
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "tunnel_id",
-            "required": true,
-            "in": "query",
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "tunnel_token",
-            "required": true,
-            "in": "query",
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "api_key",
-            "required": true,
-            "in": "query",
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "domain",
+            "name": "state",
             "required": true,
             "in": "query",
             "schema": {
@@ -456,9 +376,12 @@
           },
           "400": {
             "description": "Invalid callback data"
+          },
+          "403": {
+            "description": "No valid registration nonce, or the Hub is already registered"
           }
         },
-        "summary": "Handle registration callback from CI Cloud (legacy GET redirect)",
+        "summary": "Handle registration callback from CI Cloud",
         "tags": [
           "Registration"
         ]
@@ -2542,6 +2465,90 @@
         ]
       }
     },
+    "/api/inference/v1/chat/completions": {
+      "post": {
+        "operationId": "v1ChatCompletions",
+        "parameters": [],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Inference"
+        ]
+      }
+    },
+    "/api/inference/v1/completions": {
+      "post": {
+        "operationId": "v1Completions",
+        "parameters": [],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Inference"
+        ]
+      }
+    },
+    "/api/inference/v1/embeddings": {
+      "post": {
+        "operationId": "v1Embeddings",
+        "parameters": [],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Inference"
+        ]
+      }
+    },
+    "/api/inference/v1/models": {
+      "get": {
+        "operationId": "v1Models",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Inference"
+        ]
+      }
+    },
+    "/api/inference/v1/audio/speech": {
+      "post": {
+        "operationId": "v1AudioSpeech",
+        "parameters": [],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Inference"
+        ]
+      }
+    },
+    "/api/inference/v1/audio/transcriptions": {
+      "post": {
+        "operationId": "v1AudioTranscriptions",
+        "parameters": [],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Inference"
+        ]
+      }
+    },
     "/api/inference/health": {
       "get": {
         "operationId": "health",
@@ -2626,6 +2633,20 @@
     "/api/inference/status": {
       "get": {
         "operationId": "getStatus",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Inference"
+        ]
+      }
+    },
+    "/api/inference/supervision": {
+      "get": {
+        "operationId": "getSupervision",
         "parameters": [],
         "responses": {
           "200": {
@@ -6625,6 +6646,18 @@
                 "minimum": 0,
                 "maximum": 3
               },
+              "inferenceSupervisionMode": {
+                "type": "string",
+                "enum": [
+                  "off",
+                  "observe"
+                ]
+              },
+              "inferenceSupervisionPollSeconds": {
+                "type": "integer",
+                "minimum": 10,
+                "maximum": 300
+              },
               "hubPoolPins": {
                 "maxItems": 64,
                 "type": "array",
@@ -7090,6 +7123,18 @@
             "type": "integer",
             "minimum": 0,
             "maximum": 3
+          },
+          "inferenceSupervisionMode": {
+            "type": "string",
+            "enum": [
+              "off",
+              "observe"
+            ]
+          },
+          "inferenceSupervisionPollSeconds": {
+            "type": "integer",
+            "minimum": 10,
+            "maximum": 300
           },
           "hubPoolPins": {
             "maxItems": 64,
@@ -8132,6 +8177,57 @@
                           "amd64"
                         ]
                       }
+                    },
+                    "gpu_requirements": {
+                      "type": "object",
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "enum": [
+                            "cuda",
+                            "rocm",
+                            "oneapi"
+                          ]
+                        },
+                        "optional": {
+                          "type": "boolean"
+                        },
+                        "host_platforms": {
+                          "minItems": 1,
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "enum": [
+                              "linux",
+                              "windows"
+                            ]
+                          }
+                        },
+                        "host_devices": {
+                          "minItems": 1,
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "pattern": "^\\/dev\\/[A-Za-z0-9._/-]+$"
+                          }
+                        },
+                        "minimum_vram_gb": {
+                          "type": "number",
+                          "minimum": 0,
+                          "exclusiveMinimum": true
+                        },
+                        "recommended_vram_gb": {
+                          "type": "number",
+                          "minimum": 0,
+                          "exclusiveMinimum": true
+                        }
+                      },
+                      "required": [
+                        "type",
+                        "optional",
+                        "host_platforms"
+                      ],
+                      "additionalProperties": false
                     },
                     "uid": {
                       "type": "number"
@@ -9325,6 +9421,57 @@
                           "amd64"
                         ]
                       }
+                    },
+                    "gpu_requirements": {
+                      "type": "object",
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "enum": [
+                            "cuda",
+                            "rocm",
+                            "oneapi"
+                          ]
+                        },
+                        "optional": {
+                          "type": "boolean"
+                        },
+                        "host_platforms": {
+                          "minItems": 1,
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "enum": [
+                              "linux",
+                              "windows"
+                            ]
+                          }
+                        },
+                        "host_devices": {
+                          "minItems": 1,
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "pattern": "^\\/dev\\/[A-Za-z0-9._/-]+$"
+                          }
+                        },
+                        "minimum_vram_gb": {
+                          "type": "number",
+                          "minimum": 0,
+                          "exclusiveMinimum": true
+                        },
+                        "recommended_vram_gb": {
+                          "type": "number",
+                          "minimum": 0,
+                          "exclusiveMinimum": true
+                        }
+                      },
+                      "required": [
+                        "type",
+                        "optional",
+                        "host_platforms"
+                      ],
+                      "additionalProperties": false
                     },
                     "uid": {
                       "type": "number"
@@ -10650,6 +10797,57 @@
                     "amd64"
                   ]
                 }
+              },
+              "gpu_requirements": {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "enum": [
+                      "cuda",
+                      "rocm",
+                      "oneapi"
+                    ]
+                  },
+                  "optional": {
+                    "type": "boolean"
+                  },
+                  "host_platforms": {
+                    "minItems": 1,
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "enum": [
+                        "linux",
+                        "windows"
+                      ]
+                    }
+                  },
+                  "host_devices": {
+                    "minItems": 1,
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "pattern": "^\\/dev\\/[A-Za-z0-9._/-]+$"
+                    }
+                  },
+                  "minimum_vram_gb": {
+                    "type": "number",
+                    "minimum": 0,
+                    "exclusiveMinimum": true
+                  },
+                  "recommended_vram_gb": {
+                    "type": "number",
+                    "minimum": 0,
+                    "exclusiveMinimum": true
+                  }
+                },
+                "required": [
+                  "type",
+                  "optional",
+                  "host_platforms"
+                ],
+                "additionalProperties": false
               },
               "uid": {
                 "type": "number"

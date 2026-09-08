@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { Injectable, type OnApplicationBootstrap, type OnApplicationShutdown, Inject, forwardRef, Optional } from '@nestjs/common';
@@ -800,6 +801,85 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
       hasStaleTunnelToken,
       hasOrphanedDbRegistration,
     });
+  }
+
+  /**
+   * One-time secrets for the registration callback, and when they were minted.
+   *
+   * ⚠ THE CALLBACK IS HOW A HUB LEARNS ITS OWN CREDENTIALS, and it used to
+   * accept them from anybody. `POST /registration/callback` had no guard of any
+   * kind — no session, no device key, nothing — and the body it takes carries
+   * `api_key`, `tunnel_id` and `tunnel_token`. Anyone who could reach the Hub's
+   * HTTP port could therefore hand it an attacker-chosen Portal key and tunnel
+   * and have it re-register itself onto them.
+   *
+   * A nonce is minted only by `getDeviceId`, which is what builds the
+   * `callback_url` handed to Portal — so possession of one proves the callback
+   * belongs to a registration THIS Hub started. Portal treats `callback_url` as
+   * opaque and returns to it, so the value comes back without Portal knowing it
+   * is there.
+   *
+   * In memory on purpose: a nonce must not survive a restart, because a
+   * registration attempt does not either.
+   */
+  private readonly callbackNonces = new Map<string, number>();
+
+  /** Long enough for a person to sign in at Portal and pick an organization. */
+  private static readonly CALLBACK_NONCE_TTL_MS = 30 * 60 * 1000;
+
+  /** Bounded, so an unauthenticated mint route cannot grow this without limit. */
+  private static readonly CALLBACK_NONCE_MAX = 32;
+
+  /** Mint a nonce for a registration this Hub is starting. */
+  public mintCallbackNonce(): string {
+    this.pruneCallbackNonces();
+
+    if (this.callbackNonces.size >= RegistrationService.CALLBACK_NONCE_MAX) {
+      // Drop the oldest rather than refusing: a person retrying the setup page
+      // must not be locked out by their own earlier attempts.
+      const oldest = [...this.callbackNonces.entries()].sort((a, b) => a[1] - b[1])[0];
+
+      if (oldest) {
+        this.callbackNonces.delete(oldest[0]);
+      }
+    }
+
+    const nonce = randomUUID();
+
+    this.callbackNonces.set(nonce, Date.now());
+
+    return nonce;
+  }
+
+  /**
+   * Spend a nonce. Returns false when it was never minted here, was already
+   * used, or has expired — all of which mean the same thing to the caller.
+   */
+  public consumeCallbackNonce(nonce: string | undefined): boolean {
+    if (!nonce) {
+      return false;
+    }
+
+    this.pruneCallbackNonces();
+
+    return this.callbackNonces.delete(nonce);
+  }
+
+  private pruneCallbackNonces(): void {
+    const cutoff = Date.now() - RegistrationService.CALLBACK_NONCE_TTL_MS;
+
+    for (const [nonce, mintedAt] of this.callbackNonces) {
+      if (mintedAt < cutoff) {
+        this.callbackNonces.delete(nonce);
+      }
+    }
+  }
+
+  /** Whether this Hub is already registered and running. */
+  public async isCurrentlyOperational(): Promise<boolean> {
+    await this.refreshPhaseFromSources();
+
+    return isOperational(this._currentPhase);
   }
 
   /** Persists restore intent beyond `sessionStorage` before the device pairs again. */

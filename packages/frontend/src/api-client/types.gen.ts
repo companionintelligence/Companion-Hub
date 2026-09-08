@@ -89,6 +89,8 @@ export type AppContextDto = {
         hubPoolHealthPollSeconds?: number;
         hubPoolRequireSignedPeers?: boolean;
         hubPoolPressureWeight?: number;
+        inferenceSupervisionMode?: 'off' | 'observe';
+        inferenceSupervisionPollSeconds?: number;
         hubPoolPins?: Array<{
             scope: 'default' | 'model';
             model?: string;
@@ -185,6 +187,8 @@ export type UserSettingsBody = {
     hubPoolHealthPollSeconds?: number;
     hubPoolRequireSignedPeers?: boolean;
     hubPoolPressureWeight?: number;
+    inferenceSupervisionMode?: 'off' | 'observe';
+    inferenceSupervisionPollSeconds?: number;
     hubPoolPins?: Array<{
         scope: 'default' | 'model';
         model?: string;
@@ -451,6 +455,14 @@ export type MyAppsDto = {
             exposable: boolean;
             no_gui: boolean;
             supported_architectures: Array<'arm64' | 'amd64'>;
+            gpu_requirements?: {
+                type: 'cuda' | 'rocm' | 'oneapi';
+                optional: boolean;
+                host_platforms: Array<'linux' | 'windows'>;
+                host_devices?: Array<string>;
+                minimum_vram_gb?: number;
+                recommended_vram_gb?: number;
+            };
             uid?: number;
             gid?: number;
             dynamic_config: boolean;
@@ -698,6 +710,14 @@ export type GuestAppsDto = {
             exposable: boolean;
             no_gui: boolean;
             supported_architectures: Array<'arm64' | 'amd64'>;
+            gpu_requirements?: {
+                type: 'cuda' | 'rocm' | 'oneapi';
+                optional: boolean;
+                host_platforms: Array<'linux' | 'windows'>;
+                host_devices?: Array<string>;
+                minimum_vram_gb?: number;
+                recommended_vram_gb?: number;
+            };
             uid?: number;
             gid?: number;
             dynamic_config: boolean;
@@ -974,6 +994,14 @@ export type GetAppDto = {
         exposable: boolean;
         no_gui: boolean;
         supported_architectures: Array<'arm64' | 'amd64'>;
+        gpu_requirements?: {
+            type: 'cuda' | 'rocm' | 'oneapi';
+            optional: boolean;
+            host_platforms: Array<'linux' | 'windows'>;
+            host_devices?: Array<string>;
+            minimum_vram_gb?: number;
+            recommended_vram_gb?: number;
+        };
         uid?: number;
         gid?: number;
         dynamic_config: boolean;
@@ -2380,41 +2408,12 @@ export type GetDeviceIdResponses = {
     200: unknown;
 };
 
-export type HandleCallbackData = {
-    body?: never;
-    path?: never;
-    query: {
-        device_id: string;
-        organization_id: string;
-        organization_name: string;
-        slug: string;
-        subdomain: string;
-        tunnel_id: string;
-        tunnel_token: string;
-        api_key: string;
-        domain: string;
-    };
-    url: '/api/registration/callback';
-};
-
-export type HandleCallbackErrors = {
-    /**
-     * Invalid callback data
-     */
-    400: unknown;
-};
-
-export type HandleCallbackResponses = {
-    /**
-     * Registration completed successfully
-     */
-    200: unknown;
-};
-
 export type HandleCallbackPostData = {
     body?: never;
     path?: never;
-    query?: never;
+    query: {
+        state: string;
+    };
     url: '/api/registration/callback';
 };
 
@@ -2423,6 +2422,10 @@ export type HandleCallbackPostErrors = {
      * Invalid callback data
      */
     400: unknown;
+    /**
+     * No valid registration nonce, or the Hub is already registered
+     */
+    403: unknown;
 };
 
 export type HandleCallbackPostResponses = {
@@ -3610,6 +3613,72 @@ export type UpdateAppStoreResponses = {
 
 export type UpdateAppStoreResponse = UpdateAppStoreResponses[keyof UpdateAppStoreResponses];
 
+export type V1ChatCompletionsData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/inference/v1/chat/completions';
+};
+
+export type V1ChatCompletionsResponses = {
+    201: unknown;
+};
+
+export type V1CompletionsData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/inference/v1/completions';
+};
+
+export type V1CompletionsResponses = {
+    201: unknown;
+};
+
+export type V1EmbeddingsData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/inference/v1/embeddings';
+};
+
+export type V1EmbeddingsResponses = {
+    201: unknown;
+};
+
+export type V1ModelsData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/inference/v1/models';
+};
+
+export type V1ModelsResponses = {
+    200: unknown;
+};
+
+export type V1AudioSpeechData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/inference/v1/audio/speech';
+};
+
+export type V1AudioSpeechResponses = {
+    201: unknown;
+};
+
+export type V1AudioTranscriptionsData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/inference/v1/audio/transcriptions';
+};
+
+export type V1AudioTranscriptionsResponses = {
+    201: unknown;
+};
+
 export type HealthData = {
     body?: never;
     path?: never;
@@ -3664,6 +3733,17 @@ export type GetStatus3Data = {
 };
 
 export type GetStatus3Responses = {
+    200: unknown;
+};
+
+export type GetSupervisionData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/inference/supervision';
+};
+
+export type GetSupervisionResponses = {
     200: unknown;
 };
 

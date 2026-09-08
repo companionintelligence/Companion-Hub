@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Post, Query, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, ForbiddenException, Get, Post, Query, Req, UseGuards } from '@nestjs/common';
 import type { Request } from 'express';
 import { RegistrationService } from './registration.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
@@ -25,6 +25,8 @@ interface PairDeviceDto {
 }
 
 interface RegistrationCallbackDto {
+  /** The nonce this Hub minted for the registration; see `handleCallbackPost`. */
+  state?: string;
   device_id: string;
   organization_id: string;
   organization_name: string;
@@ -104,7 +106,23 @@ export class RegistrationController {
     // returns to the same Hub address the browser used.
     const protocol = req.protocol || 'http';
     const host = req.get('host') || 'localhost:3000';
-    const callbackUrl = `${protocol}://${host}/device-registration`;
+
+    /*
+     * ⚠ A ONE-TIME SECRET RIDES IN THE CALLBACK URL, and that is what makes the
+     * callback trustworthy.
+     *
+     * `POST /registration/callback` accepts `api_key`, `tunnel_id` and
+     * `tunnel_token` — the Hub's whole identity — and had no guard of any kind.
+     * Anyone who could reach this port could hand the Hub attacker-chosen
+     * credentials and re-register it onto their own Portal account and tunnel.
+     *
+     * Minting here binds the callback to a registration THIS Hub started: the
+     * nonce exists only in this process's memory, and only a caller who was
+     * given this URL can echo it back. Portal treats `callback_url` as opaque
+     * and returns to it verbatim, so no Portal change is needed.
+     */
+    const callbackNonce = this.registrationService.mintCallbackNonce();
+    const callbackUrl = `${protocol}://${host}/device-registration?state=${encodeURIComponent(callbackNonce)}`;
 
     // Use Companion Portal's `/device/register` entry route for authentication
     // and Add Device. Treat blank configuration like a missing value.
@@ -121,41 +139,64 @@ export class RegistrationController {
   }
 
   @Post('callback')
-  @ApiOperation({ summary: 'Handle registration callback from CI Cloud (preferred — secrets in body)' })
+  @ApiOperation({ summary: 'Handle registration callback from CI Cloud' })
   @ApiResponse({ status: 200, description: 'Registration completed successfully' })
   @ApiResponse({ status: 400, description: 'Invalid callback data' })
-  async handleCallbackPost(@Body() body: RegistrationCallbackDto) {
+  @ApiResponse({ status: 403, description: 'No valid registration nonce, or the Hub is already registered' })
+  async handleCallbackPost(@Body() body: RegistrationCallbackDto, @Query('state') stateQuery?: string) {
+    /*
+     * ⚠ THIS ROUTE HANDS THE HUB ITS IDENTITY, SO IT HAS TO PROVE WHERE IT CAME
+     * FROM.
+     *
+     * The body carries `api_key`, `tunnel_id` and `tunnel_token`. With no guard
+     * at all — no session, no device key, nothing — anyone who could reach this
+     * port could re-register a running Hub onto credentials and a tunnel of
+     * their choosing, and then receive everything it serves.
+     *
+     * The nonce is minted by `GET /registration/device-id`, which is what builds
+     * the `callback_url` Portal is sent to, and it is spent here. It proves the
+     * callback belongs to a registration this Hub started; it does not
+     * authenticate Portal, which is why the operational check below is also
+     * needed.
+     *
+     * Accepted from the query string OR the body: the query is where it arrives
+     * when Portal returns to `callback_url` verbatim, and the body is for a
+     * client that has parsed the redirect and re-posts it.
+     */
+    if (!this.registrationService.consumeCallbackNonce(stateQuery ?? body?.state)) {
+      this.logger.warn('Rejected registration callback with no valid nonce');
+
+      throw new ForbiddenException('This registration link is not valid any more. Start pairing again from this Hub.');
+    }
+
+    /*
+     * ⚠ AND A REGISTERED HUB DOES NOT ACCEPT ONE.
+     *
+     * A nonce is minted by an UNAUTHENTICATED route, so on its own it does not
+     * stop someone who can reach this port from starting a registration and
+     * completing it. Re-registering a Hub that is already running is not a thing
+     * a callback should ever do — `resetRegistration` is the deliberate,
+     * authenticated way to reach that state, and `prepareFreshSetup` and
+     * `markRestoreIntent` both refuse on the same test for the same reason.
+     */
+    if (await this.registrationService.isCurrentlyOperational()) {
+      this.logger.warn('Rejected registration callback: this Hub is already registered');
+
+      throw new ForbiddenException('This Hub is already registered. Reset its registration from Settings before pairing it again.');
+    }
+
     return this.completeRegistrationCallback(body);
   }
 
-  /** Supports the legacy Portal redirect; POST keeps secrets out of query strings. */
-  @Get('callback')
-  @ApiOperation({ summary: 'Handle registration callback from CI Cloud (legacy GET redirect)' })
-  @ApiResponse({ status: 200, description: 'Registration completed successfully' })
-  @ApiResponse({ status: 400, description: 'Invalid callback data' })
-  async handleCallback(
-    @Query('device_id') deviceId: string,
-    @Query('organization_id') organizationId: string,
-    @Query('organization_name') organizationName: string,
-    @Query('slug') slug: string,
-    @Query('subdomain') subdomain: string,
-    @Query('tunnel_id') tunnelId: string,
-    @Query('tunnel_token') tunnelToken: string,
-    @Query('api_key') apiKey: string,
-    @Query('domain') domain: string,
-  ) {
-    return this.completeRegistrationCallback({
-      device_id: deviceId,
-      organization_id: organizationId,
-      organization_name: organizationName,
-      slug,
-      subdomain,
-      tunnel_id: tunnelId,
-      tunnel_token: tunnelToken,
-      api_key: apiKey,
-      domain,
-    });
-  }
+  /*
+   * ⚠ `GET /registration/callback` IS GONE, AND IT IS NOT COMING BACK.
+   *
+   * It took the same nine values — `api_key` and `tunnel_token` included — as
+   * QUERY PARAMETERS. Those land in access logs, proxy logs, browser history and
+   * `Referer` headers, so the Hub's Portal credential was written to disk in
+   * several places on every registration. Its own comment called it legacy.
+   * A client still using it gets a 404 and should be moved to the POST.
+   */
 
   private async completeRegistrationCallback(body: RegistrationCallbackDto) {
     const {
