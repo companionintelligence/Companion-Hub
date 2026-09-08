@@ -95,13 +95,18 @@ const commandSections: { title: string; entries: CommandEntry[] }[] = [
     title: 'Hub Pool',
     entries: [
       { command: `${BASE_COMMAND} pool status [env]`, description: 'Whether pooling is routing, this node, and every peer' },
+      {
+        command: `${BASE_COMMAND} pool doctor [env] [--check-latency]`,
+        description: 'Preflight: env, tailnet reachability, peer probe budget, and the host bridge',
+      },
       { command: `${BASE_COMMAND} pool peers [env]`, description: 'Paired peers with status, last seen, queue depth, and models' },
       { command: `${BASE_COMMAND} pool discover [env]`, description: 'Unpaired CI-Hub nodes, from your tailnet and your CI account' },
       { command: `${BASE_COMMAND} pool probe <address> [env]`, description: 'Is there a CI-Hub at this LAN address, and can it pair by one?' },
       {
-        command: `${BASE_COMMAND} pool pairing-pin [env] [--cancel]`,
+        command: `${BASE_COMMAND} pool pairing-pin [env]`,
         description: 'Mint the six digits a peer needs to pair with THIS Hub by address',
       },
+      { command: `${BASE_COMMAND} pool cancel-pin [env]`, description: 'Revoke the outstanding pairing PIN before it expires' },
       { command: `${BASE_COMMAND} pool pair <node> [--name <label>] [--yes]`, description: 'Send a pairing request to a peer (it must approve)' },
       { command: `${BASE_COMMAND} pool pair <address> --pin <digits>`, description: '...or pair by LAN address, using the PIN minted on that Hub' },
       { command: `${BASE_COMMAND} pool approve|reject <id> [--yes]`, description: 'Act on a pending inbound pairing request' },

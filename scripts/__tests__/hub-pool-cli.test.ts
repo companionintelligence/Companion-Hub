@@ -6,7 +6,8 @@ import {
   type PoolRoutingLogResponse,
   type PoolStatusResponse,
   cancelPairingPin,
-  formatMintedPairingPinLines,
+  formatPairingPinCancelledLines,
+  formatPairingPinLines,
   formatPairingPinStateLines,
   formatPeerAuthModeLines,
   formatPoolDiscoverLines,
@@ -523,37 +524,22 @@ describe('hub-pool-cli pairing PIN', () => {
     expect((hubApiFetch.mock.calls[1]?.[2] as RequestInit).method).toBe('DELETE');
   });
 
-  it('names the OTHER Hub as where the digits are typed', () => {
+  it('names the OTHER Hub as where the digits are typed, and that approval is still required', () => {
     // The one thing operators get backwards: the PIN is minted on the receiving Hub and typed on the
-    // joining one, the opposite way round from every other pool command.
-    const text = formatMintedPairingPinLines({ pin: '123456', expiresAt: '2026-09-05T10:10:00.000Z' }, 'hub-a.example-tailnet.ts.net').join('\n');
+    // joining one, the opposite way round from every other pool command. Minting is not pre-approval.
+    const text = formatPairingPinLines({ pin: '123456', expiresAt: '2026-09-05T10:10:00.000Z' }, 'hub-a.example-tailnet.ts.net').join('\n');
 
-    expect(text).toContain('123456');
     expect(text).toContain('OTHER Hub');
     expect(text).toContain('cihub pool pair hub-a.example-tailnet.ts.net --pin 123456');
-    expect(text).toContain('single use');
-    // Approval is still required on this side: minting a PIN is not pre-approval.
     expect(text).toContain('cihub pool approve');
   });
 
-  it('still prints usable digits when this node has no name to offer', () => {
-    const text = formatMintedPairingPinLines({ pin: '004200', expiresAt: '2026-09-05T10:10:00.000Z' }, null).join('\n');
+  it('falls back to the address placeholder when this node has no name to offer', () => {
+    // `GET status` is best-effort here, so a Hub that cannot name itself still gets usable digits.
+    const text = formatPairingPinLines({ pin: '004200', expiresAt: '2026-09-05T10:10:00.000Z' }, null).join('\n');
 
     expect(text).toContain('004200');
-    expect(text).toContain('<this-hub-address>');
-  });
-
-  it('shows the key fingerprint to compare, or says why there is none', () => {
-    const withKey = formatMintedPairingPinLines(
-      { pin: '123456', expiresAt: '2026-09-05T10:10:00.000Z', publicKeyFingerprint: 'ab12cd34' },
-      null,
-    ).join('\n');
-    expect(withKey).toContain('ab12cd34');
-
-    const broken = formatMintedPairingPinLines({ pin: '123456', expiresAt: '2026-09-05T10:10:00.000Z', identityError: 'key unreadable' }, null).join(
-      '\n',
-    );
-    expect(broken).toContain('key unreadable');
+    expect(text).toContain('<this-node-address>');
   });
 
   it('reports an outstanding PIN in status, and nothing at all when there is none', () => {
@@ -562,7 +548,7 @@ describe('hub-pool-cli pairing PIN', () => {
 
     const text = formatPairingPinStateLines({ active: true, expiresAt: '2026-09-05T10:10:00.000Z' }).join('\n');
     expect(text).toContain('2026-09-05 10:10:00Z');
-    expect(text).toContain('--cancel');
+    expect(text).toContain('cihub pool cancel-pin');
   });
 
   it('never prints the digits from a status payload', () => {
@@ -608,5 +594,44 @@ describe('hub-pool-cli peer auth mode', () => {
     const text = formatPeerAuthModeLines([peer({ authMode: undefined })], false).join('\n');
 
     expect(text).toContain('legacy bearer token');
+  });
+});
+
+describe('formatPairingPinLines', () => {
+  const minted = (over: Record<string, unknown> = {}) => ({
+    pin: '123456',
+    expiresAt: '2026-09-08T01:50:32.710Z',
+    nodeUuid: 'd5c2a2c9-78c0-4055-b8fb-779a219f9937',
+    publicKeyFingerprint: '82:e7:a9:48:8e:05:a8:9f',
+    identityError: null,
+    ...over,
+  });
+
+  /**
+   * `cihub pool pairing-pin` is named in four places in this repo and twice in docs/CLI.md, and
+   * until now was not a subcommand at all — an operator following the probe output's own
+   * instructions got "unknown subcommand". These assertions pin the output that instruction leads to.
+   */
+  it('shows the digits, the expiry and the exact command to run on the other Hub', () => {
+    const text = formatPairingPinLines(minted()).join('\n');
+
+    expect(text).toContain('123456');
+    expect(text).toContain('cihub pool pair <this-node-address> --pin 123456');
+    // Single-use and time-boxed are the two properties an operator must not have to guess at.
+    expect(text).toContain('Single-use');
+  });
+
+  it('shows the key fingerprint, so the far operator has something to compare', () => {
+    expect(formatPairingPinLines(minted()).join('\n')).toContain('82:e7:a9:48:8e:05:a8:9f');
+  });
+
+  it('surfaces an identity error rather than printing a PIN that cannot complete a handshake', () => {
+    const text = formatPairingPinLines(minted({ identityError: 'keypair unreadable', publicKeyFingerprint: null })).join('\n');
+
+    expect(text).toContain('keypair unreadable');
+  });
+
+  it('says what cancelling actually costs', () => {
+    expect(formatPairingPinCancelledLines().join('\n')).toContain('cancelled');
   });
 });

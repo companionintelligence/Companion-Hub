@@ -81,6 +81,18 @@ guide it did not have.
 
 ---
 
+## Merge note (2026-09-08)
+
+`dev` gained [#1290](https://github.com/companionintelligence/CI-Hub/pull/1290), which fixed the same
+`pairing-pin` gap independently while this branch was open, and [#1293](https://github.com/companionintelligence/CI-Hub/pull/1293),
+which added `cihub pool doctor`. Resolved in favour of the shipped surface: upstream's `cancel-pin`
+**subcommand** replaces the `--cancel` flag described above, and upstream's `mintPairingPin` /
+`cancelPairingPin` / `formatPairingPinLines` replace the duplicates this branch introduced. Two things
+from here were folded into upstream's formatter rather than dropped: the copy-pasteable local node name
+in the printed `pool pair` line, and the note that minting is not pre-approval. Everything with no
+upstream equivalent — the `pool status` PIN/identity/auth-mode blocks, the Portal discovery correction,
+the transcode repairs, and `docs/fleet-setup.md` — is unchanged.
+
 ## Open items / handoff
 
 - **CI-Portal work is needed to make pool discovery's Portal leg real.** It needs a device-key

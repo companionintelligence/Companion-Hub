@@ -166,15 +166,6 @@ export interface PoolProbeResult {
   reason: 'unreachable' | 'not_a_hub' | 'protocol_too_old' | null;
 }
 
-/**
- * What `POST /inference/pool/pairing-pin` returns. The identity fields are flattened into the same
- * object by the controller, and are optional for a Hub whose identity failed to bootstrap.
- */
-export interface MintedPairingPin extends Partial<PoolIdentitySummary> {
-  pin: string;
-  expiresAt: string;
-}
-
 export interface PoolRoutingRecord {
   at: string;
   direction: 'outbound' | 'inbound';
@@ -206,6 +197,67 @@ export async function fetchPoolStatus(envFileName: string): Promise<PoolStatusRe
 
 export async function fetchPoolPeers(envFileName: string): Promise<PoolPeerRow[]> {
   return hubApiFetch<PoolPeerRow[]>(envFileName, '/inference/pool/peers', { signal: AbortSignal.timeout(POOL_GET_TIMEOUT_MS) });
+}
+
+/** What `POST pairing-pin` answers with: the digits, when they expire, and this node's identity. */
+export interface PoolPairingPinMint {
+  pin: string;
+  expiresAt: string;
+  nodeUuid?: string | null;
+  publicKeyFingerprint?: string | null;
+  identityError?: string | null;
+}
+
+/**
+ * Mint the six digits the other Hub needs to pair by address.
+ *
+ * The mutation budget, not the GET one: this writes the outstanding PIN. It is also the ONLY place
+ * the digits are ever returned — `pool status` reports that a PIN is outstanding and when it
+ * expires, never its value — so a caller that loses this output has to mint a new one.
+ */
+export async function mintPairingPin(envFileName: string): Promise<PoolPairingPinMint> {
+  return hubApiFetch<PoolPairingPinMint>(envFileName, '/inference/pool/pairing-pin', {
+    method: 'POST',
+    body: '{}',
+    signal: AbortSignal.timeout(POOL_MUTATION_TIMEOUT_MS),
+  });
+}
+
+/** Revoke the outstanding PIN before it expires on its own. */
+export async function cancelPairingPin(envFileName: string): Promise<{ cancelled: boolean }> {
+  return hubApiFetch<{ cancelled: boolean }>(envFileName, '/inference/pool/pairing-pin', {
+    method: 'DELETE',
+    signal: AbortSignal.timeout(POOL_MUTATION_TIMEOUT_MS),
+  });
+}
+
+/** Renders a freshly minted PIN, including the fingerprint the far operator should be shown. */
+export function formatPairingPinLines(minted: PoolPairingPinMint, localNodeFqdn?: string | null): string[] {
+  const lines = [
+    `${OK} Pairing PIN: ${sanitizeForBox(minted.pin)}`,
+    '',
+    `Expires ${formatPoolTimestamp(minted.expiresAt)}. Single-use, and only one is live at a time.`,
+    '',
+    'On the OTHER Hub:',
+    // The caller passes this node's name when `GET status` could supply one, so the line is
+    // copy-pasteable rather than a template. Any address that reaches this Hub works in its place.
+    `  cihub pool pair ${sanitizeForBox(localNodeFqdn ?? '<this-node-address>')} --pin ${sanitizeForBox(minted.pin)}`,
+  ];
+  if (minted.publicKeyFingerprint) {
+    lines.push('', `This node's key fingerprint is ${sanitizeForBox(minted.publicKeyFingerprint)} — compare it there.`);
+  }
+  if (minted.identityError) {
+    lines.push('', `${FAIL} This node could not load its own pool identity: ${sanitizeForBox(minted.identityError)}`);
+  }
+  // Minting is not pre-approval: the request still lands as `pending` on this side. Worth saying,
+  // because handing someone a PIN feels like the consent step and is not.
+  lines.push('', 'The request still has to be approved here: cihub pool approve <id>');
+  return lines;
+}
+
+/** The cancel confirmation, kept here so the status glyphs stay private to this module. */
+export function formatPairingPinCancelledLines(): string[] {
+  return [`${OK} Outstanding pairing PIN cancelled.`, '', 'Nothing can pair by address to this Hub until a new one is minted.'];
 }
 
 /** One HTTPS probe per tailnet device on the backend, so it gets the mutation budget rather than the GET one. */
@@ -245,32 +297,6 @@ export async function pairPoolPeer(
   return hubApiFetch<PoolPeerRow>(envFileName, '/inference/pool/peers/pair', {
     method: 'POST',
     body: JSON.stringify({ ...target, ...(displayName ? { displayName } : {}), ...(pin ? { pin } : {}) }),
-    signal: AbortSignal.timeout(POOL_MUTATION_TIMEOUT_MS),
-  });
-}
-
-/**
- * Mint the six digits the OTHER Hub needs to pair with this one by LAN address.
- *
- * The digits come back exactly once, here. `GET /status` reports only whether one is outstanding and
- * when it expires, so an operator who loses them mints a new one — minting replaces any PIN already
- * outstanding rather than adding a second.
- *
- * The response also carries this node's identity summary, because the mint is where an operator has
- * both machines in front of them: the fingerprint printed here is the one the far Hub pins.
- */
-export async function mintPairingPin(envFileName: string): Promise<MintedPairingPin> {
-  return hubApiFetch<MintedPairingPin>(envFileName, '/inference/pool/pairing-pin', {
-    method: 'POST',
-    body: '{}',
-    signal: AbortSignal.timeout(POOL_MUTATION_TIMEOUT_MS),
-  });
-}
-
-/** Revoke the outstanding PIN now, rather than waiting out its ten minutes. Idempotent: no PIN is not an error. */
-export async function cancelPairingPin(envFileName: string): Promise<void> {
-  await hubApiFetch(envFileName, '/inference/pool/pairing-pin', {
-    method: 'DELETE',
     signal: AbortSignal.timeout(POOL_MUTATION_TIMEOUT_MS),
   });
 }
@@ -596,7 +622,7 @@ export function formatPairingPinStateLines(pairingPin: PoolPairingPinState | und
   if (!pairingPin?.active) return [];
   return [
     `  Pairing    ${PENDING} PIN outstanding until ${formatPoolTimestamp(pairingPin.expiresAt)}`,
-    '             Revoke it early with: cihub pool pairing-pin --cancel',
+    '             Revoke it early with: cihub pool cancel-pin',
   ];
 }
 
@@ -772,39 +798,6 @@ export function formatPoolProbeLines(result: PoolProbeResult): string[] {
 // --- routing log ---
 
 const LOG_WIDTHS = [20, 4, 20, 34, 5, 7] as const;
-
-/**
- * The minted PIN, and what to do with it in the ten minutes it lives.
- *
- * It is printed on the Hub that will *receive* the pairing request, and typed on the one that sends
- * it — the opposite way round from every other pool command, which is the single thing operators get
- * wrong here. So the digits are labelled with the machine they are for, not just shown.
- */
-export function formatMintedPairingPinLines(minted: MintedPairingPin, localNodeFqdn: string | null): string[] {
-  const lines = [`PIN        ${sanitizeForBox(minted.pin)}`, `Expires    ${formatPoolTimestamp(minted.expiresAt)}  (ten minutes, single use)`];
-
-  // The fingerprint is only useful while both machines are in front of the operator, which is exactly
-  // now — the far Hub pins this key during the handshake and has no second chance to check it.
-  if (minted.publicKeyFingerprint) {
-    lines.push(`Key        ${sanitizeForBox(minted.publicKeyFingerprint)}  (this node's pool identity)`);
-  }
-  if (minted.identityError) {
-    lines.push(`Key        ${FAIL} ${sanitizeForBox(minted.identityError)}`);
-  }
-
-  lines.push(
-    '',
-    'Type it on the OTHER Hub — the one joining this pool — not on this one:',
-    `  cihub pool pair ${sanitizeForBox(localNodeFqdn ?? '<this-hub-address>')} --pin ${sanitizeForBox(minted.pin)}`,
-    '',
-    'Any LAN, tailnet or CGNAT address that reaches this Hub will do in place of the name above;',
-    "the reply carries this node's tailnet name and that is what the peer is stored as.",
-    '',
-    'The request still has to be approved here: cihub pool approve <id>',
-    'Revoke the PIN early with: cihub pool pairing-pin --cancel',
-  );
-  return lines;
-}
 
 export function formatPoolRoutingLogLines(log: PoolRoutingLogResponse): string[] {
   const summary = log.summary;
