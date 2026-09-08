@@ -221,6 +221,32 @@ export function toPublicPeer(peer: HubPoolPeer): PublicHubPoolPeer {
  */
 export type PoolPeerStatus = 'pending' | 'connected' | 'unreachable';
 
+/**
+ * Whether a peer row is still short of established trust — the only thing an INBOUND request may be
+ * judged on.
+ *
+ * `'pending'` is that state, and it is the only one: the operator has not approved the pairing, so
+ * there is nothing to serve. `'unreachable'` is the opposite — a fully established pairing whose
+ * OUTBOUND health view has gone stale. The two must not be conflated, because refusing an
+ * unreachable peer's inbound requests wedges the pair permanently:
+ *
+ *   The sole way out of `'unreachable'` is a successful capabilities probe (`refreshOnePeer`). If
+ *   both nodes strike out on each other — one partition both sides notice, or one node briefly slow
+ *   enough to blow three probe timeouts — then both rows read `'unreachable'` at once, each answers
+ *   the other's recovery probe 403, and every probe from then on fails *because of the refusal
+ *   rather than the network*. Neither side can ever return, the failure counters run away past the
+ *   threshold, and Unpair becomes the operator's only move on a pairing that was never broken.
+ *
+ * A peer that is talking to us is, self-evidently, reachable. Our own opinion that it was down is
+ * the stalest possible input to that question, so it is not consulted.
+ *
+ * Fail closed on anything outside the union: `status` is a `varchar`, not a database constraint, so
+ * a value written by a future build is treated as not-yet-trusted rather than admitted by default.
+ */
+export function isPairingIncomplete(status: string | null | undefined): boolean {
+  return status !== 'connected' && status !== 'unreachable';
+}
+
 /** A peer row plus what this node currently has in flight to it. Built from {@link toPublicPeer}, so the token columns cannot reach it. */
 export interface PoolStatusPeer extends PublicHubPoolPeer {
   /** Requests this node has forwarded to the peer and not yet finished reading. A live gauge reset by a restart, never a total. */
