@@ -40,7 +40,7 @@ import {
   UpsertPoolPinBody,
 } from './hub-pool.dto';
 import { POOL_PROTOCOL_VERSION } from './hub-pool-peer-auth';
-import { toPublicPeer } from './hub-pool.types';
+import { isPairingIncomplete, toPublicPeer } from './hub-pool.types';
 
 /**
  * Multi-Hub inference pooling.
@@ -385,8 +385,13 @@ export class HubPoolController {
    * Branch order matters, and is fixed:
    *   1. {@link PoolPeerGuard} — is this a paired peer at all (401)?
    *   2. master kill switch — 503, so the caller's probe fails and marks this node unreachable.
-   *   3. row not `connected` — 403, the half-finished-pairing case the guard deliberately admits.
+   *   3. pairing incomplete — 403, the half-finished-pairing case the guard deliberately admits.
    *   4. inbound off, or this peer disabled — 200 with an empty inventory and `acceptingWork: false`.
+   *
+   * Branch 3 asks {@link isPairingIncomplete}, NOT `status !== 'connected'`. This route is the one
+   * recovery path out of `'unreachable'`, so refusing a peer we currently believe is down makes
+   * two simultaneously-unreachable nodes refuse each other forever — see that helper for the full
+   * deadlock. Whether the caller is up is settled by the fact that it is calling.
    *
    * The asymmetry between 2 and 4 is the whole design, not an oversight to tidy up later. The
    * master switch means "I have left the pool": a hard failure is correct, and the caller marking
@@ -404,10 +409,14 @@ export class HubPoolController {
       // makes the caller's health probe fail outright, which is what should mark us unreachable.
       throw new ServiceUnavailableException(describeHubPoolDisabled(enabled.disabledBy));
     }
-    if (req.poolPeer?.status !== 'connected') {
+    // Bound to a local so the peer is narrowed for `inboundRefusal` below: `isPairingIncomplete`
+    // returns a plain boolean, unlike the `?.status !== 'connected'` comparison it replaced, which
+    // narrowed `req.poolPeer` as a side effect of how it read an undefined peer.
+    const peer = req.poolPeer;
+    if (!peer || isPairingIncomplete(peer.status)) {
       throw new ForbiddenException('Peer is not connected');
     }
-    return this.peerService.getOwnCapabilities(this.peerService.inboundRefusal(req.poolPeer) === null);
+    return this.peerService.getOwnCapabilities(this.peerService.inboundRefusal(peer) === null);
   }
 
   // ── App-facing proxy (local Docker network apps only; PoolAppGuard additionally rejects tunnel-forwarded traffic) ──
@@ -553,7 +562,11 @@ export class HubPoolController {
 
   private async forwardLocal(req: Request, path: string, method: string, body: unknown, res: Response): Promise<void> {
     const peer = req.poolPeer;
-    if (!peer || peer.status !== 'connected') {
+    // `isPairingIncomplete`, not `status !== 'connected'`: a peer we have marked unreachable is
+    // still paired, and 403 here is read by the sender's `noteRejectedCandidate` as "it no longer
+    // considers us paired", dropping a valid pairing's cached capabilities over our own stale
+    // outbound health opinion. Only a pairing that was never completed has nothing to serve.
+    if (!peer || isPairingIncomplete(peer.status)) {
       this.proxyService.recordRefusedInboundForward({ backend: null, path, fromPeerFqdn: peer?.nodeFqdn, status: 403 });
       res.status(403).json({ error: 'Peer is not connected' });
       return;
