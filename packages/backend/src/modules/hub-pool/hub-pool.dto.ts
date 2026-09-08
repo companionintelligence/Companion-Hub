@@ -54,7 +54,8 @@ const peerNodeUuidSchema = z.uuid();
 /**
  * Two ways to name what to pair with, and exactly one of them per request.
  *
- * `nodeFqdn` is the original: a MagicDNS name, from the tailnet directory or typed by the operator.
+ * `nodeFqdn` is the original: a MagicDNS name, from a discovery directory — the tailnet or the CI
+ * Portal device registry, whose rows carry a MagicDNS name too — or typed by the operator.
  * `address` is for a Hub found with `POST peers/probe`, which cannot report a name — `/identify` is
  * unauthenticated and no longer discloses one — so the name is learned from the far side's reply to
  * a PIN-authenticated pairing request. That is why `pin` is *required* with `address` and optional

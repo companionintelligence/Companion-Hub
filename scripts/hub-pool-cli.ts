@@ -463,10 +463,14 @@ export function formatPoolStatusLines(status: PoolStatusResponse): string[] {
     `Outbound     ${describeDirection('sending work to peers', status.directions.outbound, 'HUB_POOL_OUTBOUND_DISABLED', '--outbound')}`,
     `Inbound      ${describeDirection('serving work for peers', status.directions.inbound, 'HUB_POOL_INBOUND_DISABLED', '--inbound')}`,
     `Peers        ${counts.total} total · ${counts.connected} connected · ${counts.pending} pending · ${counts.unreachable} unreachable · ${counts.disabled} disabled`,
+    // Names the one credential `GET status` reports on, and says so. The Tailscale daemon's peer map
+    // and the Portal registry also name candidates, need no credential, and are not in this response
+    // (the `Tailscale` line below and `localNode.tailnet` are as close as it gets — preconditions, not
+    // its result) — so this line must not read as "discovery is on" or "discovery is off".
     `Discovery    ${
       status.tailscaleAdminApiConfigured
-        ? 'Tailscale Admin API configured — cihub pool discover can enumerate the tailnet'
-        : 'not configured — this Hub cannot enumerate the tailnet (it can still be paired with)'
+        ? 'Tailscale Admin API configured — cihub pool discover can enumerate the whole tailnet'
+        : 'no Admin API credential — cihub pool discover still lists visible tailnet peers and any CI account Hubs'
     }`,
     `Settings     poolEnabled=${status.settings.poolEnabled} · outbound=${status.settings.poolOutboundEnabled} · inbound=${status.settings.poolInboundEnabled} · localAffinity=${status.settings.poolLocalAffinity} · healthPoll=${status.settings.poolHealthPollSeconds}s`,
     `Routing log  ${routing.recorded}/${routing.capacity} recorded · ${routing.served} served · ${routing.failed} failed · ${routing.failovers} failover(s)`,
@@ -528,16 +532,21 @@ export function formatPoolPinLines(pins: PoolStatusPin[] | undefined): string[] 
 const DISCOVER_WIDTHS = [34, 24] as const;
 
 /**
- * An empty discoverable list has two completely different causes, and the CLI must not print the same
- * empty table for both: no Admin API credential means discovery could never have run.
+ * The candidate table, or an empty state that names the sources and what each one needs.
+ *
+ * The Admin API — reported by `tailscaleAdminApiConfigured`, the one directory `GET status` speaks
+ * to — is one of three: the local Tailscale daemon's peer map and the CI Portal device registry also
+ * name candidates and need no credential. So the flag only selects a hint here — it is not the difference
+ * between discovery having run and not having run, and the copy must not imply that it is. Nor may
+ * the empty state claim a directory was consulted: an unregistered Hub never calls Portal, and a
+ * Hub off the tailnet never reads a peer map.
  */
 export function formatPoolDiscoverLines(devices: DiscoverablePoolPeer[], tailscaleAdminApiConfigured: boolean): string[] {
   if (devices.length === 0) {
-    // An empty list has two remedies now that the Admin API credential is not the only source, and
-    // the operator is told both. Manual entry goes first on purpose: it works today, on this Hub,
-    // with nothing to go and create in someone else's console.
+    // Manual entry goes first on purpose: it works today, on this Hub, with nothing to go and create
+    // in someone else's console.
     return [
-      'No unpaired CI-Hub nodes found.',
+      'No unpaired CI-Hub nodes found: no directory this Hub can ask named one.',
       '',
       'Find one by address:  cihub pool probe <address>',
       '  e.g. 192.168.1.42, 192.168.1.42:5002, or a hostname on this LAN. A Hub found that',
@@ -545,21 +554,25 @@ export function formatPoolDiscoverLines(devices: DiscoverablePoolPeer[], tailsca
       '  not a name: cihub pool pair <address> --pin <digits>',
       '',
       ...(tailscaleAdminApiConfigured
-        ? ['Tailnet enumeration is configured, and found nothing unpaired.']
+        ? ['Whole-tailnet enumeration is configured, and found nothing unpaired.']
         : [
-            `${PENDING} Tailnet enumeration is off. Set TAILSCALE_OAUTH_CLIENT_ID and`,
-            '  TAILSCALE_OAUTH_CLIENT_SECRET (devices:core:read) and restart to list the',
-            '  whole tailnet at once. It is optional — this Hub pools normally without it.',
+            `${PENDING} Whole-tailnet enumeration is off. Set TAILSCALE_OAUTH_CLIENT_ID and`,
+            '  TAILSCALE_OAUTH_CLIENT_SECRET (devices:core:read) and restart to list every device',
+            '  on the tailnet at once. It is optional — this Hub pools normally without it, and',
+            '  already lists the tailnet peers its own daemon can see whenever it is connected.',
           ]),
       '',
       'Already-paired nodes are excluded — see: cihub pool peers',
       'A candidate only appears once its Hub is running and answers /api/inference/pool/identify.',
+      'A Hub your CI account knows only by LAN address is not listed: pairing needs a tailnet name.',
     ];
   }
 
+  // "DEVICE ID", not "TAILSCALE DEVICE": the id belongs to whichever directory named the node, so a
+  // candidate that came from the CI Portal registry carries its Portal device id here.
   const lines = [
-    `${cell('NODE', DISCOVER_WIDTHS[0])} ${cell('HOSTNAME', DISCOVER_WIDTHS[1])} TAILSCALE DEVICE`,
-    ruleRow([...DISCOVER_WIDTHS, 'TAILSCALE DEVICE'.length]),
+    `${cell('NODE', DISCOVER_WIDTHS[0])} ${cell('HOSTNAME', DISCOVER_WIDTHS[1])} DEVICE ID`,
+    ruleRow([...DISCOVER_WIDTHS, 'DEVICE ID'.length]),
   ];
   for (const device of devices) {
     // Every string on this row is authored off-box, and box output is ANSI-injectable.
@@ -680,16 +693,25 @@ export function formatPoolRoutingLogLines(log: PoolRoutingLogResponse): string[]
 // --- discover orchestration ---
 
 /**
- * Status first, so a Hub with no Admin API credential gets the explanation instead of an OAuth
- * attempt that can only fail — and so the empty-vs-unconfigured distinction is made from the same
- * boolean the UI uses.
+ * Status alongside the candidate list, so the empty state can name the credential that is missing —
+ * from the same boolean the UI uses.
+ *
+ * `found` is what the caller colours the box on, deliberately *not* `configured`: a credential-free
+ * Hub that listed candidates from its daemon peer map or from Portal has nothing wrong with it, and
+ * yellow means a problem state everywhere else in this CLI (`pool status` uses it for "not enabled",
+ * `pool probe` for "not pairable"). The missing credential stays a line of copy inside the box.
  */
-export async function runPoolDiscover(envFileName: string): Promise<{ lines: string[]; configured: boolean }> {
-  // The candidate list is now fetched unconditionally. It used to be skipped when no Tailscale
-  // Admin API credential was configured, because that credential was the only source there was —
-  // but manually probed nodes come back from the same route, so skipping it made them invisible on
-  // exactly the Hubs that needed them. `configured` still reports only the credential, which is
-  // what colours the box and what the "how do I see the whole tailnet" hint keys on.
+export async function runPoolDiscover(envFileName: string): Promise<{ lines: string[]; configured: boolean; found: boolean }> {
+  // The candidate list is fetched unconditionally. It used to be skipped when no Tailscale Admin API
+  // credential was configured, back when that credential was the only source; it is now one of
+  // three. The local Tailscale daemon's peer map and the CI Portal device registry both name
+  // candidates with no credential at all, so short-circuiting on the flag hid real candidates on
+  // exactly the Hubs the credential-free paths exist for. `configured` still reports only the
+  // credential, which is what the "how do I see the whole tailnet" hint keys on.
   const [status, devices] = await Promise.all([fetchPoolStatus(envFileName), fetchDiscoverablePeers(envFileName)]);
-  return { lines: formatPoolDiscoverLines(devices, status.tailscaleAdminApiConfigured), configured: status.tailscaleAdminApiConfigured };
+  return {
+    lines: formatPoolDiscoverLines(devices, status.tailscaleAdminApiConfigured),
+    configured: status.tailscaleAdminApiConfigured,
+    found: devices.length > 0,
+  };
 }

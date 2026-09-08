@@ -718,9 +718,45 @@ export class PortalClientService {
     };
   }
 
+  /**
+   * Fetches peer Hub devices registered to the same user or organization from CI Portal
+   * for peer pool discovery and dispatch over the internet.
+   */
+  async fetchDispatchDevices(): Promise<PortalDispatchDevice[]> {
+    if (!this.publicPortalUrl || !this.configuration.get('ciHubApiKey')) {
+      return [];
+    }
+
+    try {
+      const result = await this.fetchJson<{ devices?: PortalDispatchDevice[] } | PortalDispatchDevice[]>('/devices', {
+        authenticated: true,
+        bypassCache: true,
+      });
+
+      if (Array.isArray(result)) {
+        return result;
+      }
+      return result?.devices ?? [];
+    } catch {
+      return [];
+    }
+  }
+
   createOfflineEntitlementToken(payload: OfflineEntitlementPayload, privateKey: string | KeyObject): string {
     return createOfflineEntitlementToken(payload, privateKey);
   }
+}
+
+export interface PortalDispatchDevice {
+  id: string;
+  name?: string;
+  hubUrl?: string;
+  lanIp?: string | null;
+  lanUrl?: string | null;
+  tailscaleDns?: string | null;
+  tailscaleIp?: string | null;
+  tailscaleIpv4?: string | null;
+  status?: string;
 }
 
 /**

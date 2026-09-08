@@ -264,8 +264,10 @@ export async function runPoolCommand(args: string[]) {
     }
 
     if (parsed.subcommand === 'discover') {
-      const { lines, configured } = await runPoolDiscover(envFile);
-      printMessageBox(`Hub Pool discovery  [${env}]`, lines, configured ? 'cyan' : 'yellow');
+      // Coloured on whether anything was found, not on the Admin API credential: two of the three
+      // directories need none, so a credential-free Hub listing real candidates is not a warning.
+      const { lines, found } = await runPoolDiscover(envFile);
+      printMessageBox(`Hub Pool discovery  [${env}]`, lines, found ? 'cyan' : 'yellow');
       return;
     }
 

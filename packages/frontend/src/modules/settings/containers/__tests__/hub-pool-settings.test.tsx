@@ -375,7 +375,7 @@ describe('HubPoolSection', () => {
     expect(screen.getByText('HUB_POOL_ROUTING_INBOUND')).toBeTruthy();
   });
 
-  it('says the discovery credential is missing instead of showing an empty device list', async () => {
+  it('names the missing tailnet-enumeration credential instead of showing a bare empty device list', async () => {
     fixtures.status = baseStatus({ tailscaleAdminApiConfigured: false, reason: 'no_peers', routingActive: false });
 
     renderSection();

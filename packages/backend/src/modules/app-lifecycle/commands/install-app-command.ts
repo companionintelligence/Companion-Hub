@@ -73,6 +73,9 @@ export class InstallAppCommand extends AppLifecycleCommand {
     const appsRepository = this.moduleRef.get(AppsRepository, { strict: false });
 
     const emitProgress = async (progress: number) => {
+      if (ctx?.updateProgress) {
+        await ctx.updateProgress(progress).catch(() => null);
+      }
       if (sseService) {
         // No `appUrn` third argument: that publishes to the `app:<urn>` topic, which
         // nothing subscribes to (`sse.controller.ts` opens `getTopicObservable('app')`

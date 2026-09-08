@@ -74,8 +74,11 @@ function loadCiHubRootEnvFiles(root: string): Record<string, string> {
 export default defineConfig(({ mode }) => {
   const fileEnv = loadEnv(mode, hubRoot, '');
   const hubFileEnv = loadCiHubRootEnvFiles(hubRoot);
+  const isVitest = process.env.VITEST === 'true';
   /** Same variable as backend/runtime; injected into the client bundle for portal API calls. */
-  const ciCloudUrl = (process.env.CI_CLOUD_URL ?? fileEnv.CI_CLOUD_URL ?? hubFileEnv.CI_CLOUD_URL ?? '').trim();
+  const ciCloudUrl = (
+    isVitest ? (process.env.CI_CLOUD_URL ?? '') : (process.env.CI_CLOUD_URL ?? fileEnv.CI_CLOUD_URL ?? hubFileEnv.CI_CLOUD_URL ?? '')
+  ).trim();
   const ciHubVersion = (process.env.CI_HUB_VERSION ?? fileEnv.CI_HUB_VERSION ?? hubFileEnv.CI_HUB_VERSION ?? '').trim();
   const ciHubImage = (process.env.CI_HUB_IMAGE ?? fileEnv.CI_HUB_IMAGE ?? hubFileEnv.CI_HUB_IMAGE ?? '').trim();
   /**
@@ -89,7 +92,6 @@ export default defineConfig(({ mode }) => {
   const alias: Record<string, string> = {
     '@': path.resolve(__dirname, './src'),
   };
-  const isVitest = process.env.VITEST === 'true';
   const plugins: PluginOption[] = [!isVitest && reactRouter(), tsconfigPaths(), tailwindcss()];
 
   const { NODE_ENV } = process.env;

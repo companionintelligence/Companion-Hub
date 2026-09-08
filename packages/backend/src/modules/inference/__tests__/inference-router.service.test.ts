@@ -3,6 +3,7 @@ import { InferenceRouterService } from '../inference-router.service';
 import { HardwareInspectorService } from '../hardware-inspector.service';
 import { ModelRegistryService } from '../model-registry.service';
 import { MemoryManagerService } from '../memory-manager.service';
+import { ModelPullerService } from '../model-puller.service';
 import { CloudFallbackService } from '../cloud-fallback.service';
 import { InferenceBackendRegistry } from '../backends/backend-registry';
 import { OllamaBackend } from '../backends/ollama.backend';
@@ -22,6 +23,7 @@ describe('InferenceRouterService', () => {
   let hardwareInspector: MockProxy<HardwareInspectorService>;
   let modelRegistry: MockProxy<ModelRegistryService>;
   let memoryManager: MockProxy<MemoryManagerService>;
+  let modelPuller: MockProxy<ModelPullerService>;
   let cloudFallback: MockProxy<CloudFallbackService>;
   let ollamaBackend: MockProxy<OllamaBackend>;
   let vllmBackend: MockProxy<VllmBackend>;
@@ -44,6 +46,7 @@ describe('InferenceRouterService', () => {
     hardwareInspector = mock<HardwareInspectorService>();
     modelRegistry = mock<ModelRegistryService>();
     memoryManager = mock<MemoryManagerService>();
+    modelPuller = mock<ModelPullerService>();
     cloudFallback = mock<CloudFallbackService>();
     ollamaBackend = mock<OllamaBackend>();
     vllmBackend = mock<VllmBackend>();
@@ -80,6 +83,7 @@ describe('InferenceRouterService', () => {
         { provide: HardwareInspectorService, useValue: hardwareInspector },
         { provide: ModelRegistryService, useValue: modelRegistry },
         { provide: MemoryManagerService, useValue: memoryManager },
+        { provide: ModelPullerService, useValue: modelPuller },
         { provide: CloudFallbackService, useValue: cloudFallback },
         { provide: OllamaBackend, useValue: ollamaBackend },
         { provide: VllmBackend, useValue: vllmBackend },
@@ -95,8 +99,8 @@ describe('InferenceRouterService', () => {
   });
 
   // ─── Model listing ────────────────────────────────────────────────
-  // The router no longer proxies requests — it only surfaces the merged model
-  // list + backend health for the management endpoints and credentials service.
+  // The router surfaces the merged model list + backend health and routes
+  // inference requests through local backends or cloud fallback.
 
   describe('Model listing', () => {
     it('SHALL return merged model lists from all backends + cloud', async () => {
@@ -235,6 +239,29 @@ describe('InferenceRouterService', () => {
       // pinning a wall-clock figure a slow CI box would flake on.
       expect(peakInFlight).toBe(6);
       expect(elapsed).toBeLessThan(STALL_MS * 4);
+    });
+    /**
+     * Regression: #1277's routing methods each walked the registry with `await backend.healthCheck()`
+     * in a `for` loop, and on the `auto` path `resolveAutoModel()` and `routeChatCompletion()`'s
+     * step-4 lookup ran back to back — two serial six-backend sweeps per chat request. That is the
+     * doubling #1287 removed from `getStatus()`, on a hotter path, and #1287's own tests do not
+     * reach it. `routeChatCompletion` now memoizes one sweep and shares it with the resolution.
+     */
+    it('sweeps the backends at most once per auto chat request, not once per routing step', async () => {
+      modelRegistry.getTrackedModels.mockReturnValue([]);
+      // ollama must be HEALTHY WITH A RESIDENT MODEL. Otherwise `auto` resolves to nothing and
+      // routeChatCompletion returns before step 4 — one sweep happens either way and this test
+      // passes whether or not the memo works. It did exactly that until this line was added.
+      ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['resident-model'] });
+      for (const backend of [vllmBackend, lemonadeBackend, mtplxBackend, dsparkBackend, luceboxBackend]) {
+        backend.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [] });
+      }
+
+      await service.routeChatCompletion({ model: 'auto', messages: [] }).catch(() => undefined);
+
+      for (const backend of [ollamaBackend, vllmBackend, lemonadeBackend, mtplxBackend, dsparkBackend, luceboxBackend]) {
+        expect(backend.healthCheck.mock.calls.length).toBeLessThanOrEqual(1);
+      }
     });
   });
 });

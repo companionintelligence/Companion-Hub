@@ -423,8 +423,10 @@ export const hubPoolPeer = pgTable(
   'hub_pool_peer',
   {
     id: uuid('id').defaultRandom().primaryKey().notNull(),
-    // Populated when the peer was discovered via the Tailscale Admin API; null for a peer
-    // that only ever arrived as an inbound pairing request (its nodeFqdn is still the trust anchor).
+    // Never populated: every writer passes null (pair by name, pair at address, inbound request),
+    // and no update path touches the column — `nodeFqdn` is the trust anchor and the key. A device
+    // id reaches an operator only on a `peers/discoverable` row, where it belongs to whichever
+    // directory named the node (a Tailscale device id, or a CI Portal one). Read it as always null.
     tailscaleDeviceId: varchar('tailscale_device_id'),
     nodeFqdn: varchar('node_fqdn').notNull().unique(),
     displayName: varchar('display_name'),

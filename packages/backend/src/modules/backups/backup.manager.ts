@@ -86,6 +86,7 @@ export class BackupManager implements OnApplicationShutdown {
     await this.filesystem.removeDirectory(tempDir);
 
     this.logger.info('Backup completed!');
+    return { filename: `${backupName}.tar.gz` };
   };
 
   public restoreApp = async (appUrn: AppUrn, filename: string) => {

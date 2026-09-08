@@ -177,11 +177,17 @@ export class HubPoolController {
   }
 
   /**
-   * Pairing candidates this node can offer **by name** — the Tailscale Admin API directory.
+   * Pairing candidates this node can offer **by name**, from every directory that can attest one,
+   * deduplicated: the tailnet (the local Tailscale daemon's peer map, plus the Admin API when a
+   * credential is configured) and the CI Portal device registry when this Hub is registered.
+   * Neither is required, and a Hub with neither returns an empty list rather than an error.
    *
    * A Hub found by address is not in here and cannot be: entries are consumed by handing `nodeFqdn`
    * to `peers/pair`, and the unauthenticated probe is told no name. Those are paired with through
    * `peers/pair` in its address form instead. See `HubPoolDiscoveryService`.
+   *
+   * Not a polling route. Every source probes: one `/identify` per unpaired candidate, plus a Portal
+   * dispatch call and, with a credential, a Tailscale OAuth exchange.
    */
   @UseGuards(AuthGuard)
   @Get('peers/discoverable')

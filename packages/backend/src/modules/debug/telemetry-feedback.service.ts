@@ -2,7 +2,7 @@ import { ErrorReportingService } from '@/core/error-reporting/error-reporting.se
 import { LoggerService } from '@/core/logger/logger.service';
 import { DOCKERODE } from '@/modules/docker/constants';
 import { HostTelemetryService } from '@/modules/system/host-telemetry.service';
-import { Inject, Injectable, Optional } from '@nestjs/common';
+import { Inject, Injectable, Optional, type OnApplicationShutdown } from '@nestjs/common';
 import type Dockerode from 'dockerode';
 import { randomUUID } from 'node:crypto';
 
@@ -70,10 +70,11 @@ export interface TelemetryFeedbackSummary {
  * into appliance error telemetry, host event logs, and operational feedback loops.
  */
 @Injectable()
-export class TelemetryFeedbackService {
+export class TelemetryFeedbackService implements OnApplicationShutdown {
   private readonly maxBufferSize = 200;
   private readonly crashLoopReports: CrashLoopReport[] = [];
   private readonly installFailureReports: InstallFailureReport[] = [];
+  private autoDetectionTimer: NodeJS.Timeout | null = null;
 
   constructor(
     private readonly logger: LoggerService,
@@ -81,6 +82,32 @@ export class TelemetryFeedbackService {
     @Optional() private readonly hostTelemetry?: HostTelemetryService,
     @Optional() @Inject(DOCKERODE) private readonly docker?: Dockerode,
   ) {}
+
+  /**
+   * Start periodic crash loop detection.
+   */
+  public startAutoDetection(intervalMs = 60_000): void {
+    if (this.autoDetectionTimer) return;
+    this.autoDetectionTimer = setInterval(() => {
+      this.detectCrashLoops().catch((err) => {
+        this.logger.debug?.(`Error in auto crash loop detection: ${err}`);
+      });
+    }, intervalMs);
+  }
+
+  /**
+   * Stop periodic crash loop detection.
+   */
+  public stopAutoDetection(): void {
+    if (this.autoDetectionTimer) {
+      clearInterval(this.autoDetectionTimer);
+      this.autoDetectionTimer = null;
+    }
+  }
+
+  onApplicationShutdown(): void {
+    this.stopAutoDetection();
+  }
 
   /**
    * Capture and report a container crash loop.
