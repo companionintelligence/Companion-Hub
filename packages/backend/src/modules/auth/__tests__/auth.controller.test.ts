@@ -1360,7 +1360,21 @@ describe('AuthController', () => {
       expect(res.redirect).toHaveBeenCalledWith('http://localhost:5002/home');
     });
 
-    it('syncs the sole local operator email from a verified Portal login when they differ', async () => {
+    it('refuses a Portal login whose email differs from the sole local operator', async () => {
+      /*
+       * ⚠ THIS TEST ASSERTED THE OPPOSITE, under the heading "a verified Portal
+       * identity is authoritative for the sole operator on a single-user
+       * appliance". The Portal verifies WHO SOMEBODY IS; it asserts no
+       * relationship between that person and THIS Hub, and the redirect that
+       * brings them here validates against every tenant's Hub host rather than
+       * their own (CI-Portal#685 is the other half). So a stranger who signs up
+       * at the Portal and knows a Hub hostname — enumerable from any published
+       * app URL — could arrive here with their own verified email, have the
+       * owner's operator row RENAMED to their address, and get a session.
+       *
+       * The single-operator case was the permissive branch, and it is the common
+       * one. A mismatch is a refusal whatever the operator count.
+       */
       cache.get.mockReturnValue(
         JSON.stringify({
           codeVerifier: 'verifier',
@@ -1401,9 +1415,10 @@ describe('AuthController', () => {
 
       await authController.portalCallback(req, res, 'auth-code', 'state-123');
 
-      expect(userRepository.updateUser).toHaveBeenCalledWith(1, { username: 'companion@example.com' });
-      expect(sessionManager.createSession).toHaveBeenCalledWith(1);
-      expect(res.redirect).toHaveBeenCalledWith('http://localhost:5002/home');
+      // The operator row is untouched and no session is issued.
+      expect(userRepository.updateUser).not.toHaveBeenCalled();
+      expect(sessionManager.createSession).not.toHaveBeenCalled();
+      expect(res.redirect).toHaveBeenCalledWith(expect.stringContaining('account_mismatch'));
     });
   });
 

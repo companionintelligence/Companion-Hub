@@ -544,21 +544,34 @@ export class AuthController {
           return redirectError(hubOrigin, 'callback_error');
         }
       } else if (operator.username.trim().toLowerCase() !== email.trim().toLowerCase()) {
-        const operators = await this.userRepository.getOperators();
+        /*
+         * ⚠ A VERIFIED PORTAL IDENTITY SAYS WHO SOMEBODY IS. IT SAYS NOTHING
+         * ABOUT THIS APPLIANCE.
+         *
+         * This used to rename the operator row to the incoming address whenever
+         * the Hub had exactly ONE operator — under the heading "a verified
+         * Portal identity is authoritative for the sole operator on a
+         * single-user appliance" — and refuse only when there were several. That
+         * is backwards: the single-operator case is the common one, so the
+         * permissive branch was the default.
+         *
+         * The Portal verifies the person. It does not assert any relationship
+         * between that person and THIS Hub, and the redirect that brings them
+         * here is validated against every tenant's Hub host rather than their
+         * own (CI-Portal#685 is the other half). So a stranger who signs up at
+         * the Portal and knows a Hub hostname — composed from published app URLs
+         * and therefore enumerable — could drive the flow in their own browser,
+         * arrive here with their own verified email, have the owner's operator
+         * row RENAMED to their address, and receive a session. The owner is
+         * locked out of their own appliance by a login they never saw.
+         *
+         * A mismatch is now a refusal whatever the operator count. Changing the
+         * operator's address is a deliberate, authenticated act performed on the
+         * Hub — not a side effect of somebody else signing in.
+         */
+        this.logger.warn('Portal login blocked: email mismatch', { portalEmail: email, operatorEmail: operator.username });
 
-        if (operators.length === 1) {
-          // A verified Portal identity is authoritative for the sole operator on a single-user appliance.
-          this.logger.warn('Portal login email differs from local operator; syncing from verified Portal identity', {
-            portalEmail: email,
-            operatorEmail: operator.username,
-          });
-          const normalizedEmail = email.trim().toLowerCase();
-          await this.userRepository.updateUser(operator.id, { username: normalizedEmail });
-          operator = { ...operator, username: normalizedEmail };
-        } else {
-          this.logger.warn('Portal login blocked: email mismatch', { portalEmail: email, operatorEmail: operator.username });
-          return redirectError(hubOrigin, 'account_mismatch');
-        }
+        return redirectError(hubOrigin, 'account_mismatch');
       }
 
       const sessionId = await this.sessionManager.createSession(operator.id);
