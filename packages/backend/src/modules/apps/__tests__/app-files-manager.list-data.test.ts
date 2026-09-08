@@ -14,6 +14,7 @@ describe('AppFilesManager.listAppDataListing', () => {
     pathExists: ReturnType<typeof vi.fn>;
     listFiles: ReturnType<typeof vi.fn>;
     getStats: ReturnType<typeof vi.fn>;
+    getLinkStats: ReturnType<typeof vi.fn>;
   };
   let manager: AppFilesManager;
 
@@ -22,6 +23,7 @@ describe('AppFilesManager.listAppDataListing', () => {
       pathExists: vi.fn(),
       listFiles: vi.fn(),
       getStats: vi.fn(),
+      getLinkStats: vi.fn(),
     };
 
     const configuration = {
@@ -58,15 +60,15 @@ describe('AppFilesManager.listAppDataListing', () => {
       if (dir === path.join(appDataRoot, 'data')) return ['blob.bin'];
       return [];
     });
-    filesystem.getStats.mockImplementation(async (filePath: string) => {
+    filesystem.getLinkStats.mockImplementation(async (filePath: string) => {
       if (filePath === path.join(appDataRoot, 'config.json')) {
-        return { isDirectory: () => false, isFile: () => true, size: 12 };
+        return { isDirectory: () => false, isFile: () => true, isSymbolicLink: () => false, size: 12 };
       }
       if (filePath === path.join(appDataRoot, 'data')) {
-        return { isDirectory: () => true, isFile: () => false, size: 0 };
+        return { isDirectory: () => true, isFile: () => false, isSymbolicLink: () => false, size: 0 };
       }
       if (filePath === path.join(appDataRoot, 'data', 'blob.bin')) {
-        return { isDirectory: () => false, isFile: () => true, size: 2048 };
+        return { isDirectory: () => false, isFile: () => true, isSymbolicLink: () => false, size: 2048 };
       }
       throw new Error(`unexpected path ${filePath}`);
     });
@@ -80,5 +82,33 @@ describe('AppFilesManager.listAppDataListing', () => {
       truncated: false,
       rootExists: true,
     });
+  });
+
+  it('does not follow a symlink out of the app data directory', async () => {
+    /*
+     * ⚠ THE WALK USED `stat`, WHICH REPORTS THE TARGET'S KIND. A link planted in
+     * the app's own data directory — which the app itself can write — looked
+     * like an ordinary directory, so `ln -s / /app-data/<store>/<app>/x` turned
+     * a read-only inventory of one app's files into a listing of the whole host,
+     * eight levels deep, through `GET /api/apps/:urn/data-files`.
+     *
+     * The path fence does not help: it is applied to the path handed in, which
+     * is inside the app's directory, and the escape happens in the kernel.
+     */
+    filesystem.pathExists.mockResolvedValue(true);
+    filesystem.listFiles.mockImplementation(async (dir: string) => {
+      if (dir === appDataRoot) return ['escape'];
+      // Would be the host root's contents if the walk descended.
+      return ['etc', 'root'];
+    });
+    filesystem.getLinkStats.mockImplementation(async () => {
+      return { isDirectory: () => true, isFile: () => false, isSymbolicLink: () => true, size: 0 } as never;
+    });
+
+    const listing = await manager.listAppDataListing(appUrn);
+
+    // Reported, so an operator sees what is in the folder — but not descended.
+    expect(listing.entries).toEqual([{ name: 'escape', path: 'escape', kind: 'file', sizeBytes: null }]);
+    expect(filesystem.listFiles).toHaveBeenCalledTimes(1);
   });
 });

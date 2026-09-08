@@ -1,4 +1,6 @@
 import path from 'node:path';
+
+import { resolveBackupFilePath } from './backup-path';
 import { isAbsoluteHostPath, joinHostPath } from '@/common/helpers/app-data-path.helper';
 import { extractAppUrn } from '@/common/helpers/app-helpers';
 import { ArchiveService } from '@/core/archive/archive.service';
@@ -100,7 +102,7 @@ export class BackupManager implements OnApplicationShutdown {
     const { appStoreId, appName } = extractAppUrn(appUrn);
     const backupDir = path.join(dataDir, 'backups', appStoreId, appName);
 
-    const archive = this.filesystem.getSafeFilePath(path.join(backupDir, filename));
+    const archive = resolveBackupFilePath(backupDir, filename);
 
     if (!archive.startsWith(backupDir)) {
       throw new Error('Invalid backup file path');
@@ -156,7 +158,7 @@ export class BackupManager implements OnApplicationShutdown {
 
     const { appName, appStoreId } = extractAppUrn(appUrn);
     const backupDir = path.join(dataDir, 'backups', appStoreId, appName);
-    const backupPath = this.filesystem.getSafeFilePath(path.join(backupDir, filename));
+    const backupPath = resolveBackupFilePath(backupDir, filename);
 
     if (await this.filesystem.pathExists(backupPath)) {
       await this.filesystem.removeFile(backupPath);
@@ -264,7 +266,7 @@ export class BackupManager implements OnApplicationShutdown {
     const { appName, appStoreId } = extractAppUrn(appUrn);
     const backupDir = path.join(dataDir, 'backups', appStoreId, appName);
 
-    const backupPath = this.filesystem.getSafeFilePath(path.join(backupDir, filename));
+    const backupPath = resolveBackupFilePath(backupDir, filename);
 
     if (!(await this.filesystem.pathExists(backupPath))) {
       throw new Error('The backup file does not exist');
@@ -284,7 +286,7 @@ export class BackupManager implements OnApplicationShutdown {
     const { appName, appStoreId } = extractAppUrn(appUrn);
     const backupDir = path.join(dataDir, 'backups', appStoreId, appName);
 
-    const backupPath = this.filesystem.getSafeFilePath(path.join(backupDir, filename));
+    const backupPath = resolveBackupFilePath(backupDir, filename);
 
     // Create backup directory if it doesn't exist
     await this.filesystem.createDirectory(backupDir);
