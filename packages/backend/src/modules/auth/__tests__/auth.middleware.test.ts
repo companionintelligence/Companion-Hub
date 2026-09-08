@@ -166,4 +166,34 @@ describe('AuthMiddleware session fallback', () => {
     expect(req.user).toEqual({ id: 1, username: 'op' });
     expect(next).toHaveBeenCalledOnce();
   });
+
+  /**
+   * The comparison moved to `timingSafeEqual`, which throws on a length mismatch rather than
+   * returning false — so a wrong key of a DIFFERENT length is the case that would surface a
+   * careless port of this branch as a 500 instead of an anonymous request.
+   */
+  it.each([
+    ['a wrong key of the same length', 'hub-api-keX'],
+    ['a wrong key that is shorter', 'hub-api'],
+    ['a wrong key that is longer', 'hub-api-key-with-more'],
+    ['an empty-ish bearer', ' '],
+  ])('does not authenticate with %s', async (_label, presented) => {
+    sessionManager.resolveSessionUserId.mockReturnValue(null);
+    config.get.mockImplementation((key: string) => (key === 'ciHubApiKey' ? 'hub-api-key' : undefined));
+    userRepository.getFirstOperator.mockResolvedValue({ id: 1, username: 'op' });
+
+    const req = {
+      cookies: {},
+      headers: { authorization: `Bearer ${presented}` },
+      query: {},
+      get: () => undefined,
+    } as unknown as Request;
+    const next = vi.fn();
+
+    await middleware.use(req, {} as never, next);
+
+    expect(req.user).toBeUndefined();
+    expect(userRepository.getFirstOperator).not.toHaveBeenCalled();
+    expect(next).toHaveBeenCalledOnce();
+  });
 });

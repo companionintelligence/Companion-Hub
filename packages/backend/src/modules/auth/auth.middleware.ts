@@ -1,3 +1,4 @@
+import { timingSafeEqual } from 'node:crypto';
 import { SESSION_COOKIE_NAME } from '@/common/constants';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { withTransientDbRetry } from '@/core/database/transient-db-retry';
@@ -8,6 +9,19 @@ import jsonwebtoken from 'jsonwebtoken';
 import { UserRepository } from '../user/user.repository';
 import { SESSION_TTL_SECONDS, SessionManager } from './session.manager';
 import { SessionUserCache } from '@/core/cache/session-user.cache';
+
+/**
+ * Constant-time secret comparison, length-safe.
+ *
+ * `timingSafeEqual` throws on a length mismatch, which would itself leak the secret's length, so
+ * the lengths are compared first and a mismatch returns before it is called.
+ */
+function secretEquals(presented: string, expected: string): boolean {
+  const a = Buffer.from(presented);
+  const b = Buffer.from(expected);
+  if (a.length !== b.length) return false;
+  return timingSafeEqual(a, b);
+}
 
 function addSessionId(ids: string[], seen: Set<string>, value: unknown) {
   if (typeof value !== 'string' || !value || seen.has(value)) {
@@ -114,8 +128,19 @@ export class AuthMiddleware implements NestMiddleware {
         return next();
       }
 
+      // The Hub's Portal device credential, accepted here as an operator bearer.
+      //
+      // This is a HOST-LOCAL credential: it lives in `state/settings.json`, so presenting it means
+      // the caller could already read that file, which is the same access `cihub` itself needs. It
+      // must therefore never be distributed to anything with a smaller blast radius than the host —
+      // it was previously injected into every app container as `HUB_API_KEY`, which handed every
+      // installed app operator authority on this API (see the delete in `AppHelpers.generateEnvFile`).
+      //
+      // Compared in constant time because it is a secret, not an identifier. The durable fix is a
+      // hashed, scoped, revocable api-key row resolved the way `McpAuthGuard` resolves the `mcp`
+      // scope; until then this branch stays deliberately narrow.
       const ciHubApiKey = this.config.get('ciHubApiKey');
-      if (ciHubApiKey && token === ciHubApiKey) {
+      if (ciHubApiKey && secretEquals(token, ciHubApiKey)) {
         const user = await this.loadUserResilient(() => this.userRepository.getFirstOperator());
         req.user = user;
         return next();
