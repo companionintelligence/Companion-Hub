@@ -31,19 +31,19 @@ type RecommendationRow = {
 const RECOMMENDATIONS_COUNT = ONBOARDING_TOP_ALTERNATIVES.length;
 
 const CATEGORY_ACCENTS: Record<string, { icon: string; header: string; pill: string }> = {
-  ai: { icon: 'text-cyan-300', header: 'bg-cyan-400/10', pill: 'bg-cyan-400/10 text-cyan-100' },
-  automation: { icon: 'text-indigo-300', header: 'bg-indigo-400/10', pill: 'bg-indigo-400/10 text-indigo-100' },
-  data: { icon: 'text-emerald-300', header: 'bg-emerald-400/10', pill: 'bg-emerald-400/10 text-emerald-100' },
-  development: { icon: 'text-rose-300', header: 'bg-rose-400/10', pill: 'bg-rose-400/10 text-rose-100' },
-  finance: { icon: 'text-amber-300', header: 'bg-amber-400/10', pill: 'bg-amber-400/10 text-amber-100' },
-  media: { icon: 'text-violet-300', header: 'bg-violet-400/10', pill: 'bg-violet-400/10 text-violet-100' },
-  photography: { icon: 'text-fuchsia-300', header: 'bg-fuchsia-400/10', pill: 'bg-fuchsia-400/10 text-fuchsia-100' },
-  security: { icon: 'text-amber-300', header: 'bg-amber-400/10', pill: 'bg-amber-400/10 text-amber-100' },
-  social: { icon: 'text-sky-300', header: 'bg-sky-400/10', pill: 'bg-sky-400/10 text-sky-100' },
-  utilities: { icon: 'text-slate-300', header: 'bg-slate-400/10', pill: 'bg-slate-400/10 text-slate-100' },
+  ai: { icon: 'text-cyan-700 dark:text-cyan-300', header: 'bg-cyan-400/15 dark:bg-cyan-400/10', pill: 'bg-cyan-400/15 text-cyan-800 dark:bg-cyan-400/10 dark:text-cyan-100' },
+  automation: { icon: 'text-indigo-700 dark:text-indigo-300', header: 'bg-indigo-400/15 dark:bg-indigo-400/10', pill: 'bg-indigo-400/15 text-indigo-800 dark:bg-indigo-400/10 dark:text-indigo-100' },
+  data: { icon: 'text-emerald-700 dark:text-emerald-300', header: 'bg-emerald-400/15 dark:bg-emerald-400/10', pill: 'bg-emerald-400/15 text-emerald-800 dark:bg-emerald-400/10 dark:text-emerald-100' },
+  development: { icon: 'text-rose-700 dark:text-rose-300', header: 'bg-rose-400/15 dark:bg-rose-400/10', pill: 'bg-rose-400/15 text-rose-800 dark:bg-rose-400/10 dark:text-rose-100' },
+  finance: { icon: 'text-amber-800 dark:text-amber-300', header: 'bg-amber-400/15 dark:bg-amber-400/10', pill: 'bg-amber-400/15 text-amber-900 dark:bg-amber-400/10 dark:text-amber-100' },
+  media: { icon: 'text-violet-700 dark:text-violet-300', header: 'bg-violet-400/15 dark:bg-violet-400/10', pill: 'bg-violet-400/15 text-violet-800 dark:bg-violet-400/10 dark:text-violet-100' },
+  photography: { icon: 'text-fuchsia-700 dark:text-fuchsia-300', header: 'bg-fuchsia-400/15 dark:bg-fuchsia-400/10', pill: 'bg-fuchsia-400/15 text-fuchsia-800 dark:bg-fuchsia-400/10 dark:text-fuchsia-100' },
+  security: { icon: 'text-amber-800 dark:text-amber-300', header: 'bg-amber-400/15 dark:bg-amber-400/10', pill: 'bg-amber-400/15 text-amber-900 dark:bg-amber-400/10 dark:text-amber-100' },
+  social: { icon: 'text-sky-700 dark:text-sky-300', header: 'bg-sky-400/15 dark:bg-sky-400/10', pill: 'bg-sky-400/15 text-sky-800 dark:bg-sky-400/10 dark:text-sky-100' },
+  utilities: { icon: 'text-slate-700 dark:text-slate-300', header: 'bg-slate-400/15 dark:bg-slate-400/10', pill: 'bg-slate-400/15 text-slate-800 dark:bg-slate-400/10 dark:text-slate-100' },
 };
 
-const DEFAULT_CATEGORY_ACCENT = { icon: 'text-primary', header: 'bg-primary/10', pill: 'bg-primary/10 text-primary-foreground' };
+const DEFAULT_CATEGORY_ACCENT = { icon: 'text-primary', header: 'bg-primary/10', pill: 'bg-primary/10 text-primary' };
 
 /**
  * The Portal normally supplies these icons. Keep a small name-to-domain fallback so the chart
