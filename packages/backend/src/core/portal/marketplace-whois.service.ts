@@ -221,15 +221,41 @@ export class MarketplaceWhoIsService {
       return undefined;
     }
 
-    const registration = await this.registration.getDeviceRegistrationInfo().catch(() => null);
-    if (registration?.id) {
-      const match = organizations.find((org) => org.organizationId === registration.id);
-      if (match) {
-        return match;
-      }
+    /*
+     * ⚠ THE DEVICE'S OWN ORGANIZATION, OR NONE — NEVER "THE FIRST ONE".
+     *
+     * `organizations[0]` is an arbitrary tenant from a response that may list
+     * several, so a subject who belongs to two organizations could have this
+     * Hub answer with the grants of whichever one Portal happened to serialize
+     * first. That is a grant read from the wrong tenant, and it can be wider
+     * than the real one.
+     *
+     * The registration read failing is the same problem wearing a different
+     * hat: it used to be swallowed into `null` and fall through to the same
+     * arbitrary pick, so a transient failure to learn our own identity silently
+     * widened every grant on the appliance. `undefined` here becomes `null` for
+     * every slug upstream, which `assertSessionActions` already treats as a
+     * refusal.
+     */
+    const registration = await this.registration.getDeviceRegistrationInfo().catch((error) => {
+      this.logger.warn(`whois_org_unresolved: could not read this device's registration: ${error}`);
+
+      return null;
+    });
+
+    if (!registration?.id) {
+      this.logger.warn('whois_org_unresolved: this device has no organization id; refusing to guess at grants');
+
+      return undefined;
     }
 
-    return organizations[0];
+    const match = organizations.find((org) => org.organizationId === registration.id);
+
+    if (!match) {
+      this.logger.warn(`whois_org_unresolved: Portal did not return grants for organization ${registration.id}`);
+    }
+
+    return match;
   }
 
   private canFromApp(app: { appId: string; can?: unknown; capMap?: Record<string, unknown> }): HubAction[] {

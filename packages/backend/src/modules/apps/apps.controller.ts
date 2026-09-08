@@ -127,8 +127,12 @@ export class AppsController {
   @Get(':urn/data-files')
   @UseGuards(AuthGuard)
   @ApiResponse({ type: AppDataListingDto })
-  async getAppDataListing(@Param('urn') urn: string) {
-    const res = await this.appsReadService.getAppDataListing(castAppUrn(urn));
+  async getAppDataListing(@Param('urn') urn: string, @Req() req: Request) {
+    const appUrn = castAppUrn(urn);
+    // Its siblings `compose-diff` and `config-diff` both assert `view`; this one
+    // reads the app's actual files and asserted nothing.
+    await this.whois.assertSessionAction(req, appUrn, 'view');
+    const res = await this.appsReadService.getAppDataListing(appUrn);
     return AppDataListingDto.parse(res, { reportOnly: true });
   }
 
@@ -154,14 +158,20 @@ export class AppsController {
 
   @Patch(':urn/ignore-version')
   @UseGuards(AuthGuard)
-  async ignoreAppVersion(@Param('urn') urn: string) {
-    return this.appsService.ignoreAppVersion(castAppUrn(urn));
+  async ignoreAppVersion(@Param('urn') urn: string, @Req() req: Request) {
+    const appUrn = castAppUrn(urn);
+    // Writes app state: suppressing an update notice is a configuration choice
+    // about somebody else's app.
+    await this.whois.assertSessionAction(req, appUrn, 'configure');
+    return this.appsService.ignoreAppVersion(appUrn);
   }
 
   @Patch(':urn/unignore-version')
   @UseGuards(AuthGuard)
-  async unignoreAppVersion(@Param('urn') urn: string) {
-    return this.appsService.unignoreAppVersion(castAppUrn(urn));
+  async unignoreAppVersion(@Param('urn') urn: string, @Req() req: Request) {
+    const appUrn = castAppUrn(urn);
+    await this.whois.assertSessionAction(req, appUrn, 'configure');
+    return this.appsService.unignoreAppVersion(appUrn);
   }
 
   @Get(':urn/check-availability')
@@ -184,7 +194,9 @@ export class AppsController {
 
   @Post(':urn/resolve-availability')
   @UseGuards(AuthGuard)
-  async resolveAvailability(@Param('urn') urn: string) {
-    return this.appsService.resolveAppAvailability(castAppUrn(urn));
+  async resolveAvailability(@Param('urn') urn: string, @Req() req: Request) {
+    const appUrn = castAppUrn(urn);
+    await this.whois.assertSessionAction(req, appUrn, 'configure');
+    return this.appsService.resolveAppAvailability(appUrn);
   }
 }
