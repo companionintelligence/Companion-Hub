@@ -161,21 +161,16 @@ export class HubPoolDiscoveryService {
    * identity space this module refuses to open. That Hub is paired with by address and PIN through
    * {@link pairAtAddress}, which does learn a name.
    *
-   * ⚠ THIS LEG RETURNS NOTHING TODAY, for two independent reasons — do not read an empty Portal
-   * directory as "no sibling devices registered":
-   *
-   *   1. `fetchDispatchDevices` calls `GET <portal>/api/devices` with the device key. That route is
-   *      Portal's `ListDevices` behind `sessionMiddleware`, which authenticates a BROWSER SESSION
-   *      via better-auth `getSession`. A device key is not a session, so the call is refused, and
-   *      `fetchDispatchDevices` ends `} catch { return []; }` — silently.
-   *   2. `tailscaleDns` is the only field that can name a candidate, and CI-Portal has no such
-   *      column: `device` holds `device_id`, `api_key`, `name`, `slug`, `status`, `pairing_code`
-   *      and `catalog_channel`. Even with a session, every row would be dropped above for having
-   *      no MagicDNS name.
-   *
-   * Both fixes are CI-Portal changes — a device-key-authenticated listing that carries a MagicDNS
-   * name — so this method is kept rather than deleted. See `docs/hub-pool.md` → Where pairing
-   * candidates come from.
+   * Fixed 2026-09-08 (CI-Portal `GET /api/devices/pool-peers`, migration `0053_device_tailscale_dns`)
+   * — until then this leg returned nothing for two independent reasons, worth knowing if a fleet
+   * node still reports empty Portal candidates: `fetchDispatchDevices` called `GET
+   * <portal>/api/devices`, which is Portal's *session*-authenticated `ListDevices` (a device key is
+   * not a session, so every call 401ed and the failure was swallowed silently); and even past that,
+   * CI-Portal's `device` row had no field to carry a MagicDNS name in at all, so every row would
+   * have been dropped here regardless. `tailscaleDns` on a Portal-sourced row is now that device's
+   * own self-report from `CheckIn.ts` — Portal is a directory here, never an authority, which is why
+   * `tryIdentify` below still probes it exactly like a Tailscale-sourced candidate rather than
+   * trusting the name outright.
    */
   private async listPortalCandidates(): Promise<DiscoverablePoolPeer[]> {
     if (!this.portalClient) return [];
