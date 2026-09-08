@@ -95,6 +95,10 @@ const commandSections: { title: string; entries: CommandEntry[] }[] = [
     title: 'Hub Pool',
     entries: [
       { command: `${BASE_COMMAND} pool status [env]`, description: 'Whether pooling is routing, this node, and every peer' },
+      {
+        command: `${BASE_COMMAND} pool doctor [env] [--check-latency]`,
+        description: 'Preflight: env, tailnet reachability, peer probe budget, and the host bridge',
+      },
       { command: `${BASE_COMMAND} pool peers [env]`, description: 'Paired peers with status, last seen, queue depth, and models' },
       { command: `${BASE_COMMAND} pool discover [env]`, description: 'Unpaired CI-Hub nodes, from your tailnet and your CI account' },
       { command: `${BASE_COMMAND} pool pair <node> [--name <label>] [--yes]`, description: 'Send a pairing request to a peer (it must approve)' },
