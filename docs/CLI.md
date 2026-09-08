@@ -323,6 +323,7 @@ cihub pool peers [env]                        # paired peers: status, last seen,
 cihub pool discover [env]                     # unpaired CI-Hub nodes, from every source
 cihub pool probe <address> [env]              # is there a CI-Hub at this LAN address?
 cihub pool pairing-pin [env]                  # mint the six digits the other Hub will need
+cihub pool cancel-pin [env]                   # revoke the outstanding PIN before it expires
 cihub pool pair <node> [--name <label>]       # send a pairing request (the other Hub must approve)
 cihub pool pair <address> --pin <digits>      # ...or pair by LAN address, no OAuth credential needed
 cihub pool approve <id>                       # accept a pending inbound request
