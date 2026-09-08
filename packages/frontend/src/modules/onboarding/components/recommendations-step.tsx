@@ -5,10 +5,9 @@ import { portalAlternativesQueryOptions } from '@/lib/portal-alternatives';
 import { getCategoryLabel } from '@/modules/app/helpers/category-label';
 import { iconForCategory } from '@/modules/app/helpers/table-helpers';
 import { useQuery } from '@tanstack/react-query';
-import { ArrowRight, LayoutGrid } from 'lucide-react';
+import { LayoutGrid } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Link } from 'react-router';
 import { getAllAlternatives } from '../helpers/alternatives';
 import { ONBOARDING_TOP_ALTERNATIVES } from '../helpers/onboarding-curated-picks';
 import type { DetectedService } from '../helpers/service-detection';
@@ -31,16 +30,56 @@ type RecommendationRow = {
 const RECOMMENDATIONS_COUNT = ONBOARDING_TOP_ALTERNATIVES.length;
 
 const CATEGORY_ACCENTS: Record<string, { icon: string; header: string; pill: string }> = {
-  ai: { icon: 'text-cyan-700 dark:text-cyan-300', header: 'bg-cyan-400/15 dark:bg-cyan-400/10', pill: 'bg-cyan-400/15 text-cyan-800 dark:bg-cyan-400/10 dark:text-cyan-100' },
-  automation: { icon: 'text-indigo-700 dark:text-indigo-300', header: 'bg-indigo-400/15 dark:bg-indigo-400/10', pill: 'bg-indigo-400/15 text-indigo-800 dark:bg-indigo-400/10 dark:text-indigo-100' },
-  data: { icon: 'text-emerald-700 dark:text-emerald-300', header: 'bg-emerald-400/15 dark:bg-emerald-400/10', pill: 'bg-emerald-400/15 text-emerald-800 dark:bg-emerald-400/10 dark:text-emerald-100' },
-  development: { icon: 'text-rose-700 dark:text-rose-300', header: 'bg-rose-400/15 dark:bg-rose-400/10', pill: 'bg-rose-400/15 text-rose-800 dark:bg-rose-400/10 dark:text-rose-100' },
-  finance: { icon: 'text-amber-800 dark:text-amber-300', header: 'bg-amber-400/15 dark:bg-amber-400/10', pill: 'bg-amber-400/15 text-amber-900 dark:bg-amber-400/10 dark:text-amber-100' },
-  media: { icon: 'text-violet-700 dark:text-violet-300', header: 'bg-violet-400/15 dark:bg-violet-400/10', pill: 'bg-violet-400/15 text-violet-800 dark:bg-violet-400/10 dark:text-violet-100' },
-  photography: { icon: 'text-fuchsia-700 dark:text-fuchsia-300', header: 'bg-fuchsia-400/15 dark:bg-fuchsia-400/10', pill: 'bg-fuchsia-400/15 text-fuchsia-800 dark:bg-fuchsia-400/10 dark:text-fuchsia-100' },
-  security: { icon: 'text-amber-800 dark:text-amber-300', header: 'bg-amber-400/15 dark:bg-amber-400/10', pill: 'bg-amber-400/15 text-amber-900 dark:bg-amber-400/10 dark:text-amber-100' },
-  social: { icon: 'text-sky-700 dark:text-sky-300', header: 'bg-sky-400/15 dark:bg-sky-400/10', pill: 'bg-sky-400/15 text-sky-800 dark:bg-sky-400/10 dark:text-sky-100' },
-  utilities: { icon: 'text-slate-700 dark:text-slate-300', header: 'bg-slate-400/15 dark:bg-slate-400/10', pill: 'bg-slate-400/15 text-slate-800 dark:bg-slate-400/10 dark:text-slate-100' },
+  ai: {
+    icon: 'text-cyan-700 dark:text-cyan-300',
+    header: 'bg-cyan-400/15 dark:bg-cyan-400/10',
+    pill: 'bg-cyan-400/15 text-cyan-800 dark:bg-cyan-400/10 dark:text-cyan-100',
+  },
+  automation: {
+    icon: 'text-indigo-700 dark:text-indigo-300',
+    header: 'bg-indigo-400/15 dark:bg-indigo-400/10',
+    pill: 'bg-indigo-400/15 text-indigo-800 dark:bg-indigo-400/10 dark:text-indigo-100',
+  },
+  data: {
+    icon: 'text-emerald-700 dark:text-emerald-300',
+    header: 'bg-emerald-400/15 dark:bg-emerald-400/10',
+    pill: 'bg-emerald-400/15 text-emerald-800 dark:bg-emerald-400/10 dark:text-emerald-100',
+  },
+  development: {
+    icon: 'text-rose-700 dark:text-rose-300',
+    header: 'bg-rose-400/15 dark:bg-rose-400/10',
+    pill: 'bg-rose-400/15 text-rose-800 dark:bg-rose-400/10 dark:text-rose-100',
+  },
+  finance: {
+    icon: 'text-amber-800 dark:text-amber-300',
+    header: 'bg-amber-400/15 dark:bg-amber-400/10',
+    pill: 'bg-amber-400/15 text-amber-900 dark:bg-amber-400/10 dark:text-amber-100',
+  },
+  media: {
+    icon: 'text-violet-700 dark:text-violet-300',
+    header: 'bg-violet-400/15 dark:bg-violet-400/10',
+    pill: 'bg-violet-400/15 text-violet-800 dark:bg-violet-400/10 dark:text-violet-100',
+  },
+  photography: {
+    icon: 'text-fuchsia-700 dark:text-fuchsia-300',
+    header: 'bg-fuchsia-400/15 dark:bg-fuchsia-400/10',
+    pill: 'bg-fuchsia-400/15 text-fuchsia-800 dark:bg-fuchsia-400/10 dark:text-fuchsia-100',
+  },
+  security: {
+    icon: 'text-amber-800 dark:text-amber-300',
+    header: 'bg-amber-400/15 dark:bg-amber-400/10',
+    pill: 'bg-amber-400/15 text-amber-900 dark:bg-amber-400/10 dark:text-amber-100',
+  },
+  social: {
+    icon: 'text-sky-700 dark:text-sky-300',
+    header: 'bg-sky-400/15 dark:bg-sky-400/10',
+    pill: 'bg-sky-400/15 text-sky-800 dark:bg-sky-400/10 dark:text-sky-100',
+  },
+  utilities: {
+    icon: 'text-slate-700 dark:text-slate-300',
+    header: 'bg-slate-400/15 dark:bg-slate-400/10',
+    pill: 'bg-slate-400/15 text-slate-800 dark:bg-slate-400/10 dark:text-slate-100',
+  },
 };
 
 const DEFAULT_CATEGORY_ACCENT = { icon: 'text-primary', header: 'bg-primary/10', pill: 'bg-primary/10 text-primary' };
@@ -500,14 +539,6 @@ export const RecommendationsStep = ({
                 </section>
               );
             })}
-          </div>
-        )}
-        {!showCatalogLoading && alternativeGroups.length > 0 && (
-          <div className="mt-3 flex justify-end">
-            <Link to="/store?category=alternatives" className="inline-flex items-center gap-1 text-sm font-medium text-primary hover:underline">
-              {t('ONBOARDING_BROWSE_ALL_ALTERNATIVES')}
-              <ArrowRight className="h-3 w-3" aria-hidden />
-            </Link>
           </div>
         )}
       </div>
