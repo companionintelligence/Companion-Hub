@@ -365,13 +365,26 @@ describe('HubPoolPeerService', () => {
       expect(repo.delete).not.toHaveBeenCalledWith('fresh');
     });
 
-    it('leaves an old outbound row alone — the operator created it and only they retire it', async () => {
+    /**
+     * This previously asserted the opposite — that an outbound row is the operator's to retire —
+     * on the reasoning that the peer's reject callback or Unpair would clean it up. That holds only
+     * if the far side can ever answer. `approvePairing` confirms back over `https://<fqdn>`, so a
+     * peer with no `tailscale serve` on 443 leaves the initiator holding a pending row nothing will
+     * ever resolve, which then answers 409 "already paired or pairing" on every retry. Observed on
+     * a real fleet; Unpair was the only way out.
+     */
+    it('deletes outbound pending rows older than the TTL, so a never-answered pairing unsticks itself', async () => {
       const stale = new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString();
-      repo.listByStatus.mockResolvedValue([mockPeer({ id: 'mine', direction: 'outbound', createdAt: stale })]);
+      repo.listByStatus.mockResolvedValue([
+        mockPeer({ id: 'stranded', direction: 'outbound', createdAt: stale }),
+        mockPeer({ id: 'recent', direction: 'outbound', createdAt: new Date().toISOString() }),
+      ]);
 
       await sweep(service);
 
-      expect(repo.delete).not.toHaveBeenCalled();
+      expect(repo.delete).toHaveBeenCalledWith('stranded');
+      // An outbound request still inside the TTL is a pairing the far operator may yet approve.
+      expect(repo.delete).not.toHaveBeenCalledWith('recent');
     });
   });
 
@@ -618,6 +631,35 @@ describe('HubPoolPeerService', () => {
       expect(inferenceRouter.getStatus).toHaveBeenCalledTimes(1);
       // A cached load figure would tell a ranking peer we are idle while our engines are busy.
       expect(second.inFlightRequests).toBe(1);
+    });
+
+    /**
+     * The regression that evicted a healthy node from a live pool.
+     *
+     * The caller most likely to find an expired entry is a peer's health probe, and the rebuild it
+     * would otherwise wait on measured 10.0s on a loaded appliance against a 15s budget — three
+     * overruns and the peer is `unreachable`. A stale entry must therefore be SERVED, not awaited.
+     */
+    it('serves a stale inventory immediately and refreshes behind the caller', async () => {
+      vi.useFakeTimers();
+      try {
+        await service.getOwnCapabilities();
+        expect(inferenceRouter.getStatus).toHaveBeenCalledTimes(1);
+
+        // Past the TTL, well inside the staleness ceiling — the window every 30s peer probe lands in.
+        vi.advanceTimersByTime(25_000);
+
+        // A rebuild that never settles: if the read awaited it, this call could not resolve at all.
+        inferenceRouter.getStatus.mockReturnValue(new Promise(() => {}) as never);
+
+        const stale = await service.getOwnCapabilities();
+
+        expect(stale.backends).toBeDefined();
+        // Served from cache, and the refresh was still kicked off for the next caller.
+        expect(inferenceRouter.getStatus).toHaveBeenCalledTimes(2);
+      } finally {
+        vi.useRealTimers();
+      }
     });
   });
 
