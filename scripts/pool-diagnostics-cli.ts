@@ -29,7 +29,9 @@ import { isHubContainerRunning, probeHostPort, resolveHubContainerName, runBridg
 import { parseEnvFile } from './env-file';
 import { BIND_MOUNT_DIRS } from './lib/bind-mounts';
 import { cliFail, cliOk, colorize, dim, sanitizeForBox, STEP_ICONS, type Tone } from './lib/cli-ui';
-import { resolveRootFolderHost } from './lib/paths';
+import { allowedEnvs, type HubEnv } from './lib/cli-types';
+import { resolveHubContext } from './lib/hub-context';
+import { resolveProdApplianceContext } from './lib/paths';
 import { readHubApiKey } from './public-web-cli';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -279,6 +281,228 @@ function runCli(command: string, args: string[], timeoutMs = CLI_TIMEOUT_MS): { 
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Where this node's configuration lives.
+//
+// Three defects in this file have now had the same shape: the right question asked of the wrong
+// place. B2 probed the node's own MagicDNS name, which cannot loop back (fixed by reading the serve
+// config). D2 read backend URLs from the env file, where compose never puts them (fixed by reading
+// the container environment). A1 resolved `.env.<env>` inside the checkout on a node whose Hub was
+// started from `~/.local/share/companion-hub/` (this).
+//
+// The through-line, and the rule this resolver exists to hold: ASK THE RUNNING SYSTEM, NOT THE
+// FILESYSTEM LAYOUT. `resolveHubContext` decides appliance-vs-checkout by asking "am I inside a
+// checkout?", which is the wrong question on a HYBRID node — a repo checkout AND an appliance
+// install on one box, where the running Hub reads the appliance's env file and the repo has none.
+// The container itself knows: `com.docker.compose.project.config_files` names the compose it was
+// created from, and the env file it was started with sits beside that.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Values the RUNNING Hub container was started with.
+ *
+ * Two variables and no others. A port and a path — both already printed by A1 and A4 — while the
+ * rest of that block is passwords, tokens and keys. Same allowlist discipline as
+ * {@link readBackendVarsFromContainer}: nothing else is even carried into the process.
+ */
+export interface ContainerConfigValues {
+  apiPort: number | null;
+  rootFolderHost: string | null;
+}
+
+/** The two names read out of the container's env block, and the reason each is not a secret. */
+const CONFIG_VALUE_VARS = ['API_PORT', 'ROOT_FOLDER_HOST'] as const;
+
+/**
+ * - `container` — the running Hub named the compose it was created from, and the file sits beside it.
+ * - `appliance` — no container answered, but a packaged install owns this host's Hub.
+ * - `checkout` — repo-relative `.env.<env>`, the historical behaviour and the last resort.
+ */
+export type NodeConfigSource = 'container' | 'appliance' | 'checkout';
+
+export interface ResolvedNodeConfig {
+  /** Absolute path to the env file the checks read. */
+  envFile: string;
+  exists: boolean;
+  source: NodeConfigSource;
+  /**
+   * Why THIS file, as a clause A1 prints verbatim. An operator has to be able to see that the doctor
+   * read `/home/ci/.local/share/companion-hub/.env` because that is what the running container was
+   * started from — a resolver that silently picks a different file just moves the confusion.
+   */
+  origin: string;
+  /** Why the earlier, more authoritative sources did not answer. Printed under A1. */
+  notes: string[];
+  /** What the running container is actually configured with, when there is one. */
+  container: ContainerConfigValues | null;
+  /** Data dir to use when the resolved env file declares no ROOT_FOLDER_HOST. */
+  defaultRootFolderHost: string;
+}
+
+export interface NodeConfigProbes {
+  /** Environment label (`prod`), which decides the env-specific file name looked for. */
+  env: string;
+  /** The container's own answer. Null when Docker is absent, or no Hub container is running. */
+  container: { name: string; composeFiles: string[]; config: ContainerConfigValues } | null;
+  /** `resolveHubContext(env)`: `appliance` says which mode it decided, `envFile` is absolute there. */
+  hubContext: { appliance: boolean; envFile: string; dataDir?: string } | null;
+  /** The canonical appliance install, consulted ONLY to rescue a checkout whose env file is absent. */
+  applianceInstall: { exists: boolean; envFilePath: string; dataDir: string } | null;
+  /** Repo-relative name the CLI resolved (`.env.prod`), used when nothing better answers. */
+  checkoutEnvFile: string;
+  /** `process.env.ROOT_FOLDER_HOST`, an operator override the rest of the CLI honours. */
+  envRootFolderHost: string | null;
+  exists: (target: string) => boolean;
+  cwd: string;
+}
+
+/**
+ * Env file names to look for beside a compose file, in order.
+ *
+ * Env-specific FIRST, and that order is load-bearing rather than cosmetic. A checkout is started
+ * with `--env-file .env.prod` and may also carry an unrelated `.env`, so preferring the bare name
+ * there would read the wrong file; an appliance data dir holds `.env` (plus, on nodes seeded long
+ * ago, a stale `.env.dev`) and no `.env.prod`, so the env-specific name simply misses and `.env`
+ * wins. Both real layouts resolve to the file their Hub was actually started with.
+ */
+export function envFileCandidates(env: string): string[] {
+  return [...new Set([`.env.${env}`, '.env'])];
+}
+
+/**
+ * Resolve where this node's configuration lives. Pure: every probe is injected, so the precedence
+ * is testable without Docker, without an appliance install and without a checkout.
+ *
+ * Precedence: the running container → the resolved Hub context → the checkout. Nothing here throws
+ * and nothing writes; a step that cannot answer records why in `notes` and defers to the next one.
+ */
+export function resolveNodeConfig(probes: NodeConfigProbes): ResolvedNodeConfig {
+  const notes: string[] = [];
+  const container = probes.container?.config ?? null;
+  const candidates = envFileCandidates(probes.env);
+  const fallbackRoot = (dir: string): string => container?.rootFolderHost ?? probes.envRootFolderHost ?? dir;
+
+  if (probes.container) {
+    const name = sanitizeForBox(probes.container.name);
+    const composeFile = probes.container.composeFiles[0] ?? null;
+    if (composeFile === null) {
+      notes.push(`The running container ${name} carries no compose label, so it could not name the file it was started from.`);
+    } else {
+      const composeDir = path.dirname(composeFile);
+      const found = candidates.map((candidate) => path.join(composeDir, candidate)).find((target) => probes.exists(target));
+      if (found !== undefined) {
+        return {
+          envFile: found,
+          exists: true,
+          source: 'container',
+          origin: `the running container ${name}, which was created from ${sanitizeForBox(composeFile)} — this file sits beside it`,
+          notes,
+          container,
+          defaultRootFolderHost: fallbackRoot(composeDir),
+        };
+      }
+      notes.push(
+        `The running container ${name} was created from ${sanitizeForBox(composeFile)}, but that directory holds none of: ${candidates.join(', ')}.`,
+      );
+    }
+  } else {
+    notes.push('No running Hub container answered, so the file it was started with could not be read off it.');
+  }
+
+  const ctx = probes.hubContext;
+  if (ctx?.appliance) {
+    const dataDir = ctx.dataDir ?? path.dirname(ctx.envFile);
+    return {
+      envFile: ctx.envFile,
+      exists: probes.exists(ctx.envFile),
+      source: 'appliance',
+      // No ` <path> (` shapes in any origin: the run-level guard that keeps stack frames out of the
+      // report matches on exactly that, and a line that trips it is a line an operator misreads too.
+      origin: `the appliance install at ${sanitizeForBox(dataDir)} — this host has no CI-Hub checkout`,
+      notes,
+      container,
+      defaultRootFolderHost: fallbackRoot(dataDir),
+    };
+  }
+
+  const checkoutName = ctx?.envFile ?? probes.checkoutEnvFile;
+  const checkoutFile = path.isAbsolute(checkoutName) ? checkoutName : path.join(probes.cwd, checkoutName);
+  const checkoutExists = probes.exists(checkoutFile);
+
+  // The hybrid, one step short of the container's answer: a checkout with no env file of its own,
+  // beside a complete appliance install. `resolveHubContext` cannot see this — it asks "am I inside
+  // a checkout?" and stops — and reporting the repo file that was never written would name a
+  // location this node has never had any configuration in.
+  if (!checkoutExists && probes.applianceInstall?.exists) {
+    return {
+      envFile: probes.applianceInstall.envFilePath,
+      exists: true,
+      source: 'appliance',
+      origin: `the appliance install at ${sanitizeForBox(probes.applianceInstall.dataDir)}, because this checkout has no ${sanitizeForBox(checkoutName)}`,
+      notes,
+      container,
+      defaultRootFolderHost: fallbackRoot(probes.applianceInstall.dataDir),
+    };
+  }
+
+  return {
+    envFile: checkoutFile,
+    exists: checkoutExists,
+    source: 'checkout',
+    origin: `this CI-Hub checkout's ${sanitizeForBox(checkoutName)}`,
+    notes,
+    container,
+    // Matches `resolveRootFolderHost`'s own last resort, so a checkout keeps the path it always had.
+    defaultRootFolderHost: fallbackRoot(path.join(probes.cwd, '.internal')),
+  };
+}
+
+/**
+ * {@link resolveNodeConfig} wired to this host. The one impure step, and the only place the doctor
+ * decides which env file everything below it reads.
+ */
+export function resolveNodeConfigForRun(env: string, checkoutEnvFile: string, image: RunningImageIdentity | null): ResolvedNodeConfig {
+  let hubContext: NodeConfigProbes['hubContext'] = null;
+  try {
+    // Guard BEFORE the call. In checkout mode resolveHubContext reaches getEnvFileOrExit, which
+    // does `process.exit(2)` on an unknown environment — not catchable, so the try/catch below is
+    // decorative for that path, and `pool doctor <typo>` printed one bare line and exited with no
+    // report at all. The doctor's contract is that it always renders something.
+    if (!(allowedEnvs as readonly string[]).includes(env)) {
+      throw new Error(`unknown environment '${env}' — expected one of ${allowedEnvs.join(', ')}`);
+    }
+    const ctx = resolveHubContext(env as HubEnv);
+    hubContext = { appliance: ctx.appliance, envFile: ctx.envFile, ...(ctx.dataDir === undefined ? {} : { dataDir: ctx.dataDir }) };
+  } catch {
+    // Degrade: an unresolvable context is one source fewer, not a failed run.
+  }
+  let applianceInstall: NodeConfigProbes['applianceInstall'] = null;
+  try {
+    const install = resolveProdApplianceContext();
+    // That helper answers for the desktop, which seeds `.env.dev` as primary and `.env` as an
+    // identical compat copy — so on Unix it prefers `.env.dev`. The doctor's order is the opposite
+    // way round (`.env.<env>`, then `.env`), and on a node where the two have drifted apart, or
+    // where an image-only install only ever had `.env`, the two disagree and A1 would name a file
+    // nothing else in the run reads. Re-pick by the doctor's own order and keep its answer whole.
+    const preferred = envFileCandidates(env)
+      .map((candidate) => path.join(install.dataDir, candidate))
+      .find((target) => existsSync(target));
+    applianceInstall = { exists: install.exists, envFilePath: preferred ?? install.envFilePath, dataDir: install.dataDir };
+  } catch {
+    // Same.
+  }
+  return resolveNodeConfig({
+    env,
+    container: image === null ? null : { name: image.container, composeFiles: image.composeFiles, config: image.config },
+    hubContext,
+    applianceInstall,
+    checkoutEnvFile,
+    envRootFolderHost: process.env.ROOT_FOLDER_HOST?.trim() || null,
+    exists: (target) => existsSync(target),
+    cwd: process.cwd(),
+  });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Section A — can this node be a pool member at all?
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -317,61 +541,121 @@ export function readEnvFoundation(envFileName: string): EnvFoundation {
 }
 
 /**
- * A1 — the env file defines the two variables nothing else can supply.
+ * A1 — this node has the two variables nothing else can supply, and the line says where they came from.
  *
  * Four fleet nodes shipped with a stub env holding neither, and there is no non-interactive way to
  * write one — so the remediation here is the literal lines to append, not a command that would open
- * a wizard the operator is not sitting in front of.
+ * a wizard the operator is not sitting in front of. Those lines are appended to the file
+ * {@link resolveNodeConfig} chose, which on an appliance node is not in the repo at all.
+ *
+ * The file is not the only source. Compose sets `API_PORT: 5002` in the service `environment:`
+ * block, so an appliance env file legitimately has none while the running Hub does — measured on a
+ * hybrid fleet node whose Hub was healthy and serving pool protocol 2 while this check called it
+ * unconfigured. A variable the running container carries is a variable this node has, and the note
+ * says which of the two it came from rather than blurring them into one number.
  */
-export function checkEnvFoundation(foundation: EnvFoundation, defaultRootFolderHost: string): PoolCheck {
-  const missing: string[] = [];
-  if (foundation.apiPort === null) missing.push('API_PORT');
-  if (foundation.rootFolderHost === null) missing.push('ROOT_FOLDER_HOST');
+export function checkEnvFoundation(foundation: EnvFoundation, config: ResolvedNodeConfig): PoolCheck {
+  const id = 'A1';
+  const label = 'Env file';
+  const file = sanitizeForBox(foundation.envFileName);
+  const sourceNotes = [`Read from ${config.origin}.`, ...config.notes];
+
+  const apiPort = foundation.apiPort ?? config.container?.apiPort ?? null;
+  const rootFolderHost = foundation.rootFolderHost ?? config.container?.rootFolderHost ?? null;
+  // Quoted because the target is now an absolute path the resolver chose, and the canonical macOS
+  // data dir (`~/Library/Application Support/companion-hub`) contains a space. Values default only
+  // where nothing on this node knows better: a port the running Hub already uses beats 5002.
+  const append = (key: 'API_PORT' | 'ROOT_FOLDER_HOST') =>
+    key === 'API_PORT'
+      ? `printf 'API_PORT=%s\\n' ${apiPort ?? DEFAULT_API_PORT} >> '${foundation.envFileName}'`
+      : `printf 'ROOT_FOLDER_HOST=%s\\n' '${rootFolderHost ?? config.defaultRootFolderHost}' >> '${foundation.envFileName}'`;
+  const fromContainer = [
+    ...(foundation.apiPort === null && config.container?.apiPort != null ? ['API_PORT'] : []),
+    ...(foundation.rootFolderHost === null && config.container?.rootFolderHost ? ['ROOT_FOLDER_HOST'] : []),
+  ];
+  const containerNote =
+    fromContainer.length === 0
+      ? []
+      : [
+          `${fromContainer.join(' and ')} ${fromContainer.length === 1 ? 'is' : 'are'} not in that file. The value above is what the running Hub`,
+          'container was started with, which is where its compose sets it: the service `environment:` block.',
+        ];
+  const missing = [...(apiPort === null ? ['API_PORT'] : []), ...(rootFolderHost === null ? ['ROOT_FOLDER_HOST'] : [])] as (
+    | 'API_PORT'
+    | 'ROOT_FOLDER_HOST'
+  )[];
 
   if (!foundation.exists) {
+    // The running Hub answers for a file that is gone: it was started with these values and still
+    // holds them, but nothing on disk would reproduce that. A finding, and not the same one as an
+    // unconfigured node — `cihub up` here fails on the very ROOT_FOLDER_HOST compose demands.
+    if (missing.length === 0) {
+      return {
+        id,
+        label,
+        verdict: 'warn',
+        detail: `${file} does not exist, but the running container has API_PORT=${apiPort}, ROOT_FOLDER_HOST=${sanitizeForBox(rootFolderHost ?? '')}`,
+        notes: [
+          ...sourceNotes,
+          'The Hub is running on configuration no file on this host still carries. It survives until the',
+          'next `cihub up`, which needs ROOT_FOLDER_HOST from the env file and stops without it.',
+        ],
+        commands: [append('API_PORT'), append('ROOT_FOLDER_HOST')],
+      };
+    }
     return {
-      id: 'A1',
-      label: 'Env file',
+      id,
+      label,
       verdict: 'fail',
-      detail: `${sanitizeForBox(foundation.envFileName)} does not exist — this node has no configuration to be a pool member with`,
+      detail: `${file} does not exist — this node has no configuration to be a pool member with`,
       notes: [
+        ...sourceNotes,
         'Every check below falls back to a default it had to guess. Write the file first.',
         '`cihub wizard` and `cihub setup` write a complete one, but both are interactive; the two',
         'lines below are the non-interactive minimum.',
       ],
-      commands: [
-        `printf 'API_PORT=%s\\n' ${DEFAULT_API_PORT} >> ${foundation.envFileName}`,
-        `printf 'ROOT_FOLDER_HOST=%s\\n' '${defaultRootFolderHost}' >> ${foundation.envFileName}`,
-      ],
+      commands: [append('API_PORT'), append('ROOT_FOLDER_HOST')],
     };
   }
 
   if (missing.length > 0) {
     return {
-      id: 'A1',
-      label: 'Env file',
+      id,
+      label,
       verdict: 'fail',
-      detail: `${sanitizeForBox(foundation.envFileName)} defines neither of: ${missing.join(', ')}`,
+      detail: `${file} defines neither of: ${missing.join(', ')}`,
       notes: [
+        ...sourceNotes,
         'A stub env file is the shape four fleet nodes shipped in. Nothing downstream can recover it:',
         'API_PORT is the port peers and the tunnel dial, ROOT_FOLDER_HOST is where the Hub keeps its state.',
+        ...(config.container === null ? ['No running container carries them either — there is no second source to fall back on.'] : []),
       ],
-      commands: missing.map((key) =>
-        key === 'API_PORT'
-          ? `printf 'API_PORT=%s\\n' ${DEFAULT_API_PORT} >> ${foundation.envFileName}`
-          : `printf 'ROOT_FOLDER_HOST=%s\\n' '${defaultRootFolderHost}' >> ${foundation.envFileName}`,
-      ),
+      commands: missing.map(append),
     };
   }
 
   return {
-    id: 'A1',
-    label: 'Env file',
+    id,
+    label,
     verdict: 'ok',
-    detail: `${sanitizeForBox(foundation.envFileName)} — API_PORT=${foundation.apiPort}, ROOT_FOLDER_HOST=${sanitizeForBox(
-      foundation.rootFolderHost ?? '',
-    )}`,
+    detail: `${file} — API_PORT=${apiPort}, ROOT_FOLDER_HOST=${sanitizeForBox(rootFolderHost ?? '')}`,
+    notes: [...sourceNotes, ...containerNote],
   };
+}
+
+/**
+ * The data dir A4 inspects, from the same resolved configuration A1 reported.
+ *
+ * ROOT_FOLDER_HOST in the resolved env file is the authority — it is the value compose interpolates
+ * — then the running container's own, then the resolver's default. Deriving this from the checkout
+ * instead is how A4 passed on `<checkout>/.internal`, a ten-directory tree that had nothing to do
+ * with the Hub, while the real one went uninspected.
+ */
+export function resolveDataDir(foundation: EnvFoundation, config: ResolvedNodeConfig): { root: string; origin: string } {
+  if (foundation.rootFolderHost !== null)
+    return { root: foundation.rootFolderHost, origin: `ROOT_FOLDER_HOST in ${sanitizeForBox(foundation.envFileName)}` };
+  if (config.container?.rootFolderHost) return { root: config.container.rootFolderHost, origin: 'ROOT_FOLDER_HOST in the running Hub container' };
+  return { root: config.defaultRootFolderHost, origin: 'a default — no env file or container declared ROOT_FOLDER_HOST' };
 }
 
 /** A2 — the Hub answers at all. Separated from A3 so "not running" never reads as "no Hub Pool". */
@@ -705,6 +989,15 @@ export interface RunningImageIdentity {
   mountTargets: string[];
   /** Environment variable NAMES. Values are dropped: that block is where the secrets are. */
   envNames: string[];
+  /**
+   * API_PORT and ROOT_FOLDER_HOST as the container actually has them — the two values A1 reports.
+   *
+   * The env FILE is not the only place they come from, which is the whole reason this field exists:
+   * `docker-compose.prod.yml` sets `API_PORT: 5002` in the service `environment:` block, so an
+   * appliance env file has no API_PORT at all while the running Hub has one. A1 reading only the
+   * file reports a configuration defect on a node that is correctly configured and serving.
+   */
+  config: ContainerConfigValues;
 }
 
 const IMAGE_INSPECT_FORMAT = [
@@ -726,6 +1019,7 @@ export function parseHubContainerInspect(container: string, stdout: string): Run
   const fields = new Map<string, string>();
   const mountTargets: string[] = [];
   const envNames: string[] = [];
+  const configValues = new Map<string, string>();
   let version: string | null = null;
 
   for (const line of stdout.split('\n')) {
@@ -742,9 +1036,11 @@ export function parseHubContainerInspect(container: string, stdout: string): Run
       if (nameEnd <= 0) continue;
       const name = raw.slice(0, nameEnd);
       envNames.push(name);
-      // The one value read out of this block, and it is a version string. Everything else beside it
-      // is a password, a token or a key, so nothing else is even carried into the process.
+      // Three values out of this block and no more: a version string and the two A1 reports. Every
+      // other line beside them is a password, a token or a key, so nothing else is even carried
+      // into the process — the allowlist is the protection, not the printing site.
       if (name === 'CI_HUB_VERSION') version = raw.slice(nameEnd + 1).trim() || null;
+      else if ((CONFIG_VALUE_VARS as readonly string[]).includes(name)) configValues.set(name, raw.slice(nameEnd + 1).trim());
       continue;
     }
     fields.set(key, raw);
@@ -762,6 +1058,10 @@ export function parseHubContainerInspect(container: string, stdout: string): Run
       .filter((entry) => entry !== ''),
     mountTargets,
     envNames,
+    config: {
+      apiPort: parsePort(configValues.get('API_PORT')),
+      rootFolderHost: configValues.get('ROOT_FOLDER_HOST')?.trim() ? (configValues.get('ROOT_FOLDER_HOST') as string).trim() : null,
+    },
   };
 }
 
@@ -2004,7 +2304,10 @@ export function checkBackendDns(specs: BackendUrlSpec[], results: DnsProbeResult
   for (const spec of specs) {
     if (spec.malformed) {
       failures += 1;
-      notes.push(`${spec.variable.padEnd(26, ' ')} ${cliFail(`not a URL: ${sanitizeForBox(spec.url)}`)}`);
+      // Never echo the value. A malformed URL still commonly carries `user:password@`, and this
+      // check now reads the file the operator's Hub was actually started from, so the reachable
+      // input is real credentials rather than a repo placeholder. The variable name is enough to fix it.
+      notes.push(`${spec.variable.padEnd(26, ' ')} ${cliFail('not a URL — value withheld; check this variable in the env file named by A1')}`);
       continue;
     }
     if (spec.isIpLiteral) {
@@ -2242,12 +2545,12 @@ export function checkNonStreamingHeadroom(
 
 async function collectSectionA(
   foundation: EnvFoundation,
+  config: ResolvedNodeConfig,
   base: string,
   apiPort: number,
   env: string,
 ): Promise<{ checks: PoolCheck[]; health: HttpProbe }> {
-  const defaultRoot = resolveRootFolderHost(foundation.envFileName);
-  const checks: PoolCheck[] = [checkEnvFoundation(foundation, defaultRoot)];
+  const checks: PoolCheck[] = [checkEnvFoundation(foundation, config)];
 
   const listening = await probeHostPort(apiPort);
   const health = await timedFetch(`${base}/api/health`, HUB_PROBE_TIMEOUT_MS);
@@ -2256,9 +2559,12 @@ async function collectSectionA(
   const identify = await timedFetch(`${base}/api/inference/pool/identify`, HUB_PROBE_TIMEOUT_MS);
   checks.push(checkPoolProtocol(identify, base));
 
-  const root = foundation.rootFolderHost ?? defaultRoot;
+  // Same resolved configuration A1 named. Deriving this independently is what let A4 report a clean
+  // pass on a directory tree the Hub does not use.
+  const { root, origin } = resolveDataDir(foundation, config);
   if (existsSync(root)) {
-    checks.push(checkDataDirOwnership(inspectHubDataDirs(root), root, foundation.containerUid, foundation.containerGid));
+    const ownership = checkDataDirOwnership(inspectHubDataDirs(root), root, foundation.containerUid, foundation.containerGid);
+    checks.push({ ...ownership, notes: [...(ownership.notes ?? []), `Data dir from ${origin}.`] });
   } else {
     checks.push({
       id: 'A4',
@@ -2266,10 +2572,11 @@ async function collectSectionA(
       verdict: 'warn',
       detail: `${sanitizeForBox(root)} does not exist yet`,
       notes: [
+        `Data dir from ${origin}.`,
         'Docker creates every missing bind-mount source as root:root at compose up, which is exactly',
         'the failure this check exists for. Create the tree first, owned by the container user.',
       ],
-      commands: [`mkdir -p ${root} && sudo chown -R ${foundation.containerUid}:${foundation.containerGid} ${root}`],
+      commands: [`mkdir -p '${root}' && sudo chown -R ${foundation.containerUid}:${foundation.containerGid} '${root}'`],
     });
   }
 
@@ -2322,9 +2629,14 @@ async function probePoolRoutes(base: string): Promise<PoolRouteSupport[]> {
   );
 }
 
-async function collectSectionB(base: string, hubAnswering: boolean, env: string, options: PoolDoctorOptions): Promise<PoolCheck[]> {
+async function collectSectionB(
+  base: string,
+  hubAnswering: boolean,
+  env: string,
+  options: PoolDoctorOptions,
+  image: RunningImageIdentity | null,
+): Promise<PoolCheck[]> {
   const repo = readRepoIdentity();
-  const image = readRunningImageIdentity();
   const comparison = repo.root !== null && repo.head !== null && image?.revision ? compareImageRevision(repo.root, repo.head, image.revision) : null;
 
   const checks: PoolCheck[] = [
@@ -2570,6 +2882,9 @@ async function lastRoutedNode(base: string, apiKey: string | undefined): Promise
  * Never throws: the outer catch mirrors `runBridgeDoctorSection`, and every individual check
  * degrades to an `unknown` verdict rather than aborting the run. On a machine with no Docker, no
  * Tailscale and no Hub this still produces a full report — that machine is the one being set up.
+ *
+ * `envFileName` is the caller's best guess, not the answer: {@link resolveNodeConfig} asks the
+ * running container first and falls back to this only when nothing better answers.
  */
 export async function runPoolDoctorSection(envFileName: string, options: PoolDoctorOptions = {}): Promise<PoolDoctorSection> {
   try {
@@ -2621,11 +2936,18 @@ async function collectSectionSafely(letter: string, collapsed: string[], run: ()
 
 async function collectPoolDoctorSection(envFileName: string, options: PoolDoctorOptions): Promise<PoolDoctorSection> {
   const env = options.env ?? 'prod';
-  const foundation = readEnvFoundation(envFileName);
-  const apiPort = foundation.apiPort ?? DEFAULT_API_PORT;
+  // One `docker inspect`, shared: the resolver needs the compose label and section B needs the rest.
+  const image = readRunningImageIdentity();
+  // Everything below reads THIS file, whichever it turns out to be — sections A, D and E all used to
+  // resolve the checkout's `.env.<env>` independently and all three were wrong on a hybrid node.
+  const config = resolveNodeConfigForRun(env, envFileName, image);
+  const foundation = readEnvFoundation(config.envFile);
+  const apiPort = foundation.apiPort ?? config.container?.apiPort ?? DEFAULT_API_PORT;
   const base = `http://127.0.0.1:${apiPort}`;
   // Read, never printed. Reaching an authenticated route with it is fine; disclosing it is not.
-  const apiKey = readHubApiKey(envFileName);
+  // The key lives at `<ROOT_FOLDER_HOST>/state/settings.json`, so it is found only when the env file
+  // this resolves from is the one the Hub actually uses.
+  const apiKey = readHubApiKey(config.envFile);
   const collapsed: string[] = [];
 
   // Each section prints as it lands. Sequential and bounded, the worst case is minutes on precisely
@@ -2640,20 +2962,22 @@ async function collectPoolDoctorSection(envFileName: string, options: PoolDoctor
 
   let health: HttpProbe = { ok: false, status: null, ms: 0, body: '', error: 'section A did not complete' };
   const sectionA = await collectSectionSafely('A', collapsed, async () => {
-    const collected = await collectSectionA(foundation, base, apiPort, env);
+    const collected = await collectSectionA(foundation, config, base, apiPort, env);
     health = collected.health;
     return collected.checks;
   });
   announce('A', header('A').title);
-  const sectionB = await collectSectionSafely('B', collapsed, () => collectSectionB(base, health.ok, env, options));
+  const sectionB = await collectSectionSafely('B', collapsed, () => collectSectionB(base, health.ok, env, options, image));
   announce('B', header('B').title);
   const sectionC = await collectSectionSafely('C', collapsed, () => collectSectionC(apiPort, health.ok));
   announce('C', header('C').title);
-  const sectionD = await collectSectionSafely('D', collapsed, () => collectSectionD(base, envFileName, apiKey, options));
+  const sectionD = await collectSectionSafely('D', collapsed, () => collectSectionD(base, config.envFile, apiKey, options));
   announce('D', header('D').title);
-  // Section E is the existing bridge module, unchanged: it already probes from inside the container
-  // (the only vantage where a filtered bridge is visible) and already derives the ufw rule.
-  const bridge = await runBridgeDoctorSection(envFileName).catch((error: unknown) => {
+  // Section E is the existing bridge module, unchanged apart from the file it reads: it already
+  // probes from inside the container (the only vantage where a filtered bridge is visible) and
+  // already derives the ufw rule. Its ports come from the env file, so it gets the resolved one —
+  // reading a checkout file that does not exist silently probed the default ports instead.
+  const bridge = await runBridgeDoctorSection(config.envFile).catch((error: unknown) => {
     collapsed.push('E');
     return {
       lines: [`Docker bridge            unavailable (${sanitizeForBox(error instanceof Error ? error.message : String(error))})`],
@@ -2671,7 +2995,11 @@ async function collectPoolDoctorSection(envFileName: string, options: PoolDoctor
 
   const lines = [
     `Hub Pool preflight       ${summarisePoolChecks(checks)}${collapsed.length > 0 ? `, ${collapsed.length} section(s) unavailable` : ''}`,
-    ...(foundation.apiPort === null ? [dim(`  API_PORT was not set, so every probe above used the default ${DEFAULT_API_PORT}.`)] : []),
+    // Only when NOTHING knew the port. A file without API_PORT whose container has one is not a run
+    // on a guessed default, and saying so sent operators looking for a defect that was not there.
+    ...(foundation.apiPort === null && config.container?.apiPort == null
+      ? [dim(`  API_PORT was not set, so every probe above used the default ${DEFAULT_API_PORT}.`)]
+      : []),
     '',
     ...SECTION_HEADERS.flatMap(({ letter, title }, index) => [
       ...(index === 0 ? [] : ['']),
