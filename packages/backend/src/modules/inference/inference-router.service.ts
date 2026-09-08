@@ -2,14 +2,18 @@ import { Injectable, forwardRef, Inject } from '@nestjs/common';
 import axios from 'axios';
 import { LoggerService } from '@/core/logger/logger.service';
 import { hubContainerName } from '@/common/constants';
-import type { InferenceBackendType, InferenceModelInfo, InferenceStatus } from '@ci-hub/common/types';
+import type { BackendHealthStatus, InferenceBackendType, InferenceModelInfo, InferenceStatus } from '@ci-hub/common/types';
 import { HardwareInspectorService } from './hardware-inspector.service';
 import { ModelRegistryService } from './model-registry.service';
 import { MemoryManagerService } from './memory-manager.service';
 import { CloudFallbackService } from './cloud-fallback.service';
 import { ModelPullerService } from './model-puller.service';
 import { InferenceBackendRegistry } from './backends/backend-registry';
+import type { InferenceBackend } from './backends/backend.interface';
 import { resolveInstalledCatalogIds } from './model-availability.util';
+
+/** One parallel health sweep over every registered backend. */
+type ProbedBackends = ReadonlyArray<readonly [InferenceBackendType, InferenceBackend, BackendHealthStatus]>;
 
 /**
  * Inference router — unified routing view over local backends + multi-node pool + cloud fallback.
@@ -27,28 +31,39 @@ export class InferenceRouterService {
     private readonly modelPuller: ModelPullerService,
   ) {}
 
+  /**
+   * Health-check every backend once, concurrently.
+   *
+   * Concurrency is the point. A backend whose URL does not resolve does not fail fast — Node's
+   * `getaddrinfo` blocks for the resolver timeout — so probing six of them in sequence costs the
+   * sum of their stalls rather than the worst one.
+   */
+  private async probeBackends(): Promise<ProbedBackends> {
+    return Promise.all(this.backends.entries().map(async ([type, backend]) => [type, backend, await backend.healthCheck()] as const));
+  }
+
   /** Get full inference status for MCP / API */
   async getStatus(): Promise<InferenceStatus> {
     const profile = await this.hardwareInspector.getProfile();
     const budget = this.memoryManager.calculateBudget(profile);
 
-    const backends = await Promise.all(
-      this.backends.entries().map(async ([type, backend]) => {
-        const health = await backend.healthCheck();
-        const unservableModels = this.inBothIdSpaces(health.unservableModels ?? []);
-        return {
-          type,
-          running: health.running,
-          healthy: health.healthy,
-          url: backend.getBaseUrl(),
-          modelsLoaded: health.modelsLoaded.length,
-          ...(unservableModels.length > 0 ? { unservableModels } : {}),
-        };
-      }),
-    );
+    const probed = await this.probeBackends();
+    const backends = probed.map(([type, backend, health]) => {
+      const unservableModels = this.inBothIdSpaces(health.unservableModels ?? []);
+      return {
+        type,
+        running: health.running,
+        healthy: health.healthy,
+        url: backend.getBaseUrl(),
+        modelsLoaded: health.modelsLoaded.length,
+        ...(unservableModels.length > 0 ? { unservableModels } : {}),
+      };
+    });
 
-    // Build merged model list
-    const models = await this.listModels();
+    // Build merged model list. Hand it the probe we just did: `listModels` otherwise repeats the
+    // whole fan-out, and on a node with one slow backend that doubling is what blows the caller's
+    // budget rather than the backend itself.
+    const models = await this.listModels(probed);
 
     const cloudProviders = this.cloudFallback.listProviders().map((p) => ({
       provider: p.provider,
@@ -82,8 +97,13 @@ export class InferenceRouterService {
     return [...new Set([...backendModelIds, ...resolveInstalledCatalogIds(this.modelRegistry.getCatalog(), backendModelIds)])];
   }
 
-  /** List all available models (local + cloud) */
-  async listModels(): Promise<InferenceModelInfo[]> {
+  /**
+   * List all available models (local + cloud).
+   *
+   * `probed` lets a caller that has already health-checked every backend hand the result in.
+   * Without it this probes them itself — in parallel, never in sequence.
+   */
+  async listModels(probed?: ProbedBackends): Promise<InferenceModelInfo[]> {
     const models: InferenceModelInfo[] = [];
     const now = Math.floor(Date.now() / 1000);
 
@@ -142,8 +162,7 @@ export class InferenceRouterService {
 
     // Discovered models from backends (not in curated catalog or tracked)
     const knownIds = new Set(models.map((m) => m.id));
-    for (const [backendType, backend] of this.backends.entries()) {
-      const health = await backend.healthCheck();
+    for (const [backendType, , health] of probed ?? (await this.probeBackends())) {
       if (health.running && health.healthy) {
         for (const modelName of health.modelsLoaded) {
           if (!knownIds.has(modelName)) {
