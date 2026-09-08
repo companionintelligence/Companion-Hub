@@ -95,19 +95,20 @@ describe('banner', () => {
     expect(plain).toContain('cihub man');
   });
 
-  it('box sections have no side | borders on content lines', () => {
+  it('box sections have no side borders on content lines', () => {
+    // `box()` frames with a top and bottom rule only (BOX_CHARS has no `vertical`), so a content
+    // line is a plain two-space indent. The guard is against a vertical border creeping back in and
+    // making every line width-dependent — it is NOT about question marks, which are ordinary text.
+    const VERTICAL = '\u2502';
     const plain = stripAnsi(renderHelp());
-    // Content lines should start with 2-space indent, not ?
     for (const line of plain.split('\n')) {
-      if (line.startsWith('  ') && !line.startsWith('  ?') && !line.startsWith('  ?')) {
-        expect(line.startsWith('?')).toBe(false);
-        expect(line.endsWith('?')).toBe(false);
-      }
+      expect(line.startsWith(VERTICAL)).toBe(false);
+      expect(line.trimEnd().endsWith(VERTICAL)).toBe(false);
     }
   });
 });
 
-// ??? help & man ???????????????????????????????????????????????????????????????
+// --- help & man ----------------------------------------------------------------------------------
 
 describe('renderHelp', () => {
   it('lists all command groups', () => {
@@ -294,7 +295,7 @@ describe('shouldRetryApkMirrorWithHostNetwork', () => {
   });
 });
 
-// ??? first-run detection ??????????????????????????????????????????????????????
+// --- first-run detection -------------------------------------------------------------------------
 
 describe('isFirstRun', () => {
   it('returns true when the env file does not exist', () => {
@@ -307,7 +308,7 @@ describe('isFirstRun', () => {
   });
 });
 
-// ??? repo-root guard ???????????????????????????????????????????????????????????
+// --- repo-root guard -----------------------------------------------------------------------------
 
 describe('isHubRepoRoot', () => {
   it('recognises the CI-Hub repo from its package.json name + scripts dir', () => {
@@ -473,7 +474,7 @@ describe('getComposeFiles', () => {
   });
 });
 
-// ??? env file round-trip ???????????????????????????????????????????????????????
+// --- env file round-trip -------------------------------------------------------------------------
 
 describe('parseEnvFile / upsertEnvVar', () => {
   const TMP = '.env.__vitest__';
@@ -519,7 +520,7 @@ describe('parseEnvFile / upsertEnvVar', () => {
   });
 });
 
-// ??? compose profiles / private-vpn ?????????????????????????????????????????????
+// --- compose profiles / private-vpn --------------------------------------------------------------
 
 describe('mergeComposeProfilesFromEnvFile', () => {
   const TMP = '.env.__vitest_vpn__';
@@ -1019,9 +1020,24 @@ describe('parsePoolArgs', () => {
       limit: undefined,
       axis: 'both',
       model: undefined,
+      cancel: false,
       yes: false,
       env: 'local',
     });
+  });
+
+  it('routes pairing-pin, the command the other Hub needs before it can pair by address', () => {
+    // It was documented, and named in `pool probe`'s own output, long before it was routed: a
+    // headless appliance with no dashboard has no other way to mint one.
+    expect(parsePoolArgs(['pairing-pin']).subcommand).toBe('pairing-pin');
+    expect(parsePoolArgs(['pairing-pin', 'dev']).env).toBe('dev');
+  });
+
+  it('reads --cancel, and only where revoking a PIN is meaningful', () => {
+    expect(parsePoolArgs(['pairing-pin', '--cancel']).cancel).toBe(true);
+    expect(parsePoolArgs(['pairing-pin']).cancel).toBe(false);
+    expect(() => parsePoolArgs(['status', '--cancel'])).toThrow();
+    expect(() => parsePoolArgs(['unpair', 'aaaaaaaa', '--cancel'])).toThrow();
   });
 
   it('reads --outbound / --inbound into the axis, defaulting to the master switch', () => {

@@ -39,6 +39,7 @@ Follow the [Google developer documentation style guide](https://developers.googl
 | [`License-FAQ.md`](License-FAQ.md) | License questions |
 | [`security/hub-portal-trust.md`](security/hub-portal-trust.md) | Hub ↔ Portal trust; marketplace needs a paired device key |
 | [`CLI.md`](CLI.md) | `cihub` CLI |
+| [`fleet-setup.md`](fleet-setup.md) | End-to-end setup: account, devices, operators, tailnet, and pooling — the order to do them in |
 | [`private-vpn.md`](private-vpn.md) | Tailscale private VPN |
 | [`hub-pool.md`](hub-pool.md) | Multi-Hub inference pooling over Tailscale |
 | [`inference-supervision.md`](inference-supervision.md) | Observing inference backends and Compose-wide crash loops — and why the Hub never restarts one |

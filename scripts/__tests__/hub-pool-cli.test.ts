@@ -5,6 +5,10 @@ import {
   type PoolProbeResult,
   type PoolRoutingLogResponse,
   type PoolStatusResponse,
+  cancelPairingPin,
+  formatMintedPairingPinLines,
+  formatPairingPinStateLines,
+  formatPeerAuthModeLines,
   formatPoolDiscoverLines,
   formatPoolPeerTable,
   formatPoolPeersLines,
@@ -16,6 +20,7 @@ import {
   deletePoolPin,
   setPoolPin,
   probePoolAddress,
+  mintPairingPin,
   resolvePoolPeerTarget,
   runPoolDiscover,
   setPoolEnabledSetting,
@@ -498,5 +503,110 @@ describe('hub-pool-cli pins', () => {
     expect(hubApiFetch.mock.calls[1]?.[1]).toBe('/inference/pool/pins?scope=model&model=hf.co%2Forg%2Frepo%3AQ4_K_M');
     expect((hubApiFetch.mock.calls[1]?.[2] as RequestInit).method).toBe('DELETE');
     expect(hubApiFetch.mock.calls[2]?.[1]).toBe('/inference/pool/pins?scope=default');
+  });
+});
+
+describe('hub-pool-cli pairing PIN', () => {
+  beforeEach(() => {
+    hubApiFetch.mockReset();
+  });
+
+  it('mints and revokes against the same route, with the mutation budget', async () => {
+    hubApiFetch.mockResolvedValueOnce({ pin: '123456', expiresAt: '2026-09-05T10:10:00.000Z' });
+    await mintPairingPin('.env.local');
+    await cancelPairingPin('.env.local');
+
+    expect(hubApiFetch.mock.calls[0]?.[1]).toBe('/inference/pool/pairing-pin');
+    expect((hubApiFetch.mock.calls[0]?.[2] as RequestInit).method).toBe('POST');
+    expect((hubApiFetch.mock.calls[0]?.[2] as RequestInit).signal).toBeInstanceOf(AbortSignal);
+    expect(hubApiFetch.mock.calls[1]?.[1]).toBe('/inference/pool/pairing-pin');
+    expect((hubApiFetch.mock.calls[1]?.[2] as RequestInit).method).toBe('DELETE');
+  });
+
+  it('names the OTHER Hub as where the digits are typed', () => {
+    // The one thing operators get backwards: the PIN is minted on the receiving Hub and typed on the
+    // joining one, the opposite way round from every other pool command.
+    const text = formatMintedPairingPinLines({ pin: '123456', expiresAt: '2026-09-05T10:10:00.000Z' }, 'hub-a.example-tailnet.ts.net').join('\n');
+
+    expect(text).toContain('123456');
+    expect(text).toContain('OTHER Hub');
+    expect(text).toContain('cihub pool pair hub-a.example-tailnet.ts.net --pin 123456');
+    expect(text).toContain('single use');
+    // Approval is still required on this side: minting a PIN is not pre-approval.
+    expect(text).toContain('cihub pool approve');
+  });
+
+  it('still prints usable digits when this node has no name to offer', () => {
+    const text = formatMintedPairingPinLines({ pin: '004200', expiresAt: '2026-09-05T10:10:00.000Z' }, null).join('\n');
+
+    expect(text).toContain('004200');
+    expect(text).toContain('<this-hub-address>');
+  });
+
+  it('shows the key fingerprint to compare, or says why there is none', () => {
+    const withKey = formatMintedPairingPinLines(
+      { pin: '123456', expiresAt: '2026-09-05T10:10:00.000Z', publicKeyFingerprint: 'ab12cd34' },
+      null,
+    ).join('\n');
+    expect(withKey).toContain('ab12cd34');
+
+    const broken = formatMintedPairingPinLines({ pin: '123456', expiresAt: '2026-09-05T10:10:00.000Z', identityError: 'key unreadable' }, null).join(
+      '\n',
+    );
+    expect(broken).toContain('key unreadable');
+  });
+
+  it('reports an outstanding PIN in status, and nothing at all when there is none', () => {
+    expect(formatPairingPinStateLines(undefined)).toEqual([]);
+    expect(formatPairingPinStateLines({ active: false, expiresAt: null })).toEqual([]);
+
+    const text = formatPairingPinStateLines({ active: true, expiresAt: '2026-09-05T10:10:00.000Z' }).join('\n');
+    expect(text).toContain('2026-09-05 10:10:00Z');
+    expect(text).toContain('--cancel');
+  });
+
+  it('never prints the digits from a status payload', () => {
+    // `GET status` reports only that a PIN exists; the mint is the sole place it is ever shown.
+    const text = formatPoolStatusLines(status({ pairingPin: { active: true, expiresAt: '2026-09-05T10:10:00.000Z' } })).join('\n');
+    expect(text).toContain('PIN outstanding');
+    expect(text).not.toMatch(/\b\d{6}\b/);
+  });
+});
+
+describe('hub-pool-cli peer auth mode', () => {
+  it('names the peers still on a bearer token, because they are what blocks the switch', () => {
+    const text = formatPeerAuthModeLines([peer({ authMode: 'bearer' }), peer({ id: 'b', nodeFqdn: PEER_B, authMode: 'signed' })], false).join('\n');
+
+    expect(text).toContain(PEER_A);
+    expect(text).not.toContain(PEER_B);
+    expect(text).toContain('Do not set poolRequireSignedPeers');
+  });
+
+  it('says the switch is safe once every peer has upgraded', () => {
+    const text = formatPeerAuthModeLines([peer({ authMode: 'signed' })], false).join('\n');
+
+    expect(text).toContain('now safe');
+  });
+
+  it('calls out peers being refused when the switch is already on', () => {
+    const text = formatPeerAuthModeLines([peer({ authMode: 'bearer' })], true).join('\n');
+
+    expect(text).toContain('refused in both directions');
+  });
+
+  it('treats a peer that has not finished pairing as no evidence either way', () => {
+    // A pending row has no auth mode yet, so it must neither be listed as a blocker nor counted as
+    // an upgraded peer.
+    expect(formatPeerAuthModeLines([peer({ status: 'pending' })], false)).toEqual([]);
+
+    const text = formatPeerAuthModeLines([peer({ authMode: 'signed' }), peer({ id: 'b', nodeFqdn: PEER_B, status: 'pending' })], false).join('\n');
+    expect(text).toContain('now safe');
+    expect(text).not.toContain(PEER_B);
+  });
+
+  it('reads a Hub predating pinned identities as not yet upgraded, never as signed', () => {
+    const text = formatPeerAuthModeLines([peer({ authMode: undefined })], false).join('\n');
+
+    expect(text).toContain('legacy bearer token');
   });
 });

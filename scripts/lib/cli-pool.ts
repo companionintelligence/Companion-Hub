@@ -8,14 +8,17 @@ import path from 'node:path';
 import { parseEnvFile } from '../env-file.js';
 import {
   approvePoolPeer,
+  cancelPairingPin,
   deletePoolPin,
   fetchPoolPeers,
   fetchPoolRoutingLog,
   fetchPoolStatus,
   formatPoolPeersLines,
   formatPoolProbeLines,
+  formatMintedPairingPinLines,
   formatPoolRoutingLogLines,
   formatPoolStatusLines,
+  mintPairingPin,
   pairPoolPeer,
   probePoolAddress,
   rejectPoolPeer,
@@ -44,6 +47,7 @@ export const POOL_SUBCOMMANDS = [
   'approve',
   'reject',
   'unpair',
+  'pairing-pin',
   'log',
   'enable',
   'disable',
@@ -63,6 +67,8 @@ export interface ParsedPoolArgs {
   subcommand: PoolSubcommand;
   target?: string;
   displayName?: string;
+  /** `pairing-pin` only: revoke the outstanding PIN instead of minting a new one. */
+  cancel: boolean;
   /** `pair` only: the six digits minted on the OTHER Hub, and the only way to pair by address. */
   pin?: string;
   limit?: number;
@@ -80,6 +86,7 @@ export interface ParsedPoolArgs {
  */
 export function parsePoolArgs(args: string[]): ParsedPoolArgs {
   let yes = false;
+  let cancel = false;
   let displayName: string | undefined;
   let pin: string | undefined;
   let limit: number | undefined;
@@ -91,6 +98,10 @@ export function parsePoolArgs(args: string[]): ParsedPoolArgs {
     const arg = args[i] as string;
     if (arg === '--yes') {
       yes = true;
+      continue;
+    }
+    if (arg === '--cancel') {
+      cancel = true;
       continue;
     }
     if (arg === '--outbound' || arg === '--inbound') {
@@ -150,9 +161,13 @@ export function parsePoolArgs(args: string[]): ParsedPoolArgs {
     usageAndExit(`--model only applies to \`${BASE_COMMAND} pool pin\` and \`${BASE_COMMAND} pool unpin\`.`);
   }
 
+  if (cancel && subcommand !== 'pairing-pin') {
+    usageAndExit(`--cancel only applies to \`${BASE_COMMAND} pool pairing-pin\`.`);
+  }
+
   const takesTarget = POOL_TARGET_SUBCOMMANDS.includes(subcommand);
   const target = takesTarget ? positional[1] : undefined;
-  return { subcommand, target, displayName, pin, limit, axis, model, yes, env: resolveEnvFromArgs(positional.slice(takesTarget ? 2 : 1)) };
+  return { subcommand, target, displayName, pin, limit, axis, model, cancel, yes, env: resolveEnvFromArgs(positional.slice(takesTarget ? 2 : 1)) };
 }
 
 /**
@@ -282,6 +297,11 @@ export async function runPoolCommand(args: string[]) {
       return;
     }
 
+    if (parsed.subcommand === 'pairing-pin') {
+      await runPairingPinCommand(ctx, parsed);
+      return;
+    }
+
     if (parsed.subcommand === 'log') {
       const log = await fetchPoolRoutingLog(envFile, parsed.limit);
       printMessageBox(`Hub Pool routing log  [${env}]`, formatPoolRoutingLogLines(log), log.summary.failed > 0 ? 'yellow' : 'cyan');
@@ -302,6 +322,46 @@ export async function runPoolCommand(args: string[]) {
   } catch (error) {
     poolErrorExit(error, envFile);
   }
+}
+
+/**
+ * `cihub pool pairing-pin` — mint (or revoke) the six digits a peer needs to pair with THIS Hub by
+ * address.
+ *
+ * It runs on the Hub that will receive the request, which is the opposite side from `pool pair`, so
+ * the output leads with which machine to type the digits on. Minting replaces any outstanding PIN
+ * rather than adding a second, and that is stated rather than left to be discovered: an operator who
+ * mints twice has invalidated the digits they are still reading off the first screen.
+ *
+ * The local node name comes from `GET status`, so the printed `pool pair` line is complete. A status
+ * call that fails is not fatal — the digits are the point, and the address can be typed by hand.
+ */
+async function runPairingPinCommand(ctx: HubContext, parsed: ParsedPoolArgs) {
+  const { env, envFile } = ctx;
+
+  if (parsed.cancel) {
+    await cancelPairingPin(envFile);
+    printMessageBox(
+      `Hub Pool pairing PIN  [${env}]`,
+      [
+        `${STEP_ICONS.done} Any outstanding pairing PIN is revoked.`,
+        '',
+        'Pairing by address needs a new one: cihub pool pairing-pin',
+        'Peers already paired are unaffected — the PIN only ever authenticated the request.',
+      ],
+      'yellow',
+    );
+    return;
+  }
+
+  const minted = await mintPairingPin(envFile);
+  // Best-effort: the name only makes the printed command copy-pasteable, so a Hub whose status call
+  // fails still gets its digits rather than an error.
+  const localNodeFqdn = await fetchPoolStatus(envFile)
+    .then((status) => status.localNode.nodeFqdn)
+    .catch(() => null);
+
+  printMessageBox(`Hub Pool pairing PIN  [${env}]`, formatMintedPairingPinLines(minted, localNodeFqdn), 'green');
 }
 
 /** What each axis is called, which env var overrides it, and how `/status` reports its state. */
