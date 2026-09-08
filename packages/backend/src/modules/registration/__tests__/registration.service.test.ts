@@ -8,6 +8,7 @@ import { DeviceRegistrationRepository } from '../device-registration.repository'
 import { RepoEventsQueue } from '../../queue/entities/repo-events';
 import axios from 'axios';
 import { PortalClientService } from '@/core/portal/portal-client.service';
+import { TailscaleService } from '../../tailscale/tailscale.service';
 import { mock, MockProxy } from 'vitest-mock-extended';
 import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as si from 'systeminformation';
@@ -24,6 +25,7 @@ describe('RegistrationService', () => {
   let deviceRegistrationRepository: MockProxy<DeviceRegistrationRepository>;
   let repoEventsQueue: MockProxy<RepoEventsQueue>;
   let portalClient: MockProxy<PortalClientService>;
+  let tailscaleService: MockProxy<TailscaleService>;
   const mockedAxios = vi.mocked(axios);
 
   beforeEach(async () => {
@@ -36,6 +38,7 @@ describe('RegistrationService', () => {
     repoEventsQueue = mock<RepoEventsQueue>();
     portalClient = mock<PortalClientService>();
     portalClient.postDeviceDeregister.mockResolvedValue({ success: true });
+    tailscaleService = mock<TailscaleService>();
     mockedAxios.post.mockReset();
     mockedAxios.head.mockReset();
 
@@ -52,6 +55,7 @@ describe('RegistrationService', () => {
         { provide: DeviceRegistrationRepository, useValue: deviceRegistrationRepository },
         { provide: RepoEventsQueue, useValue: repoEventsQueue },
         { provide: PortalClientService, useValue: portalClient },
+        { provide: TailscaleService, useValue: tailscaleService },
       ],
     }).compile();
 
@@ -753,6 +757,40 @@ describe('RegistrationService', () => {
           headers: expect.objectContaining({ 'x-device-key': 'test-api-key' }),
         }),
       );
+    });
+
+    it("piggybacks this node's current Tailscale name on the check-in, for Hub Pool's Portal discovery leg", async () => {
+      await service.setPhase('paired');
+      await service.setPhase('provisioning');
+      await service.setPhase('locally_ready');
+
+      vi.spyOn(service as any, 'hasTunnelToken').mockReturnValue(true);
+      mockedAxios.post.mockResolvedValue({ status: 200 } as any);
+      tailscaleService.getStatusCached.mockResolvedValue({ nodeFqdn: 'my-hub.example-tailnet.ts.net' } as any);
+
+      await (service as any).validateRegistrationWithCloud();
+
+      expect(mockedAxios.post).toHaveBeenCalledWith(
+        expect.stringContaining('/api/devices/check-in'),
+        { device_id: 'test-device', tailscale_dns: 'my-hub.example-tailnet.ts.net' },
+        expect.anything(),
+      );
+    });
+
+    it('omits tailscale_dns rather than sending a false "no tailnet" when the tailscale service has no answer right now', async () => {
+      await service.setPhase('paired');
+      await service.setPhase('provisioning');
+      await service.setPhase('locally_ready');
+
+      vi.spyOn(service as any, 'hasTunnelToken').mockReturnValue(true);
+      mockedAxios.post.mockResolvedValue({ status: 200 } as any);
+      tailscaleService.getStatusCached.mockResolvedValue({ nodeFqdn: null } as any);
+
+      await (service as any).validateRegistrationWithCloud();
+
+      const [, body] = mockedAxios.post.mock.calls[0]!;
+      expect(body).toEqual({ device_id: 'test-device' });
+      expect(body).not.toHaveProperty('tailscale_dns');
     });
 
     it('transitions to degraded when tunnel token is missing', async () => {
