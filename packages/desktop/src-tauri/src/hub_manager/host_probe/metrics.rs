@@ -1,7 +1,5 @@
 //! Per-OS CPU, RAM and disk metrics probing.
 
-use crate::hub_manager::*;
-
 #[allow(unused_imports)]
 use super::*;
 
