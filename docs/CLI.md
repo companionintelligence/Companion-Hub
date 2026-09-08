@@ -320,6 +320,7 @@ Hub Pool**. See [`hub-pool.md`](./hub-pool.md) for how pooling works.
 ```bash
 cihub pool status [env]                       # is pooling routing, and why or why not
 cihub pool doctor [env] [--check-latency]     # preflight: can this node be a pool member, and will peers reach it
+cihub pool update [env]                       # pull the published image and redeploy — no build toolchain needed
 cihub pool peers [env]                        # paired peers: status, last seen, queue depth, models
 cihub pool discover [env]                     # unpaired CI-Hub nodes, from every source
 cihub pool probe <address> [env]              # is there a CI-Hub at this LAN address?
@@ -524,6 +525,22 @@ than a frozen terminal.
 No secret is ever printed. The operator key is read from `<ROOT_FOLDER_HOST>/state/settings.json` to reach
 the authenticated routes behind the per-backend breakdown; it is never echoed, and neither is a PIN, a peer
 token, or any `TAILSCALE_OAUTH_*` value.
+
+### `cihub pool update`
+
+Pull `ghcr.io/companionintelligence/ci-hub:<env>` and redeploy. Unlike `cihub up`/`cihub setup`, this
+never passes `--build` — it exists for the fleet node that has no GitHub Packages token and therefore
+cannot build the image at all, which used to mean shipping a `docker save | docker load` by hand,
+per node, every update.
+
+It touches a git checkout only when doing so is certain to be lossless: a clean tree already on `dev`
+gets fast-forwarded (`git fetch` + `git merge --ff-only`); anything else — uncommitted changes, a
+different branch, no checkout at all — is left untouched and reported, never reset or stashed on your
+behalf. After the pull and redeploy it polls `/api/health` for up to ~20s, then reads `poolProtocol`
+off `/api/inference/pool/identify` so you know at a glance whether the redeploy landed and whether this
+build has Hub Pool at all.
+
+Runs before the device-key gate, like `doctor` — the node most likely to need it has no key yet either.
 
 ### `cihub pool log`
 
