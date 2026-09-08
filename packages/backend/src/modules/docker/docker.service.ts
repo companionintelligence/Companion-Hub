@@ -21,8 +21,43 @@ import { AppFilesManager } from '../apps/app-files-manager';
 import { AppsRepository } from '../apps/apps.repository';
 import { DOCKERODE } from './constants';
 import { DockerReadFacade, type ManagedAppContainerVerification } from './docker-read.facade';
+import { listContainersMatchingAnyLabelSets, managedAppLabelSets } from './hub-container-query';
 
 export type { AppContainerRuntimeStats, AppNetworkTarget, ManagedAppContainerVerification } from './docker-read.facade';
+
+export interface PreUpdateVolumeSnapshotResult {
+  appUrn: AppUrn;
+  snapshotId: string;
+  timestamp: string;
+  snapshotPath?: string;
+  volumes: Array<{
+    name?: string;
+    type: 'bind' | 'volume';
+    source: string;
+    destination?: string;
+    snapshotTarget?: string;
+  }>;
+  success: boolean;
+  error?: string;
+}
+
+export interface ContainerHealthProbeDetail {
+  id: string;
+  name: string;
+  status: string;
+  state: string;
+  healthStatus: string | null;
+  hasHealthCheck: boolean;
+  failingStreak?: number;
+  log?: string[];
+}
+
+export interface ContainerHealthProbeResult {
+  ok: boolean;
+  healthy: boolean;
+  containers: ContainerHealthProbeDetail[];
+  message: string;
+}
 
 const MANAGED_APP_STARTUP_MAX_ATTEMPTS = 6;
 const MANAGED_APP_STARTUP_DELAY_MS = 2_000;
@@ -1439,5 +1474,219 @@ export class DockerService {
     }
 
     return lastVerification ?? (await this.dockerReadFacade.getManagedAppContainerVerification(appUrn));
+  }
+
+  /**
+   * Creates a pre-update snapshot of the app's volumes and data directory before an update begins.
+   *
+   * Discovers the app's host data directory, project containers, and Docker named volumes,
+   * creating a snapshot copy of the host data directory and cataloging all volumes.
+   *
+   * @param appUrn App URN to snapshot.
+   * @returns Snapshot result including snapshotted paths and volumes.
+   */
+  public async createPreUpdateVolumeSnapshot(appUrn: AppUrn): Promise<PreUpdateVolumeSnapshotResult> {
+    const projectName = this.getComposeProjectName(appUrn);
+    const { appName, appStoreId } = extractAppUrn(appUrn);
+    const timestamp = new Date().toISOString();
+    const snapshotId = `pre-update-${appName}-${Date.now()}`;
+
+    try {
+      const { appDataDir } = this.appFilesManager.getAppPaths(appUrn);
+      const { dataDir } = this.config.get('directories');
+      const snapshotBaseDir = path.join(dataDir, 'snapshots', appStoreId, appName, snapshotId);
+
+      const snapshottedVolumes: PreUpdateVolumeSnapshotResult['volumes'] = [];
+
+      const appDataExists = await this.filesystem.pathExists(appDataDir);
+      let snapshotPath: string | undefined;
+
+      if (appDataExists) {
+        snapshotPath = path.join(snapshotBaseDir, 'app-data');
+        this.logger.info(`[pre-update-snapshot] Snapshotting ${appDataDir} to ${snapshotPath}`);
+        await this.filesystem.createDirectory(snapshotPath);
+        await this.filesystem.copyDirectory(appDataDir, snapshotPath);
+        snapshottedVolumes.push({
+          type: 'bind',
+          source: appDataDir,
+          snapshotTarget: snapshotPath,
+        });
+      }
+
+      const containers = await this.docker
+        .listContainers({
+          all: true,
+          filters: { label: [`com.docker.compose.project=${projectName}`] },
+        })
+        .catch((err) => {
+          this.logger.warn(`Failed to list containers for ${appUrn} snapshot: ${err}`);
+          return [];
+        });
+
+      const volumeList = await this.docker
+        .listVolumes({
+          filters: { label: [`com.docker.compose.project=${projectName}`] },
+        })
+        .catch((err) => {
+          this.logger.warn(`Failed to list docker volumes for ${appUrn} snapshot: ${err}`);
+          return { Volumes: [] };
+        });
+
+      for (const vol of volumeList.Volumes ?? []) {
+        if (!snapshottedVolumes.some((v) => v.name === vol.Name)) {
+          snapshottedVolumes.push({
+            name: vol.Name,
+            type: 'volume',
+            source: vol.Mountpoint || vol.Name,
+          });
+        }
+      }
+
+      for (const container of containers) {
+        for (const mount of container.Mounts ?? []) {
+          if (!snapshottedVolumes.some((v) => v.source === mount.Source || (mount.Name && v.name === mount.Name))) {
+            snapshottedVolumes.push({
+              name: mount.Name,
+              type: mount.Type === 'volume' ? 'volume' : 'bind',
+              source: mount.Source,
+              destination: mount.Destination,
+            });
+          }
+        }
+      }
+
+      this.logger.info(`[pre-update-snapshot] Created volume snapshot ${snapshotId} for ${appUrn} (${snapshottedVolumes.length} volumes recorded)`);
+
+      return {
+        appUrn,
+        snapshotId,
+        timestamp,
+        snapshotPath,
+        volumes: snapshottedVolumes,
+        success: true,
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.error(`[pre-update-snapshot] Failed to create volume snapshot for ${appUrn}: ${message}`);
+      return {
+        appUrn,
+        snapshotId,
+        timestamp,
+        volumes: [],
+        success: false,
+        error: message,
+      };
+    }
+  }
+
+  /**
+   * Verifies health probe status for all containers in an app's Compose project.
+   *
+   * Containers with a health check defined in Docker/Compose must be in 'healthy' status.
+   * Containers without a health check must be in a 'running' status.
+   *
+   * @param appUrn App URN.
+   * @param options Optional retry options (maxAttempts, delayMs).
+   */
+  public async verifyContainerHealthProbe(appUrn: AppUrn, options?: { maxAttempts?: number; delayMs?: number }): Promise<ContainerHealthProbeResult> {
+    const projectName = this.getComposeProjectName(appUrn);
+    const maxAttempts = options?.maxAttempts ?? 1;
+    const delayMs = options?.delayMs ?? 1000;
+
+    let lastResult: ContainerHealthProbeResult | undefined;
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      let containers = await this.docker
+        .listContainers({
+          all: true,
+          filters: { label: [`com.docker.compose.project=${projectName}`] },
+        })
+        .catch((err) => {
+          this.logger.warn(`Failed to list containers for health probe ${appUrn}: ${err}`);
+          return [];
+        });
+
+      if (containers.length === 0) {
+        containers = await listContainersMatchingAnyLabelSets(this.docker, managedAppLabelSets(appUrn)).catch(() => []);
+      }
+
+      if (containers.length === 0) {
+        lastResult = {
+          ok: false,
+          healthy: false,
+          containers: [],
+          message: `No containers found for app ${appUrn}`,
+        };
+        if (attempt < maxAttempts) {
+          await new Promise((resolve) => setTimeout(resolve, delayMs));
+          continue;
+        }
+        return lastResult;
+      }
+
+      const containerDetails: ContainerHealthProbeDetail[] = [];
+
+      for (const container of containers) {
+        const dockerContainer = this.docker.getContainer(container.Id);
+        let inspect: Dockerode.ContainerInspectInfo | undefined;
+        try {
+          inspect = await dockerContainer.inspect();
+        } catch (inspectErr) {
+          this.logger.warn(`Failed to inspect container ${container.Id} for health probe: ${inspectErr}`);
+        }
+
+        const name = container.Names?.[0]?.replace(/^\//, '') || container.Id.slice(0, 12);
+        const state = inspect?.State?.Status || container.State || 'unknown';
+        const health = inspect?.State?.Health;
+        const hasHealthCheck = Boolean(health);
+        const healthStatus = health?.Status ?? null;
+        const failingStreak = health?.FailingStreak;
+        const log = health?.Log?.map((entry) => entry.Output || '').filter(Boolean);
+
+        containerDetails.push({
+          id: container.Id,
+          name,
+          status: container.Status || state,
+          state,
+          healthStatus,
+          hasHealthCheck,
+          failingStreak,
+          log,
+        });
+      }
+
+      const unhealthyContainers = containerDetails.filter((c) => {
+        if (c.hasHealthCheck) {
+          return c.healthStatus !== 'healthy';
+        }
+        return c.state !== 'running';
+      });
+
+      const allHealthy = unhealthyContainers.length === 0;
+
+      lastResult = {
+        ok: allHealthy,
+        healthy: allHealthy,
+        containers: containerDetails,
+        message: allHealthy
+          ? `All containers for ${appUrn} passed health probes`
+          : `Health probe failed for ${appUrn}: ${unhealthyContainers.map((c) => `${c.name} (${c.healthStatus || c.state})`).join(', ')}`,
+      };
+
+      if (allHealthy || attempt >= maxAttempts) {
+        return lastResult;
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+
+    return (
+      lastResult ?? {
+        ok: false,
+        healthy: false,
+        containers: [],
+        message: `Health probe timed out for ${appUrn}`,
+      }
+    );
   }
 }

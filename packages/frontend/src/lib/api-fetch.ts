@@ -1,16 +1,126 @@
 import { client } from '@/api-client/client.gen';
 import { isSessionExpiryExempt } from '@/lib/session-expiry-policy';
 import { usesCrossOriginDesktopApi } from '@/lib/hub-runtime-mode';
+import { isMobileClient, isTauriMobileSync } from '@/lib/mobile-connection';
 import { runtimeFetch } from './runtime-fetch';
 
 export const TAURI_SESSION_STORAGE_KEY = 'ci-hub-session';
 export const HUB_SESSION_ISSUED_AT_KEY = 'ci-hub-session-issued-at';
+export const MOBILE_SESSION_STORE_FILE = 'mobile-session.json';
 
 /** Rotate hub sessions after 5 days so the 7-day server TTL never lapses for active users. */
 export const HUB_SESSION_REFRESH_AFTER_MS = 5 * 24 * 60 * 60 * 1000;
 
 // Session ID storage for Tauri release mode (where cookies don't work cross-origin)
 let tauriSessionId: string | null = null;
+
+function isMobileRuntime(): boolean {
+  return isTauriMobileSync() || isMobileClient();
+}
+
+let mobileStorePromise: Promise<{
+  get: <T>(key: string) => Promise<T | null>;
+  set: (key: string, value: unknown) => Promise<void>;
+  delete: (key: string) => Promise<boolean | undefined>;
+  save: () => Promise<void>;
+} | null> | null = null;
+
+export function resetMobileSessionStoreForTests(): void {
+  mobileStorePromise = null;
+}
+
+async function openMobileSessionStore() {
+  if (!mobileStorePromise) {
+    mobileStorePromise = (async () => {
+      try {
+        const { load } = await import('@tauri-apps/plugin-store');
+        const store = await load(MOBILE_SESSION_STORE_FILE);
+        return store as unknown as {
+          get: <T>(key: string) => Promise<T | null>;
+          set: (key: string, value: unknown) => Promise<void>;
+          delete: (key: string) => Promise<boolean | undefined>;
+          save: () => Promise<void>;
+        };
+      } catch {
+        return null;
+      }
+    })();
+  }
+  return mobileStorePromise;
+}
+
+export async function persistMobileSession(id: string, issuedAt: number): Promise<void> {
+  try {
+    const store = await openMobileSessionStore();
+    if (store) {
+      await store.set(TAURI_SESSION_STORAGE_KEY, id);
+      await store.set(HUB_SESSION_ISSUED_AT_KEY, String(issuedAt));
+      await store.save();
+    }
+  } catch {
+    // Best-effort write-through
+  }
+}
+
+export async function clearMobileSession(): Promise<void> {
+  try {
+    const store = await openMobileSessionStore();
+    if (store) {
+      await store.delete(TAURI_SESSION_STORAGE_KEY);
+      await store.delete(HUB_SESSION_ISSUED_AT_KEY);
+      await store.save();
+    }
+  } catch {
+    // Best-effort
+  }
+}
+
+/**
+ * Hydrate the in-memory session cache from secure native storage on mobile.
+ * Also migrates any legacy session found in localStorage into native storage and deletes it.
+ */
+export async function hydrateMobileSession(): Promise<string | null> {
+  if (!isMobileRuntime()) {
+    return getTauriSessionId();
+  }
+
+  try {
+    const store = await openMobileSessionStore();
+    if (store) {
+      const stored = await store.get<string>(TAURI_SESSION_STORAGE_KEY);
+      const storedIssuedAt = await store.get<string | number>(HUB_SESSION_ISSUED_AT_KEY);
+      if (stored) {
+        tauriSessionId = stored;
+        if (storedIssuedAt) {
+          markHubSessionIssuedAt(Number(storedIssuedAt));
+        }
+        try {
+          localStorage.removeItem(TAURI_SESSION_STORAGE_KEY);
+        } catch {
+          // ignore
+        }
+        return stored;
+      }
+    }
+  } catch {
+    // Fall back to reading web storage
+  }
+
+  const legacy = readStoredSessionId();
+  if (legacy) {
+    tauriSessionId = legacy;
+    const issuedAt = getHubSessionIssuedAt() ?? Date.now();
+    await persistMobileSession(legacy, issuedAt);
+    try {
+      localStorage.removeItem(TAURI_SESSION_STORAGE_KEY);
+    } catch {
+      // ignore
+    }
+    return legacy;
+  }
+
+  return null;
+}
 
 /** Desktop release builds must survive full app quit/relaunch — sessionStorage does not. */
 function usesPersistentSessionStorage(): boolean {
@@ -105,11 +215,25 @@ function migrateSessionToPersistentStorage(id: string): void {
 
 export function setTauriSessionId(id: string | null, issuedAt?: number) {
   tauriSessionId = id;
+  const timestamp = issuedAt ?? Date.now();
   if (id) {
-    writeStoredSessionId(id);
-    migrateSessionToPersistentStorage(id);
-    markHubSessionIssuedAt(issuedAt ?? Date.now());
+    if (isMobileRuntime()) {
+      void persistMobileSession(id, timestamp);
+      try {
+        sessionStorage.setItem(TAURI_SESSION_STORAGE_KEY, id);
+        localStorage.removeItem(TAURI_SESSION_STORAGE_KEY);
+      } catch {
+        // ignore
+      }
+    } else {
+      writeStoredSessionId(id);
+      migrateSessionToPersistentStorage(id);
+    }
+    markHubSessionIssuedAt(timestamp);
   } else {
+    if (isMobileRuntime()) {
+      void clearMobileSession();
+    }
     removeStoredSessionId();
   }
 }
@@ -120,7 +244,7 @@ export function getTauriSessionId(): string | null {
   }
 
   tauriSessionId = readStoredSessionId();
-  if (tauriSessionId) {
+  if (tauriSessionId && !isMobileRuntime()) {
     migrateSessionToPersistentStorage(tauriSessionId);
   }
 

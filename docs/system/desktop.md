@@ -5,7 +5,7 @@
 > **Key paths:** `packages/desktop/src-tauri/src/hub_manager.rs`, `packages/desktop/src-tauri/resources/`
 > **Commands:** `pnpm run local:desktop` (Vite :5005), `pnpm run dev:desktop` (appliance :5002), `cd packages/desktop/src-tauri && cargo test`
 > **Owner persona:** maintainability + security
-> **Last updated:** 2026-09-04
+> **Last updated:** 2026-09-07
 > **Related:** docs/system/frontend.md, docs/DESKTOP-UI-ARCHITECTURE.md, docs/AUTO_HEALING.md
 
 ---
@@ -50,8 +50,10 @@ back to a detached session process and reports the degraded lifecycle in the run
 The frontend passes the exact selected runner set: the chat backend plus Ollama for embeddings (or
 Ollama alone). The two speculative servers are alternatives, not an automatic bundle. Runner PIDs,
 logs, credentials, and endpoints are persisted under the Hub data directory; a later MTPLX retry
-reuses a healthy persisted endpoint before starting another process. Linux and Windows host runners
-retain the existing detached-process lifecycle; a future systemd/Windows-service layer remains open.
+reuses a healthy persisted endpoint before starting another process. On Linux, native runners are
+supervised via per-user systemd services (`~/.config/systemd/user/computer.ci.companion-hub.inference.{runner}.service`)
+with `Restart=on-failure` and enable/disable lifecycle matching the macOS LaunchAgent pattern.
+Windows host runners retain the existing detached-process lifecycle; a future Windows-service layer remains open.
 
 ## Running locally
 

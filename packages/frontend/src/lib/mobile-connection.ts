@@ -313,6 +313,13 @@ export async function initMobileConnection(): Promise<{ isMobile: boolean; hubBa
   if (cachedIsMobile) {
     // Route remote-Hub API calls through native HTTP (best-effort; non-blocking).
     await ensureNativeFetchActive();
+    // Hydrate in-memory session cache from secure native storage on mobile.
+    try {
+      const { hydrateMobileSession } = await import('@/lib/api-fetch');
+      await withTimeout(hydrateMobileSession(), 3000, null);
+    } catch {
+      // Best-effort
+    }
     // Read the stored Hub URL, but never let a slow/hung store wedge startup:
     // if it doesn't answer quickly we just fall through to the connect screen.
     try {
