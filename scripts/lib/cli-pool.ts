@@ -36,7 +36,7 @@ import { readHubApiKey, resolveHubApiBase } from '../public-web-cli.js';
 import { resolveEnvFromArgs, usageAndExit } from './cli-args.js';
 import { confirmDestructiveAction } from './cli-prompt.js';
 import { BASE_COMMAND, type HubEnv } from './cli-types.js';
-import { printMessageBox, sanitizeForBox, STEP_ICONS } from './cli-ui.js';
+import { dim, printMessageBox, sanitizeForBox, STEP_ICONS } from './cli-ui.js';
 import { type HubContext, resolveHubContext } from './hub-context.js';
 import { resolveRootFolderHost } from './paths.js';
 
@@ -68,6 +68,9 @@ export type PoolSubcommand = (typeof POOL_SUBCOMMANDS)[number];
 const POOL_TARGET_SUBCOMMANDS: readonly PoolSubcommand[] = ['probe', 'pair', 'approve', 'reject', 'unpair', 'peer-enable', 'peer-disable', 'pin'];
 
 const POOL_USAGE = `Usage: ${BASE_COMMAND} pool <${POOL_SUBCOMMANDS.join('|')}> [env]`;
+
+/** How long `pool doctor` runs before it starts narrating. Below this, the box arrives on its own. */
+const POOL_DOCTOR_PROGRESS_AFTER_MS = 3_000;
 
 export interface ParsedPoolArgs {
   subcommand: PoolSubcommand;
@@ -272,7 +275,19 @@ export async function runPoolCommand(args: string[]) {
   // on a node that is not set up yet — a node with no key is one of the states it has to report on,
   // not a reason to refuse to run.
   if (parsed.subcommand === 'doctor') {
-    const section = await runPoolDoctorSection(envFile, { checkLatency: parsed.checkLatency, env });
+    // B4 compares the routes the Hub serves against the commands THIS build has, so the list has to
+    // come from here — the doctor module cannot import it back without closing an import cycle.
+    const section = await runPoolDoctorSection(envFile, {
+      checkLatency: parsed.checkLatency,
+      env,
+      cliSubcommands: POOL_SUBCOMMANDS,
+      // Only once the run is visibly slow. On a healthy node the whole preflight is over in a second
+      // and five progress lines would be noise; on the node this command exists for it is minutes,
+      // and silence there reads as a hang.
+      onSectionDone: (line, elapsedMs) => {
+        if (elapsedMs >= POOL_DOCTOR_PROGRESS_AFTER_MS) console.log(dim(`  ${line}`));
+      },
+    });
     printMessageBox(`Hub Pool doctor  [${env}]`, section.lines, section.issueCount > 0 ? 'yellow' : 'cyan');
     return;
   }
