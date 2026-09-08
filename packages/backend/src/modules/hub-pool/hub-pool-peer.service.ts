@@ -70,7 +70,17 @@ async function peerRefusalDetail(response: Response): Promise<string | null> {
 const UNREACHABLE_THRESHOLD = 3;
 const DISCOVERY_PROBE_TIMEOUT_MS = 5_000;
 const HANDSHAKE_TIMEOUT_MS = 10_000;
-const CAPABILITIES_PROBE_TIMEOUT_MS = 8_000;
+/**
+ * Budget for a peer's capabilities probe.
+ *
+ * Raised from 8s because 8s was under the observed cold cost of the very thing it fetches: on a
+ * loaded appliance the first `pool/status` after cache expiry took 10.0s to rebuild the backend
+ * inventory (0.004s warm). Three of those in a row is all it takes to mark a healthy node
+ * unreachable, which is exactly what happened to a live pair. {@link OWN_INVENTORY_TTL_MS} now
+ * keeps a served snapshot warm so this ceiling is only reached on a genuinely cold node, and the
+ * structural fix — splitting liveness off the inventory route entirely — is still worth doing.
+ */
+const CAPABILITIES_PROBE_TIMEOUT_MS = 15_000;
 /**
  * Ceiling on inbound `pending` rows. They are created by unauthenticated callers and outlive the
  * request, so without a cap the table is an anonymous write primitive; with one, the worst an
@@ -84,13 +94,26 @@ const PENDING_REQUEST_TTL_MS = 24 * 60 * 60 * 1000;
  *
  * `getOwnCapabilities` fans out to twelve uncached backend health checks (`getStatus` and
  * `listModels` each probe all six), so it must not run once per caller: it is hit by every peer's
- * 30s health probe *and* by the operator status endpoint, which the UI polls. Deliberately shorter
- * than the default poll interval so a peer probe still gets a freshly built inventory, while
- * operator polling in between is free. Only the inventory is cached — `inFlightRequests` and
- * `updatedAt` are stamped live on every read, since a stale load figure is the one thing that would
- * actually mis-route work.
+ * 30s health probe *and* by the operator status endpoint, which the UI polls. Only the inventory is
+ * cached — `inFlightRequests` and `updatedAt` are stamped live on every read, since a stale load
+ * figure is the one thing that would actually mis-route work.
+ *
+ * This TTL used to be described as "deliberately shorter than the default poll interval so a peer
+ * probe still gets a freshly built inventory". That trade was backwards, and it is reversed here on
+ * evidence. Being 20s under a 30s poll meant the cache was ALWAYS expired when a peer arrived, so
+ * every probe paid the full cold rebuild — 10.0s on a loaded appliance — and three consecutive
+ * overruns mark a healthy node unreachable. A model list up to a poll old costs nothing; being
+ * evicted from the pool costs everything. So the TTL is now the point at which a refresh is
+ * TRIGGERED, not the point at which callers start blocking: see the stale-while-revalidate read in
+ * `getOwnInventory`.
  */
 const OWN_INVENTORY_TTL_MS = 20_000;
+/**
+ * Hard ceiling on serving a stale inventory. Past this a caller blocks on a rebuild rather than
+ * being handed an ancient snapshot, so a node whose refresh keeps failing degrades into slow probes
+ * instead of silently advertising models it may no longer hold.
+ */
+const OWN_INVENTORY_MAX_STALE_MS = 120_000;
 
 /** The expensive-to-build half of {@link PoolPeerCapabilities} — everything that isn't a live counter. */
 type OwnInventory = Pick<PoolPeerCapabilities, 'hardwareTier' | 'backends'>;
@@ -905,16 +928,31 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  /** Expires inbound `pending` rows nothing ever answered, so a squatted FQDN cannot block pairing forever and the table cannot grow without bound. */
+  /**
+   * Expires `pending` rows nothing ever answered, so a squatted FQDN cannot block pairing forever
+   * and the table cannot grow without bound.
+   *
+   * Both directions are swept, and the outbound half is the correction. The previous filter kept
+   * only `direction === 'inbound'` on the reasoning that outbound rows "are operator-created and are
+   * cleaned up by the peer's reject callback or by Unpair" — which holds only when the far side ever
+   * answers. It does not when the callback cannot land: `approvePairing` confirms back over
+   * `https://<fqdn>`, so a peer without `tailscale serve` on 443 leaves the initiator holding a
+   * `pending` row no callback will ever resolve. That row is permanent, it makes a re-pair attempt
+   * answer 409 "already paired or pairing", and Unpair was the operator's only way out.
+   *
+   * Sweeping both halves also keeps the two sides symmetric: the inbound row on the far node expires
+   * on the same TTL, so an unanswered request disappears from both tables at roughly the same time
+   * rather than stranding one end.
+   */
   private async sweepExpiredPendingRequests(): Promise<void> {
     const cutoff = Date.now() - PENDING_REQUEST_TTL_MS;
     const pending = await this.repo.listByStatus('pending');
-    // Outbound rows are operator-created and are cleaned up by the peer's reject callback or by
-    // Unpair, so only the anonymously-created inbound half is swept.
-    const expired = pending.filter((row) => row.direction === 'inbound' && Date.parse(row.createdAt) < cutoff);
+    const expired = pending.filter((row) => Date.parse(row.createdAt) < cutoff);
 
     for (const row of expired) {
-      this.logger.info(`[HubPool] expiring unanswered pairing request from ${row.nodeFqdn} (created ${row.createdAt})`);
+      this.logger.info(
+        `[HubPool] expiring unanswered ${row.direction} pairing request for ${row.nodeFqdn} (created ${row.createdAt})`,
+      );
       await this.repo.delete(row.id);
     }
   }
@@ -1096,12 +1134,48 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
     };
   }
 
-  /** Hardware tier + per-backend model lists, behind {@link OWN_INVENTORY_TTL_MS} and a single-flight guard so concurrent callers share one fan-out. */
+  /**
+   * Hardware tier + per-backend model lists, stale-while-revalidate behind {@link
+   * OWN_INVENTORY_TTL_MS}, with a single-flight guard so concurrent callers share one fan-out.
+   *
+   * Three tiers, and the middle one is the whole point: fresh is served directly; STALE is served
+   * directly too while a refresh runs in the background, so the caller that happened to arrive after
+   * the TTL does not pay for the rebuild; only a genuinely cold cache — nothing cached at all, or
+   * something older than {@link OWN_INVENTORY_MAX_STALE_MS} — blocks.
+   *
+   * That middle tier is what stops a slow node being evicted from the pool. The caller most likely
+   * to hit an expired entry is a peer's health probe, and making IT wait for a twelve-backend
+   * fan-out is what turned a loaded-but-healthy appliance into an `unreachable` row three probes
+   * later.
+   */
   private async getOwnInventory(): Promise<OwnInventory> {
     const cached = this.ownInventoryCache;
-    if (cached && Date.now() < cached.expiresAt) {
+    const now = Date.now();
+    if (cached && now < cached.expiresAt) {
       return cached.value;
     }
+
+    // Stale but serviceable: hand back what we have and refresh behind the caller's back. The
+    // refresh is deliberately not awaited, and its rejection is swallowed — a failed background
+    // rebuild must not reject the read that triggered it, and the next caller simply tries again.
+    if (cached && now < cached.expiresAt + OWN_INVENTORY_MAX_STALE_MS) {
+      if (!this.ownInventoryInFlight) {
+        void this.refreshOwnInventory().catch(() => {
+          /* logged at the fan-out; a stale-serve must never surface as a caller-visible failure */
+        });
+      }
+      return cached.value;
+    }
+
+    if (this.ownInventoryInFlight) {
+      return this.ownInventoryInFlight;
+    }
+
+    return this.refreshOwnInventory();
+  }
+
+  /** The uncached fan-out itself, single-flighted. Always resolves to a freshly built inventory. */
+  private async refreshOwnInventory(): Promise<OwnInventory> {
     if (this.ownInventoryInFlight) {
       return this.ownInventoryInFlight;
     }
