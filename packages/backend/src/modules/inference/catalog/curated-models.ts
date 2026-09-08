@@ -114,14 +114,14 @@ import type {
 // passes (e.g. gpt-oss-120b 33.3→24, llama-3.3-70b 14.5→9) — consistent with AA having rebased/recalibrated
 // the index in between, not with the older numbers being wrong at the time they were entered.
 const CATALOG_TOON = `
-llms[87|]{id,backendModelId,name,purpose,params,gb,tier,ctxK,creator,intel,agentic,reason,vision,tools,audio,tps,ttft,e2e}:
+llms[98|]{id,backendModelId,name,purpose,params,gb,tier,ctxK,creator,intel,agentic,reason,vision,tools,audio,tps,ttft,e2e}:
   gemma4-e2b|gemma4:e2b|Gemma 4 E2B|general|2|7.2|cpu-only|128|Google|9|7.4|1|1|1|1|||
   gemma4-e4b|gemma4:e4b|Gemma 4 E4B|general|4|9.6|cpu-only|128|Google|12|8.7|1|1|1|1|||
   gemma4-26b|gemma4:26b|Gemma 4 26B|general|26|18|medium|256|Google|26|28.9|1|1|1|0|78|1.59|8
   gemma4-31b|gemma4:31b|Gemma 4 31B|general|31|20|medium|256|Google|29|39.4|1|1|1|0|17|1.38|30.7
   qwen3-8-27b|qwen3.8:27b|Qwen 3.8 27B|reasoning|27|18|medium|256|Alibaba|||1|1|1|0|||
   qwen3-6-27b|qwen3.6:27b|Qwen 3.6 27B|coding|27|17|medium|262|Alibaba|37.1|60.9|1|1|1|0|56|3.66|12.8
-  qwen3-6-35b|qwen3.6:35b|Qwen 3.6 35B|coding|35|24|medium|262|Alibaba|31.5|52.5|1|1|1|0|158.2|2.22|5.4
+  qwen3-6-35b|qwen3.6:35b|Qwen 3.6 35B|coding|35|22.6|medium|262|Alibaba|31.5|52.5|1|1|1|0|158.2|2.22|5.4
   qwen3-5-0-8b|qwen3.5:0.8b|Qwen 3.5 0.8B|reasoning|0.8|1|cpu-only|262|Alibaba|9.9|21.7|1|1|1|0|74|0.45|7.2
   qwen3-5-2b|qwen3.5:2b|Qwen 3.5 2B|reasoning|2|2.7|cpu-only|262|Alibaba|14.7|27.2|1|1|1|0|247|0.42|2.4
   qwen3-5-4b|qwen3.5:4b|Qwen 3.5 4B|reasoning|4|3.4|cpu-only|262|Alibaba|20|36.3|1|1|1|0|198|0.76|3
@@ -177,7 +177,7 @@ llms[87|]{id,backendModelId,name,purpose,params,gb,tier,ctxK,creator,intel,agent
   minimax-m2-community-230b|gabegoodhart/minimax-m2:230b|MiniMax M2 230B|general|230|56|high|205|MiniMax|28||1|0|1|0|||
   glm-5-2|hf.co/unsloth/GLM-5.2-GGUF:UD-Q4_K_XL|GLM 5.2|reasoning|754|467|high|1000|Z AI|51||1|0|1|0|||
   laguna-xs-2-1|laguna-xs-2.1:latest|Laguna XS 2.1|coding|33|20|medium|256|Poolside|||1|0|1|0|||
-  laguna-s-2-1|laguna-s-2.1:latest|Laguna S 2.1|coding|118|75|high|256|Poolside|||1|0|1|0|||
+  laguna-s-2-1|laguna-s-2.1:latest|Laguna S 2.1|coding|118|96|high|256|Poolside|||1|0|1|0|||
   ornith-9b|ornith:9b|Ornith 9B|coding|9|5.6|low|256|Deep Reinforce|||1|0|1|0|||
   ornith-35b|ornith:35b|Ornith 35B|coding|35|21|medium|256|Deep Reinforce|||1|0|1|0|||
   lfm2-5-8b|lfm2.5:8b|LFM 2.5 8B|general|8|5.2|cpu-only|125|Liquid AI|8||0|0|1|0|||
@@ -202,6 +202,17 @@ llms[87|]{id,backendModelId,name,purpose,params,gb,tier,ctxK,creator,intel,agent
   ornith-1-5-9b|ornith-1.5:9b|Ornith 1.5 9B|coding|9|6.6|low|256|Deep Reinforce|||0|1|0|0|||
   ornith-1-5-35b|ornith-1.5:35b|Ornith 1.5 35B|coding|35|23|medium|256|Deep Reinforce|||0|1|0|0|||
   ornith-1-5-397b|ornith-1.5:397b|Ornith 1.5 397B|coding|397|242|high|256|Deep Reinforce|||0|1|0|0|||
+  qwen3-coder-30b|qwen3-coder:30b|Qwen 3 Coder 30B|coding|30|18.6|medium|262|Alibaba|||0|0|1|0|||
+  qwen3-coder-480b|qwen3-coder:480b|Qwen 3 Coder 480B|coding|480|290.1|high|262|Alibaba|||0|0|1|0|||
+  qwen2-5-coder-1-5b|qwen2.5-coder:1.5b|Qwen 2.5 Coder 1.5B|coding|1.5|1|cpu-only|32|Alibaba|||0|0|1|0|||
+  qwen2-5-coder-3b|qwen2.5-coder:3b|Qwen 2.5 Coder 3B|coding|3|1.9|cpu-only|32|Alibaba|||0|0|1|0|||
+  qwen2-5-coder-7b|qwen2.5-coder:7b|Qwen 2.5 Coder 7B|coding|7|4.7|low|32|Alibaba|||0|0|1|0|||
+  qwen2-5-coder-14b|qwen2.5-coder:14b|Qwen 2.5 Coder 14B|coding|14|9|low|32|Alibaba|||0|0|1|0|||
+  qwen2-5-coder-32b|qwen2.5-coder:32b|Qwen 2.5 Coder 32B|coding|32|19.9|medium|32|Alibaba|||0|0|1|0|||
+  devstral-24b|devstral:24b|Devstral 24B|coding|24|14.3|medium|128|Mistral|||0|0|1|0|||
+  codestral-22b|codestral:22b|Codestral 22B|coding|22|12.6|medium|32|Mistral|||0|0|0|0|||
+  deepcoder-1-5b|deepcoder:1.5b|DeepCoder 1.5B|coding|1.5|1.1|cpu-only|64|Agentica|||1|0|0|0|||
+  deepcoder-14b|deepcoder:14b|DeepCoder 14B|coding|14|9|low|64|Agentica|||1|0|0|0|||
 `;
 
 /** A decoded TOON row: every column mapped to its raw string cell (empty string when blank). */
@@ -308,6 +319,8 @@ const MOE_ACTIVE_PARAMS_B: Record<string, number> = {
   'nemotron-3-5-lightning-30b': 3, // Nemotron 3.5 Lightning — 30B-A3B MoE
   'deepseek-v4-flash-0731-284b': 13, // DeepSeek V4 Flash 0731 — 284B total / 13B active MoE
   'ornith-1-5-35b': 3, // Ornith 1.5 35B — 35B-A3B MoE per the library readme; the 9B/397B sizes are dense
+  'qwen3-coder-30b': 3, // Qwen3-Coder-30B-A3B — same 30B-A3B MoE as qwen3-30b/qwen3-coder-30b-vllm above
+  'qwen3-coder-480b': 35, // Qwen3-Coder-480B-A35B
   // 2026-08-24 MLX expansion — active params reused from the matching Ollama-backend row above, or
   // (where the base row has no MoE entry) taken directly from the HF repo's own `-A#B` name suffix.
   'gemma4-26b-mlx': 3.8, // Gemma 4 26B (MLX) — same MoE as gemma4-26b above
