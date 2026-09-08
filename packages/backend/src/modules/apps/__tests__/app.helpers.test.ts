@@ -432,7 +432,21 @@ describe('AppHelpers', () => {
       expect(envMap.get('ROOT_FOLDER_HOST')).toBe('/opt/ci-hub');
       expect(toPosix(envMap.get('APP_DATA_DIR') ?? '')).toBe('/opt/ci-hub/app-data/test-store/test-app');
       expect(envMap.get('HUB_DEVICE_ID')).toBe('hub-device-id');
-      expect(envMap.get('HUB_API_KEY')).toBe('hub-api-key');
+      // Never issued to an app: `ciHubApiKey` authenticates as the operator on every AuthGuard
+      // route, so shipping it in an app environment is an app-to-operator escalation.
+      expect(envMap.has('HUB_API_KEY')).toBe(false);
+    });
+
+    it('never issues HUB_API_KEY to an app, even when the Hub has a device key configured', async () => {
+      // The regression this guards: `ciHubApiKey` is accepted by AuthMiddleware as an operator
+      // bearer, so any app holding it could pair pool peers, read settings and install or uninstall
+      // apps. Third-party images inherit the same environment, so this must hold unconditionally.
+      const envMap = new Map<string, string>([['HUB_API_KEY', 'inherited-from-hub-dotenv']]);
+      envUtils.envStringToMap.mockReturnValue(envMap);
+
+      await appHelpers.generateEnvFile(testAppUrn, {});
+
+      expect(envMap.has('HUB_API_KEY')).toBe(false);
     });
 
     it.each(['C:/foo/bar', 'C:\\foo\\bar', '\\\\server\\share\\folder'])('accepts Windows absolute ROOT_FOLDER_HOST (%s)', async (rootFolderHost) => {
