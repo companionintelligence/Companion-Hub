@@ -14,6 +14,7 @@ import { TraefikConfigService } from '../docker/traefik-config.service';
 import { DeviceRegistrationRepository } from './device-registration.repository';
 import { RepoEventsQueue } from '../queue/entities/repo-events';
 import { AgentNotifyService } from '../agent-notify/agent-notify.service';
+import { TailscaleService } from '../tailscale/tailscale.service';
 import {
   type ProvisioningPhase,
   type DegradedReason,
@@ -90,6 +91,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     private readonly deviceRegistrationRepository: DeviceRegistrationRepository,
     readonly _repoQueue: RepoEventsQueue,
     @Optional() private readonly agentNotifyService?: AgentNotifyService,
+    @Optional() private readonly tailscaleService?: TailscaleService,
   ) {}
 
   private portalAxiosConfig() {
@@ -511,13 +513,21 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     try {
       const deviceId = await this.getDeviceId();
 
+      // Best-effort: piggyback this node's current Tailscale MagicDNS name on the check-in this
+      // method already sends every hour, rather than adding a second round trip to Portal. Omitted
+      // (not sent as an empty string) when the tailscale service is absent or has no answer right
+      // now — a transient Tailscale hiccup must not read to Portal as "this node lost its tailnet."
+      // See `CheckIn.ts` on the Portal side for exactly that field-absent-vs-blank distinction, and
+      // `hub-pool-discovery.service.ts` for what this feeds: the Portal leg of Hub Pool discovery.
+      const nodeFqdn = (await this.tailscaleService?.getStatusCached())?.nodeFqdn;
+
       // Confirm that Companion Portal still considers the device active. The
       // check-in endpoint authenticates with the registered device's
       // `x-device-key`. A 400 is definitive; network errors count toward the
       // transient-failure threshold.
       const response = await axios.post(
         `${this.config.getOutboundCiCloudUrl()}/api/devices/check-in`,
-        { device_id: deviceId },
+        { device_id: deviceId, ...(nodeFqdn ? { tailscale_dns: nodeFqdn } : {}) },
         {
           timeout: 5_000,
           validateStatus: () => true,
