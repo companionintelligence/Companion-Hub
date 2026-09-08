@@ -11,7 +11,7 @@ import { and, eq } from 'drizzle-orm';
 import type { Request } from 'express';
 
 import { DEFAULT_MEMBER_ACTIONS, type HubAction, HUB_CAPABILITY, isHubAction, MAX_WHOIS_APP_IDS, WHOIS_CACHE_TTL_MS } from './hub-actions';
-import { hubSessionOperatorUserId } from './hub-session-operator';
+import { hubSessionOperatorUserId, isGrantExemptPrincipal } from './hub-session-operator';
 import { PortalClientService, type PortalWhoIsResponse } from './portal-client.service';
 
 export type GrantSurface = 'hub' | 'store';
@@ -54,9 +54,25 @@ export class MarketplaceWhoIsService {
    * anything on a partial refusal get all-or-nothing by construction.
    */
   async assertSessionActions(req: Request, appUrns: AppUrn[], action: HubAction, surface: GrantSurface = 'hub'): Promise<void> {
-    const userId = hubSessionOperatorUserId(req);
-    if (userId == null || appUrns.length === 0) {
+    if (appUrns.length === 0) {
       return;
+    }
+
+    const userId = hubSessionOperatorUserId(req);
+
+    if (userId == null) {
+      /*
+       * ⚠ NO PERSON IS NOT AUTOMATICALLY "ALLOW". A Portal push and the CLI are
+       * exempt — both are host-local and Portal runs its own GRANT_DENIED gate —
+       * and this used to be inferred from the absence of a session, which was
+       * also true of every future auth arm that forgot to set one. Named now, so
+       * anything unrecognised is refused instead of waved through.
+       */
+      if (isGrantExemptPrincipal(req)) {
+        return;
+      }
+
+      throw new TranslatableError('APP_ACTION_GRANT_DENIED', { action, app: extractAppUrn(appUrns[0] as AppUrn).appName }, HttpStatus.FORBIDDEN);
     }
 
     const map = await this.canMap(userId, appUrns, surface);
@@ -79,9 +95,16 @@ export class MarketplaceWhoIsService {
    * grant could not be resolved is dropped rather than swept along.
    */
   async filterSessionByAction(req: Request, appUrns: AppUrn[], action: HubAction, surface: GrantSurface = 'hub'): Promise<AppUrn[]> {
-    const userId = hubSessionOperatorUserId(req);
-    if (userId == null || appUrns.length === 0) {
+    if (appUrns.length === 0) {
       return appUrns;
+    }
+
+    const userId = hubSessionOperatorUserId(req);
+
+    if (userId == null) {
+      // Exempt principals sweep everything, as before; an unrecognised one
+      // sweeps nothing. See `isGrantExemptPrincipal`.
+      return isGrantExemptPrincipal(req) ? appUrns : [];
     }
 
     const map = await this.canMap(userId, appUrns, surface);
@@ -89,8 +112,20 @@ export class MarketplaceWhoIsService {
   }
 
   async filterSessionByView<T>(req: Request, items: T[], urnOf: (item: T) => string | undefined, surface: GrantSurface): Promise<T[]> {
+    if (items.length === 0) {
+      return items;
+    }
+
     const userId = hubSessionOperatorUserId(req);
-    if (userId == null || items.length === 0) {
+
+    if (userId == null) {
+      /*
+       * ⚠ THIS ONE STILL FAILS OPEN FOR AN UNRECOGNISED PRINCIPAL, and that is
+       * deliberate: its own contract says it fails open where the action
+       * variants fail closed, because hiding a row from a READ is how an
+       * operator loses sight of an app they own. The mutating paths above are
+       * where a wrong answer costs something.
+       */
       return items;
     }
 

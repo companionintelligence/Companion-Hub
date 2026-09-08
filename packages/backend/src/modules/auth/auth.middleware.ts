@@ -111,6 +111,7 @@ export class AuthMiddleware implements NestMiddleware {
         const user = await this.loadSessionUser(userId);
         req.user = user;
         req.hubSessionId = sessionId;
+        req.hubPrincipal = 'session';
         return next();
       } catch (err) {
         if (err instanceof ServiceUnavailableException) {
@@ -143,6 +144,19 @@ export class AuthMiddleware implements NestMiddleware {
       if (ciHubApiKey && secretEquals(token, ciHubApiKey)) {
         const user = await this.loadUserResilient(() => this.userRepository.getFirstOperator());
         req.user = user;
+        /*
+         * ⚠ NAMED, so the org-grant gate exempts this DELIBERATELY rather than
+         * by accident.
+         *
+         * `hubSessionOperatorUserId` returned `undefined` for any request with
+         * no `hubSessionId`, and each grant entry point read that as "no person
+         * to check, allow" — so this arm, the CLI arm, and any arm added later
+         * that forgot to set a session were all exempt without anyone deciding
+         * they should be. Portal's own GRANT_DENIED gate is what authorises a
+         * Portal push; that is a real answer, and it is only correct while the
+         * exemption is this narrow.
+         */
+        req.hubPrincipal = 'portal-device';
         return next();
       }
 
@@ -153,6 +167,9 @@ export class AuthMiddleware implements NestMiddleware {
         if (sub === 'cli') {
           const user = await this.loadUserResilient(() => this.userRepository.getFirstOperator());
           req.user = user;
+          // Host-local by construction: the JWT is signed with `jwtSecret`, which
+          // lives in the same state file as the device key.
+          req.hubPrincipal = 'cli';
         }
 
         return next();
