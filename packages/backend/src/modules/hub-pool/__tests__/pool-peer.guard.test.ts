@@ -26,6 +26,7 @@ function preferences(overrides: Partial<HubPoolPreferences> = {}): HubPoolPrefer
     poolInboundEnabled: true,
     poolLocalAffinity: DEFAULT_POOL_LOCAL_AFFINITY,
     poolHealthPollSeconds: DEFAULT_POOL_HEALTH_POLL_SECONDS,
+    poolPins: [],
     poolRequireSignedPeers: false,
     ...overrides,
   };
@@ -117,6 +118,32 @@ describe('PoolPeerGuard', () => {
     configuration.getHubPoolPreferences.mockImplementation(() => preferences());
     repo.update.mockImplementation(async (_id, data) => ({ ...mockPeer(), ...(data as Partial<HubPoolPeer>) }));
     guard = new PoolPeerGuard(repo, identity, configuration, mock<LoggerService>());
+  });
+
+  describe('background cost on a peerless Hub', () => {
+    it('holds no nonce-sweep timer until a signed request actually stores a nonce', () => {
+      // The cost this pins. The guard used to arm a 30s `setInterval` from `onModuleInit` on every
+      // Hub in the fleet, sweeping a map that stays empty forever on the overwhelming majority of
+      // them — the ones with no pool peers, which never send a signed request at all.
+      expect(guard.hasNonceSweeper()).toBe(false);
+    });
+
+    it('arms the sweeper the moment there is something to sweep', async () => {
+      repo.findByNodeUuid.mockResolvedValue(signedPeer());
+
+      await expect(guard.canActivate(createContext(signedHeaders()).context)).resolves.toBe(true);
+
+      expect(guard.hasNonceSweeper()).toBe(true);
+    });
+
+    it('releases it again on destroy', async () => {
+      repo.findByNodeUuid.mockResolvedValue(signedPeer());
+      await guard.canActivate(createContext(signedHeaders()).context);
+
+      guard.onModuleDestroy();
+
+      expect(guard.hasNonceSweeper()).toBe(false);
+    });
   });
 
   describe('bearer branch (legacy — must stay byte-identical for an un-upgraded peer)', () => {

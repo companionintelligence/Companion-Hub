@@ -7,6 +7,7 @@ import {
   DEFAULT_POOL_HEALTH_POLL_SECONDS,
   DEFAULT_POOL_LOCAL_AFFINITY,
   DEFAULT_POOL_PRESSURE_WEIGHT,
+  type HubPoolPin,
   type HubPoolPreferences,
 } from '@/common/helpers/hub-pool';
 import type { InferenceSupervisionMode } from '@/common/helpers/inference-supervision';
@@ -117,6 +118,7 @@ type PersistedSettingsValues = {
   hubPoolPressureWeight: number | undefined;
   inferenceSupervisionMode: InferenceSupervisionMode | undefined;
   inferenceSupervisionPollSeconds: number | undefined;
+  hubPoolPins: HubPoolPin[] | undefined;
 };
 
 const EMPTY_PERSISTED_SETTINGS: PersistedSettingsValues = {
@@ -144,6 +146,7 @@ const EMPTY_PERSISTED_SETTINGS: PersistedSettingsValues = {
   hubPoolPressureWeight: undefined,
   inferenceSupervisionMode: undefined,
   inferenceSupervisionPollSeconds: undefined,
+  hubPoolPins: undefined,
 };
 
 @Injectable()
@@ -229,6 +232,7 @@ export class ConfigurationService {
       hubPoolPressureWeight: settings.hubPoolPressureWeight,
       inferenceSupervisionMode: settings.inferenceSupervisionMode,
       inferenceSupervisionPollSeconds: settings.inferenceSupervisionPollSeconds,
+      hubPoolPins: settings.hubPoolPins,
     };
   }
 
@@ -326,6 +330,7 @@ export class ConfigurationService {
         hubPoolPressureWeight: settingsValues.hubPoolPressureWeight,
         inferenceSupervisionMode: settingsValues.inferenceSupervisionMode,
         inferenceSupervisionPollSeconds: settingsValues.inferenceSupervisionPollSeconds,
+        hubPoolPins: settingsValues.hubPoolPins,
         experimental: {
           insecureCookie: env.data.EXPERIMENTAL_INSECURE_COOKIE,
         },
@@ -494,6 +499,9 @@ export class ConfigurationService {
       // code path older peers still depend on. See `HubPoolPreferences.poolRequireSignedPeers`.
       poolRequireSignedPeers: this.config.userSettings.hubPoolRequireSignedPeers ?? false,
       poolPressureWeight: this.config.userSettings.hubPoolPressureWeight ?? DEFAULT_POOL_PRESSURE_WEIGHT,
+      // A fresh array every read, so a caller that sorts or splices what it got cannot mutate the
+      // in-memory settings the next request will rank against.
+      poolPins: [...(this.config.userSettings.hubPoolPins ?? [])],
     };
   }
 
@@ -507,6 +515,7 @@ export class ConfigurationService {
       hubPoolHealthPollSeconds?: number;
       hubPoolRequireSignedPeers?: boolean;
       hubPoolPressureWeight?: number;
+      hubPoolPins?: HubPoolPin[];
     } = {};
     if (preferences.poolEnabled !== undefined) {
       settings.hubPoolEnabled = preferences.poolEnabled;
@@ -528,6 +537,12 @@ export class ConfigurationService {
     }
     if (preferences.poolPressureWeight !== undefined) {
       settings.hubPoolPressureWeight = preferences.poolPressureWeight;
+    }
+    // The whole list, never a delta: pins have no per-row identity in settings.json, so the pin
+    // service computes the next array and this persists it. `undefined` still means "leave alone",
+    // which is what keeps every other pool PATCH from wiping an operator's pins.
+    if (preferences.poolPins !== undefined) {
+      settings.hubPoolPins = preferences.poolPins;
     }
     // A no-op PATCH must not rewrite settings.json: every write is a read-modify-write of the whole
     // file with no locking, so an empty one can still clobber a concurrent inference-preferences save.
