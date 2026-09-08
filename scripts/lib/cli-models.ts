@@ -43,7 +43,7 @@ export function runModelsCommand(args: string[]) {
   if (subcommand === 'rm' || subcommand === 'remove') {
     const name = args[1];
     if (!name) usageAndExit('Usage: models rm <model-name>');
-    printMessageBox('Removing model', [`Removing ${bold(name)} from Ollama?`], 'yellow');
+    printMessageBox('Removing model', [`Removing ${bold(name)} from Ollama\u2026`], 'yellow');
     run('docker', ['exec', ollamaContainer, 'ollama', 'rm', name]);
     return;
   }
