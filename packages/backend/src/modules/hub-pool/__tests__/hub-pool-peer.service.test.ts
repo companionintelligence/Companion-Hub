@@ -1045,7 +1045,7 @@ describe('HubPoolPeerService', () => {
       expect(await service.getPoolStatus()).toMatchObject({ reason: 'disabled_by_setting', routingActive: false });
     });
 
-    it('never triggers peer discovery, which is a Tailscale OAuth exchange plus a probe per device', async () => {
+    it('never triggers peer discovery, which probes every unpaired candidate and is not pollable', async () => {
       await service.getPoolStatus();
 
       expect(tailscaleAdminApi.listDevices).not.toHaveBeenCalled();

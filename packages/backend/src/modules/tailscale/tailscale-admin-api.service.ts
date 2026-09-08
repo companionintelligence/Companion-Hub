@@ -28,8 +28,10 @@ const TOKEN_EXPIRY_SAFETY_MARGIN_S = 60;
  *
  * Requires an OAuth client with the `devices:core:read` scope, configured via
  * `TAILSCALE_OAUTH_CLIENT_ID` / `TAILSCALE_OAUTH_CLIENT_SECRET`. Both are
- * optional — {@link isConfigured} tells callers whether to offer discovery at
- * all, matching the existing optional-`TAILSCALE_AUTHKEY` posture.
+ * optional. {@link isConfigured} reports only whether that OAuth client is set; it is NOT a test
+ * of whether peer discovery is available, and no caller uses it as one. Hub Pool's other two
+ * directories — the local Tailscale daemon's peer map and the CI Portal device list — need no
+ * credential, so a Hub reading `false` here can still be naming candidates.
  */
 @Injectable()
 export class TailscaleAdminApiService {

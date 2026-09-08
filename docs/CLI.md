@@ -364,14 +364,26 @@ address can reach the other Hub but cannot *name* it, and a peer is stored under
 
 ### `cihub pool discover`
 
-Lists every unpaired candidate the tailnet directory knows about. A Hub found with `cihub pool probe`
-is **not** here and never will be: entries are paired with by handing their name to `pool pair`, and
-an address has no name until the PIN exchange produces one.
+Lists every unpaired candidate this Hub can *name*, from up to three directories: the local Tailscale
+daemon's peer map, the Tailscale Admin API when a credential is configured, and the CI Portal device
+registry on a registered Hub. A node two of them both name is listed once. A Hub found with
+`cihub pool probe` is **not** here and never will be: entries are paired with by handing their name
+to `pool pair`, and an address has no name until the PIN exchange produces one.
 
 A Tailscale OAuth client (`TAILSCALE_OAUTH_CLIENT_ID` / `TAILSCALE_OAUTH_CLIENT_SECRET`,
 `devices:core:read`) enumerates the whole tailnet at once and is worth having when a pool spans
-several networks. It is **optional**: without one, the empty-list output points at `cihub pool probe`
-first and names the variables second.
+several networks. It is **optional**, and it is the only one of the three that needs a credential:
+a tailnet-connected Hub already lists the peers its own daemon can see. Without the OAuth client, the
+empty-list output points at `cihub pool probe` first and names the variables second.
+
+The `Discovery` line in `cihub pool status` reports **only** the Tailscale credential, because that is
+the only candidate directory `GET status` reports on — the daemon peer map and the Portal registry are
+not in that response (the `Tailscale` line below it is the daemon leg's precondition, not its result).
+It is not a report on whether discovery works.
+
+A Hub your CI account knows only by LAN address is not listed: a peer is stored under its tailnet
+name, and an IP literal can never be one. Pair with it by address instead. See
+[`hub-pool.md` → Where pairing candidates come from](hub-pool.md#where-pairing-candidates-come-from).
 
 ### `cihub pool probe` and pairing by address
 

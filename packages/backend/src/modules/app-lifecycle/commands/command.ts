@@ -20,6 +20,10 @@ export interface CommandExecutionContext {
   signal: AbortSignal;
   /** Report the current execution phase to the operation registry. */
   setPhase(phase: OperationPhase): void;
+  /** Durable lifecycle job ID if tracked. */
+  jobId?: string;
+  /** Report progress percentage to durable job tracking. */
+  updateProgress?(percent: number): Promise<void>;
 }
 
 /**

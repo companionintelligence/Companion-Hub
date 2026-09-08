@@ -307,18 +307,49 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
    * with this Hub yet.
    */
   async listDiscoverableDevices(): Promise<DiscoverablePoolPeer[]> {
-    if (!this.tailscaleAdminApi.isConfigured()) {
-      return [];
-    }
-
     const selfStatus = await this.tailscaleService.getStatusCached();
-    if (!selfStatus.tailnet) {
+    if (!selfStatus.connected && !this.tailscaleAdminApi.isConfigured()) {
       return [];
     }
 
-    const [devices, existingPeers] = await Promise.all([this.tailscaleAdminApi.listDevices(selfStatus.tailnet), this.repo.listAll()]);
+    const candidateMap = new Map<string, { id: string; name: string; hostname: string }>();
+
+    // 1. From local Tailscale daemon peer map (zero-config, no OAuth needed)
+    for (const peer of selfStatus.peers ?? []) {
+      if (peer.nodeFqdn && peer.nodeFqdn !== selfStatus.nodeFqdn) {
+        candidateMap.set(peer.nodeFqdn, {
+          id: peer.id ?? '',
+          name: peer.nodeFqdn,
+          hostname: peer.hostname ?? peer.nodeFqdn,
+        });
+      }
+    }
+
+    // 2. From Tailscale Admin API (if configured)
+    if (this.tailscaleAdminApi.isConfigured() && selfStatus.tailnet) {
+      try {
+        const adminDevices = await this.tailscaleAdminApi.listDevices(selfStatus.tailnet);
+        for (const device of adminDevices) {
+          if (device.name && device.name !== selfStatus.nodeFqdn) {
+            candidateMap.set(device.name, {
+              id: device.id,
+              name: device.name,
+              hostname: device.hostname,
+            });
+          }
+        }
+      } catch (error) {
+        this.logger.debug(`[HubPool] Admin API listDevices failed: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+
+    if (candidateMap.size === 0) {
+      return [];
+    }
+
+    const existingPeers = await this.repo.listAll();
     const known = new Set(existingPeers.map((p) => p.nodeFqdn));
-    const candidates = devices.filter((d) => d.name && d.name !== selfStatus.nodeFqdn && !known.has(d.name));
+    const candidates = [...candidateMap.values()].filter((d) => d.name && !known.has(d.name));
 
     const probed = await Promise.all(
       candidates.map(async (device): Promise<DiscoverablePoolPeer | null> => {
@@ -341,17 +372,24 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
-   * Everything the operator UI and CLI need in one poll: whether pooling is on and why, whether
-   * discovery is even possible, this node's own identity and inventory, and every peer with its
-   * live queue depth — plus the operator's routing pins, each resolved to a node name and to
-   * whether it can take work right now.
+   * Everything the operator UI and CLI need in one poll: whether pooling is on and why, whether this
+   * node is on a tailnet and whether it can enumerate the whole one, this node's own identity and
+   * inventory, and every peer with its live queue depth — plus the operator's routing pins, each
+   * resolved to a node name and to whether it can take work right now.
+   *
+   * `tailscaleAdminApiConfigured` here is the Admin API credential and nothing more: discovery has
+   * two other directories that need no credential (the local daemon's peer map, the CI Portal
+   * registry), so this response can neither confirm nor deny that discovery works.
    *
    * Deliberately cheap enough to poll: one `listAll()` SELECT, in-memory counters, two env reads,
    * the 30s-cached Tailscale status, and the {@link OWN_INVENTORY_TTL_MS}-cached local inventory.
-   * It never calls `listDiscoverableDevices` (a Tailscale OAuth exchange plus an HTTPS probe per
-   * tailnet device, all uncached) and never re-probes peers — peer capabilities are read from the
-   * `lastCapabilities` the health poll already cached. Pins add no query at all: they live in
-   * settings.json, and their availability is computed from the peers and inventory already loaded.
+   * It never calls `listDiscoverableDevices` (an HTTPS probe per unpaired tailnet candidate, all
+   * uncached, and a Tailscale OAuth exchange on top when an Admin API credential is configured —
+   * being connected to the tailnet is enough to pay the probes), and the route that wraps it,
+   * `GET peers/discoverable`, adds a Portal dispatch call and a probe per named Portal device on
+   * top. It never re-probes peers either — peer capabilities are read from the `lastCapabilities`
+   * the health poll already cached. Pins add no query at all: they live in settings.json, and their
+   * availability is computed from the peers and inventory already loaded.
    */
   async getPoolStatus(): Promise<PoolStatus> {
     const enabled = this.enabledState();

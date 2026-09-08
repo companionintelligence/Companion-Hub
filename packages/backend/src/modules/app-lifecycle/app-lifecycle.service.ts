@@ -26,7 +26,8 @@ import { AppStoreService } from '../app-stores/app-store.service';
 import { AppEventsQueue, appEventResultSchema, appEventSchema } from '../queue/entities/app-events';
 import { AppLifecycleCommandFactory } from './app-lifecycle-command.factory';
 import { AppOperationRegistry, type CancellabilityTier, type OperationCommand } from './app-operation-registry';
-import type { AppStatus } from '@/core/database/drizzle/types';
+import type { AppStatus, LifecycleJob } from '@/core/database/drizzle/types';
+import { LifecycleJobService } from './lifecycle-job.service';
 import { toAppCommandFailureResult } from './commands/app-lifecycle-errors';
 import type { CommandExecutionContext } from './commands/command';
 import { appFormSchema } from './dto/app-lifecycle.dto';
@@ -254,6 +255,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     @Optional() private readonly appIntentSyncService?: AppIntentSyncService,
     @Optional() private readonly agentNotifyService?: AgentNotifyService,
     @Optional() private readonly errorReportingService?: ErrorReportingService,
+    @Optional() private readonly lifecycleJobService?: LifecycleJobService,
   ) {
     this.logger.debug('Subscribing to app events...');
     this.appEventsQueue.onEvent((data, reply) => this.invokeCommand(data, reply));
@@ -462,6 +464,21 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
 
     const release = await this.mutex.acquire(data.appUrn);
 
+    let job: LifecycleJob | null = null;
+    if (this.lifecycleJobService) {
+      job = await this.lifecycleJobService
+        .createJob({
+          appUrn: data.appUrn,
+          operation: data.command,
+          status: 'running',
+          metadata: { requestId: data.requestId },
+        })
+        .catch((err) => {
+          this.logger.warn(`Failed to create lifecycle job for ${data.command} on ${data.appUrn}: ${err}`);
+          return null;
+        });
+    }
+
     try {
       // Only treat the registry entry as ours when its requestId matches this message. A stale queued
       // message dequeued after a newer op replaced the entry must NOT wire the newer op's AbortSignal
@@ -473,6 +490,9 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       // entirely and finalize the cancellation. No compose/pull ran, so there is nothing to compensate.
       if (entry && (entry.cancelRequestedWhileQueued || entry.abortController.signal.aborted)) {
         this.logger.info(`[lifecycle] '${data.command}' for ${data.appUrn} was cancelled while queued; skipping execution`);
+        if (job) {
+          await this.lifecycleJobService?.cancelJob(job.id, 'Operation cancelled before it started').catch(() => null);
+        }
         await this.handleCancelledResult(data.command, data.appUrn, {
           success: false,
           cancelled: true,
@@ -492,6 +512,12 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
         ? {
             signal: entry.abortController.signal,
             setPhase: (phase) => this.operationRegistry.markPhase(data.appUrn, phase, data.requestId),
+            jobId: job?.id,
+            updateProgress: async (percent: number) => {
+              if (job) {
+                await this.lifecycleJobService?.updateProgress(job.id, percent).catch(() => null);
+              }
+            },
           }
         : undefined;
 
@@ -507,9 +533,15 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       // that fails AFTER its RPC timed out still reaches 'install_failed' instead of being stranded
       // in 'installing'.
       if (result.cancelled) {
+        if (job) {
+          await this.lifecycleJobService?.cancelJob(job.id, result.message || 'Operation was cancelled').catch(() => null);
+        }
         await this.handleCancelledResult(data.command, data.appUrn, result);
         this.operationRegistry.clear(data.appUrn, data.requestId);
       } else if (result.success) {
+        if (job) {
+          await this.lifecycleJobService?.completeJob(job.id).catch(() => null);
+        }
         this.logger.debug('Command executed successfully, triggering Cloudflare sync...');
         // Trigger sync to ensure cloud state matches local state (exposed apps)
         await this.syncExposure();
@@ -519,6 +551,9 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
           this.operationRegistry.clear(data.appUrn, data.requestId);
         }
       } else {
+        if (job) {
+          await this.lifecycleJobService?.failJob(job.id, result.message || 'Operation failed').catch(() => null);
+        }
         await this.handleFailedResult(data.command, data.appUrn, result);
         if (isInstall) {
           this.operationRegistry.clear(data.appUrn, data.requestId);
@@ -527,6 +562,9 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
 
       await reply(result);
     } catch (err) {
+      if (job) {
+        await this.lifecycleJobService?.failJob(job.id, err instanceof Error ? err : String(err)).catch(() => null);
+      }
       this.logger.error('Error invoking command:', err);
       const failure = toAppCommandFailureResult(err);
       if (isInstall) {

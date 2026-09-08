@@ -3,6 +3,15 @@ import { execFile } from 'node:child_process';
 import { access, constants } from 'node:fs/promises';
 import { hubContainerName } from '@/common/constants';
 
+export interface TailscalePeerDevice {
+  id?: string;
+  nodeFqdn: string;
+  hostname: string | null;
+  ip: string | null;
+  online?: boolean;
+  os?: string | null;
+}
+
 export interface TailscaleStatus {
   installed: boolean;
   connected: boolean;
@@ -16,6 +25,7 @@ export interface TailscaleStatus {
   httpsAvailable: boolean;
   backendState: string | null;
   authUrl: string | null;
+  peers?: TailscalePeerDevice[];
 }
 
 export interface TailscaleServeEntry {
@@ -266,6 +276,7 @@ export class TailscaleService {
       httpsAvailable: false,
       backendState: null,
       authUrl: null,
+      peers: [],
     };
 
     try {
@@ -292,6 +303,22 @@ export class TailscaleService {
       const certDomains = status.CertDomains as string[] | undefined;
       const httpsAvailable = Array.isArray(certDomains) && certDomains.length > 0;
 
+      const rawPeers = (status.Peer as Record<string, Record<string, unknown>> | undefined) ?? {};
+      const peers: TailscalePeerDevice[] = [];
+      for (const [key, peerObj] of Object.entries(rawPeers)) {
+        if (!peerObj) continue;
+        const dnsName = normalizeDnsName((peerObj.DNSName as string) || null);
+        if (!dnsName) continue;
+        peers.push({
+          id: peerObj.ID ? String(peerObj.ID) : key,
+          nodeFqdn: dnsName,
+          hostname: (peerObj.HostName as string) || null,
+          ip: (peerObj.TailscaleIPs as string[])?.[0] || null,
+          online: peerObj.Online === true,
+          os: (peerObj.OS as string) || null,
+        });
+      }
+
       return {
         installed,
         connected,
@@ -306,6 +333,7 @@ export class TailscaleService {
         httpsAvailable,
         backendState: (status.BackendState as string) || null,
         authUrl: (status.AuthURL as string) || null,
+        peers,
       };
     } catch (error) {
       this.logger.warn(`Failed to parse tailscale status JSON: ${error}`);
@@ -326,6 +354,7 @@ export class TailscaleService {
       httpsAvailable: false,
       backendState: null,
       authUrl: null,
+      peers: [],
     };
 
     const strategy = await this.resolveStrategy();
@@ -334,6 +363,18 @@ export class TailscaleService {
     }
 
     return this.getStatusForStrategy(strategy);
+  }
+
+  /** Returns peer devices discovered by the local Tailscale daemon from status.Peer */
+  async getPeers(): Promise<TailscalePeerDevice[]> {
+    const status = await this.getStatus();
+    return status.peers ?? [];
+  }
+
+  /** Returns cached peer devices discovered by the local Tailscale daemon from status.Peer */
+  async getPeersCached(): Promise<TailscalePeerDevice[]> {
+    const status = await this.getStatusCached();
+    return status.peers ?? [];
   }
 
   /**
