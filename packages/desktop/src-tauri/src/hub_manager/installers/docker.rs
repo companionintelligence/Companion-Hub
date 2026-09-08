@@ -1,7 +1,5 @@
 //! Docker Desktop / Engine installation per platform.
 
-use crate::hub_manager::*;
-
 #[allow(unused_imports)]
 use super::*;
 
