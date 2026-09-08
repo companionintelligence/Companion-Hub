@@ -913,6 +913,59 @@ describe('Hub Pool across two nodes', () => {
       expect(cached.backends[0]?.modelsLoaded).toContain(BETA_ONLY_MODEL);
     });
 
+    /**
+     * The deadlock this pair hit in the field, and the case every other test in this block misses:
+     * they drive ONE side unreachable while the other stays `connected`, so the recovering probe is
+     * always answered by a node that still considers the caller connected.
+     *
+     * Both sides go unreachable together whenever the partition is mutual — or when one node is
+     * merely slow enough to blow three probe timeouts while its own polls are timing out too. From
+     * there, recovery runs solely through a successful capabilities probe, so if a node refuses the
+     * probe of a peer it has marked unreachable, both refuse each other and neither can ever return:
+     * the counters run away past the threshold and Unpair is the operator's only move on a pairing
+     * that was never broken. Observed as `capabilities probe ... failed (14/3): returned 403`.
+     */
+    it('recovers a pair that BOTH sides marked unreachable, instead of wedging on a mutual 403', async () => {
+      await pairNodes();
+
+      // A partition both sides notice.
+      offline.add(CORE_FQDN);
+      offline.add(BETA_FQDN);
+      for (let i = 0; i < 3; i += 1) {
+        await core.poll();
+        await beta.poll();
+      }
+      expect(core.repo.only().status).toBe('unreachable');
+      expect(beta.repo.only().status).toBe('unreachable');
+
+      // The network heals. Nothing else about either node has changed.
+      offline.delete(CORE_FQDN);
+      offline.delete(BETA_FQDN);
+      await core.poll();
+      await beta.poll();
+
+      expect(core.repo.only()).toMatchObject({ status: 'connected', consecutiveFailures: 0 });
+      expect(beta.repo.only()).toMatchObject({ status: 'connected', consecutiveFailures: 0 });
+    });
+
+    /** The recovering probe must come back with a real inventory, not merely a 200. */
+    it('re-caches the peer inventory after a mutual outage, so routing resumes', async () => {
+      await pairNodes();
+      offline.add(CORE_FQDN);
+      offline.add(BETA_FQDN);
+      for (let i = 0; i < 3; i += 1) {
+        await core.poll();
+        await beta.poll();
+      }
+
+      offline.delete(CORE_FQDN);
+      offline.delete(BETA_FQDN);
+      await core.poll();
+
+      const cached = core.repo.only().lastCapabilities as unknown as PoolPeerCapabilities;
+      expect(cached.backends[0]?.modelsLoaded).toContain(BETA_ONLY_MODEL);
+    });
+
     it('keeps the pairing intact throughout, so recovery never needs a re-pair', async () => {
       await pairNodes();
       const pairedId = core.repo.only().id;

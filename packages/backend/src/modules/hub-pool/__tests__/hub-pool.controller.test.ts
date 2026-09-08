@@ -240,13 +240,30 @@ describe('HubPoolController', () => {
       expect(peerService.getOwnCapabilities).not.toHaveBeenCalled();
     });
 
-    it.each(['pending', 'unreachable'])('refuses a peer whose row is %s, even though the guard admitted its token', async (status) => {
+    it('refuses a peer whose row is pending, even though the guard admitted its token', async () => {
       peerService.enabledState.mockReturnValue({ enabled: true, disabledBy: null });
 
       // PoolPeerGuard deliberately admits a pending row so /pair/confirm can use it, so this handler
       // is the only thing standing between a half-finished pairing and this node's inventory.
-      await expect(controller.capabilities(peerRequest({ status }))).rejects.toThrow(ForbiddenException);
+      await expect(controller.capabilities(peerRequest({ status: 'pending' }))).rejects.toThrow(ForbiddenException);
       expect(peerService.getOwnCapabilities).not.toHaveBeenCalled();
+    });
+
+    /**
+     * The regression that wedged core-2 and beta-max in the field.
+     *
+     * `unreachable` is our stale OUTBOUND opinion, not a statement about the pairing — and this
+     * route is the sole way out of it. Refusing here is self-reinforcing: two nodes that strike out
+     * on each other at the same time answer each other 403 forever, and every subsequent probe then
+     * fails because of the refusal rather than the network.
+     */
+    it('serves a peer we have marked unreachable, because answering is the only way it recovers', async () => {
+      peerService.enabledState.mockReturnValue({ enabled: true, disabledBy: null });
+
+      await controller.capabilities(peerRequest({ status: 'unreachable' }));
+
+      // Reaching the inventory at all is the assertion: the refusal branch throws before this.
+      expect(peerService.getOwnCapabilities).toHaveBeenCalled();
     });
 
     /**
@@ -334,13 +351,32 @@ describe('HubPoolController', () => {
       );
     });
 
-    it.each(['pending', 'unreachable'])('refuses a %s peer with 403 without touching a backend', async (status) => {
+    it('refuses a pending peer with 403 without touching a backend', async () => {
       const res = mockResponse();
 
-      await controller.localOllamaChat(peerRequest({ nodeFqdn: 'hub-b.example-tailnet.ts.net', status }), body, res);
+      await controller.localOllamaChat(peerRequest({ nodeFqdn: 'hub-b.example-tailnet.ts.net', status: 'pending' }), body, res);
 
       expect(res.status).toHaveBeenCalledWith(403);
       expect(proxyService.forwardToLocalBackendAndRespond).not.toHaveBeenCalled();
+    });
+
+    /**
+     * Same rule as `GET capabilities`, for the same reason plus one of its own: the sender's
+     * `noteRejectedCandidate` reads 403 as "it no longer considers us paired" and drops the cached
+     * capabilities of a pairing that is entirely intact. Our own stale view of the peer's health is
+     * not grounds for invalidating it.
+     */
+    it('serves a peer we have marked unreachable, rather than invalidating a live pairing', async () => {
+      const res = mockResponse();
+
+      await controller.localOllamaChat(
+        peerRequest({ nodeFqdn: 'hub-b.example-tailnet.ts.net', status: 'unreachable' }, { 'x-hub-pool-backend': 'ollama' }),
+        body,
+        res,
+      );
+
+      expect(res.status).not.toHaveBeenCalledWith(403);
+      expect(proxyService.forwardToLocalBackendAndRespond).toHaveBeenCalled();
     });
 
     /**
