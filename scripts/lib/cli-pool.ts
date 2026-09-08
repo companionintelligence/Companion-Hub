@@ -50,7 +50,6 @@ export const POOL_SUBCOMMANDS = [
   'approve',
   'reject',
   'unpair',
-  'pairing-pin',
   'log',
   'enable',
   'disable',
