@@ -2,12 +2,13 @@
  * `cihub pool update` — pull the published image and redeploy, without a build toolchain.
  *
  * `cihub up`/`cihub setup` always pass `--build` (see `runDockerComposeUp` in cli-lifecycle.ts),
- * which is right for `local` (source dev, no `image:` to pull) and wrong for every other
- * environment now that CI publishes `ghcr.io/companionintelligence/ci-hub:<env>` on every merge
- * (confirmed for `dev` 2026-09-08). A fleet node with no GitHub Packages token cannot build at
- * all — that gap is documented history (`docker save | docker load`, 497 MB, by hand, per node).
- * This command is deliberately narrow instead of changing that shared path: pull, redeploy,
- * verify. It never builds and never touches the git checkout beyond a fast-forward it is certain
+ * which is right for `local` (source dev, no `image:` to pull). `getComposeFiles` (cli-compose-env.ts)
+ * now layers `docker-compose.dev-image.yml` onto `dev`/`staging`/`prod` alike whenever the matching
+ * env file sets `CI_HUB_IMAGE`, so a node that has pinned that var already gets a pull instead of a
+ * from-source build. This command covers what that doesn't: a fleet node with `CI_HUB_IMAGE` unset
+ * entirely, which still falls back to building — something a node with no GitHub Packages token
+ * cannot do at all (that gap is documented history: `docker save | docker load`, 497 MB, by hand,
+ * per node). It never builds and never touches the git checkout beyond a fast-forward it is certain
  * cannot lose anything.
  */
 import { existsSync } from 'node:fs';
@@ -19,10 +20,11 @@ import type { HubEnv } from './cli-types.js';
 /**
  * The one compose file this whole command exists to route around: `docker-compose.prod.yml`
  * declares the `ci-hub` service `build:`-only, no `image:` at all, so `docker compose pull` has
- * nothing to fetch and `up` falls back to a from-source build. `docker-compose.dev-image.yml`
- * already solves this the same way but only for `env=dev` (see `getComposeFiles` in
- * cli-compose-env.ts) — every real fleet node runs `prod`. This overlay is env-agnostic on
- * purpose so `pool update` gets the same pull path regardless of which env it targets.
+ * nothing to fetch and `up` falls back to a from-source build. `getComposeFiles` (cli-compose-env.ts)
+ * already layers `docker-compose.dev-image.yml` for this when the env file sets `CI_HUB_IMAGE`, but
+ * a fleet node running `prod` with that var unset has nothing to key off. This overlay is
+ * env-agnostic and always applied so `pool update` gets a pull path regardless of whether
+ * `CI_HUB_IMAGE` is set, defaulting the tag to the env being updated (see `resolvePoolUpdateImage`).
  */
 const PULL_IMAGE_OVERLAY = 'docker-compose.pull-image.yml';
 
