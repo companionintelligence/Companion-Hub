@@ -945,7 +945,6 @@
   "ONBOARDING_SHOW_MORE_APPS_HINT": "Load a few more recommendations",
   "ONBOARDING_RECOMMENDED_APPS": "Recommended Private Apps",
   "ONBOARDING_RECOMMENDED_APPS_DESC": "Choose from 20 popular open-source alternatives. Everything here is optional, and you can add more from the Store anytime.",
-  "ONBOARDING_BROWSE_ALL_ALTERNATIVES": "Browse all alternatives",
   "ONBOARDING_CHANGE_LATER_SETTINGS": "You can change everything later in Settings.",
   "ONBOARDING_MODEL_DOWNLOADS_TITLE": "Downloading models",
   "ONBOARDING_MODEL_DOWNLOADS_DESC": "Models download in the background while you finish setup. Progress also appears in Settings → Logs.",
