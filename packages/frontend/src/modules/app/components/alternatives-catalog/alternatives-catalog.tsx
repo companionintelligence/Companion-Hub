@@ -53,7 +53,7 @@ export function AlternativesCatalog({ alternatives, marketplaceSlug, title, subt
                       <TableCell className="px-2 py-3 sm:px-4">
                         <div className="flex flex-wrap gap-2">
                           {item.proprietary.map((prop) => (
-                            <div key={prop.name} className="flex items-center gap-2 rounded-full bg-muted/50 px-3 py-1.5 text-sm" title={prop.name}>
+                            <div key={prop.name} className="flex items-center gap-2 rounded-full bg-muted px-3 py-1.5 text-sm text-foreground" title={prop.name}>
                               {prop.icon && <img src={prop.icon} alt={prop.name} className="h-5 w-5 rounded-full object-cover" loading="lazy" />}
                               <span className="font-medium">{prop.name}</span>
                             </div>
