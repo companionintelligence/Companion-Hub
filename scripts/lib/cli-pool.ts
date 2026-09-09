@@ -417,12 +417,22 @@ async function runPoolUpdateCommand(ctx: HubContext): Promise<void> {
   if (overlayApplied) {
     lines.push(cliOk(`will pull ${image} (set CI_HUB_IMAGE to override)`));
   } else {
-    lines.push(cliWarn(`no pull-image overlay found in ${ctx.cwd} — falling back to whatever ${ctx.composeFiles.join(', ')} already declares`));
+    lines.push(cliWarn(`no pull-image overlay in ${ctx.cwd} — pulling ${image} directly, since the seeded compose caches a mutable tag`));
   }
 
   const { pullArgs, upArgs } = buildPoolUpdateComposeArgs(ctx.envFile, files);
   printMessageBox(`Hub Pool update  [${ctx.env}]`, [...lines, '', 'Pulling the published image, then redeploying...'], 'cyan');
-  const envOverrides = overlayApplied ? { CI_HUB_IMAGE: image } : {};
+  // CI_HUB_IMAGE is exported even without the overlay. On an appliance the seeded compose carries
+  // `image: ${CI_HUB_IMAGE:-…:latest}` with `pull_policy: if_not_present`, so a mutable tag like
+  // `:dev` is fetched once and then never again — an "update" that silently redeploys the cached
+  // image it already had. Naming the image explicitly, plus the pull below, is what makes the
+  // command mean what it says on a node that has no checkout.
+  const envOverrides = { CI_HUB_IMAGE: image };
+  if (!overlayApplied) {
+    // `docker compose pull` honours pull_policy; `docker pull` does not, so it is the only way to
+    // refresh a mutable tag through a compose file this command cannot edit.
+    run('docker', ['pull', image], {}, ctx.cwd);
+  }
   run('docker', pullArgs, envOverrides, ctx.cwd);
   run('docker', upArgs, envOverrides, ctx.cwd);
 
