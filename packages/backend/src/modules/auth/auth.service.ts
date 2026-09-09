@@ -17,6 +17,8 @@ import {
 import { parseRetryAfterSeconds } from '@/common/helpers/retry-after';
 import { PasswordService } from '@/core/password/password.service';
 import axios, { type AxiosResponse } from 'axios';
+import { PortalClientService } from '@/core/portal/portal-client.service';
+import { DeviceRegistrationRepository } from '@/modules/registration/device-registration.repository';
 import { FederatedIdentityRepository } from '@/modules/user/federated-identity.repository';
 import { UserRepository } from '@/modules/user/user.repository';
 import { HttpStatus, Injectable, ServiceUnavailableException } from '@nestjs/common';
@@ -44,6 +46,8 @@ export class AuthService {
     private passwordService: PasswordService,
     private logger: LoggerService,
     private sessionUserCache: SessionUserCache,
+    private portal: PortalClientService,
+    private deviceRegistration: DeviceRegistrationRepository,
   ) {}
 
   public getCookieDomain(domain?: string) {
@@ -117,7 +121,10 @@ export class AuthService {
       },
     );
 
-    const body = (await Promise.resolve(response.data).catch(() => ({}))) as { code?: string };
+    const body = (await Promise.resolve(response.data).catch(() => ({}))) as {
+      code?: string;
+      user?: { id?: string; email?: string; emailVerified?: boolean };
+    };
 
     this.throwIfPortalRateLimited(response);
 
@@ -128,6 +135,12 @@ export class AuthService {
 
       throw new TranslatableError('AUTH_ERROR_INVALID_CREDENTIALS', {}, HttpStatus.BAD_REQUEST);
     }
+
+    return {
+      subject: typeof body.user?.id === 'string' && body.user.id.trim() ? body.user.id.trim() : null,
+      email: typeof body.user?.email === 'string' && body.user.email.trim() ? body.user.email.trim() : email,
+      emailVerified: body.user?.emailVerified !== false,
+    };
   }
 
   private async signUpWithPortal(email: string, password: string, name: string) {
@@ -167,7 +180,67 @@ export class AuthService {
     return this.ensureLocalCompanionUser(email);
   }
 
-  private async ensureLocalCompanionUser(rawEmail: string) {
+  /**
+   * Admit a verified Portal person onto this Hub.
+   *
+   * Existing federated links win. The first operator may bootstrap without an org check.
+   * Additional people need a Portal membership on the org this appliance is paired to.
+   */
+  public async admitHubPerson(params: { issuer: string; subject: string | null; email: string; emailVerified: boolean }) {
+    const issuer = (params.issuer || this.getPublicPortalBaseUrl()).trim();
+    const subject = params.subject?.trim() || '';
+
+    if (subject) {
+      const existingLink = await this.federatedIdentityRepository.findByIssuerSubject(issuer, subject);
+      if (existingLink) {
+        return this.ensureFederatedUser({
+          issuer,
+          subject,
+          email: params.email,
+          emailVerified: params.emailVerified,
+        });
+      }
+    }
+
+    const operators = await this.userRepository.getOperators();
+    if (operators.length > 0) {
+      if (!subject) {
+        throw new TranslatableError('AUTH_ERROR_INVALID_CREDENTIALS', {}, HttpStatus.BAD_REQUEST);
+      }
+      const member = await this.isSubjectMemberOfPairedOrg(subject);
+      if (!member) {
+        throw new TranslatableError('AUTH_ERROR_NOT_ORG_MEMBER', {}, HttpStatus.FORBIDDEN);
+      }
+    }
+
+    if (!subject) {
+      return this.ensureLocalCompanionUser(params.email);
+    }
+
+    return this.ensureFederatedUser({
+      issuer,
+      subject,
+      email: params.email,
+      emailVerified: params.emailVerified,
+      allowCreateAdditionalOperator: operators.length > 0,
+    });
+  }
+
+  private async isSubjectMemberOfPairedOrg(subject: string): Promise<boolean> {
+    const registration = await this.deviceRegistration.getFirstDeviceRegistration().catch(() => null);
+    if (!registration?.id) {
+      return false;
+    }
+
+    const whois = await this.portal.whoisApps({ subject, appIds: ['_membership'], surface: 'hub' });
+    if (!whois || whois.status >= 400 || !whois.body?.organizations?.length) {
+      return false;
+    }
+
+    return whois.body.organizations.some((org) => org.organizationId === registration.id);
+  }
+
+  private async ensureLocalCompanionUser(rawEmail: string, options?: { allowCreateAdditionalOperator?: boolean }) {
     // Normalize before the INSERT, not just before the lookup: `getUserByUsername` lowercases what
     // it is given and compares it to the stored value, so a row created from a mixed-case Portal
     // address (`Owner@Example.com`) is never found again — that operator can never use the password
@@ -181,12 +254,19 @@ export class AuthService {
 
     const operators = await this.userRepository.getOperators();
 
-    if (operators.length > 0) {
+    if (operators.length > 0 && !options?.allowCreateAdditionalOperator) {
       throw new TranslatableError('AUTH_ERROR_USER_NOT_FOUND', {}, HttpStatus.BAD_REQUEST);
     }
 
     const hash = await this.passwordService.hash(crypto.randomUUID());
-    const created = await this.userRepository.createUser({ username: email, password: hash, operator: true });
+    const created = await this.userRepository.createUser({
+      username: email,
+      password: hash,
+      operator: true,
+      // Second (and later) family operators skip the device wizard — it already
+      // ran when this Hub was first set up.
+      hasCompletedOnboarding: operators.some((operator) => operator.hasCompletedOnboarding),
+    });
 
     if (!created) {
       throw new TranslatableError('AUTH_ERROR_ERROR_CREATING_USER', {}, HttpStatus.INTERNAL_SERVER_ERROR);
@@ -218,6 +298,8 @@ export class AuthService {
     emailVerified: boolean;
     /** Permit linking by email match without a verified claim, for one-time migration of legacy operators only. */
     allowUnverifiedEmailForMigration?: boolean;
+    /** Create another Hub operator when this Portal subject is a first login for an org member. */
+    allowCreateAdditionalOperator?: boolean;
   }) {
     const issuer = params.issuer.trim();
     const subject = params.subject.trim();
@@ -251,7 +333,9 @@ export class AuthService {
 
     // First login for this subject: match or provision the local user by email,
     // then bind (iss, sub) so subsequent logins are email-independent.
-    const localUser = await this.ensureLocalCompanionUser(email);
+    const localUser = await this.ensureLocalCompanionUser(email, {
+      allowCreateAdditionalOperator: params.allowCreateAdditionalOperator,
+    });
 
     try {
       await this.federatedIdentityRepository.create({
@@ -335,9 +419,14 @@ export class AuthService {
     const { username, password } = input;
     const email = username.trim().toLowerCase();
 
-    await this.signInWithPortal(email, password);
+    const portalIdentity = await this.signInWithPortal(email, password);
 
-    const user = await this.ensureLocalCompanionUser(email);
+    const user = await this.admitHubPerson({
+      issuer: this.getPublicPortalBaseUrl(),
+      subject: portalIdentity.subject,
+      email: portalIdentity.email || email,
+      emailVerified: portalIdentity.emailVerified,
+    });
 
     if (user.totpEnabled) {
       const totpSessionId = crypto.randomUUID();

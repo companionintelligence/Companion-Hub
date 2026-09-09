@@ -7669,6 +7669,7 @@
             "type": "string",
             "enum": [
               "hub_operator",
+              "hub_user",
               "portal_session"
             ]
           }

@@ -4,13 +4,14 @@ import { client } from '@/api-client/client.gen';
 import { markHubSessionIssuedAt, setTauriSessionId } from '@/lib/api-fetch';
 import { portalErrorTranslationKey } from '@/lib/portal-auth-errors';
 import { SIGNED_OUT_PARAM, signedOutTranslationKey } from '@/lib/signed-out-reasons';
-import { resolvePortalSessionHint } from '@/lib/portal-session-hint';
+import { forgetPortalAccountEmail, resolvePortalSessionHint } from '@/lib/portal-session-hint';
 import { hubAuthFlowPolicy, resolveHubAuthFlow } from '@/lib/hub-auth-flow';
 import { isTauriDesktopApp } from '@/lib/hub-runtime-mode';
 import { clearHubConnection, getHubBaseUrlSync, isMobileClient, usesCloudConnect } from '@/lib/mobile-connection';
 import { shouldTimeBoxMobileLoads } from '@/lib/use-mobile-load-timeout';
 import { buildPortalSsoStartUrl } from '@/lib/portal-sso-url';
 import { followSafeRedirect } from '@/lib/safe-redirect';
+import { openAuthInSystemBrowser } from '@/lib/helpers/open-auth-browser';
 import { useUserContext } from '@/context/user-context';
 import type { TranslatableError } from '@/types/error.types';
 import { useMutation } from '@tanstack/react-query';
@@ -208,6 +209,17 @@ export default () => {
         portalSsoHref={portalSsoHref}
         portalAccountEmail={portalAccountEmail}
         openPortalSsoExternally={authPolicy.openHubSsoInSystemBrowser}
+        onSwitchAccount={() => {
+          forgetPortalAccountEmail();
+          setPortalAccountEmail(null);
+          if (portalSsoHref) {
+            if (authPolicy.openHubSsoInSystemBrowser) {
+              void openAuthInSystemBrowser(portalSsoHref).catch(() => undefined);
+              return;
+            }
+            window.location.assign(portalSsoHref);
+          }
+        }}
       />
       {authPolicy.showSwitchHub ? (
         <button
