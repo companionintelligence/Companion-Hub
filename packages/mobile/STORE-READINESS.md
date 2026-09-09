@@ -10,7 +10,7 @@ including the signed-IPA lane (`ios-release`) and the ASC build-number
 stamping. What's left needs an Apple Developer account, a Play Console
 account, and a decision about how App Review signs in.
 
-- App: **Companion Hub** · id **`computer.ci.app.hub`** · version **0.1.0**
+- App: **Companion Hub** · iOS/Tauri id **`computer.ci.app.hub`** · Android Play id **`com.companionintelligence.hub`** · version **0.1.0**
 - Roadmap for post-v1 capabilities: [`ROADMAP.md`](./ROADMAP.md)
 
 ---
