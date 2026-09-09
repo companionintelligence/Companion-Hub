@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { Injectable, type OnApplicationBootstrap, type OnApplicationShutdown, Inject, forwardRef, Optional } from '@nestjs/common';
@@ -824,6 +825,70 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
       hasStaleTunnelToken,
       hasOrphanedDbRegistration,
     });
+  }
+
+  /**
+   * The one-time secret for the registration this Hub is running: minted with
+   * the `callback_url` handed to Portal, and spent when the callback returns.
+   * Possession of it shows the callback belongs to a registration this Hub
+   * started; it does not authenticate Portal, so `POST /registration/callback`
+   * also refuses an already-registered Hub.
+   *
+   * In memory on purpose, because a registration attempt does not survive a
+   * restart either.
+   */
+  private callbackNonce: { value: string; mintedAt: number } | null = null;
+
+  /** Long enough for a person to sign in at Portal and pick an organization. */
+  private static readonly CALLBACK_NONCE_TTL_MS = 30 * 60 * 1000;
+
+  /**
+   * Returns the nonce for the registration in flight, minting one when there is
+   * none.
+   *
+   * The registration page re-reads `GET /registration/device-id` on every status
+   * poll, so minting one per call would replace the nonce the person is carrying
+   * through Portal, and change the QR code they are scanning.
+   */
+  public mintCallbackNonce(): string {
+    const live = this.liveCallbackNonce();
+
+    if (live) {
+      return live;
+    }
+
+    this.callbackNonce = { value: randomUUID(), mintedAt: Date.now() };
+
+    return this.callbackNonce.value;
+  }
+
+  /**
+   * Spends the nonce. Returns false when it was never minted here, was already
+   * used, or has expired — all of which mean the same thing to the caller.
+   */
+  public consumeCallbackNonce(nonce: string | undefined): boolean {
+    if (!nonce || this.liveCallbackNonce() !== nonce) {
+      return false;
+    }
+
+    this.callbackNonce = null;
+
+    return true;
+  }
+
+  /** The current nonce, or null once it has aged past the TTL. */
+  private liveCallbackNonce(): string | null {
+    if (!this.callbackNonce) {
+      return null;
+    }
+
+    if (Date.now() - this.callbackNonce.mintedAt >= RegistrationService.CALLBACK_NONCE_TTL_MS) {
+      this.callbackNonce = null;
+
+      return null;
+    }
+
+    return this.callbackNonce.value;
   }
 
   /** Persists restore intent beyond `sessionStorage` before the device pairs again. */
