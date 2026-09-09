@@ -140,8 +140,8 @@ export class AppsController {
   @ApiResponse({ type: AppDataListingDto })
   async getAppDataListing(@Param('urn') urn: string, @Req() req: Request) {
     const appUrn = castAppUrn(urn);
-    // Its siblings `compose-diff` and `config-diff` both assert `view`; this one
-    // reads the app's actual files and asserted nothing.
+    // Every other `:urn` route on this controller asserts the operator's grant over
+    // the named app; this one listed any app's data tree on the AuthGuard alone.
     await this.whois.assertSessionAction(req, appUrn, 'view');
     const res = await this.appsReadService.getAppDataListing(appUrn);
     return AppDataListingDto.parse(res, { reportOnly: true });

@@ -17,7 +17,7 @@ fi
 ### --------------------------------
 UPDATE="false"
 VERSION="latest"
-ASSET="runcihub-cli-linux-x86_64.tar.gz" # Legacy tarball name; ships `cihub` binary (rename tracked with CI packaging)
+ASSET="cihub-linux-x64"
 ENV_FILE=""
 
 while [ -n "${1-}" ]; do
@@ -201,38 +201,37 @@ function check_dependency_and_install() {
 
 # If version was not given it will install the latest version
 if [[ "${VERSION}" == "latest" ]]; then
-  LATEST_VERSION=$(curl -sL https://api.github.com/repos/companionintelligence/CI-OS-Hub/releases/latest | grep tag_name | cut -d '"' -f4)
+  LATEST_VERSION=$(curl -sL https://api.github.com/repos/companionintelligence/CI-Hub/releases/latest | grep tag_name | cut -d '"' -f4)
   VERSION="${LATEST_VERSION}"
 fi
 
 if [[ "$ARCHITECTURE" == "arm64" || "$ARCHITECTURE" == "aarch64" ]]; then
-  ASSET="runcihub-cli-linux-aarch64.tar.gz"
+  ASSET="cihub-linux-arm64"
 fi
 
-URL="https://github.com/companionintelligence/CI-OS-Hub/releases/download/$VERSION/$ASSET"
+URL="https://github.com/companionintelligence/CI-Hub/releases/download/$VERSION/$ASSET"
 
 if [[ "${UPDATE}" == "false" ]]; then
-  mkdir -p runcihub # Legacy install dir name; contains `cihub` binary after extract
-  cd runcihub || exit
+  mkdir -p cihub-install
+  cd cihub-install || exit
 fi
 
-# If the asset has a .tar.gz extension, it will be extracted
-if [[ "$ASSET" == *".tar.gz" ]]; then
-  curl --location "$URL" -o ./runcihub-cli.tar.gz
-  tar -xzf ./runcihub-cli.tar.gz
+# The release asset is a standalone executable, not a tarball. It used to be
+# `runcihub-cli-linux-x86_64.tar.gz` from the retired CI-OS-Hub repo — an asset no workflow has ever
+# produced, so this download 404'd for as long as the script has existed.
+echo "Downloading ${ASSET} from ${URL}"
+curl --fail --location "$URL" -o ./cihub
+chmod +x ./cihub
 
-  asset_name=$(tar -tzf ./runcihub-cli.tar.gz | head -n 1 | cut -f1 -d"/")
-  mv "./${asset_name}" ./runcihub-cli
-  rm ./runcihub-cli.tar.gz
-else
-  curl --location "$URL" -o ./runcihub-cli
+# `cihub up` replaces `start`, which was removed and now prints a "command removed" box and exits 2.
+# `--env-file` was never a cihub flag either.
+#
+# The appliance seed needs a Postgres password and there is no terminal here to prompt for one, so it
+# has to arrive in the environment; `sudo -E` is what carries it across the privilege boundary.
+if [[ -z "${CIHUB_POSTGRES_PASSWORD:-}${POSTGRES_PASSWORD:-}" ]]; then
+  echo "Set CIHUB_POSTGRES_PASSWORD (at least 8 characters) before running this script." >&2
+  echo "  CIHUB_POSTGRES_PASSWORD=... ./install.sh" >&2
+  exit 1
 fi
 
-chmod +x ./runcihub-cli
-
-if [[ "${ENV_FILE}" != "" ]]; then
-  echo "Starting CI-Hub with env file ${ENV_FILE}"
-  sudo ./runcihub-cli start --env-file "${ENV_FILE}"
-else
-  sudo ./runcihub-cli start
-fi
+sudo -E ./cihub up --detached

@@ -11,7 +11,7 @@ import { and, eq } from 'drizzle-orm';
 import type { Request } from 'express';
 
 import { DEFAULT_MEMBER_ACTIONS, type HubAction, HUB_CAPABILITY, isHubAction, MAX_WHOIS_APP_IDS, WHOIS_CACHE_TTL_MS } from './hub-actions';
-import { hubSessionOperatorUserId } from './hub-session-operator';
+import { hubSessionOperatorUserId, isGrantExemptPrincipal } from './hub-session-operator';
 import { PortalClientService, type PortalWhoIsResponse } from './portal-client.service';
 
 export type GrantSurface = 'hub' | 'store';
@@ -55,9 +55,23 @@ export class MarketplaceWhoIsService {
    * anything on a partial refusal get all-or-nothing by construction.
    */
   async assertSessionActions(req: Request, appUrns: AppUrn[], action: HubAction, surface: GrantSurface = 'hub'): Promise<void> {
-    const userId = hubSessionOperatorUserId(req);
-    if (userId == null || appUrns.length === 0) {
+    if (appUrns.length === 0) {
       return;
+    }
+
+    const userId = hubSessionOperatorUserId(req);
+
+    if (userId == null) {
+      // No person is not automatically "allow": the exemption is a named principal,
+      // not the absence of a session. See `isGrantExemptPrincipal`.
+      if (isGrantExemptPrincipal(req)) {
+        return;
+      }
+
+      this.logUnrecognisedPrincipal(req, action);
+      // No `app` param: the message interpolates only `action`, and `extractAppUrn`
+      // throws a bare `Error` (a 500) on a urn `castAppUrn` let through, such as `x:`.
+      throw new TranslatableError('APP_ACTION_GRANT_DENIED', { action }, HttpStatus.FORBIDDEN);
     }
 
     const map = await this.canMap(userId, appUrns, surface);
@@ -80,9 +94,21 @@ export class MarketplaceWhoIsService {
    * grant could not be resolved is dropped rather than swept along.
    */
   async filterSessionByAction(req: Request, appUrns: AppUrn[], action: HubAction, surface: GrantSurface = 'hub'): Promise<AppUrn[]> {
-    const userId = hubSessionOperatorUserId(req);
-    if (userId == null || appUrns.length === 0) {
+    if (appUrns.length === 0) {
       return appUrns;
+    }
+
+    const userId = hubSessionOperatorUserId(req);
+
+    if (userId == null) {
+      // Exempt principals sweep everything, as before; an unrecognised one sweeps
+      // nothing. See `isGrantExemptPrincipal`.
+      if (isGrantExemptPrincipal(req)) {
+        return appUrns;
+      }
+
+      this.logUnrecognisedPrincipal(req, action);
+      return [];
     }
 
     const map = await this.canMap(userId, appUrns, surface);
@@ -90,8 +116,16 @@ export class MarketplaceWhoIsService {
   }
 
   async filterSessionByView<T>(req: Request, items: T[], urnOf: (item: T) => string | undefined, surface: GrantSurface): Promise<T[]> {
+    if (items.length === 0) {
+      return items;
+    }
+
     const userId = hubSessionOperatorUserId(req);
-    if (userId == null || items.length === 0) {
+
+    if (userId == null) {
+      // Fails open even for an unrecognised principal, unlike the action variants
+      // above: hiding a row from a read is how an operator loses sight of an app
+      // they own.
       return items;
     }
 
@@ -110,6 +144,34 @@ export class MarketplaceWhoIsService {
       }
       return can.includes('view');
     });
+  }
+
+  /**
+   * The person whose grants filter a sweep over apps the caller did not name, or
+   * `undefined` for an exempt principal, which sweeps everything.
+   *
+   * The `*-all` lifecycle routes cannot use `filterSessionByAction` — they choose
+   * their own set from the app table — so they resolve the operator here instead of
+   * reading `hubSessionOperatorUserId` directly, which would read an unrecognised
+   * principal as "no person to check, allow" all over again.
+   */
+  sweepOperatorUserId(req: Request, action: HubAction): number | undefined {
+    const userId = hubSessionOperatorUserId(req);
+
+    if (userId == null && !isGrantExemptPrincipal(req)) {
+      this.logUnrecognisedPrincipal(req, action);
+      throw new TranslatableError('APP_ACTION_GRANT_DENIED', { action }, HttpStatus.FORBIDDEN);
+    }
+
+    return userId;
+  }
+
+  /**
+   * A gated route reached with no recognised principal is a middleware bug, not a
+   * grant verdict. The caller only ever sees a 403, so say which it was in the log.
+   */
+  private logUnrecognisedPrincipal(req: Request, action: HubAction): void {
+    this.logger.warn(`whois_unrecognised_principal principal=${req.hubPrincipal ?? 'none'} action=${action}`);
   }
 
   async has(userId: number, appUrn: AppUrn, action: HubAction, surface: GrantSurface = 'hub'): Promise<boolean> {

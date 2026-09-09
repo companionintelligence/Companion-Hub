@@ -234,6 +234,42 @@ describe('HubPoolSection', () => {
 
       expect(await screen.findByTestId('hub-pool-peer-not-accepting')).toBeTruthy();
     });
+
+    it('marks a peer still on the legacy bearer token, since that is what blocks poolRequireSignedPeers', async () => {
+      fixtures.status = baseStatus({
+        peers: [connectedPeer({ authMode: 'bearer' })],
+        peerCounts: { total: 1, connected: 1, pending: 0, unreachable: 0, disabled: 0 },
+      });
+
+      renderSection();
+
+      expect(await screen.findByTestId('hub-pool-peer-bearer')).toBeTruthy();
+    });
+
+    it('does not mark a peer that has upgraded to a pinned key', async () => {
+      fixtures.status = baseStatus({
+        peers: [connectedPeer({ authMode: 'signed' })],
+        peerCounts: { total: 1, connected: 1, pending: 0, unreachable: 0, disabled: 0 },
+      });
+
+      renderSection();
+
+      expect(await screen.findByTestId('hub-pool-peer')).toBeTruthy();
+      expect(screen.queryByTestId('hub-pool-peer-bearer')).toBeNull();
+    });
+
+    it('reads a peer on a build predating pinned identities as not yet upgraded, never as signed', async () => {
+      // `authMode` is absent on such a peer. Treating absence as signed would hide the one peer that
+      // would actually be cut off by turning the switch on.
+      fixtures.status = baseStatus({
+        peers: [connectedPeer({ authMode: undefined })],
+        peerCounts: { total: 1, connected: 1, pending: 0, unreachable: 0, disabled: 0 },
+      });
+
+      renderSection();
+
+      expect(await screen.findByTestId('hub-pool-peer-bearer')).toBeTruthy();
+    });
   });
 
   it('explains that pooling is on but idle when nothing is paired', async () => {

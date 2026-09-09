@@ -49,6 +49,7 @@ vi.mock('@/lib/mobile-connection', () => ({
 
 vi.mock('@/lib/portal-session-hint', () => ({
   resolvePortalSessionHint: () => mockResolveHint(),
+  forgetPortalAccountEmail: vi.fn(),
 }));
 
 vi.mock('@/api-client', () => ({

@@ -1,0 +1,188 @@
+/**
+ * `cihub fleet` — argument parsing, roster handling, and SSH failure classification.
+ *
+ * The cases below are not hypothetical. Each one encodes a way a real fleet has already misled its
+ * operators:
+ *
+ *   · Two nodes served models for an unknown period while granting no SSH, and every tool called
+ *     them healthy because it only ever probed the inference port.
+ *   · A roster row's name and IP disagreed — its `core-5` entry was a machine the tailnet calls
+ *     `core-4-kvm` — so per-node numbers were attributed to the wrong box.
+ *   · Four permanently-unfixable nodes were re-attempted on every run at a 30-second timeout each,
+ *     landing in the report indistinguishable from a machine that broke that morning.
+ */
+
+import { describe, expect, it } from 'vitest';
+import { FleetArgError, parseFleetArgs } from '../lib/cli-fleet.js';
+import { mergeFleetRoster, parseFleetRoster, partitionForRun, type FleetNode } from '../lib/fleet-roster.js';
+import { classifySshFailure, sshDestination, type SshResult } from '../lib/fleet-ssh.js';
+
+const sshResult = (over: Partial<SshResult> = {}): SshResult => ({ ok: false, out: '', err: '', code: 255, ms: 10, ...over });
+
+describe('parseFleetArgs', () => {
+  it('defaults to a read-only tailnet scan that writes nothing', () => {
+    const args = parseFleetArgs([]);
+    expect(args.subcommand).toBe('scan');
+    expect(args.tailnet).toBe(true);
+    // A LAN sweep touches every address on the operator's subnet — a different act from listing a
+    // tailnet they already belong to, so it must be asked for.
+    expect(args.lan).toBe(false);
+    expect(args.writeRoster).toBe(false);
+    expect(args.execute).toBe(false);
+  });
+
+  it('rejects an unknown subcommand by naming the valid ones', () => {
+    expect(() => parseFleetArgs(['instal'])).toThrow(FleetArgError);
+    expect(() => parseFleetArgs(['instal'])).toThrow(/scan, list, status/);
+  });
+
+  it('accepts both --flag value and --flag=value', () => {
+    expect(parseFleetArgs(['scan', '--user', 'root']).user).toBe('root');
+    expect(parseFleetArgs(['scan', '--user=root']).user).toBe('root');
+    expect(parseFleetArgs(['status', '--nodes=a,b']).nodes).toEqual(['a', 'b']);
+  });
+
+  it('refuses a flag that swallows the next flag as its value', () => {
+    // `--user --json` must not silently set user to "--json" and drop the json flag.
+    expect(() => parseFleetArgs(['scan', '--user', '--json'])).toThrow(/--user needs a value/);
+  });
+
+  it('bounds timeout and concurrency rather than accepting nonsense', () => {
+    expect(() => parseFleetArgs(['scan', '--timeout=10'])).toThrow(/between 250 and 120000/);
+    expect(() => parseFleetArgs(['scan', '--concurrency=0'])).toThrow(/between 1 and 32/);
+    expect(() => parseFleetArgs(['scan', '--concurrency=2.5'])).toThrow(/integer/);
+  });
+
+  it('rejects an unknown flag instead of ignoring it', () => {
+    // Silently ignoring would let `--dry-run` (which this group does not have) read as accepted.
+    expect(() => parseFleetArgs(['scan', '--dry-run'])).toThrow(/Unknown flag/);
+  });
+});
+
+describe('classifySshFailure', () => {
+  it('separates the two tailnet refusals, which mean opposite things', () => {
+    // "as user X" is fixable from this side with --user; the node is administrable.
+    expect(classifySshFailure(sshResult({ err: 'tailscale: tailnet policy does not permit you to SSH as user "liam"' }))).toBe('acl-wrong-user');
+    // "to this node" is an account-level grant. No flag helps, and this is the state that hid two
+    // unadministrable machines behind a healthy-looking inference port.
+    expect(classifySshFailure(sshResult({ err: 'tailscale: tailnet policy does not permit you to SSH to this node' }))).toBe('acl-denied');
+  });
+
+  it('does not confuse an unreachable host with a denied one', () => {
+    expect(classifySshFailure(sshResult({ err: 'ssh: connect to host 100.0.0.1 port 22: No route to host' }))).toBe('unreachable');
+    expect(classifySshFailure(sshResult({ err: 'Connection timed out' }))).toBe('unreachable');
+  });
+
+  it('reports our own timeout kill as a timeout, not a failure of the node', () => {
+    // code null is the signature of the SIGTERM we sent. A node under heavy load lands here, and
+    // calling that "unreachable" would send an operator looking for a dead machine.
+    expect(classifySshFailure(sshResult({ code: null, err: 'Timed out after 20000ms' }))).toBe('timeout');
+  });
+
+  it('reports a connected-but-failed command distinctly from a connection problem', () => {
+    expect(classifySshFailure(sshResult({ code: 1, err: 'docker: command not found' }))).toBe('command-failed');
+  });
+
+  it('treats success as success regardless of stderr noise', () => {
+    // Warnings on stderr are common and must not be read as failure.
+    expect(classifySshFailure(sshResult({ ok: true, code: 0, err: 'Warning: Permanently added a host key.' }))).toBe('ok');
+  });
+});
+
+describe('sshDestination', () => {
+  it('omits the user when none is given, deferring to ssh config', () => {
+    expect(sshDestination({ host: '100.0.0.1' })).toBe('100.0.0.1');
+    expect(sshDestination({ host: '100.0.0.1', user: 'root' })).toBe('root@100.0.0.1');
+  });
+});
+
+describe('parseFleetRoster', () => {
+  it('accepts a bare array or a { nodes } object', () => {
+    expect(parseFleetRoster([{ name: 'a', ip: '10.0.0.1' }]).nodes).toHaveLength(1);
+    expect(parseFleetRoster({ nodes: [{ name: 'a', ip: '10.0.0.1' }] }).nodes).toHaveLength(1);
+  });
+
+  it('drops undialable rows but keeps the rest, and says which it dropped', () => {
+    // One bad row in a twenty-node file should cost that row, not the fleet — and never silently,
+    // or the operator runs against nineteen nodes believing it is twenty.
+    const parsed = parseFleetRoster([{ name: 'good', ip: '10.0.0.1' }, { name: 'no-ip' }, { name: 'bad-ip', ip: '999.1.1.1' }]);
+    expect(parsed.nodes.map((n) => n.name)).toEqual(['good']);
+    expect(parsed.dropped).toHaveLength(2);
+    expect(parsed.dropped.join(' ')).toMatch(/no-ip/);
+    expect(parsed.dropped.join(' ')).toMatch(/not a dialable address/);
+  });
+
+  it('rejects a duplicate address rather than picking one arbitrarily', () => {
+    // The IP is the identity. Two rows for one machine is a real ambiguity, not a harmless repeat.
+    const parsed = parseFleetRoster([
+      { name: 'core-5', ip: '100.105.166.78' },
+      { name: 'core-4-kvm', ip: '100.105.166.78' },
+    ]);
+    expect(parsed.nodes).toHaveLength(1);
+    expect(parsed.dropped.join(' ')).toMatch(/duplicate/);
+  });
+
+  it('ignores a skip value it does not recognise instead of trusting it', () => {
+    const parsed = parseFleetRoster([{ name: 'a', ip: '10.0.0.1', skip: 'maybe-later' }]);
+    expect(parsed.nodes[0]?.skip).toBeUndefined();
+  });
+});
+
+describe('mergeFleetRoster', () => {
+  const existing: FleetNode[] = [{ name: 'my-name-for-it', ip: '10.0.0.1', skip: 'llm-only', note: 'ACL gap, see #242' }];
+
+  it('never overwrites operator intent with a discovery result', () => {
+    // A scan that cleared `skip` would quietly re-enable a node somebody deliberately excluded.
+    const merged = mergeFleetRoster(existing, [{ name: 'tailnet-name', ip: '10.0.0.1' }]);
+    expect(merged.nodes[0]?.skip).toBe('llm-only');
+    expect(merged.nodes[0]?.note).toBe('ACL gap, see #242');
+    expect(merged.nodes[0]?.name).toBe('my-name-for-it');
+    expect(merged.added).toHaveLength(0);
+  });
+
+  it('does fill in facts about the network', () => {
+    const merged = mergeFleetRoster(existing, [{ name: 'x', ip: '10.0.0.1', tailnetName: 'box.tail.ts.net' }]);
+    expect(merged.nodes[0]?.tailnetName).toBe('box.tail.ts.net');
+  });
+
+  it('adds genuinely new nodes and reports them', () => {
+    const merged = mergeFleetRoster(existing, [{ name: 'new', ip: '10.0.0.2' }]);
+    expect(merged.nodes).toHaveLength(2);
+    expect(merged.added.map((n) => n.ip)).toEqual(['10.0.0.2']);
+  });
+});
+
+describe('partitionForRun', () => {
+  const nodes: FleetNode[] = [
+    { name: 'ok', ip: '10.0.0.1' },
+    { name: 'here', ip: '127.0.0.1', local: true },
+    { name: 'no-ssh', ip: '10.0.0.3', skip: 'llm-only' },
+    { name: 'dark', ip: '10.0.0.4', skip: 'unreachable' },
+  ];
+
+  it('skips with a reason instead of failing the same nodes every run', () => {
+    const { run, skipped } = partitionForRun(nodes);
+    expect(run.map((n) => n.name)).toEqual(['ok']);
+    expect(skipped.map((s) => s.node.name).sort()).toEqual(['dark', 'here', 'no-ssh']);
+    // The reason has to be legible — "skipped: 3" is what made a permanent condition look like
+    // today's outage.
+    expect(skipped.find((s) => s.node.name === 'no-ssh')?.why).toMatch(/grants no SSH/);
+    expect(skipped.find((s) => s.node.name === 'dark')?.why).toMatch(/known down/);
+  });
+
+  it('never dials the local node over SSH', () => {
+    const { run } = partitionForRun(nodes);
+    expect(run.some((n) => n.local)).toBe(false);
+  });
+
+  it('matches --nodes on either the name or the address', () => {
+    // An operator types whichever identifier they remember.
+    expect(partitionForRun(nodes, ['ok']).run.map((n) => n.ip)).toEqual(['10.0.0.1']);
+    expect(partitionForRun(nodes, ['10.0.0.1']).run.map((n) => n.name)).toEqual(['ok']);
+  });
+
+  it('still honours a skip marker for an explicitly named node', () => {
+    // Naming a node is not an override of a recorded reason it cannot work.
+    expect(partitionForRun(nodes, ['no-ssh']).run).toHaveLength(0);
+  });
+});

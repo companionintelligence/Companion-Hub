@@ -64,6 +64,9 @@ const {
   readTailscaleServeTarget,
   readUpstreamProbe,
   resolveBackendUrlSpecs,
+  resolveDataDir,
+  resolveNodeConfig,
+  resolveNodeConfigForRun,
   runPoolDoctorSection,
   scrubGitError,
   summarisePoolChecks,
@@ -112,15 +115,28 @@ describe('A1 env foundation', () => {
     ...overrides,
   });
 
+  /** A `ResolvedNodeConfig`, as `resolveNodeConfig` hands one to A1. */
+  const config = (overrides: Record<string, unknown> = {}) =>
+    ({
+      envFile: '.env.prod',
+      exists: true,
+      source: 'checkout',
+      origin: "this CI-Hub checkout's .env.prod",
+      notes: [],
+      container: null,
+      defaultRootFolderHost: '/default/root',
+      ...overrides,
+    }) as never;
+
   it('fails with appendable lines when the env file is absent entirely', () => {
-    const check = checkEnvFoundation(foundation({ exists: false, apiPort: null, rootFolderHost: null }) as never, '/default/root');
+    const check = checkEnvFoundation(foundation({ exists: false, apiPort: null, rootFolderHost: null }) as never, config());
     expect(check.verdict).toBe('fail');
     expect(check.detail).toContain('does not exist');
-    expect(check.commands).toEqual(["printf 'API_PORT=%s\\n' 5002 >> .env.prod", "printf 'ROOT_FOLDER_HOST=%s\\n' '/default/root' >> .env.prod"]);
+    expect(check.commands).toEqual(["printf 'API_PORT=%s\\n' 5002 >> '.env.prod'", "printf 'ROOT_FOLDER_HOST=%s\\n' '/default/root' >> '.env.prod'"]);
   });
 
   it('fails on the stub env four fleet nodes shipped with, naming both missing keys', () => {
-    const check = checkEnvFoundation(foundation({ apiPort: null, rootFolderHost: null }) as never, '/default/root');
+    const check = checkEnvFoundation(foundation({ apiPort: null, rootFolderHost: null }) as never, config());
     expect(check.verdict).toBe('fail');
     expect(check.detail).toContain('API_PORT');
     expect(check.detail).toContain('ROOT_FOLDER_HOST');
@@ -128,17 +144,247 @@ describe('A1 env foundation', () => {
   });
 
   it('reports only the key that is actually missing', () => {
-    const check = checkEnvFoundation(foundation({ rootFolderHost: null }) as never, '/default/root');
+    const check = checkEnvFoundation(foundation({ rootFolderHost: null }) as never, config());
     expect(check.detail).toContain('ROOT_FOLDER_HOST');
     expect(check.detail).not.toContain('API_PORT,');
-    expect(check.commands).toEqual(["printf 'ROOT_FOLDER_HOST=%s\\n' '/default/root' >> .env.prod"]);
+    expect(check.commands).toEqual(["printf 'ROOT_FOLDER_HOST=%s\\n' '/default/root' >> '.env.prod'"]);
   });
 
   it('passes and echoes both values back when the env file is complete', () => {
-    const check = checkEnvFoundation(foundation() as never, '/default/root');
+    const check = checkEnvFoundation(foundation() as never, config());
     expect(check.verdict).toBe('ok');
     expect(check.detail).toContain('API_PORT=5002');
     expect(check.detail).toContain('/data/hub');
+  });
+
+  /**
+   * beta-max: a hybrid node whose Hub is healthy and serving pool protocol 2, whose appliance env
+   * file has ROOT_FOLDER_HOST but no API_PORT — compose sets `API_PORT: 5002` in the service
+   * `environment:` block — and which this check called unconfigured. A variable the running
+   * container carries is a variable this node has.
+   */
+  it('passes on a value the env file lacks but the running container carries', () => {
+    const check = checkEnvFoundation(
+      foundation({ envFileName: '/data/companion-hub/.env', apiPort: null }) as never,
+      config({ envFile: '/data/companion-hub/.env', source: 'container', container: { apiPort: 5002, rootFolderHost: '/data/companion-hub' } }),
+    );
+    expect(check.verdict).toBe('ok');
+    expect(check.detail).toContain('API_PORT=5002');
+    expect(text(check.notes ?? [])).toContain('API_PORT is not in that file');
+  });
+
+  it('names the file it read and where that came from, on the line itself', () => {
+    const check = checkEnvFoundation(
+      foundation({ envFileName: '/data/companion-hub/.env' }) as never,
+      config({
+        envFile: '/data/companion-hub/.env',
+        source: 'container',
+        origin: 'the running container ci-os-hub, which was created from /data/companion-hub/docker-compose.prod.yml — this file sits beside it',
+      }),
+    );
+    expect(check.detail).toContain('/data/companion-hub/.env');
+    expect(text(check.notes ?? [])).toContain('Read from the running container ci-os-hub');
+    expect(text(check.notes ?? [])).toContain('/data/companion-hub/docker-compose.prod.yml');
+  });
+
+  it('appends its remediation to the resolved file, never to a repo path the Hub does not read', () => {
+    const check = checkEnvFoundation(
+      foundation({ envFileName: '/data/companion-hub/.env', apiPort: null, rootFolderHost: null }) as never,
+      config({ envFile: '/data/companion-hub/.env', source: 'appliance', defaultRootFolderHost: '/data/companion-hub' }),
+    );
+    expect(check.verdict).toBe('fail');
+    expect(check.commands).toEqual([
+      "printf 'API_PORT=%s\\n' 5002 >> '/data/companion-hub/.env'",
+      "printf 'ROOT_FOLDER_HOST=%s\\n' '/data/companion-hub' >> '/data/companion-hub/.env'",
+    ]);
+    expect(check.commands?.join(' ')).not.toContain('.env.prod');
+  });
+
+  /**
+   * The Hub runs on configuration no file still carries: not "unconfigured" (it is serving) and not
+   * "fine" (the next `cihub up` has no ROOT_FOLDER_HOST to interpolate and stops).
+   */
+  it('warns rather than failing when the file is gone but the container still has both values', () => {
+    const check = checkEnvFoundation(
+      foundation({ envFileName: '/data/companion-hub/.env', exists: false, apiPort: null, rootFolderHost: null }) as never,
+      config({ source: 'container', container: { apiPort: 5002, rootFolderHost: '/data/companion-hub' } }),
+    );
+    expect(check.verdict).toBe('warn');
+    expect(check.detail).toContain('does not exist, but the running container has');
+    expect(check.detail).toContain('API_PORT=5002');
+    // The values it restores are the ones the Hub is running on, not the module's defaults.
+    expect(check.commands).toContain("printf 'ROOT_FOLDER_HOST=%s\\n' '/data/companion-hub' >> '/data/companion-hub/.env'");
+  });
+});
+
+// ─── the resolver every check reads its configuration through ────────────────
+
+describe('resolveNodeConfig', () => {
+  const probes = (overrides: Record<string, unknown> = {}) =>
+    ({
+      env: 'prod',
+      container: null,
+      hubContext: null,
+      applianceInstall: null,
+      checkoutEnvFile: '.env.prod',
+      envRootFolderHost: null,
+      exists: () => false,
+      cwd: '/home/ci/devel/CI-Hub',
+      ...overrides,
+    }) as never;
+
+  const containerProbe = (composeFiles: string[], config: Record<string, unknown> = { apiPort: 5002, rootFolderHost: '/data/companion-hub' }) => ({
+    name: 'ci-os-hub',
+    composeFiles,
+    config,
+  });
+
+  /**
+   * beta-max, the whole reason this resolver exists: a repo checkout AND an appliance install on one
+   * box. `resolveHubContext` sees the checkout and resolves `.env.prod` in the repo — a file that
+   * has never existed there — while the running Hub reads the appliance's `.env`.
+   */
+  it('reads the env file beside the compose the running container was created from', () => {
+    const resolved = resolveNodeConfig(
+      probes({
+        container: containerProbe(['/data/companion-hub/docker-compose.prod.yml']),
+        hubContext: { appliance: false, envFile: '.env.prod' },
+        exists: (target: string) => target === '/data/companion-hub/.env',
+      }),
+    );
+    expect(resolved.envFile).toBe('/data/companion-hub/.env');
+    expect(resolved.source).toBe('container');
+    expect(resolved.exists).toBe(true);
+    expect(resolved.origin).toContain('ci-os-hub');
+    expect(resolved.origin).toContain('/data/companion-hub/docker-compose.prod.yml');
+  });
+
+  /**
+   * core-2 and core-10: source installs started with `--env-file .env.prod`. A bare `.env` beside
+   * the same compose must not win, or the fix for the hybrid trades one false report for another.
+   */
+  it('prefers the env-specific name over a bare .env beside the same compose', () => {
+    const resolved = resolveNodeConfig(
+      probes({
+        container: containerProbe(['/home/ci/devel/CI-Hub/docker-compose.prod.yml']),
+        exists: () => true,
+      }),
+    );
+    expect(resolved.envFile).toBe('/home/ci/devel/CI-Hub/.env.prod');
+  });
+
+  it('does not claim a file beside the compose that is not there, and says so', () => {
+    const resolved = resolveNodeConfig(
+      probes({
+        container: containerProbe(['/data/companion-hub/docker-compose.prod.yml']),
+        hubContext: { appliance: false, envFile: '.env.prod' },
+        exists: (target: string) => target === '/home/ci/devel/CI-Hub/.env.prod',
+      }),
+    );
+    expect(resolved.envFile).toBe('/home/ci/devel/CI-Hub/.env.prod');
+    expect(resolved.source).toBe('checkout');
+    expect(text(resolved.notes)).toContain('holds none of: .env.prod, .env');
+  });
+
+  it('falls back to the appliance context when no container answers, and says why', () => {
+    const resolved = resolveNodeConfig(
+      probes({
+        hubContext: { appliance: true, envFile: '/data/companion-hub/.env.dev', dataDir: '/data/companion-hub' },
+        exists: () => true,
+      }),
+    );
+    expect(resolved.envFile).toBe('/data/companion-hub/.env.dev');
+    expect(resolved.source).toBe('appliance');
+    expect(text(resolved.notes)).toContain('No running Hub container answered');
+  });
+
+  it('falls back to the checkout last, as an absolute path', () => {
+    const resolved = resolveNodeConfig(probes({ hubContext: { appliance: false, envFile: '.env.prod' }, exists: () => true }));
+    expect(resolved.envFile).toBe('/home/ci/devel/CI-Hub/.env.prod');
+    expect(resolved.source).toBe('checkout');
+  });
+
+  /**
+   * `resolveProdApplianceContext` answers for the desktop, which seeds `.env.dev` as primary and
+   * `.env` as an identical compat copy — the reverse of the doctor's `.env.<env>` then `.env`. An
+   * install holding both must hand back the one the rest of the run reads, or A1 names a file
+   * nothing else opens. This is the only case that exercises the wiring rather than the pure
+   * resolver, so it goes through `resolveNodeConfigForRun`.
+   */
+  it('picks the appliance env file by the doctor order, not the desktop seeding order', () => {
+    const cwd = process.cwd();
+    const dataDir = '/data/companion-hub';
+    const present = new Set([
+      `${cwd}/package.json`,
+      `${cwd}/scripts`,
+      `${dataDir}/docker-compose.prod.yml`,
+      `${dataDir}/.env.dev`,
+      `${dataDir}/.env`,
+    ]);
+    existsSync.mockImplementation((target: string) => present.has(String(target)));
+    readFileSync.mockImplementation((target: string) => (String(target).endsWith('package.json') ? '{"name":"ci-hub"}' : ''));
+    vi.stubEnv('CI_HUB_DATA_DIR', dataDir);
+
+    // A real checkout with no `.env.prod` of its own, so the run reaches the appliance rescue.
+    const resolved = resolveNodeConfigForRun('prod', '.env.prod', null);
+
+    expect(resolved.source).toBe('appliance');
+    expect(resolved.envFile).toBe(`${dataDir}/.env`);
+    vi.unstubAllEnvs();
+  });
+
+  /** The hybrid with its Hub stopped: the checkout never had an env file, the install does. */
+  it('uses the appliance install when the checkout has no env file of its own', () => {
+    const resolved = resolveNodeConfig(
+      probes({
+        hubContext: { appliance: false, envFile: '.env.prod' },
+        applianceInstall: { exists: true, envFilePath: '/data/companion-hub/.env', dataDir: '/data/companion-hub' },
+        exists: (target: string) => target !== '/home/ci/devel/CI-Hub/.env.prod',
+      }),
+    );
+    expect(resolved.envFile).toBe('/data/companion-hub/.env');
+    expect(resolved.source).toBe('appliance');
+    expect(resolved.origin).toContain('because this checkout has no .env.prod');
+  });
+
+  it('keeps the checkout when its env file exists, even beside an appliance install', () => {
+    const resolved = resolveNodeConfig(
+      probes({
+        hubContext: { appliance: false, envFile: '.env.prod' },
+        applianceInstall: { exists: true, envFilePath: '/data/companion-hub/.env', dataDir: '/data/companion-hub' },
+        exists: () => true,
+      }),
+    );
+    expect(resolved.envFile).toBe('/home/ci/devel/CI-Hub/.env.prod');
+    expect(resolved.source).toBe('checkout');
+  });
+
+  it('takes the data-dir default from the running container before any path-shaped guess', () => {
+    const fromContainer = resolveNodeConfig(
+      probes({
+        container: containerProbe(['/data/companion-hub/docker-compose.prod.yml'], { apiPort: 5002, rootFolderHost: '/srv/hub-state' }),
+        exists: (target: string) => target === '/data/companion-hub/.env',
+      }),
+    );
+    expect(fromContainer.defaultRootFolderHost).toBe('/srv/hub-state');
+
+    const fromCompose = resolveNodeConfig(
+      probes({
+        container: containerProbe(['/data/companion-hub/docker-compose.prod.yml'], { apiPort: null, rootFolderHost: null }),
+        exists: (target: string) => target === '/data/companion-hub/.env',
+      }),
+    );
+    expect(fromCompose.defaultRootFolderHost).toBe('/data/companion-hub');
+
+    // The checkout's historical fallback, which `resolveRootFolderHost` also lands on.
+    expect(resolveNodeConfig(probes()).defaultRootFolderHost).toBe('/home/ci/devel/CI-Hub/.internal');
+  });
+
+  it('degrades to the checkout when nothing at all answers, without throwing', () => {
+    const resolved = resolveNodeConfig(probes({ container: { name: 'ci-hub', composeFiles: [], config: { apiPort: null, rootFolderHost: null } } }));
+    expect(resolved.source).toBe('checkout');
+    expect(resolved.exists).toBe(false);
+    expect(text(resolved.notes)).toContain('carries no compose label');
   });
 });
 
@@ -202,6 +448,35 @@ describe('A4 data dir ownership', () => {
     ...overrides,
   });
   const unreadable = (name: string) => entry({ name, present: false, unreadable: true, uid: null, gid: null, mode: null });
+
+  /**
+   * A4 has to inspect the tree the Hub actually uses. On the hybrid node it reported a clean pass
+   * over `<checkout>/.internal` — ten directories that had nothing to do with the running Hub —
+   * because it derived ROOT_FOLDER_HOST from the checkout instead of from the resolved config.
+   */
+  describe('data dir source', () => {
+    const foundation = (rootFolderHost: string | null) => ({ envFileName: '/data/companion-hub/.env', rootFolderHost }) as never;
+    const config = (container: Record<string, unknown> | null, defaultRootFolderHost = '/fallback/root') =>
+      ({ container, defaultRootFolderHost }) as never;
+
+    it('prefers ROOT_FOLDER_HOST from the resolved env file', () => {
+      const resolved = resolveDataDir(foundation('/data/companion-hub'), config({ apiPort: 5002, rootFolderHost: '/somewhere/else' }));
+      expect(resolved.root).toBe('/data/companion-hub');
+      expect(resolved.origin).toContain('/data/companion-hub/.env');
+    });
+
+    it('falls back to the running container before any guessed path', () => {
+      const resolved = resolveDataDir(foundation(null), config({ apiPort: 5002, rootFolderHost: '/data/companion-hub' }));
+      expect(resolved.root).toBe('/data/companion-hub');
+      expect(resolved.origin).toContain('running Hub container');
+    });
+
+    it('says the path is a default when neither the file nor a container declares one', () => {
+      const resolved = resolveDataDir(foundation(null), config(null));
+      expect(resolved.root).toBe('/fallback/root');
+      expect(resolved.origin).toContain('default');
+    });
+  });
 
   it('decides writability from owner, group and other bits', () => {
     expect(pathWritableBy(entry() as never, 1000, 1000)).toBe(true);
@@ -323,6 +598,21 @@ describe('B1 repo vs image', () => {
     // CI_HUB_VERSION is the only VALUE carried out of a block that also holds every secret the Hub has.
     expect(image.version).toBe('0.2.62');
     expect(JSON.stringify(image)).not.toContain('hunter2-not-a-real-password');
+  });
+
+  /**
+   * A1 and A4 read these two off the container, so the parse has to carry them — and carry nothing
+   * else. The env block beside them is where every password, token and key the Hub has lives.
+   */
+  it('carries API_PORT and ROOT_FOLDER_HOST out of the container env, and still no secret', () => {
+    const image = parseHubContainerInspect('ci-os-hub', inspectOutput({ extra: ['env=API_PORT=5002', 'env=ROOT_FOLDER_HOST=/data/companion-hub'] }));
+    expect(image.config).toEqual({ apiPort: 5002, rootFolderHost: '/data/companion-hub' });
+    expect(JSON.stringify(image)).not.toContain('hunter2-not-a-real-password');
+  });
+
+  it('reports an absent or unusable API_PORT as unknown rather than as a port', () => {
+    expect(parseHubContainerInspect('ci-hub', inspectOutput()).config).toEqual({ apiPort: null, rootFolderHost: null });
+    expect(parseHubContainerInspect('ci-hub', inspectOutput({ extra: ['env=API_PORT=not-a-port'] })).config.apiPort).toBeNull();
   });
 
   it('never turns a missing label into a commit sha', () => {
@@ -1180,6 +1470,20 @@ describe('D2 backend DNS', () => {
     expect(checkBackendDns(resolveBackendUrlSpecs({ VLLM_URL: 'nope' }), [], 'container', 'container').verdict).toBe('fail');
   });
 
+  it('names the variable but never the value when a backend URL is malformed', () => {
+    // D2 reads the env file the Hub was actually started from, so a malformed value here is the
+    // operator's real configuration rather than a repo placeholder — and a URL that fails to parse
+    // very often fails because of the `user:password@` in it. The variable name is enough to fix it.
+    const secret = 'http://admin:hunter2@';
+    const check = checkBackendDns(resolveBackendUrlSpecs({ VLLM_URL: secret }), [], 'container', 'container');
+    const rendered = [check.detail, ...(check.notes ?? []), ...(check.commands ?? [])].join('\n');
+
+    expect(check.verdict).toBe('fail');
+    expect(rendered).toContain('VLLM_URL');
+    expect(rendered).not.toContain('hunter2');
+    expect(rendered).not.toContain('admin');
+  });
+
   it('probes the container with dns.lookup — never curl, never getent', () => {
     resolveHubContainerName.mockReturnValue('ci-hub');
     spawnSync.mockReturnValue({ status: 0, stdout: JSON.stringify([{ host: 'mtplx', ms: 5010, code: 'EAI_AGAIN' }]) });
@@ -1953,6 +2257,162 @@ describe('runPoolDoctorSection', () => {
     vi.unstubAllGlobals();
   });
 
+  /**
+   * beta-max end to end: a repo checkout with no `.env.prod`, an appliance install holding the real
+   * `.env`, and a Hub container created from the appliance compose. Before this, A1 reported "no
+   * configuration to be a pool member with" and A4 passed over `<checkout>/.internal` while the Hub
+   * was healthy and serving pool protocol 2.
+   */
+  /**
+   * Mounts the beta-max shape: a real checkout (package.json says ci-hub) whose own `.env.prod` does
+   * not exist, an appliance install holding the real `.env`, and a Hub container created from the
+   * appliance compose. `envVars` is what that `.env` carries and `containerRoot`/`containerPort` what
+   * the container reports, so a test can put them in whatever relationship it needs to discriminate.
+   * The port deliberately defaults to something other than DEFAULT_API_PORT: at 5002 a run that had
+   * lost the container's value entirely would still probe the right port by luck.
+   */
+  const applianceEnv = '/data/companion-hub/.env';
+  const mountHybridNode = ({
+    envVars,
+    containerRoot,
+    containerPort = 5099,
+    composeFile = '/data/companion-hub/docker-compose.prod.yml',
+  }: {
+    envVars: Record<string, string>;
+    containerRoot: string;
+    containerPort?: number;
+    composeFile?: string;
+  }) => {
+    const cwd = process.cwd();
+    const present = new Set([`${cwd}/package.json`, `${cwd}/scripts`, '/data/companion-hub', composeFile, applianceEnv]);
+    existsSync.mockImplementation((target: string) => present.has(String(target)));
+    readFileSync.mockImplementation((target: string) => (String(target).endsWith('package.json') ? '{"name":"ci-hub"}' : ''));
+    parseEnvFile.mockImplementation((file: string) => (String(file) === applianceEnv ? envVars : {}));
+    statSync.mockReturnValue({ uid: 1000, gid: 1000, mode: 0o40755 });
+    resolveHubContainerName.mockReturnValue('ci-os-hub');
+    spawnSync.mockImplementation((command: string, args: string[]) => {
+      if (command === 'docker' && args[0] === 'inspect' && String(args[3]).includes('composeFiles=')) {
+        return {
+          status: 0,
+          stdout: [
+            'revision=<no value>',
+            'imageCreated=<no value>',
+            'service=ci-os-hub',
+            `composeFiles=${composeFile}`,
+            `env=API_PORT=${containerPort}`,
+            `env=ROOT_FOLDER_HOST=${containerRoot}`,
+            '',
+          ].join('\n'),
+        };
+      }
+      return { status: 1, stdout: '', stderr: '' };
+    });
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('fetch failed')));
+  };
+
+  it('reads the file the running container was started from, not the checkout it happens to sit in', async () => {
+    // The appliance `.env` carries neither value: API_PORT and ROOT_FOLDER_HOST both have to come
+    // from the container. And the root it reports is deliberately NOT the directory the compose file
+    // sits in, so the env file, the container and the compose-dir default hold three different
+    // values and a check that reaches for the wrong one cannot accidentally pass.
+    mountHybridNode({ envVars: {}, containerRoot: '/srv/hub-state' });
+
+    const section = await runPoolDoctorSection('.env.prod', { env: 'prod' });
+    const rendered = text(section.lines);
+    const lineFor = (id: string) => rendered.split('\n').find((line) => line.trim().startsWith(id)) ?? '';
+
+    // A1 passes, names the file, and the API_PORT the env file does not carry comes from the container.
+    expect(lineFor('A1')).toContain('✓');
+    expect(lineFor('A1')).toContain('/data/companion-hub/.env —');
+    expect(lineFor('A1')).toContain('API_PORT=5099');
+    expect(lineFor('A1')).toContain('ROOT_FOLDER_HOST=/srv/hub-state');
+    // ...and the port is not just printed: it is the one the run probes and builds its base URL from.
+    expect(probeHostPort).toHaveBeenCalledWith(5099);
+    const probed = (globalThis.fetch as unknown as { mock: { calls: [string][] } }).mock.calls.map(([url]) => String(url));
+    expect(probed.length).toBeGreaterThan(0);
+    expect(probed.every((url) => !url.includes('127.0.0.1:5002'))).toBe(true);
+    expect(probed.some((url) => url.includes('127.0.0.1:5099'))).toBe(true);
+    expect(rendered).toContain('Read from the running container ci-os-hub');
+    expect(rendered).toContain('/data/companion-hub/docker-compose.prod.yml');
+    // A4 inspected the tree the Hub actually uses: not `<checkout>/.internal` (what it reported
+    // before the fix, because the env file has no ROOT_FOLDER_HOST to read), and not the directory
+    // the compose file happens to live in — the container's value is the only one that is right.
+    expect(lineFor('A4')).toContain('/srv/hub-state');
+    expect(lineFor('A4')).not.toContain('/data/companion-hub');
+    expect(rendered).not.toContain('.internal');
+    // ...and every other consumer of the env file got the same one. The negative covers section D,
+    // which reads the file itself: nothing in the run may still be reaching for the checkout's name.
+    expect(readHubApiKey).toHaveBeenCalledWith(applianceEnv);
+    expect(runBridgeDoctorSection).toHaveBeenCalledWith(applianceEnv);
+    expect(parseEnvFile.mock.calls.map((call: unknown[]) => call[0])).not.toContain('.env.prod');
+    expect(rendered).not.toContain('API_PORT was not set');
+    vi.unstubAllGlobals();
+  });
+
+  /**
+   * The mirror of the case above. Here the appliance `.env` does carry a root and it disagrees with
+   * the container's. `resolveDataDir` prefers the file, but `defaultRootFolderHost` is derived from
+   * the container — so the resolved root and the default diverge, and A4 can only be reading the
+   * resolved one. Between the two tests every candidate source is wrong in one of them.
+   */
+  it('inspects the data root the resolver settled on, not the one the container reports', async () => {
+    mountHybridNode({ envVars: { ROOT_FOLDER_HOST: '/mnt/hub-data' }, containerRoot: '/srv/hub-state' });
+
+    const section = await runPoolDoctorSection('.env.prod', { env: 'prod' });
+    const rendered = text(section.lines);
+    const lineFor = (id: string) => rendered.split('\n').find((line) => line.trim().startsWith(id)) ?? '';
+
+    expect(lineFor('A4')).toContain('/mnt/hub-data');
+    expect(lineFor('A4')).not.toContain('/srv/hub-state');
+    // ...and it says which of the two it took, so an operator staring at a disagreement can tell.
+    expect(rendered).toContain(`Data dir from ROOT_FOLDER_HOST in ${applianceEnv}`);
+    vi.unstubAllGlobals();
+  });
+
+  /**
+   * The container is consulted first, but its compose file can sit somewhere that holds no env file
+   * at all — a stack directory separate from the data dir. That is not a failure of the container
+   * step so much as a fact an operator needs: A1 has to say the container WAS asked and what it
+   * could not supply, or the fallback it landed on looks like the only thing that was ever tried.
+   */
+  it('keeps the reason the container step was skipped in A1, not just the source it fell back to', async () => {
+    mountHybridNode({ envVars: {}, containerRoot: '/srv/hub-state', composeFile: '/opt/stack/docker-compose.prod.yml' });
+
+    const section = await runPoolDoctorSection('.env.prod', { env: 'prod' });
+    const rendered = text(section.lines);
+
+    expect(rendered).toContain('The running container ci-os-hub was created from /opt/stack/docker-compose.prod.yml');
+    expect(rendered).toContain('but that directory holds none of');
+    vi.unstubAllGlobals();
+  });
+
+  /**
+   * `cihub pool doctor <typo>` used to print one bare line and exit with no report: on a checkout,
+   * `resolveHubContext` reaches `getEnvFileOrExit`, whose `process.exit(2)` no try/catch can stop.
+   * The doctor's contract is that it always renders something, so the environment is checked first.
+   */
+  it('still renders a report when handed an environment name that does not exist', async () => {
+    const cwd = process.cwd();
+    // A real checkout — the case that reaches getEnvFileOrExit at all. In appliance mode it is
+    // never called, so a run that skipped this setup would pass no matter what the code did.
+    const present = new Set([`${cwd}/package.json`, `${cwd}/scripts`]);
+    existsSync.mockImplementation((target: string) => present.has(String(target)));
+    readFileSync.mockImplementation((target: string) => (String(target).endsWith('package.json') ? '{"name":"ci-hub"}' : ''));
+    parseEnvFile.mockReturnValue({});
+    const exit = vi.spyOn(process, 'exit').mockImplementation(((): never => {
+      throw new Error('process.exit');
+    }) as never);
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('fetch failed')));
+
+    const section = await runPoolDoctorSection('.env.bogus', { env: 'bogus' });
+
+    expect(exit).not.toHaveBeenCalled();
+    expect(section.lines.length).toBeGreaterThan(1);
+    expect(text(section.lines)).toContain('A1');
+    exit.mockRestore();
+    vi.unstubAllGlobals();
+  });
+
   it('folds the bridge section in rather than reimplementing it', async () => {
     runBridgeDoctorSection.mockResolvedValue({
       lines: ['Docker bridge            1 blocked'],
@@ -1963,7 +2423,12 @@ describe('runPoolDoctorSection', () => {
     spawnSync.mockReturnValue({ status: 1, stdout: '' });
 
     const section = await runPoolDoctorSection('.env.prod', { env: 'prod' });
-    expect(runBridgeDoctorSection).toHaveBeenCalledWith('.env.prod');
+    // Section E derives its ports from an env file, so it gets the RESOLVED one — the same file the
+    // rest of the run reads. Handed the caller's `.env.prod` on an appliance node it reads nothing
+    // and silently probes the default ports instead.
+    const resolvedEnvFile = readHubApiKey.mock.calls[0]?.[0];
+    expect(resolvedEnvFile).not.toBe('.env.prod');
+    expect(runBridgeDoctorSection).toHaveBeenCalledWith(resolvedEnvFile);
     expect(text(section.lines)).toContain('Docker bridge            1 blocked');
     expect(section.remediationCommands).toContain('sudo ufw allow from 172.18.0.0/16 to 172.18.0.1 port 11434 proto tcp');
     expect(section.issueCount).toBeGreaterThanOrEqual(1);

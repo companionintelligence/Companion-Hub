@@ -5,7 +5,7 @@
 > **Key paths:** `packages/frontend/src/components/hub-status/`, `packages/frontend/src/modules/`, `packages/frontend/src/lib/`
 > **Commands:** `cd packages/frontend && pnpm test`, `pnpm run local` (root, port 5004/5005)
 > **Owner persona:** code-quality + maintainability
-> **Last updated:** 2026-09-07 (marketplace GPU compatibility disclosure)
+> **Last updated:** 2026-09-09 (family Hub login: live Portal hint, account switcher, logout clears remembered email)
 > **Related:** docs/system/desktop.md, docs/DESKTOP-UI-ARCHITECTURE.md, docs/system/e2e.md
 
 ---
@@ -81,7 +81,7 @@ The iOS/Android thin client signs into the Portal with PKCE and a `cihub://auth/
 - Do not leave a debug HUD or a second "Connect to your Hub" splash on the phone. Bootstrap sends the user to `/connect` (cloud sign-in) or `/login` (chosen Hub). Switch Hub lives on `/login` and `MobileLoadError`.
 - Cloud connect (`/connect`) is **iOS/Android app only**. The single gate is `usesCloudConnect()` in `packages/frontend/src/lib/mobile-connection.ts` (`VITE_HUB_RUNTIME=mobile`, `lvh.me`, or Tauri + iOS/Android). Mac / Linux / Windows — browser or desktop Tauri — never take that path. A leftover `cihub.isTauriMobile` session flag from sharing Vite `:5005` with ios:dev must not send desktop there (Linux/Windows UA and the desktop OS plugin both clear it). A phone *browser* on a Hub URL still uses normal `/login`.
 - After OIDC, list Hubs with `GET /api/users/me/apps?slug=hub` (Bearer access token). `GET /api/devices` needs a better-auth session and returns 401 for the OIDC token. Email/password still uses `/api/devices`.
-- Portal URL is `CI_CLOUD_URL` (baked at frontend build). Unset + non-production `CI_HUB_ENVIRONMENT` → `https://hub.companionintelligence.com`. Production → `https://hub.ci.computer`.
+- Cloud-connect Companion URL is always `https://hub.ci.computer` (`DEFAULT_PORTAL_URL` in `mobile-connect/portal-client.ts`). That is independent of the Hub appliance's `CI_CLOUD_URL` / `CI_HUB_ENVIRONMENT`. Advanced can set a custom Companion URL. A previously persisted `hub.companionintelligence.com` is ignored so old installs migrate to production.
 - Authorization codes are single-use. Safari + `/connect` resume both try the same code — exchange is memoized per code so the loser does not toast "invalid code".
 - After a Hub is chosen, go to `/login` (not `/`). Root must not wait on the remote Hub's registration API on any mobile route.
 - `I18nProvider` must not fetch `/api/i18n` on a phone — that `window.fetch` to the remote Hub never settles and leaves the exact "Loading…" screen. Use bundled `en`.
