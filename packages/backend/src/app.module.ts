@@ -18,6 +18,7 @@ import { LoggerModule } from './core/logger/logger.module';
 import { LoggerService } from './core/logger/logger.service';
 import { SSEModule } from './core/sse/sse.module';
 import { AppLifecycleModule } from './modules/app-lifecycle/app-lifecycle.module';
+import { StatusReportModule } from './modules/status-report/status-report.module';
 import { AppStoreModule } from './modules/app-stores/app-store.module';
 import { AppsModule } from './modules/apps/apps.module';
 import { AuthMiddleware } from './modules/auth/auth.middleware';
@@ -68,6 +69,7 @@ const imports: (DynamicModule | typeof I18nModule)[] = [
   AppStoreModule,
   QueueModule,
   AppLifecycleModule,
+  StatusReportModule,
   LinksModule,
   BackupsModule,
   HealthModule,

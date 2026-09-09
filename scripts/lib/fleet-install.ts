@@ -21,8 +21,9 @@
  *    claims to have produced.
  */
 
+import { classifyStatusTimerOutput, describeStatusTimerOutcome, installStatusTimerScript } from './status-timer.js';
 import { sshCapture, type SshTarget } from './fleet-ssh.js';
-import { isTooBusyForMaintenance, readHostFacts, type HostFacts } from './fleet-hardware.js';
+import { isTooBusyForMaintenance, readHostFacts } from './fleet-hardware.js';
 
 export interface InstallStep {
   name: string;
@@ -241,6 +242,22 @@ export async function installNode(
   const up = await step('hub up + register', target, bringUpScript(opts.postgresPassword, opts.pairingCode), 'hub-up-complete', 20 * 60_000);
   steps.push(up);
   if (!up.ok) return { node: node.name, ok: false, steps };
+
+  // The audit file. Best-effort by design: a node that ends up without a timer is
+  // still an installed Hub, and the step says which of the three ways it fell short
+  // rather than reporting a bare failure.
+  // sshCapture rather than step(): the outcome is decided by markers that can appear
+  // on any line, and step() reports only the last one.
+  const timerStarted = Date.now();
+  const timerRun = await sshCapture(target, `bash <<'CIHUB_STEP_EOF'\n${installStatusTimerScript()}\nCIHUB_STEP_EOF`, 2 * 60_000);
+  const timerOutcome = classifyStatusTimerOutput(timerRun.out, timerRun.ok);
+  steps.push({
+    name: 'status timer',
+    ok: timerOutcome !== 'failed',
+    skipped: timerOutcome === 'no-user-session',
+    detail: describeStatusTimerOutcome(timerOutcome),
+    ms: Date.now() - timerStarted,
+  });
 
   if (opts.joinPool) {
     const join = await step('join pool', target, joinPoolScript(opts.joinPool, opts.poolPin), 'pool-join-attempted', 3 * 60_000);

@@ -16,6 +16,6 @@ import { DockerModule } from '../docker/docker.module';
   imports: [forwardRef(() => NetworkModule), forwardRef(() => DockerModule), forwardRef(() => RegistrationModule)],
   controllers: [SystemController, SystemInspectorController, FactoryResetController],
   providers: [SystemService, SystemInspectorService, HostMetricsService, ResourceAllocatorService, HostTelemetryService, FactoryResetService],
-  exports: [SystemService, HostMetricsService, ResourceAllocatorService, FactoryResetService, HostTelemetryService],
+  exports: [SystemService, SystemInspectorService, HostMetricsService, ResourceAllocatorService, FactoryResetService, HostTelemetryService],
 })
 export class SystemModule {}

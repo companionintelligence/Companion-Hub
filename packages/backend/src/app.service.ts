@@ -148,6 +148,13 @@ export class AppService implements OnApplicationShutdown {
       this.systemEventsQueue.publishRepeatable({ command: 'reconcile_orphan_networks' }, '*/30 * * * *');
       this.logger.info('Orphan network reconcile job scheduled');
 
+      // Keeps CI_HUB_STATUS.md current for fleet auditing. The file carries its own
+      // generatedAt, so a Hub that stops writing is visible as a stale timestamp
+      // rather than as a file that quietly describes a machine it no longer matches.
+      this.logger.info('Setting up repeatable status report job...');
+      this.systemEventsQueue.publishRepeatable({ command: 'write_status_report' }, '*/15 * * * *');
+      this.logger.info('Status report job scheduled');
+
       this.logger.info('Copying assets...');
       await this.copyAssets();
       this.logger.info('Assets copied');
