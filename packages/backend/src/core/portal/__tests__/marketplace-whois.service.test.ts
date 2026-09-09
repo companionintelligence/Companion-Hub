@@ -73,15 +73,29 @@ describe('MarketplaceWhoIsService', () => {
     service = new MarketplaceWhoIsService(portal, database, logger, federatedIdentities, registration);
   });
 
-  it('gives an unlinked operator the compiled member actions and logs once', async () => {
+  it('gives an unlinked operator the member actions only, and logs once', async () => {
+    /*
+     * ⚠ `DEFAULT_MEMBER_ACTIONS` WAS `HUB_ACTIONS` — the complete verb set —
+     * while the comment on it called it "this explicit member list, not owner
+     * `*`". It was owner `*`, spelt out. So an unlinked operator resolved to
+     * `install`, `uninstall`, `reset`, `restore` and `configure` on every app.
+     *
+     * A fallback is a state in which we do not know what somebody may do. The
+     * verbs that survive that are the ones whose worst outcome is an app being
+     * stopped and started again.
+     */
     federatedIdentities.findByUserId.mockResolvedValue([]);
 
     await expect(service.has(USER_ID, APP_URN, 'view')).resolves.toBe(true);
-    await expect(service.has(USER_ID, APP_URN, 'install')).resolves.toBe(true);
+    await expect(service.has(USER_ID, APP_URN, 'restart')).resolves.toBe(true);
+    await expect(service.has(USER_ID, APP_URN, 'install')).resolves.toBe(false);
+    await expect(service.has(USER_ID, APP_URN, 'uninstall')).resolves.toBe(false);
+    await expect(service.has(USER_ID, APP_URN, 'configure')).resolves.toBe(false);
     expect(portal.whoisApps).not.toHaveBeenCalled();
     expect(logger.warn).toHaveBeenCalledTimes(1);
     expect(logger.warn).toHaveBeenCalledWith(`whois_skipped_unlinked_operator userId=${USER_ID}`);
     expect(DEFAULT_MEMBER_ACTIONS).toContain('view');
+    expect(DEFAULT_MEMBER_ACTIONS).not.toContain('install');
   });
 
   it('uses WhoIs can[] for a linked operator', async () => {
@@ -143,11 +157,84 @@ describe('MarketplaceWhoIsService', () => {
     await expect(service.has(USER_ID, APP_URN, 'start')).resolves.toBe(false);
   });
 
-  it('inherits default member actions when Portal URL is not configured', async () => {
+  it('inherits member actions only when Portal URL is not configured', async () => {
+    // "No Portal configured" is not "everyone may do everything here".
     portal.whoisApps.mockResolvedValue(null);
 
-    await expect(service.has(USER_ID, APP_URN, 'install')).resolves.toBe(true);
     await expect(service.has(USER_ID, APP_URN, 'view')).resolves.toBe(true);
+    await expect(service.has(USER_ID, APP_URN, 'install')).resolves.toBe(false);
+  });
+
+  it("refuses rather than picking an arbitrary organization's grants", async () => {
+    /*
+     * ⚠ `organizations[0]` IS AN ARBITRARY TENANT. A subject who belongs to two
+     * organizations could have this Hub answer with the grants of whichever one
+     * Portal happened to serialize first — a grant read from the wrong tenant,
+     * and possibly wider than the real one.
+     */
+    portal.whoisApps.mockResolvedValue({
+      status: 200,
+      body: {
+        organizations: [{ organizationId: 'org-somebody-else', version: 1, apps: [{ appId: 'immich', can: ['install', 'uninstall'] }] }],
+      },
+    });
+
+    await expect(service.has(USER_ID, APP_URN, 'install')).resolves.toBe(false);
+    await expect(service.has(USER_ID, APP_URN, 'view')).resolves.toBe(false);
+  });
+
+  it("refuses when this device's own organization cannot be read", async () => {
+    // The registration read failing used to be swallowed into `null` and fall
+    // through to the same arbitrary pick — so a transient failure to learn our
+    // own identity silently widened every grant on the appliance.
+    registration.getDeviceRegistrationInfo.mockRejectedValue(new Error('db down'));
+    portal.whoisApps.mockResolvedValue({
+      status: 200,
+      body: {
+        organizations: [{ organizationId: 'org-hub', version: 1, apps: [{ appId: 'immich', can: ['install'] }] }],
+      },
+    });
+
+    await expect(service.has(USER_ID, APP_URN, 'install')).resolves.toBe(false);
+  });
+
+  /*
+   * ⚠ "OUR ORG IS UNKNOWN" IS NOT "OUR ORG GRANTED NOTHING". Refusing by
+   * falling through to an empty `can` looks identical at `has()` — both are
+   * `false` — but the two values part company everywhere else: `[]` gets
+   * WRITTEN TO THE CACHE with a fresh timestamp, so the next Portal outage
+   * inside the 24h TTL serves that empty row as though it were a real answer.
+   */
+  it("does not cache an empty grant when this device's organization is unknown", async () => {
+    registration.getDeviceRegistrationInfo.mockRejectedValue(new Error('db down'));
+    portal.whoisApps.mockResolvedValue({
+      status: 200,
+      body: {
+        organizations: [{ organizationId: 'org-hub', version: 1, apps: [{ appId: 'immich', can: ['view', 'install'] }] }],
+      },
+    });
+
+    await service.has(USER_ID, APP_URN, 'install');
+
+    expect(cacheRows).toEqual([]);
+  });
+
+  /*
+   * ⚠ AND `[]` HIDES THE APP. `filterSessionByView` keeps a row whose grant is
+   * unknown ("an outage does not empty the house") and hides one that is known
+   * to be empty — so routing an unresolved organization through the empty list
+   * emptied the operator's whole app list on a transient database blip.
+   */
+  it("keeps the app list when this device's organization is unknown", async () => {
+    registration.getDeviceRegistrationInfo.mockRejectedValue(new Error('db down'));
+    portal.whoisApps.mockResolvedValue({
+      status: 200,
+      body: {
+        organizations: [{ organizationId: 'org-hub', version: 1, apps: [{ appId: 'immich', can: ['view'] }] }],
+      },
+    });
+
+    await expect(service.filterSessionByView(sessionReq(), [APP_URN], (urn) => urn, 'hub')).resolves.toEqual([APP_URN]);
   });
 
   it('uses a fresh cache when Portal is unreachable', async () => {

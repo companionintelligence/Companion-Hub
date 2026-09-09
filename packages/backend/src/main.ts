@@ -7,6 +7,7 @@ import { SwaggerModule } from '@nestjs/swagger';
 import cookieParser from 'cookie-parser';
 import { AppModule } from './app.module';
 import { AppService } from './app.service';
+import { resolveAllowedCorsOrigin } from './common/helpers/cors-origin';
 import { generateSystemEnvFile } from './common/helpers/env-helpers';
 import { buildSwaggerDocument, writeSwaggerJsonFile } from './swagger-setup';
 import { resolvePortalRootBounce } from './modules/auth/portal-sso';
@@ -51,30 +52,6 @@ async function setupSwagger(app: INestApplication) {
     const message = error instanceof Error ? error.message : String(error);
     console.warn(`Could not write swagger.json — skipping (non-fatal): ${message}`);
   }
-}
-
-function resolveAllowedCorsOrigin(origin: string | undefined): string | boolean {
-  if (!origin) {
-    return true;
-  }
-  // Tauri webview origins. Windows (WebView2) serves the app from
-  // http(s)://tauri.localhost, while Linux (webkit2gtk) and macOS (WKWebView)
-  // serve it from the custom-protocol origin tauri://localhost.
-  if (origin === 'http://tauri.localhost' || origin === 'https://tauri.localhost' || origin === 'tauri://localhost') {
-    return origin;
-  }
-  if (origin.startsWith('http://localhost:') || origin.startsWith('http://127.0.0.1:')) {
-    return origin;
-  }
-  const domain = process.env.DOMAIN?.trim();
-  if (domain && (origin === `https://${domain}` || origin === `http://${domain}`)) {
-    return origin;
-  }
-  const localDomain = process.env.LOCAL_DOMAIN?.trim();
-  if (localDomain && (origin === `https://${localDomain}` || origin === `http://${localDomain}`)) {
-    return origin;
-  }
-  return false;
 }
 
 async function bootstrap() {
