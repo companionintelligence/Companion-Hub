@@ -43,7 +43,7 @@ export async function showDeviceId(options: { fromHub?: boolean; env?: HubEnv } 
           ['The running Hub could not resolve a device ID.', 'Check backend logs and ensure the appliance initialized correctly.'],
           'red',
         );
-        return;
+        process.exit(1);
       }
       console.log(deviceInfo.device_id);
       return;
@@ -53,7 +53,7 @@ export async function showDeviceId(options: { fromHub?: boolean; env?: HubEnv } 
         [error instanceof Error ? error.message : String(error), `Ensure the Hub is running: ${BASE_COMMAND} up ${env}`],
         'red',
       );
-      return;
+      process.exit(1);
     }
   }
 
@@ -64,6 +64,14 @@ export async function showDeviceId(options: { fromHub?: boolean; env?: HubEnv } 
   }
 }
 
+/**
+ * Every failure here exits non-zero.
+ *
+ * It used to print a red box and `return`, so `cihub register` exited 0 whether it had registered a
+ * Hub or failed to reach one — and an automated installer reading the exit code could not tell the
+ * difference. A fleet run that "succeeded" on fourteen unreachable machines is worse than one that
+ * failed on fourteen, because nobody goes looking.
+ */
 export async function registerHub(env: HubEnv, options: RegisterHubOptions = {}) {
   const ctx = resolveHubContext(env);
   if (ctx.appliance) {
@@ -88,7 +96,7 @@ export async function registerHub(env: HubEnv, options: RegisterHubOptions = {})
       [`Could not reach ${apiBase}/api/health within 2 minutes.`, `Run ${BASE_COMMAND} up ${env} and try again.`],
       'red',
     );
-    return;
+    process.exit(1);
   }
 
   let status: RegistrationStatusResponse;
@@ -96,7 +104,7 @@ export async function registerHub(env: HubEnv, options: RegisterHubOptions = {})
     status = await fetchRegistrationStatus(apiBase);
   } catch (error) {
     printMessageBox('Registration check failed', [error instanceof Error ? error.message : String(error)], 'red');
-    return;
+    process.exit(1);
   }
 
   if (registrationComplete(status)) {
@@ -154,7 +162,7 @@ export async function registerHub(env: HubEnv, options: RegisterHubOptions = {})
       ['The running Hub could not resolve a device ID.', 'Check backend logs and ensure the appliance initialized correctly.'],
       'red',
     );
-    return;
+    process.exit(1);
   }
 
   printMessageBox(
@@ -197,7 +205,7 @@ export async function registerHub(env: HubEnv, options: RegisterHubOptions = {})
   const pairResult = await submitPairingCode(apiBase, pairingCode);
   if (!pairResult.success) {
     printMessageBox('Pairing failed', [pairResult.message || 'Unknown error'], 'red');
-    return;
+    process.exit(1);
   }
 
   const accessHint = formatHubAccessUrl(pairResult.domain, pairResult.subdomain);
