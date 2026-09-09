@@ -120,7 +120,7 @@ exports[`DockerComposeBuilder > should correctly format a complex docker-compose
     command: node index.js
     restart: unless-stopped
     networks:
-      home-assistant_store-id_network:
+      home-assistant_ci-marketplace_network:
         gw_priority: 0
     extra_hosts:
       - host1
@@ -147,9 +147,9 @@ exports[`DockerComposeBuilder > should correctly format a complex docker-compose
       - service2
     labels:
       ci-hub.managed: true
-      ci-hub.appurn: home-assistant:store-id
+      ci-hub.appurn: home-assistant:ci-marketplace
       ci-os-hub.managed: true
-      ci-os-hub.appurn: home-assistant:store-id
+      ci-os-hub.appurn: home-assistant:ci-marketplace
     cap_add:
       - SYS_ADMIN
       - NET_ADMIN
@@ -199,13 +199,13 @@ exports[`DockerComposeBuilder > should correctly format a complex docker-compose
     image: image2
     restart: unless-stopped
     networks:
-      home-assistant_store-id_network:
+      home-assistant_ci-marketplace_network:
         gw_priority: 0
     labels:
       ci-hub.managed: true
-      ci-hub.appurn: home-assistant:store-id
+      ci-hub.appurn: home-assistant:ci-marketplace
       ci-os-hub.managed: true
-      ci-os-hub.appurn: home-assistant:store-id
+      ci-os-hub.appurn: home-assistant:ci-marketplace
 networks:
   ci-hub_network:
     name: ci-hub_network
@@ -213,8 +213,8 @@ networks:
   ci-os-hub_network:
     name: ci-os-hub_network
     external: true
-  home-assistant_store-id_network:
-    name: home-assistant_store-id_network
+  home-assistant_ci-marketplace_network:
+    name: home-assistant_ci-marketplace_network
     external: false
     ipam:
       config:
@@ -280,7 +280,7 @@ exports[`DockerComposeBuilder > should correctly format devices 1`] = `
       ci-os-hub.appurn: nginx:store-id
     devices:
       - /dev/ttyUSB0:/dev/ttyUSB0
-      - /dev/sda:/dev/xvda:rwm
+      - /dev/ttyACM0:/dev/xvda:rwm
 networks:
   ci-hub_network:
     name: ci-hub_network
