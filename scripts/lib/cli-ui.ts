@@ -92,18 +92,48 @@ const commandSections: { title: string; entries: CommandEntry[] }[] = [
     ],
   },
   {
+    title: 'Fleet',
+    entries: [
+      {
+        command: `${BASE_COMMAND} fleet scan [--lan] [--write-roster] [--json]`,
+        description: 'Find machines on your tailnet (and optionally the LAN), and report SSH, Hub and engines separately',
+      },
+      { command: `${BASE_COMMAND} fleet list [--json]`, description: 'The saved roster, and which nodes fleet commands will skip' },
+      {
+        command: `${BASE_COMMAND} fleet status [--nodes a,b] [--json]`,
+        description: 'Re-probe every rostered node: administrable, running a Hub, serving engines',
+      },
+    ],
+  },
+  {
     title: 'Hub Pool',
     entries: [
       { command: `${BASE_COMMAND} pool status [env]`, description: 'Whether pooling is routing, this node, and every peer' },
+      {
+        command: `${BASE_COMMAND} pool doctor [env] [--check-latency]`,
+        description: 'Preflight: env, tailnet reachability, peer probe budget, and the host bridge',
+      },
       { command: `${BASE_COMMAND} pool peers [env]`, description: 'Paired peers with status, last seen, queue depth, and models' },
-      { command: `${BASE_COMMAND} pool discover [env]`, description: 'Unpaired CI-Hub nodes on the tailnet (needs the Tailscale OAuth client)' },
+      { command: `${BASE_COMMAND} pool discover [env]`, description: 'Unpaired CI-Hub nodes, from your tailnet and your CI account' },
+      { command: `${BASE_COMMAND} pool probe <address> [env]`, description: 'Is there a CI-Hub at this LAN address, and can it pair by one?' },
+      {
+        command: `${BASE_COMMAND} pool pairing-pin [env]`,
+        description: 'Mint the six digits a peer needs to pair with THIS Hub by address',
+      },
+      { command: `${BASE_COMMAND} pool cancel-pin [env]`, description: 'Revoke the outstanding pairing PIN before it expires' },
       { command: `${BASE_COMMAND} pool pair <node> [--name <label>] [--yes]`, description: 'Send a pairing request to a peer (it must approve)' },
+      { command: `${BASE_COMMAND} pool pair <address> --pin <digits>`, description: '...or pair by LAN address, using the PIN minted on that Hub' },
       { command: `${BASE_COMMAND} pool approve|reject <id> [--yes]`, description: 'Act on a pending inbound pairing request' },
       { command: `${BASE_COMMAND} pool unpair <id> [--yes]`, description: 'Remove a peer and revoke both tokens' },
       {
         command: `${BASE_COMMAND} pool peer-enable|peer-disable <id> [--yes]`,
         description: 'Take one peer in or out of the pool (the pairing and both tokens are kept)',
       },
+      {
+        command: `${BASE_COMMAND} pool pin <node|local> [--model M] [--yes]`,
+        description: 'Prefer one node for a model (or for everything); a pin reorders, it never forces',
+      },
+      { command: `${BASE_COMMAND} pool unpin [--model M] [--yes]`, description: 'Remove that preference and go back to ranking by load' },
       { command: `${BASE_COMMAND} pool log [env] [--limit N]`, description: 'Recent routing decisions, with failovers called out' },
       {
         command: `${BASE_COMMAND} pool enable|disable [env] [--outbound|--inbound] [--yes]`,

@@ -68,6 +68,7 @@ describe('HubPoolPeerService', () => {
       poolInboundEnabled: true,
       poolLocalAffinity: DEFAULT_POOL_LOCAL_AFFINITY,
       poolHealthPollSeconds: DEFAULT_POOL_HEALTH_POLL_SECONDS,
+      poolPins: [],
       poolRequireSignedPeers: false,
       poolPressureWeight: DEFAULT_POOL_PRESSURE_WEIGHT,
       ...overrides,
@@ -364,13 +365,26 @@ describe('HubPoolPeerService', () => {
       expect(repo.delete).not.toHaveBeenCalledWith('fresh');
     });
 
-    it('leaves an old outbound row alone — the operator created it and only they retire it', async () => {
+    /**
+     * This previously asserted the opposite — that an outbound row is the operator's to retire —
+     * on the reasoning that the peer's reject callback or Unpair would clean it up. That holds only
+     * if the far side can ever answer. `approvePairing` confirms back over `https://<fqdn>`, so a
+     * peer with no `tailscale serve` on 443 leaves the initiator holding a pending row nothing will
+     * ever resolve, which then answers 409 "already paired or pairing" on every retry. Observed on
+     * a real fleet; Unpair was the only way out.
+     */
+    it('deletes outbound pending rows older than the TTL, so a never-answered pairing unsticks itself', async () => {
       const stale = new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString();
-      repo.listByStatus.mockResolvedValue([mockPeer({ id: 'mine', direction: 'outbound', createdAt: stale })]);
+      repo.listByStatus.mockResolvedValue([
+        mockPeer({ id: 'stranded', direction: 'outbound', createdAt: stale }),
+        mockPeer({ id: 'recent', direction: 'outbound', createdAt: new Date().toISOString() }),
+      ]);
 
       await sweep(service);
 
-      expect(repo.delete).not.toHaveBeenCalled();
+      expect(repo.delete).toHaveBeenCalledWith('stranded');
+      // An outbound request still inside the TTL is a pairing the far operator may yet approve.
+      expect(repo.delete).not.toHaveBeenCalledWith('recent');
     });
   });
 
@@ -617,6 +631,35 @@ describe('HubPoolPeerService', () => {
       expect(inferenceRouter.getStatus).toHaveBeenCalledTimes(1);
       // A cached load figure would tell a ranking peer we are idle while our engines are busy.
       expect(second.inFlightRequests).toBe(1);
+    });
+
+    /**
+     * The regression that evicted a healthy node from a live pool.
+     *
+     * The caller most likely to find an expired entry is a peer's health probe, and the rebuild it
+     * would otherwise wait on measured 10.0s on a loaded appliance against a 15s budget — three
+     * overruns and the peer is `unreachable`. A stale entry must therefore be SERVED, not awaited.
+     */
+    it('serves a stale inventory immediately and refreshes behind the caller', async () => {
+      vi.useFakeTimers();
+      try {
+        await service.getOwnCapabilities();
+        expect(inferenceRouter.getStatus).toHaveBeenCalledTimes(1);
+
+        // Past the TTL, well inside the staleness ceiling — the window every 30s peer probe lands in.
+        vi.advanceTimersByTime(25_000);
+
+        // A rebuild that never settles: if the read awaited it, this call could not resolve at all.
+        inferenceRouter.getStatus.mockReturnValue(new Promise(() => {}) as never);
+
+        const stale = await service.getOwnCapabilities();
+
+        expect(stale.backends).toBeDefined();
+        // Served from cache, and the refresh was still kicked off for the next caller.
+        expect(inferenceRouter.getStatus).toHaveBeenCalledTimes(2);
+      } finally {
+        vi.useRealTimers();
+      }
     });
   });
 
@@ -1044,7 +1087,7 @@ describe('HubPoolPeerService', () => {
       expect(await service.getPoolStatus()).toMatchObject({ reason: 'disabled_by_setting', routingActive: false });
     });
 
-    it('never triggers peer discovery, which is a Tailscale OAuth exchange plus a probe per device', async () => {
+    it('never triggers peer discovery, which probes every unpaired candidate and is not pollable', async () => {
       await service.getPoolStatus();
 
       expect(tailscaleAdminApi.listDevices).not.toHaveBeenCalled();
@@ -1179,7 +1222,25 @@ describe('HubPoolPeerService', () => {
         expect.any(String),
         expect.objectContaining({ peerNodeUuid: '22222222-2222-4222-8222-222222222222', peerPublicKey: keys.publicKey }),
       );
-      expect(answer).toEqual({ nodeUuid: '11111111-1111-4111-8111-111111111111', publicKey: keys.publicKey });
+      // The name is in here, and this is the only route that discloses it: `GET /identify` is
+      // unauthenticated and no longer does. Without it a Hub found by address could never be named,
+      // and `POST peers/pair { address, pin }` would have nothing to key a row on.
+      expect(answer).toEqual({
+        nodeFqdn: 'self-hub.tailxyz.ts.net',
+        nodeUuid: '11111111-1111-4111-8111-111111111111',
+        publicKey: keys.publicKey,
+      });
+    });
+
+    it('discloses nothing at all to a pairing request that carried no PIN', async () => {
+      repo.findByNodeFqdn.mockResolvedValue(undefined);
+      repo.create.mockImplementation(async (data) => mockPeer(data as Partial<HubPoolPeer>));
+
+      const answer = await service.receivePairingRequest('requester.tailxyz.ts.net', undefined, 'raw-token-value', {});
+
+      // The PIN is the disclosure boundary for this node's MagicDNS name, not merely the trigger for
+      // pinning an identity. An anonymous caller gets today's bare acknowledgement.
+      expect(answer).toEqual({});
     });
 
     it('stores no identity claim on a request that carried no PIN', async () => {

@@ -8,13 +8,18 @@ import path from 'node:path';
 import { parseEnvFile } from '../env-file.js';
 import {
   approvePoolPeer,
+  cancelPairingPin,
+  deletePoolPin,
   fetchPoolPeers,
   fetchPoolRoutingLog,
   fetchPoolStatus,
   formatPoolPeersLines,
   formatPoolProbeLines,
+  formatPairingPinCancelledLines,
+  formatPairingPinLines,
   formatPoolRoutingLogLines,
   formatPoolStatusLines,
+  mintPairingPin,
   pairPoolPeer,
   probePoolAddress,
   rejectPoolPeer,
@@ -22,19 +27,31 @@ import {
   runPoolDiscover,
   setPoolEnabledSetting,
   setPoolPeerEnabled,
+  setPoolPin,
   unpairPoolPeer,
   type PoolEnableAxis,
 } from '../hub-pool-cli.js';
+import { readRunningImageIdentity, runPoolDoctorSection } from '../pool-diagnostics-cli.js';
 import { readHubApiKey, resolveHubApiBase } from '../public-web-cli.js';
 import { resolveEnvFromArgs, usageAndExit } from './cli-args.js';
 import { confirmDestructiveAction } from './cli-prompt.js';
+import { run, runCapture } from './cli-proc.js';
+import {
+  buildPoolUpdateComposeArgs,
+  composeFilesForPoolUpdate,
+  decideGitUpdate,
+  gatherGitUpdateFacts,
+  resolvePoolUpdateImage,
+} from './cli-pool-update.js';
 import { BASE_COMMAND, type HubEnv } from './cli-types.js';
-import { printMessageBox, sanitizeForBox, STEP_ICONS } from './cli-ui.js';
+import { cliFail, cliOk, cliWarn, dim, printMessageBox, sanitizeForBox, STEP_ICONS } from './cli-ui.js';
 import { type HubContext, resolveHubContext } from './hub-context.js';
 import { resolveRootFolderHost } from './paths.js';
 
 export const POOL_SUBCOMMANDS = [
   'status',
+  'doctor',
+  'update',
   'peers',
   'discover',
   'probe',
@@ -47,21 +64,36 @@ export const POOL_SUBCOMMANDS = [
   'disable',
   'peer-enable',
   'peer-disable',
+  'pin',
+  'unpin',
+  // Four places in this repo and two in docs/CLI.md already tell the operator to run
+  // `cihub pool pairing-pin`; until now it was not a subcommand and exited as an unknown one.
+  'pairing-pin',
+  'cancel-pin',
 ] as const;
 export type PoolSubcommand = (typeof POOL_SUBCOMMANDS)[number];
 
 /** Subcommands taking a peer reference before the optional [env], so the env parser never sees it. */
-const POOL_TARGET_SUBCOMMANDS: readonly PoolSubcommand[] = ['probe', 'pair', 'approve', 'reject', 'unpair', 'peer-enable', 'peer-disable'];
+const POOL_TARGET_SUBCOMMANDS: readonly PoolSubcommand[] = ['probe', 'pair', 'approve', 'reject', 'unpair', 'peer-enable', 'peer-disable', 'pin'];
 
 const POOL_USAGE = `Usage: ${BASE_COMMAND} pool <${POOL_SUBCOMMANDS.join('|')}> [env]`;
+
+/** How long `pool doctor` runs before it starts narrating. Below this, the box arrives on its own. */
+const POOL_DOCTOR_PROGRESS_AFTER_MS = 3_000;
 
 export interface ParsedPoolArgs {
   subcommand: PoolSubcommand;
   target?: string;
   displayName?: string;
+  /** `pair` only: the six digits minted on the OTHER Hub, and the only way to pair by address. */
+  pin?: string;
   limit?: number;
   /** Which switch `enable`/`disable` writes. `both` (the default) is the master switch, i.e. today's behaviour. */
   axis: PoolEnableAxis;
+  /** `pin`/`unpin` only: which model the pin covers. Absent means the pool-wide default pin. */
+  model?: string;
+  /** `doctor` only: also measure non-streaming first-byte latency, which spends GPU time. */
+  checkLatency: boolean;
   yes: boolean;
   env: HubEnv;
 }
@@ -73,14 +105,21 @@ export interface ParsedPoolArgs {
 export function parsePoolArgs(args: string[]): ParsedPoolArgs {
   let yes = false;
   let displayName: string | undefined;
+  let pin: string | undefined;
   let limit: number | undefined;
   let axis: PoolEnableAxis = 'both';
+  let model: string | undefined;
+  let checkLatency = false;
   const positional: string[] = [];
 
   for (let i = 0; i < args.length; i += 1) {
     const arg = args[i] as string;
     if (arg === '--yes') {
       yes = true;
+      continue;
+    }
+    if (arg === '--check-latency') {
+      checkLatency = true;
       continue;
     }
     if (arg === '--outbound' || arg === '--inbound') {
@@ -93,12 +132,22 @@ export function parsePoolArgs(args: string[]): ParsedPoolArgs {
       axis = next;
       continue;
     }
-    if (arg === '--name' || arg === '--limit') {
+    if (arg === '--name' || arg === '--limit' || arg === '--pin' || arg === '--model') {
       const next = args[i + 1];
       if (!next || next.startsWith('--')) usageAndExit(`Missing value for ${arg}. ${POOL_USAGE}`);
       if (arg === '--name') displayName = next;
+      else if (arg === '--pin') pin = parsePairingPin(next);
+      else if (arg === '--model') model = parsePinnedModel(next);
       else limit = parsePoolLimit(next);
       i += 1;
+      continue;
+    }
+    if (arg.startsWith('--model=')) {
+      model = parsePinnedModel(arg.slice('--model='.length));
+      continue;
+    }
+    if (arg.startsWith('--pin=')) {
+      pin = parsePairingPin(arg.slice('--pin='.length));
       continue;
     }
     if (arg.startsWith('--name=')) {
@@ -122,9 +171,54 @@ export function parsePoolArgs(args: string[]): ParsedPoolArgs {
     usageAndExit(`--${axis} only applies to \`${BASE_COMMAND} pool enable\` and \`${BASE_COMMAND} pool disable\`.`);
   }
 
+  if (pin !== undefined && subcommand !== 'pair') {
+    usageAndExit(`--pin only applies to \`${BASE_COMMAND} pool pair\`.`);
+  }
+
+  if (model !== undefined && subcommand !== 'pin' && subcommand !== 'unpin') {
+    usageAndExit(`--model only applies to \`${BASE_COMMAND} pool pin\` and \`${BASE_COMMAND} pool unpin\`.`);
+  }
+
+  if (checkLatency && subcommand !== 'doctor') {
+    usageAndExit(`--check-latency only applies to \`${BASE_COMMAND} pool doctor\`.`);
+  }
+
   const takesTarget = POOL_TARGET_SUBCOMMANDS.includes(subcommand);
   const target = takesTarget ? positional[1] : undefined;
-  return { subcommand, target, displayName, limit, axis, yes, env: resolveEnvFromArgs(positional.slice(takesTarget ? 2 : 1)) };
+  return {
+    subcommand,
+    target,
+    displayName,
+    pin,
+    limit,
+    axis,
+    model,
+    checkLatency,
+    yes,
+    env: resolveEnvFromArgs(positional.slice(takesTarget ? 2 : 1)),
+  };
+}
+
+/**
+ * Bounded, never normalized: a model id is compared verbatim and case-sensitively against the
+ * engine's inventory on the Hub, so lower-casing a pin here would produce one that looks right and
+ * silently never matches. Matches `MAX_PINNED_MODEL_LENGTH` on the backend.
+ */
+function parsePinnedModel(raw: string): string {
+  const trimmed = raw.trim();
+  if (!trimmed || trimmed.length > 200) {
+    usageAndExit('--model takes a model id as the engine reports it, e.g. llama3.2:3b (1-200 characters).');
+  }
+  return trimmed;
+}
+
+/** Exactly six digits, checked here so a typo is a usage error rather than a 400 from the Hub. */
+function parsePairingPin(raw: string): string {
+  const trimmed = raw.trim();
+  if (!/^\d{6}$/.test(trimmed)) {
+    usageAndExit('A pairing PIN is exactly six digits, as shown by `cihub pool pairing-pin` on the other Hub.');
+  }
+  return trimmed;
 }
 
 /** Matches the backend's `RoutingLogQueryDto` bounds so a bad value fails here rather than as a 400. */
@@ -186,6 +280,34 @@ export async function runPoolCommand(args: string[]) {
   const ctx = resolveHubContext(parsed.env);
   const { env, envFile } = ctx;
 
+  // Deliberately BEFORE the device-key gate below. `doctor` is the command an operator reaches for
+  // on a node that is not set up yet — a node with no key is one of the states it has to report on,
+  // not a reason to refuse to run.
+  if (parsed.subcommand === 'doctor') {
+    // B4 compares the routes the Hub serves against the commands THIS build has, so the list has to
+    // come from here — the doctor module cannot import it back without closing an import cycle.
+    const section = await runPoolDoctorSection(envFile, {
+      checkLatency: parsed.checkLatency,
+      env,
+      cliSubcommands: POOL_SUBCOMMANDS,
+      // Only once the run is visibly slow. On a healthy node the whole preflight is over in a second
+      // and five progress lines would be noise; on the node this command exists for it is minutes,
+      // and silence there reads as a hang.
+      onSectionDone: (line, elapsedMs) => {
+        if (elapsedMs >= POOL_DOCTOR_PROGRESS_AFTER_MS) console.log(dim(`  ${line}`));
+      },
+    });
+    printMessageBox(`Hub Pool doctor  [${env}]`, section.lines, section.issueCount > 0 ? 'yellow' : 'cyan');
+    return;
+  }
+
+  // Also before the device-key gate: the node most likely to need `pool update` — never started,
+  // or stuck on an old image — has no key yet either, and pulling/redeploying needs none.
+  if (parsed.subcommand === 'update') {
+    await runPoolUpdateCommand(ctx);
+    return;
+  }
+
   if (!readHubApiKey(envFile)) {
     printMessageBox(
       'Hub not paired',
@@ -213,9 +335,28 @@ export async function runPoolCommand(args: string[]) {
       return;
     }
 
+    if (parsed.subcommand === 'pairing-pin') {
+      const minted = await mintPairingPin(envFile);
+      // Best-effort: the name only makes the printed `pool pair` line copy-pasteable, so a Hub whose
+      // status call fails still gets its digits rather than an error.
+      const localNodeFqdn = await fetchPoolStatus(envFile)
+        .then((status) => status.localNode.nodeFqdn)
+        .catch(() => null);
+      printMessageBox(`Hub Pool pairing PIN  [${env}]`, formatPairingPinLines(minted, localNodeFqdn), minted.identityError ? 'yellow' : 'green');
+      return;
+    }
+
+    if (parsed.subcommand === 'cancel-pin') {
+      await cancelPairingPin(envFile);
+      printMessageBox(`Hub Pool pairing PIN  [${env}]`, formatPairingPinCancelledLines(), 'cyan');
+      return;
+    }
+
     if (parsed.subcommand === 'discover') {
-      const { lines, configured } = await runPoolDiscover(envFile);
-      printMessageBox(`Hub Pool discovery  [${env}]`, lines, configured ? 'cyan' : 'yellow');
+      // Coloured on whether anything was found, not on the Admin API credential: two of the three
+      // directories need none, so a credential-free Hub listing real candidates is not a warning.
+      const { lines, found } = await runPoolDiscover(envFile);
+      printMessageBox(`Hub Pool discovery  [${env}]`, lines, found ? 'cyan' : 'yellow');
       return;
     }
 
@@ -241,10 +382,92 @@ export async function runPoolCommand(args: string[]) {
       return;
     }
 
+    if (parsed.subcommand === 'pin' || parsed.subcommand === 'unpin') {
+      await runPoolPinCommand(ctx, parsed);
+      return;
+    }
+
     await runPoolPeerMutation(ctx, parsed);
   } catch (error) {
     poolErrorExit(error, envFile);
   }
+}
+
+/**
+ * Pull the published image and redeploy — no build toolchain, no GitHub Packages token. See
+ * cli-pool-update.ts for why this is a separate, narrow command instead of teaching `cihub up`
+ * to skip `--build`.
+ */
+async function runPoolUpdateCommand(ctx: HubContext): Promise<void> {
+  const lines: string[] = [];
+
+  const gitFacts = gatherGitUpdateFacts(ctx.cwd);
+  const gitDecision = decideGitUpdate(gitFacts);
+  if (gitDecision.action === 'pull') {
+    run('git', ['-C', ctx.cwd, 'fetch', 'origin', 'dev']);
+    run('git', ['-C', ctx.cwd, 'merge', '--ff-only', 'origin/dev']);
+    const sha = runCapture('git', ['-C', ctx.cwd, 'rev-parse', '--short', 'HEAD']).stdout;
+    lines.push(cliOk(`git checkout fast-forwarded to dev (${sha})`));
+  } else {
+    lines.push(cliWarn(`git checkout left untouched — ${gitDecision.reason}`));
+  }
+
+  const { files, overlayApplied } = composeFilesForPoolUpdate(ctx.cwd, ctx.composeFiles);
+  const image = resolvePoolUpdateImage(ctx.env, process.env.CI_HUB_IMAGE);
+  if (overlayApplied) {
+    lines.push(cliOk(`will pull ${image} (set CI_HUB_IMAGE to override)`));
+  } else {
+    lines.push(cliWarn(`no pull-image overlay in ${ctx.cwd} — pulling ${image} directly, since the seeded compose caches a mutable tag`));
+  }
+
+  const { pullArgs, upArgs } = buildPoolUpdateComposeArgs(ctx.envFile, files);
+  printMessageBox(`Hub Pool update  [${ctx.env}]`, [...lines, '', 'Pulling the published image, then redeploying...'], 'cyan');
+  // CI_HUB_IMAGE is exported even without the overlay. On an appliance the seeded compose carries
+  // `image: ${CI_HUB_IMAGE:-…:latest}` with `pull_policy: if_not_present`, so a mutable tag like
+  // `:dev` is fetched once and then never again — an "update" that silently redeploys the cached
+  // image it already had. Naming the image explicitly, plus the pull below, is what makes the
+  // command mean what it says on a node that has no checkout.
+  const envOverrides = { CI_HUB_IMAGE: image };
+  if (!overlayApplied) {
+    // `docker compose pull` honours pull_policy; `docker pull` does not, so it is the only way to
+    // refresh a mutable tag through a compose file this command cannot edit.
+    run('docker', ['pull', image], {}, ctx.cwd);
+  }
+  run('docker', pullArgs, envOverrides, ctx.cwd);
+  run('docker', upArgs, envOverrides, ctx.cwd);
+
+  // The env file may not carry API_PORT at all on an appliance install (the compose service
+  // `environment:` block sets it) — read it off the container that just started, same precedence
+  // `pool doctor`'s A1 uses, rather than assuming 5002.
+  const base = `http://127.0.0.1:${readRunningImageIdentity()?.config.apiPort ?? 5002}`;
+  let healthy = false;
+  for (let attempt = 0; attempt < 10 && !healthy; attempt += 1) {
+    if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, 2000));
+    try {
+      healthy = (await fetch(`${base}/api/health`, { signal: AbortSignal.timeout(3000) })).ok;
+    } catch {
+      // Not up yet — a redeploy can take a few seconds before the port answers.
+    }
+  }
+  if (!healthy) {
+    lines.push('', cliFail(`${base}/api/health did not answer after redeploy — check: ${BASE_COMMAND} logs ${ctx.env}`));
+    printMessageBox(`Hub Pool update  [${ctx.env}]`, lines, 'red');
+    return;
+  }
+  lines.push('', cliOk(`${base}/api/health answered — Hub is up`));
+
+  try {
+    const identify = await fetch(`${base}/api/inference/pool/identify`, { signal: AbortSignal.timeout(3000) });
+    const body = identify.ok ? ((await identify.json()) as { poolProtocol?: number }) : null;
+    lines.push(
+      typeof body?.poolProtocol === 'number'
+        ? cliOk(`pool protocol ${body.poolProtocol}`)
+        : cliWarn('answered identify but reported no poolProtocol — this build predates Hub Pool'),
+    );
+  } catch {
+    // identify is a bonus signal on top of health, not a requirement for a successful update.
+  }
+  printMessageBox(`Hub Pool update  [${ctx.env}]`, lines, 'green');
 }
 
 /** What each axis is called, which env var overrides it, and how `/status` reports its state. */
@@ -312,24 +535,131 @@ async function runPoolEnableCommand(ctx: HubContext, parsed: ParsedPoolArgs) {
   printMessageBox(enable ? `${axis.label} enabled` : `${axis.label} disabled`, lines, enable ? 'green' : 'yellow');
 }
 
+/**
+ * `cihub pool pin <node-fqdn|local> [--model M]` / `cihub pool unpin [--model M]`.
+ *
+ * A pin is a preference, not a rule — the Hub only ever moves the pinned node to the front of a
+ * candidate list it already built — so neither verb can take inference down and neither is treated
+ * as destructive. What they CAN do is quietly stop applying, which is why both print where the pin
+ * ended up and point at `pool status`, the one place `targetAvailable` is reported.
+ */
+async function runPoolPinCommand(ctx: HubContext, parsed: ParsedPoolArgs) {
+  const { env, envFile } = ctx;
+  const scope = parsed.model === undefined ? 'default' : 'model';
+  const covers = parsed.model === undefined ? 'every model' : `model "${sanitizeForBox(parsed.model)}"`;
+
+  if (parsed.subcommand === 'unpin') {
+    const { pins } = await deletePoolPin(envFile, scope, parsed.model);
+    printMessageBox(
+      `Pin removed  [${env}]`,
+      [
+        `Routing for ${covers} is back to the ranker (least-loaded, with the local head start).`,
+        ...(pins.length > 0 ? ['', `${pins.length} other pin(s) remain — see: ${BASE_COMMAND} pool status`] : []),
+      ],
+      'yellow',
+    );
+    return;
+  }
+
+  if (!parsed.target) {
+    usageAndExit(`Usage: ${BASE_COMMAND} pool pin <node-fqdn|local> [--model <model id>] [env] [--yes]`);
+  }
+
+  // `local` is a literal, checked BEFORE the FQDN shape test — `isPlausiblePeerFqdn` requires a dot,
+  // so "local" would otherwise be read as a malformed peer name and rejected. There is no peer row
+  // for this node, which is exactly why a pin cannot be a column on one.
+  const toLocal = parsed.target.trim().toLowerCase() === 'local';
+  if (!toLocal && !isPlausiblePeerFqdn(parsed.target)) {
+    printMessageBox(
+      'Not a node name',
+      [
+        `"${sanitizeForBox(parsed.target)}" is neither \`local\` nor a tailnet hostname.`,
+        '',
+        `Pin to this Hub:  ${BASE_COMMAND} pool pin local`,
+        `Pin to a peer:    ${BASE_COMMAND} pool pin <node-fqdn>   (see: ${BASE_COMMAND} pool peers)`,
+      ],
+      'red',
+    );
+    process.exit(2);
+  }
+
+  let peer: { id: string; nodeFqdn: string; status: string } | undefined;
+  if (!toLocal) {
+    const peers = await fetchPoolPeers(envFile);
+    const resolved = resolvePoolPeerTarget(peers, parsed.target);
+    if ('error' in resolved) {
+      printMessageBox('Peer not found', [resolved.error], 'red');
+      process.exit(2);
+    }
+    peer = resolved.peer;
+  }
+
+  const label = toLocal ? 'this Hub' : sanitizeForBox(peer?.nodeFqdn ?? '');
+  const confirmed = await confirmDestructiveAction(
+    `Pinning ${covers} to ${label}`,
+    parsed.yes,
+    `Prefer ${label} for ${covers}? [y/N]: `,
+    'a state change',
+  );
+  if (!confirmed) {
+    printMessageBox('Cancelled', ['Left routing untouched.'], 'yellow');
+    return;
+  }
+
+  await setPoolPin(
+    envFile,
+    toLocal
+      ? { scope, ...(parsed.model === undefined ? {} : { model: parsed.model }), targetKind: 'local' }
+      : { scope, ...(parsed.model === undefined ? {} : { model: parsed.model }), targetKind: 'peer', targetPeerId: peer?.id as string },
+  );
+
+  printMessageBox(
+    `Pinned  [${env}]`,
+    [
+      `${covers} → ${label}`,
+      '',
+      'This is a preference, not a rule: when the pinned node cannot serve a request it is ranked',
+      'normally and the request still goes somewhere. Nothing restarts — the next pooled request',
+      'already uses it.',
+      '',
+      ...(peer && peer.status !== 'connected'
+        ? [`${STEP_ICONS.fail} That peer is ${sanitizeForBox(peer.status)} right now, so the pin does nothing until it recovers.`, '']
+        : []),
+      `Check it took effect: ${BASE_COMMAND} pool status`,
+    ],
+    'green',
+  );
+}
+
 async function runPoolPeerMutation(ctx: HubContext, parsed: ParsedPoolArgs) {
   const { env, envFile } = ctx;
   if (!parsed.target) {
     usageAndExit(
       parsed.subcommand === 'pair'
-        ? `Usage: ${BASE_COMMAND} pool pair <node-fqdn> [env] [--name <label>] [--yes]`
+        ? `Usage: ${BASE_COMMAND} pool pair <node-fqdn|address> [env] [--pin <digits>] [--name <label>] [--yes]`
         : `Usage: ${BASE_COMMAND} pool ${parsed.subcommand} <id|node-fqdn> [env] [--yes]`,
     );
   }
 
   if (parsed.subcommand === 'pair') {
-    if (!isPlausiblePeerFqdn(parsed.target)) {
+    // Two shapes, told apart by whether the target looks like a MagicDNS name. An address needs a
+    // PIN, because the far Hub only discloses its tailnet name — the name the row is keyed on — to a
+    // request carrying one; `/identify` reports no name to anybody.
+    const byName = isPlausiblePeerFqdn(parsed.target);
+    if (!byName && parsed.pin === undefined) {
       printMessageBox(
-        'Not a peer hostname',
+        'Pairing by address needs a PIN',
         [
-          `"${sanitizeForBox(parsed.target)}" is not a MagicDNS name.`,
-          'Pass the bare hostname a peer publishes on the tailnet — no scheme, port or path,',
-          'and not an IP address: e.g. hub-b.example-tailnet.ts.net',
+          `"${sanitizeForBox(parsed.target)}" is not a MagicDNS name, so it is being read as an address.`,
+          '',
+          'An address can reach the other Hub but cannot name it: /identify is unauthenticated and',
+          'reports no MagicDNS name. The name comes back in the answer to a PIN-authenticated',
+          'pairing request, so pairing by address needs the PIN from that Hub:',
+          '',
+          '  on that Hub:  cihub pool pairing-pin',
+          `  then here:    ${BASE_COMMAND} pool pair ${sanitizeForBox(parsed.target)} --pin <digits>`,
+          '',
+          'Or pass the bare tailnet hostname instead: e.g. hub-b.example-tailnet.ts.net',
         ],
         'red',
       );
@@ -345,7 +675,7 @@ async function runPoolPeerMutation(ctx: HubContext, parsed: ParsedPoolArgs) {
       printMessageBox('Pairing cancelled', ['No pairing request was sent.'], 'yellow');
       return;
     }
-    const peer = await pairPoolPeer(envFile, parsed.target, parsed.displayName);
+    const peer = await pairPoolPeer(envFile, byName ? { nodeFqdn: parsed.target } : { address: parsed.target }, parsed.displayName, parsed.pin);
     printMessageBox(
       `Pairing requested  [${env}]`,
       [

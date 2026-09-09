@@ -159,8 +159,8 @@ export async function runWizard(defaultEnv: HubEnv = 'local') {
       [
         '1. local    \u2014 Source-based local development  (default)',
         '2. dev      \u2014 Dev appliance environment',
-        '3. staging  ? Staging appliance environment',
-        '4. prod     ? Production appliance environment',
+        '3. staging  \u2014 Staging appliance environment',
+        '4. prod     \u2014 Production appliance environment',
       ],
       'cyan',
     );
@@ -170,7 +170,7 @@ export async function runWizard(defaultEnv: HubEnv = 'local') {
     if (firstRun) {
       // -- Step 2: prerequisites --
       console.log();
-      console.log(renderStep(2, FTUE_STEPS, 'Checking prerequisites?', 'active'));
+      console.log(renderStep(2, FTUE_STEPS, 'Checking prerequisites\u2026', 'active'));
       const dockerOk = checkDockerAvailable();
       const { stdout: dcVersion } = runCapture('docker', ['compose', 'version']);
       const { stdout: tsIp } = runCapture('tailscale', ['ip', '--4']);
@@ -194,20 +194,20 @@ export async function runWizard(defaultEnv: HubEnv = 'local') {
 
       // -- Step 3: setup --
       console.log();
-      console.log(renderStep(3, FTUE_STEPS, 'Initializing host assets?', 'active'));
+      console.log(renderStep(3, FTUE_STEPS, 'Initializing host assets\u2026', 'active'));
       await setupHub(env);
       console.log(renderStep(3, FTUE_STEPS, 'Host initialized', 'done'));
 
       // -- Step 4: start --
       console.log();
-      console.log(renderStep(4, FTUE_STEPS, 'Starting the Hub?', 'active'));
+      console.log(renderStep(4, FTUE_STEPS, 'Starting the Hub\u2026', 'active'));
       const detached = (await rl.question('  Run detached (background)? [y/N]: ')).trim().toLowerCase();
       await startHub(env === 'local' ? 'local-dev' : detached === 'y' || detached === 'yes' ? 'detached' : 'attached', env);
       console.log(renderStep(4, FTUE_STEPS, 'Hub launched', 'done'));
 
       // -- Step 5: register --
       console.log();
-      console.log(renderStep(5, FTUE_STEPS, 'Pairing with CI Cloud?', 'active'));
+      console.log(renderStep(5, FTUE_STEPS, 'Pairing with CI Cloud\u2026', 'active'));
       await registerHub(env);
       console.log(renderStep(5, FTUE_STEPS, 'Registration flow complete', 'done'));
 

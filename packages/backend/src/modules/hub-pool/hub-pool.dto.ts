@@ -6,6 +6,10 @@ import {
   MIN_POOL_HEALTH_POLL_SECONDS,
   MIN_POOL_LOCAL_AFFINITY,
   MIN_POOL_PRESSURE_WEIGHT,
+  MAX_PINNED_MODEL_LENGTH,
+  POOL_PIN_MODES,
+  POOL_PIN_SCOPES,
+  POOL_PIN_TARGET_KINDS,
   normalizePeerFqdn,
 } from '@/common/helpers/hub-pool';
 import { ROUTING_LOG_CAPACITY } from './hub-pool-routing-log.service';
@@ -20,6 +24,17 @@ const peerFqdnSchema = z
   .string()
   .trim()
   .refine((value) => normalizePeerFqdn(value) !== null, { message: 'Must be a bare hostname (no scheme, credentials, port, path or IP literal)' });
+
+/**
+ * An operator-typed peer address, for the discovery probe and for pairing by address.
+ *
+ * Deliberately NOT `peerFqdnSchema`: that schema exists to reject exactly these shapes, because an
+ * address must never be *stored* as a peer name. This value is used to reach one handshake and then
+ * discarded — the real parse and the private-address check are `parseProbeTarget` and
+ * `isPoolProbeTarget`, which produce messages naming the specific problem. This is the length bound,
+ * not the grammar.
+ */
+const probeAddressSchema = z.string().trim().min(1).max(300);
 
 /** Exactly six digits. Never trimmed to a number: a PIN can legitimately start with a zero. */
 const pairingPinSchema = z
@@ -36,15 +51,37 @@ const peerPublicKeySchema = z.string().trim().min(32).max(256);
 /** A pool node UUID as it appears in a body. `.uuid()` because the column is `uuid`, and a non-UUID could never match a row. */
 const peerNodeUuidSchema = z.uuid();
 
-const pairPeerSchema = z.object({
-  nodeFqdn: peerFqdnSchema,
-  displayName: z.string().trim().min(1).optional(),
-  /**
-   * The PIN minted on the peer's own screen. Optional: without it this is the pre-existing
-   * request/approve flow, unchanged, which is what keeps a mixed-version fleet pairing at all.
-   */
-  pin: pairingPinSchema.optional(),
-});
+/**
+ * Two ways to name what to pair with, and exactly one of them per request.
+ *
+ * `nodeFqdn` is the original: a MagicDNS name, from a discovery directory — the tailnet or the CI
+ * Portal device registry, whose rows carry a MagicDNS name too — or typed by the operator.
+ * `address` is for a Hub found with `POST peers/probe`, which cannot report a name — `/identify` is
+ * unauthenticated and no longer discloses one — so the name is learned from the far side's reply to
+ * a PIN-authenticated pairing request. That is why `pin` is *required* with `address` and optional
+ * with `nodeFqdn`: without it there is no answer carrying a name, and nothing to key the row on.
+ *
+ * `address` is deliberately NOT `peerFqdnSchema`, which exists to reject exactly these shapes. It is
+ * parsed by `parseProbeTarget` and never stored — see `HubPoolDiscoveryService`.
+ */
+const pairPeerSchema = z
+  .object({
+    nodeFqdn: peerFqdnSchema.optional(),
+    address: probeAddressSchema.optional(),
+    displayName: z.string().trim().min(1).optional(),
+    /**
+     * The PIN minted on the peer's own screen. Optional with `nodeFqdn`: without it that is the
+     * pre-existing request/approve flow, unchanged, which is what keeps a mixed-version fleet
+     * pairing at all. Mandatory with `address`.
+     */
+    pin: pairingPinSchema.optional(),
+  })
+  .refine((body) => (body.nodeFqdn === undefined) !== (body.address === undefined), {
+    message: "Send either nodeFqdn (a peer's tailnet name) or address (a LAN address to pair with), not both and not neither",
+  })
+  .refine((body) => body.address === undefined || body.pin !== undefined, {
+    message: 'Pairing by address needs the six-digit PIN minted on the other Hub — its tailnet name is only disclosed to a caller that presents one',
+  });
 export class PairPeerBody extends createZodDto(pairPeerSchema) {}
 
 // ── Peer-to-peer wire bodies (no operator auth on `request` — trust isn't established yet) ──
@@ -135,17 +172,8 @@ const hubPoolPreferencesSchema = z.object({
 });
 export class UpdateHubPoolPreferencesBody extends createZodDto(hubPoolPreferencesSchema) {}
 
-/**
- * An operator-typed peer address for the one-shot discovery probe.
- *
- * Deliberately NOT `peerFqdnSchema`: that schema exists to reject exactly these shapes, because an
- * address must never be *stored* as a peer name. This value is used once, from an
- * operator-authenticated route, and discarded as soon as `/identify` has named the node — the real
- * parse and the private-address check are `parseProbeTarget` and `isPoolProbeTarget`, which produce
- * messages naming the specific problem. This is the length bound, not the grammar.
- */
 const probePeerAddressSchema = z.object({
-  address: z.string().trim().min(1).max(300),
+  address: probeAddressSchema,
 });
 export class ProbePeerAddressBody extends createZodDto(probePeerAddressSchema) {}
 
@@ -153,3 +181,60 @@ const routingLogQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(ROUTING_LOG_CAPACITY).optional(),
 });
 export class RoutingLogQueryDto extends createZodDto(routingLogQuerySchema) {}
+
+// ── Manual routing pins ──
+
+/**
+ * Bounded, but deliberately not validated against a grammar: a model id is whatever the engine
+ * calls it (`llama3.2:3b`, `hf.co/org/repo:Q4_K_M`), and it is compared verbatim and case-sensitively
+ * against `modelsLoaded` on the request path. Any normalization here would produce pins that look
+ * correct on the settings card and silently never match.
+ */
+const pinnedModelSchema = z.string().trim().min(1).max(MAX_PINNED_MODEL_LENGTH);
+
+/**
+ * Upsert a pin. POST rather than PUT-with-an-id because `(scope, model)` IS the key — an operator
+ * edits "the pin for this model", not a row — and pins have no ids: they live in `HubPoolPreferences`
+ * (settings.json), not in a table.
+ *
+ * `mode` is `.optional()`, never `.default()`: `zodSchemaToOpenApiComponent` promotes a defaulted
+ * field into `required` in the generated client, which would make every caller send a value that has
+ * exactly one legal setting. The default is applied in `HubPoolPinService`.
+ */
+const upsertPoolPinSchema = z
+  .object({
+    scope: z.enum(POOL_PIN_SCOPES),
+    /** Required iff `scope === 'model'`, and forbidden otherwise — the pool-wide pin names no model. */
+    model: pinnedModelSchema.optional(),
+    targetKind: z.enum(POOL_PIN_TARGET_KINDS),
+    /** Required iff `targetKind === 'peer'`. A `local` pin has no id to give: this node has no peer row. */
+    targetPeerId: z.uuid().optional(),
+    mode: z.enum(POOL_PIN_MODES).optional(),
+  })
+  .refine((body) => (body.scope === 'model') === (body.model !== undefined), {
+    message: 'model is required for a model pin and must be omitted for the pool-wide default pin',
+    path: ['model'],
+  })
+  .refine((body) => (body.targetKind === 'peer') === (body.targetPeerId !== undefined), {
+    message: 'targetPeerId is required when pinning to a peer and must be omitted when pinning to this Hub',
+    path: ['targetPeerId'],
+  });
+export class UpsertPoolPinBody extends createZodDto(upsertPoolPinSchema) {}
+
+/**
+ * Which pin to remove, in the query string rather than a path parameter.
+ *
+ * A model id contains `:` and `/` (`hf.co/org/repo:Q4_K_M`), and Nest splits a path param on the
+ * slash — so `DELETE /pins/:model` could never address the pins operators actually set.
+ */
+/**
+ * A plain object, deliberately un-`.refine`d: `zodObjectToQueryParameters` only walks a bare
+ * `ZodObject`, so a refinement here would silently strip both parameters from the OpenAPI document
+ * and the generated client would take no arguments at all. The `scope`/`model` pairing is enforced
+ * in `HubPoolPinService.remove`, which returns the same 400.
+ */
+const deletePoolPinQuerySchema = z.object({
+  scope: z.enum(POOL_PIN_SCOPES),
+  model: pinnedModelSchema.optional(),
+});
+export class DeletePoolPinQuery extends createZodDto(deletePoolPinQuerySchema) {}

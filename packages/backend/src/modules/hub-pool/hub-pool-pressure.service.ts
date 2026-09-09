@@ -1,9 +1,8 @@
-import { Injectable, type OnModuleDestroy, type OnModuleInit } from '@nestjs/common';
+import { Injectable, type OnModuleDestroy } from '@nestjs/common';
 import { LoggerService } from '@/core/logger/logger.service';
 import { FilesystemService } from '@/core/filesystem/filesystem.service';
 import { HardwareInspectorService } from '@/modules/inference/hardware-inspector.service';
 import { MAX_PRESSURE_BAND } from '@/common/helpers/hub-pool';
-import { HubPoolPeerRepository } from './hub-pool-peer.repository';
 import {
   HOST_PRESSURE_FILE_PATH,
   hostPressureFileSchema,
@@ -73,13 +72,16 @@ const PROFILE_TTL_MS = 30 * 60_000;
  *    `UNKNOWN_PRESSURE`, which is mid-band.
  * 2. **Nothing here runs on the request path.** `band()` is a field read. No process is forked, no
  *    socket is opened and no file is stat'd while a request is being routed.
- * 3. **Sampling is gated on there being a connected peer**, not on `poolEnabled` (which defaults
- *    true). The band only exists to be compared against another node's, so on a single-node Hub —
- *    the overwhelming majority of deployments — this service does one indexed SELECT every 10s and
- *    nothing else, and its band stays `null` forever.
+ * 3. **The timer itself is gated on there being a connected peer**, not on `poolEnabled` (which
+ *    defaults true). The band only exists to be compared against another node's, so on a single-node
+ *    Hub — the overwhelming majority of deployments — this service arms no timer, issues no query and
+ *    reads no file, and its band stays `null` forever. `HubPoolPeerService`'s health tick, which
+ *    already lists the peer rows for its own reasons, calls {@link setPoolActive} with what it
+ *    found; there is deliberately no second periodic SELECT here just to ask whether to sample.
+ *    `isSampling()` exists so a test can pin that instead of this comment asserting it.
  */
 @Injectable()
-export class HubPoolPressureService implements OnModuleInit, OnModuleDestroy {
+export class HubPoolPressureService implements OnModuleDestroy {
   private timerHandle: NodeJS.Timeout | null = null;
   private stopped = false;
 
@@ -96,15 +98,44 @@ export class HubPoolPressureService implements OnModuleInit, OnModuleDestroy {
     private readonly logger: LoggerService,
     private readonly filesystem: FilesystemService,
     private readonly hardwareInspector: HardwareInspectorService,
-    private readonly repo: HubPoolPeerRepository,
   ) {}
-
-  onModuleInit(): void {
-    this.scheduleNextTick();
-  }
 
   onModuleDestroy(): void {
     this.stopped = true;
+    this.stopSampling();
+  }
+
+  /**
+   * Arm or disarm sampling, from the health tick's own view of the peer table.
+   *
+   * Idempotent in both directions, because it is called on every tick with whatever that tick
+   * happened to see. Disarming resets the smoothed state as well as clearing the timer: a band
+   * carried over from the last time this node had a peer would be a stale claim about a GPU nobody
+   * has measured since, and `band()`'s staleness check should not be the only thing standing
+   * between that value and a ranker.
+   */
+  setPoolActive(active: boolean): void {
+    if (this.stopped || active === (this.timerHandle !== null)) {
+      return;
+    }
+    if (active) {
+      this.scheduleNextTick();
+      return;
+    }
+    this.stopSampling();
+    this.ewma = null;
+    this.sampleCount = 0;
+    this.lastSampleAt = 0;
+    this.lastSource = null;
+    this.currentBand = 0;
+  }
+
+  /** Whether the sampling timer is currently armed. Test seam for what a peerless Hub costs. */
+  isSampling(): boolean {
+    return this.timerHandle !== null;
+  }
+
+  private stopSampling(): void {
     if (this.timerHandle) {
       clearTimeout(this.timerHandle);
       this.timerHandle = null;
@@ -147,7 +178,9 @@ export class HubPoolPressureService implements OnModuleInit, OnModuleDestroy {
           // correct degraded state, and a permanently dead timer would freeze it at its last value.
           this.logger.debug(`[HubPool] pressure sample failed: ${error instanceof Error ? error.message : String(error)}`);
         }
-        if (!this.stopped) {
+        // `timerHandle` is nulled by `setPoolActive(false)`, so a tick that was already in flight when
+        // the last peer went away finishes and stops, rather than re-arming the loop behind it.
+        if (!this.stopped && this.timerHandle !== null) {
           this.scheduleNextTick();
         }
       })();
@@ -155,9 +188,6 @@ export class HubPoolPressureService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async tick(): Promise<void> {
-    if (!(await this.hasConnectedPeers())) {
-      return;
-    }
     const reading = await this.read();
     if (!reading) {
       return;
@@ -167,16 +197,6 @@ export class HubPoolPressureService implements OnModuleInit, OnModuleDestroy {
     this.lastSampleAt = Date.now();
     this.lastSource = reading.source;
     this.applyBand(this.ewma);
-  }
-
-  /**
-   * Gated on peers rather than on the kill switch, and this is the difference between a feature that
-   * costs nothing on a single-node Hub and one that runs a sampling loop on every appliance forever.
-   * `poolEnabled` defaults to `true`, so gating on it would have gated nothing.
-   */
-  private async hasConnectedPeers(): Promise<boolean> {
-    const peers = await this.repo.listByStatuses(['connected']);
-    return peers.length > 0;
   }
 
   /**

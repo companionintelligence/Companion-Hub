@@ -68,15 +68,16 @@ core$ curl -s https://<beta-node>/api/inference/pool/identify
 beta$ curl -s https://<core-node>/api/inference/pool/identify
 ```
 
-**Expected** — `{"isCiHub":true,"nodeFqdn":"..."}` in both directions, with the FQDN matching the node
-you called.
+**Expected** — `{"isCiHub":true,"poolProtocol":2}` in both directions. There is deliberately no name in
+that answer: `/identify` is unauthenticated and published through the Cloudflare tunnel, so it
+discloses no MagicDNS name, no node UUID, and no public key.
 
 **PASS** both return `isCiHub: true`.
 **FAIL** a TLS error means Tailscale HTTPS certificates are not provisioned on that node; a connection
 refusal means its Hub is not serving. Every later handshake and health probe uses this exact URL shape,
 so nothing downstream can pass until this does.
 
-### 1.3 Discovery credentials on at least one node
+### 1.3 Whole-tailnet enumeration on at least one node
 
 ```bash
 core$ cihub pool status <env>
@@ -84,8 +85,13 @@ core$ cihub pool status <env>
 
 **Expected** — `Discovery  Tailscale Admin API configured` on `<core-node>`.
 
-**PASS** at least one node reports the Admin API as configured. `<beta-node>` may report
-`not configured`; that is supported, and step 1.4 confirms it still pairs.
+This step pins the *credentialed* directory, which is the one this plan's 2.1 depends on. It is not
+the only one: a tailnet-connected Hub also names the peers its own Tailscale daemon can see, and a
+registered Hub also names the Hubs on its CI account. The `Discovery` line reports the credential
+alone and says nothing about those two.
+
+**PASS** at least one node reports the Admin API as configured. `<beta-node>` may report no
+credential; that is supported, and step 1.4 confirms it still pairs.
 **FAIL** neither node has it. Set `TAILSCALE_OAUTH_CLIENT_ID` and `TAILSCALE_OAUTH_CLIENT_SECRET`
 (a Tailscale OAuth client with `devices:core:read`) on `<core-node>` and restart it.
 
@@ -121,11 +127,18 @@ core$ cihub pool discover <env>
 
 UI: **Settings → Network → Hub Pool → Discoverable devices**.
 
-**Expected** — a table with a row for `<beta-node>`, its hostname, and its Tailscale device ID.
+**Expected** — a table with a row for `<beta-node>`, its hostname, and a device ID.
 
-**PASS** `<beta-node>` is listed.
+`<beta-node>` can be named by any of three directories here — the local Tailscale daemon's peer map,
+the Admin API credential from 1.3, or the CI Portal registry if both nodes are registered to the same
+account — and it is listed once however many of them know it. The device ID column shows whichever
+directory named it, so a Portal-sourced row carries a Portal device ID rather than a Tailscale one.
+
+**PASS** `<beta-node>` is listed exactly once.
 **FAIL** an empty table means the Hub on `<beta-node>` did not answer `/identify` (retry 1.2) or the two
-are already paired (paired nodes are excluded — check `cihub pool peers`).
+are already paired (paired nodes are excluded — check `cihub pool peers`). A duplicate row is also a
+failure: the merge folds on the normalized FQDN, so two rows for one node means the two directories
+disagree about its name.
 
 ### 2.2 Initiate pairing from core
 
@@ -823,9 +836,9 @@ Date: ________  ·  Hub version core: ________  ·  beta: ________  ·  Tester: 
 |---|---|---|---|
 | 1.1 | Both nodes on the tailnet | ☐ pass ☐ fail | |
 | 1.2 | TLS reachable in both directions | ☐ pass ☐ fail | |
-| 1.3 | Admin API credential on one node | ☐ pass ☐ fail | |
+| 1.3 | Whole-tailnet enumeration on one node | ☐ pass ☐ fail | |
 | 1.4 | Inventories differ as required | ☐ pass ☐ fail | |
-| 2.1 | Discovery lists the other node | ☐ pass ☐ fail | |
+| 2.1 | Discovery lists the other node exactly once | ☐ pass ☐ fail | |
 | 2.2 | Pairing initiated from core | ☐ pass ☐ fail | |
 | 2.3 | Approved on beta | ☐ pass ☐ fail | |
 | 2.4 | Both connected, engines populated | ☐ pass ☐ fail | |

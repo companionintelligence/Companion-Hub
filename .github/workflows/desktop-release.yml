@@ -187,6 +187,14 @@ jobs:
           fi
           node scripts/build-standalone-cli.cjs --target "${{ matrix.target }}" --outfile "$CLI_OUT" --bundle-resource
           ls -lh "$CLI_OUT"
+          # A second, EXECUTABLE copy under its platform name, for release upload. The bundled one
+          # above is deliberately chmod 644 so Tauri packages it as a resource, which makes it
+          # useless to curl onto a headless node. Publishing this is what lets `cihub fleet install`
+          # reach a machine that has no desktop package.
+          mkdir -p dist/cli
+          node scripts/build-standalone-cli.cjs --target "${{ matrix.target }}" --outdir dist/cli
+          chmod +x dist/cli/* 2>/dev/null || true
+          ls -lh dist/cli/
       - name: Bump Tauri version to match release tag
         if: env.BUILD_ENABLED
         shell: bash
@@ -548,6 +556,8 @@ jobs:
         run: |
           BUNDLE_DIR="packages/desktop/src-tauri/target/${{ matrix.target }}/release/bundle"
           mkdir -p release-artifacts
+          # Standalone CLI binaries ride along with the installers for this target.
+          cp dist/cli/cihub-* release-artifacts/ 2>/dev/null || true
           # macOS
           if [ -d "$BUNDLE_DIR/dmg" ]; then
             cp "$BUNDLE_DIR"/dmg/*.dmg release-artifacts/ 2>/dev/null || true
@@ -598,7 +608,10 @@ jobs:
       - name: Collect all files
         run: |
           mkdir -p release-files
-          find artifacts -type f \( -name "*.dmg" -o -name "*.deb" -o -name "*.rpm" -o -name "*.msi" -o -name "*-setup.exe" \) -exec cp {} release-files/ \;
+          # The standalone `cihub` binaries ship alongside the desktop installers. Without them the
+          # only way onto a headless node is the .deb, which drags the whole desktop package along —
+          # and scripts/install.sh has been downloading an asset name no workflow ever produced.
+          find artifacts -type f \( -name "*.dmg" -o -name "*.deb" -o -name "*.rpm" -o -name "*.msi" -o -name "*-setup.exe" -o -name "cihub-linux-*" -o -name "cihub-macos-*" -o -name "cihub-windows-*" \) -exec cp {} release-files/ \;
           echo "=== All release files ==="
           ls -lh release-files/
       - name: Create GitHub Release

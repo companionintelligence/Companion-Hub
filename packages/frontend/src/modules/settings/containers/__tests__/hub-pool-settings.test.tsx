@@ -17,6 +17,8 @@ const fixtures = vi.hoisted(() => ({
   patchSettings: vi.fn(async (_options: { url: string; body: Record<string, unknown> }) => ({})),
   pinMint: vi.fn(async (_options: { url: string }) => ({ data: undefined }) as { data?: Record<string, unknown> }),
   pinCancel: vi.fn(async (_options: { url: string }) => ({})),
+  upsertPin: vi.fn(async (_options: { body: Record<string, unknown> }) => ({})),
+  deletePin: vi.fn(async (_options: { query: Record<string, unknown> }) => ({})),
 }));
 
 vi.mock('react-i18next', () => {
@@ -41,6 +43,8 @@ vi.mock('@/api-client/sdk.gen', () => ({
   approvePeer: vi.fn(),
   rejectPeer: vi.fn(),
   removePeer: vi.fn(),
+  upsertPoolPin: (options: { body: Record<string, unknown> }) => fixtures.upsertPin(options),
+  deletePoolPin: (options: { query: Record<string, unknown> }) => fixtures.deletePin(options),
 }));
 vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
   poolStatusQueryKey: () => ['pool-status'],
@@ -136,6 +140,8 @@ describe('HubPoolSection', () => {
     fixtures.patchSettings.mockClear();
     fixtures.pinMint.mockClear();
     fixtures.pinCancel.mockClear();
+    fixtures.upsertPin.mockClear();
+    fixtures.deletePin.mockClear();
     vi.mocked(removePeer).mockClear();
   });
 
@@ -227,6 +233,42 @@ describe('HubPoolSection', () => {
       renderSection();
 
       expect(await screen.findByTestId('hub-pool-peer-not-accepting')).toBeTruthy();
+    });
+
+    it('marks a peer still on the legacy bearer token, since that is what blocks poolRequireSignedPeers', async () => {
+      fixtures.status = baseStatus({
+        peers: [connectedPeer({ authMode: 'bearer' })],
+        peerCounts: { total: 1, connected: 1, pending: 0, unreachable: 0, disabled: 0 },
+      });
+
+      renderSection();
+
+      expect(await screen.findByTestId('hub-pool-peer-bearer')).toBeTruthy();
+    });
+
+    it('does not mark a peer that has upgraded to a pinned key', async () => {
+      fixtures.status = baseStatus({
+        peers: [connectedPeer({ authMode: 'signed' })],
+        peerCounts: { total: 1, connected: 1, pending: 0, unreachable: 0, disabled: 0 },
+      });
+
+      renderSection();
+
+      expect(await screen.findByTestId('hub-pool-peer')).toBeTruthy();
+      expect(screen.queryByTestId('hub-pool-peer-bearer')).toBeNull();
+    });
+
+    it('reads a peer on a build predating pinned identities as not yet upgraded, never as signed', async () => {
+      // `authMode` is absent on such a peer. Treating absence as signed would hide the one peer that
+      // would actually be cut off by turning the switch on.
+      fixtures.status = baseStatus({
+        peers: [connectedPeer({ authMode: undefined })],
+        peerCounts: { total: 1, connected: 1, pending: 0, unreachable: 0, disabled: 0 },
+      });
+
+      renderSection();
+
+      expect(await screen.findByTestId('hub-pool-peer-bearer')).toBeTruthy();
     });
   });
 
@@ -369,7 +411,7 @@ describe('HubPoolSection', () => {
     expect(screen.getByText('HUB_POOL_ROUTING_INBOUND')).toBeTruthy();
   });
 
-  it('says the discovery credential is missing instead of showing an empty device list', async () => {
+  it('names the missing tailnet-enumeration credential instead of showing a bare empty device list', async () => {
     fixtures.status = baseStatus({ tailscaleAdminApiConfigured: false, reason: 'no_peers', routingActive: false });
 
     renderSection();
@@ -516,6 +558,153 @@ describe('HubPoolSection', () => {
 
       expect(await screen.findByTestId('hub-pool-identity-error')).toHaveTextContent('HUB_POOL_IDENTITY_ERROR');
       expect(screen.queryByTestId('hub-pool-local-fingerprint')).not.toBeInTheDocument();
+    });
+  });
+
+  /**
+   * Routing pins. The card's job is not the mutation — it is making a pin that has quietly stopped
+   * applying visible, because a `prefer` pin never errors anywhere else.
+   */
+  describe('routing pins', () => {
+    it('says nothing is pinned when nothing is, on a Hub with no peers at all', async () => {
+      renderSection();
+
+      expect(await screen.findByText('HUB_POOL_PINS_EMPTY')).toBeTruthy();
+      expect(screen.queryByTestId('hub-pool-pin')).toBeNull();
+    });
+
+    it('renders a stored pin with the model it covers and the node it names', async () => {
+      fixtures.status = baseStatus({
+        peers: [connectedPeer()],
+        peerCounts: { total: 1, connected: 1, pending: 0, unreachable: 0, disabled: 0 },
+        pins: [
+          {
+            scope: 'model',
+            model: 'llama3.2:3b',
+            targetKind: 'peer',
+            peerId: 'peer-1',
+            mode: 'prefer',
+            nodeFqdn: 'hub-b.example-tailnet.ts.net',
+            targetAvailable: true,
+          },
+        ],
+      });
+
+      renderSection();
+
+      const row = await screen.findByTestId('hub-pool-pin');
+      expect(row.textContent).toContain('llama3.2:3b');
+      expect(row.textContent).toContain('hub-b.example-tailnet.ts.net');
+      expect(screen.queryByTestId('hub-pool-pin-unavailable')).toBeNull();
+    });
+
+    it('warns on a pin whose node cannot take work right now, which is the only place that shows', async () => {
+      fixtures.status = baseStatus({
+        peers: [connectedPeer({ status: 'unreachable' })],
+        peerCounts: { total: 1, connected: 0, pending: 0, unreachable: 1, disabled: 0 },
+        pins: [
+          {
+            scope: 'default',
+            targetKind: 'peer',
+            peerId: 'peer-1',
+            mode: 'prefer',
+            nodeFqdn: 'hub-b.example-tailnet.ts.net',
+            targetAvailable: false,
+          },
+        ],
+      });
+
+      renderSection();
+
+      expect(await screen.findByTestId('hub-pool-pin-unavailable')).toBeTruthy();
+    });
+
+    it('names an unpaired target rather than showing a bare peer id', async () => {
+      fixtures.status = baseStatus({
+        pins: [{ scope: 'default', targetKind: 'peer', peerId: 'peer-gone', mode: 'prefer', nodeFqdn: null, targetAvailable: false }],
+      });
+
+      renderSection();
+
+      expect(await screen.findByText('HUB_POOL_PINS_UNPAIRED')).toBeTruthy();
+    });
+
+    it('pins to this Hub for every model by default, which is the pool-wide pin', async () => {
+      renderSection();
+
+      await userEvent.click(await screen.findByTestId('hub-pool-pin-add'));
+
+      expect(fixtures.upsertPin).toHaveBeenCalledWith({ body: { scope: 'default', targetKind: 'local' } });
+    });
+
+    it('removes a pin by scope and model, never by an id it does not have', async () => {
+      fixtures.status = baseStatus({
+        pins: [{ scope: 'model', model: 'hf.co/org/repo:Q4_K_M', targetKind: 'local', mode: 'prefer', nodeFqdn: null, targetAvailable: true }],
+      });
+
+      renderSection();
+      await userEvent.click(await screen.findByTestId('hub-pool-pin-remove'));
+
+      expect(fixtures.deletePin).toHaveBeenCalledWith({ query: { scope: 'model', model: 'hf.co/org/repo:Q4_K_M' } });
+    });
+
+    it('warns in the unpair dialog when a pin points at the peer being unpaired', async () => {
+      fixtures.status = baseStatus({
+        peers: [connectedPeer()],
+        peerCounts: { total: 1, connected: 1, pending: 0, unreachable: 0, disabled: 0 },
+        pins: [
+          { scope: 'default', targetKind: 'peer', peerId: 'peer-1', mode: 'prefer', nodeFqdn: 'hub-b.example-tailnet.ts.net', targetAvailable: true },
+        ],
+      });
+
+      renderSection();
+      await userEvent.click(await screen.findByTestId('hub-pool-unpair-btn'));
+
+      expect(await screen.findByTestId('hub-pool-unpair-pins-warning')).toBeTruthy();
+    });
+
+    it('marks a routing-log entry a pin shaped, and leaves the others unmarked', async () => {
+      fixtures.routingLog = {
+        entries: [
+          {
+            at: '2026-09-05T10:00:01.000Z',
+            direction: 'outbound',
+            path: '/v1/chat/completions',
+            model: 'llama3.2:3b',
+            node: 'hub-b.example-tailnet.ts.net',
+            peerId: 'peer-1',
+            backend: 'vllm',
+            candidates: 2,
+            attempt: 1,
+            failedOverFrom: [],
+            outcome: 'served',
+            status: 200,
+            durationMs: 12,
+            pin: { scope: 'model', mode: 'prefer', targetKind: 'peer' },
+          },
+          {
+            at: '2026-09-05T10:00:00.000Z',
+            direction: 'outbound',
+            path: '/v1/chat/completions',
+            model: 'llama3.2:3b',
+            node: 'local',
+            peerId: null,
+            backend: 'ollama',
+            candidates: 2,
+            attempt: 1,
+            failedOverFrom: [],
+            outcome: 'served',
+            status: 200,
+            durationMs: 9,
+          },
+        ],
+        summary: { recorded: 2, capacity: 200, served: 2, failed: 0, failovers: 0, lastAt: '2026-09-05T10:00:01.000Z' },
+      };
+
+      renderSection();
+
+      await waitFor(() => expect(screen.getAllByTestId('hub-pool-routing-entry')).toHaveLength(2));
+      expect(screen.getAllByTestId('hub-pool-routing-pinned')).toHaveLength(1);
     });
   });
 });

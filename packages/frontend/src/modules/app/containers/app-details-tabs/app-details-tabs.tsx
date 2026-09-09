@@ -213,6 +213,27 @@ export const AppDetailsTabs = ({ info, app: _app, metadata, imageSizeFormatted, 
                   </div>
                 </>
               )}
+              {info.gpu_requirements && (
+                <>
+                  <div className="border-t border-border/40" />
+                  <div className="flex justify-between items-start" data-testid="app-gpu-requirements">
+                    <span className="text-sm text-muted-foreground">{t('ONBOARDING_GPU')}</span>
+                    <span className="text-sm font-medium text-right">
+                      <span className="flex items-center justify-end gap-1">
+                        <Cpu size={13} />
+                        {info.gpu_requirements.type.toUpperCase()} ·{' '}
+                        {info.gpu_requirements.optional ? t('ONBOARDING_BADGE_OPTIONAL') : t('ONBOARDING_BADGE_REQUIRED')}
+                      </span>
+                      <span className="mt-0.5 block text-xs font-normal text-muted-foreground">
+                        {info.gpu_requirements.host_platforms.join(', ')}
+                        {info.gpu_requirements.minimum_vram_gb === undefined
+                          ? ''
+                          : ` · ≥${info.gpu_requirements.minimum_vram_gb} GB ${t('ONBOARDING_VRAM')}`}
+                      </span>
+                    </span>
+                  </div>
+                </>
+              )}
               {metadata?.minHubVersion && (
                 <>
                   <div className="border-t border-border/40" />

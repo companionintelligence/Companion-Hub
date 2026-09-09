@@ -89,6 +89,13 @@ export type AppContextDto = {
         hubPoolHealthPollSeconds?: number;
         hubPoolRequireSignedPeers?: boolean;
         hubPoolPressureWeight?: number;
+        hubPoolPins?: Array<{
+            scope: 'default' | 'model';
+            model?: string;
+            targetKind: 'local' | 'peer';
+            peerId?: string;
+            mode: 'prefer';
+        }>;
         inferenceCloudProviders?: Array<{
             provider: 'openai' | 'anthropic' | 'google' | 'github-copilot';
             apiKey?: string;
@@ -178,6 +185,13 @@ export type UserSettingsBody = {
     hubPoolHealthPollSeconds?: number;
     hubPoolRequireSignedPeers?: boolean;
     hubPoolPressureWeight?: number;
+    hubPoolPins?: Array<{
+        scope: 'default' | 'model';
+        model?: string;
+        targetKind: 'local' | 'peer';
+        peerId?: string;
+        mode: 'prefer';
+    }>;
     inferenceCloudProviders?: Array<{
         provider: 'openai' | 'anthropic' | 'google' | 'github-copilot';
         apiKey?: string;
@@ -1282,6 +1296,14 @@ export type UpdateHubPoolPreferencesBody = {
     poolPressureWeight?: number;
 };
 
+export type UpsertPoolPinBody = {
+    scope: 'default' | 'model';
+    model?: string;
+    targetKind: 'local' | 'peer';
+    targetPeerId?: string;
+    mode?: 'prefer';
+};
+
 export type ProbePeerAddressBody = {
     address: string;
 };
@@ -2000,6 +2022,11 @@ export type RuntimeModelsQueryDto = {
 
 export type RoutingLogQueryDto = {
     limit?: number;
+};
+
+export type DeletePoolPinQuery = {
+    scope: 'default' | 'model';
+    model?: string;
 };
 
 export type MetadataDto = {
@@ -4010,6 +4037,31 @@ export type GetPoolRoutingLogData = {
 
 export type GetPoolRoutingLogResponses = {
     200: unknown;
+};
+
+export type DeletePoolPinData = {
+    body?: never;
+    path?: never;
+    query: {
+        scope: 'default' | 'model';
+        model?: string;
+    };
+    url: '/api/inference/pool/pins';
+};
+
+export type DeletePoolPinResponses = {
+    200: unknown;
+};
+
+export type UpsertPoolPinData = {
+    body: UpsertPoolPinBody;
+    path?: never;
+    query?: never;
+    url: '/api/inference/pool/pins';
+};
+
+export type UpsertPoolPinResponses = {
+    201: unknown;
 };
 
 export type ListPeersData = {
