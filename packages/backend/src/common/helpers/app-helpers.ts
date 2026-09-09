@@ -29,18 +29,31 @@ export const createAppUrn = (appName: string, appstore: string) => {
  * was present, so `../../..:x` was a valid URN as far as this function was
  * concerned and traversed as far as the caller's own fencing allowed.
  *
- * Deliberately narrower than "no separators": an app name and a store id are
- * both slugs by construction everywhere they are minted, so anything outside
- * this alphabet is a caller doing something other than naming an app.
+ * ⚠ THE RULE IS "SAFE PATH SEGMENT", NOT AN ALPHABET, because the alphabet does
+ * not match what this system actually mints:
  *
- * ⚠ A LEADING UNDERSCORE IS LEGAL. `_user` is the built-in per-user store slug
- * (`RESERVED_APP_STORE_SLUGS`, `APPS_FOLDER`) that every custom app and every
- * port-expose workload is minted under, so requiring an alphanumeric first
- * character would reject `<app>:_user` — i.e. every route the custom-app UI
- * calls. What the first character must not be is `.`, which is what makes `.`
- * and `..` names, and it still cannot be.
+ *   - `_user` is the built-in per-user store slug (`RESERVED_APP_STORE_SLUGS`,
+ *     `APPS_FOLDER`) every custom app and port-expose workload is filed under, so
+ *     demanding an alphanumeric first character rejects `<app>:_user` — every
+ *     route the custom-app UI calls.
+ *   - `AppStoreService.createAppStore` derives a store slug with `slugify(name,
+ *     { lower: true, trim: true })`, and *without* `strict: true` slugify keeps
+ *     `( ) : ! + $ * @ ~ _ .` — so a store a user named "Store (beta)" is really
+ *     stored as `store-(beta)`. An alphabet of `[a-zA-Z0-9._-]` orphans every app
+ *     in it.
+ *
+ * So the test is the property that actually matters, and the characters that are
+ * genuinely dangerous are named individually:
+ *
+ *   - a path separator (`/`, and `\` for the Windows convention) or a NUL would
+ *     let a half address a file outside the directory built from it;
+ *   - a LEADING `.` is what makes `.` and `..`, the traversal names themselves;
+ *   - a LEADING `-` is read as a flag by most of the tools these paths reach;
+ *   - whitespace is never in a minted name and splits an unquoted word.
+ *
+ * Everything else is an ordinary, inert filename character.
  */
-const APP_URN_SEGMENT = /^[a-zA-Z0-9_][a-zA-Z0-9._-]*$/;
+const APP_URN_SEGMENT = /^[^.\-\s/\\\0][^\s/\\\0]*$/;
 
 /**
  * Turn caller-supplied text into an `AppUrn`, or throw.

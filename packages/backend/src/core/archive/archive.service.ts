@@ -14,9 +14,13 @@ import { Injectable } from '@nestjs/common';
  * backup I uploaded" into arbitrary command execution as the backend user.
  *
  * Single quotes disable every shell metacharacter; the only character that needs
- * handling is the single quote itself.
+ * handling is the single quote itself, which closes the run (`'`), contributes an
+ * escaped literal quote (`\'`), and reopens (`'`).
+ *
+ * Exported for its own test: it is the whole of the defence, so it is asserted
+ * directly against a real `/bin/sh` rather than only through the commands below.
  */
-const shellQuote = (value: string): string => `'${value.replaceAll("'", `'\\''`)}'`;
+export const shellQuote = (value: string): string => `'${value.replaceAll("'", `'\\''`)}'`;
 
 @Injectable()
 export class ArchiveService {

@@ -20,6 +20,23 @@ describe('castAppUrn', () => {
   });
 
   /*
+   * ⚠ THESE ARE REAL STORE SLUGS TOO. `AppStoreService.createAppStore` derives one
+   * with `slugify(name, { lower: true, trim: true })`, and without `strict: true`
+   * slugify keeps `( ) : ! + $ * @ ~ _ .` — so these are what a hub actually has on
+   * disk after a user adds a store by these names. Rejecting them orphans every app
+   * in that store: the listing still renders (it never re-validates), but every
+   * route the app's page calls throws.
+   */
+  it.each([
+    ['Store (beta)', 'immich:store-(beta)'],
+    ['My Store: v2', 'immich:my-store:-v2'],
+    ['My_Store!', 'immich:my_store!'],
+    ['Store + More', 'immich:store-+-more'],
+  ])('accepts the slug a store named %j is stored under', (_name, urn) => {
+    expect(castAppUrn(urn)).toBe(urn);
+  });
+
+  /*
    * ⚠ AN APP URN IS TWO PATH SEGMENTS, AND IT IS USED AS SUCH. `extractAppUrn`
    * splits it and callers join the halves straight into filesystem paths —
    * `path.join(dataDir, 'backups', appStoreId, appName)` in the backup manager,
@@ -37,8 +54,9 @@ describe('castAppUrn', () => {
     ['immich:', 'has an empty store id'],
     [':ci-marketplace', 'has an empty app name'],
     ['immich', 'has no separator at all'],
-    ['-immich:ci-marketplace', 'starts with a dash rather than an alphanumeric'],
-    ['immich:ci marketplace', 'contains a space'],
+    ['-immich:ci-marketplace', 'starts with a dash, which most tools read as a flag'],
+    ['immich:ci marketplace', 'contains whitespace, which splits an unquoted word'],
+    ['immich:ci\tmarketplace', 'contains a tab'],
     ['.hidden:ci-marketplace', 'starts with a dot, which is what makes `.` and `..` names'],
     ['immich\0:ci-marketplace', 'contains a NUL'],
   ])('refuses %j because it %s', (urn) => {
