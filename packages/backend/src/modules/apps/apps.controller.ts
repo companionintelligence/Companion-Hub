@@ -65,9 +65,20 @@ export class AppsController {
   @Get('install-queue')
   @UseGuards(AuthGuard)
   @ApiResponse({ type: InstallQueueDto })
-  async getInstallQueue() {
+  async getInstallQueue(@Req() req: Request) {
     const queue = await this.appsReadService.getInstallQueueState();
-    return InstallQueueDto.parse(queue, { reportOnly: true });
+    // Names and URNs of apps somebody else is installing, on a route that sits
+    // between two that already filter. `filterSessionByView` fails open on an
+    // unresolved grant, so an outage still shows the queue.
+    const entries = queue.active ? [queue.active, ...queue.queued] : queue.queued;
+    const visible = new Set(await this.whois.filterSessionByView(req, entries, (entry) => entry.urn, 'hub'));
+    return InstallQueueDto.parse(
+      {
+        active: queue.active && visible.has(queue.active) ? queue.active : null,
+        queued: queue.queued.filter((entry) => visible.has(entry)),
+      },
+      { reportOnly: true },
+    );
   }
 
   @Get('guest')
@@ -158,14 +169,20 @@ export class AppsController {
 
   @Patch(':urn/ignore-version')
   @UseGuards(AuthGuard)
-  async ignoreAppVersion(@Param('urn') urn: string) {
-    return this.appsService.ignoreAppVersion(castAppUrn(urn));
+  async ignoreAppVersion(@Param('urn') urn: string, @Req() req: Request) {
+    const appUrn = castAppUrn(urn);
+    // Writes app state: suppressing an update notice is a configuration choice
+    // about somebody else's app.
+    await this.whois.assertSessionAction(req, appUrn, 'configure');
+    return this.appsService.ignoreAppVersion(appUrn);
   }
 
   @Patch(':urn/unignore-version')
   @UseGuards(AuthGuard)
-  async unignoreAppVersion(@Param('urn') urn: string) {
-    return this.appsService.unignoreAppVersion(castAppUrn(urn));
+  async unignoreAppVersion(@Param('urn') urn: string, @Req() req: Request) {
+    const appUrn = castAppUrn(urn);
+    await this.whois.assertSessionAction(req, appUrn, 'configure');
+    return this.appsService.unignoreAppVersion(appUrn);
   }
 
   @Get(':urn/check-availability')
@@ -188,7 +205,9 @@ export class AppsController {
 
   @Post(':urn/resolve-availability')
   @UseGuards(AuthGuard)
-  async resolveAvailability(@Param('urn') urn: string) {
-    return this.appsService.resolveAppAvailability(castAppUrn(urn));
+  async resolveAvailability(@Param('urn') urn: string, @Req() req: Request) {
+    const appUrn = castAppUrn(urn);
+    await this.whois.assertSessionAction(req, appUrn, 'configure');
+    return this.appsService.resolveAppAvailability(appUrn);
   }
 }

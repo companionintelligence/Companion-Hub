@@ -55,6 +55,7 @@
       "env": [
         "API_PORT",
         "FRONTEND_PORT",
+        "CI_HUB_EXTRA_CORS_ORIGINS",
         "CI_HUB_DATA_DIR",
         "CI_HUB_APP_DATA_DIR",
         "CI_HUB_APP_DIR",
@@ -92,6 +93,7 @@
       "env": [
         "API_PORT",
         "FRONTEND_PORT",
+        "CI_HUB_EXTRA_CORS_ORIGINS",
         "CI_HUB_DATA_DIR",
         "CI_HUB_APP_DATA_DIR",
         "CI_HUB_APP_DIR",

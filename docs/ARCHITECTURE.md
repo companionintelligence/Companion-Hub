@@ -76,7 +76,7 @@ The backend is a **NestJS 11** application on **Express**. `main.ts` bootstraps 
 - `AuthGuard` as global route guard (rejects unauthenticated requests unless route is marked public)
 - `MainExceptionFilter` for centralized error handling with Winston logging
 - Swagger/OpenAPI docs served at `/api/docs`
-- CORS configured for Tauri WebView origins and localhost
+- CORS (`common/helpers/cors-origin.ts`) allows credentialed requests only from the Tauri WebView origins, `DOMAIN`/`LOCAL_DOMAIN`, the loopback ports the Hub itself is served from (`API_PORT`, plus `FRONTEND_PORT` outside production), and any exact origin listed in `CI_HUB_EXTRA_CORS_ORIGINS` — *not* every loopback port, which would trust any installed app that publishes one
 - In production, the built frontend SPA is served as static files from `/assets/frontend`
 
 ### Module organization

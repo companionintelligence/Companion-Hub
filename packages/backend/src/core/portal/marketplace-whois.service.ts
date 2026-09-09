@@ -32,6 +32,7 @@ type CachedWhoIs = {
 @Injectable()
 export class MarketplaceWhoIsService {
   private readonly loggedUnlinked = new Set<number>();
+  private readonly loggedOrgUnresolved = new Set<string>();
 
   constructor(
     private readonly portal: PortalClientService,
@@ -213,6 +214,20 @@ export class MarketplaceWhoIsService {
     this.logger.warn(`whois_skipped_unlinked_operator userId=${userId}`);
   }
 
+  /**
+   * Warn once per distinct cause. `filterSessionByView` runs on the app lists
+   * the UI polls, so a standing condition — an unregistered device, a subject
+   * outside this device's organization — would otherwise write a line every
+   * few seconds for as long as it lasts.
+   */
+  private warnOnce(key: string, message: string): void {
+    if (this.loggedOrgUnresolved.has(key)) {
+      return;
+    }
+    this.loggedOrgUnresolved.add(key);
+    this.logger.warn(message);
+  }
+
   private async whoisSlugs(subject: string, slugs: string[], surface: GrantSurface): Promise<Map<string, HubAction[] | null>> {
     const unique = [...new Set(slugs)];
     const out = new Map<string, HubAction[] | null>();
@@ -254,6 +269,18 @@ export class MarketplaceWhoIsService {
       }
 
       const org = await this.pickOrg(response.body);
+      /*
+       * `null` is "this device's own organization could not be resolved" — not
+       * "the organization granted nothing". Falling through would write an
+       * empty `can` into the cache for every slug (poisoning it for the whole
+       * TTL, so a later Portal outage serves the empty row as if it were fresh)
+       * and hand callers `[]`, which `filterSessionByView` hides rather than
+       * failing open. Unknown belongs on the same path as a WhoIs outage.
+       */
+      if (org === null) {
+        return this.cacheFallback(subject, slugs);
+      }
+
       const version = org?.version ?? 0;
       const bySlug = new Map<string, HubAction[]>();
 
@@ -277,21 +304,58 @@ export class MarketplaceWhoIsService {
     }
   }
 
-  private async pickOrg(body: PortalWhoIsResponse): Promise<PortalWhoIsResponse['organizations'][number] | undefined> {
+  /**
+   * This device's organization from a WhoIs body.
+   *
+   * `undefined` — Portal answered, and this device's organization grants
+   * nothing (or the subject is in no organization at all). A real answer.
+   * `null` — this device's own organization could not be resolved. Not an
+   * answer; the caller must treat it the way it treats a WhoIs outage.
+   */
+  private async pickOrg(body: PortalWhoIsResponse): Promise<PortalWhoIsResponse['organizations'][number] | undefined | null> {
     const organizations = body.organizations ?? [];
     if (organizations.length === 0) {
       return undefined;
     }
 
-    const registration = await this.registration.getDeviceRegistrationInfo().catch(() => null);
-    if (registration?.id) {
-      const match = organizations.find((org) => org.organizationId === registration.id);
-      if (match) {
-        return match;
-      }
+    /*
+     * ⚠ THE DEVICE'S OWN ORGANIZATION, OR NONE — NEVER "THE FIRST ONE".
+     *
+     * `organizations[0]` is an arbitrary tenant from a response that may list
+     * several, so a subject who belongs to two organizations could have this
+     * Hub answer with the grants of whichever one Portal happened to serialize
+     * first. That is a grant read from the wrong tenant, and it can be wider
+     * than the real one.
+     *
+     * The registration read failing is the same problem wearing a different
+     * hat: it used to be swallowed into `null` and fall through to the same
+     * arbitrary pick, so a transient failure to learn our own identity silently
+     * widened every grant on the appliance. It now returns `null` — "unknown",
+     * which `fetchBatch` routes to the cache fallback — rather than
+     * `undefined`, which means "asked, and the answer was no grants".
+     */
+    const registration = await this.registration.getDeviceRegistrationInfo().catch((error: unknown) => {
+      this.warnOnce(
+        'read-failed',
+        `whois_org_unresolved: could not read this device's registration: ${error instanceof Error ? error.message : String(error)}`,
+      );
+
+      return null;
+    });
+
+    if (!registration?.id) {
+      this.warnOnce('no-org-id', 'whois_org_unresolved: this device has no organization id; refusing to guess at grants');
+
+      return null;
     }
 
-    return organizations[0];
+    const match = organizations.find((org) => org.organizationId === registration.id);
+
+    if (!match) {
+      this.warnOnce(`no-grants:${registration.id}`, `whois_org_unresolved: Portal did not return grants for organization ${registration.id}`);
+    }
+
+    return match;
   }
 
   private canFromApp(app: { appId: string; can?: unknown; capMap?: Record<string, unknown> }): HubAction[] {
