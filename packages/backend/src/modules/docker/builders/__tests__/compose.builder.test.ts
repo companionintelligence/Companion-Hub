@@ -1,5 +1,6 @@
 /** biome-ignore-all lint/suspicious/noTemplateCurlyInString: intended */
 import { createAppUrn } from '@/common/helpers/app-helpers';
+import { CI_MARKETPLACE_STORE_SLUG } from '@/core/portal/portal.constants';
 import type { ServiceInput } from '@ci-hub/common/schemas';
 import { beforeEach, describe, expect, it } from 'vitest';
 import yaml from 'yaml';
@@ -92,7 +93,10 @@ describe('DockerComposeBuilder', () => {
       name: 'service',
       image: 'image',
       internalPort: 80,
-      devices: ['/dev/ttyUSB0:/dev/ttyUSB0', '/dev/sda:/dev/xvda:rwm'],
+      // Ordinary passthroughs. `/dev/sda` used to be here, and the sandbox now
+      // refuses it for an app with no grant — this test is about FORMATTING, so
+      // the security case has its own vectors in `dynamic-compose.test.ts`.
+      devices: ['/dev/ttyUSB0:/dev/ttyUSB0', '/dev/ttyACM0:/dev/xvda:rwm'],
     };
 
     const compose = await composeBuilder.getDockerCompose([service], {}, urn, subnet);
@@ -121,14 +125,45 @@ describe('DockerComposeBuilder', () => {
       await expect(composeBuilder.getDockerCompose([service], {}, urn, subnet)).rejects.toThrow(/host-privileged access/);
     });
 
+    it('refuses an allowlisted NAME from a store that is not the official one', async () => {
+      /*
+       * ⚠ THE GRANT USED TO BE KEYED ON THE BARE APP NAME. So any user-added
+       * store — and `_user`, the custom-app path — could claim `privileged:
+       * true` or a `/var/run/docker.sock` bind simply by naming its app
+       * `home-assistant` or `netdata`. The allowlist is an audited set of holes
+       * in the sandbox for specific, reviewed first-party apps; a name is not
+       * evidence that this is one of them.
+       *
+       * `CI_MARKETPLACE_STORE_SLUG` is the same provenance signal
+       * `isOfficialStoreApp` rests on: the store segment is recorded by the Hub
+       * at install time and cannot be claimed by a manifest.
+       */
+      const impostor = createAppUrn('home-assistant', 'some-user-added-store');
+      const service: ServiceInput = { name: 'homeassistant', image: 'image', internalPort: 8123, privileged: true };
+
+      await expect(composeBuilder.getDockerCompose([service], {}, impostor, subnet)).rejects.toThrow(/host-privileged access/);
+    });
+
+    it('refuses an allowlisted name installed as a custom app', async () => {
+      const custom = createAppUrn('netdata', '_user');
+      const service: ServiceInput = {
+        name: 'netdata',
+        image: 'image',
+        internalPort: 19999,
+        volumes: [{ hostPath: '/var/run/docker.sock', containerPath: '/var/run/docker.sock' }],
+      };
+
+      await expect(composeBuilder.getDockerCompose([service], {}, custom, subnet)).rejects.toThrow(/host-privileged access/);
+    });
+
     it('allows a privileged service from an allowlisted app (home-assistant)', async () => {
-      const haUrn = createAppUrn('home-assistant', 'store-id');
+      const haUrn = createAppUrn('home-assistant', CI_MARKETPLACE_STORE_SLUG);
       const service: ServiceInput = { name: 'homeassistant', image: 'image', internalPort: 8123, privileged: true, networkMode: 'host' };
       await expect(composeBuilder.getDockerCompose([service], {}, haUrn, subnet)).resolves.toContain('privileged: true');
     });
 
     it('allows granted host-path binds from an allowlisted app (netdata) but not ungranted ones', async () => {
-      const netdataUrn = createAppUrn('netdata', 'store-id');
+      const netdataUrn = createAppUrn('netdata', CI_MARKETPLACE_STORE_SLUG);
       const granted: ServiceInput = {
         name: 'netdata',
         image: 'image',
@@ -148,7 +183,7 @@ describe('DockerComposeBuilder', () => {
     });
 
     it('allows a docker.sock host mount for coder', async () => {
-      const coderUrn = createAppUrn('coder', 'store-id');
+      const coderUrn = createAppUrn('coder', CI_MARKETPLACE_STORE_SLUG);
       const service: ServiceInput = {
         name: 'coder',
         image: 'image',
@@ -159,14 +194,14 @@ describe('DockerComposeBuilder', () => {
     });
 
     it('allows a privileged sidecar service for duix-avatar', async () => {
-      const duixUrn = createAppUrn('duix-avatar', 'store-id');
+      const duixUrn = createAppUrn('duix-avatar', CI_MARKETPLACE_STORE_SLUG);
       const main: ServiceInput = { name: 'duix-avatar', image: 'image', internalPort: 8383 };
       const sidecar: ServiceInput = { name: 'video-synthesis', image: 'image', internalPort: 8384, privileged: true };
       await expect(composeBuilder.getDockerCompose([main, sidecar], {}, duixUrn, subnet)).resolves.toContain('privileged: true');
     });
 
     it('allows granted host-path binds from an allowlisted app (falco) but not the rest of /sys', async () => {
-      const falcoUrn = createAppUrn('falco', 'store-id');
+      const falcoUrn = createAppUrn('falco', CI_MARKETPLACE_STORE_SLUG);
       const granted: ServiceInput = {
         name: 'falco',
         image: 'image',
@@ -188,7 +223,7 @@ describe('DockerComposeBuilder', () => {
     });
 
     it('allows a privileged sandbox service for refly', async () => {
-      const reflyUrn = createAppUrn('refly', 'store-id');
+      const reflyUrn = createAppUrn('refly', CI_MARKETPLACE_STORE_SLUG);
       const main: ServiceInput = { name: 'refly', image: 'image', internalPort: 5700 };
       const sandbox: ServiceInput = { name: 'refly-sandbox', image: 'image', internalPort: 5701, privileged: true };
       await expect(composeBuilder.getDockerCompose([main, sandbox], {}, reflyUrn, subnet)).resolves.toContain('privileged: true');
@@ -347,7 +382,7 @@ describe('DockerComposeBuilder', () => {
 
     // service1 exercises privileged formatting, so run it under an app that is granted
     // privileged in TRUSTED_APP_SECURITY_ALLOWLIST (the sandbox rejects privileged otherwise).
-    const complexUrn = createAppUrn('home-assistant', 'store-id');
+    const complexUrn = createAppUrn('home-assistant', CI_MARKETPLACE_STORE_SLUG);
     const compose = await composeBuilder.getDockerCompose([service1, service2], {}, complexUrn, subnet);
 
     expect(compose).toMatchSnapshot();
@@ -839,13 +874,13 @@ describe('DockerComposeBuilder network sandboxing and defense-in-depth', () => {
       name: 'web',
       image: 'nginx:alpine',
       internalPort: 80,
-      securityOpt: ['apparmor:unconfined', 'no-new-privileges:true'],
+      securityOpt: ['apparmor:my-profile', 'no-new-privileges:true'],
     };
 
     const compose = await builder.getDockerCompose([service], {}, urn, subnet);
     const parsed = yaml.parse(compose);
 
-    expect(parsed.services.web.security_opt).toEqual(['apparmor:unconfined', 'no-new-privileges:true']);
+    expect(parsed.services.web.security_opt).toEqual(['apparmor:my-profile', 'no-new-privileges:true']);
   });
 
   it('provides network isolation to block internal infrastructure hosts and ports', async () => {

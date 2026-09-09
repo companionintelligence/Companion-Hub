@@ -248,6 +248,46 @@ schemas.forEach(({ name, serviceSchema, dynamicComposeSchema, safeParse }) => {
           const result = safeParse(serviceSchema, withVolume({ volumeName: 'etc', containerPath: '/etc/postgresql' }));
           expect(result.success).toBe(true);
         });
+
+        /*
+         * ⚠ THE REJECT-LIST IS A STRING COMPARISON, and nothing canonicalized
+         * before it ran. `normalizeCustomAppHostPath` collapsed separators and
+         * dropped a trailing slash and stopped there — it never resolved a `.`
+         * or `..` segment. So `/etc` was denied while every spelling below,
+         * each one character away and each mounting exactly the same directory,
+         * went straight through.
+         */
+        it.each([
+          ['/etc/../etc', 'climbs out and back'],
+          ['/./etc', 'has a leading dot segment'],
+          ['/var/../etc', 'reaches a denied path from an allowed one'],
+          ['/var/run/../run/docker.sock', 'reaches the docker socket the long way'],
+          ['/app-data/x/../../..', 'walks out to the root'],
+          ['${SOME_OTHER_VAR}/etc', 'expands to something we cannot check'],
+          ['${APP_DATA_DIR}/../../etc', 'escapes the app data dir it starts in'],
+          ['${APP_DATA_DIR_EXTRA}/etc', 'names a different variable that merely starts the same'],
+          ['$APP_DATA_DIR_HOME/var/run/docker.sock', 'names a different unbraced variable that merely starts the same'],
+          ['/var/run', 'is the directory the denied docker socket sits in'],
+          ['/var', 'contains the directory the denied docker socket sits in'],
+        ])('should reject %j because it %s', (hostPath) => {
+          const result = safeParse(serviceSchema, withVolume({ hostPath, containerPath: '/mnt' }));
+          expect(result.success).toBe(false);
+        });
+
+        it('should accept the benign timezone binds, as the install sink does', () => {
+          // Both layers share one reject-list, so a bind the install sink clears must not fail
+          // validation here — `/etc/localtime` is on nearly every manifest.
+          for (const hostPath of ['/etc/localtime', '/etc/timezone']) {
+            expect(safeParse(serviceSchema, withVolume({ hostPath, containerPath: hostPath })).success).toBe(true);
+          }
+        });
+
+        it('should still accept a plain path under the app data dir', () => {
+          // `${APP_DATA_DIR}` is substituted rather than rejected: it resolves to
+          // the app's own directory, which is on no reject-list.
+          const result = safeParse(serviceSchema, withVolume({ hostPath: '${APP_DATA_DIR}/data', containerPath: '/data' }));
+          expect(result.success).toBe(true);
+        });
       });
 
       describe('Command Configuration', () => {
@@ -1086,6 +1126,135 @@ describe('collectServiceSecurityViolations (install-sink app sandbox)', () => {
     expect(collectServiceSecurityViolations({ privileged: true }, { privileged: true })).toHaveLength(0);
   });
 
+  /*
+   * ⚠ REFUSING `privileged: true` WHILE ACCEPTING THESE WAS A SANDBOX THAT COULD
+   * BE STEPPED OVER RATHER THAN CLIMBED. Neither layer checked `capAdd`,
+   * `devices` or `securityOpt`, and each of them grants the same power the
+   * `privileged` refusal exists to withhold.
+   */
+  it('flags capabilities that are equivalent to privileged', () => {
+    for (const cap of ['SYS_ADMIN', 'SYS_MODULE', 'SYS_RAWIO', 'SYS_PTRACE', 'DAC_READ_SEARCH', 'NET_ADMIN']) {
+      expect(collectServiceSecurityViolations({ capAdd: [cap] }).map((v) => v.message)).toContain('CUSTOM_APP_ERROR_CAP_ADD_NOT_ALLOWED');
+    }
+
+    // Docker accepts either spelling, so both have to be normalised.
+    expect(collectServiceSecurityViolations({ capAdd: ['cap_sys_admin'] })).toHaveLength(1);
+  });
+
+  it('allows the safe capability set without a grant, and a granted one with', () => {
+    // The safe set is Docker's own default set, which the container already holds: re-adding one of
+    // these grants nothing, so refusing it would only fail installs.
+    expect(collectServiceSecurityViolations({ capAdd: ['NET_BIND_SERVICE', 'CHOWN', 'MKNOD', 'NET_RAW', 'SYS_CHROOT'] })).toHaveLength(0);
+    expect(collectServiceSecurityViolations({ capAdd: ['SYS_ADMIN'] }, { capAdd: ['SYS_ADMIN'] })).toHaveLength(0);
+  });
+
+  it('flags securityOpt entries that switch confinement off', () => {
+    for (const opt of ['apparmor=unconfined', 'seccomp=unconfined', 'systempaths=unconfined', 'label:disable']) {
+      expect(collectServiceSecurityViolations({ securityOpt: [opt] }).map((v) => v.message)).toContain('CUSTOM_APP_ERROR_SECURITY_OPT_NOT_ALLOWED');
+    }
+  });
+
+  it('leaves securityOpt entries that tighten confinement alone', () => {
+    // Matched on the VALUE half, so a real profile and `no-new-privileges` pass.
+    expect(collectServiceSecurityViolations({ securityOpt: ['no-new-privileges:true', 'apparmor=my-profile'] })).toHaveLength(0);
+    expect(collectServiceSecurityViolations({ securityOpt: ['seccomp=unconfined'] }, { securityOpt: ['seccomp=unconfined'] })).toHaveLength(0);
+  });
+
+  it('flags a device that IS the host, not merely a device', () => {
+    // `devices` is `host:container[:perms]`, and only the host half escapes.
+    for (const device of ['/dev:/dev', '/dev/sda:/dev/sda', '/dev/nvme0n1:/dev/nvme0n1', '/dev/mem:/dev/mem']) {
+      expect(collectServiceSecurityViolations({ devices: [device] }).map((v) => v.message)).toContain('CUSTOM_APP_ERROR_DEVICE_NOT_ALLOWED');
+    }
+
+    expect(collectServiceSecurityViolations({ devices: ['/dev/../dev/sda:/dev/sda'] })).toHaveLength(1);
+  });
+
+  it('leaves the ordinary device passthroughs alone', () => {
+    /*
+     * ⚠ NARROWER THAN THE HOST-PATH REJECT-LIST ON PURPOSE. `/dev` is on that
+     * list, but passing a single character device through is what a Zigbee
+     * dongle, a GPU or a capture card needs — refusing them all would break real
+     * installs and buy nothing, because the escape is a device that IS the host.
+     */
+    expect(
+      collectServiceSecurityViolations({
+        devices: ['/dev/ttyUSB0:/dev/ttyUSB0', '/dev/dri:/dev/dri', '/dev/kfd:/dev/kfd', '/dev/video0:/dev/video0'],
+      }),
+    ).toHaveLength(0);
+  });
+
+  it('does not let devices become a second way to mount a denied directory', () => {
+    expect(collectServiceSecurityViolations({ devices: ['/etc:/host-etc'] }).map((v) => v.message)).toContain('CUSTOM_APP_ERROR_DEVICE_NOT_ALLOWED');
+    expect(collectServiceSecurityViolations({ devices: ['/dev/sda:/dev/sda'] }, { devices: ['/dev/sda'] })).toHaveLength(0);
+  });
+
+  it('does not let a privileged grant widen the host-path reject-list', () => {
+    // Grants are per-field and per-path: `home-assistant` is granted `privileged`, not `/` or the
+    // docker socket. Skipping the bind checks for a privileged app would hand it both.
+    const grants = { privileged: true };
+    expect(collectServiceSecurityViolations({ privileged: true, volumes: [{ hostPath: '/' }] }, grants).map((v) => v.message)).toContain(
+      'CUSTOM_APP_ERROR_HOST_PATH_DENIED',
+    );
+    expect(
+      collectServiceSecurityViolations({ privileged: true, volumes: [{ volumeName: '/var/run/docker.sock' }] }, grants).map((v) => v.message),
+    ).toContain('CUSTOM_APP_ERROR_VOLUME_NAME_INVALID');
+  });
+
+  it("does not let a privileged grant cover the app's other, unprivileged services", () => {
+    // `duix-avatar` and `refly` run one privileged sidecar beside ordinary services. The
+    // subsumption argument holds only for the service that actually runs privileged.
+    const grants = { privileged: true };
+    expect(collectServiceSecurityViolations({ capAdd: ['SYS_ADMIN'] }, grants).map((v) => v.message)).toContain(
+      'CUSTOM_APP_ERROR_CAP_ADD_NOT_ALLOWED',
+    );
+    expect(collectServiceSecurityViolations({ devices: ['/dev/sda:/dev/sda'] }, grants).map((v) => v.message)).toContain(
+      'CUSTOM_APP_ERROR_DEVICE_NOT_ALLOWED',
+    );
+    // The service that IS privileged needs no separate check: privileged already confers all three.
+    expect(collectServiceSecurityViolations({ privileged: true, capAdd: ['SYS_ADMIN'] }, grants)).toHaveLength(0);
+  });
+
+  it('matches a grant against the other spelling docker accepts', () => {
+    expect(collectServiceSecurityViolations({ capAdd: ['SYS_ADMIN'] }, { capAdd: ['CAP_SYS_ADMIN'] })).toHaveLength(0);
+    expect(collectServiceSecurityViolations({ capAdd: ['CAP_SYS_ADMIN'] }, { capAdd: ['SYS_ADMIN'] })).toHaveLength(0);
+    expect(collectServiceSecurityViolations({ securityOpt: ['seccomp:unconfined'] }, { securityOpt: ['seccomp=unconfined'] })).toHaveLength(0);
+  });
+
+  it('flags the SELinux and seccomp-profile forms that disable confinement without saying "unconfined"', () => {
+    // `label=type:spc_t` is the super-privileged-container type, and a seccomp profile is a path to
+    // a file the Hub cannot audit — one the app can write into its own data directory.
+    for (const opt of ['label=type:spc_t', 'label=user:system_u', 'seccomp=/app-data/store/app/data/permissive.json']) {
+      expect(collectServiceSecurityViolations({ securityOpt: [opt] }).map((v) => v.message)).toContain('CUSTOM_APP_ERROR_SECURITY_OPT_NOT_ALLOWED');
+    }
+  });
+
+  it('flags the block devices that reach the host disk under another name', () => {
+    // A device that is the host disk is one whatever it is spelled: the eMMC/SD card an
+    // appliance boots from, and the by-id/by-uuid symlinks udev keeps for every disk.
+    for (const device of [
+      '/dev/mmcblk0:/dev/mmcblk0',
+      '/dev/disk/by-id/ata-SOME_DISK:/dev/disk',
+      '/dev/block/8:0',
+      '/dev/root:/dev/root',
+      '/dev/nbd0:/dev/nbd0',
+      '/dev/ram0:/dev/ram0',
+    ]) {
+      expect(collectServiceSecurityViolations({ devices: [device] }).map((v) => v.message)).toContain('CUSTOM_APP_ERROR_DEVICE_NOT_ALLOWED');
+    }
+
+    // `/dev/random` and `/dev/urandom` start with the same letters as `/dev/ram*` and must survive.
+    expect(collectServiceSecurityViolations({ devices: ['/dev/random:/dev/random', '/dev/urandom:/dev/urandom'] })).toHaveLength(0);
+  });
+
+  it('flags a container namespace, which reaches whatever that container binds on loopback', () => {
+    expect(collectServiceSecurityViolations({ networkMode: 'container:ci-os-hub' }).map((v) => v.message)).toContain(
+      'CUSTOM_APP_ERROR_NETWORK_MODE_HOST_NOT_ALLOWED',
+    );
+    expect(collectServiceSecurityViolations({ pid: 'container:ci-os-hub' }).map((v) => v.message)).toContain('CUSTOM_APP_ERROR_PID_HOST_NOT_ALLOWED');
+    // A service reference stays inside the app's own compose project.
+    expect(collectServiceSecurityViolations({ networkMode: 'service:db' })).toHaveLength(0);
+  });
+
   it('flags host network and host pid namespaces', () => {
     expect(collectServiceSecurityViolations({ networkMode: 'host' }).map((v) => v.message)).toContain(
       'CUSTOM_APP_ERROR_NETWORK_MODE_HOST_NOT_ALLOWED',
@@ -1101,6 +1270,17 @@ describe('collectServiceSecurityViolations (install-sink app sandbox)', () => {
     expect(collectServiceSecurityViolations(svc, { hostPaths: ['/var/run/docker.sock'] })).toHaveLength(0);
     // a granted path does not whitelist a different denied path
     expect(collectServiceSecurityViolations({ volumes: [{ hostPath: '/root/.ssh' }] }, { hostPaths: ['/var/run/docker.sock'] })).toHaveLength(1);
+  });
+
+  it('flags the directory a denied path sits in, not only the denied path itself', () => {
+    // `/var/run/docker.sock` is on the reject-list, so binding `/var/run` or `/var` hands over the
+    // same socket under a spelling the equality and prefix tests never see.
+    for (const hostPath of ['/var/run', '/var']) {
+      expect(collectServiceSecurityViolations({ volumes: [{ hostPath }] }).map((v) => v.message)).toContain('CUSTOM_APP_ERROR_HOST_PATH_DENIED');
+    }
+
+    // A sibling that contains nothing denied stays allowed: this is an ancestor rule, not a new root.
+    expect(collectServiceSecurityViolations({ volumes: [{ hostPath: '/var/lib/myapp' }] })).toHaveLength(0);
   });
 
   it('never flags the benign /etc/localtime and /etc/timezone binds', () => {
@@ -1133,16 +1313,38 @@ describe('collectServiceSecurityViolations (install-sink app sandbox)', () => {
     // Guard against accidental broadening: every allowlisted app must resolve to zero
     // violations for exactly the access it is granted, and nothing else.
     expect(Object.keys(TRUSTED_APP_SECURITY_ALLOWLIST).sort()).toEqual([
+      'anything-llm',
+      'changedetection',
       'coder',
+      'comfyui',
       'coolify',
+      'dnsmasq',
       'duix-avatar',
       'falco',
       'filebrowser-quantum',
+      'gluetun',
       'home-assistant',
+      'hunyuan3d-rocm',
+      'librenms',
+      'macos',
+      'maxun',
+      'navidrome',
+      'netalertx',
       'netdata',
+      'pangolin',
+      'pi-hole',
+      'proxmox-backup',
       'refly',
       'steam-headless',
+      'strix',
+      'sup3rs3cretmes5age',
       'torollo',
+      'windows',
+      'windows-arm',
+      'wireguard',
+      'zerotier-one',
+      'zigbee2mqtt',
+      'zwave-js-ui',
     ]);
     expect(
       collectServiceSecurityViolations({ privileged: true, networkMode: 'host' }, TRUSTED_APP_SECURITY_ALLOWLIST['home-assistant']),
@@ -1161,6 +1363,50 @@ describe('collectServiceSecurityViolations (install-sink app sandbox)', () => {
     expect(
       collectServiceSecurityViolations({ privileged: true, volumes: [{ hostPath: '/proc' }] }, TRUSTED_APP_SECURITY_ALLOWLIST.torollo),
     ).toHaveLength(2);
+  });
+
+  it('grants the capability and confinement holes the shipped apps already rely on', () => {
+    expect(collectServiceSecurityViolations({ capAdd: ['NET_ADMIN'] }, TRUSTED_APP_SECURITY_ALLOWLIST.wireguard)).toHaveLength(0);
+    expect(collectServiceSecurityViolations({ capAdd: ['NET_ADMIN', 'SYS_MODULE'] }, TRUSTED_APP_SECURITY_ALLOWLIST.pangolin)).toHaveLength(0);
+    expect(
+      collectServiceSecurityViolations({ capAdd: ['SYS_ADMIN'], securityOpt: ['seccomp=unconfined'] }, TRUSTED_APP_SECURITY_ALLOWLIST.maxun),
+    ).toHaveLength(0);
+    expect(
+      collectServiceSecurityViolations({ capAdd: ['BPF', 'PERFMON', 'SYS_PTRACE', 'SYS_RESOURCE'] }, TRUSTED_APP_SECURITY_ALLOWLIST.falco),
+    ).toHaveLength(0);
+
+    // Still per-field: wireguard's NET_ADMIN grant buys it nothing else.
+    expect(collectServiceSecurityViolations({ capAdd: ['SYS_ADMIN'] }, TRUSTED_APP_SECURITY_ALLOWLIST.wireguard)).toHaveLength(1);
+    expect(collectServiceSecurityViolations({ privileged: true }, TRUSTED_APP_SECURITY_ALLOWLIST.wireguard)).toHaveLength(1);
+    expect(collectServiceSecurityViolations({ volumes: [{ hostPath: '/etc' }] }, TRUSTED_APP_SECURITY_ALLOWLIST.pangolin)).toHaveLength(1);
+  });
+
+  it('grants the install-form host paths the device owner supplies, and only those', () => {
+    /*
+     * The Hub builds the compose `.env` from `config.form_fields`, so these expansions resolve to a
+     * path the device owner typed. The grant is the literal spelling the manifest uses, because an
+     * expansion cannot be canonicalized before compose resolves it.
+     */
+    expect(
+      collectServiceSecurityViolations({ devices: ['${ZIGBEE2MQTT_DEVICE}:/dev/ttyACM0'] }, TRUSTED_APP_SECURITY_ALLOWLIST.zigbee2mqtt),
+    ).toHaveLength(0);
+    expect(
+      collectServiceSecurityViolations({ devices: ['${ZWAVE_DEVICE_PATH}:/dev/zwave'] }, TRUSTED_APP_SECURITY_ALLOWLIST['zwave-js-ui']),
+    ).toHaveLength(0);
+    expect(
+      collectServiceSecurityViolations(
+        { volumes: [{ hostPath: '${NAVIDROME_MUSIC_FOLDER:-${APP_DATA_DIR}/music}' }] },
+        TRUSTED_APP_SECURITY_ALLOWLIST.navidrome,
+      ),
+    ).toHaveLength(0);
+
+    // A DIFFERENT expansion is still unresolvable, grant or no grant.
+    expect(collectServiceSecurityViolations({ devices: ['${SOME_OTHER_VAR}:/dev/x'] }, TRUSTED_APP_SECURITY_ALLOWLIST.zigbee2mqtt)).toHaveLength(1);
+    expect(
+      collectServiceSecurityViolations({ volumes: [{ hostPath: '${MEDIA_DIR}/music' }] }, TRUSTED_APP_SECURITY_ALLOWLIST.navidrome),
+    ).toHaveLength(1);
+    // And the grant does not travel to another app.
+    expect(collectServiceSecurityViolations({ devices: ['${ZIGBEE2MQTT_DEVICE}:/dev/x'] }, TRUSTED_APP_SECURITY_ALLOWLIST.wireguard)).toHaveLength(1);
   });
 });
 
