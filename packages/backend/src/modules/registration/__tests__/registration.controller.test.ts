@@ -1,3 +1,4 @@
+import { ForbiddenException } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
@@ -146,6 +147,19 @@ describe('RegistrationController', () => {
       expect(result.registration_url).toContain('device-123');
     });
 
+    it('carries the minted nonce into the callback URL Portal is sent to', async () => {
+      // The callback guard can only pass if the nonce reaches `callback_url`.
+      registrationService.getDeviceId.mockResolvedValue('device-123');
+      registrationService.mintCallbackNonce.mockReturnValue('nonce-1');
+      configService.getConfig.mockReturnValue({ ciCloudUrl: 'https://portal.ci.com' } as any);
+
+      const req = { protocol: 'https', get: () => 'localhost:3000' } as any;
+      const result = await controller.getDeviceId(req);
+
+      expect(result.callback_url).toBe('https://localhost:3000/device-registration?state=nonce-1');
+      expect(result.registration_url).toContain(encodeURIComponent(result.callback_url));
+    });
+
     it('should return null registration URL when ciCloudUrl is empty', async () => {
       registrationService.getDeviceId.mockResolvedValue('device-123');
       configService.getConfig.mockReturnValue({ ciCloudUrl: '' } as any);
@@ -158,16 +172,84 @@ describe('RegistrationController', () => {
     });
   });
 
-  describe('handleCallback', () => {
-    it('should return error when required params are missing', async () => {
-      const result = await controller.handleCallback('', '', '', '', '', '', '', '', '');
+  describe('handleCallbackPost', () => {
+    /** A callback body that is complete apart from its proof of origin. */
+    const validBody = {
+      device_id: 'device-1',
+      organization_id: 'org-1',
+      organization_name: 'My Org',
+      slug: 'my-org',
+      subdomain: 'my-sub',
+      tunnel_id: 'tun-1',
+      tunnel_token: 'tok-1',
+      api_key: 'key-1',
+      domain: 'example.com',
+    };
+
+    it('refuses a callback with no nonce', async () => {
+      /*
+       * ⚠ THE ROUTE HANDS THE HUB ITS IDENTITY. The body carries `api_key`,
+       * `tunnel_id` and `tunnel_token`, and there was no guard of any kind — so
+       * anyone who could reach this port could re-register a running Hub onto
+       * credentials and a tunnel of their choosing.
+       */
+      registrationService.consumeCallbackNonce.mockReturnValue(false);
+
+      await expect(controller.handleCallbackPost(validBody)).rejects.toThrow(ForbiddenException);
+      expect(registrationService.completeRegistrationFromCallback).not.toHaveBeenCalled();
+    });
+
+    it('refuses a callback when the Hub is already registered', async () => {
+      // A nonce is minted by an UNAUTHENTICATED route, so it alone does not stop
+      // someone who can reach this port from starting a registration and
+      // finishing it. Re-registering a running Hub is `resetRegistration`'s job.
+      registrationService.consumeCallbackNonce.mockReturnValue(true);
+      registrationService.isRegistered.mockResolvedValue(true);
+
+      await expect(controller.handleCallbackPost(validBody)).rejects.toThrow(ForbiddenException);
+      expect(registrationService.completeRegistrationFromCallback).not.toHaveBeenCalled();
+    });
+
+    it('spends the nonce, so a replay of the same callback is refused', async () => {
+      registrationService.consumeCallbackNonce.mockReturnValueOnce(true).mockReturnValue(false);
+      registrationService.isRegistered.mockResolvedValue(false);
+      registrationService.completeRegistrationFromCallback.mockResolvedValue({ success: true } as any);
+
+      await expect(controller.handleCallbackPost(validBody, 'nonce-1')).resolves.toEqual({ success: true });
+      await expect(controller.handleCallbackPost(validBody, 'nonce-1')).rejects.toThrow(ForbiddenException);
+    });
+
+    it('returns an error when required params are missing', async () => {
+      registrationService.consumeCallbackNonce.mockReturnValue(true);
+      registrationService.isRegistered.mockResolvedValue(false);
+
+      const result = await controller.handleCallbackPost({
+        ...validBody,
+        device_id: '',
+        api_key: '',
+      });
+
       expect(result.success).toBe(false);
     });
 
-    it('should complete registration with valid params', async () => {
+    it('does not spend the nonce on a body that is missing required params', async () => {
+      // Burning the one-time secret on a malformed body would cost the person
+      // another round trip through Portal.
+      registrationService.consumeCallbackNonce.mockReturnValue(true);
+      registrationService.isRegistered.mockResolvedValue(false);
+
+      await controller.handleCallbackPost({ ...validBody, device_id: '' }, 'nonce-1');
+
+      expect(registrationService.consumeCallbackNonce).not.toHaveBeenCalled();
+    });
+
+    it('completes registration from a JSON body with a valid nonce', async () => {
+      registrationService.consumeCallbackNonce.mockReturnValue(true);
+      registrationService.isRegistered.mockResolvedValue(false);
       registrationService.completeRegistrationFromCallback.mockResolvedValue({ success: true } as any);
 
-      const result = await controller.handleCallback('device-1', 'org-1', 'My Org', 'my-org', 'my-sub', 'tun-1', 'tok-1', 'key-1', 'example.com');
+      const result = await controller.handleCallbackPost(validBody, 'nonce-1');
+
       expect(result).toEqual({ success: true });
       expect(registrationService.completeRegistrationFromCallback).toHaveBeenCalledWith({
         deviceId: 'device-1',
@@ -181,25 +263,66 @@ describe('RegistrationController', () => {
         domain: 'example.com',
       });
     });
-  });
 
-  describe('handleCallbackPost', () => {
-    it('should complete registration from JSON body', async () => {
+    it('accepts the nonce from the body as well as the query', async () => {
+      // Portal returns to `callback_url` verbatim, so the query is where it
+      // normally arrives; a client that parsed the redirect re-posts it in the
+      // body.
+      registrationService.consumeCallbackNonce.mockReturnValue(true);
+      registrationService.isRegistered.mockResolvedValue(false);
       registrationService.completeRegistrationFromCallback.mockResolvedValue({ success: true } as any);
 
-      const result = await controller.handleCallbackPost({
-        device_id: 'device-1',
-        organization_id: 'org-1',
-        organization_name: 'My Org',
-        slug: 'my-org',
-        subdomain: 'my-sub',
-        tunnel_id: 'tun-1',
-        tunnel_token: 'tok-1',
-        api_key: 'key-1',
-        domain: 'example.com',
-      });
+      await controller.handleCallbackPost({ ...validBody, state: 'nonce-in-body' });
+
+      expect(registrationService.consumeCallbackNonce).toHaveBeenCalledWith('nonce-in-body');
+    });
+  });
+
+  describe('handleCallback (deprecated GET)', () => {
+    /*
+     * CI-OS's headless setup service (`/opt/setup-backend/setup_service.py`)
+     * forwards the cloud's registration response to this route as a GET once the
+     * Hub is running. Removing it strands every appliance that pairs from the
+     * setup portal, so it stays until that caller moves to the POST.
+     */
+    const req = { ip: '127.0.0.1' } as any;
+
+    it('completes registration without a nonce, so headless setup keeps working', async () => {
+      registrationService.completeRegistrationFromCallback.mockResolvedValue({ success: true } as any);
+
+      const result = await controller.handleCallback(
+        req,
+        'device-1',
+        'org-1',
+        'My Org',
+        'my-org',
+        'my-sub',
+        'tun-1',
+        'tok-1',
+        'key-1',
+        'example.com',
+      );
 
       expect(result).toEqual({ success: true });
+      expect(registrationService.consumeCallbackNonce).not.toHaveBeenCalled();
+      expect(registrationService.completeRegistrationFromCallback).toHaveBeenCalledWith({
+        deviceId: 'device-1',
+        organizationId: 'org-1',
+        organizationName: 'My Org',
+        subdomain: 'my-sub',
+        tunnelId: 'tun-1',
+        tunnelToken: 'tok-1',
+        apiKey: 'key-1',
+        slug: 'my-org',
+        domain: 'example.com',
+      });
+    });
+
+    it('returns an error when required params are missing', async () => {
+      const result = (await controller.handleCallback(req, '', '', '', '', '', '', '', '', '')) as { success: boolean };
+
+      expect(result.success).toBe(false);
+      expect(registrationService.completeRegistrationFromCallback).not.toHaveBeenCalled();
     });
   });
 
