@@ -13,7 +13,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { FleetArgError, parseFleetArgs } from '../lib/cli-fleet.js';
+import { FleetArgError, parseFleetArgs, resolvePairingCodeStrategy } from '../lib/cli-fleet.js';
 import { mergeFleetRoster, parseFleetRoster, partitionForRun, type FleetNode } from '../lib/fleet-roster.js';
 import { classifySshFailure, sshDestination, type SshResult } from '../lib/fleet-ssh.js';
 
@@ -56,6 +56,44 @@ describe('parseFleetArgs', () => {
   it('rejects an unknown flag instead of ignoring it', () => {
     // Silently ignoring would let `--dry-run` (which this group does not have) read as accepted.
     expect(() => parseFleetArgs(['scan', '--dry-run'])).toThrow(/Unknown flag/);
+  });
+});
+
+describe('resolvePairingCodeStrategy', () => {
+  it('mints per node when a device:pair login is stored', () => {
+    expect(resolvePairingCodeStrategy({ canMint: true, nodeCount: 12 })).toEqual({ kind: 'mint' });
+  });
+
+  it('honours an explicit --code for the single node it can enroll', () => {
+    // Naming a code means that code. Minting one instead would enroll a device
+    // the operator did not ask for and leave theirs unused.
+    expect(resolvePairingCodeStrategy({ code: 'ABC123', canMint: true, nodeCount: 1 })).toEqual({ kind: 'given' });
+  });
+
+  it('mints across a fleet even when a --code was passed, since one cannot cover it', () => {
+    expect(resolvePairingCodeStrategy({ code: 'ABC123', canMint: true, nodeCount: 12 })).toEqual({ kind: 'mint' });
+  });
+
+  it('accepts one --code for exactly one node', () => {
+    expect(resolvePairingCodeStrategy({ code: 'ABC123', canMint: false, nodeCount: 1 })).toEqual({ kind: 'given' });
+  });
+
+  it('refuses one --code across several nodes, rather than burning it on the first', () => {
+    const strategy = resolvePairingCodeStrategy({ code: 'ABC123', canMint: false, nodeCount: 3 });
+
+    expect(strategy.kind).toBe('refuse');
+    if (strategy.kind !== 'refuse') return;
+    expect(strategy.why).toMatch(/3 nodes are selected/);
+    expect(strategy.fix.join(' ')).toMatch(/--scope device:pair/);
+  });
+
+  it('refuses with no code and no login, naming both ways out', () => {
+    const strategy = resolvePairingCodeStrategy({ canMint: false, nodeCount: 1 });
+
+    expect(strategy.kind).toBe('refuse');
+    if (strategy.kind !== 'refuse') return;
+    expect(strategy.fix.join(' ')).toMatch(/--scope device:pair/);
+    expect(strategy.fix.join(' ')).toMatch(/--code/);
   });
 });
 

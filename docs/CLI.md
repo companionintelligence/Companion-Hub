@@ -142,6 +142,55 @@ cihub register local
 
 ![Screenshot of cihub register local](./images/cli/register.svg)
 
+### `cihub login [--scope <scope>]`
+
+Signs this machine in to Companion Portal and stores an organization developer token in
+`~/.config/cihub/portal-login.json` (mode `0600`). One browser approval, once — the token is what
+later commands present.
+
+```bash
+cihub login                            # catalog:write, for cihub submit
+cihub login --scope device:pair        # register devices without a browser
+cihub login --device                   # device-code flow; automatic over SSH
+```
+
+| Scope | What the token may do |
+| --- | --- |
+| `catalog:write` (default) | Submit apps to the marketplace catalog (`cihub submit`) |
+| `device:pair` | Register devices into the organization, which is what mints pairing codes |
+
+**The two do not overlap.** A `catalog:write` token cannot register a device and a `device:pair`
+token cannot publish an app; each is refused with `401` by the other's routes. Both are org-scoped
+and revocable from Portal, and neither is a device key — pairing is what mints one of those.
+
+A token reaches exactly the organizations its holder is a member of. Portal runs the same membership
+check it runs for a browser session, so signing in headlessly removes the human, not the
+authorization.
+
+### Registering a fleet without a browser
+
+`cihub register` wants a pairing code, and a code is one device. Minting fourteen of them by hand is
+fourteen trips through the Portal UI, which is why `cihub fleet install` mints its own once a
+`device:pair` login is stored:
+
+```bash
+cihub login --scope device:pair
+export CIHUB_POSTGRES_PASSWORD=...
+cihub fleet install --nodes core-1,core-2 --user ci --execute
+```
+
+Each node is registered under its roster name and gets its own code. Two guardrails are worth
+knowing, because both fail in ways a dry run does not show:
+
+- **`--code` with more than one node is refused**, not spent. One code enrolls one device, so using
+  it across a fleet would enroll the first machine and fail the rest on a code Portal had already
+  burned — halfway through installing on real hardware.
+- **A node that cannot be registered is reported and skipped**, not aborted on. A name already taken
+  in the org (usually: this node was enrolled before) says so by name, and the rest of the fleet
+  continues.
+
+Without a stored `device:pair` login, `--code` still works for a single node exactly as before.
+
 ---
 
 ## Hub lifecycle
