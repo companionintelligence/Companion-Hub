@@ -929,7 +929,11 @@ describe('RegistrationService', () => {
 
       vi.spyOn(service as any, 'hasTunnelToken').mockReturnValue(true);
       mockedAxios.post.mockResolvedValue({ status: 200 } as any);
-      tailscaleService.getStatusCached.mockResolvedValue({ nodeFqdn: 'my-hub.example-tailnet.ts.net' } as any);
+      tailscaleService.getStatusCached.mockResolvedValue({
+        installed: true,
+        connected: true,
+        nodeFqdn: 'my-hub.example-tailnet.ts.net',
+      } as any);
 
       await (service as any).validateRegistrationWithCloud();
 
@@ -947,6 +951,11 @@ describe('RegistrationService', () => {
 
       vi.spyOn(service as any, 'hasTunnelToken').mockReturnValue(true);
       mockedAxios.post.mockResolvedValue({ status: 200 } as any);
+      /*
+       * No `installed`, deliberately: this is the "Tailscale gave us nothing
+       * conclusive" case, and the payload must then omit BOTH the name and
+       * `tailscale_connected` rather than assert a tailnet state it cannot see.
+       */
       tailscaleService.getStatusCached.mockResolvedValue({ nodeFqdn: null } as any);
 
       await (service as any).validateRegistrationWithCloud();
@@ -1003,7 +1012,19 @@ describe('RegistrationService', () => {
       vi.spyOn(service as any, 'hasTunnelToken').mockReturnValue(true);
       mockedAxios.post.mockResolvedValue({ status: 200 } as any);
       tunnelHealthService.getHealth.mockReturnValue('down');
-      tailscaleService.getStatusCached.mockResolvedValue({ nodeFqdn: null, connected: true } as any);
+      /*
+       * `installed: true` matters here and is not padding. `tailscale_connected`
+       * is only reported for a node that actually HAS Tailscale — the service's
+       * `notInstalled` literal hard-codes `connected: false`, so passing that
+       * through would report a Hub without Tailscale as disconnected from a
+       * tailnet it never had. A mock that omits `installed` is not a state the
+       * real service can produce.
+       */
+      tailscaleService.getStatusCached.mockResolvedValue({
+        installed: true,
+        nodeFqdn: null,
+        connected: true,
+      } as any);
 
       await (service as any).validateRegistrationWithCloud();
 

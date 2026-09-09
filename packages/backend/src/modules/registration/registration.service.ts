@@ -629,7 +629,23 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     try {
       const status = await this.tailscaleService?.getStatusCached();
       nodeFqdn = status?.nodeFqdn;
-      tailscaleConnected = status?.connected;
+      /*
+       * ⚠ ONLY MEANINGFUL WHEN TAILSCALE IS ACTUALLY INSTALLED.
+       *
+       * `TailscaleStatus.connected` is a non-optional boolean, and both
+       * not-installed paths in `tailscale.service.ts` build their result from a
+       * `notInstalled` literal that hard-codes it `false`. Passing it straight
+       * through therefore reports `tailscale_connected: false` for a Hub that
+       * has no Tailscale at all — indistinguishable, on the wire, from one that
+       * has it and has dropped off its tailnet. The first is a deployment
+       * choice; the second is a fault worth showing someone.
+       *
+       * `buildCheckInPayload` already omits a non-boolean, and its comment says
+       * exactly this — but it cannot act on it, because the type it is handed
+       * can never be undefined. So the distinction has to be made here, where
+       * `installed` is still in scope.
+       */
+      tailscaleConnected = status?.installed ? status.connected : undefined;
     } catch (error) {
       this.logger.debug(`Check-in diagnostics: Tailscale status unavailable, omitting its fields: ${describeRegistrationError(error)}`);
     }

@@ -19,14 +19,29 @@ describe('buildCheckInPayload', () => {
     });
   });
 
+  /*
+   * `tunnel_unreachable`, NOT `tunnel_token_missing`, and the difference is
+   * reachability rather than taste.
+   *
+   * A check-in only happens inside `validateRegistrationWithCloud`, which
+   * returns at its own `if (!this.hasTunnelToken())` guard — setting
+   * `degraded` / `tunnel_token_missing` — BEFORE it ever posts. So that pairing
+   * cannot appear on the wire, and a test asserting it would be pinning a state
+   * Portal can never observe.
+   *
+   * `degraded` itself is reachable: `isOperational('degraded')` is true, so a
+   * Hub degraded elsewhere still checks in. `tunnel_unreachable` is set on the
+   * health path outside this function and survives to the next check-in, which
+   * makes it the honest example.
+   */
   it('reports degraded reasons alongside a degraded phase', () => {
     const payload = buildCheckInPayload({
       deviceId: 'device-1',
       phase: 'degraded',
-      degradedReasons: ['tunnel_token_missing'],
+      degradedReasons: ['tunnel_unreachable'],
     });
 
-    expect(payload.degraded_reasons).toEqual(['tunnel_token_missing']);
+    expect(payload.degraded_reasons).toEqual(['tunnel_unreachable']);
   });
 
   it('drops degraded reasons when the phase is not degraded, so a cleared fault cannot linger', () => {
