@@ -445,4 +445,62 @@ describe('AuthService', () => {
       expect(userRepository.createUser).not.toHaveBeenCalled();
     });
   });
+  describe('register', () => {
+    const issuer = 'https://hub.example.com';
+
+    beforeEach(() => {
+      configurationService.getConfig.mockReturnValue({ ciCloudUrl: issuer } as never);
+      userRepository.getUserByUsername.mockResolvedValue(undefined as never);
+      passwordService.hash.mockResolvedValue('hashed' as never);
+      sessionManager.createSession.mockResolvedValue('session-id' as never);
+    });
+
+    it('binds the Portal subject when Portal signs the new account in', async () => {
+      /*
+       * ⚠ THE OPERATOR USED TO BE CREATED WITH NO `federated_identity` ROW.
+       * `MarketplaceWhoIsService.portalSubject` reads that table, so with no row
+       * there is no subject to ask WhoIs about and the grant gate answers from a
+       * fixed fallback list instead of this person's real Portal grants.
+       *
+       * The subject was in the sign-up response the whole time — the response
+       * type simply did not name `user`.
+       */
+      vi.mocked(axios.post).mockResolvedValue({
+        status: 200,
+        data: { token: 'portal-session', user: { id: 'portal-subject-1', email: 'owner@example.com' } },
+      });
+      userRepository.createUser.mockResolvedValue({ id: 9, username: 'owner@example.com' } as never);
+
+      const result = await authService.register({ username: 'owner@example.com', password: 'Password1!' } as never);
+
+      expect(result).toEqual({ sessionId: 'session-id' });
+      expect(federatedIdentityRepository.create).toHaveBeenCalledWith(expect.objectContaining({ userId: 9, issuer, subject: 'portal-subject-1' }));
+      expect(sessionManager.createSession).toHaveBeenCalledWith(9);
+    });
+
+    it('creates no local operator when Portal requires email verification', async () => {
+      // Today's Portal has `requireEmailVerification` on, so sign-up returns no
+      // session token. Nothing is provisioned here; the operator is linked on
+      // their first login instead.
+      vi.mocked(axios.post).mockResolvedValue({ status: 200, data: { token: null } });
+
+      await expect(authService.register({ username: 'owner@example.com', password: 'Password1!' } as never)).resolves.toEqual({
+        requiresEmailVerification: true,
+      });
+      expect(userRepository.createUser).not.toHaveBeenCalled();
+      expect(federatedIdentityRepository.create).not.toHaveBeenCalled();
+    });
+
+    it('still provisions the operator when Portal signs in but names no subject', async () => {
+      // Degrades to the old unlinked behaviour rather than refusing to register.
+      vi.mocked(axios.post).mockResolvedValue({ status: 200, data: { token: 'portal-session' } });
+      userRepository.createUser.mockResolvedValue({ id: 11, username: 'owner@example.com' } as never);
+
+      await expect(authService.register({ username: 'owner@example.com', password: 'Password1!' } as never)).resolves.toEqual({
+        sessionId: 'session-id',
+      });
+      expect(federatedIdentityRepository.create).not.toHaveBeenCalled();
+      expect(sessionManager.createSession).toHaveBeenCalledWith(11);
+    });
+  });
 });

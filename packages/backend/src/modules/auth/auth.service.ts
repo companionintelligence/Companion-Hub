@@ -160,7 +160,11 @@ export class AuthService {
       },
     );
 
-    const body = (await Promise.resolve(response.data).catch(() => ({}))) as { code?: string; token?: string | null };
+    const body = (await Promise.resolve(response.data).catch(() => ({}))) as {
+      code?: string;
+      token?: string | null;
+      user?: { id?: string; email?: string };
+    };
 
     this.throwIfPortalRateLimited(response);
 
@@ -172,7 +176,17 @@ export class AuthService {
       throw new TranslatableError('AUTH_ERROR_ERROR_CREATING_USER', {}, HttpStatus.BAD_REQUEST);
     }
 
-    return body.token !== null && body.token !== undefined;
+    /*
+     * The Portal subject was in this response all along — the type just did not
+     * name it, so `register` created its operator with no `federated_identity`
+     * row and the grant gate had no subject to ask WhoIs about. Read it the same
+     * way `signInWithPortal` reads the sign-in response.
+     */
+    return {
+      signedIn: body.token !== null && body.token !== undefined,
+      subject: typeof body.user?.id === 'string' && body.user.id.trim() ? body.user.id.trim() : null,
+      email: typeof body.user?.email === 'string' && body.user.email.trim() ? body.user.email.trim() : email,
+    };
   }
 
   /** Create the first local operator from a Portal account when none exists yet. */
@@ -515,20 +529,35 @@ export class AuthService {
       throw new TranslatableError('AUTH_ERROR_INVALID_PASSWORD_COMPLEXITY', {}, HttpStatus.BAD_REQUEST);
     }
 
-    const signedInImmediately = await this.signUpWithPortal(email, password, email.split('@')[0] ?? 'User');
+    const portalIdentity = await this.signUpWithPortal(email, password, email.split('@')[0] ?? 'User');
 
-    if (!signedInImmediately) {
+    if (!portalIdentity.signedIn) {
       return {
         requiresEmailVerification: true,
       };
     }
 
-    const hash = await this.passwordService.hash(crypto.randomUUID());
-    const newUser = await this.userRepository.createUser({ username: email, password: hash, operator: true });
-
-    if (!newUser) {
-      throw new TranslatableError('AUTH_ERROR_ERROR_CREATING_USER', {}, HttpStatus.INTERNAL_SERVER_ERROR);
-    }
+    /*
+     * Bind (issuer, subject) here, exactly as `login` does. An operator with no
+     * `federated_identity` row has no Portal subject, so `MarketplaceWhoIsService`
+     * cannot ask WhoIs what they may do and falls back to a fixed verb list
+     * instead of their real grants — the appliance answers from a default rather
+     * than from Portal.
+     *
+     * Reached only when Portal signed the account in on sign-up, which it does
+     * only where `requireEmailVerification` is off (today's Portal has it on, so
+     * registration returns `requiresEmailVerification` above and the operator is
+     * linked on their first login instead). Portal issuing a session token is
+     * itself the assertion that the account may sign in — the same assertion this
+     * flow already acted on by provisioning an operator and a Hub session — so it
+     * carries `emailVerified: true` rather than re-deriving a weaker signal.
+     */
+    const newUser = await this.admitHubPerson({
+      issuer: this.getPublicPortalBaseUrl(),
+      subject: portalIdentity.subject,
+      email: portalIdentity.email || email,
+      emailVerified: true,
+    });
 
     const sessionId = await this.sessionManager.createSession(newUser.id);
 
