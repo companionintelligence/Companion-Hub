@@ -1,6 +1,6 @@
 import path from 'node:path';
 import fs from 'node:fs/promises';
-import { Injectable } from '@nestjs/common';
+import { Injectable, Optional } from '@nestjs/common';
 
 import { DATA_DIR } from '@/common/constants';
 import { createAppUrn } from '@/common/helpers/app-helpers';
@@ -8,6 +8,7 @@ import { LoggerService } from '@/core/logger/logger.service';
 import type { InferenceStatus } from '@ci-hub/common/types';
 import { AppsReadService } from '../apps/apps-read.service';
 import { HardwareInspectorService } from '../inference/hardware-inspector.service';
+import { HubPoolIdentityService } from '../hub-pool/hub-pool-identity.service';
 import { InferenceRouterService } from '../inference/inference-router.service';
 import { RegistrationService } from '../registration/registration.service';
 import { SystemInspectorService } from '../system/system-inspector.service';
@@ -43,6 +44,7 @@ export class StatusReportService {
     private readonly logger: LoggerService,
     private readonly apps: AppsReadService,
     private readonly hardware: HardwareInspectorService,
+    @Optional() private readonly poolIdentity: HubPoolIdentityService | undefined,
     private readonly inference: InferenceRouterService,
     private readonly registration: RegistrationService,
     private readonly systemInspector: SystemInspectorService,
@@ -100,11 +102,14 @@ export class StatusReportService {
   }
 
   private async readConnection() {
-    const [registrationStatus, registrationInfo, deviceId, tailscaleStatus] = await Promise.all([
+    const [registrationStatus, registrationInfo, deviceId, tailscaleStatus, poolIdentity] = await Promise.all([
       this.registration.getLiveRegistrationStatus().catch(() => null),
       this.registration.getDeviceRegistrationInfo().catch(() => null),
       this.registration.getDeviceId().catch(() => null),
       this.tailscale.getStatusCached().catch(() => null),
+      // Absent on a build without pooling, and on one that has never minted an
+      // identity. Either way the row reads as unknown rather than as "no pool".
+      this.poolIdentity?.summary().catch(() => null) ?? Promise.resolve(null),
     ]);
 
     const apiPort = Number(process.env.API_PORT ?? process.env.BACKEND_PORT ?? '');
@@ -123,7 +128,7 @@ export class StatusReportService {
             tailnet: tailscaleStatus.tailnet ?? null,
           }
         : null,
-      poolNodeUuid: null,
+      poolNodeUuid: poolIdentity?.nodeUuid ?? null,
     };
   }
 
