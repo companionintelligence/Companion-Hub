@@ -28,6 +28,33 @@ import type { PoolCandidate, PoolPeerCapabilities } from './hub-pool.types';
 const CONNECT_TIMEOUT_MS = 15_000;
 
 /**
+ * Budget for a NON-STREAMED completion, which is a different thing from a connect budget.
+ *
+ * `CONNECT_TIMEOUT_MS` guards the wait for response headers, and for a streamed request that is
+ * exactly right — the first frame arrives in well under a second and the timer is cleared. For a
+ * non-streamed request the upstream sends no headers at all until the entire completion is ready, so
+ * the same timer silently becomes a cap on TOTAL GENERATION TIME. Fifteen seconds of generation is
+ * a short prompt; every real coding task, long summary or agent turn is longer, and every one of
+ * them was aborted and reported to the caller as an unreachable node.
+ *
+ * Proven on the fleet, same node, same model, back to back:
+ *   direct  :11434  -> HTTP 200 in 33.9s
+ *   pool    :5002   -> HTTP 502 in 15.03s, "All pool nodes serving model ... are unreachable"
+ * A 12s generation through the pool succeeded, and a cold model load — the likelier suspect —
+ * succeeded in 4.6s with nothing resident. It is specifically generations past the deadline.
+ *
+ * Five minutes by default because that is comfortably past the worst decode this fleet produces
+ * (a 2600-token generation on its slowest node measured ~300s), and env-overridable because the
+ * right number is a property of the operator's hardware, not of this file.
+ */
+const COMPLETION_TIMEOUT_MS = Math.max(CONNECT_TIMEOUT_MS, Number(process.env.HUB_POOL_COMPLETION_TIMEOUT_MS) || 300_000);
+
+/** Does this body ask for a streamed response? Decides which of the two budgets applies. */
+export function isStreamingRequest(body: unknown): boolean {
+  return !!(body && typeof body === 'object' && (body as { stream?: unknown }).stream === true);
+}
+
+/**
  * What to tell a caller when every candidate failed.
  *
  * The single sentence this replaces — "All pool nodes serving model X are currently unreachable" —
@@ -736,11 +763,15 @@ export class PoolProxyService {
     const backendImpl = this.backends.get(backend);
     const url = `${backendImpl.getBaseUrl()}${path}`;
     const apiKey = backendImpl.getApiKey?.();
-    return this.fetchWithConnectTimeout(url, {
-      method,
-      headers: { 'Content-Type': 'application/json', ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}) },
-      body: method === 'GET' ? undefined : JSON.stringify(body),
-    });
+    return this.fetchWithConnectTimeout(
+      url,
+      {
+        method,
+        headers: { 'Content-Type': 'application/json', ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}) },
+        body: method === 'GET' ? undefined : JSON.stringify(body),
+      },
+      isStreamingRequest(body),
+    );
   }
 
   private async forward(candidate: PoolCandidate, path: string, method: string, body: unknown, model: string): Promise<globalThis.Response> {
@@ -759,26 +790,41 @@ export class PoolProxyService {
     // `/local/*`, because the recipient UUID, nonce and timestamp already make a captured request
     // unreplayable, and canonicalizing a megabyte embeddings batch per hop is not affordable here.
     const authHeaders = await this.peerService.peerAuthHeaders(peer, method, requestPath, body);
-    return this.fetchWithConnectTimeout(url, {
-      method,
-      headers: {
-        'Content-Type': 'application/json',
-        // Tells the peer's `/inference/pool/local/*` handler which of ITS OWN backends to hit —
-        // it can't infer this from the path alone, and must not re-run candidate selection itself.
-        'X-Hub-Pool-Backend': candidate.backend,
-        // Lets the receiver credit the outcome to the right model without parsing the body it
-        // promises not to read. Same reason as the header above: the path alone doesn't carry it.
-        'X-Hub-Pool-Model': model,
-        ...authHeaders,
+    return this.fetchWithConnectTimeout(
+      url,
+      {
+        method,
+        headers: {
+          'Content-Type': 'application/json',
+          // Tells the peer's `/inference/pool/local/*` handler which of ITS OWN backends to hit —
+          // it can't infer this from the path alone, and must not re-run candidate selection itself.
+          'X-Hub-Pool-Backend': candidate.backend,
+          // Lets the receiver credit the outcome to the right model without parsing the body it
+          // promises not to read. Same reason as the header above: the path alone doesn't carry it.
+          'X-Hub-Pool-Model': model,
+          ...authHeaders,
+        },
+        body: method === 'GET' ? undefined : JSON.stringify(body),
       },
-      body: method === 'GET' ? undefined : JSON.stringify(body),
-    });
+      isStreamingRequest(body),
+    );
   }
 
-  /** `fetch` with a timeout that only guards the wait for response headers — cleared immediately once they arrive, so a long streamed generation is never cut off mid-stream. */
-  private async fetchWithConnectTimeout(url: string, init: RequestInit): Promise<globalThis.Response> {
+  /**
+   * `fetch` with a deadline sized to what we are actually waiting for.
+   *
+   * Streamed: headers arrive almost immediately, so the short connect budget is the right guard and
+   * the timer is cleared before the body flows — a long generation is never cut off mid-stream.
+   * Non-streamed: headers arrive only when the completion is finished, so the wait we are timing IS
+   * the generation, and the budget has to be sized for one. See COMPLETION_TIMEOUT_MS.
+   */
+  private async fetchWithConnectTimeout(url: string, init: RequestInit, streaming = false): Promise<globalThis.Response> {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(new Error(`No response headers within ${CONNECT_TIMEOUT_MS}ms`)), CONNECT_TIMEOUT_MS);
+    const budget = streaming ? CONNECT_TIMEOUT_MS : COMPLETION_TIMEOUT_MS;
+    const timer = setTimeout(
+      () => controller.abort(new Error(streaming ? `No response headers within ${budget}ms` : `No completion within ${budget}ms`)),
+      budget,
+    );
     try {
       const response = await fetch(url, { ...init, signal: controller.signal });
       return response;
