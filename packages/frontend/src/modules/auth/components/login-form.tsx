@@ -109,7 +109,7 @@ export const LoginForm: React.FC<IProps> = ({
             <button
               type="button"
               data-testid="login-switch-account"
-              className="mx-auto mt-2 block min-h-[44px] text-sm text-muted-foreground underline"
+              className="mx-auto mt-1 block py-0 leading-tight text-sm text-muted-foreground underline"
               onClick={onSwitchAccount}
             >
               {t('AUTH_LOGIN_NOT_THIS_ACCOUNT', { email: portalAccountEmail })}
