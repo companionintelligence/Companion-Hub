@@ -24,6 +24,7 @@ import { runPoolCommand } from './cli-pool.js';
 import { confirmDestructiveAction } from './cli-prompt.js';
 import { registerHub, showDeviceId } from './cli-register.js';
 import { isApplianceMode } from './cli-repo-context.js';
+import { runWriteStatusFile } from './status-file.js';
 import { cleanHub, downHub, recreateHub, resetHub, restartHub } from './cli-teardown.js';
 import { allowedEnvs, BASE_COMMAND, type HubEnv } from './cli-types.js';
 import { printMessageBox, renderHelp, renderManPage } from './cli-ui.js';
@@ -120,6 +121,11 @@ export async function runCli(rawArgs: string[]) {
   }
 
   if (first === 'status') {
+    if (args.includes('--write-status-file')) {
+      process.exitCode = runWriteStatusFile();
+      return;
+    }
+
     showStatus(resolveEnvFromArgs(args.slice(1)));
     return;
   }

@@ -42,6 +42,6 @@ import { PoolPeerGuard } from './guards/pool-peer.guard';
     PoolAppGuard,
     PoolPeerGuard,
   ],
-  exports: [HubPoolPeerService, PoolProxyService],
+  exports: [HubPoolPeerService, PoolProxyService, HubPoolIdentityService],
 })
 export class HubPoolModule {}
