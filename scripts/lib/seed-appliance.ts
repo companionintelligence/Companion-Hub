@@ -150,6 +150,42 @@ export function composeResourceCandidates(execPath: string = process.execPath): 
   ];
 }
 
+export const TRAEFIK_ASSETS_DIRNAME = 'traefik-assets';
+
+/**
+ * Same shape as {@link composeResourceCandidates}: a fresh `cihub up`/`cihub setup` on a
+ * headless box (no CI-Hub checkout, no desktop package) has no `process.cwd()`-relative
+ * monorepo path to read `packages/backend/assets/traefik/` from, so `initTraefik()` silently
+ * warned and skipped `traefik.yml` — and, because it never got that far, never reached the
+ * unconditional `acme_storage.json` write either. `traefik.yml` and `acme_storage.json`
+ * missing from `docker-compose.prod.yml`'s bind mounts is what makes the `traefik` container
+ * fail with "invalid mount config for type bind: bind source path does not exist" on every
+ * first boot outside a checkout.
+ */
+export function traefikAssetsCandidates(execPath: string = process.execPath): string[] {
+  const execDir = path.dirname(execPath);
+  const fromModule = (() => {
+    try {
+      return path.resolve(fileURLToPath(new URL('../../packages/backend/assets/traefik', import.meta.url)));
+    } catch {
+      return undefined;
+    }
+  })();
+  return [
+    path.join(execDir, TRAEFIK_ASSETS_DIRNAME),
+    path.join(execDir, 'resources', TRAEFIK_ASSETS_DIRNAME),
+    path.join('/usr/lib/Companion Hub/resources', TRAEFIK_ASSETS_DIRNAME),
+    path.join('/usr/lib/companion-hub/resources', TRAEFIK_ASSETS_DIRNAME),
+    path.join('/usr/share/companion-hub', TRAEFIK_ASSETS_DIRNAME),
+    path.join(process.cwd(), 'packages/backend/assets/traefik'),
+    ...(fromModule ? [fromModule] : []),
+  ];
+}
+
+export function findTraefikAssets(execPath: string = process.execPath): string | undefined {
+  return traefikAssetsCandidates(execPath).find((candidate) => existsSync(candidate));
+}
+
 export function findBundledCompose(execPath: string = process.execPath): string | undefined {
   return composeResourceCandidates(execPath).find((candidate) => existsSync(candidate));
 }

@@ -6,11 +6,13 @@ import {
   composeResourceCandidates,
   envPasswordFrom,
   findBundledCompose,
+  findTraefikAssets,
   HUB_STACK_IMAGE_REPO,
   renderApplianceEnvContent,
   resolveApplianceHubImage,
   resolvePostgresPassword,
   seedApplianceInstall,
+  traefikAssetsCandidates,
   validateSeedPassword,
 } from '../lib/seed-appliance';
 
@@ -162,6 +164,44 @@ describe('findBundledCompose', () => {
       const compose = join(dir, 'resources', 'docker-compose.prod.yml');
       writeFileSync(compose, 'services: {}\n');
       expect(findBundledCompose(join(dir, 'cihub'))).toBe(compose);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('traefikAssetsCandidates / findTraefikAssets', () => {
+  it('includes the same exec-dir and desktop resource shapes as the compose resolver', () => {
+    const candidates = traefikAssetsCandidates('/opt/hub/bin/cihub');
+    expect(candidates).toContain('/opt/hub/bin/traefik-assets');
+    expect(candidates).toContain('/usr/lib/Companion Hub/resources/traefik-assets');
+  });
+
+  it('returns the first candidate directory that exists — a headless install with no CI-Hub checkout', () => {
+    // Regression: initTraefik() used to resolve this directory as `path.join(process.cwd(),
+    // 'packages/backend/assets/traefik')` — correct inside a checkout, but a fresh `cihub up`
+    // on a fleet node (packaged binary, no checkout) has no such cwd-relative path. It
+    // silently warned and skipped traefik.yml, and because it never reached the unconditional
+    // acme_storage.json write either, `docker compose up` failed on both missing bind mounts:
+    // "invalid mount config for type bind: bind source path does not exist".
+    const dir = mkdtempSync(join(tmpdir(), 'cihub-traefik-'));
+    try {
+      mkdirSync(join(dir, 'resources', 'traefik-assets'), { recursive: true });
+      const traefikYml = join(dir, 'resources', 'traefik-assets', 'traefik.yml');
+      writeFileSync(traefikYml, 'entryPoints: {}\n');
+      expect(findTraefikAssets(join(dir, 'cihub'))).toBe(join(dir, 'resources', 'traefik-assets'));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('still falls back to cwd-relative packages/backend/assets/traefik inside a checkout', () => {
+    // Preserves the original (pre-fix) behavior for the one case it always worked for.
+    expect(existsSync(join(process.cwd(), 'packages/backend/assets/traefik', 'traefik.yml'))).toBe(true);
+    const dir = mkdtempSync(join(tmpdir(), 'cihub-traefik-nofile-'));
+    try {
+      // No exec-dir candidate exists, so this only passes if the cwd fallback still works.
+      expect(findTraefikAssets(join(dir, 'cihub'))).toBe(join(process.cwd(), 'packages/backend/assets/traefik'));
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
