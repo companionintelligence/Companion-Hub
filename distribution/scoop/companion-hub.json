@@ -1,10 +1,10 @@
 {
-  "version": "0.2.61",
+  "version": "0.2.65",
   "description": "Self-hosted app platform and local AI hub from Companion Intelligence",
   "homepage": "https://ci.computer/hub",
-  "license": "PolyForm-Noncommercial-1.0.0",
-  "url": "https://github.com/companionintelligence/CI-Hub/releases/download/v0.2.61/Companion.Hub_0.2.61_x64-setup.exe",
-  "hash": "16b4f373543a77cdd1f1274615ac520dcd07b6ee2f684d85f90ce927dac7b4ed",
+  "license": "CI-Commercial-1.0",
+  "url": "https://github.com/companionintelligence/CI-Hub/releases/download/v0.2.65/Companion.Hub_0.2.65_x64-setup.exe",
+  "hash": "8a05c0eb51e3b836a7cd1bfa6ce1a1ba813f66a4c30e9a3d378831b75fafbc82",
   "installer": {
     "script": "& \"$dir\\Companion.Hub_$version_x64-setup.exe\" /S"
   },
