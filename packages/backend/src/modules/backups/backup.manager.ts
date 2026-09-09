@@ -1,4 +1,6 @@
 import path from 'node:path';
+
+import { resolveBackupFilePath } from './backup-path';
 import { isAbsoluteHostPath, joinHostPath } from '@/common/helpers/app-data-path.helper';
 import { extractAppUrn } from '@/common/helpers/app-helpers';
 import { ArchiveService } from '@/core/archive/archive.service';
@@ -100,11 +102,12 @@ export class BackupManager implements OnApplicationShutdown {
     const { appStoreId, appName } = extractAppUrn(appUrn);
     const backupDir = path.join(dataDir, 'backups', appStoreId, appName);
 
-    const archive = this.filesystem.getSafeFilePath(path.join(backupDir, filename));
-
-    if (!archive.startsWith(backupDir)) {
-      throw new Error('Invalid backup file path');
-    }
+    // `resolveBackupFilePath` asserts containment itself, after resolution. The
+    // string-prefix check that used to stand here is both redundant and wrong in two
+    // directions: it passes a sibling directory sharing the prefix, and it fails a
+    // correctly-contained path whenever `dataDir` is relative (the resolved archive is
+    // absolute, the prefix is not), which would make every restore throw.
+    const archive = resolveBackupFilePath(backupDir, filename);
 
     this.logger.info('Restoring app from backup...');
 
@@ -156,7 +159,7 @@ export class BackupManager implements OnApplicationShutdown {
 
     const { appName, appStoreId } = extractAppUrn(appUrn);
     const backupDir = path.join(dataDir, 'backups', appStoreId, appName);
-    const backupPath = this.filesystem.getSafeFilePath(path.join(backupDir, filename));
+    const backupPath = resolveBackupFilePath(backupDir, filename);
 
     if (await this.filesystem.pathExists(backupPath)) {
       await this.filesystem.removeFile(backupPath);
@@ -264,7 +267,7 @@ export class BackupManager implements OnApplicationShutdown {
     const { appName, appStoreId } = extractAppUrn(appUrn);
     const backupDir = path.join(dataDir, 'backups', appStoreId, appName);
 
-    const backupPath = this.filesystem.getSafeFilePath(path.join(backupDir, filename));
+    const backupPath = resolveBackupFilePath(backupDir, filename);
 
     if (!(await this.filesystem.pathExists(backupPath))) {
       throw new Error('The backup file does not exist');
@@ -284,7 +287,7 @@ export class BackupManager implements OnApplicationShutdown {
     const { appName, appStoreId } = extractAppUrn(appUrn);
     const backupDir = path.join(dataDir, 'backups', appStoreId, appName);
 
-    const backupPath = this.filesystem.getSafeFilePath(path.join(backupDir, filename));
+    const backupPath = resolveBackupFilePath(backupDir, filename);
 
     // Create backup directory if it doesn't exist
     await this.filesystem.createDirectory(backupDir);
@@ -294,8 +297,14 @@ export class BackupManager implements OnApplicationShutdown {
       throw new Error('A backup with this filename already exists');
     }
 
-    // Write the file
-    await this.filesystem.writeBinaryFile(backupPath, fileBuffer);
+    // Write the file. `writeBinaryFile` reports failure by returning false rather than
+    // throwing, so an unwritable backup directory (EACCES, ENOSPC) otherwise produced a
+    // logged error, no file, and a `{ success: true }` response to the uploader.
+    const written = await this.filesystem.writeBinaryFile(backupPath, fileBuffer);
+
+    if (!written) {
+      throw new Error('Failed to write the backup file');
+    }
 
     this.logger.info(`Backup uploaded successfully: ${filename}`);
   }

@@ -320,7 +320,31 @@ export class AppFilesManager {
         const full = path.join(dir, name);
         const rel = relative ? `${relative}/${name}` : name;
         try {
-          const stats = await this.filesystem.getStats(full);
+          /*
+           * ⚠ `lstat`, NOT `stat`, AND A SYMLINK IS NOT FOLLOWED.
+           *
+           * `stat` reports the TARGET's kind, so a link planted in the app's own
+           * data directory — which the app itself can write — looked like an
+           * ordinary directory and this walk recursed through it. `ln -s /
+           * /app-data/<store>/<app>/x` turned a read-only inventory of one app's
+           * files into a listing of the whole host, eight levels deep, through
+           * `GET /api/apps/:urn/data-files`.
+           *
+           * The path fence does not help: it is applied to the path handed in,
+           * which is inside the app's directory, and the escape happens in the
+           * kernel afterwards.
+           *
+           * Links are reported rather than hidden — an operator looking at this
+           * dialog should see what is actually in the folder — but never
+           * descended, and never sized from their target.
+           */
+          const stats = await this.filesystem.getLinkStats(full);
+
+          if (stats.isSymbolicLink()) {
+            entries.push({ name, path: rel, kind: 'file', sizeBytes: null });
+            continue;
+          }
+
           if (stats.isDirectory()) {
             entries.push({ name, path: rel, kind: 'directory', sizeBytes: null });
             await walk(full, rel, depth + 1);
