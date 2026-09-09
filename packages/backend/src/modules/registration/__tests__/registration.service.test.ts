@@ -63,6 +63,42 @@ describe('RegistrationService', () => {
     vi.clearAllMocks();
   });
 
+  describe('callback nonce', () => {
+    it('reuses the nonce in flight, so the registration page polling device-id does not replace it', () => {
+      // The page re-reads `GET /registration/device-id` every few seconds while
+      // unregistered; a fresh nonce per call would invalidate the one the person
+      // is carrying through Portal.
+      const first = service.mintCallbackNonce();
+
+      expect(service.mintCallbackNonce()).toBe(first);
+      expect(service.consumeCallbackNonce(first)).toBe(true);
+    });
+
+    it('spends the nonce once, and refuses a replay or an unknown value', () => {
+      const nonce = service.mintCallbackNonce();
+
+      expect(service.consumeCallbackNonce(nonce)).toBe(true);
+      expect(service.consumeCallbackNonce(nonce)).toBe(false);
+      expect(service.consumeCallbackNonce('not-a-nonce')).toBe(false);
+      expect(service.consumeCallbackNonce(undefined)).toBe(false);
+    });
+
+    it('refuses a nonce that has aged past its TTL', () => {
+      vi.useFakeTimers();
+
+      try {
+        const nonce = service.mintCallbackNonce();
+
+        vi.advanceTimersByTime(30 * 60 * 1000 + 1);
+
+        expect(service.consumeCallbackNonce(nonce)).toBe(false);
+        expect(service.mintCallbackNonce()).not.toBe(nonce);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
+
   describe('isRegistered', () => {
     it('should return true if device is registered', async () => {
       deviceRegistrationRepository.hasAnyDeviceRegistration.mockResolvedValue(true);

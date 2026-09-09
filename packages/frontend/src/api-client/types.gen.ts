@@ -2411,8 +2411,11 @@ export type GetDeviceIdResponses = {
 export type HandleCallbackPostData = {
     body?: never;
     path?: never;
-    query: {
-        state: string;
+    query?: {
+        /**
+         * Registration nonce from `callback_url`; may also be sent in the body.
+         */
+        state?: string;
     };
     url: '/api/registration/callback';
 };

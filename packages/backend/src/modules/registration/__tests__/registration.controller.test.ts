@@ -147,6 +147,19 @@ describe('RegistrationController', () => {
       expect(result.registration_url).toContain('device-123');
     });
 
+    it('carries the minted nonce into the callback URL Portal is sent to', async () => {
+      // The callback guard can only pass if the nonce reaches `callback_url`.
+      registrationService.getDeviceId.mockResolvedValue('device-123');
+      registrationService.mintCallbackNonce.mockReturnValue('nonce-1');
+      configService.getConfig.mockReturnValue({ ciCloudUrl: 'https://portal.ci.com' } as any);
+
+      const req = { protocol: 'https', get: () => 'localhost:3000' } as any;
+      const result = await controller.getDeviceId(req);
+
+      expect(result.callback_url).toBe('https://localhost:3000/device-registration?state=nonce-1');
+      expect(result.registration_url).toContain(encodeURIComponent(result.callback_url));
+    });
+
     it('should return null registration URL when ciCloudUrl is empty', async () => {
       registrationService.getDeviceId.mockResolvedValue('device-123');
       configService.getConfig.mockReturnValue({ ciCloudUrl: '' } as any);
@@ -191,7 +204,7 @@ describe('RegistrationController', () => {
       // someone who can reach this port from starting a registration and
       // finishing it. Re-registering a running Hub is `resetRegistration`'s job.
       registrationService.consumeCallbackNonce.mockReturnValue(true);
-      registrationService.isCurrentlyOperational.mockResolvedValue(true);
+      registrationService.isRegistered.mockResolvedValue(true);
 
       await expect(controller.handleCallbackPost(validBody)).rejects.toThrow(ForbiddenException);
       expect(registrationService.completeRegistrationFromCallback).not.toHaveBeenCalled();
@@ -199,7 +212,7 @@ describe('RegistrationController', () => {
 
     it('spends the nonce, so a replay of the same callback is refused', async () => {
       registrationService.consumeCallbackNonce.mockReturnValueOnce(true).mockReturnValue(false);
-      registrationService.isCurrentlyOperational.mockResolvedValue(false);
+      registrationService.isRegistered.mockResolvedValue(false);
       registrationService.completeRegistrationFromCallback.mockResolvedValue({ success: true } as any);
 
       await expect(controller.handleCallbackPost(validBody, 'nonce-1')).resolves.toEqual({ success: true });
@@ -208,7 +221,7 @@ describe('RegistrationController', () => {
 
     it('returns an error when required params are missing', async () => {
       registrationService.consumeCallbackNonce.mockReturnValue(true);
-      registrationService.isCurrentlyOperational.mockResolvedValue(false);
+      registrationService.isRegistered.mockResolvedValue(false);
 
       const result = await controller.handleCallbackPost({
         ...validBody,
@@ -219,9 +232,20 @@ describe('RegistrationController', () => {
       expect(result.success).toBe(false);
     });
 
+    it('does not spend the nonce on a body that is missing required params', async () => {
+      // Burning the one-time secret on a malformed body would cost the person
+      // another round trip through Portal.
+      registrationService.consumeCallbackNonce.mockReturnValue(true);
+      registrationService.isRegistered.mockResolvedValue(false);
+
+      await controller.handleCallbackPost({ ...validBody, device_id: '' }, 'nonce-1');
+
+      expect(registrationService.consumeCallbackNonce).not.toHaveBeenCalled();
+    });
+
     it('completes registration from a JSON body with a valid nonce', async () => {
       registrationService.consumeCallbackNonce.mockReturnValue(true);
-      registrationService.isCurrentlyOperational.mockResolvedValue(false);
+      registrationService.isRegistered.mockResolvedValue(false);
       registrationService.completeRegistrationFromCallback.mockResolvedValue({ success: true } as any);
 
       const result = await controller.handleCallbackPost(validBody, 'nonce-1');
@@ -245,7 +269,7 @@ describe('RegistrationController', () => {
       // normally arrives; a client that parsed the redirect re-posts it in the
       // body.
       registrationService.consumeCallbackNonce.mockReturnValue(true);
-      registrationService.isCurrentlyOperational.mockResolvedValue(false);
+      registrationService.isRegistered.mockResolvedValue(false);
       registrationService.completeRegistrationFromCallback.mockResolvedValue({ success: true } as any);
 
       await controller.handleCallbackPost({ ...validBody, state: 'nonce-in-body' });

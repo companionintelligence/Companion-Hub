@@ -363,8 +363,9 @@
         "parameters": [
           {
             "name": "state",
-            "required": true,
+            "required": false,
             "in": "query",
+            "description": "Registration nonce from `callback_url`; may also be sent in the body.",
             "schema": {
               "type": "string"
             }

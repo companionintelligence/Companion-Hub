@@ -111,7 +111,7 @@ export const getDeviceId = <ThrowOnError extends boolean = false>(options?: Opti
 /**
  * Handle registration callback from CI Cloud
  */
-export const handleCallbackPost = <ThrowOnError extends boolean = false>(options: Options<HandleCallbackPostData, ThrowOnError>) => (options.client ?? client).post<HandleCallbackPostResponses, HandleCallbackPostErrors, ThrowOnError>({ url: '/api/registration/callback', ...options });
+export const handleCallbackPost = <ThrowOnError extends boolean = false>(options?: Options<HandleCallbackPostData, ThrowOnError>) => (options?.client ?? client).post<HandleCallbackPostResponses, HandleCallbackPostErrors, ThrowOnError>({ url: '/api/registration/callback', ...options });
 
 /**
  * Get CI Cloud configuration (operator debug)

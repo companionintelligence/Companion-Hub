@@ -804,82 +804,67 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
   }
 
   /**
-   * One-time secrets for the registration callback, and when they were minted.
+   * The one-time secret for the registration this Hub is running: minted with
+   * the `callback_url` handed to Portal, and spent when the callback returns.
+   * Possession of it shows the callback belongs to a registration this Hub
+   * started; it does not authenticate Portal, so `POST /registration/callback`
+   * also refuses an already-registered Hub.
    *
-   * ⚠ THE CALLBACK IS HOW A HUB LEARNS ITS OWN CREDENTIALS, and it used to
-   * accept them from anybody. `POST /registration/callback` had no guard of any
-   * kind — no session, no device key, nothing — and the body it takes carries
-   * `api_key`, `tunnel_id` and `tunnel_token`. Anyone who could reach the Hub's
-   * HTTP port could therefore hand it an attacker-chosen Portal key and tunnel
-   * and have it re-register itself onto them.
-   *
-   * A nonce is minted only by `getDeviceId`, which is what builds the
-   * `callback_url` handed to Portal — so possession of one proves the callback
-   * belongs to a registration THIS Hub started. Portal treats `callback_url` as
-   * opaque and returns to it, so the value comes back without Portal knowing it
-   * is there.
-   *
-   * In memory on purpose: a nonce must not survive a restart, because a
-   * registration attempt does not either.
+   * In memory on purpose, because a registration attempt does not survive a
+   * restart either.
    */
-  private readonly callbackNonces = new Map<string, number>();
+  private callbackNonce: { value: string; mintedAt: number } | null = null;
 
   /** Long enough for a person to sign in at Portal and pick an organization. */
   private static readonly CALLBACK_NONCE_TTL_MS = 30 * 60 * 1000;
 
-  /** Bounded, so an unauthenticated mint route cannot grow this without limit. */
-  private static readonly CALLBACK_NONCE_MAX = 32;
-
-  /** Mint a nonce for a registration this Hub is starting. */
+  /**
+   * Returns the nonce for the registration in flight, minting one when there is
+   * none.
+   *
+   * The registration page re-reads `GET /registration/device-id` on every status
+   * poll, so minting one per call would replace the nonce the person is carrying
+   * through Portal, and change the QR code they are scanning.
+   */
   public mintCallbackNonce(): string {
-    this.pruneCallbackNonces();
+    const live = this.liveCallbackNonce();
 
-    if (this.callbackNonces.size >= RegistrationService.CALLBACK_NONCE_MAX) {
-      // Drop the oldest rather than refusing: a person retrying the setup page
-      // must not be locked out by their own earlier attempts.
-      const oldest = [...this.callbackNonces.entries()].sort((a, b) => a[1] - b[1])[0];
-
-      if (oldest) {
-        this.callbackNonces.delete(oldest[0]);
-      }
+    if (live) {
+      return live;
     }
 
-    const nonce = randomUUID();
+    this.callbackNonce = { value: randomUUID(), mintedAt: Date.now() };
 
-    this.callbackNonces.set(nonce, Date.now());
-
-    return nonce;
+    return this.callbackNonce.value;
   }
 
   /**
-   * Spend a nonce. Returns false when it was never minted here, was already
+   * Spends the nonce. Returns false when it was never minted here, was already
    * used, or has expired — all of which mean the same thing to the caller.
    */
   public consumeCallbackNonce(nonce: string | undefined): boolean {
-    if (!nonce) {
+    if (!nonce || this.liveCallbackNonce() !== nonce) {
       return false;
     }
 
-    this.pruneCallbackNonces();
+    this.callbackNonce = null;
 
-    return this.callbackNonces.delete(nonce);
+    return true;
   }
 
-  private pruneCallbackNonces(): void {
-    const cutoff = Date.now() - RegistrationService.CALLBACK_NONCE_TTL_MS;
-
-    for (const [nonce, mintedAt] of this.callbackNonces) {
-      if (mintedAt < cutoff) {
-        this.callbackNonces.delete(nonce);
-      }
+  /** The current nonce, or null once it has aged past the TTL. */
+  private liveCallbackNonce(): string | null {
+    if (!this.callbackNonce) {
+      return null;
     }
-  }
 
-  /** Whether this Hub is already registered and running. */
-  public async isCurrentlyOperational(): Promise<boolean> {
-    await this.refreshPhaseFromSources();
+    if (Date.now() - this.callbackNonce.mintedAt >= RegistrationService.CALLBACK_NONCE_TTL_MS) {
+      this.callbackNonce = null;
 
-    return isOperational(this._currentPhase);
+      return null;
+    }
+
+    return this.callbackNonce.value;
   }
 
   /** Persists restore intent beyond `sessionStorage` before the device pairs again. */
