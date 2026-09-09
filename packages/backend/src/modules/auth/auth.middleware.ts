@@ -111,6 +111,7 @@ export class AuthMiddleware implements NestMiddleware {
         const user = await this.loadSessionUser(userId);
         req.user = user;
         req.hubSessionId = sessionId;
+        req.hubPrincipal = 'session';
         return next();
       } catch (err) {
         if (err instanceof ServiceUnavailableException) {
@@ -143,6 +144,12 @@ export class AuthMiddleware implements NestMiddleware {
       if (ciHubApiKey && secretEquals(token, ciHubApiKey)) {
         const user = await this.loadUserResilient(() => this.userRepository.getFirstOperator());
         req.user = user;
+        // Named, so the org-grant gate exempts this deliberately rather than by
+        // accident — the exemption used to follow from having no `hubSessionId`,
+        // which covered every arm that forgot to set one. Portal's own
+        // GRANT_DENIED gate is what authorises a push, and that answer holds only
+        // while the exemption stays this narrow.
+        req.hubPrincipal = 'portal-device';
         return next();
       }
 
@@ -153,6 +160,9 @@ export class AuthMiddleware implements NestMiddleware {
         if (sub === 'cli') {
           const user = await this.loadUserResilient(() => this.userRepository.getFirstOperator());
           req.user = user;
+          // Host-local by construction: the JWT is signed with `jwtSecret`, which
+          // lives in the same state file as the device key.
+          req.hubPrincipal = 'cli';
         }
 
         return next();
