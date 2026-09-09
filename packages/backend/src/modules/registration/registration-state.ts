@@ -42,6 +42,18 @@ export function isOperational(phase: ProvisioningPhase): boolean {
   return phase === 'locally_ready' || phase === 'publicly_ready' || phase === 'degraded';
 }
 
+/**
+ * Whether a registered Hub is expected to pair with Portal again.
+ *
+ * A Hub that lost its tunnel token is registered but cannot serve publicly, and
+ * pairing again is how the token is restored — so it must not be treated the
+ * same as a Hub that is up and serving. The frontend gates its pairing form on
+ * the same test.
+ */
+export function requiresPortalRePairing(phase: ProvisioningPhase, degradedReasons: readonly DegradedReason[]): boolean {
+  return phase === 'degraded' && degradedReasons.includes('tunnel_token_missing');
+}
+
 /** Transient phases while a pairing request is being provisioned — not state drift. */
 export function isActiveRegistrationPhase(phase: ProvisioningPhase): boolean {
   return phase === 'paired' || phase === 'provisioning';

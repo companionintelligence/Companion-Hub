@@ -10,6 +10,7 @@ import { PortalModule } from '@/core/portal/portal.module';
 import { CloudflareModule } from '../cloudflare/cloudflare.module';
 import { DockerModule } from '../docker/docker.module';
 import { QueueModule } from '../queue/queue.module';
+import { TailscaleModule } from '../tailscale/tailscale.module';
 
 @Module({
   imports: [
@@ -20,6 +21,7 @@ import { QueueModule } from '../queue/queue.module';
     forwardRef(() => CloudflareModule),
     forwardRef(() => DockerModule),
     QueueModule,
+    TailscaleModule,
   ],
   controllers: [RegistrationController],
   providers: [RegistrationService, RegistrationGuard, DeviceRegistrationRepository],

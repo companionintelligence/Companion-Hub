@@ -148,6 +148,18 @@ describe('UserRepository', () => {
       const result = await repository.getFirstOperator();
       expect(result).toEqual({ id: 1, operator: true });
     });
+
+    it('orders by id so the operator it picks is stable across calls', async () => {
+      // Portal SSO compares the caller's address against THIS row. Unordered, it is heap order, so
+      // on a multi-operator Hub the same login can be accepted once and refused the next time.
+      mockDb.query.user.findFirst.mockResolvedValue({ id: 1, operator: true });
+      await repository.getFirstOperator();
+
+      const [args] = mockDb.query.user.findFirst.mock.calls.at(-1) as [{ orderBy?: unknown }];
+      expect(args.orderBy).toBeTypeOf('function');
+      const asc = vi.fn((column: unknown) => ({ asc: column }));
+      expect((args.orderBy as (r: unknown, o: unknown) => unknown)({ id: 'id-column' }, { asc })).toEqual({ asc: 'id-column' });
+    });
   });
 
   describe('advancedMode field', () => {

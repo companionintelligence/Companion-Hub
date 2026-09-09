@@ -1,6 +1,6 @@
 import { AppCard } from '@/modules/app/components/app-card/app-card';
 import type { HubStoreApp } from '@/lib/portal-store';
-import { getFeaturedStoreBundleOptions } from '@/lib/featured-store-bundle-query';
+import { getFeaturedStoreSectionOptions, type FeaturedStoreSectionId } from '@/lib/featured-store-bundle-query';
 import { useQuery } from '@tanstack/react-query';
 import { ChevronDown, ChevronUp } from 'lucide-react';
 import { useId, useState } from 'react';
@@ -92,53 +92,69 @@ function AppSection({
   );
 }
 
+function FeaturedStoreSection({
+  sectionId,
+  storeId,
+  title,
+  subtitle,
+  installedAppUrns,
+}: {
+  sectionId: FeaturedStoreSectionId;
+  storeId: string;
+  title: string;
+  subtitle: string;
+  installedAppUrns: Set<string>;
+}) {
+  const { data, isLoading, isError, refetch } = useQuery({
+    ...getFeaturedStoreSectionOptions(sectionId, storeId),
+  });
+
+  return (
+    <AppSection
+      title={title}
+      subtitle={subtitle}
+      apps={data}
+      isLoading={isLoading}
+      isError={isError}
+      onRetry={() => {
+        void refetch();
+      }}
+      installedAppUrns={installedAppUrns}
+    />
+  );
+}
+
 export function FeaturedStoreView({ storeId, installedAppUrns }: { storeId: string; installedAppUrns: Set<string> }) {
   const { t } = useTranslation();
 
-  const { data, isLoading, isError, refetch } = useQuery({
-    ...getFeaturedStoreBundleOptions(storeId),
-  });
-
-  const onRetry = () => {
-    void refetch();
-  };
-
   return (
     <div className="w-full space-y-10 pb-10">
-      <AppSection
+      <FeaturedStoreSection
+        sectionId="firstParty"
+        storeId={storeId}
         title={t('APP_STORE_FIRST_PARTY_SECTION_TITLE')}
         subtitle={t('APP_STORE_FIRST_PARTY_SECTION_SUBTITLE')}
-        apps={data?.firstParty}
-        isLoading={isLoading}
-        isError={isError}
-        onRetry={onRetry}
         installedAppUrns={installedAppUrns}
       />
-      <AppSection
+      <FeaturedStoreSection
+        sectionId="featured"
+        storeId={storeId}
         title={t('APP_STORE_FEATURED_SECTION_TITLE')}
         subtitle={t('APP_STORE_FEATURED_SECTION_SUBTITLE')}
-        apps={data?.featured}
-        isLoading={isLoading}
-        isError={isError}
-        onRetry={onRetry}
         installedAppUrns={installedAppUrns}
       />
-      <AppSection
+      <FeaturedStoreSection
+        sectionId="trending"
+        storeId={storeId}
         title={t('APP_STORE_TRENDING_SECTION_TITLE')}
         subtitle={t('APP_STORE_TRENDING_SECTION_SUBTITLE')}
-        apps={data?.trending}
-        isLoading={isLoading}
-        isError={isError}
-        onRetry={onRetry}
         installedAppUrns={installedAppUrns}
       />
-      <AppSection
+      <FeaturedStoreSection
+        sectionId="newest"
+        storeId={storeId}
         title={t('APP_STORE_RECENT_SECTION_TITLE')}
         subtitle={t('APP_STORE_RECENT_SECTION_SUBTITLE')}
-        apps={data?.newest}
-        isLoading={isLoading}
-        isError={isError}
-        onRetry={onRetry}
         installedAppUrns={installedAppUrns}
       />
     </div>

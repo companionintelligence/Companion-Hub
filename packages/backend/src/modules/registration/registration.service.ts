@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { Injectable, type OnApplicationBootstrap, type OnApplicationShutdown, Inject, forwardRef, Optional } from '@nestjs/common';
@@ -14,12 +15,14 @@ import { TraefikConfigService } from '../docker/traefik-config.service';
 import { DeviceRegistrationRepository } from './device-registration.repository';
 import { RepoEventsQueue } from '../queue/entities/repo-events';
 import { AgentNotifyService } from '../agent-notify/agent-notify.service';
+import { TailscaleService } from '../tailscale/tailscale.service';
 import {
   type ProvisioningPhase,
   type DegradedReason,
   type RegistrationStatus,
   PROVISIONING_PHASES,
   isOperational,
+  requiresPortalRePairing,
   isLegalTransition,
   isActiveRegistrationPhase,
   buildRegistrationStatus,
@@ -45,6 +48,20 @@ function describeRegistrationError(error: unknown): string {
   }
 
   return scrubString(String(error));
+}
+
+/**
+ * True for a request that never got an HTTP response. Portal calls set
+ * `validateStatus: () => true`, so a thrown axios error means DNS, TCP, TLS or
+ * the timeout failed rather than the Portal answering.
+ */
+function isPortalUnreachableError(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null) {
+    return false;
+  }
+
+  const candidate = error as { isAxiosError?: boolean; response?: unknown };
+  return candidate.isAxiosError === true && !candidate.response;
 }
 
 function describePortalPairingResponse(data: unknown): string {
@@ -90,6 +107,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     private readonly deviceRegistrationRepository: DeviceRegistrationRepository,
     readonly _repoQueue: RepoEventsQueue,
     @Optional() private readonly agentNotifyService?: AgentNotifyService,
+    @Optional() private readonly tailscaleService?: TailscaleService,
   ) {}
 
   private portalAxiosConfig() {
@@ -511,13 +529,21 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     try {
       const deviceId = await this.getDeviceId();
 
+      // Best-effort: piggyback this node's current Tailscale MagicDNS name on the check-in this
+      // method already sends every hour, rather than adding a second round trip to Portal. Omitted
+      // (not sent as an empty string) when the tailscale service is absent or has no answer right
+      // now — a transient Tailscale hiccup must not read to Portal as "this node lost its tailnet."
+      // See `CheckIn.ts` on the Portal side for exactly that field-absent-vs-blank distinction, and
+      // `hub-pool-discovery.service.ts` for what this feeds: the Portal leg of Hub Pool discovery.
+      const nodeFqdn = (await this.tailscaleService?.getStatusCached())?.nodeFqdn;
+
       // Confirm that Companion Portal still considers the device active. The
       // check-in endpoint authenticates with the registered device's
       // `x-device-key`. A 400 is definitive; network errors count toward the
       // transient-failure threshold.
       const response = await axios.post(
         `${this.config.getOutboundCiCloudUrl()}/api/devices/check-in`,
-        { device_id: deviceId },
+        { device_id: deviceId, ...(nodeFqdn ? { tailscale_dns: nodeFqdn } : {}) },
         {
           timeout: 5_000,
           validateStatus: () => true,
@@ -800,6 +826,88 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
       hasStaleTunnelToken,
       hasOrphanedDbRegistration,
     });
+  }
+
+  /**
+   * The one-time secret for the registration this Hub is running: minted with
+   * the `callback_url` handed to Portal, and spent when the callback returns.
+   * Possession of it shows the callback belongs to a registration this Hub
+   * started; it does not authenticate Portal, so `POST /registration/callback`
+   * also refuses an already-registered Hub.
+   *
+   * In memory on purpose, because a registration attempt does not survive a
+   * restart either.
+   */
+  private callbackNonce: { value: string; mintedAt: number } | null = null;
+
+  /** Long enough for a person to sign in at Portal and pick an organization. */
+  private static readonly CALLBACK_NONCE_TTL_MS = 30 * 60 * 1000;
+
+  /**
+   * Returns the nonce for the registration in flight, minting one when there is
+   * none.
+   *
+   * The registration page re-reads `GET /registration/device-id` on every status
+   * poll, so minting one per call would replace the nonce the person is carrying
+   * through Portal, and change the QR code they are scanning.
+   */
+  public mintCallbackNonce(): string {
+    const live = this.liveCallbackNonce();
+
+    if (live) {
+      return live;
+    }
+
+    this.callbackNonce = { value: randomUUID(), mintedAt: Date.now() };
+
+    return this.callbackNonce.value;
+  }
+
+  /**
+   * Spends the nonce. Returns false when it was never minted here, was already
+   * used, or has expired — all of which mean the same thing to the caller.
+   */
+  public consumeCallbackNonce(nonce: string | undefined): boolean {
+    if (!nonce || this.liveCallbackNonce() !== nonce) {
+      return false;
+    }
+
+    this.callbackNonce = null;
+
+    return true;
+  }
+
+  /** The current nonce, or null once it has aged past the TTL. */
+  private liveCallbackNonce(): string | null {
+    if (!this.callbackNonce) {
+      return null;
+    }
+
+    if (Date.now() - this.callbackNonce.mintedAt >= RegistrationService.CALLBACK_NONCE_TTL_MS) {
+      this.callbackNonce = null;
+
+      return null;
+    }
+
+    return this.callbackNonce.value;
+  }
+
+  /**
+   * Whether this Hub is registered and actually serving, which is the state in
+   * which a registration callback must be refused.
+   *
+   * Deliberately narrower than {@link isRegistered}: a Hub degraded by a missing
+   * tunnel token is registered, but pairing again is how it recovers, and the
+   * headless setup service completes that pairing through the callback.
+   */
+  public async isRegisteredAndServing(): Promise<boolean> {
+    await this.refreshPhaseFromSources();
+
+    if (requiresPortalRePairing(this._currentPhase, this._degradedReasons)) {
+      return false;
+    }
+
+    return isOperational(this._currentPhase);
   }
 
   /** Persists restore intent beyond `sessionStorage` before the device pairs again. */
@@ -1280,7 +1388,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
    * and mark the device as registered.
    */
   public async pairDevice(pairingCode: string): Promise<{ success: boolean; message: string; domain?: string; subdomain?: string }> {
-    const { ciCloudUrl } = this.config.getConfig();
+    const { ciCloudUrl, ciHubApiKey } = this.config.getConfig();
 
     if (!ciCloudUrl) {
       return { success: false, message: 'CI Cloud URL not configured.' };
@@ -1299,9 +1407,18 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
 
     try {
       const pairUrl = `${this.config.getOutboundCiCloudUrl()}/api/devices/pair`;
+      /*
+       * A pairing code proves organization membership, not which machine is
+       * calling, so the Portal refuses to re-key an existing device row without
+       * proof of possession (CI-Portal#688). `ciHubApiKey` is that proof: the
+       * device credential from the last pair, which survives `resetRegistration`
+       * and is what the Hub already sends as `x-device-key` on check-in. A Hub
+       * that holds none is a first pair or has genuinely lost it, and the Portal
+       * answers those with `DEVICE_PROOF_REQUIRED` and owner-led re-registration.
+       */
       const response = await axios.post(
         pairUrl,
-        { pairing_code: pairingCode, device_id: deviceId },
+        { pairing_code: pairingCode, device_id: deviceId, ...(ciHubApiKey ? { device_key: ciHubApiKey } : {}) },
         {
           ...withPortalAxiosHeaders(this.portalAxiosConfig(), { 'Content-Type': 'application/json' }),
           validateStatus: () => true,
@@ -1324,7 +1441,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
         };
       }
 
-      const data = response.data as {
+      const data = (response.data ?? {}) as {
         device_id: string;
         organization_id: string;
         organization_name: string;
@@ -1336,8 +1453,8 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
         domain: string;
       };
 
-      if ((response.data as { success?: boolean }).success === false) {
-        const errorData = response.data as { error?: string; message?: string };
+      if ((data as { success?: boolean }).success === false) {
+        const errorData = data as { error?: string; message?: string };
         this.logger.warn(`Portal pairing request was rejected: status=${response.status} body=${describePortalPairingResponse(response.data)}`);
         return {
           success: false,
@@ -1369,7 +1486,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
       });
     } catch (error) {
       this.logger.error(`Pairing request failed before local registration completed: ${describeRegistrationError(error)}`);
-      if (error instanceof TypeError && error.message.includes('fetch')) {
+      if (isPortalUnreachableError(error)) {
         return { success: false, message: 'Unable to reach CI Portal. Please check your network connection.' };
       }
       return {

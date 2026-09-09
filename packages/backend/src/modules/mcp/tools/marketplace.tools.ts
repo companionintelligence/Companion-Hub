@@ -1,5 +1,6 @@
 import { Injectable, type OnModuleInit } from '@nestjs/common';
 import { MarketplaceService } from '@/modules/marketplace/marketplace.service';
+import { CATALOG_PAGE_SIZE } from '@/modules/marketplace/catalog-page-size';
 import { AppStoreService } from '@/modules/app-stores/app-store.service';
 import { McpToolRegistry } from '../mcp-tool-registry.service';
 
@@ -23,7 +24,7 @@ export class MarketplaceTools implements OnModuleInit {
           search: { type: 'string', description: 'Search keyword' },
           category: { type: 'string', description: 'App category filter (e.g. media, ai, development)' },
           storeId: { type: 'string', description: 'Filter to a specific app store' },
-          pageSize: { type: 'number', description: 'Results per page (1-100, default 24)' },
+          pageSize: { type: 'number', description: 'Results per page (1-100, default 16)' },
           cursor: { type: 'string', description: 'Pagination cursor from previous response' },
         },
         required: [],
@@ -101,7 +102,7 @@ export class MarketplaceTools implements OnModuleInit {
       search: params.search,
       category: params.category,
       storeId: params.storeId,
-      pageSize: params.pageSize ?? 24,
+      pageSize: params.pageSize ?? CATALOG_PAGE_SIZE,
       cursor: params.cursor,
     });
   }
