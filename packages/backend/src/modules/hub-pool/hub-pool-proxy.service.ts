@@ -26,6 +26,51 @@ import type { PoolCandidate, PoolPeerCapabilities } from './hub-pool.types';
 
 /** Header-wait timeout for a forwarded request. Cleared as soon as the upstream responds, so it never caps how long a streamed generation may run. */
 const CONNECT_TIMEOUT_MS = 15_000;
+
+/**
+ * What to tell a caller when every candidate failed.
+ *
+ * The single sentence this replaces — "All pool nodes serving model X are currently unreachable" —
+ * was emitted for every cause, and it is wrong for the most common one. A node that is merely SLOW
+ * trips `CONNECT_TIMEOUT_MS` and gets reported as unreachable, which sends the operator to look at
+ * networking, pairing and inventory while the actual node is sitting there answering its own engine
+ * fine on the direct path.
+ *
+ * Measured on this fleet: five 502s in one run, every one on the pool transport, landing at 15017ms
+ * and 15020ms on one node and ~11050ms on another — variance of milliseconds against a fixed
+ * deadline. Both nodes served the identical request over the direct path in the same run. The proxy
+ * had not established that anything was unreachable; it had established that nothing answered
+ * within its own budget, which is a different claim and points at a different fix.
+ *
+ * So: name the deadline when we hit it, and say plainly that the node may be healthy and slow.
+ */
+/** JSON for a log line, never throwing on a cycle or a BigInt. */
+function safeJson(value: unknown): string {
+  try {
+    return JSON.stringify(value, (_k, v) => (typeof v === 'bigint' ? String(v) : v)) ?? '';
+  } catch {
+    return '[unserialisable error value]';
+  }
+}
+
+export function describeAllCandidatesFailed(model: string, candidates: number, lastError: unknown): string {
+  // `String(someObject)` is "[object Object]", which tells the operator nothing and hides the one
+  // field that would have. A rejected value here is not always an Error — a fetch layer can reject
+  // with a plain object carrying `code`/`errno` — so serialise those rather than stringifying them.
+  const message =
+    lastError instanceof Error ? lastError.message : lastError == null ? '' : typeof lastError === 'object' ? safeJson(lastError) : String(lastError);
+  const timedOut = /No response headers within \d+ms/.test(message) || /abort/i.test(message);
+  const plural = candidates === 1 ? 'candidate' : 'candidates';
+  if (timedOut) {
+    return (
+      `No pool candidate returned response headers for model "${model}" within ${CONNECT_TIMEOUT_MS}ms ` +
+      `(${candidates} ${plural} tried). This is a deadline, not proof the nodes are down — a node ` +
+      'loading weights or serving a long queue hits it while remaining healthy. Retry, or raise the ' +
+      'pool connect timeout.'
+    );
+  }
+  return `All ${candidates} pool ${plural} for model "${model}" failed${message ? `: ${message}` : '.'}`;
+}
 const HOP_BY_HOP_HEADERS = new Set(['connection', 'keep-alive', 'transfer-encoding', 'content-length', 'content-encoding', 'upgrade']);
 /** 4xx that means "this node can't serve you", never "your request is bad" — retryable on any candidate. */
 const TRANSPORT_4XX = new Set([408, 429]);
@@ -356,7 +401,7 @@ export class PoolProxyService {
     this.logger.error(
       `[PoolProxy] all ${candidates.length} candidate(s) for model "${model}" failed: ${lastError instanceof Error ? lastError.message : String(lastError)}`,
     );
-    this.respondUncommitted(res, 502, { error: `All pool nodes serving model "${model}" are currently unreachable.` });
+    this.respondUncommitted(res, 502, { error: describeAllCandidatesFailed(model, candidates.length, lastError) });
   }
 
   /**
