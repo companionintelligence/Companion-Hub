@@ -1,9 +1,19 @@
 import { BadRequestException, Body, Controller, Get, Param, Post, Query, Req, Res, UseGuards } from '@nestjs/common';
 import type { Request, Response } from 'express';
 import type { AppUrn } from '@ci-hub/common/types';
+import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
+import { AppFilesManager } from '../apps/app-files-manager';
 import { AuthGuard } from '../auth/auth.guard';
+import {
+  FORWARD_AUTH_SIGNATURE_HEADER,
+  FORWARD_AUTH_TIMESTAMP_HEADER,
+  FORWARD_AUTH_USER_HEADER,
+  verifyForwardAuthHeaders,
+} from '../auth/utils/forward-auth-signing';
 import { InternalNetworkGuard } from '../auth/internal-network.guard';
+import { EnvUtils } from '../env/env.utils';
+import { UserRepository } from '../user/user.repository';
 import { ManagedAppKeyGuard } from './managed-app-key.guard';
 import { MemoryConnectService } from './memory-connect.service';
 
@@ -32,6 +42,10 @@ export class MemoryConnectController {
   constructor(
     private readonly service: MemoryConnectService,
     private readonly logger: LoggerService,
+    private readonly users: UserRepository,
+    private readonly appFiles: AppFilesManager,
+    private readonly envUtils: EnvUtils,
+    private readonly config: ConfigurationService,
   ) {}
 
   @Get('start')
@@ -145,13 +159,16 @@ export class MemoryConnectController {
     const host = Array.isArray(clientHost) ? clientHost[0] : clientHost;
     const origin = host ? { host } : this.requestOrigin(req);
 
-    return this.service.getStatus(this.decodeUrn(urn), origin);
+    const appUrn = this.decodeUrn(urn);
+    const hubUserId = await this.resolveForwardedHubUserId(req, appUrn);
+
+    return this.service.getStatus(appUrn, origin, hubUserId);
   }
 
   @UseGuards(AuthGuard)
   @Get('apps/:urn/status')
   async status(@Param('urn') urn: string, @Req() req: Request) {
-    return this.service.getUiStatus(this.decodeUrn(urn), this.requestOrigin(req));
+    return this.service.getUiStatus(this.decodeUrn(urn), this.requestOrigin(req), this.currentUserId(req));
   }
 
   @UseGuards(AuthGuard)
@@ -162,16 +179,17 @@ export class MemoryConnectController {
 
   @UseGuards(InternalNetworkGuard, ManagedAppKeyGuard)
   @Post('apps/:urn/skip')
-  async skip(@Param('urn') urn: string) {
-    await this.service.skip(this.decodeUrn(urn));
+  async skip(@Param('urn') urn: string, @Req() req: Request) {
+    const appUrn = this.decodeUrn(urn);
+    await this.service.skip(appUrn, await this.resolveForwardedHubUserId(req, appUrn));
 
     return { ok: true };
   }
 
   @UseGuards(AuthGuard)
   @Post('apps/:urn/disconnect')
-  async disconnect(@Param('urn') urn: string, @Req() _req: Request, @Body() _body: unknown) {
-    await this.service.disconnect(this.decodeUrn(urn));
+  async disconnect(@Param('urn') urn: string, @Req() req: Request, @Body() _body: unknown) {
+    await this.service.disconnect(this.decodeUrn(urn), this.currentUserId(req));
 
     return { ok: true };
   }
@@ -202,6 +220,47 @@ export class MemoryConnectController {
     const id = (req as Request & { user?: { id?: number | string } }).user?.id;
 
     return String(id ?? '');
+  }
+
+  /**
+   * The wrapper forwards Traefik's signed Hub identity so we can tell which
+   * person opened the app (the S2S call itself is the app's managed key).
+   */
+  private async resolveForwardedHubUserId(req: Request, appUrn: AppUrn): Promise<string | null> {
+    const header = (name: string): string | null => {
+      const raw = req.headers[name.toLowerCase()];
+      if (Array.isArray(raw)) {
+        return raw[0] ?? null;
+      }
+
+      return raw ?? null;
+    };
+
+    let secret = '';
+    try {
+      const appEnv = await this.appFiles.getAppEnv(appUrn);
+      secret = (this.envUtils.envStringToMap(appEnv.content).get('CI_HUB_FORWARD_AUTH_SECRET') ?? '').trim();
+    } catch {
+      secret = '';
+    }
+
+    if (!secret) {
+      secret = this.config.get('forwardAuthSecret') ?? '';
+    }
+
+    const verified = verifyForwardAuthHeaders(secret, {
+      user: header(FORWARD_AUTH_USER_HEADER),
+      timestamp: header(FORWARD_AUTH_TIMESTAMP_HEADER),
+      signature: header(FORWARD_AUTH_SIGNATURE_HEADER),
+    });
+
+    if (!verified.ok) {
+      return null;
+    }
+
+    const user = await this.users.getUserByUsername(verified.username);
+
+    return user ? String(user.id) : null;
   }
 
   /**

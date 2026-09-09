@@ -134,6 +134,25 @@ describe('UserRepository', () => {
     });
   });
 
+  describe('markApplianceOnboardingComplete', () => {
+    it('invalidates the session cache for every operator it flips', async () => {
+      mockDb.update.mockReturnValue({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{ id: 1 }, { id: 2 }]),
+          }),
+        }),
+      });
+      sessionUserCache.set(1, { id: 1, hasCompletedOnboarding: false } as UserDto);
+      sessionUserCache.set(2, { id: 2, hasCompletedOnboarding: false } as UserDto);
+
+      await repository.markApplianceOnboardingComplete();
+
+      expect(sessionUserCache.get(1)).toBeUndefined();
+      expect(sessionUserCache.get(2)).toBeUndefined();
+    });
+  });
+
   describe('getOperators', () => {
     it('should return operators', async () => {
       const result = await repository.getOperators();

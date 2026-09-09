@@ -55,7 +55,7 @@ export function toDesktopRedirectPath(redirectUrl: string | null | undefined, hu
   return `${candidate.pathname}${candidate.search}${candidate.hash}` || '/home';
 }
 
-export type PortalSsoErrorCode = 'callback_error' | 'state_expired' | 'account_mismatch' | 'not_configured';
+export type PortalSsoErrorCode = 'callback_error' | 'state_expired' | 'account_mismatch' | 'not_configured' | 'not_org_member';
 
 /** True when Hub OIDC was initiated from a local loopback origin (stack-dev / local desktop). */
 export function isLoopbackHubOrigin(hubOrigin: string): boolean {
@@ -249,6 +249,9 @@ export interface PortalTokenExchangeResult {
   ok: true;
   accessToken: string;
   email: string;
+  emailVerified: boolean;
+  subject: string | null;
+  issuer: string;
 }
 
 export interface PortalTokenExchangeFailure {
@@ -317,7 +320,8 @@ export async function exchangePortalAuthorizationCode(input: {
     return { ok: false, reason: 'token_exchange_failed', status: tokenRes.status };
   }
 
-  const accessToken = (tokenRes.data as { access_token?: string } | undefined)?.access_token;
+  const tokenPayload = tokenRes.data as { access_token?: string; id_token?: string } | undefined;
+  const accessToken = tokenPayload?.access_token;
   if (!accessToken) {
     return { ok: false, reason: 'missing_access_token', status: tokenRes.status };
   }
@@ -339,7 +343,7 @@ export async function exchangePortalAuthorizationCode(input: {
     return { ok: false, reason: 'userinfo_failed', status: userinfoRes.status };
   }
 
-  const claims = userinfoRes.data as { email?: string; email_verified?: boolean } | undefined;
+  const claims = userinfoRes.data as { sub?: string; iss?: string; email?: string; email_verified?: boolean } | undefined;
   const email = claims?.email;
   if (!email) {
     return { ok: false, reason: 'missing_email', status: userinfoRes.status };
@@ -352,5 +356,29 @@ export async function exchangePortalAuthorizationCode(input: {
     return { ok: false, reason: 'email_unverified', status: userinfoRes.status };
   }
 
-  return { ok: true, accessToken, email };
+  const idTokenClaims = decodeJwtPayload(tokenPayload?.id_token);
+  const subject =
+    (typeof claims?.sub === 'string' && claims.sub.trim()) || (typeof idTokenClaims?.sub === 'string' && idTokenClaims.sub.trim()) || null;
+  const issuer =
+    (typeof claims?.iss === 'string' && claims.iss.trim()) ||
+    (typeof idTokenClaims?.iss === 'string' && idTokenClaims.iss.trim()) ||
+    input.publicPortalBaseUrl.replace(/\/+$/, '');
+
+  return { ok: true, accessToken, email, emailVerified: true, subject, issuer };
+}
+
+function decodeJwtPayload(token?: string): { sub?: string; iss?: string } | null {
+  if (!token) {
+    return null;
+  }
+  const parts = token.split('.');
+  if (parts.length < 2 || !parts[1]) {
+    return null;
+  }
+  try {
+    const json = Buffer.from(parts[1], 'base64url').toString('utf8');
+    return JSON.parse(json) as { sub?: string; iss?: string };
+  } catch {
+    return null;
+  }
 }

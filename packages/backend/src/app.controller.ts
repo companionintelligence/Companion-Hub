@@ -330,7 +330,7 @@ export class AppController {
       return;
     }
 
-    await this.userRepository.updateUser(req.user.id, { hasCompletedOnboarding: true });
+    await this.userRepository.markApplianceOnboardingComplete();
 
     if (this.configuration.get('demoMode')) {
       return;
@@ -345,7 +345,7 @@ export class AppController {
     if (!req.user) {
       return;
     }
-    await this.userRepository.updateUser(req.user.id, { hasCompletedOnboarding: true });
+    await this.userRepository.markApplianceOnboardingComplete();
   }
 
   /** Re-arm the first-time setup wizard so the user can run it again from Settings. */
