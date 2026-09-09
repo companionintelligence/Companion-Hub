@@ -20,11 +20,12 @@ import { describeSshFailure } from './fleet-ssh.js';
 import { readHostFacts, isTooBusyForMaintenance } from './fleet-hardware.js';
 import { executeBackendPlan, planAllBackends, INSTALLABLE_BACKENDS, type InstallableBackend } from './fleet-backends.js';
 import { installNode, pullModelScript, updateHubScript } from './fleet-install.js';
+import { checkAppOnNode, poolRoutingScript, SUPPORTED_APP_SLUGS, type AppEndpointMode, type AppSlug } from './fleet-apps.js';
 import { sshCapture } from './fleet-ssh.js';
 import { colorize } from './cli-ui.js';
 import { BASE_COMMAND } from './cli-types.js';
 
-export const FLEET_SUBCOMMANDS = ['scan', 'list', 'status', 'backends', 'install', 'update'] as const;
+export const FLEET_SUBCOMMANDS = ['scan', 'list', 'status', 'backends', 'install', 'update', 'apps'] as const;
 export type FleetSubcommand = (typeof FLEET_SUBCOMMANDS)[number];
 
 export interface FleetArgs {
@@ -54,6 +55,10 @@ export interface FleetArgs {
   models: string[];
   /** Update the Hub image during `update`. */
   hub: boolean;
+  /** Agent apps for `apps`. Empty means both supported slugs. */
+  apps: AppSlug[];
+  /** Where an app should send inference. */
+  endpoint: AppEndpointMode;
 }
 
 export class FleetArgError extends Error {}
@@ -85,6 +90,10 @@ export function parseFleetArgs(argv: readonly string[]): FleetArgs {
     poolPin: undefined,
     models: [],
     hub: false,
+    apps: [],
+    // Pool by default: the whole point of installing an agent on a pooled fleet is that it reaches
+    // the cluster rather than one box.
+    endpoint: 'pool',
   };
 
   const rest = [...argv];
@@ -119,7 +128,22 @@ export function parseFleetArgs(argv: readonly string[]): FleetArgs {
     else if (arg.startsWith('--join-pool')) args.joinPool = readValue('--join-pool');
     else if (arg.startsWith('--pool-pin')) args.poolPin = readValue('--pool-pin');
     else if (arg === '--hub') args.hub = true;
-    else if (arg.startsWith('--models')) {
+    else if (arg.startsWith('--endpoint')) {
+      const mode = readValue('--endpoint');
+      if (mode !== 'pool' && mode !== 'local') throw new FleetArgError("--endpoint must be 'pool' or 'local'.");
+      args.endpoint = mode;
+    } else if (arg.startsWith('--apps')) {
+      const names = readValue('--apps')
+        .split(',')
+        .map((a) => a.trim())
+        .filter(Boolean);
+      for (const name of names) {
+        if (!(SUPPORTED_APP_SLUGS as readonly string[]).includes(name)) {
+          throw new FleetArgError(`Unknown app '${name}'. CI-Hub serves inference credentials to: ${SUPPORTED_APP_SLUGS.join(', ')}.`);
+        }
+      }
+      args.apps = names as AppSlug[];
+    } else if (arg.startsWith('--models')) {
       args.models = readValue('--models')
         .split(',')
         .map((m) => m.trim())
@@ -517,6 +541,46 @@ async function runUpdate(args: FleetArgs): Promise<void> {
   for (const s of skipped) console.log(colorize(`  skipped ${s.node.name}: ${s.why}`, 'dim'));
 }
 
+/**
+ * `cihub fleet apps` — check that the agent apps can actually get inference from each node.
+ *
+ * Deliberately a CHECK, not an installer. Marketplace install runs through entitlement checks and a
+ * compose pipeline that belong on the Hub, and driving it blind across a fleet would distribute the
+ * device key to every node's containers — the repo's own warning is that installing an app grants
+ * Hub operator authority. What is genuinely missing and safe is the pre-flight: does the Hub serve
+ * this slug credentials, and does an inference base URL resolve.
+ */
+async function runApps(args: FleetArgs): Promise<void> {
+  const roster = loadFleetRoster();
+  const { run, skipped } = partitionForRun(roster.nodes, args.nodes);
+  if (run.length === 0) {
+    console.log('No nodes selected.');
+    return;
+  }
+  const slugs = args.apps.length ? args.apps : [...SUPPORTED_APP_SLUGS];
+  console.log(colorize(`Checking ${slugs.join(', ')} against the ${args.endpoint} endpoint on ${run.length} node(s).`, 'dim'));
+  console.log(colorize('This reads credentials; it installs nothing.', 'dim'));
+  console.log('');
+
+  const report: Record<string, unknown>[] = [];
+  for (const node of run) {
+    const target = { host: node.ip, user: node.user ?? args.user };
+    const pool = await sshCapture(target, `bash <<'EOF'\n${poolRoutingScript()}\nEOF`, 30_000);
+    const pooled = pool.out.includes('pool-routes-present');
+    console.log(`${node.name} ${colorize(pooled ? 'pool routes present' : 'no pool routes', 'dim')}`);
+    for (const slug of slugs) {
+      const check = await checkAppOnNode(target, slug, args.endpoint);
+      console.log(`  ${check.ok ? colorize('✓', 'green') : colorize('✗', 'red')} ${slug} — ${check.detail}`);
+      report.push({ node: node.name, pooled, ...check });
+    }
+  }
+  for (const s of skipped) console.log(colorize(`  skipped ${s.node.name}: ${s.why}`, 'dim'));
+  console.log('');
+  console.log(colorize('Note: every installed app receives the Hub device key in its environment —', 'yellow'));
+  console.log(colorize('installing one grants Hub operator authority. Install from the Hub UI or API.', 'yellow'));
+  if (args.json) console.log(JSON.stringify(report, null, 2));
+}
+
 export async function runFleetCommand(argv: readonly string[]): Promise<void> {
   let args: FleetArgs;
   try {
@@ -547,6 +611,9 @@ export async function runFleetCommand(argv: readonly string[]): Promise<void> {
       return;
     case 'update':
       await runUpdate(args);
+      return;
+    case 'apps':
+      await runApps(args);
       return;
   }
 }

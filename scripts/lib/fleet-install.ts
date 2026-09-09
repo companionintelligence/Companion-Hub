@@ -156,7 +156,7 @@ export function pullModelScript(model: string): string {
     '  [ -n "$host" ] || host="127.0.0.1:11434"',
     '  case "$host" in *:*) : ;; *) host="$host:11434" ;; esac',
     '  case "$host" in 0.0.0.0:*|\\[::\\]:*|*:*) host="$(echo "$host" | sed \'s/^0\\.0\\.0\\.0:/127.0.0.1:/; s/^\\[::\\]:/127.0.0.1:/\')" ;; esac',
-    '  code="$(curl -s -o /dev/null -w \'%{http_code}\' --max-time 10 "http://$host/api/version" || echo 000)"',
+    '  code="$(curl -s -o /dev/null -w \'%{http_code}\' --max-time 10 "http://$host/api/version" || true)"',
     '  if [ "$code" = "200" ]; then',
     `    curl -fsS --max-time 3600 -X POST "http://$host/api/pull" -d '{"model":"${safe}","stream":false}' >/dev/null`,
     '  elif command -v ollama >/dev/null 2>&1; then',
