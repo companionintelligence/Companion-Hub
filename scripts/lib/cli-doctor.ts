@@ -45,18 +45,26 @@ export async function doctorHub(env: HubEnv, options?: { repairNetworks?: boolea
   // firewall drops these silently and the failure is invisible from the host,
   // so it is checked from inside the container.
   const bridgeSection = await runBridgeDoctorSection(envFileName);
+  const dockerOk = checkDockerAvailable();
+  const composeOk = runCapture('docker', ['compose', 'version']).ok;
+  const composeFilesFound = composeFiles.every((file) => existsSync(resolvePath(file)));
   const lines = [
-    `Docker               ${checkDockerAvailable() ? cliOk('available') : cliFail('unavailable')}`,
-    `Docker Compose       ${runCapture('docker', ['compose', 'version']).ok ? cliOk('available') : cliFail('unavailable')}`,
+    `Docker               ${dockerOk ? cliOk('available') : cliFail('unavailable')}`,
+    `Docker Compose       ${composeOk ? cliOk('available') : cliFail('unavailable')}`,
     `Env file             ${existsSync(resolvePath(envFileName)) ? cliOk('found') : cliWarn('missing')}  ${envFileName}`,
     `Root folder          ${existsSync(rootFolderHost) ? cliOk('present') : cliWarn('missing')}  ${rootFolderHost}`,
-    `Compose files        ${composeFiles.every((file) => existsSync(resolvePath(file))) ? cliOk('found') : cliFail('missing')}  ${composeFiles.join(', ')}`,
+    `Compose files        ${composeFilesFound ? cliOk('found') : cliFail('missing')}  ${composeFiles.join(', ')}`,
     `Tunnel token         ${doctorHasTunnelToken(ctx) ? cliOk('present') : colorize(`${STEP_ICONS.pending} absent`, 'dim')}`,
     ...networkSection.lines,
     ...bridgeSection.lines,
   ];
-  const tone = networkSection.issueCount + bridgeSection.issueCount > 0 ? 'yellow' : 'cyan';
-  printMessageBox(`Hub doctor  [${ctx.env}]`, lines, tone);
+  // Which local checks may fail the command is already decided by how each line is drawn: `cliFail`
+  // is a machine that cannot run the stack, `cliWarn` is state doctor exists to report — a missing
+  // env file before setup is an answer, not a fault.
+  const failureCount = [dockerOk, composeOk, composeFilesFound].filter((ok) => !ok).length + networkSection.failureCount + bridgeSection.failureCount;
+  const issueCount = networkSection.issueCount + bridgeSection.issueCount;
+  printMessageBox(`Hub doctor  [${ctx.env}]`, lines, failureCount > 0 ? 'red' : issueCount > 0 ? 'yellow' : 'cyan');
+  if (failureCount > 0) process.exitCode = 1;
 }
 
 /**
@@ -78,8 +86,9 @@ export async function uninstallHub(force: boolean) {
     return;
   }
   const summary = runHubCleanup();
+  const failures = summary.failedDirs + summary.failedCommands;
   printMessageBox(
-    'Uninstall complete',
+    failures > 0 ? 'Uninstall incomplete' : 'Uninstall complete',
     [
       `removed directories: ${summary.removedDirs}`,
       `skipped directories: ${summary.skippedDirs}`,
@@ -87,8 +96,10 @@ export async function uninstallHub(force: boolean) {
       `commands attempted: ${summary.attemptedCommands}`,
       `command failures: ${summary.failedCommands}`,
     ],
-    summary.failedDirs > 0 || summary.failedCommands > 0 ? 'yellow' : 'green',
+    failures > 0 ? 'red' : 'green',
   );
+  // State the operator asked to be gone is still on the machine; a re-run or manual removal is owed.
+  if (failures > 0) process.exitCode = 1;
 }
 
 export function findComposeName(keyword: string): string {

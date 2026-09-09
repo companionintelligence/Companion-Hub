@@ -183,6 +183,18 @@ export function parseFleetArgs(argv: readonly string[]): FleetArgs {
   return args;
 }
 
+/**
+ * Carry the run's outcome in the exit code, not only on screen.
+ *
+ * `0/14 node(s) installed.` exited 0, so `cihub fleet install --execute && cihub fleet apps` walked
+ * straight into the next step and any CI gate around a fleet command passed on a fleet that had
+ * failed everywhere. Set rather than exit: the skip list and the `--json` report are printed after
+ * the summary and are the part an operator needs most on a bad run.
+ */
+function recordFleetFailures(failed: number): void {
+  if (failed > 0) process.exitCode = 1;
+}
+
 /** Fixed-width table, so a 20-node listing is scannable rather than a wall of prose. */
 function renderTable(rows: string[][], headers: string[]): string {
   const widths = headers.map((h, i) => Math.max(h.length, ...rows.map((r) => (r[i] ?? '').length)));
@@ -386,6 +398,7 @@ async function runBackends(args: FleetArgs): Promise<void> {
   }
 
   const report: Record<string, unknown>[] = [];
+  let failed = 0;
 
   // Serialised across nodes on purpose. A backend install pulls gigabytes (CUDA wheels, GPU
   // container images); running several at once saturates the link they all share and, measured on
@@ -396,6 +409,7 @@ async function runBackends(args: FleetArgs): Promise<void> {
     if (!facts) {
       console.log(`${colorize(node.name, 'yellow')}: could not read hardware — ${String(error).slice(0, 120)}`);
       report.push({ node: node.name, error: String(error) });
+      failed += 1;
       continue;
     }
 
@@ -422,6 +436,7 @@ async function runBackends(args: FleetArgs): Promise<void> {
         continue;
       }
       const result = await executeBackendPlan(target, plan);
+      if (result.outcome === 'failed') failed += 1;
       const tone = result.outcome === 'failed' ? 'red' : result.outcome === 'installed' ? 'green' : 'dim';
       const took = result.ms ? ` (${Math.round(result.ms / 1000)}s)` : '';
       console.log(`  ${plan.backend.padEnd(9)} ${colorize(result.outcome, tone)}${took} — ${result.why}`);
@@ -433,6 +448,7 @@ async function runBackends(args: FleetArgs): Promise<void> {
 
   for (const s of skipped) console.log(colorize(`  skipped ${s.node.name}: ${s.why}`, 'dim'));
   if (args.json) console.log(JSON.stringify(report, null, 2));
+  recordFleetFailures(failed);
 }
 
 /**
@@ -565,6 +581,7 @@ async function runInstall(args: FleetArgs): Promise<void> {
   console.log(`\n${ok}/${reports.length} node(s) installed.`);
   for (const s of skipped) console.log(colorize(`  skipped ${s.node.name}: ${s.why}`, 'dim'));
   if (args.json) console.log(JSON.stringify(reports, null, 2));
+  recordFleetFailures(reports.length - ok);
 }
 
 /**
@@ -592,12 +609,14 @@ async function runUpdate(args: FleetArgs): Promise<void> {
     return;
   }
 
+  let failed = 0;
   for (const node of run) {
     const target = { host: node.ip, user: node.user ?? args.user };
     console.log(`\n${node.name}`);
     if (args.hub) {
       const res = await sshCapture(target, `bash <<'EOF'\n${updateHubScript()}\nEOF`, 20 * 60_000);
       const ok = res.ok && res.out.includes('hub-update-complete');
+      if (!ok) failed += 1;
       console.log(
         `  ${ok ? colorize('✓', 'green') : colorize('✗', 'red')} hub image — ${(res.err || res.out).split('\n').filter(Boolean).slice(-1)[0]?.slice(0, 160) ?? ''}`,
       );
@@ -605,12 +624,14 @@ async function runUpdate(args: FleetArgs): Promise<void> {
     for (const model of args.models) {
       const res = await sshCapture(target, `bash <<'EOF'\n${pullModelScript(model)}\nEOF`, 45 * 60_000);
       const ok = res.ok && res.out.includes('model-pull-complete');
+      if (!ok) failed += 1;
       console.log(
         `  ${ok ? colorize('✓', 'green') : colorize('✗', 'red')} ${model} — ${(res.err || res.out).split('\n').filter(Boolean).slice(-1)[0]?.slice(0, 160) ?? ''}`,
       );
     }
   }
   for (const s of skipped) console.log(colorize(`  skipped ${s.node.name}: ${s.why}`, 'dim'));
+  recordFleetFailures(failed);
 }
 
 /**
@@ -635,6 +656,7 @@ async function runApps(args: FleetArgs): Promise<void> {
   console.log('');
 
   const report: Record<string, unknown>[] = [];
+  let failed = 0;
   for (const node of run) {
     const target = { host: node.ip, user: node.user ?? args.user };
     const pool = await sshCapture(target, `bash <<'EOF'\n${poolRoutingScript()}\nEOF`, 30_000);
@@ -642,6 +664,7 @@ async function runApps(args: FleetArgs): Promise<void> {
     console.log(`${node.name} ${colorize(pooled ? 'pool routes present' : 'no pool routes', 'dim')}`);
     for (const slug of slugs) {
       const check = await checkAppOnNode(target, slug, args.endpoint);
+      if (!check.ok) failed += 1;
       console.log(`  ${check.ok ? colorize('✓', 'green') : colorize('✗', 'red')} ${slug} — ${check.detail}`);
       report.push({ node: node.name, pooled, ...check });
     }
@@ -651,6 +674,7 @@ async function runApps(args: FleetArgs): Promise<void> {
   console.log(colorize('Note: every installed app receives the Hub device key in its environment —', 'yellow'));
   console.log(colorize('installing one grants Hub operator authority. Install from the Hub UI or API.', 'yellow'));
   if (args.json) console.log(JSON.stringify(report, null, 2));
+  recordFleetFailures(failed);
 }
 
 export async function runFleetCommand(argv: readonly string[]): Promise<void> {
