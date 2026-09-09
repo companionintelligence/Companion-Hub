@@ -198,7 +198,7 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
           }
 
           const rotated = await this.exchange.rotate(provider.internalUrl, appUrn);
-          await this.connections.storeConnected(appUrn, provider.internalUrl, rotated.key, rotated.expiresAt);
+          await this.connections.storeConnected(appUrn, provider.internalUrl, rotated.key, rotated.expiresAt, row.hubUserId);
 
           // A running container uses the retired key until its environment is regenerated.
           // Retry once, then log loudly because the fresh `updatedAt` delays another rotation attempt.
@@ -299,7 +299,7 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
       return { next: attempt.redirect };
     }
 
-    const result = await this.completeConnect(attempt.appUrn, attempt.next, code);
+    const result = await this.completeConnect(attempt.appUrn, attempt.next, code, currentUserId);
 
     // Recording every outcome makes a replay preserve success, failure, and deferral.
     this.pending.recordOutcome(state, result.next);
@@ -307,7 +307,7 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
     return result;
   }
 
-  private async completeConnect(appUrn: AppUrn, next: string, code: string): Promise<{ next: string; error?: boolean }> {
+  private async completeConnect(appUrn: AppUrn, next: string, code: string, hubUserId: string): Promise<{ next: string; error?: boolean }> {
     const provider = await this.resolver.findProvider();
 
     if (!provider) {
@@ -330,7 +330,7 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
       }
 
       // The container shares the Hub's internal network, so it stores the internal provider URL.
-      await this.connections.storeConnected(appUrn, provider.internalUrl, exchanged.key, exchanged.expiresAt);
+      await this.connections.storeConnected(appUrn, provider.internalUrl, exchanged.key, exchanged.expiresAt, hubUserId);
       const applied = await this.applyConnection(appUrn, 'schedule');
 
       if (applied === 'restarting') {
@@ -373,9 +373,13 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
    * Null launchers keep the wrapper from blocking an app on a connect flow that would fail.
    * The provider check stays DB-only because this method runs on the status-poll path.
    */
-  async getStatus(appUrn: AppUrn, origin?: RequestOriginContext): Promise<MemoryConnectStatus> {
+  async getStatus(appUrn: AppUrn, origin?: RequestOriginContext, hubUserId?: string | null): Promise<MemoryConnectStatus> {
+    if (hubUserId) {
+      await this.ensureCurrentUserOwnsRunningToken(appUrn, hubUserId);
+    }
+
     const [state, providerInfo] = await Promise.all([
-      this.connections.getState(appUrn),
+      this.connections.getState(appUrn, hubUserId),
       // A transient provider lookup failure withholds launchers instead of failing the independent state poll.
       this.resolver.getProviderRuntimeInfo().catch(() => ({ status: 'absent' as const, localOnly: false })),
     ]);
@@ -391,7 +395,7 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
     return { state, ...launchers };
   }
 
-  async getUiStatus(appUrn: AppUrn, origin?: RequestOriginContext): Promise<MemoryConnectUiStatus> {
+  async getUiStatus(appUrn: AppUrn, origin?: RequestOriginContext, hubUserId?: string | null): Promise<MemoryConnectUiStatus> {
     // Most apps are not memory consumers, so avoid provider and connection lookups for them.
     if (!(await this.resolver.isConsumerApp(appUrn))) {
       return {
@@ -409,9 +413,13 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
     }
 
     // A provider row that is still installing must not read as ready.
+    if (hubUserId) {
+      await this.ensureCurrentUserOwnsRunningToken(appUrn, hubUserId);
+    }
+
     const [providerInfo, row] = await Promise.all([
       this.resolver.getProviderRuntimeInfo().catch(() => ({ status: 'absent' as const, localOnly: false })),
-      this.connections.getRow(appUrn),
+      this.connections.getRow(appUrn, hubUserId),
     ]);
 
     const providerStatus = providerInfo.status;
@@ -458,16 +466,44 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
     };
   }
 
+  /**
+   * When the running container token belongs to a different Hub person, revoke
+   * it and return that row to unconfigured so the current person is prompted
+   * to connect as themselves.
+   */
+  private async ensureCurrentUserOwnsRunningToken(appUrn: AppUrn, hubUserId: string): Promise<void> {
+    const latest = await this.connections.getRow(appUrn);
+    if (!latest || latest.state !== 'connected' || !latest.hubUserId) {
+      return;
+    }
+
+    if (String(latest.hubUserId) === String(hubUserId)) {
+      return;
+    }
+
+    const provider = await this.resolver.findProvider();
+    if (provider) {
+      const creds = this.connections.credsFromRow(latest);
+      if (creds) {
+        await this.exchange.revoke(provider.internalUrl, appUrn);
+      }
+    }
+
+    await this.connections.clear(appUrn, latest.hubUserId);
+    await this.applyConnection(appUrn, 'schedule');
+    this.logger.info(`[MemoryConnect] stale connect for ${appUrn}: token owner ${latest.hubUserId} ≠ current Hub user ${hubUserId}`);
+  }
+
   /** Record that the user chose not to connect (do not re-prompt). */
-  async skip(appUrn: AppUrn): Promise<void> {
-    await this.connections.markSkipped(appUrn);
+  async skip(appUrn: AppUrn, hubUserId?: string | null): Promise<void> {
+    await this.connections.markSkipped(appUrn, hubUserId);
   }
 
   /**
    * Keep the local connection when revocation fails so the UI cannot claim a still-valid key is disconnected.
    * If the provider no longer exists, clearing locally is sufficient.
    */
-  async disconnect(appUrn: AppUrn): Promise<void> {
+  async disconnect(appUrn: AppUrn, hubUserId?: string | null): Promise<void> {
     const provider = await this.resolver.findProvider();
 
     if (provider) {
@@ -477,7 +513,7 @@ export class MemoryConnectService implements OnApplicationBootstrap, OnModuleDes
       }
     }
 
-    await this.connections.clear(appUrn);
+    await this.connections.clear(appUrn, hubUserId);
     await this.applyConnection(appUrn, 'await');
   }
 

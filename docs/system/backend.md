@@ -5,7 +5,7 @@
 > **Key paths:** `packages/backend/src/modules/`, `packages/backend/src/database/`, `packages/backend/src/queue/`
 > **Commands:** `cd packages/backend && pnpm test`, `pnpm run test:integration` (root)
 > **Owner persona:** maintainability + security (see REVIEW_PERSONAS.md)
-> **Last updated:** 2026-09-07 (hub-pool module map; pool CLI types are hand-mirrored)
+> **Last updated:** 2026-09-09 (family Hub auth: org members become Hub people; Memory connect keys are per Hub user)
 > **Related:** docs/system/e2e.md, docs/ARCHITECTURE.md
 
 ---
@@ -26,7 +26,7 @@ packages/backend/
 |--------|----------------|
 | `apps` / `app-lifecycle` | Install, start, stop, uninstall marketplace apps |
 | `docker` | Dockerode + compose orchestration |
-| `auth` | JWT sessions, 2FA, registration |
+| `auth` | Hub sessions, 2FA, Portal SSO. Human login admits each Portal `(iss, sub)` in the paired org as their own operator — not `getFirstOperator()`. Session middleware prefers the newest of cookie vs `X-CI-Hub-Session`. |
 | `health` | Liveness/readiness (`/api/health/live`) |
 | `sse` | Real-time status stream to frontend |
 | `mcp` | MCP server tools for agent apps |
@@ -265,6 +265,12 @@ On save the Hub:
 
 AI apps that want these tokens must read the `CI_CLOUD_*` contract (or `hub_integration.inference`
 plus the extra env). See the tracking issue on marketplace / OpenClaw / Hermes.
+
+## Family Hub auth and Memory connect
+
+Human dashboard login (password and Portal SSO) goes through `AuthService.admitHubPerson`. Each Portal `(issuer, subject)` that is a member of the paired org gets their own Hub `user` row (`operator: true`). Device-key Bearer and CLI JWT still map to the bootstrap operator.
+
+`memory_connection` is unique on `(app_urn, hub_user_id)`. Env generation injects the latest connected key; opening an app as a different Hub person revokes the previous Memory key and re-prompts connect. Hermes and OpenClaw declare `hub_integration.memory` so Hub can inject `CI_SERVER_URL` / `CI_SERVER_TOKEN` for the current person.
 
 ## Per-app grants
 

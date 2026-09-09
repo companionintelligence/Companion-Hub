@@ -1,5 +1,5 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { and, eq, isNotNull } from 'drizzle-orm';
+import { and, desc, eq, isNotNull } from 'drizzle-orm';
 import { DATABASE, type Database } from '@/core/database/database.module';
 import { memoryConnection } from '@/core/database/drizzle/schema';
 
@@ -10,6 +10,7 @@ export type MemoryConnectionState = 'unconfigured' | 'connected' | 'skipped' | '
 export interface MemoryConnectionRow {
   id: number;
   appUrn: string;
+  hubUserId: number;
   state: MemoryConnectionState;
   encryptedKey: string | null;
   serverUrl: string | null;
@@ -18,20 +19,30 @@ export interface MemoryConnectionRow {
   updatedAt: string;
 }
 
+/** Install-global sentinel for pre-family-auth rows and operator-manual credentials. */
+export const INSTALL_GLOBAL_HUB_USER_ID = 0;
+
 /**
- * Data access for the `memory_connection` table. One row per memory-consumer
- * app (keyed by URN), holding the connection state and — when connected — the
- * encrypted CI-Server key plus the resolved memory URL. Mirrors the thin
- * repository style used by {@link ApiKeyRepository}.
+ * Data access for the `memory_connection` table. One row per (app URN, Hub
+ * person), holding the connection state and — when connected — the encrypted
+ * CI-Server key plus the resolved memory URL.
  */
 @Injectable()
 export class MemoryConnectionRepository {
   constructor(@Inject(DATABASE) private readonly db: Database) {}
 
-  /** Fetch the row for an app, or undefined if the app was never touched. */
+  /** Latest row for an app (any user), or undefined if the app was never touched. */
   async findByAppUrn(appUrn: string): Promise<MemoryConnectionRow | undefined> {
     return this.db.query.memoryConnection.findFirst({
       where: eq(memoryConnection.appUrn, appUrn),
+      orderBy: [desc(memoryConnection.updatedAt)],
+    }) as Promise<MemoryConnectionRow | undefined>;
+  }
+
+  /** Row for this app and Hub person, or undefined. */
+  async findByAppUrnAndUser(appUrn: string, hubUserId: number): Promise<MemoryConnectionRow | undefined> {
+    return this.db.query.memoryConnection.findFirst({
+      where: and(eq(memoryConnection.appUrn, appUrn), eq(memoryConnection.hubUserId, hubUserId)),
     }) as Promise<MemoryConnectionRow | undefined>;
   }
 
@@ -47,19 +58,20 @@ export class MemoryConnectionRepository {
   }
 
   /**
-   * Insert or update the row for an app (upsert on the unique `app_urn`).
-   * Only the provided fields are written; `updatedAt` is always bumped.
+   * Insert or update the row for an (app, Hub person). Only the provided fields
+   * are written; `updatedAt` is always bumped.
    */
   async upsert(
     appUrn: string,
     values: Partial<Pick<MemoryConnectionRow, 'state' | 'encryptedKey' | 'serverUrl' | 'keyExpiresAt'>>,
+    hubUserId: number = INSTALL_GLOBAL_HUB_USER_ID,
   ): Promise<MemoryConnectionRow> {
     const now = new Date().toISOString();
     const [result] = await this.db
       .insert(memoryConnection)
-      .values({ appUrn, ...values, updatedAt: now })
+      .values({ appUrn, hubUserId, ...values, updatedAt: now })
       .onConflictDoUpdate({
-        target: memoryConnection.appUrn,
+        target: [memoryConnection.appUrn, memoryConnection.hubUserId],
         set: { ...values, updatedAt: now },
       })
       .returning()
@@ -68,7 +80,7 @@ export class MemoryConnectionRepository {
     return result as MemoryConnectionRow;
   }
 
-  /** Delete the row for an app (used when the app is uninstalled). */
+  /** Delete every row for an app (used when the app is uninstalled). */
   async deleteByAppUrn(appUrn: string): Promise<number> {
     const result = await this.db.delete(memoryConnection).where(eq(memoryConnection.appUrn, appUrn)).execute();
 

@@ -4,7 +4,7 @@ import { unwrapSdkOrNull } from '@/lib/sdk-unwrap';
 
 const PORTAL_ACCOUNT_EMAIL_KEY = 'ci-hub.portalAccountEmail';
 
-export type PortalSessionHintSource = 'hub_operator' | 'portal_session' | 'remembered' | null;
+export type PortalSessionHintSource = 'hub_operator' | 'hub_user' | 'portal_session' | 'remembered' | null;
 
 export interface PortalSessionHint {
   email: string | null;
@@ -25,6 +25,14 @@ export function rememberPortalAccountEmail(email: string) {
   }
 }
 
+export function forgetPortalAccountEmail() {
+  try {
+    localStorage.removeItem(PORTAL_ACCOUNT_EMAIL_KEY);
+  } catch {
+    // Storage may be unavailable in some embedded contexts.
+  }
+}
+
 export function readRememberedPortalAccountEmail(): string | null {
   try {
     const email = localStorage.getItem(PORTAL_ACCOUNT_EMAIL_KEY)?.trim();
@@ -39,7 +47,7 @@ async function fetchPortalSessionHintFromHub(): Promise<PortalSessionHint> {
     const data = (await unwrapSdkOrNull(portalSessionHint({ query: { desktop: '0' } }))) as {
       email?: string | null;
       portalBaseUrl?: string | null;
-      source?: 'hub_operator' | 'portal_session' | null;
+      source?: 'hub_operator' | 'hub_user' | 'portal_session' | null;
     } | null;
     if (!data) {
       return { email: null, portalBaseUrl: null, source: null };
@@ -91,7 +99,7 @@ export async function resolvePortalSessionHint(): Promise<PortalSessionHint> {
     };
   }
 
-  if (hubHint.email) {
+  if (hubHint.source === 'portal_session' && hubHint.email) {
     rememberPortalAccountEmail(hubHint.email);
     return hubHint;
   }
@@ -108,12 +116,21 @@ export async function resolvePortalSessionHint(): Promise<PortalSessionHint> {
     }
   }
 
+  if (hubHint.source === 'hub_user' && hubHint.email) {
+    return hubHint;
+  }
+
   if (remembered) {
     return {
       email: remembered,
       portalBaseUrl: hubHint.portalBaseUrl,
       source: 'remembered',
     };
+  }
+
+  // Last resort only — never persist the first operator as "who Portal is".
+  if (hubHint.email) {
+    return hubHint;
   }
 
   return {

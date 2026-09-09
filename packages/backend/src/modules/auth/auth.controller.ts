@@ -91,6 +91,17 @@ function isForwardAuthAppPublicPath(uri: string): boolean {
   return FORWARD_AUTH_APP_PUBLIC_PREFIXES.some((prefix) => path === prefix || path.startsWith(`${prefix}/`));
 }
 
+function translatableErrorKey(error: unknown): string {
+  if (!(error instanceof TranslatableError)) {
+    return '';
+  }
+  const response = error.getResponse();
+  if (typeof response === 'object' && response && 'message' in response) {
+    return String((response as { message: unknown }).message);
+  }
+  return typeof error.message === 'string' ? error.message : '';
+}
+
 function requestHasApiKey(req: Request): boolean {
   const raw = req.headers['x-api-key'];
   const value = Array.isArray(raw) ? raw[0] : raw;
@@ -246,6 +257,7 @@ export class AuthController {
       return { success: true, totpSessionId };
     }
 
+    await this.replacePresentedSessions(req, sessionId);
     await this.setSessionCookie(res, sessionId, req);
 
     // WebView2 over HTTP cannot rely on cross-origin cookies, so the desktop app also receives the ID.
@@ -257,6 +269,7 @@ export class AuthController {
   async verifyTotp(@Body() body: VerifyTotpBody, @Res({ passthrough: true }) res: Response, @Req() req: Request) {
     const { sessionId } = await this.authService.verifyTotp(body);
 
+    await this.replacePresentedSessions(req, sessionId);
     await this.setSessionCookie(res, sessionId, req);
 
     return LoginDto.parse({ success: true, sessionId }, { reportOnly: true });
@@ -288,11 +301,47 @@ export class AuthController {
     if (req.hubSessionId) {
       sessionIds.add(req.hubSessionId);
     }
+    this.invalidateEdgeSsoForSessions(sessionIds);
     for (const sessionId of sessionIds) {
       await this.authService.logout(sessionId);
     }
 
     return res.status(204).send();
+  }
+
+  /** A new login must kill every other id this browser presented so a stale cookie cannot win. */
+  private async replacePresentedSessions(req: Request, keepSessionId: string) {
+    for (const presented of sessionIdsFromRequest(req)) {
+      if (presented !== keepSessionId) {
+        await this.sessionManager.deleteSession(presented);
+      }
+    }
+    this.invalidateEdgeSsoForSessions([...sessionIdsFromRequest(req), keepSessionId].filter((id) => id !== keepSessionId));
+  }
+
+  /** App-host tickets stay valid after Hub logout unless we burn the ones bound to this session. */
+  private invalidateEdgeSsoForSessions(sessionIds: Iterable<string>) {
+    const wanted = new Set([...sessionIds].filter(Boolean));
+    if (wanted.size === 0) {
+      return;
+    }
+
+    for (const entry of this.cache.getByPrefix(EDGE_SSO_CACHE_PREFIX) ?? []) {
+      try {
+        const parsed = JSON.parse(entry.val) as { sessionId?: string };
+        if (parsed.sessionId && wanted.has(parsed.sessionId)) {
+          this.cache.del(entry.key);
+        }
+      } catch {
+        // Unreadable ticket — leave it; TTL will drop it.
+      }
+    }
+
+    for (const sessionId of wanted) {
+      for (const entry of this.cache.getByPrefix(`${EDGE_SSO_COUNTER_PREFIX}${sessionId}:`) ?? []) {
+        this.cache.del(entry.key);
+      }
+    }
   }
 
   /** Desktop clients refresh before expiry because they persist the returned session ID outside browser cookies. */
@@ -535,37 +584,35 @@ export class AuthController {
       }
 
       const email = exchange.email;
-      let operator = await this.userRepository.getFirstOperator();
+      let operator: Awaited<ReturnType<AuthService['admitHubPerson']>>;
 
-      if (!operator) {
-        try {
-          operator = await this.authService.bootstrapOperatorFromPortalEmail(email);
-        } catch (error) {
-          this.logger.warn('Portal OAuth callback failed to bootstrap local operator', { error });
-          return redirectError(hubOrigin, 'callback_error');
-        }
-      } else if (operator.username.trim().toLowerCase() !== email.trim().toLowerCase()) {
-        /*
-         * A verified Portal identity says who somebody is; it asserts no relationship between that
-         * person and THIS appliance, and the redirect that brings them here is validated against
-         * every tenant's Hub host rather than their own (CI-Portal#685 is the other half). So this
-         * refuses a mismatch whatever the operator count. It used to rename the sole operator's row
-         * to the incoming address instead, which handed the appliance to any stranger who signed up
-         * at the Portal and knew an (enumerable) Hub hostname.
-         *
-         * Changing the operator's address is a deliberate, authenticated act performed on the Hub.
-         */
-        // Hash both addresses: this endpoint is unauthenticated, so the plaintext form would let a
-        // stranger pump arbitrary addresses into the log next to the owner's real one.
-        this.logger.warn('Portal login blocked: email mismatch', {
-          portalEmailHash: hashEmailForLog(email),
-          operatorEmailHash: hashEmailForLog(operator.username),
+      try {
+        operator = await this.authService.admitHubPerson({
+          issuer: exchange.issuer,
+          subject: exchange.subject,
+          email,
+          emailVerified: exchange.emailVerified,
         });
-
-        return redirectError(hubOrigin, 'account_mismatch');
+      } catch (error) {
+        const code = translatableErrorKey(error);
+        if (code === 'AUTH_ERROR_NOT_ORG_MEMBER') {
+          this.logger.warn('Portal login blocked: subject is not a member of this Hub org', {
+            portalEmailHash: hashEmailForLog(email),
+          });
+          return redirectError(hubOrigin, 'not_org_member');
+        }
+        if (code === 'AUTH_ERROR_USER_NOT_FOUND' || code === 'AUTH_ERROR_INVALID_CREDENTIALS') {
+          this.logger.warn('Portal login blocked: no Hub person for this identity', {
+            portalEmailHash: hashEmailForLog(email),
+          });
+          return redirectError(hubOrigin, 'account_mismatch');
+        }
+        this.logger.warn('Portal OAuth callback failed to admit Hub person', { error });
+        return redirectError(hubOrigin, 'callback_error');
       }
 
       const sessionId = await this.sessionManager.createSession(operator.id);
+      await this.replacePresentedSessions(req, sessionId);
       await this.setSessionCookie(res, sessionId, req);
 
       const handoffToDesktop = shouldHandoffPortalLoginToDesktop({
@@ -619,18 +666,6 @@ export class AuthController {
       return PortalSessionHintDto.parse({ email: null, portalBaseUrl: null, source: null }, { reportOnly: true });
     }
 
-    const operator = await this.userRepository.getFirstOperator();
-    if (operator?.username?.trim()) {
-      return PortalSessionHintDto.parse(
-        {
-          email: operator.username.trim(),
-          portalBaseUrl,
-          source: 'hub_operator',
-        },
-        { reportOnly: true },
-      );
-    }
-
     const cookieHeader = typeof req.headers.cookie === 'string' ? req.headers.cookie : undefined;
     const portalEmail = await fetchPortalSessionEmail({
       publicPortalBaseUrl: portalBaseUrl,
@@ -643,6 +678,30 @@ export class AuthController {
           email: portalEmail,
           portalBaseUrl,
           source: 'portal_session',
+        },
+        { reportOnly: true },
+      );
+    }
+
+    const sessionEmail = typeof req.user?.username === 'string' ? req.user.username.trim() : '';
+    if (sessionEmail) {
+      return PortalSessionHintDto.parse(
+        {
+          email: sessionEmail,
+          portalBaseUrl,
+          source: 'hub_user',
+        },
+        { reportOnly: true },
+      );
+    }
+
+    const operator = await this.userRepository.getFirstOperator();
+    if (operator?.username?.trim()) {
+      return PortalSessionHintDto.parse(
+        {
+          email: operator.username.trim(),
+          portalBaseUrl,
+          source: 'hub_operator',
         },
         { reportOnly: true },
       );

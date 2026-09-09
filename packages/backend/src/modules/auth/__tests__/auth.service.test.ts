@@ -12,6 +12,8 @@ import { mock, type MockProxy } from 'vitest-mock-extended';
 import { AuthService } from '../auth.service';
 import { SessionManager } from '../session.manager';
 import { SessionUserCache } from '@/core/cache/session-user.cache';
+import { PortalClientService } from '@/core/portal/portal-client.service';
+import { DeviceRegistrationRepository } from '@/modules/registration/device-registration.repository';
 import type { LoginBody } from '../dto/auth.dto';
 import axios from 'axios';
 
@@ -30,6 +32,8 @@ describe('AuthService', () => {
   let cacheService: MockProxy<CacheService>;
   let configurationService: MockProxy<ConfigurationService>;
   let passwordService: MockProxy<PasswordService>;
+  let portal: MockProxy<PortalClientService>;
+  let deviceRegistration: MockProxy<DeviceRegistrationRepository>;
 
   beforeEach(async () => {
     vi.mocked(axios.post).mockReset();
@@ -48,6 +52,8 @@ describe('AuthService', () => {
         { provide: FilesystemService, useValue: mock<FilesystemService>() },
         { provide: LoggerService, useValue: mock<LoggerService>() },
         { provide: SessionUserCache, useValue: mock<SessionUserCache>() },
+        { provide: PortalClientService, useValue: mock<PortalClientService>() },
+        { provide: DeviceRegistrationRepository, useValue: mock<DeviceRegistrationRepository>() },
       ],
     }).compile();
 
@@ -58,6 +64,11 @@ describe('AuthService', () => {
     cacheService = moduleRef.get(CacheService);
     configurationService = moduleRef.get(ConfigurationService);
     passwordService = moduleRef.get(PasswordService);
+    portal = moduleRef.get(PortalClientService);
+    deviceRegistration = moduleRef.get(DeviceRegistrationRepository);
+    userRepository.getOperators.mockResolvedValue([]);
+    federatedIdentityRepository.findByIssuerSubject.mockResolvedValue(undefined as never);
+    deviceRegistration.getFirstDeviceRegistration.mockResolvedValue(null as never);
   });
 
   it('should be defined', () => {
@@ -355,6 +366,83 @@ describe('AuthService', () => {
       });
 
       expect(federatedIdentityRepository.findByIssuerSubject).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('admitHubPerson', () => {
+    const issuer = 'https://hub.example.com';
+
+    it('creates a second operator when the Portal subject is a member of this Hub org', async () => {
+      const created = { id: 2, username: 'hello@lifescope.io', operator: true, hasCompletedOnboarding: true };
+      federatedIdentityRepository.findByIssuerSubject.mockResolvedValue(undefined as never);
+      userRepository.getOperators.mockResolvedValue([{ id: 1, username: 'chamberlain@example.com', hasCompletedOnboarding: true }] as never);
+      userRepository.getUserByUsername.mockResolvedValue(undefined as never);
+      userRepository.createUser.mockResolvedValue(created as never);
+      passwordService.hash.mockResolvedValue('hash');
+      deviceRegistration.getFirstDeviceRegistration.mockResolvedValue({ id: 'org-1' } as never);
+      portal.whoisApps.mockResolvedValue({
+        status: 200,
+        body: { organizations: [{ organizationId: 'org-1', apps: [] }] },
+      });
+
+      const result = await authService.admitHubPerson({
+        issuer,
+        subject: 'portal-hello',
+        email: 'hello@lifescope.io',
+        emailVerified: true,
+      });
+
+      expect(result).toEqual(created);
+      expect(userRepository.createUser).toHaveBeenCalledWith(
+        expect.objectContaining({ username: 'hello@lifescope.io', operator: true, hasCompletedOnboarding: true }),
+      );
+      expect(federatedIdentityRepository.create).toHaveBeenCalledWith(expect.objectContaining({ userId: 2, issuer, subject: 'portal-hello' }));
+    });
+
+    it('does not skip the device wizard when the appliance has never been onboarded', async () => {
+      const created = { id: 2, username: 'hello@lifescope.io', operator: true, hasCompletedOnboarding: false };
+      federatedIdentityRepository.findByIssuerSubject.mockResolvedValue(undefined as never);
+      userRepository.getOperators.mockResolvedValue([{ id: 1, username: 'chamberlain@example.com', hasCompletedOnboarding: false }] as never);
+      userRepository.getUserByUsername.mockResolvedValue(undefined as never);
+      userRepository.createUser.mockResolvedValue(created as never);
+      passwordService.hash.mockResolvedValue('hash');
+      deviceRegistration.getFirstDeviceRegistration.mockResolvedValue({ id: 'org-1' } as never);
+      portal.whoisApps.mockResolvedValue({
+        status: 200,
+        body: { organizations: [{ organizationId: 'org-1', apps: [] }] },
+      });
+
+      await authService.admitHubPerson({
+        issuer,
+        subject: 'portal-hello',
+        email: 'hello@lifescope.io',
+        emailVerified: true,
+      });
+
+      expect(userRepository.createUser).toHaveBeenCalledWith(
+        expect.objectContaining({ username: 'hello@lifescope.io', hasCompletedOnboarding: false }),
+      );
+    });
+
+    it('refuses a Portal person who is not in this Hub org', async () => {
+      federatedIdentityRepository.findByIssuerSubject.mockResolvedValue(undefined as never);
+      userRepository.getOperators.mockResolvedValue([{ id: 1, username: 'chamberlain@example.com' }] as never);
+      deviceRegistration.getFirstDeviceRegistration.mockResolvedValue({ id: 'org-1' } as never);
+      portal.whoisApps.mockResolvedValue({
+        status: 200,
+        body: { organizations: [{ organizationId: 'other-org', apps: [] }] },
+      });
+
+      await expect(
+        authService.admitHubPerson({
+          issuer,
+          subject: 'portal-stranger',
+          email: 'stranger@example.com',
+          emailVerified: true,
+        }),
+      ).rejects.toMatchObject({ message: 'AUTH_ERROR_NOT_ORG_MEMBER' });
+
+      expect(userRepository.createUser).not.toHaveBeenCalled();
     });
   });
 });
