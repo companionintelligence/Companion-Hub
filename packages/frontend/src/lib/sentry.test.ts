@@ -50,16 +50,20 @@ vi.mock('./registration-api', () => ({
 // The consent gate has its own suite (telemetry-consent.test.ts); stub it here
 // so these tests exercise enrichment/noise-dropping deterministically instead of
 // racing the real `/api/config/telemetry` fetch that init kicks off.
-const { telemetryAllowed, refreshTelemetryConsent, refreshTelemetryConsentIfStale } = vi.hoisted(() => ({
+const { telemetryAllowed, refreshTelemetryConsent, refreshTelemetryConsentIfStale, onTelemetryConsentChange } = vi.hoisted(() => ({
   telemetryAllowed: { value: true },
   refreshTelemetryConsent: vi.fn(async () => true),
   refreshTelemetryConsentIfStale: vi.fn(),
+  // Session Replay subscribes to consent changes at init; replay's own gating
+  // is covered by session-replay-consent.test.ts.
+  onTelemetryConsentChange: vi.fn(() => () => {}),
 }));
 
 vi.mock('./telemetry-consent', () => ({
   isTelemetryAllowed: () => telemetryAllowed.value,
   refreshTelemetryConsent,
   refreshTelemetryConsentIfStale,
+  onTelemetryConsentChange,
 }));
 
 describe('frontend sentry', () => {
@@ -123,14 +127,20 @@ describe('frontend sentry', () => {
       }),
     );
     expect(browserTracingIntegration).toHaveBeenCalledOnce();
-    expect(replayIntegration).toHaveBeenCalledWith({ maskAllText: true, blockAllMedia: true });
     // Factories being called is not enough — dropping their return values from
-    // `init` silently disables production tracing / replay.
+    // `init` silently disables production tracing.
     expect(init).toHaveBeenCalledWith(
       expect.objectContaining({
-        integrations: [{ name: 'BrowserTracing' }, { name: 'Replay' }],
+        integrations: [{ name: 'BrowserTracing' }],
       }),
     );
+    /*
+     * Replay is deliberately NOT registered at init and is NOT in `integrations`.
+     * Registering it here starts recording before consent is known, and replay
+     * envelopes never pass through `beforeSend` — so the gate below cannot stop
+     * them. It is added on grant instead; see session-replay-consent.test.ts.
+     */
+    expect(replayIntegration).not.toHaveBeenCalled();
     expect(setTag).toHaveBeenCalledWith('component', 'browser-web');
     expect(setTag).toHaveBeenCalledWith('ci_portal_url', 'https://hub.ci.computer');
     expect(setTag).toHaveBeenCalledWith('ci_portal_environment', 'prod');
