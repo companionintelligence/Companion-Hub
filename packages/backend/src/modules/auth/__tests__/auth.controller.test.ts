@@ -1360,7 +1360,13 @@ describe('AuthController', () => {
       expect(res.redirect).toHaveBeenCalledWith('http://localhost:5002/home');
     });
 
-    it('syncs the sole local operator email from a verified Portal login when they differ', async () => {
+    it('refuses a Portal login whose email differs from the sole local operator', async () => {
+      /*
+       * This asserted the opposite — that a sole operator's row is renamed to the incoming address.
+       * A Portal identity says who somebody is, not that they own this appliance, so that handed the
+       * Hub to any stranger who signed up at the Portal and knew a hostname (CI-Portal#685 is the
+       * other half). The single-operator case was the permissive branch and it is the common one.
+       */
       cache.get.mockReturnValue(
         JSON.stringify({
           codeVerifier: 'verifier',
@@ -1384,7 +1390,6 @@ describe('AuthController', () => {
         email: 'companion@example.com',
       });
       userRepository.getFirstOperator.mockResolvedValue({ id: 1, username: 'admin@local.test' } as never);
-      userRepository.getOperators.mockResolvedValue([{ id: 1, username: 'admin@local.test' }] as never);
       userRepository.updateUser.mockResolvedValue(true as never);
       sessionManager.createSession.mockResolvedValue('session-123');
 
@@ -1401,8 +1406,56 @@ describe('AuthController', () => {
 
       await authController.portalCallback(req, res, 'auth-code', 'state-123');
 
-      expect(userRepository.updateUser).toHaveBeenCalledWith(1, { username: 'companion@example.com' });
-      expect(sessionManager.createSession).toHaveBeenCalledWith(1);
+      // The operator row is untouched and no session is issued.
+      expect(userRepository.updateUser).not.toHaveBeenCalled();
+      expect(sessionManager.createSession).not.toHaveBeenCalled();
+      expect(res.redirect).toHaveBeenCalledWith(expect.stringContaining('account_mismatch'));
+    });
+
+    it('still signs a matching operator in on a plain browser callback', async () => {
+      // The refusal above and the desktop handoff tests share this branch, so without this a
+      // regression that refused EVERY browser login would leave the suite green.
+      cache.get.mockReturnValue(
+        JSON.stringify({
+          codeVerifier: 'verifier',
+          redirectUrl: null,
+          hubOrigin: 'http://localhost:5002',
+          desktop: false,
+        }),
+      );
+      config.get.mockImplementation((key: string) => {
+        if (key === 'ciCloudUrl') {
+          return 'https://hub.ci.computer';
+        }
+        if (key === 'userSettings') {
+          return { experimental: { insecureCookie: true } };
+        }
+        return '';
+      });
+      vi.mocked(exchangePortalAuthorizationCode).mockResolvedValue({
+        ok: true,
+        accessToken: 'access-token',
+        email: 'Operator@Example.com',
+      });
+      // Case and surrounding space are not a mismatch — the addresses are compared normalized.
+      userRepository.getFirstOperator.mockResolvedValue({ id: 7, username: ' operator@example.com ' } as never);
+      sessionManager.createSession.mockResolvedValue('session-777');
+
+      const req = {
+        protocol: 'http',
+        get: vi.fn((header: string) => (header === 'host' ? 'localhost:5002' : undefined)),
+        headers: {},
+        cookies: {},
+      } as unknown as Request;
+      const res = {
+        redirect: vi.fn(),
+        cookie: vi.fn(),
+      } as unknown as Response;
+
+      await authController.portalCallback(req, res, 'auth-code', 'state-123');
+
+      expect(sessionManager.createSession).toHaveBeenCalledWith(7);
+      expect(userRepository.updateUser).not.toHaveBeenCalled();
       expect(res.redirect).toHaveBeenCalledWith('http://localhost:5002/home');
     });
   });
