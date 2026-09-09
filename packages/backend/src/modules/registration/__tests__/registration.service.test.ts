@@ -505,13 +505,8 @@ describe('RegistrationService', () => {
     });
 
     it('sends the stored device credential as proof of possession when the Hub has one', async () => {
-      /*
-       * A Hub that has been reset still holds `ciHubApiKey` in settings.json —
-       * `resetRegistration` clears the registration rows, the tunnel token and
-       * the resolved environment, not the user settings. Sending it is what
-       * keeps reset-and-pair-again self-service now that the Portal refuses to
-       * re-key an existing device row without proof (CI-Portal#688).
-       */
+      // `resetRegistration` leaves `ciHubApiKey` in settings.json, so a reset Hub
+      // still holds the proof the Portal now demands to re-key it (CI-Portal#688).
       configService.getConfig.mockReturnValue({
         ciCloudUrl: 'http://cloud.api',
         ciHubApiKey: 'stored-device-key',
@@ -542,7 +537,7 @@ describe('RegistrationService', () => {
       expect(mockedAxios.post).toHaveBeenCalledWith(
         'http://cloud.api/api/devices/pair',
         { pairing_code: 'ABC123', device_id: 'test-device', device_key: 'stored-device-key' },
-        expect.anything(),
+        expect.objectContaining({ headers: { 'Content-Type': 'application/json' } }),
       );
 
       setupSpy.mockRestore();
@@ -570,8 +565,19 @@ describe('RegistrationService', () => {
       expect(mockedAxios.post).toHaveBeenCalledWith(
         'http://cloud.api/api/devices/pair',
         { pairing_code: 'ABC123', device_id: 'test-device' },
-        expect.anything(),
+        expect.objectContaining({ headers: { 'Content-Type': 'application/json' } }),
       );
+    });
+
+    it('refuses cleanly when the Portal answers 200 with no body', async () => {
+      // `null` body: reading `.success` off it directly threw, turning a clean
+      // refusal into "Pairing failed: Cannot read properties of null".
+      mockedAxios.post.mockResolvedValue({ status: 200, data: null } as any);
+
+      const result = await service.pairDevice('ABC123');
+
+      expect(result.success).toBe(false);
+      expect(result.message).toBe('Portal returned incomplete registration data.');
     });
 
     it('returns error when pairing code is invalid (Portal returns error)', async () => {
@@ -617,7 +623,9 @@ describe('RegistrationService', () => {
     });
 
     it('returns error when Portal is unreachable', async () => {
-      mockedAxios.post.mockRejectedValue(new TypeError('fetch failed'));
+      // Shaped like a real axios transport failure: `validateStatus` accepts every
+      // status, so a thrown error here never carries a `response`.
+      mockedAxios.post.mockRejectedValue(Object.assign(new Error('connect ECONNREFUSED 10.0.0.1:443'), { isAxiosError: true, code: 'ECONNREFUSED' }));
 
       const result = await service.pairDevice('ABC123');
 
