@@ -103,6 +103,47 @@ describe('RegistrationService', () => {
     });
   });
 
+  describe('isRegisteredAndServing', () => {
+    /*
+     * Narrower than `isRegistered` on purpose: a Hub that lost its tunnel token
+     * is registered, but pairing again is how it recovers, and CI-OS's headless
+     * setup service completes that pairing through the registration callback.
+     */
+    const setPhase = (phase: string, reasons: string[] = []) => {
+      (service as any)._currentPhase = phase;
+      (service as any)._degradedReasons = reasons;
+      vi.spyOn(service as any, 'refreshPhaseFromSources').mockResolvedValue(undefined);
+    };
+
+    it('is true for a Hub that is up and serving', async () => {
+      setPhase('publicly_ready');
+      await expect(service.isRegisteredAndServing()).resolves.toBe(true);
+
+      setPhase('locally_ready');
+      await expect(service.isRegisteredAndServing()).resolves.toBe(true);
+    });
+
+    it('is false while a registered Hub is re-pairing to restore its tunnel', async () => {
+      setPhase('degraded', ['tunnel_token_missing']);
+
+      await expect(service.isRegisteredAndServing()).resolves.toBe(false);
+      // Still registered — only the callback guard treats it differently.
+      await expect(service.isRegistered()).resolves.toBe(true);
+    });
+
+    it('is true for a Hub degraded for any other reason', async () => {
+      setPhase('degraded', ['tunnel_unreachable']);
+
+      await expect(service.isRegisteredAndServing()).resolves.toBe(true);
+    });
+
+    it('is false for an unregistered Hub', async () => {
+      setPhase('unregistered');
+
+      await expect(service.isRegisteredAndServing()).resolves.toBe(false);
+    });
+  });
+
   describe('isRegistered', () => {
     it('should return true if device is registered', async () => {
       deviceRegistrationRepository.hasAnyDeviceRegistration.mockResolvedValue(true);
