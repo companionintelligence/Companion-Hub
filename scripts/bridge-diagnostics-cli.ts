@@ -81,6 +81,12 @@ export interface BridgeCheckResult {
 export interface BridgeDoctorSection {
   lines: string[];
   issueCount: number;
+  /**
+   * The subset of `issueCount` that names something broken. `unknown` counts as an issue — the
+   * header must not read `ok` when a port went unchecked — but not as a failure: the probe never
+   * ran, so there is nothing it proves about the bridge.
+   */
+  failureCount: number;
   /** Command that fixes every filtered port, when one could be derived. */
   remediationCommands: string[];
 }
@@ -261,7 +267,7 @@ export async function runBridgeDoctorSection(envFileName: string): Promise<Bridg
     // Match runNetworkDoctorSection: a failed probe degrades to one line rather
     // than taking down the whole `cihub doctor` report.
     const message = error instanceof Error ? error.message : String(error);
-    return { lines: [`Docker bridge            unavailable (${message})`], issueCount: 0, remediationCommands: [] };
+    return { lines: [`Docker bridge            unavailable (${message})`], issueCount: 0, failureCount: 0, remediationCommands: [] };
   }
 }
 
@@ -270,6 +276,7 @@ async function collectBridgeDoctorSection(envFileName: string): Promise<BridgeDo
     return {
       lines: ['Docker bridge            skipped (Hub container not running — start the stack first)'],
       issueCount: 0,
+      failureCount: 0,
       remediationCommands: [],
     };
   }
@@ -294,7 +301,7 @@ async function collectBridgeDoctorSection(envFileName: string): Promise<BridgeDo
   const checked = results.filter((result) => result.verdict !== 'absent');
 
   if (checked.length === 0) {
-    return { lines: ['Docker bridge            no host services listening'], issueCount: 0, remediationCommands: [] };
+    return { lines: ['Docker bridge            no host services listening'], issueCount: 0, failureCount: 0, remediationCommands: [] };
   }
 
   // `unknown` is not a bridge fault — the probe itself never completed — but the
@@ -306,11 +313,12 @@ async function collectBridgeDoctorSection(envFileName: string): Promise<BridgeDo
     unresolved.length > 0 ? `${unresolved.length} unresolved` : '',
     unverified.length > 0 ? `${unverified.length} unverified` : '',
   ].filter(Boolean);
-  const issueCount = blocked.length + refused.length + unresolved.length + unverified.length;
+  const failureCount = blocked.length + refused.length + unresolved.length;
+  const issueCount = failureCount + unverified.length;
   const lines = [`Docker bridge            ${summary.length === 0 ? 'ok' : summary.join(', ')}`, ...formatBridgeLines(results)];
 
   if (issueCount === 0) {
-    return { lines, issueCount: 0, remediationCommands: [] };
+    return { lines, issueCount: 0, failureCount: 0, remediationCommands: [] };
   }
 
   let remediationCommands: string[] = [];
@@ -342,5 +350,5 @@ async function collectBridgeDoctorSection(envFileName: string): Promise<BridgeDo
     lines.push('  The container probe did not complete for these, so they were NOT checked — this is not evidence of a firewall.');
   }
 
-  return { lines, issueCount, remediationCommands };
+  return { lines, issueCount, failureCount, remediationCommands };
 }
