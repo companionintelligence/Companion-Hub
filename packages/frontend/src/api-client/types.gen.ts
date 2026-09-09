@@ -2462,27 +2462,6 @@ export type ValidateOrganizationNameResponses = {
     200: unknown;
 };
 
-export type VerifyPairingCodeData = {
-    body?: never;
-    path?: never;
-    query?: never;
-    url: '/api/registration/verify-pairing-code';
-};
-
-export type VerifyPairingCodeErrors = {
-    /**
-     * Invalid or missing pairing code
-     */
-    400: unknown;
-};
-
-export type VerifyPairingCodeResponses = {
-    /**
-     * Pairing code verified and device identity bound
-     */
-    200: unknown;
-};
-
 export type ProbeDomainData = {
     body?: never;
     path?: never;

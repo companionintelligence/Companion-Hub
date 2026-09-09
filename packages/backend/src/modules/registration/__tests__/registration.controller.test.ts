@@ -220,21 +220,6 @@ describe('RegistrationController', () => {
     });
   });
 
-  describe('verifyPairingCode', () => {
-    it('should reject invalid pairing codes', async () => {
-      const result = await controller.verifyPairingCode({ pairing_code: 'AB' });
-      expect(result.success).toBe(false);
-    });
-
-    it('should reject when device ID not found', async () => {
-      registrationService.getDeviceId.mockResolvedValue('');
-      configService.getConfig.mockReturnValue({ ciCloudUrl: 'https://portal.ci.com' } as any);
-
-      const result = await controller.verifyPairingCode({ pairing_code: 'ABCDEF' });
-      expect(result.success).toBe(false);
-    });
-  });
-
   describe('pairDevice', () => {
     it('should reject invalid pairing codes', async () => {
       const result = await controller.pairDevice({ pairing_code: '' });
