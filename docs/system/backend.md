@@ -33,7 +33,7 @@ packages/backend/
 | `tailscale` / `cloudflare` | Optional sidecar integrations |
 | `inference` | Backend registry, model resolution, routing to a local engine |
 | `hub-pool` | Multi-Hub inference pooling: peer identity, pairing, discovery, ranking, and the proxy |
-| `registration` | Portal pairing, device ID, and registration-state drift |
+| `registration` | Portal pairing, device ID, and registration-state drift. The hourly check-in also carries this Hub's own status (phase, degraded reasons, tunnel health, Tailscale connectivity, version) for Portal's org fleet report — see `check-in-payload.ts`; every field is optional and absent means "no report this time", never "the value is gone". |
 
 ## App volumes
 
