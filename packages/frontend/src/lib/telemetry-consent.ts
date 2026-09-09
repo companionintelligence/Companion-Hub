@@ -30,16 +30,65 @@ export function isTelemetryAllowed(): boolean {
   return allowed === true;
 }
 
+/**
+ * Notified whenever the answer CHANGES.
+ *
+ * `beforeSend` can consult {@link isTelemetryAllowed} per event, but Session
+ * Replay cannot: replay envelopes never pass through `beforeSend`, so the only
+ * way to honour a withdrawal is to stop the recorder itself. That needs an
+ * edge, not a poll.
+ */
+type ConsentListener = (allowed: boolean | null) => void;
+
+const listeners = new Set<ConsentListener>();
+
+export function onTelemetryConsentChange(listener: ConsentListener): () => void {
+  listeners.add(listener);
+
+  return () => listeners.delete(listener);
+}
+
 /** Test seam / immediate publish when a fresher answer is already in hand. */
 export function setTelemetryAllowed(value: boolean | null, now: number = Date.now()): void {
+  const changed = allowed !== value;
   allowed = value;
   lastResolvedAt = value === null ? 0 : now;
+
+  if (!changed) {
+    return;
+  }
+
+  for (const listener of listeners) {
+    // One listener throwing must not stop the others from learning that consent
+    // was withdrawn — that is the direction where failing quietly leaks data.
+    try {
+      listener(value);
+    } catch {
+      // ignored on purpose
+    }
+  }
 }
 
 export function resetTelemetryConsent(): void {
+  const changed = allowed !== null;
   allowed = null;
   inFlight = null;
   lastResolvedAt = 0;
+
+  if (changed) {
+    for (const listener of listeners) {
+      try {
+        listener(null);
+      } catch {
+        // ignored on purpose
+      }
+    }
+  }
+}
+
+/** Test seam: drop every subscriber. */
+export function resetTelemetryConsentListeners(): void {
+  listeners.clear();
 }
 
 /**
