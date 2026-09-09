@@ -2408,6 +2408,37 @@ export type GetDeviceIdResponses = {
     200: unknown;
 };
 
+export type HandleCallbackData = {
+    body?: never;
+    path?: never;
+    query: {
+        device_id: string;
+        organization_id: string;
+        organization_name: string;
+        slug: string;
+        subdomain: string;
+        tunnel_id: string;
+        tunnel_token: string;
+        api_key: string;
+        domain: string;
+    };
+    url: '/api/registration/callback';
+};
+
+export type HandleCallbackErrors = {
+    /**
+     * Invalid callback data
+     */
+    400: unknown;
+};
+
+export type HandleCallbackResponses = {
+    /**
+     * Registration completed successfully
+     */
+    200: unknown;
+};
+
 export type HandleCallbackPostData = {
     body?: never;
     path?: never;

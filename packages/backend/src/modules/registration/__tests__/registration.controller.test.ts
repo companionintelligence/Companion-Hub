@@ -278,6 +278,54 @@ describe('RegistrationController', () => {
     });
   });
 
+  describe('handleCallback (deprecated GET)', () => {
+    /*
+     * CI-OS's headless setup service (`/opt/setup-backend/setup_service.py`)
+     * forwards the cloud's registration response to this route as a GET once the
+     * Hub is running. Removing it strands every appliance that pairs from the
+     * setup portal, so it stays until that caller moves to the POST.
+     */
+    const req = { ip: '127.0.0.1' } as any;
+
+    it('completes registration without a nonce, so headless setup keeps working', async () => {
+      registrationService.completeRegistrationFromCallback.mockResolvedValue({ success: true } as any);
+
+      const result = await controller.handleCallback(
+        req,
+        'device-1',
+        'org-1',
+        'My Org',
+        'my-org',
+        'my-sub',
+        'tun-1',
+        'tok-1',
+        'key-1',
+        'example.com',
+      );
+
+      expect(result).toEqual({ success: true });
+      expect(registrationService.consumeCallbackNonce).not.toHaveBeenCalled();
+      expect(registrationService.completeRegistrationFromCallback).toHaveBeenCalledWith({
+        deviceId: 'device-1',
+        organizationId: 'org-1',
+        organizationName: 'My Org',
+        subdomain: 'my-sub',
+        tunnelId: 'tun-1',
+        tunnelToken: 'tok-1',
+        apiKey: 'key-1',
+        slug: 'my-org',
+        domain: 'example.com',
+      });
+    });
+
+    it('returns an error when required params are missing', async () => {
+      const result = (await controller.handleCallback(req, '', '', '', '', '', '', '', '', '')) as { success: boolean };
+
+      expect(result.success).toBe(false);
+      expect(registrationService.completeRegistrationFromCallback).not.toHaveBeenCalled();
+    });
+  });
+
   describe('validateOrganizationName', () => {
     it('should reject empty names', async () => {
       const result = await controller.validateOrganizationName('');

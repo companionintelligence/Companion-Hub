@@ -135,26 +135,12 @@ export class RegistrationController {
   @ApiResponse({ status: 400, description: 'Invalid callback data' })
   @ApiResponse({ status: 403, description: 'No valid registration nonce, or the Hub is already registered' })
   async handleCallbackPost(@Body() body: RegistrationCallbackDto, @Query('state') stateQuery?: string) {
-    const {
-      state: stateBody,
-      device_id: deviceId,
-      organization_id: organizationId,
-      organization_name: organizationName,
-      slug,
-      subdomain,
-      tunnel_id: tunnelId,
-      tunnel_token: tunnelToken,
-      api_key: apiKey,
-      domain,
-    } = body ?? ({} as RegistrationCallbackDto);
-
     // Check the shape before spending the nonce, so a malformed callback does not
     // burn a one-time secret that costs another round trip through Portal.
-    if (!deviceId || !organizationId || !organizationName || !subdomain || !tunnelId || !tunnelToken || !apiKey || !slug) {
-      return {
-        success: false,
-        message: 'Missing required parameters: device_id, organization_id, organization_name, slug, subdomain, tunnel_id, tunnel_token, api_key',
-      };
+    const missing = this.missingCallbackParams(body);
+
+    if (missing) {
+      return missing;
     }
 
     /*
@@ -167,7 +153,7 @@ export class RegistrationController {
      * URL verbatim, so the nonce normally arrives in the query string; a client
      * that parsed the redirect re-posts it in the body instead.
      */
-    if (!this.registrationService.consumeCallbackNonce(stateQuery?.trim() || stateBody)) {
+    if (!this.registrationService.consumeCallbackNonce(stateQuery?.trim() || body?.state)) {
       this.logger.warn('Rejected registration callback with no valid nonce');
 
       throw new ForbiddenException('This registration link is not valid any more. Start pairing again from this Hub.');
@@ -186,16 +172,92 @@ export class RegistrationController {
       throw new ForbiddenException('This Hub is already registered. Reset its registration from Settings before pairing it again.');
     }
 
-    return this.registrationService.completeRegistrationFromCallback({
-      deviceId,
-      organizationId,
-      organizationName,
-      subdomain,
-      tunnelId,
-      tunnelToken,
-      apiKey,
+    return this.completeRegistrationCallback(body);
+  }
+
+  /**
+   * Deprecated. Kept because the CI-OS headless setup service still uses it:
+   * `/opt/setup-backend/setup_service.py` forwards the cloud's registration
+   * response to `http://127.0.0.1:5002/api/registration/callback` as a GET once
+   * the Hub is running, so removing this route strands every appliance that
+   * pairs from the setup portal.
+   *
+   * It carries `api_key` and `tunnel_token` in the query string, where they
+   * reach request logs, so it takes no nonce and gains no guard only because
+   * that caller cannot supply one yet. Migrate CI-OS to the POST above, then
+   * delete this; the warning below is how we tell when nothing calls it.
+   */
+  @Get('callback')
+  @ApiOperation({ summary: 'Handle registration callback from CI Cloud (deprecated GET form — use POST)' })
+  @ApiResponse({ status: 200, description: 'Registration completed successfully' })
+  @ApiResponse({ status: 400, description: 'Invalid callback data' })
+  async handleCallback(
+    @Req() req: Request,
+    @Query('device_id') deviceId: string,
+    @Query('organization_id') organizationId: string,
+    @Query('organization_name') organizationName: string,
+    @Query('slug') slug: string,
+    @Query('subdomain') subdomain: string,
+    @Query('tunnel_id') tunnelId: string,
+    @Query('tunnel_token') tunnelToken: string,
+    @Query('api_key') apiKey: string,
+    @Query('domain') domain: string,
+  ) {
+    this.logger.warn(`Deprecated GET /registration/callback used by ${req.ip ?? 'unknown'} — migrate this caller to POST /registration/callback`);
+
+    return this.completeRegistrationCallback({
+      device_id: deviceId,
+      organization_id: organizationId,
+      organization_name: organizationName,
       slug,
+      subdomain,
+      tunnel_id: tunnelId,
+      tunnel_token: tunnelToken,
+      api_key: apiKey,
       domain,
+    });
+  }
+
+  /** The fields a callback must carry, whichever route it arrives on. */
+  private missingCallbackParams(body: RegistrationCallbackDto): { success: false; message: string } | null {
+    const {
+      device_id: deviceId,
+      organization_id: organizationId,
+      organization_name: organizationName,
+      slug,
+      subdomain,
+      tunnel_id: tunnelId,
+      tunnel_token: tunnelToken,
+      api_key: apiKey,
+    } = body ?? ({} as RegistrationCallbackDto);
+
+    if (!deviceId || !organizationId || !organizationName || !subdomain || !tunnelId || !tunnelToken || !apiKey || !slug) {
+      return {
+        success: false,
+        message: 'Missing required parameters: device_id, organization_id, organization_name, slug, subdomain, tunnel_id, tunnel_token, api_key',
+      };
+    }
+
+    return null;
+  }
+
+  private async completeRegistrationCallback(body: RegistrationCallbackDto) {
+    const missing = this.missingCallbackParams(body);
+
+    if (missing) {
+      return missing;
+    }
+
+    return this.registrationService.completeRegistrationFromCallback({
+      deviceId: body.device_id,
+      organizationId: body.organization_id,
+      organizationName: body.organization_name,
+      subdomain: body.subdomain,
+      tunnelId: body.tunnel_id,
+      tunnelToken: body.tunnel_token,
+      apiKey: body.api_key,
+      slug: body.slug,
+      domain: body.domain,
     });
   }
 
