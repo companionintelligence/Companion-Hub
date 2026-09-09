@@ -233,6 +233,47 @@ describe('RegistrationController', () => {
       const result = await controller.verifyPairingCode({ pairing_code: 'ABCDEF' });
       expect(result.success).toBe(false);
     });
+
+    it('sends the stored device credential as proof of possession when the Hub has one', async () => {
+      registrationService.getDeviceId.mockResolvedValue('test-device');
+      configService.getConfig.mockReturnValue({
+        ciCloudUrl: 'https://portal.ci.com',
+        ciHubApiKey: 'stored-device-key',
+      } as any);
+
+      const fetchSpy = vi
+        .spyOn(globalThis, 'fetch')
+        .mockResolvedValue({ ok: true, json: async () => ({ deviceId: 'test-device' }) } as unknown as Response);
+
+      await controller.verifyPairingCode({ pairing_code: 'ABCDEF' });
+
+      const [, init] = fetchSpy.mock.calls[0];
+      expect(JSON.parse(String(init?.body))).toEqual({
+        pairing_code: 'ABCDEF',
+        device_id: 'test-device',
+        device_key: 'stored-device-key',
+      });
+
+      fetchSpy.mockRestore();
+    });
+
+    it('omits device_key rather than sending an empty one when no credential is stored', async () => {
+      // Empty rather than absent, because `JSON.stringify` drops an `undefined`
+      // value on its own — only an empty string proves the guard is doing it.
+      registrationService.getDeviceId.mockResolvedValue('test-device');
+      configService.getConfig.mockReturnValue({ ciCloudUrl: 'https://portal.ci.com', ciHubApiKey: '' } as any);
+
+      const fetchSpy = vi
+        .spyOn(globalThis, 'fetch')
+        .mockResolvedValue({ ok: true, json: async () => ({ deviceId: 'test-device' }) } as unknown as Response);
+
+      await controller.verifyPairingCode({ pairing_code: 'ABCDEF' });
+
+      const [, init] = fetchSpy.mock.calls[0];
+      expect(JSON.parse(String(init?.body))).toEqual({ pairing_code: 'ABCDEF', device_id: 'test-device' });
+
+      fetchSpy.mockRestore();
+    });
   });
 
   describe('pairDevice', () => {

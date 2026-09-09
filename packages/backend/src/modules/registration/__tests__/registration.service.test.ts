@@ -480,6 +480,7 @@ describe('RegistrationService', () => {
 
       expect(result.success).toBe(true);
       expect(result.domain).toBe('companionintelligence.com');
+      // No `ciHubApiKey` in this config: a first pair sends no device key.
       expect(mockedAxios.post).toHaveBeenCalledWith(
         'http://cloud.api/api/devices/pair',
         { pairing_code: 'ABC123', device_id: 'test-device' },
@@ -501,6 +502,76 @@ describe('RegistrationService', () => {
         }),
       );
       setupSpy.mockRestore();
+    });
+
+    it('sends the stored device credential as proof of possession when the Hub has one', async () => {
+      /*
+       * A Hub that has been reset still holds `ciHubApiKey` in settings.json —
+       * `resetRegistration` clears the registration rows, the tunnel token and
+       * the resolved environment, not the user settings. Sending it is what
+       * keeps reset-and-pair-again self-service now that the Portal refuses to
+       * re-key an existing device row without proof (CI-Portal#688).
+       */
+      configService.getConfig.mockReturnValue({
+        ciCloudUrl: 'http://cloud.api',
+        ciHubApiKey: 'stored-device-key',
+        userSettings: { domain: 'example.com' },
+        domain: 'example.com',
+      } as any);
+
+      mockedAxios.post.mockResolvedValue({
+        status: 200,
+        data: {
+          device_id: 'test-device',
+          organization_id: 'org-pair',
+          organization_name: 'Paired Org',
+          slug: 'paired-org',
+          subdomain: 'hub-paired-org',
+          tunnel_id: 'tunnel-pair',
+          tunnel_token: 'token-pair',
+          api_key: 'key-pair',
+          domain: 'companionintelligence.com',
+        },
+      } as any);
+
+      const setupSpy = vi.spyOn(service as any, 'setupOrganizationInfrastructure').mockResolvedValue(undefined);
+      configService.setDomain.mockResolvedValue(undefined);
+
+      await service.pairDevice('ABC123');
+
+      expect(mockedAxios.post).toHaveBeenCalledWith(
+        'http://cloud.api/api/devices/pair',
+        { pairing_code: 'ABC123', device_id: 'test-device', device_key: 'stored-device-key' },
+        expect.anything(),
+      );
+
+      setupSpy.mockRestore();
+    });
+
+    it('omits device_key rather than sending an empty one when no credential is stored', async () => {
+      // An empty string is not a credential, and sending one would have the
+      // Portal look up a device by `''` instead of treating the caller as
+      // key-less.
+      configService.getConfig.mockReturnValue({
+        ciCloudUrl: 'http://cloud.api',
+        ciHubApiKey: '',
+        userSettings: { domain: 'example.com' },
+        domain: 'example.com',
+      } as any);
+
+      mockedAxios.post.mockResolvedValue({
+        status: 400,
+        statusText: 'Bad Request',
+        data: { error: 'Invalid pairing code' },
+      } as any);
+
+      await service.pairDevice('ABC123');
+
+      expect(mockedAxios.post).toHaveBeenCalledWith(
+        'http://cloud.api/api/devices/pair',
+        { pairing_code: 'ABC123', device_id: 'test-device' },
+        expect.anything(),
+      );
     });
 
     it('returns error when pairing code is invalid (Portal returns error)', async () => {

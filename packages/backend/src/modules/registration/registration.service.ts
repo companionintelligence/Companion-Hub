@@ -1290,7 +1290,7 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
    * and mark the device as registered.
    */
   public async pairDevice(pairingCode: string): Promise<{ success: boolean; message: string; domain?: string; subdomain?: string }> {
-    const { ciCloudUrl } = this.config.getConfig();
+    const { ciCloudUrl, ciHubApiKey } = this.config.getConfig();
 
     if (!ciCloudUrl) {
       return { success: false, message: 'CI Cloud URL not configured.' };
@@ -1309,9 +1309,28 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
 
     try {
       const pairUrl = `${this.config.getOutboundCiCloudUrl()}/api/devices/pair`;
+      /*
+       * A pairing code proves membership of the organization that minted it. It
+       * says nothing about the machine sending it, so the Portal will not re-key
+       * a device row that already exists unless the caller also proves it holds
+       * that device — see CI-Portal#688.
+       *
+       * `ciHubApiKey` is that proof: the device credential the Portal issued at
+       * the last successful pair, which this Hub already presents as
+       * `x-device-key` on check-in. It lives in `settings.json` and survives
+       * `resetRegistration`, which clears the registration rows, the tunnel
+       * token and the resolved environment but not the user settings — so the
+       * ordinary reset-and-pair-again path can still re-key itself.
+       *
+       * Omitted when there is none, which is the normal first pair and also the
+       * genuinely key-less Hub (wiped settings, restored from a foreign backup).
+       * Those cannot prove possession by definition, and the Portal answers them
+       * with `DEVICE_PROOF_REQUIRED`, pointing at re-registration — an
+       * authenticated act by an owner or admin that leaves an audit row.
+       */
       const response = await axios.post(
         pairUrl,
-        { pairing_code: pairingCode, device_id: deviceId },
+        { pairing_code: pairingCode, device_id: deviceId, ...(ciHubApiKey ? { device_key: ciHubApiKey } : {}) },
         {
           ...withPortalAxiosHeaders(this.portalAxiosConfig(), { 'Content-Type': 'application/json' }),
           validateStatus: () => true,

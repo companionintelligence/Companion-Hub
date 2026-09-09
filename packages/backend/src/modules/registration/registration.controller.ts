@@ -290,7 +290,7 @@ export class RegistrationController {
       return { success: false, message: 'Device ID not found. Please ensure your device is properly initialized.' };
     }
 
-    const { ciCloudUrl } = this.config.getConfig();
+    const { ciCloudUrl, ciHubApiKey } = this.config.getConfig();
 
     if (!ciCloudUrl) {
       return { success: false, message: 'CI Cloud URL not configured.' };
@@ -298,10 +298,16 @@ export class RegistrationController {
 
     try {
       const pairUrl = `${ciCloudUrl}/api/devices/pair`;
+      // Same proof-of-possession the service path sends; see `pairDevice` there
+      // for why the Portal needs it and why omitting it is safe.
       const response = await fetch(pairUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pairing_code: pairingCode, device_id: deviceId }),
+        body: JSON.stringify({
+          pairing_code: pairingCode,
+          device_id: deviceId,
+          ...(ciHubApiKey ? { device_key: ciHubApiKey } : {}),
+        }),
       });
 
       if (!response.ok) {
