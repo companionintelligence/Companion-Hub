@@ -95,4 +95,15 @@ describe('HorizontalAppList', () => {
     expect(screen.queryAllByRole('link')).toHaveLength(1);
     expect(screen.getByText('Click here to install your first app')).toBeInTheDocument();
   });
+
+  it('MUST paint in-grid skeletons instead of blocking the dashboard while installed apps load', () => {
+    render(
+      <MemoryRouter>
+        <HorizontalAppList apps={[]} isLoading />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getAllByTestId('app-tile-skeleton')).toHaveLength(16);
+    expect(screen.queryByText('Click here to install your first app')).not.toBeInTheDocument();
+  });
 });

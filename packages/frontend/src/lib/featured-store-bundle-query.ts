@@ -1,6 +1,30 @@
 import { getStoreFeaturedBundle } from '@/api-client/sdk.gen';
-import { normalizeStoreListingsPayload, type HubStoreApp, CI_MARKETPLACE_STORE_ID, mapPortalStoreAppToHub } from '@/lib/portal-store';
+import {
+  normalizeStoreListingsPayload,
+  type HubStoreApp,
+  CI_MARKETPLACE_STORE_ID,
+  mapPortalStoreAppToHub,
+  portalStoreListingsQueryOptions,
+  type PortalStoreListingsParams,
+} from '@/lib/portal-store';
 import { queryOptions } from '@tanstack/react-query';
+
+export const FEATURED_STORE_SECTIONS = [
+  { id: 'firstParty', params: { tags: 'companion-intelligence' } satisfies PortalStoreListingsParams },
+  { id: 'featured', params: { tags: 'featured' } satisfies PortalStoreListingsParams },
+  { id: 'trending', params: { sort: 'trending' } satisfies PortalStoreListingsParams },
+  { id: 'newest', params: { sort: 'newest' } satisfies PortalStoreListingsParams },
+] as const;
+
+export type FeaturedStoreSectionId = (typeof FEATURED_STORE_SECTIONS)[number]['id'];
+
+export function getFeaturedStoreSectionOptions(sectionId: FeaturedStoreSectionId, storeId = CI_MARKETPLACE_STORE_ID) {
+  const section = FEATURED_STORE_SECTIONS.find((entry) => entry.id === sectionId);
+  if (!section) {
+    throw new Error(`Unknown featured store section: ${sectionId}`);
+  }
+  return portalStoreListingsQueryOptions(section.params, storeId);
+}
 
 export type FeaturedStoreBundle = {
   firstParty: HubStoreApp[];
