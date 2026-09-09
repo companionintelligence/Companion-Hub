@@ -29,6 +29,7 @@ describe('AuthService', () => {
   let sessionManager: MockProxy<SessionManager>;
   let cacheService: MockProxy<CacheService>;
   let configurationService: MockProxy<ConfigurationService>;
+  let passwordService: MockProxy<PasswordService>;
 
   beforeEach(async () => {
     vi.mocked(axios.post).mockReset();
@@ -56,6 +57,7 @@ describe('AuthService', () => {
     sessionManager = moduleRef.get(SessionManager);
     cacheService = moduleRef.get(CacheService);
     configurationService = moduleRef.get(ConfigurationService);
+    passwordService = moduleRef.get(PasswordService);
   });
 
   it('should be defined', () => {
@@ -220,6 +222,33 @@ describe('AuthService', () => {
         message: 'AUTH_ERROR_INVALID_PASSWORD_COMPLEXITY',
       });
       expect(axios.post).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('bootstrapOperatorFromPortalEmail', () => {
+    it('normalizes the Portal address before the insert so the row can be found again', async () => {
+      // `getUserByUsername` lowercases its argument and compares it to the stored column, so a row
+      // written with the raw mixed-case address is unreachable forever after: the password form
+      // throws AUTH_ERROR_USER_NOT_FOUND, and Portal SSO is the operator's only remaining door.
+      userRepository.getUserByUsername.mockResolvedValue(undefined as never);
+      userRepository.getOperators.mockResolvedValue([] as never);
+      passwordService.hash.mockResolvedValue('hashed' as never);
+      userRepository.createUser.mockResolvedValue({ id: 3, username: 'owner@example.com' } as never);
+
+      await authService.bootstrapOperatorFromPortalEmail('  Owner@Example.com  ');
+
+      expect(userRepository.getUserByUsername).toHaveBeenCalledWith('owner@example.com');
+      expect(userRepository.createUser).toHaveBeenCalledWith(expect.objectContaining({ username: 'owner@example.com', operator: true }));
+    });
+
+    it('refuses to claim an appliance that already has an operator', async () => {
+      userRepository.getUserByUsername.mockResolvedValue(undefined as never);
+      userRepository.getOperators.mockResolvedValue([{ id: 1, username: 'owner@example.com' }] as never);
+
+      await expect(authService.bootstrapOperatorFromPortalEmail('stranger@example.com')).rejects.toMatchObject({
+        message: 'AUTH_ERROR_USER_NOT_FOUND',
+      });
+      expect(userRepository.createUser).not.toHaveBeenCalled();
     });
   });
 

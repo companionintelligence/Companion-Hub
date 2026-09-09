@@ -167,7 +167,12 @@ export class AuthService {
     return this.ensureLocalCompanionUser(email);
   }
 
-  private async ensureLocalCompanionUser(email: string) {
+  private async ensureLocalCompanionUser(rawEmail: string) {
+    // Normalize before the INSERT, not just before the lookup: `getUserByUsername` lowercases what
+    // it is given and compares it to the stored value, so a row created from a mixed-case Portal
+    // address (`Owner@Example.com`) is never found again — that operator can never use the password
+    // login form, and after CI-Hub#1300 a Portal address change leaves them with no way in at all.
+    const email = rawEmail.trim().toLowerCase();
     const existing = await this.userRepository.getUserByUsername(email);
 
     if (existing) {

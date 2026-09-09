@@ -2468,27 +2468,6 @@ export type ValidateOrganizationNameResponses = {
     200: unknown;
 };
 
-export type VerifyPairingCodeData = {
-    body?: never;
-    path?: never;
-    query?: never;
-    url: '/api/registration/verify-pairing-code';
-};
-
-export type VerifyPairingCodeErrors = {
-    /**
-     * Invalid or missing pairing code
-     */
-    400: unknown;
-};
-
-export type VerifyPairingCodeResponses = {
-    /**
-     * Pairing code verified and device identity bound
-     */
-    200: unknown;
-};
-
 export type ProbeDomainData = {
     body?: never;
     path?: never;
@@ -2684,6 +2663,110 @@ export type RemoveCatchAllRoutesResponses = {
 };
 
 export type RemoveCatchAllRoutesResponse = RemoveCatchAllRoutesResponses[keyof RemoveCatchAllRoutesResponses];
+
+export type GetStatus3Data = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/tailscale/status';
+};
+
+export type GetStatus3Responses = {
+    default: {
+        [key: string]: unknown;
+    };
+};
+
+export type GetStatus3Response = GetStatus3Responses[keyof GetStatus3Responses];
+
+export type SyncExposureData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/tailscale/sync';
+};
+
+export type SyncExposureResponses = {
+    /**
+     * Sync triggered
+     */
+    200: unknown;
+};
+
+export type StartAuthData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/tailscale/auth/start';
+};
+
+export type StartAuthResponses = {
+    default: {
+        [key: string]: unknown;
+    };
+};
+
+export type StartAuthResponse = StartAuthResponses[keyof StartAuthResponses];
+
+export type ConnectWithAuthKeyData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/tailscale/auth/key';
+};
+
+export type ConnectWithAuthKeyResponses = {
+    default: {
+        [key: string]: unknown;
+    };
+};
+
+export type ConnectWithAuthKeyResponse = ConnectWithAuthKeyResponses[keyof ConnectWithAuthKeyResponses];
+
+export type CheckAuthData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/tailscale/auth/check';
+};
+
+export type CheckAuthResponses = {
+    default: {
+        [key: string]: unknown;
+    };
+};
+
+export type CheckAuthResponse = CheckAuthResponses[keyof CheckAuthResponses];
+
+export type DisconnectData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/tailscale/disconnect';
+};
+
+export type DisconnectResponses = {
+    default: {
+        [key: string]: unknown;
+    };
+};
+
+export type DisconnectResponse = DisconnectResponses[keyof DisconnectResponses];
+
+export type GetServeStatusData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/tailscale/serve';
+};
+
+export type GetServeStatusResponses = {
+    default: {
+        [key: string]: unknown;
+    };
+};
+
+export type GetServeStatusResponse = GetServeStatusResponses[keyof GetServeStatusResponses];
 
 export type SystemLoadData = {
     body?: never;
@@ -3728,14 +3811,14 @@ export type GetRuntimeModelsResponses = {
     200: unknown;
 };
 
-export type GetStatus3Data = {
+export type GetStatus4Data = {
     body?: never;
     path?: never;
     query?: never;
     url: '/api/inference/status';
 };
 
-export type GetStatus3Responses = {
+export type GetStatus4Responses = {
     200: unknown;
 };
 
@@ -4598,110 +4681,6 @@ export type LocalOllamaTagsData = {
 export type LocalOllamaTagsResponses = {
     200: unknown;
 };
-
-export type GetStatus4Data = {
-    body?: never;
-    path?: never;
-    query?: never;
-    url: '/api/tailscale/status';
-};
-
-export type GetStatus4Responses = {
-    default: {
-        [key: string]: unknown;
-    };
-};
-
-export type GetStatus4Response = GetStatus4Responses[keyof GetStatus4Responses];
-
-export type SyncExposureData = {
-    body?: never;
-    path?: never;
-    query?: never;
-    url: '/api/tailscale/sync';
-};
-
-export type SyncExposureResponses = {
-    /**
-     * Sync triggered
-     */
-    200: unknown;
-};
-
-export type StartAuthData = {
-    body?: never;
-    path?: never;
-    query?: never;
-    url: '/api/tailscale/auth/start';
-};
-
-export type StartAuthResponses = {
-    default: {
-        [key: string]: unknown;
-    };
-};
-
-export type StartAuthResponse = StartAuthResponses[keyof StartAuthResponses];
-
-export type ConnectWithAuthKeyData = {
-    body?: never;
-    path?: never;
-    query?: never;
-    url: '/api/tailscale/auth/key';
-};
-
-export type ConnectWithAuthKeyResponses = {
-    default: {
-        [key: string]: unknown;
-    };
-};
-
-export type ConnectWithAuthKeyResponse = ConnectWithAuthKeyResponses[keyof ConnectWithAuthKeyResponses];
-
-export type CheckAuthData = {
-    body?: never;
-    path?: never;
-    query?: never;
-    url: '/api/tailscale/auth/check';
-};
-
-export type CheckAuthResponses = {
-    default: {
-        [key: string]: unknown;
-    };
-};
-
-export type CheckAuthResponse = CheckAuthResponses[keyof CheckAuthResponses];
-
-export type DisconnectData = {
-    body?: never;
-    path?: never;
-    query?: never;
-    url: '/api/tailscale/disconnect';
-};
-
-export type DisconnectResponses = {
-    default: {
-        [key: string]: unknown;
-    };
-};
-
-export type DisconnectResponse = DisconnectResponses[keyof DisconnectResponses];
-
-export type GetServeStatusData = {
-    body?: never;
-    path?: never;
-    query?: never;
-    url: '/api/tailscale/serve';
-};
-
-export type GetServeStatusResponses = {
-    default: {
-        [key: string]: unknown;
-    };
-};
-
-export type GetServeStatusResponse = GetServeStatusResponses[keyof GetServeStatusResponses];
 
 export type ListKeysData = {
     body?: never;

@@ -427,24 +427,6 @@
         ]
       }
     },
-    "/api/registration/verify-pairing-code": {
-      "post": {
-        "operationId": "verifyPairingCode",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "description": "Pairing code verified and device identity bound"
-          },
-          "400": {
-            "description": "Invalid or missing pairing code"
-          }
-        },
-        "summary": "Verify a signup pairing code and bind device identity with CI Cloud",
-        "tags": [
-          "Registration"
-        ]
-      }
-    },
     "/api/registration/probe-domain": {
       "get": {
         "operationId": "probeDomain",
@@ -738,6 +720,147 @@
         },
         "tags": [
           "Cloudflare"
+        ]
+      }
+    },
+    "/api/tailscale/status": {
+      "get": {
+        "operationId": "getStatus",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Tailscale"
+        ]
+      }
+    },
+    "/api/tailscale/sync": {
+      "post": {
+        "operationId": "syncExposure",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Sync triggered"
+          }
+        },
+        "summary": "Reconcile Tailscale Serve routes for Private VPN apps",
+        "tags": [
+          "Tailscale"
+        ]
+      }
+    },
+    "/api/tailscale/auth/start": {
+      "post": {
+        "operationId": "startAuth",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Tailscale"
+        ]
+      }
+    },
+    "/api/tailscale/auth/key": {
+      "post": {
+        "operationId": "connectWithAuthKey",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Tailscale"
+        ]
+      }
+    },
+    "/api/tailscale/auth/check": {
+      "get": {
+        "operationId": "checkAuth",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Tailscale"
+        ]
+      }
+    },
+    "/api/tailscale/disconnect": {
+      "post": {
+        "operationId": "disconnect",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Tailscale"
+        ]
+      }
+    },
+    "/api/tailscale/serve": {
+      "get": {
+        "operationId": "getServeStatus",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Tailscale"
         ]
       }
     },
@@ -3997,147 +4120,6 @@
         },
         "tags": [
           "Hub Pool"
-        ]
-      }
-    },
-    "/api/tailscale/status": {
-      "get": {
-        "operationId": "getStatus",
-        "parameters": [],
-        "responses": {
-          "default": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object"
-                }
-              }
-            }
-          }
-        },
-        "tags": [
-          "Tailscale"
-        ]
-      }
-    },
-    "/api/tailscale/sync": {
-      "post": {
-        "operationId": "syncExposure",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "description": "Sync triggered"
-          }
-        },
-        "summary": "Reconcile Tailscale Serve routes for Private VPN apps",
-        "tags": [
-          "Tailscale"
-        ]
-      }
-    },
-    "/api/tailscale/auth/start": {
-      "post": {
-        "operationId": "startAuth",
-        "parameters": [],
-        "responses": {
-          "default": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object"
-                }
-              }
-            }
-          }
-        },
-        "tags": [
-          "Tailscale"
-        ]
-      }
-    },
-    "/api/tailscale/auth/key": {
-      "post": {
-        "operationId": "connectWithAuthKey",
-        "parameters": [],
-        "responses": {
-          "default": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object"
-                }
-              }
-            }
-          }
-        },
-        "tags": [
-          "Tailscale"
-        ]
-      }
-    },
-    "/api/tailscale/auth/check": {
-      "get": {
-        "operationId": "checkAuth",
-        "parameters": [],
-        "responses": {
-          "default": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object"
-                }
-              }
-            }
-          }
-        },
-        "tags": [
-          "Tailscale"
-        ]
-      }
-    },
-    "/api/tailscale/disconnect": {
-      "post": {
-        "operationId": "disconnect",
-        "parameters": [],
-        "responses": {
-          "default": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object"
-                }
-              }
-            }
-          }
-        },
-        "tags": [
-          "Tailscale"
-        ]
-      }
-    },
-    "/api/tailscale/serve": {
-      "get": {
-        "operationId": "getServeStatus",
-        "parameters": [],
-        "responses": {
-          "default": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object"
-                }
-              }
-            }
-          }
-        },
-        "tags": [
-          "Tailscale"
         ]
       }
     },

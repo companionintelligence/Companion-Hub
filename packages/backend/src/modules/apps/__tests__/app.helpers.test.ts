@@ -432,15 +432,15 @@ describe('AppHelpers', () => {
       expect(envMap.get('ROOT_FOLDER_HOST')).toBe('/opt/ci-hub');
       expect(toPosix(envMap.get('APP_DATA_DIR') ?? '')).toBe('/opt/ci-hub/app-data/test-store/test-app');
       expect(envMap.get('HUB_DEVICE_ID')).toBe('hub-device-id');
-      // Never issued to an app: `ciHubApiKey` authenticates as the operator on every AuthGuard
-      // route, so shipping it in an app environment is an app-to-operator escalation.
+      // Third-party / unmarked apps never get `ciHubApiKey`. It authenticates as the
+      // operator on AuthGuard routes; only first-party Memory gets it back later.
       expect(envMap.has('HUB_API_KEY')).toBe(false);
     });
 
-    it('never issues HUB_API_KEY to an app, even when the Hub has a device key configured', async () => {
+    it('never issues HUB_API_KEY to a third-party app, even when the Hub has a device key configured', async () => {
       // The regression this guards: `ciHubApiKey` is accepted by AuthMiddleware as an operator
-      // bearer, so any app holding it could pair pool peers, read settings and install or uninstall
-      // apps. Third-party images inherit the same environment, so this must hold unconditionally.
+      // bearer, so a third-party app holding it could pair pool peers, read settings and install
+      // or uninstall apps. First-party Memory is the only exception (cloud OAuth / geocode).
       const envMap = new Map<string, string>([['HUB_API_KEY', 'inherited-from-hub-dotenv']]);
       envUtils.envStringToMap.mockReturnValue(envMap);
 
@@ -1791,6 +1791,86 @@ describe('AppHelpers', () => {
 
         expect(envMap.has('GOOGLE_MAPS_KEY')).toBe(false);
         expect(portalClient.fetchMapsConfig).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('Portal device key injection (ci-memory cloud OAuth)', () => {
+      it('injects HUB_API_KEY and CI_CLOUD_URL for first-party Memory', async () => {
+        const envMap = new Map<string, string>();
+        envUtils.envStringToMap.mockReturnValue(envMap);
+        config.getConfig.mockReturnValue(
+          fromPartial({
+            internalIp: '127.0.0.1',
+            envFilePath: '/data/.env',
+            rootFolderHost: '/opt/ci-hub',
+            domain: 'example.com',
+            ciHubApiKey: 'portal-device-key',
+            ciCloudUrl: 'https://hub.ci.computer',
+            userSettings: { appDataPath: '/opt/ci-hub', domain: 'example.com' },
+          }),
+        );
+        appFilesManager.getInstalledAppInfo.mockResolvedValue({ ...mockAppInfo, id: 'ci-memory' });
+
+        await appHelpers.generateEnvFile(testAppUrn, {});
+
+        expect(envMap.get('HUB_API_KEY')).toBe('portal-device-key');
+        expect(envMap.get('HUB_DEVICE_ID')).toBe('hub-device-id');
+        expect(envMap.get('CI_CLOUD_URL')).toBe('https://hub.ci.computer');
+      });
+
+      it('injects HUB_API_KEY for a first-party app identified by CI-Server source', async () => {
+        const envMap = new Map<string, string>();
+        envUtils.envStringToMap.mockReturnValue(envMap);
+        appFilesManager.getInstalledAppInfo.mockResolvedValue({
+          ...mockAppInfo,
+          source: 'https://github.com/companionintelligence/CI-Server',
+        });
+
+        await appHelpers.generateEnvFile(testAppUrn, {});
+
+        expect(envMap.get('HUB_API_KEY')).toBe('hub-api-key');
+      });
+
+      it('does not overwrite an operator-set CI_CLOUD_URL', async () => {
+        const envMap = new Map<string, string>([['CI_CLOUD_URL', 'https://portal.internal']]);
+        envUtils.envStringToMap.mockReturnValue(envMap);
+        config.getConfig.mockReturnValue(
+          fromPartial({
+            internalIp: '127.0.0.1',
+            envFilePath: '/data/.env',
+            rootFolderHost: '/opt/ci-hub',
+            domain: 'example.com',
+            ciHubApiKey: 'portal-device-key',
+            ciCloudUrl: 'https://hub.ci.computer',
+            userSettings: { appDataPath: '/opt/ci-hub', domain: 'example.com' },
+          }),
+        );
+        appFilesManager.getInstalledAppInfo.mockResolvedValue({ ...mockAppInfo, id: 'ci-memory' });
+
+        await appHelpers.generateEnvFile(testAppUrn, {});
+
+        expect(envMap.get('CI_CLOUD_URL')).toBe('https://portal.internal');
+        expect(envMap.get('HUB_API_KEY')).toBe('portal-device-key');
+      });
+
+      it('omits HUB_API_KEY when the Hub has no Portal device key', async () => {
+        const envMap = new Map<string, string>([['HUB_API_KEY', 'stale-inherited']]);
+        envUtils.envStringToMap.mockReturnValue(envMap);
+        config.getConfig.mockReturnValue(
+          fromPartial({
+            internalIp: '127.0.0.1',
+            envFilePath: '/data/.env',
+            rootFolderHost: '/opt/ci-hub',
+            domain: 'example.com',
+            ciHubApiKey: null,
+            userSettings: { appDataPath: '/opt/ci-hub', domain: 'example.com' },
+          }),
+        );
+        appFilesManager.getInstalledAppInfo.mockResolvedValue({ ...mockAppInfo, id: 'ci-memory' });
+
+        await appHelpers.generateEnvFile(testAppUrn, {});
+
+        expect(envMap.has('HUB_API_KEY')).toBe(false);
       });
     });
   });

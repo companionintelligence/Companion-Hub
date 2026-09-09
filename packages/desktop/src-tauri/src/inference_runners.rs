@@ -32,6 +32,7 @@ const STARTUP_WAIT: Duration = Duration::from_secs(45);
 const POLL_INTERVAL: Duration = Duration::from_millis(500);
 const API_KEY_BYTES: usize = 32;
 const MACOS_LAUNCH_AGENT_PREFIX: &str = "computer.ci.companion-hub.inference";
+#[cfg(any(test, target_os = "linux"))]
 const LINUX_SYSTEMD_SERVICE_PREFIX: &str = "computer.ci.companion-hub.inference";
 
 const DSPARK_PORT: u16 = 8080;
@@ -1088,10 +1089,12 @@ fn xml_escape(value: &str) -> String {
         .replace('\'', "&apos;")
 }
 
+#[cfg(any(test, target_os = "linux"))]
 fn systemd_service_name(runner: &str) -> String {
     format!("{LINUX_SYSTEMD_SERVICE_PREFIX}.{runner}.service")
 }
 
+#[cfg(any(test, target_os = "linux"))]
 fn systemd_user_service_path(runner: &str) -> Result<PathBuf, String> {
     let home = dirs::home_dir()
         .ok_or_else(|| "The current user's home directory could not be resolved.".to_string())?;
@@ -1104,6 +1107,7 @@ fn systemd_user_service_path(runner: &str) -> Result<PathBuf, String> {
         .join(systemd_service_name(runner)))
 }
 
+#[cfg(any(test, target_os = "linux"))]
 fn systemd_escape_arg(value: &str) -> String {
     let escaped = value
         .replace('%', "%%")
@@ -1120,6 +1124,7 @@ fn systemd_escape_arg(value: &str) -> String {
     }
 }
 
+#[cfg(any(test, target_os = "linux"))]
 fn render_systemd_user_service(
     runner: &str,
     executable: &Path,

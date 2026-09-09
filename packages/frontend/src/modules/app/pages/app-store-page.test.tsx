@@ -116,18 +116,21 @@ vi.mock('@/components/empty-page/empty-page', () => ({
 }));
 
 vi.mock('@/modules/app/components/app-card/app-card', () => ({
-  AppCard: ({ app }: { app: { name: string } }) => <div data-testid={`app-card-${app.name}`} />,
+  AppCard: ({ app, isLoading }: { app: { name: string }; isLoading?: boolean }) => (
+    <div data-testid={isLoading ? 'app-card-skeleton' : `app-card-${app.name}`} />
+  ),
 }));
 
 vi.mock('@/stores/app-store', () => ({
   useAppStoreState: () => mockStoreState,
 }));
 
-import { useQuery } from '@tanstack/react-query';
+import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
 import { useParams } from 'react-router';
 import AppStorePage from './app-store-page';
 
 const mockUseQuery = vi.mocked(useQuery);
+const mockUseInfiniteQuery = vi.mocked(useInfiniteQuery);
 const mockUseParams = vi.mocked(useParams);
 
 const STORE_A = { slug: 'ci-apps', name: 'CI Apps', enabled: true, url: '', hash: '', branch: 'main' };
@@ -320,7 +323,7 @@ describe('AppStorePage — multi-store UX', () => {
     );
 
     expect(mockSearchAppsInfiniteOptions).toHaveBeenCalledWith({
-      query: { search: 'sidebar term', category: undefined, pageSize: 24, storeId: 'ci-apps' },
+      query: { search: 'sidebar term', category: undefined, pageSize: 16, storeId: 'ci-apps' },
     });
     expect(screen.getByPlaceholderText('APP_STORE_SEARCH_APPS')).toHaveValue('sidebar term');
 
@@ -335,6 +338,50 @@ describe('AppStorePage — multi-store UX', () => {
     expect(screen.getByPlaceholderText('APP_STORE_SEARCH_APPS')).toHaveValue('updated elsewhere');
   });
 
+  it('prefetches the next catalog page after the first 16 land', () => {
+    const fetchNextPage = vi.fn();
+    setupQueries();
+    mockUseInfiniteQuery.mockReturnValueOnce({
+      data: {
+        pages: [{ data: [{ urn: 'a:ci-apps', name: 'A', short_desc: '', categories: [] }], nextCursor: 'b:ci-apps' }],
+      },
+      hasNextPage: true,
+      isFetchingNextPage: false,
+      isFetching: false,
+      fetchNextPage,
+    } as unknown as ReturnType<typeof useInfiniteQuery>);
+
+    render(
+      <MemoryRouter>
+        <AppStorePage />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByTestId('app-card-A')).toBeInTheDocument();
+    expect(fetchNextPage).toHaveBeenCalled();
+  });
+
+  it('paints store chrome and in-grid skeletons while the first catalog page is loading', () => {
+    setupQueries();
+    mockUseInfiniteQuery.mockReturnValueOnce({
+      data: undefined,
+      hasNextPage: false,
+      isFetchingNextPage: false,
+      isFetching: true,
+      fetchNextPage: vi.fn(),
+    } as unknown as ReturnType<typeof useInfiniteQuery>);
+
+    render(
+      <MemoryRouter>
+        <AppStorePage />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByTestId('store-switcher')).toBeInTheDocument();
+    expect(screen.queryByTestId('empty-page')).not.toBeInTheDocument();
+    expect(screen.getAllByTestId('app-card-skeleton')).toHaveLength(16);
+  });
+
   it('renders featured view instead of category search when featured is selected', () => {
     setupQueries();
     mockStoreState.category = 'featured';
@@ -347,7 +394,7 @@ describe('AppStorePage — multi-store UX', () => {
 
     expect(screen.getByTestId('featured-store-view')).toBeInTheDocument();
     expect(mockSearchAppsInfiniteOptions).toHaveBeenCalledWith({
-      query: { search: '', category: undefined, pageSize: 24, storeId: 'ci-apps' },
+      query: { search: '', category: undefined, pageSize: 16, storeId: 'ci-apps' },
     });
   });
 

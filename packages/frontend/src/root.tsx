@@ -60,7 +60,14 @@ export function DesktopStartupFallback() {
   return <ConnectingToLocalApi />;
 }
 
-/** Shown under the chrome while bootstrap fetches sit on a dead keep-alive. */
+/**
+ * Covers the viewport while root `clientLoader` / a Suspense fallback is up.
+ * Must be `fixed inset-0`, not an in-flow `min-h-[40vh]` block: on reload of
+ * `/store` React Router can keep HydrateFallback mounted as a sibling of App
+ * (dummy server `loader()` already returned null, so App renders the store).
+ * An in-flow 40vh gate then sits under the fixed dashboard header while the
+ * featured catalog — which talks to an API that is already up — paints below.
+ */
 function ConnectingToLocalApi() {
   const [showRetry, setShowRetry] = useState(false);
 
@@ -70,7 +77,12 @@ function ConnectingToLocalApi() {
   }, []);
 
   return (
-    <main className="safe-area-inset flex min-h-[40vh] flex-col items-center justify-center gap-4 bg-background px-6" role="status" aria-busy="true">
+    <main
+      data-testid="connecting-to-local-api"
+      className="safe-area-inset fixed inset-0 z-[100] flex flex-col items-center justify-center gap-4 bg-background px-6"
+      role="status"
+      aria-busy="true"
+    >
       <p className="text-sm text-muted-foreground">{safeI18nText('ROOT_CONNECTING_TO_LOCAL_API', 'Connecting to local API...')}</p>
       {showRetry && (
         <button type="button" className="text-sm font-medium text-primary hover:underline" onClick={() => window.location.reload()}>

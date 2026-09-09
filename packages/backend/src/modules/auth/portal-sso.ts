@@ -253,7 +253,7 @@ export interface PortalTokenExchangeResult {
 
 export interface PortalTokenExchangeFailure {
   ok: false;
-  reason: 'token_exchange_failed' | 'missing_access_token' | 'userinfo_failed' | 'missing_email' | 'network_error';
+  reason: 'token_exchange_failed' | 'missing_access_token' | 'userinfo_failed' | 'missing_email' | 'email_unverified' | 'network_error';
   status?: number;
 }
 
@@ -339,9 +339,17 @@ export async function exchangePortalAuthorizationCode(input: {
     return { ok: false, reason: 'userinfo_failed', status: userinfoRes.status };
   }
 
-  const email = (userinfoRes.data as { email?: string } | undefined)?.email;
+  const claims = userinfoRes.data as { email?: string; email_verified?: boolean } | undefined;
+  const email = claims?.email;
   if (!email) {
     return { ok: false, reason: 'missing_email', status: userinfoRes.status };
+  }
+
+  // The Hub decides who its operator is by comparing this address, so an unverified one would let
+  // anybody claim a Hub by typing its operator's address into a signup form. The Portal issues the
+  // claim whenever the `email` scope is requested, and this flow always requests it.
+  if (claims?.email_verified !== true) {
+    return { ok: false, reason: 'email_unverified', status: userinfoRes.status };
   }
 
   return { ok: true, accessToken, email };
