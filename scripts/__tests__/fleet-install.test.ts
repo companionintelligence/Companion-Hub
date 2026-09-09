@@ -83,9 +83,26 @@ describe('pullModelScript', () => {
     expect(script).toContain('docker exec "$c"');
   });
 
-  it('fails with a usable message when no ollama container exists', () => {
-    // A fresh prod appliance has none, and a silent no-op there is indistinguishable from success.
-    expect(pullModelScript('x')).toMatch(/no ollama container on this node/);
+  it('tries a container, then a live endpoint, then a host CLI', () => {
+    // The first cut only knew about a Hub-managed container and failed on every node in this fleet,
+    // which runs Ollama as a host systemd service.
+    const script = pullModelScript('x');
+    expect(script).toContain('docker exec "$c"');
+    expect(script).toContain('/api/pull');
+    expect(script).toMatch(/command -v ollama/);
+  });
+
+  it('discovers where ollama actually listens instead of assuming loopback', () => {
+    // core-1 binds to its tailnet address, not 0.0.0.0, so 127.0.0.1 answers nothing on a node that
+    // is serving perfectly — which is exactly how this failed before.
+    const script = pullModelScript('x');
+    expect(script).toContain('OLLAMA_HOST=');
+    expect(script).toMatch(/ss -ltn/);
+  });
+
+  it('fails with a message naming all three things it looked for', () => {
+    // A silent no-op is indistinguishable from success on a fresh appliance.
+    expect(pullModelScript('x')).toMatch(/no ollama on this node/);
   });
 
   it('escapes a quote in a model name', () => {
