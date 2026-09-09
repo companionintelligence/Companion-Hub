@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import type { HubEnv } from './cihub-cli';
 import { parseEnvFile } from './env-file';
+import { BASE_COMMAND } from './lib/cli-types';
 import { resolveRootFolderHost } from './lib/paths';
 
 export interface PublicWebDiagnosticEntry {
@@ -52,6 +53,18 @@ export function readHubApiKey(envFileName: string): string | undefined {
   }
 }
 
+/**
+ * The Hub is not answering on its local port. Its own error class so a caller can
+ * tell "the Hub is not running" from "the Hub said no", which need different
+ * advice: start it, versus look at what it refused.
+ */
+export class HubUnreachableError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'HubUnreachableError';
+  }
+}
+
 export async function hubApiFetch<T>(envFileName: string, route: string, init: RequestInit = {}): Promise<T> {
   const base = resolveHubApiBase(envFileName);
   const apiKey = readHubApiKey(envFileName);
@@ -61,7 +74,23 @@ export async function hubApiFetch<T>(envFileName: string, route: string, init: R
     headers.set('Authorization', `Bearer ${apiKey}`);
   }
 
-  const response = await fetch(`${base}/api${route}`, { ...init, headers });
+  let response: Response;
+
+  try {
+    response = await fetch(`${base}/api${route}`, { ...init, headers });
+  } catch (error) {
+    /*
+     * A refused connection here means the Hub is not listening, which is an
+     * ordinary state on a machine where it was never started — not an exception
+     * worth a stack trace. Left unhandled this escapes `fetch` as a raw
+     * TypeError and the operator gets bundled source dumped at them: observed on
+     * a fleet node running `cihub pool status` with no Hub up.
+     */
+    const detail = error instanceof Error ? error.message : String(error);
+
+    throw new HubUnreachableError(`Cannot reach the Hub at ${base} — ${detail}\nIs it running? Check with: ${BASE_COMMAND} status`);
+  }
+
   if (!response.ok) {
     const text = await response.text();
     throw new Error(`Hub API ${route} failed (${response.status}): ${text || response.statusText}`);
