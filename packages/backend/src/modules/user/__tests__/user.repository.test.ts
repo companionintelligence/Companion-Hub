@@ -134,6 +134,25 @@ describe('UserRepository', () => {
     });
   });
 
+  describe('markApplianceOnboardingComplete', () => {
+    it('invalidates the session cache for every operator it flips', async () => {
+      mockDb.update.mockReturnValue({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{ id: 1 }, { id: 2 }]),
+          }),
+        }),
+      });
+      sessionUserCache.set(1, { id: 1, hasCompletedOnboarding: false } as UserDto);
+      sessionUserCache.set(2, { id: 2, hasCompletedOnboarding: false } as UserDto);
+
+      await repository.markApplianceOnboardingComplete();
+
+      expect(sessionUserCache.get(1)).toBeUndefined();
+      expect(sessionUserCache.get(2)).toBeUndefined();
+    });
+  });
+
   describe('getOperators', () => {
     it('should return operators', async () => {
       const result = await repository.getOperators();
@@ -147,6 +166,18 @@ describe('UserRepository', () => {
       mockDb.query.user.findFirst.mockResolvedValue({ id: 1, operator: true });
       const result = await repository.getFirstOperator();
       expect(result).toEqual({ id: 1, operator: true });
+    });
+
+    it('orders by id so the operator it picks is stable across calls', async () => {
+      // Portal SSO compares the caller's address against THIS row. Unordered, it is heap order, so
+      // on a multi-operator Hub the same login can be accepted once and refused the next time.
+      mockDb.query.user.findFirst.mockResolvedValue({ id: 1, operator: true });
+      await repository.getFirstOperator();
+
+      const [args] = mockDb.query.user.findFirst.mock.calls.at(-1) as [{ orderBy?: unknown }];
+      expect(args.orderBy).toBeTypeOf('function');
+      const asc = vi.fn((column: unknown) => ({ asc: column }));
+      expect((args.orderBy as (r: unknown, o: unknown) => unknown)({ id: 'id-column' }, { asc })).toEqual({ asc: 'id-column' });
     });
   });
 

@@ -3635,7 +3635,7 @@ const SECTION_7 = [
       const stop = gate(poolGate(ctx.beta), tokenGate(ctx.beta));
       if (stop) return stop;
       const patched = await patchSetting(ctx, ctx.beta, 'poolEnabled', true);
-      if (!patched.res || !patched.res.ok) return fail(httpSummary(patched.res));
+      if (!patched.res?.ok) return fail(httpSummary(patched.res));
       return patched.value === true ? pass('PATCH succeeded and the stored poolEnabled is true') : fail(`returned poolEnabled=${patched.value}`);
     },
   },
@@ -3762,7 +3762,7 @@ const SECTION_7 = [
       const stop = gate(poolGate(ctx.beta), tokenGate(ctx.beta));
       if (stop) return stop;
       const patched = await patchSetting(ctx, ctx.beta, 'poolInboundEnabled', false);
-      if (!patched.res || !patched.res.ok) return fail(httpSummary(patched.res));
+      if (!patched.res?.ok) return fail(httpSummary(patched.res));
       if (patched.drifted.length) return fail(`a PATCH must touch only the named field, but ${patched.drifted.join('; ')}`);
       return patched.value === false
         ? pass('poolInboundEnabled=false, every other field unchanged')
@@ -3868,7 +3868,7 @@ const SECTION_7 = [
       const stop = gate(poolGate(ctx.core, ctx.beta), tokenGate(ctx.core, ctx.beta), modelGate(ctx.state));
       if (stop) return stop;
       const patched = await patchSetting(ctx, ctx.beta, 'poolInboundEnabled', true);
-      if (!patched.res || !patched.res.ok) return fail(httpSummary(patched.res));
+      if (!patched.res?.ok) return fail(httpSummary(patched.res));
       const seconds = ctx.state.pollSeconds ?? DEFAULT_POLL_SECONDS;
       const seen = await waitForPeerView(
         ctx.core,
@@ -3897,7 +3897,7 @@ const SECTION_7 = [
       const stop = gate(poolGate(ctx.core), tokenGate(ctx.core));
       if (stop) return stop;
       const patched = await patchSetting(ctx, ctx.core, 'poolOutboundEnabled', false);
-      if (!patched.res || !patched.res.ok) return fail(httpSummary(patched.res));
+      if (!patched.res?.ok) return fail(httpSummary(patched.res));
       if (patched.drifted.length) return fail(`another field moved: ${patched.drifted.join('; ')}`);
       return patched.value === false ? pass('poolOutboundEnabled=false, every other field unchanged') : fail(`returned ${patched.value}`);
     },
@@ -3983,7 +3983,7 @@ const SECTION_7 = [
       const stop = gate(poolGate(ctx.core), tokenGate(ctx.core), modelGate(ctx.state));
       if (stop) return stop;
       const patched = await patchSetting(ctx, ctx.core, 'poolOutboundEnabled', true);
-      if (!patched.res || !patched.res.ok) return fail(httpSummary(patched.res));
+      if (!patched.res?.ok) return fail(httpSummary(patched.res));
       const since = Date.now();
       const res = await poolInfer(ctx.core, '/v1/chat/completions', shortChat(ctx.state.models.beta));
       if (!res.ok) return fail(`routing did not resume: ${httpSummary(res)}`);

@@ -158,7 +158,7 @@ describe('portal-sso helpers', () => {
     });
     vi.mocked(axios.get).mockResolvedValue({
       status: 200,
-      data: { email: 'operator@example.com' },
+      data: { email: 'operator@example.com', email_verified: true },
     });
 
     await expect(
@@ -172,6 +172,38 @@ describe('portal-sso helpers', () => {
       ok: true,
       accessToken: 'access-token',
       email: 'operator@example.com',
+      emailVerified: true,
+      subject: null,
+      issuer: 'https://hub.ci.computer',
+    });
+  });
+
+  it.each([
+    ['unverified', false],
+    ['absent', undefined],
+  ])('refuses a userinfo email whose email_verified is %s', async (_label, emailVerified) => {
+    // The Hub decides who its operator is by comparing this address. Accepting it unverified would
+    // let anyone claim a Hub by typing its operator's address into a Portal signup form.
+    vi.mocked(axios.post).mockResolvedValue({
+      status: 200,
+      data: { access_token: 'access-token' },
+    });
+    vi.mocked(axios.get).mockResolvedValue({
+      status: 200,
+      data: { email: 'operator@example.com', email_verified: emailVerified },
+    });
+
+    await expect(
+      exchangePortalAuthorizationCode({
+        publicPortalBaseUrl: 'https://hub.ci.computer',
+        callbackUrl: 'http://localhost:5002/api/auth/portal/callback',
+        code: 'auth-code',
+        codeVerifier: 'verifier',
+      }),
+    ).resolves.toEqual({
+      ok: false,
+      reason: 'email_unverified',
+      status: 200,
     });
   });
 

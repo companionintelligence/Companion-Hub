@@ -1,4 +1,5 @@
 import { getEnabledAppStoresOptions } from '@/api-client/@tanstack/react-query.gen';
+import { CATALOG_PAGE_SIZE } from '@/lib/catalog-page-size';
 import { searchAppsInfiniteOptions } from '@/lib/marketplace-search-query';
 import { getInstalledAppUrnsOptions } from '@/lib/installed-app-urns-query';
 import { applyStoreBrowseParams, parseStoreBrowseParams } from '@/lib/store-browse-params';
@@ -26,7 +27,7 @@ import { Navigate, useParams, useSearchParams } from 'react-router';
 import { useTranslation } from 'react-i18next';
 import toast from 'react-hot-toast';
 
-const SKELETONS = Array.from({ length: 12 }, (_, i) => `skeleton-${i}`);
+const SKELETONS = Array.from({ length: CATALOG_PAGE_SIZE }, (_, i) => `skeleton-${i}`);
 const MARKETPLACE_SEARCH_STALE_MS = 5 * 60_000;
 
 const ALTERNATIVES_VIEW = '__alternatives__';
@@ -106,7 +107,10 @@ export default () => {
   const isAlternativesView = category === ALTERNATIVES_VIEW;
   const isFeaturedView = category === 'featured';
   const effectiveCategory = isAlternativesView || isFeaturedView ? undefined : category;
-  const catalogSearchQuery = useMemo(() => ({ search, category: effectiveCategory, pageSize: 24, storeId }), [search, effectiveCategory, storeId]);
+  const catalogSearchQuery = useMemo(
+    () => ({ search, category: effectiveCategory, pageSize: CATALOG_PAGE_SIZE, storeId }),
+    [search, effectiveCategory, storeId],
+  );
   const catalogSearchEnabled = !isAlternativesView && !isFeaturedView;
 
   useEffect(() => {
@@ -227,6 +231,14 @@ export default () => {
   const isLoading = catalogSearchEnabled && !data;
   const apps = data?.pages.flatMap((page) => page.data) ?? [];
 
+  useEffect(() => {
+    if (!catalogSearchEnabled || !hasNextPage || isFetchingNextPage || !data || data.pages.length !== 1) {
+      return;
+    }
+
+    void fetchNextPage();
+  }, [catalogSearchEnabled, data, fetchNextPage, hasNextPage, isFetchingNextPage]);
+
   const { lastElementRef } = useInfiniteScroll({
     fetchNextPage,
     hasNextPage: Boolean(hasNextPage),
@@ -245,10 +257,6 @@ export default () => {
   // when we *know* the hub is not registered — not while the status query is
   // still settling (avoids a full-page skeleton on every store revisit).
   if (registrationStatus && !registrationStatus.registered) {
-    return <AppStorePageSuspense />;
-  }
-
-  if (isLoading) {
     return <AppStorePageSuspense />;
   }
 

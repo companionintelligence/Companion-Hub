@@ -5,7 +5,7 @@
 > **Key paths:** `packages/backend/src/modules/`, `packages/backend/src/database/`, `packages/backend/src/queue/`
 > **Commands:** `cd packages/backend && pnpm test`, `pnpm run test:integration` (root)
 > **Owner persona:** maintainability + security (see REVIEW_PERSONAS.md)
-> **Last updated:** 2026-09-06 (lifecycle command modules, inference backend registry)
+> **Last updated:** 2026-09-09 (family Hub auth: org members become Hub people; Memory connect keys are per Hub user)
 > **Related:** docs/system/e2e.md, docs/ARCHITECTURE.md
 
 ---
@@ -26,11 +26,14 @@ packages/backend/
 |--------|----------------|
 | `apps` / `app-lifecycle` | Install, start, stop, uninstall marketplace apps |
 | `docker` | Dockerode + compose orchestration |
-| `auth` | JWT sessions, 2FA, registration |
+| `auth` | Hub sessions, 2FA, Portal SSO. Human login admits each Portal `(iss, sub)` in the paired org as their own operator — not `getFirstOperator()`. Session middleware prefers the newest of cookie vs `X-CI-Hub-Session`. |
 | `health` | Liveness/readiness (`/api/health/live`) |
 | `sse` | Real-time status stream to frontend |
 | `mcp` | MCP server tools for agent apps |
 | `tailscale` / `cloudflare` | Optional sidecar integrations |
+| `inference` | Backend registry, model resolution, routing to a local engine |
+| `hub-pool` | Multi-Hub inference pooling: peer identity, pairing, discovery, ranking, and the proxy |
+| `registration` | Portal pairing, device ID, and registration-state drift |
 
 ## App volumes
 
@@ -95,6 +98,34 @@ deliberate and easy to undo by accident:
 
 `entries()` yields the type as the string from the source tuple rather than reading `backend.type`
 off the instance, because test doubles are mock proxies whose `type` is undefined.
+
+## Hub Pool
+
+`modules/hub-pool/` is the largest single module in the backend. It is worth knowing which service
+owns what before changing any of it — deep model in [`docs/hub-pool.md`](../hub-pool.md).
+
+| Service | Owns |
+|---|---|
+| `hub-pool-peer.service.ts` | Peer lifecycle: pairing, approval, health polling, capabilities, and `getPoolStatus` |
+| `hub-pool-proxy.service.ts` | The request path: candidate ranking, forwarding, and failover |
+| `hub-pool-discovery.service.ts` | Naming unpaired candidates, and the address probe |
+| `hub-pool-identity.service.ts` | This node's Ed25519 keypair and UUID |
+| `hub-pool-pairing-pin.service.ts` | The six-digit PIN: mint, consume, expiry, and the attempt ceiling |
+| `hub-pool-pin.service.ts` | Operator routing pins (a *different* pin — a preference, not a secret) |
+| `hub-pool-pressure.service.ts` | The GPU-pressure band sampler |
+| `hub-pool-routing-log.service.ts` | The in-memory last-200 routing decisions |
+
+Two traps in this module:
+
+- **Two things are called a pin.** `hub-pool-pairing-pin.service.ts` holds the six-digit pairing
+  secret; `hub-pool-pin.service.ts` holds operator routing preferences. They are unrelated.
+- **Discovery is not pollable.** Every leg probes the network, so `getPoolStatus` must never call it.
+
+The `cihub pool` CLI mirrors these routes in `scripts/hub-pool-cli.ts` (API calls plus pure
+formatters) and `scripts/lib/cli-pool.ts` (arg parsing and confirmation). The response types there
+are **hand-mirrored** from `hub-pool.types.ts`, because every pool route declares an empty response
+schema in `swagger.json` and the generated client types them as `unknown`. Adding a field to a pool
+status payload therefore does not reach the CLI on its own — update both.
 
 ## Database
 
@@ -234,6 +265,12 @@ On save the Hub:
 
 AI apps that want these tokens must read the `CI_CLOUD_*` contract (or `hub_integration.inference`
 plus the extra env). See the tracking issue on marketplace / OpenClaw / Hermes.
+
+## Family Hub auth and Memory connect
+
+Human dashboard login (password and Portal SSO) goes through `AuthService.admitHubPerson`. Each Portal `(issuer, subject)` that is a member of the paired org gets their own Hub `user` row (`operator: true`). Device-key Bearer and CLI JWT still map to the bootstrap operator.
+
+`memory_connection` is unique on `(app_urn, hub_user_id)`. Env generation injects the latest connected key; opening an app as a different Hub person revokes the previous Memory key and re-prompts connect. Hermes and OpenClaw declare `hub_integration.memory` so Hub can inject `CI_SERVER_URL` / `CI_SERVER_TOKEN` for the current person.
 
 ## Per-app grants
 

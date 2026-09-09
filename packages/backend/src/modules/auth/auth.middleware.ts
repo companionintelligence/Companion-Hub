@@ -32,17 +32,39 @@ function addSessionId(ids: string[], seen: Set<string>, value: unknown) {
 }
 
 /**
- * Session ids in preference order. A stale `ci-hub-sid` cookie must not hide a
- * live `X-CI-Hub-Session` from the login response body — that is the race that
- * 401s app install right after a successful login.
+ * Session ids the client presented. Preference among *valid* ids is the newest
+ * expiry (see `AuthMiddleware`): a stale `ci-hub-sid` must not hide a live
+ * `X-CI-Hub-Session` from the login response body.
  */
 export function sessionIdsFromRequest(req: Request): string[] {
   const ids: string[] = [];
   const seen = new Set<string>();
   addSessionId(ids, seen, req.cookies?.[SESSION_COOKIE_NAME]);
-  addSessionId(ids, seen, req.get('x-ci-hub-session'));
+  addSessionId(ids, seen, typeof req.get === 'function' ? req.get('x-ci-hub-session') : undefined);
   addSessionId(ids, seen, req.query?.session_id);
   return ids;
+}
+
+/** Among live session ids, the one that expires last is the one just minted. */
+export function pickNewestSessionId(
+  ids: string[],
+  resolve: { resolveSessionUserId: (id: string) => number | null; getSessionExpiresAt: (id: string) => number | null },
+): string | null {
+  let bestId: string | null = null;
+  let bestExpiry = Number.NEGATIVE_INFINITY;
+
+  for (const id of ids) {
+    if (!resolve.resolveSessionUserId(id)) {
+      continue;
+    }
+    const expiresAt = resolve.getSessionExpiresAt(id) ?? 0;
+    if (expiresAt >= bestExpiry) {
+      bestExpiry = expiresAt;
+      bestId = id;
+    }
+  }
+
+  return bestId;
 }
 
 @Injectable()
@@ -93,7 +115,11 @@ export class AuthMiddleware implements NestMiddleware {
   async use(req: Request, _: Response, next: NextFunction) {
     const bearerToken = req.headers.authorization;
 
-    for (const sessionId of sessionIdsFromRequest(req)) {
+    const presentedIds = sessionIdsFromRequest(req);
+    const preferredSessionId = pickNewestSessionId(presentedIds, this.sessionManager);
+    const orderedIds = preferredSessionId ? [preferredSessionId, ...presentedIds.filter((id) => id !== preferredSessionId)] : presentedIds;
+
+    for (const sessionId of orderedIds) {
       const userId = this.sessionManager.resolveSessionUserId(sessionId);
       if (!userId) {
         continue;
@@ -111,6 +137,7 @@ export class AuthMiddleware implements NestMiddleware {
         const user = await this.loadSessionUser(userId);
         req.user = user;
         req.hubSessionId = sessionId;
+        req.hubPrincipal = 'session';
         return next();
       } catch (err) {
         if (err instanceof ServiceUnavailableException) {
@@ -143,6 +170,12 @@ export class AuthMiddleware implements NestMiddleware {
       if (ciHubApiKey && secretEquals(token, ciHubApiKey)) {
         const user = await this.loadUserResilient(() => this.userRepository.getFirstOperator());
         req.user = user;
+        // Named, so the org-grant gate exempts this deliberately rather than by
+        // accident — the exemption used to follow from having no `hubSessionId`,
+        // which covered every arm that forgot to set one. Portal's own
+        // GRANT_DENIED gate is what authorises a push, and that answer holds only
+        // while the exemption stays this narrow.
+        req.hubPrincipal = 'portal-device';
         return next();
       }
 
@@ -153,6 +186,9 @@ export class AuthMiddleware implements NestMiddleware {
         if (sub === 'cli') {
           const user = await this.loadUserResilient(() => this.userRepository.getFirstOperator());
           req.user = user;
+          // Host-local by construction: the JWT is signed with `jwtSecret`, which
+          // lives in the same state file as the device key.
+          req.hubPrincipal = 'cli';
         }
 
         return next();

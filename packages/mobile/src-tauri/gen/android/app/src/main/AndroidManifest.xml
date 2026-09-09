@@ -33,6 +33,15 @@
                  injected below from tauri.conf `plugins.deep-link.mobile`. That
                  config is also required at runtime: the plugin's isDeepLink()
                  returns false when `mobile` is empty, dropping every deep link. -->
+
+            <!-- Android App Links for hub.ci.computer/auth and hub.companionintelligence.com/auth -->
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="https" android:host="hub.ci.computer" android:pathPrefix="/auth" />
+                <data android:scheme="https" android:host="hub.companionintelligence.com" android:pathPrefix="/auth" />
+            </intent-filter>
             <!-- DEEP LINK PLUGIN. AUTO-GENERATED. DO NOT REMOVE. -->
             <intent-filter >
                 <action android:name="android.intent.action.VIEW" />
@@ -48,15 +57,6 @@
                 
             </intent-filter>
             <!-- DEEP LINK PLUGIN. AUTO-GENERATED. DO NOT REMOVE. -->
-
-            <!-- Android App Links for hub.ci.computer/auth and hub.companionintelligence.com/auth -->
-            <intent-filter android:autoVerify="true">
-                <action android:name="android.intent.action.VIEW" />
-                <category android:name="android.intent.category.DEFAULT" />
-                <category android:name="android.intent.category.BROWSABLE" />
-                <data android:scheme="https" android:host="hub.ci.computer" android:pathPrefix="/auth" />
-                <data android:scheme="https" android:host="hub.companionintelligence.com" android:pathPrefix="/auth" />
-            </intent-filter>
         </activity>
 
         <provider

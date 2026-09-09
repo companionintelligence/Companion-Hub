@@ -261,21 +261,17 @@ export class AppHelpers {
       this.logger.warn('Unable to resolve HUB_DEVICE_ID for app env generation.', error);
     }
 
-    // `HUB_API_KEY` is never issued to an app, and this delete is load-bearing rather than tidy-up.
+    // Strip `HUB_API_KEY` from every inherited env. The value it used to carry is
+    // `ciHubApiKey`, the Hub's Portal device credential — which `AuthMiddleware`
+    // also accepts as an operator bearer. Shipping it to every installed app,
+    // third-party images included, authenticated as the operator on every
+    // `AuthGuard` route (CI-Hub#1288).
     //
-    // The value it used to carry is `ciHubApiKey`, the Hub's Portal device credential — which
-    // `AuthMiddleware` accepts as a bearer token and answers with `getFirstOperator()`. Setting it
-    // here handed every installed app, third-party images included, a credential that authenticates
-    // as the operator on every `AuthGuard` route: pool pairing, settings, app install and uninstall.
-    // It defeated the `HUB_ONLY_SECRET_ENV_VARS` denylist a few lines up by being added back after it.
-    //
-    // Apps that legitimately call the Hub already have a better credential, provisioned below:
-    // `HUB_MCP_API_KEY` for an MCP client and `HUB_APP_KEY` for a provenance-gated first-party
-    // consumer. Both are managed keys — hashed at rest, scoped to what that app declared, and revoked
-    // on uninstall. An app holding neither is an app with no business calling the Hub API.
-    //
-    // The delete is unconditional so an env inherited from `.env`, or one left in an existing
-    // `app.env` by a build that still set it, is stripped on the next regeneration.
+    // Apps that call the Hub API get a scoped key below (`HUB_MCP_API_KEY` /
+    // `HUB_APP_KEY`). First-party Companion Memory is the exception: it calls
+    // Portal (cloud OAuth, geocode) as this Hub's device and needs the Portal
+    // device key back. That re-inject happens later, after this strip, so a
+    // stale or inherited value cannot leak to any other app.
     envMap.delete('HUB_API_KEY');
 
     const { appName, appStoreId } = extractAppUrn(appUrn);
@@ -825,12 +821,32 @@ export class AppHelpers {
       );
     }
 
-    // --- Companion Memory Google Maps and geocoding key ---
-    // Portal holds GOOGLE_MAPS_API_KEY as a wrangler secret and serves it at
-    // `GET /api/config/maps`. Inject it into `ci-memory` so server geocoding and
-    // frontend maps work without embedding Vite keys in images. Portal
-    // unavailability must not fail environment generation.
+    // --- Companion Memory Portal device credential (cloud OAuth + geocode) ---
+    // Memory authenticates to Portal as this Hub's device. `HUB_DEVICE_ID` +
+    // `HUB_API_KEY` are what CI-Server maps to `ciPortal.deviceId` / `apiKey`.
+    // Without the key, every OAuth2 provider is forced `localOnly` and Sources
+    // shows the bring-your-own OAuth dialog instead of cloud connect.
+    //
+    // Third-party apps still do not get this value — the strip above stands.
+    // Memory already stores user OAuth tokens; giving it the Portal device key
+    // is the previous working contract, scoped to the first-party app.
+    //
+    // Portal also holds GOOGLE_MAPS_API_KEY and serves it at `GET /api/config/maps`.
+    // Inject it here so server geocoding and frontend maps work without embedding
+    // Vite keys in images. Portal unavailability must not fail env generation.
     if (isFirstPartyCiServerApp) {
+      const portalDeviceKey = (this.config.getConfig().ciHubApiKey ?? '').trim();
+      if (portalDeviceKey) {
+        envMap.set('HUB_API_KEY', portalDeviceKey);
+      } else {
+        this.logger.warn(
+          `[AppHelpers] ${appUrn} is first-party Memory but this Hub has no Portal device key; cloud OAuth will fall back to bring-your-own credentials.`,
+        );
+      }
+      if (normalizedCloudUrl) {
+        setUnlessOperatorSet('CI_CLOUD_URL', normalizedCloudUrl);
+      }
+
       const operatorSetMapsKey = (envMap.get('GOOGLE_MAPS_KEY') ?? '').trim().length > 0 || (envMap.get('GEOCODING_API_KEY') ?? '').trim().length > 0;
       if (!operatorSetMapsKey) {
         try {

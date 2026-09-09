@@ -250,6 +250,29 @@ describe('resolveHubContext in a checkout', () => {
     writeFileSync(join(checkout, '.env.dev'), 'CI_HUB_IMAGE=\n', 'utf-8');
     expect(resolveHubContext('dev').composeFiles).toEqual(['docker-compose.prod.yml']);
   });
+
+  it('layers the dev-image override for prod when .env.prod pins CI_HUB_IMAGE', () => {
+    // Regression: a fleet node's .env.prod can set CI_HUB_IMAGE just like .env.dev does, and used
+    // to be silently ignored by getComposeFiles — `cihub up` would then try (and fail) to build
+    // from source instead of pulling the pinned image.
+    expect(resolveHubContext('prod').composeFiles).toEqual(['docker-compose.prod.yml']);
+
+    writeFileSync(join(checkout, '.env.prod'), 'CI_HUB_IMAGE=ghcr.io/companionintelligence/ci-hub:dev\n', 'utf-8');
+    expect(resolveHubContext('prod').composeFiles).toEqual(['docker-compose.prod.yml', 'docker-compose.dev-image.yml']);
+
+    // Keyed on the requested env's own file — a stale .env.prod must never affect `up dev`/`up staging`.
+    expect(resolveHubContext('dev').composeFiles).toEqual(['docker-compose.prod.yml']);
+    expect(resolveHubContext('staging').composeFiles).toEqual(['docker-compose.prod.yml', 'docker-compose.staging.yml']);
+  });
+
+  it('layers the dev-image override on top of staging when .env.staging pins CI_HUB_IMAGE', () => {
+    writeFileSync(join(checkout, '.env.staging'), 'CI_HUB_IMAGE=ghcr.io/companionintelligence/ci-hub:staging\n', 'utf-8');
+    expect(resolveHubContext('staging').composeFiles).toEqual([
+      'docker-compose.prod.yml',
+      'docker-compose.staging.yml',
+      'docker-compose.dev-image.yml',
+    ]);
+  });
 });
 
 // --- context resolution: appliance mode ---

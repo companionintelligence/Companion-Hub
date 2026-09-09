@@ -283,23 +283,31 @@ export const deviceRegistration = pgTable('device_registration', {
 /**
  * Per-app Companion Memory connection state + the (encrypted) minted api key.
  *
- * One row per memory-consumer app (keyed by app URN). `state` drives the
+ * One row per (memory-consumer app, Hub person). `state` drives the
  * interstitial ('unconfigured' | 'connected' | 'skipped' | 'manual'); the
  * transient 'deferred' choice lives in a wrapper cookie, not here. `encryptedKey`
  * holds the CI-Server-issued key (AES-256-GCM via EncryptionService, salt = URN)
  * — the Hub must retain the raw value because it re-emits it into the app's env
  * on every restart, and CI-Server only ever reveals it once.
+ *
+ * `hubUserId` is the Hub `user.id` that consented. `0` is the install-global
+ * sentinel used for pre-family-auth rows and operator-manual credentials.
  */
-export const memoryConnection = pgTable('memory_connection', {
-  id: serial().primaryKey().notNull(),
-  appUrn: varchar('app_urn').notNull().unique(),
-  state: varchar().default('unconfigured').notNull(), // 'unconfigured' | 'connected' | 'skipped' | 'manual'
-  encryptedKey: text('encrypted_key'), // encrypted CI-Server api key; null unless connected
-  serverUrl: varchar('server_url'), // resolved Companion Memory URL captured at connect time
-  keyExpiresAt: timestamp('key_expires_at', { withTimezone: true, mode: 'string' }), // instant the CI-Server key expires (timestamptz preserves the UTC offset); null unless connected. Rotation refreshes it well before this.
-  createdAt: timestamp({ mode: 'string' }).defaultNow().notNull(),
-  updatedAt: timestamp({ mode: 'string' }).defaultNow().notNull(),
-});
+export const memoryConnection = pgTable(
+  'memory_connection',
+  {
+    id: serial().primaryKey().notNull(),
+    appUrn: varchar('app_urn').notNull(),
+    hubUserId: integer('hub_user_id').default(0).notNull(),
+    state: varchar().default('unconfigured').notNull(), // 'unconfigured' | 'connected' | 'skipped' | 'manual'
+    encryptedKey: text('encrypted_key'), // encrypted CI-Server api key; null unless connected
+    serverUrl: varchar('server_url'), // resolved Companion Memory URL captured at connect time
+    keyExpiresAt: timestamp('key_expires_at', { withTimezone: true, mode: 'string' }), // instant the CI-Server key expires (timestamptz preserves the UTC offset); null unless connected. Rotation refreshes it well before this.
+    createdAt: timestamp({ mode: 'string' }).defaultNow().notNull(),
+    updatedAt: timestamp({ mode: 'string' }).defaultNow().notNull(),
+  },
+  (table) => [uniqueIndex('memory_connection_app_urn_hub_user_idx').on(table.appUrn, table.hubUserId)],
+);
 
 const telemetryJson = customType<{ data: unknown; driverData: string }>({
   dataType() {

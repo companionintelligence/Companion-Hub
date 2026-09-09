@@ -20,6 +20,7 @@ import {
   portalScreenshotPath,
 } from './app-media.helpers';
 import { MarketplaceCacheBus } from './marketplace-cache.bus';
+import { CATALOG_PAGE_SIZE } from './catalog-page-size';
 
 type AppList = Awaited<ReturnType<InstanceType<typeof MarketplaceService>['getAllAppFromStores']>>;
 
@@ -329,7 +330,7 @@ export class MarketplaceService implements OnModuleInit {
     }
 
     const start = cursor ? filteredApps.findIndex((app) => app.urn === cursor) : 0;
-    const end = start + (pageSize ?? 24);
+    const end = start + (pageSize ?? CATALOG_PAGE_SIZE);
     const data = filteredApps.slice(start, end);
 
     return {

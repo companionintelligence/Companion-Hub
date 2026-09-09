@@ -54,9 +54,8 @@ function envFileHasCiHubImage(envFileName: string): boolean {
 
 export function getComposeFiles(env: HubEnv): string[] {
   if (env === 'local') return ['docker-compose.local.yml'];
-  if (env === 'staging') return ['docker-compose.prod.yml', 'docker-compose.staging.yml'];
-  const files = ['docker-compose.prod.yml'];
-  if (env === 'dev' && envFileHasCiHubImage(envFileMap.dev)) {
+  const files = env === 'staging' ? ['docker-compose.prod.yml', 'docker-compose.staging.yml'] : ['docker-compose.prod.yml'];
+  if (envFileHasCiHubImage(envFileMap[env])) {
     files.push('docker-compose.dev-image.yml');
   }
   return files;

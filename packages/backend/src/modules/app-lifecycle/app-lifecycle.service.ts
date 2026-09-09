@@ -2584,8 +2584,11 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
   }
 
   /**
-   * Hub-session grants. Omitted `operatorUserId` is Portal-push / CLI / boot
-   * recovery — those paths are not a Hub-session person.
+   * Hub-session grants. An omitted `operatorUserId` sweeps everything, so only a
+   * caller that has already named the principal may omit it: boot recovery, or a
+   * request `MarketplaceWhoIsService.sweepOperatorUserId` found exempt. Reading
+   * `hubSessionOperatorUserId` straight off a request would restore the
+   * exemption-by-absence this fails open for.
    */
   private async operatorMay(operatorUserId: number | undefined, appUrn: AppUrn, action: HubAction): Promise<boolean> {
     if (operatorUserId == null) {

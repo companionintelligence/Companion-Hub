@@ -8,10 +8,25 @@ import { stdin as input, stdout as output } from 'node:process';
 import { createInterface } from 'node:readline/promises';
 import { colorize, STEP_ICONS } from './cli-ui.js';
 
+/**
+ * Non-interactive consent, for callers that genuinely have no terminal.
+ *
+ * `cihub fleet` drives every one of these commands over `ssh -n`, which has no TTY by construction,
+ * so without an env-level opt-in a fleet operation cannot approve a pairing, enable a pool, or pin a
+ * model — it exits 2 before doing anything. Deliberately an environment variable rather than a
+ * silent non-TTY exemption: "there is no terminal" must never by itself mean "yes".
+ */
+export function assumeYesFromEnv(env: NodeJS.ProcessEnv = process.env): boolean {
+  const raw = (env.CI_HUB_ASSUME_YES ?? '').trim().toLowerCase();
+  return raw === '1' || raw === 'true' || raw === 'yes';
+}
+
 export function confirmDestructive(actionLabel: string, force: boolean, noun = 'destructive') {
-  if (force) return true;
+  if (force || assumeYesFromEnv()) return true;
   if (!process.stdin.isTTY) {
-    console.error(colorize(`  ${STEP_ICONS.fail} ${actionLabel} is ${noun} \u2014 requires an interactive terminal or --yes`, 'red'));
+    console.error(
+      colorize(`  ${STEP_ICONS.fail} ${actionLabel} is ${noun} \u2014 requires an interactive terminal, --yes, or CI_HUB_ASSUME_YES=1`, 'red'),
+    );
     process.exit(2);
   }
   return false;

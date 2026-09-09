@@ -8,6 +8,7 @@ import { Test } from '@nestjs/testing';
 import type { Request, Response } from 'express';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
+import { TranslatableError } from '@/common/error/translatable-error';
 import { AuthController } from '../auth.controller';
 import { ForwardAuthSecretResolver } from '../forward-auth-secret.resolver';
 import { AuthService } from '../auth.service';
@@ -69,6 +70,7 @@ describe('AuthController', () => {
     userRepository = moduleRef.get(UserRepository);
     sessionManager = moduleRef.get(SessionManager);
     deviceRegistration = moduleRef.get(DeviceRegistrationRepository);
+    cache.getByPrefix.mockReturnValue([]);
   });
 
   it('should be defined', () => {
@@ -1117,9 +1119,11 @@ describe('AuthController', () => {
         ok: true,
         accessToken: 'access-token',
         email: 'operator@example.com',
+        emailVerified: true,
+        subject: 'portal-user-1',
+        issuer: 'https://hub.ci.computer',
       });
-      userRepository.getFirstOperator.mockResolvedValue(null);
-      authService.bootstrapOperatorFromPortalEmail.mockRejectedValue(new Error('bootstrap failed'));
+      authService.admitHubPerson.mockRejectedValue(new Error('bootstrap failed'));
 
       const req = {
         protocol: 'http',
@@ -1175,8 +1179,11 @@ describe('AuthController', () => {
         ok: true,
         accessToken: 'access-token',
         email: 'operator@example.com',
+        emailVerified: true,
+        subject: 'portal-user-1',
+        issuer: 'https://hub.ci.computer',
       });
-      userRepository.getFirstOperator.mockResolvedValue({ id: 1, username: 'operator@example.com' } as never);
+      authService.admitHubPerson.mockResolvedValue({ id: 1, username: 'operator@example.com' } as never);
       sessionManager.createSession.mockResolvedValue('session-123');
 
       const req = {
@@ -1226,8 +1233,11 @@ describe('AuthController', () => {
         ok: true,
         accessToken: 'access-token',
         email: 'operator@example.com',
+        emailVerified: true,
+        subject: 'portal-user-1',
+        issuer: 'https://hub.ci.computer',
       });
-      userRepository.getFirstOperator.mockResolvedValue({ id: 1, username: 'operator@example.com' } as never);
+      authService.admitHubPerson.mockResolvedValue({ id: 1, username: 'operator@example.com' } as never);
       sessionManager.createSession.mockResolvedValue('session-123');
 
       const req = {
@@ -1273,6 +1283,7 @@ describe('AuthController', () => {
   describe('portalSessionHint', () => {
     it('returns the configured operator email when the hub is already set up', async () => {
       config.get.mockReturnValue('https://hub.ci.computer');
+      vi.mocked(fetchPortalSessionEmail).mockResolvedValue(null);
       userRepository.getFirstOperator.mockResolvedValue({ id: 1, username: 'operator@example.com' } as never);
 
       await expect(
@@ -1283,6 +1294,39 @@ describe('AuthController', () => {
         email: 'operator@example.com',
         portalBaseUrl: 'https://hub.ci.computer',
         source: 'hub_operator',
+      });
+    });
+
+    it('prefers a live Portal session over the Hub operator', async () => {
+      config.get.mockReturnValue('https://hub.ci.computer');
+      vi.mocked(fetchPortalSessionEmail).mockResolvedValue('hello@lifescope.io');
+      userRepository.getFirstOperator.mockResolvedValue({ id: 1, username: 'operator@example.com' } as never);
+
+      await expect(
+        authController.portalSessionHint({
+          headers: { cookie: 'ci.session_token=abc' },
+        } as Request),
+      ).resolves.toEqual({
+        email: 'hello@lifescope.io',
+        portalBaseUrl: 'https://hub.ci.computer',
+        source: 'portal_session',
+      });
+    });
+
+    it('prefers the current Hub session user over the first operator', async () => {
+      config.get.mockReturnValue('https://hub.ci.computer');
+      vi.mocked(fetchPortalSessionEmail).mockResolvedValue(null);
+      userRepository.getFirstOperator.mockResolvedValue({ id: 1, username: 'operator@example.com' } as never);
+
+      await expect(
+        authController.portalSessionHint({
+          headers: {},
+          user: { username: 'hello@lifescope.io' },
+        } as Request),
+      ).resolves.toEqual({
+        email: 'hello@lifescope.io',
+        portalBaseUrl: 'https://hub.ci.computer',
+        source: 'hub_user',
       });
     });
 
@@ -1338,9 +1382,12 @@ describe('AuthController', () => {
         ok: true,
         accessToken: 'access-token',
         email: 'first@example.com',
+        emailVerified: true,
+        subject: 'portal-user-1',
+        issuer: 'https://hub.ci.computer',
       });
       userRepository.getFirstOperator.mockResolvedValue(null);
-      authService.bootstrapOperatorFromPortalEmail.mockResolvedValue({ id: 1, username: 'first@example.com' } as never);
+      authService.admitHubPerson.mockResolvedValue({ id: 1, username: 'first@example.com' } as never);
       sessionManager.createSession.mockResolvedValue('session-123');
 
       const req = {
@@ -1356,11 +1403,20 @@ describe('AuthController', () => {
 
       await authController.portalCallback(req, res, 'auth-code', 'state-123');
 
-      expect(authService.bootstrapOperatorFromPortalEmail).toHaveBeenCalledWith('first@example.com');
+      expect(authService.admitHubPerson).toHaveBeenCalledWith({
+        issuer: 'https://hub.ci.computer',
+        subject: 'portal-user-1',
+        email: 'first@example.com',
+        emailVerified: true,
+      });
       expect(res.redirect).toHaveBeenCalledWith('http://localhost:5002/home');
     });
 
-    it('syncs the sole local operator email from a verified Portal login when they differ', async () => {
+    it('refuses a Portal login that is not a member of this Hub org', async () => {
+      /*
+       * Strangers who merely have a Portal account must not become operators. Org membership
+       * is the admission ticket; admitHubPerson throws AUTH_ERROR_NOT_ORG_MEMBER.
+       */
       cache.get.mockReturnValue(
         JSON.stringify({
           codeVerifier: 'verifier',
@@ -1382,9 +1438,11 @@ describe('AuthController', () => {
         ok: true,
         accessToken: 'access-token',
         email: 'companion@example.com',
+        emailVerified: true,
+        subject: 'portal-stranger',
+        issuer: 'https://hub.ci.computer',
       });
-      userRepository.getFirstOperator.mockResolvedValue({ id: 1, username: 'admin@local.test' } as never);
-      userRepository.getOperators.mockResolvedValue([{ id: 1, username: 'admin@local.test' }] as never);
+      authService.admitHubPerson.mockRejectedValue(new TranslatableError('AUTH_ERROR_NOT_ORG_MEMBER', {}, 403));
       userRepository.updateUser.mockResolvedValue(true as never);
       sessionManager.createSession.mockResolvedValue('session-123');
 
@@ -1401,8 +1459,58 @@ describe('AuthController', () => {
 
       await authController.portalCallback(req, res, 'auth-code', 'state-123');
 
-      expect(userRepository.updateUser).toHaveBeenCalledWith(1, { username: 'companion@example.com' });
-      expect(sessionManager.createSession).toHaveBeenCalledWith(1);
+      // The operator row is untouched and no session is issued.
+      expect(userRepository.updateUser).not.toHaveBeenCalled();
+      expect(sessionManager.createSession).not.toHaveBeenCalled();
+      expect(res.redirect).toHaveBeenCalledWith(expect.stringContaining('not_org_member'));
+    });
+
+    it('still signs a matching operator in on a plain browser callback', async () => {
+      // The refusal above and the desktop handoff tests share this branch, so without this a
+      // regression that refused EVERY browser login would leave the suite green.
+      cache.get.mockReturnValue(
+        JSON.stringify({
+          codeVerifier: 'verifier',
+          redirectUrl: null,
+          hubOrigin: 'http://localhost:5002',
+          desktop: false,
+        }),
+      );
+      config.get.mockImplementation((key: string) => {
+        if (key === 'ciCloudUrl') {
+          return 'https://hub.ci.computer';
+        }
+        if (key === 'userSettings') {
+          return { experimental: { insecureCookie: true } };
+        }
+        return '';
+      });
+      vi.mocked(exchangePortalAuthorizationCode).mockResolvedValue({
+        ok: true,
+        accessToken: 'access-token',
+        email: 'Operator@Example.com',
+        emailVerified: true,
+        subject: 'portal-user-7',
+        issuer: 'https://hub.ci.computer',
+      });
+      authService.admitHubPerson.mockResolvedValue({ id: 7, username: 'operator@example.com' } as never);
+      sessionManager.createSession.mockResolvedValue('session-777');
+
+      const req = {
+        protocol: 'http',
+        get: vi.fn((header: string) => (header === 'host' ? 'localhost:5002' : undefined)),
+        headers: {},
+        cookies: {},
+      } as unknown as Request;
+      const res = {
+        redirect: vi.fn(),
+        cookie: vi.fn(),
+      } as unknown as Response;
+
+      await authController.portalCallback(req, res, 'auth-code', 'state-123');
+
+      expect(sessionManager.createSession).toHaveBeenCalledWith(7);
+      expect(userRepository.updateUser).not.toHaveBeenCalled();
       expect(res.redirect).toHaveBeenCalledWith('http://localhost:5002/home');
     });
   });

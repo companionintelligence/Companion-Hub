@@ -721,6 +721,13 @@ export class PortalClientService {
   /**
    * Fetches peer Hub devices registered to the same user or organization from CI Portal
    * for peer pool discovery and dispatch over the internet.
+   *
+   * `/devices/pool-peers`, not `/devices` — that route is session-authenticated (a browser's own
+   * organization membership), and a device key is not a session; every call there 401ed and was
+   * silently swallowed by the `catch` below, which is why this leg returned nothing for as long as
+   * it pointed there. `/devices/pool-peers` authenticates the same way `/devices/check-in` already
+   * does — this device's own key — and scopes to this device's own organization server-side, never
+   * a caller-supplied id.
    */
   async fetchDispatchDevices(): Promise<PortalDispatchDevice[]> {
     if (!this.publicPortalUrl || !this.configuration.get('ciHubApiKey')) {
@@ -728,7 +735,7 @@ export class PortalClientService {
     }
 
     try {
-      const result = await this.fetchJson<{ devices?: PortalDispatchDevice[] } | PortalDispatchDevice[]>('/devices', {
+      const result = await this.fetchJson<{ devices?: PortalDispatchDevice[] } | PortalDispatchDevice[]>('/devices/pool-peers', {
         authenticated: true,
         bypassCache: true,
       });

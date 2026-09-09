@@ -95,6 +95,10 @@ export class UserRepository {
   public async getFirstOperator() {
     return this.db.query.user.findFirst({
       where: eq(user.operator, true),
+      // Ordered because Portal SSO compares the caller's address against THIS row: without it the
+      // row is heap order, so on a multi-operator Hub the same login can be accepted one day and
+      // refused the next. Oldest operator wins, which is the one that claimed the appliance.
+      orderBy: (row, { asc }) => asc(row.id),
       columns: {
         id: true,
         username: true,
@@ -126,5 +130,20 @@ export class UserRepository {
     }
 
     return created;
+  }
+
+  /**
+   * Hub onboarding is appliance setup, not a per-person wizard. Finishing it
+   * (or inheriting it onto a later family operator) must flip every operator
+   * so the next sign-in lands on the dashboard.
+   */
+  public async markApplianceOnboardingComplete() {
+    const updated = await this.db.update(user).set({ hasCompletedOnboarding: true }).where(eq(user.operator, true)).returning({ id: user.id });
+
+    for (const row of updated) {
+      this.sessionUserCache.invalidate(row.id);
+    }
+
+    return updated;
   }
 }

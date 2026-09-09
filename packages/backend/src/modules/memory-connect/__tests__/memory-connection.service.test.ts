@@ -11,6 +11,7 @@ import type { MemoryConnectionRepository, MemoryConnectionRow } from '../memory-
 function makeMocks() {
   const repo = {
     findByAppUrn: vi.fn(),
+    findByAppUrnAndUser: vi.fn(),
     upsert: vi.fn().mockResolvedValue(undefined),
     deleteByAppUrn: vi.fn().mockResolvedValue(1),
   };
@@ -29,6 +30,7 @@ function row(overrides: Partial<MemoryConnectionRow>): MemoryConnectionRow {
   return {
     id: 1,
     appUrn: 'ci-openclaw:local',
+    hubUserId: 0,
     state: 'unconfigured',
     encryptedKey: null,
     serverUrl: null,
@@ -55,12 +57,16 @@ describe('MemoryConnectionService', () => {
     await service.storeConnected('ci-openclaw:local', 'http://gateway:8642', 'raw-key', '2026-10-07T00:00:00.000Z');
 
     expect(encryption.encrypt).toHaveBeenCalledWith('raw-key', 'ci-openclaw:local');
-    expect(repo.upsert).toHaveBeenCalledWith('ci-openclaw:local', {
-      state: 'connected',
-      serverUrl: 'http://gateway:8642',
-      encryptedKey: 'enc(raw-key)',
-      keyExpiresAt: '2026-10-07T00:00:00.000Z',
-    });
+    expect(repo.upsert).toHaveBeenCalledWith(
+      'ci-openclaw:local',
+      {
+        state: 'connected',
+        serverUrl: 'http://gateway:8642',
+        encryptedKey: 'enc(raw-key)',
+        keyExpiresAt: '2026-10-07T00:00:00.000Z',
+      },
+      0,
+    );
   });
 
   it('getInjectableCreds decrypts and returns url + token when connected', async () => {
@@ -95,12 +101,16 @@ describe('MemoryConnectionService', () => {
 
     await service.clear('ci-openclaw:local');
 
-    expect(repo.upsert).toHaveBeenCalledWith('ci-openclaw:local', {
-      state: 'unconfigured',
-      encryptedKey: null,
-      serverUrl: null,
-      keyExpiresAt: null,
-    });
+    expect(repo.upsert).toHaveBeenCalledWith(
+      'ci-openclaw:local',
+      {
+        state: 'unconfigured',
+        encryptedKey: null,
+        serverUrl: null,
+        keyExpiresAt: null,
+      },
+      0,
+    );
   });
 
   it('markSkipped and markManual persist their states', async () => {
@@ -109,8 +119,8 @@ describe('MemoryConnectionService', () => {
     await service.markSkipped('ci-openclaw:local');
     await service.markManual('ci-hermes:local');
 
-    expect(repo.upsert).toHaveBeenCalledWith('ci-openclaw:local', { state: 'skipped' });
-    expect(repo.upsert).toHaveBeenCalledWith('ci-hermes:local', { state: 'manual' });
+    expect(repo.upsert).toHaveBeenCalledWith('ci-openclaw:local', { state: 'skipped' }, 0);
+    expect(repo.upsert).toHaveBeenCalledWith('ci-hermes:local', { state: 'manual' }, 0);
   });
 
   it('markManual is idempotent: no redundant upsert when already manual', async () => {
@@ -122,6 +132,23 @@ describe('MemoryConnectionService', () => {
     await service.markManual('ci-hermes:local');
 
     expect(repo.upsert).not.toHaveBeenCalled();
+  });
+
+  it('getState for a Hub person reads that person, not a sibling row', async () => {
+    const { service, repo } = makeMocks();
+    repo.findByAppUrn.mockResolvedValue(row({ hubUserId: 1, state: 'connected', encryptedKey: 'enc(k)' }));
+    repo.findByAppUrnAndUser.mockResolvedValue(undefined);
+
+    expect(await service.getState('ci-openclaw:local', '2')).toBe('unconfigured');
+    expect(repo.findByAppUrnAndUser).toHaveBeenCalledWith('ci-openclaw:local', 2);
+  });
+
+  it('storeConnected persists the Hub person who consented', async () => {
+    const { service, repo } = makeMocks();
+
+    await service.storeConnected('ci-openclaw:local', 'http://gateway:8642', 'raw-key', '2026-10-07T00:00:00.000Z', '7');
+
+    expect(repo.upsert).toHaveBeenCalledWith(expect.any(String), expect.any(Object), 7);
   });
 
   it('isConnected requires both connected state and a stored key', async () => {

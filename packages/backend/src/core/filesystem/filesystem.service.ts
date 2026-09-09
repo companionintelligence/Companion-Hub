@@ -231,6 +231,20 @@ export class FilesystemService {
   }
 
   /**
+   * Stat a path WITHOUT following a symlink.
+   *
+   * ⚠ USE THIS WHEN THE ANSWER DECIDES WHETHER TO DESCEND OR TO REPORT. `stat`
+   * follows links, so a walk built on it reports the TARGET's kind: a symlink to
+   * `/` looks like an ordinary directory and the walk recurses into it. The
+   * containment `getSafeFilePath` provides is on the path it was handed, and the
+   * path it was handed is inside the app's own directory — the escape happens
+   * afterwards, in the kernel.
+   */
+  async getLinkStats(filePath: string) {
+    return await fs.promises.lstat(this.getSafeFilePath(filePath));
+  }
+
+  /**
    * Open a read stream over an allowed path, optionally for a byte range.
    * Prefer this over `readBinaryFile` for anything large enough to matter (media, archives) so the
    * whole payload never has to sit in the appliance's heap.

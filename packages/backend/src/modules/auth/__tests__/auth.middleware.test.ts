@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ServiceUnavailableException } from '@nestjs/common';
 import { AuthMiddleware, sessionIdsFromRequest } from '../auth.middleware';
 import type { Request } from 'express';
+import jsonwebtoken from 'jsonwebtoken';
 
 describe('AuthMiddleware transient DB handling', () => {
   const sessionManager = {
@@ -126,7 +127,27 @@ describe('AuthMiddleware session fallback', () => {
 
     expect(userRepository.getUserDtoById).not.toHaveBeenCalled();
     expect((req as { user?: { id: number } }).user).toEqual({ id: 7, username: 'cached' });
+    expect((req as { hubPrincipal?: string }).hubPrincipal).toBe('session');
     expect(next).toHaveBeenCalledOnce();
+  });
+
+  it('prefers the newer of a valid cookie and a valid header session', async () => {
+    sessionManager.resolveSessionUserId.mockImplementation((id: string) => (id === 'old-sess' ? 1 : id === 'new-sess' ? 2 : null));
+    sessionManager.getSessionExpiresAt.mockImplementation((id: string) => (id === 'old-sess' ? 1_000 : id === 'new-sess' ? 9_000 : null));
+    userRepository.getUserDtoById.mockResolvedValue({ id: 2, username: 'hello@lifescope.io' });
+
+    const req = {
+      cookies: { 'ci-hub-sid': 'old-sess' },
+      headers: {},
+      query: {},
+      get: (name: string) => (name === 'x-ci-hub-session' ? 'new-sess' : undefined),
+    } as unknown as Request;
+    const next = vi.fn();
+
+    await middleware.use(req, {} as never, next);
+
+    expect(req.user).toEqual({ id: 2, username: 'hello@lifescope.io' });
+    expect(req.hubSessionId).toBe('new-sess');
   });
 
   it('authenticates from X-CI-Hub-Session when the cookie session is stale', async () => {
@@ -145,6 +166,7 @@ describe('AuthMiddleware session fallback', () => {
 
     expect(req.user).toEqual({ id: 2, username: 'op' });
     expect(req.hubSessionId).toBe('live-sess');
+    expect(req.hubPrincipal).toBe('session');
     expect(next).toHaveBeenCalledOnce();
   });
 
@@ -164,6 +186,55 @@ describe('AuthMiddleware session fallback', () => {
     await middleware.use(req, {} as never, next);
 
     expect(req.user).toEqual({ id: 1, username: 'op' });
+    expect(req.hubPrincipal).toBe('portal-device');
+    expect(next).toHaveBeenCalledOnce();
+  });
+
+  /*
+   * `hubPrincipal` is what exempts a caller from the org-grant gate, and an
+   * unnamed principal is refused there. An arm that stops naming itself would
+   * therefore 403 every Portal push and every `cihub` install, so each arm is
+   * pinned here rather than only in the gate's own unit tests, which build their
+   * requests by hand.
+   */
+  it('names the CLI principal for a `sub: cli` JWT', async () => {
+    sessionManager.resolveSessionUserId.mockReturnValue(null);
+    const token = jsonwebtoken.sign({ sub: 'cli' }, 'jwt-secret');
+    config.get.mockImplementation((key: string) => (key === 'jwtSecret' ? 'jwt-secret' : undefined));
+    userRepository.getFirstOperator.mockResolvedValue({ id: 1, username: 'op' });
+
+    const req = {
+      cookies: {},
+      headers: { authorization: `Bearer ${token}` },
+      query: {},
+      get: () => undefined,
+    } as unknown as Request;
+    const next = vi.fn();
+
+    await middleware.use(req, {} as never, next);
+
+    expect(req.user).toEqual({ id: 1, username: 'op' });
+    expect(req.hubPrincipal).toBe('cli');
+    expect(next).toHaveBeenCalledOnce();
+  });
+
+  it('names no principal for a JWT that is not the CLI', async () => {
+    sessionManager.resolveSessionUserId.mockReturnValue(null);
+    const token = jsonwebtoken.sign({ sub: 'someone-else' }, 'jwt-secret');
+    config.get.mockImplementation((key: string) => (key === 'jwtSecret' ? 'jwt-secret' : undefined));
+
+    const req = {
+      cookies: {},
+      headers: { authorization: `Bearer ${token}` },
+      query: {},
+      get: () => undefined,
+    } as unknown as Request;
+    const next = vi.fn();
+
+    await middleware.use(req, {} as never, next);
+
+    expect(req.user).toBeUndefined();
+    expect(req.hubPrincipal).toBeUndefined();
     expect(next).toHaveBeenCalledOnce();
   });
 
