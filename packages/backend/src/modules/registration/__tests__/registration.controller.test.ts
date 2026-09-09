@@ -204,7 +204,7 @@ describe('RegistrationController', () => {
       // someone who can reach this port from starting a registration and
       // finishing it. Re-registering a running Hub is `resetRegistration`'s job.
       registrationService.consumeCallbackNonce.mockReturnValue(true);
-      registrationService.isRegistered.mockResolvedValue(true);
+      registrationService.isRegisteredAndServing.mockResolvedValue(true);
 
       await expect(controller.handleCallbackPost(validBody)).rejects.toThrow(ForbiddenException);
       expect(registrationService.completeRegistrationFromCallback).not.toHaveBeenCalled();
@@ -212,7 +212,7 @@ describe('RegistrationController', () => {
 
     it('spends the nonce, so a replay of the same callback is refused', async () => {
       registrationService.consumeCallbackNonce.mockReturnValueOnce(true).mockReturnValue(false);
-      registrationService.isRegistered.mockResolvedValue(false);
+      registrationService.isRegisteredAndServing.mockResolvedValue(false);
       registrationService.completeRegistrationFromCallback.mockResolvedValue({ success: true } as any);
 
       await expect(controller.handleCallbackPost(validBody, 'nonce-1')).resolves.toEqual({ success: true });
@@ -221,7 +221,7 @@ describe('RegistrationController', () => {
 
     it('returns an error when required params are missing', async () => {
       registrationService.consumeCallbackNonce.mockReturnValue(true);
-      registrationService.isRegistered.mockResolvedValue(false);
+      registrationService.isRegisteredAndServing.mockResolvedValue(false);
 
       const result = await controller.handleCallbackPost({
         ...validBody,
@@ -236,7 +236,7 @@ describe('RegistrationController', () => {
       // Burning the one-time secret on a malformed body would cost the person
       // another round trip through Portal.
       registrationService.consumeCallbackNonce.mockReturnValue(true);
-      registrationService.isRegistered.mockResolvedValue(false);
+      registrationService.isRegisteredAndServing.mockResolvedValue(false);
 
       await controller.handleCallbackPost({ ...validBody, device_id: '' }, 'nonce-1');
 
@@ -245,7 +245,7 @@ describe('RegistrationController', () => {
 
     it('completes registration from a JSON body with a valid nonce', async () => {
       registrationService.consumeCallbackNonce.mockReturnValue(true);
-      registrationService.isRegistered.mockResolvedValue(false);
+      registrationService.isRegisteredAndServing.mockResolvedValue(false);
       registrationService.completeRegistrationFromCallback.mockResolvedValue({ success: true } as any);
 
       const result = await controller.handleCallbackPost(validBody, 'nonce-1');
@@ -269,7 +269,7 @@ describe('RegistrationController', () => {
       // normally arrives; a client that parsed the redirect re-posts it in the
       // body.
       registrationService.consumeCallbackNonce.mockReturnValue(true);
-      registrationService.isRegistered.mockResolvedValue(false);
+      registrationService.isRegisteredAndServing.mockResolvedValue(false);
       registrationService.completeRegistrationFromCallback.mockResolvedValue({ success: true } as any);
 
       await controller.handleCallbackPost({ ...validBody, state: 'nonce-in-body' });
