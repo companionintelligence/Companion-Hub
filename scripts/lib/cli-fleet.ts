@@ -14,6 +14,7 @@
  * library (see `docs/CLI.md`).
  */
 
+import { DEVICE_PAIR_SCOPE, loginScope, mintPairingCode, type PortalLogin, readStoredLogin } from './catalog-submit.js';
 import { loadFleetRoster, mergeFleetRoster, partitionForRun, saveFleetRoster, fleetRosterPath, type FleetNode } from './fleet-roster.js';
 import { probeNode, resolveTailscaleCli, scanLan, summariseNode, tailnetPeers, type DiscoveredNode } from './fleet-discover.js';
 import { describeSshFailure } from './fleet-ssh.js';
@@ -435,6 +436,42 @@ async function runBackends(args: FleetArgs): Promise<void> {
 }
 
 /**
+ * How this run will get a pairing code, decided before anything is dialled.
+ *
+ * Its own function because the wrong answer is expensive in a way a dry run
+ * does not reveal: one `--code` is one device's credential, so a fleet run that
+ * accepted it would enroll the first node and fail every other one on a code
+ * Portal has already burned — halfway through installing on real machines.
+ */
+export type PairingCodeStrategy = { kind: 'mint' } | { kind: 'given' } | { kind: 'refuse'; why: string; fix: string[] };
+
+export function resolvePairingCodeStrategy(input: { code?: string; canMint: boolean; nodeCount: number }): PairingCodeStrategy {
+  // An explicit --code wins for the one node it can actually enroll: the
+  // operator naming a code means that code, not one this run invents.
+  if (input.code && input.nodeCount === 1) {
+    return { kind: 'given' };
+  }
+
+  if (input.canMint) {
+    return { kind: 'mint' };
+  }
+
+  if (!input.code) {
+    return {
+      kind: 'refuse',
+      why: 'No way to get a pairing code.',
+      fix: [`Run 'cihub login --scope ${DEVICE_PAIR_SCOPE}' to mint one per node,`, 'or pass --code <portal-pairing-code> to enroll a single node.'],
+    };
+  }
+
+  return {
+    kind: 'refuse',
+    why: `--code is one device's code, but ${input.nodeCount} nodes are selected.`,
+    fix: [`Run 'cihub login --scope ${DEVICE_PAIR_SCOPE}' so each node gets its own.`],
+  };
+}
+
+/**
  * `cihub fleet install` — stand a Hub up on every selected node.
  *
  * Serialised, and load-gated per node. Both because a fleet-wide pass on this fleet upgraded a
@@ -449,17 +486,33 @@ async function runInstall(args: FleetArgs): Promise<void> {
     return;
   }
 
+  // A stored `device:pair` login mints a code per node, which is the only way a
+  // multi-node install is unattended: one `--code` is one device, so passing it
+  // for a fleet would enroll the first node and fail the rest on a used code.
+  const storedLogin = readStoredLogin();
+  const canMint = loginScope(storedLogin) === DEVICE_PAIR_SCOPE;
+
   if (!args.execute) {
     console.log(colorize('Dry run — nothing will be installed. Add --execute to apply.', 'dim'));
     console.log(`  would install on ${run.length} node(s): ${run.map((n) => n.name).join(', ')}`);
     if (args.joinPool) console.log(`  each would then pair into ${args.joinPool}`);
-    console.log(colorize('  requires --code <portal-pairing-code> and a Postgres password', 'dim'));
+    if (canMint) {
+      console.log(colorize(`  would mint a pairing code per node as ${storedLogin?.orgSlug ?? storedLogin?.orgId}`, 'dim'));
+    } else if (args.code) {
+      console.log(colorize('  would use the one --code given, which enrolls a single node', 'dim'));
+    } else {
+      console.log(colorize(`  needs 'cihub login --scope ${DEVICE_PAIR_SCOPE}', or --code for one node`, 'dim'));
+    }
+    console.log(colorize('  requires a Postgres password', 'dim'));
     return;
   }
 
   // Checked here rather than at parse time so a dry run needs neither secret.
-  if (!args.code) {
-    console.error(colorize('--code <portal-pairing-code> is required. Get one from Companion Portal.', 'red'));
+  const strategy = resolvePairingCodeStrategy({ code: args.code, canMint, nodeCount: run.length });
+
+  if (strategy.kind === 'refuse') {
+    console.error(colorize(strategy.why, 'red'));
+    for (const line of strategy.fix) console.error(colorize(`  ${line}`, 'dim'));
     process.exit(2);
   }
   if (!args.postgresPassword || args.postgresPassword.length < 8) {
@@ -471,11 +524,30 @@ async function runInstall(args: FleetArgs): Promise<void> {
   const reports = [];
   for (const node of run) {
     console.log(`\n${node.name}`);
+
+    let pairingCode: string;
+
+    if (strategy.kind === 'given') {
+      pairingCode = args.code as string;
+    } else {
+      try {
+        const minted = await mintPairingCode({ name: node.name, login: storedLogin as PortalLogin });
+        pairingCode = minted.pairingCode;
+        console.log(`  ${colorize('✓', 'green')} portal device — registered as ${minted.slug}`);
+      } catch (error) {
+        // Registering is the first step; without a code the rest cannot run, so
+        // this node is reported and the fleet continues rather than aborting.
+        console.log(`  ${colorize('✗', 'red')} portal device — ${error instanceof Error ? error.message : String(error)}`);
+        reports.push({ node: node.name, ok: false, steps: [] });
+        continue;
+      }
+    }
+
     const report = await installNode(
       node,
       {
         postgresPassword: args.postgresPassword,
-        pairingCode: args.code,
+        pairingCode,
         joinPool: args.joinPool,
         poolPin: args.poolPin,
       },
