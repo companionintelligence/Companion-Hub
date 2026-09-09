@@ -8,6 +8,7 @@ import { DeviceRegistrationRepository } from '../device-registration.repository'
 import { RepoEventsQueue } from '../../queue/entities/repo-events';
 import axios from 'axios';
 import { PortalClientService } from '@/core/portal/portal-client.service';
+import { TailscaleService } from '../../tailscale/tailscale.service';
 import { mock, MockProxy } from 'vitest-mock-extended';
 import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as si from 'systeminformation';
@@ -24,6 +25,7 @@ describe('RegistrationService', () => {
   let deviceRegistrationRepository: MockProxy<DeviceRegistrationRepository>;
   let repoEventsQueue: MockProxy<RepoEventsQueue>;
   let portalClient: MockProxy<PortalClientService>;
+  let tailscaleService: MockProxy<TailscaleService>;
   const mockedAxios = vi.mocked(axios);
 
   beforeEach(async () => {
@@ -36,6 +38,7 @@ describe('RegistrationService', () => {
     repoEventsQueue = mock<RepoEventsQueue>();
     portalClient = mock<PortalClientService>();
     portalClient.postDeviceDeregister.mockResolvedValue({ success: true });
+    tailscaleService = mock<TailscaleService>();
     mockedAxios.post.mockReset();
     mockedAxios.head.mockReset();
 
@@ -52,6 +55,7 @@ describe('RegistrationService', () => {
         { provide: DeviceRegistrationRepository, useValue: deviceRegistrationRepository },
         { provide: RepoEventsQueue, useValue: repoEventsQueue },
         { provide: PortalClientService, useValue: portalClient },
+        { provide: TailscaleService, useValue: tailscaleService },
       ],
     }).compile();
 
@@ -61,6 +65,42 @@ describe('RegistrationService', () => {
 
   afterEach(() => {
     vi.clearAllMocks();
+  });
+
+  describe('callback nonce', () => {
+    it('reuses the nonce in flight, so the registration page polling device-id does not replace it', () => {
+      // The page re-reads `GET /registration/device-id` every few seconds while
+      // unregistered; a fresh nonce per call would invalidate the one the person
+      // is carrying through Portal.
+      const first = service.mintCallbackNonce();
+
+      expect(service.mintCallbackNonce()).toBe(first);
+      expect(service.consumeCallbackNonce(first)).toBe(true);
+    });
+
+    it('spends the nonce once, and refuses a replay or an unknown value', () => {
+      const nonce = service.mintCallbackNonce();
+
+      expect(service.consumeCallbackNonce(nonce)).toBe(true);
+      expect(service.consumeCallbackNonce(nonce)).toBe(false);
+      expect(service.consumeCallbackNonce('not-a-nonce')).toBe(false);
+      expect(service.consumeCallbackNonce(undefined)).toBe(false);
+    });
+
+    it('refuses a nonce that has aged past its TTL', () => {
+      vi.useFakeTimers();
+
+      try {
+        const nonce = service.mintCallbackNonce();
+
+        vi.advanceTimersByTime(30 * 60 * 1000 + 1);
+
+        expect(service.consumeCallbackNonce(nonce)).toBe(false);
+        expect(service.mintCallbackNonce()).not.toBe(nonce);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
   });
 
   describe('isRegistered', () => {
@@ -476,6 +516,7 @@ describe('RegistrationService', () => {
 
       expect(result.success).toBe(true);
       expect(result.domain).toBe('companionintelligence.com');
+      // No `ciHubApiKey` in this config: a first pair sends no device key.
       expect(mockedAxios.post).toHaveBeenCalledWith(
         'http://cloud.api/api/devices/pair',
         { pairing_code: 'ABC123', device_id: 'test-device' },
@@ -497,6 +538,82 @@ describe('RegistrationService', () => {
         }),
       );
       setupSpy.mockRestore();
+    });
+
+    it('sends the stored device credential as proof of possession when the Hub has one', async () => {
+      // `resetRegistration` leaves `ciHubApiKey` in settings.json, so a reset Hub
+      // still holds the proof the Portal now demands to re-key it (CI-Portal#688).
+      configService.getConfig.mockReturnValue({
+        ciCloudUrl: 'http://cloud.api',
+        ciHubApiKey: 'stored-device-key',
+        userSettings: { domain: 'example.com' },
+        domain: 'example.com',
+      } as any);
+
+      mockedAxios.post.mockResolvedValue({
+        status: 200,
+        data: {
+          device_id: 'test-device',
+          organization_id: 'org-pair',
+          organization_name: 'Paired Org',
+          slug: 'paired-org',
+          subdomain: 'hub-paired-org',
+          tunnel_id: 'tunnel-pair',
+          tunnel_token: 'token-pair',
+          api_key: 'key-pair',
+          domain: 'companionintelligence.com',
+        },
+      } as any);
+
+      const setupSpy = vi.spyOn(service as any, 'setupOrganizationInfrastructure').mockResolvedValue(undefined);
+      configService.setDomain.mockResolvedValue(undefined);
+
+      await service.pairDevice('ABC123');
+
+      expect(mockedAxios.post).toHaveBeenCalledWith(
+        'http://cloud.api/api/devices/pair',
+        { pairing_code: 'ABC123', device_id: 'test-device', device_key: 'stored-device-key' },
+        expect.objectContaining({ headers: { 'Content-Type': 'application/json' } }),
+      );
+
+      setupSpy.mockRestore();
+    });
+
+    it('omits device_key rather than sending an empty one when no credential is stored', async () => {
+      // An empty string is not a credential, and sending one would have the
+      // Portal look up a device by `''` instead of treating the caller as
+      // key-less.
+      configService.getConfig.mockReturnValue({
+        ciCloudUrl: 'http://cloud.api',
+        ciHubApiKey: '',
+        userSettings: { domain: 'example.com' },
+        domain: 'example.com',
+      } as any);
+
+      mockedAxios.post.mockResolvedValue({
+        status: 400,
+        statusText: 'Bad Request',
+        data: { error: 'Invalid pairing code' },
+      } as any);
+
+      await service.pairDevice('ABC123');
+
+      expect(mockedAxios.post).toHaveBeenCalledWith(
+        'http://cloud.api/api/devices/pair',
+        { pairing_code: 'ABC123', device_id: 'test-device' },
+        expect.objectContaining({ headers: { 'Content-Type': 'application/json' } }),
+      );
+    });
+
+    it('refuses cleanly when the Portal answers 200 with no body', async () => {
+      // `null` body: reading `.success` off it directly threw, turning a clean
+      // refusal into "Pairing failed: Cannot read properties of null".
+      mockedAxios.post.mockResolvedValue({ status: 200, data: null } as any);
+
+      const result = await service.pairDevice('ABC123');
+
+      expect(result.success).toBe(false);
+      expect(result.message).toBe('Portal returned incomplete registration data.');
     });
 
     it('returns error when pairing code is invalid (Portal returns error)', async () => {
@@ -542,7 +659,9 @@ describe('RegistrationService', () => {
     });
 
     it('returns error when Portal is unreachable', async () => {
-      mockedAxios.post.mockRejectedValue(new TypeError('fetch failed'));
+      // Shaped like a real axios transport failure: `validateStatus` accepts every
+      // status, so a thrown error here never carries a `response`.
+      mockedAxios.post.mockRejectedValue(Object.assign(new Error('connect ECONNREFUSED 10.0.0.1:443'), { isAxiosError: true, code: 'ECONNREFUSED' }));
 
       const result = await service.pairDevice('ABC123');
 
@@ -753,6 +872,40 @@ describe('RegistrationService', () => {
           headers: expect.objectContaining({ 'x-device-key': 'test-api-key' }),
         }),
       );
+    });
+
+    it("piggybacks this node's current Tailscale name on the check-in, for Hub Pool's Portal discovery leg", async () => {
+      await service.setPhase('paired');
+      await service.setPhase('provisioning');
+      await service.setPhase('locally_ready');
+
+      vi.spyOn(service as any, 'hasTunnelToken').mockReturnValue(true);
+      mockedAxios.post.mockResolvedValue({ status: 200 } as any);
+      tailscaleService.getStatusCached.mockResolvedValue({ nodeFqdn: 'my-hub.example-tailnet.ts.net' } as any);
+
+      await (service as any).validateRegistrationWithCloud();
+
+      expect(mockedAxios.post).toHaveBeenCalledWith(
+        expect.stringContaining('/api/devices/check-in'),
+        { device_id: 'test-device', tailscale_dns: 'my-hub.example-tailnet.ts.net' },
+        expect.anything(),
+      );
+    });
+
+    it('omits tailscale_dns rather than sending a false "no tailnet" when the tailscale service has no answer right now', async () => {
+      await service.setPhase('paired');
+      await service.setPhase('provisioning');
+      await service.setPhase('locally_ready');
+
+      vi.spyOn(service as any, 'hasTunnelToken').mockReturnValue(true);
+      mockedAxios.post.mockResolvedValue({ status: 200 } as any);
+      tailscaleService.getStatusCached.mockResolvedValue({ nodeFqdn: null } as any);
+
+      await (service as any).validateRegistrationWithCloud();
+
+      const [, body] = mockedAxios.post.mock.calls[0]!;
+      expect(body).toEqual({ device_id: 'test-device' });
+      expect(body).not.toHaveProperty('tailscale_dns');
     });
 
     it('transitions to degraded when tunnel token is missing', async () => {

@@ -950,9 +950,7 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
     const expired = pending.filter((row) => Date.parse(row.createdAt) < cutoff);
 
     for (const row of expired) {
-      this.logger.info(
-        `[HubPool] expiring unanswered ${row.direction} pairing request for ${row.nodeFqdn} (created ${row.createdAt})`,
-      );
+      this.logger.info(`[HubPool] expiring unanswered ${row.direction} pairing request for ${row.nodeFqdn} (created ${row.createdAt})`);
       await this.repo.delete(row.id);
     }
   }

@@ -89,6 +89,8 @@ export type AppContextDto = {
         hubPoolHealthPollSeconds?: number;
         hubPoolRequireSignedPeers?: boolean;
         hubPoolPressureWeight?: number;
+        inferenceSupervisionMode?: 'off' | 'observe';
+        inferenceSupervisionPollSeconds?: number;
         hubPoolPins?: Array<{
             scope: 'default' | 'model';
             model?: string;
@@ -185,6 +187,8 @@ export type UserSettingsBody = {
     hubPoolHealthPollSeconds?: number;
     hubPoolRequireSignedPeers?: boolean;
     hubPoolPressureWeight?: number;
+    inferenceSupervisionMode?: 'off' | 'observe';
+    inferenceSupervisionPollSeconds?: number;
     hubPoolPins?: Array<{
         scope: 'default' | 'model';
         model?: string;
@@ -451,6 +455,14 @@ export type MyAppsDto = {
             exposable: boolean;
             no_gui: boolean;
             supported_architectures: Array<'arm64' | 'amd64'>;
+            gpu_requirements?: {
+                type: 'cuda' | 'rocm' | 'oneapi';
+                optional: boolean;
+                host_platforms: Array<'linux' | 'windows'>;
+                host_devices?: Array<string>;
+                minimum_vram_gb?: number;
+                recommended_vram_gb?: number;
+            };
             uid?: number;
             gid?: number;
             dynamic_config: boolean;
@@ -698,6 +710,14 @@ export type GuestAppsDto = {
             exposable: boolean;
             no_gui: boolean;
             supported_architectures: Array<'arm64' | 'amd64'>;
+            gpu_requirements?: {
+                type: 'cuda' | 'rocm' | 'oneapi';
+                optional: boolean;
+                host_platforms: Array<'linux' | 'windows'>;
+                host_devices?: Array<string>;
+                minimum_vram_gb?: number;
+                recommended_vram_gb?: number;
+            };
             uid?: number;
             gid?: number;
             dynamic_config: boolean;
@@ -974,6 +994,14 @@ export type GetAppDto = {
         exposable: boolean;
         no_gui: boolean;
         supported_architectures: Array<'arm64' | 'amd64'>;
+        gpu_requirements?: {
+            type: 'cuda' | 'rocm' | 'oneapi';
+            optional: boolean;
+            host_platforms: Array<'linux' | 'windows'>;
+            host_devices?: Array<string>;
+            minimum_vram_gb?: number;
+            recommended_vram_gb?: number;
+        };
         uid?: number;
         gid?: number;
         dynamic_config: boolean;
@@ -2414,7 +2442,12 @@ export type HandleCallbackResponses = {
 export type HandleCallbackPostData = {
     body?: never;
     path?: never;
-    query?: never;
+    query?: {
+        /**
+         * Registration nonce from `callback_url`; may also be sent in the body.
+         */
+        state?: string;
+    };
     url: '/api/registration/callback';
 };
 
@@ -2423,6 +2456,10 @@ export type HandleCallbackPostErrors = {
      * Invalid callback data
      */
     400: unknown;
+    /**
+     * No valid registration nonce, or the Hub is already registered
+     */
+    403: unknown;
 };
 
 export type HandleCallbackPostResponses = {
@@ -2458,27 +2495,6 @@ export type ValidateOrganizationNameData = {
 export type ValidateOrganizationNameResponses = {
     /**
      * Returns validation result
-     */
-    200: unknown;
-};
-
-export type VerifyPairingCodeData = {
-    body?: never;
-    path?: never;
-    query?: never;
-    url: '/api/registration/verify-pairing-code';
-};
-
-export type VerifyPairingCodeErrors = {
-    /**
-     * Invalid or missing pairing code
-     */
-    400: unknown;
-};
-
-export type VerifyPairingCodeResponses = {
-    /**
-     * Pairing code verified and device identity bound
      */
     200: unknown;
 };
@@ -2678,6 +2694,110 @@ export type RemoveCatchAllRoutesResponses = {
 };
 
 export type RemoveCatchAllRoutesResponse = RemoveCatchAllRoutesResponses[keyof RemoveCatchAllRoutesResponses];
+
+export type GetStatus3Data = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/tailscale/status';
+};
+
+export type GetStatus3Responses = {
+    default: {
+        [key: string]: unknown;
+    };
+};
+
+export type GetStatus3Response = GetStatus3Responses[keyof GetStatus3Responses];
+
+export type SyncExposureData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/tailscale/sync';
+};
+
+export type SyncExposureResponses = {
+    /**
+     * Sync triggered
+     */
+    200: unknown;
+};
+
+export type StartAuthData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/tailscale/auth/start';
+};
+
+export type StartAuthResponses = {
+    default: {
+        [key: string]: unknown;
+    };
+};
+
+export type StartAuthResponse = StartAuthResponses[keyof StartAuthResponses];
+
+export type ConnectWithAuthKeyData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/tailscale/auth/key';
+};
+
+export type ConnectWithAuthKeyResponses = {
+    default: {
+        [key: string]: unknown;
+    };
+};
+
+export type ConnectWithAuthKeyResponse = ConnectWithAuthKeyResponses[keyof ConnectWithAuthKeyResponses];
+
+export type CheckAuthData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/tailscale/auth/check';
+};
+
+export type CheckAuthResponses = {
+    default: {
+        [key: string]: unknown;
+    };
+};
+
+export type CheckAuthResponse = CheckAuthResponses[keyof CheckAuthResponses];
+
+export type DisconnectData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/tailscale/disconnect';
+};
+
+export type DisconnectResponses = {
+    default: {
+        [key: string]: unknown;
+    };
+};
+
+export type DisconnectResponse = DisconnectResponses[keyof DisconnectResponses];
+
+export type GetServeStatusData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/tailscale/serve';
+};
+
+export type GetServeStatusResponses = {
+    default: {
+        [key: string]: unknown;
+    };
+};
+
+export type GetServeStatusResponse = GetServeStatusResponses[keyof GetServeStatusResponses];
 
 export type SystemLoadData = {
     body?: never;
@@ -3610,6 +3730,72 @@ export type UpdateAppStoreResponses = {
 
 export type UpdateAppStoreResponse = UpdateAppStoreResponses[keyof UpdateAppStoreResponses];
 
+export type V1ChatCompletionsData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/inference/v1/chat/completions';
+};
+
+export type V1ChatCompletionsResponses = {
+    201: unknown;
+};
+
+export type V1CompletionsData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/inference/v1/completions';
+};
+
+export type V1CompletionsResponses = {
+    201: unknown;
+};
+
+export type V1EmbeddingsData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/inference/v1/embeddings';
+};
+
+export type V1EmbeddingsResponses = {
+    201: unknown;
+};
+
+export type V1ModelsData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/inference/v1/models';
+};
+
+export type V1ModelsResponses = {
+    200: unknown;
+};
+
+export type V1AudioSpeechData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/inference/v1/audio/speech';
+};
+
+export type V1AudioSpeechResponses = {
+    201: unknown;
+};
+
+export type V1AudioTranscriptionsData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/inference/v1/audio/transcriptions';
+};
+
+export type V1AudioTranscriptionsResponses = {
+    201: unknown;
+};
+
 export type HealthData = {
     body?: never;
     path?: never;
@@ -3656,14 +3842,25 @@ export type GetRuntimeModelsResponses = {
     200: unknown;
 };
 
-export type GetStatus3Data = {
+export type GetStatus4Data = {
     body?: never;
     path?: never;
     query?: never;
     url: '/api/inference/status';
 };
 
-export type GetStatus3Responses = {
+export type GetStatus4Responses = {
+    200: unknown;
+};
+
+export type GetSupervisionData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/inference/supervision';
+};
+
+export type GetSupervisionResponses = {
     200: unknown;
 };
 
@@ -4515,110 +4712,6 @@ export type LocalOllamaTagsData = {
 export type LocalOllamaTagsResponses = {
     200: unknown;
 };
-
-export type GetStatus4Data = {
-    body?: never;
-    path?: never;
-    query?: never;
-    url: '/api/tailscale/status';
-};
-
-export type GetStatus4Responses = {
-    default: {
-        [key: string]: unknown;
-    };
-};
-
-export type GetStatus4Response = GetStatus4Responses[keyof GetStatus4Responses];
-
-export type SyncExposureData = {
-    body?: never;
-    path?: never;
-    query?: never;
-    url: '/api/tailscale/sync';
-};
-
-export type SyncExposureResponses = {
-    /**
-     * Sync triggered
-     */
-    200: unknown;
-};
-
-export type StartAuthData = {
-    body?: never;
-    path?: never;
-    query?: never;
-    url: '/api/tailscale/auth/start';
-};
-
-export type StartAuthResponses = {
-    default: {
-        [key: string]: unknown;
-    };
-};
-
-export type StartAuthResponse = StartAuthResponses[keyof StartAuthResponses];
-
-export type ConnectWithAuthKeyData = {
-    body?: never;
-    path?: never;
-    query?: never;
-    url: '/api/tailscale/auth/key';
-};
-
-export type ConnectWithAuthKeyResponses = {
-    default: {
-        [key: string]: unknown;
-    };
-};
-
-export type ConnectWithAuthKeyResponse = ConnectWithAuthKeyResponses[keyof ConnectWithAuthKeyResponses];
-
-export type CheckAuthData = {
-    body?: never;
-    path?: never;
-    query?: never;
-    url: '/api/tailscale/auth/check';
-};
-
-export type CheckAuthResponses = {
-    default: {
-        [key: string]: unknown;
-    };
-};
-
-export type CheckAuthResponse = CheckAuthResponses[keyof CheckAuthResponses];
-
-export type DisconnectData = {
-    body?: never;
-    path?: never;
-    query?: never;
-    url: '/api/tailscale/disconnect';
-};
-
-export type DisconnectResponses = {
-    default: {
-        [key: string]: unknown;
-    };
-};
-
-export type DisconnectResponse = DisconnectResponses[keyof DisconnectResponses];
-
-export type GetServeStatusData = {
-    body?: never;
-    path?: never;
-    query?: never;
-    url: '/api/tailscale/serve';
-};
-
-export type GetServeStatusResponses = {
-    default: {
-        [key: string]: unknown;
-    };
-};
-
-export type GetServeStatusResponse = GetServeStatusResponses[keyof GetServeStatusResponses];
 
 export type ListKeysData = {
     body?: never;

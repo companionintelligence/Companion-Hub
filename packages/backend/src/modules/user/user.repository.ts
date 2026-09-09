@@ -95,6 +95,10 @@ export class UserRepository {
   public async getFirstOperator() {
     return this.db.query.user.findFirst({
       where: eq(user.operator, true),
+      // Ordered because Portal SSO compares the caller's address against THIS row: without it the
+      // row is heap order, so on a multi-operator Hub the same login can be accepted one day and
+      // refused the next. Oldest operator wins, which is the one that claimed the appliance.
+      orderBy: (row, { asc }) => asc(row.id),
       columns: {
         id: true,
         username: true,

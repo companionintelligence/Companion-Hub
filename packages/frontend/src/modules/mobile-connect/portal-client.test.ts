@@ -153,6 +153,11 @@ describe('listHubDevices', () => {
 });
 
 describe('persisted Portal URL and auth', () => {
+  it('defaults cloud connect to production, not the internal Hub appliance Portal', () => {
+    expect(DEFAULT_PORTAL_URL).toBe('https://hub.ci.computer');
+    expect(readPersistedPortalUrl()).toBe('https://hub.ci.computer');
+  });
+
   it('round-trips a custom Portal URL', () => {
     expect(readPersistedPortalUrl()).toBe('https://hub.ci.computer');
     expect(persistPortalUrl('https://hub.example.test/')).toBe('https://hub.example.test');

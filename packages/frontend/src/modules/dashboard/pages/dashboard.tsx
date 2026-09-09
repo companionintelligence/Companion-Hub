@@ -105,7 +105,7 @@ export default () => {
         {/* Apps section */}
         <div className="rounded-lg border border-border bg-linear-to-b from-card to-card/60 p-4 shadow-sm">
           <QueuedInstallsIndicator queue={installQueue} isLoading={installQueueLoading} />
-          {appsData ? <HorizontalAppList apps={appsData.installed} /> : <LoadingSpinner />}
+          <HorizontalAppList apps={appsData?.installed ?? []} isLoading={!appsData} />
         </div>
       </div>
     </div>
