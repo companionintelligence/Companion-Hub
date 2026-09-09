@@ -86,14 +86,19 @@ export function describeAllCandidatesFailed(model: string, candidates: number, l
   // with a plain object carrying `code`/`errno` — so serialise those rather than stringifying them.
   const message =
     lastError instanceof Error ? lastError.message : lastError == null ? '' : typeof lastError === 'object' ? safeJson(lastError) : String(lastError);
-  const timedOut = /No response headers within \d+ms/.test(message) || /abort/i.test(message);
+  // Two deadlines now produce a timeout, and both must be recognised here: the header wait on a
+  // streamed request, and the completion budget on a non-streamed one. Matching only the first would
+  // send every long-generation abort down the generic branch and print a raw abort message instead
+  // of the sentence that tells an operator this is a deadline rather than a dead node.
+  const timedOut = /No (?:response headers|completion) within \d+ms/.test(message) || /abort/i.test(message);
   const plural = candidates === 1 ? 'candidate' : 'candidates';
   if (timedOut) {
     return (
-      `No pool candidate returned response headers for model "${model}" within ${CONNECT_TIMEOUT_MS}ms ` +
-      `(${candidates} ${plural} tried). This is a deadline, not proof the nodes are down — a node ` +
-      'loading weights or serving a long queue hits it while remaining healthy. Retry, or raise the ' +
-      'pool connect timeout.'
+      `No pool candidate answered for model "${model}" within its deadline ` +
+      `(${candidates} ${plural} tried; ${CONNECT_TIMEOUT_MS}ms for headers on a streamed request, ` +
+      `${COMPLETION_TIMEOUT_MS}ms for a whole non-streamed completion). This is a deadline, not ` +
+      'proof the nodes are down — a node loading weights or serving a long queue hits it while ' +
+      'remaining healthy. Retry, or raise HUB_POOL_COMPLETION_TIMEOUT_MS.'
     );
   }
   return `All ${candidates} pool ${plural} for model "${model}" failed${message ? `: ${message}` : '.'}`;

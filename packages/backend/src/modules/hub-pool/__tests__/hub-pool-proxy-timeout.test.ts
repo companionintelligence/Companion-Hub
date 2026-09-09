@@ -44,3 +44,29 @@ describe('isStreamingRequest', () => {
     expect(isStreamingRequest([])).toBe(false);
   });
 });
+
+describe('describeAllCandidatesFailed recognises both deadlines', () => {
+  it('names a completion timeout as a deadline, not a dead node', async () => {
+    // The seam the merge created: two deadlines now exist, and the message helper originally matched
+    // only the header one. Left unfixed, every long-generation abort — the common case, and the
+    // whole reason the completion budget exists — would print a raw abort string instead of the
+    // sentence that stops an operator hunting through pairing and ACLs.
+    const { describeAllCandidatesFailed } = await import('../hub-pool-proxy.service');
+    const msg = describeAllCandidatesFailed('qwen3.6:35b', 2, new Error('No completion within 300000ms'));
+    expect(msg).toMatch(/deadline, not/i);
+    expect(msg).not.toMatch(/unreachable/i);
+    expect(msg).toContain('HUB_POOL_COMPLETION_TIMEOUT_MS');
+  });
+
+  it('still names a header timeout the same way', async () => {
+    const { describeAllCandidatesFailed } = await import('../hub-pool-proxy.service');
+    expect(describeAllCandidatesFailed('m', 1, new Error('No response headers within 15000ms'))).toMatch(/deadline, not/i);
+  });
+
+  it('a real transport failure is still reported as a failure', async () => {
+    const { describeAllCandidatesFailed } = await import('../hub-pool-proxy.service');
+    const msg = describeAllCandidatesFailed('m', 3, new Error('connect ECONNREFUSED 100.64.0.2:5002'));
+    expect(msg).toContain('ECONNREFUSED');
+    expect(msg).not.toMatch(/deadline, not/i);
+  });
+});
