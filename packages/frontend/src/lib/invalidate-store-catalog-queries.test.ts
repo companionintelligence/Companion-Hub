@@ -10,6 +10,7 @@ describe('isStoreCatalogQueryKey', () => {
     expect(isStoreCatalogQueryKey([{ _id: 'getStoreListings' }])).toBe(true);
     expect(isStoreCatalogQueryKey([{ _id: 'getInstalledApps' }])).toBe(true);
     expect(isStoreCatalogQueryKey(['portal', 'featured-bundle', 'ci-marketplace'])).toBe(true);
+    expect(isStoreCatalogQueryKey(['portal', 'store-listings', 'ci-marketplace', { tags: 'featured' }])).toBe(true);
   });
 
   it('does not match unrelated queries', () => {
