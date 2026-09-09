@@ -36,7 +36,11 @@ export function runModelsCommand(args: string[]) {
     const name = args[1];
     if (!name) usageAndExit('Usage: models install <model-name>  (e.g. llama3, mistral, phi3)');
     printMessageBox('Installing model', [`Pulling ${bold(name)} via Ollama \u2014 this may take a few minutes\u2026`], 'green');
-    run('docker', ['exec', '-it', ollamaContainer, 'ollama', 'pull', name]);
+    // `-it` allocates a TTY, and `docker exec -it` on a non-TTY stdin fails outright with "the input
+    // device is not a TTY". Every fleet call arrives over `ssh -n`, so the flags have to follow the
+    // stream we actually have rather than assuming a terminal.
+    const ttyFlags = process.stdin.isTTY ? ['-it'] : [];
+    run('docker', ['exec', ...ttyFlags, ollamaContainer, 'ollama', 'pull', name]);
     return;
   }
 

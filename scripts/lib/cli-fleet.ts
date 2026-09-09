@@ -17,10 +17,15 @@
 import { loadFleetRoster, mergeFleetRoster, partitionForRun, saveFleetRoster, fleetRosterPath, type FleetNode } from './fleet-roster.js';
 import { probeNode, resolveTailscaleCli, scanLan, summariseNode, tailnetPeers, type DiscoveredNode } from './fleet-discover.js';
 import { describeSshFailure } from './fleet-ssh.js';
+import { readHostFacts, isTooBusyForMaintenance } from './fleet-hardware.js';
+import { executeBackendPlan, planAllBackends, INSTALLABLE_BACKENDS, type InstallableBackend } from './fleet-backends.js';
+import { installNode, pullModelScript, updateHubScript } from './fleet-install.js';
+import { checkAppOnNode, poolRoutingScript, SUPPORTED_APP_SLUGS, type AppEndpointMode, type AppSlug } from './fleet-apps.js';
+import { sshCapture } from './fleet-ssh.js';
 import { colorize } from './cli-ui.js';
 import { BASE_COMMAND } from './cli-types.js';
 
-export const FLEET_SUBCOMMANDS = ['scan', 'list', 'status'] as const;
+export const FLEET_SUBCOMMANDS = ['scan', 'list', 'status', 'backends', 'install', 'update', 'apps'] as const;
 export type FleetSubcommand = (typeof FLEET_SUBCOMMANDS)[number];
 
 export interface FleetArgs {
@@ -35,6 +40,25 @@ export interface FleetArgs {
   concurrency: number;
   /** Remote account for SSH. The tailnet ACL grants specific users, and it is rarely your local one. */
   user?: string;
+  /** Restrict `backends` to these. Empty means every installable backend. */
+  backends: InstallableBackend[];
+  /** Where the Hub keeps runner venvs and model dirs on the REMOTE machine. */
+  dataDir: string;
+  /** Portal pairing code for `install`. Six characters. */
+  code?: string;
+  /** Postgres password for the appliance seed. Never logged. */
+  postgresPassword?: string;
+  /** Pair each installed node into this Hub's pool. */
+  joinPool?: string;
+  poolPin?: string;
+  /** Models to pull during `update`. */
+  models: string[];
+  /** Update the Hub image during `update`. */
+  hub: boolean;
+  /** Agent apps for `apps`. Empty means both supported slugs. */
+  apps: AppSlug[];
+  /** Where an app should send inference. */
+  endpoint: AppEndpointMode;
 }
 
 export class FleetArgError extends Error {}
@@ -58,6 +82,18 @@ export function parseFleetArgs(argv: readonly string[]): FleetArgs {
     // so guessing would be wrong half the time and silently — the scan reports 'acl-wrong-user' and
     // names the flag instead.
     user: process.env.FLEET_SSH_USER || undefined,
+    backends: [],
+    dataDir: '/var/lib/companion-hub',
+    code: undefined,
+    postgresPassword: process.env.CIHUB_POSTGRES_PASSWORD || undefined,
+    joinPool: undefined,
+    poolPin: undefined,
+    models: [],
+    hub: false,
+    apps: [],
+    // Pool by default: the whole point of installing an agent on a pooled fleet is that it reaches
+    // the cluster rather than one box.
+    endpoint: 'pool',
   };
 
   const rest = [...argv];
@@ -87,7 +123,43 @@ export function parseFleetArgs(argv: readonly string[]): FleetArgs {
     else if (arg === '--write-roster') args.writeRoster = true;
     else if (arg === '--execute') args.execute = true;
     else if (arg.startsWith('--user')) args.user = readValue('--user');
-    else if (arg.startsWith('--nodes')) {
+    else if (arg.startsWith('--data-dir')) args.dataDir = readValue('--data-dir');
+    else if (arg.startsWith('--code')) args.code = readValue('--code');
+    else if (arg.startsWith('--join-pool')) args.joinPool = readValue('--join-pool');
+    else if (arg.startsWith('--pool-pin')) args.poolPin = readValue('--pool-pin');
+    else if (arg === '--hub') args.hub = true;
+    else if (arg.startsWith('--endpoint')) {
+      const mode = readValue('--endpoint');
+      if (mode !== 'pool' && mode !== 'local') throw new FleetArgError("--endpoint must be 'pool' or 'local'.");
+      args.endpoint = mode;
+    } else if (arg.startsWith('--apps')) {
+      const names = readValue('--apps')
+        .split(',')
+        .map((a) => a.trim())
+        .filter(Boolean);
+      for (const name of names) {
+        if (!(SUPPORTED_APP_SLUGS as readonly string[]).includes(name)) {
+          throw new FleetArgError(`Unknown app '${name}'. CI-Hub serves inference credentials to: ${SUPPORTED_APP_SLUGS.join(', ')}.`);
+        }
+      }
+      args.apps = names as AppSlug[];
+    } else if (arg.startsWith('--models')) {
+      args.models = readValue('--models')
+        .split(',')
+        .map((m) => m.trim())
+        .filter(Boolean);
+    } else if (arg.startsWith('--backends')) {
+      const names = readValue('--backends')
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean);
+      for (const name of names) {
+        if (!(INSTALLABLE_BACKENDS as readonly string[]).includes(name)) {
+          throw new FleetArgError(`Unknown backend '${name}'. Valid: ${INSTALLABLE_BACKENDS.join(', ')}.`);
+        }
+      }
+      args.backends = names as InstallableBackend[];
+    } else if (arg.startsWith('--nodes')) {
       args.nodes = readValue('--nodes')
         .split(',')
         .map((s) => s.trim())
@@ -288,6 +360,227 @@ async function runStatus(args: FleetArgs): Promise<void> {
   }
 }
 
+/**
+ * `cihub fleet backends` — install or adopt inference backends across the fleet.
+ *
+ * Read-only unless `--execute`. The dry run is the useful default: it reports what each machine can
+ * run and why, which is most of the value even when nothing is installed.
+ */
+async function runBackends(args: FleetArgs): Promise<void> {
+  const roster = loadFleetRoster();
+  if (roster.nodes.length === 0) {
+    console.log(`No roster yet. Run '${BASE_COMMAND} fleet scan --write-roster' first.`);
+    return;
+  }
+  const { run, skipped } = partitionForRun(roster.nodes, args.nodes);
+  if (run.length === 0) {
+    console.log('No nodes selected.');
+    for (const s of skipped) console.log(colorize(`  skipped ${s.node.name}: ${s.why}`, 'dim'));
+    return;
+  }
+
+  if (!args.execute) {
+    console.log(colorize('Dry run — nothing will be installed. Add --execute to apply.', 'dim'));
+    console.log('');
+  }
+
+  const report: Record<string, unknown>[] = [];
+
+  // Serialised across nodes on purpose. A backend install pulls gigabytes (CUDA wheels, GPU
+  // container images); running several at once saturates the link they all share and, measured on
+  // this fleet, blocks the nodes' own HTTP listeners long enough to look absent to everything else.
+  for (const node of run) {
+    const target = { host: node.ip, user: node.user ?? args.user };
+    const { facts, error } = await readHostFacts(target);
+    if (!facts) {
+      console.log(`${colorize(node.name, 'yellow')}: could not read hardware — ${String(error).slice(0, 120)}`);
+      report.push({ node: node.name, error: String(error) });
+      continue;
+    }
+
+    const busy = isTooBusyForMaintenance(facts);
+    const plans = planAllBackends(facts, args.dataDir, args.backends.length ? args.backends : undefined);
+    const gpu = facts.gpus.map((g) => `${g.vendor}${g.gfx ? `/${g.gfx}` : ''}${g.driverWorking ? '' : ' [driver dead]'}`).join(', ') || 'no gpu';
+    console.log(`${node.name}  ${colorize(`${facts.os}/${facts.arch} · ${gpu} · load ${facts.load1 ?? '?'}`, 'dim')}`);
+    for (const note of facts.notes) console.log(colorize(`  ! ${note}`, 'yellow'));
+
+    if (busy.busy && args.execute) {
+      // The reason this gate exists: a fleet-wide upgrade pass on this fleet caught one node
+      // mid-inference at load 108-116 and left it needing physical recovery. Nothing checked first.
+      console.log(colorize(`  refusing to install: ${busy.why}`, 'yellow'));
+      report.push({ node: node.name, skipped: busy.why });
+      console.log('');
+      continue;
+    }
+
+    for (const plan of plans) {
+      if (!args.execute) {
+        const tag = plan.action === 'install' ? colorize('would install', 'green') : plan.action;
+        console.log(`  ${plan.backend.padEnd(9)} ${tag} — ${plan.why}`);
+        report.push({ node: node.name, backend: plan.backend, action: plan.action, why: plan.why });
+        continue;
+      }
+      const result = await executeBackendPlan(target, plan);
+      const tone = result.outcome === 'failed' ? 'red' : result.outcome === 'installed' ? 'green' : 'dim';
+      const took = result.ms ? ` (${Math.round(result.ms / 1000)}s)` : '';
+      console.log(`  ${plan.backend.padEnd(9)} ${colorize(result.outcome, tone)}${took} — ${result.why}`);
+      if (result.detail && result.outcome === 'failed') console.log(colorize(`    ${result.detail}`, 'dim'));
+      report.push({ node: node.name, ...result });
+    }
+    console.log('');
+  }
+
+  for (const s of skipped) console.log(colorize(`  skipped ${s.node.name}: ${s.why}`, 'dim'));
+  if (args.json) console.log(JSON.stringify(report, null, 2));
+}
+
+/**
+ * `cihub fleet install` — stand a Hub up on every selected node.
+ *
+ * Serialised, and load-gated per node. Both because a fleet-wide pass on this fleet upgraded a
+ * machine that was serving live traffic at load 108-116 and left it needing physical recovery.
+ */
+async function runInstall(args: FleetArgs): Promise<void> {
+  const roster = loadFleetRoster();
+  const { run, skipped } = partitionForRun(roster.nodes, args.nodes);
+  if (run.length === 0) {
+    console.log('No nodes selected.');
+    for (const s of skipped) console.log(colorize(`  skipped ${s.node.name}: ${s.why}`, 'dim'));
+    return;
+  }
+
+  if (!args.execute) {
+    console.log(colorize('Dry run — nothing will be installed. Add --execute to apply.', 'dim'));
+    console.log(`  would install on ${run.length} node(s): ${run.map((n) => n.name).join(', ')}`);
+    if (args.joinPool) console.log(`  each would then pair into ${args.joinPool}`);
+    console.log(colorize('  requires --code <portal-pairing-code> and a Postgres password', 'dim'));
+    return;
+  }
+
+  // Checked here rather than at parse time so a dry run needs neither secret.
+  if (!args.code) {
+    console.error(colorize('--code <portal-pairing-code> is required. Get one from Companion Portal.', 'red'));
+    process.exit(2);
+  }
+  if (!args.postgresPassword || args.postgresPassword.length < 8) {
+    console.error(colorize('A Postgres password of at least 8 characters is required.', 'red'));
+    console.error(colorize('  Set CIHUB_POSTGRES_PASSWORD in your environment; it is never passed on a command line.', 'dim'));
+    process.exit(2);
+  }
+
+  const reports = [];
+  for (const node of run) {
+    console.log(`\n${node.name}`);
+    const report = await installNode(
+      node,
+      {
+        postgresPassword: args.postgresPassword,
+        pairingCode: args.code,
+        joinPool: args.joinPool,
+        poolPin: args.poolPin,
+      },
+      args.user,
+    );
+    for (const st of report.steps) {
+      const icon = st.skipped ? colorize('·', 'dim') : st.ok ? colorize('✓', 'green') : colorize('✗', 'red');
+      const took = st.ms ? colorize(` (${Math.round(st.ms / 1000)}s)`, 'dim') : '';
+      console.log(`  ${icon} ${st.name}${took} — ${st.detail}`);
+    }
+    reports.push(report);
+  }
+
+  const ok = reports.filter((r) => r.ok).length;
+  console.log(`\n${ok}/${reports.length} node(s) installed.`);
+  for (const s of skipped) console.log(colorize(`  skipped ${s.node.name}: ${s.why}`, 'dim'));
+  if (args.json) console.log(JSON.stringify(reports, null, 2));
+}
+
+/**
+ * `cihub fleet update` — refresh the Hub image and/or pull models across the fleet.
+ *
+ * Model pulls are serialised for a measured reason: concurrent cold loads of 20-50 GB blocked the
+ * nodes' own HTTP listeners long enough that the tooling reported them absent while they worked.
+ */
+async function runUpdate(args: FleetArgs): Promise<void> {
+  const roster = loadFleetRoster();
+  const { run, skipped } = partitionForRun(roster.nodes, args.nodes);
+  if (run.length === 0) {
+    console.log('No nodes selected.');
+    return;
+  }
+  if (!args.hub && args.models.length === 0) {
+    console.log('Nothing to do. Pass --hub to update the Hub image, --models a,b to pull models, or both.');
+    return;
+  }
+  if (!args.execute) {
+    console.log(colorize('Dry run — nothing will change. Add --execute to apply.', 'dim'));
+    console.log(`  ${run.length} node(s): ${run.map((n) => n.name).join(', ')}`);
+    if (args.hub) console.log('  would run: cihub pool update');
+    for (const m of args.models) console.log(`  would pull: ${m}`);
+    return;
+  }
+
+  for (const node of run) {
+    const target = { host: node.ip, user: node.user ?? args.user };
+    console.log(`\n${node.name}`);
+    if (args.hub) {
+      const res = await sshCapture(target, `bash <<'EOF'\n${updateHubScript()}\nEOF`, 20 * 60_000);
+      const ok = res.ok && res.out.includes('hub-update-complete');
+      console.log(
+        `  ${ok ? colorize('✓', 'green') : colorize('✗', 'red')} hub image — ${(res.err || res.out).split('\n').filter(Boolean).slice(-1)[0]?.slice(0, 160) ?? ''}`,
+      );
+    }
+    for (const model of args.models) {
+      const res = await sshCapture(target, `bash <<'EOF'\n${pullModelScript(model)}\nEOF`, 45 * 60_000);
+      const ok = res.ok && res.out.includes('model-pull-complete');
+      console.log(
+        `  ${ok ? colorize('✓', 'green') : colorize('✗', 'red')} ${model} — ${(res.err || res.out).split('\n').filter(Boolean).slice(-1)[0]?.slice(0, 160) ?? ''}`,
+      );
+    }
+  }
+  for (const s of skipped) console.log(colorize(`  skipped ${s.node.name}: ${s.why}`, 'dim'));
+}
+
+/**
+ * `cihub fleet apps` — check that the agent apps can actually get inference from each node.
+ *
+ * Deliberately a CHECK, not an installer. Marketplace install runs through entitlement checks and a
+ * compose pipeline that belong on the Hub, and driving it blind across a fleet would distribute the
+ * device key to every node's containers — the repo's own warning is that installing an app grants
+ * Hub operator authority. What is genuinely missing and safe is the pre-flight: does the Hub serve
+ * this slug credentials, and does an inference base URL resolve.
+ */
+async function runApps(args: FleetArgs): Promise<void> {
+  const roster = loadFleetRoster();
+  const { run, skipped } = partitionForRun(roster.nodes, args.nodes);
+  if (run.length === 0) {
+    console.log('No nodes selected.');
+    return;
+  }
+  const slugs = args.apps.length ? args.apps : [...SUPPORTED_APP_SLUGS];
+  console.log(colorize(`Checking ${slugs.join(', ')} against the ${args.endpoint} endpoint on ${run.length} node(s).`, 'dim'));
+  console.log(colorize('This reads credentials; it installs nothing.', 'dim'));
+  console.log('');
+
+  const report: Record<string, unknown>[] = [];
+  for (const node of run) {
+    const target = { host: node.ip, user: node.user ?? args.user };
+    const pool = await sshCapture(target, `bash <<'EOF'\n${poolRoutingScript()}\nEOF`, 30_000);
+    const pooled = pool.out.includes('pool-routes-present');
+    console.log(`${node.name} ${colorize(pooled ? 'pool routes present' : 'no pool routes', 'dim')}`);
+    for (const slug of slugs) {
+      const check = await checkAppOnNode(target, slug, args.endpoint);
+      console.log(`  ${check.ok ? colorize('✓', 'green') : colorize('✗', 'red')} ${slug} — ${check.detail}`);
+      report.push({ node: node.name, pooled, ...check });
+    }
+  }
+  for (const s of skipped) console.log(colorize(`  skipped ${s.node.name}: ${s.why}`, 'dim'));
+  console.log('');
+  console.log(colorize('Note: every installed app receives the Hub device key in its environment —', 'yellow'));
+  console.log(colorize('installing one grants Hub operator authority. Install from the Hub UI or API.', 'yellow'));
+  if (args.json) console.log(JSON.stringify(report, null, 2));
+}
+
 export async function runFleetCommand(argv: readonly string[]): Promise<void> {
   let args: FleetArgs;
   try {
@@ -309,6 +602,18 @@ export async function runFleetCommand(argv: readonly string[]): Promise<void> {
       return;
     case 'status':
       await runStatus(args);
+      return;
+    case 'backends':
+      await runBackends(args);
+      return;
+    case 'install':
+      await runInstall(args);
+      return;
+    case 'update':
+      await runUpdate(args);
+      return;
+    case 'apps':
+      await runApps(args);
       return;
   }
 }

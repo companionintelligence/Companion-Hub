@@ -1270,7 +1270,7 @@ describe('runPoolCommand', () => {
 
     expect(poolApi.unpairPoolPeer).not.toHaveBeenCalled();
     expect(exitSpy).toHaveBeenCalledWith(2);
-    expect(stripAnsi(String(errorSpy.mock.calls[0]?.[0]))).toContain('requires an interactive terminal or --yes');
+    expect(stripAnsi(String(errorSpy.mock.calls[0]?.[0]))).toContain('requires an interactive terminal, --yes, or CI_HUB_ASSUME_YES=1');
   });
 
   it('unpairs the peer resolved from an id prefix once --yes is given', async () => {
