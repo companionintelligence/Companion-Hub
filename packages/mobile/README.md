@@ -135,14 +135,12 @@ IPHONEOS_DEPLOYMENT_TARGET=16.0 \
 mobile-dev proxy (a black WKWebView on iOS 26). Do not pass `--host 127.0.0.1`
 — that puts the proxy back.
 
-Compile and run on the Simulator against the **development** Portal
-(`hub.companionintelligence.com`):
+Cloud connect defaults to the **production** Portal (`hub.ci.computer`), even when
+this checkout's `.env.dev` points the Hub appliance at the internal cloud. A custom
+Companion URL can be set under **Advanced** on `/connect`.
 
 ```bash
-CI_CLOUD_URL=https://hub.companionintelligence.com \
-CI_HUB_ENVIRONMENT=development \
-VITE_HUB_RUNTIME=mobile \
-  pnpm --filter frontend run dev
+VITE_HUB_RUNTIME=mobile pnpm --filter frontend run dev
 
 IPHONEOS_DEPLOYMENT_TARGET=16.0 \
   pnpm --filter mobile exec tauri ios dev "iPhone 17"
