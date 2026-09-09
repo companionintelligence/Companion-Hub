@@ -172,6 +172,9 @@ describe('portal-sso helpers', () => {
       ok: true,
       accessToken: 'access-token',
       email: 'operator@example.com',
+      emailVerified: true,
+      subject: null,
+      issuer: 'https://hub.ci.computer',
     });
   });
 
