@@ -11,6 +11,7 @@ import { mkdir, copyFile, writeFile, chmod, rm, stat, readFile } from 'node:fs/p
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { isDirectScriptRun } from './lib/is-direct-run';
+import { findTraefikAssets } from './lib/seed-appliance';
 
 const INTERNAL_DIR = process.env.CI_HUB_STATE_PATH || process.env.STATE_PATH || '.internal';
 const STATE_DIR = path.join(INTERNAL_DIR, 'state');
@@ -29,14 +30,16 @@ export async function initTraefik() {
     }
   }
 
-  // Copy config files
-  const assetsDir = path.join(process.cwd(), 'packages/backend/assets/traefik');
+  // Copy config files. `process.cwd()` only resolves this inside a CI-Hub checkout — a
+  // packaged/standalone `cihub` (no checkout, no desktop install) needs the same
+  // execPath-relative search `findBundledCompose` already does for docker-compose.prod.yml.
+  const assetsDir = findTraefikAssets();
 
   // traefik.yml
-  const traefikSrc = path.join(assetsDir, 'traefik.yml');
+  const traefikSrc = assetsDir ? path.join(assetsDir, 'traefik.yml') : undefined;
   const traefikDest = path.join(TRAEFIK_DIR, 'config', 'traefik.yml');
 
-  if (existsSync(traefikSrc)) {
+  if (traefikSrc && existsSync(traefikSrc)) {
     let shouldCopy = true;
     if (existsSync(traefikDest)) {
       const destStats = await stat(traefikDest);
@@ -57,13 +60,17 @@ export async function initTraefik() {
       const finalContent = content.replace('{{ACME_EMAIL}}', 'admin@localhost');
       await writeFile(traefikDest, finalContent);
     }
-  } else {
+  } else if (traefikSrc) {
     console.warn(`Warning: Source traefik.yml not found at ${traefikSrc}`);
+  } else {
+    console.warn(
+      'Warning: no bundled Traefik assets found (checked next to the executable, its resources/ dir, the desktop install paths, and packages/backend/assets/traefik relative to cwd). traefik.yml and acme_storage.json below still get created so the container can start.',
+    );
   }
 
   // dynamic.yml
   // Check if dynamic folder exists in assets
-  if (existsSync(path.join(assetsDir, 'dynamic'))) {
+  if (assetsDir && existsSync(path.join(assetsDir, 'dynamic'))) {
     // We might want to copy specific files or just one common dynamic.yml
     // Based on previous code, it seems dynamic.yml is expected
     const dynamicSrc = path.join(assetsDir, 'dynamic', 'dynamic.yml'); // Assumption based on typical setup
