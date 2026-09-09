@@ -8,6 +8,7 @@ import { DockerReadFacade } from '../docker/docker-read.facade';
 import { AppsRepository } from '../apps/apps.repository';
 import { InstallPipelineTracker } from '../apps/install-pipeline.tracker';
 import type { AppStatus } from '@/core/database/drizzle/types';
+import { StatusReportService } from '../status-report/status-report.service';
 import { SystemEventsQueue } from '../queue/entities/system-events';
 import { appUrnFromLabels, DEFAULT_APP_IMAGE_PULL_TIMEOUT_MINUTES } from '@/common/constants';
 import { listContainersMatchingAnyLabelSets, managedAppLabelSets } from '../docker/hub-container-query';
@@ -47,6 +48,7 @@ export class AppStatusSyncService {
     @Optional() private readonly errorReportingService?: ErrorReportingService,
     @Optional() private readonly networkDiagnostics?: NetworkDiagnosticsService,
     @Optional() private readonly dockerReadFacade?: DockerReadFacade,
+    @Optional() private readonly statusReportService?: StatusReportService,
   ) {
     if (this.configuration.get('userSettings').eventsTimeout > 5) {
       const eventsTimeout = this.configuration.get('userSettings').eventsTimeout;
@@ -64,6 +66,21 @@ export class AppStatusSyncService {
       if (data.command === 'sync_app_statuses') {
         const result = await this.syncAllAppStatuses();
         await reply(result);
+        return;
+      }
+
+      if (data.command === 'write_status_report') {
+        if (!this.statusReportService) {
+          await reply({ success: false, message: 'Status report unavailable' });
+          return;
+        }
+
+        try {
+          const written = await this.statusReportService.writeReport();
+          await reply({ success: true, message: `Status report written to ${written}` });
+        } catch (error) {
+          await reply({ success: false, message: error instanceof Error ? error.message : String(error) });
+        }
         return;
       }
 

@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { Queue } from '../queue.entity';
 
 export const systemCommandSchema = z.object({
-  command: z.union([z.literal('sync_app_statuses'), z.literal('reconcile_orphan_networks')]),
+  command: z.union([z.literal('sync_app_statuses'), z.literal('reconcile_orphan_networks'), z.literal('write_status_report')]),
 });
 
 export const systemCommandResultSchema = z.object({
