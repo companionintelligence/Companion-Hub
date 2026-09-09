@@ -503,24 +503,6 @@
         ]
       }
     },
-    "/api/registration/verify-pairing-code": {
-      "post": {
-        "operationId": "verifyPairingCode",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "description": "Pairing code verified and device identity bound"
-          },
-          "400": {
-            "description": "Invalid or missing pairing code"
-          }
-        },
-        "summary": "Verify a signup pairing code and bind device identity with CI Cloud",
-        "tags": [
-          "Registration"
-        ]
-      }
-    },
     "/api/registration/probe-domain": {
       "get": {
         "operationId": "probeDomain",
