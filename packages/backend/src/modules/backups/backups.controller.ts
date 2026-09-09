@@ -74,9 +74,15 @@ export class BackupsController {
     await this.whois.assertSessionAction(req, appUrn, 'view');
     const filePath = await this.backupsService.getBackupFilePath({ appUrn, filename });
 
+    // The name is interpolated into a quoted header parameter, so a `"` or `\` in it
+    // would close the quoted-string early and let the rest of the filename be read as
+    // further Content-Disposition parameters. `resolveBackupFilePath` fences the name to
+    // one path segment, which does not make it header-safe.
+    const headerFilename = filename.replaceAll('\\', '\\\\').replaceAll('"', '\\"');
+
     res.set({
       'Content-Type': 'application/gzip',
-      'Content-Disposition': `attachment; filename="${filename}"`,
+      'Content-Disposition': `attachment; filename="${headerFilename}"`,
     });
 
     return res.sendFile(filePath);
