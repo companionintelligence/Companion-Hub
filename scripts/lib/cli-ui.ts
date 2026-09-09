@@ -92,6 +92,20 @@ const commandSections: { title: string; entries: CommandEntry[] }[] = [
     ],
   },
   {
+    title: 'Fleet',
+    entries: [
+      {
+        command: `${BASE_COMMAND} fleet scan [--lan] [--write-roster] [--json]`,
+        description: 'Find machines on your tailnet (and optionally the LAN), and report SSH, Hub and engines separately',
+      },
+      { command: `${BASE_COMMAND} fleet list [--json]`, description: 'The saved roster, and which nodes fleet commands will skip' },
+      {
+        command: `${BASE_COMMAND} fleet status [--nodes a,b] [--json]`,
+        description: 'Re-probe every rostered node: administrable, running a Hub, serving engines',
+      },
+    ],
+  },
+  {
     title: 'Hub Pool',
     entries: [
       { command: `${BASE_COMMAND} pool status [env]`, description: 'Whether pooling is routing, this node, and every peer' },

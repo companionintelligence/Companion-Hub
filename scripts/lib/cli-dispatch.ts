@@ -19,6 +19,7 @@ import { runAppCommand } from './cli-app.js';
 import { doctorHub, logsHub, showStatus, uninstallHub } from './cli-doctor.js';
 import { printConfig, setupHub, startHub } from './cli-lifecycle.js';
 import { runModelsCommand, runPublicWebCommand, setMcpState } from './cli-models.js';
+import { runFleetCommand } from './cli-fleet.js';
 import { runPoolCommand } from './cli-pool.js';
 import { confirmDestructiveAction } from './cli-prompt.js';
 import { registerHub, showDeviceId } from './cli-register.js';
@@ -213,6 +214,11 @@ export async function runCli(rawArgs: string[]) {
 
   if (first === 'pool') {
     await runPoolCommand(args.slice(1));
+    return;
+  }
+
+  if (first === 'fleet') {
+    await runFleetCommand(args.slice(1));
     return;
   }
 
