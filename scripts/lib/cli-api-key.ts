@@ -56,8 +56,9 @@ export function sqlQuote(value: string): string {
  * Key names are interpolated into SQL, so the character set is deliberately narrow — quoting alone
  * is not the only line of defence. `app:` is reserved for keys the Hub provisions to marketplace
  * apps; an operator key must not be able to impersonate one. A leading `-` is refused too: it is
- * never a sensible label, and it is what `--name --scopes mcp` (a flag whose value was forgotten)
- * looks like by the time it reaches here.
+ * never a sensible label, and it is what a flag whose value was forgotten looks like by the time it
+ * reaches here — `--name=--scopes` arrives intact, the space-separated form having already been
+ * refused by {@link readApiKeyFlag}.
  */
 export function isValidApiKeyName(name: string): boolean {
   return /^[\w .:@][\w .:@-]{0,63}$/.test(name) && !name.startsWith('app:');
@@ -209,6 +210,28 @@ function psqlErrorLines(result: { stdout: string; stderr: string }): string[] {
 }
 
 /**
+ * Read `--flag value` or `--flag=value`, the two spellings being interchangeable — the same rule
+ * `readValue` applies in cli-fleet.ts.
+ *
+ * Matching only the space-separated form made `--capability=full` *invisible*: the key was minted at
+ * DEFAULT_API_KEY_CAPABILITY and the box reported that as the grant, so the operator was told a key
+ * they had not asked for was the key they had. A flag that decides privilege must never be readable
+ * as absent, which is why a missing value exits here rather than returning something the caller
+ * would fall back on.
+ */
+function readApiKeyFlag(args: string[], flag: string): string | undefined {
+  const index = args.findIndex((arg) => arg === flag || arg.startsWith(`${flag}=`));
+  if (index < 0) return undefined;
+
+  const arg = args[index] as string;
+  if (arg !== flag) return arg.slice(flag.length + 1);
+
+  const next = args[index + 1];
+  if (next === undefined || next.startsWith('-')) usageAndExit(`Missing value for ${flag}.`);
+  return next;
+}
+
+/**
  * Operator API keys from the terminal.
  *
  * SEC-MCP-8 made the hashed store the sole auth authority and deliberately removed the guard's env
@@ -223,8 +246,7 @@ export function runApiKeyCommand(args: string[]) {
   const subcommand = args[0] || 'list';
 
   if (subcommand === 'create') {
-    const nameFlag = args.indexOf('--name');
-    const name = nameFlag >= 0 ? args[nameFlag + 1] : undefined;
+    const name = readApiKeyFlag(args, '--name');
     if (!name)
       usageAndExit(
         `Usage: ${BASE_COMMAND} api-key create --name <label> [--scopes ${OPERATOR_API_KEY_SCOPES.join(',')}] ` +
@@ -236,8 +258,7 @@ export function runApiKeyCommand(args: string[]) {
       );
     }
 
-    const scopesFlag = args.indexOf('--scopes');
-    const { scopes, invalid, managedOnly } = parseApiKeyScopes(scopesFlag >= 0 ? (args[scopesFlag + 1] ?? '') : 'mcp');
+    const { scopes, invalid, managedOnly } = parseApiKeyScopes(readApiKeyFlag(args, '--scopes') ?? 'mcp');
     if (scopes.length === 0) usageAndExit(`At least one scope is required. Valid: ${OPERATOR_API_KEY_SCOPES.join(', ')}`);
     if (managedOnly.length > 0) {
       usageAndExit(
@@ -246,8 +267,7 @@ export function runApiKeyCommand(args: string[]) {
     }
     if (invalid.length > 0) usageAndExit(`Unknown scope(s): ${invalid.join(', ')}. Valid: ${OPERATOR_API_KEY_SCOPES.join(', ')}`);
 
-    const capabilityFlag = args.indexOf('--capability');
-    const capability = capabilityFlag >= 0 ? (args[capabilityFlag + 1] ?? '') : DEFAULT_API_KEY_CAPABILITY;
+    const capability = readApiKeyFlag(args, '--capability') ?? DEFAULT_API_KEY_CAPABILITY;
     if (!API_KEY_CAPABILITIES.includes(capability)) {
       usageAndExit(
         `Unknown capability: ${capability || '(empty)'}. Valid: ${API_KEY_CAPABILITIES.join(', ')} — ` +
