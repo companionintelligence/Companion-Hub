@@ -134,6 +134,26 @@ describe('renderHubStatusMarkdown', () => {
     expect(out).not.toContain('| Model | Backend | Size | Servable |');
   });
 
+  it('says a model list is unverified when nothing is healthy to serve it', () => {
+    // The Hub's record is not a live check. Left unqualified beside a "Servable"
+    // column, it reads as confirmed when nothing confirmed it.
+    const out = render({
+      models: [{ name: 'qwen3:8b', backend: 'ollama', sizeBytes: null, unservable: false }],
+      backends: [{ type: 'ollama', running: false, healthy: false, url: null, modelsLoaded: null }],
+    });
+
+    expect(out).toMatch(/what the Hub last recorded/);
+  });
+
+  it('does not add that caveat when a backend is healthy', () => {
+    const out = render({
+      models: [{ name: 'qwen3:8b', backend: 'ollama', sizeBytes: null, unservable: false }],
+      backends: [{ type: 'ollama', running: true, healthy: true, url: 'http://x', modelsLoaded: 1 }],
+    });
+
+    expect(out).not.toMatch(/what the Hub last recorded/);
+  });
+
   // ── backends ─────────────────────────────────────────────────────────────
 
   it('separates running backends from the ones that are merely possible', () => {

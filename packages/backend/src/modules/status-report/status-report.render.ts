@@ -156,7 +156,7 @@ function renderBackends(report: HubStatusReport): string[] {
   return lines;
 }
 
-function renderModels(models: StatusModel[] | null): string[] {
+function renderModels(models: StatusModel[] | null, anyBackendHealthy: boolean): string[] {
   const lines = ['## LLM / AI models installed', ''];
 
   if (!models) {
@@ -167,6 +167,13 @@ function renderModels(models: StatusModel[] | null): string[] {
   if (models.length === 0) {
     lines.push('No models are installed on this node.', '');
     return lines;
+  }
+
+  // Same discipline as the workloads table: this list is what the Hub has
+  // recorded, and with nothing healthy to serve them that record is unverifiable
+  // rather than wrong. Saying so beats a table that reads as confirmed.
+  if (!anyBackendHealthy) {
+    lines.push('> No inference backend is healthy, so this list is what the Hub last recorded — not a live check.', '');
   }
 
   // A column in which every cell is unknown teaches nothing and reads as missing
@@ -263,7 +270,10 @@ export function renderHubStatusMarkdown(report: HubStatusReport): string {
   lines.push(
     ...renderConnection(report),
     ...renderBackends(report),
-    ...renderModels(report.models),
+    ...renderModels(
+      report.models,
+      (report.backends ?? []).some((backend) => backend.healthy),
+    ),
     ...renderWorkloads(report.workloads),
     ...renderSystem(report),
   );

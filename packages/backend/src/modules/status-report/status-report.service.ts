@@ -19,6 +19,8 @@ import type { HubStatusReport, StatusBackend, StatusModel, StatusSystem, StatusW
 /** Where the file lands. `state/` is already bind-mounted to the host, so this needs no new mount. */
 export const STATUS_REPORT_FILENAME = 'CI_HUB_STATUS.md';
 
+const GIB = 1024 ** 3;
+
 export function statusReportPath(dataDir: string = DATA_DIR): string {
   return path.join(dataDir, 'state', STATUS_REPORT_FILENAME);
 }
@@ -114,8 +116,13 @@ export class StatusReportService {
 
     const apiPort = Number(process.env.API_PORT ?? process.env.BACKEND_PORT ?? '');
 
+    // `os.hostname()` and `$HOSTNAME` are both the CONTAINER id in here, which
+    // names the wrong machine in a fleet report. The tailnet name is this node's
+    // actual identity; without one, say nothing rather than print a container id.
+    const tailscaleName = tailscaleStatus?.hostname ?? tailscaleStatus?.nodeFqdn?.split('.')[0] ?? null;
+
     return {
-      hostname: process.env.HOSTNAME ?? null,
+      hostname: tailscaleName,
       deviceId,
       registered: Boolean(registrationStatus?.registered ?? registrationInfo?.id),
       organization: registrationInfo?.name ?? registrationInfo?.slug ?? null,
@@ -140,8 +147,16 @@ export class StatusReportService {
       uptimeSeconds: typeof health.uptime === 'number' ? health.uptime : null,
       cpu: health.cpu ? { model: health.cpu.model ?? null, cores: health.cpu.cores ?? null, loadPercent: health.cpu.load ?? null } : null,
       memory: health.memory ? { totalBytes: health.memory.total, usedBytes: health.memory.used, percent: health.memory.percent } : null,
+      // `getSystemHealth` reports memory in bytes and disk in GB (`diskTotalGb`).
+      // The report's own contract is bytes everywhere, so the conversion happens
+      // here rather than leaving two units in one structure.
       disk: health.disk
-        ? { totalBytes: health.disk.total, usedBytes: health.disk.used, freeBytes: health.disk.free, percent: health.disk.percent }
+        ? {
+            totalBytes: health.disk.total * GIB,
+            usedBytes: health.disk.used * GIB,
+            freeBytes: health.disk.free * GIB,
+            percent: health.disk.percent,
+          }
         : null,
       dockerVersion: health.dockerVersion ?? null,
       containerCount: health.containerCount ?? null,
@@ -171,9 +186,11 @@ export class StatusReportService {
     }));
 
     const models: StatusModel[] = status.models
-      // Cloud models are not installed on this box, and this file is an inventory
-      // of this box.
-      .filter((model) => model.local)
+      // `local: true` is NOT "installed" — the router sets it on curated rows the
+      // node could run but has never pulled, which would list a catalog as an
+      // inventory. `owned_by` is the discriminator the router actually varies:
+      // `local:<backend>` for a tracked model, `catalog:<backend>` for a candidate.
+      .filter((model) => model.local && !model.owned_by?.startsWith('catalog:') && model.state !== 'available')
       .map((model) => ({
         name: model.id,
         backend: model.backend ?? null,
