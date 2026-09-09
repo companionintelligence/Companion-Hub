@@ -480,6 +480,7 @@ describe('RegistrationService', () => {
 
       expect(result.success).toBe(true);
       expect(result.domain).toBe('companionintelligence.com');
+      // No `ciHubApiKey` in this config: a first pair sends no device key.
       expect(mockedAxios.post).toHaveBeenCalledWith(
         'http://cloud.api/api/devices/pair',
         { pairing_code: 'ABC123', device_id: 'test-device' },
@@ -501,6 +502,82 @@ describe('RegistrationService', () => {
         }),
       );
       setupSpy.mockRestore();
+    });
+
+    it('sends the stored device credential as proof of possession when the Hub has one', async () => {
+      // `resetRegistration` leaves `ciHubApiKey` in settings.json, so a reset Hub
+      // still holds the proof the Portal now demands to re-key it (CI-Portal#688).
+      configService.getConfig.mockReturnValue({
+        ciCloudUrl: 'http://cloud.api',
+        ciHubApiKey: 'stored-device-key',
+        userSettings: { domain: 'example.com' },
+        domain: 'example.com',
+      } as any);
+
+      mockedAxios.post.mockResolvedValue({
+        status: 200,
+        data: {
+          device_id: 'test-device',
+          organization_id: 'org-pair',
+          organization_name: 'Paired Org',
+          slug: 'paired-org',
+          subdomain: 'hub-paired-org',
+          tunnel_id: 'tunnel-pair',
+          tunnel_token: 'token-pair',
+          api_key: 'key-pair',
+          domain: 'companionintelligence.com',
+        },
+      } as any);
+
+      const setupSpy = vi.spyOn(service as any, 'setupOrganizationInfrastructure').mockResolvedValue(undefined);
+      configService.setDomain.mockResolvedValue(undefined);
+
+      await service.pairDevice('ABC123');
+
+      expect(mockedAxios.post).toHaveBeenCalledWith(
+        'http://cloud.api/api/devices/pair',
+        { pairing_code: 'ABC123', device_id: 'test-device', device_key: 'stored-device-key' },
+        expect.objectContaining({ headers: { 'Content-Type': 'application/json' } }),
+      );
+
+      setupSpy.mockRestore();
+    });
+
+    it('omits device_key rather than sending an empty one when no credential is stored', async () => {
+      // An empty string is not a credential, and sending one would have the
+      // Portal look up a device by `''` instead of treating the caller as
+      // key-less.
+      configService.getConfig.mockReturnValue({
+        ciCloudUrl: 'http://cloud.api',
+        ciHubApiKey: '',
+        userSettings: { domain: 'example.com' },
+        domain: 'example.com',
+      } as any);
+
+      mockedAxios.post.mockResolvedValue({
+        status: 400,
+        statusText: 'Bad Request',
+        data: { error: 'Invalid pairing code' },
+      } as any);
+
+      await service.pairDevice('ABC123');
+
+      expect(mockedAxios.post).toHaveBeenCalledWith(
+        'http://cloud.api/api/devices/pair',
+        { pairing_code: 'ABC123', device_id: 'test-device' },
+        expect.objectContaining({ headers: { 'Content-Type': 'application/json' } }),
+      );
+    });
+
+    it('refuses cleanly when the Portal answers 200 with no body', async () => {
+      // `null` body: reading `.success` off it directly threw, turning a clean
+      // refusal into "Pairing failed: Cannot read properties of null".
+      mockedAxios.post.mockResolvedValue({ status: 200, data: null } as any);
+
+      const result = await service.pairDevice('ABC123');
+
+      expect(result.success).toBe(false);
+      expect(result.message).toBe('Portal returned incomplete registration data.');
     });
 
     it('returns error when pairing code is invalid (Portal returns error)', async () => {
@@ -546,7 +623,9 @@ describe('RegistrationService', () => {
     });
 
     it('returns error when Portal is unreachable', async () => {
-      mockedAxios.post.mockRejectedValue(new TypeError('fetch failed'));
+      // Shaped like a real axios transport failure: `validateStatus` accepts every
+      // status, so a thrown error here never carries a `response`.
+      mockedAxios.post.mockRejectedValue(Object.assign(new Error('connect ECONNREFUSED 10.0.0.1:443'), { isAxiosError: true, code: 'ECONNREFUSED' }));
 
       const result = await service.pairDevice('ABC123');
 
