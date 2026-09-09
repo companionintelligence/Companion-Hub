@@ -19,12 +19,14 @@ export function hubSessionOperatorUserId(req: Request): number | undefined {
 /**
  * Whether this caller is exempt from the org-grant gate, and why.
  *
- * Both exempt principals are host-local by construction: the device key and the
- * JWT signing secret live in the same state file, so presenting either means the
- * caller could already read it, and Portal runs its own GRANT_DENIED gate over
- * the installs it pushes. Every other caller is checked — the exemption used to
- * be inferred from a missing `hubSessionId`, which widened it silently each time
- * an authentication arm was added (CI-Hub#1299).
+ * `cli` is host-local: its JWT is signed with `jwtSecret`, which lives in the
+ * state file. `portal-device` is not, quite — #1328 injects `HUB_API_KEY` into
+ * first-party Memory's container — so it rests on Portal's own GRANT_DENIED gate
+ * over the installs it pushes, and on that injection staying first-party only
+ * (`AppHelpers.generateEnvFile` strips the key for everything else). Every other
+ * caller is checked: the exemption used to be inferred from a missing
+ * `hubSessionId`, which widened it silently each time an authentication arm was
+ * added (CI-Hub#1299).
  */
 export function isGrantExemptPrincipal(req: Request): boolean {
   return req.hubPrincipal === 'portal-device' || req.hubPrincipal === 'cli';
