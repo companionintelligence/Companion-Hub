@@ -113,6 +113,14 @@ describe('root startup/loading fallback', () => {
     expect(screen.queryByTestId('startup-switch-hub-btn')).not.toBeInTheDocument();
   });
 
+  it('covers the viewport so a hydrated store cannot paint underneath it', () => {
+    render(<DesktopStartupFallback />);
+
+    const gate = screen.getByTestId('connecting-to-local-api');
+    expect(gate).toHaveClass('fixed', 'inset-0');
+    expect(gate.className).not.toMatch(/min-h-\[40vh\]/);
+  });
+
   it('offers a reload after the connecting copy has been up for a few seconds', async () => {
     vi.useFakeTimers();
     render(<DesktopStartupFallback />);
