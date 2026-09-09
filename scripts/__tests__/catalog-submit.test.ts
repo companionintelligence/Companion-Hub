@@ -19,6 +19,11 @@ import {
   deleteStoredLogin,
   loginFilePath,
   runCatalogLogout,
+  loginScope,
+  mintPairingCode,
+  CATALOG_WRITE_SCOPE,
+  DEVICE_PAIR_SCOPE,
+  type PortalLogin,
 } from '../lib/catalog-submit';
 import { renderHelp, stripAnsi } from '../cihub-cli';
 
@@ -207,6 +212,107 @@ describe('stored login file', () => {
     });
 
     expect(readStoredLogin(filePath)).toBeNull();
+  });
+});
+
+describe('login scope', () => {
+  const login = (scope?: string): PortalLogin =>
+    ({
+      token: 'cio_test',
+      orgId: 'org_1',
+      orgSlug: 'acme',
+      portalOrigin: 'https://portal.example',
+      ...(scope ? { scope } : {}),
+    }) as PortalLogin;
+
+  it('treats a login stored before scopes existed as catalog:write', () => {
+    expect(loginScope(login())).toBe(CATALOG_WRITE_SCOPE);
+  });
+
+  it('reports the stored scope when there is one', () => {
+    expect(loginScope(login(DEVICE_PAIR_SCOPE))).toBe(DEVICE_PAIR_SCOPE);
+  });
+
+  it('reports nothing when there is no login at all', () => {
+    expect(loginScope(null)).toBeNull();
+  });
+});
+
+describe('minting a pairing code', () => {
+  const login = (scope: string): PortalLogin =>
+    ({
+      token: 'cio_test',
+      orgId: 'org_1',
+      orgSlug: 'acme',
+      portalOrigin: 'https://portal.example',
+      scope,
+    }) as PortalLogin;
+
+  it('refuses to try with a catalog:write login, naming the command that fixes it', async () => {
+    await expect(
+      mintPairingCode({
+        name: 'core-9',
+        login: login(CATALOG_WRITE_SCOPE),
+        fetchImpl: (() => {
+          throw new Error('must not be called');
+        }) as unknown as typeof fetch,
+      }),
+    ).rejects.toThrow(/cihub login --scope device:pair/);
+  });
+
+  it('posts the node name and the token org, and returns the code', async () => {
+    const seen: { url: string; body: unknown; auth: string | undefined }[] = [];
+
+    const result = await mintPairingCode({
+      name: 'core-9',
+      login: login(DEVICE_PAIR_SCOPE),
+      fetchImpl: (async (url: string, init: RequestInit) => {
+        seen.push({
+          url,
+          body: JSON.parse(String(init.body)),
+          auth: (init.headers as Record<string, string>).Authorization,
+        });
+
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ deviceId: 'inactive-1', pairingCode: 'ABC123', name: 'core-9', slug: 'core-9' }),
+        };
+      }) as unknown as typeof fetch,
+    });
+
+    expect(result.pairingCode).toBe('ABC123');
+    expect(seen).toEqual([
+      {
+        url: 'https://portal.example/api/devices',
+        auth: 'Bearer cio_test',
+        body: { name: 'core-9', organization_id: 'org_1' },
+      },
+    ]);
+  });
+
+  it('explains a 409 as the name already being taken, not a bare status', async () => {
+    await expect(
+      mintPairingCode({
+        name: 'core-9',
+        login: login(DEVICE_PAIR_SCOPE),
+        fetchImpl: (async () => ({ ok: false, status: 409, json: async () => ({}) })) as unknown as typeof fetch,
+      }),
+    ).rejects.toThrow(/already exists/);
+  });
+
+  it('surfaces Portal’s own error text when it sends one', async () => {
+    await expect(
+      mintPairingCode({
+        name: 'core-9',
+        login: login(DEVICE_PAIR_SCOPE),
+        fetchImpl: (async () => ({
+          ok: false,
+          status: 403,
+          json: async () => ({ error: 'You are not a member of this organization' }),
+        })) as unknown as typeof fetch,
+      }),
+    ).rejects.toThrow(/not a member/);
   });
 });
 
