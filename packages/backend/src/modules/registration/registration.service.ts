@@ -22,6 +22,7 @@ import {
   type RegistrationStatus,
   PROVISIONING_PHASES,
   isOperational,
+  requiresPortalRePairing,
   isLegalTransition,
   isActiveRegistrationPhase,
   buildRegistrationStatus,
@@ -889,6 +890,24 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     }
 
     return this.callbackNonce.value;
+  }
+
+  /**
+   * Whether this Hub is registered and actually serving, which is the state in
+   * which a registration callback must be refused.
+   *
+   * Deliberately narrower than {@link isRegistered}: a Hub degraded by a missing
+   * tunnel token is registered, but pairing again is how it recovers, and the
+   * headless setup service completes that pairing through the callback.
+   */
+  public async isRegisteredAndServing(): Promise<boolean> {
+    await this.refreshPhaseFromSources();
+
+    if (requiresPortalRePairing(this._currentPhase, this._degradedReasons)) {
+      return false;
+    }
+
+    return isOperational(this._currentPhase);
   }
 
   /** Persists restore intent beyond `sessionStorage` before the device pairs again. */
