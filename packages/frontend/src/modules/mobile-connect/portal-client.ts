@@ -1,9 +1,15 @@
 /**
  * Minimal client for the CI cloud control plane (the Portal) used by the
- * mobile Hub picker. Production is `hub.ci.computer`; the development Portal
- * is `hub.companionintelligence.com`. All requests go through the Tauri HTTP
- * plugin (`@tauri-apps/plugin-http`) rather than the webview `fetch`, so
- * cross-origin cookie/CORS limitations of a `tauri://localhost` origin don't apply.
+ * mobile Hub picker. Cloud connect always starts on production (`hub.ci.computer`).
+ * `CI_CLOUD_URL` / `CI_HUB_ENVIRONMENT` belong to the Hub appliance, not the
+ * phone — a `cihub up dev` frontend must not silently aim TestFlight / Play /
+ * Simulator Sign in at the internal Portal. Advanced can override the Companion
+ * URL; a persisted `hub.companionintelligence.com` is ignored so old installs
+ * migrate to production.
+ *
+ * All requests go through the Tauri HTTP plugin (`@tauri-apps/plugin-http`)
+ * rather than the webview `fetch`, so cross-origin cookie/CORS limitations of a
+ * `tauri://localhost` origin don't apply.
  *
  * The Portal is better-auth + Hono on Cloudflare Workers. Email/password
  * yields a session (cookie / session token) for `GET /api/devices`. OIDC PKCE
@@ -11,19 +17,8 @@
  * token is valid on `GET /api/users/me/apps?slug=hub` (`oauthBearerMiddleware`).
  */
 
-const PRODUCTION_PORTAL_URL = 'https://hub.ci.computer';
-
-function portalUrlFromEnv(): string {
-  const baked = (import.meta.env.CI_CLOUD_URL as string | undefined)?.trim();
-  if (baked) {
-    const next = baked.replace(/\/+$/, '');
-    // Internal/dev cloud host is not the user-facing Companion URL.
-    if (next && !next.includes('companionintelligence.com')) return next;
-  }
-  return PRODUCTION_PORTAL_URL;
-}
-
-export const DEFAULT_PORTAL_URL = portalUrlFromEnv();
+/** Phone cloud-connect Companion URL. Not derived from Hub appliance env. */
+export const DEFAULT_PORTAL_URL = 'https://hub.ci.computer';
 
 export interface PortalAuth {
   token: string | null;
