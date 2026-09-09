@@ -13,13 +13,34 @@ const BUNDLE_ID = /^[a-z0-9][a-z0-9-]{0,31}$/;
 const MAX_CATALOG_ID_LENGTH = 48;
 const LOGIN_FILE_NAME = 'portal-login.json';
 
+/** Submitting apps to the marketplace. What `cihub login` has always minted. */
+export const CATALOG_WRITE_SCOPE = 'catalog:write';
+
+/** Registering devices into the org, so a fleet install needs no browser per box. */
+export const DEVICE_PAIR_SCOPE = 'device:pair';
+
+export const CLI_LOGIN_SCOPES = [CATALOG_WRITE_SCOPE, DEVICE_PAIR_SCOPE] as const;
+
+export type CliLoginScope = (typeof CLI_LOGIN_SCOPES)[number];
+
 export type PortalLogin = {
   token: string;
   tokenId?: string | null;
   orgId: string;
   orgSlug: string | null;
   portalOrigin: string;
+  /** Absent on a login stored before scopes existed, which means catalog:write. */
+  scope?: CliLoginScope;
 };
+
+/** What a stored login can do. An old file has no scope and predates any but catalog:write. */
+export function loginScope(login: Pick<PortalLogin, 'scope'> | null | undefined): CliLoginScope | null {
+  if (!login) {
+    return null;
+  }
+
+  return login.scope ?? CATALOG_WRITE_SCOPE;
+}
 
 export type CatalogSubmitOptions = {
   dir?: string;
@@ -35,6 +56,7 @@ export type CatalogSubmitOptions = {
 export type CatalogLoginOptions = {
   device?: boolean;
   org?: string;
+  scope?: string;
   portalOrigin?: string;
   fetchImpl?: typeof fetch;
   openUrl?: (url: string) => void;
@@ -174,6 +196,58 @@ export function resolveSubmitCredentials(args: {
     };
   }
   return { token, orgId, orgSlug };
+}
+
+export type MintedPairingCode = { deviceId: string; pairingCode: string; name: string; slug: string };
+
+/**
+ * Register a device with Portal and return its pairing code, using a stored
+ * `device:pair` login instead of a browser.
+ *
+ * This is the same `POST /api/devices` the Portal UI calls when someone clicks
+ * "Add device" — the token stands in for that session, and Portal still checks
+ * the token holder is a member of the org. What it removes is the human, not
+ * the authorization.
+ */
+export async function mintPairingCode(params: { name: string; login: PortalLogin; fetchImpl?: typeof fetch }): Promise<MintedPairingCode> {
+  const scope = loginScope(params.login);
+
+  if (scope !== DEVICE_PAIR_SCOPE) {
+    throw new Error(`the stored Portal login has scope ${scope ?? 'none'}; run: cihub login --scope ${DEVICE_PAIR_SCOPE}`);
+  }
+
+  const fetchImpl = params.fetchImpl ?? fetch;
+  const response = await fetchImpl(`${params.login.portalOrigin}/api/devices`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${params.login.token}`,
+    },
+    body: JSON.stringify({ name: params.name, organization_id: params.login.orgId }),
+  });
+
+  const body = (await response.json().catch(() => ({}))) as {
+    deviceId?: string;
+    pairingCode?: string;
+    name?: string;
+    slug?: string;
+    error?: string;
+  };
+
+  if (!response.ok || !body.pairingCode || !body.deviceId) {
+    // 409 is the one an operator can act on without reading Portal: the name is
+    // taken, which on a fleet run usually means this node was already enrolled.
+    const detail = response.status === 409 ? `a device named "${params.name}" already exists in this org` : (body.error ?? `HTTP ${response.status}`);
+
+    throw new Error(detail);
+  }
+
+  return {
+    deviceId: body.deviceId,
+    pairingCode: body.pairingCode,
+    name: body.name ?? params.name,
+    slug: body.slug ?? params.name,
+  };
 }
 
 function tarHeader(name: string, size: number): Uint8Array {
@@ -409,6 +483,14 @@ export async function runCatalogLogin(rawArgs: string[], options: CatalogLoginOp
   const args = [...rawArgs];
   const device = options.device || args.includes('--device') || Boolean(process.env.SSH_CONNECTION);
   const org = options.org || takeFlag(args, '--org');
+  const scopeFlag = options.scope ?? takeFlag(args, '--scope');
+
+  if (scopeFlag && !(CLI_LOGIN_SCOPES as readonly string[]).includes(scopeFlag)) {
+    printMessageBox('Unknown scope', [`--scope must be one of: ${CLI_LOGIN_SCOPES.join(', ')}`], 'red');
+    process.exit(1);
+  }
+
+  const scope = scopeFlag as CliLoginScope | undefined;
   const portalOrigin = portalOriginFromEnv(process.env, options.portalOrigin || takeFlag(args, '--portal'));
   const fetchImpl = options.fetchImpl ?? fetch;
   const sleep = options.sleep ?? ((ms: number) => new Promise((resolve) => setTimeout(resolve, ms)));
@@ -421,15 +503,15 @@ export async function runCatalogLogin(rawArgs: string[], options: CatalogLoginOp
     });
 
   if (device) {
-    await deviceCodeLogin({ portalOrigin, org, fetchImpl, sleep, openUrl });
+    await deviceCodeLogin({ portalOrigin, org, fetchImpl, sleep, openUrl, scope });
     return;
   }
 
   try {
-    await loopbackLogin({ portalOrigin, org, fetchImpl, sleep, openUrl });
+    await loopbackLogin({ portalOrigin, org, fetchImpl, sleep, openUrl, scope });
   } catch {
     printMessageBox('Loopback unavailable', ['Falling back to device code.'], 'yellow');
-    await deviceCodeLogin({ portalOrigin, org, fetchImpl, sleep, openUrl });
+    await deviceCodeLogin({ portalOrigin, org, fetchImpl, sleep, openUrl, scope });
   }
 }
 
@@ -439,6 +521,7 @@ async function loopbackLogin(params: {
   fetchImpl: typeof fetch;
   sleep: (ms: number) => Promise<void>;
   openUrl: (url: string) => void;
+  scope?: CliLoginScope;
 }): Promise<void> {
   const state = randomBytes(16).toString('hex');
   const code = await new Promise<string>((resolve, reject) => {
@@ -474,16 +557,23 @@ async function loopbackLogin(params: {
     });
   });
 
-  await redeemCode(params.portalOrigin, { code }, params.fetchImpl);
+  await redeemCode(params.portalOrigin, { code }, params.fetchImpl, params.scope);
 }
 
-async function startAndOpen(params: { portalOrigin: string; fetchImpl: typeof fetch; redirectUri?: string; state?: string }): Promise<string> {
+async function startAndOpen(params: {
+  portalOrigin: string;
+  fetchImpl: typeof fetch;
+  redirectUri?: string;
+  state?: string;
+  scope?: CliLoginScope;
+}): Promise<string> {
   const started = await params.fetchImpl(`${params.portalOrigin}/api/cli/device/code`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       redirect_uri: params.redirectUri,
       state: params.state,
+      scope: params.scope,
     }),
   });
   if (!started.ok) {
@@ -499,11 +589,12 @@ async function deviceCodeLogin(params: {
   fetchImpl: typeof fetch;
   sleep: (ms: number) => Promise<void>;
   openUrl: (url: string) => void;
+  scope?: CliLoginScope;
 }): Promise<void> {
   const started = await params.fetchImpl(`${params.portalOrigin}/api/cli/device/code`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({}),
+    body: JSON.stringify({ scope: params.scope }),
   });
   if (!started.ok) {
     printMessageBox('Login failed', [await started.text()], 'red');
@@ -549,13 +640,14 @@ async function deviceCodeLogin(params: {
       orgId: payload.orgId,
       orgSlug: payload.orgSlug ?? null,
       portalOrigin: params.portalOrigin,
+      scope: params.scope ?? CATALOG_WRITE_SCOPE,
     });
-    printMessageBox('Logged in', [`Organization ${payload.orgSlug ?? payload.orgId}`], 'green');
+    printMessageBox('Logged in', [`Organization ${payload.orgSlug ?? payload.orgId}`, `Scope ${params.scope ?? CATALOG_WRITE_SCOPE}`], 'green');
     return;
   }
 }
 
-async function redeemCode(portalOrigin: string, body: { code?: string; device_code?: string }, fetchImpl: typeof fetch) {
+async function redeemCode(portalOrigin: string, body: { code?: string; device_code?: string }, fetchImpl: typeof fetch, scope?: CliLoginScope) {
   const polled = await fetchImpl(`${portalOrigin}/api/cli/device/token`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -576,8 +668,9 @@ async function redeemCode(portalOrigin: string, body: { code?: string; device_co
     orgId: payload.orgId,
     orgSlug: payload.orgSlug ?? null,
     portalOrigin,
+    scope: scope ?? CATALOG_WRITE_SCOPE,
   });
-  printMessageBox('Logged in', [`Organization ${payload.orgSlug ?? payload.orgId}`], 'green');
+  printMessageBox('Logged in', [`Organization ${payload.orgSlug ?? payload.orgId}`, `Scope ${scope ?? CATALOG_WRITE_SCOPE}`], 'green');
 }
 
 function takeFlag(args: string[], flag: string): string | undefined {
