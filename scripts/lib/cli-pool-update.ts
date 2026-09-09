@@ -14,6 +14,7 @@
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { buildComposeBaseArgs } from './hub-context.js';
+import { composeArgsFromIdentity, type ComposeIdentity } from './compose-discovery.js';
 import { runCapture } from './cli-proc.js';
 import type { HubEnv } from './cli-types.js';
 
@@ -100,10 +101,23 @@ export function resolvePoolUpdateImage(env: HubEnv, existingEnvValue: string | u
 }
 
 /** `docker compose ... pull` / `... up -d --remove-orphans`, sharing the same base args as every other lifecycle command. */
-export function buildPoolUpdateComposeArgs(envFileName: string, composeFiles: string[]): { pullArgs: string[]; upArgs: string[] } {
-  const base = buildComposeBaseArgs(envFileName, composeFiles);
+export function buildPoolUpdateComposeArgs(
+  envFileName: string,
+  composeFiles: string[],
+  identity: ComposeIdentity | null = null,
+): { pullArgs: string[]; upArgs: string[] } {
+  // Prefer the stack that is actually running over the one this checkout would have created. On a
+  // machine this CLI installed the two agree and nothing changes; on a drifted one they do not, and
+  // the assumptions lose in four distinct ways — see compose-discovery.ts for the measured list.
+  const base = identity
+    ? composeArgsFromIdentity(identity, { project: 'ci-hub', envFiles: [envFileName], configFiles: composeFiles })
+    : buildComposeBaseArgs(envFileName, composeFiles);
   return {
     pullArgs: [...base, 'pull'],
-    upArgs: [...base, 'up', '-d', '--remove-orphans'],
+    // `--no-build` because the published image IS the artifact being deployed. Two fleet nodes carry
+    // a compose file with a build stanza and no npm auth token, so an update that is allowed to fall
+    // back to building fails on `pnpm install --frozen-lockfile` instead of pulling the image that
+    // was already built for them.
+    upArgs: [...base, 'up', '-d', '--remove-orphans', '--no-build'],
   };
 }
