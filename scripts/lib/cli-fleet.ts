@@ -17,10 +17,12 @@
 import { loadFleetRoster, mergeFleetRoster, partitionForRun, saveFleetRoster, fleetRosterPath, type FleetNode } from './fleet-roster.js';
 import { probeNode, resolveTailscaleCli, scanLan, summariseNode, tailnetPeers, type DiscoveredNode } from './fleet-discover.js';
 import { describeSshFailure } from './fleet-ssh.js';
+import { readHostFacts, isTooBusyForMaintenance } from './fleet-hardware.js';
+import { executeBackendPlan, planAllBackends, INSTALLABLE_BACKENDS, type InstallableBackend } from './fleet-backends.js';
 import { colorize } from './cli-ui.js';
 import { BASE_COMMAND } from './cli-types.js';
 
-export const FLEET_SUBCOMMANDS = ['scan', 'list', 'status'] as const;
+export const FLEET_SUBCOMMANDS = ['scan', 'list', 'status', 'backends'] as const;
 export type FleetSubcommand = (typeof FLEET_SUBCOMMANDS)[number];
 
 export interface FleetArgs {
@@ -35,6 +37,10 @@ export interface FleetArgs {
   concurrency: number;
   /** Remote account for SSH. The tailnet ACL grants specific users, and it is rarely your local one. */
   user?: string;
+  /** Restrict `backends` to these. Empty means every installable backend. */
+  backends: InstallableBackend[];
+  /** Where the Hub keeps runner venvs and model dirs on the REMOTE machine. */
+  dataDir: string;
 }
 
 export class FleetArgError extends Error {}
@@ -58,6 +64,8 @@ export function parseFleetArgs(argv: readonly string[]): FleetArgs {
     // so guessing would be wrong half the time and silently — the scan reports 'acl-wrong-user' and
     // names the flag instead.
     user: process.env.FLEET_SSH_USER || undefined,
+    backends: [],
+    dataDir: '/var/lib/companion-hub',
   };
 
   const rest = [...argv];
@@ -87,7 +95,19 @@ export function parseFleetArgs(argv: readonly string[]): FleetArgs {
     else if (arg === '--write-roster') args.writeRoster = true;
     else if (arg === '--execute') args.execute = true;
     else if (arg.startsWith('--user')) args.user = readValue('--user');
-    else if (arg.startsWith('--nodes')) {
+    else if (arg.startsWith('--data-dir')) args.dataDir = readValue('--data-dir');
+    else if (arg.startsWith('--backends')) {
+      const names = readValue('--backends')
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean);
+      for (const name of names) {
+        if (!(INSTALLABLE_BACKENDS as readonly string[]).includes(name)) {
+          throw new FleetArgError(`Unknown backend '${name}'. Valid: ${INSTALLABLE_BACKENDS.join(', ')}.`);
+        }
+      }
+      args.backends = names as InstallableBackend[];
+    } else if (arg.startsWith('--nodes')) {
       args.nodes = readValue('--nodes')
         .split(',')
         .map((s) => s.trim())
@@ -288,6 +308,80 @@ async function runStatus(args: FleetArgs): Promise<void> {
   }
 }
 
+/**
+ * `cihub fleet backends` — install or adopt inference backends across the fleet.
+ *
+ * Read-only unless `--execute`. The dry run is the useful default: it reports what each machine can
+ * run and why, which is most of the value even when nothing is installed.
+ */
+async function runBackends(args: FleetArgs): Promise<void> {
+  const roster = loadFleetRoster();
+  if (roster.nodes.length === 0) {
+    console.log(`No roster yet. Run '${BASE_COMMAND} fleet scan --write-roster' first.`);
+    return;
+  }
+  const { run, skipped } = partitionForRun(roster.nodes, args.nodes);
+  if (run.length === 0) {
+    console.log('No nodes selected.');
+    for (const s of skipped) console.log(colorize(`  skipped ${s.node.name}: ${s.why}`, 'dim'));
+    return;
+  }
+
+  if (!args.execute) {
+    console.log(colorize('Dry run — nothing will be installed. Add --execute to apply.', 'dim'));
+    console.log('');
+  }
+
+  const report: Record<string, unknown>[] = [];
+
+  // Serialised across nodes on purpose. A backend install pulls gigabytes (CUDA wheels, GPU
+  // container images); running several at once saturates the link they all share and, measured on
+  // this fleet, blocks the nodes' own HTTP listeners long enough to look absent to everything else.
+  for (const node of run) {
+    const target = { host: node.ip, user: node.user ?? args.user };
+    const { facts, error } = await readHostFacts(target);
+    if (!facts) {
+      console.log(`${colorize(node.name, 'yellow')}: could not read hardware — ${String(error).slice(0, 120)}`);
+      report.push({ node: node.name, error: String(error) });
+      continue;
+    }
+
+    const busy = isTooBusyForMaintenance(facts);
+    const plans = planAllBackends(facts, args.dataDir, args.backends.length ? args.backends : undefined);
+    const gpu = facts.gpus.map((g) => `${g.vendor}${g.gfx ? `/${g.gfx}` : ''}${g.driverWorking ? '' : ' [driver dead]'}`).join(', ') || 'no gpu';
+    console.log(`${node.name}  ${colorize(`${facts.os}/${facts.arch} · ${gpu} · load ${facts.load1 ?? '?'}`, 'dim')}`);
+    for (const note of facts.notes) console.log(colorize(`  ! ${note}`, 'yellow'));
+
+    if (busy.busy && args.execute) {
+      // The reason this gate exists: a fleet-wide upgrade pass on this fleet caught one node
+      // mid-inference at load 108-116 and left it needing physical recovery. Nothing checked first.
+      console.log(colorize(`  refusing to install: ${busy.why}`, 'yellow'));
+      report.push({ node: node.name, skipped: busy.why });
+      console.log('');
+      continue;
+    }
+
+    for (const plan of plans) {
+      if (!args.execute) {
+        const tag = plan.action === 'install' ? colorize('would install', 'green') : plan.action;
+        console.log(`  ${plan.backend.padEnd(9)} ${tag} — ${plan.why}`);
+        report.push({ node: node.name, backend: plan.backend, action: plan.action, why: plan.why });
+        continue;
+      }
+      const result = await executeBackendPlan(target, plan);
+      const tone = result.outcome === 'failed' ? 'red' : result.outcome === 'installed' ? 'green' : 'dim';
+      const took = result.ms ? ` (${Math.round(result.ms / 1000)}s)` : '';
+      console.log(`  ${plan.backend.padEnd(9)} ${colorize(result.outcome, tone)}${took} — ${result.why}`);
+      if (result.detail && result.outcome === 'failed') console.log(colorize(`    ${result.detail}`, 'dim'));
+      report.push({ node: node.name, ...result });
+    }
+    console.log('');
+  }
+
+  for (const s of skipped) console.log(colorize(`  skipped ${s.node.name}: ${s.why}`, 'dim'));
+  if (args.json) console.log(JSON.stringify(report, null, 2));
+}
+
 export async function runFleetCommand(argv: readonly string[]): Promise<void> {
   let args: FleetArgs;
   try {
@@ -309,6 +403,9 @@ export async function runFleetCommand(argv: readonly string[]): Promise<void> {
       return;
     case 'status':
       await runStatus(args);
+      return;
+    case 'backends':
+      await runBackends(args);
       return;
   }
 }
