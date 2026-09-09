@@ -70,6 +70,25 @@ describe('LoginForm', () => {
     expect(screen.getByLabelText('AUTH_FORM_EMAIL')).toHaveValue('operator@example.com');
   });
 
+  it('offers an account switcher when a Portal email is known', async () => {
+    const onSwitchAccount = vi.fn();
+    render(
+      <MemoryRouter>
+        <LoginForm
+          loading={false}
+          loginType="your local admin account"
+          onSubmit={vi.fn()}
+          portalSsoHref="https://portal.example.com"
+          portalAccountEmail="hello@lifescope.io"
+          onSwitchAccount={onSwitchAccount}
+        />
+      </MemoryRouter>,
+    );
+
+    await userEvent.click(screen.getByTestId('login-switch-account'));
+    expect(onSwitchAccount).toHaveBeenCalled();
+  });
+
   it('opens Companion Account SSO in the system browser so the native webview stays mounted', async () => {
     openAuthInSystemBrowser.mockClear();
     render(

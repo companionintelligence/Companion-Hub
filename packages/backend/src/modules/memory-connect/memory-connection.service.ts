@@ -1,7 +1,17 @@
 import { Injectable } from '@nestjs/common';
 import { EncryptionService } from '@/core/encryption/encryption.service';
 import { LoggerService } from '@/core/logger/logger.service';
-import { type MemoryConnectionRow, MemoryConnectionRepository, type MemoryConnectionState } from './memory-connection.repository';
+import {
+  INSTALL_GLOBAL_HUB_USER_ID,
+  type MemoryConnectionRow,
+  MemoryConnectionRepository,
+  type MemoryConnectionState,
+} from './memory-connection.repository';
+
+export function normalizeHubUserId(hubUserId?: string | number | null): number {
+  const parsed = Number(hubUserId);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : INSTALL_GLOBAL_HUB_USER_ID;
+}
 
 /** Credentials ready to inject into a consumer app's env. */
 export interface InjectableMemoryCreds {
@@ -31,11 +41,21 @@ export class MemoryConnectionService {
     private readonly logger: LoggerService,
   ) {}
 
-  /** Current connection state for an app; `unconfigured` when never touched. */
-  async getState(appUrn: string): Promise<MemoryConnectionState> {
-    const row = await this.repo.findByAppUrn(appUrn);
+  /** Current connection state for an app (and Hub person, when given). */
+  async getState(appUrn: string, hubUserId?: string | number | null): Promise<MemoryConnectionState> {
+    const latest = await this.repo.findByAppUrn(appUrn);
+    if (latest?.state === 'manual') {
+      return 'manual';
+    }
 
-    return row?.state ?? 'unconfigured';
+    const userId = normalizeHubUserId(hubUserId);
+    if (hubUserId != null && userId > 0) {
+      const row = await this.repo.findByAppUrnAndUser(appUrn, userId);
+
+      return row?.state ?? 'unconfigured';
+    }
+
+    return latest?.state ?? 'unconfigured';
   }
 
   /** All connected apps holding a stored key (for the key-rotation sweep). */
@@ -56,15 +76,20 @@ export class MemoryConnectionService {
    * `connected`. `keyExpiresAt` is the ISO instant CI-Server returned; the
    * rotation sweep refreshes the key (and this value) well before it.
    */
-  async storeConnected(appUrn: string, serverUrl: string, rawKey: string, keyExpiresAt: string): Promise<void> {
-    await this.repo.upsert(appUrn, {
-      state: 'connected',
-      serverUrl,
-      encryptedKey: this.encryption.encrypt(rawKey, appUrn),
-      keyExpiresAt,
-    });
+  async storeConnected(appUrn: string, serverUrl: string, rawKey: string, keyExpiresAt: string, hubUserId?: string | number | null): Promise<void> {
+    const userId = normalizeHubUserId(hubUserId);
+    await this.repo.upsert(
+      appUrn,
+      {
+        state: 'connected',
+        serverUrl,
+        encryptedKey: this.encryption.encrypt(rawKey, appUrn),
+        keyExpiresAt,
+      },
+      userId,
+    );
 
-    this.logger.info(`[MemoryConnect] stored connection for ${appUrn}`);
+    this.logger.info(`[MemoryConnect] stored connection for ${appUrn} (hubUser=${userId})`);
   }
 
   /**
@@ -98,10 +123,11 @@ export class MemoryConnectionService {
   }
 
   /** Record that the user explicitly skipped connecting (do not re-prompt). */
-  async markSkipped(appUrn: string): Promise<void> {
-    await this.repo.upsert(appUrn, { state: 'skipped' });
+  async markSkipped(appUrn: string, hubUserId?: string | number | null): Promise<void> {
+    const userId = normalizeHubUserId(hubUserId);
+    await this.repo.upsert(appUrn, { state: 'skipped' }, userId);
 
-    this.logger.info(`[MemoryConnect] ${appUrn} marked skipped`);
+    this.logger.info(`[MemoryConnect] ${appUrn} marked skipped (hubUser=${userId})`);
   }
 
   /**
@@ -119,7 +145,7 @@ export class MemoryConnectionService {
       return;
     }
 
-    await this.repo.upsert(appUrn, { state: 'manual' });
+    await this.repo.upsert(appUrn, { state: 'manual' }, INSTALL_GLOBAL_HUB_USER_ID);
     this.logger.info(`[MemoryConnect] ${appUrn} marked manual (operator-configured)`);
   }
 
@@ -128,10 +154,15 @@ export class MemoryConnectionService {
    * user "Disconnect"), returning the app to `unconfigured` so it re-prompts.
    * Drops the stored key.
    */
-  async clear(appUrn: string): Promise<void> {
-    await this.repo.upsert(appUrn, { state: 'unconfigured', encryptedKey: null, serverUrl: null, keyExpiresAt: null });
+  async clear(appUrn: string, hubUserId?: string | number | null): Promise<void> {
+    const userId = hubUserId == null ? (await this.repo.findByAppUrn(appUrn))?.hubUserId : normalizeHubUserId(hubUserId);
+    await this.repo.upsert(
+      appUrn,
+      { state: 'unconfigured', encryptedKey: null, serverUrl: null, keyExpiresAt: null },
+      userId ?? INSTALL_GLOBAL_HUB_USER_ID,
+    );
 
-    this.logger.info(`[MemoryConnect] cleared connection for ${appUrn}`);
+    this.logger.info(`[MemoryConnect] cleared connection for ${appUrn} (hubUser=${userId ?? INSTALL_GLOBAL_HUB_USER_ID})`);
   }
 
   /** Remove all connection state for an app (called when the app is uninstalled). */
@@ -144,7 +175,11 @@ export class MemoryConnectionService {
   }
 
   /** Raw row accessor (for callers that need the full record). */
-  async getRow(appUrn: string): Promise<MemoryConnectionRow | undefined> {
+  async getRow(appUrn: string, hubUserId?: string | number | null): Promise<MemoryConnectionRow | undefined> {
+    if (hubUserId != null && normalizeHubUserId(hubUserId) > 0) {
+      return this.repo.findByAppUrnAndUser(appUrn, normalizeHubUserId(hubUserId));
+    }
+
     return this.repo.findByAppUrn(appUrn);
   }
 }

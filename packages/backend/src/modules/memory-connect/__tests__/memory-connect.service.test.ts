@@ -174,7 +174,13 @@ describe('MemoryConnectService.handleCallback', () => {
     // so a fresh consent grant is distinguishable from a browser replay.
     expect(pending.consume).toHaveBeenCalledWith('state-nonce', 'user-1', expect.stringMatching(/^[0-9a-f]{64}$/));
     expect(exchange.exchange).toHaveBeenCalledWith('http://gateway:8642', 'the-code');
-    expect(connections.storeConnected).toHaveBeenCalledWith('ci-openclaw:local', 'http://gateway:8642', 'raw-key', '2026-10-07T00:00:00.000Z');
+    expect(connections.storeConnected).toHaveBeenCalledWith(
+      'ci-openclaw:local',
+      'http://gateway:8642',
+      'raw-key',
+      '2026-10-07T00:00:00.000Z',
+      'user-1',
+    );
     // The restart is scheduled (fire-and-track, skipPull — env-only change), NOT
     // awaited to completion: the browser must not hang out the compose cycle.
     expect(lifecycle.restartApp).toHaveBeenCalledWith({ appUrn: 'ci-openclaw:local', skipPull: true });
@@ -401,7 +407,26 @@ describe('MemoryConnectService side effects', () => {
   it('skip marks the app skipped', async () => {
     const { service, connections } = makeService();
     await service.skip('ci-openclaw:local');
-    expect(connections.markSkipped).toHaveBeenCalledWith('ci-openclaw:local');
+    expect(connections.markSkipped).toHaveBeenCalledWith('ci-openclaw:local', undefined);
+  });
+
+  it('getStatus revokes a running token owned by a different Hub person', async () => {
+    const { service, resolver, exchange, connections, lifecycle } = makeService();
+    resolver.findProvider.mockResolvedValue(PROVIDER);
+    connections.getRow.mockResolvedValue({
+      state: 'connected',
+      hubUserId: 1,
+      encryptedKey: 'enc',
+      serverUrl: 'http://gateway:8642',
+    });
+    connections.getState.mockResolvedValue('unconfigured');
+
+    await service.getStatus('ci-openclaw:local', undefined, '2');
+
+    expect(exchange.revoke).toHaveBeenCalledWith('http://gateway:8642', 'ci-openclaw:local');
+    expect(connections.clear).toHaveBeenCalledWith('ci-openclaw:local', 1);
+    expect(lifecycle.restartApp).toHaveBeenCalled();
+    expect(connections.getState).toHaveBeenCalledWith('ci-openclaw:local', '2');
   });
 
   it('disconnect revokes on ci-memory, clears state, and restarts', async () => {
@@ -411,7 +436,7 @@ describe('MemoryConnectService side effects', () => {
     await service.disconnect('ci-openclaw:local');
 
     expect(exchange.revoke).toHaveBeenCalledWith('http://gateway:8642', 'ci-openclaw:local');
-    expect(connections.clear).toHaveBeenCalledWith('ci-openclaw:local');
+    expect(connections.clear).toHaveBeenCalledWith('ci-openclaw:local', undefined);
     expect(lifecycle.restartAppAndWait).toHaveBeenCalledWith({ appUrn: 'ci-openclaw:local', skipPull: true });
   });
 
@@ -425,7 +450,7 @@ describe('MemoryConnectService side effects', () => {
 
     await service.disconnect('ci-openclaw:local');
 
-    expect(connections.clear).toHaveBeenCalledWith('ci-openclaw:local');
+    expect(connections.clear).toHaveBeenCalledWith('ci-openclaw:local', undefined);
     expect(lifecycle.restartAppAndWait).not.toHaveBeenCalled();
     expect(lifecycle.regenerateAppEnv).toHaveBeenCalledWith('ci-openclaw:local');
   });
@@ -444,7 +469,7 @@ describe('MemoryConnectService side effects', () => {
 
     await service.disconnect('ci-openclaw:local');
 
-    expect(connections.clear).toHaveBeenCalledWith('ci-openclaw:local');
+    expect(connections.clear).toHaveBeenCalledWith('ci-openclaw:local', undefined);
     expect(lifecycle.restartAppAndWait).not.toHaveBeenCalled();
     expect(lifecycle.regenerateAppEnv).toHaveBeenCalledWith('ci-openclaw:local');
   });
@@ -468,7 +493,7 @@ describe('MemoryConnectService side effects', () => {
     await service.disconnect('ci-openclaw:local');
 
     expect(exchange.revoke).not.toHaveBeenCalled();
-    expect(connections.clear).toHaveBeenCalledWith('ci-openclaw:local');
+    expect(connections.clear).toHaveBeenCalledWith('ci-openclaw:local', undefined);
   });
 
   it('handleUninstall revokes and removes state without restarting', async () => {
@@ -568,13 +593,13 @@ describe('MemoryConnectService side effects', () => {
   it('rotateDueKeys rotates a key older than the threshold and restarts the app', async () => {
     const { service, resolver, exchange, connections, lifecycle } = makeService();
     resolver.findProvider.mockResolvedValue(PROVIDER);
-    connections.listConnected.mockResolvedValue([{ appUrn: 'ci-openclaw:local', updatedAt: daysAgoIso(61) }]);
+    connections.listConnected.mockResolvedValue([{ appUrn: 'ci-openclaw:local', hubUserId: 3, updatedAt: daysAgoIso(61) }]);
     exchange.rotate.mockResolvedValue({ appUrn: 'ci-openclaw:local', key: 'fresh-key', expiresAt: '2026-10-07T00:00:00.000Z' });
 
     await service.rotateDueKeys();
 
     expect(exchange.rotate).toHaveBeenCalledWith('http://gateway:8642', 'ci-openclaw:local');
-    expect(connections.storeConnected).toHaveBeenCalledWith('ci-openclaw:local', 'http://gateway:8642', 'fresh-key', '2026-10-07T00:00:00.000Z');
+    expect(connections.storeConnected).toHaveBeenCalledWith('ci-openclaw:local', 'http://gateway:8642', 'fresh-key', '2026-10-07T00:00:00.000Z', 3);
     expect(lifecycle.restartAppAndWait).toHaveBeenCalledWith({ appUrn: 'ci-openclaw:local', skipPull: true });
   });
 

@@ -3,7 +3,9 @@ import { LoggerModule } from '@/core/logger/logger.module';
 import { AppsModule } from '../apps/apps.module';
 import { CloudflareModule } from '../cloudflare/cloudflare.module';
 import { ApiKeyModule } from '../api-keys/api-key.module';
+import { EnvModule } from '../env/env.module';
 import { RegistrationModule } from '../registration/registration.module';
+import { UserModule } from '../user/user.module';
 import { ManagedAppKeyGuard } from './managed-app-key.guard';
 import { MemoryConnectController } from './memory-connect.controller';
 import { MemoryConnectService } from './memory-connect.service';
@@ -22,7 +24,7 @@ import { PendingConnectStore } from './pending-connect.store';
  * via ModuleRef in MemoryConnectService to avoid a static cycle with app-lifecycle.
  */
 @Module({
-  imports: [MemoryConnectionModule, AppsModule, CloudflareModule, ApiKeyModule, RegistrationModule, LoggerModule],
+  imports: [MemoryConnectionModule, AppsModule, CloudflareModule, ApiKeyModule, RegistrationModule, UserModule, EnvModule, LoggerModule],
   controllers: [MemoryConnectController],
   providers: [MemoryProviderResolver, MemoryExchangeClient, PendingConnectStore, MemoryConnectService, ManagedAppKeyGuard],
   exports: [MemoryConnectService],
