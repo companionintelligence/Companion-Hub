@@ -102,11 +102,12 @@ export class BackupManager implements OnApplicationShutdown {
     const { appStoreId, appName } = extractAppUrn(appUrn);
     const backupDir = path.join(dataDir, 'backups', appStoreId, appName);
 
+    // `resolveBackupFilePath` asserts containment itself, after resolution. The
+    // string-prefix check that used to stand here is both redundant and wrong in two
+    // directions: it passes a sibling directory sharing the prefix, and it fails a
+    // correctly-contained path whenever `dataDir` is relative (the resolved archive is
+    // absolute, the prefix is not), which would make every restore throw.
     const archive = resolveBackupFilePath(backupDir, filename);
-
-    if (!archive.startsWith(backupDir)) {
-      throw new Error('Invalid backup file path');
-    }
 
     this.logger.info('Restoring app from backup...');
 
@@ -296,8 +297,14 @@ export class BackupManager implements OnApplicationShutdown {
       throw new Error('A backup with this filename already exists');
     }
 
-    // Write the file
-    await this.filesystem.writeBinaryFile(backupPath, fileBuffer);
+    // Write the file. `writeBinaryFile` reports failure by returning false rather than
+    // throwing, so an unwritable backup directory (EACCES, ENOSPC) otherwise produced a
+    // logged error, no file, and a `{ success: true }` response to the uploader.
+    const written = await this.filesystem.writeBinaryFile(backupPath, fileBuffer);
+
+    if (!written) {
+      throw new Error('Failed to write the backup file');
+    }
 
     this.logger.info(`Backup uploaded successfully: ${filename}`);
   }

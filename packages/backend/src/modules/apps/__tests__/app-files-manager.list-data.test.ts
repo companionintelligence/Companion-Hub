@@ -13,7 +13,6 @@ describe('AppFilesManager.listAppDataListing', () => {
   let filesystem: {
     pathExists: ReturnType<typeof vi.fn>;
     listFiles: ReturnType<typeof vi.fn>;
-    getStats: ReturnType<typeof vi.fn>;
     getLinkStats: ReturnType<typeof vi.fn>;
   };
   let manager: AppFilesManager;
@@ -22,7 +21,6 @@ describe('AppFilesManager.listAppDataListing', () => {
     filesystem = {
       pathExists: vi.fn(),
       listFiles: vi.fn(),
-      getStats: vi.fn(),
       getLinkStats: vi.fn(),
     };
 

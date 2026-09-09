@@ -33,9 +33,16 @@ describe('resolveBackupFilePath', () => {
     expect(() => resolveBackupFilePath(backupDir, filename)).toThrow();
   });
 
-  it('refuses a name that is only a segment after trimming', () => {
-    // Trimmed first, so surrounding whitespace cannot smuggle a different name
-    // past the single-segment test.
-    expect(resolveBackupFilePath(backupDir, '  backup.tar.gz  ')).toBe(path.join(backupDir, 'backup.tar.gz'));
+  it('refuses a padded name rather than trimming it into a different file', () => {
+    // Whitespace is a legal part of a filename, so trimming and then resolving the
+    // trimmed name would act on `backup.tar.gz` when the caller named something else
+    // — exactly the sanitising this function exists to avoid.
+    expect(() => resolveBackupFilePath(backupDir, '  backup.tar.gz  ')).toThrow();
+  });
+
+  it('resolves a contained name that merely begins with dots', () => {
+    // `relative.startsWith('..')` rejects this one too; escaping is `..` itself or
+    // `..` followed by a separator, not any name whose first two characters are dots.
+    expect(resolveBackupFilePath(backupDir, '..hidden.tar.gz')).toBe(path.join(backupDir, '..hidden.tar.gz'));
   });
 });

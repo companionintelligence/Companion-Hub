@@ -9,6 +9,17 @@ describe('castAppUrn', () => {
   });
 
   /*
+   * ⚠ `_user` IS A REAL STORE SLUG, NOT AN EDGE CASE. It is the built-in
+   * per-user namespace (`RESERVED_APP_STORE_SLUGS` / `APPS_FOLDER`) every custom
+   * app and every port-expose workload is minted under, and the frontend builds
+   * `${appId}:_user` for every route it calls on one. A validator that demands
+   * an alphanumeric first character rejects all of them.
+   */
+  it('accepts the built-in per-user store slug', () => {
+    expect(castAppUrn('my-app:_user')).toBe('my-app:_user');
+  });
+
+  /*
    * ⚠ AN APP URN IS TWO PATH SEGMENTS, AND IT IS USED AS SUCH. `extractAppUrn`
    * splits it and callers join the halves straight into filesystem paths —
    * `path.join(dataDir, 'backups', appStoreId, appName)` in the backup manager,
@@ -28,6 +39,7 @@ describe('castAppUrn', () => {
     ['immich', 'has no separator at all'],
     ['-immich:ci-marketplace', 'starts with a dash rather than an alphanumeric'],
     ['immich:ci marketplace', 'contains a space'],
+    ['.hidden:ci-marketplace', 'starts with a dot, which is what makes `.` and `..` names'],
     ['immich\0:ci-marketplace', 'contains a NUL'],
   ])('refuses %j because it %s', (urn) => {
     expect(() => castAppUrn(urn)).toThrow();

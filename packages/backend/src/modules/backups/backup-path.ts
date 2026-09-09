@@ -16,21 +16,30 @@ import path from 'node:path';
  * download path, and a write over any app's `docker-compose.yml` through the
  * upload path — from a route whose parameters are a URN and a filename.
  *
- * ⚠ THE NAME IS REJECTED, NOT SANITISED. Stripping separators out of a filename
- * invents a different name than the caller asked for, which for a delete or a
- * restore means acting on a file nobody named. A backup filename is produced by
- * this system and is always a single path segment; anything else is a caller
- * doing something other than naming a backup.
+ * ⚠ THE NAME IS REJECTED, NOT SANITISED. Rewriting a filename — stripping its
+ * separators, trimming its whitespace — invents a different name than the caller
+ * asked for, which for a delete or a restore means acting on a file nobody named.
+ * A backup filename is produced by this system and is always a single path
+ * segment; anything else is a caller doing something other than naming a backup.
  *
  * Containment is asserted after resolution as well, so a name that is a single
  * segment by inspection but not by `path` — a platform quirk, an encoding — is
  * still caught by the property that actually matters.
  */
 export function resolveBackupFilePath(backupDir: string, filename: string): string {
-  const name = filename?.trim();
+  const name = filename ?? '';
 
-  if (!name) {
+  if (!name.trim()) {
     throw new Error('A backup filename is required');
+  }
+
+  // ⚠ TRIMMED FOR THE *TEST*, NEVER FOR THE *RESULT*. Surrounding whitespace is
+  // legal in a filename on every platform this runs on, so trimming and then
+  // resolving the trimmed name is the sanitising this function exists to avoid:
+  // `deleteBackup(urn, ' x.tar.gz ')` would unlink `x.tar.gz`, a different file,
+  // and the retention sweep feeds ids straight back from `listBackupsByAppId`.
+  if (name !== name.trim()) {
+    throw new Error('Invalid backup filename');
   }
 
   // `path.basename` is the definition of "one segment", on both separator
@@ -49,7 +58,10 @@ export function resolveBackupFilePath(backupDir: string, filename: string): stri
   const resolved = path.resolve(resolvedDir, name);
   const relative = path.relative(resolvedDir, resolved);
 
-  if (!relative || path.isAbsolute(relative) || relative.startsWith('..')) {
+  // `relative.startsWith('..')` would also reject `..hidden.tar.gz`, a contained
+  // name that merely begins with two dots. Escaping is `..` itself or `..` followed
+  // by a separator; anything else starting with dots is an ordinary filename.
+  if (!relative || path.isAbsolute(relative) || relative === '..' || relative.startsWith(`..${path.sep}`)) {
     throw new Error('Invalid backup filename');
   }
 

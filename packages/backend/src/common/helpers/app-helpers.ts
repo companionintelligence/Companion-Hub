@@ -32,8 +32,15 @@ export const createAppUrn = (appName: string, appstore: string) => {
  * Deliberately narrower than "no separators": an app name and a store id are
  * both slugs by construction everywhere they are minted, so anything outside
  * this alphabet is a caller doing something other than naming an app.
+ *
+ * ⚠ A LEADING UNDERSCORE IS LEGAL. `_user` is the built-in per-user store slug
+ * (`RESERVED_APP_STORE_SLUGS`, `APPS_FOLDER`) that every custom app and every
+ * port-expose workload is minted under, so requiring an alphanumeric first
+ * character would reject `<app>:_user` — i.e. every route the custom-app UI
+ * calls. What the first character must not be is `.`, which is what makes `.`
+ * and `..` names, and it still cannot be.
  */
-const APP_URN_SEGMENT = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
+const APP_URN_SEGMENT = /^[a-zA-Z0-9_][a-zA-Z0-9._-]*$/;
 
 /**
  * Turn caller-supplied text into an `AppUrn`, or throw.
