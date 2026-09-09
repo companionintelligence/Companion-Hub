@@ -7,6 +7,7 @@ import axios from 'axios';
 import { createHash } from 'node:crypto';
 import { CI_MARKETPLACE_STORE_SLUG } from './portal.constants';
 import { PortalClientService } from './portal-client.service';
+import { CATALOG_PAGE_SIZE } from '@/modules/marketplace/catalog-page-size';
 import {
   alternativeSlugsMatchingSearch,
   parseAlternativesCatalog,
@@ -268,7 +269,7 @@ export class PortalCatalogService {
           filtered.findIndex((app) => app.urn === cursor),
         )
       : 0;
-    const end = start + (pageSize ?? 24);
+    const end = start + (pageSize ?? CATALOG_PAGE_SIZE);
     const data = filtered.slice(start, end);
 
     return {

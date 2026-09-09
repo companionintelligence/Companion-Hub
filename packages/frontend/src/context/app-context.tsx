@@ -1,6 +1,6 @@
 import type { AppContextDto } from '@/api-client';
 import { appContextOptions, appContextQueryKey, getUpdatesAvailableOptions, systemLoadOptions } from '@/api-client/@tanstack/react-query.gen';
-import { getFeaturedStoreBundleOptions } from '@/lib/featured-store-bundle-query';
+import { FEATURED_STORE_SECTIONS, getFeaturedStoreSectionOptions } from '@/lib/featured-store-bundle-query';
 import { getInstalledAppUrnsOptions } from '@/lib/installed-app-urns-query';
 import { prefetchOnboardingMarketplace } from '@/modules/onboarding/helpers/prefetch-onboarding-marketplace';
 import { isMobileClient } from '@/lib/mobile-connection';
@@ -38,7 +38,10 @@ const prefetch = async (queryClient: QueryClient) => {
 };
 
 const prefetchStoreShell = async (queryClient: QueryClient) => {
-  await Promise.all([queryClient.ensureQueryData(getInstalledAppUrnsOptions()), queryClient.ensureQueryData(getFeaturedStoreBundleOptions())]);
+  await Promise.all([
+    queryClient.ensureQueryData(getInstalledAppUrnsOptions()),
+    ...FEATURED_STORE_SECTIONS.map((section) => queryClient.ensureQueryData(getFeaturedStoreSectionOptions(section.id))),
+  ]);
 };
 
 export const AppContextProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {

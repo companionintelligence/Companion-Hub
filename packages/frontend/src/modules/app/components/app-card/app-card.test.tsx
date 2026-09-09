@@ -41,6 +41,8 @@ describe('AppCard', () => {
 
     expect(getMarketplaceAppImageUrl).toHaveBeenCalledWith('test-app:community');
     expect(image).toHaveAttribute('src', 'http://localhost:5002/api/marketplace/apps/test-app%3Acommunity/image');
+    expect(image).toHaveAttribute('loading', 'lazy');
+    expect(image).toHaveAttribute('decoding', 'async');
   });
 
   it('prefers portal icon URLs from search results', () => {
