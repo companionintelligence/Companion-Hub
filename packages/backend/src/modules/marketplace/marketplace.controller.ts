@@ -36,6 +36,7 @@ import {
 import { ImageSizeService } from './image-size.service';
 import { MarketplaceWhoIsService } from '@/core/portal/marketplace-whois.service';
 import { MarketplaceService } from './marketplace.service';
+import { CATALOG_PAGE_SIZE } from './catalog-page-size';
 
 const isExpectedStreamAbortError = (error: unknown) => {
   if (!(error instanceof Error) || !('code' in error)) {
@@ -61,7 +62,7 @@ export class MarketplaceController {
   async searchApps(@Query() query: SearchAppsQueryDto, @Req() req: Request) {
     const { search, pageSize, cursor, category, storeId } = query;
 
-    const size = pageSize ? Number(pageSize) : 24;
+    const size = pageSize ? Number(pageSize) : CATALOG_PAGE_SIZE;
     if (Number.isNaN(size) || size <= 0) {
       throw new BadRequestException('Invalid pageSize');
     }

@@ -1,7 +1,8 @@
 import { SimpleAppTile } from './simple-app-tile';
 import { Link } from 'react-router';
-import { useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import type { AppInfo, AppStatus } from '@/types/app.types';
+import { CATALOG_PAGE_SIZE } from '@/lib/catalog-page-size';
 import { useTranslation } from 'react-i18next';
 
 interface InstalledApp {
@@ -11,9 +12,20 @@ interface InstalledApp {
 
 interface HorizontalAppListProps {
   apps: InstalledApp[];
+  isLoading?: boolean;
 }
 
-export const HorizontalAppList = ({ apps }: HorizontalAppListProps) => {
+const SKELETON_KEYS = Array.from({ length: CATALOG_PAGE_SIZE }, (_, i) => `installed-skeleton-${i}`);
+
+const APP_GRID_STYLE = {
+  gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))',
+  overflowX: 'auto',
+  scrollBehavior: 'smooth',
+  scrollbarWidth: 'none',
+  alignContent: 'start',
+} as const;
+
+export const HorizontalAppList = ({ apps, isLoading = false }: HorizontalAppListProps) => {
   const { t } = useTranslation();
 
   // A urn identifies an installed app exactly once, so it — not `app.id` — is the tile's identity.
@@ -31,6 +43,32 @@ export const HorizontalAppList = ({ apps }: HorizontalAppListProps) => {
     });
   }, [apps]);
 
+  const [paintedCount, setPaintedCount] = useState(Math.min(visibleApps.length, CATALOG_PAGE_SIZE));
+
+  useEffect(() => {
+    setPaintedCount(Math.min(visibleApps.length, CATALOG_PAGE_SIZE));
+    if (visibleApps.length <= CATALOG_PAGE_SIZE) {
+      return;
+    }
+
+    const frame = requestAnimationFrame(() => {
+      setPaintedCount(visibleApps.length);
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [visibleApps]);
+
+  if (isLoading) {
+    return (
+      <div className="flex flex-col gap-2">
+        <div className="grid gap-3 py-2 px-1" style={APP_GRID_STYLE}>
+          {SKELETON_KEYS.map((key) => (
+            <div key={key} data-testid="app-tile-skeleton" className="h-14 animate-pulse rounded-md bg-muted/40" />
+          ))}
+        </div>
+      </div>
+    );
+  }
+
   if (visibleApps.length === 0) {
     return (
       <Link to="/store" className="flex justify-center items-center no-underline py-16 sm:py-0 w-full" style={{ minHeight: 0 }}>
@@ -43,17 +81,8 @@ export const HorizontalAppList = ({ apps }: HorizontalAppListProps) => {
 
   return (
     <div className="flex flex-col gap-2">
-      <div
-        className="grid gap-3 py-2 px-1"
-        style={{
-          gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))',
-          overflowX: 'auto',
-          scrollBehavior: 'smooth',
-          scrollbarWidth: 'none',
-          alignContent: 'start',
-        }}
-      >
-        {visibleApps.map(({ info, app }) => {
+      <div className="grid gap-3 py-2 px-1" style={APP_GRID_STYLE}>
+        {visibleApps.slice(0, paintedCount).map(({ info, app }) => {
           const [appName, storeId] = info.urn.split(':');
           return (
             <Link key={info.urn} to={`/apps/${storeId}/${appName}`} className="no-underline text-inherit">
