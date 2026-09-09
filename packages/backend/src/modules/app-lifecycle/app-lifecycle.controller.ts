@@ -178,8 +178,13 @@ export class AppLifecycleController {
    */
   @Post(':urn/cancel')
   @ApiResponse({ type: CancelOperationResponseDto })
-  async cancelOperation(@Param('urn') urn: string, @Body() body: CancelOperationBody) {
-    const res = await this.appLifecycleService.cancelOperation(castAppUrn(urn), body.requestId);
+  async cancelOperation(@Param('urn') urn: string, @Body() body: CancelOperationBody, @Req() req: Request) {
+    const appUrn = castAppUrn(urn);
+    // Aborting somebody else's install or update is a lifecycle action like any
+    // other on this controller; `stop` is the verb whose weight it matches
+    // (`force-stop` next to it asserts the same one).
+    await this.whois.assertSessionAction(req, appUrn, 'stop');
+    const res = await this.appLifecycleService.cancelOperation(appUrn, body.requestId);
     return CancelOperationResponseDto.parse(res, { reportOnly: true });
   }
 

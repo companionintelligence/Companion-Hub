@@ -191,6 +191,45 @@ describe('MarketplaceWhoIsService', () => {
     await expect(service.has(USER_ID, APP_URN, 'install')).resolves.toBe(false);
   });
 
+  /*
+   * ⚠ "OUR ORG IS UNKNOWN" IS NOT "OUR ORG GRANTED NOTHING". Refusing by
+   * falling through to an empty `can` looks identical at `has()` — both are
+   * `false` — but the two values part company everywhere else: `[]` gets
+   * WRITTEN TO THE CACHE with a fresh timestamp, so the next Portal outage
+   * inside the 24h TTL serves that empty row as though it were a real answer.
+   */
+  it("does not cache an empty grant when this device's organization is unknown", async () => {
+    registration.getDeviceRegistrationInfo.mockRejectedValue(new Error('db down'));
+    portal.whoisApps.mockResolvedValue({
+      status: 200,
+      body: {
+        organizations: [{ organizationId: 'org-hub', version: 1, apps: [{ appId: 'immich', can: ['view', 'install'] }] }],
+      },
+    });
+
+    await service.has(USER_ID, APP_URN, 'install');
+
+    expect(cacheRows).toEqual([]);
+  });
+
+  /*
+   * ⚠ AND `[]` HIDES THE APP. `filterSessionByView` keeps a row whose grant is
+   * unknown ("an outage does not empty the house") and hides one that is known
+   * to be empty — so routing an unresolved organization through the empty list
+   * emptied the operator's whole app list on a transient database blip.
+   */
+  it("keeps the app list when this device's organization is unknown", async () => {
+    registration.getDeviceRegistrationInfo.mockRejectedValue(new Error('db down'));
+    portal.whoisApps.mockResolvedValue({
+      status: 200,
+      body: {
+        organizations: [{ organizationId: 'org-hub', version: 1, apps: [{ appId: 'immich', can: ['view'] }] }],
+      },
+    });
+
+    await expect(service.filterSessionByView(sessionReq(), [APP_URN], (urn) => urn, 'hub')).resolves.toEqual([APP_URN]);
+  });
+
   it('uses a fresh cache when Portal is unreachable', async () => {
     cacheRows = [
       {

@@ -5,7 +5,16 @@
  * without importing the bootstrap, which reads the environment and exits.
  */
 /** `http://localhost:<port>` / `http://127.0.0.1:<port>`, and nothing else. */
-const LOOPBACK_ORIGIN_PATTERN = /^http:\/\/(localhost|127\.0\.0\.1):\d+$/;
+const LOOPBACK_ORIGIN_PATTERN = /^http:\/\/(?:localhost|127\.0\.0\.1):(\d+)$/;
+
+/** Matches `main.ts`, which listens on `API_PORT || 3000`. */
+const DEFAULT_API_PORT = '3000';
+/**
+ * Matches `packages/frontend/vite.config.ts`, whose dev server and preview
+ * server both listen on `FRONTEND_PORT || 5005` — the same port
+ * `packages/desktop/src-tauri/tauri.conf.json` names as its `devUrl`.
+ */
+const DEFAULT_FRONTEND_PORT = '5005';
 
 /**
  * The loopback ports the HUB is served from — not every port on the machine.
@@ -14,24 +23,22 @@ const LOOPBACK_ORIGIN_PATTERN = /^http:\/\/(localhost|127\.0\.0\.1):\d+$/;
  * operator actually browses to; in production the frontend is served by the API
  * itself and there is no second port.
  */
-function allowedLoopbackPorts(): Set<string> {
-  const ports = new Set([process.env.API_PORT?.trim() || '3000']);
-
-  if (process.env.NODE_ENV !== 'production') {
-    ports.add(process.env.FRONTEND_DEV_PORT?.trim() || '5173');
+function isAllowedLoopbackPort(port: string): boolean {
+  if (port === (process.env.API_PORT?.trim() || DEFAULT_API_PORT)) {
+    return true;
   }
 
-  return ports;
+  return process.env.NODE_ENV !== 'production' && port === (process.env.FRONTEND_PORT?.trim() || DEFAULT_FRONTEND_PORT);
 }
 
 /** Operator-declared additional origins, comma-separated. Exact matches only. */
-function extraCorsOrigins(): Set<string> {
-  return new Set(
-    (process.env.CI_HUB_EXTRA_CORS_ORIGINS ?? '')
-      .split(',')
-      .map((value) => value.trim())
-      .filter(Boolean),
-  );
+function isExtraCorsOrigin(origin: string): boolean {
+  const declared = process.env.CI_HUB_EXTRA_CORS_ORIGINS?.trim();
+  if (!declared) {
+    return false;
+  }
+
+  return declared.split(',').some((value) => value.trim() === origin);
 }
 
 export function resolveAllowedCorsOrigin(origin: string | undefined): string | boolean {
@@ -42,6 +49,17 @@ export function resolveAllowedCorsOrigin(origin: string | undefined): string | b
   // http(s)://tauri.localhost, while Linux (webkit2gtk) and macOS (WKWebView)
   // serve it from the custom-protocol origin tauri://localhost.
   if (origin === 'http://tauri.localhost' || origin === 'https://tauri.localhost' || origin === 'tauri://localhost') {
+    return origin;
+  }
+  /*
+   * The operator's own list is checked BEFORE the loopback narrowing below:
+   * that narrowing refuses every loopback port it does not recognise, so an
+   * escape hatch behind it could never express `http://localhost:<port>` —
+   * which is the case an operator most needs it for, since the compose file
+   * pins the container's `API_PORT` to 5002 while publishing it on the host as
+   * `${API_PORT:-5002}`.
+   */
+  if (isExtraCorsOrigin(origin)) {
     return origin;
   }
   /*
@@ -58,19 +76,11 @@ export function resolveAllowedCorsOrigin(origin: string | undefined): string | b
    * the frontend dev server. `CI_HUB_EXTRA_CORS_ORIGINS` is the escape hatch for
    * an operator with a genuine second origin — explicit, and not a wildcard.
    */
-  if (LOOPBACK_ORIGIN_PATTERN.test(origin)) {
-    const port = origin.slice(origin.lastIndexOf(':') + 1);
-
-    if (allowedLoopbackPorts().has(port)) {
-      return origin;
-    }
-
-    return false;
+  const loopbackPort = LOOPBACK_ORIGIN_PATTERN.exec(origin)?.[1];
+  if (loopbackPort !== undefined) {
+    return isAllowedLoopbackPort(loopbackPort) ? origin : false;
   }
 
-  if (extraCorsOrigins().has(origin)) {
-    return origin;
-  }
   const domain = process.env.DOMAIN?.trim();
   if (domain && (origin === `https://${domain}` || origin === `http://${domain}`)) {
     return origin;
