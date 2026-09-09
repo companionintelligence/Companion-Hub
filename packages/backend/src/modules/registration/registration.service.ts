@@ -10,6 +10,7 @@ import { APP_DATA_DIR, DATA_DIR, TUNNEL_DIR, tunnelUserClearedMarkerPath } from 
 import { buildPortalAxiosConfig, readPortalInternalUrlOverride, withPortalAxiosHeaders } from '@/common/helpers/portal-url';
 import { rateLimitedWaitCopy } from '@/common/helpers/retry-after';
 import { CloudflareClientService } from '../cloudflare/cloudflare-client.service';
+import { type TunnelHealth, TunnelHealthService } from '../cloudflare/tunnel-health.service';
 import { PortalClientService } from '@/core/portal/portal-client.service';
 import { TraefikConfigService } from '../docker/traefik-config.service';
 import { DeviceRegistrationRepository } from './device-registration.repository';
@@ -35,6 +36,7 @@ import {
   type RegistrationStateDrift,
 } from './registration-state-drift';
 import { clearRegistrationRecoveryArtifacts, clearRehydrationState, writeRestoreIntent } from '../app-lifecycle/registration-recovery-state';
+import { buildCheckInPayload } from './check-in-payload';
 import { resolveDeviceId } from './device-id.resolver';
 
 const PERIODIC_VALIDATION_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
@@ -108,6 +110,12 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     readonly _repoQueue: RepoEventsQueue,
     @Optional() private readonly agentNotifyService?: AgentNotifyService,
     @Optional() private readonly tailscaleService?: TailscaleService,
+    // Appended last, and optional, on purpose. This constructor is resolved positionally by
+    // several test harnesses and by `CloudflareModule`'s forward-referenced graph; a dependency
+    // inserted anywhere but the end silently re-binds the ones after it. Optional also keeps the
+    // check-in working on a Hub whose Cloudflare module never came up — the tunnel-health field
+    // is a diagnostic, not a precondition.
+    @Optional() private readonly tunnelHealthService?: TunnelHealthService,
   ) {}
 
   private portalAxiosConfig() {
@@ -523,19 +531,17 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
     // Refresh the in-memory token so `getTunnelToken()` matches durable state.
     await this.ensureCloudflareClientHasTunnelToken();
 
-    const { ciCloudUrl, ciHubApiKey } = this.config.getConfig();
+    const { ciCloudUrl, ciHubApiKey, version } = this.config.getConfig();
     if (!ciCloudUrl) return;
 
     try {
       const deviceId = await this.getDeviceId();
 
-      // Best-effort: piggyback this node's current Tailscale MagicDNS name on the check-in this
-      // method already sends every hour, rather than adding a second round trip to Portal. Omitted
-      // (not sent as an empty string) when the tailscale service is absent or has no answer right
-      // now — a transient Tailscale hiccup must not read to Portal as "this node lost its tailnet."
-      // See `CheckIn.ts` on the Portal side for exactly that field-absent-vs-blank distinction, and
-      // `hub-pool-discovery.service.ts` for what this feeds: the Portal leg of Hub Pool discovery.
-      const nodeFqdn = (await this.tailscaleService?.getStatusCached())?.nodeFqdn;
+      // Best-effort: piggyback what this node knows about itself on the check-in this method
+      // already sends every hour, rather than adding a second round trip to Portal. See
+      // `check-in-payload.ts` for the rules that govern the body, and `CheckIn.ts` on the Portal
+      // side for the field-absent-vs-blank contract they follow.
+      const diagnostics = await this.collectCheckInDiagnostics();
 
       // Confirm that Companion Portal still considers the device active. The
       // check-in endpoint authenticates with the registered device's
@@ -543,7 +549,13 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
       // transient-failure threshold.
       const response = await axios.post(
         `${this.config.getOutboundCiCloudUrl()}/api/devices/check-in`,
-        { device_id: deviceId, ...(nodeFqdn ? { tailscale_dns: nodeFqdn } : {}) },
+        buildCheckInPayload({
+          deviceId,
+          hubVersion: version,
+          phase: this._currentPhase,
+          degradedReasons: this._degradedReasons,
+          ...diagnostics,
+        }),
         {
           timeout: 5_000,
           validateStatus: () => true,
@@ -596,6 +608,40 @@ export class RegistrationService implements OnApplicationBootstrap, OnApplicatio
         await this.setPhase('degraded', ['cloud_validation_failed']);
       }
     }
+  }
+
+  /**
+   * Reads the best-effort facts the Portal status report shows beside this device.
+   *
+   * Each read is guarded individually because none of them may fail the check-in. The caller runs
+   * inside the catch that counts Portal failures toward `degraded` and eventually toward telling
+   * the owner to re-pair; a wedged Tailscale daemon or a throwing tunnel probe is not Portal being
+   * unreachable, and must never be counted as one. A failed read returns `undefined`, which
+   * `buildCheckInPayload` drops from the wire — the check-in then simply reports less than usual
+   * instead of reporting something false.
+   *
+   * Both sources are cache reads by design (Tailscale 30s, tunnel health 60s), so this costs no
+   * blocking I/O on a path with a 5s HTTP budget that also runs during bootstrap.
+   */
+  private async collectCheckInDiagnostics(): Promise<{ nodeFqdn?: string | null; tailscaleConnected?: boolean | null; tunnelHealth?: TunnelHealth }> {
+    let nodeFqdn: string | null | undefined;
+    let tailscaleConnected: boolean | null | undefined;
+    try {
+      const status = await this.tailscaleService?.getStatusCached();
+      nodeFqdn = status?.nodeFqdn;
+      tailscaleConnected = status?.connected;
+    } catch (error) {
+      this.logger.debug(`Check-in diagnostics: Tailscale status unavailable, omitting its fields: ${describeRegistrationError(error)}`);
+    }
+
+    let tunnelHealth: TunnelHealth | undefined;
+    try {
+      tunnelHealth = this.tunnelHealthService?.getHealth();
+    } catch (error) {
+      this.logger.debug(`Check-in diagnostics: tunnel health unavailable, omitting the field: ${describeRegistrationError(error)}`);
+    }
+
+    return { nodeFqdn, tailscaleConnected, tunnelHealth };
   }
 
   /** Probes tunnel DNS and HTTPS for logging without blocking request handlers. */

@@ -3,6 +3,7 @@ import { RegistrationService } from '../registration.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { CloudflareClientService } from '../../cloudflare/cloudflare-client.service';
+import { TunnelHealthService } from '../../cloudflare/tunnel-health.service';
 import { TraefikConfigService } from '../../docker/traefik-config.service';
 import { DeviceRegistrationRepository } from '../device-registration.repository';
 import { RepoEventsQueue } from '../../queue/entities/repo-events';
@@ -26,6 +27,7 @@ describe('RegistrationService', () => {
   let repoEventsQueue: MockProxy<RepoEventsQueue>;
   let portalClient: MockProxy<PortalClientService>;
   let tailscaleService: MockProxy<TailscaleService>;
+  let tunnelHealthService: MockProxy<TunnelHealthService>;
   const mockedAxios = vi.mocked(axios);
 
   beforeEach(async () => {
@@ -39,6 +41,10 @@ describe('RegistrationService', () => {
     portalClient = mock<PortalClientService>();
     portalClient.postDeviceDeregister.mockResolvedValue({ success: true });
     tailscaleService = mock<TailscaleService>();
+    tunnelHealthService = mock<TunnelHealthService>();
+    // Default to the reading a Hub that has not probed yet would give, so any test that does not
+    // care about the tunnel exercises the omit-`unknown` path rather than a convenient fiction.
+    tunnelHealthService.getHealth.mockReturnValue('unknown');
     mockedAxios.post.mockReset();
     mockedAxios.head.mockReset();
 
@@ -56,6 +62,7 @@ describe('RegistrationService', () => {
         { provide: RepoEventsQueue, useValue: repoEventsQueue },
         { provide: PortalClientService, useValue: portalClient },
         { provide: TailscaleService, useValue: tailscaleService },
+        { provide: TunnelHealthService, useValue: tunnelHealthService },
       ],
     }).compile();
 
@@ -908,7 +915,7 @@ describe('RegistrationService', () => {
       // must present its key or it would be wrongly marked degraded.
       expect(mockedAxios.post).toHaveBeenCalledWith(
         expect.stringContaining('/api/devices/check-in'),
-        { device_id: 'test-device' },
+        expect.objectContaining({ device_id: 'test-device' }),
         expect.objectContaining({
           headers: expect.objectContaining({ 'x-device-key': 'test-api-key' }),
         }),
@@ -928,7 +935,7 @@ describe('RegistrationService', () => {
 
       expect(mockedAxios.post).toHaveBeenCalledWith(
         expect.stringContaining('/api/devices/check-in'),
-        { device_id: 'test-device', tailscale_dns: 'my-hub.example-tailnet.ts.net' },
+        expect.objectContaining({ device_id: 'test-device', tailscale_dns: 'my-hub.example-tailnet.ts.net' }),
         expect.anything(),
       );
     });
@@ -944,9 +951,113 @@ describe('RegistrationService', () => {
 
       await (service as any).validateRegistrationWithCloud();
 
-      const [, body] = mockedAxios.post.mock.calls[0]!;
-      expect(body).toEqual({ device_id: 'test-device' });
+      const body = mockedAxios.post.mock.calls[0]?.[1];
+      expect(body).toEqual({ device_id: 'test-device', phase: 'locally_ready' });
       expect(body).not.toHaveProperty('tailscale_dns');
+    });
+
+    it('reports the provisioning phase on every check-in, so Portal can say why a device is unhealthy', async () => {
+      // Portal knows when a Hub last checked in; only the Hub knows what state it was in when it
+      // did. Without this field an org status report can say "seen 4 minutes ago" and nothing more.
+      await service.setPhase('paired');
+      await service.setPhase('provisioning');
+      await service.setPhase('locally_ready');
+      await service.setPhase('publicly_ready');
+
+      vi.spyOn(service as any, 'hasTunnelToken').mockReturnValue(true);
+      mockedAxios.post.mockResolvedValue({ status: 200 } as any);
+
+      await (service as any).validateRegistrationWithCloud();
+
+      const body = mockedAxios.post.mock.calls[0]?.[1];
+      expect(body).toMatchObject({ phase: 'publicly_ready' });
+      expect(body).not.toHaveProperty('degraded_reasons');
+    });
+
+    it('reports the degraded reasons, which is the field that tells an owner what to actually do', async () => {
+      await service.setPhase('paired');
+      await service.setPhase('provisioning');
+      await service.setPhase('locally_ready');
+      await service.setPhase('degraded', ['tunnel_unreachable']);
+
+      vi.spyOn(service as any, 'hasTunnelToken').mockReturnValue(true);
+      mockedAxios.post.mockResolvedValue({ status: 200 } as any);
+
+      await (service as any).validateRegistrationWithCloud();
+
+      const body = mockedAxios.post.mock.calls[0]?.[1];
+      expect(body).toMatchObject({ phase: 'degraded', degraded_reasons: ['tunnel_unreachable'] });
+    });
+
+    it('reports a conclusive tunnel health and the Hub version', async () => {
+      configService.getConfig.mockReturnValue({
+        ciCloudUrl: 'http://cloud.api',
+        ciHubApiKey: 'test-api-key',
+        version: '0.2.67',
+        userSettings: { domain: 'example.com' },
+      } as any);
+      await service.setPhase('paired');
+      await service.setPhase('provisioning');
+      await service.setPhase('locally_ready');
+
+      vi.spyOn(service as any, 'hasTunnelToken').mockReturnValue(true);
+      mockedAxios.post.mockResolvedValue({ status: 200 } as any);
+      tunnelHealthService.getHealth.mockReturnValue('down');
+      tailscaleService.getStatusCached.mockResolvedValue({ nodeFqdn: null, connected: true } as any);
+
+      await (service as any).validateRegistrationWithCloud();
+
+      const body = mockedAxios.post.mock.calls[0]?.[1];
+      expect(body).toMatchObject({ tunnel_health: 'down', hub_version: '0.2.67', tailscale_connected: true });
+    });
+
+    it('omits tunnel_health while the tunnel probe has no conclusive reading', async () => {
+      // `unknown` is what a Hub that just booted reports, which is precisely when the first
+      // check-in fires. Putting it on the wire would read at Portal as a real tunnel state.
+      await service.setPhase('paired');
+      await service.setPhase('provisioning');
+      await service.setPhase('locally_ready');
+
+      vi.spyOn(service as any, 'hasTunnelToken').mockReturnValue(true);
+      mockedAxios.post.mockResolvedValue({ status: 200 } as any);
+      tunnelHealthService.getHealth.mockReturnValue('unknown');
+
+      await (service as any).validateRegistrationWithCloud();
+
+      expect(mockedAxios.post.mock.calls[0]?.[1]).not.toHaveProperty('tunnel_health');
+    });
+
+    it('still checks in, and does not count a failure, when a diagnostic source throws', async () => {
+      // The check-in's real job is asking Portal whether this device is still active. A wedged
+      // Tailscale daemon or a throwing tunnel probe is not Portal being unreachable, and must not
+      // push this Hub toward `degraded` and a spurious "re-pair me" prompt.
+      await service.setPhase('paired');
+      await service.setPhase('provisioning');
+      await service.setPhase('locally_ready');
+
+      vi.spyOn(service as any, 'hasTunnelToken').mockReturnValue(true);
+      mockedAxios.post.mockResolvedValue({ status: 200 } as any);
+      tailscaleService.getStatusCached.mockRejectedValue(new Error('tailscaled is not running'));
+      tunnelHealthService.getHealth.mockImplementation(() => {
+        throw new Error('probe exploded');
+      });
+
+      await (service as any).validateRegistrationWithCloud();
+
+      const body = mockedAxios.post.mock.calls[0]?.[1];
+      expect(body).toEqual({ device_id: 'test-device', phase: 'locally_ready' });
+      expect(service.getRegistrationStatus().phase).toBe('locally_ready');
+    });
+
+    it('leaves the drift-detection probe as a bare device_id, so it can never blank a reported field', async () => {
+      // `probePortalDeviceActive` hits the same endpoint while the Hub is locally unregistered.
+      // Portal treats an absent field as "unchanged"; if this probe ever grew status fields it
+      // would overwrite a real report with whatever an unregistered Hub happens to know.
+      mockedAxios.post.mockResolvedValue({ status: 200 } as any);
+
+      await (service as any).probePortalDeviceActive('test-device', 'http://cloud.api');
+
+      expect(mockedAxios.post.mock.calls[0]?.[1]).toEqual({ device_id: 'test-device' });
     });
 
     it('transitions to degraded when tunnel token is missing', async () => {
