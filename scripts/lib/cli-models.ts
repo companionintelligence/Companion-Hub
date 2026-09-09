@@ -22,7 +22,8 @@ export function runModelsCommand(args: string[]) {
 
   const ollamaContainer = findComposeName('ollama');
   if (!ollamaContainer) {
-    printMessageBox('Models', ['Ollama container not running. Start the hub first: cihub up'], 'yellow');
+    printMessageBox('Models', ['Ollama container not running. Start the hub first: cihub up'], 'red');
+    process.exitCode = 1;
     return;
   }
 
@@ -89,7 +90,9 @@ export async function runPublicWebCommand(args: string[]) {
 
     if (subcommand === 'repair') {
       const lines = await runPublicWebRepair(envFileName, appName);
-      printMessageBox(`Public Web repair  [${env}]`, lines, publicWebRepairHasFailures(lines) ? 'yellow' : 'green');
+      const failed = publicWebRepairHasFailures(lines);
+      printMessageBox(`Public Web repair  [${env}]`, lines, failed ? 'yellow' : 'green');
+      if (failed) process.exitCode = 1;
       return;
     }
 

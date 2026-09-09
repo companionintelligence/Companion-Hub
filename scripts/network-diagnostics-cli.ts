@@ -73,10 +73,19 @@ export async function repairOrphanNetworks(envFileName: string): Promise<Network
   return hubApiFetch<NetworkRepairResponse>(envFileName, '/network/repair-orphans', { method: 'POST', body: '{}' });
 }
 
+/**
+ * The subset of `issueCount` that is broken rather than untidy: two things claiming one subnet
+ * cannot both route today, while an orphan bridge left behind by a removed app costs nothing until
+ * the pool runs out of ranges — and is exactly what `--repair-networks` sweeps up.
+ */
+function networkFailureCount(report: NetworkDiagnosticsReport): number {
+  return report.duplicateDbSubnets.length + report.hubPoolOverlaps.length;
+}
+
 export async function runNetworkDoctorSection(
   envFileName: string,
   options?: { repairNetworks?: boolean },
-): Promise<{ lines: string[]; issueCount: number; repaired?: NetworkRepairResponse }> {
+): Promise<{ lines: string[]; issueCount: number; failureCount: number; repaired?: NetworkRepairResponse }> {
   try {
     let report = await fetchNetworkDiagnostics(envFileName);
 
@@ -85,15 +94,16 @@ export async function runNetworkDoctorSection(
       report = await fetchNetworkDiagnostics(envFileName);
       const lines = formatNetworkDiagnosticsLines(report);
       lines.push(`Repair orphans           removed ${repaired.removed.length}, skipped ${repaired.skipped.length}, failed ${repaired.failed.length}`);
-      return { lines, issueCount: report.issueCount, repaired };
+      return { lines, issueCount: report.issueCount, failureCount: networkFailureCount(report) + repaired.failed.length, repaired };
     }
 
-    return { lines: formatNetworkDiagnosticsLines(report), issueCount: report.issueCount };
+    return { lines: formatNetworkDiagnosticsLines(report), issueCount: report.issueCount, failureCount: networkFailureCount(report) };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return {
       lines: [`Network diagnostics      unavailable (${message})`],
       issueCount: 0,
+      failureCount: 0,
     };
   }
 }

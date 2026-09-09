@@ -32,6 +32,14 @@ export function parseAppRuntimeArgs(args: string[]) {
   return { ports, envVars };
 }
 
+/** `--tail 10` and `--tail=10` both, matching `readValue` in the fleet module. */
+function readAppFlagValue(args: string[], flag: string): string | undefined {
+  const inline = args.find((arg) => arg.startsWith(`${flag}=`));
+  if (inline !== undefined) return inline.slice(flag.length + 1);
+  const index = args.indexOf(flag);
+  return index === -1 ? undefined : args[index + 1];
+}
+
 export function appStatusColor(status: string): string {
   const s = status.toLowerCase();
   if (s.startsWith('up')) return colorize(status, 'green');
@@ -78,7 +86,10 @@ export function runAppCommand(args: string[]) {
     const { stdout } = runCapture('docker', filterArgs);
     const rows = stdout.split('\n').filter(Boolean);
     if (rows.length === 0) {
-      printMessageBox('App status', [name ? `Container "${name}" not found.` : 'No containers running.'], 'yellow');
+      printMessageBox('App status', [name ? `Container "${name}" not found.` : 'No containers running.'], name ? 'red' : 'yellow');
+      // A named container that is not there is a failed lookup; a machine with no containers at all
+      // is an answer to the question asked.
+      if (name) process.exitCode = 1;
       return;
     }
     const lines = rows.map((row) => {
@@ -97,8 +108,7 @@ export function runAppCommand(args: string[]) {
   if (subcommand === 'logs') {
     const name = args[1];
     if (!name) usageAndExit('Usage: app logs <name> [--tail N]');
-    const tailIdx = args.indexOf('--tail');
-    const tail = tailIdx !== -1 && args[tailIdx + 1] ? args[tailIdx + 1] : '50';
+    const tail = readAppFlagValue(args, '--tail') || '50';
     printMessageBox('Container logs', [`Container: ${name}`, `Tail: ${tail} lines`], 'dim');
     run('docker', ['logs', '--tail', tail, '--timestamps', name]);
     return;
@@ -125,6 +135,7 @@ export function runAppCommand(args: string[]) {
     const { stdout, ok } = runCapture('docker', ['inspect', name]);
     if (!ok || !stdout) {
       printMessageBox('Inspect', [`Container "${name}" not found.`], 'red');
+      process.exitCode = 1;
       return;
     }
     let info: Record<string, unknown>[];
