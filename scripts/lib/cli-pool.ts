@@ -6,6 +6,7 @@
  */
 import path from 'node:path';
 import { parseEnvFile } from '../env-file.js';
+import { discoverComposeIdentity } from './compose-discovery.js';
 import {
   approvePoolPeer,
   cancelPairingPin,
@@ -420,7 +421,19 @@ async function runPoolUpdateCommand(ctx: HubContext): Promise<void> {
     lines.push(cliWarn(`no pull-image overlay in ${ctx.cwd} — pulling ${image} directly, since the seeded compose caches a mutable tag`));
   }
 
-  const { pullArgs, upArgs } = buildPoolUpdateComposeArgs(ctx.envFile, files);
+  // Read the running stack before assuming this checkout's shape. Costs one `docker inspect` and is
+  // the difference between updating the Hub that exists and failing on a project-name mismatch.
+  const identity = discoverComposeIdentity();
+  if (identity && (identity.project !== 'ci-hub' || identity.configFiles.length)) {
+    console.log(
+      colorize(
+        `  using the running stack: container ${identity.container}, project ${identity.project ?? '(none)'}` +
+          `${identity.configFiles.length ? `, ${identity.configFiles.length} compose file(s)` : ''}`,
+        'dim',
+      ),
+    );
+  }
+  const { pullArgs, upArgs } = buildPoolUpdateComposeArgs(ctx.envFile, files, identity);
   printMessageBox(`Hub Pool update  [${ctx.env}]`, [...lines, '', 'Pulling the published image, then redeploying...'], 'cyan');
   // CI_HUB_IMAGE is exported even without the overlay. On an appliance the seeded compose carries
   // `image: ${CI_HUB_IMAGE:-…:latest}` with `pull_policy: if_not_present`, so a mutable tag like
