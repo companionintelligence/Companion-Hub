@@ -31,13 +31,13 @@ describe('MarketplaceWhoIsService', () => {
     cachedAt: string;
   }>;
 
-  const sessionReq = (userId = USER_ID): Request => ({ hubSessionId: 'sess-1', user: { id: userId } }) as Request;
+  const sessionReq = (userId = USER_ID): Request => ({ hubSessionId: 'sess-1', user: { id: userId }, hubPrincipal: 'session' }) as Request;
 
-  /**
-   * A Portal push: the device-key bearer arm, which names itself so the grant
-   * exemption is a decision rather than the absence of a session.
-   */
+  /** A Portal push: the device-key bearer arm, exempt because it names itself. */
   const portalPushReq = (userId = USER_ID): Request => ({ user: { id: userId }, hubPrincipal: 'portal-device' }) as Request;
+
+  /** The `cihub` CLI: the JWT arm, the other exempt principal. */
+  const cliReq = (userId = USER_ID): Request => ({ user: { id: userId }, hubPrincipal: 'cli' }) as Request;
 
   /** An authenticated caller with no recognised principal — a middleware bug. */
   const unknownPrincipalReq = (userId = USER_ID): Request => ({ user: { id: userId } }) as Request;
@@ -204,24 +204,49 @@ describe('MarketplaceWhoIsService', () => {
     expect(visible).toEqual([{ urn: APP_URN }]);
   });
 
-  it('no-ops assertSessionAction without a Hub session (Portal-push)', async () => {
-    await expect(service.assertSessionAction(portalPushReq(), APP_URN, 'install')).resolves.toBeUndefined();
+  it.each([
+    ['the Portal-device principal', portalPushReq],
+    ['the CLI principal', cliReq],
+  ])('no-ops assertSessionAction for %s', async (_label, buildReq) => {
+    await expect(service.assertSessionAction(buildReq(), APP_URN, 'install')).resolves.toBeUndefined();
     expect(portal.whoisApps).not.toHaveBeenCalled();
     expect(federatedIdentities.findByUserId).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ['the Portal-device principal', portalPushReq],
+    ['the CLI principal', cliReq],
+  ])('sweeps everything for %s', async (_label, buildReq) => {
+    await expect(service.filterSessionByAction(buildReq(), [APP_URN], 'install')).resolves.toEqual([APP_URN]);
+    expect(portal.whoisApps).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['the Portal-device principal', portalPushReq],
+    ['the CLI principal', cliReq],
+  ])('resolves no sweep operator for %s, so the sweep is unfiltered', (_label, buildReq) => {
+    expect(service.sweepOperatorUserId(buildReq(), 'update')).toBeUndefined();
+  });
+
   it('refuses an action from a caller with no recognised principal', async () => {
-    /*
-     * ⚠ THE EXEMPTION USED TO BE INFERRED FROM A MISSING SESSION, which is true
-     * of the Portal-device bearer, of the CLI JWT, and of any authentication arm
-     * added later that forgets to set one — so it widened silently every time
-     * the middleware grew. A request that reaches a gated route with no
-     * principal is a bug, and the safe reading of a bug is a refusal.
-     */
+    // The exemption used to follow from a missing session, which was equally true
+    // of every arm that forgot to set one. A gated route reached with no principal
+    // is a middleware bug, and the safe reading of a bug is a refusal.
     await expect(service.assertSessionAction(unknownPrincipalReq(), APP_URN, 'install')).rejects.toMatchObject({
       status: 403,
     });
     expect(portal.whoisApps).not.toHaveBeenCalled();
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('whois_unrecognised_principal'));
+  });
+
+  it('refuses a sweep from a caller with no recognised principal', () => {
+    // `updateAllApps` and friends act on every installed app, so the sweep gets the
+    // same answer the named routes do rather than `operatorMay`'s fail-open.
+    expect(() => service.sweepOperatorUserId(unknownPrincipalReq(), 'update')).toThrowError(TranslatableError);
+  });
+
+  it('resolves the sweep operator for a Hub session', () => {
+    expect(service.sweepOperatorUserId(sessionReq(), 'update')).toBe(USER_ID);
   });
 
   it('sweeps nothing for a caller with no recognised principal', async () => {
@@ -231,7 +256,7 @@ describe('MarketplaceWhoIsService', () => {
   });
 
   it('still shows list rows to an unrecognised principal, because reads fail open', async () => {
-    // `filterSessionByView`'s own contract: hiding a row from a READ is how an
+    // `filterSessionByView`'s own contract: hiding a row from a read is how an
     // operator loses sight of an app they own. Only the mutating paths refuse.
     const items = [{ urn: APP_URN }];
 

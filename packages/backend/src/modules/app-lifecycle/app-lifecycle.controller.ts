@@ -2,7 +2,6 @@ import { castAppUrn } from '@/common/helpers/app-helpers';
 import { Body, Controller, Delete, Get, Param, Patch, Post, Req, UseGuards } from '@nestjs/common';
 import type { Request } from 'express';
 import { MarketplaceWhoIsService } from '@/core/portal/marketplace-whois.service';
-import { hubSessionOperatorUserId } from '@/core/portal/hub-session-operator';
 import { AuthGuard } from '../auth/auth.guard';
 import { AppLifecycleService } from './app-lifecycle.service';
 import { HubAccessService } from './hub-access.service';
@@ -173,23 +172,30 @@ export class AppLifecycleController {
     return CancelOperationResponseDto.parse(res, { reportOnly: true });
   }
 
+  /*
+   * The sweeps resolve the operator through `sweepOperatorUserId`, not through
+   * `hubSessionOperatorUserId`: `operatorMay` treats an omitted id as "not a
+   * Hub-session person, allow", so reading the id directly would let an
+   * unrecognised principal act on every installed app — the exemption-by-absence
+   * the named routes above no longer have.
+   */
   @Patch('update-all')
   async updateAllApps(@Req() req: Request) {
-    return this.appLifecycleService.updateAllApps(hubSessionOperatorUserId(req));
+    return this.appLifecycleService.updateAllApps(this.whois.sweepOperatorUserId(req, 'update'));
   }
 
   @Post('start-all')
   async startAllApps(@Req() req: Request) {
-    return this.appLifecycleService.startAllApps(hubSessionOperatorUserId(req));
+    return this.appLifecycleService.startAllApps(this.whois.sweepOperatorUserId(req, 'start'));
   }
 
   @Post('stop-all')
   async stopAllApps(@Req() req: Request) {
-    return this.appLifecycleService.stopAllApps(hubSessionOperatorUserId(req));
+    return this.appLifecycleService.stopAllApps(this.whois.sweepOperatorUserId(req, 'stop'));
   }
 
   @Post('restart-all')
   async restartAllApps(@Req() req: Request) {
-    return this.appLifecycleService.restartAllApps(hubSessionOperatorUserId(req));
+    return this.appLifecycleService.restartAllApps(this.whois.sweepOperatorUserId(req, 'restart'));
   }
 }

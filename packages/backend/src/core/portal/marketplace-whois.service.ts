@@ -61,18 +61,16 @@ export class MarketplaceWhoIsService {
     const userId = hubSessionOperatorUserId(req);
 
     if (userId == null) {
-      /*
-       * ⚠ NO PERSON IS NOT AUTOMATICALLY "ALLOW". A Portal push and the CLI are
-       * exempt — both are host-local and Portal runs its own GRANT_DENIED gate —
-       * and this used to be inferred from the absence of a session, which was
-       * also true of every future auth arm that forgot to set one. Named now, so
-       * anything unrecognised is refused instead of waved through.
-       */
+      // No person is not automatically "allow": the exemption is a named principal,
+      // not the absence of a session. See `isGrantExemptPrincipal`.
       if (isGrantExemptPrincipal(req)) {
         return;
       }
 
-      throw new TranslatableError('APP_ACTION_GRANT_DENIED', { action, app: extractAppUrn(appUrns[0] as AppUrn).appName }, HttpStatus.FORBIDDEN);
+      this.logUnrecognisedPrincipal(req, action);
+      // No `app` param: the message interpolates only `action`, and `extractAppUrn`
+      // throws a bare `Error` (a 500) on a urn `castAppUrn` let through, such as `x:`.
+      throw new TranslatableError('APP_ACTION_GRANT_DENIED', { action }, HttpStatus.FORBIDDEN);
     }
 
     const map = await this.canMap(userId, appUrns, surface);
@@ -102,9 +100,14 @@ export class MarketplaceWhoIsService {
     const userId = hubSessionOperatorUserId(req);
 
     if (userId == null) {
-      // Exempt principals sweep everything, as before; an unrecognised one
-      // sweeps nothing. See `isGrantExemptPrincipal`.
-      return isGrantExemptPrincipal(req) ? appUrns : [];
+      // Exempt principals sweep everything, as before; an unrecognised one sweeps
+      // nothing. See `isGrantExemptPrincipal`.
+      if (isGrantExemptPrincipal(req)) {
+        return appUrns;
+      }
+
+      this.logUnrecognisedPrincipal(req, action);
+      return [];
     }
 
     const map = await this.canMap(userId, appUrns, surface);
@@ -119,13 +122,9 @@ export class MarketplaceWhoIsService {
     const userId = hubSessionOperatorUserId(req);
 
     if (userId == null) {
-      /*
-       * ⚠ THIS ONE STILL FAILS OPEN FOR AN UNRECOGNISED PRINCIPAL, and that is
-       * deliberate: its own contract says it fails open where the action
-       * variants fail closed, because hiding a row from a READ is how an
-       * operator loses sight of an app they own. The mutating paths above are
-       * where a wrong answer costs something.
-       */
+      // Fails open even for an unrecognised principal, unlike the action variants
+      // above: hiding a row from a read is how an operator loses sight of an app
+      // they own.
       return items;
     }
 
@@ -144,6 +143,34 @@ export class MarketplaceWhoIsService {
       }
       return can.includes('view');
     });
+  }
+
+  /**
+   * The person whose grants filter a sweep over apps the caller did not name, or
+   * `undefined` for an exempt principal, which sweeps everything.
+   *
+   * The `*-all` lifecycle routes cannot use `filterSessionByAction` — they choose
+   * their own set from the app table — so they resolve the operator here instead of
+   * reading `hubSessionOperatorUserId` directly, which would read an unrecognised
+   * principal as "no person to check, allow" all over again.
+   */
+  sweepOperatorUserId(req: Request, action: HubAction): number | undefined {
+    const userId = hubSessionOperatorUserId(req);
+
+    if (userId == null && !isGrantExemptPrincipal(req)) {
+      this.logUnrecognisedPrincipal(req, action);
+      throw new TranslatableError('APP_ACTION_GRANT_DENIED', { action }, HttpStatus.FORBIDDEN);
+    }
+
+    return userId;
+  }
+
+  /**
+   * A gated route reached with no recognised principal is a middleware bug, not a
+   * grant verdict. The caller only ever sees a 403, so say which it was in the log.
+   */
+  private logUnrecognisedPrincipal(req: Request, action: HubAction): void {
+    this.logger.warn(`whois_unrecognised_principal principal=${req.hubPrincipal ?? 'none'} action=${action}`);
   }
 
   async has(userId: number, appUrn: AppUrn, action: HubAction, surface: GrantSurface = 'hub'): Promise<boolean> {

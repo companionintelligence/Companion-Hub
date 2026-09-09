@@ -43,8 +43,8 @@ export class PublicWebController {
     }
     // Repair rewrites the app env and restarts the app, so it carries the same
     // grant as saving that config does — an operator who cannot configure an app
-    // must not reach the same effect through the routing banner. API-key callers
-    // (the `cihub` CLI) hold no Hub session, so this is a no-op for them, exactly
+    // must not reach the same effect through the routing banner. The Portal-device
+    // and CLI principals are exempt by name, so this is a no-op for them, exactly
     // as it is on every lifecycle route.
     return this.publicWebService.repair(parsed.data, async (appUrns, named) => {
       // Named apps are all-or-nothing: the operator chose them, so quietly skipping one
