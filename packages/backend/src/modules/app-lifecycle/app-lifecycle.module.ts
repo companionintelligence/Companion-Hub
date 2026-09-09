@@ -1,4 +1,5 @@
 import { SSEModule } from '@/core/sse/sse.module';
+import { StatusReportModule } from '../status-report/status-report.module';
 import { HubAccessService } from './hub-access.service';
 import { ApiKeyModule } from '@/modules/api-keys/api-key.module';
 import { Module, forwardRef } from '@nestjs/common';
@@ -27,6 +28,7 @@ import { LifecycleJobService } from './lifecycle-job.service';
 
 @Module({
   imports: [
+    StatusReportModule,
     QueueModule,
     forwardRef(() => AppsModule),
     EnvModule,

@@ -191,6 +191,39 @@ knowing, because both fail in ways a dry run does not show:
 
 Without a stored `device:pair` login, `--code` still works for a single node exactly as before.
 
+### `cihub status --write-status-file`
+
+Copies this node's status report to the operator's Desktop as `CI_HUB_STATUS.md` — connection
+details, the LLM backends running, the models installed, the containerized workloads, and system
+status, for auditing a fleet without opening a dashboard per box.
+
+```bash
+cihub status --write-status-file
+```
+
+**The Hub writes the report; this command only delivers it.** Every service that knows the answers
+lives in the backend process, and the CLI holds no credential for the guarded routes that expose
+them (`pool/status`, `apps/installed` and `system-inspector` are all behind `AuthGuard`), so
+composing it here would mean provisioning an API key on every node just to audit it. The backend
+writes `<data-dir>/state/CI_HUB_STATUS.md` every 15 minutes; `fleet install` installs a systemd user
+timer that copies it to the Desktop on the same cadence.
+
+Two things the output tells you that the file alone would not:
+
+- **Where it went.** `~/Desktop` is not a given — `xdg-user-dirs` is often unset on a server
+  install, the directory is localised, and an appliance brought up with `sudo` has `root` as the
+  host user. With no Desktop the file stays in the data dir and the command says so, rather than
+  inventing a path.
+- **How old it is.** The report carries its own `Generated` timestamp. A stale one means the Hub
+  that writes it is not running, so the contents describe when it last ran — not what is running
+  now. Past 45 minutes the command says so out loud.
+
+The report distinguishes an unreadable section from an empty one throughout. "No workloads" means
+none are installed; a section that could not be read says so and is listed at the top of the file.
+It also prints the Hub's own belief about an app beside the live container state, so the case that
+matters to an audit — an app the Hub calls `running` with nothing actually up — is visible rather
+than averaged away.
+
 ---
 
 ## Hub lifecycle
