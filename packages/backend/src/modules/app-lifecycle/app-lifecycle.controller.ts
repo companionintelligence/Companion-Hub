@@ -58,14 +58,24 @@ export class AppLifecycleController {
 
   /** Hub-provisioned trust material held by this app (managed key prefix, forward-auth state). */
   @Get(':urn/hub-access')
-  async getHubAccess(@Param('urn') urn: string) {
-    return this.hubAccessService.getStatus(castAppUrn(urn));
+  async getHubAccess(@Param('urn') urn: string, @Req() req: Request) {
+    const appUrn = castAppUrn(urn);
+    await this.whois.assertSessionAction(req, appUrn, 'view');
+    return this.hubAccessService.getStatus(appUrn);
   }
 
   /** Rotate the app's Hub trust material: revoke + clear, then restart to re-provision fresh values. */
   @Post(':urn/hub-access/rotate')
-  async rotateHubAccess(@Param('urn') urn: string) {
-    return this.hubAccessService.rotate(castAppUrn(urn));
+  async rotateHubAccess(@Param('urn') urn: string, @Req() req: Request) {
+    const appUrn = castAppUrn(urn);
+    /*
+     * ⚠ THIS ROTATES AN APP'S CREDENTIALS. Every install/start/stop verb beside
+     * it asserts a grant and this asserted nothing, so a caller with no standing
+     * over an app could revoke its managed key and forward-auth state — and the
+     * app stays broken until it is restarted and re-provisioned.
+     */
+    await this.whois.assertSessionAction(req, appUrn, 'configure');
+    return this.hubAccessService.rotate(appUrn);
   }
 
   @Post(':urn/install')
@@ -167,8 +177,13 @@ export class AppLifecycleController {
    */
   @Post(':urn/cancel')
   @ApiResponse({ type: CancelOperationResponseDto })
-  async cancelOperation(@Param('urn') urn: string, @Body() body: CancelOperationBody) {
-    const res = await this.appLifecycleService.cancelOperation(castAppUrn(urn), body.requestId);
+  async cancelOperation(@Param('urn') urn: string, @Body() body: CancelOperationBody, @Req() req: Request) {
+    const appUrn = castAppUrn(urn);
+    // Aborting somebody else's install or update is a lifecycle action like any
+    // other on this controller; `stop` is the verb whose weight it matches
+    // (`force-stop` next to it asserts the same one).
+    await this.whois.assertSessionAction(req, appUrn, 'stop');
+    const res = await this.appLifecycleService.cancelOperation(appUrn, body.requestId);
     return CancelOperationResponseDto.parse(res, { reportOnly: true });
   }
 
