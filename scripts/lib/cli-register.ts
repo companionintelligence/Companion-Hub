@@ -61,7 +61,53 @@ export async function showDeviceId(options: { fromHub?: boolean; env?: HubEnv } 
     console.log(await resolveLocalDeviceId());
   } catch (error) {
     printMessageBox('Device ID lookup failed', [error instanceof Error ? error.message : String(error)], 'red');
+    process.exit(1);
   }
+}
+
+/**
+ * The code to pair with, or a refusal — never a prompt nobody can answer.
+ *
+ * `cihub fleet` drives register over `ssh -n`, which has no TTY by construction: the prompt below
+ * used to read a closed stdin, never settle, and let the process exit 0 having registered nothing.
+ * Refusing follows `confirmDestructive` — no terminal means fail fast naming the flag that works
+ * unattended — but there is no `CI_HUB_ASSUME_YES` equivalent here, because only the operator's CI
+ * Account can produce a code. Exported so that refusal is reachable without detaching stdin.
+ */
+export async function resolvePairingCode(env: HubEnv, code: string | undefined, isTTY = process.stdin.isTTY === true): Promise<string> {
+  const supplied = code ? normalizePairingCode(code) : '';
+  if (code && !isValidPairingCode(supplied)) {
+    printMessageBox('Invalid pairing code', [`"${code}" is not a valid 6-character code.`], 'red');
+    process.exit(2);
+  }
+  if (isValidPairingCode(supplied)) return supplied;
+
+  if (!isTTY) {
+    printMessageBox(
+      'Pairing code required',
+      [
+        'No pairing code was given and there is no terminal to prompt on.',
+        `Generate a code in your CI Account and pass it: ${BASE_COMMAND} register ${env} --code <code>`,
+      ],
+      'red',
+    );
+    process.exit(2);
+  }
+
+  let pairingCode = '';
+  const rl = createInterface({ input, output });
+  try {
+    while (!isValidPairingCode(pairingCode)) {
+      const answer = await rl.question('  Pairing code (6 characters): ');
+      pairingCode = normalizePairingCode(answer);
+      if (!isValidPairingCode(pairingCode)) {
+        console.log(colorize('  Enter a valid 6-character code from your CI Account.', 'yellow'));
+      }
+    }
+  } finally {
+    rl.close();
+  }
+  return pairingCode;
 }
 
 /**
@@ -136,12 +182,12 @@ export async function registerHub(env: HubEnv, options: RegisterHubOptions = {})
       const prepared = await prepareFreshSetup(apiBase);
       if (!prepared.success) {
         printMessageBox('Prepare fresh failed', [prepared.message || 'Unknown error'], 'red');
-        return;
+        process.exit(1);
       }
       printMessageBox('Local state cleared', [prepared.message], 'green');
     } catch (error) {
       printMessageBox('Prepare fresh failed', [error instanceof Error ? error.message : String(error)], 'red');
-      return;
+      process.exit(1);
     }
   }
 
@@ -150,7 +196,7 @@ export async function registerHub(env: HubEnv, options: RegisterHubOptions = {})
     deviceInfo = await fetchDeviceId(apiBase);
   } catch (error) {
     printMessageBox('Device info failed', [error instanceof Error ? error.message : String(error)], 'red');
-    return;
+    process.exit(1);
   }
 
   const deviceId = deviceInfo.device_id;
@@ -180,26 +226,7 @@ export async function registerHub(env: HubEnv, options: RegisterHubOptions = {})
     'green',
   );
 
-  let pairingCode = options.code ? normalizePairingCode(options.code) : '';
-  if (options.code && !isValidPairingCode(pairingCode)) {
-    printMessageBox('Invalid pairing code', [`"${options.code}" is not a valid 6-character code.`], 'red');
-    return;
-  }
-
-  if (!isValidPairingCode(pairingCode)) {
-    const rl = createInterface({ input, output });
-    try {
-      while (!isValidPairingCode(pairingCode)) {
-        const answer = await rl.question('  Pairing code (6 characters): ');
-        pairingCode = normalizePairingCode(answer);
-        if (!isValidPairingCode(pairingCode)) {
-          console.log(colorize('  Enter a valid 6-character code from your CI Account.', 'yellow'));
-        }
-      }
-    } finally {
-      rl.close();
-    }
-  }
+  const pairingCode = await resolvePairingCode(env, options.code);
 
   printMessageBox('Pairing', ['Submitting pairing code to the Hub\u2026'], 'cyan');
   const pairResult = await submitPairingCode(apiBase, pairingCode);
