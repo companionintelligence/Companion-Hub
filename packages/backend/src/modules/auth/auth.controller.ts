@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import net from 'node:net';
 import { SESSION_COOKIE_MAX_AGE, SESSION_COOKIE_NAME } from '@/common/constants';
 import { buildHubPublicOrigin } from '@/common/helpers/hub-origin';
+import { hashEmailForLog } from '@/common/helpers/log-privacy';
 import { TranslatableError } from '@/common/error/translatable-error';
 import { CacheService } from '@/core/cache/cache.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
@@ -544,21 +545,24 @@ export class AuthController {
           return redirectError(hubOrigin, 'callback_error');
         }
       } else if (operator.username.trim().toLowerCase() !== email.trim().toLowerCase()) {
-        const operators = await this.userRepository.getOperators();
+        /*
+         * A verified Portal identity says who somebody is; it asserts no relationship between that
+         * person and THIS appliance, and the redirect that brings them here is validated against
+         * every tenant's Hub host rather than their own (CI-Portal#685 is the other half). So this
+         * refuses a mismatch whatever the operator count. It used to rename the sole operator's row
+         * to the incoming address instead, which handed the appliance to any stranger who signed up
+         * at the Portal and knew an (enumerable) Hub hostname.
+         *
+         * Changing the operator's address is a deliberate, authenticated act performed on the Hub.
+         */
+        // Hash both addresses: this endpoint is unauthenticated, so the plaintext form would let a
+        // stranger pump arbitrary addresses into the log next to the owner's real one.
+        this.logger.warn('Portal login blocked: email mismatch', {
+          portalEmailHash: hashEmailForLog(email),
+          operatorEmailHash: hashEmailForLog(operator.username),
+        });
 
-        if (operators.length === 1) {
-          // A verified Portal identity is authoritative for the sole operator on a single-user appliance.
-          this.logger.warn('Portal login email differs from local operator; syncing from verified Portal identity', {
-            portalEmail: email,
-            operatorEmail: operator.username,
-          });
-          const normalizedEmail = email.trim().toLowerCase();
-          await this.userRepository.updateUser(operator.id, { username: normalizedEmail });
-          operator = { ...operator, username: normalizedEmail };
-        } else {
-          this.logger.warn('Portal login blocked: email mismatch', { portalEmail: email, operatorEmail: operator.username });
-          return redirectError(hubOrigin, 'account_mismatch');
-        }
+        return redirectError(hubOrigin, 'account_mismatch');
       }
 
       const sessionId = await this.sessionManager.createSession(operator.id);
