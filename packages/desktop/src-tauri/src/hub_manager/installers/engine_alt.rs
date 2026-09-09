@@ -1,7 +1,5 @@
 //! Licensing-free Docker engine alternatives: Colima and the WSL2 engine.
 
-use crate::hub_manager::*;
-
 #[allow(unused_imports)]
 use super::*;
 

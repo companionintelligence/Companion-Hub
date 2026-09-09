@@ -36,10 +36,10 @@ describe('MarketplaceTools', () => {
       expect(marketplaceService.searchApps).toHaveBeenCalled();
       expect(result).toEqual({ data: [], total: 0, nextCursor: null });
     });
-    it('should default pageSize to 24', async () => {
+    it('should default pageSize to 16', async () => {
       marketplaceService.searchApps.mockResolvedValue({ data: [], total: 0, nextCursor: null } as any);
       await tools.searchApps({});
-      expect(marketplaceService.searchApps).toHaveBeenCalledWith(expect.objectContaining({ pageSize: 24 }));
+      expect(marketplaceService.searchApps).toHaveBeenCalledWith(expect.objectContaining({ pageSize: 16 }));
     });
     it('should support text search filter', async () => {
       marketplaceService.searchApps.mockResolvedValue({ data: [], total: 0, nextCursor: null } as any);

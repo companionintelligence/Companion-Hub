@@ -29,7 +29,10 @@ android {
     namespace = "computer.ci.app.hub"
     defaultConfig {
         manifestPlaceholders["usesCleartextTraffic"] = "false"
-        applicationId = "computer.ci.app.hub"
+        // Play Console app id (must match the registered package name).
+        // Kotlin namespace / R class stay on computer.ci.app.hub; only the
+        // published applicationId is what Google Play validates.
+        applicationId = "com.companionintelligence.hub"
         minSdk = 24
         targetSdk = 36
         versionCode = tauriProperties.getProperty("tauri.android.versionCode", "1").toInt()
