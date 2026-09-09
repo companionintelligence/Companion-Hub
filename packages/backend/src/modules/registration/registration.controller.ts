@@ -162,11 +162,14 @@ export class RegistrationController {
     /*
      * A nonce is minted by an unauthenticated route, so on its own it does not
      * stop someone who can reach this port from starting a registration and
-     * finishing it. Re-registering a Hub that is already running is
-     * `resetRegistration`'s job, and `prepareFreshSetup` and `markRestoreIntent`
-     * refuse on the same test.
+     * finishing it. Re-registering a Hub that is already serving is
+     * `resetRegistration`'s job.
+     *
+     * A Hub degraded by a missing tunnel token is excluded: it is registered,
+     * but pairing again is how it recovers, and the headless setup service
+     * finishes that pairing here.
      */
-    if (await this.registrationService.isRegistered()) {
+    if (await this.registrationService.isRegisteredAndServing()) {
       this.logger.warn('Rejected registration callback: this Hub is already registered');
 
       throw new ForbiddenException('This Hub is already registered. Reset its registration from Settings before pairing it again.');
