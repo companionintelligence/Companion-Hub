@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import net from 'node:net';
 import { SESSION_COOKIE_MAX_AGE, SESSION_COOKIE_NAME } from '@/common/constants';
 import { buildHubPublicOrigin } from '@/common/helpers/hub-origin';
+import { hashEmailForLog } from '@/common/helpers/log-privacy';
 import { TranslatableError } from '@/common/error/translatable-error';
 import { CacheService } from '@/core/cache/cache.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
@@ -545,31 +546,21 @@ export class AuthController {
         }
       } else if (operator.username.trim().toLowerCase() !== email.trim().toLowerCase()) {
         /*
-         * ⚠ A VERIFIED PORTAL IDENTITY SAYS WHO SOMEBODY IS. IT SAYS NOTHING
-         * ABOUT THIS APPLIANCE.
+         * A verified Portal identity says who somebody is; it asserts no relationship between that
+         * person and THIS appliance, and the redirect that brings them here is validated against
+         * every tenant's Hub host rather than their own (CI-Portal#685 is the other half). So this
+         * refuses a mismatch whatever the operator count. It used to rename the sole operator's row
+         * to the incoming address instead, which handed the appliance to any stranger who signed up
+         * at the Portal and knew an (enumerable) Hub hostname.
          *
-         * This used to rename the operator row to the incoming address whenever
-         * the Hub had exactly ONE operator — under the heading "a verified
-         * Portal identity is authoritative for the sole operator on a
-         * single-user appliance" — and refuse only when there were several. That
-         * is backwards: the single-operator case is the common one, so the
-         * permissive branch was the default.
-         *
-         * The Portal verifies the person. It does not assert any relationship
-         * between that person and THIS Hub, and the redirect that brings them
-         * here is validated against every tenant's Hub host rather than their
-         * own (CI-Portal#685 is the other half). So a stranger who signs up at
-         * the Portal and knows a Hub hostname — composed from published app URLs
-         * and therefore enumerable — could drive the flow in their own browser,
-         * arrive here with their own verified email, have the owner's operator
-         * row RENAMED to their address, and receive a session. The owner is
-         * locked out of their own appliance by a login they never saw.
-         *
-         * A mismatch is now a refusal whatever the operator count. Changing the
-         * operator's address is a deliberate, authenticated act performed on the
-         * Hub — not a side effect of somebody else signing in.
+         * Changing the operator's address is a deliberate, authenticated act performed on the Hub.
          */
-        this.logger.warn('Portal login blocked: email mismatch', { portalEmail: email, operatorEmail: operator.username });
+        // Hash both addresses: this endpoint is unauthenticated, so the plaintext form would let a
+        // stranger pump arbitrary addresses into the log next to the owner's real one.
+        this.logger.warn('Portal login blocked: email mismatch', {
+          portalEmailHash: hashEmailForLog(email),
+          operatorEmailHash: hashEmailForLog(operator.username),
+        });
 
         return redirectError(hubOrigin, 'account_mismatch');
       }
