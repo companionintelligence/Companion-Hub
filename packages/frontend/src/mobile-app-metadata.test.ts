@@ -11,7 +11,8 @@ import { describe, expect, it } from 'vitest';
  * modes this test locks down (some seen historically — e.g. Android strings.xml
  * once wrapped the label in literal quotes: `"Companion Hub"`):
  *   - the human-facing app / display name drifting or picking up stray quote chars
- *   - the bundle id (iOS) and applicationId (Android) diverging from computer.ci.app.hub
+ *   - the iOS bundle id drifting from computer.ci.app.hub, or Android
+ *     applicationId drifting from the Play-registered com.companionintelligence.hub
  *   - version strings disagreeing across tauri.conf.json, iOS, and Android
  *   - the `cihub` deep-link scheme missing on one platform
  *   - the iOS deployment target slipping off iOS 16
@@ -25,6 +26,8 @@ const TAURI = path.resolve(here, '../../mobile/src-tauri');
 
 const EXPECTED_NAME = 'Companion Hub';
 const EXPECTED_ID = 'computer.ci.app.hub';
+/** Google Play package — registered separately from the Tauri/iOS identifier. */
+const EXPECTED_ANDROID_APPLICATION_ID = 'com.companionintelligence.hub';
 const EXPECTED_SCHEME = 'cihub';
 const EXPECTED_IOS_TARGET = '16.0';
 
@@ -100,13 +103,14 @@ describe('mobile app metadata: display name', () => {
 });
 
 describe('mobile app metadata: bundle identifier', () => {
-  it('is computer.ci.app.hub across tauri.conf, iOS, and Android', () => {
+  it('keeps Tauri/iOS on computer.ci.app.hub and Android applicationId on Play id', () => {
     expect(tauriConf.identifier).toBe(EXPECTED_ID);
     // iOS: Info.plist CFBundleIdentifier is driven by project.yml PRODUCT_BUNDLE_IDENTIFIER
     expect(plistString(iosInfoPlist, 'CFBundleIdentifier')).toBe('$(PRODUCT_BUNDLE_IDENTIFIER)');
     expect(iosBundleId).toBe(EXPECTED_ID);
-    // Android: applicationId and namespace
-    expect(androidApplicationId).toBe(EXPECTED_ID);
+    // Android: Play Console requires com.companionintelligence.hub; namespace may
+    // stay on the Tauri identifier (R class / generated Kotlin package).
+    expect(androidApplicationId).toBe(EXPECTED_ANDROID_APPLICATION_ID);
     expect(androidNamespace).toBe(EXPECTED_ID);
   });
 });
