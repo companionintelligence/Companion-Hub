@@ -3,7 +3,7 @@ import { TranslatableError } from '@/types/error.types';
 import { isChunkLoadError } from './chunk-load-error';
 import { fetchDeviceRegistrationInfoResult } from './registration-api';
 import { scrubBreadcrumb, scrubBrowserEvent, scrubString, scrubUrl } from './sentry-scrubber';
-import { isTelemetryAllowed, refreshTelemetryConsent, refreshTelemetryConsentIfStale } from './telemetry-consent';
+import { isTelemetryAllowed, onTelemetryConsentChange, refreshTelemetryConsent, refreshTelemetryConsentIfStale } from './telemetry-consent';
 
 let sentryInitialized = false;
 let deviceIdRequest: Promise<void> | null = null;
@@ -261,6 +261,39 @@ function shouldDropSentryEvent(event: Sentry.ErrorEvent): boolean {
   return false;
 }
 
+/** Name the SDK registers the replay integration under. */
+const REPLAY_INTEGRATION_NAME = 'Replay';
+
+/**
+ * Start or stop Session Replay to match consent.
+ *
+ * Replay cannot be gated in `beforeSend` — its envelopes never reach that hook —
+ * so honouring a withdrawal means stopping the recorder. Added lazily on grant
+ * so a user who never consents is never recorded at all, and stopped on
+ * withdrawal so a mid-session flip takes effect without a reload, matching how
+ * `beforeSend` already behaves for errors.
+ */
+export function syncSessionReplayWithConsent(allowed: boolean | null): void {
+  const client = Sentry.getClient();
+
+  if (!client) {
+    return;
+  }
+
+  const existing = client.getIntegrationByName?.(REPLAY_INTEGRATION_NAME) as { start?: () => void; stop?: () => Promise<void> } | undefined;
+
+  if (allowed === true) {
+    if (!existing) {
+      client.addIntegration?.(Sentry.replayIntegration({ maskAllText: true, blockAllMedia: true }));
+    }
+
+    return;
+  }
+
+  // Unknown counts as withdrawn here, same posture as `isTelemetryAllowed`.
+  void existing?.stop?.();
+}
+
 export function initHubSentry(): void {
   if (sentryInitialized) {
     return;
@@ -288,12 +321,23 @@ export function initHubSentry(): void {
   // false while the answer is unknown.
   void refreshTelemetryConsent();
 
+  // Replay follows consent for the life of the page.
+  onTelemetryConsentChange(syncSessionReplayWithConsent);
+
   Sentry.init({
     dsn,
     environment: import.meta.env.CI_HUB_ENVIRONMENT || import.meta.env.MODE,
     release: getSentryRelease(),
     enabled: true,
-    integrations: [Sentry.browserTracingIntegration(), Sentry.replayIntegration({ maskAllText: true, blockAllMedia: true })],
+    /*
+     * Replay is deliberately ABSENT here and added later, only once consent is
+     * known to be granted — see `syncSessionReplayWithConsent`. Registering it
+     * at init records and uploads sessions regardless of the switch, because
+     * replay envelopes do not pass through `beforeSend`; that hook filters
+     * error events only. Sampling still comes from the rates below, which apply
+     * when the integration is added.
+     */
+    integrations: [Sentry.browserTracingIntegration()],
     tracesSampleRate: Number(import.meta.env.VITE_SENTRY_TRACES_SAMPLE_RATE ?? 0.1),
     replaysSessionSampleRate: Number(import.meta.env.VITE_SENTRY_REPLAYS_SESSION_SAMPLE_RATE ?? 0.1),
     replaysOnErrorSampleRate: Number(import.meta.env.VITE_SENTRY_REPLAYS_ON_ERROR_SAMPLE_RATE ?? 1),

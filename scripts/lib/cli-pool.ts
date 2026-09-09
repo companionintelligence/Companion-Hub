@@ -45,7 +45,7 @@ import {
   resolvePoolUpdateImage,
 } from './cli-pool-update.js';
 import { BASE_COMMAND, type HubEnv } from './cli-types.js';
-import { cliFail, cliOk, cliWarn, dim, printMessageBox, sanitizeForBox, STEP_ICONS } from './cli-ui.js';
+import { cliFail, cliOk, cliWarn, colorize, dim, printMessageBox, sanitizeForBox, STEP_ICONS } from './cli-ui.js';
 import { type HubContext, resolveHubContext } from './hub-context.js';
 import { resolveRootFolderHost } from './paths.js';
 
@@ -248,7 +248,22 @@ function describePoolPeer(peer: { nodeFqdn: string; direction: string; status: s
 function poolErrorExit(error: unknown, envFileName: string): never {
   const message = error instanceof Error ? error.message : String(error);
   const name = error instanceof Error ? error.name : '';
-  if (message.includes('fetch failed') || message.includes('ECONNREFUSED')) {
+  /*
+   * `HubUnreachableError` first, by NAME rather than by message text. The string
+   * checks below were written against Node's `fetch failed` / `ECONNREFUSED`
+   * wording, and this CLI ships as a bun-compiled binary whose message is
+   * "Unable to connect. Is the computer able to access the url?" with
+   * `code: ConnectionRefused` — matching neither. The result on a fleet node with
+   * no Hub running was a raw TypeError and bundled source printed at the
+   * operator. Catching at the fetch and keying on the type is runtime-agnostic;
+   * the string checks stay for errors raised elsewhere.
+   */
+  if (
+    name === 'HubUnreachableError' ||
+    message.includes('fetch failed') ||
+    message.includes('ECONNREFUSED') ||
+    message.includes('Unable to connect')
+  ) {
     printMessageBox('Hub unavailable', [`Could not reach Hub at ${resolveHubApiBase(envFileName)}.`, 'Start the Hub first: cihub up'], 'red');
     process.exit(1);
   }

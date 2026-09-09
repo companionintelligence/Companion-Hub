@@ -17,6 +17,13 @@ Open-source Hub is an untrusted client of Companion Portal. See [`docs/security/
 
 Marketplace installs and registry tag lists need a **Portal-issued device key**. Hub tries to send that key (`x-device-key`) after you pair this appliance ([CI-Portal#634](https://github.com/companionintelligence/CI-Portal/pull/634)). Paid marketplace apps also need an org entitlement on Portal; Hub's local cache is UX only and is not the till. If pairing never finishes, or this machine cannot store the key, those calls fail with `401`. Installs do not complete, and the catalog can look slow or empty instead of obviously unauthorized. Pair first (`cihub register` or the onboarding UI).
 
+## Telemetry
+
+Hub reports crashes to Sentry by default in distributed builds. `CI_TELEMETRY=off`
+or `CI_LOCAL_ONLY=true` in the hub `.env` stops it, as does the switch in
+Settings → General. What is collected, and what is not, is documented in
+[`docs/telemetry.md`](docs/telemetry.md).
+
 ## Documentation
 
 Start with [`docs/README.md`](docs/README.md) for the doc map, product glossary, tip scrub policy, and writing style.
