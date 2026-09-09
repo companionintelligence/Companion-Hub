@@ -26,9 +26,19 @@ interface IProps {
   portalAccountEmail?: string | null;
   /** Native app: keep this window mounted and finish SSO via cihub:// / cihub-dev://. */
   openPortalSsoExternally?: boolean;
+  /** Clear the sticky Portal hint and let another family member sign in. */
+  onSwitchAccount?: () => void;
 }
 
-export const LoginForm: React.FC<IProps> = ({ loading, onSubmit, loginType, portalSsoHref, portalAccountEmail, openPortalSsoExternally = false }) => {
+export const LoginForm: React.FC<IProps> = ({
+  loading,
+  onSubmit,
+  loginType,
+  portalSsoHref,
+  portalAccountEmail,
+  openPortalSsoExternally = false,
+  onSwitchAccount,
+}) => {
   const { t } = useTranslation();
   const {
     register,
@@ -95,6 +105,16 @@ export const LoginForm: React.FC<IProps> = ({ loading, onSubmit, loginType, port
           <div className="text-xs text-muted-foreground text-center mt-2">
             {t(openPortalSsoExternally ? 'AUTH_LOGIN_COMPANION_ACCOUNT_HINT' : 'AUTH_LOGIN_COMPANION_ACCOUNT_HINT_IN_APP')}
           </div>
+          {portalAccountEmail && onSwitchAccount ? (
+            <button
+              type="button"
+              data-testid="login-switch-account"
+              className="mx-auto mt-1 block py-0 leading-tight text-sm text-muted-foreground underline"
+              onClick={onSwitchAccount}
+            >
+              {t('AUTH_LOGIN_NOT_THIS_ACCOUNT', { email: portalAccountEmail })}
+            </button>
+          ) : null}
           <div className="my-4 h-px bg-border" />
         </div>
       ) : null}

@@ -428,6 +428,13 @@
       "when": 1781100000000,
       "tag": "0060_lifecycle_job",
       "breakpoints": true
+    },
+    {
+      "idx": 61,
+      "version": "7",
+      "when": 1781200000000,
+      "tag": "0061_memory_connection_hub_user",
+      "breakpoints": true
     }
   ]
 }

@@ -99,7 +99,7 @@ const portalDesktopExchangeResponseSchema = z.object({
 const portalSessionHintResponseSchema = z.object({
   email: z.string().nullable(),
   portalBaseUrl: z.string().nullable(),
-  source: z.enum(['hub_operator', 'portal_session']).nullable(),
+  source: z.enum(['hub_operator', 'hub_user', 'portal_session']).nullable(),
 });
 
 const sessionRefreshResponseSchema = z.object({

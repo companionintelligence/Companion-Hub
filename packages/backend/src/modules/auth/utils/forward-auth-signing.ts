@@ -64,3 +64,53 @@ export function buildSignedForwardAuthHeaders(secret: string, username: string, 
     [FORWARD_AUTH_SIGNATURE_HEADER]: signForwardAuthUser(secret, username, now),
   };
 }
+
+export type ForwardAuthVerifyResult =
+  | { ok: true; username: string }
+  | { ok: false; reason: 'missing_headers' | 'bad_timestamp' | 'expired' | 'bad_signature' };
+
+const DEFAULT_MAX_SKEW_MS = 5 * 60 * 1000;
+
+function signaturesEqual(a: string, b: string): boolean {
+  const bufA = Buffer.from(a, 'utf8');
+  const bufB = Buffer.from(b, 'utf8');
+  if (bufA.length !== bufB.length) {
+    return false;
+  }
+
+  return crypto.timingSafeEqual(bufA, bufB);
+}
+
+/**
+ * Verify a signed forward-auth header set (same contract as CI-Server).
+ */
+export function verifyForwardAuthHeaders(
+  secret: string,
+  headers: { user?: string | null; timestamp?: string | null; signature?: string | null },
+  opts: { now?: number; maxSkewMs?: number } = {},
+): ForwardAuthVerifyResult {
+  const username = headers.user;
+  const timestampRaw = headers.timestamp;
+  const signature = headers.signature;
+
+  if (!secret || !username || !timestampRaw || !signature) {
+    return { ok: false, reason: 'missing_headers' };
+  }
+
+  const timestampMs = Number(timestampRaw);
+  if (!Number.isFinite(timestampMs) || !Number.isInteger(timestampMs)) {
+    return { ok: false, reason: 'bad_timestamp' };
+  }
+
+  const now = opts.now ?? Date.now();
+  const maxSkewMs = opts.maxSkewMs ?? DEFAULT_MAX_SKEW_MS;
+  if (Math.abs(now - timestampMs) > maxSkewMs) {
+    return { ok: false, reason: 'expired' };
+  }
+
+  if (!signaturesEqual(signature, signForwardAuthUser(secret, username, timestampMs))) {
+    return { ok: false, reason: 'bad_signature' };
+  }
+
+  return { ok: true, username };
+}

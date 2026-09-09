@@ -131,6 +131,25 @@ describe('AuthMiddleware session fallback', () => {
     expect(next).toHaveBeenCalledOnce();
   });
 
+  it('prefers the newer of a valid cookie and a valid header session', async () => {
+    sessionManager.resolveSessionUserId.mockImplementation((id: string) => (id === 'old-sess' ? 1 : id === 'new-sess' ? 2 : null));
+    sessionManager.getSessionExpiresAt.mockImplementation((id: string) => (id === 'old-sess' ? 1_000 : id === 'new-sess' ? 9_000 : null));
+    userRepository.getUserDtoById.mockResolvedValue({ id: 2, username: 'hello@lifescope.io' });
+
+    const req = {
+      cookies: { 'ci-hub-sid': 'old-sess' },
+      headers: {},
+      query: {},
+      get: (name: string) => (name === 'x-ci-hub-session' ? 'new-sess' : undefined),
+    } as unknown as Request;
+    const next = vi.fn();
+
+    await middleware.use(req, {} as never, next);
+
+    expect(req.user).toEqual({ id: 2, username: 'hello@lifescope.io' });
+    expect(req.hubSessionId).toBe('new-sess');
+  });
+
   it('authenticates from X-CI-Hub-Session when the cookie session is stale', async () => {
     sessionManager.resolveSessionUserId.mockImplementation((id: string) => (id === 'live-sess' ? 2 : null));
     userRepository.getUserDtoById.mockResolvedValue({ id: 2, username: 'op' });

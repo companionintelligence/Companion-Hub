@@ -32,7 +32,7 @@ export const Header = (props: HeaderProps) => {
   const logout = useMutation({
     ...logoutMutation(),
     onSuccess: () => {
-      clearClientHubState({ keepPortalEmail: true });
+      clearClientHubState();
       window.location.reload();
     },
   });

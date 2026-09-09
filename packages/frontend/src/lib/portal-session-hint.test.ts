@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   fetchPortalSessionEmailDirect,
+  forgetPortalAccountEmail,
   readRememberedPortalAccountEmail,
   rememberPortalAccountEmail,
   resolvePortalSessionHint,
@@ -40,13 +41,34 @@ describe('portal-session-hint', () => {
       request: new Request('http://localhost/api/portal/session-hint'),
       response: { ok: true } as Response,
     });
+    vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('no portal session'));
 
     await expect(resolvePortalSessionHint()).resolves.toEqual({
       email: 'operator@example.com',
       portalBaseUrl: 'https://ci-portal.localhost',
       source: 'hub_operator',
     });
-    expect(readRememberedPortalAccountEmail()).toBe('operator@example.com');
+    expect(readRememberedPortalAccountEmail()).toBeNull();
+  });
+
+  it('persists a live Portal session and prefers it over the Hub operator', async () => {
+    vi.mocked(portalSessionHint).mockResolvedValue({
+      data: {
+        email: 'hello@lifescope.io',
+        portalBaseUrl: 'https://ci-portal.localhost',
+        source: 'portal_session',
+      },
+      error: undefined,
+      request: new Request('http://localhost/api/portal/session-hint'),
+      response: { ok: true } as Response,
+    });
+
+    await expect(resolvePortalSessionHint()).resolves.toEqual({
+      email: 'hello@lifescope.io',
+      portalBaseUrl: 'https://ci-portal.localhost',
+      source: 'portal_session',
+    });
+    expect(readRememberedPortalAccountEmail()).toBe('hello@lifescope.io');
   });
 
   it('falls back to a direct Portal session probe when the hub hint has no email', async () => {
@@ -112,6 +134,12 @@ describe('portal-session-hint', () => {
       source: 'remembered',
     });
     expect(readRememberedPortalAccountEmail()).toBe('user@example.com');
+  });
+
+  it('forgetPortalAccountEmail drops the sticky hint', () => {
+    rememberPortalAccountEmail('hello@lifescope.io');
+    forgetPortalAccountEmail();
+    expect(readRememberedPortalAccountEmail()).toBeNull();
   });
 
   it('parses direct portal session responses', async () => {
