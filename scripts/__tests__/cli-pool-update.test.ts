@@ -72,9 +72,9 @@ describe('gatherGitUpdateFacts', () => {
 });
 
 describe('buildPoolUpdateComposeArgs', () => {
-  it('shares the same base args every other lifecycle command uses — same project name, same env file, same compose files', () => {
+  it('shares the same base args every other lifecycle command uses when nothing is running', () => {
     const { pullArgs, upArgs } = buildPoolUpdateComposeArgs('/data/companion-hub/.env', ['/data/companion-hub/docker-compose.prod.yml']);
-    expect(pullArgs).toEqual([
+    const base = [
       'compose',
       '--env-file',
       '/data/companion-hub/.env',
@@ -82,32 +82,40 @@ describe('buildPoolUpdateComposeArgs', () => {
       'ci-hub',
       '-f',
       '/data/companion-hub/docker-compose.prod.yml',
-      'pull',
-    ]);
+    ];
+    expect(pullArgs).toEqual([...base, 'pull']);
+    // `--no-build` is not cosmetic. Two fleet nodes ship a compose file with a build stanza and hold
+    // no npm auth token, so an update allowed to fall back to building dies on
+    // `pnpm install --frozen-lockfile` instead of pulling the image already built for them.
+    expect(upArgs).toEqual([...base, 'up', '-d', '--remove-orphans', '--no-build']);
+  });
+
+  it("targets the RUNNING stack when one was discovered, not this checkout's assumptions", () => {
+    // The failure this prevents: a node whose data dir was renamed reports project `ci-hub` while
+    // compose would infer `companion-hub` from the directory — so `up` tried to CREATE a second
+    // container and died on a name conflict, leaving the Hub un-updated.
+    const { upArgs } = buildPoolUpdateComposeArgs('.env.prod', ['docker-compose.prod.yml'], {
+      container: 'ci-os-hub',
+      project: 'ci-hub',
+      workingDir: '/home/ci/.local/share/companion-hub',
+      configFiles: ['/w/docker-compose.prod.yml', '/w/docker-compose.dev-image.yml'],
+      envFiles: ['/w/.env.prod'],
+    });
     expect(upArgs).toEqual([
       'compose',
-      '--env-file',
-      '/data/companion-hub/.env',
       '--project-name',
       'ci-hub',
+      '--env-file',
+      '/w/.env.prod',
       '-f',
-      '/data/companion-hub/docker-compose.prod.yml',
+      '/w/docker-compose.prod.yml',
+      '-f',
+      '/w/docker-compose.dev-image.yml',
       'up',
       '-d',
       '--remove-orphans',
+      '--no-build',
     ]);
-  });
-
-  it('never passes --build — the whole point is updating without a build toolchain', () => {
-    const { pullArgs, upArgs } = buildPoolUpdateComposeArgs('.env.prod', ['docker-compose.prod.yml']);
-    expect(pullArgs).not.toContain('--build');
-    expect(upArgs).not.toContain('--build');
-  });
-
-  it('passes multiple compose files as repeated -f flags, in order', () => {
-    const { pullArgs } = buildPoolUpdateComposeArgs('.env.prod', ['a.yml', 'b.yml']);
-    expect(pullArgs.filter((a) => a === '-f')).toHaveLength(2);
-    expect(pullArgs).toEqual(expect.arrayContaining(['-f', 'a.yml', '-f', 'b.yml']));
   });
 });
 
