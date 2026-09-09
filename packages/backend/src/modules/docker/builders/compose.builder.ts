@@ -13,7 +13,7 @@ import * as yaml from 'yaml';
 import { type BuiltService, ServiceBuilder } from './service.builder';
 import { TraefikLabelsBuilder } from './traefik-labels.builder';
 import { publishesHostPort } from '@/modules/apps/app-exposure.helpers';
-import { CI_MARKETPLACE_STORE_SLUG } from '@/core/portal/portal.constants';
+import { isOfficialStoreApp } from '@/modules/apps/official-store.predicate';
 import { z } from 'zod';
 
 export const INTERNAL_INFRASTRUCTURE_PORTS = [6543, 5672] as const;
@@ -319,24 +319,13 @@ export class DockerComposeBuilder {
     // schema check is not enough here — a malicious or compromised manifest would otherwise be
     // rendered into a root-equivalent container. This throw aborts the install (the caller in
     // command.ts surfaces it as an app error).
-    /*
-     * ⚠ THE GRANT IS KEYED ON PROVENANCE, NOT ON THE NAME.
-     *
-     * `TRUSTED_APP_SECURITY_ALLOWLIST` is keyed by bare app name, and this
-     * looked the name up with no regard for WHERE the app came from. So any
-     * user-added store — and `_user`, the custom-app path — could claim
-     * `privileged: true` or a `/var/run/docker.sock` bind simply by naming its
-     * app `home-assistant` or `netdata`. The allowlist is an audited list of
-     * holes in the sandbox for specific, reviewed FIRST-PARTY apps; a name is
-     * not evidence that this is one of them.
-     *
-     * `CI_MARKETPLACE_STORE_SLUG` is the same provenance signal
-     * `isOfficialStoreApp` rests on, and for the reason stated there: the store
-     * segment is recorded by the Hub at install time and cannot be claimed by a
-     * manifest, because the official store occupies that slug on every boot.
-     * Everything else gets `undefined` and is held to the bare reject-list.
-     */
-    const securityGrants = appStoreId === CI_MARKETPLACE_STORE_SLUG ? TRUSTED_APP_SECURITY_ALLOWLIST[appName] : undefined;
+    // The grant is keyed on provenance, not on the name. `TRUSTED_APP_SECURITY_ALLOWLIST` is keyed
+    // by bare app name, so looking it up without asking where the app came from let any user-added
+    // store — and `_user`, the custom-app path — claim `privileged: true` by naming its app
+    // `home-assistant`. `isOfficialStoreApp` is the provenance gate, and its doc comment explains
+    // why the store segment is the one signal a manifest cannot forge. Everything else gets
+    // `undefined` and is held to the bare reject-list.
+    const securityGrants = isOfficialStoreApp({ urn: appUrn }) ? TRUSTED_APP_SECURITY_ALLOWLIST[appName] : undefined;
     const securityViolations = collectServiceSecurityViolations(params, securityGrants);
     if (securityViolations.length > 0) {
       const details = securityViolations.map((v) => `${v.path.join('.')}${v.hostPath ? ` (${v.hostPath})` : ''} [${v.message}]`).join(', ');

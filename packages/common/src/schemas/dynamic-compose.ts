@@ -42,36 +42,27 @@ function assertVolumeSource(volume: { hostPath?: string; volumeName?: string; re
 }
 
 /**
- * ⚠ THE REJECT-LIST IS A STRING COMPARISON, so anything that spells a denied
- * path differently used to walk straight past it.
+ * The one expansion a manifest may legitimately use: the Hub substitutes it with the app's own data
+ * directory, which is never a denied path.
  *
- * `normalizeCustomAppHostPath` collapsed separators and dropped a trailing
- * slash and stopped there: it never resolved a `.` or `..` segment. So `/etc`
- * was denied while `/etc/../etc`, `/./etc` and `/var/../etc` were not — each is
- * one character away from the denied form and mounts exactly the same
- * directory. A `${...}` expansion is the same problem one layer later: the
- * string checked here is not the string docker-compose eventually resolves.
- *
- * Both are REJECTED rather than resolved. A manifest has no legitimate need for
- * a relative segment or an expansion in a host path — every real entry in the
- * allowlist above is a plain absolute path — so accepting them and normalising
- * would only mean guessing at what the author meant, on the one input where
- * guessing wrong is a host escape.
+ * Both alternatives match a COMPLETE reference, so a longer variable that merely starts with the
+ * same characters (`${APP_DATA_DIR_EXTRA}`, `$APP_DATA_DIR_HOME`) is left intact and rejected below
+ * as an unknown expansion. Prefix-matching it would substitute the leading half, hide the `$`, and
+ * let compose expand the whole thing to `/etc` at up time.
  */
-/**
- * The one expansion a manifest may legitimately use.
- *
- * `${APP_DATA_DIR}` is substituted by the Hub with the app's OWN data
- * directory, which is under the app-data root and therefore never a denied
- * path. Substituting it here — rather than rejecting it — lets the reject-list
- * see the shape of the rest of the path, so `${APP_DATA_DIR}/../../etc` is still
- * caught by the dot-segment test below.
- */
-const APP_DATA_DIR_EXPANSION = /\$\{?APP_DATA_DIR\}?/g;
+const APP_DATA_DIR_EXPANSION = /\$\{APP_DATA_DIR\}|\$APP_DATA_DIR(?![A-Za-z0-9_])/g;
 
 /** A stand-in for the app's own data directory: absolute, and on no reject-list. */
 const APP_DATA_DIR_PLACEHOLDER = '/app-data/__app__';
 
+/**
+ * Whether a host path cannot be canonicalized, and so cannot be cleared by the reject-list below.
+ *
+ * The reject-list is a string comparison, so a dot segment (`/etc/../etc`, `/./etc`) or an unknown
+ * `${...}` expansion mounts a denied directory under a spelling the comparison never sees. Both are
+ * rejected rather than resolved: a manifest has no legitimate need for either, and resolving them
+ * would mean guessing at intent on the one input where guessing wrong is a host escape.
+ */
 function hasUnresolvableHostPathSyntax(hostPath: string): boolean {
   const substituted = hostPath.replace(APP_DATA_DIR_EXPANSION, APP_DATA_DIR_PLACEHOLDER);
 
@@ -95,6 +86,13 @@ function normalizeCustomAppHostPath(hostPath: string): string {
   return normalized || '/';
 }
 
+/**
+ * Host paths that are safe to bind even though they sit under a denied root: single,
+ * well-known timezone files. Binding these grants no meaningful host access and many
+ * apps rely on them, so they are never treated as a sandbox escape.
+ */
+const ALLOWED_CUSTOM_APP_HOST_PATHS = new Set(['/etc/localtime', '/etc/timezone']);
+
 function isDeniedCustomAppHostPath(hostPath: string): boolean {
   // Unresolvable first: a path we cannot canonicalize is one we cannot clear.
   if (hasUnresolvableHostPathSyntax(hostPath)) {
@@ -102,7 +100,17 @@ function isDeniedCustomAppHostPath(hostPath: string): boolean {
   }
 
   const normalized = normalizeCustomAppHostPath(hostPath.replace(APP_DATA_DIR_EXPANSION, APP_DATA_DIR_PLACEHOLDER));
-  return DENIED_CUSTOM_APP_HOST_PATHS.some((denied) => normalized === denied || normalized.startsWith(`${denied}/`));
+
+  if (ALLOWED_CUSTOM_APP_HOST_PATHS.has(normalized)) {
+    return false;
+  }
+
+  // A denied path is denied by its ANCESTORS too. `/var/run/docker.sock` is on the list, so
+  // binding `/var/run` — or `/var` — hands over the same socket under a path the equality and
+  // prefix tests never see. The third clause denies any directory that contains a denied path.
+  return DENIED_CUSTOM_APP_HOST_PATHS.some(
+    (denied) => normalized === denied || normalized.startsWith(`${denied}/`) || denied.startsWith(`${normalized}/`),
+  );
 }
 
 function assertCustomAppServiceSecurity(service: { privileged?: boolean; volumes?: { hostPath?: string }[] }, ctx: z.RefinementCtx) {
@@ -124,13 +132,6 @@ function assertCustomAppServiceSecurity(service: { privileged?: boolean; volumes
     }
   }
 }
-
-/**
- * Host paths that are safe to bind even though they sit under a denied root: single,
- * well-known timezone files. Binding these grants no meaningful host access and many
- * apps rely on them, so they are never treated as a sandbox escape.
- */
-const ALLOWED_CUSTOM_APP_HOST_PATHS = new Set(['/etc/localtime', '/etc/timezone']);
 
 /**
  * Per-app grants for host-privileged compose features. First-party / marketplace apps
@@ -171,13 +172,76 @@ export const TRUSTED_APP_SECURITY_ALLOWLIST: Record<string, AppSecurityGrants> =
   // Cloud-native runtime security tool that hooks host syscalls; reads the
   // host docker socket, /proc, /etc, and kernel tracing, matching Falco's own
   // official docker quickstart.
-  falco: { hostPaths: ['/var/run/docker.sock', '/proc', '/etc', '/sys/kernel/tracing'] },
+  // BPF/PERFMON read the kernel tracepoints it hooks; SYS_PTRACE/SYS_RESOURCE match upstream.
+  falco: {
+    hostPaths: ['/var/run/docker.sock', '/proc', '/etc', '/sys/kernel/tracing'],
+    capAdd: ['BPF', 'PERFMON', 'SYS_PTRACE', 'SYS_RESOURCE'],
+  },
   // Agentic workspace's code-execution sandbox service needs privileged mode
   // to isolate arbitrary AI-agent-generated code, matching upstream's own
   // docker-compose.yml.
   refly: { privileged: true },
   // Host file explorer: bind-mounts Hub root so the UI can browse/edit device files.
   'filebrowser-quantum': { hostPaths: ['/'] },
+
+  /*
+   * NET_ADMIN for apps whose whole function is the network stack: a VPN or tunnel endpoint
+   * configuring its own interface and routes, or a DNS/monitoring app that needs raw sockets. The
+   * capability is confined to the container's own network namespace unless `networkModeHost` is
+   * also granted, which none of these have.
+   */
+  dnsmasq: { capAdd: ['NET_ADMIN'] },
+  gluetun: { capAdd: ['NET_ADMIN'] },
+  librenms: { capAdd: ['NET_ADMIN'] },
+  netalertx: { capAdd: ['NET_ADMIN'] },
+  'pi-hole': { capAdd: ['NET_ADMIN'] },
+  strix: { capAdd: ['NET_ADMIN'] },
+  wireguard: { capAdd: ['NET_ADMIN'] },
+  // QEMU/KVM appliances: NET_ADMIN builds the guest's bridge and TAP interface.
+  macos: { capAdd: ['NET_ADMIN'] },
+  windows: { capAdd: ['NET_ADMIN'] },
+  'windows-arm': { capAdd: ['NET_ADMIN'] },
+
+  /*
+   * ⚠ SYS_ADMIN IS TREATED AS PRIVILEGED-EQUIVALENT and SYS_MODULE loads kernel modules. These
+   * entries record what these apps already ship with rather than newly granting it, so that adding
+   * the capability check does not break installs that work today. Each deserves an audit of its
+   * own: the browser sandboxes below want SYS_ADMIN only for Chromium's user namespaces, which
+   * `--no-sandbox` or a seccomp profile can replace.
+   */
+  'anything-llm': { capAdd: ['SYS_ADMIN'] },
+  changedetection: { capAdd: ['SYS_ADMIN'] },
+  'proxmox-backup': { capAdd: ['SYS_ADMIN'] },
+  maxun: { capAdd: ['SYS_ADMIN'], securityOpt: ['seccomp=unconfined'] },
+  // gerbil, the WireGuard data-plane sidecar, loads the kernel wireguard module.
+  pangolin: { capAdd: ['NET_ADMIN', 'SYS_MODULE'] },
+  // SDN overlay: NET_ADMIN for its TUN interface, SYS_ADMIN per upstream's compose.
+  'zerotier-one': { capAdd: ['NET_ADMIN', 'SYS_ADMIN'] },
+  // Secret-sharing vault: IPC_LOCK keeps decrypted secrets off swap.
+  sup3rs3cretmes5age: { capAdd: ['IPC_LOCK'] },
+
+  /*
+   * ⚠ `seccomp=unconfined` REMOVES THE SYSCALL FILTER. Granted only for the GPU inference stacks
+   * that need it: ROCm's userspace queues issue ioctls the default profile blocks. Recorded to
+   * match what these apps ship with; a targeted profile would be the better long-term answer.
+   */
+  comfyui: { securityOpt: ['seccomp=unconfined'] },
+  'hunyuan3d-rocm': { securityOpt: ['seccomp=unconfined'] },
+
+  /*
+   * Host paths and devices the DEVICE OWNER supplies through the install form, not the manifest.
+   * The Hub builds the compose `.env` from `config.form_fields`, so these expansions resolve to a
+   * value typed by the person who owns the Hub — the grant is for the app's declared field, and the
+   * reject-list still holds for every path the manifest writes itself. The literal spelling has to
+   * match the manifest exactly, because an expansion cannot be canonicalized before compose
+   * resolves it.
+   */
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: a compose expansion, matched literally
+  zigbee2mqtt: { devices: ['${ZIGBEE2MQTT_DEVICE}'] },
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: a compose expansion, matched literally
+  'zwave-js-ui': { devices: ['${ZWAVE_DEVICE_PATH}'] },
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: a compose expansion, matched literally
+  navidrome: { hostPaths: ['${NAVIDROME_MUSIC_FOLDER:-${APP_DATA_DIR}/music}'] },
 };
 
 export interface ServiceSecurityViolation {
@@ -199,45 +263,73 @@ interface SecurityCheckedService {
 /**
  * Capabilities an ordinary app may add without a grant.
  *
- * ⚠ THE POINT OF BLOCKING `privileged` IS THE POWER IT CONFERS, AND `capAdd`
- * CONFERS THE SAME POWER PIECEMEAL. `SYS_ADMIN` alone is close enough to
- * privileged to be treated as equivalent by every container-security guide;
- * `SYS_MODULE` loads kernel modules; `SYS_RAWIO` reaches raw devices;
- * `SYS_PTRACE` reads other processes' memory; `DAC_READ_SEARCH` bypasses file
- * permission checks; `MKNOD` creates device nodes. Refusing `privileged: true`
- * while accepting any of these was a sandbox that could be stepped over rather
- * than climbed.
+ * `capAdd` confers the power `privileged` confers, piecemeal: `SYS_ADMIN` is treated as equivalent
+ * to privileged by every container-security guide, `SYS_MODULE` loads kernel modules, and
+ * `DAC_READ_SEARCH` bypasses file permission checks. An allow-list, not a deny-list, because the
+ * dangerous set grows with the kernel and the set an app legitimately needs does not.
  *
- * An allow-list, not a deny-list: the set of dangerous capabilities grows with
- * the kernel, and the set an app legitimately needs does not.
+ * The list is Docker's OWN default capability set, which every container already holds. Adding one
+ * of these back through `cap_add` grants nothing the runtime has not already granted — refusing it
+ * would fail the install of any manifest that lists one redundantly, or that drops all capabilities
+ * and re-adds the few it needs, and buy no security for it.
  */
-const SAFE_CAP_ADD = new Set(['NET_BIND_SERVICE', 'CHOWN', 'SETUID', 'SETGID', 'FOWNER', 'DAC_OVERRIDE', 'KILL']);
+const SAFE_CAP_ADD = new Set([
+  'AUDIT_WRITE',
+  'CHOWN',
+  'DAC_OVERRIDE',
+  'FOWNER',
+  'FSETID',
+  'KILL',
+  'MKNOD',
+  'NET_BIND_SERVICE',
+  'NET_RAW',
+  'SETFCAP',
+  'SETGID',
+  'SETPCAP',
+  'SETUID',
+  'SYS_CHROOT',
+]);
+
+/** Docker accepts `CAP_SYS_ADMIN` and `SYS_ADMIN` for the same capability, so both sides normalize. */
+function normalizeCapability(capability: string): string {
+  return capability.trim().toUpperCase().replace(/^CAP_/, '');
+}
+
+/** Docker accepts `seccomp=unconfined` and `seccomp:unconfined` for the same option, so both sides normalize. */
+function normalizeSecurityOpt(opt: string): string {
+  return opt
+    .trim()
+    .toLowerCase()
+    .replace(/\s*[:=]\s*/, '=');
+}
 
 /**
- * `securityOpt` values that switch confinement OFF.
+ * `securityOpt` values that switch confinement OFF, matched against `normalizeSecurityOpt`.
  *
- * Matched on the VALUE half so `apparmor=unconfined` is refused while
- * `apparmor=my-profile` is not, and so `no-new-privileges` — which tightens
- * rather than loosens — is unaffected.
+ * `label=` is refused whole: `label=disable` turns SELinux off outright, and `label=type:spc_t` —
+ * the "super privileged container" type — is no weaker. `seccomp=` is refused whole because its
+ * value is either `unconfined` or a path to a profile the Hub cannot audit, and the app's own data
+ * directory is a host path it can write that profile into. `apparmor=my-profile` and
+ * `no-new-privileges`, which tighten rather than loosen, are unaffected.
  */
-const CONFINEMENT_DISABLING_SECURITY_OPTS = /^(apparmor|seccomp|systempaths)\s*[:=]\s*unconfined$|^label\s*[:=]\s*disable$/i;
+const CONFINEMENT_DISABLING_SECURITY_OPTS = [/^apparmor=unconfined$/, /^systempaths=unconfined$/, /^seccomp=/, /^label=/];
 
 /**
  * Host devices no app may pass through without a grant.
  *
- * ⚠ DELIBERATELY NARROWER THAN THE HOST-PATH REJECT-LIST. `/dev` is on that
- * list, but passing through a single character device under it is an ORDINARY
- * thing for a self-hosted app to need — a Zigbee or Z-Wave dongle
- * (`/dev/ttyUSB0`, `/dev/ttyACM0`), a GPU (`/dev/dri`, `/dev/kfd`), a capture
- * card (`/dev/video0`). Refusing all of those would break real installs while
- * buying nothing: the escape is not "a device" but a device that IS the host.
- *
- * What is refused: `/dev` itself or any other denied ROOT (which passes the
- * whole tree), raw block devices (the disk the host filesystem is on, readable
- * and writable byte by byte, whatever the file permissions say), and the memory
- * and port devices.
+ * Deliberately narrower than the host-path reject-list. `/dev` is on that list, but passing a single
+ * character device through is ordinary for a self-hosted app — a Zigbee dongle (`/dev/ttyUSB0`), a
+ * GPU (`/dev/dri`, `/dev/kfd`), a capture card (`/dev/video0`) — so refusing all of them would break
+ * real installs and buy nothing. The escape is a device that IS the host: the tree itself, the
+ * memory and port devices, and any block device, including the aliases that reach one under another
+ * name (`/dev/disk/by-id/*`, `/dev/block/*`, `/dev/mapper/*`, `/dev/root`).
  */
-const DENIED_DEVICE_PATTERNS = [/^\/dev\/?$/, /^\/dev\/(sd|nvme|vd|hd|xvd|loop|dm-|md)/i, /^\/dev\/mapper\//i, /^\/dev\/(mem|kmem|port)$/i];
+const DENIED_DEVICE_PATTERNS = [
+  /^\/dev\/?$/,
+  /^\/dev\/(sd|nvme|vd|hd|xvd|loop|dm-|md|mmcblk|nbd|zd|ram|sr|pmem|dasd)/i,
+  /^\/dev\/(disk|block|mapper)(\/|$)/i,
+  /^\/dev\/(mem|kmem|port|root)$/i,
+];
 
 function isDeniedDeviceHostPath(hostHalf: string): boolean {
   if (hasUnresolvableHostPathSyntax(hostHalf)) {
@@ -252,11 +344,7 @@ function isDeniedDeviceHostPath(hostHalf: string): boolean {
 
   // Anything OUTSIDE `/dev` is an ordinary host path and is held to the ordinary
   // reject-list: `devices` must not become a second way to mount `/etc`.
-  if (!normalized.startsWith('/dev/')) {
-    return isDeniedCustomAppHostPath(hostHalf);
-  }
-
-  return false;
+  return !normalized.startsWith('/dev/') && isDeniedCustomAppHostPath(hostHalf);
 }
 
 /**
@@ -271,62 +359,65 @@ export function collectServiceSecurityViolations(service: SecurityCheckedService
   if (service.privileged === true && !grants?.privileged) {
     violations.push({ path: ['privileged'], message: 'CUSTOM_APP_ERROR_PRIVILEGED_NOT_ALLOWED' });
   }
-  if (service.networkMode === 'host' && !grants?.networkModeHost) {
+  // `container:<name>` joins the namespace of an arbitrary container by name, the Hub's own
+  // included, so it reaches whatever that container binds on loopback and defeats the
+  // internal-infrastructure port isolation the compose builder applies. It needs the same grant the
+  // host namespace needs. (`service:<name>` stays inside the app's own project and is left alone.)
+  if ((service.networkMode === 'host' || service.networkMode?.startsWith('container:')) && !grants?.networkModeHost) {
     violations.push({ path: ['networkMode'], message: 'CUSTOM_APP_ERROR_NETWORK_MODE_HOST_NOT_ALLOWED' });
   }
-  if (service.pid === 'host' && !grants?.pidHost) {
+  if ((service.pid === 'host' || service.pid?.startsWith('container:')) && !grants?.pidHost) {
     violations.push({ path: ['pid'], message: 'CUSTOM_APP_ERROR_PID_HOST_NOT_ALLOWED' });
   }
 
   /*
-   * ⚠ THE AXES BELOW WERE CHECKED BY NEITHER LAYER, so the `privileged` refusal
-   * above was the front door of a building with the windows open.
+   * A service that is both granted `privileged` and declares it needs no separate capability,
+   * device or confinement check: `privileged: true` already confers every capability, every device
+   * and no confinement, so checking them again would be theatre and would need four allowlist
+   * entries to say one thing.
    *
-   * ⚠ A `privileged` GRANT SUBSUMES THEM. `privileged: true` already confers
-   * every capability, every device and no confinement — that is what it means —
-   * so refusing an audited privileged app's `capAdd` would be theatre, and would
-   * make the allowlist harder to read by requiring four entries to say one
-   * thing. An app granted `privileged` has been reviewed for exactly this.
+   * Scoped to the service that actually runs privileged, and to these three axes only. A grant is
+   * per-field and per-path, so it must not silently widen the app's OTHER services, nor the host
+   * bind reject-list below — `home-assistant` is granted `privileged`, not `/var/run/docker.sock`.
    */
-  if (grants?.privileged) {
-    return violations;
-  }
+  const isAuditedPrivileged = service.privileged === true && grants?.privileged === true;
 
-  const grantedCaps = new Set((grants?.capAdd ?? []).map((cap) => cap.trim().toUpperCase()));
-  for (const [index, cap] of (service.capAdd ?? []).entries()) {
-    const normalized = cap.trim().toUpperCase().replace(/^CAP_/, '');
+  if (!isAuditedPrivileged) {
+    const grantedCaps = new Set((grants?.capAdd ?? []).map(normalizeCapability));
+    for (const [index, cap] of (service.capAdd ?? []).entries()) {
+      const normalized = normalizeCapability(cap);
 
-    if (SAFE_CAP_ADD.has(normalized) || grantedCaps.has(normalized) || grantedCaps.has(cap.trim().toUpperCase())) {
-      continue;
+      if (SAFE_CAP_ADD.has(normalized) || grantedCaps.has(normalized)) {
+        continue;
+      }
+
+      violations.push({ path: ['capAdd', index], message: 'CUSTOM_APP_ERROR_CAP_ADD_NOT_ALLOWED', hostPath: cap });
     }
 
-    violations.push({ path: ['capAdd', index], message: 'CUSTOM_APP_ERROR_CAP_ADD_NOT_ALLOWED', hostPath: cap });
-  }
+    const grantedSecurityOpts = new Set((grants?.securityOpt ?? []).map(normalizeSecurityOpt));
+    for (const [index, opt] of (service.securityOpt ?? []).entries()) {
+      const normalized = normalizeSecurityOpt(opt);
 
-  const grantedSecurityOpts = new Set((grants?.securityOpt ?? []).map((opt) => opt.trim().toLowerCase()));
-  for (const [index, opt] of (service.securityOpt ?? []).entries()) {
-    if (!CONFINEMENT_DISABLING_SECURITY_OPTS.test(opt.trim())) {
-      continue;
+      if (!CONFINEMENT_DISABLING_SECURITY_OPTS.some((pattern) => pattern.test(normalized)) || grantedSecurityOpts.has(normalized)) {
+        continue;
+      }
+
+      violations.push({ path: ['securityOpt', index], message: 'CUSTOM_APP_ERROR_SECURITY_OPT_NOT_ALLOWED', hostPath: opt });
     }
 
-    if (grantedSecurityOpts.has(opt.trim().toLowerCase())) {
-      continue;
-    }
+    const grantedDevices = new Set((grants?.devices ?? []).map(normalizeCustomAppHostPath));
+    for (const [index, device] of (service.devices ?? []).entries()) {
+      // `devices` is `host:container[:perms]`, and only the HOST half escapes.
+      // `?? ''` for `noUncheckedIndexedAccess`; `split` always yields at least one element.
+      const hostHalf = device.split(':')[0] ?? '';
 
-    violations.push({ path: ['securityOpt', index], message: 'CUSTOM_APP_ERROR_SECURITY_OPT_NOT_ALLOWED', hostPath: opt });
-  }
+      if (grantedDevices.has(normalizeCustomAppHostPath(hostHalf))) {
+        continue;
+      }
 
-  const grantedDevices = new Set((grants?.devices ?? []).map(normalizeCustomAppHostPath));
-  for (const [index, device] of (service.devices ?? []).entries()) {
-    // `devices` is `host:container[:perms]`, and only the HOST half escapes.
-    const hostHalf = device.split(':')[0] ?? '';
-
-    if (grantedDevices.has(normalizeCustomAppHostPath(hostHalf))) {
-      continue;
-    }
-
-    if (isDeniedDeviceHostPath(hostHalf)) {
-      violations.push({ path: ['devices', index], message: 'CUSTOM_APP_ERROR_DEVICE_NOT_ALLOWED', hostPath: device });
+      if (isDeniedDeviceHostPath(hostHalf)) {
+        violations.push({ path: ['devices', index], message: 'CUSTOM_APP_ERROR_DEVICE_NOT_ALLOWED', hostPath: device });
+      }
     }
   }
 
@@ -345,8 +436,9 @@ export function collectServiceSecurityViolations(service: SecurityCheckedService
     if (volume.hostPath === undefined) {
       continue;
     }
-    const normalized = normalizeCustomAppHostPath(volume.hostPath);
-    if (ALLOWED_CUSTOM_APP_HOST_PATHS.has(normalized) || grantedPaths.has(normalized)) {
+    // The benign timezone binds are cleared inside `isDeniedCustomAppHostPath`, so both this sink
+    // and the schema layer agree on them; only the per-app grants are consulted here.
+    if (grantedPaths.has(normalizeCustomAppHostPath(volume.hostPath))) {
       continue;
     }
     if (isDeniedCustomAppHostPath(volume.hostPath)) {
