@@ -138,7 +138,8 @@ export interface InferencePreferencesResponse {
 export interface RuntimeModelInfo {
   id: string;
   name: string;
-  state: 'loaded' | 'unknown';
+  /** In the engine's inventory (on disk), not resident in VRAM — see inference.controller.ts. */
+  state: 'available' | 'unknown';
 }
 
 export interface RuntimeModelsResponse {

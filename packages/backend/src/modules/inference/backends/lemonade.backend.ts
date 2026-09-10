@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { LoggerService } from '@/core/logger/logger.service';
 import type { InferenceBackend } from './backend.interface';
-import type { BackendHealthStatus, BackendModelInfo, PullProgress } from '@ci-hub/common/types';
+import type { BackendHealthStatus, BackendResidency, BackendModelInfo, PullProgress } from '@ci-hub/common/types';
 import axios from 'axios';
 // Shared with the Lucebox and Ollama backends: all three mount the same AMD device nodes and so
 // need the same host GIDs. See that module for the full rationale.
@@ -85,6 +85,58 @@ export class LemonadeBackend implements InferenceBackend {
   async unloadModel(modelId: string): Promise<void> {
     this.logger.info(`[Lemonade] Unloading model: ${modelId}`);
     await axios.post(`${this.baseUrl}/v1/unload`, { model_name: modelId }, { timeout: 30000 });
+  }
+
+  /**
+   * What Lemonade currently holds loaded, from the body of `/v1/health`.
+   *
+   * `healthCheck()` above already calls this endpoint and throws the body away, taking its
+   * `modelsLoaded` from `/v1/models` instead — which is the OpenAI-compatible INVENTORY, so
+   * lemonade inherits the same "loaded means available" confusion as every other backend.
+   * The health body carries the real thing: `all_models_loaded`, an array of per-model
+   * records with `loaded`, `status`, `backend_alive` and `device`.
+   *
+   * Deliberately defensive. If `all_models_loaded` is absent — an older lemonade, or a shape
+   * that differs from the one observed — this reports `unsupported` rather than falling back
+   * to the inventory. On a route whose entire purpose is not overstating what was measured,
+   * "this build cannot tell me" is a correct answer and a guess is not.
+   *
+   * Lemonade exposes NO per-model memory figure. Its only memory numbers are host-wide, and
+   * on a unified-memory APU the host baseline drifts by gigabytes with no residency change at
+   * all, so no delta can be attributed to a model even in principle. `engineGpuBytes` and
+   * `totalBytes` are therefore null, not zero.
+   */
+  async listResident(): Promise<BackendResidency> {
+    try {
+      const response = await axios.get(`${this.baseUrl}/v1/health`, { timeout: 5000 });
+      const records = response.data?.all_models_loaded;
+
+      if (!Array.isArray(records)) {
+        return { backend: this.type, source: 'unsupported', models: null };
+      }
+
+      const resident = (records as { model_name?: string; checkpoint?: string; loaded?: boolean; status?: string; backend_alive?: boolean }[])
+        // All three conditions, not just `loaded`: a record can be marked loaded while its
+        // backend process is gone, which is precisely the false "resident" to avoid.
+        .filter((record) => record.loaded === true && record.status === 'ready' && record.backend_alive !== false)
+        .map((record) => ({
+          id: record.model_name ?? record.checkpoint ?? 'unknown',
+          engineGpuBytes: null,
+          totalBytes: null,
+          expiresAt: null,
+          contextLength: null,
+          quantization: null,
+        }));
+
+      return { backend: this.type, source: 'measured', models: resident };
+    } catch (err) {
+      return {
+        backend: this.type,
+        source: 'unreachable',
+        models: null,
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
   }
 
   async isModelLoaded(modelId: string): Promise<boolean> {

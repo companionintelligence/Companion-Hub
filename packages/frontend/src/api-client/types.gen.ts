@@ -3830,6 +3830,17 @@ export type UpdatePreferencesResponses = {
     200: unknown;
 };
 
+export type GetResidentModelsData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/inference/models/resident';
+};
+
+export type GetResidentModelsResponses = {
+    200: unknown;
+};
+
 export type GetRuntimeModelsData = {
     body?: never;
     path?: never;

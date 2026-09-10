@@ -1,5 +1,5 @@
 import { appContextQueryKey } from '@/api-client/@tanstack/react-query.gen';
-import { cloudflareStatusOptions, tailscaleStatusOptions, tailscaleStatusQueryKey } from '@/api-client/routes/named-status-routes';
+import { cloudflareStatusOptions, tailscaleStatusOptions, tailscaleStatusQueryKey } from '@/lib/api-routes/named-status-routes';
 import { disconnect, resetRegistration, startAuth } from '@/api-client/sdk.gen';
 import { Button } from '@/components/ui/Button';
 import { Card, CardContent } from '@/components/ui/Card';
