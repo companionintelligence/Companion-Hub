@@ -9,7 +9,7 @@ import { SSEService } from '@/core/sse/sse.service';
 import { HttpStatus, Inject, Injectable, OnApplicationBootstrap, OnModuleDestroy, Optional } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
 import type { AppUrn } from '@ci-hub/common/types';
-import { normalizeStoredHostname } from '@ci-hub/common/types';
+import { normalizeStoredHostname, sanitizeAppSubdomain } from '@ci-hub/common/types';
 import validator from 'validator';
 import { AppFilesManager } from '../apps/app-files-manager';
 import { AppRuntimeMonitorService } from '../apps/app-runtime-monitor.service';
@@ -54,12 +54,21 @@ type AppFormForSubdomain = Pick<z.infer<typeof appFormSchema>, 'exposedLocal' | 
 type ParsedAppForm = z.infer<typeof appFormSchema>;
 type AppOutcomeSseEvent = Extract<Extract<SSE, { topic: 'app' }>['data'], { appUrn: string }>['event'];
 
-/** Trimmed subdomain when Cloudflare routing requires it to be globally unique on this Hub. */
+/**
+ * The subdomain to check for conflicts when Cloudflare routing requires it to be
+ * globally unique on this Hub — canonical, because that is what the check is about.
+ *
+ * `normalizeSubmittedForm` has already canonicalized the form, so this only trims
+ * and decides whether the app is routed at all. It stays a separate step from the
+ * repository's own canonicalization so the name in
+ * `APP_ERROR_LOCAL_SUBDOMAIN_ALREADY_IN_USE` is the hostname label the operator
+ * will actually be served on rather than the spelling they typed (R2-HUBDOMAINS-2).
+ */
 function uniqueRoutingLocalSubdomain(parsedForm: AppFormForSubdomain): string | undefined {
   const trimmed = parsedForm.localSubdomain?.trim();
   if (!trimmed) return undefined;
   if (parsedForm.exposedLocal || parsedForm.exposureMode === 'cloudflare') {
-    return trimmed;
+    return sanitizeAppSubdomain(trimmed) || undefined;
   }
   return undefined;
 }
@@ -89,12 +98,43 @@ function dropUnservableCustomDomain(parsedForm: ParsedAppForm, exposable: boolea
   }
 }
 
-function normalizeLocalOpenPort(parsedForm: ParsedAppForm): ParsedAppForm {
-  if ((parsedForm.exposureMode ?? 'local') === 'local' && !parsedForm.openPort) {
-    return { ...parsedForm, openPort: true };
+/**
+ * The submitted form as the Hub will act on it.
+ *
+ * Local exposure always publishes the host port, and the routing subdomain is
+ * stored in the ONE spelling it will be served under.
+ *
+ * ⚠ THE SUBDOMAIN IS CANONICALIZED ON WRITE (R2-HUBDOMAINS-2), exactly as
+ * `port-expose.service.ts` already does for a custom app. Every hostname the Hub
+ * composes — the public FQDN, the Traefik `Host()` rule, the slug CI-Cloud stores
+ * — runs the value through {@link sanitizeAppSubdomain}, so a row holding
+ * anything else disagrees with its own hostname: `My-App` and `my--app` both
+ * serve `my-app` while reading as two different apps to the conflict check, to
+ * `customDomainServesAnotherApp`, and to the custom-domain delivery pass. Storing
+ * what is served is what makes the row and the hostname one fact.
+ *
+ * Applied here rather than at each write so `installApp`, `updateAppConfig` and
+ * `normalizeConfigForCompare` cannot disagree — the last of those matters: a row
+ * stored raw before this change must normalize the same way as the form it is
+ * compared against, or the first save after the upgrade reads as a config change
+ * and restarts the app for a hostname that did not move.
+ *
+ * A value that sanitizes to nothing becomes absent, which is the same instruction
+ * an omitted field carries: fall back to `<appName>-<appStoreSlug>`, which is what
+ * the composed hostname did with it anyway.
+ */
+function normalizeSubmittedForm(parsedForm: ParsedAppForm): ParsedAppForm {
+  let normalized = parsedForm;
+
+  if (normalized.localSubdomain !== undefined) {
+    normalized = { ...normalized, localSubdomain: sanitizeAppSubdomain(normalized.localSubdomain) || undefined };
   }
 
-  return parsedForm;
+  if ((normalized.exposureMode ?? 'local') === 'local' && !normalized.openPort) {
+    normalized = { ...normalized, openPort: true };
+  }
+
+  return normalized;
 }
 
 /**
@@ -195,6 +235,16 @@ function toStoredConfig(parsedForm: ParsedAppForm): Record<string, unknown> {
    * can seed an IN-FLIGHT confirmation from there instead.
    */
   delete stored.customDomainTakeover;
+  /*
+   * ⚠ AND THE EXPECTED VALUE, FOR THE SAME REASON ONE STEP FURTHER ON.
+   *
+   * `customDomainExpected` asserts what the app was being served on at the moment
+   * a dialog was drawn. Stored in the snapshot it becomes the assertion of a
+   * dialog nobody has looked at since — and a version bump, which re-submits
+   * `app.config` verbatim, would replay it against a row that has moved on. An
+   * assertion about a moment cannot survive the moment (R2-HUBDOMAINS-3).
+   */
+  delete stored.customDomainExpected;
 
   return stored;
 }
@@ -207,7 +257,7 @@ function normalizeConfigForCompare(raw: Record<string, unknown>): Record<string,
   }
   // Through `toStoredConfig` so a row written before the choice moved to its own
   // column does not read as a diff on the first save after the upgrade.
-  return toStoredConfig(normalizeLocalOpenPort(parsed.data));
+  return toStoredConfig(normalizeSubmittedForm(parsed.data));
 }
 
 @Injectable()
@@ -864,7 +914,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       };
     }
 
-    const parsedForm = normalizeLocalOpenPort(parsedFormResult.data);
+    const parsedForm = normalizeSubmittedForm(parsedFormResult.data);
 
     if (parsedForm.exposedLocal && !parsedForm.localSubdomain?.trim() && info.exposable) {
       parsedForm.localSubdomain = appUrn.split(':')[0];
@@ -926,7 +976,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     if (!parsedFormResult.success) {
       throw new TranslatableError('SYSTEM_ERROR_INVALID_BODY', undefined, HttpStatus.BAD_REQUEST, { cause: parsedFormResult.error });
     }
-    const parsedForm = normalizeLocalOpenPort(parsedFormResult.data);
+    const parsedForm = normalizeSubmittedForm(parsedFormResult.data);
 
     const configValidation = await this.validateAppConfig(appUrn, parsedForm);
     if (!configValidation.valid) {
@@ -1898,7 +1948,7 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     if (!parsedFormResult.success) {
       throw new TranslatableError('SYSTEM_ERROR_INVALID_BODY', undefined, HttpStatus.BAD_REQUEST, { cause: parsedFormResult.error });
     }
-    const parsedForm = normalizeLocalOpenPort(parsedFormResult.data);
+    const parsedForm = normalizeSubmittedForm(parsedFormResult.data);
 
     // Snapshot of what the REQUEST asked for, used by the validation below. Everything written to
     // the row further down must read `parsedForm` instead: the production-exposed guard, the
@@ -2539,6 +2589,10 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
    * same write, or a failure between here and the row update below leaves an
    * intent naming the domain that was just parked — which the next bind pass
    * would dutifully ask CI-Cloud to wire back.
+   *
+   * ⚠ AND IT IS A COMPARE-AND-SWAP, NOT AN ORDER (R2-HUBDOMAINS-3). See the
+   * refusal below: `''` releases what the operator was SHOWN, or it releases
+   * nothing.
    */
   private async releaseClearedCustomDomain(
     appUrn: AppUrn,
@@ -2547,8 +2601,40 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
   ): Promise<void> {
     // Guarded on the binding so a fresh install, or an app that never had one,
     // never reaches CI-Cloud at all.
-    if (parsedForm.customDomain !== '' || !normalizeStoredHostname(app.customDomain)) {
+    const bound = normalizeStoredHostname(app.customDomain);
+    if (parsedForm.customDomain !== '' || !bound) {
       return;
+    }
+
+    /*
+     * ── RELEASE WHAT THE OPERATOR SAW, OR REFUSE ─────────────────────────────
+     *
+     * The dialog seeds `customDomain` from the row snapshot taken when it OPENED
+     * and submits that value on every save, including saves where the picker was
+     * never even drawn. `''` is the instruction to give the domain up, and
+     * nothing tied it to the state anybody was shown: open settings on an app
+     * with no domain, have an admin bind `shop.acme.com` in the Portal, edit an
+     * unrelated env var, save — and the stale `''` released a live customer
+     * hostname, with a success toast. Every guard downstream passed precisely
+     * BECAUSE the domain genuinely was this app's by then; there was nothing left
+     * for them to catch.
+     *
+     * So the client says what it believed was bound, and a row that has moved on
+     * refuses the save rather than proceeding. The operator reloads, sees the
+     * domain that appeared, and decides again.
+     *
+     * ⚠ A REQUEST THAT CANNOT SAY WHAT IT SAW IS REFUSED TOO, deliberately. The
+     * compatibility case this codebase protects — an older client, or one
+     * patching a single setting — never arrives here at all: those send no
+     * `customDomain`, and `undefined` returned above. What reaches this line is a
+     * caller that deliberately asked to take a live customer hostname off the
+     * air, and a caller that knows enough to ask that is a caller that can say
+     * which hostname it means. Accepting the assertionless ones would leave the
+     * defect standing for exactly the client that has it.
+     */
+    const expected = normalizeStoredHostname(parsedForm.customDomainExpected);
+    if (expected !== bound) {
+      throw new TranslatableError('APP_ERROR_CUSTOM_DOMAIN_RELEASE_STALE', { id: appUrn, current: bound }, HttpStatus.CONFLICT);
     }
 
     const released = await this.exposureSyncService.releaseCustomDomain(app);
