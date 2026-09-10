@@ -356,6 +356,15 @@ export class DsparkBackend implements InferenceBackend {
   }
 
   /** Exact, not approximate: `modelsLoaded` is `[health.target]`, the full HF repo id. */
+  /*
+   * No `listResident()`, deliberately — this backend reports `source: 'unsupported'`.
+   *
+   * Unverified rather than disproven, and that distinction is the reason for the comment.
+   * mlx-dspark is an Apple-Silicon host process; `DSPARK_URL` is `http://127.0.0.1:1` on every
+   * node here — the deliberate disabled sentinel — so no instance was reachable to probe. Its
+   * `healthCheck().modelsLoaded` must not be forwarded: like every other backend that field is
+   * the inventory. When a real instance exists, probe it and implement then.
+   */
   async isModelLoaded(modelId: string): Promise<boolean> {
     const health = await this.healthCheck();
     return health.modelsLoaded.includes(modelId);

@@ -3,7 +3,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ReactNode } from 'react';
 import { syncExposure } from '@/api-client/sdk.gen';
-import { mcpAdminStatusQueryKey, tailscaleStatusQueryKey } from '@/api-client/routes/named-status-routes';
+import { mcpAdminStatusQueryKey, tailscaleStatusQueryKey } from '@/lib/api-routes/named-status-routes';
 import { useTailscaleReadinessSync, type TailscaleReadinessStatus } from './use-tailscale-readiness-sync';
 
 vi.mock('@/api-client/sdk.gen', () => ({

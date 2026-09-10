@@ -1,4 +1,4 @@
-import { tailscaleStatusOptions, tailscaleStatusQueryKey } from '@/api-client/routes/named-status-routes';
+import { tailscaleStatusOptions, tailscaleStatusQueryKey } from '@/lib/api-routes/named-status-routes';
 import { startAuth } from '@/api-client/sdk.gen';
 import { Button } from '@/components/ui/Button';
 import { useEffect, useRef, useState } from 'react';

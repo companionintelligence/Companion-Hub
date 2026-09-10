@@ -30,9 +30,14 @@ import { useTranslation } from 'react-i18next';
 /*
  * LOCAL RESOURCES — what this machine itself is running.
  *
- * Four panels: the host's own capacity, the AI models resident on it, how much memory
- * those models are allowed and holding, and the containerised workloads. Every number
- * here is measured on this node, so the whole section renders on an unpaired Hub.
+ * Four panels: the host's own capacity, the AI models it HOLDS, how much memory those
+ * models are allowed and holding, and the containerised workloads. Every number here is
+ * measured on this node, so the whole section renders on an unpaired Hub.
+ *
+ * "Holds", not "resident". The pool status field is called `modelsLoaded` but it is the
+ * engine's ON-DISK inventory: measured on beta-max it listed 11 models while the engine's
+ * own `/api/ps` reported zero in memory. On-disk is the right basis for "can this node
+ * serve that model", but it is not residency and this panel must not imply it is.
  *
  * Each panel takes its own `state` and wraps its body in `PanelBody`, so a failed fetch
  * shows as a failed fetch rather than as a zero.

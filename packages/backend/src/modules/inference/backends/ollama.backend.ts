@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { LoggerService } from '@/core/logger/logger.service';
 import type { InferenceBackend } from './backend.interface';
-import type { BackendHealthStatus, BackendModelInfo, PullProgress } from '@ci-hub/common/types';
+import type { BackendHealthStatus, BackendResidency, BackendModelInfo, PullProgress } from '@ci-hub/common/types';
 import axios from 'axios';
 // Shared with the Lucebox and Lemonade backends: all three mount the same AMD device nodes and
 // so need the same host GIDs. See that module for the full rationale.
@@ -213,6 +213,10 @@ export class OllamaBackend implements InferenceBackend {
         id: m.name,
         name: m.name,
         size: m.size || 0,
+        // Hardcoded, and it means "in this engine's inventory", NOT resident in VRAM:
+        // `/api/tags` lists what is on disk and says nothing about what is loaded. Residency
+        // is only knowable from `/api/ps` (read elsewhere in this file for quarantine).
+        // Callers that surface this to a user must not call it "loaded".
         loaded: true,
       }));
     } catch {
@@ -348,6 +352,59 @@ export class OllamaBackend implements InferenceBackend {
       this.logger.error(`[Ollama] Failed to unload model ${modelId}: ${msg}`);
       this.invalidateResolvedUrl();
       throw err;
+    }
+  }
+
+  /**
+   * What Ollama currently holds in memory, from `/api/ps`.
+   *
+   * This is the one engine in the fleet that will state residency directly, and the gap it
+   * closes is not small: measured on a live node, `/api/tags` listed 11 models while
+   * `/api/ps` reported zero resident.
+   *
+   * `size_vram` is carried as `engineGpuBytes`, NOT as VRAM. It is the scheduler's
+   * GPU-backend allocation: on beta-max ollama reported 7319 MiB for a 9B model on a card
+   * with 2048 MB of VRAM, the remainder living in host RAM through GTT. See the field's doc.
+   *
+   * A failure is `unreachable` with `models: null`, never an empty list: "the engine did not
+   * answer" and "the engine has nothing loaded" must not collapse into the same reading.
+   */
+  async listResident(): Promise<BackendResidency> {
+    try {
+      const url = await this.resolveUrl();
+      const response = await axios.get(`${url}/api/ps`, { timeout: 5000 });
+      const models = (response.data?.models ?? []) as {
+        name?: string;
+        model?: string;
+        size?: number;
+        size_vram?: number;
+        expires_at?: string;
+        context_length?: number;
+        details?: { quantization_level?: string };
+      }[];
+
+      return {
+        backend: this.type,
+        source: 'measured',
+        models: models.map((entry) => ({
+          id: entry.name ?? entry.model ?? 'unknown',
+          engineGpuBytes: typeof entry.size_vram === 'number' ? entry.size_vram : null,
+          totalBytes: typeof entry.size === 'number' ? entry.size : null,
+          // Ollama sends a zero-value timestamp for a model pinned with keep_alive: -1.
+          expiresAt: entry.expires_at && !entry.expires_at.startsWith('0001-01-01') ? entry.expires_at : null,
+          contextLength: typeof entry.context_length === 'number' ? entry.context_length : null,
+          quantization: entry.details?.quantization_level ?? null,
+        })),
+      };
+    } catch (err) {
+      this.invalidateResolvedUrl();
+
+      return {
+        backend: this.type,
+        source: 'unreachable',
+        models: null,
+        error: err instanceof Error ? err.message : String(err),
+      };
     }
   }
 

@@ -145,6 +145,13 @@ export class MtplxBackend implements InferenceBackend {
     this.logger.info(`[MTPLX] Unload model request for ${modelId} — requires server restart`);
   }
 
+  /*
+   * No `listResident()`, deliberately — this backend reports `source: 'unsupported'`.
+   *
+   * There is no source to read. MTPLX is a native macOS app with no residency endpoint, and no
+   * instance exists anywhere on this fleet to probe, so even a plausible-looking shape could not
+   * be verified. Reporting `unsupported` states exactly that; anything else would be invention.
+   */
   async isModelLoaded(modelId: string): Promise<boolean> {
     const health = await this.healthCheck();
     return health.modelsLoaded.includes(modelId);
