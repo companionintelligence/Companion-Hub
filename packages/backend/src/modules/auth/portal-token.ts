@@ -128,8 +128,12 @@ export function portalClaimsIdentity(claims: PortalIdTokenClaims): string {
   // string is signed into `X-CI-Hub-User`, and the cookie/SSO path signs `user.username`, which is
   // always the lower-cased address. Left raw, `Owner@Example.com` on the Bearer path and
   // `owner@example.com` on the browser path are two different people to every app behind Traefik.
-  // `sub` is an opaque Portal id and is passed through as-is.
-  return claims.email ? claims.email.toLowerCase() : claims.sub;
+  // `sub` is an opaque Portal id and is passed through as-is. Trimmed as well as folded, because
+  // `normalizeUsername` (the fold every `user.username` write goes through) trims too: a claim of
+  // `' owner@example.com '` folded but not trimmed is still a different string from the stored
+  // username, and would put raw whitespace inside a signed header value.
+  const email = claims.email?.trim().toLowerCase();
+  return email || claims.sub;
 }
 
 /** Test helper — drop cached JWKS between cases. */

@@ -31,6 +31,13 @@ describe('portalClaimsIdentity', () => {
     // address. A raw `Owner@Example.com` here made the same person two users to the app.
     expect(portalClaimsIdentity({ sub: 's1', email: 'Owner@Example.com', name: null })).toBe('owner@example.com');
   });
+
+  it('trims the claim as well as folding it, because `normalizeUsername` trims', () => {
+    // A padded claim that is only lower-cased is still a different string from the stored username,
+    // and would put raw whitespace inside the signed header value.
+    expect(portalClaimsIdentity({ sub: 's1', email: '  Owner@Example.com  ', name: null })).toBe('owner@example.com');
+    expect(portalClaimsIdentity({ sub: 's1', email: '   ', name: null })).toBe('s1');
+  });
 });
 
 describe('verifyPortalIdToken', () => {

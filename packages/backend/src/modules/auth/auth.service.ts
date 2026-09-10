@@ -20,7 +20,7 @@ import axios, { type AxiosResponse } from 'axios';
 import { PortalClientService } from '@/core/portal/portal-client.service';
 import { DeviceRegistrationRepository } from '@/modules/registration/device-registration.repository';
 import { FederatedIdentityRepository } from '@/modules/user/federated-identity.repository';
-import { UserRepository } from '@/modules/user/user.repository';
+import { normalizeUsername, UserRepository } from '@/modules/user/user.repository';
 import { HttpStatus, Injectable, ServiceUnavailableException } from '@nestjs/common';
 import psl from 'psl';
 import validator from 'validator';
@@ -266,9 +266,22 @@ export class AuthService {
    * draws the same line for grants, for the same reason.
    */
   public async resolvePairedOrgMembership(subject: string): Promise<PairedOrgMembership> {
-    const registration = await this.deviceRegistration.getFirstDeviceRegistration().catch(() => null);
-    if (!registration?.id) {
+    // A read that FAILED and a Hub paired to nothing are different answers. Collapsing both into
+    // `null` made the second one look transient, and `unknown` is deliberately never remembered:
+    // an unpaired appliance re-read the row and wrote a fresh warn line on every forwarded app
+    // request, and told the operator at login to try again in a moment for a permanent condition.
+    let registration: Awaited<ReturnType<DeviceRegistrationRepository['getFirstDeviceRegistration']>>;
+    try {
+      registration = await this.deviceRegistration.getFirstDeviceRegistration();
+    } catch (error) {
+      this.logger.warn(`Device registration read failed during org membership check: ${error instanceof Error ? error.message : String(error)}`);
       return 'unknown';
+    }
+
+    // Paired to no organization: nobody is a member of one this Hub does not have. That is a
+    // settled local fact, so it is safe to remember, unlike a Portal we could not reach.
+    if (!registration?.id) {
+      return 'not-member';
     }
 
     // `whoisApps` does not catch transport failures: a DNS failure, a refused connection or its own
@@ -296,7 +309,7 @@ export class AuthService {
     // it is given and compares it to the stored value, so a row created from a mixed-case Portal
     // address (`Owner@Example.com`) is never found again — that operator can never use the password
     // login form, and after CI-Hub#1300 a Portal address change leaves them with no way in at all.
-    const email = rawEmail.trim().toLowerCase();
+    const email = normalizeUsername(rawEmail);
     const existing = await this.userRepository.getUserByUsername(email);
 
     if (existing) {
@@ -372,7 +385,7 @@ export class AuthService {
       return linkedUser;
     }
 
-    const email = params.email.trim().toLowerCase();
+    const email = normalizeUsername(params.email);
 
     if (!email || !validator.isEmail(email)) {
       throw new TranslatableError('AUTH_ERROR_INVALID_CREDENTIALS', {}, HttpStatus.BAD_REQUEST);
@@ -468,7 +481,7 @@ export class AuthService {
    */
   public login = async (input: LoginBody) => {
     const { username, password } = input;
-    const email = username.trim().toLowerCase();
+    const email = normalizeUsername(username);
 
     const portalIdentity = await this.signInWithPortal(email, password);
 
@@ -546,7 +559,7 @@ export class AuthService {
     }
 
     const { password, username } = input;
-    const email = username.trim().toLowerCase();
+    const email = normalizeUsername(username);
 
     if (!username || !password) {
       throw new TranslatableError('AUTH_ERROR_MISSING_EMAIL_OR_PASSWORD', {}, HttpStatus.BAD_REQUEST);
@@ -648,7 +661,7 @@ export class AuthService {
       throw new TranslatableError('AUTH_ERROR_INVALID_PASSWORD');
     }
 
-    const email = newUsername.trim().toLowerCase();
+    const email = normalizeUsername(newUsername);
 
     if (!validator.isEmail(email)) {
       throw new TranslatableError('AUTH_ERROR_INVALID_USERNAME');
@@ -793,7 +806,7 @@ export class AuthService {
   };
 
   public requestPasswordReset = async (params: { email: string; ipAddress?: string; returnOrigin?: string; deviceId?: string }) => {
-    const email = params.email.trim().toLowerCase();
+    const email = normalizeUsername(params.email);
     const rateLimitAllowed = this.consumePasswordResetRateLimit(email);
 
     this.logger.info('Password reset requested', {

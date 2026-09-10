@@ -466,6 +466,42 @@ describe('AuthService', () => {
       expect(userRepository.createUser).not.toHaveBeenCalled();
     });
 
+    it('refuses, rather than deferring forever, when this Hub is paired to no organization', async () => {
+      // An appliance with no device registration is not a Portal wobble: it is a settled local
+      // fact. Answering `unknown` told the operator to "try again in a moment" for a condition
+      // that never clears, and — because `unknown` is never remembered — made every forwarded app
+      // request re-read the row and write a fresh warn line.
+      federatedIdentityRepository.findByIssuerSubject.mockResolvedValue(undefined as never);
+      userRepository.getOperators.mockResolvedValue([{ id: 1, username: 'chamberlain@example.com' }] as never);
+      deviceRegistration.getFirstDeviceRegistration.mockResolvedValue(null as never);
+
+      await expect(
+        authService.admitHubPerson({
+          issuer,
+          subject: 'portal-person',
+          email: 'person@example.com',
+          emailVerified: true,
+        }),
+      ).rejects.toMatchObject({ message: 'AUTH_ERROR_NOT_ORG_MEMBER' });
+
+      expect(portal.whoisApps).not.toHaveBeenCalled();
+    });
+
+    it('answers 503 when the device-registration read itself fails', async () => {
+      federatedIdentityRepository.findByIssuerSubject.mockResolvedValue(undefined as never);
+      userRepository.getOperators.mockResolvedValue([{ id: 1, username: 'chamberlain@example.com' }] as never);
+      deviceRegistration.getFirstDeviceRegistration.mockRejectedValue(new Error('connection terminated'));
+
+      await expect(
+        authService.admitHubPerson({
+          issuer,
+          subject: 'portal-person',
+          email: 'person@example.com',
+          emailVerified: true,
+        }),
+      ).rejects.toMatchObject({ message: 'AUTH_ERROR_ORG_CHECK_UNAVAILABLE', status: 503 });
+    });
+
     it('answers 503 when Portal answers 5xx rather than calling the person a stranger', async () => {
       federatedIdentityRepository.findByIssuerSubject.mockResolvedValue(undefined as never);
       userRepository.getOperators.mockResolvedValue([{ id: 1, username: 'chamberlain@example.com' }] as never);

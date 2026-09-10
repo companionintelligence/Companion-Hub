@@ -11,6 +11,7 @@ import { mock, type MockProxy } from 'vitest-mock-extended';
 import { TranslatableError } from '@/common/error/translatable-error';
 import { AuthController } from '../auth.controller';
 import { ForwardAuthSecretResolver } from '../forward-auth-secret.resolver';
+import { BearerOrgMembershipCache } from '../bearer-org-membership.cache';
 import { AuthService } from '../auth.service';
 import { exchangePortalAuthorizationCode, fetchPortalSessionEmail } from '../portal-sso';
 import { verifyPortalIdToken } from '../portal-token';
@@ -58,6 +59,8 @@ describe('AuthController', () => {
         { provide: SessionManager, useValue: mock<SessionManager>() },
         { provide: RegistrationService, useValue: mock<RegistrationService>() },
         { provide: DeviceRegistrationRepository, useValue: mock<DeviceRegistrationRepository>() },
+        // Real instance, not a mock: its TTL/coalescing behaviour is what the caching tests assert.
+        BearerOrgMembershipCache,
       ],
     }).compile();
 
@@ -289,6 +292,20 @@ describe('AuthController', () => {
       expect(forwardAuthSecrets.resolveForHost).not.toHaveBeenCalled();
     });
 
+    it('refuses a COOKIE-authenticated request with no forwarded host for the same reason', async () => {
+      // The Bearer branch is not the only one that signs identity headers: an authenticated session
+      // with no forwarded host reached `resolveForHost('')` and got the Hub-global secret too.
+      const req = { user: { id: 1, username: 'operator@example.com' }, headers: {} } as unknown as Request;
+      const setHeader = vi.fn();
+      const res = { status: vi.fn().mockReturnThis(), send: vi.fn(), setHeader, redirect: vi.fn() } as unknown as Response;
+
+      await authController.traefik(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(401);
+      expect(setHeader).not.toHaveBeenCalled();
+      expect(forwardAuthSecrets.resolveForHost).not.toHaveBeenCalled();
+    });
+
     describe('CI-Hub#1333 membership caching', () => {
       const makeBearerReq = () =>
         ({
@@ -314,6 +331,21 @@ describe('AuthController', () => {
         await authController.traefik(makeBearerReq(), makeRes());
 
         expect(authService.resolvePairedOrgMembership).toHaveBeenCalledTimes(1);
+      });
+
+      it('reuses a REFUSAL too, so a client retrying in a loop cannot hammer Portal', async () => {
+        // The positive case above would stay green if refusals stopped being remembered, and a
+        // refused machine client is exactly the one that retries hardest.
+        authService.resolvePairedOrgMembership.mockResolvedValue('not-member');
+
+        const first = makeRes();
+        const second = makeRes();
+        await authController.traefik(makeBearerReq(), first);
+        await authController.traefik(makeBearerReq(), second);
+
+        expect(authService.resolvePairedOrgMembership).toHaveBeenCalledTimes(1);
+        expect(first.status).toHaveBeenCalledWith(403);
+        expect(second.status).toHaveBeenCalledWith(403);
       });
 
       it('coalesces a cold-start burst into ONE Portal round trip', async () => {
@@ -491,8 +523,13 @@ describe('AuthController', () => {
     });
 
     it('falls back to the global secret for a host that maps to no app', async () => {
+      // A host that IS forwarded and simply matches no app in the map. Sending no host at all
+      // exercised a different branch (it is now refused outright), so this case went uncovered.
       forwardAuthSecrets.resolveForHost.mockResolvedValue({ secret: 'global-secret', source: 'global' });
-      const req = { user: { id: 1, username: 'testuser' }, headers: {} } as unknown as Request;
+      const req = {
+        user: { id: 1, username: 'testuser' },
+        headers: { 'x-forwarded-host': 'dashboard.ci.lan' },
+      } as unknown as Request;
       const setHeader = vi.fn();
       const res = { status: vi.fn().mockReturnThis(), send: vi.fn(), setHeader } as unknown as Response;
 

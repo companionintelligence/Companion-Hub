@@ -13,6 +13,7 @@ import { ConfigurationService } from '@/core/config/configuration.service';
 import { UninstallAppCommand } from '@/modules/app-lifecycle/commands/uninstall-app-command';
 import { clearRegistrationRecoveryArtifacts } from '@/modules/app-lifecycle/registration-recovery-state';
 import { RegistrationService } from '@/modules/registration/registration.service';
+import { BearerOrgMembershipCache } from '@/modules/auth/bearer-org-membership.cache';
 import { DOCKERODE } from '@/modules/docker/constants';
 import { Inject, Injectable } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
@@ -33,6 +34,23 @@ export class FactoryResetService {
     private readonly registrationService: RegistrationService,
   ) {}
 
+  /**
+   * Forward-auth Bearer org-membership verdicts live in a process-local store, not `CacheService`,
+   * so `cache.clear()` above does not reach them. Without this a subject cached as allowed seconds
+   * before the reset keeps passing forward-auth for the rest of its TTL — on an appliance that has
+   * just been unbound from the organisation that vouched for them.
+   *
+   * Resolved through `ModuleRef` rather than injected because `SystemModule` does not import
+   * `AuthModule`, and a reset must not fail if that provider is somehow unavailable.
+   */
+  private clearBearerOrgMembership(): void {
+    try {
+      this.moduleRef.get(BearerOrgMembershipCache, { strict: false })?.clear();
+    } catch (error) {
+      this.logger.warn(`Factory reset could not clear Bearer org-membership verdicts: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
   public async execute(): Promise<{ success: true; message: string }> {
     this.logger.warn('Factory reset requested — tearing down apps, wiping data mounts, and clearing Hub state');
 
@@ -43,6 +61,7 @@ export class FactoryResetService {
     await this.registrationService.resetRegistration({ reason: 'manual' });
     await this.resetSettings();
     this.cache.clear();
+    this.clearBearerOrgMembership();
 
     this.logger.warn('Factory reset complete — Hub is ready for first-operator setup');
 
