@@ -73,7 +73,7 @@ vi.mock('../public-web-cli', async (importOriginal) => ({
 }));
 
 /** The doctor itself is covered in pool-diagnostics-cli.test.ts; what is under test here is the wiring. */
-const doctorSection = { lines: ['Hub Pool preflight  all 13 checks passed'], issueCount: 0, remediationCommands: [] as string[] };
+const doctorSection = { lines: ['Hub Pool preflight  all 13 checks passed'], issueCount: 0, failureCount: 0, remediationCommands: [] as string[] };
 const runPoolDoctorSection = vi.fn(async (..._args: unknown[]) => doctorSection);
 vi.mock('../pool-diagnostics-cli', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../pool-diagnostics-cli')>()),
@@ -1195,6 +1195,7 @@ describe('runPoolCommand', () => {
     });
     logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
     errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    process.exitCode = undefined;
   });
 
   afterEach(() => {
@@ -1202,6 +1203,7 @@ describe('runPoolCommand', () => {
     exitSpy.mockRestore();
     logSpy.mockRestore();
     errorSpy.mockRestore();
+    process.exitCode = undefined;
   });
 
   const boxText = () => (logSpy.mock.calls as unknown[][]).map((call) => stripAnsi(String(call[0]))).join('\n');
@@ -1240,7 +1242,7 @@ describe('runPoolCommand', () => {
       const { onSectionDone } = options as { onSectionDone?: (line: string, elapsedMs: number) => void };
       onSectionDone?.('A  Can this node be a pool member at all? — 0.4s', 400);
       onSectionDone?.('B  Version reconciliation — 61.0s', 61_000);
-      return { lines: ['Hub Pool preflight  all 13 checks passed'], issueCount: 0, remediationCommands: [] };
+      return { lines: ['Hub Pool preflight  all 13 checks passed'], issueCount: 0, failureCount: 0, remediationCommands: [] };
     });
 
     await runPoolCommand(['doctor']);
@@ -1250,6 +1252,40 @@ describe('runPoolCommand', () => {
     expect(printed).not.toContain('A  Can this node be a pool member');
     // The report itself is still one box at the end, not a stream of half-checks.
     expect(printed).toContain('Hub Pool preflight  all 13 checks passed');
+  });
+
+  /**
+   * `pool doctor` computed `issueCount` and spent it on the box colour alone — the same defect
+   * `cihub doctor` carried until #1345 — so `cihub pool doctor && cihub pool pair …` carried on from
+   * a node no peer can reach. The section decides which of its checks mean broken; this asserts the
+   * caller acts on that rather than on "something was reported".
+   */
+  describe('doctor exit code', () => {
+    const section = (over: { issueCount: number; failureCount: number }) => ({
+      lines: ['Hub Pool preflight  1 failed'],
+      remediationCommands: [] as string[],
+      ...over,
+    });
+
+    it('exits 0 on a clean preflight', async () => {
+      runPoolDoctorSection.mockReset().mockResolvedValue(doctorSection);
+      await runPoolCommand(['doctor']);
+      expect(process.exitCode).toBeUndefined();
+    });
+
+    it('fails when a check decided this node cannot be a pool member', async () => {
+      runPoolDoctorSection.mockReset().mockResolvedValue(section({ issueCount: 1, failureCount: 1 }));
+      await runPoolCommand(['doctor']);
+      expect(process.exitCode).toBe(1);
+    });
+
+    it('does not fail on findings that are state rather than breakage', async () => {
+      // A warn is what doctor exists to report, and an `unknown` — a peer-served measurement, a probe
+      // that could not run — decided nothing about this node. Neither may fail the command.
+      runPoolDoctorSection.mockReset().mockResolvedValue(section({ issueCount: 3, failureCount: 0 }));
+      await runPoolCommand(['doctor']);
+      expect(process.exitCode).toBeUndefined();
+    });
   });
 
   it('refuses a state change without --yes on a non-interactive terminal', async () => {

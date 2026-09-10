@@ -11,7 +11,7 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
-  nodes: [] as { name: string; ip: string }[],
+  nodes: [] as import('../lib/fleet-roster.js').FleetNode[],
   installNode: vi.fn(),
   sshCapture: vi.fn(),
   readHostFacts: vi.fn(),
@@ -184,5 +184,67 @@ describe('fleet apps', () => {
     await runFleetCommand(['apps']);
     expect(mocks.checkAppOnNode).toHaveBeenCalled();
     expect(process.exitCode).toBeUndefined();
+  });
+});
+
+/**
+ * `--nodes core-l` for `core-1` is not the same event as a roster whose entries are all skipped.
+ * `partitionForRun` drops an unmatched name into neither `run` nor `skipped`, so both printed "No
+ * nodes selected." and both exited 0 — and a scripted `fleet update --nodes $HOST` that had drifted
+ * one rename behind reported success for a machine it never touched.
+ */
+describe('fleet --nodes naming a machine that is not in the roster', () => {
+  it('fails when the only name given matches nothing', async () => {
+    await runFleetCommand(['update', '--execute', '--hub', '--nodes=core-9']);
+    expect(mocks.sshCapture).not.toHaveBeenCalled();
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('fails on the unknown name while still doing the work for the known one', async () => {
+    mocks.sshCapture.mockResolvedValue({ ok: true, out: 'hub-update-complete', err: '', code: 0, ms: 5 });
+    await runFleetCommand(['update', '--execute', '--hub', '--nodes=core-1,core-9']);
+    expect(mocks.sshCapture).toHaveBeenCalledTimes(1);
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('names the node it could not find, rather than reporting a count', async () => {
+    const errorSpy = vi.mocked(console.error);
+    await runFleetCommand(['update', '--execute', '--hub', '--nodes=core-9']);
+    expect(errorSpy.mock.calls.map((call) => String(call[0])).join('\n')).toContain("'core-9'");
+  });
+
+  it('exits 0 when a named node exists but is deliberately skipped', async () => {
+    // The operator asked for a machine the roster knows and has marked. Nothing was misspelled.
+    mocks.nodes = [{ name: 'core-1', ip: '10.0.0.1', skip: 'unreachable' }];
+    await runFleetCommand(['update', '--execute', '--hub', '--nodes=core-1']);
+    expect(mocks.sshCapture).not.toHaveBeenCalled();
+    expect(process.exitCode).toBeUndefined();
+  });
+
+  it('exits 0 on an empty roster, which is a state rather than a typo', async () => {
+    mocks.nodes = [];
+    await runFleetCommand(['update', '--execute', '--hub']);
+    expect(process.exitCode).toBeUndefined();
+  });
+
+  it('accepts an address as readily as a name', async () => {
+    mocks.sshCapture.mockResolvedValue({ ok: true, out: 'hub-update-complete', err: '', code: 0, ms: 5 });
+    await runFleetCommand(['update', '--execute', '--hub', '--nodes=10.0.0.2']);
+    expect(mocks.sshCapture).toHaveBeenCalledTimes(1);
+    expect(process.exitCode).toBeUndefined();
+  });
+
+  it('exits 0 for every subcommand when each name matches', async () => {
+    mocks.checkAppOnNode.mockResolvedValue({ slug: 'clara', ok: true, detail: 'app-creds-ok' });
+    mocks.sshCapture.mockResolvedValue({ ok: true, out: 'pool-routes-present', err: '', code: 0, ms: 5 });
+    await runFleetCommand(['apps', '--nodes=core-1,core-2']);
+    expect(process.exitCode).toBeUndefined();
+  });
+
+  it('fails an apps run on an unknown name too', async () => {
+    mocks.checkAppOnNode.mockResolvedValue({ slug: 'clara', ok: true, detail: 'app-creds-ok' });
+    mocks.sshCapture.mockResolvedValue({ ok: true, out: 'pool-routes-present', err: '', code: 0, ms: 5 });
+    await runFleetCommand(['apps', '--nodes=core-1,core-typo']);
+    expect(process.exitCode).toBe(1);
   });
 });

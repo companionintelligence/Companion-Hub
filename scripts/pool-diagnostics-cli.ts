@@ -134,6 +134,16 @@ export interface PoolCheck {
 export interface PoolDoctorSection {
   lines: string[];
   issueCount: number;
+  /**
+   * The subset of `issueCount` that says THIS node is broken as a pool member, matching
+   * `BridgeDoctorSection.failureCount`.
+   *
+   * Only a `fail` verdict counts. `warn` is state the operator asked to be told about, `unknown` is
+   * a probe that could not decide — and D3's `unknown` is precisely the remote case: a figure that
+   * may have been served by a peer is not a verdict about this node, so it must not fail the command
+   * an operator ran to look at it.
+   */
+  failureCount: number;
   remediationCommands: string[];
 }
 
@@ -214,6 +224,11 @@ export function formatPoolCheckLines(checks: PoolCheck[]): string[] {
 /** Issues are decided failures only. See {@link PoolCheckVerdict} for why `unknown` is excluded. */
 export function countPoolIssues(checks: PoolCheck[]): number {
   return checks.filter((check) => check.verdict === 'fail' || check.verdict === 'warn').length;
+}
+
+/** The half of {@link countPoolIssues} that is broken rather than reported. See {@link PoolDoctorSection.failureCount}. */
+export function countPoolFailures(checks: PoolCheck[]): number {
+  return checks.filter((check) => check.verdict === 'fail').length;
 }
 
 export function summarisePoolChecks(checks: PoolCheck[]): string {
@@ -2891,7 +2906,7 @@ export async function runPoolDoctorSection(envFileName: string, options: PoolDoc
     return await collectPoolDoctorSection(envFileName, options);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    return { lines: [`Hub Pool preflight       unavailable (${sanitizeForBox(message)})`], issueCount: 0, remediationCommands: [] };
+    return { lines: [`Hub Pool preflight       unavailable (${sanitizeForBox(message)})`], issueCount: 0, failureCount: 0, remediationCommands: [] };
   }
 }
 
@@ -2982,6 +2997,7 @@ async function collectPoolDoctorSection(envFileName: string, options: PoolDoctor
     return {
       lines: [`Docker bridge            unavailable (${sanitizeForBox(error instanceof Error ? error.message : String(error))})`],
       issueCount: 0,
+      failureCount: 0,
       remediationCommands: [],
     };
   });
@@ -2991,6 +3007,9 @@ async function collectPoolDoctorSection(envFileName: string, options: PoolDoctor
   // A collapsed section is counted even though its line is `unknown`: the two are different claims.
   // The line says nothing was decided about the node; the count says this report is not all-clear.
   const issueCount = countPoolIssues(checks) + bridge.issueCount + collapsed.length;
+  // A collapsed section is NOT a failure, for the same reason `unknown` is not: the checks never
+  // ran, so the report proves nothing about the node — only that this command could not look.
+  const failureCount = countPoolFailures(checks) + bridge.failureCount;
   const remediationCommands = [...checks.flatMap((check) => check.commands ?? []), ...bridge.remediationCommands];
 
   const lines = [
@@ -3010,5 +3029,5 @@ async function collectPoolDoctorSection(envFileName: string, options: PoolDoctor
     ]),
   ];
 
-  return { lines, issueCount, remediationCommands };
+  return { lines, issueCount, failureCount, remediationCommands };
 }
