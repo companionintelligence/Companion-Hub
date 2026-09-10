@@ -120,6 +120,47 @@ describe('portal-sso helpers', () => {
     expect(html).toContain('Open Companion Hub');
   });
 
+  it('renders the fallback link BEFORE the script that navigates away', () => {
+    // The script used to come first. An external-scheme navigation aborts the
+    // parse, so the text and the fallback link never rendered and the user was
+    // left on a blank white tab with no way forward.
+    const html = buildPortalDesktopHandoffHtml('cihub://auth?token=tok-2');
+
+    const linkAt = html.indexOf('Open Companion Hub</a>');
+    const scriptAt = html.indexOf('location.replace(');
+    expect(linkAt).toBeGreaterThan(-1);
+    expect(scriptAt).toBeGreaterThan(-1);
+    expect(linkAt).toBeLessThan(scriptAt);
+  });
+
+  it('navigates exactly once, so the one-time token is not spent twice', () => {
+    const html = buildPortalDesktopHandoffHtml('cihub://auth?token=tok-3');
+
+    expect(html.match(/location\.replace\(/g)).toHaveLength(1);
+    expect(html).not.toContain('http-equiv="refresh"');
+    expect(html).not.toContain('http-equiv=refresh');
+  });
+
+  it('is a self-contained page: a title, and no external assets to 404', () => {
+    // Served by the API before any session exists, and on a Hub with no frontend
+    // bundle there is nothing under /assets to reference.
+    const html = buildPortalDesktopHandoffHtml('cihub://auth?token=tok-4');
+
+    expect(html).toContain('<title>Signing you in — Companion Hub</title>');
+    expect(html).not.toMatch(/<link[^>]+href=/i);
+    expect(html).not.toMatch(/<(img|script)[^>]+src=/i);
+  });
+
+  it('escapes the deep link in both the href and the inline script', () => {
+    const html = buildPortalDesktopHandoffHtml('cihub://auth?token=a&b=<c>"d"');
+
+    expect(html).toContain('href="cihub://auth?token=a&amp;b=&lt;c>&quot;d&quot;"');
+    // No raw `<` inside the script literal, which could close the tag early.
+    const script = html.slice(html.indexOf('<script>'), html.indexOf('</script>'));
+    expect(script).not.toContain('<c>');
+    expect(script).toContain('\\u003c');
+  });
+
   it('hands loopback SSO to a running Tauri app even without desktop=1', () => {
     expect(
       shouldHandoffPortalLoginToDesktop({
