@@ -73,7 +73,7 @@ export const TailscaleSetupStep = ({ onComplete, onSkip, onBack, embedded = fals
       }
       return result.data as unknown as AuthStartResponse;
     },
-    onSuccess: (payload) => {
+    onSuccess: async (payload) => {
       if (!payload.success) {
         toast.error(payload.error ?? t('ONBOARDING_TAILSCALE_AUTH_ERROR'));
         return;
@@ -85,8 +85,11 @@ export const TailscaleSetupStep = ({ onComplete, onSkip, onBack, embedded = fals
         return;
       }
       if (payload.authUrl) {
-        openExternal(payload.authUrl);
-        toast.success(t('ONBOARDING_TAILSCALE_AUTH_OPENING'));
+        const opened = await openExternal(payload.authUrl);
+        // openExternal never throws (it logs and returns false instead), so this
+        // is the only signal that the system opener actually did anything -- skip
+        // it and the button looks like it worked while nothing opened.
+        toast[opened ? 'success' : 'error'](t(opened ? 'ONBOARDING_TAILSCALE_AUTH_OPENING' : 'ONBOARDING_TAILSCALE_AUTH_FAILED'));
         setHasAttemptedConnection(true);
         void queryClient.invalidateQueries({ queryKey: tailscaleStatusQueryKey() });
       }
