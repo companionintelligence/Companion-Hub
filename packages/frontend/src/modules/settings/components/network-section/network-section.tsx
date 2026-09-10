@@ -16,78 +16,25 @@ import type { ReactNode } from 'react';
  * Nothing was deleted: `HintText` keeps each string one hover away.
  */
 
-/** 8px status dot. The one shape every state in this tab is drawn with. */
-export const StatusDot = ({ tone = 'idle', className }: { tone?: 'ok' | 'warn' | 'bad' | 'idle'; className?: string }) => (
-  <span
-    className={cn(
-      'inline-block h-2 w-2 shrink-0 rounded-full',
-      tone === 'ok' && 'bg-success',
-      tone === 'warn' && 'bg-warning',
-      tone === 'bad' && 'bg-destructive',
-      tone === 'idle' && 'bg-muted-foreground/50',
-      className,
-    )}
-  />
-);
-
-export const StatusBadge = ({ connected, label }: { connected: boolean; label: string }) => (
-  <span
-    className={cn(
-      'inline-flex shrink-0 items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px] font-medium',
-      connected ? 'border-success/40 bg-success/10 text-success' : 'border-border/70 bg-muted/30 text-muted-foreground',
-    )}
-  >
-    <StatusDot tone={connected ? 'ok' : 'idle'} className="h-1.5 w-1.5" />
-    {label}
-  </span>
-);
-
-/**
- * A number the size of a headline over a label the size of a footnote — the fleet-QA
- * `.chip`. `tone` colours the VALUE, never the label, so a row of chips scans as one
- * line of numbers with the exceptional one picked out.
- */
-export const StatChip = ({
-  value,
-  label,
-  tone = 'plain',
-  hint,
-  hintId,
-}: {
-  value: ReactNode;
-  label: string;
-  tone?: 'plain' | 'ok' | 'warn' | 'bad' | 'muted';
-  hint?: ReactNode;
-  hintId?: string;
-}) => {
-  const caption =
-    hint && hintId ? (
-      <HintText id={hintId} hint={hint} className="cursor-help underline decoration-dotted underline-offset-2">
-        {label}
-      </HintText>
-    ) : (
-      label
-    );
-
-  return (
-    <div className="flex min-w-[74px] flex-col gap-0.5 rounded-md border border-border bg-muted/20 px-2.5 py-1.5">
-      <span
-        className={cn(
-          'text-[17px] font-bold leading-none tabular-nums',
-          tone === 'ok' && 'text-success',
-          tone === 'warn' && 'text-warning',
-          tone === 'bad' && 'text-destructive',
-          tone === 'muted' && 'text-muted-foreground',
-        )}
-      >
-        {value}
-      </span>
-      <span className="text-[10px] uppercase tracking-[0.5px] text-muted-foreground">{caption}</span>
-    </div>
-  );
-};
-
-export const StatChipRow = ({ children }: { children: ReactNode }) => <div className="flex flex-wrap gap-1.5">{children}</div>;
+export {
+  DASH,
+  humanBytes,
+  humanCount,
+  KpiTable,
+  MeterBar,
+  Panel,
+  relativeAge,
+  Sparkline,
+  StackedBar,
+  StatChip,
+  StatChipRow,
+  StatusBadge,
+  StatusDot,
+  TableEmpty,
+  Td,
+  Th,
+  Tr,
+} from '@/components/ui/dense/dense';
 
 /**
  * Compact header. The title is `text-base`, not `text-xl`: this tab stacks three cards,
@@ -119,56 +66,6 @@ export const Detail = ({ label, value, mono = true }: { label: string; value: Re
     <dt className="text-[10px] uppercase tracking-[0.5px] text-muted-foreground">{label}</dt>
     <dd className={cn('break-words text-xs leading-snug', mono && 'font-mono')}>{value}</dd>
   </div>
-);
-
-/**
- * The fleet-QA `table.kpi`: 12px body, sticky uppercase micro-headers, tabular numerals,
- * hairline row rules. Wrapped in its own horizontal scroller so a wide row scrolls itself
- * instead of widening the page.
- */
-export const KpiTable = ({ head, children }: { head: ReactNode; children: ReactNode }) => (
-  <div className="overflow-x-auto rounded-md border border-border">
-    <table className="w-full border-collapse text-xs">
-      <thead>
-        <tr className="bg-muted/40">{head}</tr>
-      </thead>
-      <tbody>{children}</tbody>
-    </table>
-  </div>
-);
-
-export const Th = ({ children, align = 'left' }: { children: ReactNode; align?: 'left' | 'right' }) => (
-  <th
-    className={cn(
-      'whitespace-nowrap border-b border-border px-2.5 py-1.5 text-[10px] font-bold uppercase tracking-[0.06em] text-muted-foreground',
-      align === 'right' ? 'text-right' : 'text-left',
-    )}
-  >
-    {children}
-  </th>
-);
-
-export const Td = ({ children, align = 'left', className }: { children: ReactNode; align?: 'left' | 'right'; className?: string }) => (
-  <td
-    className={cn(
-      'border-b border-border px-2.5 py-1.5 align-middle tabular-nums last:border-b-0',
-      align === 'right' ? 'text-right' : 'text-left',
-      className,
-    )}
-  >
-    {children}
-  </td>
-);
-
-export const Tr = ({ children }: { children: ReactNode }) => <tr className="transition-colors hover:bg-muted/30">{children}</tr>;
-
-/** Empty state for a KpiTable — one short line, centred, never a paragraph. */
-export const TableEmpty = ({ colSpan, children }: { colSpan: number; children: ReactNode }) => (
-  <tr>
-    <td colSpan={colSpan} className="px-2.5 py-4 text-center text-xs italic text-muted-foreground">
-      {children}
-    </td>
-  </tr>
 );
 
 /**
