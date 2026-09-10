@@ -24,7 +24,7 @@ No. Selling Companion Hub—including cloud-hosted instances, home-server or app
 
 ### Does this license apply to Companion Memory or Companion Portal?
 
-No. The PolyForm Noncommercial terms cover this Hub repository only. Companion Memory, Companion Portal, and other Companion Intelligence products use separate licenses and are not open-sourced under these terms.
+Companion Memory, Companion Capture, Companion Marketplace, Companion OS, and the Companion Browser Extension use the same PolyForm Noncommercial terms in their own repositories. Companion Portal stays a separate commercial product.
 
 Portal is the commercial convenience layer: authentication, public web, and paid add-ons (Pro at $9/month or $99/year; extra device $5; extra subdomain $1; custom domain $4; user support $29). Those add-ons are optional capacity. They do not buy you the right to run Hub. Hub is already free to run for personal and nonprofit use under this license.
 
