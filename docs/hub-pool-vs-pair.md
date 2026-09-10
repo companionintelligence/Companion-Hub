@@ -33,7 +33,15 @@ comment it as the specific mechanism that prevents chaining.
 
 PAIR runs `nvpair-node-scanner`, advertising one `_nvpair-node._tcp` mDNS record per host carrying
 UUID, cluster membership, ports and a ranked address list, plus manual direct-address probing.
-Eviction tolerates "three consecutive misses".
+Eviction needs **twelve** consecutive misses at a 5 s scan — a full minute
+(`missThresholdDefault = 12`, `services/shared/discovery/discovery.go:93`), and three further
+mechanisms sit in front of it: from ~15 s a missing node is TCP-probed on its advertised ports every
+scan; a scan that returns *none* of several known nodes penalises nobody for up to six scans, on the
+reasoning that machines do not leave together but a starved process hears silence from all of them;
+and `discovery:node-activity` counts inference response bytes seen in the last 60 s as proof of life.
+PAIR's own note for the last one — that it is the only liveness evidence that gets *stronger* the
+busier a node is — is the idea worth taking, because our three-failed-polls rule fails hardest exactly
+when a node is busy serving.
 
 Hub Pool asks directories that authenticate it first, and every one of them supplies a *name*: the
 local Tailscale daemon's peer map, the **Tailscale Admin API** when an OAuth client is configured,
@@ -104,7 +112,11 @@ caveats keep it from being parity:
 - **It is AMD-only.** `gpu_busy_percent` from DRM sysfs is the only live utilization counter the Hub
   container can reach; `nvidia-smi` is not in the Alpine image and the Docker socket is mounted `:ro`
   deliberately. NVIDIA and Apple nodes report nothing and rank mid-band until someone writes the
-  documented host-file probe. PAIR runs on a fleet where every node can answer.
+  documented host-file probe. **PAIR has the mirror-image gap, not parity:** on Linux it reads
+  utilization only from `nvidia-smi`, and its own comment says an AMD/Intel-only host falls back to
+  ghw and lists GPUs "without dynamic VRAM/utilization"
+  (`services/nvpair-node-info/gpu_linux.go:25-31`). Each project implemented the vendor it runs on.
+  The honest framing is that neither has fleet-wide telemetry, not that PAIR solved it.
 - **It ships off** (`poolPressureWeight = 0`) and needs a `/sys` bind mount this repo does not
   install, because the band is unvalidated on real fleet hardware. Where it is not enabled, the
   paragraph this replaces still describes the behaviour: a node running a long generation at 100% GPU
@@ -137,9 +149,6 @@ mid-answer.
 
 ### 5. Features PAIR has that we do not
 
-- **Manual node pinning.** PAIR's routing priority is (1) pinned nodes, (2) scheduler ranking, (3) node ID.
-  Hub Pool has no pin — grep finds no `pinned`/`preferredNode`/node-override header anywhere in the module.
-  For "run this on the Threadripper because I said so", we have no answer.
 - **Supervised worker processes.** PAIR's broker restarts workers with exponential backoff (~1s→16s,
   five attempts). Hub Pool is a NestJS module inside the Hub; engine supervision is Docker's.
 - **Cluster-wide model inventory.** PAIR advertises per-engine inventory across the cluster; our
@@ -147,6 +156,12 @@ mid-answer.
   (documented gap in `docs/hub-pool.md`). Chat/completion/embedding do use the full pool.
 
 ### 6. Features we have that PAIR does not
+
+- **Manual routing pins** — added since this doc was first written, so PAIR's advantage here is gone.
+  `hub-pool-pin.service.ts` and `applyPin()` (`hub-pool-proxy.service.ts:169`) are, if anything, more
+  carefully specified than PAIR's: a pin *reorders* the finished candidate list rather than forcing a
+  target, so it can never resurrect a node ranking already excluded, and a pin naming an unavailable
+  node is a silent no-op instead of a failure.
 
 - **Bidirectional routing log.** We record both outbound decisions (which node, which attempt, what it
   failed over from) *and* inbound forwards, so an operator can answer "which of my peers is spending
@@ -167,19 +182,40 @@ dispatch, ordered failover, streaming, no relay chaining, no retry of genuine cl
 is *better instrumented* and better suited to a heterogeneous fleet. It is behind PAIR in two places
 that matter:
 
-1. **GPU-pressure signal only on AMD, and off by default.** The smoothed 0–3 band with hysteresis
-   now exists and is wired into ranking, but the only source that can feed it is the amdgpu driver's
-   `gpu_busy_percent`, and enabling it takes a `/sys` mount plus a settings change on each node. On
-   an NVIDIA or Apple node the gap is unchanged, and closing it needs a host-side writer for the
-   documented `gpu_pressure.json` probe rather than any further work in the Hub.
-2. **No manual pinning.** Cheap to add — a request header or per-app setting consulted ahead of the
-   ranker, mirroring PAIR's priority order.
+1. **Load-signal freshness.** This is the real gap, and it is not the one this doc used to name.
+   PAIR samples telemetry every 2 s and recomputes ranking every 1 s; we poll every 30 s and trust a
+   snapshot for up to 90 s. A queue depth that old is close to useless for bursty multi-agent traffic,
+   which is the traffic this exists to serve. PAIR's scheduler emits only on change, so the cost of
+   closing this is low.
+2. **Cluster-wide model-list aggregation.** PAIR fans `/v1/models` and `/api/tags` across candidates
+   and merges them de-duplicated; ours are local-only. Verified live: the pool proxy on a 5-node mesh
+   returned 11 models — one node's inventory — while the pool as a whole could serve far more. This is
+   also the specific reason a `require`-mode pin had to be cut, so fixing it unblocks that design.
+3. **GPU-pressure signal only on AMD, and off by default.** Kept on the list, but demoted: PAIR is
+   NVIDIA-only on Linux (§3), so this is a difference in which vendor each project covers rather than a
+   capability one has and the other lacks.
 
-Neither blocks the current deployment model. Both should be on the roadmap before Hub Pool is
-pointed at a fleet where nodes differ sharply in *live* load rather than in static capability.
+None blocks the current deployment model.
 
-## Not verified here
+## Provenance
 
-Ranking behaviour is compared from source on our side and from PAIR's prose on theirs; PAIR's
-scheduler source was not read. No head-to-head benchmark of the two routers was run — the claims
-above are about design, not measured throughput.
+**PAIR's source has now been read**, at tag `v0.1.1` (commit `13b6811`, 2026-08-28) — the earlier
+revision of this doc compared our source against PAIR's *prose*, and three of its claims were wrong
+because of it: the eviction threshold (stated as 3, actually 12), the GPU-telemetry framing (stated as
+fleet-wide for PAIR, actually NVIDIA-only on Linux), and "Hub Pool has no pin" (stale — pins shipped).
+Each is corrected above against a cited file and line.
+
+One thing to know when reading PAIR's own documentation: **it contradicts itself.** `known-issues.mdx`
+says scheduling "does not consider… current utilization", while the scheduler README and `schedule.go`
+both add a GPU-pressure term. Cite the source, not `known-issues.mdx`.
+
+Worth recording as prior art we do not match: PAIR pairs with **EAP-NOOB (RFC 9140)**, a standards-based
+out-of-band protocol, where ours is a bespoke PIN handshake. And a weakness we do not share:
+`nvpair-node-info` — full hardware inventory and live GPU/CPU utilization — is served as
+**unauthenticated plaintext HTTP on the LAN even on a clustered node**, because the desktop's 2 s
+telemetry poll holds no cluster identity and gating it would blank the UI
+(`services/nvpair-ui-broker/broker.go:1045`). It is recorded as an accepted risk in their
+`desktop/SECURITY.md`. Our equivalent surface is behind `PoolPeerGuard`.
+
+Still not done: no head-to-head benchmark of the two routers. The claims above are about design, not
+measured throughput.
