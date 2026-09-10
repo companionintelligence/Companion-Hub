@@ -11,6 +11,39 @@ import { useTranslation } from 'react-i18next';
  */
 
 /**
+ * Configuration that is quietly not doing what it says, counted for the drawer badge.
+ *
+ * All three are SILENT by nature, which is the only reason they are worth surfacing at all: a pin
+ * whose target can no longer serve is a no-op on the request path, a direction switched off in
+ * `.env` cannot be flipped from the settings screen it appears to live on, and a capabilities
+ * error means this node's own engine inventory is stale. None of the three produces an error
+ * anywhere a person looks.
+ *
+ * Exported so the page's drawer badge and the page's verdict count the SAME facts. Two
+ * independent derivations of "is anything wrong in here" is how a collapsed drawer ends up
+ * hiding a fault the verdict already cleared — and a collapsed drawer must never be the only
+ * place a fault is visible.
+ *
+ * An undefined `pool` — the query never answered — returns zeros, and that is deliberate: it is
+ * not a claim that the configuration is clean. The rail's verdict counts that query as an
+ * UNAVAILABLE CHECK, which is a different statement and the one that belongs to a failed fetch.
+ */
+export interface PoolConfigWarnings {
+  stalePins: number;
+  envDisabledDirections: number;
+  capabilitiesError: boolean;
+  total: number;
+}
+
+export function poolConfigWarnings(pool: PoolStatusSummary | undefined): PoolConfigWarnings {
+  const stalePins = (pool?.pins ?? []).filter((pin) => pin.targetAvailable === false).length;
+  const envDisabledDirections = [pool?.directions?.outbound, pool?.directions?.inbound].filter((direction) => direction?.disabledBy === 'env').length;
+  const capabilitiesError = !!pool?.localNode?.capabilitiesError;
+
+  return { stalePins, envDisabledDirections, capabilitiesError, total: stalePins + envDisabledDirections + (capabilitiesError ? 1 : 0) };
+}
+
+/**
  * One direction of pooling, and what is holding it off.
  *
  * `env` and `setting` are kept apart because only one of them is something the operator can
@@ -46,34 +79,23 @@ function DirectionChip({ direction, label }: { direction: PoolDirectionState | u
   );
 }
 
-export function PoolSummary({ pool, state }: { pool: PoolStatusSummary | undefined; state: LoadState }) {
+export function PoolSummary({ pool, state, className }: { pool: PoolStatusSummary | undefined; state: LoadState; className?: string }) {
   const { t } = useTranslation();
-  const routing = pool?.routing;
   const settings = pool?.settings;
   const pins = pool?.pins ?? [];
   const stalePins = pins.filter((pin) => pin.targetAvailable === false);
 
   return (
-    <Panel title={t('DASHBOARD_POOL_SUMMARY_TITLE')}>
+    <Panel title={t('DASHBOARD_POOL_SUMMARY_TITLE')} density="compact" className={className}>
       <PanelBody state={state} error={t('DASHBOARD_POOL_FAILED')} lines={2}>
+        {/* SETTINGS ONLY. `routingActive`, served, failed and failovers used to sit here as well;
+            they are live counters, they are now in the page rail, and a second copy inside a
+            collapsed drawer would be a number an operator reads twice and trusts once — the two
+            are polled off the same query but rendered a scroll apart. What is left is the
+            configuration those counters are the consequence of. */}
         <StatChipRow>
-          <StatChip
-            value={pool?.routingActive ? t('DASHBOARD_POOL_ON') : t('DASHBOARD_POOL_OFF')}
-            label={t('DASHBOARD_POOL_ROUTING')}
-            sub={pool?.reason ? t(`DASHBOARD_REASON_${(pool.reason as string).toUpperCase()}`, { defaultValue: pool.reason }) : undefined}
-            tone={pool?.routingActive ? 'ok' : pool?.enabled ? 'warn' : 'muted'}
-          />
           <DirectionChip direction={pool?.directions?.outbound} label={t('DASHBOARD_OUTBOUND')} />
           <DirectionChip direction={pool?.directions?.inbound} label={t('DASHBOARD_INBOUND')} />
-          <StatChip value={routing?.served ?? DASH} label={t('DASHBOARD_SERVED')} tone={(routing?.served ?? 0) > 0 ? 'ok' : 'muted'} />
-          <StatChip value={routing?.failed ?? DASH} label={t('DASHBOARD_FAILED')} tone={(routing?.failed ?? 0) > 0 ? 'bad' : 'muted'} />
-          <StatChip
-            value={routing?.failovers ?? DASH}
-            label={t('DASHBOARD_FAILOVERS')}
-            tone={(routing?.failovers ?? 0) > 0 ? 'warn' : 'muted'}
-            hint={t('DASHBOARD_FAILOVERS_HINT')}
-            hintId="dashboard-failovers"
-          />
           <StatChip
             value={settings?.poolLocalAffinity ?? DASH}
             label={t('DASHBOARD_AFFINITY')}
@@ -128,17 +150,25 @@ export function PoolSummary({ pool, state }: { pool: PoolStatusSummary | undefin
   );
 }
 
-export function CloudProviders({ providers, state }: { providers: CloudProviderSummary[] | undefined; state: LoadState }) {
+export function CloudProviders({
+  providers,
+  state,
+  className,
+}: {
+  providers: CloudProviderSummary[] | undefined;
+  state: LoadState;
+  className?: string;
+}) {
   const { t } = useTranslation();
   const rows = providers ?? [];
 
   return (
-    <Panel title={t('DASHBOARD_CLOUD_TITLE')}>
+    <Panel title={t('DASHBOARD_CLOUD_TITLE')} density="compact" className={className}>
       <PanelBody state={state} error={t('DASHBOARD_CLOUD_FAILED')} lines={2}>
         {rows.length === 0 ? (
           /* Empty is the normal state: cloud fallback is opt-in and most Hubs run local
              only. It must not read like a fetch that came back short. */
-          <p className="py-3 text-center text-[13px] italic text-muted-foreground">{t('DASHBOARD_CLOUD_EMPTY')}</p>
+          <p className="py-2.5 text-center text-[13px] italic text-muted-foreground">{t('DASHBOARD_CLOUD_EMPTY')}</p>
         ) : (
           <div className="flex flex-wrap gap-1.5">
             {rows.map((provider) => (
@@ -166,11 +196,13 @@ export function MiscPanel({
   hardware,
   poolState,
   hardwareState,
+  className,
 }: {
   pool: PoolStatusSummary | undefined;
   hardware: HardwareSummary | undefined;
   poolState: LoadState;
   hardwareState: LoadState;
+  className?: string;
 }) {
   const { t } = useTranslation();
   const node = pool?.localNode;
@@ -209,7 +241,7 @@ export function MiscPanel({
   ];
 
   return (
-    <Panel title={t('DASHBOARD_MISC_TITLE')}>
+    <Panel title={t('DASHBOARD_MISC_TITLE')} density="compact" className={className}>
       <PanelBody state={state} error={t('DASHBOARD_MISC_FAILED')} lines={5}>
         <KpiTable
           head={

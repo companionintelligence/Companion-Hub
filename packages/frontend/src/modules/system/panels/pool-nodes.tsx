@@ -3,14 +3,18 @@ import {
   DASH,
   humanBytes,
   humanCount,
+  KpiTable,
   Panel,
   PanelBody,
   relativeAge,
   StatusBadge,
   StatusDot,
   StepAreaChart,
+  Td,
+  Th,
   TONE_TEXT,
   type Tone,
+  Tr,
 } from '@/components/ui/dense/dense';
 import { cn } from '@/lib/utils';
 import {
@@ -21,11 +25,16 @@ import {
   type PoolSampleWindow,
 } from '@/modules/system/pool-node-series';
 import type { LoadState } from '@/modules/system/use-dashboard-data';
-import type { ReactNode } from 'react';
+import { ChevronRight } from 'lucide-react';
+import { Fragment, type ReactNode, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 /*
- * ONE CARD PER NODE — this Hub and every peer, the pool as a set of machines.
+ * THE POOL AS A SET OF MACHINES — one row per node, and the full card one click below it.
+ *
+ * The row is for scanning across nodes; `NodeCard` is for reading one. Both are here because they
+ * are the same facts at two depths, and the card is reused as the expanded row rather than
+ * duplicated — see {@link PoolNodes} at the bottom of the file for why that matters.
  *
  * The reference this is modelled on puts a live GPU-utilisation curve, VRAM used/total and a CPU
  * percentage on every node. None of those three exist here for a PEER, and inventing them is the
@@ -168,7 +177,7 @@ function NodeCard({ card, window: samples }: { card: PoolNodeCard; window: PoolS
         </dl>
       </div>
 
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-border/70 pt-2.5 text-[11px] text-muted-foreground">
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-border/70 pt-2 text-[11px] text-muted-foreground">
         {card.containers === null ? (
           <span className="italic">{t('DASHBOARD_NODE_CONTAINERS_UNREPORTED')}</span>
         ) : (
@@ -193,32 +202,156 @@ function NodeCard({ card, window: samples }: { card: PoolNodeCard; window: PoolS
       </div>
 
       {card.capabilitiesError ? (
-        <p className="rounded-md border border-warning/30 bg-warning/10 px-2.5 py-2 text-[11px] text-warning">{card.capabilitiesError}</p>
+        <p className="rounded-md border border-warning/30 bg-warning/10 px-2.5 py-1.5 text-[11px] text-warning">{card.capabilitiesError}</p>
       ) : null}
     </section>
   );
 }
 
-export function PoolNodes({ cards, window: samples, state }: { cards: PoolNodeCard[]; window: PoolSampleWindow; state: LoadState }) {
+/**
+ * The pool as a TABLE of machines, one row each, with the full card one click away.
+ *
+ * A grid of cards spent ~270px per node on chrome to say what a 22px row says — four nodes filled
+ * a laptop screen before a single number about this machine appeared. The row carries the six
+ * facts an operator scans across nodes (status, name, tier, in-flight now, its trend, GPU pressure
+ * band, containers); everything else lives in `NodeCard`, which is REUSED VERBATIM as the expanded
+ * row rather than reimplemented. That matters twice over: no information is lost by the collapse,
+ * and there is exactly one source for the detail view at every width — so a column dropped below a
+ * breakpoint is still reachable, not gone.
+ *
+ * The WHOLE ROW toggles for pointer and touch, which is what makes this usable on a phone: the row
+ * is ~33px tall at `Td`'s `py-1.5` with 13px text — well short of the 44px guideline, and the reason the
+ * target is the entire row rather than the 20px chevron, which alone would be well under it. Raising
+ * `Td`'s padding to clear 44px was rejected: `Td` is shared with the settings module and every other
+ * table on this board, so it would cost vertical density everywhere to fix one row. (An earlier
+ * version of this comment claimed `py-2` "clears a 44px target"; it never did, and the 20% vertical-
+ * padding trim since took the row from 38px to 33px, so the gap is wider now than when it was written.)
+ * The real
+ * `<button>` in the first cell carries `aria-expanded`/`aria-controls` for keyboard and screen
+ * readers. The button has no handler of its own on purpose: activating it by keyboard dispatches a
+ * click that bubbles to the row, so there is one code path and no double-toggle.
+ *
+ * `KpiTable` keeps its own `overflow-x-auto`. A table scrolling inside its own box is a legitimate
+ * idiom and the column drops mean it rarely triggers — unlike the 720px-wide chart this rebuild
+ * deleted, which forced the whole PAGE sideways on a phone.
+ */
+export function PoolNodes({
+  cards,
+  window: samples,
+  state,
+  className,
+}: {
+  cards: PoolNodeCard[];
+  window: PoolSampleWindow;
+  state: LoadState;
+  className?: string;
+}) {
   const { t } = useTranslation();
+  const [expanded, setExpanded] = useState<string[]>([]);
+
+  const toggle = (key: string) => setExpanded((current) => (current.includes(key) ? current.filter((open) => open !== key) : [...current, key]));
 
   return (
     <Panel
-      // Borderless: the cards carry their own frame, and nesting one border inside another turns
-      // a grid of machines into a box of boxes. The Panel is here for its three-state contract.
-      className="border-0 bg-transparent p-0"
       title={t('DASHBOARD_POOL_NODES_TITLE')}
+      density="compact"
+      className={className}
       actions={state.pending || state.failed ? null : <span className="text-[11px] text-muted-foreground">{cards.length}</span>}
     >
       <PanelBody state={state} error={t('DASHBOARD_POOL_FAILED')} lines={6}>
         {cards.length === 0 ? (
-          <p className="py-6 text-center text-[13px] italic text-muted-foreground">{t('DASHBOARD_POOL_NODES_EMPTY')}</p>
+          <p className="py-5 text-center text-[13px] italic text-muted-foreground">{t('DASHBOARD_POOL_NODES_EMPTY')}</p>
         ) : (
-          <div className="grid gap-3 xl:grid-cols-2">
-            {cards.map((card) => (
-              <NodeCard key={card.key} card={card} window={samples} />
-            ))}
-          </div>
+          <KpiTable
+            head={
+              <>
+                <Th className="w-8">
+                  <span className="sr-only">{t('DASHBOARD_COL_EXPAND')}</span>
+                </Th>
+                <Th>{t('DASHBOARD_COL_STATE')}</Th>
+                <Th>{t('DASHBOARD_COL_NODE')}</Th>
+                <Th className="hidden @md:table-cell">{t('DASHBOARD_COL_TIER')}</Th>
+                <Th align="right">{t('DASHBOARD_NODE_NOW')}</Th>
+                <Th className="hidden w-24 @xl:table-cell">{t('DASHBOARD_COL_TREND')}</Th>
+                <Th className="hidden @2xl:table-cell">{t('DASHBOARD_NODE_PRESSURE')}</Th>
+                <Th align="right" className="hidden @md:table-cell">
+                  {t('DASHBOARD_COL_CONTAINERS')}
+                </Th>
+              </>
+            }
+          >
+            {cards.map((card) => {
+              const open = expanded.includes(card.key);
+              const detailId = `pool-node-detail-${card.key}`;
+              const series = nodeInFlightSeries(samples, card.key);
+              const { max } = computeCountChartScale(series);
+              const statusLabel = t(`DASHBOARD_NODE_STATUS_${card.status.toUpperCase()}`, { defaultValue: card.status });
+              const inFlightLabel = card.local ? t('DASHBOARD_NODE_IN_FLIGHT_LOCAL') : t('DASHBOARD_NODE_IN_FLIGHT_FORWARDED');
+
+              return (
+                <Fragment key={card.key}>
+                  <Tr className="cursor-pointer" onClick={() => toggle(card.key)} data={{ node: card.key }}>
+                    <Td>
+                      <button
+                        type="button"
+                        aria-expanded={open}
+                        aria-controls={detailId}
+                        className="flex size-5 items-center justify-center rounded-sm text-muted-foreground hover:text-foreground"
+                      >
+                        <ChevronRight className={cn('size-3.5 transition-transform', open && 'rotate-90')} strokeWidth={2} />
+                        <span className="sr-only">{card.label}</span>
+                      </button>
+                    </Td>
+                    {/* Below `sm` the dot carries the status on its own and the word is dropped —
+                        "unreachable" is 80px of a 375px row, and the dot's tone already says it.
+                        The word is on the cell's `title` and in the expanded card, so nothing is
+                        lost; this is the one column drop where the CONTENT thins rather than the
+                        whole cell, because a status column with no cell at all would shift the
+                        table and leave the row unreadable. */}
+                    <Td title={statusLabel}>
+                      <span className="inline-flex items-center gap-1.5">
+                        <StatusDot tone={STATUS_TONE[card.status] ?? 'muted'} />
+                        <span className="hidden text-[11px] uppercase tracking-[0.5px] text-muted-foreground sm:inline">{statusLabel}</span>
+                      </span>
+                    </Td>
+                    {/* No "this Hub" badge here: `card.label` for the local node already IS that
+                        string, and the status cell beside it already reads "local". The badge
+                        earns its place on the expanded card, where the name is a heading. */}
+                    <Td className="max-w-[160px] truncate font-medium" title={card.fqdn ?? card.label}>
+                      {card.label}
+                    </Td>
+                    <Td className="hidden text-muted-foreground @md:table-cell">{card.hardwareTier ?? DASH}</Td>
+                    {/* Dash, not 0: a node that reported no counter is unread, not idle. */}
+                    <Td align="right" className={(card.inFlight ?? 0) > 0 ? 'font-medium text-success' : 'text-muted-foreground'}>
+                      {humanCount(card.inFlight)}
+                    </Td>
+                    <Td className="hidden @xl:table-cell">
+                      <StepAreaChart variant="row" height={20} points={series} max={max} tone="ok" label={`${card.label} — ${inFlightLabel}`} />
+                    </Td>
+                    {/* Band 0 is a real measurement and `null` is "this node cannot measure",
+                        so the pips are driven off `null` rather than off the number. */}
+                    <Td className="hidden @2xl:table-cell">
+                      <BandMeter value={card.pressureBand} />
+                    </Td>
+                    <Td align="right" className="hidden @md:table-cell">
+                      {card.containers === null ? (
+                        <span className="italic text-muted-foreground">{t('DASHBOARD_NODE_CONTAINERS_SHORT_UNREPORTED')}</span>
+                      ) : (
+                        `${card.containers.running}/${card.containers.total}`
+                      )}
+                    </Td>
+                  </Tr>
+                  {open ? (
+                    <tr id={detailId}>
+                      <td colSpan={8} className="border-b border-border/70 bg-muted/10 p-0">
+                        <NodeCard card={card} window={samples} />
+                      </td>
+                    </tr>
+                  ) : null}
+                </Fragment>
+              );
+            })}
+          </KpiTable>
         )}
       </PanelBody>
     </Panel>

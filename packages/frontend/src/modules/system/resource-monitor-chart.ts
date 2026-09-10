@@ -23,3 +23,39 @@ export function computeCpuChartScale(cpuPercents: number[]): { max: number; tick
 
   return { max, ticks };
 }
+
+const MIB = 1024 ** 2;
+const GIB = 1024 ** 3;
+
+/**
+ * Y-axis scale for per-workload memory, in BYTES.
+ *
+ * A separate function rather than a reuse of {@link computeCpuChartScale}, which floors its
+ * ceiling at 100 because a Docker CPU percentage is meaningfully compared to one core. Handed
+ * bytes, that floor would put every workload on this fleet — hundreds of megabytes at the low
+ * end — at the very top of a 100-byte axis, and every row would read as full.
+ *
+ * The ceiling is rounded up to a step an operator already thinks in, so two tiles drawn a minute
+ * apart do not silently rescale under a value that moved by a few megabytes: 256 MiB steps below
+ * 2 GiB, 1 GiB below 16 GiB, 4 GiB above. Every step is a power of two, so the quarter ticks are
+ * always exact byte counts rather than a rounding to be re-rounded by `humanBytes` at render.
+ *
+ * `dataMax === 0` returns a nominal 256 MiB axis. That is NOT a claim that anything is using
+ * 256 MiB — it is the smallest readable box to draw a measured zero inside, and the caller's own
+ * empty and waiting states handle the cases where there is nothing measured at all.
+ */
+export function computeMemoryChartScale(byteValues: number[]): { max: number; ticks: number[] } {
+  const finiteValues = byteValues.filter((value) => Number.isFinite(value) && value >= 0);
+  const dataMax = finiteValues.length > 0 ? Math.max(...finiteValues) : 0;
+
+  if (dataMax === 0) {
+    return { max: 256 * MIB, ticks: [0, 256 * MIB] };
+  }
+
+  // Headroom so a peak does not clip against the top edge, then up to the next readable step.
+  const padded = dataMax * 1.1;
+  const step = padded < 2 * GIB ? 256 * MIB : padded < 16 * GIB ? GIB : 4 * GIB;
+  const max = Math.ceil(padded / step) * step;
+
+  return { max, ticks: [0, max / 4, max / 2, (max * 3) / 4, max] };
+}
