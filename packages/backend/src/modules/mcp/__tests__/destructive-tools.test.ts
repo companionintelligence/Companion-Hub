@@ -30,6 +30,9 @@ import { SystemTools } from '../tools/system.tools';
  * predicate (e.g. hub_call_app_api, gated only for mutating HTTP verbs).
  */
 const EXPECTED_DESTRUCTIVE = [
+  // R2-HUBHOSTESCAPE-5: adding or re-enabling an app store makes a caller-chosen repo an install
+  // source for the whole appliance — a larger grant than deleting one, which was already gated.
+  'hub_add_app_store',
   'hub_call_app_api',
   // Bridged MCP tools are opaque to the Hub (#936) — a bridged call can mutate anything the
   // remote server can (delete branches, overwrite files), so the proxy is always gated.
@@ -37,6 +40,9 @@ const EXPECTED_DESTRUCTIVE = [
   'hub_delete_app_store',
   'hub_delete_backup',
   'hub_delete_link',
+  // R2-HUBHOSTESCAPE-6: arg-dependent — destructive only for a form naming a custom domain, which on
+  // the MCP path nobody confirmed. Ordinary installs and config edits stay reachable by a 'write' key.
+  'hub_install_app',
   'hub_perform_update',
   'hub_reset_app',
   'hub_restart_all_apps',
@@ -45,6 +51,8 @@ const EXPECTED_DESTRUCTIVE = [
   'hub_uninstall_app',
   'hub_update_all_apps',
   'hub_update_app',
+  'hub_update_app_config',
+  'hub_update_app_store',
   'hub_update_custom_app',
   'hub_update_user_config',
 ].sort();
@@ -131,11 +139,14 @@ describe('MCP tool classification', () => {
     expect(namesWhere((tool) => tool.access === 'read' && Boolean(tool.destructive))).toEqual([]);
   });
 
-  it('gives an argument-dependent tool predicates on BOTH axes, so the two cannot disagree', () => {
-    // A tool that can be destructive for some arguments must also be able to say when it is merely
-    // reading — otherwise a read-only key loses the harmless half of it (a GET through the proxy).
+  it('never labels an argument-dependent destructive tool as statically read', () => {
+    // `isReadOnly` is the opposite-axis predicate that lets a read-only key keep the harmless half of
+    // a tool whose worst case is a write (a GET through the app-API proxy). It is optional: no
+    // arguments make hub_install_app a read, so its static 'write' is the correct and stricter
+    // answer. What must never appear is the reverse — access 'read' plus a destructive predicate,
+    // where the read gate would pass the call through before the destructive gate saw the arguments.
     for (const tool of tools.filter((candidate) => typeof candidate.isDestructive === 'function')) {
-      expect(typeof tool.isReadOnly, `${tool.name} has isDestructive but no isReadOnly`).toBe('function');
+      expect(tool.access, `${tool.name} can be destructive for some arguments but is labelled 'read'`).toBe('write');
     }
   });
 });
