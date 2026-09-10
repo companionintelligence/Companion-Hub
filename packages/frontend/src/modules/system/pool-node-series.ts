@@ -138,9 +138,15 @@ export interface NodeContainers {
 
 /** The per-app container sample `/apps/resource-monitor` returns, reduced to what a rollup needs. */
 export interface LocalContainerSource {
+  /**
+   * ⚠ THE PER-APP TOTALS ARE DELIBERATELY NOT READ by {@link localContainerRollup}. They fold in
+   * the Hub's own Node process, which the container count excludes — so summing them puts the two
+   * halves of the rollup on different populations and makes the local card incomparable with the
+   * peer cards beside it. Kept on the type because callers pass the whole snapshot row.
+   */
   cpuPercent: number;
   memoryUsageBytes: number;
-  containers: { state: string }[];
+  containers: { containerId: string; state: string; cpuPercent: number; memoryUsageBytes: number }[];
 }
 
 /**
@@ -159,24 +165,45 @@ export interface LocalContainerSource {
  * that is not `running` lands in `stopped`, because the question is "how much of this box is
  * doing work".
  */
+/**
+ * Marks the synthetic entry the Hub adds for its own Node process on a host where the backend is
+ * not containerised. It is a process, not a container — mirrors `PROCESS_RUNTIME_ID_PREFIX` in
+ * `app-runtime-monitor.service.ts`, which is what every peer's rollup filters on.
+ */
+const PROCESS_RUNTIME_ID_PREFIX = 'pid:';
+
 export function localContainerRollup(apps: LocalContainerSource[] | undefined): NodeContainers | null {
   if (!apps) return null;
 
-  let running = 0;
-  let total = 0;
-  let cpuPercent = 0;
-  let memoryBytes = 0;
+  /*
+   * ⚠ LEAF CONTAINERS, AND THE `pid:` ENTRY EXCLUDED — because this number sits on a card beside
+   * numbers a PEER published about itself, and the whole point of the grid is comparing them.
+   *
+   * `AppRuntimeMonitorService.containerRollup` — the canonical rollup every peer sends — flatMaps
+   * to leaf containers and drops the synthetic `pid:` entry the Hub adds for its own Node process
+   * on a non-containerised host. Its comment gives the reason: summing per-app totals "would count
+   * a process the container count excludes and put the two halves of this payload on different
+   * populations".
+   *
+   * Summing `app.cpuPercent` here did exactly that. The local card read one container higher than a
+   * peer would report for the identical machine, and its CPU and memory included the Hub's own API
+   * process. Two cards side by side, silently measuring different things.
+   */
+  const containers = apps
+    .flatMap((app) => app.containers ?? [])
+    .filter((container) => !container.containerId.startsWith(PROCESS_RUNTIME_ID_PREFIX));
 
-  for (const app of apps) {
-    cpuPercent += Number.isFinite(app.cpuPercent) ? app.cpuPercent : 0;
-    memoryBytes += Number.isFinite(app.memoryUsageBytes) ? app.memoryUsageBytes : 0;
-    for (const container of app.containers ?? []) {
-      total += 1;
-      if (container.state === 'running') running += 1;
-    }
-  }
+  const running = containers.filter((container) => container.state === 'running').length;
+  const cpuPercent = containers.reduce((sum, c) => sum + (Number.isFinite(c.cpuPercent) ? c.cpuPercent : 0), 0);
+  const memoryBytes = containers.reduce((sum, c) => sum + (Number.isFinite(c.memoryUsageBytes) ? c.memoryUsageBytes : 0), 0);
 
-  return { running, stopped: total - running, total, cpuPercent, memoryBytes };
+  return {
+    running,
+    stopped: containers.length - running,
+    total: containers.length,
+    cpuPercent: Number(cpuPercent.toFixed(2)),
+    memoryBytes,
+  };
 }
 
 /**
@@ -196,7 +223,15 @@ export interface PoolNodeCard {
   hardwareTier: string | null;
   backends: { type: string; healthy: boolean | null; models: number }[];
   /** Models this node holds on disk across its HEALTHY backends — what it could actually serve. */
-  models: number;
+  /**
+   * Models the node holds, or NULL when we could not ask.
+   *
+   * ⚠ NOT 0 FOR AN UNREACHABLE PEER. A count of zero is a claim that the node holds nothing; a
+   * peer we cannot reach has told us nothing, and the engine chips on the same card still render
+   * its LAST KNOWN per-engine counts from cache. Encoding "unknown" as 0 put those two on the same
+   * card contradicting each other — `ollama 2` above, `Models held 0` below.
+   */
+  models: number | null;
   /**
    * The in-flight counter, and what it counts — which is NOT the same quantity on the two kinds
    * of card. See {@link inFlightMeaning}.
@@ -309,7 +344,8 @@ export function poolNodeCards(
       backends: describeBackends(peer.lastCapabilities?.backends),
       // A peer that is not connected holds only a cached inventory; counting it presents capacity
       // that has stopped answering as live.
-      models: peer.status === 'connected' ? countModels(peer.lastCapabilities?.backends) : 0,
+      // null, not 0 — see `models` on the card type. The chips beside it show cached counts.
+      models: peer.status === 'connected' ? countModels(peer.lastCapabilities?.backends) : null,
       inFlight: typeof peer.inFlightRequests === 'number' ? peer.inFlightRequests : null,
       inFlightMeaning: 'forwarded-by-us',
       peerReportedInFlight: peerReportedInFlight(peer, options.healthPollSeconds, options.now),

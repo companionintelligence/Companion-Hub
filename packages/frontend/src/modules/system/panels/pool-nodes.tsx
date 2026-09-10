@@ -147,7 +147,12 @@ function NodeCard({ card, window: samples }: { card: PoolNodeCard; window: PoolS
               hint={t('DASHBOARD_NODE_IN_FLIGHT_REPORTED_SUB')}
             />
           )}
-          <Readout label={t('DASHBOARD_NODE_MODELS')} value={card.models} tone={card.models > 0 ? 'plain' : 'muted'} />
+          {/* `null` is "we could not ask", and renders as a dash rather than a confident zero. */}
+          <Readout
+            label={t('DASHBOARD_NODE_MODELS')}
+            value={card.models === null ? DASH : humanCount(card.models)}
+            tone={card.models ? 'plain' : 'muted'}
+          />
           {/* Band 0 is a real measurement and must not look like the absence of one, so the pips
               and the words are both driven off `null` rather than off the number. */}
           <Readout
