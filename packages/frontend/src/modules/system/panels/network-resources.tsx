@@ -15,12 +15,22 @@ import { useTranslation } from 'react-i18next';
  * the two halves of this section can never disagree mid-poll.
  */
 
-export function NetworkOverview({ peers, node, state }: { peers: PoolPeerSummary[]; node: PoolNodeSummary | undefined; state: LoadState }) {
+export function NetworkOverview({
+  peers,
+  node,
+  state,
+  className,
+}: {
+  peers: PoolPeerSummary[];
+  node: PoolNodeSummary | undefined;
+  state: LoadState;
+  className?: string;
+}) {
   const { t } = useTranslation();
   const reach = poolReach(peers, node);
 
   return (
-    <Panel title={t('DASHBOARD_NETWORK_OVERVIEW_TITLE')}>
+    <Panel title={t('DASHBOARD_NETWORK_OVERVIEW_TITLE')} density="compact" className={className}>
       <PanelBody state={state} error={t('DASHBOARD_POOL_FAILED')} lines={2}>
         <StatChipRow>
           <StatChip value={reach.connected} label={t('DASHBOARD_PEERS_CONNECTED')} tone={reach.connected > 0 ? 'ok' : 'muted'} />
@@ -53,11 +63,13 @@ export function NetworkModels({
   node,
   localLabel,
   state,
+  className,
 }: {
   peers: PoolPeerSummary[];
   node: PoolNodeSummary | undefined;
   localLabel: string;
   state: LoadState;
+  className?: string;
 }) {
   const { t } = useTranslation();
   const index = poolModelIndex(node, peers, localLabel);
@@ -66,6 +78,8 @@ export function NetworkModels({
   return (
     <Panel
       title={t('DASHBOARD_NETWORK_MODELS_TITLE')}
+      density="compact"
+      className={className}
       actions={state.pending || state.failed ? null : <span className="text-[11px] text-muted-foreground">{index.length}</span>}
     >
       <PanelBody state={state} error={t('DASHBOARD_POOL_FAILED')} lines={5}>
@@ -76,7 +90,7 @@ export function NetworkModels({
               <Th>{t('DASHBOARD_COL_MODEL')}</Th>
               <Th align="right">{t('DASHBOARD_COL_NODES')}</Th>
               <Th>{t('DASHBOARD_COL_AVAILABLE_ON')}</Th>
-              <Th>{t('DASHBOARD_COL_ENGINE')}</Th>
+              <Th className="hidden @lg:table-cell">{t('DASHBOARD_COL_ENGINE')}</Th>
             </>
           }
         >
@@ -85,7 +99,7 @@ export function NetworkModels({
           ) : (
             index.map((row) => (
               <Tr key={row.model}>
-                <Td className="font-mono" title={row.model}>
+                <Td className="max-w-[92px] truncate font-mono @sm:max-w-[140px] @2xl:max-w-none" title={row.model}>
                   {row.model}
                 </Td>
                 <Td align="right">
@@ -97,7 +111,7 @@ export function NetworkModels({
                 <Td className="max-w-[220px] truncate text-muted-foreground" title={row.nodes.join(', ')}>
                   {row.nodes.join(', ')}
                 </Td>
-                <Td className="text-muted-foreground">{row.backends.join(', ')}</Td>
+                <Td className="hidden text-muted-foreground @lg:table-cell">{row.backends.join(', ')}</Td>
               </Tr>
             ))
           )}

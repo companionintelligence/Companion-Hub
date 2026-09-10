@@ -49,10 +49,12 @@ export function HostCapacity({
   hardware,
   node,
   state,
+  className,
 }: {
   hardware: HardwareSummary | undefined;
   node: PoolNodeSummary | undefined;
   state: LoadState;
+  className?: string;
 }) {
   const { t } = useTranslation();
   const ramTotal = hardware?.ram?.totalMb ?? null;
@@ -60,7 +62,7 @@ export function HostCapacity({
   const ramUsed = ramTotal !== null && ramAvail !== null ? ramTotal - ramAvail : null;
 
   return (
-    <Panel title={t('DASHBOARD_HOST_TITLE')}>
+    <Panel title={t('DASHBOARD_HOST_TITLE')} density="compact" className={className}>
       <PanelBody state={state} error={t('DASHBOARD_HARDWARE_FAILED')}>
         <StatChipRow>
           <StatChip
@@ -118,20 +120,22 @@ export function ModelMemory({
   memory,
   hardware,
   state,
+  className,
 }: {
   memory: MemoryBudgetSummary | undefined;
   hardware: HardwareSummary | undefined;
   state: LoadState;
+  className?: string;
 }) {
   const { t } = useTranslation();
   const rows = memoryBudgetRows(memory);
   const unified = hardware?.gpu?.unifiedMemory === true;
 
   return (
-    <Panel title={t('DASHBOARD_MODEL_MEMORY_TITLE')}>
+    <Panel title={t('DASHBOARD_MODEL_MEMORY_TITLE')} density="compact" className={className}>
       <PanelBody state={state} error={t('DASHBOARD_MEMORY_FAILED')}>
         {rows.length === 0 ? (
-          <p className="py-3 text-center text-[13px] italic text-muted-foreground">{t('DASHBOARD_MODEL_MEMORY_EMPTY')}</p>
+          <p className="py-2.5 text-center text-[13px] italic text-muted-foreground">{t('DASHBOARD_MODEL_MEMORY_EMPTY')}</p>
         ) : (
           <div className="space-y-2.5">
             {rows.map((row) => {
@@ -185,10 +189,12 @@ export function LocalModels({
   node,
   inference,
   state,
+  className,
 }: {
   node: PoolNodeSummary | undefined;
   inference: InferenceBackendStatus[] | undefined;
   state: LoadState;
+  className?: string;
 }) {
   const { t } = useTranslation();
   const backends = node?.backends ?? [];
@@ -207,6 +213,8 @@ export function LocalModels({
   return (
     <Panel
       title={t('DASHBOARD_LOCAL_MODELS_TITLE')}
+      density="compact"
+      className={className}
       actions={state.pending || state.failed ? null : <span className="text-[11px] text-muted-foreground">{rows.length}</span>}
     >
       <PanelBody state={state} error={t('DASHBOARD_POOL_FAILED')} lines={4}>
@@ -266,17 +274,42 @@ export function LocalModels({
   );
 }
 
-export function LocalContainers({ apps, history, state }: { apps: AppRuntimeHealth[]; history: AppRuntimeHistorySample[]; state: LoadState }) {
+export function LocalContainers({
+  apps,
+  history,
+  state,
+  className,
+}: {
+  apps: AppRuntimeHealth[];
+  history: AppRuntimeHistorySample[];
+  state: LoadState;
+  className?: string;
+}) {
   const { t } = useTranslation();
   const sorted = [...apps].sort((a, b) => b.cpuPercent - a.cpuPercent || a.appName.localeCompare(b.appName));
   const maxCpu = Math.max(1, ...apps.map((app) => app.cpuPercent));
   const totalContainers = apps.reduce((sum, app) => sum + app.containers.length, 0);
 
-  const seriesFor = (appUrn: string) => history.map((sample) => sample.apps.find((app) => app.appUrn === appUrn)?.cpuPercent ?? 0);
+  /*
+   * `null`, NOT `?? 0`, for a sample that does not mention this workload.
+   *
+   * Every installed non-`missing` app appears in every sample the backend takes, so an app absent
+   * from an older one was not installed yet. Coalescing that to zero drew a brand-new workload as
+   * having idled at 0% for the first half of the window — a measurement nobody took, and identical
+   * on screen to a container doing nothing. `Sparkline` splits the runs and leaves the gap open.
+   */
+  const seriesFor = (appUrn: string): (number | null)[] =>
+    history.map((sample) => {
+      const point = sample.apps.find((app) => app.appUrn === appUrn);
+
+      return point ? point.cpuPercent : null;
+    });
 
   return (
     <Panel
       title={t('DASHBOARD_LOCAL_CONTAINERS_TITLE')}
+      density="compact"
+      className={className}
       actions={
         state.pending || state.failed ? null : (
           <span className="text-[11px] text-muted-foreground">{t('DASHBOARD_CONTAINER_COUNT', { total: totalContainers })}</span>
@@ -289,9 +322,13 @@ export function LocalContainers({ apps, history, state }: { apps: AppRuntimeHeal
             <>
               <Th>{t('DASHBOARD_COL_WORKLOAD')}</Th>
               <Th align="right">{t('DASHBOARD_COL_CPU')}</Th>
-              <Th>{t('DASHBOARD_COL_TREND')}</Th>
-              <Th align="right">{t('DASHBOARD_COL_MEMORY')}</Th>
-              <Th align="right">{t('DASHBOARD_COL_CONTAINERS')}</Th>
+              <Th className="hidden @lg:table-cell">{t('DASHBOARD_COL_TREND')}</Th>
+              <Th align="right" className="hidden @sm:table-cell">
+                {t('DASHBOARD_COL_MEMORY')}
+              </Th>
+              <Th align="right" className="hidden @xl:table-cell">
+                {t('DASHBOARD_COL_CONTAINERS')}
+              </Th>
               <Th align="right">{t('DASHBOARD_COL_STATE')}</Th>
             </>
           }
@@ -301,7 +338,7 @@ export function LocalContainers({ apps, history, state }: { apps: AppRuntimeHeal
           ) : (
             sorted.map((app) => (
               <Tr key={app.appUrn}>
-                <Td className="max-w-[180px] truncate font-medium" title={`${app.appName} · ${app.appUrn}`}>
+                <Td className="max-w-[120px] truncate font-medium @sm:max-w-[180px]" title={`${app.appName} · ${app.appUrn}`}>
                   {app.appName}
                 </Td>
                 <Td align="right">
@@ -315,11 +352,15 @@ export function LocalContainers({ apps, history, state }: { apps: AppRuntimeHeal
                     />
                   </div>
                 </Td>
-                <Td>
+                <Td className="hidden @lg:table-cell">
                   <Sparkline points={seriesFor(app.appUrn)} tone={app.degraded ? 'bad' : 'ok'} />
                 </Td>
-                <Td align="right">{humanBytes(app.memoryUsageBytes)}</Td>
-                <Td align="right">{app.containers.length}</Td>
+                <Td align="right" className="hidden @sm:table-cell">
+                  {humanBytes(app.memoryUsageBytes)}
+                </Td>
+                <Td align="right" className="hidden @xl:table-cell">
+                  {app.containers.length}
+                </Td>
                 <Td align="right" title={app.reason ?? undefined}>
                   <StatusDot tone={app.degraded ? 'bad' : app.responsive ? 'ok' : 'warn'} />
                 </Td>

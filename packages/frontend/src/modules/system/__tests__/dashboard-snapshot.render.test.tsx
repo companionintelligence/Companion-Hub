@@ -224,7 +224,38 @@ describe.skipIf(!OUT)('resource dashboard snapshot', () => {
       pinnedRamMb: 12_288,
     };
     fixtures.cloud = [];
-    fixtures.residency = { backends: [], residentCount: 0, sampledAt: secondsAgo(5) };
+    /*
+     * Residency is read by the rail. Two of the four engines answer, and two are `unsupported` /
+     * `unreachable` — which is not "nothing is resident on them", it is "they were not asked". The
+     * rail names those two under the count rather than folding them into it.
+     */
+    fixtures.residency = {
+      backends: [
+        {
+          backend: 'ollama',
+          source: 'measured',
+          models: [
+            {
+              id: 'qwen3-vl:32b',
+              engineGpuBytes: 7_674_000_000,
+              totalBytes: 7_674_000_000,
+              expiresAt: null,
+              contextLength: 8192,
+              quantization: 'Q4_K_M',
+            },
+          ],
+        },
+        {
+          backend: 'vllm',
+          source: 'implicit',
+          models: [{ id: 'Qwen/Qwen3.5-9B', engineGpuBytes: null, totalBytes: null, expiresAt: null, contextLength: null, quantization: null }],
+        },
+        { backend: 'lemonade', source: 'unreachable', models: null, error: 'connection refused' },
+        { backend: 'lucebox', source: 'unsupported', models: null },
+      ],
+      residentCount: 2,
+      sampledAt: secondsAgo(5),
+    };
     fixtures.inference = {
       backends: [
         { type: 'ollama', running: true, healthy: true, modelsLoaded: 7 },
@@ -294,5 +325,70 @@ describe.skipIf(!OUT)('resource dashboard snapshot', () => {
     await waitFor(() => expect(container.textContent).toContain('core-2'), { timeout: 5000 });
     await waitFor(() => expect(container.textContent).toContain('Companion Memory'), { timeout: 5000 });
     writeFileSync(OUT as string, container.innerHTML, 'utf-8');
+  });
+});
+
+/*
+ * A REAL CHECK, not gated on `DASHBOARD_SNAPSHOT_OUT`.
+ *
+ * The snapshot above is a development affordance that CI never runs, which is how this page
+ * shipped three absence-as-zero regressions with a green suite. The coverage tile is the one
+ * element on the board whose correctness is entirely structural — it must state that GPU and
+ * token metering do not exist, and it must be incapable of drawing anything that could be read
+ * as a measurement of them — so it is asserted here where CI will actually run it.
+ */
+describe('workload coverage tile', () => {
+  it('says what is not measured and draws nothing at all', async () => {
+    fixtures.hardware = { gpu: { available: true, vendor: 'amd', model: 'Radeon 8060S', vramMb: 128_085, unifiedMemory: true } };
+    fixtures.pool = {};
+    fixtures.log = { entries: [] };
+    fixtures.memory = {};
+    fixtures.cloud = [];
+    fixtures.inference = {};
+    fixtures.residency = { backends: [], residentCount: 0, sampledAt: secondsAgo(5) };
+    fixtures.monitor = { sampledAt: secondsAgo(5), apps: [], history: [] };
+
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const { container } = render(
+      <QueryClientProvider client={client}>
+        <ResourceMonitorPage />
+      </QueryClientProvider>,
+    );
+
+    const tile = container.querySelector('[data-testid="workload-coverage"]') as HTMLElement | null;
+    expect(tile).not.toBeNull();
+
+    // The words, in the register the copy rules fix: present tense, and never "0", "—",
+    // "no data", "unavailable" or "coming soon".
+    expect(tile?.textContent).toContain('Not measured');
+    expect(tile?.textContent).toContain('Not recorded');
+    expect(tile?.textContent).toContain('GPU per workload');
+    expect(tile?.textContent).toContain('LLM tokens per workload');
+    // Not a substring check: the prose legitimately uses em-dashes as punctuation. What must not
+    // exist is an element whose WHOLE content is a dash or a zero — that is a read-out, and a
+    // read-out here would be a measurement of something that is not measured.
+    const readouts = [...(tile?.querySelectorAll('*') ?? [])].map((node) => (node.textContent ?? '').trim());
+    expect(readouts).not.toContain('—');
+    expect(readouts).not.toContain('0');
+    expect(readouts).not.toContain('0%');
+
+    // The copy rules, enforced: never "no data" (reads as an empty result set), never
+    // "unavailable" (reads as a failed fetch), never "coming soon" (a roadmap promise).
+    for (const banned of ['No data', 'no data', 'Unavailable', 'unavailable', 'Coming soon', 'coming soon']) {
+      expect(tile?.textContent).not.toContain(banned);
+    }
+
+    // No axis, no gridline, no baseline, no plot frame, no legend swatch — no SVG of any kind.
+    // An empty chart frame beside a populated one reads as loading-or-broken, which is the
+    // absence/idleness collision in a different costume.
+    expect(tile?.querySelector('svg')).toBeNull();
+
+    // Dashed means "waiting for samples" everywhere else on this page. GPU-per-workload is not
+    // waiting; it was never built, so the tile uses a solid left accent rule instead.
+    expect(tile?.className).not.toContain('border-dashed');
+
+    // The host GPU is a fact about hardware, not a per-workload metric, and it is the only thing
+    // the tile reads. It must arrive without ever gating the statement above it.
+    await waitFor(() => expect(tile?.textContent).toContain('Radeon 8060S'), { timeout: 5000 });
   });
 });
