@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -69,6 +69,23 @@ describe('heal-hub-ports', () => {
     expect(result.assignments.POSTGRES_PORT).toBe(6544);
     expect(result.assignments.RABBITMQ_PORT).toBe(5003);
     expect(result.assignments.TRAEFIK_DASHBOARD_PORT).toBe(8080);
+
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it('does not throw when the env file does not exist yet, and creates it with resolved ports', () => {
+    const tempDir = mkdtempSync(path.join(tmpdir(), 'ci-hub-ports-'));
+    const envFile = path.join(tempDir, '.env.prod');
+
+    expect(existsSync(envFile)).toBe(false);
+
+    const result = resolveHubPorts(envFile);
+
+    expect(result.assignments.HTTP_PORT).toBe(80);
+    expect(result.assignments.HTTPS_PORT).toBe(443);
+    expect(result.assignments.API_PORT).toBe(5002);
+    expect(existsSync(envFile)).toBe(true);
+    expect(readFileSync(envFile, 'utf-8')).toContain('HTTP_PORT=80');
 
     rmSync(tempDir, { recursive: true, force: true });
   });

@@ -31,6 +31,11 @@ export function upsertEnvVar(envFileName: string, key: string, value: string) {
   const line = `${key}=${value}`;
   const current = existsSync(abs) ? readFileSync(abs, 'utf-8') : '';
   const lines = current.length > 0 ? current.split(/\r?\n/) : [];
+  // A file this function wrote always ends in '\n', which splits into a trailing '' element.
+  // Drop it before appending a new key, or repeated calls against the same freshly-created file
+  // (e.g. resolveHubPorts writing several ports in a row) accumulate a blank line between every
+  // entry instead of one trailing newline at the end.
+  if (lines.length > 0 && lines[lines.length - 1] === '') lines.pop();
   let replaced = false;
   for (let i = 0; i < lines.length; i += 1) {
     if (lines[i]?.trimStart().startsWith(`${key}=`)) {
@@ -40,8 +45,7 @@ export function upsertEnvVar(envFileName: string, key: string, value: string) {
     }
   }
   if (!replaced) lines.push(line);
-  const finalContent = `${lines.filter((entry, index, all) => !(index === all.length - 1 && entry === '')).join('\n')}\n`;
-  writeFileSync(abs, finalContent, 'utf-8');
+  writeFileSync(abs, `${lines.join('\n')}\n`, 'utf-8');
 }
 
 /**
