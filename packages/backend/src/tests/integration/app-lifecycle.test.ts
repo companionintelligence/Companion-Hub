@@ -135,6 +135,17 @@ describe('App lifecycle', () => {
     summary: { total: 1, running: 1, exitZero: 0 },
     message: 'All containers are running',
   });
+  // Added alongside UpdateAppCommand's post-update auto-rollback check (#1277). Left
+  // unmocked, an unconfigured `mock<DockerService>()` call resolves `undefined`, and
+  // `probeResult.healthy` throws — not a failed health check, a crash before the
+  // update ever reaches its success path, which is why every "update app" test left
+  // the DB status at its pre-update value instead of 'running'.
+  dockerService.verifyContainerHealthProbe.mockResolvedValue({
+    ok: true,
+    healthy: true,
+    containers: [],
+    message: 'All containers for the app passed health probes',
+  });
   dockerReadFacade.diagnoseAppContainers.mockResolvedValue({ unhealthy: [], healthy: [] });
 
   const queueFactory = new QueueFactory(loggerService, configurationService);
