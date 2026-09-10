@@ -67,20 +67,54 @@ check "0640 config + foreign uid and gid refuses" 1 "refusing to start"
 try 31337 31337 "$WORK/does-not-exist"
 check "absent config does not block boot" 0
 
-# The uid DERIVATION — the half that prevents the outage rather than explaining it.
-# A root-owned install (data dir owned by 0) must default to 0, not to 1000.
-derive() { # data_owner_uid  -> the HUB_UID the script would pick with no env override
-  printf '%s' "$(CI_HUB_CONTAINER_UID= sh -c '
-    DATA_UID="'"$1"'"
-    HUB_UID="${CI_HUB_CONTAINER_UID:-${DATA_UID:-1000}}"
-    printf %s "$HUB_UID"')"
+# The uid DERIVATION, exercised the way COMPOSE actually delivers it.
+#
+# The previous version of this test called the derivation with the variable UNSET and
+# passed — while in production it was dead code, because every compose file rendered
+# `CI_HUB_CONTAINER_UID: ${CI_HUB_CONTAINER_UID:-1000}`, so the variable was ALWAYS set,
+# to 1000. A root-owned install therefore still dropped to 1000 and crash-looped on its
+# own 0600 /data/.env. The test was right about the script and silent about the contract.
+#
+# So model the contract: compose renders `${VAR:-}` as the EMPTY STRING (not an omitted
+# key), and the image's BusyBox sh treats empty as unset for `${VAR:-default}`. Both are
+# verified against the shipped image; if either stopped holding, the derivation would
+# silently stop working again exactly as it did before.
+derive() { # data_owner_uid  compose_rendered_value  -> the HUB_UID actually used
+  DATA_UID="$1" CI_HUB_CONTAINER_UID="$2" sh -c 'printf %s "${CI_HUB_CONTAINER_UID:-${DATA_UID:-1000}}"'
 }
-[ "$(derive 0)" = "0" ] && { PASS=$((PASS+1)); echo "  ok   root-owned data dir derives uid 0 (skips the drop)"; } \
-  || { FAIL=$((FAIL+1)); echo "  FAIL root-owned data dir should derive uid 0, got $(derive 0)"; }
-[ "$(derive 1000)" = "1000" ] && { PASS=$((PASS+1)); echo "  ok   user-owned data dir derives uid 1000"; } \
-  || { FAIL=$((FAIL+1)); echo "  FAIL user-owned data dir should derive 1000, got $(derive 1000)"; }
-[ "$(derive '')" = "1000" ] && { PASS=$((PASS+1)); echo "  ok   unreadable data dir falls back to 1000"; } \
-  || { FAIL=$((FAIL+1)); echo "  FAIL missing data dir should fall back to 1000, got $(derive '')"; }
+
+# What compose sends after this fix: the empty string.
+[ "$(derive 0 '')" = "0" ] && { PASS=$((PASS+1)); echo "  ok   root-owned + empty passthrough derives 0 (skips the drop)"; } \
+  || { FAIL=$((FAIL+1)); echo "  FAIL root-owned + empty passthrough should derive 0, got $(derive 0 '')"; }
+[ "$(derive 1000 '')" = "1000" ] && { PASS=$((PASS+1)); echo "  ok   user-owned + empty passthrough derives 1000"; } \
+  || { FAIL=$((FAIL+1)); echo "  FAIL user-owned should derive 1000, got $(derive 1000 '')"; }
+
+# THE REGRESSION GUARD: what compose sent BEFORE the fix. If someone reinstates a
+# `:-1000` default in any compose file, the derivation goes dead again and a root-owned
+# install crash-loops. This asserts that shape produces the WRONG answer, so the test
+# fails loudly rather than the fleet doing it.
+[ "$(derive 0 '1000')" = "1000" ] && { PASS=$((PASS+1)); echo "  ok   a compose :-1000 default provably defeats derivation (guarding against its return)"; } \
+  || { FAIL=$((FAIL+1)); echo "  FAIL expected a 1000 default to defeat derivation"; }
+
+# An explicit value still wins — the desktop app sets 0:0 on Windows deliberately.
+[ "$(derive 1000 '0')" = "0" ] && { PASS=$((PASS+1)); echo "  ok   an explicit value still overrides the data-dir owner"; } \
+  || { FAIL=$((FAIL+1)); echo "  FAIL explicit value should win, got $(derive 1000 '0')"; }
+
+# Unreadable /data: fall back rather than emitting an empty uid.
+[ "$(derive '' '')" = "1000" ] && { PASS=$((PASS+1)); echo "  ok   unreadable data dir falls back to 1000"; } \
+  || { FAIL=$((FAIL+1)); echo "  FAIL missing data dir should fall back to 1000, got $(derive '' '')"; }
+
+# And the contract the fix rests on: no compose file may reinstate a numeric default for
+# the ENVIRONMENT passthrough. `user:` in docker-compose.local.yml is exempt — an empty
+# value there renders the unparseable `user: ":"`, and a pinned user means the entrypoint
+# never runs as root to derive anything in the first place.
+REPO="$HERE/../.."
+BAD=$(grep -rn 'CI_HUB_CONTAINER_UID: *${CI_HUB_CONTAINER_UID:-[0-9]' "$REPO"/docker-compose*.yml "$REPO"/packages/desktop/src-tauri/resources/docker-compose*.yml 2>/dev/null || true)
+if [ -z "$BAD" ]; then
+  PASS=$((PASS+1)); echo "  ok   no compose file defaults the env passthrough back to a number"
+else
+  FAIL=$((FAIL+1)); echo "  FAIL a compose file reinstated a numeric default:"; printf '%s\n' "$BAD" | sed 's/^/       /'
+fi
 
 echo "  ${PASS} passed, ${FAIL} failed"
 [ "$FAIL" = "0" ]

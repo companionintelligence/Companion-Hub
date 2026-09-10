@@ -233,8 +233,17 @@ services:
       HOME: /data/user-config
       ROOT_FOLDER_HOST: ${ROOT_FOLDER_HOST:?ROOT_FOLDER_HOST must be set to an absolute host path}
       DOCKER_CONFIG: /data/.docker
-      CI_HUB_CONTAINER_UID: ${CI_HUB_CONTAINER_UID:-1000}
-      CI_HUB_CONTAINER_GID: ${CI_HUB_CONTAINER_GID:-1000}
+      # Passed through EMPTY, not defaulted to 1000, so the entrypoint's own derivation is
+      # authoritative. `docker-entrypoint.sh` picks the owner of /data when this is unset —
+      # 1000 for a user-owned install, 0 for a root-owned one, where it then skips the
+      # privilege drop. Defaulting here made the variable ALWAYS set, so that derivation was
+      # dead code on the only path that matters, and a root-owned install crash-looped on
+      # EACCES reading its own 0600 /data/.env.
+      # Compose renders `${VAR:-}` as the empty string rather than omitting the key, and the
+      # image's BusyBox `sh` treats an empty value as unset for `${VAR:-default}` — both
+      # verified against the shipped image, because the whole fix rests on them.
+      CI_HUB_CONTAINER_UID: ${CI_HUB_CONTAINER_UID:-}
+      CI_HUB_CONTAINER_GID: ${CI_HUB_CONTAINER_GID:-}
       # Consumed by docker-entrypoint.sh to keep Docker-socket access after it
       # drops privileges (matches the group_add below).
       DOCKER_GID: ${DOCKER_GID:-973}
