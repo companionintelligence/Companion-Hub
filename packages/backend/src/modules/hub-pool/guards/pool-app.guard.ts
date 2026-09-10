@@ -14,7 +14,7 @@ import { TUNNEL_MARKER_HEADERS } from '@/common/helpers/hub-pool';
  * default.
  *
  * Apps reach the proxy container-to-container at
- * `http://<hub>:<API_PORT>/api/inference/pool/...` (see `InferenceEnvResolver`),
+ * `http://<hub>:<API_PORT>/api/inference/pool/...` (see `InferenceEndpointService`),
  * which traverses no proxy at all: a request carrying proxy provenance is by
  * definition not one of them, whatever `request.ip` says.
  *

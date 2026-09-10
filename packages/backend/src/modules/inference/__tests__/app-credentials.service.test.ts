@@ -14,6 +14,8 @@ import { MtplxBackend } from '../backends/mtplx.backend';
 import { LemonadeBackend } from '../backends/lemonade.backend';
 import { DsparkBackend } from '../backends/dspark.backend';
 import { LuceboxBackend } from '../backends/lucebox.backend';
+import { InferenceEndpointService } from '../inference-endpoint.service';
+import { HubPoolPeerService } from '@/modules/hub-pool/hub-pool-peer.service';
 import { LoggerService } from '@/core/logger/logger.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import type { CloudProviderConfig, CuratedModel, HardwareProfile, InferenceBackendType } from '@ci-hub/common/types';
@@ -105,6 +107,7 @@ describe('AppCredentialsService', () => {
   let dsparkBackend: MockProxy<DsparkBackend>;
   let luceboxBackend: MockProxy<LuceboxBackend>;
   let configurationService: MockProxy<ConfigurationService>;
+  let hubPoolPeerService: MockProxy<HubPoolPeerService>;
 
   beforeEach(async () => {
     logger = mock<LoggerService>();
@@ -119,6 +122,10 @@ describe('AppCredentialsService', () => {
     dsparkBackend = mock<DsparkBackend>();
     luceboxBackend = mock<LuceboxBackend>();
     configurationService = mock<ConfigurationService>();
+    hubPoolPeerService = mock<HubPoolPeerService>();
+    // No connected peers by default — every existing case asserts the direct-backend shape, so the
+    // pool override must be a no-op unless a test opts in explicitly.
+    hubPoolPeerService.hasConnectedPeers.mockResolvedValue(false);
 
     configurationService.getInferencePreferences.mockReturnValue({
       preferredBackend: null,
@@ -170,6 +177,11 @@ describe('AppCredentialsService', () => {
         { provide: LuceboxBackend, useValue: luceboxBackend },
         InferenceBackendRegistry,
         { provide: ConfigurationService, useValue: configurationService },
+        { provide: HubPoolPeerService, useValue: hubPoolPeerService },
+        // The real endpoint helper, not a mock: it is the shared code this service and
+        // InferenceEnvResolver both delegate to, so stubbing it would stop these tests from
+        // covering the backend/pool decisions at all.
+        InferenceEndpointService,
       ],
     }).compile();
 
@@ -475,6 +487,130 @@ describe('AppCredentialsService', () => {
       expect(config.env.OPENAI_API_KEY).toBe('sk-operator-key');
       expect(config.env.CI_CLOUD_OPENAI_API_KEY).toBe('sk-operator-key');
       expect(config.env.OLLAMA_HOST).toBe(OLLAMA_BASE_URL);
+    });
+  });
+
+  describe('getCredentials — multi-Hub pooling', () => {
+    // The generated-app.env path (InferenceEnvResolver) has routed through the pool since pooling
+    // shipped; this endpoint did not. Apps that bootstrap their inference config over HTTP rather
+    // than from app.env — CI-OpenClaw and CI-Hermes, the only two slugs this endpoint serves — were
+    // therefore the one class of app that never used the pool, on every pooled node. Both paths now
+    // call InferenceEndpointService.routeThroughPool, so these assertions and the resolver's own
+    // pooling block are pinning a single implementation.
+    beforeEach(() => {
+      ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['hermes4:70b'] });
+      hubPoolPeerService.hasConnectedPeers.mockResolvedValue(true);
+      service.invalidateCache();
+    });
+
+    it('points the app at this Hub pool proxy once a peer is connected', async () => {
+      const config = await service.getCredentials('openclaw');
+
+      expect(config.endpointUrl).toMatch(/\/api\/inference\/pool\/v1$/);
+      expect(config.env.OPENAI_API_BASE).toBe(config.endpointUrl);
+      expect(config.env.OLLAMA_HOST).toMatch(/\/api\/inference\/pool$/);
+      // Transport only. The proxy picks whichever pool node actually has this model, so the
+      // resolved model id, the backend name, and the context cap survive the override untouched.
+      expect(config.chatModelId).toBe('hermes4:70b');
+      expect(config.env.DEFAULT_MODEL).toBe('hermes4:70b');
+      expect(config.provider).toBe('ollama');
+      expect(config.env.CI_INFERENCE_BACKEND).toBe('ollama');
+      expect(config.env.CI_LLM_NUM_CTX).toBe('65536');
+    });
+
+    it('serves the same pooled endpoint to hermes-agent under its own env keys', async () => {
+      const config = await service.getCredentials('hermes-agent');
+
+      expect(config.env.HERMES_OPENAI_BASE_URL).toMatch(/\/api\/inference\/pool\/v1$/);
+      expect(config.env.OLLAMA_HOST).toMatch(/\/api\/inference\/pool$/);
+    });
+
+    it('leaves the app on the direct backend URL when no peer is connected', async () => {
+      hubPoolPeerService.hasConnectedPeers.mockResolvedValue(false);
+      service.invalidateCache();
+
+      const config = await service.getCredentials('openclaw');
+
+      expect(config.endpointUrl).toBe(OLLAMA_OPENAI_URL);
+      expect(config.env.OLLAMA_HOST).toBe(OLLAMA_BASE_URL);
+    });
+
+    it('does not put the pool in front of a cloud-primary endpoint', async () => {
+      // Matching the resolver: a cloud answer means this node has no local inference to pool with,
+      // and the app already holds a working endpoint. Routing an api.openai.com base URL through
+      // the local pool proxy would break it outright.
+      ollamaBackend.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [] });
+      cloudFallback.getEnabledProviders.mockReturnValue([
+        { provider: 'openai', apiKey: 'sk-operator-key', enabled: true, baseUrl: 'https://api.openai.com/v1', defaultModel: 'gpt-4o' },
+      ] as CloudProviderConfig[]);
+      service.invalidateCache();
+
+      const config = await service.getCredentials('openclaw');
+
+      expect(config.provider).toBe('cloud');
+      expect(config.env.OPENAI_API_BASE).toBe('https://api.openai.com/v1');
+    });
+  });
+
+  describe('getCredentials — preferred backend not running', () => {
+    // A preference is a preference, not a veto. `inferenceBackend: "vllm"` with no vLLM process
+    // running used to mean "this node has no local inference": the app was handed the dead vLLM URL
+    // (or a cloud endpoint) and no chat model, while a healthy Ollama with models pulled sat on the
+    // same host and was never even probed.
+    beforeEach(() => {
+      configurationService.getInferencePreferences.mockReturnValue({
+        preferredBackend: 'vllm',
+        preferredModel: null,
+        preferredEmbeddingModel: null,
+        preferredVisionModel: null,
+      });
+      vllmBackend.getBaseUrl.mockReturnValue('http://host.docker.internal:8000');
+      vllmBackend.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [] });
+      ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['hermes4:70b'] });
+      service.invalidateCache();
+    });
+
+    it('falls back to the healthy local Ollama rather than to the dead preferred backend', async () => {
+      const config = await service.getCredentials('openclaw');
+
+      expect(config.provider).toBe('ollama');
+      expect(config.endpointUrl).toBe(OLLAMA_OPENAI_URL);
+      expect(config.endpointReady).toBe(true);
+      expect(config.env.CI_INFERENCE_BACKEND).toBe('ollama');
+      // The catalog filter follows the backend type, so the fallback has to move the type as well
+      // as the instance — leaving 'vllm' in place matches no curated ollama model and the app ends
+      // up with no chat model at all.
+      expect(config.chatModelId).toBe('hermes4:70b');
+      expect(config.chatModelReady).toBe(true);
+      expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining("'vllm'"));
+    });
+
+    it('does not hand the app a cloud endpoint when a working local backend is available', async () => {
+      cloudFallback.getEnabledProviders.mockReturnValue([
+        { provider: 'openai', apiKey: 'sk-operator-key', enabled: true, baseUrl: 'https://api.openai.com/v1', defaultModel: 'gpt-4o' },
+      ] as CloudProviderConfig[]);
+      cloudFallback.toAppEnv.mockReturnValue({ CI_CLOUD_OPENAI_API_KEY: 'sk-operator-key' });
+      service.invalidateCache();
+
+      const config = await service.getCredentials('openclaw');
+
+      expect(config.provider).toBe('ollama');
+      expect(config.env.OPENAI_API_BASE).toBe(OLLAMA_OPENAI_URL);
+      // The cloud provider stays attached as a secondary — it just stops being primary.
+      expect(config.env.CI_CLOUD_OPENAI_API_KEY).toBe('sk-operator-key');
+    });
+
+    it('still falls through to cloud when nothing local is running at all', async () => {
+      ollamaBackend.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [] });
+      cloudFallback.getEnabledProviders.mockReturnValue([
+        { provider: 'openai', apiKey: 'sk-operator-key', enabled: true, baseUrl: 'https://api.openai.com/v1', defaultModel: 'gpt-4o' },
+      ] as CloudProviderConfig[]);
+      service.invalidateCache();
+
+      const config = await service.getCredentials('openclaw');
+
+      expect(config.provider).toBe('cloud');
+      expect(config.env.OPENAI_API_BASE).toBe('https://api.openai.com/v1');
     });
   });
 
