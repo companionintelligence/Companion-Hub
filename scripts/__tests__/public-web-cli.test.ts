@@ -1,4 +1,5 @@
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
@@ -6,6 +7,7 @@ import {
   PUBLIC_WEB_REPAIR_FAIL_PREFIX,
   PUBLIC_WEB_REPAIR_OK_PREFIX,
   publicWebRepairHasFailures,
+  readHubApiKeySource,
   resolveHubApiBase,
 } from '../public-web-cli';
 
@@ -65,5 +67,85 @@ describe('resolveHubApiBase', () => {
     process.env.API_PORT = '9999';
 
     expect(resolveHubApiBase(envFile)).toBe('http://127.0.0.1:5002');
+  });
+});
+
+/**
+ * The key is read from one file, but which file depends on the install layout. Checking a
+ * single path turned "I did not find it where I looked" into "this Hub is not paired" —
+ * printed, with a `cihub register` prompt, on a node routing inference to three peers.
+ */
+describe('readHubApiKeySource', () => {
+  let tmp: string;
+  const originalDataDir = process.env.CI_HUB_DATA_DIR;
+  const originalRoot = process.env.ROOT_FOLDER_HOST;
+
+  afterEach(() => {
+    if (tmp) rmSync(tmp, { recursive: true, force: true });
+    if (originalDataDir === undefined) delete process.env.CI_HUB_DATA_DIR;
+    else process.env.CI_HUB_DATA_DIR = originalDataDir;
+    if (originalRoot === undefined) delete process.env.ROOT_FOLDER_HOST;
+    else process.env.ROOT_FOLDER_HOST = originalRoot;
+  });
+
+  function seedKey(dir: string, key: string) {
+    mkdirSync(join(dir, 'state'), { recursive: true });
+    writeFileSync(join(dir, 'state', 'settings.json'), JSON.stringify({ ciHubApiKey: key }));
+  }
+
+  it('finds the key in the canonical data dir when ROOT_FOLDER_HOST holds none', () => {
+    tmp = mkdtempSync(join(tmpdir(), 'hubkey-'));
+    const rootFolder = join(tmp, 'checkout', '.internal');
+    const canonical = join(tmp, 'canonical');
+    mkdirSync(join(rootFolder, 'state'), { recursive: true });
+    seedKey(canonical, 'device-key-from-canonical');
+    process.env.ROOT_FOLDER_HOST = rootFolder;
+    process.env.CI_HUB_DATA_DIR = canonical;
+
+    const source = readHubApiKeySource(join(tmp, 'missing.env'));
+
+    expect(source.key).toBe('device-key-from-canonical');
+    expect(source.found).toBe(join(canonical, 'state', 'settings.json'));
+  });
+
+  it('prefers ROOT_FOLDER_HOST when it does hold a key', () => {
+    tmp = mkdtempSync(join(tmpdir(), 'hubkey-'));
+    const rootFolder = join(tmp, 'checkout', '.internal');
+    const canonical = join(tmp, 'canonical');
+    seedKey(rootFolder, 'device-key-from-root-folder');
+    seedKey(canonical, 'device-key-from-canonical');
+    process.env.ROOT_FOLDER_HOST = rootFolder;
+    process.env.CI_HUB_DATA_DIR = canonical;
+
+    expect(readHubApiKeySource(join(tmp, 'missing.env')).key).toBe('device-key-from-root-folder');
+  });
+
+  // The report has to name what was searched — a caller that only learns "no key" is the
+  // caller that concluded the Hub was unpaired.
+  it('reports every path it checked when no key is found', () => {
+    tmp = mkdtempSync(join(tmpdir(), 'hubkey-'));
+    const rootFolder = join(tmp, 'checkout', '.internal');
+    const canonical = join(tmp, 'canonical');
+    process.env.ROOT_FOLDER_HOST = rootFolder;
+    process.env.CI_HUB_DATA_DIR = canonical;
+
+    const source = readHubApiKeySource(join(tmp, 'missing.env'));
+
+    expect(source.key).toBeUndefined();
+    expect(source.found).toBeUndefined();
+    expect(source.checked).toEqual([join(rootFolder, 'state', 'settings.json'), join(canonical, 'state', 'settings.json')]);
+  });
+
+  it('keeps looking past a settings.json that is malformed or has no key', () => {
+    tmp = mkdtempSync(join(tmpdir(), 'hubkey-'));
+    const rootFolder = join(tmp, 'checkout', '.internal');
+    const canonical = join(tmp, 'canonical');
+    mkdirSync(join(rootFolder, 'state'), { recursive: true });
+    writeFileSync(join(rootFolder, 'state', 'settings.json'), '{ not json');
+    seedKey(canonical, 'device-key-from-canonical');
+    process.env.ROOT_FOLDER_HOST = rootFolder;
+    process.env.CI_HUB_DATA_DIR = canonical;
+
+    expect(readHubApiKeySource(join(tmp, 'missing.env')).key).toBe('device-key-from-canonical');
   });
 });

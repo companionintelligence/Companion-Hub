@@ -1,9 +1,8 @@
 import { existsSync, readFileSync } from 'node:fs';
-import path from 'node:path';
 import type { HubEnv } from './cihub-cli';
 import { parseEnvFile } from './env-file';
 import { BASE_COMMAND } from './lib/cli-types';
-import { resolveRootFolderHost } from './lib/paths';
+import { resolveSettingsCandidates } from './lib/paths';
 
 export interface PublicWebDiagnosticEntry {
   appUrn: string;
@@ -41,16 +40,33 @@ export function resolveHubApiBase(envFileName: string): string {
   return `http://127.0.0.1:${port}`;
 }
 
-export function readHubApiKey(envFileName: string): string | undefined {
-  const root = resolveRootFolderHost(envFileName);
-  const settingsPath = path.join(root, 'state', 'settings.json');
-  if (!existsSync(settingsPath)) return undefined;
-  try {
-    const settings = JSON.parse(readFileSync(settingsPath, 'utf-8')) as { ciHubApiKey?: string };
-    return settings.ciHubApiKey;
-  } catch {
-    return undefined;
+/**
+ * The device key, and which file it came from.
+ *
+ * `checked` is every path that was read and did not yield a key. Callers report it instead
+ * of asserting the Hub is unpaired: not finding a key in the places we looked is a fact
+ * about the search, and the two are not the same finding. See `resolveSettingsCandidates`.
+ */
+export function readHubApiKeySource(envFileName: string): { key?: string; found?: string; checked: string[] } {
+  const checked: string[] = [];
+  for (const settingsPath of resolveSettingsCandidates(envFileName)) {
+    if (!existsSync(settingsPath)) {
+      checked.push(settingsPath);
+      continue;
+    }
+    try {
+      const settings = JSON.parse(readFileSync(settingsPath, 'utf-8')) as { ciHubApiKey?: string };
+      if (settings.ciHubApiKey) return { key: settings.ciHubApiKey, found: settingsPath, checked };
+    } catch {
+      // Unreadable or malformed: it decided nothing, so keep looking and report it as checked.
+    }
+    checked.push(settingsPath);
   }
+  return { checked };
+}
+
+export function readHubApiKey(envFileName: string): string | undefined {
+  return readHubApiKeySource(envFileName).key;
 }
 
 /**
