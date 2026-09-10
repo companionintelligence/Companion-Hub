@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  collectContestedCustomDomainTargets,
   customDomainServesAnotherApp,
   indexCustomDomainsByTarget,
   parseAvailableCustomDomains,
@@ -385,5 +386,34 @@ describe('customDomainServesAnotherApp', () => {
   it('answers "somebody else" when we cannot name ourselves', () => {
     expect(customDomainServesAnotherApp(entry({ boundAppSlug: 'comfy' }), undefined)).toBe(true);
     expect(customDomainServesAnotherApp(entry({ boundAppSlug: 'comfy' }), '')).toBe(true);
+  });
+});
+
+describe('collectContestedCustomDomainTargets', () => {
+  /*
+   * R2-HUBDOMAINS-2. Two apps whose subdomains sanitize to one label compose one
+   * platform hostname, and CI-Cloud attributes a delivered domain by hostname —
+   * so the delivery pass cannot tell which of them a customer bound it to.
+   */
+  it('names a hostname more than one app answers on', () => {
+    expect(
+      collectContestedCustomDomainTargets([
+        'my-app-hub-acme.companionintelligence.com',
+        'my-app-hub-acme.companionintelligence.com',
+        'dozzle-hub-acme.companionintelligence.com',
+      ]),
+    ).toEqual(new Set(['my-app-hub-acme.companionintelligence.com']));
+  });
+
+  it('names nothing when every app has a hostname of its own', () => {
+    expect(collectContestedCustomDomainTargets(['my-app-hub-acme.companionintelligence.com', 'dozzle-hub-acme.companionintelligence.com'])).toEqual(
+      new Set(),
+    );
+  });
+
+  it('names a hostname three apps answer on exactly once', () => {
+    const target = 'my-app-hub-acme.companionintelligence.com';
+
+    expect(collectContestedCustomDomainTargets([target, target, target])).toEqual(new Set([target]));
   });
 });

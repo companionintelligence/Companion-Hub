@@ -599,7 +599,16 @@ describe('AppLifecycleService', () => {
 
       await service.installApp({
         appUrn,
-        form: { port: 8080, exposureMode: 'cloudflare', exposedLocal: true, openPort: false, customDomain: '' },
+        // The picker was shown this domain, and says so: the release is a
+        // compare-and-swap (R2-HUBDOMAINS-3), not an order.
+        form: {
+          port: 8080,
+          exposureMode: 'cloudflare',
+          exposedLocal: true,
+          openPort: false,
+          customDomain: '',
+          customDomainExpected: 'comfy.acme.com',
+        },
       } as any);
 
       expect(release).toHaveBeenCalled();
@@ -660,11 +669,104 @@ describe('AppLifecycleService', () => {
       await expect(
         service.installApp({
           appUrn,
-          form: { port: 8080, exposureMode: 'cloudflare', exposedLocal: true, openPort: false, customDomain: '' },
+          form: {
+            port: 8080,
+            exposureMode: 'cloudflare',
+            exposedLocal: true,
+            openPort: false,
+            customDomain: '',
+            customDomainExpected: 'comfy.acme.com',
+          },
         } as any),
       ).rejects.toThrow();
 
       expect(appsRepository.updateAppById).not.toHaveBeenCalledWith(1, { customDomain: null });
+    });
+
+    it('refuses to release a domain the operator was never shown', async () => {
+      /*
+       * R2-HUBDOMAINS-3. The dialog opened while the app had no domain, so it
+       * seeded `customDomain: ''` — and submits it on every save, whether or not
+       * the picker was ever drawn. An admin then bound the domain in the Portal
+       * and the Hub mirrored it. Every guard downstream passes precisely BECAUSE
+       * the domain genuinely is this app's now, so the stale instruction released
+       * a live customer hostname behind a success toast.
+       */
+      appsRepository.getAppByUrn.mockResolvedValue({
+        id: 1,
+        status: 'stopped',
+        config: { port: 8080 },
+        customDomain: 'shop.acme.com',
+      } as any);
+      const release = vi.spyOn(exposureSyncService, 'releaseCustomDomain').mockResolvedValue({ ok: true });
+
+      await expect(
+        service.installApp({
+          appUrn,
+          form: { port: 8080, exposureMode: 'cloudflare', exposedLocal: true, openPort: false, customDomain: '', customDomainExpected: '' },
+        } as any),
+      ).rejects.toThrow();
+
+      expect(release).not.toHaveBeenCalled();
+      expect(appsRepository.updateAppById).not.toHaveBeenCalledWith(1, expect.objectContaining({ customDomain: null }));
+    });
+
+    it('refuses a release that cannot say what it was looking at', async () => {
+      /*
+       * The deliberate backward-compatibility answer (R2-HUBDOMAINS-3). The
+       * compatibility case this codebase protects — an older client, or one
+       * patching a single setting — sends no `customDomain` at all and never
+       * reaches the release. What arrives here asked to take a live customer
+       * hostname off the air, and a caller that knows enough to ask that can say
+       * which hostname it means.
+       */
+      appsRepository.getAppByUrn.mockResolvedValue({
+        id: 1,
+        status: 'stopped',
+        config: { port: 8080 },
+        customDomain: 'shop.acme.com',
+      } as any);
+      const release = vi.spyOn(exposureSyncService, 'releaseCustomDomain').mockResolvedValue({ ok: true });
+
+      await expect(
+        service.installApp({
+          appUrn,
+          form: { port: 8080, exposureMode: 'cloudflare', exposedLocal: true, openPort: false, customDomain: '' },
+        } as any),
+      ).rejects.toThrow();
+
+      expect(release).not.toHaveBeenCalled();
+    });
+
+    it('stores the routing subdomain in the one spelling it will be served under', async () => {
+      /*
+       * R2-HUBDOMAINS-2. `My--App` composes the hostname `my-app`, so a row
+       * holding the raw spelling disagrees with its own Traefik `Host()` rule,
+       * with the slug CI-Cloud stores, and with the conflict check meant to keep
+       * a second app off that hostname — which is how two apps came to share one.
+       */
+      await service.installApp({
+        appUrn,
+        form: { port: 8080, exposureMode: 'cloudflare', exposedLocal: true, openPort: false, localSubdomain: 'My--App' },
+      } as any);
+
+      expect(appsRepository.getAppsByLocalSubdomain).toHaveBeenCalledWith('my-app');
+      expect(appsRepository.createApp).toHaveBeenCalledWith(expect.objectContaining({ localSubdomain: 'my-app' }));
+    });
+
+    it('refuses My-App when my-app is already taken', async () => {
+      appsRepository.getAppsByLocalSubdomain.mockResolvedValue([{ id: 9, appName: 'comfyui' }] as any);
+
+      await expect(
+        service.installApp({
+          appUrn,
+          form: { port: 8080, exposureMode: 'cloudflare', exposedLocal: true, openPort: false, localSubdomain: 'My-App' },
+        } as any),
+      ).rejects.toThrow();
+
+      // The refusal names the hostname label, not the spelling that was typed.
+      expect(appsRepository.getAppsByLocalSubdomain).toHaveBeenCalledWith('my-app');
+      expect(appsRepository.createApp).not.toHaveBeenCalled();
     });
 
     it('records a takeover confirmed at install time, not only at settings time', async () => {
@@ -1054,6 +1156,48 @@ describe('AppLifecycleService', () => {
       // No third argument: that publishes to `app:<urn>`, a topic nothing
       // subscribes to, so the badge would never appear without a reload.
       expect(sseService.emit).toHaveBeenCalledWith('app', { event: 'custom_domain_changed', appUrn: 'comfyui:ci-marketplace' });
+    });
+
+    it('binds nothing when two apps answer on one platform hostname', async () => {
+      /*
+       * R2-HUBDOMAINS-2, the delivery half. `ComfyUI` and `comfyui` are two rows
+       * that compose one hostname, and CI-Cloud attributes a delivered domain by
+       * hostname rather than by app — so `byTarget.get(target)` matches both rows
+       * and neither attribution is better than the other. The wrong half of that
+       * guess writes the customer's `custom_domain` onto an app it was never
+       * bound to, which then emits `APP_PUBLIC_URL=https://comfy.acme.com`,
+       * receives it as `X-Forwarded-Host` and signs OAuth redirects for it.
+       *
+       * The conservative rule is the one the mirror-image case already uses (one
+       * domain against two targets): bind none, and leave each app on whatever it
+       * is already serving.
+       */
+      appsRepository.getApps.mockResolvedValue([runningComfy(), runningComfy({ id: 8, appName: 'dozzle', localSubdomain: 'ComfyUI' })] as any);
+      cloudflareClientService.syncState.mockResolvedValue({
+        ok: true,
+        failed: [],
+        failures: [],
+        synced: 2,
+        customDomains: [{ id: 'cd_1', domain: 'comfy.acme.com', targetHostname: TARGET }],
+      });
+
+      await service.triggerCloudflareSync();
+
+      expect(appsRepository.updateAppByIdIfStatus).not.toHaveBeenCalled();
+    });
+
+    it('holds a contested app on the hostname it is already serving rather than unbinding it', async () => {
+      // Holding still means exactly that: the app that legitimately holds the
+      // domain does not lose it because a second app appeared on its hostname.
+      appsRepository.getApps.mockResolvedValue([
+        runningComfy({ customDomain: 'comfy.acme.com' }),
+        runningComfy({ id: 8, appName: 'dozzle', localSubdomain: 'ComfyUI' }),
+      ] as any);
+      cloudflareClientService.syncState.mockResolvedValue({ ok: true, failed: [], failures: [], synced: 2, customDomains: [] });
+
+      await service.triggerCloudflareSync();
+
+      expect(appsRepository.updateAppByIdIfStatus).not.toHaveBeenCalled();
     });
 
     it('is idempotent once the binding is already stored', async () => {
@@ -2317,6 +2461,122 @@ describe('AppLifecycleService', () => {
 
       expect(appsRepository.updateAppById).toHaveBeenCalledWith(1, expect.objectContaining({ customDomainIntent: null }));
       expect(appsRepository.clearCustomDomainIntentElsewhere).not.toHaveBeenCalled();
+    });
+
+    it('releases the domain the operator was shown', async () => {
+      // The whole point of the compare-and-swap is that the ordinary save still
+      // works: the picker saw `shop.acme.com`, said so, and the row agrees.
+      appsRepository.getAppByUrn.mockResolvedValue({
+        id: 1,
+        status: 'stopped',
+        config: { port: 8080, exposureMode: 'cloudflare', exposedLocal: true, openPort: false },
+        customDomain: 'shop.acme.com',
+      } as any);
+      const release = vi.spyOn(exposureSyncService, 'releaseCustomDomain').mockResolvedValue({ ok: true });
+
+      await service.updateAppConfig({
+        appUrn,
+        form: {
+          port: 8080,
+          exposureMode: 'cloudflare',
+          exposedLocal: true,
+          openPort: false,
+          customDomain: '',
+          customDomainExpected: 'shop.acme.com',
+        },
+      } as any);
+
+      expect(release).toHaveBeenCalled();
+      expect(appsRepository.updateAppById).toHaveBeenCalledWith(1, { customDomain: null, customDomainIntent: null, customDomainTakeover: false });
+    });
+
+    it('refuses the save when the row gained a domain while the dialog was open', async () => {
+      /*
+       * R2-HUBDOMAINS-3, through the settings dialog this time — the fail-unsafe
+       * race itself. `''` was seeded from a snapshot taken when the dialog opened
+       * on a domainless app; by the time the operator saved an unrelated env var,
+       * an admin had bound `shop.acme.com` in the Portal and the Hub had mirrored
+       * it. Refusing the whole save is the point: the operator reloads, sees the
+       * domain that appeared, and decides again.
+       */
+      appsRepository.getAppByUrn.mockResolvedValue({
+        id: 1,
+        status: 'stopped',
+        config: { port: 8080, exposureMode: 'cloudflare', exposedLocal: true, openPort: false },
+        customDomain: 'shop.acme.com',
+        customDomainIntent: null,
+      } as any);
+      const release = vi.spyOn(exposureSyncService, 'releaseCustomDomain').mockResolvedValue({ ok: true });
+
+      await expect(
+        service.updateAppConfig({
+          appUrn,
+          form: {
+            port: 8080,
+            exposureMode: 'cloudflare',
+            exposedLocal: true,
+            openPort: false,
+            customDomain: '',
+            customDomainExpected: '',
+          },
+        } as any),
+      ).rejects.toThrow();
+
+      expect(release).not.toHaveBeenCalled();
+      // Nothing is written at all: the release runs before the row write and
+      // before `generate_env` is published.
+      expect(appsRepository.updateAppById).not.toHaveBeenCalled();
+      expect(appEventsQueue.publish).not.toHaveBeenCalled();
+    });
+
+    it('refuses to release a DIFFERENT domain than the one the dialog named', async () => {
+      // The domain moved between apps while the dialog sat open. The instruction
+      // names a hostname this app is no longer on, so it acts on nothing.
+      appsRepository.getAppByUrn.mockResolvedValue({
+        id: 1,
+        status: 'stopped',
+        config: { port: 8080, exposureMode: 'cloudflare', exposedLocal: true, openPort: false },
+        customDomain: 'shop.acme.com',
+      } as any);
+      const release = vi.spyOn(exposureSyncService, 'releaseCustomDomain').mockResolvedValue({ ok: true });
+
+      await expect(
+        service.updateAppConfig({
+          appUrn,
+          form: {
+            port: 8080,
+            exposureMode: 'cloudflare',
+            exposedLocal: true,
+            openPort: false,
+            customDomain: '',
+            customDomainExpected: 'comfy.acme.com',
+          },
+        } as any),
+      ).rejects.toThrow();
+
+      expect(release).not.toHaveBeenCalled();
+    });
+
+    it('canonicalizes the routing subdomain on a settings save too', async () => {
+      /*
+       * R2-HUBDOMAINS-2. The two install paths disagreed —
+       * `port-expose.service.ts` sanitized before the conflict check and this one
+       * did not — so a custom app stored the canonical value, a marketplace app
+       * stored the raw one, and they collided on one hostname.
+       */
+      appsRepository.getAppByUrn.mockResolvedValue({
+        id: 1,
+        status: 'stopped',
+        config: { port: 8080, exposureMode: 'cloudflare', exposedLocal: true, openPort: false },
+      } as any);
+
+      await service.updateAppConfig({
+        appUrn,
+        form: { port: 8080, exposureMode: 'cloudflare', exposedLocal: true, openPort: false, localSubdomain: 'My-App' },
+      } as any);
+
+      expect(appsRepository.getAppsByLocalSubdomain).toHaveBeenCalledWith('my-app', 1);
+      expect(appsRepository.updateAppById).toHaveBeenCalledWith(1, expect.objectContaining({ localSubdomain: 'my-app' }));
     });
 
     it('re-records a choice the Hub cleared, even though the saved snapshot still names it', async () => {

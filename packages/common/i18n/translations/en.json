@@ -189,6 +189,7 @@
   "NETWORK_ERROR_NO_AVAILABLE_PORTS": "No available ports in the configured range",
   "APP_ERROR_ARCHITECTURE_NOT_SUPPORTED": "Your architecture {{arch}} is not supported by app {{id}}",
   "APP_ERROR_CUSTOM_DOMAIN_RELEASE_FAILED": "Could not stop serving the custom domain for {{id}}. {{message}}",
+  "APP_ERROR_CUSTOM_DOMAIN_RELEASE_STALE": "{{id}} is now served on {{current}}, which is not what this page showed. Reload the app settings and choose again.",
   "APP_ERROR_DOMAIN_ALREADY_IN_USE": "Domain {{domain}} is already in use by app {{id}}",
   "APP_ERROR_LOCAL_SUBDOMAIN_ALREADY_IN_USE": "Subdomain {{subdomain}} is already in use by app {{id}}",
   "APP_ERROR_DOMAIN_NOT_VALID": "Domain {{domain}} is not a valid domain",

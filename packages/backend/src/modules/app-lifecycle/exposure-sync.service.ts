@@ -9,6 +9,7 @@ import {
   buildOriginServerName,
   buildPublicWebIdentity,
   collectAmbiguousCustomDomains,
+  collectContestedCustomDomainTargets,
   customDomainServesAnotherApp,
   indexCustomDomainsByTarget,
   normalizeHostname,
@@ -1286,6 +1287,17 @@ export class ExposureSyncService {
 
     const byTarget = indexCustomDomainsByTarget(params.customDomains);
     const ambiguousDomains = collectAmbiguousCustomDomains(params.customDomains);
+    /*
+     * Platform hostnames more than one app answers on. CI-Cloud attributes a
+     * delivered domain by hostname, so a contested one cannot be attributed at
+     * all — see {@link collectContestedCustomDomainTargets}, and the refusal
+     * below.
+     */
+    const contestedTargets = collectContestedCustomDomainTargets(
+      params.apps
+        .filter((candidate) => canServeOnCustomDomain(candidate as AppPublicRoutingSnapshot))
+        .map((candidate) => normalizeHostname(params.toPublicHostname(candidate))),
+    );
     const matchedTargets = new Set<string>();
     /** Reverts to dispatch, with the hostname each app lost. See the filter below. */
     const revertedApps: { appUrn: AppUrn; lostHostname: string }[] = [];
@@ -1333,6 +1345,24 @@ export class ExposureSyncService {
         // configuration rather than treating it as a transient payload absence.
         next = null;
       } else if (params.syncedAppUrns.has(appUrn)) {
+        /*
+         * Two apps answer on this hostname, so nothing delivered against it can be
+         * attributed to one of them (R2-HUBDOMAINS-2). Bind none and hold each app
+         * on whatever it is already serving: CI-Cloud reports a target, not an app
+         * id, and the wrong half of that guess hands a customer's production
+         * hostname — with its live certificate, its `X-Forwarded-Host` and its
+         * OAuth redirects — to an app it was never bound to.
+         *
+         * Logged as an error, not a warning: unlike the mid-rebind case below,
+         * this does not settle on its own. Two rows resolving to one hostname is a
+         * local misconfiguration, and it stays until somebody renames one of them.
+         */
+        if (contestedTargets.has(target)) {
+          this.logger.error(
+            `[Cloudflare] More than one app resolves to ${target}; binding no custom domain to ${appUrn} until one of them is renamed.`,
+          );
+          continue;
+        }
         /*
          * The app's current hostname is mid-rebind. Companion Portal reported it
          * against multiple targets, so `indexCustomDomainsByTarget` removes it

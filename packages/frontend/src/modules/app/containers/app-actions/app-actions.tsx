@@ -974,7 +974,7 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
 
   return (
     <>
-      <InstallDialog isOpen={installDisclosure.isOpen} onClose={installDisclosure.close} info={info} />
+      <InstallDialog isOpen={installDisclosure.isOpen} onClose={installDisclosure.close} info={info} boundCustomDomain={app?.customDomain ?? null} />
       <CancelInstallDialog
         isOpen={cancelInstallDisclosure.isOpen}
         onClose={cancelInstallDisclosure.close}
@@ -1028,6 +1028,18 @@ export const AppActions = ({ app, info, metadata, appDataHostPath, runtimeHealth
            * reached yet.
            */
           ...(app ? { customDomainTakeover: app.customDomainTakeover ?? false } : {}),
+          /*
+           * What the operator is being SHOWN this app is served on, carried so the
+           * save can be refused if it stops being true (R2-HUBDOMAINS-3).
+           *
+           * The BINDING, not the intent: `customDomain: ''` acts on what CI-Cloud
+           * is actually serving, so that is the value the release has to be
+           * conditioned on. A domain bound in the Portal while this dialog sat
+           * open used to be released by the seeded `''` above — a save that never
+           * mentioned the domain, taking a customer hostname off the air with a
+           * success toast.
+           */
+          ...(app ? { customDomainExpected: app.customDomain ?? '' } : {}),
         }}
         status={app?.status}
       />
