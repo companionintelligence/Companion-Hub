@@ -12,7 +12,7 @@ import { NAMED_STATUS_ROUTES } from '../named-status-routes';
  * that cannot see which URL it holds. The file is generated, so its shape is stable
  * enough to match, and a match failure is itself the signal that the generator changed.
  */
-const SDK = resolve(dirname(fileURLToPath(import.meta.url)), '../../sdk.gen.ts');
+const SDK = resolve(dirname(fileURLToPath(import.meta.url)), '../../../api-client/sdk.gen.ts');
 
 function urlOf(operation: string): string | null {
   const source = readFileSync(SDK, 'utf-8');

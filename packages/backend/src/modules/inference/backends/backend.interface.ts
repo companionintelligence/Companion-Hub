@@ -1,4 +1,4 @@
-import type { BackendHealthStatus, BackendModelInfo, InferenceBackendType, PullProgress } from '@ci-hub/common/types';
+import type { BackendHealthStatus, BackendModelInfo, BackendResidency, InferenceBackendType, PullProgress } from '@ci-hub/common/types';
 
 /**
  * Common interface implemented by all inference backends (Ollama, vLLM, Lemonade, MTPLX,
@@ -32,6 +32,21 @@ export interface InferenceBackend {
 
   /** Check if a specific model is loaded */
   isModelLoaded(modelId: string): Promise<boolean>;
+
+  /**
+   * What is IN MEMORY right now, and how the backend knows.
+   *
+   * Optional, and the optionality is the point. An engine that cannot answer must be able to
+   * say so: the caller reports `source: 'unsupported'` with `models: null`, which is a
+   * different fact from an engine that answered "nothing is loaded" (`'measured'`, `[]`).
+   * Making this required would force every implementation to invent one of those two answers.
+   *
+   * Implementations must NOT satisfy this from `healthCheck().modelsLoaded` — that field is the
+   * on-disk inventory despite its name, and forwarding it here would rebuild the exact
+   * confusion this method exists to end. Either query the engine for real residency, or return
+   * `'implicit'` when the engine can only ever serve what it was started with.
+   */
+  listResident?(): Promise<BackendResidency>;
 
   /**
    * Tell the backend that a request it accepted for `modelId` failed in a way that suggests it

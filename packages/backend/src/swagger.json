@@ -2812,6 +2812,20 @@
         ]
       }
     },
+    "/api/inference/models/resident": {
+      "get": {
+        "operationId": "getResidentModels",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "Inference"
+        ]
+      }
+    },
     "/api/inference/models/runtime": {
       "get": {
         "operationId": "getRuntimeModels",

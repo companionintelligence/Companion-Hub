@@ -10,6 +10,7 @@ import { InferenceRouterService } from './inference-router.service';
 import { HardwareInspectorService } from './hardware-inspector.service';
 import { MemoryManagerService } from './memory-manager.service';
 import { ModelRegistryService } from './model-registry.service';
+import { ModelResidencyService } from './model-residency.service';
 import { ModelPullerService } from './model-puller.service';
 import { CloudFallbackService } from './cloud-fallback.service';
 import { OllamaInstallerService } from './ollama-installer.service';
@@ -52,6 +53,7 @@ import { BackendObserverService } from './supervision/backend-observer.service';
 @Controller('inference')
 export class InferenceController {
   constructor(
+    private readonly residency: ModelResidencyService,
     private readonly router: InferenceRouterService,
     private readonly hardwareInspector: HardwareInspectorService,
     private readonly memoryManager: MemoryManagerService,
@@ -284,6 +286,23 @@ export class InferenceController {
     this.scheduleAiAppRestart();
 
     return result;
+  }
+
+  /**
+   * What is IN MEMORY right now, per backend.
+   *
+   * Distinct from `models/runtime`, which reports the on-disk inventory: on a live node those
+   * two disagree completely — 11 models listed, zero resident. Callers that want to know
+   * whether a request will be fast, or what is occupying VRAM, need this one.
+   *
+   * Read `source` before `models`. `models: null` means the engine could not be asked
+   * (`unreachable`) or has no residency concept (`unsupported`); only `source: 'measured'`
+   * with an empty array means "asked, and nothing is loaded".
+   */
+  @UseGuards(AuthGuard)
+  @Get('models/resident')
+  async getResidentModels() {
+    return this.residency.getReport(new Date().toISOString());
   }
 
   @UseGuards(AuthGuard)
