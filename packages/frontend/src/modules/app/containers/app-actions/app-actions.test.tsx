@@ -37,6 +37,14 @@ const hoisted = vi.hoisted(() => ({
   },
   architecture: 'amd64' as 'amd64' | 'arm64',
   toastError: vi.fn(),
+  /*
+   * Props the two dialogs that carry the custom-domain state were mounted with.
+   * The seeding is the whole behaviour here — what the operator is SHOWN is what
+   * a release is allowed to act on (R2-HUBDOMAINS-3) — and it happens on the way
+   * in, so it is only observable from the props.
+   */
+  updateSettingsProps: undefined as undefined | Record<string, unknown>,
+  installDialogProps: undefined as undefined | Record<string, unknown>,
 }));
 
 vi.mock('@/modules/app/helpers/use-memory-connection', () => ({
@@ -158,7 +166,10 @@ vi.mock('@/lib/helpers/open-external', () => ({
 }));
 
 vi.mock('../../components/dialogs/install-dialog/install-dialog', () => ({
-  InstallDialog: () => null,
+  InstallDialog: (props: Record<string, unknown>) => {
+    hoisted.installDialogProps = props;
+    return null;
+  },
 }));
 vi.mock('../../components/dialogs/cancel-install-dialog/cancel-install-dialog', () => ({
   CancelInstallDialog: () => null,
@@ -182,7 +193,10 @@ vi.mock('../../components/dialogs/app-data-folder-dialog/app-data-folder-dialog'
   AppDataFolderDialog: () => null,
 }));
 vi.mock('../../components/dialogs/update-settings-dialog/update-settings-dialog', () => ({
-  UpdateSettingsDialog: () => null,
+  UpdateSettingsDialog: (props: Record<string, unknown>) => {
+    hoisted.updateSettingsProps = props;
+    return null;
+  },
 }));
 
 function makeInfo(overrides: Partial<AppInfo> = {}): AppInfo {
@@ -282,7 +296,43 @@ describe('AppActions', () => {
     });
     hoisted.architecture = 'amd64';
     hoisted.toastError.mockReset();
+    hoisted.updateSettingsProps = undefined;
+    hoisted.installDialogProps = undefined;
     disclosureOpen.mockReset();
+  });
+
+  describe('the custom-domain state a save is allowed to act on', () => {
+    /*
+     * R2-HUBDOMAINS-3. Both dialogs submit `customDomain` on every save, and `''`
+     * is the instruction to give a domain up — so each has to carry what the row
+     * held when it was drawn, or the Hub cannot tell an operator's decision from
+     * a snapshot that went stale while the dialog sat open.
+     */
+    const servingApp = makeApp({ customDomain: 'shop.acme.com', customDomainIntent: 'comfy.acme.com' });
+
+    it('seeds the settings dialog with the BINDING, alongside the intent it shows in the picker', () => {
+      render(<AppActions app={servingApp} metadata={metadata} info={info} urlAvailability={idleAvailability} layout="hero" />);
+
+      const config = hoisted.updateSettingsProps?.config as Record<string, unknown>;
+
+      // The release acts on what CI-Cloud is actually serving, so that — not the
+      // intent the picker displays — is what the save has to be conditioned on.
+      expect(config.customDomainExpected).toBe('shop.acme.com');
+      expect(config.customDomain).toBe('comfy.acme.com');
+    });
+
+    it('tells the install dialog what a reinstall would be giving up', () => {
+      render(<AppActions app={servingApp} metadata={metadata} info={info} urlAvailability={idleAvailability} layout="hero" />);
+
+      expect(hoisted.installDialogProps?.boundCustomDomain).toBe('shop.acme.com');
+    });
+
+    it('claims nothing for an app that holds no domain', () => {
+      render(<AppActions app={runningApp} metadata={metadata} info={info} urlAvailability={idleAvailability} layout="hero" />);
+
+      expect((hoisted.updateSettingsProps?.config as Record<string, unknown>).customDomainExpected).toBe('');
+      expect(hoisted.installDialogProps?.boundCustomDomain).toBeNull();
+    });
   });
 
   it('re-syncs the app when a start fails synchronously so the status never sticks on "starting" (#909)', () => {

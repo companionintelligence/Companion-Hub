@@ -312,7 +312,7 @@ export type BrowserHandoffMintDto = {
 export type PortalSessionHintDto = {
     email: string;
     portalBaseUrl: string;
-    source: 'hub_operator' | 'portal_session';
+    source: 'hub_operator' | 'hub_user' | 'portal_session';
 };
 
 export type PortalDesktopExchangeDto = {
@@ -1375,6 +1375,7 @@ export type AppFormBody = {
     publicDomain?: string;
     customDomain?: string;
     customDomainTakeover?: boolean;
+    customDomainExpected?: string;
     maxBackups?: number;
     cpuLimit?: string;
     memoryLimit?: string;

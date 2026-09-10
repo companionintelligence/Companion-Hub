@@ -29,6 +29,7 @@ export {
 } from '../public-web/identity.js';
 export {
   collectAmbiguousCustomDomains,
+  collectContestedCustomDomainTargets,
   customDomainServesAnotherApp,
   indexCustomDomainsByTarget,
   normalizeHostname,

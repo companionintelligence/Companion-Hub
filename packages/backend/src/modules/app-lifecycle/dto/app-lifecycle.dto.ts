@@ -86,6 +86,27 @@ export const appFormSchema = z
      * carries a `customDomain`, and cleared with the intent otherwise.
      */
     customDomainTakeover: z.boolean().optional(),
+    /*
+     * What the client believed this app was BEING SERVED ON when it drew the
+     * picker — `app.custom_domain`, or `''` for "nothing".
+     *
+     * The compare-and-swap half of `customDomain: ''` (R2-HUBDOMAINS-3). Giving a
+     * domain up is the one instruction on this form that destroys state nobody
+     * can restore from the Hub, and it was carried on every save whether or not
+     * the picker had ever been shown: the dialog seeds this field from the row
+     * snapshot taken when it OPENED, so an operator who opened settings on a
+     * domainless app, and saved an unrelated env var after an admin bound
+     * `shop.acme.com` in the Portal, released the domain they were never shown.
+     * Every existing guard passed precisely because the domain genuinely was this
+     * app's by then.
+     *
+     * So the release is conditioned on the state the operator saw rather than on
+     * the state at save time. It is read ONLY by
+     * `AppLifecycleService.releaseClearedCustomDomain`, and only when a binding
+     * actually exists to release — it is an assertion about one moment, never a
+     * setting, which is why `toStoredConfig` keeps it out of the stored snapshot.
+     */
+    customDomainExpected: z.string().trim().toLowerCase().optional(),
     maxBackups: z.number().min(0).max(100).optional(),
     cpuLimit: optionalCpuLimitSchema,
     memoryLimit: optionalMemoryLimitSchema,

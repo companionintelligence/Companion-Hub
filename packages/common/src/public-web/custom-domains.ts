@@ -228,6 +228,44 @@ export function collectAmbiguousCustomDomains(entries: readonly TunnelCustomDoma
   return new Set([...targetsByDomain].filter(([, targets]) => targets.size > 1).map(([domain]) => domain));
 }
 
+/**
+ * The platform hostnames MORE THAN ONE app on this Hub resolves to.
+ *
+ * The mirror image of {@link collectAmbiguousCustomDomains}, and deliberately the
+ * same conservative rule (R2-HUBDOMAINS-2): there, one domain names two targets
+ * and the Hub cannot tell which app CI-Cloud is routing; here, two apps compose
+ * one target and the Hub cannot tell which of them a delivered domain was bound
+ * to. CI-Cloud answers with a hostname, not with an app id, so a contested target
+ * makes the attribution a coin toss — and the wrong side of that toss writes a
+ * customer's `custom_domain` onto an app it was never bound to, which then emits
+ * `APP_PUBLIC_URL=https://shop.acme.com`, receives the domain as
+ * `X-Forwarded-Host` and signs OAuth redirects for it.
+ *
+ * Uniqueness is enforced on write, so this is not the primary defence — it is the
+ * one that still holds for the rows a Hub wrote before that check existed, and for
+ * any future path that reaches the column without passing through it. Callers bind
+ * NONE of the contesting apps and leave whatever each is already serving alone:
+ * neither attribution is better than the other, and a wrong bind is not recoverable
+ * by the app that lost it.
+ *
+ * Callers pass only the apps a domain could actually be delivered to
+ * (`canServeOnCustomDomain`); an app with no public identity composes no ingress
+ * rule and so contests nothing.
+ */
+export function collectContestedCustomDomainTargets(targets: readonly string[]): Set<string> {
+  const seen = new Set<string>();
+  const contested = new Set<string>();
+
+  for (const target of targets) {
+    if (seen.has(target)) {
+      contested.add(target);
+    }
+    seen.add(target);
+  }
+
+  return contested;
+}
+
 export function indexCustomDomainsByTarget(entries: readonly TunnelCustomDomain[]): Map<string, string[]> {
   const ambiguous = collectAmbiguousCustomDomains(entries);
   const byTarget = new Map<string, Set<string>>();
