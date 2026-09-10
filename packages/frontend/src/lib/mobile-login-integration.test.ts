@@ -48,8 +48,15 @@ beforeEach(() => {
   httpFetch.mockClear();
   localStorage.clear();
   sessionStorage.clear();
-  setTauriSessionId(null);
+  // setMobileTauri() must run before setTauriSessionId(null): that call's internal
+  // isMobileRuntime() check reads the current UA/Tauri state, and mobile-connection's
+  // isTauriMobileSync() never downgrades a confirmed-desktop detection back to mobile
+  // (by design — see its own doc comment). Clearing the session first left jsdom's
+  // default UA ("...jsdom/x.y.z", which matches the Linux desktop pattern) to latch
+  // cachedIsDesktop=true before the iPhone UA was ever set, so every fetch for the
+  // rest of the test silently fell back to window.fetch instead of the native mock.
   setMobileTauri();
+  setTauriSessionId(null);
 });
 
 afterEach(async () => {
