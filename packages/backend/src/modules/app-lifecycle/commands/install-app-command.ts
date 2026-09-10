@@ -108,6 +108,7 @@ export class InstallAppCommand extends AppLifecycleCommand {
     try {
       ctx?.setPhase('preparing');
       await this.assertMarketplaceEntitlement(appUrn, 'install');
+      await this.assertPlanConfigAndArchitecture(appUrn, form);
       const appImages = extractComposeImages(composeToInstallContent);
       await emitProgress(5);
       if (process.getuid && process.getgid) {
@@ -504,6 +505,36 @@ export class InstallAppCommand extends AppLifecycleCommand {
         return { success: false, cancelled: true, message };
       }
       return this.handleAppError(err, appUrn, 'install');
+    }
+  }
+
+  /**
+   * Re-validates config and architecture — via `AppLifecycleService.buildInstallPlan`, the same
+   * preview a caller can request through `POST :urn/install/plan` — before any mutation. Both were
+   * already checked once at submission time (`AppLifecycleService.installApp`), but a queued
+   * install can sit for a while, and neither is re-checked anywhere else once the job runs.
+   * Calling the shared plan builder rather than re-deriving these checks keeps this from drifting
+   * from what the preview reports.
+   *
+   * Entitlement and host-device availability are deliberately NOT driven from the plan here:
+   * entitlement is already asserted directly above, with its own richer (payment-aware) error, and
+   * host-device support can only be checked once the app's own compose is on disk — `buildInstallPlan`
+   * runs before any install exists, so its `hostDevices` check is a no-op for a fresh install. See
+   * `assertRequiredHostDevices` below, once `copyAppFromRepoToInstalled` has run.
+   */
+  private async assertPlanConfigAndArchitecture(appUrn: AppUrn, form: AppEventFormInput): Promise<void> {
+    const { AppLifecycleService } = await import('../app-lifecycle.service');
+    const appLifecycleService = this.moduleRef.get(AppLifecycleService, { strict: false });
+    const plan = await appLifecycleService?.buildInstallPlan(appUrn, form);
+    if (!plan) return;
+
+    const failures = [
+      plan.checks.config.ok ? null : `config (${plan.checks.config.reason ?? 'invalid'})`,
+      plan.checks.architecture.ok ? null : `architecture (${plan.checks.architecture.reason ?? 'unsupported'})`,
+    ].filter((reason): reason is string => reason !== null);
+
+    if (failures.length > 0) {
+      throw new AppLifecycleError(`Install of ${appUrn} is no longer valid: ${failures.join('; ')}`, { code: 'install_plan_blocked' });
     }
   }
 
