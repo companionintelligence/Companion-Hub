@@ -30,6 +30,10 @@ import type { AppStatus, LifecycleJob } from '@/core/database/drizzle/types';
 import { LifecycleJobService } from './lifecycle-job.service';
 import { toAppCommandFailureResult } from './commands/app-lifecycle-errors';
 import type { CommandExecutionContext } from './commands/command';
+import { assertHostDevicesAvailable } from './commands/host-device-preflight';
+import { extractComposeImages } from './commands/install-app-command';
+import { toCheckResult, planImages } from './planning/install-plan';
+import type { InstallPlan, InstallPlanChecks } from './planning/install-plan.types';
 import { appFormSchema } from './dto/app-lifecycle.dto';
 import { INSTALL_PIPELINE_MUTEX_KEY } from '@/common/constants';
 import { APP_ASYNC_MUTEX } from '@/utils/mutex/mutex.module';
@@ -39,6 +43,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { DATA_DIR } from '@/common/constants';
 import { MarketplaceWhoIsService } from '@/core/portal/marketplace-whois.service';
+import { MarketplaceEntitlementService } from '@/core/portal/marketplace-entitlement.service';
 import type { HubAction } from '@/core/portal/hub-actions';
 import { AgentNotifyService } from '../agent-notify/agent-notify.service';
 import { ErrorReportingService, type AppFailurePhase } from '@/core/error-reporting/error-reporting.service';
@@ -938,6 +943,54 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     return {
       valid: errors.length === 0,
       errors: errors.map((e) => ({ env_variable: e.env_variable, label: e.label, messageKey: e.messageKey })),
+    };
+  }
+
+  /**
+   * Read-only preview of `installApp`: runs the same guard checks (config, entitlement, host
+   * devices, architecture) and reports which images would be pulled, without downloading app
+   * files, writing env, allocating ports, or touching Docker. Deliberately reuses
+   * `validateAppConfig` and `imageSizeService.verifyAppArchitecture` rather than re-deriving
+   * them, so a plan that reports `blocked: false` cannot drift from what `installApp` itself
+   * is about to check.
+   */
+  async buildInstallPlan(appUrn: AppUrn, form: unknown): Promise<InstallPlan> {
+    const appInfo = await this.marketplaceService.getAppInfoFromAppStoreOrInstalled(appUrn);
+    if (!appInfo) {
+      throw new TranslatableError('APP_ERROR_APP_NOT_FOUND', { id: appUrn }, HttpStatus.NOT_FOUND);
+    }
+
+    const { architecture } = this.config.getConfig();
+    const entitlements = this.moduleRef.get(MarketplaceEntitlementService, { strict: false });
+
+    const [configValidation, entitlement, hostDevices, archCheck, composeJson] = await Promise.all([
+      this.validateAppConfig(appUrn, form),
+      toCheckResult(() => entitlements?.assertForInstall(appUrn)),
+      toCheckResult(() => assertHostDevicesAvailable(this.moduleRef, appUrn)),
+      this.imageSizeService.verifyAppArchitecture(appUrn, architecture),
+      this.marketplaceService.getDockerComposeJson(appUrn),
+    ]);
+
+    const images = composeJson.content ? await planImages(this.dockerService, extractComposeImages(composeJson.content)) : [];
+
+    const checks: InstallPlanChecks = {
+      config: configValidation.valid ? { ok: true } : { ok: false, reason: configValidation.errors.map((e) => e.label).join(', ') },
+      entitlement,
+      hostDevices,
+      architecture:
+        !archCheck || archCheck.ok
+          ? { ok: true }
+          : {
+              ok: false,
+              reason: `${archCheck.image} has no manifest for ${architecture} (available: ${archCheck.available.join(', ') || 'none'})`,
+            },
+    };
+
+    return {
+      appUrn,
+      checks,
+      images,
+      blocked: Object.values(checks).some((c) => !c.ok),
     };
   }
 
