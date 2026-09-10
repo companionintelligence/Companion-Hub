@@ -79,7 +79,10 @@ describe('hubAuthFlowPolicy — the four flows stay distinct', () => {
       pkce: false,
       hubSso: true,
       deepLink: true,
-      systemBrowser: false,
+      // Same as mobile-hub-sso: the deep-link return is only exchangeable while
+      // this React app is still mounted, so the authorization request has to
+      // happen somewhere else — the system browser.
+      systemBrowser: true,
       switchHub: false,
       listenAuth: true,
       desktopPresence: true,

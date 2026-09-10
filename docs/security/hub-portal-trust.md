@@ -1,6 +1,6 @@
 # Trust between Companion Hub and Companion Portal
 
-Companion Hub uses the PolyForm Noncommercial License. **Companion Portal** and **Companion Memory** remain closed-source products. When you review Portal interactions, treat a modified Hub as an **untrusted Portal client**.
+Companion Hub uses the PolyForm Noncommercial License. **Companion Portal** remains a closed-source product. Companion Memory is PolyForm Noncommercial in its own repository. When you review Portal interactions, treat a modified Hub as an **untrusted Portal client**.
 
 Use this page to review the trust boundaries between these products. It is not a penetration test report.
 
@@ -24,7 +24,7 @@ Hub never meters usage to Portal. Hub never decides who paid. Hub WhoIs is **not
 |---|---|---|
 | Portal ↔ Hub device | Portal | Pairing, device API key, store install *commands*, GET install bundles, registry JWTs, tunnels, app entitlement checks |
 | Hub ↔ apps on the appliance | Hub (local) | Traefik forward-auth headers, memory-connect, wake hooks, local Docker |
-| Hub ↔ Memory | Shared appliance secrets | HMAC / connect signing; Memory remains closed-source |
+| Hub ↔ Memory | Shared appliance secrets | HMAC / connect signing; Memory is PolyForm Noncommercial in CI-Server |
 
 ## Device identity
 
@@ -128,4 +128,4 @@ Traefik `forwardauth` calls Hub `/api/auth/traefik`. On a valid Hub session, Hub
 - [x] Hub entitlement cache is documented as UX, not a till ([#1212](https://github.com/companionintelligence/CI-Hub/pull/1212)).
 - [x] Hub WhoIs / org grants cache is documented as UX, not a till ([#1214](https://github.com/companionintelligence/CI-Hub/issues/1214)). Device WhoIs uses federated `subject`; Portal-push skips Hub grants.
 - [x] Forward-auth documentation states Hub-signed headers apply only to apps on that appliance (this page + architecture).
-- [x] Memory and Portal remain closed-source; the Hub license does not relicense them ([License FAQ](../License-FAQ.md)).
+- [x] Portal remains closed-source. Memory is PolyForm Noncommercial in CI-Server; the Hub license does not relicense Portal ([License FAQ](../License-FAQ.md)).

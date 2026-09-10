@@ -46,9 +46,9 @@ describe('LoginForm', () => {
     );
 
     expect(screen.getByRole('link', { name: 'AUTH_LOGIN_COMPANION_ACCOUNT_BUTTON' })).toHaveClass('h-10', 'w-full', 'font-semibold');
-    // This is the <a href> branch — desktop-hub-sso, which signs in IN THE APP —
-    // so the hint must be the in-app one, not the "opens in your browser" line
-    // that belongs to the mobile flow.
+    // This is the <a href> branch — browser-hub-sso, a plain browser already on
+    // the Hub, which navigates in place — so the hint must be the in-app one and
+    // not the "opens in your browser" line that belongs to the native shells.
     expect(screen.getByText('AUTH_LOGIN_COMPANION_ACCOUNT_HINT_IN_APP')).toBeInTheDocument();
     expect(screen.queryByText('AUTH_LOGIN_COMPANION_ACCOUNT_HINT')).not.toBeInTheDocument();
   });

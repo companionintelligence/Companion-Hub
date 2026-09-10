@@ -59,13 +59,17 @@ export function shouldUsePortalDesktopHandoff(input: { isTauriDesktop: boolean; 
 }
 
 /**
- * iOS/Android *Hub* SSO (`mobile-hub-sso`) must not navigate the WKWebView.
- * macOS/Linux/Windows desktop uses a normal `<a href>` — never also call
- * `openAuthInSystemBrowser` (that opens a second tab). Cloud-connect PKCE
- * opens Safari from `oidc.ts`, not from the login form.
+ * Native *Hub* SSO must not navigate its own webview — not WKWebView on a phone
+ * and not the Tauri window on a desktop. Both hand the start URL to the system
+ * browser and come back over `cihub://`. Only a plain browser ON the Hub
+ * navigates in place. Cloud-connect PKCE opens Safari from `oidc.ts`, not from
+ * the login form.
+ *
+ * The login form reads `hubAuthFlowPolicy().openHubSsoInSystemBrowser`; this
+ * mirrors that rule for callers that have the two flags but not the flow.
  */
-export function shouldOpenPortalSsoInSystemBrowser(isMobileClient: boolean): boolean {
-  return isMobileClient;
+export function shouldOpenPortalSsoInSystemBrowser(input: { isMobileClient: boolean; isTauriDesktop: boolean }): boolean {
+  return input.isMobileClient || input.isTauriDesktop;
 }
 
 /** Same Hub host as {@link buildPortalSsoStartUrl} — the one-time token is stored there. */

@@ -96,12 +96,11 @@ export const openExternal = async (url: string): Promise<void> => {
     try {
       // retryDynamicImport, because a stale chunk hash here is not cosmetic.
       //
-      // On desktop this is the SIGN-IN path, not just a docs link: login-form
-      // renders an <a> and the Providers interceptor hands it to openExternal, so
-      // the system browser is how desktop SSO starts (hub-auth-flow.ts —
-      // announceDesktopPresence exists "so a Chrome loopback callback can hand
-      // off into Tauri"). If this import fails, the sign-in button and every
-      // external link die together, which is exactly the reported pairing.
+      // Sign-in shares this dependency without going through this function:
+      // login-form calls openAuthInSystemBrowser directly, and it imports the
+      // same @tauri-apps/plugin-opener. So a stale chunk hash here takes the
+      // sign-in button and every external link out together, which is exactly
+      // the reported pairing.
       const { openUrl } = await retryDynamicImport(() => import('@tauri-apps/plugin-opener'));
       await openUrl(normalizedUrl);
       if (shouldWarmDns) void warmDns(hostname);

@@ -214,7 +214,13 @@ export default () => {
           setPortalAccountEmail(null);
           if (portalSsoHref) {
             if (authPolicy.openHubSsoInSystemBrowser) {
-              void openAuthInSystemBrowser(portalSsoHref).catch(() => undefined);
+              // Same reasoning as the sign-in button in login-form: the opener
+              // rejects on an ACL/plugin failure, and swallowing that leaves a
+              // switcher that looks clicked and does nothing.
+              openAuthInSystemBrowser(portalSsoHref).catch((error: unknown) => {
+                console.error('login: the system opener refused the SSO URL', error);
+                toast.error(t('COMMON_AN_ERROR_OCCURRED'));
+              });
               return;
             }
             window.location.assign(portalSsoHref);
