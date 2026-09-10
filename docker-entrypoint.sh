@@ -10,7 +10,7 @@
 # the old compose `user:` directive.
 set -eu
 
-# The default is DERIVED from the data root, not hardcoded.
+# The default is DERIVED from the install's own files, not hardcoded.
 #
 # A hardcoded 1000 is wrong for a root-owned install. `/root/.local/share/companion-hub`
 # — what you get when the Hub is installed as root — is root:root with the env file at
@@ -23,17 +23,33 @@ set -eu
 # fleet node whose older image predated this entrypoint: it had run happily as root for
 # months, then failed the moment it was moved onto an image that drops privileges.
 #
-# Owning uid of /data is the right default because it is the identity that install
-# actually uses: 1000 for a user-owned install, 0 for a root-owned one (where the
-# `HUB_UID = 0` branch below then correctly skips the drop entirely). An explicit
-# CI_HUB_CONTAINER_UID still wins — the desktop app sets it deliberately, including 0:0
-# on Windows where NTFS bind mounts require root.
+# Derived from a BIND-MOUNTED path, never from /data itself.
+#
+# /data is NOT a bind mount. The compose files mount the install's contents as individual
+# subpaths — /data/.env, /data/state, /data/apps, and the rest — so /data is a directory
+# Docker synthesises inside the container to hold them, and Docker creates it as root.
+# Measured across the whole test fleet: `stat -c %u /data` returned 0 on all 15 running
+# Hubs, on plain uid-1000 installs exactly as on root-owned ones. It is a constant, not a
+# signal, and reading it would have dropped every node to root the moment the variable
+# went unset.
+#
+# The bind-mounted config file DOES carry the install's identity, because it is the host's
+# own file. Across those same 15 nodes its owner matched the uid each Hub was actually
+# running as, every time: 1000 on the user installs, 1001 where the operator account is
+# 1001, 0 on the three root-owned installs — the crash-loop case this default exists for.
+#
+# /data/state is the fallback for a first boot that has no env file yet; a literal 1000
+# only if neither exists, which is the old behaviour.
 DATA_UID=""
 DATA_GID=""
-if [ -d /data ]; then
-  DATA_UID="$(stat -c %u /data 2>/dev/null || echo '')"
-  DATA_GID="$(stat -c %g /data 2>/dev/null || echo '')"
-fi
+for _probe in /data/.env /data/state; do
+  if [ -e "$_probe" ]; then
+    DATA_UID="$(stat -c %u "$_probe" 2>/dev/null || echo '')"
+    DATA_GID="$(stat -c %g "$_probe" 2>/dev/null || echo '')"
+    [ -n "$DATA_UID" ] && break
+  fi
+done
+unset _probe
 
 HUB_UID="${CI_HUB_CONTAINER_UID:-${DATA_UID:-1000}}"
 HUB_GID="${CI_HUB_CONTAINER_GID:-${DATA_GID:-1000}}"
