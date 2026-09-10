@@ -32,8 +32,11 @@ import { toAppCommandFailureResult } from './commands/app-lifecycle-errors';
 import type { CommandExecutionContext } from './commands/command';
 import { assertHostDevicesAvailable } from './commands/host-device-preflight';
 import { extractComposeImages } from './commands/install-app-command';
-import { toCheckResult, planImages } from './planning/install-plan';
+import { toCheckResult, planImages, planPorts, planFormFields } from './planning/install-plan';
 import type { InstallPlan, InstallPlanChecks } from './planning/install-plan.types';
+import { buildComposePortRequests, buildMainPortRequest, type PortRequestInput } from './planning/port-requests';
+import { PortManagerService } from '../network/port-manager.service';
+import { EnvUtils } from '../env/env.utils';
 import { appFormSchema } from './dto/app-lifecycle.dto';
 import { INSTALL_PIPELINE_MUTEX_KEY } from '@/common/constants';
 import { APP_ASYNC_MUTEX } from '@/utils/mutex/mutex.module';
@@ -962,6 +965,8 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
 
     const { architecture } = this.config.getConfig();
     const entitlements = this.moduleRef.get(MarketplaceEntitlementService, { strict: false });
+    const portManager = this.moduleRef.get(PortManagerService, { strict: false });
+    const envUtils = this.moduleRef.get(EnvUtils, { strict: false });
 
     const [configValidation, entitlement, hostDevices, archCheck, composeJson] = await Promise.all([
       this.validateAppConfig(appUrn, form),
@@ -972,6 +977,29 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     ]);
 
     const images = composeJson.content ? await planImages(this.dockerService, extractComposeImages(composeJson.content)) : [];
+
+    // Parsed the same way `validateAppConfig`/`installApp` do; an invalid form still produces a
+    // usable (if empty) basis here — `checks.config` is what reports the validation failure.
+    const parsedForm = appFormSchema.safeParse(form ?? {});
+    const formValues = parsedForm.success ? (parsedForm.data as Record<string, unknown>) : {};
+
+    const portRequests: PortRequestInput[] = [];
+    const mainPortRequest = buildMainPortRequest(appInfo.port, parsedForm.success ? parsedForm.data.port : undefined);
+    if (mainPortRequest) {
+      portRequests.push(mainPortRequest);
+    }
+    if (composeJson.content) {
+      try {
+        portRequests.push(...buildComposePortRequests(composeJson.content));
+      } catch {
+        // Malformed compose — already surfaced via `checks.config`/`images`; the port plan just omits extras.
+      }
+    }
+
+    const [ports, formFields] = await Promise.all([
+      portManager ? planPorts(portManager, portRequests) : Promise.resolve([]),
+      envUtils ? planFormFields(this.appFilesManager, envUtils, appUrn, appInfo.form_fields ?? [], formValues) : Promise.resolve([]),
+    ]);
 
     const checks: InstallPlanChecks = {
       config: configValidation.valid ? { ok: true } : { ok: false, reason: configValidation.errors.map((e) => e.label).join(', ') },
@@ -990,6 +1018,8 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       appUrn,
       checks,
       images,
+      ports,
+      formFields,
       blocked: Object.values(checks).some((c) => !c.ok),
     };
   }
