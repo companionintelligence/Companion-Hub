@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // settings.json is read through node:fs and written through the env-helpers pair, so both are
 // mocked here. Nothing else in this file touches either.
@@ -9,7 +9,10 @@ vi.mock('node:fs', () => {
   return { default: { existsSync, readFileSync, promises }, existsSync, readFileSync, promises };
 });
 
-vi.mock('@/common/helpers/env-helpers', () => ({
+// Only the two fs writers are stubbed. resolveAllowErrorMonitoring stays real: it is the consent
+// precedence under test below, and a stub would make that test assert its own mock.
+vi.mock('@/common/helpers/env-helpers', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/common/helpers/env-helpers')>()),
   ensureSettingsJsonReady: vi.fn(async () => undefined),
   writeSettingsJsonFile: vi.fn(async () => undefined),
 }));
@@ -339,5 +342,77 @@ describe('ConfigurationService.mergeSettingsToDisk', () => {
 
     expect(JSON.parse(mockedWriteSettingsJsonFile.mock.calls[0][1] as string)).toEqual({ ciHubApiKey: 'portal-key', themeColor: 'blue' });
     expect(svc.logger.warn).not.toHaveBeenCalled();
+  });
+});
+
+describe('ConfigurationService — error-monitoring consent precedence', () => {
+  // The other half of the audited contradiction. generateSystemEnvFile resolved this key env-first
+  // and configure() resolved it settings-first, so the resolved env and the running config could
+  // disagree about a privacy control. Both now call resolveAllowErrorMonitoring; this pins the
+  // configure() half against the same truth table env-helpers.test.ts pins for the boot half.
+  const APPLIANCE_ENV: Record<string, string> = {
+    POSTGRES_HOST: 'db',
+    POSTGRES_DBNAME: 'hub',
+    POSTGRES_USERNAME: 'hub',
+    POSTGRES_PASSWORD: 'hub',
+    RABBITMQ_HOST: 'queue',
+    RABBITMQ_USERNAME: 'hub',
+    RABBITMQ_PASSWORD: 'hub',
+    INTERNAL_IP: '127.0.0.1',
+    CI_HUB_VERSION: '0.0.0',
+    JWT_SECRET: 'jwt',
+    CI_CLOUD_URL: 'https://cloud.example.com',
+    DOMAIN: 'example.com',
+    CI_HUB_APP_DATA_PATH: '/host/app-data',
+    CI_HUB_FORWARD_AUTH_URL: 'http://auth',
+    DEMO_MODE: 'false',
+    GUEST_DASHBOARD: 'false',
+    ALLOW_AUTO_THEMES: 'true',
+    PERSIST_TRAEFIK_CONFIG: 'false',
+    TZ: 'UTC',
+    ROOT_FOLDER_HOST: '/host',
+    ADVANCED_SETTINGS: 'false',
+    THEME_BASE: 'gray',
+    THEME_COLOR: 'blue',
+    EXPERIMENTAL_INSECURE_COOKIE: 'false',
+  };
+
+  // configure() spreads process.env over the .env map, so the environment half of the truth table
+  // has to be set there rather than in APPLIANCE_ENV.
+  function configureWith(setting: boolean | undefined, envValue: string) {
+    process.env.ALLOW_ERROR_MONITORING = envValue;
+
+    const svc = Object.create(ConfigurationService.prototype) as unknown as {
+      getEnvMap: () => Map<string, string>;
+      readPersistedSettings: () => Record<string, unknown>;
+      configure: () => { userSettings: { allowErrorMonitoring: boolean } };
+    };
+    svc.getEnvMap = () => new Map(Object.entries(APPLIANCE_ENV));
+    svc.readPersistedSettings = () => ({ allowErrorMonitoring: setting });
+
+    return svc.configure().userSettings.allowErrorMonitoring;
+  }
+
+  let savedEnvValue: string | undefined;
+
+  beforeEach(() => {
+    savedEnvValue = process.env.ALLOW_ERROR_MONITORING;
+  });
+
+  afterEach(() => {
+    if (savedEnvValue === undefined) delete process.env.ALLOW_ERROR_MONITORING;
+    else process.env.ALLOW_ERROR_MONITORING = savedEnvValue;
+  });
+
+  it("keeps the user's opt-out when the environment allows reporting", () => {
+    expect(configureWith(false, 'true')).toBe(false);
+  });
+
+  it("keeps the user's opt-in when the environment forbids reporting", () => {
+    expect(configureWith(true, 'false')).toBe(true);
+  });
+
+  it('takes the environment value when the user has never touched the switch', () => {
+    expect(configureWith(undefined, 'false')).toBe(false);
   });
 });
