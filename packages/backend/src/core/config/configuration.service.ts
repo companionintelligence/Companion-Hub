@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { type UserSettingsBody, parsePersistedSettings } from '@/app.dto';
 import { APP_DATA_DIR, APP_DIR, ARCHITECTURES, DATA_DIR, DEFAULT_LOCAL_DOMAIN } from '@/common/constants';
-import { ensureSettingsJsonReady, writeSettingsJsonFile } from '@/common/helpers/env-helpers';
+import { ensureSettingsJsonReady, resolveAllowErrorMonitoring, writeSettingsJsonFile } from '@/common/helpers/env-helpers';
 import {
   DEFAULT_POOL_HEALTH_POLL_SECONDS,
   DEFAULT_POOL_LOCAL_AFFINITY,
@@ -279,11 +279,11 @@ export class ConfigurationService {
       isProduction: NODE_ENV === 'production',
       userSettings: {
         allowAutoThemes: env.data.ALLOW_AUTO_THEMES,
-        // The user's error-reporting consent. This used to be hardcoded `true`,
-        // which silently discarded the switch on every boot. settings.json wins
-        // over the generated .env because a settings write does not regenerate
-        // .env until the next startup.
-        allowErrorMonitoring: settingsValues.allowErrorMonitoring ?? env.data.ALLOW_ERROR_MONITORING,
+        // The user's error-reporting consent. This used to be hardcoded `true`, which
+        // silently discarded the switch on every boot. The precedence now lives in one
+        // shared resolver rather than being restated here — `generateSystemEnvFile` had
+        // written the opposite order into the resolved env.
+        allowErrorMonitoring: resolveAllowErrorMonitoring({ setting: settingsValues.allowErrorMonitoring, env: env.data.ALLOW_ERROR_MONITORING }),
         defaultAppCpuLimit: settingsValues.defaultAppCpuLimit,
         defaultAppMemoryLimit: settingsValues.defaultAppMemoryLimit,
         // Auto resource allocation is opt-out: undefined means enabled

@@ -150,6 +150,40 @@ function boolStr(val: boolean | undefined): string | undefined {
 }
 
 /**
+ * Error-reporting consent, and the ONLY place its precedence is decided: the persisted
+ * `allowErrorMonitoring` switch, then `ALLOW_ERROR_MONITORING`, then
+ * {@link DEFAULT_ALLOW_ERROR_MONITORING}. `generateSystemEnvFile` and
+ * `ConfigurationService.configure()` both call it, so the resolved env this function writes
+ * and the config the Hub actually runs on cannot disagree about what the user consented to.
+ * They did: `resolve()` handed the variable to the env and `configure()` handed it to the
+ * setting, and for a privacy control "whichever wins" is not an answer.
+ *
+ * Settings-first is deliberately NOT the env-first order `resolve()` gives every other key,
+ * and deliberately not the `resolveHubPoolEnabled` shape either. Those exist so a box
+ * owner's `.env` cannot be undone from the dashboard, and both are disable-only:
+ * `HUB_POOL_USER_DISABLED=true` switches pooling off and nothing switches it back on.
+ * `ALLOW_ERROR_MONITORING` is two-valued and defaults to `'true'`, so env-first would let a
+ * `true` inherited from a compose file, a stale shell, or an older build's
+ * `state/.env.resolved` override a user who explicitly opted out — an environment variable
+ * forcing consent ON, which is the one direction a privacy control must never move.
+ *
+ * The operator-of-the-box kill switch for reporting already exists in the disable-only
+ * shape. `CI_LOCAL_ONLY=true` and `CI_TELEMETRY=off` sit above the user's switch in
+ * `core/error-reporting/telemetry-consent.ts`, are enforced at Sentry init and again per
+ * event in `beforeSend`, and cannot be undone from the UI. This variable is the seed for a
+ * Hub whose user has never touched the switch — level 3 of that file's precedence list, not
+ * a fourth switch above it.
+ *
+ * Settings-first is also what keeps projecting the value into `state/.env.resolved` safe:
+ * under env-first the projection would be exactly the trap `resolveHubPoolEnabled` documents
+ * in `helpers/hub-pool.ts`, where one boot writes the flag to disk and every later boot reads
+ * its own output back as an operator decision.
+ */
+export function resolveAllowErrorMonitoring(sources: { setting: boolean | undefined; env: boolean }): boolean {
+  return sources.setting ?? sources.env;
+}
+
+/**
  * Resolves the RabbitMQ password without silently using the development default in
  * production. Production requires an explicit value; an explicit `admin` remains
  * compatible but returns a migration warning.
@@ -506,9 +540,11 @@ export const generateSystemEnvFile = async (): Promise<Map<string, string>> => {
     'ALLOW_AUTO_THEMES',
     resolve('ALLOW_AUTO_THEMES', { envMap, settingsVal: boolStr(settingsData.allowAutoThemes), fallback: DEFAULT_ALLOW_AUTO_THEMES }),
   );
+  // Not `resolve()`'s settingsVal slot: that slot is env-first, and this one key must not be.
+  const errorMonitoringEnv = resolve('ALLOW_ERROR_MONITORING', { envMap, fallback: DEFAULT_ALLOW_ERROR_MONITORING });
   envMap.set(
     'ALLOW_ERROR_MONITORING',
-    resolve('ALLOW_ERROR_MONITORING', { envMap, settingsVal: boolStr(settingsData.allowErrorMonitoring), fallback: DEFAULT_ALLOW_ERROR_MONITORING }),
+    String(resolveAllowErrorMonitoring({ setting: settingsData.allowErrorMonitoring, env: errorMonitoringEnv.toLowerCase() === 'true' })),
   );
   envMap.set(
     'PERSIST_TRAEFIK_CONFIG',

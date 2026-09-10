@@ -563,3 +563,77 @@ describe('ensureSettingsJsonReady', () => {
     expect(mockedFs.promises.chmod).toHaveBeenCalledWith('/data/state/settings.json', 0o666);
   });
 });
+
+describe('env-helpers — ALLOW_ERROR_MONITORING precedence', () => {
+  // The audited contradiction: resolve() gave the environment precedence for this key while
+  // ConfigurationService.configure() gave it to the setting, so the resolved env and the config the
+  // Hub actually runs on could report opposite consent. Both now call resolveAllowErrorMonitoring,
+  // which is settings-first — its docblock carries the argument for why this one key does not
+  // follow resolve()'s env-first order, and why CI_TELEMETRY/CI_LOCAL_ONLY are the operator
+  // switches that a dashboard toggle cannot undo.
+  let envSnapshot: NodeJS.ProcessEnv;
+
+  const setSettings = (settingsJson: Record<string, unknown>, dataEnv = '') => {
+    (mockedFs.promises.readFile as any).mockImplementation(async (filePath: string) => {
+      const p = String(filePath);
+      if (p.includes('settings.json')) return JSON.stringify(settingsJson);
+      if (p.includes('.env')) return dataEnv;
+      if (p.includes('seed')) return 'a'.repeat(64);
+      throw new Error(`Unexpected readFile: ${p}`);
+    });
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    envSnapshot = { ...process.env };
+
+    process.env.ROOT_FOLDER_HOST = '/home/user/ci-os-hub';
+    process.env.CI_CLOUD_URL = 'https://cloud.example.com';
+    delete process.env.ALLOW_ERROR_MONITORING;
+
+    mockedFs.existsSync.mockReturnValue(true);
+    (mockedFs.promises.writeFile as any).mockResolvedValue(undefined);
+  });
+
+  afterEach(() => {
+    for (const key of Object.keys(process.env)) {
+      if (!(key in envSnapshot)) delete process.env[key];
+    }
+    Object.assign(process.env, envSnapshot);
+  });
+
+  it("MUST keep the user's opt-out when the environment allows reporting", async () => {
+    process.env.ALLOW_ERROR_MONITORING = 'true';
+    setSettings({ allowErrorMonitoring: false });
+
+    const envMap = await generateSystemEnvFile();
+
+    expect(envMap.get('ALLOW_ERROR_MONITORING')).toBe('false');
+  });
+
+  it("MUST keep the user's opt-in when the environment forbids reporting", async () => {
+    process.env.ALLOW_ERROR_MONITORING = 'false';
+    setSettings({ allowErrorMonitoring: true });
+
+    const envMap = await generateSystemEnvFile();
+
+    expect(envMap.get('ALLOW_ERROR_MONITORING')).toBe('true');
+  });
+
+  it('MUST take the environment value when the user has never touched the switch', async () => {
+    process.env.ALLOW_ERROR_MONITORING = 'false';
+    setSettings({});
+
+    const envMap = await generateSystemEnvFile();
+
+    expect(envMap.get('ALLOW_ERROR_MONITORING')).toBe('false');
+  });
+
+  it('MUST fall back to the opt-out default when no source has an opinion', async () => {
+    setSettings({});
+
+    const envMap = await generateSystemEnvFile();
+
+    expect(envMap.get('ALLOW_ERROR_MONITORING')).toBe('true');
+  });
+});
