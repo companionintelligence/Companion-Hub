@@ -107,6 +107,30 @@ const sessionRefreshResponseSchema = z.object({
   issuedAt: z.number(),
 });
 
+/**
+ * Headless claim: the email the first operator is created for.
+ *
+ * The email is the only thing the caller supplies — the *authority* comes from the host-local
+ * device key on the request, so there is no password here to be a second, weaker way in.
+ */
+const hubClaimSchema = z.object({
+  email: z.string().trim().email(),
+});
+
+const hubClaimResponseSchema = z.object({
+  claimed: z.boolean(),
+  /** The operator's username (its normalized email). */
+  username: z.string(),
+});
+
+const hubClaimStatusResponseSchema = z.object({
+  /** At least one operator row exists, so the Hub can answer as somebody. */
+  claimed: z.boolean(),
+  operators: z.number(),
+  /** Paired with Portal: a device registration row and an organization id are both present. */
+  registered: z.boolean(),
+});
+
 const browserHandoffMintSchema = z.object({
   // Bounded so a rogue caller can't stuff a multi-KB blob into the (SQLite-backed)
   // ticket cache; legitimate Hub/app URLs are well under this.
@@ -132,6 +156,11 @@ export class BrowserHandoffMintDto extends createZodDto(browserHandoffMintRespon
 // Register
 export class RegisterBody extends createZodDto(credentialsSchema) {}
 export class RegisterDto extends createZodDto(registerResponseSchema) {}
+
+// Headless claim
+export class HubClaimBody extends createZodDto(hubClaimSchema) {}
+export class HubClaimDto extends createZodDto(hubClaimResponseSchema) {}
+export class HubClaimStatusDto extends createZodDto(hubClaimStatusResponseSchema) {}
 
 // Change username
 export class ChangeUsernameBody extends createZodDto(changeUsernameSchema) {}

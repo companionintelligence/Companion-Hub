@@ -28,6 +28,9 @@ import {
   DisableTotpBody,
   GetTotpUriBody,
   GetTotpUriDto,
+  HubClaimBody,
+  HubClaimDto,
+  HubClaimStatusDto,
   LoginBody,
   LoginDto,
   PasswordResetCompleteBody,
@@ -291,6 +294,102 @@ export class AuthController {
     }
 
     return RegisterDto.parse({ success: true }, { reportOnly: true });
+  }
+
+  /**
+   * The Hub's own state, for the one caller that can do something about it.
+   *
+   * Behind the device key rather than public: "this appliance has nobody on it" is exactly the
+   * sentence you would want before deciding to attack one, and the only caller who needs it —
+   * `cihub doctor` on the box itself — already holds the key.
+   */
+  @Get('/hub/claim')
+  @ApiResponse({ type: HubClaimStatusDto })
+  async hubClaimStatus(@Req() req: Request) {
+    this.requireDeviceKeyPrincipal(req);
+    const [operators, registration] = await Promise.all([this.userRepository.getOperators(), this.deviceRegistration.getFirstDeviceRegistration()]);
+
+    return HubClaimStatusDto.parse(
+      {
+        claimed: operators.length > 0,
+        operators: operators.length,
+        registered: Boolean(registration?.id) && Boolean(this.config.get('ciHubOrganizationId')),
+      },
+      { reportOnly: true },
+    );
+  }
+
+  /**
+   * Create the first operator on a registered-but-unclaimed Hub, without a browser.
+   *
+   * Until now the ONLY thing that could write that row was an interactive Portal login landing on
+   * `/api/auth/portal/callback` — `cihub register` writes the device key and the organization id
+   * and stops there, and `POST /register` cannot finish headlessly because Portal answers it with
+   * `requiresEmailVerification`. So every headless appliance came up registered, keyed, and unable
+   * to authenticate its own operator API. That is the gap this closes.
+   *
+   * It is deliberately not a new way IN. Three things gate it, and each is already true of the
+   * browser path it substitutes for:
+   *
+   *   1. The host-local device key. It lives in `<data-dir>/state/settings.json`, so presenting it
+   *      means the caller can already read that file — the same access `cihub` itself needs, and
+   *      strictly less than the root shell that could write the `user` table directly.
+   *   2. This Hub must be paired. Pairing is what proved org membership in the first place; a Hub
+   *      that has not done it has no organization for an operator to belong to.
+   *   3. There must be no operator yet. First-operator bootstrap is the ONE admission that skips
+   *      the Portal membership check (see `admitHubPerson`), so it must happen at most once —
+   *      after that, additional people go through Portal and get checked.
+   *
+   * The row itself is written by `admitHubPerson`, not here: the rules about who may become an
+   * operator on this appliance live in one place, and a second creation path would be a second
+   * place for them to drift.
+   *
+   * Not `@UseGuards(AuthGuard)` on purpose — on an unclaimed Hub that guard's answer is the 409
+   * this route exists to clear.
+   */
+  @Post('/hub/claim')
+  @ApiResponse({ type: HubClaimDto })
+  async claimHub(@Body() body: HubClaimBody, @Req() req: Request) {
+    this.requireDeviceKeyPrincipal(req);
+
+    const registration = await this.deviceRegistration.getFirstDeviceRegistration();
+    if (!registration?.id || !this.config.get('ciHubOrganizationId')) {
+      throw new TranslatableError('AUTH_ERROR_HUB_NOT_REGISTERED', {}, HttpStatus.CONFLICT);
+    }
+
+    // Checked here as well as inside `admitHubPerson` so the refusal names the real reason. Left to
+    // the service, a second claim for a different address surfaces as "user not found", which reads
+    // as a lookup failure rather than "this Hub is already somebody's".
+    const operators = await this.userRepository.getOperators();
+    if (operators.length > 0) {
+      throw new TranslatableError('AUTH_ERROR_HUB_ALREADY_CLAIMED', {}, HttpStatus.CONFLICT);
+    }
+
+    // Empty issuer: `admitHubPerson` fills in this Hub's public Portal base URL. No subject, so it
+    // takes the local-bootstrap branch — the federated (iss, sub) link is written later, by the
+    // operator's first real Portal sign-in, which is the only thing that can prove a subject.
+    //
+    // That fill-in throws 503 when `CI_CLOUD_URL` is unset, which is left alone deliberately: a Hub
+    // that got past the registration gate above and still has no Portal URL is genuinely broken,
+    // and "CI_CLOUD_URL is not configured" is a better answer than a claim that half-works.
+    const user = await this.authService.admitHubPerson({ issuer: '', subject: null, email: body.email, emailVerified: false });
+
+    this.logger.info(`Hub claimed headlessly by device key for ${hashEmailForLog(user.username)}`);
+
+    return HubClaimDto.parse({ claimed: true, username: user.username }, { reportOnly: true });
+  }
+
+  /**
+   * The device key, and nothing else, admits a caller to the claim routes.
+   *
+   * A session would be circular (there is no operator to hold one) and the CLI JWT is not accepted
+   * because it is minted by the backend for its own callers rather than presented by an operator
+   * who can read the state file.
+   */
+  private requireDeviceKeyPrincipal(req: Request) {
+    if (req.hubPrincipal !== 'portal-device') {
+      throw new TranslatableError('AUTH_ERROR_HUB_CLAIM_REQUIRES_DEVICE_KEY', {}, HttpStatus.UNAUTHORIZED);
+    }
   }
 
   @Post('/logout')

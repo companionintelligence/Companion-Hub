@@ -69,6 +69,7 @@ describe('parseFleetArgs', () => {
     expect(() => parseFleetArgs(['install', '--codeword', 'xyz'])).toThrow(/Unknown flag '--codeword'/);
     expect(() => parseFleetArgs(['install', '--codeword=xyz'])).toThrow(/Unknown flag/);
     expect(() => parseFleetArgs(['install', '--pool-pinned=123456'])).toThrow(/Unknown flag/);
+    expect(() => parseFleetArgs(['install', '--claim-emails=a@b.co'])).toThrow(/Unknown flag/);
     expect(() => parseFleetArgs(['status', '--nodes-only=a'])).toThrow(/Unknown flag/);
     expect(() => parseFleetArgs(['scan', '--timeouts=500'])).toThrow(/Unknown flag/);
   });
@@ -76,6 +77,10 @@ describe('parseFleetArgs', () => {
   it('still takes every value flag in both spellings', () => {
     expect(parseFleetArgs(['install', '--code', 'ABC123']).code).toBe('ABC123');
     expect(parseFleetArgs(['install', '--code=ABC123']).code).toBe('ABC123');
+    // Registering a node is not the same as claiming it: without this the fleet stands up Hubs that
+    // are paired, keyed, and unable to authenticate anybody.
+    expect(parseFleetArgs(['install', '--claim-email', 'owner@example.com']).claimEmail).toBe('owner@example.com');
+    expect(parseFleetArgs(['install', '--claim-email=owner@example.com']).claimEmail).toBe('owner@example.com');
     expect(parseFleetArgs(['install', '--pool-pin', '123456']).poolPin).toBe('123456');
     expect(parseFleetArgs(['install', '--pool-pin=123456']).poolPin).toBe('123456');
     expect(parseFleetArgs(['install', '--join-pool=hub.tail.ts.net']).joinPool).toBe('hub.tail.ts.net');

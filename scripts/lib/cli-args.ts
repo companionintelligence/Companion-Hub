@@ -90,6 +90,38 @@ export function normalizeRegisterFlags(args: string[]): RegisterHubOptions & { e
   };
 }
 
+/**
+ * `cihub claim [env] [--email <addr>]`.
+ *
+ * Both spellings of the flag are accepted — `--email a@b.c` and `--email=a@b.c` — because half the
+ * CLI already takes both and a claim that silently ran with no email would prompt on a fleet run
+ * that has no terminal (see `readApiKeyFlag`, which was written after exactly that bug).
+ */
+export function normalizeClaimFlags(args: string[]): { email?: string; env: HubEnv } {
+  let email: string | undefined;
+  const remaining: string[] = [];
+
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i] ?? '';
+    if (arg === '--email') {
+      const next = args[i + 1];
+      if (!next || next.startsWith('-')) {
+        usageAndExit(`Usage: ${BASE_COMMAND} claim [env] [--email <you@example.com>]`);
+      }
+      email = next;
+      i++;
+      continue;
+    }
+    if (arg.startsWith('--email=')) {
+      email = arg.slice('--email='.length);
+      continue;
+    }
+    remaining.push(arg);
+  }
+
+  return { email, env: resolveEnvFromArgs(remaining) };
+}
+
 /** Non-local appliance stacks default to detached so `cihub up dev` returns after boot. */
 export function resolveUpStartMode(
   env: HubEnv,

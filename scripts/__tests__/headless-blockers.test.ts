@@ -141,3 +141,66 @@ describe('the standalone CLI build produces what the installer asks for', () => 
     expect(existsSync(join(repoRoot, 'scripts/build-standalone-cli.cjs'))).toBe(true);
   });
 });
+
+/**
+ * The seventh blocker, and the one that survived all six above.
+ *
+ * Every fix in this file makes a command RUN unattended. This one is about what running it leaves
+ * behind: `cihub register` completes, exits 0, and produces a Hub with no operator — the row is
+ * written only by an interactive Portal login, which is exactly what a headless install does not
+ * have. Fourteen nodes came up "installed" and could not authenticate their own API.
+ *
+ * These assert the shape of the flow rather than its wording: register alone must not be the end of
+ * the story, the claim must be non-interactive, and the state must be caught before the install
+ * reports success.
+ */
+describe('registered is not claimed', () => {
+  it('gives the fleet installer a claim step of its own', () => {
+    const src = read('scripts/lib/fleet-install.ts');
+    // Not folded into bringUpScript: a claim that cannot run must be reported as its own step, not
+    // hidden inside the one that says "hub up + register".
+    expect(src).toContain('claimHubScript');
+    expect(src).toContain("'claim hub'");
+  });
+
+  it('never guesses whose Hub it is', () => {
+    // Absent `--claim-email` the step is SKIPPED and says so. Inventing an address would silently
+    // decide who owns fourteen appliances.
+    const src = read('scripts/lib/fleet-install.ts');
+    expect(src).toMatch(/if \(opts\.claimEmail\)/);
+    expect(src).toContain('skipped: true');
+  });
+
+  it('claims without a prompt, the way register does with --code', () => {
+    const src = read('scripts/lib/cli-claim.ts');
+    expect(src).toContain('--email');
+    // Same refusal `resolvePairingCode` makes: no terminal and no flag is an immediate exit, never
+    // a read on a stdin that will never answer.
+    expect(src).toMatch(/if \(!isTTY\)[\s\S]{0,400}process\.exit\(2\)/);
+  });
+
+  it('makes doctor fail a Hub that is registered and unclaimed', () => {
+    // The check that turns a silent half-install into a non-zero exit code an installer can read.
+    const src = read('scripts/lib/cli-doctor.ts');
+    expect(src).toContain('runOperatorDoctorSection');
+    expect(src).toContain('operatorSection.failureCount');
+  });
+
+  it('answers a valid key on an operator-less Hub with something other than a login error', () => {
+    // The whole misdiagnosis in one assertion: the guard used to say "you must be logged in" to a
+    // correct device key, so twelve nodes were treated as key failures for a week.
+    const guard = read('packages/backend/src/modules/auth/auth.guard.ts');
+    expect(guard).toContain('AUTH_ERROR_HUB_NOT_CLAIMED');
+    expect(guard).toMatch(/hubUnclaimed[\s\S]{0,200}HttpStatus\.CONFLICT/);
+  });
+
+  it('never installs an undefined principal for a host-local credential', () => {
+    const middleware = read('packages/backend/src/modules/auth/auth.middleware.ts');
+    // Both host-local arms go through one helper, so neither can drift back to `req.user = user`
+    // with no null check.
+    expect(middleware).toContain('attachFirstOperator');
+    expect(middleware).not.toMatch(
+      /const user = await this\.loadUserResilient\(\(\) => this\.userRepository\.getFirstOperator\(\)\);\s*\n\s*req\.user = user;/,
+    );
+  });
+});

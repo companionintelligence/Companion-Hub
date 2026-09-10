@@ -7,7 +7,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { bringUpScript, installCihubScript, joinPoolScript, pullModelScript, updateHubScript } from '../lib/fleet-install.js';
+import { bringUpScript, claimHubScript, installCihubScript, joinPoolScript, pullModelScript, updateHubScript } from '../lib/fleet-install.js';
 
 describe('installCihubScript', () => {
   const script = installCihubScript();
@@ -58,6 +58,30 @@ describe('bringUpScript', () => {
     const script = bringUpScript("pass'word12", "AB'123");
     expect(script).toContain("'pass'\\''word12'");
     expect(script).toContain("'AB'\\''123'");
+  });
+});
+
+describe('claimHubScript', () => {
+  /**
+   * The step `docs/fleet-setup.md` never listed. "install, register, install models, then pair"
+   * leaves out the one thing that creates an operator, which is why this fleet ended up with twelve
+   * registered Hubs that could not authenticate anybody.
+   */
+  it('claims for the address given, non-interactively', () => {
+    const script = claimHubScript('owner@example.com');
+
+    expect(script).toContain("cihub claim --email 'owner@example.com'");
+    // No prompt fallback: `ssh -n` has no TTY, and `claim` without --email would sit on a stdin
+    // that never answers.
+    expect(script).toContain('--email');
+  });
+
+  it('escapes a quote in the address rather than breaking out of the string', () => {
+    expect(claimHubScript("o'brien@example.com")).toContain("'o'\\''brien@example.com'");
+  });
+
+  it('stops the step on failure instead of reporting the marker anyway', () => {
+    expect(claimHubScript('owner@example.com').startsWith('set -e')).toBe(true);
   });
 });
 

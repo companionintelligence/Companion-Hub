@@ -93,6 +93,39 @@ export class AuthMiddleware implements NestMiddleware {
     }
   }
 
+  /**
+   * Speak as the first operator on behalf of a host-local credential — or, when there is no
+   * operator to speak as, refuse to install a principal and record WHY.
+   *
+   * Both host-local arms (the Portal device key and the CLI JWT) used to assign the result of
+   * `getFirstOperator()` to `req.user` unconditionally and call `next()`. On a Hub that had been
+   * registered with `cihub register` but never claimed by a browser login, the `user` table is
+   * empty, so that assignment was `undefined` and `AuthGuard` answered SYSTEM_ERROR_YOU_MUST_BE
+   * _LOGGED_IN — a 401 on a *valid* key. Correlation was 12/12 across the Hub Pool fleet, and the
+   * whole fleet was diagnosed as having bad or missing device keys for it.
+   *
+   * The fix is to fail closed and say the true thing: no principal is installed (so nothing
+   * downstream can mistake `undefined` for an authenticated caller), and `hubUnclaimed` tells
+   * `AuthGuard` to answer AUTH_ERROR_HUB_NOT_CLAIMED / 409 instead.
+   *
+   * The diagnosis is carried on the request rather than thrown from here on purpose: this
+   * middleware runs on `*all` routes, including ones that need no user at all (`/api/health`,
+   * the OIDC returns, the Traefik forward-auth handler, and `POST /api/auth/hub/claim` — the one
+   * route whose entire job is to clear this condition, and which is reached with this very key).
+   * Throwing here would turn all of them into 409s and lock the Hub out of its own remedy.
+   */
+  private async attachFirstOperator(req: Request, principal: 'portal-device' | 'cli') {
+    const user = await this.loadUserResilient(() => this.userRepository.getFirstOperator());
+    req.hubPrincipal = principal;
+
+    if (!user) {
+      req.hubUnclaimed = true;
+      return;
+    }
+
+    req.user = user;
+  }
+
   private async loadSessionUser(userId: number) {
     const cached = this.sessionUserCache.get(userId);
     if (cached) {
@@ -168,14 +201,12 @@ export class AuthMiddleware implements NestMiddleware {
       // scope; until then this branch stays deliberately narrow.
       const ciHubApiKey = this.config.get('ciHubApiKey');
       if (ciHubApiKey && secretEquals(token, ciHubApiKey)) {
-        const user = await this.loadUserResilient(() => this.userRepository.getFirstOperator());
-        req.user = user;
         // Named, so the org-grant gate exempts this deliberately rather than by
         // accident — the exemption used to follow from having no `hubSessionId`,
         // which covered every arm that forgot to set one. Portal's own
         // GRANT_DENIED gate is what authorises a push, and that answer holds only
         // while the exemption stays this narrow.
-        req.hubPrincipal = 'portal-device';
+        await this.attachFirstOperator(req, 'portal-device');
         return next();
       }
 
@@ -184,11 +215,10 @@ export class AuthMiddleware implements NestMiddleware {
       try {
         const { sub } = jsonwebtoken.verify(token, jwtSecret) as { sub: string };
         if (sub === 'cli') {
-          const user = await this.loadUserResilient(() => this.userRepository.getFirstOperator());
-          req.user = user;
           // Host-local by construction: the JWT is signed with `jwtSecret`, which
-          // lives in the same state file as the device key.
-          req.hubPrincipal = 'cli';
+          // lives in the same state file as the device key — so it has the same
+          // empty-`user` hole, and gets the same honest refusal.
+          await this.attachFirstOperator(req, 'cli');
         }
 
         return next();
