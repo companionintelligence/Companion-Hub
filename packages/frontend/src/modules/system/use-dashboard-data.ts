@@ -388,6 +388,44 @@ export interface PoolReach {
   peerInFlight: number | null;
 }
 
+/**
+ * Where OUR OUTBOUND work actually went, as label→count.
+ *
+ * ⚠ `entry.node` DOES NOT MEAN THE SAME THING IN EVERY ROW, which is why this cannot just count
+ * them. The field's doc on `hub-pool-routing-log.service.ts` states it: for `outbound` it is the
+ * node that served the request (`'local'` for this one, `null` when nothing did); for `inbound`
+ * it is the peer that SENT us work.
+ *
+ * Counting every row made two false claims at once — a peer that gave us work charted as having
+ * done work for us (and on a fleet where every peer is inbound, those rows dominate), and each
+ * request nobody would take credited to the local node via `?? 'local'`.
+ *
+ * `unplacedLabel` is passed in rather than hardcoded so the caller can translate it.
+ */
+export function routingByNode(entries: RoutingLogEntry[], unplacedLabel: string): Map<string, number> {
+  const byNode = new Map<string, number>();
+  let unplaced = 0;
+
+  for (const entry of entries) {
+    if (entry.direction !== 'outbound') continue;
+
+    const node = entry.node?.split('.')[0];
+
+    if (!node) {
+      unplaced += 1;
+      continue;
+    }
+
+    byNode.set(node, (byNode.get(node) ?? 0) + 1);
+  }
+
+  // Counted under its own label rather than folded into a node or dropped: "we tried and nobody
+  // took it" is a real outcome, and the one most worth seeing.
+  if (unplaced > 0) byNode.set(unplacedLabel, unplaced);
+
+  return byNode;
+}
+
 export function poolReach(peers: PoolPeerSummary[], local: PoolNodeSummary | undefined): PoolReach {
   const connected = peers.filter((peer) => peer.status === 'connected' && peer.enabled !== false);
   const servable = (backends: PoolBackend[] | undefined) =>

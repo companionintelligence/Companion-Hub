@@ -21,6 +21,7 @@ import {
   type PoolDirectionState,
   type PoolStatusSummary,
   type RoutingLogEntry,
+  routingByNode,
   routingLogKeys,
 } from '@/modules/system/use-dashboard-data';
 import { useTranslation } from 'react-i18next';
@@ -161,11 +162,7 @@ export function RoutingLog({ entries, state }: { entries: RoutingLogEntry[]; sta
 
   // Where requests went, as one bar. Answers "is the pool spreading work, or is one node
   // taking all of it" without reading every row.
-  const byNode = new Map<string, number>();
-  for (const entry of entries) {
-    const node = (entry.node ?? 'local').split('.')[0] || 'local';
-    byNode.set(node, (byNode.get(node) ?? 0) + 1);
-  }
+  const byNode = routingByNode(entries, t('DASHBOARD_ROUTING_UNPLACED'));
   const segments = [...byNode.entries()]
     .sort((a, b) => b[1] - a[1])
     .map(([label, value], index) => ({ label, value, tone: NODE_TONES[index % NODE_TONES.length] as Tone }));
