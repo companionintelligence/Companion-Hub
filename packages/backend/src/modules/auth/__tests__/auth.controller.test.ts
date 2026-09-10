@@ -4,6 +4,7 @@ import { LoggerService } from '@/core/logger/logger.service';
 import { UserRepository } from '@/modules/user/user.repository';
 import { RegistrationService } from '@/modules/registration/registration.service';
 import { DeviceRegistrationRepository } from '@/modules/registration/device-registration.repository';
+import { HttpStatus } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import type { Request, Response } from 'express';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -1962,6 +1963,130 @@ describe('AuthController', () => {
 
       expect(res.cookie).not.toHaveBeenCalled();
       expect(res.redirect).toHaveBeenCalledWith('/');
+    });
+  });
+
+  /**
+   * `cihub claim` — the headless way to create a Hub's first operator.
+   *
+   * The gap it closes: `cihub register` writes the device key and the organization id and stops. The
+   * `user` row was only ever written by an interactive Portal login, and `POST /api/auth/register`
+   * cannot finish unattended because Portal answers it with `requiresEmailVerification`. So a Hub
+   * installed over SSH came up paired, keyed, and unable to authenticate its own operator API.
+   *
+   * These tests are about the three gates, because a claim route that is one gate short is a way in
+   * rather than a way out: the host-local device key, a Hub that is actually paired, and no existing
+   * operator. And about reuse: the row must come from `admitHubPerson`, so the rules on who may
+   * become an operator have one home and cannot drift.
+   */
+  describe('POST /auth/hub/claim', () => {
+    const claimReq = (over: Partial<Request> = {}) => ({ hubPrincipal: 'portal-device', ...over }) as unknown as Request;
+
+    const keyOf = (error: unknown) => {
+      const response = (error as TranslatableError).getResponse();
+      return typeof response === 'object' && response ? (response as { message?: string }).message : String(response);
+    };
+
+    beforeEach(() => {
+      config.get.mockReturnValue('org-1' as never);
+      deviceRegistration.getFirstDeviceRegistration.mockResolvedValue({ id: 'org-1' } as never);
+      userRepository.getOperators.mockResolvedValue([] as never);
+    });
+
+    it('creates the first operator through admitHubPerson', async () => {
+      authService.admitHubPerson.mockResolvedValue({ id: 1, username: 'owner@example.com' } as never);
+
+      const result = await authController.claimHub({ email: 'Owner@Example.com' } as never, claimReq());
+
+      expect(result).toEqual({ claimed: true, username: 'owner@example.com' });
+      // Not a second user-creation path. `admitHubPerson` owns the first-operator bootstrap rule (the
+      // one admission that skips the Portal membership check), so this route asks it rather than
+      // writing a row of its own.
+      expect(authService.admitHubPerson).toHaveBeenCalledWith({ issuer: '', subject: null, email: 'Owner@Example.com', emailVerified: false });
+    });
+
+    it('refuses a caller who did not present the host-local device key', async () => {
+      // Pairing proves the ORG. The device key proves you are ON THE HUB — it lives in
+      // state/settings.json, so presenting it means you could already read the Hub's credentials off
+      // the disk. Without it this route would let anyone who can reach port 5002 own the appliance.
+      for (const principal of [undefined, 'session', 'cli'] as const) {
+        const error = await authController.claimHub({ email: 'a@b.co' } as never, claimReq({ hubPrincipal: principal })).catch((err) => err);
+
+        expect(keyOf(error)).toBe('AUTH_ERROR_HUB_CLAIM_REQUIRES_DEVICE_KEY');
+        expect((error as TranslatableError).getStatus()).toBe(HttpStatus.UNAUTHORIZED);
+      }
+      expect(authService.admitHubPerson).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['no device registration row', null, 'org-1'],
+      ['no organization id in settings', { id: 'org-1' }, null],
+    ])('refuses a Hub that is not registered: %s', async (_label, registration, orgId) => {
+      deviceRegistration.getFirstDeviceRegistration.mockResolvedValue(registration as never);
+      config.get.mockReturnValue(orgId as never);
+
+      const error = await authController.claimHub({ email: 'a@b.co' } as never, claimReq()).catch((err) => err);
+
+      expect(keyOf(error)).toBe('AUTH_ERROR_HUB_NOT_REGISTERED');
+      expect((error as TranslatableError).getStatus()).toBe(HttpStatus.CONFLICT);
+      expect(authService.admitHubPerson).not.toHaveBeenCalled();
+    });
+
+    it('refuses a second operator, and says which condition refused it', async () => {
+      // The whole safety of the bootstrap is that it happens ONCE: after the first operator exists,
+      // everyone else goes through Portal and gets membership-checked. A claim that could run twice
+      // would be a standing way to mint an unchecked operator on a working appliance.
+      userRepository.getOperators.mockResolvedValue([{ id: 1, username: 'owner@example.com' }] as never);
+
+      const error = await authController.claimHub({ email: 'someone-else@example.com' } as never, claimReq()).catch((err) => err);
+
+      expect(keyOf(error)).toBe('AUTH_ERROR_HUB_ALREADY_CLAIMED');
+      expect((error as TranslatableError).getStatus()).toBe(HttpStatus.CONFLICT);
+      expect(authService.admitHubPerson).not.toHaveBeenCalled();
+    });
+
+    it('is idempotent for the address that already holds the Hub', async () => {
+      // Re-running an installer must not create a second row, and must not silently succeed either:
+      // the refusal is the same one, and it is what lets `cihub claim` exit 0 without acting.
+      userRepository.getOperators.mockResolvedValue([{ id: 1, username: 'owner@example.com' }] as never);
+
+      const error = await authController.claimHub({ email: 'owner@example.com' } as never, claimReq()).catch((err) => err);
+
+      expect(keyOf(error)).toBe('AUTH_ERROR_HUB_ALREADY_CLAIMED');
+      expect(authService.admitHubPerson).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('GET /auth/hub/claim', () => {
+    it('reports the operator count and whether the Hub is paired', async () => {
+      userRepository.getOperators.mockResolvedValue([{ id: 1 }, { id: 2 }] as never);
+      deviceRegistration.getFirstDeviceRegistration.mockResolvedValue({ id: 'org-1' } as never);
+      config.get.mockReturnValue('org-1' as never);
+
+      await expect(authController.hubClaimStatus({ hubPrincipal: 'portal-device' } as unknown as Request)).resolves.toEqual({
+        claimed: true,
+        operators: 2,
+        registered: true,
+      });
+    });
+
+    it('separates "no operator" from "not registered", which need different next steps', async () => {
+      userRepository.getOperators.mockResolvedValue([] as never);
+      deviceRegistration.getFirstDeviceRegistration.mockResolvedValue(null as never);
+      config.get.mockReturnValue(null as never);
+
+      await expect(authController.hubClaimStatus({ hubPrincipal: 'portal-device' } as unknown as Request)).resolves.toEqual({
+        claimed: false,
+        operators: 0,
+        registered: false,
+      });
+    });
+
+    it('does not tell an unkeyed caller whether this appliance has an owner', async () => {
+      // "This Hub has nobody on it" is the first sentence of an attack plan, and the only caller that
+      // needs it — `cihub doctor` on the box — already holds the key.
+      await expect(authController.hubClaimStatus({} as unknown as Request)).rejects.toBeInstanceOf(TranslatableError);
+      expect(userRepository.getOperators).not.toHaveBeenCalled();
     });
   });
 });

@@ -47,6 +47,13 @@ export interface FleetArgs {
   dataDir: string;
   /** Portal pairing code for `install`. Six characters. */
   code?: string;
+  /**
+   * CI Account address each installed Hub is claimed for, creating its first operator.
+   *
+   * Absent means the claim step is skipped and reported as skipped — never guessed. A Hub left
+   * unclaimed is registered, keyed, and unable to authenticate anybody.
+   */
+  claimEmail?: string;
   /** Postgres password for the appliance seed. Never logged. */
   postgresPassword?: string;
   /** Pair each installed node into this Hub's pool. */
@@ -86,6 +93,7 @@ export function parseFleetArgs(argv: readonly string[]): FleetArgs {
     backends: [],
     dataDir: '/var/lib/companion-hub',
     code: undefined,
+    claimEmail: process.env.CIHUB_CLAIM_EMAIL || undefined,
     postgresPassword: process.env.CIHUB_POSTGRES_PASSWORD || undefined,
     joinPool: undefined,
     poolPin: undefined,
@@ -134,6 +142,7 @@ export function parseFleetArgs(argv: readonly string[]): FleetArgs {
     else if (isFlag('--user')) args.user = readValue('--user');
     else if (isFlag('--data-dir')) args.dataDir = readValue('--data-dir');
     else if (isFlag('--code')) args.code = readValue('--code');
+    else if (isFlag('--claim-email')) args.claimEmail = readValue('--claim-email');
     else if (isFlag('--join-pool')) args.joinPool = readValue('--join-pool');
     else if (isFlag('--pool-pin')) args.poolPin = readValue('--pool-pin');
     else if (arg === '--hub') args.hub = true;
@@ -541,6 +550,11 @@ async function runInstall(args: FleetArgs): Promise<void> {
   if (!args.execute) {
     console.log(colorize('Dry run — nothing will be installed. Add --execute to apply.', 'dim'));
     console.log(`  would install on ${run.length} node(s): ${run.map((n) => n.name).join(', ')}`);
+    if (args.claimEmail) {
+      console.log(`  each would then be claimed for ${args.claimEmail}`);
+    } else {
+      console.log(colorize('  no --claim-email: each Hub would be left registered but with no operator', 'yellow'));
+    }
     if (args.joinPool) console.log(`  each would then pair into ${args.joinPool}`);
     if (canMint) {
       console.log(colorize(`  would mint a pairing code per node as ${storedLogin?.orgSlug ?? storedLogin?.orgId}`, 'dim'));
@@ -594,6 +608,7 @@ async function runInstall(args: FleetArgs): Promise<void> {
       {
         postgresPassword: args.postgresPassword,
         pairingCode,
+        claimEmail: args.claimEmail,
         joinPool: args.joinPool,
         poolPin: args.poolPin,
       },

@@ -103,6 +103,22 @@ export function bringUpScript(postgresPassword: string, pairingCode: string): st
 }
 
 /**
+ * Give the freshly registered Hub its first operator.
+ *
+ * `docs/fleet-setup.md` describes the one-node path as *"install, register, install models, then
+ * pair"* — and that list is missing a step, which is why this fleet ended up with twelve registered
+ * Hubs that could not authenticate anybody. `register` writes the device key; the operator row was
+ * only ever written by a person signing in through Portal in a browser, which is precisely what a
+ * fleet install does not have. `cihub claim` is that step, headless.
+ *
+ * Re-runnable: a Hub that already has an operator reports it and exits 0, so a replayed install
+ * does not fail here.
+ */
+export function claimHubScript(email: string): string {
+  return ['set -e', `cihub claim --email '${email.replace(/'/g, "'\\''")}'`, 'echo "hub-claim-complete"'].join('\n');
+}
+
+/**
  * Join this node into a pool by pairing with an existing Hub.
  *
  * The PIN is minted on the RECEIVING Hub and typed on the joining one — the opposite direction from
@@ -182,6 +198,14 @@ async function step(name: string, target: SshTarget, script: string, marker: str
 export interface InstallOptions {
   postgresPassword: string;
   pairingCode: string;
+  /**
+   * CI Account address to claim each Hub for, creating its first operator.
+   *
+   * Optional, and skipped rather than assumed when absent: a claim writes the one row that decides
+   * who this appliance belongs to, and guessing an address for fourteen machines is not a default
+   * anything should hold.
+   */
+  claimEmail?: string;
   version?: string;
   joinPool?: string;
   poolPin?: string;
@@ -242,6 +266,20 @@ export async function installNode(
   const up = await step('hub up + register', target, bringUpScript(opts.postgresPassword, opts.pairingCode), 'hub-up-complete', 20 * 60_000);
   steps.push(up);
   if (!up.ok) return { node: node.name, ok: false, steps };
+
+  // Registered is not claimed. Without this the node comes up paired, keyed, and answering 409
+  // AUTH_ERROR_HUB_NOT_CLAIMED to its own operator API — the state twelve of this fleet's nodes
+  // were in, misread as bad device keys for a week.
+  if (opts.claimEmail) {
+    steps.push(await step('claim hub', target, claimHubScript(opts.claimEmail), 'hub-claim-complete', 2 * 60_000));
+  } else {
+    steps.push({
+      name: 'claim hub',
+      ok: true,
+      skipped: true,
+      detail: 'no --claim-email given; this Hub has no operator until one is created',
+    });
+  }
 
   // The audit file. Best-effort by design: a node that ends up without a timer is
   // still an installed Hub, and the step says which of the three ways it fell short

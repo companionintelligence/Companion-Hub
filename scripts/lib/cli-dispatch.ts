@@ -7,6 +7,7 @@
 import { runCatalogLogin, runCatalogLogout, runCatalogSubmit } from './catalog-submit.js';
 import {
   normalizeCliArgs,
+  normalizeClaimFlags,
   normalizeDetachedFlag,
   normalizeRegisterFlags,
   printRemovedCommand,
@@ -16,6 +17,7 @@ import {
 } from './cli-args.js';
 import { runApiKeyCommand } from './cli-api-key.js';
 import { runAppCommand } from './cli-app.js';
+import { claimHub } from './cli-claim.js';
 import { doctorHub, logsHub, showStatus, uninstallHub } from './cli-doctor.js';
 import { printConfig, setupHub, startHub } from './cli-lifecycle.js';
 import { runModelsCommand, runPublicWebCommand, setMcpState } from './cli-models.js';
@@ -73,6 +75,12 @@ export async function runCli(rawArgs: string[]) {
   if (first === 'register') {
     const registerArgs = normalizeRegisterFlags(args.slice(1));
     await registerHub(registerArgs.env, { fresh: registerArgs.fresh, code: registerArgs.code });
+    return;
+  }
+
+  if (first === 'claim') {
+    const claimArgs = normalizeClaimFlags(args.slice(1));
+    await claimHub(claimArgs.env, { email: claimArgs.email });
     return;
   }
 
