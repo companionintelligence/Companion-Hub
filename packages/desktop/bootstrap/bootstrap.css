@@ -1,0 +1,618 @@
+/*
+ * Desktop bootstrap splash — the first half of the Hub's startup screen.
+ *
+ * The second half is StartupScreen in components/hub-status/hub-status.tsx,
+ * which takes over the moment the Hub API answers. This page is built to be
+ * indistinguishable from it: same shell (logo, "CI Hub", centred max-w-2xl
+ * card), same heading and copy, same progress bar, same per-service rows. The
+ * handover mid-startup should look like nothing happened.
+ *
+ * It cannot import the frontend's Tailwind build or reach Google Fonts (see the
+ * CSP in tauri.conf.json: `font-src 'self' data:`), so the design system is
+ * transcribed rather than invented, with each value's source noted:
+ *
+ *   - Colors are @companionintelligence/tokens v0.3 hex, copied from that
+ *     package's tokens.css (:root = light, .dark = dark). The palette that used
+ *     to be here (#3ec9e0 cyan, #8aa8b5 muted) was in no token file at all.
+ *   - Radii are the Hub's own overrides from frontend/src/styles/globals.css
+ *     (4 / 6 / 9px), not the tokens default.
+ *   - .card mirrors SetupCard, .btn mirrors Button.tsx, and .service-row is the
+ *     row StartupScreen renders per container.
+ *
+ * Manrope is vendored next to this file (assets/manrope-latin-var.woff2, from
+ * @companionintelligence/fonts) because the app's Google Fonts <link> is
+ * blocked here — without it this page fell back to system-ui while every other
+ * Hub surface rendered in Manrope.
+ */
+
+@font-face {
+  font-family: "Manrope";
+  font-style: normal;
+  font-weight: 200 800;
+  font-display: swap;
+  src: url("./assets/manrope-latin-var.woff2") format("woff2");
+}
+
+:root {
+  color-scheme: dark;
+
+  --background: #041620;
+  --foreground: #e8f2f4;
+  --card: #0c323c;
+  --card-foreground: #e8f2f4;
+  --primary: #c5e8dc;
+  --primary-foreground: #041620;
+  --muted: #073038;
+  --muted-foreground: #a3babf;
+  --accent: #0a2e38;
+  --accent-foreground: #e8f2f4;
+  --border: #073038;
+  --input: #0a2e38;
+  --destructive: #ef7070;
+  --success: #34d399;
+  --warning: #fbbf24;
+
+  /* muted at low alpha — the `bg-muted/30` inner surface of the startup screen */
+  --panel: rgba(7, 48, 56, 0.45);
+  --shadow-md: 0 1px 3px rgba(0, 0, 0, 0.24), 0 6px 18px -8px rgba(0, 0, 0, 0.32);
+  --background-lift:
+    radial-gradient(1200px circle at 50% -20%, rgba(200, 230, 217, 0.08), transparent 55%),
+    radial-gradient(800px circle at 15% 10%, rgba(4, 22, 32, 0.5), transparent 50%);
+
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 9px;
+
+  --font-sans: "Manrope", system-ui, -apple-system, sans-serif;
+  --font-letter-spacing: 0.2pt;
+  --font-word-spacing: 0.4pt;
+
+  /* Set by bootstrap.js once the platform is known, exactly as Titlebar does. */
+  --titlebar-height: 0px;
+}
+
+/*
+ * The desktop app's stored theme defaults to `system` and lives in the Hub
+ * origin's localStorage, which this page (tauri://) cannot read — so follow the
+ * OS the same way that default resolves to. Without this, a light-mode desktop
+ * saw a near-black splash flip to a light app the moment the Hub came up.
+ */
+@media (prefers-color-scheme: light) {
+  :root {
+    color-scheme: light;
+
+    --background: #f3faf7;
+    --foreground: #0a222e;
+    --card: #f0f9f5;
+    --card-foreground: #0a222e;
+    --primary: #0a6358;
+    --primary-foreground: #f0fdf4;
+    --muted: #e8f2ec;
+    --muted-foreground: #3a524b;
+    --accent: #edf6f0;
+    --accent-foreground: #0a222e;
+    --border: #dfece6;
+    --input: #dfece6;
+    --destructive: #ee3533;
+    --success: #0f5132;
+    --warning: #855500;
+
+    --panel: rgba(232, 242, 236, 0.55);
+    --shadow-md: 0 1px 3px rgba(4, 22, 32, 0.05), 0 6px 18px -6px rgba(10, 99, 88, 0.07);
+    --background-lift:
+      radial-gradient(1200px circle at 50% -20%, rgba(232, 242, 236, 0.65), transparent 52%),
+      radial-gradient(900px circle at 80% 0%, rgba(10, 99, 88, 0.04), transparent 45%);
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+/*
+ * Doubled on purpose: the UA's `[hidden]` rule is (0,0,1), so the class rules
+ * below — `.actions { display: grid }`, `.services { ... }` — would out-specify
+ * it and a hidden element would still paint. (0,2,0) settles it without
+ * reaching for !important.
+ */
+[hidden][hidden] {
+  display: none;
+}
+
+html {
+  /* tokens' base layer sets 17px, so every rem below matches the app's scale */
+  font-size: 17px;
+  background: var(--background);
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background: var(--background);
+  background-image: var(--background-lift);
+  background-attachment: fixed;
+  background-repeat: no-repeat;
+  color: var(--foreground);
+  font-family: var(--font-sans);
+  letter-spacing: var(--font-letter-spacing);
+  word-spacing: var(--font-word-spacing);
+}
+
+/* ── Titlebar ──────────────────────────────────────────────────────────────
+ * Decorations are off on Windows/Linux (see main.rs setup), so without a drag
+ * region the window cannot be moved while the Hub is starting. This is the same
+ * bar components/titlebar/titlebar.tsx renders in the app: 40px, logo + name,
+ * three window controls. macOS keeps its native traffic lights and gets the
+ * 28px transparent spacer that titlebar.tsx uses there instead.
+ */
+.titlebar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 60;
+  display: flex;
+  height: 2.5rem;
+  user-select: none;
+  border-bottom: 1px solid var(--border);
+  background: var(--background);
+}
+
+.titlebar-mac {
+  height: 1.75rem;
+  border-bottom: 0;
+  background: transparent;
+}
+
+.titlebar-drag {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0 0.75rem;
+}
+
+.titlebar-icon {
+  height: 1.25rem;
+  width: 1.25rem;
+  pointer-events: none;
+}
+
+.titlebar-title {
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--foreground);
+  pointer-events: none;
+}
+
+.titlebar-controls {
+  display: flex;
+  height: 100%;
+}
+
+.titlebar-controls button {
+  display: inline-flex;
+  height: 100%;
+  width: 46px;
+  align-items: center;
+  justify-content: center;
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.titlebar-controls button:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+@media (prefers-color-scheme: light) {
+  .titlebar-controls button:hover {
+    background: rgba(0, 0, 0, 0.05);
+  }
+}
+
+.titlebar-controls button.close:hover {
+  background: #c42b1c;
+  color: #fff;
+}
+
+/* ── Shell (mirrors SetupPageShell) ────────────────────────────────────── */
+
+main {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  overflow-y: auto;
+  height: calc(100vh - var(--titlebar-height, 0px));
+  padding: calc(var(--titlebar-height, 0px) + 2rem) 1rem 2rem;
+}
+
+.shell {
+  width: 100%;
+  max-width: 42rem;
+  margin: auto 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+}
+
+.brand {
+  text-align: center;
+}
+
+.logo {
+  display: block;
+  width: 64px;
+  height: 64px;
+  margin: 0 auto 0.75rem;
+  opacity: 0.9;
+}
+
+h1 {
+  font-size: 1.5rem;
+  font-weight: 700;
+  line-height: 1.2;
+  margin: 0;
+}
+
+/* ── Card (mirrors SetupCard) ──────────────────────────────────────────── */
+
+.card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--card);
+  color: var(--card-foreground);
+  box-shadow: var(--shadow-md);
+  padding: 1.5rem;
+}
+
+@media (min-width: 640px) {
+  .card {
+    padding: 2rem;
+  }
+}
+
+.stack {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1.5rem;
+  width: 100%;
+}
+
+.head {
+  width: 100%;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+h2 {
+  font-size: 1.25rem;
+  font-weight: 600;
+  line-height: 1.3;
+  margin: 0;
+}
+
+#status {
+  margin: 0;
+  font-size: 0.875rem;
+  line-height: 1.5;
+  color: var(--muted-foreground);
+}
+
+#status.warn {
+  color: var(--warning);
+}
+
+#status.error {
+  color: var(--destructive);
+}
+
+.note {
+  margin: 0;
+  font-size: 0.75rem;
+  line-height: 1.5;
+  color: var(--muted-foreground);
+}
+
+/* ── Progress (mirrors StartupScreen) ──────────────────────────────────── */
+
+.progress {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+}
+
+.bar {
+  height: 0.375rem;
+  width: 100%;
+  border-radius: 9999px;
+  background: var(--muted);
+  overflow: hidden;
+}
+
+.bar-fill {
+  height: 100%;
+  width: 4%;
+  border-radius: 9999px;
+  background: var(--primary);
+  transition: width 0.7s ease-out;
+}
+
+.bar-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  font-size: 0.75rem;
+  color: var(--muted-foreground);
+  font-variant-numeric: tabular-nums;
+}
+
+.counts {
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+  font-size: 0.75rem;
+  color: var(--muted-foreground);
+}
+
+/* ── Service rows ──────────────────────────────────────────────────────── */
+
+.services {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--panel);
+  padding: 0 1rem;
+}
+
+.service-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.375rem 0;
+  border-top: 1px solid var(--border);
+}
+
+.service-row:first-child {
+  border-top: 0;
+}
+
+.service-name {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  min-width: 0;
+}
+
+.service-icon {
+  font-size: 0.875rem;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+
+.service-label {
+  font-size: 0.875rem;
+  color: var(--foreground);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.service-state {
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+}
+
+.pulse {
+  animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+@keyframes pulse {
+  50% {
+    opacity: 0.5;
+  }
+}
+
+.initialising {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.875rem;
+  color: var(--muted-foreground);
+}
+
+.spinner {
+  width: 1rem;
+  height: 1rem;
+  color: var(--primary);
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spinner,
+  .pulse {
+    animation: none;
+  }
+
+  .bar-fill {
+    transition: none;
+  }
+}
+
+.tone-ok {
+  color: var(--success);
+}
+
+.tone-warn {
+  color: var(--warning);
+}
+
+.tone-bad {
+  color: var(--destructive);
+}
+
+.tone-muted {
+  color: var(--muted-foreground);
+}
+
+/* ── Actions (Button.tsx: h-10, rounded-md, text-sm) ───────────────────── */
+
+.actions {
+  width: 100%;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.5rem;
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  white-space: nowrap;
+  height: 2.5rem;
+  padding: 0 1rem;
+  border-radius: var(--radius-md);
+  border: 1px solid transparent;
+  font: inherit;
+  font-size: 0.875rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition:
+    background-color 0.15s,
+    color 0.15s,
+    border-color 0.15s;
+}
+
+.btn:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 1px var(--primary);
+}
+
+.btn-wide {
+  grid-column: span 2;
+}
+
+.btn-primary {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: var(--primary-foreground);
+  box-shadow: var(--shadow-md);
+}
+
+.btn-primary:hover {
+  filter: brightness(0.94);
+}
+
+.btn-outline {
+  background: var(--background);
+  border-color: var(--input);
+  color: var(--foreground);
+}
+
+.btn-outline:hover {
+  background: var(--accent);
+  color: var(--accent-foreground);
+}
+
+/* ── Short windows ────────────────────────────────────────────────────────
+ * Overrides last, so they read as overrides.
+ *
+ * `expanded` = the recovery state, where the health panel and six buttons join
+ * the progress view. That is far taller than startup alone, and the window is
+ * 800px tall by default and can be dragged to 600 (tauri.conf.json), so in that
+ * state on a short window the frame tightens, the service list scrolls in place
+ * and the logo gives way rather than let Retry fall below the fold. While the
+ * Hub is simply starting, the logo stays at every window size.
+ */
+
+@media (max-height: 860px) {
+  .expanded main {
+    padding: calc(var(--titlebar-height, 0px) + 1rem) 1rem 1rem;
+  }
+
+  .expanded .brand,
+  .expanded .note {
+    display: none;
+  }
+
+  .expanded .shell {
+    gap: 1rem;
+  }
+
+  .expanded .stack {
+    gap: 1rem;
+  }
+
+  .expanded .card {
+    padding: 1.25rem;
+  }
+
+  .expanded .services {
+    max-height: 26vh;
+    overflow-y: auto;
+  }
+}
+
+@media (max-height: 680px) {
+  .expanded h1 {
+    font-size: 1.25rem;
+  }
+
+  .expanded h2 {
+    font-size: 1.125rem;
+  }
+
+  .expanded .card {
+    padding: 1rem;
+  }
+
+  .expanded .stack {
+    gap: 0.75rem;
+  }
+
+  .expanded .services {
+    max-height: 16vh;
+  }
+
+  /* Three stacked read-out lines cost more than they are worth this short. */
+  .expanded .counts {
+    flex-direction: row;
+    flex-wrap: wrap;
+    gap: 0.125rem 0.75rem;
+  }
+
+  /* Retry keeps the full width; the five recovery actions pack into two rows. */
+  .expanded .actions {
+    grid-template-columns: repeat(3, 1fr);
+  }
+
+  .expanded .btn-wide {
+    grid-column: span 3;
+  }
+
+  /* Fills the last row rather than leaving two dead cells beside it. */
+  .expanded #open-logs {
+    grid-column: span 2;
+  }
+
+  .expanded .btn {
+    height: 2.25rem;
+    padding: 0 0.5rem;
+    font-size: 0.8125rem;
+  }
+}
