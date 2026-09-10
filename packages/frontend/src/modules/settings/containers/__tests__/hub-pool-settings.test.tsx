@@ -415,7 +415,13 @@ describe('HubPoolSection', () => {
     expect(entries).toHaveLength(2);
     const failovers = screen.getAllByTestId('hub-pool-routing-failover');
     expect(failovers).toHaveLength(1);
-    expect(failovers[0]?.textContent).toBe('HUB_POOL_ROUTING_FAILOVER');
+
+    // The CHAIN is the fact, not the label. It moved onto the marker's title and the row's
+    // data attribute when the log became a table, so assert on the chain rather than on the
+    // badge's glyph — which is what the old textContent check was really standing in for.
+    expect(failovers[0]?.getAttribute('title')).toBe('HUB_POOL_ROUTING_FAILOVER');
+    const failedOverRow = entries.find((row) => row.getAttribute('data-failedover'));
+    expect(failedOverRow?.getAttribute('data-failedover')).toBe('local');
     expect(screen.getByText('HUB_POOL_ROUTING_INBOUND')).toBeTruthy();
   });
 

@@ -577,7 +577,7 @@ export const HubPoolSection = () => {
           />
         }
       />
-      <CardContent className="space-y-5">
+      <CardContent className="space-y-4">
         {/* ── State at a glance ───────────────────────────────────────── */}
         <div className="space-y-3">
           {/* Only when something is NOT nominal. With routing active the badge in the header
@@ -646,32 +646,39 @@ export const HubPoolSection = () => {
 
         {/* ── Controls ────────────────────────────────────────────────── */}
         <Block title={t('HUB_POOL_CONTROLS_TITLE')}>
-          <div className="space-y-4">
-            <div className="space-y-1.5">
-              <Switch
-                name="hubPoolEnabled"
-                data-testid="hub-pool-toggle"
-                checked={status.settings.poolEnabled}
-                disabled={demoMode || envLocked || settingsMutation.isPending}
-                onCheckedChange={(checked: boolean) => settingsMutation.mutate({ body: { poolEnabled: checked } })}
-                label={
-                  <HintText
-                    id="hub-pool-toggle"
-                    hint={t('HUB_POOL_TOGGLE_HELP')}
-                    className="cursor-help underline decoration-dotted underline-offset-2"
-                  >
-                    {t('HUB_POOL_TOGGLE_LABEL')}
-                  </HintText>
-                }
-              />
-              {envLocked ? <p className="text-xs text-warning">{t('HUB_POOL_TOGGLE_ENV_LOCKED')}</p> : null}
-            </div>
+          {/*
+            One wrapping row, not a stack with an indented sub-stack. The indent drew
+            "these two are halves of the master", which the disabled state already
+            enforces — both halves disable when the master is off — so the vertical
+            hierarchy was 196px spent restating a rule the controls apply themselves.
+            Env-lock notices stay visible: they name a file to edit, which a tooltip
+            would hide from anyone who does not know to hover.
+          */}
+          <div className="space-y-3">
+            <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
+              <div className="space-y-1">
+                <Switch
+                  name="hubPoolEnabled"
+                  data-testid="hub-pool-toggle"
+                  checked={status.settings.poolEnabled}
+                  disabled={demoMode || envLocked || settingsMutation.isPending}
+                  onCheckedChange={(checked: boolean) => settingsMutation.mutate({ body: { poolEnabled: checked } })}
+                  label={
+                    <HintText
+                      id="hub-pool-toggle"
+                      hint={t('HUB_POOL_TOGGLE_HELP')}
+                      className="cursor-help underline decoration-dotted underline-offset-2"
+                    >
+                      {t('HUB_POOL_TOGGLE_LABEL')}
+                    </HintText>
+                  }
+                />
+                {envLocked ? <p className="text-[10px] text-warning">{t('HUB_POOL_TOGGLE_ENV_LOCKED')}</p> : null}
+              </div>
 
-            {/* The two halves, below the master and indented under it. Each renders the PERSISTED
-                value, like the master above, so an env override shows what is stored while the
-                state banner explains what is actually in force. */}
-            <div className="space-y-4 border-l pl-4">
-              <div className="space-y-1.5">
+              {/* Each renders the PERSISTED value, like the master, so an env override shows
+                  what is stored while the state banner explains what is actually in force. */}
+              <div className="space-y-1">
                 <Switch
                   name="hubPoolOutboundEnabled"
                   data-testid="hub-pool-outbound-toggle"
@@ -688,10 +695,10 @@ export const HubPoolSection = () => {
                     </HintText>
                   }
                 />
-                {outboundEnvLocked ? <p className="text-xs text-warning">{t('HUB_POOL_OUTBOUND_ENV_LOCKED')}</p> : null}
+                {outboundEnvLocked ? <p className="text-[10px] text-warning">{t('HUB_POOL_OUTBOUND_ENV_LOCKED')}</p> : null}
               </div>
 
-              <div className="space-y-1.5">
+              <div className="space-y-1">
                 <Switch
                   name="hubPoolInboundEnabled"
                   data-testid="hub-pool-inbound-toggle"
@@ -708,12 +715,14 @@ export const HubPoolSection = () => {
                     </HintText>
                   }
                 />
-                {inboundEnvLocked ? <p className="text-xs text-warning">{t('HUB_POOL_INBOUND_ENV_LOCKED')}</p> : null}
+                {inboundEnvLocked ? <p className="text-[10px] text-warning">{t('HUB_POOL_INBOUND_ENV_LOCKED')}</p> : null}
               </div>
             </div>
 
-            <div className="grid gap-4 sm:grid-cols-2">
-              <div className="space-y-1.5">
+            {/* The two tuning numbers sit on the switch row's line rather than in a grid of
+                their own: they are small, always both present, and never wrap apart. */}
+            <div className="flex flex-wrap items-end gap-3">
+              <div className="w-32">
                 <Input
                   type="number"
                   min={MIN_LOCAL_AFFINITY}
@@ -738,7 +747,7 @@ export const HubPoolSection = () => {
                 />
               </div>
 
-              <div className="space-y-1.5">
+              <div className="w-32">
                 <Input
                   type="number"
                   min={MIN_HEALTH_POLL_SECONDS}
@@ -872,60 +881,96 @@ export const HubPoolSection = () => {
         </Block>
 
         {/* ── The pool ────────────────────────────────────────────────── */}
+        {/*
+          One row per peer instead of a bordered card carrying a 4-cell `<dl>`. The card
+          cost ~128px each; the row costs ~34px, which is set by the switch it has to hold.
+
+          This does NOT undo the mobile stacking from the previous change: `KpiTable` wraps
+          in `overflow-x-auto`, so a narrow screen scrolls the table inside its own box
+          rather than the page sideways, and every column keeps its natural width instead of
+          the identity column being crushed to 31px to make room for the buttons.
+
+          The two capability markers stay because each explains an otherwise-confusing
+          reading: `not accepting` is why a healthy peer shows no models, and `bearer` is the
+          precondition for `poolRequireSignedPeers` — turning that on while a peer has not
+          upgraded takes the pairing down in both directions.
+        */}
         <Block title={t('HUB_POOL_CONNECTED_TITLE')} help={t('HUB_POOL_CONNECTED_HELP')}>
           {paired.length ? (
-            <ul className="space-y-2">
+            <KpiTable
+              head={
+                <>
+                  <Th>{t('HUB_POOL_PEER_COL_NODE')}</Th>
+                  <Th>{t('HUB_POOL_FIELD_HARDWARE')}</Th>
+                  <Th align="right">{t('HUB_POOL_FIELD_QUEUE')}</Th>
+                  <Th>{t('HUB_POOL_FIELD_BACKENDS')}</Th>
+                  <Th align="right">{t('HUB_POOL_FIELD_LAST_SEEN')}</Th>
+                  <Th align="right">{t('HUB_POOL_PEER_COL_ACTIONS')}</Th>
+                </>
+              }
+            >
               {paired.map((peer) => (
-                <li key={peer.id} data-testid="hub-pool-peer" className="space-y-2 rounded-md border px-3 py-2.5">
-                  <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between sm:gap-3">
-                    <div className="min-w-0 space-y-1">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <span className="break-all text-sm font-medium sm:truncate">{peerLabel(peer)}</span>
+                <Tr key={peer.id} testId="hub-pool-peer" data={{ status: peer.status, enabled: String(peer.enabled) }}>
+                  <Td className="max-w-[240px]">
+                    <div className="flex flex-col gap-0.5">
+                      <span className="flex flex-wrap items-center gap-1.5">
+                        <span className="break-all font-medium sm:truncate">{peerLabel(peer)}</span>
                         <PeerStatusBadge status={peer.status} enabled={peer.enabled} t={t} />
-                        {/* The far side's decision, not ours: it is up and answering, it just will
-                            not serve us. Without this its empty model list reads as a broken node. */}
                         {peer.enabled && peer.lastCapabilities?.acceptingWork === false ? (
                           <span
                             data-testid="hub-pool-peer-not-accepting"
-                            className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-border/70 bg-muted/30 px-2.5 py-1 text-xs font-medium text-muted-foreground"
+                            title={t('HUB_POOL_PEER_NOT_ACCEPTING')}
+                            className="shrink-0 rounded-sm border border-border px-1 text-[9px] uppercase tracking-wide text-muted-foreground"
                           >
-                            {t('HUB_POOL_PEER_NOT_ACCEPTING')}
+                            {t('HUB_POOL_PEER_NOT_ACCEPTING_MARK')}
                           </span>
                         ) : null}
-                        {/* Which peers are still on the legacy bearer token is the precondition for
-                            `poolRequireSignedPeers`: setting it while any peer has not upgraded takes
-                            both directions of that pairing down. The upgrade runs on a health poll by
-                            itself, so this is an indicator and not an action. `!== 'signed'` so a peer
-                            on a build predating pinned identities reads as not-yet, never as signed. */}
                         {peer.status !== 'pending' && peer.authMode !== 'signed' ? (
                           <span
                             data-testid="hub-pool-peer-bearer"
-                            className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-border/70 bg-muted/30 px-2.5 py-1 text-xs font-medium text-muted-foreground"
                             title={t('HUB_POOL_PEER_BEARER_HELP')}
+                            className="shrink-0 rounded-sm border border-border px-1 text-[9px] uppercase tracking-wide text-muted-foreground"
                           >
                             {t('HUB_POOL_PEER_BEARER')}
                           </span>
                         ) : null}
-                      </div>
-                      {/* The FQDN is the identity the token was issued to; the display name is only a label. */}
-                      <span className="block break-all font-mono text-xs text-muted-foreground sm:truncate" title={peer.nodeFqdn}>
+                      </span>
+                      {/* The FQDN is the identity the token was issued to; the label is only a label. */}
+                      <span className="break-all font-mono text-[10px] text-muted-foreground sm:truncate" title={peer.nodeFqdn}>
                         {peer.nodeFqdn}
                       </span>
+                      {peer.status === 'unreachable' ? (
+                        <span data-testid="hub-pool-unreachable-hint" className="text-[10px] text-muted-foreground">
+                          {t('HUB_POOL_UNREACHABLE_HINT', { failures: peer.consecutiveFailures })}
+                        </span>
+                      ) : null}
                     </div>
-                    <div className="flex shrink-0 items-center justify-end gap-3 self-end sm:self-auto">
+                  </Td>
+                  <Td className="text-muted-foreground">{peer.lastCapabilities?.hardwareTier ?? t('COMMON_UNKNOWN')}</Td>
+                  {/* Dash, not 0, when the probe has not landed: an idle peer and an unread
+                      counter are different facts that send an operator to different places. */}
+                  <Td align="right">{typeof peer.inFlightRequests === 'number' ? String(peer.inFlightRequests) : t('COMMON_UNKNOWN')}</Td>
+                  <Td
+                    className="max-w-[200px] truncate text-muted-foreground"
+                    title={peer.lastCapabilities?.backends.length ? backendSummary(peer.lastCapabilities.backends, t) : undefined}
+                  >
+                    {peer.lastCapabilities?.backends.length ? backendSummary(peer.lastCapabilities.backends, t) : t('COMMON_UNKNOWN')}
+                  </Td>
+                  <Td align="right" className="whitespace-nowrap text-muted-foreground">
+                    {peer.lastSeenAt ? new Date(peer.lastSeenAt).toLocaleString() : t('HUB_POOL_NEVER_SEEN')}
+                  </Td>
+                  <Td align="right">
+                    <span className="flex items-center justify-end gap-2">
                       {/* Instantly reversible and NOT a revocation: both tokens and the pairing
-                          survive, so this needs no confirmation dialog and no re-approval from the
-                          other side. Unpair, beside it, is the one that revokes. */}
+                          survive, so this needs no dialog. Unpair, beside it, is the one that revokes. */}
                       <Switch
                         name={`hub-pool-peer-enabled-${peer.id}`}
                         data-testid="hub-pool-peer-toggle"
                         checked={peer.enabled}
                         disabled={demoMode || peerEnabledMutation.isPending}
                         onCheckedChange={(checked: boolean) => peerEnabledMutation.mutate({ id: peer.id, enabled: checked })}
-                        label={t('HUB_POOL_PEER_TOGGLE_LABEL')}
+                        aria-label={t('HUB_POOL_PEER_TOGGLE_LABEL')}
                       />
-                      {/* Confirmed in a dialog like Re-register device: it deletes the peer and revokes
-                          both directional tokens, so recovering means a full two-sided re-pair. */}
                       <Button
                         type="button"
                         size="sm"
@@ -938,38 +983,11 @@ export const HubPoolSection = () => {
                       >
                         {t('HUB_POOL_UNPAIR_BUTTON')}
                       </Button>
-                    </div>
-                  </div>
-
-                  <dl className="grid grid-cols-2 gap-2 text-xs sm:grid-cols-4">
-                    <Detail
-                      label={t('HUB_POOL_FIELD_LAST_SEEN')}
-                      value={peer.lastSeenAt ? new Date(peer.lastSeenAt).toLocaleString() : t('HUB_POOL_NEVER_SEEN')}
-                    />
-                    {/* `inFlightRequests` is optional on a peer — a capabilities probe that has not
-                        landed yet leaves it undefined, and `String(undefined)` printed the literal
-                        word "undefined" in the cell. Nor may it fall back to 0: an idle peer and a
-                        peer we could not read are different facts that send an operator to
-                        different places. */}
-                    <Detail
-                      label={t('HUB_POOL_FIELD_QUEUE')}
-                      value={typeof peer.inFlightRequests === 'number' ? String(peer.inFlightRequests) : t('COMMON_UNKNOWN')}
-                    />
-                    <Detail label={t('HUB_POOL_FIELD_HARDWARE')} value={peer.lastCapabilities?.hardwareTier ?? t('COMMON_UNKNOWN')} />
-                    <Detail
-                      label={t('HUB_POOL_FIELD_BACKENDS')}
-                      value={peer.lastCapabilities?.backends.length ? backendSummary(peer.lastCapabilities.backends, t) : t('COMMON_UNKNOWN')}
-                    />
-                  </dl>
-
-                  {peer.status === 'unreachable' ? (
-                    <p data-testid="hub-pool-unreachable-hint" className="text-xs text-muted-foreground">
-                      {t('HUB_POOL_UNREACHABLE_HINT', { failures: peer.consecutiveFailures })}
-                    </p>
-                  ) : null}
-                </li>
+                    </span>
+                  </Td>
+                </Tr>
               ))}
-            </ul>
+            </KpiTable>
           ) : (
             <p className="text-sm text-muted-foreground">{t('HUB_POOL_CONNECTED_EMPTY')}</p>
           )}
@@ -1064,53 +1082,97 @@ export const HubPoolSection = () => {
         </Block>
 
         {/* ── Recent routing ──────────────────────────────────────────── */}
+        {/*
+          The routing log as a table. It was one bordered `<li>` per request at ~57px, so
+          twenty requests cost 1,134px — more than a screen, for a list whose whole job is
+          to be skimmed. Columns make it skimmable and drop the row to ~25px.
+
+          The two facts the old rows carried as extra lines survive as markers, because
+          both change what an operator concludes: a PIN is why everything landed on one
+          node when the ranker would not have chosen it, and a failover chain is why one
+          request touched three nodes. They are markers with titles rather than lines, so
+          they cost nothing on the rows that do not have them — which is almost all of them.
+        */}
         <Block title={t('HUB_POOL_ROUTING_TITLE')} help={t('HUB_POOL_ROUTING_HELP')}>
           {routingLog?.entries.length ? (
-            <>
-              <p className="text-xs text-muted-foreground">
+            <div className="space-y-2">
+              <p className="text-[11px] text-muted-foreground">
                 {t('HUB_POOL_ROUTING_SUMMARY', {
                   served: routingLog.summary.served,
                   failed: routingLog.summary.failed,
                   failovers: routingLog.summary.failovers,
                 })}
               </p>
-              <ul className="space-y-1.5">
+              <KpiTable
+                className="max-h-[220px] overflow-y-auto"
+                head={
+                  <>
+                    <Th>{t('HUB_POOL_ROUTING_COL_WHEN')}</Th>
+                    <Th>{t('HUB_POOL_ROUTING_COL_NODE')}</Th>
+                    <Th>{t('HUB_POOL_ROUTING_COL_MODEL')}</Th>
+                    <Th align="right">{t('HUB_POOL_ROUTING_COL_RESULT')}</Th>
+                  </>
+                }
+              >
                 {routingLog.entries.map((entry) => (
-                  <li
+                  <Tr
                     key={`${entry.at}-${entry.path}-${entry.node ?? 'none'}`}
-                    data-testid="hub-pool-routing-entry"
-                    className="space-y-1 rounded-md border px-3 py-2 text-xs"
+                    testId="hub-pool-routing-entry"
+                    data={{
+                      direction: entry.direction,
+                      outcome: entry.outcome,
+                      ...(entry.pin ? { pinned: 'true' } : {}),
+                      ...(entry.failedOverFrom.length ? { failedover: entry.failedOverFrom.join(',') } : {}),
+                    }}
                   >
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className="text-muted-foreground">{new Date(entry.at).toLocaleTimeString()}</span>
-                      <ArrowRightLeft className="h-3 w-3 shrink-0 text-muted-foreground" />
-                      <span className="font-medium">
-                        {entry.direction === 'outbound'
-                          ? t('HUB_POOL_ROUTING_OUTBOUND', { node: entry.node ?? t('HUB_POOL_ROUTING_NO_NODE') })
-                          : t('HUB_POOL_ROUTING_INBOUND', { node: entry.node ?? t('HUB_POOL_ROUTING_NO_NODE') })}
+                    <Td className="whitespace-nowrap text-muted-foreground">{new Date(entry.at).toLocaleTimeString()}</Td>
+                    <Td className="max-w-[180px]">
+                      <span className="flex items-center gap-1.5">
+                        <ArrowRightLeft
+                          className={cn('h-3 w-3 shrink-0', entry.direction === 'outbound' ? 'text-primary' : 'text-muted-foreground')}
+                          aria-hidden="true"
+                        />
+                        <span className="truncate">
+                          {entry.direction === 'outbound'
+                            ? t('HUB_POOL_ROUTING_OUTBOUND', { node: entry.node ?? t('HUB_POOL_ROUTING_NO_NODE') })
+                            : t('HUB_POOL_ROUTING_INBOUND', { node: entry.node ?? t('HUB_POOL_ROUTING_NO_NODE') })}
+                        </span>
+                        {/* Named on the row it shaped: an operator seeing everything land on one
+                            node cannot otherwise tell a pin from the ranker deciding the same. */}
+                        {entry.pin ? (
+                          <span
+                            data-testid="hub-pool-routing-pinned"
+                            title={t('HUB_POOL_ROUTING_PINNED')}
+                            className="shrink-0 rounded-sm border border-border px-1 text-[9px] uppercase tracking-wide text-muted-foreground"
+                          >
+                            {t('HUB_POOL_ROUTING_PIN_MARK')}
+                          </span>
+                        ) : null}
+                        {/* One entry per request, so a failover is a chain here, not a run of rows. */}
+                        {entry.failedOverFrom.length ? (
+                          <span
+                            data-testid="hub-pool-routing-failover"
+                            title={t('HUB_POOL_ROUTING_FAILOVER', { nodes: entry.failedOverFrom.join(' → ') })}
+                            className="shrink-0 rounded-sm border border-warning/40 px-1 text-[9px] uppercase tracking-wide text-warning"
+                          >
+                            {t('HUB_POOL_ROUTING_FAILOVER_MARK', { count: entry.failedOverFrom.length })}
+                          </span>
+                        ) : null}
                       </span>
-                      <span className="font-mono text-muted-foreground">{entry.model ?? entry.path}</span>
-                      <span className={cn('ml-auto', entry.outcome === 'served' ? 'text-muted-foreground' : 'font-medium text-destructive')}>
-                        {entry.outcome === 'served' ? t('HUB_POOL_ROUTING_DURATION', { ms: entry.durationMs }) : t('HUB_POOL_ROUTING_FAILED_LABEL')}
-                      </span>
-                    </div>
-                    {/* Named on the row it shaped: an operator seeing everything land on one node
-                        cannot otherwise tell a pin from the ranker having decided the same thing. */}
-                    {entry.pin ? (
-                      <p data-testid="hub-pool-routing-pinned" className="text-muted-foreground">
-                        {t('HUB_POOL_ROUTING_PINNED')}
-                      </p>
-                    ) : null}
-                    {/* One entry per request, so a failover is a chain here, not a run of rows. */}
-                    {entry.failedOverFrom.length ? (
-                      <p data-testid="hub-pool-routing-failover" className="text-warning">
-                        {t('HUB_POOL_ROUTING_FAILOVER', { nodes: entry.failedOverFrom.join(' → ') })}
-                      </p>
-                    ) : null}
-                  </li>
+                    </Td>
+                    <Td className="max-w-[160px] truncate font-mono text-muted-foreground" title={entry.model ?? entry.path}>
+                      {entry.model ?? entry.path}
+                    </Td>
+                    <Td
+                      align="right"
+                      className={cn('whitespace-nowrap', entry.outcome === 'served' ? 'text-muted-foreground' : 'font-medium text-warning')}
+                    >
+                      {entry.outcome === 'served' ? t('HUB_POOL_ROUTING_DURATION', { ms: entry.durationMs }) : t('HUB_POOL_ROUTING_FAILED_LABEL')}
+                    </Td>
+                  </Tr>
                 ))}
-              </ul>
-            </>
+              </KpiTable>
+            </div>
           ) : (
             <p className="text-sm text-muted-foreground">{t('HUB_POOL_ROUTING_EMPTY')}</p>
           )}
