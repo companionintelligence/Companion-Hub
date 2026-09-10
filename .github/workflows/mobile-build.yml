@@ -122,6 +122,7 @@ jobs:
       - name: Upload APK
         uses: actions/upload-artifact@v7
         with:
+          retention-days: 7
           name: companion-hub-android-debug-apk
           path: packages/mobile/src-tauri/gen/android/app/build/outputs/apk/**/*.apk
           if-no-files-found: error
@@ -239,6 +240,7 @@ jobs:
         if: steps.secrets.outputs.present == 'true'
         uses: actions/upload-artifact@v7
         with:
+          retention-days: 7
           name: companion-hub-android-release-aab
           path: packages/mobile/src-tauri/gen/android/app/build/outputs/bundle/**/*.aab
           if-no-files-found: error
@@ -317,6 +319,7 @@ jobs:
       - name: Upload iOS Simulator app
         uses: actions/upload-artifact@v7
         with:
+          retention-days: 7
           name: companion-hub-ios-sim-app
           path: ${{ steps.findapp.outputs.app }}
           if-no-files-found: error
@@ -478,6 +481,7 @@ jobs:
         if: steps.secrets.outputs.present == 'true'
         uses: actions/upload-artifact@v7
         with:
+          retention-days: 7
           name: companion-hub-ios-release-ipa
           path: ${{ steps.findipa.outputs.ipa }}
           if-no-files-found: error
