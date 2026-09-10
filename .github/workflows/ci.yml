@@ -30,6 +30,12 @@ jobs:
         with:
           node-auth-token: ${{ secrets.GITHUB_TOKEN }}
 
+      # `pnpm run test` ends in `test:cli`, which now compiles and runs the standalone `cihub`
+      # binary (scripts/__tests__/cli-binary-smoke.test.ts). That suite refuses to skip when CI is
+      # set, so bun has to be installed here or the job fails — which is the intent.
+      - name: Install bun
+        uses: oven-sh/setup-bun@v2
+
       - name: Run biome tests
         run: pnpm run lint:ci
 

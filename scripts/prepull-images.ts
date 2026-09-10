@@ -86,7 +86,11 @@ for (const appId of batchApps) {
 
     // Small delay to avoid rate limits
     await new Promise((r) => setTimeout(r, 1000));
-  } catch (_e) {
+  } catch (e) {
+    // `catch (_e)` here while the message interpolated `e` — the same free-identifier defect that
+    // killed `cihub pool update` on the fleet (see scripts/__tests__/cli-binary-smoke.test.ts).
+    // Reached only when an app entry fails to parse, so the ReferenceError would have replaced the
+    // real error with a crash on the one line whose job is to report it.
     console.log(`❌ ${appId}: Error - ${e}`);
     failed++;
   }
