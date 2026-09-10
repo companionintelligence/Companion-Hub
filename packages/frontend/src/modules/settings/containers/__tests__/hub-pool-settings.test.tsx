@@ -349,7 +349,10 @@ describe('HubPoolSection', () => {
     expect(screen.getByText('HUB_POOL_STATUS_UNREACHABLE')).toBeTruthy();
     // An unreachable peer's cached inventory is not capacity the pool can offer right now, so only
     // this node's own model is listed as servable.
-    expect(screen.getAllByTestId('hub-pool-model').map((row) => row.textContent)).toEqual(['llama3.2:3bHUB_POOL_LOCAL_NODE_LABEL']);
+    // Asserted on the row's data attributes, not its textContent: the matrix renders node
+    // presence as dots, so which nodes can serve a model is not readable as text.
+    expect(screen.getAllByTestId('hub-pool-model').map((row) => row.getAttribute('data-model'))).toEqual(['llama3.2:3b']);
+    expect(screen.getAllByTestId('hub-pool-model').map((row) => row.getAttribute('data-nodes'))).toEqual(['HUB_POOL_LOCAL_NODE_LABEL']);
   });
 
   it('merges the model inventory across the pool and names every node holding each model', async () => {
@@ -361,7 +364,12 @@ describe('HubPoolSection', () => {
     renderSection();
 
     const rows = await screen.findAllByTestId('hub-pool-model');
-    expect(rows.map((row) => row.textContent)).toEqual(['llama3.2:3bHUB_POOL_LOCAL_NODE_LABELStudio Hub', 'qwen3:8bStudio Hub']);
+
+    // Attributes, not textContent: presence is rendered as a dot per node column, so the
+    // set of nodes holding a model is not readable as text — and asserting on concatenated
+    // glyphs was how this test previously encoded the old chip layout.
+    expect(rows.map((row) => row.getAttribute('data-model'))).toEqual(['llama3.2:3b', 'qwen3:8b']);
+    expect(rows.map((row) => row.getAttribute('data-nodes'))).toEqual(['HUB_POOL_LOCAL_NODE_LABEL,Studio Hub', 'Studio Hub']);
   });
 
   it('renders a failover as one entry carrying the chain of nodes that were tried', async () => {
@@ -407,7 +415,13 @@ describe('HubPoolSection', () => {
     expect(entries).toHaveLength(2);
     const failovers = screen.getAllByTestId('hub-pool-routing-failover');
     expect(failovers).toHaveLength(1);
-    expect(failovers[0]?.textContent).toBe('HUB_POOL_ROUTING_FAILOVER');
+
+    // The CHAIN is the fact, not the label. It moved onto the marker's title and the row's
+    // data attribute when the log became a table, so assert on the chain rather than on the
+    // badge's glyph — which is what the old textContent check was really standing in for.
+    expect(failovers[0]?.getAttribute('title')).toBe('HUB_POOL_ROUTING_FAILOVER');
+    const failedOverRow = entries.find((row) => row.getAttribute('data-failedover'));
+    expect(failedOverRow?.getAttribute('data-failedover')).toBe('local');
     expect(screen.getByText('HUB_POOL_ROUTING_INBOUND')).toBeTruthy();
   });
 
@@ -719,5 +733,41 @@ describe('HubPoolSection', () => {
     await waitFor(() => expect(screen.getByTestId('hub-pool-card')).toBeTruthy());
     expect(screen.queryByText('undefined')).toBeNull();
     expect(screen.getAllByText('COMMON_UNKNOWN').length).toBeGreaterThan(0);
+  });
+
+  // The matrix exists to make this visible. A model only one node can serve disappears
+  // when that node does, and the old chip list required counting pills across thirty rows
+  // to notice. It is marked on the row AND counted on the collapsed summary.
+  it('marks a model only one node can serve, and counts them on the summary', async () => {
+    fixtures.status = baseStatus({
+      peers: [connectedPeer()],
+      peerCounts: { total: 1, connected: 1, pending: 0, unreachable: 0 },
+    });
+
+    renderSection();
+
+    const rows = await screen.findAllByTestId('hub-pool-model');
+    const soleSourced = rows.filter((row) => (row.getAttribute('data-nodes') ?? '').split(',').length === 1);
+
+    // qwen3:8b lives only on the peer; llama3.2:3b is on both.
+    expect(soleSourced.map((row) => row.getAttribute('data-model'))).toEqual(['qwen3:8b']);
+    expect(screen.getByText('HUB_POOL_MODELS_SOLE_SOURCED')).toBeTruthy();
+  });
+
+  it('filters the matrix without touching what the pool does', async () => {
+    fixtures.status = baseStatus({
+      peers: [connectedPeer()],
+      peerCounts: { total: 1, connected: 1, pending: 0, unreachable: 0 },
+    });
+
+    renderSection();
+    await screen.findAllByTestId('hub-pool-model');
+
+    await userEvent.type(screen.getByTestId('hub-pool-model-filter'), 'qwen');
+
+    await waitFor(() => expect(screen.getAllByTestId('hub-pool-model')).toHaveLength(1));
+    expect(screen.getAllByTestId('hub-pool-model')[0]?.getAttribute('data-model')).toBe('qwen3:8b');
+    // A filter is a view concern: it must not have written anything.
+    expect(fixtures.updateSettings).not.toHaveBeenCalled();
   });
 });

@@ -5,7 +5,19 @@ import { useTranslation } from 'react-i18next';
 
 const CHART_WIDTH = 960;
 const CHART_HEIGHT = 320;
-const CHART_COLORS = ['#0a6358', '#8b5cf6', '#f59e0b', '#ef4444', '#22c55e', '#3b82f6', '#ec4899', '#14b8a6'];
+/*
+ * Series colours come from the canon's `--chart-*` ramp, not from hardcoded hex.
+ *
+ * The old literals had two problems. They were fixed values on a themed page, so the
+ * darkest of them drew at 1.91:1 against the dark card — below any legibility bar. And
+ * slot 4 was `#ef4444`, so the fourth-busiest workload was rendered in the same red this
+ * app uses for failure: a perfectly healthy container looked like an incident.
+ *
+ * The canon defines five slots with separate light and dark values, so these follow the
+ * theme. Five, not eight — the ramp is the palette that exists, and a sixth series
+ * repeating slot 1 is honest, whereas inventing three more hues is how the red got in.
+ */
+const CHART_SLOTS = ['--chart-1', '--chart-2', '--chart-3', '--chart-4', '--chart-5'] as const;
 
 /*
  * Per-workload CPU over time. Kept verbatim from the previous resource page — it is the
@@ -52,11 +64,11 @@ export function CpuUsageHistoryChart({ history, apps }: { history: AppRuntimeHis
     const labels = new Map(apps.map((app) => [app.appUrn, app.appName]));
     return [...totals.entries()]
       .sort((a, b) => b[1] - a[1])
-      .slice(0, CHART_COLORS.length)
+      .slice(0, CHART_SLOTS.length)
       .map(([appUrn], index) => ({
         appUrn,
         appName: labels.get(appUrn) ?? appUrn,
-        color: CHART_COLORS[index] as string,
+        color: `var(${CHART_SLOTS[index % CHART_SLOTS.length]})`,
       }));
   }, [apps, history]);
 

@@ -132,8 +132,19 @@ export const Td = ({
   </td>
 );
 
-export const Tr = ({ children }: { children: ReactNode }) => (
-  <tr className="transition-colors last:[&>td]:border-b-0 hover:bg-muted/30">{children}</tr>
+/**
+ * `testId` and `data` exist so a row stays assertable when its cells are glyphs rather
+ * than text. A presence matrix renders dots; a test that read `textContent` would be
+ * asserting on nothing, or on whatever the dot's aria label happened to be.
+ */
+export const Tr = ({ children, testId, data }: { children: ReactNode; testId?: string; data?: Record<string, string> }) => (
+  <tr
+    className="transition-colors last:[&>td]:border-b-0 hover:bg-muted/30"
+    data-testid={testId}
+    {...Object.fromEntries(Object.entries(data ?? {}).map(([key, value]) => [`data-${key}`, value]))}
+  >
+    {children}
+  </tr>
 );
 
 export const TableEmpty = ({ colSpan, children }: { colSpan: number; children: ReactNode }) => (
