@@ -1,8 +1,15 @@
 import { render, screen, userEvent } from '@/tests/test-utils';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import toast from 'react-hot-toast';
+import { openExternal } from '@/lib/helpers/open-external';
 import { TailscaleSetupStep } from '../tailscale-setup-step';
 
 const mockUseQuery = vi.fn();
+// The component makes exactly one useMutation() call (browserAuthMutation), so
+// capturing every config passed in and reading the last one gets us the real
+// onSuccess/onError closures to exercise directly -- there is no live
+// QueryClient here to drive a real mutation lifecycle through.
+const mutationConfigs: Array<{ onSuccess?: (payload: unknown) => unknown; onError?: () => void }> = [];
 const translations = {
   COMMON_BACK: 'Back',
   COMMON_CONTINUE: 'Continue',
@@ -12,10 +19,13 @@ const translations = {
 
 vi.mock('@tanstack/react-query', () => ({
   useQuery: (...args: unknown[]) => mockUseQuery(...args),
-  useMutation: () => ({
-    mutate: vi.fn(),
-    isPending: false,
-  }),
+  useMutation: (config: { onSuccess?: (payload: unknown) => unknown; onError?: () => void }) => {
+    mutationConfigs.push(config);
+    return {
+      mutate: vi.fn(),
+      isPending: false,
+    };
+  },
   useQueryClient: () => ({
     invalidateQueries: vi.fn(),
   }),
@@ -72,6 +82,7 @@ function renderStep(connected: boolean) {
 describe('TailscaleSetupStep', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mutationConfigs.length = 0;
   });
 
   it('shows only Skip when Tailscale is not connected', () => {
@@ -90,5 +101,31 @@ describe('TailscaleSetupStep', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Continue to Discover' }));
 
     expect(onComplete).toHaveBeenCalledTimes(1);
+  });
+
+  it('shows the opening toast only when the system opener actually reports success', async () => {
+    vi.mocked(openExternal).mockResolvedValue(true);
+    renderStep(false);
+    const { onSuccess } = mutationConfigs[mutationConfigs.length - 1] ?? {};
+
+    await onSuccess?.({ success: true, authUrl: 'https://login.tailscale.com/a/abc123' });
+
+    expect(openExternal).toHaveBeenCalledWith('https://login.tailscale.com/a/abc123');
+    expect(toast.success).toHaveBeenCalledWith('ONBOARDING_TAILSCALE_AUTH_OPENING');
+    expect(toast.error).not.toHaveBeenCalled();
+  });
+
+  it('shows an error, not a false success toast, when the system opener silently fails', async () => {
+    // Regression test: openExternal never throws on a failed open (an ACL denial,
+    // a scope rejection, a stale opener-plugin chunk) -- it logs and resolves
+    // false. Before this was awaited, the button showed "Opening..." regardless.
+    vi.mocked(openExternal).mockResolvedValue(false);
+    renderStep(false);
+    const { onSuccess } = mutationConfigs[mutationConfigs.length - 1] ?? {};
+
+    await onSuccess?.({ success: true, authUrl: 'https://login.tailscale.com/a/abc123' });
+
+    expect(toast.error).toHaveBeenCalledWith('ONBOARDING_TAILSCALE_AUTH_FAILED');
+    expect(toast.success).not.toHaveBeenCalled();
   });
 });
