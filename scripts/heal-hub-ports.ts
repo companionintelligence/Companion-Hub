@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { parseEnvFile, upsertEnvVar } from './cihub-cli';
 import { isPortAvailable } from './port-availability';
 
@@ -172,7 +172,10 @@ export interface PortHealResult {
 }
 
 export function resolveHubPorts(envFilePath: string): PortHealResult {
-  const existing = readFileSync(envFilePath, 'utf-8');
+  // A brand-new environment (`cihub up <env>` before any env file was ever written) has no file
+  // here yet. Tolerate that the same way parseEnvFile below does, instead of crashing with a raw
+  // ENOENT — upsertEnvPorts (via upsertEnvVar) creates the file on its first write.
+  const existing = existsSync(envFilePath) ? readFileSync(envFilePath, 'utf-8') : '';
   const parsed = parseEnvFile(envFilePath);
   const ourPorts = getOurRunningContainerPorts();
   const assignedPorts = new Set<number>();
