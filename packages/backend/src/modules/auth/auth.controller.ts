@@ -989,6 +989,36 @@ export class AuthController {
     return appUrn ? url : null;
   }
 
+  /**
+   * Whether a Portal Bearer token's subject may authenticate to THIS Hub's apps (CI-Hub#1333).
+   * `AuthService.isSubjectMemberOfPairedOrg` is the same appliance-binding check the cookie/SSO
+   * login path uses (`admitHubPerson`); this wraps it in a short-lived cache because — unlike a
+   * one-time login — the Traefik forward-auth path runs on every machine-client app request, and
+   * a Portal round trip per request is both slow and needless traffic to Portal.
+   *
+   * Fails closed: a missing subject, or any lookup that comes back false, is "not authorized" —
+   * never "let it through because we could not tell."
+   */
+  private async isBearerSubjectAuthorizedForThisHub(subject: string): Promise<boolean> {
+    const trimmed = subject?.trim();
+    if (!trimmed) {
+      return false;
+    }
+
+    const cacheKey = `bearer_org_member:${trimmed}`;
+    const cached = this.cache.get(cacheKey);
+    if (cached !== undefined) {
+      return cached === '1';
+    }
+
+    const isMember = await this.authService.isSubjectMemberOfPairedOrg(trimmed);
+    // 60s: long enough that a burst of forwarded requests from one machine client doesn't hit
+    // Portal per-request, short enough that a revoked org membership takes effect within a
+    // minute rather than surviving for the cache's normal day-long default.
+    this.cache.set(cacheKey, isMember ? '1' : '0', 60);
+    return isMember;
+  }
+
   @Get('/traefik')
   async traefik(@Req() req: Request, @Res() res: Response) {
     const forwardedHost = normalizeForwardedHost(req.headers['x-forwarded-host']);
@@ -1016,6 +1046,17 @@ export class AuthController {
         if (!claims) {
           this.logger.debug('Traefik forward auth rejected Portal Bearer token');
           return res.status(401).send();
+        }
+        // A verified id_token proves who the caller is to Portal, not that they may act on THIS
+        // Hub: the audience list, issuer and signature are identical for every Hub in the fleet
+        // (CI-Hub#1333). Bind it to the appliance the same way the cookie/SSO login path does
+        // (admitHubPerson -> isSubjectMemberOfPairedOrg) before issuing any forward-auth header.
+        const isMember = await this.isBearerSubjectAuthorizedForThisHub(claims.sub);
+        if (!isMember) {
+          this.logger.warn("Traefik forward auth rejected Portal Bearer token: not a member of this Hub's paired organization", {
+            targetHost: forwardedHost,
+          });
+          return res.status(403).send();
         }
         const username = portalClaimsIdentity(claims);
         const resolved = await this.forwardAuthSecrets.resolveForHost(forwardedHost);
