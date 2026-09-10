@@ -247,6 +247,47 @@ export const Panel = ({ title, actions, children, className }: { title: string; 
   </section>
 );
 
+/**
+ * The three states of a panel, kept apart on purpose.
+ *
+ * "Still loading", "the request failed" and "it loaded and there is genuinely nothing"
+ * are three different facts that send an operator to three different places, and on a
+ * monitoring dashboard the failure mode that matters is the middle one collapsing into
+ * the last. A panel that renders a failed fetch as an empty table — or worse, as `0` —
+ * states something the Hub never said. So the body is REPLACED while pending or failed;
+ * derived zeros computed from `undefined` data never reach the screen.
+ *
+ * `pending`, not `isLoading`: an errored query has `isLoading === false` and no data, so
+ * a skeleton keyed off `isLoading` would sit there forever on a failed fetch.
+ */
+export const PanelBody = ({
+  state,
+  error,
+  lines = 3,
+  children,
+}: {
+  state: { pending: boolean; failed: boolean };
+  error: string;
+  lines?: number;
+  children: ReactNode;
+}) => {
+  if (state.failed) {
+    return <p className="rounded-md border border-destructive/30 bg-destructive/10 px-2.5 py-2 text-[11px] text-destructive">{error}</p>;
+  }
+
+  if (state.pending) {
+    return (
+      <div className="space-y-1.5" aria-busy="true">
+        {Array.from({ length: lines }, (_, index) => 100 - index * 12).map((width) => (
+          <div key={width} className="h-3 animate-pulse rounded-sm bg-muted/60" style={{ width: `${width}%` }} />
+        ))}
+      </div>
+    );
+  }
+
+  return <>{children}</>;
+};
+
 /** Top-level dashboard section: a rule, a title, and its panels. */
 export const DashboardSection = ({ title, badge, children }: { title: string; badge?: ReactNode; children: ReactNode }) => (
   <section className="space-y-3">

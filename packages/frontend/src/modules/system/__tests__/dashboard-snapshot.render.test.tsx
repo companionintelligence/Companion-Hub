@@ -18,6 +18,8 @@ const fixtures = vi.hoisted(() => ({
   peers: [] as Record<string, unknown>[],
   log: {} as Record<string, unknown>,
   hardware: {} as Record<string, unknown>,
+  memory: {} as Record<string, unknown>,
+  cloud: [] as Record<string, unknown>[],
   inference: {} as Record<string, unknown>,
   monitor: {} as Record<string, unknown>,
 }));
@@ -40,10 +42,9 @@ vi.mock('react-i18next', () => {
     DASHBOARD_TIER: 'Tier',
     DASHBOARD_IN_FLIGHT: 'In flight',
     DASHBOARD_RAM_USED: '{{used}} of {{total}} in use',
-    DASHBOARD_INFERENCE_BUDGET: '{{mb}} for inference',
     DASHBOARD_LOCAL_MODELS_TITLE: 'AI models on this node',
     DASHBOARD_LOCAL_CONTAINERS_TITLE: 'Containers on this node',
-    DASHBOARD_CONTAINER_COUNT: '{{count}} containers',
+    DASHBOARD_CONTAINER_COUNT: '{{total}} containers',
     DASHBOARD_COL_MODEL: 'Model',
     DASHBOARD_COL_ENGINE: 'Engine',
     DASHBOARD_COL_STATE: 'State',
@@ -95,7 +96,50 @@ vi.mock('react-i18next', () => {
     DASHBOARD_MISC_GPU_RUNTIME: 'GPU runtime',
     DASHBOARD_CONNECTED: 'Connected',
     DASHBOARD_AVAILABLE: 'Available',
+    DASHBOARD_HARDWARE_FAILED: 'Could not read hardware.',
+    DASHBOARD_MEMORY_FAILED: 'Could not read the model memory budget.',
+    DASHBOARD_CONTAINERS_FAILED: 'Could not read container usage.',
+    DASHBOARD_POOL_FAILED: 'Could not read pool status.',
+    DASHBOARD_ROUTING_LOG_FAILED: 'Could not read the routing log.',
+    DASHBOARD_CLOUD_FAILED: 'Could not read cloud providers.',
+    DASHBOARD_MISC_FAILED: 'Could not read node details.',
+    DASHBOARD_PERCENT_USED: '{{percent}}% used',
+    DASHBOARD_UNIFIED: 'Unified',
+    DASHBOARD_MODEL_MEMORY_TITLE: 'Model memory budget',
+    DASHBOARD_MODEL_MEMORY_EMPTY: 'No memory budget reported.',
+    DASHBOARD_MEMORY_OF_BUDGET: '{{used}} of {{budget}} · {{percent}}%',
+    DASHBOARD_MEMORY_USED: 'Used',
+    DASHBOARD_MEMORY_PINNED: 'Pinned',
+    DASHBOARD_MEMORY_FREE: 'Free',
+    DASHBOARD_MEMORY_TOTAL: '{{total}} installed',
+    DASHBOARD_MEMORY_PINNED_MB: '{{mb}} pinned',
+    DASHBOARD_UNIFIED_MEMORY_NOTE: 'Unified memory: models are sized against system RAM.',
+    DASHBOARD_DOCKER_OVERHEAD: 'Holds back an estimated {{mb}} for app containers.',
+    DASHBOARD_COL_PRESSURE: 'GPU',
+    DASHBOARD_PEER_DISABLED: 'off',
+    DASHBOARD_NETWORK_CONTAINERS_WOULD_NEED: 'Would need the peer capability payload extended on both sides.',
+    DASHBOARD_OUTBOUND: 'Outbound',
+    DASHBOARD_INBOUND: 'Inbound',
+    DASHBOARD_DISABLED_BY_ENV: 'off in .env',
+    DASHBOARD_DISABLED_BY_SETTING: 'off in settings',
+    DASHBOARD_PRESSURE_WEIGHT: 'Pressure',
+    DASHBOARD_SIGNED_PEERS: 'Signed',
+    DASHBOARD_REQUIRED: 'Required',
+    DASHBOARD_OPTIONAL: 'Optional',
+    DASHBOARD_PINS: 'Pins',
+    DASHBOARD_PIN_INACTIVE: 'This pin is doing nothing right now.',
+    DASHBOARD_PINS_INACTIVE: 'Inactive pins: {{total}}.',
+    DASHBOARD_REASON_ACTIVE: 'routing normally',
+    DASHBOARD_FAILOVER_SHORT: '+{{total}} tried',
+    DASHBOARD_PIN_SHORT: 'pinned',
+    DASHBOARD_INBOUND_NO_MODEL: 'An inbound request does not report its model.',
+    DASHBOARD_CLOUD_TITLE: 'Cloud fallback',
+    DASHBOARD_CLOUD_EMPTY: 'No cloud providers configured.',
+    DASHBOARD_NO_KEY: 'no key',
+    DASHBOARD_MISC_NPU: 'NPU',
     DASHBOARD_UNAVAILABLE: 'Unavailable',
+    DASHBOARD_POOL_OFF: 'Off',
+    DASHBOARD_NONE: 'None',
   };
   const t = (key: string, vars?: Record<string, unknown>) => {
     const raw = strings[key] ?? key;
@@ -115,9 +159,10 @@ vi.mock('@/api-client/routes/named-status-routes', () => ({
 }));
 vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
   poolStatusOptions: () => ({ queryKey: ['pool-status'], queryFn: async () => fixtures.pool }),
-  listPeersOptions: () => ({ queryKey: ['pool-peers'], queryFn: async () => fixtures.peers }),
   getPoolRoutingLogOptions: () => ({ queryKey: ['pool-log'], queryFn: async () => fixtures.log }),
   getHardwareOptions: () => ({ queryKey: ['hardware'], queryFn: async () => fixtures.hardware }),
+  getMemoryOptions: () => ({ queryKey: ['memory'], queryFn: async () => fixtures.memory }),
+  getCloudProvidersOptions: () => ({ queryKey: ['cloud'], queryFn: async () => fixtures.cloud }),
 }));
 
 const peer = (name: string, tier: string, models: string[], inFlight: number | undefined, seen: string) => ({
@@ -147,6 +192,7 @@ describe.skipIf(!OUT)('resource dashboard snapshot', () => {
       enabled: true,
       routingActive: true,
       reason: 'active',
+      directions: { outbound: { enabled: true, disabledBy: null }, inbound: { enabled: true, disabledBy: null } },
       settings: { poolEnabled: true, poolLocalAffinity: 1, poolHealthPollSeconds: 30 },
       localNode: {
         nodeFqdn: 'beta-max.capybara-ulmer.ts.net',
@@ -169,7 +215,7 @@ describe.skipIf(!OUT)('resource dashboard snapshot', () => {
       peerCounts: { total: 3, connected: 3, pending: 0, unreachable: 0, disabled: 0 },
       routing: { recorded: 14, capacity: 200, served: 13, failed: 1, failovers: 0, lastAt: '2026-09-10T02:31:00Z' },
     };
-    fixtures.peers = [
+    fixtures.pool.peers = [
       peer('core-2', 'high', ['gemma3:27b', 'qwen2.5-coder:32b', 'ornith-1.5:9b'], 0, '2026-09-10 02:31:10.495'),
       peer('beta-red', 'low', ['qwen2.5-coder:7b', 'qwen3:8b'], undefined, '2026-09-10 02:30:55.100'),
       peer('core-7', 'high', ['gabegoodhart/minimax-m2:230b', 'qwen3-vl:32b', 'gemma4:31b'], 2, '2026-09-10 02:31:12.000'),
@@ -219,6 +265,20 @@ describe.skipIf(!OUT)('resource dashboard snapshot', () => {
         },
       ],
     };
+    fixtures.memory = {
+      totalVramMb: 0,
+      totalRamMb: 131_072,
+      systemReservedRamMb: 8192,
+      dockerOverheadMb: 5120,
+      appContainerBudgetMb: 32_768,
+      modelBudgetVramMb: 0,
+      modelBudgetRamMb: 63_488,
+      modelUsedVramMb: 0,
+      modelUsedRamMb: 41_984,
+      pinnedVramMb: 0,
+      pinnedRamMb: 12_288,
+    };
+    fixtures.cloud = [];
     fixtures.inference = {
       backends: [
         { type: 'ollama', running: true, healthy: true, modelsLoaded: 7 },
