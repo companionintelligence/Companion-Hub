@@ -131,6 +131,20 @@ export class VllmBackend implements InferenceBackend {
     this.logger.info(`[vLLM] Unload model request for ${modelId} — requires container restart`);
   }
 
+  /*
+   * No `listResident()`, deliberately — this backend reports `source: 'unsupported'`.
+   *
+   * The obvious candidate is the Prometheus gauge `vllm:engine_sleep_state{sleep_state="awake"}`
+   * on `/metrics`, and it looks like residency. It is not: it is a latch written once at logger
+   * construction and mutated only by `AsyncLLM.sleep()` / `wake_up()`, whose sole entry points
+   * are the dev-mode routes `/sleep` and `/wake_up` — both 404 on every node in this fleet. It
+   * therefore reads "awake" whether the engine is serving, evicted, crashed or hung, and
+   * distinguishes only "somebody called the sleep API" from "nobody did".
+   *
+   * It would be reportable on a server launched with BOTH `--enable-sleep-mode` and
+   * `VLLM_SERVER_DEV_MODE=1`, which nothing here is. Until then a gauge that cannot go false
+   * is worse than no gauge: it would render a crashed engine as resident.
+   */
   async isModelLoaded(modelId: string): Promise<boolean> {
     const health = await this.healthCheck();
     return health.modelsLoaded.includes(modelId);

@@ -10,6 +10,7 @@ import { InferenceRouterService } from './inference-router.service';
 import { HardwareInspectorService } from './hardware-inspector.service';
 import { MemoryManagerService } from './memory-manager.service';
 import { ModelRegistryService } from './model-registry.service';
+import { ModelResidencyService } from './model-residency.service';
 import { ModelPullerService } from './model-puller.service';
 import { CloudFallbackService } from './cloud-fallback.service';
 import { OllamaInstallerService } from './ollama-installer.service';
@@ -52,6 +53,7 @@ import { BackendObserverService } from './supervision/backend-observer.service';
 @Controller('inference')
 export class InferenceController {
   constructor(
+    private readonly residency: ModelResidencyService,
     private readonly router: InferenceRouterService,
     private readonly hardwareInspector: HardwareInspectorService,
     private readonly memoryManager: MemoryManagerService,
@@ -286,6 +288,23 @@ export class InferenceController {
     return result;
   }
 
+  /**
+   * What is IN MEMORY right now, per backend.
+   *
+   * Distinct from `models/runtime`, which reports the on-disk inventory: on a live node those
+   * two disagree completely — 11 models listed, zero resident. Callers that want to know
+   * whether a request will be fast, or what is occupying VRAM, need this one.
+   *
+   * Read `source` before `models`. `models: null` means the engine could not be asked
+   * (`unreachable`) or has no residency concept (`unsupported`); only `source: 'measured'`
+   * with an empty array means "asked, and nothing is loaded".
+   */
+  @UseGuards(AuthGuard)
+  @Get('models/resident')
+  async getResidentModels() {
+    return this.residency.getReport(new Date().toISOString());
+  }
+
   @UseGuards(AuthGuard)
   @Get('models/runtime')
   async getRuntimeModels(@Query() query: RuntimeModelsQueryDto) {
@@ -309,7 +328,24 @@ export class InferenceController {
       models: models.map((model) => ({
         id: model.id,
         name: model.name,
-        state: model.loaded ? 'loaded' : 'unknown',
+        /*
+         * `available`, NOT `loaded`.
+         *
+         * `InferenceModel.loaded` is hardcoded `true` by every backend's `listModels()`
+         * (ollama.backend.ts, mtplx.backend.ts, dspark.backend.ts,
+         * openai-compatible.client.ts) — it has never meant "resident in VRAM", only "the
+         * engine has this in its inventory". Reporting it as `loaded` borrowed a word from
+         * the `ModelState` lifecycle, where `loaded` is specifically the resident state and
+         * `pulled` is the on-disk one, so the route asserted residency it never measured.
+         *
+         * Measured on beta-max: this route reported 11/11 `loaded` while the engine's own
+         * `/api/ps` reported zero models resident. Nothing reads this field — the AI settings
+         * card ignores it and renders a "Downloaded" badge — so correcting the word costs
+         * nothing and stops the API stating something false.
+         *
+         * Real residency needs `/api/ps`, which no authenticated route exposes today.
+         */
+        state: model.loaded ? 'available' : 'unknown',
       })),
     };
   }

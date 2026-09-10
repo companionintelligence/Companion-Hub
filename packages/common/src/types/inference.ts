@@ -261,6 +261,81 @@ export interface BackendHealthStatus {
   error?: string;
 }
 
+/**
+ * One model the engine says is IN MEMORY right now — not on disk.
+ *
+ * This type exists because `BackendHealthStatus.modelsLoaded` does not mean what its name
+ * says (see its doc): it is inventory. Every field here is nullable on purpose, because
+ * engines differ in what they will admit to, and a null that means "the engine did not
+ * say" must never be rendered as a zero.
+ */
+export interface ResidentModel {
+  id: string;
+  /**
+   * Bytes the engine's scheduler assigned to its GPU BACKEND. This is not a GPU memory
+   * reading and must never be labelled VRAM.
+   *
+   * Measured on beta-max (Strix Halo, unified memory): the card's total VRAM is 2048 MB,
+   * and ollama reported 7674223656 (7319 MiB) for a single 9B model — 3.5x the whole card.
+   * Most of that allocation lives in host RAM reached through GTT. Calling this "bytes in
+   * VRAM" would repeat, one level down, the exact mistake this type exists to correct:
+   * "loaded means on disk" becoming "in VRAM means in host RAM".
+   *
+   * `null` when the engine reports residency but not size — most of them do not.
+   */
+  engineGpuBytes: number | null;
+  /**
+   * Total bytes the engine attributes to the model. Do NOT infer CPU offload from
+   * `totalBytes - engineGpuBytes`: on every node in the current fleet those two are equal
+   * while up to 83% of the allocation is physically in host RAM, so the difference is a
+   * scheduler bookkeeping artefact, not a placement measurement.
+   */
+  totalBytes: number | null;
+  /** When the engine will evict it unless used again. `null` when it does not expire or does not say. */
+  expiresAt: string | null;
+  /**
+   * The context window the model was actually loaded WITH, which is not necessarily the one
+   * the catalog advertises — an engine short on memory will load a smaller window silently,
+   * and that is a thing an operator debugging a truncated prompt needs to see.
+   */
+  contextLength: number | null;
+  /** e.g. `Q4_K_M`. `null` when the engine does not report it. */
+  quantization: string | null;
+}
+
+/**
+ * What one backend can tell us about residency, and — as importantly — how it knows.
+ *
+ * `source` is not decoration. A caller must be able to tell "the engine was asked and said
+ * nothing is loaded" from "this engine has no notion of loading", because the first is a
+ * fact about the machine and the second is a fact about the software. Conflating them is
+ * exactly the class of error that made `modelsLoaded` mean the wrong thing.
+ */
+export type ResidencySource =
+  /** The engine was queried and answered — the only source that can report an empty list as a fact. */
+  | 'measured'
+  /** The engine serves exactly the model(s) it was started with, so its inventory IS its residency. */
+  | 'implicit'
+  /** The engine exposes no residency concept. `models` is null; it is not empty. */
+  | 'unsupported'
+  /** The engine could not be reached. `models` is null. */
+  | 'unreachable';
+
+export interface BackendResidency {
+  backend: InferenceBackendType;
+  source: ResidencySource;
+  /** `null` whenever `source` is `unsupported` or `unreachable` — never an empty array in those cases. */
+  models: ResidentModel[] | null;
+  error?: string;
+}
+
+export interface ResidencyReport {
+  backends: BackendResidency[];
+  /** Models resident across all backends that could answer. */
+  residentCount: number;
+  sampledAt: string;
+}
+
 export interface BackendModelInfo {
   id: string;
   name: string;

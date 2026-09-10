@@ -57,6 +57,10 @@ export type {
   InferenceStatus,
   BackendHealthStatus,
   BackendModelInfo,
+  BackendResidency,
+  ResidencySource,
+  ResidentModel,
+  ResidencyReport,
   PullProgress,
 } from './inference.js';
 export type {
