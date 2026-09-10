@@ -38,6 +38,10 @@ const commandSections: { title: string; entries: CommandEntry[] }[] = [
         description: 'Pair this Hub with CI Cloud using a portal pairing code (hub must be running)',
       },
       {
+        command: `${BASE_COMMAND} claim [env] [--email <addr>]`,
+        description: 'Create this Hub’s first operator without a browser (needs register first). Safe to re-run',
+      },
+      {
         command: `${BASE_COMMAND} device-id [--from-hub]`,
         description: "Print this machine's stable device ID (default: local resolver; --from-hub asks the running Hub API)",
       },
@@ -110,8 +114,8 @@ const commandSections: { title: string; entries: CommandEntry[] }[] = [
         description: 'What inference backends a node can run, from its hardware; prints the plan unless --execute',
       },
       {
-        command: `${BASE_COMMAND} fleet install [--user <account>] [--execute]`,
-        description: 'Stand a Hub up on each node and register it; prints the plan unless --execute',
+        command: `${BASE_COMMAND} fleet install [--user <account>] [--claim-email <addr>] [--execute]`,
+        description: 'Stand a Hub up on each node, register it, and claim it; prints the plan unless --execute',
       },
       {
         command: `${BASE_COMMAND} fleet update [--hub] [--models a,b] [--execute]`,
@@ -366,7 +370,7 @@ export function renderManPage() {
       'MCP toggles, environment resets, and app management.',
       '',
       'The commands that target one environment take an optional [env]: local (default), dev, staging, prod.',
-      'Those are wizard, setup, register, device-id, up, down, restart, recreate, status, logs, config,',
+      'Those are wizard, setup, register, claim, device-id, up, down, restart, recreate, status, logs, config,',
       'doctor, clean, reset, and the mcp, public-web and pool subcommands.',
       '',
       'Every other command takes none. fleet refuses one outright (cihub fleet scan prod is an error);',

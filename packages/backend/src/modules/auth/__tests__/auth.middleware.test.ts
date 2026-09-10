@@ -268,3 +268,120 @@ describe('AuthMiddleware session fallback', () => {
     expect(next).toHaveBeenCalledOnce();
   });
 });
+
+/**
+ * The hole that cost the Hub Pool fleet a week.
+ *
+ * A Hub registered with `cihub register` holds a valid device key and — until somebody signs in
+ * through Portal in a browser — has ZERO rows in `user`. Both host-local arms assigned
+ * `getFirstOperator()` to `req.user` without checking it, so on those Hubs `req.user` was
+ * `undefined` and `AuthGuard` answered "you must be logged in" to a correct key. Twelve of sixteen
+ * nodes were in that state, and every one of them was diagnosed as a key problem.
+ *
+ * What is pinned here is the behaviour that was missing, not the wording: a valid host-local
+ * credential on an operator-less Hub must never leave an undefined principal behind, and must be
+ * distinguishable from an anonymous caller.
+ */
+describe('AuthMiddleware on a Hub with no operator', () => {
+  const sessionManager = {
+    resolveSessionUserId: vi.fn(),
+    getSessionExpiresAt: vi.fn(),
+    touchSession: vi.fn(),
+  };
+  const config = { get: vi.fn() };
+  const userRepository = {
+    getUserDtoById: vi.fn(),
+    getFirstOperator: vi.fn(),
+  };
+  const sessionUserCache = {
+    get: vi.fn().mockReturnValue(undefined),
+    beginRead: vi.fn().mockReturnValue({ epoch: 0, version: 0 }),
+    set: vi.fn(),
+    invalidate: vi.fn(),
+  };
+
+  let middleware: AuthMiddleware;
+
+  const bearerRequest = (token: string) =>
+    ({
+      cookies: {},
+      headers: { authorization: `Bearer ${token}` },
+      query: {},
+      get: () => undefined,
+    }) as unknown as Request;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    sessionUserCache.get.mockReturnValue(undefined);
+    sessionManager.resolveSessionUserId.mockReturnValue(null);
+    sessionManager.getSessionExpiresAt.mockReturnValue(null);
+    middleware = new AuthMiddleware(sessionManager as never, config as never, userRepository as never, sessionUserCache as never);
+  });
+
+  it.each([
+    ['no operator row at all', null],
+    ['a repository that answers undefined', undefined],
+  ])('does not install a principal for a valid device key when there is %s', async (_label, operator) => {
+    config.get.mockImplementation((key: string) => (key === 'ciHubApiKey' ? 'hub-api-key' : undefined));
+    userRepository.getFirstOperator.mockResolvedValue(operator);
+
+    const req = bearerRequest('hub-api-key');
+    const next = vi.fn();
+
+    await middleware.use(req, {} as never, next);
+
+    expect(req.user).toBeUndefined();
+    expect(req.hubUnclaimed).toBe(true);
+    // The arm still names itself: "we could not tell who you are" and "this Hub has nobody to be"
+    // are different answers, and only the second one has a fix.
+    expect(req.hubPrincipal).toBe('portal-device');
+    expect(next).toHaveBeenCalledOnce();
+  });
+
+  it('leaves the CLI JWT arm in the same honest state', async () => {
+    // Same hole, same fix: the JWT is signed with `jwtSecret`, which lives in the same state file
+    // as the device key, so it reaches an empty `user` table exactly as often.
+    const token = jsonwebtoken.sign({ sub: 'cli' }, 'jwt-secret');
+    config.get.mockImplementation((key: string) => (key === 'jwtSecret' ? 'jwt-secret' : undefined));
+    userRepository.getFirstOperator.mockResolvedValue(null);
+
+    const req = bearerRequest(token);
+    const next = vi.fn();
+
+    await middleware.use(req, {} as never, next);
+
+    expect(req.user).toBeUndefined();
+    expect(req.hubUnclaimed).toBe(true);
+    expect(req.hubPrincipal).toBe('cli');
+    expect(next).toHaveBeenCalledOnce();
+  });
+
+  it('marks nothing unclaimed once the Hub has an operator', async () => {
+    config.get.mockImplementation((key: string) => (key === 'ciHubApiKey' ? 'hub-api-key' : undefined));
+    userRepository.getFirstOperator.mockResolvedValue({ id: 1, username: 'op@example.com' });
+
+    const req = bearerRequest('hub-api-key');
+    const next = vi.fn();
+
+    await middleware.use(req, {} as never, next);
+
+    expect(req.user).toEqual({ id: 1, username: 'op@example.com' });
+    expect(req.hubUnclaimed).toBeUndefined();
+    expect(req.hubPrincipal).toBe('portal-device');
+  });
+
+  it('never reports an anonymous caller as merely unclaimed', async () => {
+    // No bearer at all: the Hub's own state is not the reason this request has no user, and saying
+    // otherwise would hand a stranger a "run cihub claim" hint about an appliance they cannot touch.
+    config.get.mockImplementation((key: string) => (key === 'ciHubApiKey' ? 'hub-api-key' : undefined));
+
+    const req = { cookies: {}, headers: {}, query: {}, get: () => undefined } as unknown as Request;
+    const next = vi.fn();
+
+    await middleware.use(req, {} as never, next);
+
+    expect(req.hubUnclaimed).toBeUndefined();
+    expect(req.hubPrincipal).toBeUndefined();
+    expect(next).toHaveBeenCalledOnce();
+  });
+});

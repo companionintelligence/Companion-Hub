@@ -1396,6 +1396,56 @@
         ]
       }
     },
+    "/api/auth/hub/claim": {
+      "get": {
+        "operationId": "hubClaimStatus",
+        "parameters": [],
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HubClaimStatusDto"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Auth"
+        ]
+      },
+      "post": {
+        "operationId": "claimHub",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HubClaimBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "default": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HubClaimDto"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Auth"
+        ]
+      }
+    },
     "/api/auth/logout": {
       "post": {
         "operationId": "logout",
@@ -7662,6 +7712,18 @@
           "success"
         ],
         "additionalProperties": false
+      },
+      "HubClaimStatusDto": {
+        "type": "object",
+        "properties": {}
+      },
+      "HubClaimBody": {
+        "type": "object",
+        "properties": {}
+      },
+      "HubClaimDto": {
+        "type": "object",
+        "properties": {}
       },
       "SessionRefreshDto": {
         "type": "object",
