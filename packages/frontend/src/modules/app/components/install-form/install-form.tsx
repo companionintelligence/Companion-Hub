@@ -100,6 +100,17 @@ export type FormValues = {
    * serving it now. Set only by the picker, and only after it has asked.
    */
   customDomainTakeover?: boolean;
+  /**
+   * What this app was being served on when the dialog was drawn — the
+   * compare-and-swap half of `customDomain: ''` (R2-HUBDOMAINS-3).
+   *
+   * Seeded from the row and never edited, so a release acts on the state the
+   * operator was SHOWN: the dialog's `''` is submitted on every save, and a
+   * domain bound in the Portal while the dialog sat open would otherwise be
+   * released by a save that never mentioned it. The Hub refuses the save when
+   * this no longer matches the row.
+   */
+  customDomainExpected?: string;
   isVisibleOnGuestDashboard?: boolean;
   enableAuth: boolean;
   maxBackups?: number;

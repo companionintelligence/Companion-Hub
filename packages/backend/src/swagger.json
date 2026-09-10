@@ -12574,6 +12574,9 @@
           "customDomainTakeover": {
             "type": "boolean"
           },
+          "customDomainExpected": {
+            "type": "string"
+          },
           "maxBackups": {
             "type": "number",
             "minimum": 0,

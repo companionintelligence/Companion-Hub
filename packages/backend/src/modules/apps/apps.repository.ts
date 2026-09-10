@@ -4,7 +4,7 @@ import { app } from '@/core/database/drizzle/schema';
 import type { AppStatus, NewApp } from '@/core/database/drizzle/types';
 import { Inject, Injectable } from '@nestjs/common';
 import type { AppUrn } from '@ci-hub/common/types';
-import { normalizeStoredHostname } from '@ci-hub/common/types';
+import { normalizeStoredHostname, sanitizeAppSubdomain } from '@ci-hub/common/types';
 import { and, asc, eq, ne, notInArray, or, sql } from 'drizzle-orm';
 
 @Injectable()
@@ -202,20 +202,44 @@ export class AppsRepository {
   }
 
   /**
-   * Given a local subdomain, return all apps that have this subdomain, have exposedLocal enabled and not the given id
+   * Given a local subdomain, return all apps that would be served on the same
+   * hostname, have exposedLocal enabled and are not the given id.
+   *
+   * ⚠ MATCHED ON THE VALUE THAT BECOMES A HOSTNAME, NOT ON THE BYTES STORED
+   * (R2-HUBDOMAINS-2). Every hostname the Hub composes runs the subdomain through
+   * {@link sanitizeAppSubdomain} — lowercased, non-`[a-z0-9-]` replaced, hyphen
+   * runs collapsed — while `localSubdomain` accepts `/^[a-zA-Z0-9-]{1,63}$/`. A
+   * `varchar` equality on the raw value therefore let `my-app`, `My-App` and
+   * `my--app` occupy three rows that all pass this conflict check and all emit
+   * one byte-identical Traefik `Host()` rule; the delivery reconcile then wrote a
+   * customer's bound `custom_domain` onto whichever of those rows it reached, and
+   * the takeover confirmation was skipped because `customDomainServesAnotherApp`
+   * sanitizes both sides and found the two apps to be the same one.
+   *
+   * Saves canonicalize the value they store (`normalizeSubmittedForm`), so new
+   * rows agree with their own hostname. Rows written before that do not, which is
+   * why the comparison canonicalizes both sides instead of trusting the column:
+   * a Hub that already holds `My-App` must still refuse a second app asking for
+   * `my-app`. That costs a scan of the locally-exposed apps — a handful of rows on
+   * any Hub — in exchange for a check that cannot be walked past by spelling.
    *
    * @param {string} localSubdomain - The local subdomain to search for
    * @param {number} id - The id of the app to exclude
    */
   public async getAppsByLocalSubdomain(localSubdomain: string, id?: number) {
-    if (!id) {
-      return this.db.query.app.findMany({
-        where: and(eq(app.localSubdomain, localSubdomain), eq(app.exposedLocal, true)),
-      });
+    const canonical = sanitizeAppSubdomain(localSubdomain);
+
+    // Punctuation that sanitizes to nothing names no hostname, so it can collide
+    // with none: such a row falls back to `<appName>-<appStoreSlug>`.
+    if (!canonical) {
+      return [];
     }
-    return this.db.query.app.findMany({
-      where: and(eq(app.localSubdomain, localSubdomain), eq(app.exposedLocal, true), ne(app.id, id)),
+
+    const candidates = await this.db.query.app.findMany({
+      where: id ? and(eq(app.exposedLocal, true), ne(app.id, id)) : eq(app.exposedLocal, true),
     });
+
+    return candidates.filter((candidate) => candidate.localSubdomain !== null && sanitizeAppSubdomain(candidate.localSubdomain) === canonical);
   }
 
   /**
