@@ -19,12 +19,26 @@ import { HintText } from '@/components/ui/field-hint/field-hint';
 import { useDemoMode } from '@/lib/hooks/use-demo-mode';
 import { cn } from '@/lib/utils';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ArrowRightLeft, Network } from 'lucide-react';
+import { ArrowRightLeft, ChevronRight, Network } from 'lucide-react';
 import { useState } from 'react';
 import type { ReactNode } from 'react';
 import toast from 'react-hot-toast';
 import { useTranslation } from 'react-i18next';
-import { Detail, DetailGrid, LoadingCard, SectionHeader, StatChip, StatChipRow, StatusBadge } from '../components/network-section/network-section';
+import {
+  Detail,
+  DetailGrid,
+  KpiTable,
+  LoadingCard,
+  SectionHeader,
+  StatChip,
+  StatChipRow,
+  StatusBadge,
+  StatusDot,
+  TableEmpty,
+  Td,
+  Th,
+  Tr,
+} from '../components/network-section/network-section';
 
 /* Shapes mirrored by hand from the backend: every pool route has an empty response schema in
    swagger.json, so the generated SDK types these payloads as `unknown`. Authoritative sources are
@@ -178,6 +192,11 @@ interface DiscoverablePoolPeer {
 
 /** How many routing decisions to render. The buffer holds 200; an operator reads the recent ones. */
 const ROUTING_LOG_LIMIT = 25;
+/** Above this the matrix is collapsed on first paint — 12 rows is ~340px, the scroll cap. */
+const MODEL_TABLE_OPEN_MAX = 12;
+/** Past six columns the matrix stops being readable at this card width, so it degrades to a node list. */
+const MODEL_MATRIX_MAX_NODES = 6;
+
 const MIN_LOCAL_AFFINITY = 0;
 const MAX_LOCAL_AFFINITY = 20;
 const MIN_HEALTH_POLL_SECONDS = 10;
@@ -288,6 +307,8 @@ export const HubPoolSection = () => {
   // `null` means "showing what the server has"; a value means the operator has edited the form and
   // it must not be overwritten by the next 15s poll landing mid-edit.
   const [draft, setDraft] = useState<{ poolLocalAffinity: number; poolHealthPollSeconds: number } | null>(null);
+  /* Per-view, never persisted: it narrows what is rendered and changes nothing the pool does. */
+  const [modelFilter, setModelFilter] = useState('');
 
   // The peer an Unpair click is waiting on confirmation for; `null` closes the dialog.
   const [unpairTarget, setUnpairTarget] = useState<PoolPeer | null>(null);
@@ -497,6 +518,22 @@ export const HubPoolSection = () => {
   const inboundEnvLocked = !envLocked && status.directions.inbound.disabledBy === 'env';
   const localLabel = t('HUB_POOL_LOCAL_NODE_LABEL');
   const models = mergePoolModels(status, localLabel);
+  /* Column order is the order the ranker considers: this Hub first, then peers by name.
+     Derived from the PEER list rather than from `models`, so a connected peer holding
+     nothing still gets a column and reads as empty instead of vanishing from the matrix. */
+  const poolNodes = [
+    localLabel,
+    ...status.peers
+      .filter((peer) => peer.status === 'connected')
+      .map((peer) => peerLabel(peer))
+      .sort((a, b) => a.localeCompare(b)),
+  ];
+  const asMatrix = poolNodes.length <= MODEL_MATRIX_MAX_NODES;
+  const modelQuery = modelFilter.trim().toLowerCase();
+  const shownModels = modelQuery ? models.filter((entry) => entry.model.toLowerCase().includes(modelQuery)) : models;
+  /* The number worth surfacing while collapsed: a model only one node can serve goes dark
+     with that node. */
+  const soleSourced = models.filter((entry) => entry.nodes.length === 1).length;
   const pendingInbound = status.peers.filter((peer) => peer.direction === 'inbound' && peer.status === 'pending');
   const pendingOutbound = status.peers.filter((peer) => peer.direction === 'outbound' && peer.status === 'pending');
   const paired = status.peers.filter((peer) => peer.status === 'connected' || peer.status === 'unreachable');
@@ -753,7 +790,7 @@ export const HubPoolSection = () => {
                     className="flex flex-wrap items-center justify-between gap-2 rounded-md border px-3 py-2 text-sm"
                   >
                     <span className="min-w-0 space-y-0.5">
-                      <span className="block truncate font-mono text-xs" title={describePinScope(pin)}>
+                      <span className="block break-all font-mono text-xs sm:truncate" title={describePinScope(pin)}>
                         {describePinScope(pin)}
                       </span>
                       <span className="block text-xs text-muted-foreground">{describePinTarget(pin)}</span>
@@ -840,10 +877,10 @@ export const HubPoolSection = () => {
             <ul className="space-y-2">
               {paired.map((peer) => (
                 <li key={peer.id} data-testid="hub-pool-peer" className="space-y-2 rounded-md border px-3 py-2.5">
-                  <div className="flex items-start justify-between gap-3">
+                  <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between sm:gap-3">
                     <div className="min-w-0 space-y-1">
                       <div className="flex flex-wrap items-center gap-2">
-                        <span className="truncate text-sm font-medium">{peerLabel(peer)}</span>
+                        <span className="break-all text-sm font-medium sm:truncate">{peerLabel(peer)}</span>
                         <PeerStatusBadge status={peer.status} enabled={peer.enabled} t={t} />
                         {/* The far side's decision, not ours: it is up and answering, it just will
                             not serve us. Without this its empty model list reads as a broken node. */}
@@ -871,11 +908,11 @@ export const HubPoolSection = () => {
                         ) : null}
                       </div>
                       {/* The FQDN is the identity the token was issued to; the display name is only a label. */}
-                      <span className="block truncate font-mono text-xs text-muted-foreground" title={peer.nodeFqdn}>
+                      <span className="block break-all font-mono text-xs text-muted-foreground sm:truncate" title={peer.nodeFqdn}>
                         {peer.nodeFqdn}
                       </span>
                     </div>
-                    <div className="flex shrink-0 items-center gap-3">
+                    <div className="flex shrink-0 items-center justify-end gap-3 self-end sm:self-auto">
                       {/* Instantly reversible and NOT a revocation: both tokens and the pairing
                           survive, so this needs no confirmation dialog and no re-approval from the
                           other side. Unpair, beside it, is the one that revokes. */}
@@ -939,28 +976,88 @@ export const HubPoolSection = () => {
         </Block>
 
         {/* ── What the pool can serve ─────────────────────────────────── */}
+        {/*
+          A presence MATRIX, not one bordered row per model.
+          The chip list spent 47px per model — a border, `py-2` and a gap — to carry a name
+          and a few node pills, and it answered the wrong question. Scanning thirty rows of
+          chips, an operator cannot see which model lives on exactly ONE node, and that is
+          the fact that predicts an outage: when that node goes, those models go with it.
+          Nodes as columns makes it readable straight down, and the row cost drops to ~25px.
+        */}
         <Block title={t('HUB_POOL_MODELS_TITLE')} help={t('HUB_POOL_MODELS_HELP')}>
           {models.length ? (
-            <ul className="space-y-1.5">
-              {models.map((entry) => (
-                <li
-                  key={entry.model}
-                  data-testid="hub-pool-model"
-                  className="flex flex-wrap items-center justify-between gap-2 rounded-md border px-3 py-2"
+            <details className="group" open={models.length <= MODEL_TABLE_OPEN_MAX}>
+              <summary className="flex cursor-pointer list-none items-center gap-2 text-[11px] text-muted-foreground [&::-webkit-details-marker]:hidden">
+                <ChevronRight className="h-3 w-3 shrink-0 transition-transform group-open:rotate-90" />
+                {t('HUB_POOL_MODELS_COUNT', { models: models.length, nodes: poolNodes.length })}
+                {/* Stated on the collapsed summary too — it is the reason to open it. */}
+                {soleSourced > 0 ? <span className="text-warning">{t('HUB_POOL_MODELS_SOLE_SOURCED', { count: soleSourced })}</span> : null}
+              </summary>
+              <div className="mt-2 space-y-2">
+                <Input
+                  type="search"
+                  name="hubPoolModelFilter"
+                  data-testid="hub-pool-model-filter"
+                  className="h-7 text-xs"
+                  placeholder={t('HUB_POOL_MODELS_FILTER')}
+                  value={modelFilter}
+                  onChange={(event) => setModelFilter(event.target.value)}
+                />
+                <KpiTable
+                  className="max-h-[340px] overflow-y-auto"
+                  head={
+                    <>
+                      <Th>{t('HUB_POOL_MODELS_COL_MODEL')}</Th>
+                      {asMatrix ? (
+                        poolNodes.map((node) => (
+                          <Th key={node} align="right">
+                            {node}
+                          </Th>
+                        ))
+                      ) : (
+                        <Th>{t('HUB_POOL_MODELS_COL_NODES')}</Th>
+                      )}
+                    </>
+                  }
                 >
-                  <span className="min-w-0 truncate font-mono text-xs" title={entry.model}>
-                    {entry.model}
-                  </span>
-                  <span className="flex flex-wrap gap-1.5">
-                    {entry.nodes.map((node) => (
-                      <span key={node} className="rounded-full border border-border/70 bg-muted/30 px-2 py-0.5 text-xs text-muted-foreground">
-                        {node}
-                      </span>
-                    ))}
-                  </span>
-                </li>
-              ))}
-            </ul>
+                  {shownModels.length === 0 ? (
+                    <TableEmpty colSpan={asMatrix ? poolNodes.length + 1 : 2}>{t('HUB_POOL_MODELS_NO_MATCH')}</TableEmpty>
+                  ) : (
+                    shownModels.map((entry) => {
+                      const sole = entry.nodes.length === 1;
+
+                      return (
+                        <Tr key={entry.model} testId="hub-pool-model" data={{ model: entry.model, nodes: entry.nodes.join(',') }}>
+                          <Td className="max-w-[220px] font-mono" title={entry.model}>
+                            <span className="flex items-center gap-1.5">
+                              <span className="truncate">{entry.model}</span>
+                              {/* Only one node can serve this. Marked on the row rather than
+                                  left to be inferred from counting dots. */}
+                              {sole ? <StatusDot tone="warn" className="h-1.5 w-1.5 shrink-0" /> : null}
+                            </span>
+                          </Td>
+                          {asMatrix ? (
+                            poolNodes.map((node) => (
+                              <Td key={node} align="right">
+                                {entry.nodes.includes(node) ? (
+                                  <StatusDot tone={sole ? 'warn' : 'ok'} />
+                                ) : (
+                                  <span className="text-muted-foreground/40">·</span>
+                                )}
+                              </Td>
+                            ))
+                          ) : (
+                            <Td className="text-muted-foreground" title={entry.nodes.join(', ')}>
+                              {entry.nodes.join(', ')}
+                            </Td>
+                          )}
+                        </Tr>
+                      );
+                    })
+                  )}
+                </KpiTable>
+              </div>
+            </details>
           ) : (
             <p className="text-sm text-muted-foreground">{t('HUB_POOL_MODELS_EMPTY')}</p>
           )}
@@ -1036,7 +1133,7 @@ export const HubPoolSection = () => {
             )}
 
             {mintedPin ? (
-              <div className="flex items-center justify-between gap-3 rounded-md border px-3 py-2">
+              <div className="flex flex-col gap-2 rounded-md border px-3 py-2 sm:flex-row sm:items-center sm:justify-between sm:gap-3">
                 {/* The only place the digits are ever rendered: they came back from the mint call and
                     are held in this component's state, never re-fetched. A reload loses them, which
                     is correct — the operator mints a new one. */}
@@ -1095,7 +1192,7 @@ export const HubPoolSection = () => {
                   // Keyed on the FQDN, not the Tailscale device id: the FQDN is unique across this
                   // list by construction, and it is the value the Pair button posts.
                   <li key={device.nodeFqdn} className="flex items-center justify-between gap-3 rounded-md border px-3 py-2">
-                    <span className="min-w-0 truncate font-mono text-xs" title={device.nodeFqdn}>
+                    <span className="min-w-0 break-all font-mono text-xs sm:truncate" title={device.nodeFqdn}>
                       {device.hostname}
                     </span>
                     <Button
@@ -1147,7 +1244,7 @@ export const HubPoolSection = () => {
                   {/* The FQDN, not the display name: approving issues a fresh token to this exact host,
                       and the name is whatever the (unauthenticated) requester chose to call itself. */}
                   <div className="min-w-0">
-                    <span className="block truncate font-mono text-xs" title={peer.nodeFqdn} data-testid="hub-pool-pending-fqdn">
+                    <span className="block break-all font-mono text-xs sm:truncate" title={peer.nodeFqdn} data-testid="hub-pool-pending-fqdn">
                       {peer.nodeFqdn}
                     </span>
                     {peer.displayName ? <span className="block truncate text-xs text-muted-foreground">{peer.displayName}</span> : null}
@@ -1156,13 +1253,16 @@ export const HubPoolSection = () => {
                         against the one shown on that Hub's own screen before approving. Absent means
                         the request carried no PIN — i.e. an unauthenticated claim of a name, which is
                         exactly the case the PIN exists to close. */}
-                    <span className="block truncate font-mono text-[11px] text-muted-foreground" data-testid="hub-pool-pending-fingerprint">
+                    <span
+                      className="block break-all font-mono text-[11px] text-muted-foreground sm:truncate"
+                      data-testid="hub-pool-pending-fingerprint"
+                    >
                       {peer.peerKeyFingerprint
                         ? t('HUB_POOL_PEER_FINGERPRINT', { fingerprint: peer.peerKeyFingerprint })
                         : t('HUB_POOL_PEER_FINGERPRINT_UNVERIFIED')}
                     </span>
                   </div>
-                  <div className="flex shrink-0 gap-2">
+                  <div className="flex shrink-0 gap-2 self-end sm:self-auto">
                     <Button
                       type="button"
                       size="sm"
@@ -1194,10 +1294,10 @@ export const HubPoolSection = () => {
                   data-testid="hub-pool-pending-outbound"
                   className="flex items-center justify-between gap-3 rounded-md border px-3 py-2"
                 >
-                  <span className="min-w-0 truncate font-mono text-xs" title={peer.nodeFqdn}>
+                  <span className="min-w-0 break-all font-mono text-xs sm:truncate" title={peer.nodeFqdn}>
                     {peerLabel(peer)}
                   </span>
-                  <div className="flex shrink-0 items-center gap-3">
+                  <div className="flex shrink-0 items-center justify-end gap-3 self-end sm:self-auto">
                     <span className="text-xs text-muted-foreground">{t('HUB_POOL_OUTBOUND_WAITING', { name: peerLabel(peer) })}</span>
                     {/* No confirm dialog, unlike Unpair: this discards a request nobody answered, so
                         there is no established pairing or issued token to lose. */}

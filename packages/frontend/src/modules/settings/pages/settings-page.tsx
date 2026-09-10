@@ -1,4 +1,3 @@
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/DropdownMenu';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useAppContext } from '@/context/app-context';
 import { cn } from '@/lib/utils';
@@ -46,40 +45,22 @@ export default () => {
       <div className="flex flex-col flex-1 overflow-hidden">
         <Tabs value={currentTab} onValueChange={handleTabChange} className="flex-1 flex flex-col h-full overflow-hidden">
           <div className="mx-auto flex w-full max-w-5xl justify-center">
-            <TabsList className="bg-card/50 border border-border/50">
+            {/* One scrolling strip, not six tabs plus a "More" dropdown.
+                The dropdown was three separate defects: the active tab lost its indicator
+                whenever it lived inside it, the items were DropdownMenuItems rather than
+                tabs so the tablist told a screen reader it had two children when it has
+                eight, and roving arrow-key focus stopped at the visible pair. All eight
+                triggers measure 598px, which scrolls comfortably in the 358px mobile pane,
+                so the strip is simply better on every axis. */}
+            <TabsList className="max-w-full justify-start overflow-x-auto border border-border/50 bg-card/50 md:justify-center">
               <TabsTrigger value="settings">{t('COMMON_SETTINGS')}</TabsTrigger>
               <TabsTrigger value="security">{t('COMMON_SECURITY')}</TabsTrigger>
-              <TabsTrigger value="appstores" className="hidden md:inline-flex">
-                {t('COMMON_APP_STORES')}
-              </TabsTrigger>
-              <TabsTrigger value="network" className="hidden md:inline-flex">
-                {t('COMMON_NETWORK')}
-              </TabsTrigger>
-              <TabsTrigger value="ai" className="hidden md:inline-flex">
-                {t('COMMON_AI')}
-              </TabsTrigger>
-              <TabsTrigger value="mcp" className="hidden md:inline-flex">
-                {t('COMMON_MCP')}
-              </TabsTrigger>
-              <TabsTrigger value="system" className="hidden md:inline-flex">
-                {t('COMMON_SYSTEM')}
-              </TabsTrigger>
-              <TabsTrigger value="logs" className="hidden md:inline-flex">
-                {t('COMMON_LOGS')}
-              </TabsTrigger>
-              <DropdownMenu>
-                <DropdownMenuTrigger className="inline-flex md:hidden items-center justify-center whitespace-nowrap rounded-sm px-3 py-1.5 text-sm font-medium text-muted-foreground hover:text-foreground transition-colors">
-                  {t('MORE')}
-                </DropdownMenuTrigger>
-                <DropdownMenuContent>
-                  <DropdownMenuItem onClick={() => handleTabChange('appstores')}>{t('COMMON_APP_STORES')}</DropdownMenuItem>
-                  <DropdownMenuItem onClick={() => handleTabChange('network')}>{t('COMMON_NETWORK')}</DropdownMenuItem>
-                  <DropdownMenuItem onClick={() => handleTabChange('ai')}>{t('COMMON_AI')}</DropdownMenuItem>
-                  <DropdownMenuItem onClick={() => handleTabChange('mcp')}>{t('COMMON_MCP')}</DropdownMenuItem>
-                  <DropdownMenuItem onClick={() => handleTabChange('system')}>{t('COMMON_SYSTEM')}</DropdownMenuItem>
-                  <DropdownMenuItem onClick={() => handleTabChange('logs')}>{t('COMMON_LOGS')}</DropdownMenuItem>
-                </DropdownMenuContent>
-              </DropdownMenu>
+              <TabsTrigger value="appstores">{t('COMMON_APP_STORES')}</TabsTrigger>
+              <TabsTrigger value="network">{t('COMMON_NETWORK')}</TabsTrigger>
+              <TabsTrigger value="ai">{t('COMMON_AI')}</TabsTrigger>
+              <TabsTrigger value="mcp">{t('COMMON_MCP')}</TabsTrigger>
+              <TabsTrigger value="system">{t('COMMON_SYSTEM')}</TabsTrigger>
+              <TabsTrigger value="logs">{t('COMMON_LOGS')}</TabsTrigger>
             </TabsList>
           </div>
           <div className={cn('p-3 flex-1 min-h-0', isLogsTab ? 'overflow-hidden' : 'overflow-y-auto')} data-testid="settings-scroll-container">
