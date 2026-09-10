@@ -16,6 +16,7 @@ import type { ReactNode } from 'react';
  * Nothing was deleted: `HintText` keeps each string one hover away.
  */
 
+// biome-ignore lint/performance/noBarrelFile: re-exports the dense primitives this tab's own components (below) are built from, so a consumer of this file gets both from one import — not a pure barrel with no other content.
 export {
   DASH,
   humanBytes,

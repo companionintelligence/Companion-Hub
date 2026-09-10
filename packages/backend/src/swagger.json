@@ -4494,6 +4494,39 @@
         ]
       }
     },
+    "/api/app-lifecycle/{urn}/install/plan": {
+      "post": {
+        "operationId": "planInstall",
+        "parameters": [
+          {
+            "name": "urn",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AppFormBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "tags": [
+          "AppLifecycle"
+        ]
+      }
+    },
     "/api/app-lifecycle/{urn}/start": {
       "post": {
         "operationId": "startApp",
