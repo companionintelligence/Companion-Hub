@@ -21,9 +21,16 @@ import { useTranslation } from 'react-i18next';
 /*
  * LOCAL RESOURCES — what this machine itself is running.
  *
- * Three panels: the host's own capacity, the AI models resident on it, and the
- * containerised workloads. Every number here is measured on this node; nothing in this
- * section depends on the pool, so it renders in full on an unpaired Hub.
+ * Three panels: the host's own capacity, the AI models it HOLDS, and the containerised
+ * workloads. Every number here is measured on this node; nothing in this section depends
+ * on the pool, so it renders in full on an unpaired Hub.
+ *
+ * "Holds", not "resident". The pool status field is called `modelsLoaded` but it is the
+ * engine's on-disk inventory: measured on beta-max, it listed 11 models while the engine's
+ * own `/api/ps` reported zero actually in VRAM. On-disk is the right basis for the question
+ * this dashboard answers — "can this node serve that model" — but it is not residency, and
+ * this panel must not imply it is. Nothing in the product exposes true residency over an
+ * authenticated route today.
  */
 
 const BACKEND_TONES = ['ok', 'plain', 'warn', 'muted'] as const;

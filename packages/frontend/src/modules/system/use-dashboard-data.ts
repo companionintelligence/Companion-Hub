@@ -23,6 +23,14 @@ const HARDWARE_POLL_MS = 120_000;
 export interface PoolBackend {
   type: string;
   healthy?: boolean;
+  /**
+   * The engine's ON-DISK inventory, despite the name the API gives it.
+   *
+   * Measured on beta-max: `modelsLoaded` carried 11 entries while the engine's own
+   * `/api/ps` reported zero models resident in VRAM. This is the right basis for "can
+   * this node serve that model" — a model on disk can be served — but any label built
+   * from it must say holds/available, never loaded or resident.
+   */
   modelsLoaded?: string[];
 }
 

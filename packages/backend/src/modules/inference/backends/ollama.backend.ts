@@ -213,6 +213,10 @@ export class OllamaBackend implements InferenceBackend {
         id: m.name,
         name: m.name,
         size: m.size || 0,
+        // Hardcoded, and it means "in this engine's inventory", NOT resident in VRAM:
+        // `/api/tags` lists what is on disk and says nothing about what is loaded. Residency
+        // is only knowable from `/api/ps` (read elsewhere in this file for quarantine).
+        // Callers that surface this to a user must not call it "loaded".
         loaded: true,
       }));
     } catch {
