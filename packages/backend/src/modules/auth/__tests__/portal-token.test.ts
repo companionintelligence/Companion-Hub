@@ -25,6 +25,19 @@ describe('portalClaimsIdentity', () => {
     expect(portalClaimsIdentity({ sub: 's1', email: 'a@b.c', name: null })).toBe('a@b.c');
     expect(portalClaimsIdentity({ sub: 's1', email: null, name: null })).toBe('s1');
   });
+
+  it('lower-cases the email so Bearer and cookie traffic sign the SAME X-CI-Hub-User', () => {
+    // Local usernames are lower-cased on insert, so the cookie path always signs the lower-cased
+    // address. A raw `Owner@Example.com` here made the same person two users to the app.
+    expect(portalClaimsIdentity({ sub: 's1', email: 'Owner@Example.com', name: null })).toBe('owner@example.com');
+  });
+
+  it('trims the claim as well as folding it, because `normalizeUsername` trims', () => {
+    // A padded claim that is only lower-cased is still a different string from the stored username,
+    // and would put raw whitespace inside the signed header value.
+    expect(portalClaimsIdentity({ sub: 's1', email: '  Owner@Example.com  ', name: null })).toBe('owner@example.com');
+    expect(portalClaimsIdentity({ sub: 's1', email: '   ', name: null })).toBe('s1');
+  });
 });
 
 describe('verifyPortalIdToken', () => {

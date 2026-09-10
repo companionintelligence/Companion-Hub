@@ -55,7 +55,13 @@ export function toDesktopRedirectPath(redirectUrl: string | null | undefined, hu
   return `${candidate.pathname}${candidate.search}${candidate.hash}` || '/home';
 }
 
-export type PortalSsoErrorCode = 'callback_error' | 'state_expired' | 'account_mismatch' | 'not_configured' | 'not_org_member';
+export type PortalSsoErrorCode =
+  | 'callback_error'
+  | 'state_expired'
+  | 'account_mismatch'
+  | 'not_configured'
+  | 'not_org_member'
+  | 'org_check_unavailable';
 
 /** True when Hub OIDC was initiated from a local loopback origin (stack-dev / local desktop). */
 export function isLoopbackHubOrigin(hubOrigin: string): boolean {

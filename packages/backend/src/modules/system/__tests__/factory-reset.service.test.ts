@@ -11,6 +11,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
 import { FactoryResetService } from '../factory-reset.service';
 import { RegistrationService } from '@/modules/registration/registration.service';
+import { BearerOrgMembershipCache } from '@/modules/auth/bearer-org-membership.cache';
 
 const uninstallExecute = vi.fn().mockResolvedValue({ success: true, message: 'ok' });
 
@@ -27,6 +28,7 @@ describe('FactoryResetService', () => {
   let cache: MockProxy<CacheService>;
   let sessionUserCache: SessionUserCache;
   let registrationService: MockProxy<RegistrationService>;
+  let bearerOrgMembership: BearerOrgMembershipCache;
 
   beforeEach(async () => {
     uninstallExecute.mockClear();
@@ -35,6 +37,9 @@ describe('FactoryResetService', () => {
       query: { app: { findMany: vi.fn().mockResolvedValue([]) } },
     };
     filesystem = mock<FilesystemService>();
+    bearerOrgMembership = new BearerOrgMembershipCache();
+    const moduleRefMock = mock<ModuleRef>();
+    moduleRefMock.get.mockImplementation((token: unknown) => (token === BearerOrgMembershipCache ? bearerOrgMembership : undefined) as never);
     cache = mock<CacheService>();
     registrationService = mock<RegistrationService>();
     registrationService.resetRegistration.mockResolvedValue(undefined);
@@ -44,7 +49,7 @@ describe('FactoryResetService', () => {
         FactoryResetService,
         { provide: DATABASE, useValue: db },
         { provide: DOCKERODE, useValue: {} },
-        { provide: ModuleRef, useValue: mock<ModuleRef>() },
+        { provide: ModuleRef, useValue: moduleRefMock },
         { provide: FilesystemService, useValue: filesystem },
         {
           provide: ConfigurationService,
@@ -74,6 +79,21 @@ describe('FactoryResetService', () => {
     expect(db.execute).toHaveBeenCalled();
     expect(registrationService.resetRegistration).toHaveBeenCalledWith({ reason: 'manual' });
     expect(cache.clear).toHaveBeenCalled();
+  });
+
+  /**
+   * Forward-auth Bearer verdicts moved out of CacheService into a process-local store, so
+   * `cache.clear()` no longer reaches them. Without an explicit clear, a subject cached as allowed
+   * seconds before the reset keeps passing forward-auth for the rest of its 60s TTL — on an
+   * appliance that has just been unbound from the organisation that vouched for them.
+   */
+  it('MUST revoke cached Bearer org-membership verdicts, which CacheService.clear() cannot reach', async () => {
+    bearerOrgMembership.set('portal-subject', true);
+    expect(bearerOrgMembership.get('portal-subject')).toBe(true);
+
+    await service.execute();
+
+    expect(bearerOrgMembership.get('portal-subject')).toBeUndefined();
   });
 
   // The TRUNCATE goes around UserRepository, so nothing else drops these entries: a surviving

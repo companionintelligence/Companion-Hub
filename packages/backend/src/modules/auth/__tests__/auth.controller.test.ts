@@ -11,6 +11,7 @@ import { mock, type MockProxy } from 'vitest-mock-extended';
 import { TranslatableError } from '@/common/error/translatable-error';
 import { AuthController } from '../auth.controller';
 import { ForwardAuthSecretResolver } from '../forward-auth-secret.resolver';
+import { BearerOrgMembershipCache } from '../bearer-org-membership.cache';
 import { AuthService } from '../auth.service';
 import { exchangePortalAuthorizationCode, fetchPortalSessionEmail } from '../portal-sso';
 import { verifyPortalIdToken } from '../portal-token';
@@ -58,6 +59,8 @@ describe('AuthController', () => {
         { provide: SessionManager, useValue: mock<SessionManager>() },
         { provide: RegistrationService, useValue: mock<RegistrationService>() },
         { provide: DeviceRegistrationRepository, useValue: mock<DeviceRegistrationRepository>() },
+        // Real instance, not a mock: its TTL/coalescing behaviour is what the caching tests assert.
+        BearerOrgMembershipCache,
       ],
     }).compile();
 
@@ -189,7 +192,7 @@ describe('AuthController', () => {
         email: 'support@example.com',
         name: 'Support',
       });
-      authService.isSubjectMemberOfPairedOrg.mockResolvedValue(true);
+      authService.resolvePairedOrgMembership.mockResolvedValue('member');
       forwardAuthSecrets.resolveForHost.mockResolvedValue({
         secret: 'per-app-secret',
         appUrn: 'ci-memory:ci-marketplace' as never,
@@ -215,7 +218,7 @@ describe('AuthController', () => {
       await authController.traefik(req, res);
 
       expect(verifyPortalIdToken).toHaveBeenCalledWith('portal.id.token', expect.objectContaining({ publicCiCloudUrl: 'https://hub.ci.computer' }));
-      expect(authService.isSubjectMemberOfPairedOrg).toHaveBeenCalledWith('portal-sub');
+      expect(authService.resolvePairedOrgMembership).toHaveBeenCalledWith('portal-sub');
       expect(res.redirect).not.toHaveBeenCalled();
       expect(res.status).toHaveBeenCalledWith(200);
       const headers = Object.fromEntries(setHeader.mock.calls);
@@ -234,7 +237,7 @@ describe('AuthController', () => {
         email: 'attacker@example.com',
         name: 'Attacker',
       });
-      authService.isSubjectMemberOfPairedOrg.mockResolvedValue(false);
+      authService.resolvePairedOrgMembership.mockResolvedValue('not-member');
 
       const req = {
         user: undefined,
@@ -254,9 +257,12 @@ describe('AuthController', () => {
       expect(forwardAuthSecrets.resolveForHost).not.toHaveBeenCalled();
     });
 
-    it('CI-Hub#1333: fails closed on an empty subject rather than treating "unknown" as "authorized"', async () => {
+    it('CI-Hub#1333: fails closed on a blank subject rather than treating "unknown" as "authorized"', async () => {
+      // A whitespace `sub` is the blank subject that can actually reach here: `verifyPortalIdToken`
+      // already returns null (-> 401) for an empty one, so asserting on `sub: ''` would only be
+      // testing the mock. `'   '` is truthy, passes verification, and is what `trim()` guards.
       config.get.mockImplementation((key: string) => (key === 'ciCloudUrl' ? 'https://hub.ci.computer' : (undefined as never)));
-      vi.mocked(verifyPortalIdToken).mockResolvedValue({ sub: '', email: 'nobody@example.com', name: null });
+      vi.mocked(verifyPortalIdToken).mockResolvedValue({ sub: '   ', email: 'nobody@example.com', name: null });
 
       const req = {
         user: undefined,
@@ -267,37 +273,123 @@ describe('AuthController', () => {
       await authController.traefik(req, res);
 
       expect(res.status).toHaveBeenCalledWith(403);
-      expect(authService.isSubjectMemberOfPairedOrg).not.toHaveBeenCalled();
+      expect(authService.resolvePairedOrgMembership).not.toHaveBeenCalled();
     });
 
-    it('CI-Hub#1333: caches a positive membership result instead of asking Portal on every forwarded request', async () => {
+    it('CI-Hub#1333: refuses a Bearer with no forwarded host instead of signing with the Hub-global secret', async () => {
+      // `resolveForHost(undefined)` falls back to the Hub-global signing secret, which is exactly
+      // the cross-app forgery the per-app secret exists to stop (CI-Engineering#74).
       config.get.mockImplementation((key: string) => (key === 'ciCloudUrl' ? 'https://hub.ci.computer' : (undefined as never)));
-      vi.mocked(verifyPortalIdToken).mockResolvedValue({ sub: 'portal-sub', email: 'support@example.com', name: 'Support' });
-      authService.isSubjectMemberOfPairedOrg.mockResolvedValue(true);
-      forwardAuthSecrets.resolveForHost.mockResolvedValue({
-        secret: 'per-app-secret',
-        appUrn: 'ci-memory:ci-marketplace' as never,
-        source: 'app-env',
-      });
 
-      let cachedValue: string | undefined;
-      cache.get.mockImplementation((key: string) => (key === 'bearer_org_member:portal-sub' ? cachedValue : undefined) as never);
-      cache.set.mockImplementation((key: string, value: string) => {
-        if (key === 'bearer_org_member:portal-sub') cachedValue = value;
-      });
+      const req = { user: undefined, headers: { authorization: 'Bearer portal.id.token' } } as unknown as Request;
+      const setHeader = vi.fn();
+      const res = { status: vi.fn().mockReturnThis(), send: vi.fn(), setHeader, redirect: vi.fn() } as unknown as Response;
 
-      const makeReq = () =>
+      await authController.traefik(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(401);
+      expect(setHeader).not.toHaveBeenCalled();
+      expect(forwardAuthSecrets.resolveForHost).not.toHaveBeenCalled();
+    });
+
+    it('refuses a COOKIE-authenticated request with no forwarded host for the same reason', async () => {
+      // The Bearer branch is not the only one that signs identity headers: an authenticated session
+      // with no forwarded host reached `resolveForHost('')` and got the Hub-global secret too.
+      const req = { user: { id: 1, username: 'operator@example.com' }, headers: {} } as unknown as Request;
+      const setHeader = vi.fn();
+      const res = { status: vi.fn().mockReturnThis(), send: vi.fn(), setHeader, redirect: vi.fn() } as unknown as Response;
+
+      await authController.traefik(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(401);
+      expect(setHeader).not.toHaveBeenCalled();
+      expect(forwardAuthSecrets.resolveForHost).not.toHaveBeenCalled();
+    });
+
+    describe('CI-Hub#1333 membership caching', () => {
+      const makeBearerReq = () =>
         ({
           user: undefined,
           headers: { authorization: 'Bearer portal.id.token', 'x-forwarded-host': 'app.companionintelligence.com' },
         }) as unknown as Request;
       const makeRes = () => ({ status: vi.fn().mockReturnThis(), send: vi.fn(), setHeader: vi.fn(), redirect: vi.fn() }) as unknown as Response;
 
-      await authController.traefik(makeReq(), makeRes());
-      await authController.traefik(makeReq(), makeRes());
+      beforeEach(() => {
+        config.get.mockImplementation((key: string) => (key === 'ciCloudUrl' ? 'https://hub.ci.computer' : (undefined as never)));
+        vi.mocked(verifyPortalIdToken).mockResolvedValue({ sub: 'portal-sub', email: 'support@example.com', name: 'Support' });
+        forwardAuthSecrets.resolveForHost.mockResolvedValue({
+          secret: 'per-app-secret',
+          appUrn: 'ci-memory:ci-marketplace' as never,
+          source: 'app-env',
+        });
+      });
 
-      expect(authService.isSubjectMemberOfPairedOrg).toHaveBeenCalledTimes(1);
-      expect(cache.set).toHaveBeenCalledWith('bearer_org_member:portal-sub', '1', 60);
+      it('reuses a positive membership result instead of asking Portal on every forwarded request', async () => {
+        authService.resolvePairedOrgMembership.mockResolvedValue('member');
+
+        await authController.traefik(makeBearerReq(), makeRes());
+        await authController.traefik(makeBearerReq(), makeRes());
+
+        expect(authService.resolvePairedOrgMembership).toHaveBeenCalledTimes(1);
+      });
+
+      it('reuses a REFUSAL too, so a client retrying in a loop cannot hammer Portal', async () => {
+        // The positive case above would stay green if refusals stopped being remembered, and a
+        // refused machine client is exactly the one that retries hardest.
+        authService.resolvePairedOrgMembership.mockResolvedValue('not-member');
+
+        const first = makeRes();
+        const second = makeRes();
+        await authController.traefik(makeBearerReq(), first);
+        await authController.traefik(makeBearerReq(), second);
+
+        expect(authService.resolvePairedOrgMembership).toHaveBeenCalledTimes(1);
+        expect(first.status).toHaveBeenCalledWith(403);
+        expect(second.status).toHaveBeenCalledWith(403);
+      });
+
+      it('coalesces a cold-start burst into ONE Portal round trip', async () => {
+        // The cache only helps after the first answer returns, so without in-flight coalescing a
+        // machine client opening ten parallel requests makes ten Portal calls — the traffic the
+        // cache is there to prevent.
+        let release: (value: 'member') => void = () => undefined;
+        authService.resolvePairedOrgMembership.mockReturnValue(
+          new Promise<'member'>((resolve) => {
+            release = resolve;
+          }),
+        );
+
+        const inFlight = Array.from({ length: 5 }, () => authController.traefik(makeBearerReq(), makeRes()));
+        release('member');
+        await Promise.all(inFlight);
+
+        expect(authService.resolvePairedOrgMembership).toHaveBeenCalledTimes(1);
+      });
+
+      it('denies on an unresolvable membership WITHOUT remembering it, so a Portal blip is not a 60s lockout', async () => {
+        authService.resolvePairedOrgMembership.mockResolvedValueOnce('unknown').mockResolvedValueOnce('member');
+
+        const deniedRes = makeRes();
+        await authController.traefik(makeBearerReq(), deniedRes);
+        expect(deniedRes.status).toHaveBeenCalledWith(403);
+
+        // Portal recovers: the very next request must ask again rather than serve the refusal.
+        const allowedRes = makeRes();
+        await authController.traefik(makeBearerReq(), allowedRes);
+
+        expect(authService.resolvePairedOrgMembership).toHaveBeenCalledTimes(2);
+        expect(allowedRes.status).toHaveBeenCalledWith(200);
+      });
+
+      it('survives a membership lookup that rejects outright, as a 403 rather than a 500', async () => {
+        authService.resolvePairedOrgMembership.mockRejectedValue(new Error('ECONNREFUSED'));
+
+        const res = makeRes();
+        await expect(authController.traefik(makeBearerReq(), res)).resolves.not.toThrow();
+
+        expect(res.status).toHaveBeenCalledWith(403);
+        expect(res.setHeader).not.toHaveBeenCalled();
+      });
     });
 
     it('lets Memory login and API-key traffic through without a Hub session', async () => {
@@ -431,8 +523,13 @@ describe('AuthController', () => {
     });
 
     it('falls back to the global secret for a host that maps to no app', async () => {
+      // A host that IS forwarded and simply matches no app in the map. Sending no host at all
+      // exercised a different branch (it is now refused outright), so this case went uncovered.
       forwardAuthSecrets.resolveForHost.mockResolvedValue({ secret: 'global-secret', source: 'global' });
-      const req = { user: { id: 1, username: 'testuser' }, headers: {} } as unknown as Request;
+      const req = {
+        user: { id: 1, username: 'testuser' },
+        headers: { 'x-forwarded-host': 'dashboard.ci.lan' },
+      } as unknown as Request;
       const setHeader = vi.fn();
       const res = { status: vi.fn().mockReturnThis(), send: vi.fn(), setHeader } as unknown as Response;
 
@@ -1541,6 +1638,52 @@ describe('AuthController', () => {
       expect(userRepository.updateUser).not.toHaveBeenCalled();
       expect(sessionManager.createSession).not.toHaveBeenCalled();
       expect(res.redirect).toHaveBeenCalledWith(expect.stringContaining('not_org_member'));
+    });
+
+    it('sends a Portal outage to its own error code instead of blaming the account', async () => {
+      // `not_org_member` renders "ask an admin to invite you". When the truth is that Portal was
+      // unreachable, that sends the operator after a problem they do not have.
+      cache.get.mockReturnValue(
+        JSON.stringify({
+          codeVerifier: 'verifier',
+          redirectUrl: null,
+          hubOrigin: 'http://localhost:5002',
+          desktop: false,
+        }),
+      );
+      config.get.mockImplementation((key: string) => {
+        if (key === 'ciCloudUrl') {
+          return 'https://hub.ci.computer';
+        }
+        if (key === 'userSettings') {
+          return { experimental: { insecureCookie: true } };
+        }
+        return '';
+      });
+      vi.mocked(exchangePortalAuthorizationCode).mockResolvedValue({
+        ok: true,
+        accessToken: 'access-token',
+        email: 'companion@example.com',
+        emailVerified: true,
+        subject: 'portal-person',
+        issuer: 'https://hub.ci.computer',
+      });
+      authService.admitHubPerson.mockRejectedValue(new TranslatableError('AUTH_ERROR_ORG_CHECK_UNAVAILABLE', {}, 503));
+      sessionManager.createSession.mockResolvedValue('session-123');
+
+      const req = {
+        protocol: 'http',
+        get: vi.fn((header: string) => (header === 'host' ? 'localhost:5002' : undefined)),
+        headers: {},
+        cookies: {},
+      } as unknown as Request;
+      const res = { redirect: vi.fn(), cookie: vi.fn() } as unknown as Response;
+
+      await authController.portalCallback(req, res, 'auth-code', 'state-123');
+
+      expect(sessionManager.createSession).not.toHaveBeenCalled();
+      expect(res.redirect).toHaveBeenCalledWith(expect.stringContaining('org_check_unavailable'));
+      expect(res.redirect).not.toHaveBeenCalledWith(expect.stringContaining('not_org_member'));
     });
 
     it('still signs a matching operator in on a plain browser callback', async () => {

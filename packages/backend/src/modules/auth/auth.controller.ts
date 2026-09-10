@@ -10,10 +10,11 @@ import { LoggerService } from '@/core/logger/logger.service';
 import { BadRequestException, Body, Controller, Delete, Get, HttpStatus, Patch, Post, Query, Req, Res, UseGuards } from '@nestjs/common';
 import type { Request, Response } from 'express';
 import { AuthGuard } from './auth.guard';
-import { AuthService } from './auth.service';
+import { AuthService, type PairedOrgMembership } from './auth.service';
 import { buildSignedForwardAuthHeaders } from './utils/forward-auth-signing';
 import { normalizeForwardedHost, rawForwardedHost } from './utils/forward-auth-host';
 import { ForwardAuthSecretResolver } from './forward-auth-secret.resolver';
+import { BearerOrgMembershipCache } from './bearer-org-membership.cache';
 import { UserRepository } from '@/modules/user/user.repository';
 import { RegistrationService } from '@/modules/registration/registration.service';
 import { DeviceRegistrationRepository } from '@/modules/registration/device-registration.repository';
@@ -120,6 +121,7 @@ export class AuthController {
     private readonly sessionManager: SessionManager,
     private readonly registrationService: RegistrationService,
     private readonly deviceRegistration: DeviceRegistrationRepository,
+    private readonly bearerOrgMembership: BearerOrgMembershipCache,
   ) {}
 
   private sessionCookieOptions(req: Request, scope?: { host?: string; proto?: string }) {
@@ -601,6 +603,15 @@ export class AuthController {
           });
           return redirectError(hubOrigin, 'not_org_member');
         }
+        // Distinct from the above on purpose: nothing is wrong with this account, we just could not
+        // reach Portal to check. Telling them to ask for an invite would send them after a problem
+        // they do not have.
+        if (code === 'AUTH_ERROR_ORG_CHECK_UNAVAILABLE') {
+          this.logger.warn('Portal login deferred: could not reach Portal to confirm org membership', {
+            portalEmailHash: hashEmailForLog(email),
+          });
+          return redirectError(hubOrigin, 'org_check_unavailable');
+        }
         if (code === 'AUTH_ERROR_USER_NOT_FOUND' || code === 'AUTH_ERROR_INVALID_CREDENTIALS') {
           this.logger.warn('Portal login blocked: no Hub person for this identity', {
             portalEmailHash: hashEmailForLog(email),
@@ -991,32 +1002,62 @@ export class AuthController {
 
   /**
    * Whether a Portal Bearer token's subject may authenticate to THIS Hub's apps (CI-Hub#1333).
-   * `AuthService.isSubjectMemberOfPairedOrg` is the same appliance-binding check the cookie/SSO
+   * `AuthService.resolvePairedOrgMembership` is the same appliance-binding check the cookie/SSO
    * login path uses (`admitHubPerson`); this wraps it in a short-lived cache because — unlike a
    * one-time login — the Traefik forward-auth path runs on every machine-client app request, and
    * a Portal round trip per request is both slow and needless traffic to Portal.
    *
-   * Fails closed: a missing subject, or any lookup that comes back false, is "not authorized" —
-   * never "let it through because we could not tell."
+   * Three things this must get right, none of which a plain "call it and cache the boolean" does:
+   *
+   * 1. It fails closed. A missing subject, a refusal, or a lookup that could not be made at all is
+   *    "not authorized" — never "let it through because we could not tell."
+   * 2. It does not REMEMBER "could not tell". A device-registration read blip or a Portal 5xx would
+   *    otherwise be written down as a refusal and lock every machine client out for the full TTL,
+   *    turning a one-second wobble into a one-minute outage. Same policy as
+   *    `ForwardAuthSecretResolver`: "Do not cache read failures so the next request can recover."
+   * 3. It coalesces. The cache only helps AFTER the first answer comes back, so a cold-start burst
+   *    from one client would otherwise fan out into one Portal round trip per in-flight request —
+   *    exactly the traffic the cache exists to prevent.
    */
-  private async isBearerSubjectAuthorizedForThisHub(subject: string): Promise<boolean> {
+  private async isBearerSubjectAuthorizedForThisHub(subject: string, targetHost: string): Promise<boolean> {
     const trimmed = subject?.trim();
     if (!trimmed) {
       return false;
     }
 
-    const cacheKey = `bearer_org_member:${trimmed}`;
-    const cached = this.cache.get(cacheKey);
-    if (cached !== undefined) {
-      return cached === '1';
+    const remembered = this.bearerOrgMembership.get(trimmed);
+    if (remembered !== undefined) {
+      return remembered;
     }
 
-    const isMember = await this.authService.isSubjectMemberOfPairedOrg(trimmed);
-    // 60s: long enough that a burst of forwarded requests from one machine client doesn't hit
-    // Portal per-request, short enough that a revoked org membership takes effect within a
-    // minute rather than surviving for the cache's normal day-long default.
-    this.cache.set(cacheKey, isMember ? '1' : '0', 60);
-    return isMember;
+    let membership: PairedOrgMembership;
+    try {
+      membership = await this.bearerOrgMembership.coalesce(trimmed, () => this.authService.resolvePairedOrgMembership(trimmed));
+    } catch (error) {
+      this.logger.warn(`Traefik forward auth could not resolve Portal org membership: ${error instanceof Error ? error.message : String(error)}`, {
+        targetHost,
+      });
+      return false;
+    }
+
+    if (membership === 'unknown') {
+      // Deny, but deliberately do not remember it — see (2) above.
+      this.logger.warn("Traefik forward auth rejected Portal Bearer token: could not confirm this Hub's paired organization", { targetHost });
+      return false;
+    }
+
+    const allowed = membership === 'member';
+    if (!allowed) {
+      // Logged here rather than at the 403 so a client retrying in a loop writes one line per TTL
+      // window instead of one per request: the same warning-flood guard the unauthenticated branch
+      // of `traefik` already applies to itself.
+      this.logger.warn("Traefik forward auth rejected Portal Bearer token: subject is not a member of this Hub's paired organization", {
+        subject: trimmed,
+        targetHost,
+      });
+    }
+    this.bearerOrgMembership.set(trimmed, allowed);
+    return allowed;
   }
 
   @Get('/traefik')
@@ -1036,6 +1077,16 @@ export class AuthController {
       return res.status(200).send();
     }
 
+    // Without a forwarded host `resolveForHost` falls back to the Hub-GLOBAL signing secret, which
+    // is the cross-app forgery the per-app secret exists to prevent (CI-Engineering#74), and there
+    // is no valid return route to build either. One guard for every branch below rather than one
+    // per branch: the Bearer path and the cookie path BOTH sign identity headers, so neither may
+    // be allowed to reach `resolveForHost('')`.
+    if (!forwardedHost) {
+      this.logger.debug('Traefik forward auth rejected a request with no forwarded host');
+      return res.status(401).send();
+    }
+
     // Machine clients use Portal bearer tokens, so valid tokens bypass browser SSO.
     // Invalid tokens return 401 instead of login HTML.
     if (!req.user) {
@@ -1050,12 +1101,10 @@ export class AuthController {
         // A verified id_token proves who the caller is to Portal, not that they may act on THIS
         // Hub: the audience list, issuer and signature are identical for every Hub in the fleet
         // (CI-Hub#1333). Bind it to the appliance the same way the cookie/SSO login path does
-        // (admitHubPerson -> isSubjectMemberOfPairedOrg) before issuing any forward-auth header.
-        const isMember = await this.isBearerSubjectAuthorizedForThisHub(claims.sub);
+        // (admitHubPerson -> resolvePairedOrgMembership) before issuing any forward-auth header.
+        // The rejection itself is logged inside the helper, once per verdict rather than per request.
+        const isMember = await this.isBearerSubjectAuthorizedForThisHub(claims.sub, forwardedHost);
         if (!isMember) {
-          this.logger.warn("Traefik forward auth rejected Portal Bearer token: not a member of this Hub's paired organization", {
-            targetHost: forwardedHost,
-          });
           return res.status(403).send();
         }
         const username = portalClaimsIdentity(claims);
@@ -1104,11 +1153,6 @@ export class AuthController {
       }
 
       return res.status(200).send();
-    }
-
-    // Without a forwarded host, refuse instead of constructing an invalid return route.
-    if (!forwardedHost) {
-      return res.status(401).send();
     }
 
     // Cache the host-map result because a failed consume falls directly through to mint.

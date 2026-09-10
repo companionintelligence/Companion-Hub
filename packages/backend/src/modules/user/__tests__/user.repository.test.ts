@@ -211,5 +211,50 @@ describe('UserRepository', () => {
       const result = await repository.createUser({ username: 'newuser' } as any);
       expect(result?.advancedMode).toBe(false);
     });
+
+    it('SHOULD fold the username to lower case before the INSERT', async () => {
+      // `getUserByUsername` folds what it is handed, so a row stored as `Owner@Example.com` can
+      // never be matched again: that operator cannot sign in at all. Migration 0062 repairs the
+      // rows that predate this; this keeps new ones from being written that way.
+      const values = vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([{ id: 3 }]) });
+      mockDb.insert.mockReturnValue({ values });
+
+      await repository.createUser({ username: '  Owner@Example.COM  ', password: 'hash' } as any);
+
+      expect(values).toHaveBeenCalledWith(expect.objectContaining({ username: 'owner@example.com' }));
+    });
+  });
+
+  describe('username normalization', () => {
+    it('SHOULD fold a username handed to updateUser', async () => {
+      const set = vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([{ id: 4 }]) }),
+      });
+      mockDb.update.mockReturnValue({ set });
+
+      await repository.updateUser(4, { username: 'Owner@Example.COM' });
+
+      expect(set).toHaveBeenCalledWith(expect.objectContaining({ username: 'owner@example.com' }));
+    });
+
+    it('SHOULD leave an update that does not touch the username alone', async () => {
+      // `undefined` must not be written over the stored address as an empty string.
+      const set = vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({ returning: vi.fn().mockResolvedValue([{ id: 5 }]) }),
+      });
+      mockDb.update.mockReturnValue({ set });
+
+      await repository.updateUser(5, { advancedMode: true });
+
+      expect(set).toHaveBeenCalledWith({ advancedMode: true });
+    });
+
+    it('SHOULD fold the value it looks a user up by', async () => {
+      mockDb.query.user.findFirst.mockResolvedValue({ id: 6 });
+
+      await repository.getUserByUsername('  Owner@Example.COM  ');
+
+      expect(mockDb.query.user.findFirst).toHaveBeenCalled();
+    });
   });
 });
