@@ -120,6 +120,7 @@ function ollamaLinuxScript(facts: HostFacts): string {
     '  systemctl daemon-reload',
     '  systemctl enable --now ollama || systemctl restart ollama',
     'fi',
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: bash parameter expansion for the generated script, not a forgotten template literal — JS must NOT interpolate it.
     'if getent group ollama >/dev/null 2>&1; then usermod -aG ollama "${SUDO_USER:-$(id -un)}" || true; fi',
     'echo "ollama-install-complete"',
   );
@@ -144,6 +145,7 @@ function vllmLinuxScript(dataDir: string): string {
     'for c in python3.13 python3.12 python3.11 python3.10 python3 python; do',
     '  command -v "$c" >/dev/null 2>&1 || continue',
     '  v="$("$c" -c "import sys; print(f\'{sys.version_info.major}.{sys.version_info.minor}\')" 2>/dev/null || echo 0.0)"',
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: bash parameter expansion for the generated script, not a forgotten template literal — JS must NOT interpolate it.
     '  maj="${v%%.*}"; min="${v#*.}"',
     '  if [ "$maj" = "3" ] && [ "$min" -ge 10 ] 2>/dev/null; then PY="$c"; break; fi',
     'done',

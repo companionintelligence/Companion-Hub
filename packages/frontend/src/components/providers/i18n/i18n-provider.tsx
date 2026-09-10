@@ -67,28 +67,27 @@ function initI18n() {
     chain.use(Backend).use(LanguageDetector);
   }
 
-  void chain
-    .init({
-      debug: false,
-      lng: mobile ? 'en' : undefined,
-      resources: {
-        en: {
-          translation: en,
-        },
-        'en-US': {
-          translation: en,
-        },
+  void chain.init({
+    debug: false,
+    lng: mobile ? 'en' : undefined,
+    resources: {
+      en: {
+        translation: en,
       },
-      react: {
-        useSuspense: false,
+      'en-US': {
+        translation: en,
       },
-      fallbackLng: 'en',
-      partialBundledLanguages: true,
-      load: 'currentOnly',
-      interpolation: {
-        escapeValue: false,
-      },
-    });
+    },
+    react: {
+      useSuspense: false,
+    },
+    fallbackLng: 'en',
+    partialBundledLanguages: true,
+    load: 'currentOnly',
+    interpolation: {
+      escapeValue: false,
+    },
+  });
 }
 
 initI18n();

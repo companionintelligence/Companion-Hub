@@ -18,6 +18,7 @@
  * Import these names instead of the numbered ones. `named-status-routes.test.ts` pins
  * each to its URL, so a regeneration that renumbers fails the suite instead of the UI.
  */
+// biome-ignore lint/performance/noBarrelFile: the point of this file is the rename — see the doc comment above.
 export {
   getStatusOptions as registrationStatusOptions,
   getStatusQueryKey as registrationStatusQueryKey,
