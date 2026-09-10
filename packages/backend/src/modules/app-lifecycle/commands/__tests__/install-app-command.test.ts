@@ -15,6 +15,7 @@ import { EnvUtils } from '@/modules/env/env.utils';
 import { MarketplaceService } from '@/modules/marketplace/marketplace.service';
 import { PortManagerService } from '@/modules/network/port-manager.service';
 import { CloudflareClientService } from '@/modules/cloudflare/cloudflare-client.service';
+import { AppLifecycleService } from '../../app-lifecycle.service';
 import type { AppUrn } from '@ci-hub/common/types';
 import { parseComposeJson } from '@ci-hub/common/schemas';
 import { isRocmKfdPassthroughAvailable } from '@/modules/inference/host-rocm-availability';
@@ -523,6 +524,177 @@ describe('InstallAppCommand — pull policy', () => {
 
   it('still succeeds when called without a cancellation context (backward compatible)', async () => {
     const result = await command.execute(appUrn, {});
+    expect(result.success).toBe(true);
+  });
+});
+
+describe('InstallAppCommand — plan-based pre-flight', () => {
+  let command: InstallAppCommand;
+  let dockerService: any;
+  let appLifecycleService: { buildInstallPlan: ReturnType<typeof vi.fn> };
+  const appUrn = 'urn:store:test-app' as AppUrn;
+
+  const okPlan = {
+    appUrn,
+    checks: { config: { ok: true }, entitlement: { ok: true }, hostDevices: { ok: true }, architecture: { ok: true } },
+    images: [],
+    ports: [],
+    formFields: [],
+    blocked: false,
+  };
+
+  beforeEach(() => {
+    vi.mocked(parseComposeJson).mockReturnValue({ services: [], overrides: [] } as any);
+    vi.mocked(isRocmKfdPassthroughAvailable).mockResolvedValue(true);
+    vi.mocked(fs.promises.access).mockResolvedValue(undefined as any);
+
+    const dockerReadFacade = { diagnoseAppContainers: vi.fn().mockResolvedValue({ unhealthy: [], healthy: [] }) };
+    dockerService = {
+      composeApp: vi.fn().mockResolvedValue(undefined),
+      pullImages: vi.fn().mockResolvedValue(undefined),
+      waitForManagedAppContainersReady: vi.fn().mockResolvedValue({
+        ok: true,
+        appStatus: 'running',
+        summary: { total: 1, running: 1, exitZero: 0 },
+        message: 'All containers are running',
+      }),
+      removeAppNetworks: vi.fn().mockResolvedValue(undefined),
+      snapshotAppImageIds: vi.fn().mockResolvedValue([]),
+      removeAppImages: vi.fn().mockResolvedValue(undefined),
+    };
+
+    const logger = mockDeep<LoggerService>();
+    const config = mock<ConfigurationService>();
+    // @ts-expect-error
+    config.get.mockImplementation((key: string) => {
+      if (key === 'directories') return { dataDir: '/tmp', appDataDir: '/tmp/app-data' };
+      if (key === 'architecture') return 'amd64';
+      return {};
+    });
+    // @ts-expect-error
+    config.getConfig.mockReturnValue({
+      internalIp: '127.0.0.1',
+      directories: { dataDir: '/tmp', appDataDir: '/tmp/app-data' },
+      domain: 'test.local',
+      localDomain: 'local',
+    });
+
+    const appFilesManager = mock<AppFilesManager>();
+    appFilesManager.getDockerComposeJson.mockResolvedValue({ content: '{}', path: '/tmp/compose.json' });
+    appFilesManager.getAppEnv.mockResolvedValue({ content: '', path: '/tmp/.env' });
+    appFilesManager.getUserComposeFile.mockResolvedValue({ content: null, path: '/tmp/user-compose.yml' });
+    appFilesManager.setAppDataDirPermissions.mockResolvedValue();
+    appFilesManager.getInstalledAppInfo.mockResolvedValue({
+      id: 'test-app',
+      name: 'Test App',
+      port: 8080,
+      categories: [],
+      short_desc: 'test',
+      author: 'test',
+      source: 'test',
+      available: true,
+      force_pull: false,
+    } as any);
+
+    const marketplaceService = mock<MarketplaceService>();
+    marketplaceService.getDockerComposeJson.mockResolvedValue({ content: '{}', path: '/tmp/compose.json' });
+    marketplaceService.copyAppFromRepoToInstalled.mockResolvedValue();
+    marketplaceService.copyDataDir.mockResolvedValue();
+
+    const appHelpers = mock<AppHelpers>();
+    appHelpers.generateEnvFile.mockResolvedValue();
+
+    const sseService = mock<SSEService>();
+    const envUtils = new EnvUtils();
+    const portManager = mock<PortManagerService>();
+    portManager.releaseAll.mockResolvedValue();
+    portManager.allocatePorts.mockResolvedValue([]);
+
+    appLifecycleService = { buildInstallPlan: vi.fn().mockResolvedValue(okPlan) };
+
+    const dockerode = mock<Dockerode>();
+    // @ts-expect-error
+    dockerode.pruneContainers.mockResolvedValue({ ContainersDeleted: [], SpaceReclaimed: 0 });
+
+    const moduleRef = {
+      get: vi.fn((token: any) => {
+        if (token === LoggerService) return logger;
+        if (token === ConfigurationService) return config;
+        if (token === AppFilesManager) return appFilesManager;
+        if (token === MarketplaceService) return marketplaceService;
+        if (token === DockerService) return dockerService;
+        if (token === DockerReadFacade) return dockerReadFacade;
+        if (token === AppHelpers) return appHelpers;
+        if (token === SSEService) return sseService;
+        if (token === EnvUtils) return envUtils;
+        if (token === PortManagerService) return portManager;
+        if (token === AppLifecycleService) return appLifecycleService;
+        return mock();
+      }),
+    } as unknown as ModuleRef;
+
+    command = new InstallAppCommand(moduleRef, dockerode);
+  });
+
+  it('proceeds normally when the plan reports no blocking checks', async () => {
+    const result = await command.execute(appUrn, {});
+
+    expect(result.success).toBe(true);
+    expect(appLifecycleService.buildInstallPlan).toHaveBeenCalledWith(appUrn, {});
+    expect(dockerService.composeApp).toHaveBeenCalled();
+  });
+
+  it('aborts before touching the filesystem when the plan reports invalid config', async () => {
+    appLifecycleService.buildInstallPlan.mockResolvedValue({
+      ...okPlan,
+      checks: { ...okPlan.checks, config: { ok: false, reason: 'Domain' } },
+      blocked: true,
+    });
+    const marketplaceService = (command as any).moduleRef.get(MarketplaceService);
+
+    const result = await command.execute(appUrn, {});
+
+    expect(result.success).toBe(false);
+    expect((result as any).errorCode).toBe('install_plan_blocked');
+    expect((result as any).message).toContain('config (Domain)');
+    expect(marketplaceService.copyAppFromRepoToInstalled).not.toHaveBeenCalled();
+  });
+
+  it('aborts and reports both reasons when the plan blocks on config and architecture together', async () => {
+    appLifecycleService.buildInstallPlan.mockResolvedValue({
+      ...okPlan,
+      checks: {
+        ...okPlan.checks,
+        config: { ok: false, reason: 'Domain' },
+        architecture: { ok: false, reason: 'ghcr.io/ci/app:latest has no manifest for amd64 (available: arm64)' },
+      },
+      blocked: true,
+    });
+
+    const result = await command.execute(appUrn, {});
+
+    expect(result.success).toBe(false);
+    expect((result as any).message).toContain('config (Domain)');
+    expect((result as any).message).toContain('architecture (ghcr.io/ci/app:latest has no manifest for amd64 (available: arm64))');
+  });
+
+  it('does not block on a plan-reported host-device failure — that check runs later, post-copy, with its own dedicated handling', async () => {
+    appLifecycleService.buildInstallPlan.mockResolvedValue({
+      ...okPlan,
+      checks: { ...okPlan.checks, hostDevices: { ok: false, reason: 'stale plan snapshot' } },
+      blocked: true,
+    });
+
+    const result = await command.execute(appUrn, {});
+
+    expect(result.success).toBe(true);
+  });
+
+  it('proceeds when the plan builder is unavailable (no AppLifecycleService wired, or it resolves no plan)', async () => {
+    appLifecycleService.buildInstallPlan.mockResolvedValue(undefined as any);
+
+    const result = await command.execute(appUrn, {});
+
     expect(result.success).toBe(true);
   });
 });
