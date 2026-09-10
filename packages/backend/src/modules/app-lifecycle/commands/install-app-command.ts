@@ -21,6 +21,7 @@ import { parseComposeJson } from '@ci-hub/common/schemas';
 import { AgentNotifyService } from '@/modules/agent-notify/agent-notify.service';
 import { ErrorReportingService } from '@/core/error-reporting/error-reporting.service';
 import { McpProbeService } from '@/modules/mcp/mcp-probe.service';
+import { buildComposePortRequests, buildMainPortRequest, type PortRequestInput } from '../planning/port-requests';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -138,39 +139,19 @@ export class InstallAppCommand extends AppLifecycleCommand {
           // Release any existing allocations (in case of reinstall)
           await portManager.releaseAll(appUrn);
 
-          const portRequests: Array<{ containerPort: number; protocol?: 'tcp' | 'udp'; label: string; preferredHostPort?: number }> = [];
+          const portRequests: PortRequestInput[] = [];
 
           // Main port from config.json
-          if (appInfo.port) {
-            portRequests.push({
-              containerPort: appInfo.port,
-              label: 'main',
-              preferredHostPort: form.port ?? appInfo.port,
-            });
+          const mainPortRequest = buildMainPortRequest(appInfo.port, form.port);
+          if (mainPortRequest) {
+            portRequests.push(mainPortRequest);
           }
 
           // Additional ports from docker-compose.json services
           const composeJson = await appFilesManager.getDockerComposeJson(appUrn);
           if (composeJson.content) {
             try {
-              const { services } = parseComposeJson(composeJson.content);
-              for (const service of services) {
-                if (service.addPorts) {
-                  for (const addPort of service.addPorts) {
-                    const containerPort =
-                      typeof addPort.containerPort === 'string' ? Number.parseInt(addPort.containerPort, 10) : addPort.containerPort;
-                    const hostPort = typeof addPort.hostPort === 'string' ? Number.parseInt(addPort.hostPort, 10) : addPort.hostPort;
-                    if (!Number.isNaN(containerPort) && !Number.isNaN(hostPort)) {
-                      portRequests.push({
-                        containerPort,
-                        label: `${service.name}-${containerPort}`,
-                        preferredHostPort: hostPort,
-                        protocol: addPort.udp ? 'udp' : 'tcp',
-                      });
-                    }
-                  }
-                }
-              }
+              portRequests.push(...buildComposePortRequests(composeJson.content));
             } catch (parseErr) {
               logger.warn(`Failed to parse compose for extra ports: ${parseErr}`);
             }

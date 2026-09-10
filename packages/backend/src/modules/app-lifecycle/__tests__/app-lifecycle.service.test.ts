@@ -34,6 +34,8 @@ import * as registrationRecoveryState from '../registration-recovery-state';
 import { parseComposeJson } from '@ci-hub/common/schemas';
 import { MarketplaceEntitlementService } from '@/core/portal/marketplace-entitlement.service';
 import { assertHostDevicesAvailable } from '../commands/host-device-preflight';
+import { PortManagerService } from '@/modules/network/port-manager.service';
+import { EnvUtils } from '@/modules/env/env.utils';
 
 // buildInstallPlan's image listing goes through extractComposeImages -> parseComposeJson; the
 // schema itself has its own coverage elsewhere, so keep this suite focused on plan orchestration.
@@ -673,6 +675,58 @@ describe('AppLifecycleService', () => {
       marketplaceService.getAppInfoFromAppStoreOrInstalled.mockResolvedValue(null as any);
 
       await expect(service.buildInstallPlan(appUrn, {})).rejects.toThrow();
+    });
+
+    it('reports port availability for the main port without allocating', async () => {
+      const portManager = mock<PortManagerService>();
+      portManager.isPortAvailable.mockResolvedValue(true);
+      moduleRefGet.mockImplementation((token: unknown) => (token === PortManagerService ? portManager : undefined));
+
+      const plan = await service.buildInstallPlan(appUrn, { port: 9090 });
+
+      expect(plan.ports).toEqual([{ label: 'main', containerPort: 8080, protocol: 'tcp', preferredHostPort: 9090, available: true }]);
+      expect(portManager.allocatePorts).not.toHaveBeenCalled();
+    });
+
+    it('reports the main port unavailable when something already holds it, falling back to the manifest port as preferred', async () => {
+      const portManager = mock<PortManagerService>();
+      portManager.isPortAvailable.mockResolvedValue(false);
+      moduleRefGet.mockImplementation((token: unknown) => (token === PortManagerService ? portManager : undefined));
+
+      const plan = await service.buildInstallPlan(appUrn, {});
+
+      expect(plan.ports).toEqual([{ label: 'main', containerPort: 8080, protocol: 'tcp', preferredHostPort: 8080, available: false }]);
+    });
+
+    it('returns no ports when PortManagerService is not wired', async () => {
+      // beforeEach's default moduleRefGet already returns undefined for every token.
+      const plan = await service.buildInstallPlan(appUrn, {});
+      expect(plan.ports).toEqual([]);
+    });
+
+    it('diffs the app-declared form fields against the currently persisted app.env', async () => {
+      const appInfoWithFields = { ...baseAppInfo, form_fields: [{ env_variable: 'ADMIN_EMAIL', label: 'Admin email', type: 'text' }] };
+      marketplaceService.getAppInfoFromAppStoreOrInstalled.mockResolvedValue(appInfoWithFields as any);
+      const envUtils = mock<EnvUtils>();
+      envUtils.envStringToMap.mockReturnValue(new Map([['ADMIN_EMAIL', 'old@example.com']]));
+      moduleRefGet.mockImplementation((token: unknown) => (token === EnvUtils ? envUtils : undefined));
+      appFilesManager.getAppEnv.mockResolvedValue({ path: '/x/app.env', content: 'ADMIN_EMAIL=old@example.com' } as any);
+
+      const plan = await service.buildInstallPlan(appUrn, { ADMIN_EMAIL: 'new@example.com' });
+
+      expect(plan.formFields).toEqual([
+        { key: 'ADMIN_EMAIL', label: 'Admin email', currentValue: 'old@example.com', proposedValue: 'new@example.com', status: 'changed' },
+      ]);
+      // Only the read path — no env file written by a plan preview.
+      expect(appFilesManager.writeAppEnv).not.toHaveBeenCalled();
+    });
+
+    it('returns no form fields when EnvUtils is not wired', async () => {
+      const appInfoWithFields = { ...baseAppInfo, form_fields: [{ env_variable: 'ADMIN_EMAIL', label: 'Admin email', type: 'text' }] };
+      marketplaceService.getAppInfoFromAppStoreOrInstalled.mockResolvedValue(appInfoWithFields as any);
+
+      const plan = await service.buildInstallPlan(appUrn, {});
+      expect(plan.formFields).toEqual([]);
     });
   });
 
