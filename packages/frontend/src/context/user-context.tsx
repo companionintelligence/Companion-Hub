@@ -12,6 +12,19 @@ interface UserContextValue extends UserContextDto {
 
 const UserContext = createContext<UserContextValue | null>(null);
 
+/**
+ * What the app renders with before `/user-context` answers, and after it fails.
+ *
+ * `allowErrorMonitoring` is the one field here where a wrong guess is a privacy claim rather
+ * than a cosmetic default, so it tracks the Hub's own opt-out posture — `DEFAULT_ALLOW_ERROR_MONITORING`
+ * in the backend constants, and the `allowErrorMonitoring: true` fallback in both branches of
+ * `AppController.userContext`. Seeding `false` had the settings switch reading "off" during
+ * every cold start while the Hub was in fact reporting, which is the failure that matters; the
+ * opposite error costs one render of an over-stated "on" and self-corrects the moment the real
+ * value lands. Consumers that must tell "not yet known" from a decision read `isLoading` — the
+ * DTO is generated from the backend, where the field is a required boolean, so a third state
+ * cannot be expressed in this object.
+ */
 const USER_CONTEXT_DEFAULTS: UserContextDto = {
   isLoggedIn: false,
   isPasswordResetDisabled: false,
@@ -20,7 +33,7 @@ const USER_CONTEXT_DEFAULTS: UserContextDto = {
   domain: '',
   localDomain: 'localhost',
   sslPort: 443,
-  allowErrorMonitoring: false,
+  allowErrorMonitoring: true,
   allowAutoThemes: false,
   themeColor: 'blue',
   themeBase: 'gray',
