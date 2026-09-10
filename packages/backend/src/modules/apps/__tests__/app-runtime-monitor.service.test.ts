@@ -413,6 +413,27 @@ describe('AppRuntimeMonitorService', () => {
       expect(service.containerRollup()).toEqual({ running: 0, stopped: 0, total: 0, cpuPercent: 0, memoryBytes: 0 });
     });
 
+    it('withholds the figure when Docker was never reached, even though the collection succeeded', async () => {
+      /*
+       * THE PATH THAT PUBLISHED ZEROS AS A MEASUREMENT.
+       *
+       * `collectHubRuntimeHealth` catches every Docker error and returns null, which the collector
+       * cannot tell from "this Hub has no containerised entity". With no non-missing apps there is
+       * no second Docker call left to throw, so the collection completes, stamps a fresh
+       * `sampledAt` and stores an empty `apps` array — and the rollup taken from it said
+       * `running: 0, total: 0` to every paired peer.
+       *
+       * Indistinguishable, on the wire, from the idle node in the test above. That is the one
+       * confusion this payload exists to prevent.
+       */
+      appsRepository.getApps.mockResolvedValue([] as any);
+      dockerReadFacade.getHubRuntimeStats.mockRejectedValue(new Error('Cannot connect to the Docker daemon'));
+
+      await service.getRuntimeMonitorSnapshot();
+
+      expect(service.containerRollup()).toBeNull();
+    });
+
     it('excludes the backend Node process, which is not a container', async () => {
       appsRepository.getApps.mockResolvedValue([] as any);
       (si.processes as any).mockResolvedValue({ list: [{ pid: process.pid, cpu: 7.5, memRss: 2048, state: 'running' }] });

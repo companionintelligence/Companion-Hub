@@ -164,9 +164,30 @@ export class AppRuntimeMonitorService implements OnModuleInit, OnModuleDestroy, 
    * current. `latestSnapshot` itself is never assigned from `emptySnapshot()`, so a total failure
    * with no prior sample stays `null` here instead of arriving as a believable "0 containers".
    */
+  /**
+   * Whether the most recent collection actually READ Docker, as opposed to completing without
+   * having reached it.
+   *
+   * {@link collectHubRuntimeHealth} catches every Docker error and returns `null`, which the
+   * collector cannot tell from "this Hub has no containerised entity". On a node with no
+   * non-missing apps there is no second Docker call left to throw, so a collection with Docker
+   * flat on its back still stamps a fresh `sampledAt` and an empty `apps` array — and a rollup
+   * taken from it would publish `running: 0, total: 0` to every peer as a MEASUREMENT.
+   *
+   * That is the one encoding this payload may never produce for an unknown, so the rollup is
+   * withheld unless this says the sample was genuinely observed.
+   */
+  private lastCollectionObservedDocker = false;
+
   containerRollup(now: number = Date.now()): PoolContainerRollup | null {
     const snapshot = this.latestSnapshot;
     if (!snapshot) {
+      return null;
+    }
+
+    // A snapshot that exists but was never actually read off Docker is not a zero, it is a blank.
+    // A snapshot that exists but was never actually read off Docker is not a zero, it is a blank.
+    if (!this.lastCollectionObservedDocker) {
       return null;
     }
 
@@ -262,6 +283,10 @@ export class AppRuntimeMonitorService implements OnModuleInit, OnModuleDestroy, 
   private async collectHubRuntimeHealth(sampledAt: string): Promise<AppRuntimeHealth | null> {
     try {
       const hubContainers = await this.dockerReadFacade.getHubRuntimeStats();
+      // Reached Docker and got an answer. Set HERE, on the call itself, rather than at the end of
+      // the collection: everything after this is arithmetic, and a later unrelated throw must not
+      // retract a read that genuinely happened.
+      this.lastCollectionObservedDocker = true;
       const backendProcess = this.isCurrentProcessRepresentedByHubContainers(hubContainers)
         ? null
         : await withTimeout(
@@ -324,6 +349,9 @@ export class AppRuntimeMonitorService implements OnModuleInit, OnModuleDestroy, 
         containers,
       };
     } catch (error) {
+      // Records that this collection did NOT reach Docker. Without it the empty result below is
+      // indistinguishable from a genuinely idle box — see `lastCollectionObservedDocker`.
+      this.lastCollectionObservedDocker = false;
       this.logger.warn(`Failed to collect Hub runtime metrics: ${error instanceof Error ? error.message : String(error)}`);
       return null;
     }
