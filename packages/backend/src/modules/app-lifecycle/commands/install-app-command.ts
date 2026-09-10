@@ -521,11 +521,28 @@ export class InstallAppCommand extends AppLifecycleCommand {
    * host-device support can only be checked once the app's own compose is on disk — `buildInstallPlan`
    * runs before any install exists, so its `hostDevices` check is a no-op for a fresh install. See
    * `assertRequiredHostDevices` below, once `copyAppFromRepoToInstalled` has run.
+   *
+   * If building the plan itself throws — a marketplace lookup blip, a registry hiccup, anything
+   * short of the plan actually reporting a failed check — that is not evidence the install is
+   * invalid, only that this recheck couldn't run. Same stance `verifyAppArchitecture` already
+   * takes when it cannot inspect an image (`null`, not a block): fail open and let the install
+   * proceed on the strength of the checks `installApp` already ran at submission time, rather
+   * than turning a would-succeed install into `install_failed` over this recheck's own failure.
    */
   private async assertPlanConfigAndArchitecture(appUrn: AppUrn, form: AppEventFormInput): Promise<void> {
     const { AppLifecycleService } = await import('../app-lifecycle.service');
     const appLifecycleService = this.moduleRef.get(AppLifecycleService, { strict: false });
-    const plan = await appLifecycleService?.buildInstallPlan(appUrn, form);
+
+    let plan: Awaited<ReturnType<typeof appLifecycleService.buildInstallPlan>> | undefined;
+    try {
+      plan = await appLifecycleService?.buildInstallPlan(appUrn, form);
+    } catch (error) {
+      const logger = this.moduleRef.get(LoggerService, { strict: false });
+      logger?.warn(
+        `[install] could not re-validate the install plan for ${appUrn}, proceeding without the recheck: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      return;
+    }
     if (!plan) return;
 
     const failures = [
