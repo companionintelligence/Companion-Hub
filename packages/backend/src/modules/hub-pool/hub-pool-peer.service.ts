@@ -9,22 +9,28 @@ import {
   NotFoundException,
   OnModuleDestroy,
   OnModuleInit,
+  Optional,
   ServiceUnavailableException,
 } from '@nestjs/common';
+import { ModuleRef } from '@nestjs/core';
 import { LoggerService } from '@/core/logger/logger.service';
 import { EncryptionService } from '@/core/encryption/encryption.service';
 import {
   bearerUpgradeGraceMs,
   CAPABILITIES_FRESHNESS_POLLS,
+  clampContainerRollup,
   describeHubPoolDisabled,
   effectivePeerPressureBand,
   isCapabilitiesSnapshotFresh,
   normalizePeerFqdn,
+  POOL_CONTAINER_SAMPLER,
   resolveHubPoolDirections,
   resolveHubPoolEnabled,
   type HubPoolDirectionalState,
   type HubPoolEnabledState,
   type HubPoolInboundRefusal,
+  type PoolContainerRollup,
+  type PoolContainerSampler,
 } from '@/common/helpers/hub-pool';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import type { HubPoolPeer } from '@/core/database/drizzle/types';
@@ -128,6 +134,8 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
   private stopped = false;
   private ownInventoryCache: { value: OwnInventory; expiresAt: number } | null = null;
   private ownInventoryInFlight: Promise<OwnInventory> | null = null;
+  private containerSampler: PoolContainerSampler | null = null;
+  private containerSamplerWarned = false;
 
   constructor(
     private readonly logger: LoggerService,
@@ -142,6 +150,17 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
     private readonly identity: HubPoolIdentityService,
     private readonly pairingPins: HubPoolPairingPinService,
     private readonly pressureService: HubPoolPressureService,
+    /**
+     * Only ever used to reach {@link POOL_CONTAINER_SAMPLER}, which `AppsModule` provides. Injecting
+     * `AppRuntimeMonitorService` directly would need a `HubPoolModule -> AppsModule` import, closing
+     * a second Nest cycle and dragging the whole apps graph in here; the lazy non-strict lookup is
+     * the shape this repo already uses for exactly that problem.
+     *
+     * `@Optional()` so every direct-construction test harness keeps compiling and constructing this
+     * service can never depend on module resolution order — an unresolvable sampler degrades to "no
+     * sample", which is an omitted key.
+     */
+    @Optional() private readonly moduleRef?: ModuleRef,
   ) {}
 
   onModuleInit(): void {
@@ -472,6 +491,9 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
         // own forwarded count as a floor — not the raw jsonb. Showing the operator a number routing
         // does not believe is how a status page becomes a liability during an incident.
         gpuPressure: this.effectivePeerPressure(peer),
+        // Clamped and freshness-gated, never the raw jsonb, for the reason directly above: this is
+        // a remote machine's self-report about itself. `null` reads as "not reported", never as 0.
+        containers: this.peerContainers(peer),
       })),
       peerCounts: {
         total: peers.length,
@@ -1105,6 +1127,7 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
     const [inventory, self] = await Promise.all([this.getOwnInventory(), this.identity.get()]);
     const gpuPressure = this.pressureService.band();
     const gpuPressureSource = this.pressureService.source();
+    const containers = this.ownContainerRollup();
     return {
       hardwareTier: inventory.hardwareTier,
       backends: acceptingWork ? inventory.backends : [],
@@ -1128,8 +1151,79 @@ export class HubPoolPeerService implements OnModuleInit, OnModuleDestroy {
       // turns a missing key into UNKNOWN_PRESSURE, and would have taken a 0 at face value.
       ...(gpuPressure === null ? {} : { gpuPressure }),
       ...(gpuPressureSource === null ? {} : { gpuPressureSource }),
+      // Same spread, same rule, and deliberately outside the inventory cache: read fresh from the
+      // runtime monitor's own sample on every call so OWN_INVENTORY_TTL_MS cannot pin a container
+      // count that has since changed. It is a SAMPLED figure rather than a live counter — the
+      // monitor collects on its own 60s timer and this only reads what it already has, because
+      // probing Docker on the route answering every peer's poll is what the probe-timeout comment
+      // above records going wrong. Nothing to report (opted out, no sample yet, sampling failing)
+      // omits the key entirely; it never becomes `{ running: 0 }`, which is a claim we cannot make.
+      ...(containers === null ? {} : { containers }),
       updatedAt: new Date().toISOString(),
     };
+  }
+
+  /**
+   * This node's container rollup for the capability payload, or `null` for "do not report".
+   *
+   * Two independent reasons to stay silent, and both must omit the key rather than send zeros: the
+   * operator has switched sharing off, or nothing here has a recent sample to publish. A peer
+   * cannot tell those apart, and it does not need to — both mean "we cannot tell you", which is
+   * exactly what a pre-container build already says by omitting it.
+   *
+   * The setting is read per call, never cached, so switching it off takes effect on the very next
+   * peer poll rather than at the next restart — the same rule every other pool setting follows.
+   */
+  private ownContainerRollup(): PoolContainerRollup | null {
+    if (!this.configuration.getHubPoolPreferences().poolShareContainerStats) {
+      return null;
+    }
+    return this.resolveContainerSampler()?.containerRollup() ?? null;
+  }
+
+  /**
+   * The apps-side sampler, resolved lazily through `ModuleRef` and memoized once it is found.
+   *
+   * A failure is NOT memoized: this is called from the poll path, `ModuleRef.get` is a map lookup,
+   * and a permanent negative cache would turn one unlucky early call into a Hub that never reports
+   * containers again. It is warned about exactly once, because a silently absent sampler is
+   * indistinguishable on the wire from an operator who opted out — the one failure here that could
+   * otherwise go unnoticed for the life of the install.
+   */
+  private resolveContainerSampler(): PoolContainerSampler | null {
+    if (this.containerSampler) {
+      return this.containerSampler;
+    }
+    try {
+      this.containerSampler = this.moduleRef?.get<PoolContainerSampler>(POOL_CONTAINER_SAMPLER, { strict: false }) ?? null;
+    } catch {
+      // ModuleRef.get THROWS on an unresolvable token rather than returning undefined.
+      this.containerSampler = null;
+    }
+    if (!this.containerSampler && !this.containerSamplerWarned) {
+      this.containerSamplerWarned = true;
+      this.logger.warn('[HubPool] no container sampler is wired up, so peers will see this node as not reporting containers');
+    }
+    return this.containerSampler;
+  }
+
+  /**
+   * A peer's container rollup as this node is willing to believe it, or `null` for "not reported".
+   *
+   * Shared by `/pool/status` and `/pool/peers` rather than re-derived at each surface, and applied
+   * on the READ path: `last_capabilities` is free-form jsonb the peer controls, and a row can
+   * predate any check we add at the moment it is written. A stale snapshot discards the claim
+   * entirely — the same rule {@link effectivePeerPressure} applies, and for the same reason: an
+   * hour-old container count drawn as current is a number an operator would act on during the one
+   * incident it is wrong for.
+   */
+  peerContainers(peer: HubPoolPeer): PoolContainerRollup | null {
+    const capabilities = peer.lastCapabilities as unknown as PoolPeerCapabilities | null;
+    const freshnessMs = this.configuration.getHubPoolPreferences().poolHealthPollSeconds * 1000 * CAPABILITIES_FRESHNESS_POLLS;
+    if (!isCapabilitiesSnapshotFresh(peer.lastSeenAt, freshnessMs)) {
+      return null;
+    }
+    return clampContainerRollup(capabilities?.containers);
   }
 
   /**

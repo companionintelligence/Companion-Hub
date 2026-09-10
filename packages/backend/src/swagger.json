@@ -6727,6 +6727,9 @@
               "hubPoolRequireSignedPeers": {
                 "type": "boolean"
               },
+              "hubPoolShareContainerStats": {
+                "type": "boolean"
+              },
               "hubPoolPressureWeight": {
                 "type": "integer",
                 "minimum": 0,
@@ -7203,6 +7206,9 @@
             "maximum": 300
           },
           "hubPoolRequireSignedPeers": {
+            "type": "boolean"
+          },
+          "hubPoolShareContainerStats": {
             "type": "boolean"
           },
           "hubPoolPressureWeight": {
@@ -12403,6 +12409,9 @@
             "maximum": 300
           },
           "poolRequireSignedPeers": {
+            "type": "boolean"
+          },
+          "poolShareContainerStats": {
             "type": "boolean"
           },
           "poolPressureWeight": {

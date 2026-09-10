@@ -15,6 +15,7 @@ import { RegistrationModule } from '../registration/registration.module';
 import { ApiKeyModule } from '../api-keys/api-key.module';
 import { MemoryConnectionModule } from '../memory-connect/memory-connection.module';
 import { SystemModule } from '../system/system.module';
+import { POOL_CONTAINER_SAMPLER } from '@/common/helpers/hub-pool';
 
 @Module({
   imports: [
@@ -35,7 +36,19 @@ import { SystemModule } from '../system/system.module';
     // McpProbe is resolved lazily via ModuleRef in AppsController (no Apps → Mcp Nest edge).
   ],
   controllers: [AppsController],
-  providers: [AppHelpers, AppsService, AppIntentSyncService, AppRuntimeMonitorService],
-  exports: [AppsReadModule, AppHelpers, AppsService, AppIntentSyncService, AppRuntimeMonitorService],
+  providers: [
+    AppHelpers,
+    AppsService,
+    AppIntentSyncService,
+    AppRuntimeMonitorService,
+    // The Hub pool publishes an aggregate container rollup to its peers and reads it from the
+    // sample this monitor has already collected. It resolves this token through ModuleRef with
+    // `strict: false` rather than injecting the class, so there is no HubPoolModule -> AppsModule
+    // Nest edge: that edge would close a second cycle (Apps -> Inference -> HubPool) and pull the
+    // whole apps graph into the pool's. The token is declared in a leaf helper, so nothing here
+    // imports from modules/hub-pool. See `PoolContainerSampler`.
+    { provide: POOL_CONTAINER_SAMPLER, useExisting: AppRuntimeMonitorService },
+  ],
+  exports: [AppsReadModule, AppHelpers, AppsService, AppIntentSyncService, AppRuntimeMonitorService, POOL_CONTAINER_SAMPLER],
 })
 export class AppsModule {}

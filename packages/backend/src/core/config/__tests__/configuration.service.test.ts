@@ -115,6 +115,12 @@ describe('ConfigurationService Hub Pool preferences', () => {
       // The one pool switch that is opt-IN: it removes the bearer branch older peers depend on, so
       // absent has to resolve to false or upgrading one node of a fleet would strand the rest.
       poolRequireSignedPeers: false,
+      // Opt-OUT, back with the three switches above: an upgraded Hub starts publishing its
+      // aggregate container rollup to the peers its operator already approved, and it is turning it
+      // OFF that takes a decision. Defaulting this off would leave every peer on an upgraded fleet
+      // reading "not reported" — indistinguishable from an old build — until someone visited every
+      // node, which is the fleet view this exists for, permanently empty.
+      poolShareContainerStats: true,
       // 0 is what makes the pressure signal a no-op until an operator opts in: at 0 the band is not
       // in the ranking comparator at all, so a fresh Hub ranks byte-identically to the build before it.
       poolPressureWeight: 0,
@@ -122,6 +128,21 @@ describe('ConfigurationService Hub Pool preferences', () => {
       // "peerless single-node Hub is unaffected" guarantee, held at its source.
       poolPins: [],
     });
+  });
+
+  it('keeps a persisted container-sharing opt-out', () => {
+    const svc = makePoolService();
+    svc.config.userSettings = { hubPoolShareContainerStats: false };
+
+    expect(svc.getHubPoolPreferences()).toMatchObject({ poolShareContainerStats: false });
+  });
+
+  it('persists the container-sharing switch and reports it back', async () => {
+    const svc = makePoolService();
+
+    await svc.setHubPoolPreferences({ poolShareContainerStats: false });
+
+    expect(svc.mergeSettingsToDisk).toHaveBeenCalledWith(expect.objectContaining({ hubPoolShareContainerStats: false }));
   });
 
   it('persists the signed-peers requirement and reports it back', async () => {

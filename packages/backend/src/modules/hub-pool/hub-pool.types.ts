@@ -1,6 +1,6 @@
 import type { InferenceBackendType } from '@ci-hub/common/types';
 import type { HubPoolPeer } from '@/core/database/drizzle/types';
-import type { HubPoolDirectionalState, HubPoolDisabledBy, HubPoolPin, HubPoolPreferences } from '@/common/helpers/hub-pool';
+import type { HubPoolDirectionalState, HubPoolDisabledBy, HubPoolPin, HubPoolPreferences, PoolContainerRollup } from '@/common/helpers/hub-pool';
 
 /** One backend's live model availability on a node, as reported by `GET /inference/pool/capabilities`. */
 export interface PoolPeerBackendCapability {
@@ -49,6 +49,30 @@ export interface PoolPeerCapabilities {
    * node whose identity could not be established, which is also every pre-identity build.
    */
   nodeUuid?: string;
+  /**
+   * Aggregate container counts and resource totals for the containers the answering node manages.
+   * Numbers only — no names, no per-container rows: see {@link PoolContainerRollup} for why the
+   * disclosure stops there and what population it covers.
+   *
+   * ABSENT means "not reported", and a reader must render it that way, never as zeros. Four states
+   * share three encodings here, and two of them are deliberately identical:
+   *
+   *   - a peer on a pre-container build   -> key absent  -> not reported
+   *   - a peer whose operator opted out   -> key absent  -> not reported
+   *   - reporting, nothing running        -> `{ running: 0, ... }` -> 0 containers
+   *   - reporting, busy                   -> real numbers
+   *
+   * The first two being indistinguishable is correct: both mean "we cannot tell you", and neither
+   * may ever be drawn as an idle machine. Same rule {@link gpuPressure} states at length — absence
+   * and idleness do not share an encoding on the wire. A node whose own sampler has no recent
+   * sample omits the key for exactly that reason rather than publishing zeros it did not measure.
+   *
+   * `acceptingWork: false` does NOT blank this. It is a HEALTH signal, not an offer of work, so it
+   * follows {@link inFlightRequests} and not `backends`: a node that has stopped taking work is
+   * precisely when an operator needs to see whether it is still busy, and blanking it would draw a
+   * loaded machine as an idle one at that moment.
+   */
+  containers?: PoolContainerRollup;
   updatedAt: string;
 }
 
@@ -308,6 +332,16 @@ export interface PoolStatusPeer extends PublicHubPoolPeer {
    * incident, which is when it is read.
    */
   gpuPressure?: number | null;
+  /**
+   * The peer's container rollup as this node is willing to believe it — freshness applied, hostile
+   * values rejected — or `null` for "not reported". Deliberately not the raw jsonb, for the same
+   * reason {@link PoolStatusPeer.gpuPressure} is not: `last_capabilities` is free-form and the peer
+   * writes it, so an unclamped number would be a hostile machine drawing on the operator's screen.
+   *
+   * `null` covers every way we can fail to know — old build, opted out, sampler quiet, snapshot too
+   * old, value rejected — and a renderer must say "not reported" for all of them. Never 0.
+   */
+  containers?: PoolContainerRollup | null;
 }
 
 export interface PoolStatusLocalNode {

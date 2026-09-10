@@ -346,6 +346,134 @@ describe('AppRuntimeMonitorService', () => {
     }
   });
 
+  describe('containerRollup — the pool capability sample', () => {
+    function container(overrides: Record<string, unknown> = {}) {
+      return {
+        containerId: 'c1',
+        name: 'svc',
+        state: 'running',
+        status: 'Up',
+        health: 'healthy',
+        exitCode: null,
+        cpuPercent: 10,
+        memoryUsageBytes: 1000,
+        memoryLimitBytes: 4000,
+        ...overrides,
+      };
+    }
+
+    beforeEach(() => {
+      // Nothing containerised for the Hub itself, and no backend process either, so each test
+      // decides its own container population instead of inheriting one.
+      dockerReadFacade.getHubRuntimeStats.mockResolvedValue([]);
+      (si.processes as any).mockResolvedValue({ list: [] });
+    });
+
+    it('reports nothing at all before the first sample has landed', () => {
+      // The state every Hub is in for the first seconds after boot. It must reach a peer as an
+      // omitted key, not as "0 containers" — this node has measured precisely nothing.
+      expect(service.containerRollup()).toBeNull();
+    });
+
+    it('reports nothing when a collection failed and there was never a successful sample', async () => {
+      appsRepository.getApps.mockRejectedValue(new Error('docker is down'));
+
+      await service.getRuntimeMonitorSnapshot();
+
+      // `collectRuntimeMonitorSnapshot` swallows the failure and RETURNS an empty snapshot, whose
+      // `apps: []` is pixel-identical to an idle node. Only this service knows which happened, so
+      // only this service can refuse to answer.
+      expect(service.containerRollup()).toBeNull();
+    });
+
+    it('rolls the collected sample up into counts and totals', async () => {
+      appsRepository.getApps.mockResolvedValue([
+        { id: 1, appName: 'alpha', appStoreSlug: 'store', status: 'running', config: {}, updatedAt: new Date().toISOString() },
+      ] as any);
+      dockerReadFacade.getAppRuntimeStats.mockResolvedValue([
+        container({ containerId: 'a1', cpuPercent: 12.5, memoryUsageBytes: 2_000 }),
+        container({ containerId: 'a2', state: 'exited', status: 'Exited (0)', cpuPercent: 0, memoryUsageBytes: 0 }),
+        container({ containerId: 'a3', state: 'paused', cpuPercent: 0.5, memoryUsageBytes: 500 }),
+      ] as any);
+
+      await service.getRuntimeMonitorSnapshot();
+
+      // `paused` is not running, so it lands in `stopped`: the question a peer is asking is how much
+      // of this box is doing work, and the two buckets are defined to sum to `total`.
+      expect(service.containerRollup()).toEqual({ running: 1, stopped: 2, total: 3, cpuPercent: 13, memoryBytes: 2_500 });
+    });
+
+    it('reports a genuinely idle node as zeros rather than omitting the figure', async () => {
+      appsRepository.getApps.mockResolvedValue([] as any);
+
+      await service.getRuntimeMonitorSnapshot();
+
+      // The collection SUCCEEDED and found nothing. That is a claim this node is entitled to make,
+      // and it is the one case that must not be confused with "cannot tell you".
+      expect(service.containerRollup()).toEqual({ running: 0, stopped: 0, total: 0, cpuPercent: 0, memoryBytes: 0 });
+    });
+
+    it('withholds the figure when Docker was never reached, even though the collection succeeded', async () => {
+      /*
+       * THE PATH THAT PUBLISHED ZEROS AS A MEASUREMENT.
+       *
+       * `collectHubRuntimeHealth` catches every Docker error and returns null, which the collector
+       * cannot tell from "this Hub has no containerised entity". With no non-missing apps there is
+       * no second Docker call left to throw, so the collection completes, stamps a fresh
+       * `sampledAt` and stores an empty `apps` array — and the rollup taken from it said
+       * `running: 0, total: 0` to every paired peer.
+       *
+       * Indistinguishable, on the wire, from the idle node in the test above. That is the one
+       * confusion this payload exists to prevent.
+       */
+      appsRepository.getApps.mockResolvedValue([] as any);
+      dockerReadFacade.getHubRuntimeStats.mockRejectedValue(new Error('Cannot connect to the Docker daemon'));
+
+      await service.getRuntimeMonitorSnapshot();
+
+      expect(service.containerRollup()).toBeNull();
+    });
+
+    it('excludes the backend Node process, which is not a container', async () => {
+      appsRepository.getApps.mockResolvedValue([] as any);
+      (si.processes as any).mockResolvedValue({ list: [{ pid: process.pid, cpu: 7.5, memRss: 2048, state: 'running' }] });
+
+      await service.getRuntimeMonitorSnapshot();
+
+      // The monitor injects a synthetic `pid:<pid>` entry for the Hub's own process on a
+      // non-containerised install. Counting it would inflate every count on the fleet by one and
+      // put the CPU total on a different population from the counts.
+      expect(service.containerRollup()).toMatchObject({ running: 0, total: 0, cpuPercent: 0 });
+    });
+
+    it('stops reporting once the last successful sample is too old to believe', async () => {
+      appsRepository.getApps.mockResolvedValue([] as any);
+
+      await service.getRuntimeMonitorSnapshot();
+      const sampledAtMs = Date.parse((await service.getRuntimeMonitorSnapshot()).sampledAt);
+
+      // Inside two monitor intervals a sample is still the answer; past them the monitor has
+      // stopped producing and a peer must be told nothing rather than something stale.
+      expect(service.containerRollup(sampledAtMs + 90_000)).not.toBeNull();
+      expect(service.containerRollup(sampledAtMs + 121_000)).toBeNull();
+    });
+
+    it('keeps answering from cache without touching Docker, since this runs on a peer poll path', async () => {
+      appsRepository.getApps.mockResolvedValue([] as any);
+      await service.getRuntimeMonitorSnapshot();
+      dockerReadFacade.getAppRuntimeStats.mockClear();
+      dockerReadFacade.getHubRuntimeStats.mockClear();
+
+      service.containerRollup();
+      service.containerRollup();
+
+      // A Docker fan-out here is the documented way a healthy node gets marked unreachable: the
+      // capabilities probe answering this has a 15s budget and three overruns is all it takes.
+      expect(dockerReadFacade.getAppRuntimeStats).not.toHaveBeenCalled();
+      expect(dockerReadFacade.getHubRuntimeStats).not.toHaveBeenCalled();
+    });
+  });
+
   it('hydrates rolling history from persisted telemetry after a restart', async () => {
     const telemetry = mock<HostTelemetryService>();
     telemetry.getRuntimeHistory.mockResolvedValue([
