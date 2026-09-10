@@ -1,11 +1,12 @@
 import {
   getCloudProvidersOptions,
   getHardwareOptions,
+  getResidentModelsOptions,
   getMemoryOptions,
   getPoolRoutingLogOptions,
   poolStatusOptions,
 } from '@/api-client/@tanstack/react-query.gen';
-import { inferenceStatusOptions } from '@/api-client/routes/named-status-routes';
+import { inferenceStatusOptions } from '@/lib/api-routes/named-status-routes';
 import { fetchAppRuntimeMonitor, type AppRuntimeMonitorSnapshot } from '@/lib/app-runtime-monitor';
 import { useQuery } from '@tanstack/react-query';
 
@@ -180,6 +181,38 @@ export interface CloudProviderSummary {
   defaultModel?: string | null;
 }
 
+/**
+ * One model an engine says is in memory right now — `GET /api/inference/models/resident`.
+ *
+ * `engineGpuBytes` is deliberately NOT called VRAM. It is the bytes the engine's scheduler
+ * assigned to its GPU backend, which on a unified-memory APU is largely host RAM reached
+ * through GTT. Measured on beta-max: ollama reported 7319 MiB for a model on a card whose
+ * total VRAM is 2048 MB. Naming it VRAM would repeat, one level down, the very mistake this
+ * route was built to correct.
+ */
+export interface ResidentModelSummary {
+  id: string;
+  engineGpuBytes: number | null;
+  totalBytes: number | null;
+  expiresAt: string | null;
+  contextLength: number | null;
+  quantization: string | null;
+}
+
+export interface BackendResidencySummary {
+  backend: string;
+  source: 'measured' | 'implicit' | 'unsupported' | 'unreachable';
+  /** `null` for `unsupported`/`unreachable` — the engine was not asked, so it holds no opinion. */
+  models: ResidentModelSummary[] | null;
+  error?: string;
+}
+
+export interface ResidencyReportSummary {
+  backends: BackendResidencySummary[];
+  residentCount: number;
+  sampledAt: string;
+}
+
 export interface HardwareSummary {
   gpu?: { available?: boolean; vendor?: string; model?: string; vramMb?: number; unifiedMemory?: boolean; runtimeAvailable?: boolean };
   npu?: { available?: boolean; model?: string };
@@ -249,6 +282,19 @@ export function useDashboardData() {
     retry: false,
   });
 
+  /*
+   * Residency sits on the POOL cadence, not the engine one. It is a single cheap read of each
+   * engine's in-memory scheduler state — ollama's `/api/ps` returns only what is resident,
+   * typically 0-3 entries — and it is the number that actually moves minute to minute as
+   * models load and expire.
+   */
+  const residency = useQuery({
+    ...getResidentModelsOptions(),
+    select: (payload) => payload as unknown as ResidencyReportSummary,
+    refetchInterval: POOL_POLL_MS,
+    retry: false,
+  });
+
   const hardware = useQuery({
     ...getHardwareOptions(),
     select: (payload) => payload as unknown as HardwareSummary,
@@ -263,7 +309,7 @@ export function useDashboardData() {
     retry: false,
   });
 
-  return { containers, pool, routingLog, inference, memory, hardware, cloudProviders };
+  return { containers, pool, routingLog, inference, memory, residency, hardware, cloudProviders };
 }
 
 /**

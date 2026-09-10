@@ -360,9 +360,11 @@ export class OllamaBackend implements InferenceBackend {
    *
    * This is the one engine in the fleet that will state residency directly, and the gap it
    * closes is not small: measured on a live node, `/api/tags` listed 11 models while
-   * `/api/ps` reported zero resident. `size` and `size_vram` differ when part of a model is
-   * CPU-offloaded, so both are carried — a model that "fits" entirely in VRAM and one spilling
-   * into host RAM behave nothing alike, and only these two numbers together tell them apart.
+   * `/api/ps` reported zero resident.
+   *
+   * `size_vram` is carried as `engineGpuBytes`, NOT as VRAM. It is the scheduler's
+   * GPU-backend allocation: on beta-max ollama reported 7319 MiB for a 9B model on a card
+   * with 2048 MB of VRAM, the remainder living in host RAM through GTT. See the field's doc.
    *
    * A failure is `unreachable` with `models: null`, never an empty list: "the engine did not
    * answer" and "the engine has nothing loaded" must not collapse into the same reading.
@@ -386,7 +388,7 @@ export class OllamaBackend implements InferenceBackend {
         source: 'measured',
         models: models.map((entry) => ({
           id: entry.name ?? entry.model ?? 'unknown',
-          vramBytes: typeof entry.size_vram === 'number' ? entry.size_vram : null,
+          engineGpuBytes: typeof entry.size_vram === 'number' ? entry.size_vram : null,
           totalBytes: typeof entry.size === 'number' ? entry.size : null,
           // Ollama sends a zero-value timestamp for a model pinned with keep_alive: -1.
           expiresAt: entry.expires_at && !entry.expires_at.startsWith('0001-01-01') ? entry.expires_at : null,

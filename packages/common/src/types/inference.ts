@@ -271,12 +271,24 @@ export interface BackendHealthStatus {
  */
 export interface ResidentModel {
   id: string;
-  /** Bytes held in VRAM. `null` when the engine reports residency but not size. */
-  vramBytes: number | null;
   /**
-   * Total bytes the model occupies across VRAM and host RAM. When this exceeds
-   * {@link vramBytes} the remainder is CPU-offloaded, which is the difference between a
-   * model that is fast and one that merely fits.
+   * Bytes the engine's scheduler assigned to its GPU BACKEND. This is not a GPU memory
+   * reading and must never be labelled VRAM.
+   *
+   * Measured on beta-max (Strix Halo, unified memory): the card's total VRAM is 2048 MB,
+   * and ollama reported 7674223656 (7319 MiB) for a single 9B model — 3.5x the whole card.
+   * Most of that allocation lives in host RAM reached through GTT. Calling this "bytes in
+   * VRAM" would repeat, one level down, the exact mistake this type exists to correct:
+   * "loaded means on disk" becoming "in VRAM means in host RAM".
+   *
+   * `null` when the engine reports residency but not size — most of them do not.
+   */
+  engineGpuBytes: number | null;
+  /**
+   * Total bytes the engine attributes to the model. Do NOT infer CPU offload from
+   * `totalBytes - engineGpuBytes`: on every node in the current fleet those two are equal
+   * while up to 83% of the allocation is physically in host RAM, so the difference is a
+   * scheduler bookkeeping artefact, not a placement measurement.
    */
   totalBytes: number | null;
   /** When the engine will evict it unless used again. `null` when it does not expire or does not say. */
@@ -319,8 +331,6 @@ export interface BackendResidency {
 
 export interface ResidencyReport {
   backends: BackendResidency[];
-  /** Summed VRAM across backends that reported it. `null` when no backend could. */
-  totalVramBytes: number | null;
   /** Models resident across all backends that could answer. */
   residentCount: number;
   sampledAt: string;

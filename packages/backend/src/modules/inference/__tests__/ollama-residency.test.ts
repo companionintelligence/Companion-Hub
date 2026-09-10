@@ -42,7 +42,7 @@ describe('OllamaBackend.listResident', () => {
     expect(result.models).toEqual([]);
   });
 
-  it('carries VRAM and total separately, so CPU offload is visible', async () => {
+  it('carries the engine-attributed GPU bytes and the total separately', async () => {
     vi.mocked(axios.get).mockResolvedValue({
       data: {
         models: [
@@ -54,8 +54,9 @@ describe('OllamaBackend.listResident', () => {
             context_length: 32_768,
             details: { quantization_level: 'Q4_K_M' },
           },
-          // Spilling into host RAM: size > size_vram. A UI showing only one number cannot
-          // tell this apart from the row above, and they behave nothing alike.
+          // size > size_vram in the engine's own bookkeeping. Both are carried; neither is
+          // a placement measurement — see the field doc for why the difference must not be
+          // read as CPU offload.
           { name: 'qwen3-coder:30b', size: 20_000_000_000, size_vram: 12_000_000_000, expires_at: '2026-09-10T03:05:00Z' },
         ],
       },
@@ -66,7 +67,7 @@ describe('OllamaBackend.listResident', () => {
     expect(result.models).toEqual([
       {
         id: 'gemma3:1b',
-        vramBytes: 2_000_000_000,
+        engineGpuBytes: 2_000_000_000,
         totalBytes: 2_000_000_000,
         expiresAt: '2026-09-10T03:05:00Z',
         contextLength: 32_768,
@@ -74,7 +75,7 @@ describe('OllamaBackend.listResident', () => {
       },
       {
         id: 'qwen3-coder:30b',
-        vramBytes: 12_000_000_000,
+        engineGpuBytes: 12_000_000_000,
         totalBytes: 20_000_000_000,
         expiresAt: '2026-09-10T03:05:00Z',
         contextLength: null,
@@ -102,7 +103,7 @@ describe('OllamaBackend.listResident', () => {
 
     expect(result.models?.[0]).toEqual({
       id: 'odd:1b',
-      vramBytes: null,
+      engineGpuBytes: null,
       totalBytes: null,
       expiresAt: null,
       contextLength: null,

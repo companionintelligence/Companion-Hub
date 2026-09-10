@@ -48,41 +48,25 @@ describe('ModelResidencyService', () => {
     expect(unreachable?.models).toBeNull();
   });
 
-  it('totals VRAM only across backends that reported it', async () => {
+  it('counts every resident model across backends', async () => {
     const report = await serviceWith([
       backend('ollama', async () => ({
         backend: 'ollama',
         source: 'measured',
         models: [
-          { id: 'a', vramBytes: 1_000, totalBytes: 1_200, expiresAt: null, contextLength: null, quantization: null },
-          { id: 'b', vramBytes: 2_000, totalBytes: 2_000, expiresAt: null, contextLength: null, quantization: null },
+          { id: 'a', engineGpuBytes: 1_000, totalBytes: 1_200, expiresAt: null, contextLength: null, quantization: null },
+          { id: 'b', engineGpuBytes: 2_000, totalBytes: 2_000, expiresAt: null, contextLength: null, quantization: null },
         ],
       })),
       // Reports residency but not size — must contribute a model, and nothing to the total.
       backend('mtplx', async () => ({
         backend: 'mtplx',
         source: 'implicit',
-        models: [{ id: 'c', vramBytes: null, totalBytes: null, expiresAt: null, contextLength: null, quantization: null }],
+        models: [{ id: 'c', engineGpuBytes: null, totalBytes: null, expiresAt: null, contextLength: null, quantization: null }],
       })),
     ]).getReport(AT);
 
-    expect(report.totalVramBytes).toBe(3_000);
     expect(report.residentCount).toBe(3);
-  });
-
-  it('reports a null VRAM total when no backend measured any, rather than zero', async () => {
-    const report = await serviceWith([
-      backend('mtplx', async () => ({
-        backend: 'mtplx',
-        source: 'implicit',
-        models: [{ id: 'c', vramBytes: null, totalBytes: null, expiresAt: null, contextLength: null, quantization: null }],
-      })),
-      backend('vllm'),
-    ]).getReport(AT);
-
-    // A zero here would claim the GPUs are empty. One model IS resident; its size is unknown.
-    expect(report.totalVramBytes).toBeNull();
-    expect(report.residentCount).toBe(1);
   });
 
   it('keeps the report alive when one backend throws', async () => {
@@ -90,7 +74,7 @@ describe('ModelResidencyService', () => {
       backend('ollama', async () => ({
         backend: 'ollama',
         source: 'measured',
-        models: [{ id: 'a', vramBytes: 500, totalBytes: 500, expiresAt: null, contextLength: null, quantization: null }],
+        models: [{ id: 'a', engineGpuBytes: 500, totalBytes: 500, expiresAt: null, contextLength: null, quantization: null }],
       })),
       backend('dspark', async () => {
         throw new Error('boom');

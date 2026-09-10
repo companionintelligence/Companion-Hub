@@ -210,6 +210,20 @@ export class LuceboxBackend implements InferenceBackend {
     this.logger.info(`[Speculative inference] Unload model request for ${modelId} — restart the server to change the target model`);
   }
 
+  /*
+   * No `listResident()`, deliberately — this backend reports `source: 'unsupported'`.
+   *
+   * Every endpoint was checked and none measures residency: `/props`, `/status/json`,
+   * `/health` and `/v1/models` answer IDENTICALLY whether weights are loaded or not, verified
+   * live on core-7 against a container holding 860 MiB RSS for a 15.66 GiB GGUF — i.e. the
+   * weights were plainly NOT loaded while every endpoint said the same thing it says when they
+   * are.
+   *
+   * `daemon.alive` looks like the answer and is a trap: it is emitted by the same and only
+   * process that serves `/props`, so it is `true` in every response that can be received. An
+   * implementation reading it produced a live false "resident" during review. `model_path` and
+   * `model.draft_path` are disk paths.
+   */
   async isModelLoaded(modelId: string): Promise<boolean> {
     const health = await this.healthCheck();
     return health.modelsLoaded.includes(modelId);

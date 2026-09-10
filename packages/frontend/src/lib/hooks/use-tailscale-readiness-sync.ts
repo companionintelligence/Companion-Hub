@@ -1,5 +1,5 @@
 import { appContextQueryKey } from '@/api-client/@tanstack/react-query.gen';
-import { tailscaleStatusQueryKey } from '@/api-client/routes/named-status-routes';
+import { tailscaleStatusQueryKey } from '@/lib/api-routes/named-status-routes';
 import { syncExposure } from '@/api-client/sdk.gen';
 import { useQueryClient } from '@tanstack/react-query';
 import { useEffect, useRef } from 'react';

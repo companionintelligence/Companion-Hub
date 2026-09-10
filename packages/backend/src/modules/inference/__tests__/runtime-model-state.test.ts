@@ -40,3 +40,34 @@ describe('runtime model state vocabulary', () => {
     expect(hardcoded).toEqual(backends);
   });
 });
+
+/**
+ * Four backends deliberately do not implement `listResident()`, each for a checked reason
+ * recorded above their `isModelLoaded`. This pins that decision.
+ *
+ * The failure mode being guarded against is someone satisfying the method from
+ * `healthCheck().modelsLoaded` because it is right there and sounds correct. That field is
+ * the on-disk inventory on every backend, so doing so would report a crashed engine's
+ * catalogue as resident — the exact bug this whole area exists to end. If a backend gains a
+ * REAL residency probe, delete its entry here on purpose rather than letting the guard rot.
+ */
+describe('backends that cannot report residency', () => {
+  const CANNOT_REPORT = ['vllm.backend.ts', 'lucebox.backend.ts', 'mtplx.backend.ts', 'dspark.backend.ts'];
+
+  it.each(CANNOT_REPORT)('%s implements no listResident, and says why', (file) => {
+    const source = readFileSync(resolve(HERE, '../backends', file), 'utf-8');
+
+    expect(source).not.toMatch(/async listResident\s*\(/);
+    expect(source).toContain("reports `source: 'unsupported'`");
+  });
+
+  it('the backends that DO implement it never read the inventory to do so', () => {
+    for (const file of ['ollama.backend.ts', 'lemonade.backend.ts']) {
+      const source = readFileSync(resolve(HERE, '../backends', file), 'utf-8');
+      const body = source.slice(source.indexOf('async listResident('), source.indexOf('async isModelLoaded('));
+
+      expect(body).not.toContain('healthCheck()');
+      expect(body).not.toContain('listModels()');
+    }
+  });
+});

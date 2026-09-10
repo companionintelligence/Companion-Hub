@@ -154,7 +154,7 @@ vi.mock('@/lib/app-runtime-monitor', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   fetchAppRuntimeMonitor: async () => fixtures.monitor,
 }));
-vi.mock('@/api-client/routes/named-status-routes', () => ({
+vi.mock('@/lib/api-routes/named-status-routes', () => ({
   inferenceStatusOptions: () => ({ queryKey: ['inference-status'], queryFn: async () => fixtures.inference }),
 }));
 vi.mock('@/api-client/@tanstack/react-query.gen', () => ({

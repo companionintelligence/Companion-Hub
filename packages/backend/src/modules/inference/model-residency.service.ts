@@ -29,15 +29,18 @@ export class ModelResidencyService {
   async getReport(sampledAt: string): Promise<ResidencyReport> {
     const entries = await Promise.all(this.backends.entries().map(([, backend]) => this.forBackend(backend)));
 
-    // Summed only over backends that actually reported a number. If none did, the total is
-    // null rather than 0 — a dashboard must be able to render "not measured" here, and a
-    // zero would claim the GPUs are empty.
-    const reported = entries.flatMap((entry) => entry.models ?? []).map((model) => model.vramBytes);
-    const measured = reported.filter((bytes): bytes is number => typeof bytes === 'number');
-
+    /*
+     * There is deliberately NO `totalVramBytes` here.
+     *
+     * Summing `engineGpuBytes` into something called "total VRAM" invites the one operation
+     * that must never be performed on it: a ratio against the card's real capacity from
+     * `HardwareInspectorService`. On beta-max that arithmetic reads 7319 MiB used of 2048 MB
+     * total — 357% — because the numerator is scheduler bookkeeping and the denominator is a
+     * GPU meter. Neither number is wrong; dividing them is. No engine in the fleet exposes a
+     * VRAM denominator, so the report offers no total for anyone to divide.
+     */
     return {
       backends: entries,
-      totalVramBytes: measured.length > 0 ? measured.reduce((sum, bytes) => sum + bytes, 0) : null,
       residentCount: entries.reduce((count, entry) => count + (entry.models?.length ?? 0), 0),
       sampledAt,
     };
