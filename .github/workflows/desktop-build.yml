@@ -1,15 +1,17 @@
 name: Desktop Build
 
+# Manual/release-only. Previously ran automatically on every push to `dev`
+# touching packages/desktop|frontend|common — that auto-trigger is removed as
+# of 2026-09-10 because CI-Hub's macOS/Windows/ARM runner minutes were the
+# largest single line in the org's GitHub Actions bill (macOS alone was 23% of
+# the entire org's August spend; see
+# CI-Engineering/architecture/cost-model.md §4.2). Run before cutting a
+# release, or on demand to verify a desktop-affecting change builds:
+#
+#   gh workflow run desktop-build.yml --repo companionintelligence/CI-Hub --ref dev
+
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - dev
-    paths:
-      - 'packages/desktop/**'
-      - 'packages/frontend/**'
-      - 'packages/common/**'
-      - '.github/workflows/desktop-build.yml'
 
 concurrency:
   group: desktop-${{ github.ref }}
