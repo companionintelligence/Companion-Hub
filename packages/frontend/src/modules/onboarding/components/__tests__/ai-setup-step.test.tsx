@@ -61,8 +61,8 @@ vi.mock('@tanstack/react-query', async (importOriginal) => {
 });
 
 vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
-  getStatus5Options: () => ({ queryKey: ['tailscale-status'], queryFn: vi.fn() }),
-  getStatus5QueryKey: () => ['tailscale-status'],
+  getStatus3Options: () => ({ queryKey: ['tailscale-status'], queryFn: vi.fn() }),
+  getStatus3QueryKey: () => ['tailscale-status'],
 }));
 
 vi.mock('@/lib/hooks/use-tailscale-readiness-sync', () => ({
