@@ -10,6 +10,7 @@ import {
   type PoolNodeSummary,
   type PoolPeerSummary,
   poolReach,
+  routingByNode,
   routingLogKeys,
 } from './use-dashboard-data';
 
@@ -126,6 +127,54 @@ describe('budgetPercent', () => {
 
   it('is null, not zero, when there is no budget to be a share of', () => {
     expect(budgetPercent(0, 0)).toBeNull();
+  });
+});
+
+describe('routingByNode', () => {
+  const row = (over: Record<string, unknown> = {}) =>
+    ({
+      at: '2026-01-01T00:00:00Z',
+      direction: 'outbound',
+      path: '/v1/chat/completions',
+      model: 'm',
+      node: 'core-2.tail.ts.net',
+      peerId: 'p',
+      backend: 'ollama',
+      candidates: 1,
+      attempt: 1,
+      failedOverFrom: [],
+      pin: null,
+      outcome: 'ok',
+      ...over,
+    }) as never;
+
+  it('ignores inbound rows — their node SENT us work, it did not serve ours', () => {
+    const counts = routingByNode([row({ direction: 'inbound', node: 'core-7.tail.ts.net' })], 'Unplaced');
+
+    expect(counts.size).toBe(0);
+  });
+
+  it('does not credit the local node with a request nothing served', () => {
+    const counts = routingByNode([row({ node: null, outcome: 'failed' })], 'Unplaced');
+
+    expect(counts.get('local')).toBeUndefined();
+    expect(counts.get('Unplaced')).toBe(1);
+  });
+
+  it('counts outbound work under the node that served it, shortened to its hostname', () => {
+    const counts = routingByNode([row(), row(), row({ node: 'local' })], 'Unplaced');
+
+    expect(counts.get('core-2')).toBe(2);
+    expect(counts.get('local')).toBe(1);
+  });
+
+  it('keeps the three populations apart in one mixed log', () => {
+    const counts = routingByNode([row(), row({ direction: 'inbound', node: 'beta-red.tail.ts.net' }), row({ node: null })], 'Unplaced');
+
+    expect([...counts.entries()].sort()).toEqual([
+      ['Unplaced', 1],
+      ['core-2', 1],
+    ]);
   });
 });
 
