@@ -96,6 +96,17 @@ export class AppLifecycleController {
     return ValidateConfigResultDto.parse(res, { reportOnly: true });
   }
 
+  /**
+   * Dry-run preview of `POST :urn/install`: the same guard checks, none of the mutation. Lets a
+   * caller (UI pre-flight, future CLI `--dry-run`) show what would happen before committing.
+   */
+  @Post(':urn/install/plan')
+  async planInstall(@Param('urn') urn: string, @Body() body: AppFormBody, @Req() req: Request) {
+    const appUrn = castAppUrn(urn);
+    await this.whois.assertSessionAction(req, appUrn, 'install');
+    return this.appLifecycleService.buildInstallPlan(appUrn, body);
+  }
+
   @Post(':urn/start')
   @ApiResponse({ type: LifecycleRequestDto })
   async startApp(@Param('urn') urn: string, @Req() req: Request) {

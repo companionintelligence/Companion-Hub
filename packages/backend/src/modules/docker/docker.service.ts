@@ -548,7 +548,8 @@ export class DockerService {
     }
   }
 
-  private async imageExistsLocally(image: string): Promise<boolean> {
+  /** Read-only cache lookup — never pulls. Also used by install plan preview (no mutation). */
+  async imageExistsLocally(image: string): Promise<boolean> {
     try {
       await this.docker.getImage(image).inspect();
       return true;
