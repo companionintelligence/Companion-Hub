@@ -22,6 +22,7 @@ import { RocmInstallerService } from '../rocm-installer.service';
 import { AppCredentialsService } from '../app-credentials.service';
 import { inferencePreferencesSchema } from '../inference.dto';
 import { InferenceBackendRegistry } from '../backends/backend-registry';
+import { ModelResidencyService } from '../model-residency.service';
 import { BackendObserverService } from '../supervision/backend-observer.service';
 import { OllamaBackend } from '../backends/ollama.backend';
 import { VllmBackend } from '../backends/vllm.backend';
@@ -58,6 +59,9 @@ describe('InferenceController — preferences', () => {
         { provide: DsparkBackend, useValue: mock<DsparkBackend>() },
         { provide: LuceboxBackend, useValue: mock<LuceboxBackend>() },
         InferenceBackendRegistry,
+        // The controller exposes GET inference/models/resident, which reads this service's
+        // report. Mocked here: nothing in these suites exercises residency.
+        { provide: ModelResidencyService, useValue: mock<ModelResidencyService>() },
         // The controller exposes GET inference/supervision, which reads this service's in-memory
         // report. Mocked here: nothing in these suites exercises observation.
         { provide: BackendObserverService, useValue: mock<BackendObserverService>() },
@@ -258,7 +262,7 @@ describe('InferenceController — preferences', () => {
     expect(result).toEqual({
       backend: 'ollama',
       discoveryUnavailable: false,
-      models: [{ id: 'mistral:latest', name: 'mistral:latest', state: 'loaded' }],
+      models: [{ id: 'mistral:latest', name: 'mistral:latest', state: 'available' }],
     });
   });
 
