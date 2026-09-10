@@ -104,6 +104,24 @@ derive() { # data_owner_uid  compose_rendered_value  -> the HUB_UID actually use
 [ "$(derive '' '')" = "1000" ] && { PASS=$((PASS+1)); echo "  ok   unreadable data dir falls back to 1000"; } \
   || { FAIL=$((FAIL+1)); echo "  FAIL missing data dir should fall back to 1000, got $(derive '' '')"; }
 
+# THE SIGNAL ITSELF. The first version of this derivation stat'd /data, which is not a
+# bind mount: compose mounts the install as individual subpaths (/data/.env, /data/state,
+# ...), so Docker synthesises /data inside the container and owns it as root. Measured on
+# 15 running fleet Hubs, `stat -c %u /data` was 0 on every one — including plain uid-1000
+# installs — while the owner of /data/.env matched the uid each Hub actually ran as, every
+# time. Reading /data would have dropped every node to root the moment the variable went
+# unset. This asserts the entrypoint reads a bind-mounted path instead.
+if grep -qE '^[[:space:]]*for _probe in /data/\.env' "$ENTRY"; then
+  PASS=$((PASS+1)); echo "  ok   derivation reads a bind-mounted path, not the synthesised /data"
+else
+  FAIL=$((FAIL+1)); echo "  FAIL derivation must stat a bind-mounted path (/data/.env), not /data"
+fi
+if grep -qE 'stat -c %u /data 2>/dev/null' "$ENTRY"; then
+  FAIL=$((FAIL+1)); echo "  FAIL entrypoint still stats /data, which is root-owned on every node"
+else
+  PASS=$((PASS+1)); echo "  ok   entrypoint no longer stats the synthesised /data"
+fi
+
 # And the contract the fix rests on: no compose file may reinstate a numeric default for
 # the ENVIRONMENT passthrough. `user:` in docker-compose.local.yml is exempt — an empty
 # value there renders the unparseable `user: ":"`, and a pinned user means the entrypoint
