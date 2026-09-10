@@ -5,6 +5,31 @@ import { McpToolRegistry } from '../mcp-tool-registry.service';
 
 const urnProp = { type: 'string', description: 'App identifier in appName:storeSlug format' } as const;
 
+/**
+ * R2-HUBHOSTESCAPE-6: whether this call reaches for one of the organization's custom domains.
+ *
+ * `customDomain` retargets a customer-facing hostname at this app — including one a sibling Hub in
+ * the organization is currently serving — and `''` is the equally consequential other direction,
+ * "park it back on the platform hostname", which takes a domain off whatever app has it. Both are
+ * `!== undefined`, which is also exactly how the service reads the field: absent means "said
+ * nothing", anything present is an instruction.
+ *
+ * `customDomainTakeover` trips the gate on its own, even though `customDomainColumns` drops an
+ * unaccompanied one today. What this predicate answers is which authority the CALL is reaching for,
+ * and that answer must not depend on a parsing rule three modules away staying true.
+ *
+ * Why the gate has to live here at all: nothing else on this path checks a grant.
+ * `assertSessionAction(req, appUrn, 'configure')` is in app-lifecycle.controller.ts, not in the
+ * service, and `operatorMay` reads an absent operator as consent — which is exactly the MCP case, a
+ * key with no person behind it. Moving that check into the service so HTTP, MCP and rehydrate share
+ * one gate is the real fix and is deliberately not in this change; see CI-Hub#1302. Until it lands,
+ * a form carrying either field is destructive, so it takes a 'full' key or an operator confirmation.
+ */
+function claimsCustomDomain(params: Record<string, unknown>): boolean {
+  const form = params.form as Record<string, unknown> | undefined;
+  return form?.customDomain !== undefined || form?.customDomainTakeover !== undefined;
+}
+
 @Injectable()
 export class AppLifecycleTools implements OnModuleInit {
   constructor(
@@ -17,12 +42,20 @@ export class AppLifecycleTools implements OnModuleInit {
       category: 'App Lifecycle',
       name: 'hub_install_app',
       access: 'write',
+      // R2-HUBHOSTESCAPE-6: installing is an ordinary 'write', but an install form that names a
+      // custom domain is a domain takeover wearing an install's clothes. See claimsCustomDomain.
+      isDestructive: claimsCustomDomain,
       description: 'Install an app from a configured app store. Returns a requestId to track progress.',
       inputSchema: {
         type: 'object',
         properties: {
           appUrn: urnProp,
-          form: { type: 'object', description: 'Optional install config: port, exposed, domain, and app-specific form fields' },
+          form: {
+            type: 'object',
+            description:
+              'Optional install config: port, exposed, domain, and app-specific form fields. Naming a customDomain or ' +
+              "customDomainTakeover makes the call destructive and requires a 'full'-capability key.",
+          },
         },
         required: ['appUrn'],
       },
@@ -116,10 +149,18 @@ export class AppLifecycleTools implements OnModuleInit {
       category: 'App Lifecycle',
       name: 'hub_update_app_config',
       access: 'write',
+      isDestructive: claimsCustomDomain, // R2-HUBHOSTESCAPE-6: the same form, on an app that already exists.
       description: 'Update an app configuration (port, domain, env vars). Returns a requestId.',
       inputSchema: {
         type: 'object',
-        properties: { appUrn: urnProp, form: { type: 'object', description: 'Config fields to update' } },
+        properties: {
+          appUrn: urnProp,
+          form: {
+            type: 'object',
+            description:
+              "Config fields to update. Naming a customDomain or customDomainTakeover makes the call destructive and requires a 'full'-capability key.",
+          },
+        },
         required: ['appUrn', 'form'],
       },
       handler: (p) => this.updateAppConfig(p as { appUrn: string; form: Record<string, unknown> }),

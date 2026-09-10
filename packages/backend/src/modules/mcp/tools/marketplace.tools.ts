@@ -51,6 +51,10 @@ export class MarketplaceTools implements OnModuleInit {
       category: 'Marketplace',
       name: 'hub_add_app_store',
       access: 'write',
+      // R2-HUBHOSTESCAPE-5: makes a caller-chosen git repo an install source for the whole appliance,
+      // whose compose files can ask for privileged/capAdd/host paths — a strictly larger grant than
+      // hub_delete_app_store below, which was already gated. Pairs with hub_install_app to reach root.
+      destructive: true,
       description: 'Add a new app store by name and URL.',
       inputSchema: {
         type: 'object',
@@ -66,6 +70,7 @@ export class MarketplaceTools implements OnModuleInit {
       category: 'Marketplace',
       name: 'hub_update_app_store',
       access: 'write',
+      destructive: true, // R2-HUBHOSTESCAPE-5: re-enabling a disabled store re-arms it as an install source.
       description: 'Update an app store name and enabled state.',
       inputSchema: {
         type: 'object',
