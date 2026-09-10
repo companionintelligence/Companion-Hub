@@ -170,10 +170,16 @@ export class HubPoolController {
 
   // ── Operator-facing peer management ─────────────────────────────────────
 
+  /**
+   * The peer rows themselves. `containers` is added alongside each row rather than left to be read
+   * out of `lastCapabilities`: that column is free-form jsonb the peer writes, so the clamped,
+   * freshness-gated value is the only one a caller may render. `null` there means "not reported" —
+   * an older peer, an operator who opted out, or a snapshot too old to believe — and never 0.
+   */
   @UseGuards(AuthGuard)
   @Get('peers')
   async listPeers() {
-    return (await this.peerService.listPeers()).map(toPublicPeer);
+    return (await this.peerService.listPeers()).map((peer) => ({ ...toPublicPeer(peer), containers: this.peerService.peerContainers(peer) }));
   }
 
   /**

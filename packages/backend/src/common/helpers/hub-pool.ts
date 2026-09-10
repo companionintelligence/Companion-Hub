@@ -237,6 +237,115 @@ export function effectivePeerPressureBand(params: { reported: unknown; snapshotF
 }
 
 /**
+ * The coarse, name-free container picture a node publishes to its paired peers.
+ *
+ * Counts and aggregate resources ONLY, and that is the disclosure decision rather than a first
+ * cut: a peer learns how loaded a box is and never which applications it runs. Model ids are
+ * already shared by name because models are what the pool OFFERS — a peer cannot rank us without
+ * them. Containers are not offered to anyone, so every field here is a number.
+ *
+ * Scope is the containers THIS HUB MANAGES — the compose projects `AppRuntimeMonitorService`
+ * already samples — never the whole Docker daemon. A container someone started by hand outside
+ * compose is invisible to the sampler and is therefore absent from these totals.
+ *
+ * `stopped` is defined as `total - running`, so the two always sum. Docker's own state enum is
+ * wider than that (`created`, `restarting`, `paused`, `removing`, `dead`), and everything that is
+ * not `running` lands in `stopped` because the question a health signal answers is "how much of
+ * this box is doing work". Note also that `docker compose down` REMOVES containers, so a torn-down
+ * app contributes nothing at all rather than counting as stopped.
+ */
+export interface PoolContainerRollup {
+  /** Containers in Docker's `running` state. */
+  running: number;
+  /** Containers that exist but are not running — `total - running`, see the note above. */
+  stopped: number;
+  /** Containers the reporting node manages, running or not. */
+  total: number;
+  /** Summed CPU percentage across those containers. Per-core, so a busy multi-core box exceeds 100. */
+  cpuPercent: number;
+  /** Summed resident memory across those containers, in bytes. */
+  memoryBytes: number;
+}
+
+/** Above this a "count" is a typo or a lie; no Hub manages ten thousand containers. */
+export const MAX_REPORTED_CONTAINERS = 10_000;
+/** 100% x 1024 cores. Nothing this fleet runs has more, and a larger figure is not a busy box, it is a broken one. */
+export const MAX_REPORTED_CONTAINER_CPU_PERCENT = 102_400;
+/** 1 PiB of resident memory. Same reasoning as the CPU ceiling. */
+export const MAX_REPORTED_CONTAINER_MEMORY_BYTES = 2 ** 50;
+
+function clampCount(raw: unknown, max: number): number | null {
+  return typeof raw === 'number' && Number.isInteger(raw) && raw >= 0 && raw <= max ? raw : null;
+}
+
+function clampGauge(raw: unknown, max: number): number | null {
+  return typeof raw === 'number' && Number.isFinite(raw) && raw >= 0 && raw <= max ? raw : null;
+}
+
+/**
+ * A peer's self-reported container rollup, reduced to something an operator surface may render, or
+ * `null` for "not reported".
+ *
+ * Runs on the READ path, exactly like {@link clampPressureBand} and for the same reason:
+ * `last_capabilities` is free-form jsonb that a paired peer fully controls, and rows can predate
+ * any write-side check we add. A peer is a remote machine, so `-1`, `1.5`, `NaN`, `Infinity`,
+ * `'lots'`, an array, and a missing key all land on `null` here rather than on a dashboard.
+ *
+ * All-or-nothing, deliberately: one bad field rejects the whole object instead of being replaced
+ * with a plausible substitute. A rollup whose count survived and whose memory figure did not is a
+ * half-truth that reads as fact, and there is no honest value to put in the gap — `null` says "not
+ * reported", which is the only thing we actually know. `running` or `stopped` exceeding `total` is
+ * rejected on the same grounds; the exact sum is NOT required, so a future build that buckets the
+ * wider state enum differently degrades to a believable rollup rather than to nothing.
+ *
+ * Never maps a rejected value to 0. Zero is a claim ("nothing is running here") and this function
+ * only ever sees values it could not believe.
+ */
+export function clampContainerRollup(raw: unknown): PoolContainerRollup | null {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+    return null;
+  }
+  const reported = raw as Record<string, unknown>;
+  const running = clampCount(reported.running, MAX_REPORTED_CONTAINERS);
+  const stopped = clampCount(reported.stopped, MAX_REPORTED_CONTAINERS);
+  const total = clampCount(reported.total, MAX_REPORTED_CONTAINERS);
+  const cpuPercent = clampGauge(reported.cpuPercent, MAX_REPORTED_CONTAINER_CPU_PERCENT);
+  const memoryBytes = clampGauge(reported.memoryBytes, MAX_REPORTED_CONTAINER_MEMORY_BYTES);
+  if (running === null || stopped === null || total === null || cpuPercent === null || memoryBytes === null) {
+    return null;
+  }
+  if (running > total || stopped > total) {
+    return null;
+  }
+  return { running, stopped, total, cpuPercent, memoryBytes };
+}
+
+/**
+ * Whatever can hand the pool an already-collected container rollup for THIS node.
+ *
+ * `AppRuntimeMonitorService` is the only implementation and lives in `AppsModule`, which the pool
+ * module does not (and should not) import: the edge would close a second Nest cycle and drag the
+ * entire apps graph — marketplace, queue, registration, portal — into the pool's. So the pool
+ * resolves this token through `ModuleRef` with `strict: false`, the same lazy-lookup shape
+ * `AppsService` uses for `TunnelHealthService` and `HubAccessService` for the auth resolver.
+ *
+ * The token and the interface live here, in a leaf helper with no imports of its own, so that
+ * `AppsModule` can provide them without importing anything from `modules/hub-pool`.
+ */
+export const POOL_CONTAINER_SAMPLER = 'POOL_CONTAINER_SAMPLER';
+
+export interface PoolContainerSampler {
+  /**
+   * The last ALREADY-COLLECTED sample, or `null` when there is nothing recent enough to publish.
+   *
+   * Must never probe: this is called on the route answering every peer's health poll. `null` is
+   * what a node that has not sampled yet, or whose sampling is failing, reports — and the pool
+   * turns that into an omitted key, never into zeros.
+   */
+  containerRollup(now?: number): PoolContainerRollup | null;
+}
+
+/**
  * How much the 0-3 GPU-pressure band contributes to a candidate's score.
  *
  * Zero, deliberately, and that is not timidity: at 0 the pressure key is not in the comparator at
@@ -290,6 +399,22 @@ export interface HubPoolPreferences {
    * `GET /inference/pool/status` shows every peer with `authMode: 'signed'`.
    */
   poolRequireSignedPeers: boolean;
+  /**
+   * Publish this node's aggregate container counts and resource totals to paired peers.
+   *
+   * DEFAULT TRUE, so an untouched settings.json starts reporting on upgrade, and it is the operator
+   * who opts OUT. The trade is real and goes this way for two reasons. The audience is not the
+   * internet: it is machines this operator personally approved into a pairing, mutually
+   * authenticated, that already receive this node's hardware tier, queue depth and the NAMES of
+   * every model it holds — five aggregate numbers are strictly less revealing than the inventory
+   * already on that wire. And defaulting off would leave every peer reading "not reported" until
+   * each operator flips a switch on each node, which is indistinguishable from an old build and
+   * makes the fleet view the field exists for permanently empty on an upgraded fleet.
+   *
+   * Off does not send zeros. It OMITS the key, which is the same thing a pre-container build sends
+   * and reads as "we cannot tell you" — see `PoolPeerCapabilities.containers`.
+   */
+  poolShareContainerStats: boolean;
   /** How heavily the GPU-pressure band counts in candidate ranking. 0 (the default) keeps ranking byte-identical to the pre-pressure build. */
   poolPressureWeight: number;
   /**

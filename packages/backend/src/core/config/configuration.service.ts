@@ -115,6 +115,7 @@ type PersistedSettingsValues = {
   hubPoolLocalAffinity: number | undefined;
   hubPoolHealthPollSeconds: number | undefined;
   hubPoolRequireSignedPeers: boolean | undefined;
+  hubPoolShareContainerStats: boolean | undefined;
   hubPoolPressureWeight: number | undefined;
   inferenceSupervisionMode: InferenceSupervisionMode | undefined;
   inferenceSupervisionPollSeconds: number | undefined;
@@ -143,6 +144,7 @@ const EMPTY_PERSISTED_SETTINGS: PersistedSettingsValues = {
   hubPoolLocalAffinity: undefined,
   hubPoolHealthPollSeconds: undefined,
   hubPoolRequireSignedPeers: undefined,
+  hubPoolShareContainerStats: undefined,
   hubPoolPressureWeight: undefined,
   inferenceSupervisionMode: undefined,
   inferenceSupervisionPollSeconds: undefined,
@@ -229,6 +231,7 @@ export class ConfigurationService {
       hubPoolLocalAffinity: settings.hubPoolLocalAffinity,
       hubPoolHealthPollSeconds: settings.hubPoolHealthPollSeconds,
       hubPoolRequireSignedPeers: settings.hubPoolRequireSignedPeers,
+      hubPoolShareContainerStats: settings.hubPoolShareContainerStats,
       hubPoolPressureWeight: settings.hubPoolPressureWeight,
       inferenceSupervisionMode: settings.inferenceSupervisionMode,
       inferenceSupervisionPollSeconds: settings.inferenceSupervisionPollSeconds,
@@ -327,6 +330,7 @@ export class ConfigurationService {
         hubPoolLocalAffinity: settingsValues.hubPoolLocalAffinity,
         hubPoolHealthPollSeconds: settingsValues.hubPoolHealthPollSeconds,
         hubPoolRequireSignedPeers: settingsValues.hubPoolRequireSignedPeers,
+        hubPoolShareContainerStats: settingsValues.hubPoolShareContainerStats,
         hubPoolPressureWeight: settingsValues.hubPoolPressureWeight,
         inferenceSupervisionMode: settingsValues.inferenceSupervisionMode,
         inferenceSupervisionPollSeconds: settingsValues.inferenceSupervisionPollSeconds,
@@ -498,6 +502,9 @@ export class ConfigurationService {
       // `?? false`, not `?? true`: this is the one pool switch that is opt-IN, because it removes a
       // code path older peers still depend on. See `HubPoolPreferences.poolRequireSignedPeers`.
       poolRequireSignedPeers: this.config.userSettings.hubPoolRequireSignedPeers ?? false,
+      // `?? true`: the container rollup is an opt-OUT, like the three switches above and unlike the
+      // one directly before it. See `HubPoolPreferences.poolShareContainerStats` for the trade.
+      poolShareContainerStats: this.config.userSettings.hubPoolShareContainerStats ?? true,
       poolPressureWeight: this.config.userSettings.hubPoolPressureWeight ?? DEFAULT_POOL_PRESSURE_WEIGHT,
       // A fresh array every read, so a caller that sorts or splices what it got cannot mutate the
       // in-memory settings the next request will rank against.
@@ -514,6 +521,7 @@ export class ConfigurationService {
       hubPoolLocalAffinity?: number;
       hubPoolHealthPollSeconds?: number;
       hubPoolRequireSignedPeers?: boolean;
+      hubPoolShareContainerStats?: boolean;
       hubPoolPressureWeight?: number;
       hubPoolPins?: HubPoolPin[];
     } = {};
@@ -534,6 +542,9 @@ export class ConfigurationService {
     }
     if (preferences.poolRequireSignedPeers !== undefined) {
       settings.hubPoolRequireSignedPeers = preferences.poolRequireSignedPeers;
+    }
+    if (preferences.poolShareContainerStats !== undefined) {
+      settings.hubPoolShareContainerStats = preferences.poolShareContainerStats;
     }
     if (preferences.poolPressureWeight !== undefined) {
       settings.hubPoolPressureWeight = preferences.poolPressureWeight;

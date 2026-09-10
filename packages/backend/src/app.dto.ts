@@ -136,6 +136,11 @@ export const settingsSchema = z.object({
   // (and false) has to mean "keep accepting it" or upgrading one node of a fleet would strand the
   // rest. See `HubPoolPreferences.poolRequireSignedPeers`.
   hubPoolRequireSignedPeers: z.boolean().optional(),
+  // Opt-OUT, like the three switches above: absent means this node publishes an aggregate container
+  // rollup to its paired peers, so an untouched settings.json starts reporting on upgrade and the
+  // operator is the one who turns it off. Off omits the key on the wire rather than sending zeros.
+  // See `HubPoolPreferences.poolShareContainerStats` for why the default goes this way.
+  hubPoolShareContainerStats: z.boolean().optional(),
   hubPoolPressureWeight: poolPressureWeightSchema.optional().catch(undefined),
   // Inference-backend observation. Opt-IN, unlike the pool switches: absent means `'off'`, which is
   // the only value that costs a deployed Hub literally nothing — no timer, no probe, no boot work.

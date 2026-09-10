@@ -6,6 +6,7 @@ import {
   MAX_PRESSURE_BAND,
   MIN_POOL_PRESSURE_WEIGHT,
   UNKNOWN_PRESSURE,
+  clampContainerRollup,
   clampPressureBand,
   describeHubPoolDisabled,
   describeHubPoolInboundRefused,
@@ -230,6 +231,66 @@ describe('callerSourceIp — the only address a per-source limiter may key on', 
 
   it('tolerates a request object with no headers', () => {
     expect(callerSourceIp({ ip: '100.64.0.7' }, undefined)).toBe('100.64.0.7');
+  });
+});
+
+describe('clampContainerRollup', () => {
+  const sane = { running: 3, stopped: 1, total: 4, cpuPercent: 42.5, memoryBytes: 1_073_741_824 };
+
+  it('passes a believable rollup through unchanged', () => {
+    expect(clampContainerRollup(sane)).toEqual(sane);
+  });
+
+  it('keeps a genuine all-zero rollup, which is a claim and not an absence', () => {
+    // "Nothing is running on this box" is a real, reportable state. Rejecting it here would erase
+    // the only difference between an idle peer and one that cannot tell us anything.
+    const idle = { running: 0, stopped: 0, total: 0, cpuPercent: 0, memoryBytes: 0 };
+
+    expect(clampContainerRollup(idle)).toEqual(idle);
+  });
+
+  it('accepts a fractional cpuPercent, which is what a real sample looks like', () => {
+    expect(clampContainerRollup({ ...sane, cpuPercent: 0.37 })?.cpuPercent).toBe(0.37);
+  });
+
+  it.each([
+    ['a missing key', undefined],
+    ['null', null],
+    ['an array', [1, 2, 3]],
+    ['a number', 4],
+    ['a string', '4 containers'],
+    ['true', true],
+    ['an empty object', {}],
+    ['a negative count', { ...sane, running: -1 }],
+    ['a fractional count', { ...sane, total: 4.5 }],
+    ['an absurd count', { ...sane, running: 0, stopped: 0, total: 10_001 }],
+    ['a negative cpu figure', { ...sane, cpuPercent: -12 }],
+    ['an absurd cpu figure', { ...sane, cpuPercent: 1e9 }],
+    ['a negative memory figure', { ...sane, memoryBytes: -1 }],
+    ['an absurd memory figure', { ...sane, memoryBytes: 2 ** 60 }],
+    ['NaN', { ...sane, cpuPercent: Number.NaN }],
+    ['Infinity', { ...sane, memoryBytes: Number.POSITIVE_INFINITY }],
+    ['a numeric string', { ...sane, total: '4' }],
+    ['a word', { ...sane, running: 'lots' }],
+    ['a nested object', { ...sane, memoryBytes: { bytes: 1 } }],
+    ['more running than exist', { ...sane, running: 9, total: 4 }],
+    ['more stopped than exist', { ...sane, stopped: 9, total: 4 }],
+  ])('rejects %s', (_label, raw) => {
+    // Everything here arrives inside `last_capabilities`: free-form jsonb written by a remote
+    // machine, on rows that can predate any write-side check. The clamp has to live on the READ
+    // path, exactly like `clampPressureBand`.
+    expect(clampContainerRollup(raw)).toBeNull();
+  });
+
+  it('rejects the whole rollup when one field is bad, rather than rendering a half-truth', () => {
+    // A count that survived beside a memory figure that did not is a number an operator would read
+    // as measured. There is no honest value to substitute, so the answer is "not reported".
+    expect(clampContainerRollup({ ...sane, memoryBytes: -1 })).toBeNull();
+  });
+
+  it('never maps a rejected value to zeros, which would draw a hostile peer as an idle one', () => {
+    expect(clampContainerRollup({ ...sane, running: -1 })).not.toEqual({ running: 0, stopped: 0, total: 0, cpuPercent: 0, memoryBytes: 0 });
+    expect(clampContainerRollup('idle')).toBeNull();
   });
 });
 

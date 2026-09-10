@@ -33,6 +33,7 @@ Persisted in `settings.json` and editable over `GET`/`PATCH /api/inference/pool/
 | `poolHealthPollSeconds` | `30` | 10–300 | Seconds between peer capability probes. Also sets how long a peer's snapshot stays trusted — three polls — so slowing the cadence does not silently mark every peer stale. |
 | `poolPins` | `[]` | — | Operator routing pins — see [Manual routing pins](#manual-routing-pins). Written through `POST`/`DELETE /api/inference/pool/pins`, not through this PATCH. Empty means the ranker alone decides. |
 | `poolRequireSignedPeers` | `false` | — | Refuse the legacy bearer-token path outright, on the inbound guard **and** the outbound client. **Default false on purpose:** setting it while any peer has not finished the bearer→signed upgrade takes both directions of that pairing down. Flip it only once every peer reports `authMode: signed` — `cihub pool status` names the ones that do not, and says when the switch has become safe. |
+| `poolShareContainerStats` | `true` | — | Publish this node's aggregate container counts and resource totals to paired peers — counts and totals only, never a container name. **Default on**, so an upgraded Hub starts reporting to the peers its operator already approved; off omits the key entirely, which reads on the far side as "not reported" and never as an idle machine. See [Container counts](#container-counts-what-the-rest-of-the-fleet-is-running). |
 | `poolPressureWeight` | `0` | 0–3 | How heavily the 0–3 GPU-pressure band counts in ranking. `0` (the default) removes it from the comparator entirely, so ranking is byte-identical to the build before pressure existed; `1` is `pending + pressure`, which is what lets the pool move work off a node whose queue is empty but whose GPU is busy. See [GPU pressure](#gpu-pressure-a-second-load-signal-amd-only-and-off-by-default). |
 
 ## Manual routing pins
@@ -112,6 +113,37 @@ curl -X PATCH .../api/inference/pool/settings -d '{"poolPressureWeight": 1}'
 ### End-to-end lag
 
 A change on one node reaches another node's ranking through: the EWMA (~30 s to 64% of a step), then that peer's next capability poll (`poolHealthPollSeconds`, 30 s by default). Worst case is roughly **90 seconds at the default cadence, and about 5 minutes at the 300 s maximum**. The band is a steady-state signal about a machine, not a per-request measurement.
+
+## Container counts: what the rest of the fleet is running
+
+A paired peer's capabilities payload carries one more optional key, `containers`, so the operator surfaces can answer "how loaded is the rest of my fleet" without a second route or a new probe:
+
+```json
+"containers": { "running": 6, "stopped": 2, "total": 8, "cpuPercent": 91.25, "memoryBytes": 5368709120 }
+```
+
+**Counts and aggregate resources only.** No container names, no per-container rows. A peer learns how loaded a box is and never which applications it runs. Model ids are already shared by name because models are what the pool *offers* and a peer cannot rank a node without them; containers are offered to nobody, so this stays coarse deliberately.
+
+**Scope is the containers this Hub manages** — the compose projects `AppRuntimeMonitorService` already samples for `/resource-monitor` — not the whole Docker daemon. A container started by hand outside compose is invisible to that sampler and absent from these totals. `stopped` is `total - running`, so the two sum; everything that is not `running` (including `paused` and `restarting`) lands in `stopped`, and a `docker compose down` removes containers entirely rather than making them stopped.
+
+### Absent means not reported, never zero
+
+The same rule as [GPU pressure](#absent-means-neutral-never-idle), and it is what the shape is designed around. Four states, three encodings:
+
+| State | On the wire | How it must read |
+|---|---|---|
+| Peer on a pre-container build | key absent | not reported |
+| Peer whose operator set `poolShareContainerStats: false` | key absent | not reported |
+| Reporting, nothing running | `{ "running": 0, ... }` | 0 containers |
+| Reporting, busy | real numbers | real numbers |
+
+The first two being indistinguishable is correct: both mean *"we cannot tell you"*, and neither may ever be drawn as an idle machine. A node whose own sampler has no recent collection omits the key for the same reason rather than publishing zeros it did not measure.
+
+- **No new probing on the poll path.** The producer reads only the sample the runtime monitor's 60 s timer has already collected, and reports nothing at all when the last *successful* collection is over two intervals old. `GET /capabilities` answers every peer's 30 s poll under a 15 s budget, and three overruns mark a healthy node unreachable — a Docker fan-out here is that incident again.
+- **`acceptingWork: false` does not blank it.** Container counts are a health signal, not an offer of work, so they follow `inFlightRequests` and not `backends`. A node that has stopped taking work is exactly when an operator needs to see whether it is still busy.
+- **Validated on the read path.** `last_capabilities` is free-form JSON a paired peer fully controls, so negative, non-finite, absurd, wrong-typed or self-contradictory figures (more running than exist) are rejected wholesale and surface as `null`. One bad field rejects the whole rollup rather than leaving a half-truth that reads as measured, and a rejected value never becomes `0`.
+
+`GET /api/inference/pool/status` and `GET /api/inference/pool/peers` both carry the clamped, freshness-gated value as `containers` on each peer row — not the raw jsonb, for the same reason `gpuPressure` is not.
 
 ## Kill switches: three levels, one precedence
 
