@@ -57,6 +57,38 @@ describe('parseFleetArgs', () => {
     // Silently ignoring would let `--dry-run` (which this group does not have) read as accepted.
     expect(() => parseFleetArgs(['scan', '--dry-run'])).toThrow(/Unknown flag/);
   });
+
+  /**
+   * The chain matched flags with `startsWith`, so no misspelling ever reached the unknown-flag
+   * error — each one landed on whichever real flag it happened to begin with. `--codeword xyz` is
+   * the one that matters: `--code` is the Portal pairing credential `install` enrolls a device with,
+   * and an invented flag was quietly supplying it.
+   */
+  it('refuses a flag that merely begins with a real one', () => {
+    expect(() => parseFleetArgs(['scan', '--username', 'bob'])).toThrow(/Unknown flag '--username'/);
+    expect(() => parseFleetArgs(['install', '--codeword', 'xyz'])).toThrow(/Unknown flag '--codeword'/);
+    expect(() => parseFleetArgs(['install', '--codeword=xyz'])).toThrow(/Unknown flag/);
+    expect(() => parseFleetArgs(['install', '--pool-pinned=123456'])).toThrow(/Unknown flag/);
+    expect(() => parseFleetArgs(['status', '--nodes-only=a'])).toThrow(/Unknown flag/);
+    expect(() => parseFleetArgs(['scan', '--timeouts=500'])).toThrow(/Unknown flag/);
+  });
+
+  it('still takes every value flag in both spellings', () => {
+    expect(parseFleetArgs(['install', '--code', 'ABC123']).code).toBe('ABC123');
+    expect(parseFleetArgs(['install', '--code=ABC123']).code).toBe('ABC123');
+    expect(parseFleetArgs(['install', '--pool-pin', '123456']).poolPin).toBe('123456');
+    expect(parseFleetArgs(['install', '--pool-pin=123456']).poolPin).toBe('123456');
+    expect(parseFleetArgs(['install', '--join-pool=hub.tail.ts.net']).joinPool).toBe('hub.tail.ts.net');
+    expect(parseFleetArgs(['backends', '--data-dir', '/srv/hub']).dataDir).toBe('/srv/hub');
+    expect(parseFleetArgs(['apps', '--endpoint=local']).endpoint).toBe('local');
+    expect(parseFleetArgs(['update', '--models', 'llama3,qwen3']).models).toEqual(['llama3', 'qwen3']);
+    expect(parseFleetArgs(['backends', '--backends=ollama']).backends).toEqual(['ollama']);
+    expect(parseFleetArgs(['scan', '--timeout=500']).timeoutMs).toBe(500);
+    expect(parseFleetArgs(['scan', '--concurrency', '8']).concurrency).toBe(8);
+    // `--nodes` and `--no-tailnet` share a prefix in the other direction; both still land.
+    expect(parseFleetArgs(['status', '--nodes', 'a,b', '--no-tailnet']).nodes).toEqual(['a', 'b']);
+    expect(parseFleetArgs(['status', '--nodes=a', '--no-tailnet']).tailnet).toBe(false);
+  });
 });
 
 describe('resolvePairingCodeStrategy', () => {

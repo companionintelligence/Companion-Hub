@@ -117,23 +117,31 @@ export function parseFleetArgs(argv: readonly string[]): FleetArgs {
       i += 1;
       return next;
     };
+    /**
+     * A flag is its exact spelling, or that spelling with `=value`. Never a prefix of a longer word.
+     *
+     * The chain below matched on `startsWith`, so every misspelling landed on a real flag instead of
+     * the unknown-flag error at the end of the chain: `--username bob` set `--user`, and `--codeword
+     * xyz` supplied the Portal pairing credential. A flag this CLI does not have must be loud.
+     */
+    const isFlag = (flag: string): boolean => arg === flag || arg.startsWith(`${flag}=`);
 
     if (arg === '--json') args.json = true;
     else if (arg === '--lan') args.lan = true;
     else if (arg === '--no-tailnet') args.tailnet = false;
     else if (arg === '--write-roster') args.writeRoster = true;
     else if (arg === '--execute') args.execute = true;
-    else if (arg.startsWith('--user')) args.user = readValue('--user');
-    else if (arg.startsWith('--data-dir')) args.dataDir = readValue('--data-dir');
-    else if (arg.startsWith('--code')) args.code = readValue('--code');
-    else if (arg.startsWith('--join-pool')) args.joinPool = readValue('--join-pool');
-    else if (arg.startsWith('--pool-pin')) args.poolPin = readValue('--pool-pin');
+    else if (isFlag('--user')) args.user = readValue('--user');
+    else if (isFlag('--data-dir')) args.dataDir = readValue('--data-dir');
+    else if (isFlag('--code')) args.code = readValue('--code');
+    else if (isFlag('--join-pool')) args.joinPool = readValue('--join-pool');
+    else if (isFlag('--pool-pin')) args.poolPin = readValue('--pool-pin');
     else if (arg === '--hub') args.hub = true;
-    else if (arg.startsWith('--endpoint')) {
+    else if (isFlag('--endpoint')) {
       const mode = readValue('--endpoint');
       if (mode !== 'pool' && mode !== 'local') throw new FleetArgError("--endpoint must be 'pool' or 'local'.");
       args.endpoint = mode;
-    } else if (arg.startsWith('--apps')) {
+    } else if (isFlag('--apps')) {
       const names = readValue('--apps')
         .split(',')
         .map((a) => a.trim())
@@ -144,12 +152,12 @@ export function parseFleetArgs(argv: readonly string[]): FleetArgs {
         }
       }
       args.apps = names as AppSlug[];
-    } else if (arg.startsWith('--models')) {
+    } else if (isFlag('--models')) {
       args.models = readValue('--models')
         .split(',')
         .map((m) => m.trim())
         .filter(Boolean);
-    } else if (arg.startsWith('--backends')) {
+    } else if (isFlag('--backends')) {
       const names = readValue('--backends')
         .split(',')
         .map((s) => s.trim())
@@ -160,16 +168,16 @@ export function parseFleetArgs(argv: readonly string[]): FleetArgs {
         }
       }
       args.backends = names as InstallableBackend[];
-    } else if (arg.startsWith('--nodes')) {
+    } else if (isFlag('--nodes')) {
       args.nodes = readValue('--nodes')
         .split(',')
         .map((s) => s.trim())
         .filter(Boolean);
-    } else if (arg.startsWith('--timeout')) {
+    } else if (isFlag('--timeout')) {
       const ms = Number(readValue('--timeout'));
       if (!Number.isFinite(ms) || ms < 250 || ms > 120_000) throw new FleetArgError('--timeout must be between 250 and 120000 ms.');
       args.timeoutMs = ms;
-    } else if (arg.startsWith('--concurrency')) {
+    } else if (isFlag('--concurrency')) {
       const n = Number(readValue('--concurrency'));
       if (!Number.isInteger(n) || n < 1 || n > 32) throw new FleetArgError('--concurrency must be an integer between 1 and 32.');
       args.concurrency = n;
@@ -193,6 +201,24 @@ export function parseFleetArgs(argv: readonly string[]): FleetArgs {
  */
 function recordFleetFailures(failed: number): void {
   if (failed > 0) process.exitCode = 1;
+}
+
+/**
+ * Say so when `--nodes` names a machine the roster has never heard of.
+ *
+ * `partitionForRun` drops an unmatched name silently — it lands in neither `run` nor `skipped` — so
+ * `--nodes core-l` for `core-1` produced the same empty selection, and the same exit 0, as a roster
+ * whose every entry is marked skip. Those are different findings: an empty selection is a state to
+ * report, a node that does not exist is the operator's typo, and only the typo belongs in the exit
+ * code. The run continues on whatever did match, so a partial selection still does its work.
+ */
+function reportUnknownNodes(roster: readonly FleetNode[], wanted: readonly string[]): void {
+  const known = new Set(roster.flatMap((node) => [node.name, node.ip]));
+  const unknown = wanted.filter((name) => !known.has(name));
+  if (unknown.length === 0) return;
+  console.error(colorize(`No roster entry matches ${unknown.map((name) => `'${name}'`).join(', ')} by name or address.`, 'red'));
+  console.error(colorize(`  Run '${BASE_COMMAND} fleet list' to see the roster.`, 'dim'));
+  process.exitCode = 1;
 }
 
 /** Fixed-width table, so a 20-node listing is scannable rather than a wall of prose. */
@@ -319,6 +345,7 @@ async function runScan(args: FleetArgs): Promise<void> {
 
 function runList(args: FleetArgs): void {
   const roster = loadFleetRoster();
+  reportUnknownNodes(roster.nodes, args.nodes);
   if (args.json) {
     console.log(JSON.stringify({ source: roster.source, nodes: roster.nodes, dropped: roster.dropped }, null, 2));
     return;
@@ -345,6 +372,7 @@ function runList(args: FleetArgs): void {
 
 async function runStatus(args: FleetArgs): Promise<void> {
   const roster = loadFleetRoster();
+  reportUnknownNodes(roster.nodes, args.nodes);
   if (roster.nodes.length === 0) {
     console.log(`No roster yet. Run '${BASE_COMMAND} fleet scan --write-roster' first.`);
     return;
@@ -381,6 +409,7 @@ async function runStatus(args: FleetArgs): Promise<void> {
  */
 async function runBackends(args: FleetArgs): Promise<void> {
   const roster = loadFleetRoster();
+  reportUnknownNodes(roster.nodes, args.nodes);
   if (roster.nodes.length === 0) {
     console.log(`No roster yet. Run '${BASE_COMMAND} fleet scan --write-roster' first.`);
     return;
@@ -495,6 +524,7 @@ export function resolvePairingCodeStrategy(input: { code?: string; canMint: bool
  */
 async function runInstall(args: FleetArgs): Promise<void> {
   const roster = loadFleetRoster();
+  reportUnknownNodes(roster.nodes, args.nodes);
   const { run, skipped } = partitionForRun(roster.nodes, args.nodes);
   if (run.length === 0) {
     console.log('No nodes selected.');
@@ -592,6 +622,7 @@ async function runInstall(args: FleetArgs): Promise<void> {
  */
 async function runUpdate(args: FleetArgs): Promise<void> {
   const roster = loadFleetRoster();
+  reportUnknownNodes(roster.nodes, args.nodes);
   const { run, skipped } = partitionForRun(roster.nodes, args.nodes);
   if (run.length === 0) {
     console.log('No nodes selected.');
@@ -645,6 +676,7 @@ async function runUpdate(args: FleetArgs): Promise<void> {
  */
 async function runApps(args: FleetArgs): Promise<void> {
   const roster = loadFleetRoster();
+  reportUnknownNodes(roster.nodes, args.nodes);
   const { run, skipped } = partitionForRun(roster.nodes, args.nodes);
   if (run.length === 0) {
     console.log('No nodes selected.');

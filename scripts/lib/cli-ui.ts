@@ -92,7 +92,9 @@ const commandSections: { title: string; entries: CommandEntry[] }[] = [
     ],
   },
   {
-    title: 'Fleet',
+    // The one group that acts on OTHER machines, over SSH. Said in the title because a reader
+    // scanning `--help` for the first time has no other cue that `fleet install` is not local.
+    title: 'Fleet (other machines, over SSH)',
     entries: [
       {
         command: `${BASE_COMMAND} fleet scan [--lan] [--write-roster] [--json]`,
@@ -102,6 +104,22 @@ const commandSections: { title: string; entries: CommandEntry[] }[] = [
       {
         command: `${BASE_COMMAND} fleet status [--nodes a,b] [--json]`,
         description: 'Re-probe every rostered node: administrable, running a Hub, serving engines',
+      },
+      {
+        command: `${BASE_COMMAND} fleet backends [--backends a,b] [--execute]`,
+        description: 'What inference backends a node can run, from its hardware; prints the plan unless --execute',
+      },
+      {
+        command: `${BASE_COMMAND} fleet install [--user <account>] [--execute]`,
+        description: 'Stand a Hub up on each node and register it; prints the plan unless --execute',
+      },
+      {
+        command: `${BASE_COMMAND} fleet update [--hub] [--models a,b] [--execute]`,
+        description: 'Pull the Hub image and models across the roster; prints the plan unless --execute',
+      },
+      {
+        command: `${BASE_COMMAND} fleet apps [--apps a,b] [--endpoint pool|local]`,
+        description: 'Can each node serve an agent app its inference credentials? A check; it installs nothing',
       },
     ],
   },
@@ -347,7 +365,14 @@ export function renderManPage() {
       'CI Hub CLI \u2014 setup, registration, Docker lifecycle,',
       'MCP toggles, environment resets, and app management.',
       '',
-      'All commands accept an optional [env] argument: local (default), dev, staging, prod.',
+      'The commands that target one environment take an optional [env]: local (default), dev, staging, prod.',
+      'Those are wizard, setup, register, device-id, up, down, restart, recreate, status, logs, config,',
+      'doctor, clean, reset, and the mcp, public-web and pool subcommands.',
+      '',
+      'Every other command takes none. fleet refuses one outright (cihub fleet scan prod is an error);',
+      'app, models and api-key read it as a subcommand name and fail; connect, update, uninstall and',
+      'the catalog commands ignore it. None of them is a way to retarget an environment.',
+      '',
       'Use local for source-based development and dev/staging/prod for appliance-style compose environments.',
       '',
       'Run outside a CI-Hub checkout (e.g. a packaged install), up/down/reset/clean infer prod and',

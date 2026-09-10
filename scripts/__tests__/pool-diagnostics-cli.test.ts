@@ -46,6 +46,7 @@ const {
   checkTailscaleServe,
   checkUpstreamVisibility,
   composeShortFormTarget,
+  countPoolFailures,
   countPoolIssues,
   formatPoolCheckLines,
   measureColdCapabilityBuild,
@@ -96,7 +97,9 @@ beforeEach(() => {
   statSync.mockReset();
   dnsLookup.mockReset();
   readHubApiKey.mockReset().mockReturnValue(undefined);
-  runBridgeDoctorSection.mockReset().mockResolvedValue({ lines: ['Docker bridge  skipped'], issueCount: 0, remediationCommands: [] });
+  runBridgeDoctorSection
+    .mockReset()
+    .mockResolvedValue({ lines: ['Docker bridge  skipped'], issueCount: 0, failureCount: 0, remediationCommands: [] });
   isHubContainerRunning.mockReset().mockReturnValue(false);
   resolveHubContainerName.mockReset().mockReturnValue(undefined);
   probeHostPort.mockReset().mockResolvedValue(false);
@@ -2085,6 +2088,7 @@ describe('runPoolDoctorSection', () => {
     runBridgeDoctorSection.mockResolvedValue({
       lines: ['Docker bridge            1 blocked'],
       issueCount: 1,
+      failureCount: 1,
       remediationCommands: ['sudo ufw allow from 172.18.0.0/16 to 172.18.0.1 port 11434 proto tcp'],
     });
     parseEnvFile.mockReturnValue({ API_PORT: '5002', ROOT_FOLDER_HOST: '/data/hub' });
@@ -2105,6 +2109,69 @@ describe('runPoolDoctorSection', () => {
     expect(summary).not.toContain('warned');
     // ...so this 1 can only have come from the bridge section, and it decides the box colour.
     expect(section.issueCount).toBe(1);
+    vi.unstubAllGlobals();
+  });
+
+  /**
+   * `failureCount` is the half of `issueCount` that says THIS node is broken, and it is what
+   * `cli-pool.ts` puts in the exit code. The split has to hold in both directions: a `warn` is state
+   * the operator asked to be shown, and an `unknown` — D3's peer-served measurement, a section that
+   * could not be collected — decided nothing about the node, so neither may fail the command.
+   */
+  it('counts a decided failure and nothing else', () => {
+    const verdicts = ['fail', 'warn', 'unknown', 'skipped', 'ok'] as const;
+    const checks = verdicts.map((verdict, index) => ({ id: `X${index}`, label: 'check', verdict, detail: '' }));
+
+    expect(countPoolIssues(checks)).toBe(2);
+    expect(countPoolFailures(checks)).toBe(1);
+  });
+
+  it('reports a bridge failure as a failure of this node, not merely an issue', async () => {
+    runBridgeDoctorSection.mockResolvedValue({
+      lines: ['Docker bridge            1 blocked'],
+      issueCount: 1,
+      failureCount: 1,
+      remediationCommands: [],
+    });
+    parseEnvFile.mockReturnValue({ API_PORT: '5002', ROOT_FOLDER_HOST: '/data/hub' });
+    existsSync.mockReturnValue(true);
+    statSync.mockReturnValue({ uid: 1000, gid: 1000, mode: 0o40755 });
+    probeHostPort.mockResolvedValue(true);
+    spawnSync.mockReturnValue({ status: 1, stdout: '', stderr: '' });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({ ok: true, status: 200, text: async () => JSON.stringify({ isCiHub: true, poolProtocol: 2, data: [] }) }),
+    );
+
+    const section = await runPoolDoctorSection('.env.prod', { env: 'prod', cliSubcommands: ['status', 'peers', 'discover', 'log', 'enable'] });
+
+    // Nothing this node checks of its own failed, so the 1 is the bridge's — and a container that
+    // cannot reach its host backends is this node unusable as a pool member.
+    expect(section.failureCount).toBe(1);
+    vi.unstubAllGlobals();
+  });
+
+  it('keeps a probe that could not decide out of the failure count', async () => {
+    runBridgeDoctorSection.mockResolvedValue({
+      lines: ['Docker bridge            1 unverified'],
+      issueCount: 1,
+      failureCount: 0,
+      remediationCommands: [],
+    });
+    parseEnvFile.mockReturnValue({ API_PORT: '5002', ROOT_FOLDER_HOST: '/data/hub' });
+    existsSync.mockReturnValue(true);
+    statSync.mockReturnValue({ uid: 1000, gid: 1000, mode: 0o40755 });
+    probeHostPort.mockResolvedValue(true);
+    spawnSync.mockReturnValue({ status: 1, stdout: '', stderr: '' });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({ ok: true, status: 200, text: async () => JSON.stringify({ isCiHub: true, poolProtocol: 2, data: [] }) }),
+    );
+
+    const section = await runPoolDoctorSection('.env.prod', { env: 'prod', cliSubcommands: ['status', 'peers', 'discover', 'log', 'enable'] });
+
+    expect(section.issueCount).toBe(1);
+    expect(section.failureCount).toBe(0);
     vi.unstubAllGlobals();
   });
 
@@ -2417,6 +2484,7 @@ describe('runPoolDoctorSection', () => {
     runBridgeDoctorSection.mockResolvedValue({
       lines: ['Docker bridge            1 blocked'],
       issueCount: 1,
+      failureCount: 1,
       remediationCommands: ['sudo ufw allow from 172.18.0.0/16 to 172.18.0.1 port 11434 proto tcp'],
     });
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('fetch failed')));
