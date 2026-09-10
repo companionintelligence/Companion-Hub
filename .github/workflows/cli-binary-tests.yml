@@ -4,17 +4,19 @@ name: CLI binary tests
 # `cihub pool update` that died on `ReferenceError: colorize is not defined` with tsc, biome and
 # 1000+ unit tests green — see scripts/__tests__/cli-binary-smoke.test.ts for the full autopsy.
 #
-# Auto-triggers are scoped to the CLI's own sources so this only burns Actions credit when the
-# binary can actually change. `Hub CI` (ci.yml) runs the same suite, but its PR triggers are
-# currently disabled for credit reasons, so this workflow is what keeps the gate live on PRs.
+# Manual/on-demand only as of 2026-09-10. This workflow's `pull_request` trigger
+# was added when `ci.yml`'s own PR trigger was disabled for Actions-credit reasons
+# ("this workflow is what keeps the gate live on PRs" — the claim this comment
+# used to make). `ci.yml`'s PR trigger has since been restored (it currently runs
+# `pull_request:` unfiltered + `push: branches: [dev]`), and `ci.yml`'s own `test`
+# job already runs `pnpm run test`, which ends in `test:cli` — the exact command
+# below. So every PR has been compiling the standalone `cihub` binary and running
+# this smoke test TWICE: once here, once in `ci.yml`. Dropping the duplicate.
+#
+# Run by hand if you need to verify a CLI-affecting change in isolation:
+#   gh workflow run cli-binary-tests.yml --repo companionintelligence/CI-Hub --ref dev
 on:
   workflow_dispatch:
-  pull_request:
-    paths:
-      - 'scripts/**'
-      - 'package.json'
-      - 'biome.json'
-      - '.github/workflows/cli-binary-tests.yml'
 
 concurrency:
   group: cli-binary-tests-${{ github.ref }}
