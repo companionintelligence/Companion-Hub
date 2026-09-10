@@ -189,6 +189,7 @@ describe('AuthController', () => {
         email: 'support@example.com',
         name: 'Support',
       });
+      authService.isSubjectMemberOfPairedOrg.mockResolvedValue(true);
       forwardAuthSecrets.resolveForHost.mockResolvedValue({
         secret: 'per-app-secret',
         appUrn: 'ci-memory:ci-marketplace' as never,
@@ -214,12 +215,89 @@ describe('AuthController', () => {
       await authController.traefik(req, res);
 
       expect(verifyPortalIdToken).toHaveBeenCalledWith('portal.id.token', expect.objectContaining({ publicCiCloudUrl: 'https://hub.ci.computer' }));
+      expect(authService.isSubjectMemberOfPairedOrg).toHaveBeenCalledWith('portal-sub');
       expect(res.redirect).not.toHaveBeenCalled();
       expect(res.status).toHaveBeenCalledWith(200);
       const headers = Object.fromEntries(setHeader.mock.calls);
       expect(headers['X-CI-Hub-User']).toBe('support@example.com');
       const timestamp = Number(headers['X-CI-Hub-User-Timestamp']);
       expect(headers['X-CI-Hub-User-Signature']).toBe(signForwardAuthUser('per-app-secret', 'support@example.com', timestamp));
+    });
+
+    it("CI-Hub#1333: rejects a valid Portal Bearer whose subject is not a member of this Hub's paired org", async () => {
+      // The exploit this guards against: a token that is perfectly valid to Portal (right
+      // signature, issuer, audience) but was never meant to authorize THIS appliance, because
+      // every Hub in the fleet shares the same audience list.
+      config.get.mockImplementation((key: string) => (key === 'ciCloudUrl' ? 'https://hub.ci.computer' : (undefined as never)));
+      vi.mocked(verifyPortalIdToken).mockResolvedValue({
+        sub: 'attacker-sub',
+        email: 'attacker@example.com',
+        name: 'Attacker',
+      });
+      authService.isSubjectMemberOfPairedOrg.mockResolvedValue(false);
+
+      const req = {
+        user: undefined,
+        headers: {
+          authorization: 'Bearer stolen.portal.token',
+          'x-forwarded-host': 'victim-app.companionintelligence.com',
+          'x-forwarded-uri': '/api/files/upload',
+        },
+      } as unknown as Request;
+      const setHeader = vi.fn();
+      const res = { status: vi.fn().mockReturnThis(), send: vi.fn(), setHeader, redirect: vi.fn() } as unknown as Response;
+
+      await authController.traefik(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(403);
+      expect(setHeader).not.toHaveBeenCalled();
+      expect(forwardAuthSecrets.resolveForHost).not.toHaveBeenCalled();
+    });
+
+    it('CI-Hub#1333: fails closed on an empty subject rather than treating "unknown" as "authorized"', async () => {
+      config.get.mockImplementation((key: string) => (key === 'ciCloudUrl' ? 'https://hub.ci.computer' : (undefined as never)));
+      vi.mocked(verifyPortalIdToken).mockResolvedValue({ sub: '', email: 'nobody@example.com', name: null });
+
+      const req = {
+        user: undefined,
+        headers: { authorization: 'Bearer weird.token', 'x-forwarded-host': 'app.companionintelligence.com' },
+      } as unknown as Request;
+      const res = { status: vi.fn().mockReturnThis(), send: vi.fn(), setHeader: vi.fn(), redirect: vi.fn() } as unknown as Response;
+
+      await authController.traefik(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(403);
+      expect(authService.isSubjectMemberOfPairedOrg).not.toHaveBeenCalled();
+    });
+
+    it('CI-Hub#1333: caches a positive membership result instead of asking Portal on every forwarded request', async () => {
+      config.get.mockImplementation((key: string) => (key === 'ciCloudUrl' ? 'https://hub.ci.computer' : (undefined as never)));
+      vi.mocked(verifyPortalIdToken).mockResolvedValue({ sub: 'portal-sub', email: 'support@example.com', name: 'Support' });
+      authService.isSubjectMemberOfPairedOrg.mockResolvedValue(true);
+      forwardAuthSecrets.resolveForHost.mockResolvedValue({
+        secret: 'per-app-secret',
+        appUrn: 'ci-memory:ci-marketplace' as never,
+        source: 'app-env',
+      });
+
+      let cachedValue: string | undefined;
+      cache.get.mockImplementation((key: string) => (key === 'bearer_org_member:portal-sub' ? cachedValue : undefined) as never);
+      cache.set.mockImplementation((key: string, value: string) => {
+        if (key === 'bearer_org_member:portal-sub') cachedValue = value;
+      });
+
+      const makeReq = () =>
+        ({
+          user: undefined,
+          headers: { authorization: 'Bearer portal.id.token', 'x-forwarded-host': 'app.companionintelligence.com' },
+        }) as unknown as Request;
+      const makeRes = () => ({ status: vi.fn().mockReturnThis(), send: vi.fn(), setHeader: vi.fn(), redirect: vi.fn() }) as unknown as Response;
+
+      await authController.traefik(makeReq(), makeRes());
+      await authController.traefik(makeReq(), makeRes());
+
+      expect(authService.isSubjectMemberOfPairedOrg).toHaveBeenCalledTimes(1);
+      expect(cache.set).toHaveBeenCalledWith('bearer_org_member:portal-sub', '1', 60);
     });
 
     it('lets Memory login and API-key traffic through without a Hub session', async () => {

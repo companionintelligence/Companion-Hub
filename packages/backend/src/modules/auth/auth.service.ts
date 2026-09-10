@@ -240,7 +240,14 @@ export class AuthService {
     });
   }
 
-  private async isSubjectMemberOfPairedOrg(subject: string): Promise<boolean> {
+  /**
+   * Whether a Portal `sub` is a member of the organisation THIS Hub is paired to. The only
+   * appliance-binding check available for a bare Portal identity — every other Portal-issued
+   * credential (id_token audience, signature, issuer) is identical across every Hub in the fleet.
+   * Also used directly by the Traefik forward-auth Bearer path (CI-Hub#1333): that call site owns
+   * its own short-TTL cache, since a Portal round trip per forwarded app request is too slow.
+   */
+  async isSubjectMemberOfPairedOrg(subject: string): Promise<boolean> {
     const registration = await this.deviceRegistration.getFirstDeviceRegistration().catch(() => null);
     if (!registration?.id) {
       return false;
