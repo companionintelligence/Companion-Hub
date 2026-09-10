@@ -5,6 +5,18 @@ import type { NewUser } from '@/core/database/drizzle/types';
 import { Inject, Injectable } from '@nestjs/common';
 import { eq } from 'drizzle-orm/sql';
 
+/**
+ * The Hub's canonical form for a username, which is always an email address.
+ *
+ * Every read folds the value it is handed, so every write must fold too or the row it creates can
+ * never be found again — that was CI-Hub#1300's account-lockout, and at the Traefik edge it is also
+ * what let one person arrive at an app as `Owner@Example.com` over Bearer and `owner@example.com`
+ * over the session cookie. Migration 0062 folds the rows that predate this.
+ */
+export function normalizeUsername(username: string): string {
+  return username.trim().toLowerCase();
+}
+
 @Injectable()
 export class UserRepository {
   constructor(
@@ -18,7 +30,7 @@ export class UserRepository {
    * @param {string} username - The username of the user to return
    */
   public async getUserByUsername(username: string) {
-    return this.db.query.user.findFirst({ where: eq(user.username, username.trim().toLowerCase()) });
+    return this.db.query.user.findFirst({ where: eq(user.username, normalizeUsername(username)) });
   }
 
   /**
@@ -65,9 +77,12 @@ export class UserRepository {
     // One coercion for both the row and the cache key: two would be free to drift apart, and a
     // cache key that disagrees with the WHERE clause invalidates nobody while the row changes.
     const userId = Number(id);
+    // Same normalization as the INSERT, and for the same reason: `getUserByUsername` folds what it
+    // is given, so a mixed-case write makes the row unfindable and the person unable to sign in.
+    const values = data.username === undefined ? data : { ...data, username: normalizeUsername(data.username) };
 
     try {
-      const updatedUsers = await this.db.update(user).set(data).where(eq(user.id, userId)).returning();
+      const updatedUsers = await this.db.update(user).set(values).where(eq(user.id, userId)).returning();
       return updatedUsers[0];
     } finally {
       // In `finally` because the UPDATE can commit and still reject on the way back (the
@@ -122,7 +137,10 @@ export class UserRepository {
    * @param {NewUser} data - The data to create the user with
    */
   public async createUser(data: NewUser) {
-    const newUsers = await this.db.insert(user).values(data).returning();
+    const newUsers = await this.db
+      .insert(user)
+      .values({ ...data, username: normalizeUsername(data.username) })
+      .returning();
     const created = newUsers[0];
 
     if (created) {
