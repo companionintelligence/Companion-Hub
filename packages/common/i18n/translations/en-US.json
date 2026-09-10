@@ -2151,7 +2151,7 @@
   "HUB_POOL_STATUS_UNREACHABLE": "Unreachable",
   "HUB_POOL_STATUS_DISABLED": "Disabled",
   "HUB_POOL_PEER_COL_NODE": "Node",
-  "HUB_POOL_PEER_COL_ACTIONS": "",
+  "HUB_POOL_PEER_COL_ACTIONS": "Actions",
   "HUB_POOL_PEER_NOT_ACCEPTING_MARK": "paused",
   "HUB_POOL_PEER_NOT_ACCEPTING": "Not accepting work",
   "HUB_POOL_OUTBOUND_WAITING": "Waiting for {{name}} to approve",
