@@ -134,6 +134,9 @@
         "rules": {
           "suspicious": {
             "noConsole": "off"
+          },
+          "correctness": {
+            "noUndeclaredVariables": "error"
           }
         }
       }

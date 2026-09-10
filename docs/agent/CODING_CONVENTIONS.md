@@ -16,6 +16,13 @@
 - No non-null assertions (`!`) — use explicit types or guards (`noNonNullAssertion`)
 - 2-space indent, 150-char line width
 - Use `pnpm` — never npm/yarn/bun for this repo
+- **`scripts/**` only:** `correctness/noUndeclaredVariables` is an error. `biome.json` cannot carry
+  comments, so the reason lives here: root `scripts/` is not in the pnpm workspace, so
+  `pnpm run tsc` (which is `turbo run tsc`, `packages/*` only) never type-checks the shipped `cihub`
+  CLI. A missing import or a `catch (_e)` body that reads `e` therefore compiles cleanly into the
+  binary and becomes a `ReferenceError` the first time that line runs — which is exactly how
+  v0.2.67 shipped a `cihub pool update` that crashed before doing any work. This rule is the static
+  half of that guard; `scripts/__tests__/cli-binary-smoke.test.ts` is the runtime half.
 
 ### Agent-specific
 
