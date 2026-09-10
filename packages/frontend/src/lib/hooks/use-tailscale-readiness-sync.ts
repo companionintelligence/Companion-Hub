@@ -1,4 +1,5 @@
-import { appContextQueryKey, getStatus5QueryKey } from '@/api-client/@tanstack/react-query.gen';
+import { appContextQueryKey } from '@/api-client/@tanstack/react-query.gen';
+import { tailscaleStatusQueryKey } from '@/api-client/routes/named-status-routes';
 import { syncExposure } from '@/api-client/sdk.gen';
 import { useQueryClient } from '@tanstack/react-query';
 import { useEffect, useRef } from 'react';
@@ -17,6 +18,12 @@ export async function requestTailscaleExposureSync(): Promise<void> {
 /**
  * When Tailscale connects or HTTPS/Serve becomes available, ask the backend to
  * re-publish Private VPN apps and refresh client-side context.
+ *
+ * The Tailscale key here must come from `named-status-routes`, not from a numbered
+ * `getStatusN` helper. This hook invalidated `getStatus5QueryKey()` — `/api/mcp-admin/status`
+ * — while the card it exists to refresh reads `tailscaleStatusQueryKey()`. The sync fired
+ * and refreshed nothing, and nothing failed: the keys are both valid, just for different
+ * routes. Same renumbering hazard that put an MCP payload behind the Private VPN card.
  */
 export function useTailscaleReadinessSync(status: TailscaleReadinessStatus | undefined, enabled = true): void {
   const queryClient = useQueryClient();
@@ -50,7 +57,7 @@ export function useTailscaleReadinessSync(status: TailscaleReadinessStatus | und
           Promise.all([
             queryClient.invalidateQueries({ queryKey: appContextQueryKey() }),
             queryClient.invalidateQueries({ queryKey: ['tailscale-serve'] }),
-            queryClient.invalidateQueries({ queryKey: getStatus5QueryKey() }),
+            queryClient.invalidateQueries({ queryKey: tailscaleStatusQueryKey() }),
           ]),
         )
         .catch(() => undefined);
