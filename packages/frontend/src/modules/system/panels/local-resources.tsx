@@ -95,7 +95,7 @@ export function HostCapacity({
         {ramTotal !== null && ramUsed !== null ? (
           <div className="space-y-1 pt-1">
             <MeterBar value={ramUsed} max={ramTotal} tone={ramUsed / ramTotal > 0.9 ? 'warn' : 'ok'} />
-            <div className="flex justify-between text-[10px] text-muted-foreground">
+            <div className="flex justify-between text-[11px] text-muted-foreground">
               <span>{t('DASHBOARD_RAM_USED', { used: `${Math.round(ramUsed / 1024)}G`, total: `${Math.round(ramTotal / 1024)}G` })}</span>
             </div>
           </div>
@@ -131,7 +131,7 @@ export function ModelMemory({
     <Panel title={t('DASHBOARD_MODEL_MEMORY_TITLE')}>
       <PanelBody state={state} error={t('DASHBOARD_MEMORY_FAILED')}>
         {rows.length === 0 ? (
-          <p className="py-3 text-center text-xs italic text-muted-foreground">{t('DASHBOARD_MODEL_MEMORY_EMPTY')}</p>
+          <p className="py-3 text-center text-[13px] italic text-muted-foreground">{t('DASHBOARD_MODEL_MEMORY_EMPTY')}</p>
         ) : (
           <div className="space-y-2.5">
             {rows.map((row) => {
@@ -158,7 +158,7 @@ export function ModelMemory({
                       { label: t('DASHBOARD_MEMORY_FREE'), value: Math.max(0, row.budget - row.used), tone: 'muted' },
                     ]}
                   />
-                  <div className="flex justify-between text-[10px] text-muted-foreground">
+                  <div className="flex justify-between text-[11px] text-muted-foreground">
                     <span>{t('DASHBOARD_MEMORY_TOTAL', { total: `${Math.round(row.total / 1024)}G` })}</span>
                     {row.pinned > 0 ? <span>{t('DASHBOARD_MEMORY_PINNED_MB', { mb: `${Math.round(row.pinned / 1024)}G` })}</span> : null}
                   </div>
@@ -167,12 +167,12 @@ export function ModelMemory({
             })}
           </div>
         )}
-        {unified ? <p className="pt-1 text-[10px] leading-tight text-muted-foreground">{t('DASHBOARD_UNIFIED_MEMORY_NOTE')}</p> : null}
+        {unified ? <p className="pt-1 text-[11px] leading-tight text-muted-foreground">{t('DASHBOARD_UNIFIED_MEMORY_NOTE')}</p> : null}
         {/* Docker overhead is an estimate — running app containers times a flat per-container
             figure — not a measurement. Saying so is the difference between a budget an
             operator can reason about and a number they will chase. */}
         {typeof memory?.dockerOverheadMb === 'number' ? (
-          <p className="text-[10px] leading-tight text-muted-foreground">
+          <p className="text-[11px] leading-tight text-muted-foreground">
             {t('DASHBOARD_DOCKER_OVERHEAD', { mb: `${Math.round(memory.dockerOverheadMb / 1024)}G` })}
           </p>
         ) : null}
@@ -207,13 +207,13 @@ export function LocalModels({
   return (
     <Panel
       title={t('DASHBOARD_LOCAL_MODELS_TITLE')}
-      actions={state.pending || state.failed ? null : <span className="text-[10px] text-muted-foreground">{rows.length}</span>}
+      actions={state.pending || state.failed ? null : <span className="text-[11px] text-muted-foreground">{rows.length}</span>}
     >
       <PanelBody state={state} error={t('DASHBOARD_POOL_FAILED')} lines={4}>
         {segments.length > 0 ? (
           <div className="space-y-1">
             <StackedBar segments={segments} />
-            <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-[10px] text-muted-foreground">
+            <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-muted-foreground">
               {segments.map((segment) => (
                 <span key={segment.label} className="inline-flex items-center gap-1">
                   <StatusDot tone={segment.tone} className="h-1.5 w-1.5" />
@@ -252,7 +252,7 @@ export function LocalModels({
           )}
         </KpiTable>
         {inference && inference.length > 0 ? (
-          <div className="flex flex-wrap gap-x-3 gap-y-1 pt-1.5 text-[10px] text-muted-foreground">
+          <div className="flex flex-wrap gap-x-3 gap-y-1 pt-1.5 text-[11px] text-muted-foreground">
             {inference.map((backend) => (
               <span key={backend.type} className="inline-flex items-center gap-1">
                 <StatusDot tone={backend.healthy ? 'ok' : backend.running ? 'warn' : 'muted'} className="h-1.5 w-1.5" />
@@ -279,7 +279,7 @@ export function LocalContainers({ apps, history, state }: { apps: AppRuntimeHeal
       title={t('DASHBOARD_LOCAL_CONTAINERS_TITLE')}
       actions={
         state.pending || state.failed ? null : (
-          <span className="text-[10px] text-muted-foreground">{t('DASHBOARD_CONTAINER_COUNT', { total: totalContainers })}</span>
+          <span className="text-[11px] text-muted-foreground">{t('DASHBOARD_CONTAINER_COUNT', { total: totalContainers })}</span>
         )
       }
     >

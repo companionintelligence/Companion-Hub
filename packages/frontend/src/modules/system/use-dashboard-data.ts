@@ -57,6 +57,15 @@ export interface PoolBackend {
   modelsLoaded?: string[];
 }
 
+/**
+ * This Hub as `/pool/status` reports it.
+ *
+ * ⚠ There is deliberately no `containers` here, and adding one would be wrong: the endpoint does
+ * not carry it. `buildLocalNodeStatus` returns inference capability only, and the local container
+ * rollup exists solely inside the OUTBOUND capability payload that PEERS fetch from us. This
+ * Hub's own container numbers come from `/apps/resource-monitor`, which is a different endpoint
+ * on a different cadence with real server-side history.
+ */
 export interface PoolNodeSummary {
   nodeFqdn?: string | null;
   tailnet?: string | null;
@@ -65,7 +74,27 @@ export interface PoolNodeSummary {
   tailscaleConnected?: boolean;
   capabilitiesError?: string | null;
   gpuPressure?: number | null;
+  /** Which measurement produced the band — `'amd-drm'` or `'host-file'`. Absent when unmeasured. */
+  gpuPressureSource?: string | null;
   backends?: PoolBackend[];
+}
+
+/**
+ * Aggregate container counts a peer publishes about itself — numbers only, never names.
+ *
+ * `null` on the wire, and absent, both mean NOT REPORTED, and they cover every way we can fail to
+ * know: a peer on a pre-container build, an operator who opted out, a sampler with no recent
+ * sample, a snapshot too old to believe, a value the backend refused to clamp. All five must
+ * render as "not reported". None of them may ever render as zero — `{ running: 0 }` is a peer
+ * actively telling us nothing is running, which is a different fact.
+ */
+export interface PoolContainerRollup {
+  running: number;
+  stopped: number;
+  total: number;
+  /** Summed across containers and per-core, so a busy multi-core box legitimately exceeds 100. */
+  cpuPercent: number;
+  memoryBytes: number;
 }
 
 /**
@@ -90,10 +119,36 @@ export interface PoolPeerSummary {
   enabled?: boolean;
   consecutiveFailures?: number;
   lastSeenAt?: string | null;
+  /** What THIS Hub has forwarded to the peer and not yet finished reading — our counter, not its load. */
   inFlightRequests?: number | null;
   gpuPressure?: number | null;
   authMode?: string;
-  lastCapabilities?: { hardwareTier?: string | null; acceptingWork?: boolean; backends?: PoolBackend[] } | null;
+  /**
+   * The peer's clamped, freshness-gated container rollup, or `null` for "not reported".
+   *
+   * Read this, never `lastCapabilities.containers`. The raw blob is what the remote machine sent;
+   * this is what our backend was willing to believe after rejecting hostile values and stale
+   * snapshots, and the two disagreeing is precisely when the difference matters.
+   */
+  containers?: PoolContainerRollup | null;
+  /**
+   * The peer's verbatim self-report, cached at the last successful probe.
+   *
+   * ⚠ UNCLAMPED AND NOT FRESHNESS-GATED. `toPublicPeer` strips only the token columns, so this
+   * whole jsonb blob ships to the browser exactly as the peer wrote it. Where a clamped sibling
+   * field exists — `containers`, `gpuPressure` — read the sibling. Anything taken from here must
+   * be range-checked and age-checked at the point of use.
+   */
+  lastCapabilities?: {
+    hardwareTier?: string | null;
+    acceptingWork?: boolean;
+    backends?: PoolBackend[];
+    inFlightRequests?: number;
+    gpuPressure?: number;
+    gpuPressureSource?: string;
+    containers?: PoolContainerRollup;
+    updatedAt?: string;
+  } | null;
 }
 
 /** One half of pooling and what is holding it off. `disabledBy: 'env'` is not a toggle the UI can offer to flip. */
