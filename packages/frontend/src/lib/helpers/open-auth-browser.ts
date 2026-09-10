@@ -1,3 +1,5 @@
+import { retryDynamicImport } from '@/lib/chunk-load-error';
+
 /**
  * Open an auth URL in the real system browser (Safari / Chrome Custom Tabs).
  *
@@ -16,7 +18,10 @@
 export async function openAuthInSystemBrowser(url: string): Promise<void> {
   let openUrl: ((href: string) => Promise<void>) | undefined;
   try {
-    const opener = await import('@tauri-apps/plugin-opener');
+    // retryDynamicImport for the same reason open-external.ts uses it: this is
+    // the sign-in path on every native shell, so a stale chunk hash here is the
+    // difference between a browser opening and a button that does nothing.
+    const opener = await retryDynamicImport(() => import('@tauri-apps/plugin-opener'));
     openUrl = opener.openUrl;
   } catch {
     openUrl = undefined;
@@ -27,6 +32,18 @@ export async function openAuthInSystemBrowser(url: string): Promise<void> {
     await openUrl(url);
     return;
   }
+
+  // NO SILENT FALLBACK INSIDE A WEBVIEW.
+  //
+  // The <a target="_blank"> below is for a real web context. In wry it is inert
+  // and in WKWebView it is a same-document navigation, so falling through there
+  // turns a failed import into a dead button with nothing in the console — the
+  // exact silent-failure shape this file's callers were fixed for. Reject
+  // instead and let the caller surface it.
+  if (typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window) {
+    throw new Error('The system opener is unavailable, so sign-in could not open a browser.');
+  }
+
   if (typeof document === 'undefined') {
     throw new Error('Could not open the system browser for sign-in.');
   }
