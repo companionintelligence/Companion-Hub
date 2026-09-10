@@ -14,6 +14,7 @@ import { MtplxBackend } from '../backends/mtplx.backend';
 import { DsparkBackend } from '../backends/dspark.backend';
 import { LuceboxBackend } from '../backends/lucebox.backend';
 import { CloudFallbackService } from '../cloud-fallback.service';
+import { InferenceEndpointService } from '../inference-endpoint.service';
 import { HubPoolPeerService } from '@/modules/hub-pool/hub-pool-peer.service';
 import type { CloudProviderConfig, CuratedModel, HardwareProfile, InferenceBackendType } from '@ci-hub/common/types';
 
@@ -163,6 +164,10 @@ describe('InferenceEnvResolver', () => {
         InferenceBackendRegistry,
         { provide: CloudFallbackService, useValue: cloudFallback },
         { provide: HubPoolPeerService, useValue: hubPoolPeerService },
+        // The real endpoint helper, not a mock: it is the shared code this resolver and
+        // AppCredentialsService both delegate to, so stubbing it would stop these tests from
+        // covering the backend/pool decisions at all.
+        InferenceEndpointService,
       ],
     }).compile();
 
@@ -443,6 +448,85 @@ describe('InferenceEnvResolver', () => {
     expect(env.CI_CHAT_MODEL).toBe('preferred:latest');
     expect(env.CI_EMBEDDING_MODEL).toBe('preferred-embed:latest');
     expect(env.CI_VISION_MODEL).toBe('gemma4:27b');
+  });
+
+  describe('preferred backend not running', () => {
+    // The counterpart of the AppCredentialsService suite of the same name — both go through
+    // InferenceEndpointService.resolveActiveBackend, so a regression in either shows up in both.
+    const VLLM_BASE_URL = 'http://ci-hub-vllm:8000';
+
+    beforeEach(() => {
+      config.getInferencePreferences.mockReturnValue({
+        preferredBackend: 'vllm',
+        preferredModel: null,
+        preferredEmbeddingModel: null,
+        preferredVisionModel: null,
+      });
+      vllmBackend.getBaseUrl.mockReturnValue(VLLM_BASE_URL);
+      vllmBackend.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [] });
+      ollamaBackend.healthCheck.mockResolvedValue({ running: true, healthy: true, modelsLoaded: ['hermes4:70b'] });
+    });
+
+    it('does not strip every AI variable when a healthy Ollama is on the same host', async () => {
+      // This is the regression. With no cloud provider configured, an unavailable preferred backend
+      // took the `return {}` branch: every app on the node was generated with no CI_* inference env
+      // at all, silently, with a working Ollama alongside it.
+      const env = await service.resolve();
+
+      expect(env.CI_INFERENCE_BACKEND).toBe('ollama');
+      expect(env.CI_LLM_BASE_URL).toBe(`${OLLAMA_BASE_URL}/v1`);
+      expect(env.CI_LLM_API_KEY).toBe('ollama');
+      expect(env.OLLAMA_HOST).toBe(OLLAMA_BASE_URL);
+      // The catalog filter follows the backend type, so the fallback has to move the type as well
+      // as the instance, or nothing in the ollama catalog matches.
+      expect(env.CI_CHAT_MODEL).toBe('hermes4:70b');
+      expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining("'vllm'"));
+    });
+
+    it('prefers the healthy local Ollama over a configured cloud provider', async () => {
+      const provider: CloudProviderConfig = {
+        provider: 'openai',
+        enabled: true,
+        apiKey: 'sk-test',
+        baseUrl: 'https://api.openai.com/v1',
+        defaultModel: 'gpt-4o',
+      };
+      cloudFallback.getEnabledProviders.mockReturnValue([provider]);
+      cloudFallback.toAppEnv.mockReturnValue({ CI_CLOUD_OPENAI_API_KEY: 'sk-test' });
+
+      const env = await service.resolve();
+
+      expect(env.CI_INFERENCE_BACKEND).toBe('ollama');
+      expect(env.CI_LLM_BASE_URL).toBe(`${OLLAMA_BASE_URL}/v1`);
+      // Cloud stays attached as a secondary; it just stops being primary.
+      expect(env.cloudProviderEnv).toEqual({ CI_CLOUD_OPENAI_API_KEY: 'sk-test' });
+    });
+
+    it('still routes the fallback backend through the pool when peers are connected', async () => {
+      hubPoolPeerService.hasConnectedPeers.mockResolvedValue(true);
+
+      const env = await service.resolve();
+
+      expect(env.CI_LLM_BASE_URL).toMatch(/\/api\/inference\/pool\/v1$/);
+      expect(env.OLLAMA_HOST).toMatch(/\/api\/inference\/pool$/);
+    });
+
+    it('falls through to cloud only when nothing local is running at all', async () => {
+      ollamaBackend.healthCheck.mockResolvedValue({ running: false, healthy: false, modelsLoaded: [] });
+      const provider: CloudProviderConfig = {
+        provider: 'openai',
+        enabled: true,
+        apiKey: 'sk-test',
+        baseUrl: 'https://api.openai.com/v1',
+        defaultModel: 'gpt-4o',
+      };
+      cloudFallback.getEnabledProviders.mockReturnValue([provider]);
+
+      const env = await service.resolve();
+
+      expect(env.CI_INFERENCE_BACKEND).toBe('cloud');
+      expect(env.CI_LLM_BASE_URL).toBe('https://api.openai.com/v1');
+    });
   });
 
   describe('multi-Hub pooling', () => {
