@@ -15,10 +15,19 @@
 | Layer | Tool | Location | CI |
 |-------|------|----------|-----|
 | Unit | Vitest | `packages/*/**/*.test.ts(x)`, `scripts/__tests__/` | `ci.yml` |
+| CLI binary smoke | Vitest + bun | `scripts/__tests__/cli-binary-smoke.test.ts` | `cli-binary-tests.yml`, `ci.yml` |
 | Integration | Vitest + Docker | `packages/backend/test/integration/` | `integration-tests.yml` |
 | E2E | Playwright | `e2e/**/*.spec.ts` | Release / manual / labels |
 | Visual | Playwright + pixelmatch | `e2e/visual/` | `agent-gates.yml` |
 | Benchmark | `benchmark-app.ts` | `e2e/results/benchmarks/` | `agent-gates.yml` |
+
+**Why the CLI has its own layer:** `cihub` ships as a bun-compiled single-file binary, and every
+other gate looks at the TypeScript instead. v0.2.67 shipped a `cihub pool update` that died on
+`ReferenceError: colorize is not defined` with tsc, Biome and 1000+ unit tests green. The smoke
+suite compiles the binary with the release's own `scripts/build-standalone-cli.cjs` and runs its
+commands against stub `docker`/`git` binaries and a throwaway `HOME` — no real Docker state, no
+network. Add a case there whenever you add a CLI subcommand. It skips locally without bun and
+**fails** without bun when `CI` is set, so it can never pass by not running.
 
 ---
 

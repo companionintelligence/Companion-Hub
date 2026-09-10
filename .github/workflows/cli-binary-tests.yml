@@ -1,0 +1,56 @@
+name: CLI binary tests
+# The `cihub` CLI ships as a bun-compiled single-file binary and is the only part of this repo
+# whose gates all ran against something other than the artifact users get. v0.2.67 shipped a
+# `cihub pool update` that died on `ReferenceError: colorize is not defined` with tsc, biome and
+# 1000+ unit tests green — see scripts/__tests__/cli-binary-smoke.test.ts for the full autopsy.
+#
+# Auto-triggers are scoped to the CLI's own sources so this only burns Actions credit when the
+# binary can actually change. `Hub CI` (ci.yml) runs the same suite, but its PR triggers are
+# currently disabled for credit reasons, so this workflow is what keeps the gate live on PRs.
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'scripts/**'
+      - 'package.json'
+      - 'biome.json'
+      - '.github/workflows/cli-binary-tests.yml'
+
+concurrency:
+  group: cli-binary-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  cli-tests:
+    name: CLI unit + compiled-binary smoke tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install dependencies
+        uses: "./.github/actions/install-dependencies"
+        with:
+          node-auth-token: ${{ secrets.GITHUB_TOKEN }}
+
+      # The smoke tests compile the binary with the same `scripts/build-standalone-cli.cjs` the
+      # release uses, so bun has to be here. It must never be optional: the suite hard-fails rather
+      # than skipping when CI is set, because a gate that silently passes without its tool is how
+      # the original defect escaped.
+      - name: Install bun
+        uses: oven-sh/setup-bun@v2
+
+      # Deliberately just the one rule, not `lint:ci`: this job's contract is "no free identifiers
+      # reach the binary", and repo-wide formatting/lint stays the `Hub CI` lint step's business.
+      # Scoped that way this gate is green from the day it lands, so a red run here means a real
+      # missing symbol rather than an unrelated backlog.
+      - name: Check the CLI sources for undeclared variables
+        run: pnpm exec biome lint --only=correctness/noUndeclaredVariables scripts/
+
+      - name: Run CLI tests (includes compiled-binary smoke tests)
+        run: pnpm run test:cli
