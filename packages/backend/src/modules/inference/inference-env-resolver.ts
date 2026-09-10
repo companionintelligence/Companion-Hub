@@ -1,17 +1,13 @@
-import { forwardRef, Inject, Injectable } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { LoggerService } from '@/core/logger/logger.service';
 import { ConfigurationService } from '@/core/config/configuration.service';
-import { hubContainerName } from '@/common/constants';
-import { HubPoolPeerService } from '@/modules/hub-pool/hub-pool-peer.service';
 import { ModelRegistryService } from './model-registry.service';
 import { HardwareInspectorService } from './hardware-inspector.service';
-import { InferenceBackendRegistry } from './backends/backend-registry';
-import type { InferenceBackend } from './backends/backend.interface';
 import { OllamaBackend } from './backends/ollama.backend';
 import { CloudFallbackService } from './cloud-fallback.service';
+import { InferenceEndpointService } from './inference-endpoint.service';
 import { recommendContextLength } from './context-length.util';
 import { isCatalogModelInstalled, isServedModelForCatalog } from './model-availability.util';
-import { INFERENCE_BACKEND_TYPES } from '@ci-hub/common/types';
 import type { CuratedModel, InferenceBackendType } from '@ci-hub/common/types';
 
 /** Fallback keys for backends that do not expose a configured or desktop-managed key. */
@@ -83,9 +79,7 @@ export class InferenceEnvResolver {
     private readonly hardwareInspector: HardwareInspectorService,
     private readonly ollamaBackend: OllamaBackend,
     private readonly cloudFallback: CloudFallbackService,
-    @Inject(forwardRef(() => HubPoolPeerService))
-    private readonly hubPoolPeerService: HubPoolPeerService,
-    private readonly backends: InferenceBackendRegistry,
+    private readonly endpoints: InferenceEndpointService,
   ) {}
 
   /**
@@ -100,14 +94,14 @@ export class InferenceEnvResolver {
     const fallbackCloud = cloudProviders[0];
 
     const preferences = this.config.getInferencePreferences();
-    const { backendType, backend } = this.resolvePreferredBackend(preferences.preferredBackend);
-
-    const backendHealth = await backend.healthCheck().catch((err) => {
-      const message = err instanceof Error ? err.message : String(err);
-      this.logger.warn(`[InferenceEnvResolver] ${backendType} health check failed: ${message}`);
-      return { running: false, healthy: false, modelsLoaded: [] as string[] };
-    });
-    const backendReady = !!(backendHealth.running && backendHealth.healthy);
+    // Shared with the credentials.env path: resolves an unknown *or* an unavailable
+    // `inferenceBackend` preference down to a healthy local Ollama before anyone considers cloud.
+    const {
+      backendType,
+      backend,
+      health: backendHealth,
+      ready: backendReady,
+    } = await this.endpoints.resolveActiveBackend(preferences.preferredBackend, 'InferenceEnvResolver');
 
     if (!backendReady) {
       if (fallbackCloud) {
@@ -256,17 +250,16 @@ export class InferenceEnvResolver {
     }
 
     // Multi-Hub pooling: once any peer is connected, route the app through this Hub's own pool
-    // proxy instead of a directly-resolved backend URL. The model/context values above are
-    // unchanged — the proxy uses the resolved model name to pick whichever pool node actually has
-    // it. This is a global override (no per-app opt-in): with zero connected peers it's a no-op,
-    // so a single-node Hub behaves exactly as before.
-    if (await this.hubPoolPeerService.hasConnectedPeers()) {
-      const poolBaseUrl = `http://${hubContainerName()}:${process.env.API_PORT || '3000'}/api/inference/pool`;
-      env.CI_LLM_BASE_URL = `${poolBaseUrl}/v1`;
-      if (env.OLLAMA_HOST) env.OLLAMA_HOST = poolBaseUrl;
-      if (env.CI_OLLAMA_EMBED_HOST) env.CI_OLLAMA_EMBED_HOST = poolBaseUrl;
-      this.logger.info('[InferenceEnvResolver] connected pool peer(s) present; routing CI_LLM_BASE_URL through the pool proxy');
-    }
+    // proxy instead of a directly-resolved backend URL. Shared with the credentials.env path —
+    // see InferenceEndpointService.routeThroughPool for why it is a global override and why the
+    // model/context values above are deliberately left alone.
+    const routed = await this.endpoints.routeThroughPool(
+      { openAiBaseUrl: env.CI_LLM_BASE_URL, ollamaHost: env.OLLAMA_HOST, ollamaEmbedHost: env.CI_OLLAMA_EMBED_HOST },
+      'InferenceEnvResolver',
+    );
+    env.CI_LLM_BASE_URL = routed.openAiBaseUrl;
+    if (env.OLLAMA_HOST) env.OLLAMA_HOST = routed.ollamaHost;
+    if (env.CI_OLLAMA_EMBED_HOST) env.CI_OLLAMA_EMBED_HOST = routed.ollamaEmbedHost;
 
     this.logger.info(
       `[InferenceEnvResolver] backend=${backendType} chat=${chatModel ?? 'none'} embedding=${embeddingModel ?? 'none'} ` +
@@ -275,33 +268,6 @@ export class InferenceEnvResolver {
     );
 
     return env;
-  }
-
-  /**
-   * The active backend, paired with the type string that names it.
-   *
-   * Mirrors `AppCredentialsService.resolvePreferredBackend`, for the same reason: `preferredBackend`
-   * comes from settings.json, which is read off disk and typed by assertion rather than validated,
-   * so `?? 'ollama'` catches an absent preference but not a retired or mistyped one. The registry
-   * now throws on those instead of returning undefined behind a non-optional type, and this resolver
-   * runs on every app install/start — a stale settings.json must not stop every app from getting its
-   * `CI_*` env. Degrade to Ollama and name the rejected value in the warning.
-   *
-   * The fallback also has to move `backendType`, not just the instance: it feeds BACKEND_API_KEY,
-   * the catalog filter, and the emitted CI_INFERENCE_BACKEND, so leaving the bad string in place
-   * would hand apps an undefined API key and an unmatchable backend filter.
-   */
-  private resolvePreferredBackend(preferred: InferenceBackendType | null): { backendType: InferenceBackendType; backend: InferenceBackend } {
-    const requested = preferred ?? 'ollama';
-    const backend = this.backends.tryGet(requested);
-    if (backend) {
-      return { backendType: requested, backend };
-    }
-    this.logger.error(
-      `[InferenceEnvResolver] stored inference backend '${requested}' is not a known backend; falling back to ollama. ` +
-        `Valid backends: ${INFERENCE_BACKEND_TYPES.join(', ')}.`,
-    );
-    return { backendType: 'ollama', backend: this.ollamaBackend };
   }
 
   /** True when the model is on disk on the active backend or tracked as pulled/loaded/pinned in the registry. */

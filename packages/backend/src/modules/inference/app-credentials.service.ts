@@ -5,10 +5,8 @@ import { HardwareInspectorService } from './hardware-inspector.service';
 import { ModelRegistryService } from './model-registry.service';
 import { ModelPullerService } from './model-puller.service';
 import { CloudFallbackService } from './cloud-fallback.service';
-import { InferenceBackendRegistry } from './backends/backend-registry';
-import type { InferenceBackend } from './backends/backend.interface';
 import { OllamaBackend } from './backends/ollama.backend';
-import { INFERENCE_BACKEND_TYPES } from '@ci-hub/common/types';
+import { InferenceEndpointService } from './inference-endpoint.service';
 import type { CuratedModel, HardwareProfile, HardwareTier, InferenceBackendType } from '@ci-hub/common/types';
 import { isCatalogModelInstalled, isServedModelForCatalog } from './model-availability.util';
 import { appMinContextLength, recommendContextLength } from './context-length.util';
@@ -100,7 +98,7 @@ export class AppCredentialsService {
     private readonly cloudFallback: CloudFallbackService,
     private readonly ollamaBackend: OllamaBackend,
     private readonly configurationService: ConfigurationService,
-    private readonly backends: InferenceBackendRegistry,
+    private readonly endpoints: InferenceEndpointService,
   ) {}
 
   isSupported(slug: string): slug is AppSlug {
@@ -142,17 +140,19 @@ export class AppCredentialsService {
 
     const profile = await this.hardwareInspector.getProfile();
     const preferences = this.configurationService.getInferencePreferences();
-    const { backendType, backend } = this.resolvePreferredBackend(preferences.preferredBackend);
+    // Shared with the app.env path (InferenceEnvResolver): resolves an unknown *or* an unavailable
+    // `inferenceBackend` preference down to a healthy local Ollama before anyone considers cloud.
+    const {
+      backendType,
+      backend,
+      health: endpointHealth,
+      ready: endpointReady,
+    } = await this.endpoints.resolveActiveBackend(preferences.preferredBackend, 'AppCredentials');
 
-    // Apps talk to the active backend directly via its own OpenAI-compatible surface, not the Hub.
+    // Apps talk to the active backend via its own OpenAI-compatible surface — unless this Hub is
+    // pooling, in which case the override below points them at the pool proxy instead.
     const backendBaseUrl = backend.getBaseUrl();
     const backendOpenAiUrl = `${backendBaseUrl}/v1`;
-
-    const endpointHealth = await backend.healthCheck().catch((err) => {
-      this.logger.error(`[AppCredentials] ${backendType} health check threw: ${err instanceof Error ? err.message : String(err)}`);
-      return { running: false, healthy: false, modelsLoaded: [] as string[] };
-    });
-    const endpointReady = !!(endpointHealth.running && endpointHealth.healthy);
 
     // Embeddings stay on Ollama even when chat is vLLM/Lemonade. Probe Ollama
     // separately so a vLLM-only health check cannot look like "embeddings ready"
@@ -220,6 +220,26 @@ export class AppCredentialsService {
       chatModelId = cloudProvider.defaultModel || chatModelId;
     }
 
+    // Always expose a native (non-OpenAI) Ollama URL, regardless of which backend is primary or
+    // whether a cloud provider is overriding it, so the app can still speak Ollama's own protocol
+    // if Ollama happens to also be installed alongside the active backend. The pool override below
+    // may re-point it at the proxy, which serves the same native routes (`api/generate`,
+    // `api/embeddings`, `api/tags`) under its own prefix.
+    let ollamaHost = this.ollamaBackend.getBaseUrl();
+
+    // ─── Multi-Hub pooling: app → this Hub's pool proxy ──────────────────
+    // The same override the generated-app.env path applies, through the same helper. It used to
+    // live only there, so an app that bootstraps its inference config over HTTP (CI-OpenClaw,
+    // CI-Hermes) was handed a direct backend URL and never used the pool, even on a node actively
+    // routing to peers. Gated on the local path for the same reason the resolver gates it: a
+    // cloud-primary answer means this node has no local inference to pool with, and the app
+    // already has a working endpoint.
+    if (provider !== 'cloud') {
+      const routed = await this.endpoints.routeThroughPool({ openAiBaseUrl: endpointUrl, ollamaHost }, 'AppCredentials');
+      endpointUrl = routed.openAiBaseUrl;
+      ollamaHost = routed.ollamaHost;
+    }
+
     const env: Record<string, string> = {
       [keys.baseUrl]: endpointUrl,
       [keys.apiKey]: apiKey,
@@ -232,10 +252,7 @@ export class AppCredentialsService {
     if (embeddingsModelId) {
       env[keys.embeddings] = embeddingsModelId;
     }
-    // Always expose the direct native Ollama URL, regardless of which backend is primary or
-    // whether a cloud provider is overriding it, so the app can still reach Ollama's native
-    // protocol if Ollama happens to also be installed alongside the active backend.
-    env.OLLAMA_HOST = this.ollamaBackend.getBaseUrl();
+    env.OLLAMA_HOST = ollamaHost;
 
     // Hardware-aware default context window for the model the app will actually
     // run locally. Cloud providers manage their own context, so this is only
@@ -302,30 +319,6 @@ export class AppCredentialsService {
   /** Clear the per-slug cache. Tests + admin endpoints can use this. */
   invalidateCache(): void {
     this.cache.clear();
-  }
-
-  /**
-   * The active backend, paired with the type string that names it.
-   *
-   * `preferredBackend` originates in settings.json, which is read off disk and typed by assertion
-   * rather than validated — so `?? 'ollama'` covers an *absent* preference but not a retired or
-   * mistyped one. The registry now throws on those (it used to return undefined behind a
-   * non-optional type, dying frames later at `.healthCheck()`), and a throw here would take
-   * credential resolution down for every installed app over one bad character in a file the
-   * operator hand-edits. Degrade to Ollama — the default backend and the one embeddings already
-   * fall back to — and name the rejected value so the log points at the fix.
-   */
-  private resolvePreferredBackend(preferred: InferenceBackendType | null): { backendType: InferenceBackendType; backend: InferenceBackend } {
-    const requested = preferred ?? 'ollama';
-    const backend = this.backends.tryGet(requested);
-    if (backend) {
-      return { backendType: requested, backend };
-    }
-    this.logger.error(
-      `[AppCredentials] stored inference backend '${requested}' is not a known backend; falling back to ollama. ` +
-        `Valid backends: ${INFERENCE_BACKEND_TYPES.join(', ')}.`,
-    );
-    return { backendType: 'ollama', backend: this.ollamaBackend };
   }
 
   /**

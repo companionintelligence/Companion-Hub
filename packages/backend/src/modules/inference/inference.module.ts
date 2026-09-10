@@ -15,6 +15,7 @@ import { OllamaInstallerService } from './ollama-installer.service';
 import { RocmInstallerService } from './rocm-installer.service';
 import { AppCredentialsService } from './app-credentials.service';
 import { InferenceEnvResolver } from './inference-env-resolver';
+import { InferenceEndpointService } from './inference-endpoint.service';
 import { InferenceBackendRegistry } from './backends/backend-registry';
 import { OllamaBackend } from './backends/ollama.backend';
 import { VllmBackend } from './backends/vllm.backend';
@@ -43,6 +44,7 @@ import { InferenceController } from './inference.controller';
     RocmInstallerService,
     AppCredentialsService,
     InferenceEnvResolver,
+    InferenceEndpointService,
     OllamaBackend,
     VllmBackend,
     LemonadeBackend,
@@ -64,6 +66,7 @@ import { InferenceController } from './inference.controller';
     RocmInstallerService,
     AppCredentialsService,
     InferenceEnvResolver,
+    InferenceEndpointService,
     OllamaBackend,
     VllmBackend,
     LemonadeBackend,
