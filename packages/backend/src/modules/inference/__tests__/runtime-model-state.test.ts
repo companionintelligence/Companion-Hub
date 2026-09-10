@@ -1,7 +1,14 @@
 import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+
+// This file reads real sibling source files as text (see the class doc below) — it needs the
+// real filesystem, not the memfs-backed mock every other backend test gets from the shared
+// setupFiles `vi.mock('fs', ...)`. Without this, `readFileSync` resolves against the sandboxed
+// in-memory volume, which has no idea `inference.controller.ts` or the backend files exist.
+vi.unmock('node:fs');
+vi.unmock('fs');
 
 /**
  * `GET /api/inference/models/runtime` must not claim a model is `loaded`.
