@@ -1,7 +1,7 @@
 import { Alert, AlertDescription, AlertHeading, AlertIcon } from '@/components/ui/Alert/Alert';
 import { DashboardSection, Panel, StatusBadge } from '@/components/ui/dense/dense';
 import { CpuUsageHistoryChart } from '@/modules/system/panels/cpu-history-chart';
-import { HostCapacity, LocalContainers, LocalModels } from '@/modules/system/panels/local-resources';
+import { HostCapacity, LocalContainers, LocalModels, ResidentModels } from '@/modules/system/panels/local-resources';
 import { NetworkContainers, NetworkModels, NetworkNodes, NetworkOverview } from '@/modules/system/panels/network-resources';
 import { MiscPanel, PoolSummary, RoutingLog } from '@/modules/system/panels/pooling-misc';
 import { useDashboardData } from '@/modules/system/use-dashboard-data';
@@ -24,7 +24,7 @@ const HISTORY_LIMIT = 12;
 
 export default function ResourceMonitorPage() {
   const { t } = useTranslation();
-  const { containers, pool, peers, routingLog, inference, hardware } = useDashboardData();
+  const { containers, pool, peers, routingLog, inference, hardware, residency } = useDashboardData();
 
   const apps = containers.data?.apps ?? [];
   const history = containers.data?.history ?? [];
@@ -66,10 +66,14 @@ export default function ResourceMonitorPage() {
       <DashboardSection title={t('DASHBOARD_SECTION_LOCAL')}>
         <div className="grid gap-3 lg:grid-cols-3">
           <HostCapacity hardware={hardware.data} node={localNode} />
+          {/* Held (on disk) and resident (in memory) are separate panels on purpose — on a
+              live node they read 11 and 0, and merging them is the bug this pair exists to
+              stop repeating. */}
           <LocalModels node={localNode} inference={inference.data?.backends} />
-          <div className="lg:col-span-1">
-            <LocalContainers apps={apps} history={history} />
-          </div>
+          <ResidentModels residency={residency.data} />
+        </div>
+        <div className="grid gap-3 lg:grid-cols-1">
+          <LocalContainers apps={apps} history={history} />
         </div>
         <Panel title={t('RESOURCE_MONITOR_CHART_TITLE')}>
           <CpuUsageHistoryChart history={history.slice(-HISTORY_LIMIT)} apps={apps} />

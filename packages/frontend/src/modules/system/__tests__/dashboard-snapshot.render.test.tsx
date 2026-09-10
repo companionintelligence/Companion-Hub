@@ -20,6 +20,7 @@ const fixtures = vi.hoisted(() => ({
   hardware: {} as Record<string, unknown>,
   inference: {} as Record<string, unknown>,
   monitor: {} as Record<string, unknown>,
+  residency: {} as Record<string, unknown>,
 }));
 
 vi.mock('react-i18next', () => {
@@ -41,7 +42,13 @@ vi.mock('react-i18next', () => {
     DASHBOARD_IN_FLIGHT: 'In flight',
     DASHBOARD_RAM_USED: '{{used}} of {{total}} in use',
     DASHBOARD_INFERENCE_BUDGET: '{{mb}} for inference',
-    DASHBOARD_LOCAL_MODELS_TITLE: 'AI models on this node',
+    DASHBOARD_LOCAL_MODELS_TITLE: 'AI models held on this node',
+    DASHBOARD_RESIDENT_TITLE: 'AI models resident in memory',
+    DASHBOARD_RESIDENT_VRAM: '{{size}} VRAM',
+    DASHBOARD_NOTHING_RESIDENT: 'Nothing loaded — models load on first request.',
+    DASHBOARD_COL_VRAM: 'VRAM',
+    DASHBOARD_COL_EXPIRES: 'Expires',
+    DASHBOARD_RESIDENCY_UNKNOWN: 'Residency unknown for: {{engines}}',
     DASHBOARD_LOCAL_CONTAINERS_TITLE: 'Containers on this node',
     DASHBOARD_CONTAINER_COUNT: '{{count}} containers',
     DASHBOARD_COL_MODEL: 'Model',
@@ -110,7 +117,7 @@ vi.mock('@/lib/app-runtime-monitor', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   fetchAppRuntimeMonitor: async () => fixtures.monitor,
 }));
-vi.mock('@/api-client/routes/named-status-routes', () => ({
+vi.mock('@/lib/api-routes/named-status-routes', () => ({
   inferenceStatusOptions: () => ({ queryKey: ['inference-status'], queryFn: async () => fixtures.inference }),
 }));
 vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
@@ -118,6 +125,7 @@ vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
   listPeersOptions: () => ({ queryKey: ['pool-peers'], queryFn: async () => fixtures.peers }),
   getPoolRoutingLogOptions: () => ({ queryKey: ['pool-log'], queryFn: async () => fixtures.log }),
   getHardwareOptions: () => ({ queryKey: ['hardware'], queryFn: async () => fixtures.hardware }),
+  getResidentModelsOptions: () => ({ queryKey: ['residency'], queryFn: async () => fixtures.residency }),
 }));
 
 const peer = (name: string, tier: string, models: string[], inFlight: number | undefined, seen: string) => ({
@@ -274,6 +282,41 @@ describe.skipIf(!OUT)('resource dashboard snapshot', () => {
           containerCount: app.containers.length,
         })),
       })),
+    };
+
+    // Verbatim from beta-max's ollama 0.33.3 /api/ps after loading gemma3:1b, plus a second
+    // row constructed to show CPU offload (size > size_vram), which the live node did not
+    // happen to exhibit.
+    fixtures.residency = {
+      sampledAt: '2026-09-10T03:31:00Z',
+      residentCount: 2,
+      totalVramBytes: 1_007_188_705 + 12_000_000_000,
+      backends: [
+        {
+          backend: 'ollama',
+          source: 'measured',
+          models: [
+            {
+              id: 'gemma3:1b',
+              vramBytes: 1_007_188_705,
+              totalBytes: 1_007_188_705,
+              expiresAt: '2026-09-10T03:36:45.391Z',
+              contextLength: 32_768,
+              quantization: 'Q4_K_M',
+            },
+            {
+              id: 'qwen3-coder:30b',
+              vramBytes: 12_000_000_000,
+              totalBytes: 18_600_000_000,
+              expiresAt: '2026-09-10T03:34:00.000Z',
+              contextLength: 8_192,
+              quantization: 'Q4_K_M',
+            },
+          ],
+        },
+        { backend: 'vllm', source: 'unsupported', models: null },
+        { backend: 'lucebox', source: 'unsupported', models: null },
+      ],
     };
 
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });

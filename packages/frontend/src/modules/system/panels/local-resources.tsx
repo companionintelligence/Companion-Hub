@@ -4,6 +4,7 @@ import {
   KpiTable,
   MeterBar,
   Panel,
+  relativeUntil,
   Sparkline,
   StatChip,
   StatChipRow,
@@ -15,7 +16,7 @@ import {
   Tr,
 } from '@/components/ui/dense/dense';
 import type { AppRuntimeHealth, AppRuntimeHistorySample } from '@/lib/app-runtime-monitor';
-import type { HardwareSummary, InferenceBackendStatus, PoolNodeSummary } from '@/modules/system/use-dashboard-data';
+import type { HardwareSummary, InferenceBackendStatus, PoolNodeSummary, ResidencyReportSummary } from '@/modules/system/use-dashboard-data';
 import { useTranslation } from 'react-i18next';
 
 /*
@@ -209,6 +210,87 @@ export function LocalContainers({ apps, history }: { apps: AppRuntimeHealth[]; h
           ))
         )}
       </KpiTable>
+    </Panel>
+  );
+}
+
+/**
+ * What is ACTUALLY in memory, from `GET /api/inference/models/resident`.
+ *
+ * The panel above it lists what this node HOLDS on disk; this one lists what is loaded. On a
+ * live fleet node those read 11 and 0 respectively, which is the whole reason the route
+ * exists. The two must never be merged into one table.
+ *
+ * `source` is rendered, not hidden: an engine that was asked and said nothing is loaded is a
+ * fact about the machine, while one that cannot answer is a fact about the software, and an
+ * operator does different things about each.
+ */
+export function ResidentModels({ residency }: { residency: ResidencyReportSummary | undefined }) {
+  const { t } = useTranslation();
+  const now = Date.now();
+  const backends = residency?.backends ?? [];
+  const rows = backends.flatMap((entry) => (entry.models ?? []).map((model) => ({ ...model, backend: entry.backend })));
+  const cannotAnswer = backends.filter((entry) => entry.models === null);
+  const maxVram = Math.max(1, ...rows.map((row) => row.vramBytes ?? 0));
+
+  return (
+    <Panel
+      title={t('DASHBOARD_RESIDENT_TITLE')}
+      actions={
+        <span className="text-[10px] text-muted-foreground">
+          {residency?.totalVramBytes === null || residency?.totalVramBytes === undefined
+            ? DASH
+            : t('DASHBOARD_RESIDENT_VRAM', { size: humanBytes(residency.totalVramBytes) })}
+        </span>
+      }
+    >
+      <KpiTable
+        className="max-h-64 overflow-y-auto"
+        head={
+          <>
+            <Th>{t('DASHBOARD_COL_MODEL')}</Th>
+            <Th>{t('DASHBOARD_COL_ENGINE')}</Th>
+            <Th align="right">{t('DASHBOARD_COL_VRAM')}</Th>
+            <Th align="right">{t('DASHBOARD_COL_EXPIRES')}</Th>
+          </>
+        }
+      >
+        {rows.length === 0 ? (
+          <TableEmpty colSpan={4}>{t('DASHBOARD_NOTHING_RESIDENT')}</TableEmpty>
+        ) : (
+          rows.map((row) => {
+            // size > size_vram means part of the model is on the CPU. A row that shows only
+            // one number cannot distinguish that from a model entirely in VRAM, and the two
+            // behave nothing alike.
+            const offloaded = row.totalBytes !== null && row.vramBytes !== null && row.totalBytes > row.vramBytes;
+
+            return (
+              <Tr key={`${row.backend}:${row.id}`}>
+                <Td className="font-mono" title={row.quantization ? `${row.id} · ${row.quantization}` : row.id}>
+                  {row.id}
+                </Td>
+                <Td className="text-muted-foreground">{row.backend}</Td>
+                <Td align="right">
+                  <div className="flex items-center justify-end gap-1.5">
+                    <span className={offloaded ? 'text-warning' : undefined} title={offloaded ? t('DASHBOARD_CPU_OFFLOAD') : undefined}>
+                      {humanBytes(row.vramBytes)}
+                    </span>
+                    <MeterBar value={row.vramBytes ?? 0} max={maxVram} tone={offloaded ? 'warn' : 'ok'} className="w-10 min-w-[24px]" />
+                  </div>
+                </Td>
+                <Td align="right" className="text-muted-foreground">
+                  {row.expiresAt ? relativeUntil(row.expiresAt, now) : DASH}
+                </Td>
+              </Tr>
+            );
+          })
+        )}
+      </KpiTable>
+      {cannotAnswer.length > 0 ? (
+        <p className="text-[10px] text-muted-foreground">
+          {t('DASHBOARD_RESIDENCY_UNKNOWN', { engines: cannotAnswer.map((entry) => entry.backend).join(', ') })}
+        </p>
+      ) : null}
     </Panel>
   );
 }

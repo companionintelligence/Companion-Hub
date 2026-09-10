@@ -1,5 +1,11 @@
-import { getHardwareOptions, getPoolRoutingLogOptions, listPeersOptions, poolStatusOptions } from '@/api-client/@tanstack/react-query.gen';
-import { inferenceStatusOptions } from '@/api-client/routes/named-status-routes';
+import {
+  getHardwareOptions,
+  getPoolRoutingLogOptions,
+  getResidentModelsOptions,
+  listPeersOptions,
+  poolStatusOptions,
+} from '@/api-client/@tanstack/react-query.gen';
+import { inferenceStatusOptions } from '@/lib/api-routes/named-status-routes';
 import { fetchAppRuntimeMonitor, type AppRuntimeMonitorSnapshot } from '@/lib/app-runtime-monitor';
 import { useQuery } from '@tanstack/react-query';
 
@@ -90,6 +96,31 @@ export interface InferenceBackendStatus {
   modelsLoaded?: number;
 }
 
+/** One model the engine says is in memory right now — see `models/resident`. */
+export interface ResidentModelSummary {
+  id: string;
+  vramBytes: number | null;
+  totalBytes: number | null;
+  expiresAt: string | null;
+  contextLength: number | null;
+  quantization: string | null;
+}
+
+export interface BackendResidencySummary {
+  backend: string;
+  source: 'measured' | 'implicit' | 'unsupported' | 'unreachable';
+  /** `null` for `unsupported`/`unreachable` — the engine was not asked, so it holds no opinion. */
+  models: ResidentModelSummary[] | null;
+  error?: string;
+}
+
+export interface ResidencyReportSummary {
+  backends: BackendResidencySummary[];
+  totalVramBytes: number | null;
+  residentCount: number;
+  sampledAt: string;
+}
+
 export interface HardwareSummary {
   gpu?: { available?: boolean; vendor?: string; model?: string; vramMb?: number; unifiedMemory?: boolean; runtimeAvailable?: boolean };
   npu?: { available?: boolean; model?: string };
@@ -137,6 +168,19 @@ export function useDashboardData() {
     retry: false,
   });
 
+  /*
+   * Residency polls on the pool cadence, not the engine one: it is a single cheap read of
+   * each engine's in-memory scheduler state (ollama's `/api/ps` returns only what is
+   * resident, typically 0-3 entries), and it is the number that changes minute to minute as
+   * models load and expire.
+   */
+  const residency = useQuery({
+    ...getResidentModelsOptions(),
+    select: (payload) => payload as unknown as ResidencyReportSummary,
+    refetchInterval: POOL_POLL_MS,
+    retry: false,
+  });
+
   const hardware = useQuery({
     ...getHardwareOptions(),
     select: (payload) => payload as unknown as HardwareSummary,
@@ -144,7 +188,7 @@ export function useDashboardData() {
     retry: false,
   });
 
-  return { containers, pool, peers, routingLog, inference, hardware };
+  return { containers, pool, peers, routingLog, inference, hardware, residency };
 }
 
 /** Peer rows worth routing to — `pending` is not a routing target yet. */

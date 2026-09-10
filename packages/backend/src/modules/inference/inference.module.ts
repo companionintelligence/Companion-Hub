@@ -6,6 +6,7 @@ import { DockerModule } from '@/modules/docker/docker.module';
 import { HubPoolModule } from '@/modules/hub-pool/hub-pool.module';
 import { HardwareInspectorService } from './hardware-inspector.service';
 import { ModelRegistryService } from './model-registry.service';
+import { ModelResidencyService } from './model-residency.service';
 import { MemoryManagerService } from './memory-manager.service';
 import { ModelPullerService } from './model-puller.service';
 import { InferenceRouterService } from './inference-router.service';
@@ -33,6 +34,7 @@ import { InferenceController } from './inference.controller';
   providers: [
     HardwareInspectorService,
     ModelRegistryService,
+    ModelResidencyService,
     MemoryManagerService,
     ModelPullerService,
     InferenceRouterService,
@@ -53,6 +55,7 @@ import { InferenceController } from './inference.controller';
   exports: [
     HardwareInspectorService,
     ModelRegistryService,
+    ModelResidencyService,
     MemoryManagerService,
     ModelPullerService,
     InferenceRouterService,

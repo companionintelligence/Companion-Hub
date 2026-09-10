@@ -282,6 +282,20 @@ export function humanCount(value: number | null | undefined): string {
   return typeof value === 'number' && Number.isFinite(value) ? String(value) : DASH;
 }
 
+/** Short countdown to a future timestamp, for "expires in" columns. */
+export function relativeUntil(iso: string | null | undefined, now: number): string {
+  if (!iso) return DASH;
+  const parsed = Date.parse(iso);
+  if (!Number.isFinite(parsed)) return DASH;
+  const seconds = Math.round((parsed - now) / 1000);
+  // Already past: the engine will evict on next sweep, which is not the same as "no expiry".
+  if (seconds <= 0) return 'now';
+  if (seconds < 60) return `${seconds}s`;
+  if (seconds < 3600) return `${Math.round(seconds / 60)}m`;
+
+  return `${Math.round(seconds / 3600)}h`;
+}
+
 /** Short relative age, for "last seen" columns. */
 export function relativeAge(iso: string | null | undefined, now: number): string {
   if (!iso) return DASH;
