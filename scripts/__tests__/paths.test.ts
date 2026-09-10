@@ -78,7 +78,7 @@ describe('resolveInvokingUserHome', () => {
     expect(resolveInvokingUserHome({}, 'linux', always)).toBeNull();
   });
 
-  it('is null when sudo was invoked by root — root\'s home is already HOME', () => {
+  it("is null when sudo was invoked by root — root's home is already HOME", () => {
     expect(resolveInvokingUserHome({ SUDO_USER: 'root' }, 'linux', always)).toBeNull();
   });
 
@@ -109,12 +109,13 @@ describe('settingsCandidatesFrom', () => {
 
   // The reported bug: sudo sets HOME=/root, so the canonical dir resolves to root's home
   // and misses a key sitting in the owning user's.
-  it('under sudo, also looks in the invoking user\'s canonical data dir', () => {
+  it("under sudo, also looks in the invoking user's canonical data dir", () => {
     const candidates = settingsCandidatesFrom(ROOT, { SUDO_USER: 'ci' }, 'linux', '/root', always);
     expect(candidates).toContain(join('/home/ci', '.local', 'share', CANONICAL_DATA_DIR_NAME, 'state', 'settings.json'));
     // and root's own is still checked, before it
-    expect(candidates.indexOf(join('/root', '.local', 'share', CANONICAL_DATA_DIR_NAME, 'state', 'settings.json')))
-      .toBeLessThan(candidates.indexOf(join('/home/ci', '.local', 'share', CANONICAL_DATA_DIR_NAME, 'state', 'settings.json')));
+    expect(candidates.indexOf(join('/root', '.local', 'share', CANONICAL_DATA_DIR_NAME, 'state', 'settings.json'))).toBeLessThan(
+      candidates.indexOf(join('/home/ci', '.local', 'share', CANONICAL_DATA_DIR_NAME, 'state', 'settings.json')),
+    );
   });
 
   it('ignores a sudo-inherited XDG_DATA_HOME when reconstructing the invoking user dir', () => {

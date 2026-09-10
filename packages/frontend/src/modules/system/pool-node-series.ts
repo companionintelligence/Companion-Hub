@@ -189,9 +189,7 @@ export function localContainerRollup(apps: LocalContainerSource[] | undefined): 
    * peer would report for the identical machine, and its CPU and memory included the Hub's own API
    * process. Two cards side by side, silently measuring different things.
    */
-  const containers = apps
-    .flatMap((app) => app.containers ?? [])
-    .filter((container) => !container.containerId.startsWith(PROCESS_RUNTIME_ID_PREFIX));
+  const containers = apps.flatMap((app) => app.containers ?? []).filter((container) => !container.containerId.startsWith(PROCESS_RUNTIME_ID_PREFIX));
 
   const running = containers.filter((container) => container.state === 'running').length;
   const cpuPercent = containers.reduce((sum, c) => sum + (Number.isFinite(c.cpuPercent) ? c.cpuPercent : 0), 0);
