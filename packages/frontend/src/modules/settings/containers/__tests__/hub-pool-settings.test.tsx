@@ -707,4 +707,17 @@ describe('HubPoolSection', () => {
       expect(screen.getAllByTestId('hub-pool-routing-pinned')).toHaveLength(1);
     });
   });
+
+  // A peer whose capabilities probe has not landed yet has no `inFlightRequests`. This
+  // rendered as the literal word "undefined" in the queue cell, and must not silently
+  // become 0 either — an idle peer and an unread counter mean different things.
+  it('shows an unread peer queue as unknown, never as "undefined" or 0', async () => {
+    fixtures.status = baseStatus({ peers: [connectedPeer({ inFlightRequests: undefined })] });
+
+    renderSection();
+
+    await waitFor(() => expect(screen.getByTestId('hub-pool-card')).toBeTruthy());
+    expect(screen.queryByText('undefined')).toBeNull();
+    expect(screen.getAllByText('COMMON_UNKNOWN').length).toBeGreaterThan(0);
+  });
 });

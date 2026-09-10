@@ -1,4 +1,5 @@
-import { appContextQueryKey, getStatus2Options, getStatus5Options, getStatus5QueryKey } from '@/api-client/@tanstack/react-query.gen';
+import { appContextQueryKey } from '@/api-client/@tanstack/react-query.gen';
+import { cloudflareStatusOptions, tailscaleStatusOptions, tailscaleStatusQueryKey } from '@/api-client/routes/named-status-routes';
 import { disconnect, resetRegistration, startAuth } from '@/api-client/sdk.gen';
 import { Button } from '@/components/ui/Button';
 import { Card, CardContent } from '@/components/ui/Card';
@@ -43,7 +44,7 @@ const TailscaleSidecarSection = () => {
   const demoMode = useDemoMode();
 
   const { data, isLoading } = useQuery({
-    ...getStatus5Options(),
+    ...tailscaleStatusOptions(),
     select: (payload) => payload as unknown as TailscaleApiStatus,
     refetchInterval: 10_000,
   });
@@ -51,7 +52,7 @@ const TailscaleSidecarSection = () => {
   useTailscaleReadinessSync(data);
 
   const invalidateTailscaleAndAppContext = () => {
-    void queryClient.invalidateQueries({ queryKey: getStatus5QueryKey() });
+    void queryClient.invalidateQueries({ queryKey: tailscaleStatusQueryKey() });
     void queryClient.invalidateQueries({ queryKey: appContextQueryKey() });
   };
 
@@ -113,58 +114,50 @@ const TailscaleSidecarSection = () => {
       <SectionHeader
         icon={Shield}
         title={t('SETTINGS_NETWORK_PRIVATE_VPN_TITLE')}
-        description={t('SETTINGS_NETWORK_PRIVATE_VPN_DESC')}
         badge={<StatusBadge connected={!!active} label={active ? t('SETTINGS_NETWORK_ACTIVE') : t('SETTINGS_NETWORK_INACTIVE')} />}
-      />
-      <CardContent className="space-y-4">
-        {(data?.ip || (data?.backendState && !active)) && (
-          <DetailGrid>
-            {data?.ip && <Detail label={t('COMMON_TAILSCALE_IP')} value={data.ip} />}
-            {data?.ip && data.hostname && <Detail label={t('COMMON_HOSTNAME')} value={data.hostname} />}
-            {data?.backendState && !active && <Detail label={t('SETTINGS_NETWORK_TAILSCALE_STATE')} value={data.backendState} />}
-          </DetailGrid>
-        )}
-
-        {cliUnavailable && (
-          <div className="space-y-2">
-            <p className="rounded-md border border-warning/30 bg-warning/10 px-3 py-2.5 text-sm text-warning">
-              {t('SETTINGS_NETWORK_TAILSCALE_NOT_INSTALLED_DESC')}
-            </p>
-            <p className="text-xs text-muted-foreground">
-              <strong className="font-medium text-foreground">{t('COMMON_NOTE')}:</strong> {t('SETTINGS_NETWORK_TAILSCALE_HOST_NOTE')}
-            </p>
-          </div>
-        )}
-
-        {canConnectFlow && (
-          <div className="space-y-3 border-t pt-4">
-            <p className="text-sm text-muted-foreground">{t('SETTINGS_NETWORK_TAILSCALE_CONNECT_HELP')}</p>
+        actions={
+          active ? (
             <Button
               type="button"
-              disabled={demoMode}
-              loading={browserAuthMutation.isPending}
-              onClick={() => browserAuthMutation.mutate()}
-              data-testid="tailscale-connect-btn"
-            >
-              {browserAuthMutation.isPending ? t('SETTINGS_NETWORK_LOADING') : t('ONBOARDING_TAILSCALE_LOGIN_BUTTON')}
-            </Button>
-            <p className="text-xs text-muted-foreground">{t('SETTINGS_NETWORK_TAILSCALE_NO_ACCOUNT')}</p>
-          </div>
-        )}
-
-        {active && (
-          <div className="border-t pt-4">
-            <Button
-              type="button"
+              size="sm"
               variant="outline"
               disabled={demoMode}
               loading={disconnectMutation.isPending}
               onClick={() => disconnectMutation.mutate()}
               data-testid="tailscale-disconnect-btn"
             >
-              {disconnectMutation.isPending ? t('SETTINGS_NETWORK_LOADING') : t('SETTINGS_NETWORK_TAILSCALE_DISCONNECT')}
+              {t('SETTINGS_NETWORK_TAILSCALE_DISCONNECT')}
             </Button>
-          </div>
+          ) : canConnectFlow ? (
+            <Button
+              type="button"
+              size="sm"
+              disabled={demoMode}
+              loading={browserAuthMutation.isPending}
+              onClick={() => browserAuthMutation.mutate()}
+              data-testid="tailscale-connect-btn"
+            >
+              {t('ONBOARDING_TAILSCALE_LOGIN_BUTTON')}
+            </Button>
+          ) : null
+        }
+      />
+      <CardContent className="space-y-3">
+        {(data?.ip || data?.hostname || data?.backendState) && (
+          <DetailGrid>
+            {data?.ip && <Detail label={t('COMMON_TAILSCALE_IP')} value={data.ip} />}
+            {data?.hostname && <Detail label={t('COMMON_HOSTNAME')} value={data.hostname} />}
+            {data?.backendState && <Detail label={t('SETTINGS_NETWORK_TAILSCALE_STATE')} value={data.backendState} />}
+          </DetailGrid>
+        )}
+
+        {/* The only prose left in this card, and only when something is actually wrong:
+            a node with no Tailscale needs the remedy spelled out, and there is no state
+            on screen for the reader to infer it from. */}
+        {cliUnavailable && (
+          <p className="rounded-md border border-warning/30 bg-warning/10 px-2.5 py-2 text-xs text-warning">
+            {t('SETTINGS_NETWORK_TAILSCALE_NOT_INSTALLED_DESC')}
+          </p>
         )}
       </CardContent>
     </Card>
@@ -178,7 +171,7 @@ const CloudflareSection = () => {
   const [resetConfirmOpen, setResetConfirmOpen] = useState(false);
 
   const { data: status, isLoading } = useQuery({
-    ...getStatus2Options(),
+    ...cloudflareStatusOptions(),
     select: (payload) => payload as unknown as CloudflareStatus,
     refetchInterval: 30_000,
   });
@@ -217,28 +210,16 @@ const CloudflareSection = () => {
       <SectionHeader
         icon={Globe}
         title={t('SETTINGS_NETWORK_CLOUDFLARE_TUNNEL')}
-        description={status?.message}
         badge={
           <StatusBadge
             connected={!!status?.tunnelEnabled}
             label={status?.tunnelEnabled ? t('SETTINGS_NETWORK_ACTIVE') : t('SETTINGS_NETWORK_INACTIVE')}
           />
         }
-      />
-      <CardContent className="space-y-4">
-        {status?.tunnelId && (
-          <DetailGrid>
-            <Detail label={t('SETTINGS_NETWORK_TUNNEL_ID')} value={status.tunnelId} />
-          </DetailGrid>
-        )}
-
-        <div className="space-y-3 border-t pt-4">
-          <div>
-            <h3 className="text-sm font-medium">{t('SETTINGS_NETWORK_REREGISTER_DEVICE')}</h3>
-            <p className="text-sm text-muted-foreground">{t('SETTINGS_NETWORK_REREGISTER_HINT')}</p>
-          </div>
+        actions={
           <Button
             type="button"
+            size="sm"
             intent="danger"
             variant="outline"
             disabled={demoMode}
@@ -248,7 +229,18 @@ const CloudflareSection = () => {
           >
             {isResetting ? t('SETTINGS_NETWORK_RESETTING') : t('SETTINGS_NETWORK_REREGISTER_DEVICE')}
           </Button>
-        </div>
+        }
+      />
+      <CardContent className="space-y-3">
+        {status?.tunnelId && (
+          <DetailGrid>
+            <Detail label={t('SETTINGS_NETWORK_TUNNEL_ID')} value={status.tunnelId} />
+          </DetailGrid>
+        )}
+        {/* The tunnel's own message replaces the static section description: when the
+            tunnel is fine it says so in a few words, and when it is not it says why —
+            which the removed boilerplate never did. */}
+        {status?.message && <p className="text-xs text-muted-foreground">{status.message}</p>}
       </CardContent>
 
       <Dialog open={resetConfirmOpen} onOpenChange={setResetConfirmOpen}>
