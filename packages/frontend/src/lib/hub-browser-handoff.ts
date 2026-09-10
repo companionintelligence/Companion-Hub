@@ -23,7 +23,8 @@ export async function openExternalWithHubSession(targetUrl: string): Promise<voi
   // Web Hub: the current browser context already carries the session cookie, so a
   // handoff would be pointless churn. Only the Tauri webview has the split session.
   if (!getTauriInvoke()) {
-    return openExternal(targetUrl);
+    await openExternal(targetUrl);
+    return;
   }
 
   try {
@@ -34,11 +35,12 @@ export async function openExternalWithHubSession(targetUrl: string): Promise<voi
     });
     const handoffUrl = (data as { url?: string | null } | undefined)?.url;
     if (handoffUrl) {
-      return openExternal(handoffUrl);
+      await openExternal(handoffUrl);
+      return;
     }
   } catch {
     // Fall through to fail-open below.
   }
 
-  return openExternal(targetUrl);
+  await openExternal(targetUrl);
 }

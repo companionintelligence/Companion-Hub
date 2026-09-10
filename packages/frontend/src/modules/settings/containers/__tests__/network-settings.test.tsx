@@ -2,9 +2,15 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import toast from 'react-hot-toast';
+import { startAuth } from '@/api-client/sdk.gen';
+import { openExternal } from '@/lib/helpers/open-external';
 import { NetworkSettingsContainer } from '../network-settings';
 
-const fixtures = vi.hoisted(() => ({ poolStatus: {} as Record<string, unknown> }));
+const fixtures = vi.hoisted(() => ({
+  poolStatus: {} as Record<string, unknown>,
+  tailscaleStatus: { installed: false, connected: false, ip: null, hostname: null, backendState: null } as Record<string, unknown>,
+}));
 
 vi.mock('react-i18next', () => {
   const t = (key: string) => key;
@@ -34,7 +40,7 @@ vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
   getStatus3QueryKey: () => ['ts'],
   getStatus3Options: () => ({
     queryKey: ['ts'],
-    queryFn: async () => ({ installed: false, connected: false, ip: null, hostname: null, backendState: null }),
+    queryFn: async () => fixtures.tailscaleStatus,
   }),
   poolStatusQueryKey: () => ['pool-status'],
   poolStatusOptions: () => ({ queryKey: ['pool-status'], queryFn: async () => fixtures.poolStatus }),
@@ -81,7 +87,9 @@ const poolStatus = () => ({
 
 describe('NetworkSettingsContainer', () => {
   beforeEach(() => {
+    vi.clearAllMocks();
     fixtures.poolStatus = poolStatus();
+    fixtures.tailscaleStatus = { installed: false, connected: false, ip: null, hostname: null, backendState: null };
   });
 
   it('renders both cards with status badges and the tunnel id', async () => {
@@ -112,5 +120,37 @@ describe('NetworkSettingsContainer', () => {
 
     await waitFor(() => expect(screen.getByText('SETTINGS_NETWORK_RESET_REGISTRATION_CONFIRM')).toBeTruthy());
     expect(screen.getByTestId('reregister-confirm-btn')).toBeTruthy();
+  });
+
+  it('shows the opening toast only when the system opener actually reports success', async () => {
+    fixtures.tailscaleStatus = { installed: true, connected: false, ip: null, hostname: null, backendState: null };
+    vi.mocked(startAuth).mockResolvedValue({ data: { success: true, authUrl: 'https://login.tailscale.com/a/abc123' }, error: undefined });
+    vi.mocked(openExternal).mockResolvedValue(true);
+
+    renderContainer();
+
+    const connectBtn = await screen.findByTestId('tailscale-connect-btn');
+    await userEvent.click(connectBtn);
+
+    await waitFor(() => expect(openExternal).toHaveBeenCalledWith('https://login.tailscale.com/a/abc123'));
+    expect(toast.success).toHaveBeenCalledWith('SETTINGS_NETWORK_TAILSCALE_AUTH_OPENING');
+    expect(toast.error).not.toHaveBeenCalled();
+  });
+
+  it('shows an error, not a false success toast, when the system opener silently fails', async () => {
+    // Regression test: openExternal never throws on a failed open (an ACL denial,
+    // a scope rejection, a stale opener-plugin chunk) -- it logs and resolves
+    // false. Before this was awaited, the button showed "Opening..." regardless.
+    fixtures.tailscaleStatus = { installed: true, connected: false, ip: null, hostname: null, backendState: null };
+    vi.mocked(startAuth).mockResolvedValue({ data: { success: true, authUrl: 'https://login.tailscale.com/a/abc123' }, error: undefined });
+    vi.mocked(openExternal).mockResolvedValue(false);
+
+    renderContainer();
+
+    const connectBtn = await screen.findByTestId('tailscale-connect-btn');
+    await userEvent.click(connectBtn);
+
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('SETTINGS_NETWORK_TAILSCALE_BROWSER_FAILED'));
+    expect(toast.success).not.toHaveBeenCalled();
   });
 });

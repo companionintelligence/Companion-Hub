@@ -72,7 +72,7 @@ async function verifyDnsResolution(hostname: string, timeoutMs = 3000): Promise<
   }
 }
 
-export const openExternal = async (url: string): Promise<void> => {
+export const openExternal = async (url: string): Promise<boolean> => {
   const normalizedUrl = normalizeExternalUrl(url);
 
   if (typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window) {
@@ -104,7 +104,7 @@ export const openExternal = async (url: string): Promise<void> => {
       const { openUrl } = await retryDynamicImport(() => import('@tauri-apps/plugin-opener'));
       await openUrl(normalizedUrl);
       if (shouldWarmDns) void warmDns(hostname);
-      return;
+      return true;
     } catch (error) {
       // DO NOT fall through to window.open here.
       //
@@ -117,13 +117,19 @@ export const openExternal = async (url: string): Promise<void> => {
       // most of them fire-and-forget `onClick={() => openExternal(url)}`, and
       // rejecting would turn each into an unhandled rejection. The defect being
       // fixed is that the failure was invisible, not that it failed to propagate.
+      // The boolean return is for the handful of callers -- Tailscale connect
+      // among them -- that show their own success/failure toast and need to know
+      // which one actually happened rather than assuming success.
       console.error(`openExternal: the system opener refused ${normalizedUrl}`, error);
-      return;
+      return false;
     }
   }
 
-  // Fallback for a real web context, where window.open actually works.
-  window.open(normalizedUrl, '_blank', 'noopener,noreferrer');
+  // Fallback for a real web context, where window.open actually works -- except
+  // when a popup blocker steps in, most often because this call did not happen
+  // synchronously inside the click handler. window.open reports that with a null
+  // return rather than a throw, so it needs the same treatment.
+  return window.open(normalizedUrl, '_blank', 'noopener,noreferrer') != null;
 };
 
 /** Best-effort DNS warm, after the URL is already on its way to the browser. */

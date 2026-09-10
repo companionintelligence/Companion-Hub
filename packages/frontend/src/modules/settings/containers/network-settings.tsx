@@ -64,7 +64,7 @@ const TailscaleSidecarSection = () => {
       }
       return result.data as unknown as AuthStartResponse;
     },
-    onSuccess: (payload: AuthStartResponse) => {
+    onSuccess: async (payload: AuthStartResponse) => {
       if (!payload.success) {
         toast.error(payload.error ?? t('SETTINGS_NETWORK_TAILSCALE_NOT_INSTALLED'));
         return;
@@ -75,8 +75,11 @@ const TailscaleSidecarSection = () => {
         return;
       }
       if (payload.authUrl) {
-        openExternal(payload.authUrl);
-        toast.success(t('SETTINGS_NETWORK_TAILSCALE_AUTH_OPENING'));
+        const opened = await openExternal(payload.authUrl);
+        // openExternal never throws (it logs and returns false instead), so this
+        // is the only signal that the system opener actually did anything -- skip
+        // it and the button looks like it worked while nothing opened.
+        toast[opened ? 'success' : 'error'](t(opened ? 'SETTINGS_NETWORK_TAILSCALE_AUTH_OPENING' : 'SETTINGS_NETWORK_TAILSCALE_BROWSER_FAILED'));
         invalidateTailscaleAndAppContext();
       }
     },
