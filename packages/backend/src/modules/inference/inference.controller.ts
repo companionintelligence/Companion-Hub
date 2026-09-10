@@ -309,7 +309,24 @@ export class InferenceController {
       models: models.map((model) => ({
         id: model.id,
         name: model.name,
-        state: model.loaded ? 'loaded' : 'unknown',
+        /*
+         * `available`, NOT `loaded`.
+         *
+         * `InferenceModel.loaded` is hardcoded `true` by every backend's `listModels()`
+         * (ollama.backend.ts, mtplx.backend.ts, dspark.backend.ts,
+         * openai-compatible.client.ts) — it has never meant "resident in VRAM", only "the
+         * engine has this in its inventory". Reporting it as `loaded` borrowed a word from
+         * the `ModelState` lifecycle, where `loaded` is specifically the resident state and
+         * `pulled` is the on-disk one, so the route asserted residency it never measured.
+         *
+         * Measured on beta-max: this route reported 11/11 `loaded` while the engine's own
+         * `/api/ps` reported zero models resident. Nothing reads this field — the AI settings
+         * card ignores it and renders a "Downloaded" badge — so correcting the word costs
+         * nothing and stops the API stating something false.
+         *
+         * Real residency needs `/api/ps`, which no authenticated route exposes today.
+         */
+        state: model.loaded ? 'available' : 'unknown',
       })),
     };
   }
