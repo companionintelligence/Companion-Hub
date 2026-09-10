@@ -130,7 +130,17 @@ describe('computeCountChartScale', () => {
 
 describe('localContainerRollup — parity with what a peer publishes', () => {
   const c = (over: Record<string, unknown> = {}) =>
-    ({ containerId: 'c1', name: 'svc', state: 'running', status: 'Up', health: null, cpuPercent: 5, memoryUsageBytes: 1000, memoryLimitBytes: 4000, ...over }) as never;
+    ({
+      containerId: 'c1',
+      name: 'svc',
+      state: 'running',
+      status: 'Up',
+      health: null,
+      cpuPercent: 5,
+      memoryUsageBytes: 1000,
+      memoryLimitBytes: 4000,
+      ...over,
+    }) as never;
 
   /*
    * THE BUG THIS PINS. The local card sits beside cards built from what a PEER published about
@@ -140,7 +150,11 @@ describe('localContainerRollup — parity with what a peer publishes', () => {
    */
   it('excludes the synthetic pid: process, exactly as a peer rollup does', () => {
     const rollup = localContainerRollup([
-      { cpuPercent: 99, memoryUsageBytes: 9_000, containers: [c({ containerId: 'pid:1234', cpuPercent: 90, memoryUsageBytes: 8_000 }), c({ containerId: 'abc' })] },
+      {
+        cpuPercent: 99,
+        memoryUsageBytes: 9_000,
+        containers: [c({ containerId: 'pid:1234', cpuPercent: 90, memoryUsageBytes: 8_000 }), c({ containerId: 'abc' })],
+      },
     ] as never);
 
     expect(rollup).toEqual({ running: 1, stopped: 0, total: 1, cpuPercent: 5, memoryBytes: 1000 });
@@ -149,7 +163,11 @@ describe('localContainerRollup — parity with what a peer publishes', () => {
   it('sums leaf containers, not per-app aggregates', () => {
     // app.cpuPercent is deliberately absurd: reading it instead of the leaves would show it.
     const rollup = localContainerRollup([
-      { cpuPercent: 500, memoryUsageBytes: 500_000, containers: [c({ containerId: 'a' }), c({ containerId: 'b', state: 'exited', cpuPercent: 0, memoryUsageBytes: 0 })] },
+      {
+        cpuPercent: 500,
+        memoryUsageBytes: 500_000,
+        containers: [c({ containerId: 'a' }), c({ containerId: 'b', state: 'exited', cpuPercent: 0, memoryUsageBytes: 0 })],
+      },
     ] as never);
 
     expect(rollup?.total).toBe(2);
