@@ -131,9 +131,10 @@ describe('buildPortalSsoStartUrl — platform matrix', () => {
 });
 
 describe('native vs browser SSO chrome', () => {
-  it('opens the system browser only on iOS/Android, not desktop or a normal browser', () => {
-    expect(shouldOpenPortalSsoInSystemBrowser(true)).toBe(true);
-    expect(shouldOpenPortalSsoInSystemBrowser(false)).toBe(false);
+  it('opens the system browser for every native shell, but not for a plain browser', () => {
+    expect(shouldOpenPortalSsoInSystemBrowser({ isMobileClient: true, isTauriDesktop: false })).toBe(true);
+    expect(shouldOpenPortalSsoInSystemBrowser({ isMobileClient: false, isTauriDesktop: true })).toBe(true);
+    expect(shouldOpenPortalSsoInSystemBrowser({ isMobileClient: false, isTauriDesktop: false })).toBe(false);
   });
 
   it('uses the cihub:// handoff on iOS/Android and desktop apps, not in a browser', () => {
