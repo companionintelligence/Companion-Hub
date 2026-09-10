@@ -24,6 +24,7 @@ APP_URL=http://127.0.0.1:9040
 APP_BASE_URL=http://127.0.0.1:9040
 APP_BASE_HOST=127.0.0.1:9040
 APP_BASE_WSS_ORIGIN=ws://127.0.0.1:9040
+HUB_INFERENCE_URL=http://ci-hub:3000/api/inference/v1
 ",
   "/app-data/test/test2/data/test.txt": "test",
   "/data/.env": "ROOT_FOLDER_HOST=/opt/ci-hub",
@@ -191,6 +192,7 @@ APP_URL=http://127.0.0.1:3041
 APP_BASE_URL=http://127.0.0.1:3041
 APP_BASE_HOST=127.0.0.1:3041
 APP_BASE_WSS_ORIGIN=ws://127.0.0.1:3041
+HUB_INFERENCE_URL=http://ci-hub:3000/api/inference/v1
 ",
   "/app-data/test/test/data": null,
   "/data/.env": "ROOT_FOLDER_HOST=/opt/ci-hub",
