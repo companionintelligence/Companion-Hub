@@ -88,6 +88,7 @@ export type AppContextDto = {
         hubPoolLocalAffinity?: number;
         hubPoolHealthPollSeconds?: number;
         hubPoolRequireSignedPeers?: boolean;
+        hubPoolShareContainerStats?: boolean;
         hubPoolPressureWeight?: number;
         inferenceSupervisionMode?: 'off' | 'observe';
         inferenceSupervisionPollSeconds?: number;
@@ -186,6 +187,7 @@ export type UserSettingsBody = {
     hubPoolLocalAffinity?: number;
     hubPoolHealthPollSeconds?: number;
     hubPoolRequireSignedPeers?: boolean;
+    hubPoolShareContainerStats?: boolean;
     hubPoolPressureWeight?: number;
     inferenceSupervisionMode?: 'off' | 'observe';
     inferenceSupervisionPollSeconds?: number;
@@ -1321,6 +1323,7 @@ export type UpdateHubPoolPreferencesBody = {
     poolLocalAffinity?: number;
     poolHealthPollSeconds?: number;
     poolRequireSignedPeers?: boolean;
+    poolShareContainerStats?: boolean;
     poolPressureWeight?: number;
 };
 

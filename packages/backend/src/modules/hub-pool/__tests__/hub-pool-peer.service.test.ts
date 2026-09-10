@@ -13,8 +13,11 @@ import {
   DEFAULT_POOL_HEALTH_POLL_SECONDS,
   DEFAULT_POOL_LOCAL_AFFINITY,
   DEFAULT_POOL_PRESSURE_WEIGHT,
+  POOL_CONTAINER_SAMPLER,
   type HubPoolPreferences,
+  type PoolContainerSampler,
 } from '@/common/helpers/hub-pool';
+import { ModuleRef } from '@nestjs/core';
 import { HubPoolPressureService } from '../hub-pool-pressure.service';
 import { HubPoolPeerRepository } from '../hub-pool-peer.repository';
 import { HubPoolPeerService } from '../hub-pool-peer.service';
@@ -58,6 +61,8 @@ describe('HubPoolPeerService', () => {
   let identity: MockProxy<HubPoolIdentityService>;
   let pairingPins: HubPoolPairingPinService;
   let pressureService: MockProxy<HubPoolPressureService>;
+  let containerSampler: MockProxy<PoolContainerSampler>;
+  let moduleRef: MockProxy<ModuleRef>;
   let service: HubPoolPeerService;
 
   /** Repoint the persisted settings, as a settings PATCH would. */
@@ -70,6 +75,7 @@ describe('HubPoolPeerService', () => {
       poolHealthPollSeconds: DEFAULT_POOL_HEALTH_POLL_SECONDS,
       poolPins: [],
       poolRequireSignedPeers: false,
+      poolShareContainerStats: true,
       poolPressureWeight: DEFAULT_POOL_PRESSURE_WEIGHT,
       ...overrides,
     });
@@ -115,6 +121,19 @@ describe('HubPoolPeerService', () => {
     // whole existing suite exercises the neutral path unless a test opts into a band.
     pressureService.band.mockReturnValue(null);
     pressureService.source.mockReturnValue(null);
+    containerSampler = mock<PoolContainerSampler>();
+    // No sample is the DEFAULT here, for the same reason the pressure band is: it is what a Hub
+    // reports before its first collection lands, so the rest of the suite exercises the omitted-key
+    // path unless a test opts into a rollup.
+    containerSampler.containerRollup.mockReturnValue(null);
+    moduleRef = mock<ModuleRef>();
+    moduleRef.get.mockImplementation((token: unknown) => {
+      if (token === POOL_CONTAINER_SAMPLER) {
+        return containerSampler as never;
+      }
+      // What Nest actually does with an unknown token: it throws rather than returning undefined.
+      throw new Error(`Nest could not find ${String(token)}`);
+    });
     service = new HubPoolPeerService(
       mock<LoggerService>(),
       repo,
@@ -127,6 +146,7 @@ describe('HubPoolPeerService', () => {
       identity,
       pairingPins,
       pressureService,
+      moduleRef,
     );
     global.fetch = vi.fn();
   });
@@ -722,6 +742,171 @@ describe('HubPoolPeerService', () => {
       setPoolPreferences({ poolOutboundEnabled: false });
 
       expect(service.inboundRefusal(mockPeer({ enabled: true }))).toBeNull();
+    });
+  });
+
+  describe('container counts on the wire and in the status payload', () => {
+    const rollup = { running: 4, stopped: 1, total: 5, cpuPercent: 37.5, memoryBytes: 2_147_483_648 };
+
+    beforeEach(() => {
+      inferenceRouter.getStatus.mockResolvedValue({
+        hardwareTier: 'high',
+        backends: [{ type: 'ollama', running: true, healthy: true, url: 'http://ollama:11434', modelsLoaded: 1 }],
+        models: [],
+        memoryBudget: { totalVramMb: 24576, totalRamMb: 65536, systemReservedRamMb: 8192, dockerOverheadMb: 2048, availableForModelsMb: 20480 },
+      } as unknown as InferenceStatus);
+      inferenceRouter.listModels.mockResolvedValue([] as never);
+    });
+
+    describe('getOwnCapabilities', () => {
+      it('publishes the counts and totals the local monitor already sampled', async () => {
+        containerSampler.containerRollup.mockReturnValue(rollup);
+
+        const capabilities = await service.getOwnCapabilities();
+
+        expect(capabilities.containers).toEqual(rollup);
+      });
+
+      it('OMITS the key entirely when the operator opted out, rather than publishing zeros', async () => {
+        setPoolPreferences({ poolShareContainerStats: false });
+        containerSampler.containerRollup.mockReturnValue(rollup);
+
+        const capabilities = await service.getOwnCapabilities();
+
+        // Opting out and running an older build are deliberately the same thing on the wire: both
+        // mean "we cannot tell you". Zeros would mean "this box is idle", which is a different
+        // claim and, here, a false one — five containers are running.
+        expect(capabilities).not.toHaveProperty('containers');
+      });
+
+      it('does not ask the sampler at all once sharing is off', async () => {
+        setPoolPreferences({ poolShareContainerStats: false });
+
+        await service.getOwnCapabilities();
+
+        expect(containerSampler.containerRollup).not.toHaveBeenCalled();
+      });
+
+      it('OMITS the key when the local monitor has no recent sample', async () => {
+        containerSampler.containerRollup.mockReturnValue(null);
+
+        const capabilities = await service.getOwnCapabilities();
+
+        // Nothing measured yet, or measurement failing. Either way this node has no claim to make,
+        // and a peer must read "not reported" rather than an idle machine.
+        expect(capabilities).not.toHaveProperty('containers');
+      });
+
+      it('OMITS the key when no sampler is wired up at all', async () => {
+        // The failure mode of reaching AppsModule lazily: a token that never resolves. It has to
+        // degrade to "not reported" rather than to zeros or to a thrown capabilities probe, which
+        // would take the node out of the pool entirely.
+        moduleRef.get.mockImplementation(() => {
+          throw new Error('Nest could not find POOL_CONTAINER_SAMPLER');
+        });
+
+        const capabilities = await service.getOwnCapabilities();
+
+        expect(capabilities).not.toHaveProperty('containers');
+        expect(capabilities.hardwareTier).toBe('high');
+      });
+
+      it('publishes an all-zero rollup, which is a claim and not an absence', async () => {
+        const idle = { running: 0, stopped: 0, total: 0, cpuPercent: 0, memoryBytes: 0 };
+        containerSampler.containerRollup.mockReturnValue(idle);
+
+        const capabilities = await service.getOwnCapabilities();
+
+        // The one case that must NOT be omitted: the monitor looked and found nothing running.
+        expect(capabilities.containers).toEqual(idle);
+      });
+
+      it('is not swallowed by the inventory cache — a moving count moves inside the TTL', async () => {
+        containerSampler.containerRollup.mockReturnValue({ ...rollup, running: 1, stopped: 0, total: 1 });
+        const first = await service.getOwnCapabilities();
+
+        containerSampler.containerRollup.mockReturnValue({ ...rollup, running: 6, stopped: 0, total: 6 });
+        const second = await service.getOwnCapabilities();
+
+        expect(first.containers?.total).toBe(1);
+        expect(second.containers?.total).toBe(6);
+        expect(inferenceRouter.getStatus).toHaveBeenCalledTimes(1);
+      });
+
+      it('stays honest while refusing inbound work', async () => {
+        containerSampler.containerRollup.mockReturnValue(rollup);
+
+        const capabilities = await service.getOwnCapabilities(false);
+
+        // Container counts are a HEALTH signal, not an offer of work, so they follow
+        // `inFlightRequests` and not `backends`. Blanking them would draw a loaded machine as an
+        // idle one at the exact moment an operator is looking to find out why it stopped taking work.
+        expect(capabilities.backends).toEqual([]);
+        expect(capabilities.acceptingWork).toBe(false);
+        expect(capabilities.containers).toEqual(rollup);
+        expect(capabilities.inFlightRequests).toBe(0);
+      });
+    });
+
+    describe('getPoolStatus', () => {
+      function peerWith(id: string, capabilities: Record<string, unknown>, lastSeenAt = new Date().toISOString()): HubPoolPeer {
+        return mockPeer({ id, status: 'connected', lastSeenAt, lastCapabilities: capabilities as unknown as Record<string, unknown> });
+      }
+
+      const baseCapabilities = { hardwareTier: 'high', backends: [], updatedAt: new Date().toISOString() };
+
+      it('reports a peer rollup that survived the clamp', async () => {
+        repo.listAll.mockResolvedValue([peerWith('p1', { ...baseCapabilities, containers: rollup })]);
+
+        const status = await service.getPoolStatus();
+
+        expect(status.peers[0]?.containers).toEqual(rollup);
+      });
+
+      it('reports a peer genuine zeros as zeros', async () => {
+        const idle = { running: 0, stopped: 0, total: 0, cpuPercent: 0, memoryBytes: 0 };
+        repo.listAll.mockResolvedValue([peerWith('p1', { ...baseCapabilities, containers: idle })]);
+
+        const status = await service.getPoolStatus();
+
+        expect(status.peers[0]?.containers).toEqual(idle);
+      });
+
+      it('shows null for a peer that reported nothing — an older build, or one opted out', async () => {
+        repo.listAll.mockResolvedValue([peerWith('p1', baseCapabilities)]);
+
+        const status = await service.getPoolStatus();
+
+        expect(status.peers[0]?.containers).toBeNull();
+      });
+
+      it('shows null for a stale snapshot rather than an hour-old count drawn as current', async () => {
+        const stale = peerWith('p1', { ...baseCapabilities, containers: rollup }, new Date(Date.now() - 10 * 60_000).toISOString());
+        repo.listAll.mockResolvedValue([stale]);
+
+        const status = await service.getPoolStatus();
+
+        expect(status.peers[0]?.containers).toBeNull();
+      });
+
+      it.each([
+        ['negative counts', { running: -3, stopped: -1, total: -4, cpuPercent: -1, memoryBytes: -1 }],
+        ['an absurd count', { running: 999_999_999, stopped: 0, total: 999_999_999, cpuPercent: 0, memoryBytes: 0 }],
+        ['non-finite figures', { running: 1, stopped: 0, total: 1, cpuPercent: Number.NaN, memoryBytes: Number.POSITIVE_INFINITY }],
+        ['wrong types', { running: '4', stopped: 'one', total: [5], cpuPercent: {}, memoryBytes: null }],
+        ['a bare string', 'lots of them'],
+        ['an array', [1, 2, 3]],
+        ['more running than exist', { running: 40, stopped: 0, total: 4, cpuPercent: 1, memoryBytes: 1 }],
+      ])('shows null for the hostile payload %s', async (_label, hostile) => {
+        repo.listAll.mockResolvedValue([peerWith('p1', { ...baseCapabilities, containers: hostile })]);
+
+        const status = await service.getPoolStatus();
+
+        // A peer is a remote machine and `last_capabilities` is jsonb it fully controls. A number
+        // routing (or an operator) would not believe must not reach the card at all, and it must
+        // never be replaced with a plausible-looking zero.
+        expect(status.peers[0]?.containers).toBeNull();
+      });
     });
   });
 

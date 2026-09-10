@@ -9,6 +9,7 @@ import { AppsRepository } from './apps.repository';
 import { AppsService } from './apps.service';
 import { DockerReadFacade, type AppContainerRuntimeStats } from '../docker/docker-read.facade';
 import { HostTelemetryService } from '../system/host-telemetry.service';
+import type { PoolContainerRollup, PoolContainerSampler } from '@/common/helpers/hub-pool';
 
 const HIGH_CPU_THRESHOLD_PERCENT = 90;
 const HIGH_CPU_SAMPLE_COUNT = 3;
@@ -19,6 +20,22 @@ const SNAPSHOT_COLLECTION_DEADLINE_MS = 30_000;
 const PROCESS_SCAN_TIMEOUT_MS = 3_000;
 const STOPPING_GRACE_MS = 30_000;
 const AVAILABILITY_PROBE_CACHE_TTL_MS = 60_000;
+/**
+ * How old the last successful sample may be and still be published to pool peers.
+ *
+ * Two monitor intervals: one missed tick is a slow Docker call, two is a monitor that has stopped
+ * producing. Past it {@link AppRuntimeMonitorService.containerRollup} returns `null` and the pool
+ * omits the key, because a figure that old is not "what this box is running", it is what it was
+ * running. Deliberately keyed off MONITOR_INTERVAL_MS — the thing that actually refreshes the
+ * sample — and not off the pool's own inventory TTL, which governs a different cache entirely.
+ */
+const CONTAINER_ROLLUP_MAX_AGE_MS = 2 * MONITOR_INTERVAL_MS;
+/**
+ * Marks the synthetic entry {@link AppRuntimeMonitorService.collectHubRuntimeHealth} adds for the
+ * backend's own Node process on a Hub that is not itself containerised. It is a process, not a
+ * container, so anything counting containers must exclude it.
+ */
+const PROCESS_RUNTIME_ID_PREFIX = 'pid:';
 
 type RuntimeSample = {
   sampledAtMs: number;
@@ -74,7 +91,7 @@ export type AppRuntimeMonitorSnapshot = {
 const HUB_RUNTIME_URN = 'ci-hub:system';
 
 @Injectable()
-export class AppRuntimeMonitorService implements OnModuleInit, OnModuleDestroy {
+export class AppRuntimeMonitorService implements OnModuleInit, OnModuleDestroy, PoolContainerSampler {
   private readonly samples = new Map<string, RuntimeSample[]>();
   private readonly availabilityProbeCache = new Map<string, AvailabilityProbeCacheEntry>();
   private readonly history: AppRuntimeHistorySample[] = [];
@@ -121,6 +138,61 @@ export class AppRuntimeMonitorService implements OnModuleInit, OnModuleDestroy {
   async getRuntimeMonitorSnapshot(): Promise<AppRuntimeMonitorSnapshot> {
     await this.hydrateHistoryFromDatabase();
     return this.collectRuntimeMonitorSnapshot();
+  }
+
+  /**
+   * The last collected sample reduced to counts and totals, for the Hub pool's capability payload,
+   * or `null` when there is nothing recent enough to publish.
+   *
+   * Cache-only and synchronous, and that is the whole point: this answers every paired peer's 30s
+   * health poll, which runs under a 15s budget, and three overruns mark a healthy node
+   * `unreachable`. {@link getRuntimeMonitorSnapshot} is not usable there — it awaits a database
+   * hydrate and then, on a cold cache, a full Docker fan-out bounded at 30s. So this reads only
+   * what the {@link MONITOR_INTERVAL_MS} timer has already collected and never probes anything.
+   *
+   * Reading a sampled value is a feature here rather than a compromise: peers poll every 30s and
+   * the monitor samples every 60s, so a rollup is at most one sampling cycle behind, which is the
+   * right resolution for "how loaded is that box" and costs the poll path nothing.
+   *
+   * `null` — never zeros — for every way this can fail to know, and each one is a real state:
+   *   - nothing sampled yet (the warmup after boot has not finished)
+   *   - the last sample is older than {@link CONTAINER_ROLLUP_MAX_AGE_MS}, so collection is failing
+   *
+   * Judged on `latestSnapshot.sampledAt`, which is stamped only where a collection SUCCEEDED, and
+   * pointedly not on `latestSnapshotAtMs`, which `collectRuntimeMonitorSnapshot` bumps on the
+   * failure path while handing back old data — that field would report an hour-dead Docker as
+   * current. `latestSnapshot` itself is never assigned from `emptySnapshot()`, so a total failure
+   * with no prior sample stays `null` here instead of arriving as a believable "0 containers".
+   */
+  containerRollup(now: number = Date.now()): PoolContainerRollup | null {
+    const snapshot = this.latestSnapshot;
+    if (!snapshot) {
+      return null;
+    }
+
+    const sampledAtMs = Date.parse(snapshot.sampledAt);
+    if (!Number.isFinite(sampledAtMs) || now - sampledAtMs > CONTAINER_ROLLUP_MAX_AGE_MS) {
+      return null;
+    }
+
+    // Leaf containers, not the per-app aggregates: the Hub entity folds the synthetic Node-process
+    // entry into its own cpuPercent, so summing app totals would count a process the container
+    // count excludes and put the two halves of this payload on different populations.
+    const containers = snapshot.apps
+      .flatMap((app) => app.containers)
+      .filter((container) => !container.containerId.startsWith(PROCESS_RUNTIME_ID_PREFIX));
+    const running = containers.filter((container) => container.state === 'running').length;
+
+    return {
+      running,
+      // Everything that exists and is not running. Docker's state enum is wider than two values, so
+      // this bucket also holds `paused`, `created` and `restarting`; that is stated on
+      // `PoolContainerRollup` and is what keeps `running + stopped === total` true.
+      stopped: containers.length - running,
+      total: containers.length,
+      cpuPercent: Number(containers.reduce((sum, container) => sum + container.cpuPercent, 0).toFixed(2)),
+      memoryBytes: containers.reduce((sum, container) => sum + container.memoryUsageBytes, 0),
+    };
   }
 
   private emptySnapshot(): AppRuntimeMonitorSnapshot {
@@ -207,7 +279,7 @@ export class AppRuntimeMonitorService implements OnModuleInit, OnModuleDestroy {
       const processRuntime: AppContainerRuntimeStats[] = backendProcess
         ? [
             {
-              containerId: `pid:${process.pid}`,
+              containerId: `${PROCESS_RUNTIME_ID_PREFIX}${process.pid}`,
               name: 'backend-api',
               state: backendProcess.state || 'running',
               status: 'Node process',

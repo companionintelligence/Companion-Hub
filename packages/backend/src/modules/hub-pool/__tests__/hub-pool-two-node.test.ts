@@ -14,8 +14,12 @@ import {
   DEFAULT_POOL_HEALTH_POLL_SECONDS,
   DEFAULT_POOL_LOCAL_AFFINITY,
   DEFAULT_POOL_PRESSURE_WEIGHT,
+  POOL_CONTAINER_SAMPLER,
   type HubPoolPreferences,
+  type PoolContainerRollup,
+  type PoolContainerSampler,
 } from '@/common/helpers/hub-pool';
+import { ModuleRef } from '@nestjs/core';
 import { HubPoolPressureService } from '../hub-pool-pressure.service';
 import { HubPoolPeerRepository } from '../hub-pool-peer.repository';
 import { HubPoolPeerService } from '../hub-pool-peer.service';
@@ -179,6 +183,10 @@ interface Node {
   setOutboundEnabled(enabled: boolean): void;
   /** Take one peer of this node out of the pool, as the operator switch does. */
   setPeerEnabled(id: string, enabled: boolean): Promise<void>;
+  /** Make this node's runtime monitor report a sample, or `null` for "nothing collected". */
+  setContainerSample(rollup: PoolContainerRollup | null): void;
+  /** Stop sharing container figures with peers, as the operator switch does. */
+  setShareContainerStats(enabled: boolean): void;
   /** Runs one health-poll tick, as the module's own timer would. */
   poll(): Promise<void>;
   /** Give this node a new MagicDNS name, as a tailnet rename would — routing and self-report together. */
@@ -196,6 +204,7 @@ function buildNode(fqdn: string, models: string[]): Node {
     poolHealthPollSeconds: DEFAULT_POOL_HEALTH_POLL_SECONDS,
     poolPins: [],
     poolRequireSignedPeers: false,
+    poolShareContainerStats: true,
     poolPressureWeight: DEFAULT_POOL_PRESSURE_WEIGHT,
   };
   configuration.getHubPoolPreferences.mockImplementation(() => ({ ...preferences }));
@@ -274,6 +283,18 @@ function buildNode(fqdn: string, models: string[]): Node {
   const pressureService = mock<HubPoolPressureService>();
   pressureService.band.mockReturnValue(null);
   pressureService.source.mockReturnValue(null);
+  // Stands in for `AppRuntimeMonitorService`, which the real pool reaches through this token. No
+  // sample by default, so every pre-existing assertion here runs against a node that reports no
+  // containers at all — which is what an un-sampled Hub genuinely is.
+  const containerSampler = mock<PoolContainerSampler>();
+  containerSampler.containerRollup.mockReturnValue(null);
+  const moduleRef = mock<ModuleRef>();
+  moduleRef.get.mockImplementation((token: unknown) => {
+    if (token === POOL_CONTAINER_SAMPLER) {
+      return containerSampler as never;
+    }
+    throw new Error(`Nest could not find ${String(token)}`);
+  });
   const service = new HubPoolPeerService(
     mock<LoggerService>(),
     repoAsReal,
@@ -286,6 +307,7 @@ function buildNode(fqdn: string, models: string[]): Node {
     identity,
     pairingPins,
     pressureService,
+    moduleRef,
   );
   // A REAL discovery service over the real peer service: pairing by address runs the address parse,
   // the private-address check, the `/identify` probe and the PIN handshake for real, which is the
@@ -307,6 +329,14 @@ function buildNode(fqdn: string, models: string[]): Node {
     controller,
     guard: new PoolPeerGuard(repoAsReal, identity, configuration, mock<LoggerService>()),
     identity,
+    /** Make this node's runtime monitor report a sample, or `null` for "nothing collected". */
+    setContainerSample(rollup: PoolContainerRollup | null) {
+      containerSampler.containerRollup.mockReturnValue(rollup);
+    },
+    /** Stop sharing container figures with peers, as the operator switch does. */
+    setShareContainerStats(enabled: boolean) {
+      preferences.poolShareContainerStats = enabled;
+    },
     /** Make this node report a measured band, as its sampler would. */
     setGpuPressure(band: number | null, source: 'host-file' | 'amd-drm' | null = band === null ? null : 'amd-drm') {
       pressureService.band.mockReturnValue(band);
@@ -1209,6 +1239,82 @@ describe('Hub Pool across two nodes', () => {
       // peer's extra keys are ignored by an older node's structural read of `capabilities.backends`.
       expect(cachedOn(beta).backends[0]?.modelsLoaded).toContain(SHARED_MODEL);
       expect(status.peers[0]?.status).toBe('connected');
+    });
+  });
+
+  describe('container counts across the wire', () => {
+    /** What `refreshOnePeer` cached about the other node on its last poll. */
+    function cachedOn(node: Node): PoolPeerCapabilities {
+      return node.repo.only().lastCapabilities as unknown as PoolPeerCapabilities;
+    }
+
+    const rollup: PoolContainerRollup = { running: 6, stopped: 2, total: 8, cpuPercent: 91.25, memoryBytes: 5_368_709_120 };
+
+    it('carries core’s rollup through /capabilities into beta’s cached snapshot and status card', async () => {
+      await pairNodes();
+      core.setContainerSample(rollup);
+
+      await beta.poll();
+      const status = await beta.service.getPoolStatus();
+
+      // No new route and no migration: it rides the existing authenticated capabilities probe into
+      // the `last_capabilities` jsonb that is already there.
+      expect(cachedOn(beta).containers).toEqual(rollup);
+      expect(status.peers[0]?.containers).toEqual(rollup);
+    });
+
+    it('leaves the key off the wire entirely when core’s operator opted out', async () => {
+      await pairNodes();
+      core.setContainerSample(rollup);
+      core.setShareContainerStats(false);
+
+      await beta.poll();
+      const status = await beta.service.getPoolStatus();
+
+      // Indistinguishable from a peer on an older build, and that is the point: both mean "we
+      // cannot tell you". Neither may ever surface as an idle machine.
+      expect(cachedOn(beta)).not.toHaveProperty('containers');
+      expect(status.peers[0]?.containers).toBeNull();
+      // And the rest of the payload is untouched — opting out of one disclosure is not leaving the pool.
+      expect(cachedOn(beta).backends[0]?.modelsLoaded).toContain(SHARED_MODEL);
+      expect(beta.repo.only()).toMatchObject({ status: 'connected' });
+    });
+
+    it('leaves the key off the wire when core’s monitor has collected nothing', async () => {
+      await pairNodes();
+      core.setContainerSample(null);
+
+      await beta.poll();
+
+      expect(cachedOn(beta)).not.toHaveProperty('containers');
+    });
+
+    it('keeps core’s counts honest while core refuses inbound work', async () => {
+      await pairNodes();
+      core.setContainerSample(rollup);
+      core.setInboundEnabled(false);
+
+      await beta.poll();
+
+      // The refusal empties the model inventory, which is the OFFER. The container figures are a
+      // health signal about a machine that is still very much running, and blanking them would
+      // draw a loaded box as an idle one at the moment an operator went looking.
+      expect(cachedOn(beta)).toMatchObject({ acceptingWork: false, containers: rollup });
+      expect(cachedOn(beta).backends).toEqual([]);
+    });
+
+    it('drops a hostile rollup on the read path, however it got into the column', async () => {
+      await pairNodes();
+      // Written straight into the jsonb, as a peer running anything at all could arrange: the probe
+      // that stores this does not validate, by design, so the clamp has to be on the read.
+      await beta.repo.update(beta.repo.only().id, {
+        lastCapabilities: { hardwareTier: 'high', backends: [], containers: { running: -1, stopped: 0, total: 0, cpuPercent: 0, memoryBytes: 0 } },
+        lastSeenAt: new Date().toISOString(),
+      } as never);
+
+      const status = await beta.service.getPoolStatus();
+
+      expect(status.peers[0]?.containers).toBeNull();
     });
   });
 });

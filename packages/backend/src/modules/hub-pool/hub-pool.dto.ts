@@ -160,6 +160,16 @@ const hubPoolPreferencesSchema = z.object({
    */
   poolRequireSignedPeers: z.boolean().optional(),
   /**
+   * Publish aggregate container counts and resource totals to paired peers. Counts and totals only —
+   * never a container name — so a peer learns how loaded this box is and not what it runs.
+   *
+   * On by default, which is why this is the opt-OUT and not the opt-in: peers are machines the
+   * operator approved into a pairing and they already receive this node's tier, queue depth and
+   * full model list. Turning it off omits the key entirely, which is what a peer on an older build
+   * sends too, and reads there as "not reported" — never as an idle machine.
+   */
+  poolShareContainerStats: z.boolean().optional(),
+  /**
    * How heavily the 0-3 GPU-pressure band counts when ranking candidates. 0 (the default) removes it
    * from ranking entirely and is byte-identical to the pre-pressure build; 1 is PAIR's
    * `pending + pressure`, which is what lets the pool move work off a node whose queue is empty but
