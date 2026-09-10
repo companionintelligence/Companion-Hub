@@ -697,4 +697,28 @@ describe('InstallAppCommand — plan-based pre-flight', () => {
 
     expect(result.success).toBe(true);
   });
+
+  it('proceeds when the plan builder rejects — a re-validation that cannot run is not evidence the install is invalid', async () => {
+    appLifecycleService.buildInstallPlan.mockRejectedValue(new Error('marketplace lookup timed out'));
+
+    const result = await command.execute(appUrn, {});
+
+    expect(result.success).toBe(true);
+    expect(dockerService.composeApp).toHaveBeenCalled();
+  });
+
+  it('proceeds when the plan builder is a bare mock that returns undefined instead of a promise (calling .catch on it must not crash the install)', async () => {
+    // Regression case: an auto-mocked ModuleRef.get fallback (e.g. `mock()` with no
+    // configured methods, as the sibling "pull policy" describe block's moduleRef.get
+    // uses for any unlisted token) makes buildInstallPlan a bare vi.fn() that returns
+    // `undefined` synchronously rather than a rejected promise. `.catch()` on that
+    // `undefined` throws a TypeError before any promise machinery gets involved — a
+    // real try/catch around the `await` is required, not a `.catch()` chained onto it.
+    appLifecycleService.buildInstallPlan = vi.fn(() => undefined) as any;
+
+    const result = await command.execute(appUrn, {});
+
+    expect(result.success).toBe(true);
+    expect(dockerService.composeApp).toHaveBeenCalled();
+  });
 });
