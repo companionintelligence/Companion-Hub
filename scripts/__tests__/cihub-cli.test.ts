@@ -70,6 +70,7 @@ vi.mock('../hub-pool-cli', async (importOriginal) => ({
 vi.mock('../public-web-cli', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../public-web-cli')>()),
   readHubApiKey: () => poolApiKey,
+  readHubApiKeySource: () => (poolApiKey ? { key: poolApiKey, checked: [] } : { checked: ['/fake/.internal/state/settings.json'] }),
 }));
 
 /** The doctor itself is covered in pool-diagnostics-cli.test.ts; what is under test here is the wiring. */

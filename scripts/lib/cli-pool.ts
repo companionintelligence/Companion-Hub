@@ -4,7 +4,6 @@
  * Argument parsing and rendering live here; the HTTP calls stay in `hub-pool-cli.ts` so the
  * two can be tested apart from each other.
  */
-import path from 'node:path';
 import { parseEnvFile } from '../env-file.js';
 import { discoverComposeIdentity } from './compose-discovery.js';
 import {
@@ -33,7 +32,7 @@ import {
   type PoolEnableAxis,
 } from '../hub-pool-cli.js';
 import { readRunningImageIdentity, runPoolDoctorSection } from '../pool-diagnostics-cli.js';
-import { readHubApiKey, resolveHubApiBase } from '../public-web-cli.js';
+import { readHubApiKeySource, resolveHubApiBase } from '../public-web-cli.js';
 import { resolveEnvFromArgs, usageAndExit } from './cli-args.js';
 import { confirmDestructiveAction } from './cli-prompt.js';
 import { run, runCapture } from './cli-proc.js';
@@ -47,7 +46,6 @@ import {
 import { BASE_COMMAND, type HubEnv } from './cli-types.js';
 import { cliFail, cliOk, cliWarn, colorize, dim, printMessageBox, sanitizeForBox, STEP_ICONS } from './cli-ui.js';
 import { type HubContext, resolveHubContext } from './hub-context.js';
-import { resolveRootFolderHost } from './paths.js';
 
 export const POOL_SUBCOMMANDS = [
   'status',
@@ -330,14 +328,23 @@ export async function runPoolCommand(args: string[]) {
     return;
   }
 
-  if (!readHubApiKey(envFile)) {
+  const keySource = readHubApiKeySource(envFile);
+  if (!keySource.key) {
+    // Say what was searched, not what the Hub is. This box used to read "Hub not paired"
+    // and prescribe `cihub register` after checking exactly one path — and printed that on
+    // a node that was routing inference to three peers at the time, because sudo moved HOME
+    // and the key was in the owning user's data dir. `cihub register --fresh` on a live pool
+    // member is a destructive answer to a question we had not actually asked.
     printMessageBox(
-      'Hub not paired',
+      'No device key found',
       [
-        'No device key found — every pool route needs one.',
-        `Expected ciHubApiKey in ${path.join(resolveRootFolderHost(envFile), 'state', 'settings.json')}.`,
+        'Every pool route needs a Portal device key. None of these files had one:',
+        ...keySource.checked.map((checked) => `  ${checked}`),
         '',
-        'Pair this Hub first: cihub register',
+        'If this Hub has never been paired:  cihub register',
+        ...(process.env.SUDO_USER
+          ? ['', 'You ran this under sudo, which changes HOME. The key is stored per user —', 'try again as the user that owns this Hub.']
+          : []),
         '(The key from `cihub api-key create` is MCP-scoped and is not accepted here.)',
       ],
       'red',

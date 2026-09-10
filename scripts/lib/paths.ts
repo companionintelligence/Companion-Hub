@@ -41,6 +41,77 @@ export function resolveCanonicalDataDir(
   return path.join(xdgData, CANONICAL_DATA_DIR_NAME);
 }
 
+/**
+ * Home directory of the user who invoked a `sudo`'d command, or null when not under sudo.
+ *
+ * `sudo` sets `HOME=/root` but leaves `SUDO_USER`, so anything resolving a per-user path
+ * under sudo silently looks in root's home. There is no portable Node API for another
+ * user's home directory, so this reconstructs it from the platform's conventional root and
+ * only returns it if it actually exists — a wrong guess yields null rather than a
+ * confidently wrong path.
+ */
+export function resolveInvokingUserHome(
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+  exists: (p: string) => boolean = existsSync,
+): string | null {
+  const user = env.SUDO_USER?.trim();
+  if (!user || user === 'root' || platform === 'win32') return null;
+  const candidate = platform === 'darwin' ? path.join('/Users', user) : path.join('/home', user);
+  return exists(candidate) ? candidate : null;
+}
+
+/**
+ * Every location a Hub device key could legitimately live, in the order to try them.
+ *
+ * A key is read from exactly one file, but which file depends on how the Hub was installed
+ * and how the CLI was invoked, and getting that wrong produces a false negative that reads
+ * as a statement about the Hub. `cihub pool status` under sudo reported "Hub not paired" on
+ * a node that was at that moment routing inference to three peers, because it checked
+ * `<cwd>/.internal/state/settings.json` while the key sat in the canonical data dir of the
+ * user who owns the Hub.
+ *
+ * Order is deliberate: an explicitly configured ROOT_FOLDER_HOST wins, then the canonical
+ * data dir a desktop/appliance install uses, then — only under sudo — the canonical dir of
+ * the invoking user, which is the case above.
+ */
+export function settingsCandidatesFrom(
+  rootFolderHost: string,
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+  home: string = homedir(),
+  exists: (p: string) => boolean = existsSync,
+): string[] {
+  const candidates = [
+    path.join(rootFolderHost, 'state', 'settings.json'),
+    path.join(resolveCanonicalDataDir(env, platform, home), 'state', 'settings.json'),
+  ];
+
+  // An explicit CI_HUB_DATA_DIR already names the answer; widening past it would search
+  // somewhere the operator did not point us.
+  if (!env.CI_HUB_DATA_DIR?.trim()) {
+    const invokingHome = resolveInvokingUserHome(env, platform, exists);
+    if (invokingHome) {
+      // Drop XDG_DATA_HOME: under sudo it is root's, or unset. The invoking user's default
+      // is what we are reconstructing.
+      const { XDG_DATA_HOME: _dropped, ...rest } = env;
+      candidates.push(path.join(resolveCanonicalDataDir(rest, platform, invokingHome), 'state', 'settings.json'));
+    }
+  }
+
+  return candidates.filter((candidate, i) => candidates.indexOf(candidate) === i);
+}
+
+/** `settingsCandidatesFrom` for a named env file. */
+export function resolveSettingsCandidates(
+  envFileName: string,
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+  home: string = homedir(),
+): string[] {
+  return settingsCandidatesFrom(resolveRootFolderHost(envFileName), env, platform, home);
+}
+
 export type ProdApplianceContext = {
   /** Canonical data dir where a desktop-installed prod Hub keeps its state. */
   dataDir: string;
