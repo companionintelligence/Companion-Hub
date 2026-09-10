@@ -63,19 +63,23 @@ export const Providers = ({ children }: PropsWithChildren) => {
       // cihub:// links are left alone.
       if (target.protocol !== 'http:' && target.protocol !== 'https:') return;
 
-      // SAME-ORIGIN LINKS ARE NOT EXTERNAL, and this is the whole bug.
+      // SAME-ORIGIN LINKS ARE NOT EXTERNAL, and this is why the old test broke.
       //
       // The test used to be href.startsWith('http'), which is true of every
       // absolute URL — including the app's own. The packaged shell serves the Hub
-      // UI from http://127.0.0.1:<apiPort>, and buildPortalSsoStartUrl always
-      // produces an ABSOLUTE url against that same origin, so the "Continue with
-      // CI Account" anchor was absolute, same-origin, and got shipped to the
-      // system browser instead of navigating in-app. hub-auth-flow.ts states the
-      // opposite contract for desktop-hub-sso: sign in via a normal <a href> and
-      // never hand it to the browser.
+      // UI from http://127.0.0.1:<apiPort>, so any same-origin anchor got shipped
+      // to the system browser too, instead of navigating in-app.
+      //
+      // Narrowing this to skip same-origin links is correct on its own, but it
+      // also means a same-origin anchor now stays in-app — which is why desktop
+      // sign-in cannot be an <a href> at all. hub-auth-flow.ts requires
+      // desktop-hub-sso to open via a button calling openAuthInSystemBrowser, so
+      // it reaches the system browser regardless of this exemption. See
+      // external-link-interception.test.tsx for that contract.
       //
       // It only broke in a BUILT app: under `tauri dev` the page is the Vite dev
-      // server, so the Hub API is cross-origin and this test happened to be right.
+      // server, so the Hub API is cross-origin and the old test happened to be
+      // right.
       if (target.origin === window.location.origin) return;
 
       e.preventDefault();
