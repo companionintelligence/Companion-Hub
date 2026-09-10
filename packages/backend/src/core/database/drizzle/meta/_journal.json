@@ -435,6 +435,13 @@
       "when": 1781200000000,
       "tag": "0061_memory_connection_hub_user",
       "breakpoints": true
+    },
+    {
+      "idx": 62,
+      "version": "7",
+      "when": 1781300000000,
+      "tag": "0062_lowercase_user_emails",
+      "breakpoints": true
     }
   ]
 }

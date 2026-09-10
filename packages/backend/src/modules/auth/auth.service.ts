@@ -20,7 +20,7 @@ import axios, { type AxiosResponse } from 'axios';
 import { PortalClientService } from '@/core/portal/portal-client.service';
 import { DeviceRegistrationRepository } from '@/modules/registration/device-registration.repository';
 import { FederatedIdentityRepository } from '@/modules/user/federated-identity.repository';
-import { UserRepository } from '@/modules/user/user.repository';
+import { normalizeUsername, UserRepository } from '@/modules/user/user.repository';
 import { HttpStatus, Injectable, ServiceUnavailableException } from '@nestjs/common';
 import psl from 'psl';
 import validator from 'validator';
@@ -29,6 +29,12 @@ import { passwordResetVerifyResponseSchema } from './dto/auth.dto';
 import { SessionManager } from './session.manager';
 import { SessionUserCache } from '@/core/cache/session-user.cache';
 import { TotpAuthenticator } from './utils/totp-authenticator';
+
+/**
+ * Portal's answer to "is this subject in the organisation this Hub is paired to?".
+ * `unknown` is a failure to ask, not a refusal — see {@link AuthService.resolvePairedOrgMembership}.
+ */
+export type PairedOrgMembership = 'member' | 'not-member' | 'unknown';
 
 @Injectable()
 export class AuthService {
@@ -221,8 +227,14 @@ export class AuthService {
       if (!subject) {
         throw new TranslatableError('AUTH_ERROR_INVALID_CREDENTIALS', {}, HttpStatus.BAD_REQUEST);
       }
-      const member = await this.isSubjectMemberOfPairedOrg(subject);
-      if (!member) {
+      // "We could not ask Portal" is not "Portal said no". Both deny, but only one of them is the
+      // person's fault: answering a Portal outage with "you are not a member of this organization"
+      // sends an operator off to chase an invite that was never missing. 503 says retry.
+      const membership = await this.resolvePairedOrgMembership(subject);
+      if (membership === 'unknown') {
+        throw new TranslatableError('AUTH_ERROR_ORG_CHECK_UNAVAILABLE', {}, HttpStatus.SERVICE_UNAVAILABLE);
+      }
+      if (membership === 'not-member') {
         throw new TranslatableError('AUTH_ERROR_NOT_ORG_MEMBER', {}, HttpStatus.FORBIDDEN);
       }
     }
@@ -241,24 +253,55 @@ export class AuthService {
   }
 
   /**
-   * Whether a Portal `sub` is a member of the organisation THIS Hub is paired to. The only
-   * appliance-binding check available for a bare Portal identity — every other Portal-issued
-   * credential (id_token audience, signature, issuer) is identical across every Hub in the fleet.
-   * Also used directly by the Traefik forward-auth Bearer path (CI-Hub#1333): that call site owns
-   * its own short-TTL cache, since a Portal round trip per forwarded app request is too slow.
+   * Whether a Portal `sub` is a member of the organisation THIS Hub is paired to, as a THREE-state
+   * answer. The only appliance-binding check available for a bare Portal identity — every other
+   * Portal-issued credential (id_token audience, signature, issuer) is identical across every Hub
+   * in the fleet. Also used directly by the Traefik forward-auth Bearer path (CI-Hub#1333).
+   *
+   * `unknown` is not `not-member`, and the distinction is the whole reason this is not a boolean:
+   * a device-registration read that failed, a Portal that is not configured, a Portal that answered
+   * 5xx (or 401 after a device-key rotation), or a Portal we could not reach at all are all "we
+   * could not tell". Callers must still DENY on `unknown` — but a caller that caches must not
+   * remember it, or one blip becomes a lockout for the whole TTL. `MarketplaceWhoIsService.pickOrg`
+   * draws the same line for grants, for the same reason.
    */
-  async isSubjectMemberOfPairedOrg(subject: string): Promise<boolean> {
-    const registration = await this.deviceRegistration.getFirstDeviceRegistration().catch(() => null);
+  public async resolvePairedOrgMembership(subject: string): Promise<PairedOrgMembership> {
+    // A read that FAILED and a Hub paired to nothing are different answers. Collapsing both into
+    // `null` made the second one look transient, and `unknown` is deliberately never remembered:
+    // an unpaired appliance re-read the row and wrote a fresh warn line on every forwarded app
+    // request, and told the operator at login to try again in a moment for a permanent condition.
+    let registration: Awaited<ReturnType<DeviceRegistrationRepository['getFirstDeviceRegistration']>>;
+    try {
+      registration = await this.deviceRegistration.getFirstDeviceRegistration();
+    } catch (error) {
+      this.logger.warn(`Device registration read failed during org membership check: ${error instanceof Error ? error.message : String(error)}`);
+      return 'unknown';
+    }
+
+    // Paired to no organization: nobody is a member of one this Hub does not have. That is a
+    // settled local fact, so it is safe to remember, unlike a Portal we could not reach.
     if (!registration?.id) {
-      return false;
+      return 'not-member';
     }
 
-    const whois = await this.portal.whoisApps({ subject, appIds: ['_membership'], surface: 'hub' });
-    if (!whois || whois.status >= 400 || !whois.body?.organizations?.length) {
-      return false;
+    // `whoisApps` does not catch transport failures: a DNS failure, a refused connection or its own
+    // 10s timeout rejects. Unhandled, that reached the Traefik forward-auth handler as a 500 per
+    // request, each one paying the full timeout again.
+    let whois: Awaited<ReturnType<PortalClientService['whoisApps']>>;
+    try {
+      whois = await this.portal.whoisApps({ subject, appIds: ['_membership'], surface: 'hub' });
+    } catch (error) {
+      this.logger.warn(`Portal WhoIs membership lookup failed: ${error instanceof Error ? error.message : String(error)}`);
+      return 'unknown';
     }
 
-    return whois.body.organizations.some((org) => org.organizationId === registration.id);
+    // `null` means Portal is not configured on this Hub; `>= 400` is an outage or a stale device key.
+    if (!whois || whois.status >= 400 || !whois.body) {
+      return 'unknown';
+    }
+
+    // An empty `organizations` IS an answer: Portal knows this subject and puts them in none of ours.
+    return whois.body.organizations?.some((org) => org.organizationId === registration.id) ? 'member' : 'not-member';
   }
 
   private async ensureLocalCompanionUser(rawEmail: string, options?: { allowCreateAdditionalOperator?: boolean }) {
@@ -266,7 +309,7 @@ export class AuthService {
     // it is given and compares it to the stored value, so a row created from a mixed-case Portal
     // address (`Owner@Example.com`) is never found again — that operator can never use the password
     // login form, and after CI-Hub#1300 a Portal address change leaves them with no way in at all.
-    const email = rawEmail.trim().toLowerCase();
+    const email = normalizeUsername(rawEmail);
     const existing = await this.userRepository.getUserByUsername(email);
 
     if (existing) {
@@ -342,7 +385,7 @@ export class AuthService {
       return linkedUser;
     }
 
-    const email = params.email.trim().toLowerCase();
+    const email = normalizeUsername(params.email);
 
     if (!email || !validator.isEmail(email)) {
       throw new TranslatableError('AUTH_ERROR_INVALID_CREDENTIALS', {}, HttpStatus.BAD_REQUEST);
@@ -438,7 +481,7 @@ export class AuthService {
    */
   public login = async (input: LoginBody) => {
     const { username, password } = input;
-    const email = username.trim().toLowerCase();
+    const email = normalizeUsername(username);
 
     const portalIdentity = await this.signInWithPortal(email, password);
 
@@ -516,7 +559,7 @@ export class AuthService {
     }
 
     const { password, username } = input;
-    const email = username.trim().toLowerCase();
+    const email = normalizeUsername(username);
 
     if (!username || !password) {
       throw new TranslatableError('AUTH_ERROR_MISSING_EMAIL_OR_PASSWORD', {}, HttpStatus.BAD_REQUEST);
@@ -618,7 +661,7 @@ export class AuthService {
       throw new TranslatableError('AUTH_ERROR_INVALID_PASSWORD');
     }
 
-    const email = newUsername.trim().toLowerCase();
+    const email = normalizeUsername(newUsername);
 
     if (!validator.isEmail(email)) {
       throw new TranslatableError('AUTH_ERROR_INVALID_USERNAME');
@@ -763,7 +806,7 @@ export class AuthService {
   };
 
   public requestPasswordReset = async (params: { email: string; ipAddress?: string; returnOrigin?: string; deviceId?: string }) => {
-    const email = params.email.trim().toLowerCase();
+    const email = normalizeUsername(params.email);
     const rateLimitAllowed = this.consumePasswordResetRateLimit(email);
 
     this.logger.info('Password reset requested', {
