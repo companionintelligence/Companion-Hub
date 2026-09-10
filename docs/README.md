@@ -8,7 +8,7 @@ Use this index so Hub, Portal, Memory, and agent-only material stay distinct.
 |------|------------|--------------|
 | **Companion Hub** (this repo) | Appliance runtime: installs and supervises marketplace apps | Yes (PolyForm Noncommercial) |
 | **Companion Portal** | Cloud control plane (entitlements, device registration, OIDC) | No |
-| **Companion Memory** (CI-Server / ci-memory) | Personal memory brain on the appliance | No |
+| **Companion Memory** (CI-Server / ci-memory) | Personal memory brain on the appliance | Yes (PolyForm Noncommercial) |
 
 Do not call Hub “CI-OS-Hub”, “Runtipi”, or “Tipi” in new docs. Prefer **Companion Hub** or **Hub**. Prefer **Companion Memory** over CI-Server in user-facing prose; keep `ci-memory` for compose service and package names.
 
