@@ -1,9 +1,16 @@
 name: Mobile Build
 
 # Builds the Tauri mobile app (packages/mobile) for iOS + Android, the same way
-# `desktop-build.yml` builds the desktop app. Trigger manually from the Actions
-# tab (workflow_dispatch) or it runs automatically on `dev` when mobile/frontend
-# code changes.
+# `desktop-build.yml` builds the desktop app.
+#
+# Manual/release-only. Previously also ran automatically on every push to `dev`
+# touching mobile/frontend/common code — that auto-trigger is removed as of
+# 2026-09-10, for the same reason as desktop-build.yml: CI-Hub's native runner
+# minutes were the org's single largest GitHub Actions line (see
+# CI-Engineering/architecture/cost-model.md §4.2). Run before cutting a
+# release, or on demand to verify a mobile-affecting change builds:
+#
+#   gh workflow run mobile-build.yml --repo companionintelligence/CI-Hub --ref dev
 #
 # Artifacts (download from the run's Summary page):
 #   - companion-hub-android-debug-apk  → installable APK (debug-signed; `adb install`)
@@ -15,14 +22,6 @@ name: Mobile Build
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - dev
-    paths:
-      - 'packages/mobile/**'
-      - 'packages/frontend/**'
-      - 'packages/common/**'
-      - '.github/workflows/mobile-build.yml'
 
 concurrency:
   group: mobile-${{ github.ref }}
