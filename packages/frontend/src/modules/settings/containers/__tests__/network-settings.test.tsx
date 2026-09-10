@@ -31,8 +31,8 @@ vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
     queryKey: ['cf'],
     queryFn: async () => ({ tunnelEnabled: true, tunnelId: 'fe950a10-8659', message: 'Tunnel is managed by CI-Cloud.' }),
   }),
-  getStatus5QueryKey: () => ['ts'],
-  getStatus5Options: () => ({
+  getStatus3QueryKey: () => ['ts'],
+  getStatus3Options: () => ({
     queryKey: ['ts'],
     queryFn: async () => ({ installed: false, connected: false, ip: null, hostname: null, backendState: null }),
   }),

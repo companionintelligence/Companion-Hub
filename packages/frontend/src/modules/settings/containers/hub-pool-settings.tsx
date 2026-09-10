@@ -15,6 +15,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Input } from '@/components/ui/Input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/Select';
 import { Switch } from '@/components/ui/Switch';
+import { HintText } from '@/components/ui/field-hint/field-hint';
 import { useDemoMode } from '@/lib/hooks/use-demo-mode';
 import { cn } from '@/lib/utils';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -23,7 +24,7 @@ import { useState } from 'react';
 import type { ReactNode } from 'react';
 import toast from 'react-hot-toast';
 import { useTranslation } from 'react-i18next';
-import { Detail, DetailGrid, LoadingCard, SectionHeader, StatusBadge } from '../components/network-section/network-section';
+import { Detail, DetailGrid, LoadingCard, SectionHeader, StatChip, StatChipRow, StatusBadge } from '../components/network-section/network-section';
 
 /* Shapes mirrored by hand from the backend: every pool route has an empty response schema in
    swagger.json, so the generated SDK types these payloads as `unknown`. Authoritative sources are
@@ -216,13 +217,25 @@ const PeerStatusBadge = ({ status, enabled, t }: { status: PoolPeerStatus; enabl
   return <StatusBadge connected={false} label={t('HUB_POOL_STATUS_PENDING')} />;
 };
 
-/** Sub-heading + one line of plain-language help, repeated for each block of the section. */
+/**
+ * Sub-heading for each block of the section.
+ *
+ * `help` is a TOOLTIP on the heading, not a paragraph under it. Eight blocks each carried
+ * a 25-to-47-word explanation, which together were most of the page's height and pushed
+ * the peer table — the thing an operator opens this section to read — below the fold.
+ * The strings are unchanged and one hover away; the dotted underline advertises that.
+ */
 const Block = ({ title, help, children }: { title: string; help?: string; children: ReactNode }) => (
-  <div className="space-y-2 border-t pt-4">
-    <div>
-      <h3 className="text-sm font-medium">{title}</h3>
-      {help ? <p className="text-xs text-muted-foreground">{help}</p> : null}
-    </div>
+  <div className="space-y-2 border-t pt-3">
+    <h3 className="text-[10px] font-bold uppercase tracking-[0.06em] text-muted-foreground">
+      {help ? (
+        <HintText id={`hub-pool-block-${title}`} hint={help} className="cursor-help underline decoration-dotted underline-offset-2">
+          {title}
+        </HintText>
+      ) : (
+        title
+      )}
+    </h3>
     {children}
   </div>
 );
@@ -517,7 +530,6 @@ export const HubPoolSection = () => {
       <SectionHeader
         icon={Network}
         title={t('HUB_POOL_SECTION_TITLE')}
-        description={t('HUB_POOL_SECTION_DESC')}
         badge={
           <StatusBadge
             connected={status.routingActive}
@@ -528,16 +540,23 @@ export const HubPoolSection = () => {
       <CardContent className="space-y-5">
         {/* ── State at a glance ───────────────────────────────────────── */}
         <div className="space-y-3">
-          <p
-            data-testid="hub-pool-state"
-            data-reason={status.reason}
-            className={cn(
-              'rounded-md border px-3 py-2.5 text-sm',
-              status.routingActive ? 'border-success/30 bg-success/10 text-foreground' : 'border-border/70 bg-muted/30 text-muted-foreground',
-            )}
-          >
-            {reasonCopy[status.reason]}
-          </p>
+          {/* Only when something is NOT nominal. With routing active the badge in the header
+              already says so in one word, and the paragraph restating it was the single largest
+              block of prose on the page. `data-reason` stays on a hidden node so the state is
+              still assertable without rendering a sentence nobody needs. */}
+          {status.routingActive ? (
+            <span data-testid="hub-pool-state" data-reason={status.reason} className="sr-only">
+              {reasonCopy[status.reason]}
+            </span>
+          ) : (
+            <p
+              data-testid="hub-pool-state"
+              data-reason={status.reason}
+              className="rounded-md border border-border/70 bg-muted/30 px-2.5 py-2 text-xs text-muted-foreground"
+            >
+              {reasonCopy[status.reason]}
+            </p>
+          )}
 
           {/* The env flag is the one state a control on this page cannot change, so it reads as a
               notice with a file to edit rather than anything clickable. */}
@@ -548,26 +567,31 @@ export const HubPoolSection = () => {
             </div>
           ) : null}
 
+          {/* Deliberately NOT the pending/unreachable/disabled counts: those are already one
+              row each in the paired-Hubs table below, and rendering them twice both duplicated
+              the badge text and made the number row longer than the thing it summarises. These
+              are the facts that appear nowhere else on the page. */}
+          <StatChipRow>
+            <StatChip value={status.peerCounts.connected} label={t('HUB_POOL_FIELD_PEERS')} tone={status.peerCounts.connected > 0 ? 'ok' : 'muted'} />
+            <StatChip value={status.routing.served} label={t('HUB_POOL_ROUTING_SERVED')} tone={status.routing.served > 0 ? 'ok' : 'muted'} />
+            <StatChip value={status.routing.failed} label={t('HUB_POOL_ROUTING_FAILED')} tone={status.routing.failed > 0 ? 'bad' : 'muted'} />
+            <StatChip
+              value={status.localNode.inFlightRequests}
+              label={t('HUB_POOL_FIELD_QUEUE')}
+              hint={t('HUB_POOL_QUEUE_HINT')}
+              hintId="hub-pool-queue"
+            />
+            <StatChip value={status.localNode.hardwareTier ?? t('COMMON_UNKNOWN')} label={t('HUB_POOL_FIELD_HARDWARE')} tone="muted" />
+          </StatChipRow>
+
           <DetailGrid>
             <Detail label={t('HUB_POOL_FIELD_NODE')} value={status.localNode.nodeFqdn ?? t('COMMON_UNKNOWN')} />
             <Detail label={t('HUB_POOL_FIELD_TAILNET')} value={status.localNode.tailnet ?? t('COMMON_UNKNOWN')} />
-            <Detail label={t('HUB_POOL_FIELD_HARDWARE')} value={status.localNode.hardwareTier ?? t('COMMON_UNKNOWN')} />
-            <Detail label={t('HUB_POOL_FIELD_QUEUE')} value={String(status.localNode.inFlightRequests)} />
-            <Detail
-              label={t('HUB_POOL_FIELD_PEERS')}
-              value={t('HUB_POOL_PEER_COUNTS', {
-                connected: status.peerCounts.connected,
-                pending: status.peerCounts.pending,
-                unreachable: status.peerCounts.unreachable,
-                disabled: status.peerCounts.disabled,
-              })}
-            />
             <Detail
               label={t('HUB_POOL_FIELD_LOCAL_BACKENDS')}
               value={status.localNode.backends.length ? backendSummary(status.localNode.backends, t) : t('HUB_POOL_NO_BACKENDS')}
             />
           </DetailGrid>
-          <p className="text-xs text-muted-foreground">{t('HUB_POOL_QUEUE_HINT')}</p>
 
           {status.localNode.capabilitiesError ? (
             <p className="rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning">
@@ -590,9 +614,17 @@ export const HubPoolSection = () => {
                 checked={status.settings.poolEnabled}
                 disabled={demoMode || envLocked || settingsMutation.isPending}
                 onCheckedChange={(checked: boolean) => settingsMutation.mutate({ body: { poolEnabled: checked } })}
-                label={t('HUB_POOL_TOGGLE_LABEL')}
+                label={
+                  <HintText
+                    id="hub-pool-toggle"
+                    hint={t('HUB_POOL_TOGGLE_HELP')}
+                    className="cursor-help underline decoration-dotted underline-offset-2"
+                  >
+                    {t('HUB_POOL_TOGGLE_LABEL')}
+                  </HintText>
+                }
               />
-              <p className="text-xs text-muted-foreground">{envLocked ? t('HUB_POOL_TOGGLE_ENV_LOCKED') : t('HUB_POOL_TOGGLE_HELP')}</p>
+              {envLocked ? <p className="text-xs text-warning">{t('HUB_POOL_TOGGLE_ENV_LOCKED')}</p> : null}
             </div>
 
             {/* The two halves, below the master and indented under it. Each renders the PERSISTED
@@ -606,9 +638,17 @@ export const HubPoolSection = () => {
                   checked={status.settings.poolOutboundEnabled}
                   disabled={demoMode || envLocked || outboundEnvLocked || !status.settings.poolEnabled || directionMutation.isPending}
                   onCheckedChange={(checked: boolean) => directionMutation.mutate({ poolOutboundEnabled: checked })}
-                  label={t('HUB_POOL_OUTBOUND_LABEL')}
+                  label={
+                    <HintText
+                      id="hub-pool-outbound"
+                      hint={t('HUB_POOL_OUTBOUND_HELP')}
+                      className="cursor-help underline decoration-dotted underline-offset-2"
+                    >
+                      {t('HUB_POOL_OUTBOUND_LABEL')}
+                    </HintText>
+                  }
                 />
-                <p className="text-xs text-muted-foreground">{outboundEnvLocked ? t('HUB_POOL_OUTBOUND_ENV_LOCKED') : t('HUB_POOL_OUTBOUND_HELP')}</p>
+                {outboundEnvLocked ? <p className="text-xs text-warning">{t('HUB_POOL_OUTBOUND_ENV_LOCKED')}</p> : null}
               </div>
 
               <div className="space-y-1.5">
@@ -618,9 +658,17 @@ export const HubPoolSection = () => {
                   checked={status.settings.poolInboundEnabled}
                   disabled={demoMode || envLocked || inboundEnvLocked || !status.settings.poolEnabled || directionMutation.isPending}
                   onCheckedChange={(checked: boolean) => directionMutation.mutate({ poolInboundEnabled: checked })}
-                  label={t('HUB_POOL_INBOUND_LABEL')}
+                  label={
+                    <HintText
+                      id="hub-pool-inbound"
+                      hint={t('HUB_POOL_INBOUND_HELP')}
+                      className="cursor-help underline decoration-dotted underline-offset-2"
+                    >
+                      {t('HUB_POOL_INBOUND_LABEL')}
+                    </HintText>
+                  }
                 />
-                <p className="text-xs text-muted-foreground">{inboundEnvLocked ? t('HUB_POOL_INBOUND_ENV_LOCKED') : t('HUB_POOL_INBOUND_HELP')}</p>
+                {inboundEnvLocked ? <p className="text-xs text-warning">{t('HUB_POOL_INBOUND_ENV_LOCKED')}</p> : null}
               </div>
             </div>
 
@@ -632,7 +680,15 @@ export const HubPoolSection = () => {
                   max={MAX_LOCAL_AFFINITY}
                   name="hubPoolLocalAffinity"
                   data-testid="hub-pool-affinity-input"
-                  label={t('HUB_POOL_AFFINITY_LABEL')}
+                  label={
+                    <HintText
+                      id="hub-pool-affinity"
+                      hint={t('HUB_POOL_AFFINITY_HELP')}
+                      className="cursor-help underline decoration-dotted underline-offset-2"
+                    >
+                      {t('HUB_POOL_AFFINITY_LABEL')}
+                    </HintText>
+                  }
                   disabled={demoMode || settingsMutation.isPending}
                   value={form.poolLocalAffinity}
                   onChange={(event) => {
@@ -640,7 +696,6 @@ export const HubPoolSection = () => {
                     setDraft({ ...form, poolLocalAffinity: Number.isFinite(next) ? next : MIN_LOCAL_AFFINITY });
                   }}
                 />
-                <p className="text-xs text-muted-foreground">{t('HUB_POOL_AFFINITY_HELP')}</p>
               </div>
 
               <div className="space-y-1.5">
@@ -650,7 +705,15 @@ export const HubPoolSection = () => {
                   max={MAX_HEALTH_POLL_SECONDS}
                   name="hubPoolHealthPollSeconds"
                   data-testid="hub-pool-poll-input"
-                  label={t('HUB_POOL_POLL_LABEL')}
+                  label={
+                    <HintText
+                      id="hub-pool-poll"
+                      hint={t('HUB_POOL_POLL_HELP')}
+                      className="cursor-help underline decoration-dotted underline-offset-2"
+                    >
+                      {t('HUB_POOL_POLL_LABEL')}
+                    </HintText>
+                  }
                   disabled={demoMode || settingsMutation.isPending}
                   value={form.poolHealthPollSeconds}
                   onChange={(event) => {
@@ -658,7 +721,6 @@ export const HubPoolSection = () => {
                     setDraft({ ...form, poolHealthPollSeconds: Number.isFinite(next) ? next : MIN_HEALTH_POLL_SECONDS });
                   }}
                 />
-                <p className="text-xs text-muted-foreground">{t('HUB_POOL_POLL_HELP')}</p>
               </div>
             </div>
 
@@ -844,7 +906,15 @@ export const HubPoolSection = () => {
                       label={t('HUB_POOL_FIELD_LAST_SEEN')}
                       value={peer.lastSeenAt ? new Date(peer.lastSeenAt).toLocaleString() : t('HUB_POOL_NEVER_SEEN')}
                     />
-                    <Detail label={t('HUB_POOL_FIELD_QUEUE')} value={String(peer.inFlightRequests)} />
+                    {/* `inFlightRequests` is optional on a peer — a capabilities probe that has not
+                        landed yet leaves it undefined, and `String(undefined)` printed the literal
+                        word "undefined" in the cell. Nor may it fall back to 0: an idle peer and a
+                        peer we could not read are different facts that send an operator to
+                        different places. */}
+                    <Detail
+                      label={t('HUB_POOL_FIELD_QUEUE')}
+                      value={typeof peer.inFlightRequests === 'number' ? String(peer.inFlightRequests) : t('COMMON_UNKNOWN')}
+                    />
                     <Detail label={t('HUB_POOL_FIELD_HARDWARE')} value={peer.lastCapabilities?.hardwareTier ?? t('COMMON_UNKNOWN')} />
                     <Detail
                       label={t('HUB_POOL_FIELD_BACKENDS')}
@@ -1038,14 +1108,28 @@ export const HubPoolSection = () => {
                 ))}
               </ul>
             ) : (
-              <p className="text-sm text-muted-foreground">{t('HUB_POOL_DISCOVERABLE_EMPTY')}</p>
+              <p className="py-2 text-center text-xs italic text-muted-foreground">
+                <HintText
+                  id="hub-pool-discoverable-empty"
+                  hint={t('HUB_POOL_DISCOVERABLE_EMPTY')}
+                  className="cursor-help underline decoration-dotted underline-offset-2"
+                >
+                  {t('HUB_POOL_DISCOVERABLE_EMPTY_SHORT')}
+                </HintText>
+              </p>
             )
           ) : (
             <p
               data-testid="hub-pool-discovery-unconfigured"
-              className="rounded-md border border-border/70 bg-muted/30 px-3 py-2.5 text-sm text-muted-foreground"
+              className="rounded-md border border-border/70 bg-muted/30 px-2.5 py-2 text-xs text-muted-foreground"
             >
-              {t('HUB_POOL_DISCOVERY_UNCONFIGURED')}
+              <HintText
+                id="hub-pool-discovery-unconfigured-hint"
+                hint={t('HUB_POOL_DISCOVERY_UNCONFIGURED')}
+                className="cursor-help underline decoration-dotted underline-offset-2"
+              >
+                {t('HUB_POOL_DISCOVERY_UNCONFIGURED_SHORT')}
+              </HintText>
             </p>
           )}
         </Block>
