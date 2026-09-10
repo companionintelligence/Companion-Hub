@@ -6,6 +6,8 @@
  * dir — so the two start functions stay separate rather than branching throughout.
  */
 
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 import { isHostPortBindConflict, runDockerComposeUpOnce } from '../compose-up.js';
 import { healHubPortBindConflict, healHubPortsBeforeStartup } from '../heal-hub-ports.js';
 import { initDockerConfig } from '../init-docker-config.js';
@@ -204,6 +206,20 @@ export async function setupHub(env: HubEnv) {
   const envOverrides = buildEnvOverrides(envFileName);
   await runScript('scripts/init-traefik.ts', () => initTraefik(), envOverrides);
   await runScript('scripts/init-docker-config.ts', () => initDockerConfig(), envOverrides);
+
+  if (!existsSync(join(process.cwd(), envFileName))) {
+    printMessageBox(
+      'Setup complete — env file still missing',
+      [
+        `Host assets prepared for ${env}, but ${envFileName} does not exist yet.`,
+        `This template is not generated for you: cp .env.example ${envFileName}, then fill in the required values.`,
+        `Then: ${BASE_COMMAND} up ${env}`,
+      ],
+      'yellow',
+    );
+    return;
+  }
+
   printMessageBox(
     'Setup complete',
     [`Host assets prepared for ${env}.`, `Next: ${BASE_COMMAND} up ${env}`, `Then: ${BASE_COMMAND} register ${env}`],
