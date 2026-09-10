@@ -21,9 +21,10 @@ import { PoolAppGuard } from './guards/pool-app.guard';
 import { PoolPeerGuard } from './guards/pool-peer.guard';
 
 // forwardRef with InferenceModule: HubPoolPeerService needs InferenceRouterService (to report this
-// node's own capabilities to peers) and InferenceEnvResolver needs HubPoolPeerService (to know
-// whether to route an app's CI_LLM_BASE_URL through the pool proxy) — same circular shape already
-// used between AppsModule and InferenceModule.
+// node's own capabilities to peers) and InferenceEndpointService needs HubPoolPeerService (to know
+// whether to route an app's inference endpoints through the pool proxy — for both the generated
+// app.env and the credentials.env an app bootstraps from) — same circular shape already used
+// between AppsModule and InferenceModule.
 @Module({
   imports: [LoggerModule, FilesystemModule, EncryptionModule, TailscaleModule, forwardRef(() => InferenceModule), forwardRef(() => PortalModule)],
   controllers: [HubPoolController],

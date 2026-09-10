@@ -803,9 +803,11 @@ export class InferenceController {
 
   // ─── App Credentials ──────────────────────────────────────────────────
   // Hub-managed sibling apps may query these endpoints to discover backend
-  // connection info. Apps can also use the v1 proxy routes above (mounted
-  // at /api/inference/v1) which automatically route through the pool when
-  // peers are connected.
+  // connection info. What comes back is pool-aware: once this Hub has a
+  // connected peer, the endpoint handed out is this node's pool proxy, the
+  // same override the generated app.env carries (both go through
+  // InferenceEndpointService). Apps can also use the v1 proxy routes above
+  // (mounted at /api/inference/v1), which pool the same way.
 
   @UseGuards(InternalNetworkGuard)
   @Get('apps/:slug/credentials')
