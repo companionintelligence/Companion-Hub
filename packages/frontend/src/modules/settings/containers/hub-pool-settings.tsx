@@ -479,7 +479,10 @@ export const HubPoolSection = () => {
       <Card data-testid="hub-pool-card">
         <SectionHeader icon={Network} title={t('HUB_POOL_SECTION_TITLE')} />
         <CardContent>
-          <p data-testid="hub-pool-status-error" className="rounded-md border border-danger/30 bg-danger/10 px-3 py-2.5 text-sm text-danger">
+          <p
+            data-testid="hub-pool-status-error"
+            className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2.5 text-sm text-destructive"
+          >
             {t('HUB_POOL_STATUS_ERROR')}
           </p>
         </CardContent>
@@ -990,7 +993,7 @@ export const HubPoolSection = () => {
                           : t('HUB_POOL_ROUTING_INBOUND', { node: entry.node ?? t('HUB_POOL_ROUTING_NO_NODE') })}
                       </span>
                       <span className="font-mono text-muted-foreground">{entry.model ?? entry.path}</span>
-                      <span className={cn('ml-auto', entry.outcome === 'served' ? 'text-muted-foreground' : 'font-medium text-danger')}>
+                      <span className={cn('ml-auto', entry.outcome === 'served' ? 'text-muted-foreground' : 'font-medium text-destructive')}>
                         {entry.outcome === 'served' ? t('HUB_POOL_ROUTING_DURATION', { ms: entry.durationMs }) : t('HUB_POOL_ROUTING_FAILED_LABEL')}
                       </span>
                     </div>
