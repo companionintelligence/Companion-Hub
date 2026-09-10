@@ -31,6 +31,23 @@ import { ErrorReportingService } from '@/core/error-reporting/error-reporting.se
 import type { AppUrn } from '@ci-hub/common/types';
 import { createAppUrn } from '@/common/helpers/app-helpers';
 import * as registrationRecoveryState from '../registration-recovery-state';
+import { parseComposeJson } from '@ci-hub/common/schemas';
+import { MarketplaceEntitlementService } from '@/core/portal/marketplace-entitlement.service';
+import { assertHostDevicesAvailable } from '../commands/host-device-preflight';
+
+// buildInstallPlan's image listing goes through extractComposeImages -> parseComposeJson; the
+// schema itself has its own coverage elsewhere, so keep this suite focused on plan orchestration.
+vi.mock('@ci-hub/common/schemas', async (importOriginal) => ({
+  ...((await importOriginal()) as any),
+  parseComposeJson: vi.fn().mockReturnValue({ services: [], overrides: [] }),
+}));
+
+// assertHostDevicesAvailable has its own coverage in host-device-preflight's own tests; here it's
+// just one of buildInstallPlan's four checks, so stub it rather than standing up its full compose
+// + filesystem dependency chain.
+vi.mock('../commands/host-device-preflight', () => ({
+  assertHostDevicesAvailable: vi.fn().mockResolvedValue(undefined),
+}));
 
 describe('AppLifecycleService', () => {
   let service: AppLifecycleService;
@@ -545,6 +562,117 @@ describe('AppLifecycleService', () => {
       await service.invokeCommand(data, reply);
       expect(reply).toHaveBeenCalledWith({ success: false, message: 'Exec failed' });
       expect(appsRepository.updateAppById).toHaveBeenCalledWith(99, expect.objectContaining({ status: 'install_failed' }));
+    });
+  });
+
+  describe('buildInstallPlan', () => {
+    const appUrn = 'testapp:ci-marketplace' as any;
+    const baseAppInfo = {
+      id: 'testapp',
+      urn: 'urn:app:testapp',
+      name: 'Test App',
+      port: 8080,
+      cihub_app_version: 1,
+      exposable: true,
+      supported_architectures: ['amd64'],
+      form_fields: [],
+    };
+    let moduleRefGet: ReturnType<typeof vi.fn>;
+
+    beforeEach(() => {
+      moduleRefGet = vi.mocked((service as any).moduleRef.get);
+      moduleRefGet.mockReturnValue(undefined); // no MarketplaceEntitlementService wired — treated as ok
+      configService.getConfig.mockReturnValue({ isProduction: false, architecture: 'amd64', userSettings: { localDomain: 'lan' } } as any);
+      marketplaceService.getAppInfoFromAppStoreOrInstalled.mockResolvedValue(baseAppInfo as any);
+      marketplaceService.getDockerComposeJson.mockResolvedValue({ content: 'services: {}' } as any);
+      imageSizeService.verifyAppArchitecture.mockResolvedValue(null); // registry unreachable — best-effort ok
+      vi.mocked(assertHostDevicesAvailable).mockResolvedValue(undefined);
+      vi.mocked(parseComposeJson).mockReturnValue({ services: [], overrides: [] } as any);
+    });
+
+    it('reports every check ok and lists no images when the compose is empty', async () => {
+      const plan = await service.buildInstallPlan(appUrn, {});
+
+      expect(plan.blocked).toBe(false);
+      expect(plan.checks).toEqual({
+        config: { ok: true },
+        entitlement: { ok: true },
+        hostDevices: { ok: true },
+        architecture: { ok: true },
+      });
+      expect(plan.images).toEqual([]);
+    });
+
+    it('lists compose images with their local cache status, without pulling', async () => {
+      vi.mocked(parseComposeJson).mockReturnValue({
+        services: [
+          { name: 'app', image: 'ghcr.io/ci/testapp:latest' },
+          { name: 'db', image: 'postgres:16' },
+        ],
+        overrides: [],
+      } as any);
+      dockerService.imageExistsLocally.mockImplementation(async (image) => image === 'postgres:16');
+
+      const plan = await service.buildInstallPlan(appUrn, {});
+
+      expect(plan.images).toEqual([
+        { image: 'ghcr.io/ci/testapp:latest', cachedLocally: false },
+        { image: 'postgres:16', cachedLocally: true },
+      ]);
+      expect(dockerService.pullImages).not.toHaveBeenCalled();
+      expect(dockerService.composeApp).not.toHaveBeenCalled();
+    });
+
+    it('blocks and surfaces the reason when the entitlement check fails', async () => {
+      moduleRefGet.mockImplementation((token: unknown) =>
+        token === MarketplaceEntitlementService ? { assertForInstall: vi.fn().mockRejectedValue(new Error('payment required')) } : undefined,
+      );
+
+      const plan = await service.buildInstallPlan(appUrn, {});
+
+      expect(plan.blocked).toBe(true);
+      expect(plan.checks.entitlement).toEqual({ ok: false, reason: 'payment required' });
+      // The other checks still ran and are reported independently.
+      expect(plan.checks.config).toEqual({ ok: true });
+    });
+
+    it('blocks and surfaces the reason when a required host device is unavailable', async () => {
+      vi.mocked(assertHostDevicesAvailable).mockRejectedValue(new Error('/dev/kfd not available on this host'));
+
+      const plan = await service.buildInstallPlan(appUrn, {});
+
+      expect(plan.blocked).toBe(true);
+      expect(plan.checks.hostDevices).toEqual({ ok: false, reason: '/dev/kfd not available on this host' });
+    });
+
+    it('blocks and surfaces the missing manifest when the image has no build for this architecture', async () => {
+      imageSizeService.verifyAppArchitecture.mockResolvedValue({ ok: false, image: 'ghcr.io/ci/testapp:latest', available: ['arm64'] });
+
+      const plan = await service.buildInstallPlan(appUrn, {});
+
+      expect(plan.blocked).toBe(true);
+      expect(plan.checks.architecture).toEqual({
+        ok: false,
+        reason: 'ghcr.io/ci/testapp:latest has no manifest for amd64 (available: arm64)',
+      });
+    });
+
+    it('blocks and surfaces config validation errors from the shared validateAppConfig path', async () => {
+      vi.spyOn(service, 'validateAppConfig').mockResolvedValue({
+        valid: false,
+        errors: [{ env_variable: 'domain', label: 'Domain', messageKey: 'APP_ERROR_DOMAIN_REQUIRED_IF_EXPOSE_APP' }],
+      });
+
+      const plan = await service.buildInstallPlan(appUrn, { exposed: true });
+
+      expect(plan.blocked).toBe(true);
+      expect(plan.checks.config).toEqual({ ok: false, reason: 'Domain' });
+    });
+
+    it('throws when the app does not exist in any store or install', async () => {
+      marketplaceService.getAppInfoFromAppStoreOrInstalled.mockResolvedValue(null as any);
+
+      await expect(service.buildInstallPlan(appUrn, {})).rejects.toThrow();
     });
   });
 
