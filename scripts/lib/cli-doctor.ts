@@ -11,11 +11,13 @@ import { runBridgeDoctorSection } from '../bridge-diagnostics-cli.js';
 import { parseEnvFile } from '../env-file.js';
 import { runHubCleanup } from '../hub-cleanup-lib.js';
 import { runNetworkDoctorSection } from '../network-diagnostics-cli.js';
+import { HubUnreachableError } from '../public-web-cli.js';
 import { getEnvFileOrExit, hasCloudflareTunnelToken, hasCloudflareTunnelTokenAtDataDir } from './cli-compose-env.js';
+import { fetchHubClaimStatus, HubClaimNoDeviceKey, type HubClaimStatus } from './hub-claim.js';
 import { run, runCapture } from './cli-proc.js';
 import { confirmDestructiveAction } from './cli-prompt.js';
 import { checkDockerAvailable, requireRepoRoot } from './cli-repo-context.js';
-import type { HubEnv } from './cli-types.js';
+import { BASE_COMMAND, type HubEnv } from './cli-types.js';
 import { bold, cliFail, cliOk, cliWarn, colorize, dim, printMessageBox, STEP_ICONS } from './cli-ui.js';
 import { composeArgsForContext, envOverridesForContext, type HubContext, requireRepoOrApplianceContext, resolveHubContext } from './hub-context.js';
 import { resolveRootFolderHost } from './paths.js';
@@ -27,6 +29,57 @@ export function logsHub(env: HubEnv, service?: string) {
   args.push('logs', '-f');
   if (service) args.push(service);
   run('docker', args, envOverrides, ctx.cwd);
+}
+
+/**
+ * Does this Hub have an operator to be?
+ *
+ * The half-provisioned state doctor exists to catch: `cihub register` succeeded, the device key is
+ * on disk, and the `user` table is empty — so every operator-authenticated call answers 409 and the
+ * node looks, from the outside, like it has a broken key. Twelve fleet nodes sat like that. Doctor
+ * is what an installer runs at the end of a node, so this is where it gets caught.
+ *
+ * A line, a failure count, and never a guess: a Hub that is not running, or that this machine holds
+ * no device key for, has told us nothing about its operators, and reporting a fault there would put
+ * a red line on every pre-install machine.
+ */
+export async function runOperatorDoctorSection(envFileName: string): Promise<{ lines: string[]; failureCount: number; issueCount: number }> {
+  let status: HubClaimStatus;
+
+  try {
+    status = await fetchHubClaimStatus(envFileName);
+  } catch (error) {
+    const why =
+      error instanceof HubClaimNoDeviceKey
+        ? 'no device key on this machine'
+        : error instanceof HubUnreachableError
+          ? 'Hub not answering'
+          : error instanceof Error
+            ? error.message.slice(0, 60)
+            : String(error).slice(0, 60);
+
+    return { lines: [`Operator             ${colorize(`${STEP_ICONS.pending} unknown`, 'dim')}  ${dim(why)}`], failureCount: 0, issueCount: 0 };
+  }
+
+  if (status.operators > 0) {
+    return { lines: [`Operator             ${cliOk(`${status.operators} present`)}`], failureCount: 0, issueCount: 0 };
+  }
+
+  // Before pairing, having no operator is the expected state, not a fault — there is nothing yet to
+  // claim the Hub on behalf of. `cihub register` is the next step, and it is not doctor's business.
+  if (!status.registered) {
+    return {
+      lines: [`Operator             ${cliWarn('none yet')}  ${dim(`register first: ${BASE_COMMAND} register`)}`],
+      failureCount: 0,
+      issueCount: 1,
+    };
+  }
+
+  return {
+    lines: [`Operator             ${cliFail('none')}  ${dim(`Hub is registered but unclaimed — ${BASE_COMMAND} claim --email <you@example.com>`)}`],
+    failureCount: 1,
+    issueCount: 1,
+  };
 }
 
 export async function doctorHub(env: HubEnv, options?: { repairNetworks?: boolean }) {
@@ -45,6 +98,8 @@ export async function doctorHub(env: HubEnv, options?: { repairNetworks?: boolea
   // firewall drops these silently and the failure is invisible from the host,
   // so it is checked from inside the container.
   const bridgeSection = await runBridgeDoctorSection(envFileName);
+  // The one check that is about the Hub's own identity rather than the machine under it.
+  const operatorSection = await runOperatorDoctorSection(envFileName);
   const dockerOk = checkDockerAvailable();
   const composeOk = runCapture('docker', ['compose', 'version']).ok;
   const composeFilesFound = composeFiles.every((file) => existsSync(resolvePath(file)));
@@ -55,14 +110,19 @@ export async function doctorHub(env: HubEnv, options?: { repairNetworks?: boolea
     `Root folder          ${existsSync(rootFolderHost) ? cliOk('present') : cliWarn('missing')}  ${rootFolderHost}`,
     `Compose files        ${composeFilesFound ? cliOk('found') : cliFail('missing')}  ${composeFiles.join(', ')}`,
     `Tunnel token         ${doctorHasTunnelToken(ctx) ? cliOk('present') : colorize(`${STEP_ICONS.pending} absent`, 'dim')}`,
+    ...operatorSection.lines,
     ...networkSection.lines,
     ...bridgeSection.lines,
   ];
   // Which local checks may fail the command is already decided by how each line is drawn: `cliFail`
   // is a machine that cannot run the stack, `cliWarn` is state doctor exists to report — a missing
   // env file before setup is an answer, not a fault.
-  const failureCount = [dockerOk, composeOk, composeFilesFound].filter((ok) => !ok).length + networkSection.failureCount + bridgeSection.failureCount;
-  const issueCount = networkSection.issueCount + bridgeSection.issueCount;
+  const failureCount =
+    [dockerOk, composeOk, composeFilesFound].filter((ok) => !ok).length +
+    networkSection.failureCount +
+    bridgeSection.failureCount +
+    operatorSection.failureCount;
+  const issueCount = networkSection.issueCount + bridgeSection.issueCount + operatorSection.issueCount;
   printMessageBox(`Hub doctor  [${ctx.env}]`, lines, failureCount > 0 ? 'red' : issueCount > 0 ? 'yellow' : 'cyan');
   if (failureCount > 0) process.exitCode = 1;
 }

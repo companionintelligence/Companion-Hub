@@ -34,6 +34,7 @@ companion-hub --detached   # one-shot headless start of the Hub stack, then exit
 cihub up                   # same, via the CLI
 cihub status               # containers, tunnel, VPN, models
 cihub register --code <c>  # pair with Companion Portal (required for marketplace installs)
+cihub claim --email <a>    # create the first operator headlessly (after register)
 ```
 
 Discoverability guarantees:
@@ -147,6 +148,46 @@ cihub register local
 ```
 
 ![Screenshot of cihub register local](./images/cli/register.svg)
+
+### `cihub claim [env] [--email <addr>]`
+
+Creates this Hub's **first operator**, without a browser. Run it on the Hub, after `cihub register`.
+
+Registration and claiming are two different things, and only one of them was ever headless.
+`cihub register` pairs the appliance and writes `ciHubApiKey` and `ciHubOrganizationId` into
+`state/settings.json`. It does **not** create a row in the `user` table — that row was written only
+by an interactive Portal sign-in landing on `/api/auth/portal/callback`, and `POST /api/auth/register`
+cannot finish unattended because Portal answers it with `requiresEmailVerification`.
+
+A Hub in that state is paired, keyed, and unable to authenticate anybody: the device key is accepted,
+there is no operator for it to speak as, and every guarded route answers **409
+`AUTH_ERROR_HUB_NOT_CLAIMED`** — *"This Hub is registered but has no operator yet"*. It used to answer
+`401 SYSTEM_ERROR_YOU_MUST_BE_LOGGED_IN`, which is why twelve of sixteen nodes on the Hub Pool fleet
+were diagnosed for a week as having bad device keys. The keys were fine.
+
+What `claim` requires, and why none of it is a new way in:
+
+| Gate | Why it is not a weakening |
+|---|---|
+| The host-local device key | It lives in `<data-dir>/state/settings.json`; presenting it means you can already read the Hub's credentials off the disk |
+| The Hub must be registered | Pairing is what proved organization membership; an unpaired Hub has no organization for an operator to belong to |
+| There must be no operator yet | First-operator bootstrap is the one admission that skips the Portal membership check, so it happens at most once |
+
+The row itself is written by `admitHubPerson` — the same function the browser path calls — so there
+is exactly one place that decides who may become an operator on this appliance.
+
+**Safe to re-run.** A Hub that already has an operator is reported and the command exits `0`, the
+same shape `cihub register` takes when the Hub is already registered, so an installer replaying the
+whole flow does not trip on the one step that is done. With no terminal and no `--email` it exits `2`
+naming the flag rather than blocking on a stdin that will never answer.
+
+```bash
+cihub claim --email you@example.com
+```
+
+Afterwards, sign in through CI Portal with the same address for a browser session; anyone else in
+the organization is admitted the normal way, membership-checked.
+
 
 ### `cihub login [--scope <scope>]`
 
@@ -763,6 +804,7 @@ while believing it was twenty is the worse failure.
 | `--backends a,b` | `backends` only: from `ollama`, `vllm`, `lucebox`, `dspark`, `mtplx`, `lemonade`. Omit for all six |
 | `--data-dir <path>` | Where the Hub keeps runner venvs and model dirs on the **remote** machine (default `/var/lib/companion-hub`) |
 | `--code <code>` | `install` only: one Portal pairing code, which enrolls exactly one node |
+| `--claim-email <addr>` | `install` only: create each Hub's first operator for this CI Account address (`CIHUB_CLAIM_EMAIL`). Omitted, the claim step is **skipped and reported as skipped** — never guessed |
 | `--join-pool <node>` | `install` only: pair each installed node into that Hub's pool |
 | `--pool-pin <digits>` | `install` only: the PIN minted on the Hub being joined, for pairing by address |
 | `--hub` | `update` only: update the Hub image |
@@ -798,9 +840,16 @@ long enough to look absent to everything else.
 ### `cihub fleet install`
 
 Per node, in order: probe hardware → **load gate** → Linux and Docker check → install `cihub` →
-`hub up` and register → install the status-file timer → optionally join a pool. Each step re-checks
-the state it claims to have produced, because a step that trusts an exit code is how a fleet ends up
-believing it registered machines it never reached.
+`hub up` and register → **claim** → install the status-file timer → optionally join a pool. Each step
+re-checks the state it claims to have produced, because a step that trusts an exit code is how a fleet
+ends up believing it registered machines it never reached.
+
+The **claim** step is the one this list used to be missing. Registering a node does not give it an
+operator, and a Hub with no operator answers `409 AUTH_ERROR_HUB_NOT_CLAIMED` to its own device key —
+the state twelve of sixteen Hub Pool nodes were in while it was being read as a key failure. Pass
+`--claim-email <addr>` to run it; without it the step is skipped and says so on the node's line, because
+guessing whose CI Account owns fourteen appliances is not a default anything should hold. It is safe to
+re-run: a Hub that already has an operator reports it and the step passes.
 
 The **load gate** refuses any node above 1.5× cores of one-minute load. A fleet-wide pass caught one
 machine mid-inference at load 108–116 on 32 cores; its package transaction stalled rebuilding an
@@ -903,6 +952,8 @@ report — still reaches you on a failing run.
   `register` now refuses immediately naming `--code` rather than hanging on a stdin that will never
   answer and eventually exiting `0` having registered nothing. There is no assume-yes opt-in here:
   assuming yes cannot invent a pairing code, which only your CI Account can produce.
+- **`cihub claim` with no terminal and no `--email`.** Same rule as `register`, for the same reason:
+  the prompt cannot be answered over `ssh -n`, so it refuses naming the flag.
 - **`fleet install --execute` with no way to get a pairing code**, or a Postgres password shorter
   than 8 characters. Both are checked before the first node is dialled.
 
@@ -925,6 +976,7 @@ normalization is in `scripts/lib/cli-args.ts`.
 | `cli-teardown.ts` | `down`, `restart`, `recreate`, `clean`, `reset` |
 | `cli-doctor.ts` | `status`, `logs`, `doctor`, `uninstall` |
 | `cli-register.ts` | `register`, `device-id` |
+| `cli-claim.ts` | `claim` |
 | `cli-app.ts` | `app` |
 | `cli-models.ts` | `models`, `mcp`, `public-web` |
 | `cli-pool.ts` | `pool` |

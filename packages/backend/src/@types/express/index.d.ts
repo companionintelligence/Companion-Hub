@@ -15,6 +15,16 @@ declare global {
        * See `isGrantExemptPrincipal` in `hub-session-operator.ts`.
        */
       hubPrincipal?: 'session' | 'portal-device' | 'cli';
+      /**
+       * A host-local credential (device key or CLI JWT) authenticated, but this Hub has no
+       * operator row for it to speak as — it was registered with Portal and never claimed.
+       *
+       * Set INSTEAD of `user`, never alongside it: the middleware used to assign the missing
+       * operator to `req.user` anyway, so `AuthGuard` answered every pooled request with
+       * "you must be logged in" and the whole fleet was diagnosed as having bad device keys.
+       * See `AuthGuard` and `POST /api/auth/hub/claim`.
+       */
+      hubUnclaimed?: boolean;
     }
   }
 }

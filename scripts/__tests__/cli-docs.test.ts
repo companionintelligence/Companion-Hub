@@ -84,3 +84,34 @@ describe('exit codes', () => {
     expect(cliDoc).toContain('The pairing-code prompt needs a terminal');
   });
 });
+
+/**
+ * Claiming has to be findable, or it is not a fix.
+ *
+ * The condition it clears is invisible by construction: a registered Hub with no operator answers
+ * every guarded route the same way whether the key is wrong or the Hub is empty. An operator who
+ * cannot find `cihub claim` in `--help` goes back to re-issuing keys, which is what twelve nodes'
+ * worth of the Hub Pool fleet did for a week.
+ */
+describe('claim is discoverable', () => {
+  it('is listed in --help and man, alongside register', () => {
+    for (const rendered of [stripAnsi(renderHelp()), stripAnsi(renderManPage())]) {
+      expect(rendered).toContain('cihub claim');
+    }
+  });
+
+  it('is named among the commands that take an [env]', () => {
+    expect(stripAnsi(renderManPage())).toContain('register, claim,');
+  });
+
+  it('has its own section in docs/CLI.md, saying what register does NOT do', () => {
+    expect(cliDoc).toContain('### `cihub claim [env] [--email <addr>]`');
+    // The sentence the whole misdiagnosis turned on.
+    expect(cliDoc).toContain('AUTH_ERROR_HUB_NOT_CLAIMED');
+    expect(cliDoc).toContain('cihub claim --email');
+  });
+
+  it('lists cli-claim.ts in the implementation map', () => {
+    expect(cliDoc).toContain('| `cli-claim.ts` | `claim` |');
+  });
+});

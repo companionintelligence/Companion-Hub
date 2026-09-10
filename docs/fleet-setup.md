@@ -27,13 +27,23 @@ nothing here is fleet-only.
 ```bash
 cihub up                     # start the stack
 cihub register --code <c>    # pair with Companion Portal
+cihub claim --email <you>    # create this Hub's first operator
 cihub status                 # containers, tunnel, VPN, models
-cihub doctor                 # env files, Docker access, bind mounts
+cihub doctor                 # env files, Docker access, bind mounts, operator
 ```
 
 `cihub register` prints the device ID and Portal URL, then prompts for the six-character pairing code
 you generate in the Portal UI. Pass `--code` to skip the prompt in a script. Pairing provisions the
 Cloudflare tunnel and DNS, which is why it takes a minute or two rather than being instant.
+
+**Registered is not claimed, and this step used to be missing from this page.** `register` writes the
+device key and the organization id and stops; it does not create a row in the Hub's `user` table. That
+row was written only by an interactive Portal sign-in in a browser, which is exactly what a machine
+reached over SSH does not have. A Hub in between is paired, keyed, and unable to authenticate anybody:
+its device key is accepted and there is no operator for it to speak as, so every operator-authenticated
+route answers `409 AUTH_ERROR_HUB_NOT_CLAIMED`. Twelve of this fleet's sixteen nodes sat in that state
+while the 401 it used to answer was read, fleet-wide, as a device-key problem. The keys were fine.
+`cihub claim` is the missing step; `cihub doctor` now fails a registered Hub that has no operator.
 
 **Registration is not optional if you want the marketplace.** Portal issues a device key at pairing,
 and Hub stores it as `ciHubApiKey`. Compose downloads and registry JWTs both require it. Without it,
@@ -48,7 +58,7 @@ three and they are still three.
 | Plane | Lives in | What it authenticates | Created by |
 |---|---|---|---|
 | **Portal user** | Portal (cloud) | Buying, org membership, and which devices you may manage | Sign-up at the Portal |
-| **Hub operator** | The Hub's own Postgres (`user`, with `operator: true`) | Signing in to *that one* Hub's dashboard | First-run onboarding on that Hub |
+| **Hub operator** | The Hub's own Postgres (`user`, with `operator: true`) | Signing in to *that one* Hub's dashboard, and every operator API route | First-run onboarding in a browser, **or** `cihub claim --email <addr>` on the appliance |
 | **Device key** | `state/settings.json` on the appliance (`ciHubApiKey`) | The appliance itself, to Portal | Portal, at pairing |
 
 Each Hub has its own operator table. Creating an operator on one Hub creates nothing on any other —
@@ -188,8 +198,9 @@ Two settings need coordinating across the fleet rather than set independently:
 
 ## Growing and shrinking
 
-- **Adding a node** repeats the whole one-node path: register, onboard an operator, join the tailnet,
-  install models, then pair. Nothing about an existing pool member carries over.
+- **Adding a node** repeats the whole one-node path: register, **claim** (`cihub claim --email <addr>`,
+  or `cihub fleet install --claim-email <addr>`, which runs it for you), join the tailnet, install
+  models, then pair. Nothing about an existing pool member carries over — including the operator.
 - **Taking a node out temporarily** is `cihub pool peer-disable <id>` on the other Hubs, or
   `cihub pool disable` on the node itself. Both keep the pairing and both tokens, so coming back is
   instant and needs no re-approval.
@@ -204,6 +215,7 @@ Two settings need coordinating across the fleet rather than set independently:
 | Symptom | Usual cause |
 |---|---|
 | Store installs fail, catalog looks empty or slow | Not paired, or the device key cannot be stored. Run `cihub register` |
+| A correct device key gets `409 AUTH_ERROR_HUB_NOT_CLAIMED` | Registered but never claimed: the `user` table is empty, so there is no operator for the key to speak as. Run `cihub claim --email <addr>` on the node. Before this existed the same state answered `401 SYSTEM_ERROR_YOU_MUST_BE_LOGGED_IN`, which is what got twelve nodes diagnosed as key failures |
 | `cihub pool` returns "Hub not paired" | Pool routes need the Portal device key, not an `api-key create` key |
 | `cihub pool discover` lists nothing | Expected without a tailnet connection or an OAuth client. Use `cihub pool probe` and pair by address |
 | Peer stuck `pending` | The request was never approved. Approve it on the Hub that received it |

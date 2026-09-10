@@ -36,6 +36,7 @@ const mocks = vi.hoisted(() => {
     showStatus: vi.fn(record('showStatus')),
     uninstallHub: vi.fn(record('uninstallHub')),
     registerHub: vi.fn(record('registerHub')),
+    claimHub: vi.fn(record('claimHub')),
     showDeviceId: vi.fn(record('showDeviceId')),
     runModelsCommand: vi.fn(record('runModelsCommand')),
     runPublicWebCommand: vi.fn(record('runPublicWebCommand')),
@@ -83,6 +84,8 @@ vi.mock('../lib/cli-register.js', () => ({
   registerHub: mocks.registerHub,
   showDeviceId: mocks.showDeviceId,
 }));
+
+vi.mock('../lib/cli-claim.js', () => ({ claimHub: mocks.claimHub }));
 
 vi.mock('../lib/cli-models.js', () => ({
   runModelsCommand: mocks.runModelsCommand,
@@ -208,6 +211,12 @@ describe('runCli command routing', () => {
       expected: [{ handler: 'registerHub', args: ['dev', { fresh: true, code: '8XNYEB' }] }],
     },
     { argv: ['register'], expected: [{ handler: 'registerHub', args: ['local', { fresh: false, code: undefined }] }] },
+    // Both spellings of --email reach the handler identically. The inline form being invisible to a
+    // parser is a bug this CLI has already shipped once (`api-key --capability=full`), and here it
+    // would drop the command into a prompt on a machine with no terminal.
+    { argv: ['claim', '--email', 'owner@example.com'], expected: [{ handler: 'claimHub', args: ['local', { email: 'owner@example.com' }] }] },
+    { argv: ['claim', 'prod', '--email=owner@example.com'], expected: [{ handler: 'claimHub', args: ['prod', { email: 'owner@example.com' }] }] },
+    { argv: ['claim'], expected: [{ handler: 'claimHub', args: ['local', { email: undefined }] }] },
     { argv: ['device-id'], expected: [{ handler: 'showDeviceId', args: [{ fromHub: false, env: 'local' }] }] },
     {
       argv: ['device-id', '--from-hub', 'dev'],
@@ -269,6 +278,14 @@ describe('runCli command routing', () => {
     expect(mocks.calls).toEqual<Dispatch[]>([]);
     expect(errorText()).toContain('Unexpected argument: bogus');
     expect(errorText()).not.toContain('Unexpected argument: worse');
+  });
+
+  it('rejects `--email` with no value instead of claiming for nobody', async () => {
+    await expect(runCli(['claim', '--email'])).rejects.toThrow('exit');
+
+    expect(mocks.calls).toEqual<Dispatch[]>([]);
+    expect(exitSpy).toHaveBeenCalledWith(2);
+    expect(errorText()).toContain('Usage: cihub claim [env] [--email <you@example.com>]');
   });
 
   it('rejects `--code` with no value instead of registering with an empty pairing code', async () => {
