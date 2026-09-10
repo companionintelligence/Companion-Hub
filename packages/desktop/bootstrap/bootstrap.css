@@ -1,0 +1,497 @@
+/*
+ * Desktop bootstrap splash — styled to match the Hub UI it hands over to.
+ *
+ * This page is embedded in the Tauri binary and paints before any container is
+ * up, so it cannot import the frontend's Tailwind build or reach Google Fonts
+ * (see the CSP in tauri.conf.json: `font-src 'self' data:`). Everything below is
+ * therefore a hand-rolled subset of the real design system, transcribed rather
+ * than invented:
+ *
+ *   - Colors are @companionintelligence/tokens v0.3 hex, copied from that
+ *     package's tokens.css (:root = light, .dark = dark). The previous palette
+ *     here (#3ec9e0 cyan, #8aa8b5 muted) was in no token file at all.
+ *   - Radii are the Hub's own overrides from frontend/src/styles/globals.css
+ *     (4 / 6 / 9px), not the tokens default.
+ *   - .card / .btn / .panel / .dot mirror Card.tsx, Button.tsx and
+ *     components/ui/dense/dense.tsx so the splash and the login screen it
+ *     precedes are the same components by eye.
+ *   - The layout mirrors components/layouts/auth/layout.tsx: logo over a
+ *     centered max-w-md card on the aurora-lifted background.
+ *
+ * Manrope is vendored next to this file (assets/manrope-latin-var.woff2, from
+ * @companionintelligence/fonts) because the app's Google Fonts <link> is
+ * blocked here — without it this page fell back to system-ui while every other
+ * Hub surface rendered in Manrope.
+ */
+
+@font-face {
+  font-family: "Manrope";
+  font-style: normal;
+  font-weight: 200 800;
+  font-display: swap;
+  src: url("./assets/manrope-latin-var.woff2") format("woff2");
+}
+
+:root {
+  color-scheme: dark;
+
+  --background: #041620;
+  --foreground: #e8f2f4;
+  --card: #0c323c;
+  --card-foreground: #e8f2f4;
+  --primary: #c5e8dc;
+  --primary-foreground: #041620;
+  --muted-foreground: #a3babf;
+  --accent: #0a2e38;
+  --accent-foreground: #e8f2f4;
+  --border: #073038;
+  --input: #0a2e38;
+  --destructive: #ef7070;
+  --success: #34d399;
+  --warning: #fbbf24;
+
+  /* muted at low alpha — the `bg-muted/20` inner surface of dense.tsx */
+  --panel: rgba(7, 48, 56, 0.45);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.22), 0 4px 12px -6px rgba(0, 0, 0, 0.28);
+  --background-lift:
+    radial-gradient(1200px circle at 50% -20%, rgba(200, 230, 217, 0.08), transparent 55%),
+    radial-gradient(800px circle at 15% 10%, rgba(4, 22, 32, 0.5), transparent 50%);
+
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 9px;
+
+  --font-sans: "Manrope", system-ui, -apple-system, sans-serif;
+  --font-letter-spacing: 0.2pt;
+  --font-word-spacing: 0.4pt;
+
+  /* Set by bootstrap.js once the platform is known, exactly as Titlebar does. */
+  --titlebar-height: 0px;
+}
+
+/*
+ * The desktop app's stored theme defaults to `system` and lives in the Hub
+ * origin's localStorage, which this page (tauri://) cannot read — so follow the
+ * OS the same way that default resolves to. Without this, a light-mode desktop
+ * saw a near-black splash flip to a light app the moment the Hub came up.
+ */
+@media (prefers-color-scheme: light) {
+  :root {
+    color-scheme: light;
+
+    --background: #f3faf7;
+    --foreground: #0a222e;
+    --card: #f0f9f5;
+    --card-foreground: #0a222e;
+    --primary: #0a6358;
+    --primary-foreground: #f0fdf4;
+    --muted-foreground: #3a524b;
+    --accent: #edf6f0;
+    --accent-foreground: #0a222e;
+    --border: #dfece6;
+    --input: #dfece6;
+    --destructive: #ee3533;
+    --success: #0f5132;
+    --warning: #855500;
+
+    --panel: rgba(232, 242, 236, 0.55);
+    --shadow-sm: 0 1px 2px rgba(4, 22, 32, 0.04), 0 4px 12px -4px rgba(10, 99, 88, 0.05);
+    --background-lift:
+      radial-gradient(1200px circle at 50% -20%, rgba(232, 242, 236, 0.65), transparent 52%),
+      radial-gradient(900px circle at 80% 0%, rgba(10, 99, 88, 0.04), transparent 45%);
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  /* tokens' base layer sets 17px, so every rem below matches the app's scale */
+  font-size: 17px;
+  background: var(--background);
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background: var(--background);
+  background-image: var(--background-lift);
+  background-attachment: fixed;
+  background-repeat: no-repeat;
+  color: var(--foreground);
+  font-family: var(--font-sans);
+  letter-spacing: var(--font-letter-spacing);
+  word-spacing: var(--font-word-spacing);
+}
+
+/* ── Titlebar ──────────────────────────────────────────────────────────────
+ * Decorations are off on Windows/Linux (see main.rs setup), so without a drag
+ * region the window cannot be moved while the Hub is starting. This is the same
+ * bar components/titlebar/titlebar.tsx renders in the app: 40px, logo + name,
+ * three window controls. macOS keeps its native traffic lights and gets the
+ * 28px transparent spacer that titlebar.tsx uses there instead.
+ */
+.titlebar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 60;
+  display: flex;
+  height: 2.5rem;
+  user-select: none;
+  border-bottom: 1px solid var(--border);
+  background: var(--background);
+}
+
+.titlebar-mac {
+  height: 1.75rem;
+  border-bottom: 0;
+  background: transparent;
+}
+
+.titlebar-drag {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0 0.75rem;
+}
+
+.titlebar-icon {
+  height: 1.25rem;
+  width: 1.25rem;
+  pointer-events: none;
+}
+
+.titlebar-title {
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--foreground);
+  pointer-events: none;
+}
+
+.titlebar-controls {
+  display: flex;
+  height: 100%;
+}
+
+.titlebar-controls button {
+  display: inline-flex;
+  height: 100%;
+  width: 46px;
+  align-items: center;
+  justify-content: center;
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.titlebar-controls button:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+@media (prefers-color-scheme: light) {
+  .titlebar-controls button:hover {
+    background: rgba(0, 0, 0, 0.05);
+  }
+}
+
+.titlebar-controls button.close:hover {
+  background: #c42b1c;
+  color: #fff;
+}
+
+/* ── Layout (mirrors AuthLayout) ───────────────────────────────────────── */
+
+main {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  overflow-y: auto;
+  height: calc(100vh - var(--titlebar-height, 0px));
+  padding: calc(var(--titlebar-height, 0px) + 2rem) 1rem 2rem;
+}
+
+.shell {
+  width: 100%;
+  max-width: 28rem;
+  margin: auto 0;
+}
+
+.logo {
+  display: block;
+  width: 80px;
+  height: 80px;
+  margin: 0 auto 1.5rem;
+}
+
+.card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--card);
+  color: var(--card-foreground);
+  box-shadow: var(--shadow-sm);
+  padding: 1.5rem;
+  text-align: center;
+}
+
+h1 {
+  font-size: 1.25rem;
+  font-weight: 600;
+  line-height: 1.3;
+  margin: 0 0 0.5rem;
+}
+
+#status {
+  margin: 0;
+  font-size: 0.875rem;
+  line-height: 1.5;
+  color: var(--muted-foreground);
+}
+
+#status.warn {
+  color: var(--warning);
+}
+
+#status.error {
+  color: var(--destructive);
+}
+
+/* ── Spinner (lucide Loader2, as LoadingSpinner renders it) ────────────── */
+
+.spinner {
+  width: 2rem;
+  height: 2rem;
+  margin: 0 auto 1rem;
+  display: block;
+  color: var(--muted-foreground);
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spinner {
+    animation: none;
+  }
+}
+
+/* ── Health check panel (the dense.tsx read-out idiom) ─────────────────── */
+
+.panel {
+  margin-top: 1.25rem;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--panel);
+  text-align: left;
+  display: none;
+}
+
+.panel.visible {
+  display: block;
+}
+
+.panel-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.25rem 0 0.5rem;
+  font-size: 0.6875rem;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--muted-foreground);
+}
+
+.panel-updated {
+  font-variant-numeric: tabular-nums;
+  letter-spacing: normal;
+}
+
+.diag-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.375rem 0;
+  border-top: 1px solid var(--border);
+  font-size: 0.8125rem;
+}
+
+.diag-label {
+  color: var(--muted-foreground);
+  white-space: nowrap;
+}
+
+/*
+ * One line per row, ellipsis and a `title` past that — a container status can
+ * carry a whole Docker error, and letting it wrap tore the row's status dot away
+ * from its text. Same truncate-with-tooltip treatment the resource panels give
+ * long values.
+ */
+.diag-value {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  min-width: 0;
+  font-weight: 500;
+}
+
+.diag-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dot {
+  display: inline-block;
+  height: 0.5rem;
+  width: 0.5rem;
+  flex-shrink: 0;
+  border-radius: 9999px;
+  background: currentColor;
+  opacity: 0.9;
+}
+
+.tone-ok {
+  color: var(--success);
+}
+
+.tone-warn {
+  color: var(--warning);
+}
+
+.tone-bad {
+  color: var(--destructive);
+}
+
+.tone-muted {
+  color: var(--muted-foreground);
+}
+
+/* ── Actions (Button.tsx: h-10, rounded-md, text-sm) ───────────────────── */
+
+.actions {
+  margin-top: 1.5rem;
+  display: none;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.5rem;
+}
+
+.actions.visible {
+  display: grid;
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  white-space: nowrap;
+  height: 2.5rem;
+  padding: 0 1rem;
+  border-radius: var(--radius-md);
+  border: 1px solid transparent;
+  font: inherit;
+  font-size: 0.875rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition:
+    background-color 0.15s,
+    color 0.15s,
+    border-color 0.15s;
+}
+
+.btn:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 1px var(--primary);
+}
+
+.btn-wide {
+  grid-column: span 2;
+}
+
+.btn-primary {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: var(--primary-foreground);
+  box-shadow: var(--shadow-sm);
+}
+
+.btn-primary:hover {
+  filter: brightness(0.94);
+}
+
+.btn-outline {
+  background: var(--background);
+  border-color: var(--input);
+  color: var(--foreground);
+  box-shadow: var(--shadow-sm);
+}
+
+.btn-outline:hover {
+  background: var(--accent);
+  color: var(--accent-foreground);
+}
+
+/* ── Short windows ────────────────────────────────────────────────────────
+ * Overrides last, so they read as overrides. */
+
+/*
+ * `expanded` = the recovery state, with the health panel and six buttons showing.
+ * That is far taller than the plain spinner, and the window is 800px tall by
+ * default and can be dragged to 600 (tauri.conf.json), so in that state on a
+ * short window the frame tightens and the logo gives way rather than let Retry
+ * fall below the fold — the card's own heading already names the app. While the
+ * Hub is simply starting, the logo stays at every window size.
+ */
+@media (max-height: 860px) {
+  .expanded main {
+    padding: calc(var(--titlebar-height, 0px) + 1rem) 1rem 1rem;
+  }
+
+  .expanded .logo {
+    display: none;
+  }
+
+  .expanded .card {
+    padding: 1.25rem;
+  }
+
+  .expanded .panel,
+  .expanded .actions {
+    margin-top: 1rem;
+  }
+}
+
+@media (max-height: 680px) {
+  .expanded h1 {
+    font-size: 1.125rem;
+  }
+
+  .expanded .card {
+    padding: 1rem;
+  }
+
+  .expanded .diag-row {
+    padding: 0.25rem 0;
+  }
+
+  .expanded .panel,
+  .expanded .actions {
+    margin-top: 0.75rem;
+  }
+
+  .expanded .btn {
+    height: 2.25rem;
+  }
+}
