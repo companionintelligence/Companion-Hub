@@ -22,133 +22,15 @@ const fixtures = vi.hoisted(() => ({
   cloud: [] as Record<string, unknown>[],
   inference: {} as Record<string, unknown>,
   monitor: {} as Record<string, unknown>,
+  residency: {} as Record<string, unknown>,
 }));
 
-vi.mock('react-i18next', () => {
-  const strings: Record<string, string> = {
-    RESOURCE_MONITOR_TITLE: 'Resources',
-    RESOURCE_MONITOR_CHART_TITLE: 'Workload CPU over time',
-    RESOURCE_MONITOR_CHART_WAITING: 'Collecting samples…',
-    RESOURCE_MONITOR_LAST_SAMPLED: 'sampled {{time}}',
-    DASHBOARD_SECTION_LOCAL: 'Local resources',
-    DASHBOARD_SECTION_NETWORK: 'Network resources',
-    DASHBOARD_SECTION_POOLING: 'AI pooling and misc',
-    DASHBOARD_THIS_HUB: 'This Hub',
-    DASHBOARD_POOLED: 'Pooled',
-    DASHBOARD_HOST_TITLE: 'Host capacity',
-    DASHBOARD_CORES: 'Cores',
-    DASHBOARD_RAM: 'RAM',
-    DASHBOARD_VRAM: 'VRAM',
-    DASHBOARD_TIER: 'Tier',
-    DASHBOARD_IN_FLIGHT: 'In flight',
-    DASHBOARD_RAM_USED: '{{used}} of {{total}} in use',
-    DASHBOARD_LOCAL_MODELS_TITLE: 'AI models on this node',
-    DASHBOARD_LOCAL_CONTAINERS_TITLE: 'Containers on this node',
-    DASHBOARD_CONTAINER_COUNT: '{{total}} containers',
-    DASHBOARD_COL_MODEL: 'Model',
-    DASHBOARD_COL_ENGINE: 'Engine',
-    DASHBOARD_COL_STATE: 'State',
-    DASHBOARD_COL_WORKLOAD: 'Workload',
-    DASHBOARD_COL_CPU: 'CPU',
-    DASHBOARD_COL_TREND: 'Trend',
-    DASHBOARD_COL_MEMORY: 'Memory',
-    DASHBOARD_COL_CONTAINERS: 'Ctr',
-    DASHBOARD_COL_NODES: 'Nodes',
-    DASHBOARD_COL_AVAILABLE_ON: 'Available on',
-    DASHBOARD_COL_NODE: 'Node',
-    DASHBOARD_COL_DIRECTION: 'Dir',
-    DASHBOARD_COL_TIER: 'Tier',
-    DASHBOARD_COL_MODELS: 'Models',
-    DASHBOARD_COL_IN_FLIGHT: 'In flight',
-    DASHBOARD_COL_FAILURES: 'Fails',
-    DASHBOARD_COL_LAST_SEEN: 'Last seen',
-    DASHBOARD_COL_AGE: 'Age',
-    DASHBOARD_COL_LATENCY: 'Latency',
-    DASHBOARD_COL_OUTCOME: 'Result',
-    DASHBOARD_COL_FIELD: 'Field',
-    DASHBOARD_COL_VALUE: 'Value',
-    DASHBOARD_NETWORK_OVERVIEW_TITLE: 'Pool reach',
-    DASHBOARD_NETWORK_MODELS_TITLE: 'AI models across the pool',
-    DASHBOARD_NETWORK_NODES_TITLE: 'Peer nodes',
-    DASHBOARD_NETWORK_CONTAINERS_TITLE: 'Containers across the pool',
-    DASHBOARD_NETWORK_CONTAINERS_UNAVAILABLE:
-      'Hubs share inference capacity, not container inventory — open a peer’s own dashboard to see its workloads.',
-    DASHBOARD_PEERS_CONNECTED: 'Peers',
-    DASHBOARD_REACHABLE_MODELS: 'Reachable',
-    DASHBOARD_EXCLUSIVE_MODELS: 'Peer only',
-    DASHBOARD_PEER_IN_FLIGHT: 'Peer load',
-    DASHBOARD_POOL_SUMMARY_TITLE: 'Pool routing',
-    DASHBOARD_POOL_ON: 'On',
-    DASHBOARD_POOL_ROUTING: 'Routing',
-    DASHBOARD_SERVED: 'Served',
-    DASHBOARD_FAILED: 'Failed',
-    DASHBOARD_FAILOVERS: 'Failovers',
-    DASHBOARD_AFFINITY: 'Affinity',
-    DASHBOARD_HEALTH_POLL: 'Poll',
-    DASHBOARD_ROUTING_LOG_TITLE: 'Recent routing',
-    DASHBOARD_MISC_TITLE: 'Node details',
-    DASHBOARD_MISC_NODE: 'Node',
-    DASHBOARD_MISC_TAILNET: 'Tailnet',
-    DASHBOARD_MISC_TAILSCALE: 'Tailscale',
-    DASHBOARD_MISC_OS: 'OS',
-    DASHBOARD_MISC_CPU: 'CPU',
-    DASHBOARD_MISC_GPU: 'GPU',
-    DASHBOARD_MISC_GPU_RUNTIME: 'GPU runtime',
-    DASHBOARD_CONNECTED: 'Connected',
-    DASHBOARD_AVAILABLE: 'Available',
-    DASHBOARD_HARDWARE_FAILED: 'Could not read hardware.',
-    DASHBOARD_MEMORY_FAILED: 'Could not read the model memory budget.',
-    DASHBOARD_CONTAINERS_FAILED: 'Could not read container usage.',
-    DASHBOARD_POOL_FAILED: 'Could not read pool status.',
-    DASHBOARD_ROUTING_LOG_FAILED: 'Could not read the routing log.',
-    DASHBOARD_CLOUD_FAILED: 'Could not read cloud providers.',
-    DASHBOARD_MISC_FAILED: 'Could not read node details.',
-    DASHBOARD_PERCENT_USED: '{{percent}}% used',
-    DASHBOARD_UNIFIED: 'Unified',
-    DASHBOARD_MODEL_MEMORY_TITLE: 'Model memory budget',
-    DASHBOARD_MODEL_MEMORY_EMPTY: 'No memory budget reported.',
-    DASHBOARD_MEMORY_OF_BUDGET: '{{used}} of {{budget}} · {{percent}}%',
-    DASHBOARD_MEMORY_USED: 'Used',
-    DASHBOARD_MEMORY_PINNED: 'Pinned',
-    DASHBOARD_MEMORY_FREE: 'Free',
-    DASHBOARD_MEMORY_TOTAL: '{{total}} installed',
-    DASHBOARD_MEMORY_PINNED_MB: '{{mb}} pinned',
-    DASHBOARD_UNIFIED_MEMORY_NOTE: 'Unified memory: models are sized against system RAM.',
-    DASHBOARD_DOCKER_OVERHEAD: 'Holds back an estimated {{mb}} for app containers.',
-    DASHBOARD_COL_PRESSURE: 'GPU',
-    DASHBOARD_PEER_DISABLED: 'off',
-    DASHBOARD_NETWORK_CONTAINERS_WOULD_NEED: 'Would need the peer capability payload extended on both sides.',
-    DASHBOARD_OUTBOUND: 'Outbound',
-    DASHBOARD_INBOUND: 'Inbound',
-    DASHBOARD_DISABLED_BY_ENV: 'off in .env',
-    DASHBOARD_DISABLED_BY_SETTING: 'off in settings',
-    DASHBOARD_PRESSURE_WEIGHT: 'Pressure',
-    DASHBOARD_SIGNED_PEERS: 'Signed',
-    DASHBOARD_REQUIRED: 'Required',
-    DASHBOARD_OPTIONAL: 'Optional',
-    DASHBOARD_PINS: 'Pins',
-    DASHBOARD_PIN_INACTIVE: 'This pin is doing nothing right now.',
-    DASHBOARD_PINS_INACTIVE: 'Inactive pins: {{total}}.',
-    DASHBOARD_REASON_ACTIVE: 'routing normally',
-    DASHBOARD_FAILOVER_SHORT: '+{{total}} tried',
-    DASHBOARD_PIN_SHORT: 'pinned',
-    DASHBOARD_INBOUND_NO_MODEL: 'An inbound request does not report its model.',
-    DASHBOARD_CLOUD_TITLE: 'Cloud fallback',
-    DASHBOARD_CLOUD_EMPTY: 'No cloud providers configured.',
-    DASHBOARD_NO_KEY: 'no key',
-    DASHBOARD_MISC_NPU: 'NPU',
-    DASHBOARD_UNAVAILABLE: 'Unavailable',
-    DASHBOARD_POOL_OFF: 'Off',
-    DASHBOARD_NONE: 'None',
-  };
-  const t = (key: string, vars?: Record<string, unknown>) => {
-    const raw = strings[key] ?? key;
-
-    return vars ? raw.replace(/\{\{(\w+)\}\}/g, (_m, k: string) => String(vars[k] ?? '')) : raw;
-  };
-
-  return { useTranslation: () => ({ t }) };
-});
+/*
+ * No i18n mock. `src/tests/setup.ts` already initialises the real i18next against the real
+ * `en.json`, so the snapshot renders the strings a user sees. The hand-mirrored subset that used
+ * to live here drifted the moment a panel gained a key, and a snapshot full of raw
+ * SCREAMING_KEYS hides exactly the rendering problem it exists to show.
+ */
 
 vi.mock('@/lib/app-runtime-monitor', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
@@ -163,9 +45,25 @@ vi.mock('@/api-client/@tanstack/react-query.gen', () => ({
   getHardwareOptions: () => ({ queryKey: ['hardware'], queryFn: async () => fixtures.hardware }),
   getMemoryOptions: () => ({ queryKey: ['memory'], queryFn: async () => fixtures.memory }),
   getCloudProvidersOptions: () => ({ queryKey: ['cloud'], queryFn: async () => fixtures.cloud }),
+  // `useDashboardData` imports this too. Leaving it out threw on every run, which nothing
+  // noticed because the suite is env-gated and CI never sets the variable.
+  getResidentModelsOptions: () => ({ queryKey: ['residency'], queryFn: async () => fixtures.residency }),
 }));
 
-const peer = (name: string, tier: string, models: string[], inFlight: number | undefined, seen: string) => ({
+/** Ages are relative to the render so "last seen" and the per-minute bars read as they would live. */
+const NOW = Date.now();
+const secondsAgo = (seconds: number) => new Date(NOW - seconds * 1000).toISOString();
+/** `lastSeenAt` arrives space-separated from the database, not as a T-ISO string. */
+const seenAgo = (seconds: number) => secondsAgo(seconds).replace('T', ' ').replace('Z', '');
+
+const peer = (
+  name: string,
+  tier: string,
+  models: string[],
+  inFlight: number | undefined,
+  seenSecondsAgo: number,
+  extras: Record<string, unknown> = {},
+) => ({
   id: `peer-${name}`,
   nodeFqdn: `${name}.capybara-ulmer.ts.net`,
   displayName: name,
@@ -173,9 +71,10 @@ const peer = (name: string, tier: string, models: string[], inFlight: number | u
   status: 'connected',
   enabled: true,
   consecutiveFailures: 0,
-  lastSeenAt: seen,
+  lastSeenAt: seenAgo(seenSecondsAgo),
   inFlightRequests: inFlight,
   lastCapabilities: { hardwareTier: tier, backends: [{ type: 'ollama', healthy: true, modelsLoaded: models }] },
+  ...extras,
 });
 
 describe.skipIf(!OUT)('resource dashboard snapshot', () => {
@@ -216,15 +115,29 @@ describe.skipIf(!OUT)('resource dashboard snapshot', () => {
       routing: { recorded: 14, capacity: 200, served: 13, failed: 1, failovers: 0, lastAt: '2026-09-10T02:31:00Z' },
     };
     fixtures.pool.peers = [
-      peer('core-2', 'high', ['gemma3:27b', 'qwen2.5-coder:32b', 'ornith-1.5:9b'], 0, '2026-09-10 02:31:10.495'),
-      peer('beta-red', 'low', ['qwen2.5-coder:7b', 'qwen3:8b'], undefined, '2026-09-10 02:30:55.100'),
-      peer('core-7', 'high', ['gabegoodhart/minimax-m2:230b', 'qwen3-vl:32b', 'gemma4:31b'], 2, '2026-09-10 02:31:12.000'),
+      // Reports containers and a measured band; also reports its own queue depth.
+      peer('core-2', 'high', ['gemma3:27b', 'qwen2.5-coder:32b', 'ornith-1.5:9b'], 0, 12, {
+        gpuPressure: 2,
+        containers: { running: 9, stopped: 2, total: 11, cpuPercent: 61.4, memoryBytes: 7_400_000_000 },
+        lastCapabilities: {
+          hardwareTier: 'high',
+          backends: [{ type: 'ollama', healthy: true, modelsLoaded: ['gemma3:27b', 'qwen2.5-coder:32b', 'ornith-1.5:9b'] }],
+          inFlightRequests: 3,
+        },
+      }),
+      // Reports nothing but models: no counter, no band, containers explicitly null. Every one of
+      // those must render as a dash or "not reported", never as a zero.
+      peer('beta-red', 'low', ['qwen2.5-coder:7b', 'qwen3:8b'], undefined, 41, { containers: null }),
+      peer('core-7', 'high', ['gabegoodhart/minimax-m2:230b', 'qwen3-vl:32b', 'gemma4:31b'], 2, 8, {
+        gpuPressure: 0,
+        containers: { running: 4, stopped: 0, total: 4, cpuPercent: 8.2, memoryBytes: 1_200_000_000 },
+      }),
     ];
     fixtures.log = {
-      summary: { recorded: 14, served: 13, failed: 1, failovers: 0 },
+      summary: { recorded: 14, served: 13, failed: 1, failovers: 1 },
       entries: [
         {
-          at: '2026-09-10T02:31:10.495Z',
+          at: secondsAgo(20),
           direction: 'outbound',
           model: 'ornith-1.5:9b',
           node: 'core-2.capybara-ulmer.ts.net',
@@ -234,34 +147,66 @@ describe.skipIf(!OUT)('resource dashboard snapshot', () => {
           durationMs: 1732,
         },
         {
-          at: '2026-09-10T02:30:40.100Z',
+          at: secondsAgo(75),
           direction: 'inbound',
-          model: 'qwen3-coder:30b',
+          model: null,
           node: 'core-7.capybara-ulmer.ts.net',
           backend: 'ollama',
           outcome: 'served',
           status: 200,
-          durationMs: 8420,
+          durationMs: 842,
         },
         {
-          at: '2026-09-10T02:29:55.000Z',
+          at: secondsAgo(140),
           direction: 'outbound',
           model: 'qwen2.5-coder:7b',
           node: 'beta-red.capybara-ulmer.ts.net',
           backend: 'ollama',
           outcome: 'served',
           status: 200,
-          durationMs: 20124,
+          durationMs: 20_124,
+          failedOverFrom: ['core-2.capybara-ulmer.ts.net'],
         },
         {
-          at: '2026-09-10T02:28:11.000Z',
+          at: secondsAgo(190),
+          direction: 'outbound',
+          model: 'qwen3-vl:32b',
+          node: 'local',
+          backend: 'ollama',
+          outcome: 'served',
+          status: 200,
+          durationMs: 311,
+        },
+        {
+          at: secondsAgo(260),
           direction: 'outbound',
           model: 'zzz-nonexistent:999b',
           node: null,
           backend: null,
           outcome: 'failed',
           status: 502,
-          durationMs: null,
+          durationMs: 96,
+        },
+        {
+          at: secondsAgo(430),
+          direction: 'outbound',
+          model: 'gemma4:26b',
+          node: 'core-7.capybara-ulmer.ts.net',
+          backend: 'ollama',
+          outcome: 'served',
+          status: 200,
+          durationMs: 2104,
+          pin: { scope: 'model' },
+        },
+        {
+          at: secondsAgo(720),
+          direction: 'inbound',
+          model: null,
+          node: 'core-2.capybara-ulmer.ts.net',
+          backend: 'vllm',
+          outcome: 'served',
+          status: 200,
+          durationMs: 1290,
         },
       ],
     };
@@ -279,6 +224,7 @@ describe.skipIf(!OUT)('resource dashboard snapshot', () => {
       pinnedRamMb: 12_288,
     };
     fixtures.cloud = [];
+    fixtures.residency = { backends: [], residentCount: 0, sampledAt: secondsAgo(5) };
     fixtures.inference = {
       backends: [
         { type: 'ollama', running: true, healthy: true, modelsLoaded: 7 },
