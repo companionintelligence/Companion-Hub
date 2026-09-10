@@ -313,7 +313,13 @@ export async function runPoolCommand(args: string[]) {
         if (elapsedMs >= POOL_DOCTOR_PROGRESS_AFTER_MS) console.log(dim(`  ${line}`));
       },
     });
-    printMessageBox(`Hub Pool doctor  [${env}]`, section.lines, section.issueCount > 0 ? 'yellow' : 'cyan');
+    // Same split `cihub doctor` makes, and for the same reason: `issueCount` alone only tinted the
+    // box, so `cihub pool doctor && cihub pool pair …` walked on from a node no peer can reach. The
+    // section decides which of its checks mean broken — a `fail` verdict is this node unusable as a
+    // pool member, a `warn` is state the operator asked to see, and a measurement that may have been
+    // served by a REMOTE peer is `unknown`, which is neither.
+    printMessageBox(`Hub Pool doctor  [${env}]`, section.lines, section.failureCount > 0 ? 'red' : section.issueCount > 0 ? 'yellow' : 'cyan');
+    if (section.failureCount > 0) process.exitCode = 1;
     return;
   }
 

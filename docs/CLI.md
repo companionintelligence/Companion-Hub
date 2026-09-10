@@ -136,6 +136,12 @@ Prints your device ID and the Companion Portal registration URL. Open the URL in
 
 Marketplace compose downloads and registry JWTs require the device key Portal issues at pairing ([CI-Portal#634](https://github.com/companionintelligence/CI-Portal/pull/634)). Hub always tries to send it. If this machine is not paired, or cannot store the key, store installs fail and tag lists can look empty — the UI may look slow rather than unauthorized.
 
+**Over SSH, pass `--code`.** The pairing-code prompt needs a terminal and `ssh -n` has none, so with
+no terminal and no `--code` the command refuses immediately (exit `2`) naming the flag, rather than
+blocking on a stdin that will never answer — which is what it used to do before exiting `0` having
+registered nothing. There is deliberately no assume-yes opt-in: assuming yes cannot invent a pairing
+code, and only your CI Account can produce one.
+
 ```bash
 cihub register local
 ```
@@ -666,6 +672,176 @@ a machine that is up. It is therefore **not** a revocation; `cihub pool unpair` 
 
 ---
 
+## Fleet
+
+Every other command in this CLI acts on the machine it runs on. `cihub fleet` is the one group that
+acts on **other** machines, over SSH — which is the first thing to know about it, and the reason the
+read-only subcommands are the default and the rest need `--execute`.
+
+```bash
+cihub fleet scan [--lan] [--write-roster] [--json]     # find machines, and what each one will allow
+cihub fleet list [--json]                              # the saved roster, and what a run would skip
+cihub fleet status [--nodes a,b] [--json]              # re-probe every rostered node
+cihub fleet backends [--backends a,b] [--execute]      # what each node can run for inference, then install it
+cihub fleet install [--user <acct>] [--execute]        # stand a Hub up on each node and register it
+cihub fleet update [--hub] [--models a,b] [--execute]  # refresh the Hub image, pull models
+cihub fleet apps [--apps a,b] [--endpoint pool|local]  # can each node serve an agent its credentials
+```
+
+**`scan`, `list` and `status` change nothing, anywhere; `apps` reads and installs nothing.**
+`backends`, `install` and `update` require `--execute`; without it they print the plan they would
+run, touch nothing, and exit `0`. A tool that can reach fourteen machines should make the destructive
+path the one you have to ask for.
+
+**Authentication is the tailnet, not a key you manage.** There is no `-i`, no agent forwarding and
+no password path. Every remote call runs `BatchMode=yes`, so a node that would prompt fails fast
+instead of hanging a fourteen-machine sweep on a TTY nobody is watching, and access stays an ACL
+decision you can read and audit.
+
+These commands take no `[env]` argument — they act on remote machines, not on one of this machine's
+environments. `cihub fleet scan prod` is an argument error, not a retarget.
+
+### `--user`, and why you usually need it
+
+The tailnet grants SSH to *specific accounts*, and rarely the one you are logged in as locally: this
+fleet grants `root` where the QA harness assumes `ci`. There is deliberately no baked-in default —
+guessing would be wrong half the time and silently. Pass `--user <account>`, or set `FLEET_SSH_USER`;
+a roster entry may also carry its own `user`, which wins for that node.
+
+`scan` tells the two SSH refusals apart, because they need opposite responses:
+
+- **`acl-wrong-user`** — the node is administrable and you named the wrong account. Re-run with
+  `--user`. The scan says so by name and prints the flag.
+- **`acl-denied`** — the ACL grants you no SSH here at all, and no flag fixes it. That node can serve
+  inference perfectly while being unadministrable, which is exactly the state two machines on this
+  fleet sat in unnoticed for an unknown period.
+
+That is also why the scan reports **SSH**, **HUB** and **ENGINES** as three separate columns. They
+are independent questions, and every fleet tool that collapsed them into one "online" column has
+been wrong in the same direction.
+
+### The roster
+
+`<data-dir>/fleet.json` — on Linux `~/.local/share/companion-hub/fleet.json`, on macOS
+`~/Library/Application Support/companion-hub/`, on Windows `%APPDATA%\companion-hub\`, or wherever
+`CI_HUB_DATA_DIR` points. It sits beside the Hub's other state rather than in a checkout, because
+`cihub` is installed on appliances that have no repo.
+
+**Only `cihub fleet scan --write-roster` writes it**, and every other subcommand reads it and acts on
+nothing else. A machine that has never been scanned into the roster is invisible to `status`,
+`backends`, `install`, `update` and `apps`.
+
+Two properties of the file are load-bearing:
+
+- **`ip` is the identity; `name` is only a label.** Every merge and lookup keys on the address,
+  because the rosters this replaces gave one machine five different names across two files and had a
+  row whose name and address disagreed outright. `--nodes` matches either, since an operator types
+  whichever they remember.
+- **A node can be excluded, and say why.** `"skip"` takes `llm-only` (serves inference, grants no
+  SSH), `unreachable` (known down, awaiting hands-on recovery) or `excluded` (deliberately out of
+  scope). Skipped nodes are printed with the reason instead of being re-attempted at a timeout each
+  and landing in the report looking like a machine that broke this morning. A re-scan never clears a
+  `skip`, a `note` or a name you chose — discovery fills fields that are absent and corrects
+  `tailnetName`, which is a fact about the network rather than a preference.
+
+A malformed row costs that row and names it, not the whole file: running against nineteen nodes
+while believing it was twenty is the worse failure.
+
+### Flags
+
+| Flag | Effect |
+| ---- | ------ |
+| `--execute` | `backends`/`install`/`update` only: actually apply. Without it, the plan is printed and nothing changes |
+| `--nodes a,b` | Restrict the run to these roster entries, by name **or** address |
+| `--user <account>` | Remote account to SSH as. `FLEET_SSH_USER` sets the same thing; a roster entry's own `user` wins |
+| `--json` | Machine-readable report — `scan`, `list`, `status`, `backends`, `install`, `apps`. `update` has none |
+| `--lan` | `scan` only: also sweep the local subnet. Off by default, because touching every address on the operator's subnet is a more intrusive act than listing a tailnet they already belong to |
+| `--no-tailnet` | `scan` only: skip tailnet enumeration |
+| `--write-roster` | `scan` only: save the result to `fleet.json` |
+| `--timeout <ms>` | Per-probe budget, 250–120000 (default 4000) |
+| `--concurrency <n>` | Parallel **probes**, 1–32 (default 4). The runners stay serialised regardless |
+| `--backends a,b` | `backends` only: from `ollama`, `vllm`, `lucebox`, `dspark`, `mtplx`, `lemonade`. Omit for all six |
+| `--data-dir <path>` | Where the Hub keeps runner venvs and model dirs on the **remote** machine (default `/var/lib/companion-hub`) |
+| `--code <code>` | `install` only: one Portal pairing code, which enrolls exactly one node |
+| `--join-pool <node>` | `install` only: pair each installed node into that Hub's pool |
+| `--pool-pin <digits>` | `install` only: the PIN minted on the Hub being joined, for pairing by address |
+| `--hub` | `update` only: update the Hub image |
+| `--models a,b` | `update` only: pull these models on each node |
+| `--apps a,b` | `apps` only: from `hermes-agent`, `openclaw`. Omit for both |
+| `--endpoint pool\|local` | `apps` only: which endpoint the report is labelled for (default `pool`). The check itself is the same either way — see below |
+
+The Postgres password `install` needs is read from **`CIHUB_POSTGRES_PASSWORD`** and has no flag, so
+it never lands in a shell history or a process listing.
+
+### `cihub fleet scan`
+
+Enumerates the tailnet (add `--lan` for the local subnet), probes each candidate on the three axes
+above, and prints a verdict per node. It writes nothing unless `--write-roster` is passed, and says
+so at the end rather than leaving you to wonder. With no Tailscale CLI it says that too, and
+enumerates nothing — set `TAILSCALE_CLI` if yours is somewhere unusual.
+
+### `cihub fleet list` and `cihub fleet status`
+
+`list` prints the roster as saved, plus the nodes a run would skip and why. `status` re-probes them:
+administrable, running a Hub, serving engines. Neither touches a node beyond the probe.
+
+### `cihub fleet backends`
+
+Reads each node's hardware — OS, arch, GPUs and whether their drivers are alive, load — and decides
+per backend whether it would **install** it, **adopt** one already answering, or **skip** a machine
+that cannot run it, with the reason. The dry run is most of the value even when nothing is installed.
+
+Serialised across nodes on purpose: a backend install pulls gigabytes of CUDA wheels and GPU images,
+and running several at once saturates the link they share and blocks the nodes' own HTTP listeners
+long enough to look absent to everything else.
+
+### `cihub fleet install`
+
+Per node, in order: probe hardware → **load gate** → Linux and Docker check → install `cihub` →
+`hub up` and register → install the status-file timer → optionally join a pool. Each step re-checks
+the state it claims to have produced, because a step that trusts an exit code is how a fleet ends up
+believing it registered machines it never reached.
+
+The **load gate** refuses any node above 1.5× cores of one-minute load. A fleet-wide pass caught one
+machine mid-inference at load 108–116 on 32 cores; its package transaction stalled rebuilding an
+initramfs it could never get CPU for, and the box needed physical recovery. Nothing in that pass
+checked load first.
+
+Pairing codes are covered under
+[Registering a fleet without a browser](#registering-a-fleet-without-a-browser): a stored
+`device:pair` login mints one per node, `--code` enrolls a single node, and any other combination is
+refused before anything is dialled. `--join-pool` leaves the pairing **pending** — the receiving Hub
+still has to approve it, and the step output says so.
+
+### `cihub fleet update`
+
+`--hub` runs [`cihub pool update`](#cihub-pool-update) on each node — the published-image redeploy,
+so a node with no build toolchain takes an update the same way as one with a checkout. `--models a,b`
+pulls each model, trying the Hub-managed container, then a host `ollama` binary, then the HTTP API,
+because this fleet runs Ollama three different ways. Pass at least one of the two flags, or the
+command says there is nothing to do and exits `0`.
+
+Model pulls are serialised for a measured reason: concurrent cold loads of 20–50 GB blocked the
+nodes' own HTTP listeners long enough that the tooling reported them absent while they were working.
+
+### `cihub fleet apps`
+
+Deliberately a **check, not an installer**. Per node it asks whether the Hub will serve
+`hermes-agent` / `openclaw` their credentials at all, and reports the inference **base URL** those
+credentials carry — never the key, which is the Hub operator credential and would be spread further
+by a fleet log than by the install itself. Whether that node's Hub has pool routes is reported
+separately, on the node's own line, because the two disagree in the direction that matters: a base
+URL is baked in at install time, so an app installed before a peer was paired keeps pointing at the
+local backend even once the pool is live. `--endpoint` names which of the two the run is *about*; it
+does not change what is fetched.
+
+Installing is not offered here because every installed app receives the Hub device key in its
+environment, so installing one grants Hub operator authority. That belongs behind the Hub's own
+entitlement checks, in the UI or API, not fanned out blind across a fleet — and the command prints
+the same warning when it finishes.
+
+---
+
 ## Maintenance
 
 ```bash
@@ -676,6 +852,62 @@ cihub uninstall [--yes]    # full machine cleanup of CI-Hub runtime state
 ```
 
 `reset` is the environment-focused cleanup path. `uninstall` is the full machine cleanup path.
+
+---
+
+## Exit codes
+
+The exit code is something a script can rely on. It was not always: `cihub doctor && deploy` walked
+straight through a broken Docker bridge, and a fleet run that installed on 0 of 14 machines exited
+`0`, so the next step in the chain ran anyway.
+
+| Command | Exits `1` when |
+| --- | --- |
+| `doctor` | A **decided failure**: Docker or Compose unavailable, a compose file missing, or a network/bridge check that ran and failed |
+| `fleet backends` / `install` / `update` / `apps` | Any node failed. It is counted per node, so 13 of 14 is still a failure |
+| `models list` / `install` / `rm` | There is no Ollama container to talk to |
+| `app status <name>` | That named container is not there |
+| `app inspect <name>` | `docker inspect` could not read the container |
+| `public-web repair` | A repair step failed |
+| `uninstall` | A directory or command failed, so state you asked to be gone is still on the machine |
+| `status --write-status-file` | The report could not be delivered |
+| `connect openclaw\|hermes` | A probe failed and nothing was written (`2` if a write failed and the backup was restored) |
+
+`app status` with no name on a machine with no containers is an **answer**, not a failure, and exits
+`0`. So does a `fleet` dry run — `install` and `update` without `--execute` changed nothing and
+reported a plan. Both `public-web` subcommands exit `1` if the Hub cannot be reached at all.
+
+**A yellow box is not a failure.** `doctor` separates a failure from a note, and the distinction is
+the one already drawn on screen: `✗` is a machine that cannot run the stack, `○` is state doctor
+exists to report. A missing env file before `setup`, an absent root folder, no tunnel token — those
+colour the box yellow and exit `0`, because they are answers rather than faults. A check that could
+not run counts as an issue but not as a failure either: "could not tell" is not "broken", or an
+unequipped machine would report a fleet-wide outage.
+
+Exit codes are set after the box is printed, so trailing output — a fleet skip list, a `--json`
+report — still reaches you on a failing run.
+
+### Exit `2` — the command never ran
+
+`2` means the invocation was refused, not that an operation failed:
+
+- **Usage errors.** An unknown command or subcommand, or a flag whose value is missing. In
+  `api-key create --name k --capability=full` the inline `=` spelling used to be invisible to the
+  parser: the key was minted at the default `write` and the confirmation reported `full` back. Both
+  spellings are read now, and a flag that decides privilege is refused when its value is missing
+  rather than falling back to a default.
+- **A confirmation nobody can answer.** With no terminal and no `--yes` (or `CI_HUB_ASSUME_YES=1`),
+  a destructive command exits `2` instead of blocking on a read. "There is no terminal" must never
+  by itself mean "yes".
+- **`cihub register` over SSH.** The pairing-code prompt needs a TTY and `ssh -n` has none, so
+  `register` now refuses immediately naming `--code` rather than hanging on a stdin that will never
+  answer and eventually exiting `0` having registered nothing. There is no assume-yes opt-in here:
+  assuming yes cannot invent a pairing code, which only your CI Account can produce.
+- **`fleet install --execute` with no way to get a pairing code**, or a Postgres password shorter
+  than 8 characters. Both are checked before the first node is dialled.
+
+One inconsistency worth knowing rather than being surprised by: a malformed `fleet` **flag** exits
+`1`, not `2`, unlike the rest of the CLI's usage errors.
 
 ---
 
@@ -696,6 +928,7 @@ normalization is in `scripts/lib/cli-args.ts`.
 | `cli-app.ts` | `app` |
 | `cli-models.ts` | `models`, `mcp`, `public-web` |
 | `cli-pool.ts` | `pool` |
+| `cli-fleet.ts` | `fleet` |
 | `cli-api-key.ts` | `api-key` |
 | `cli-update.ts` | `version`, `update`, `connect` |
 | `cli-wizard.ts` | `wizard` |
@@ -707,6 +940,12 @@ context), `cli-prompt.ts` (every confirmation, so the non-TTY refusal is worded 
 `cli-proc.ts` (process execution), `cli-ui.ts` (colors, boxes, help and man rendering),
 `cli-compose-env.ts` (env file and compose profile handling), `docker-engine.ts` (engine discovery
 and pinning).
+
+`cli-fleet.ts` owns argument parsing and the seven subcommand runners only; the work is in
+`fleet-roster.ts` (the saved fleet), `fleet-discover.ts` (the three probe axes), `fleet-ssh.ts` (the
+single SSH transport, so hosts cannot fail differently depending on which function reached them),
+`fleet-hardware.ts` (host facts and the load gate), `fleet-backends.ts`, `fleet-install.ts` and
+`fleet-apps.ts`.
 
 `scripts/cihub-cli.ts` is a re-export facade kept so `scripts/__tests__/cihub-cli.test.ts` has one
 stable import site. New code should import from the owning module instead.
@@ -731,7 +970,9 @@ executable for six targets, which is what the desktop app bundles and installs o
 
 ## Environments
 
-All commands accept an optional `[env]` argument:
+The commands that target one environment accept an optional `[env]` argument — `wizard`, `setup`,
+`register`, `device-id`, `up`, `down`, `restart`, `recreate`, `status`, `logs`, `config`, `doctor`,
+`clean`, `reset`, and the `mcp`, `public-web` and `pool` subcommands:
 
 | Value | Env file | Compose files |
 |-------|----------|---------------|
@@ -739,3 +980,12 @@ All commands accept an optional `[env]` argument:
 | `dev` | `.env.dev` | `docker-compose.prod.yml` |
 | `staging` | `.env.staging` | `docker-compose.prod.yml` + `docker-compose.staging.yml` |
 | `prod` | `.env.prod` | `docker-compose.prod.yml` |
+
+Every other command takes none, and passing one is not a way to retarget an environment. `fleet`
+refuses it outright — `cihub fleet scan prod` is an argument error, because fleet commands act on
+remote machines rather than on one of this machine's environments. `app`, `models` and `api-key`
+read it as a subcommand name and fail; `connect`, `update`, `uninstall`, `login`/`logout`/`submit`
+and `status --write-status-file` ignore it.
+
+Run outside a CI-Hub checkout (a packaged install), `up`/`down`/`reset`/`clean` infer `prod` and
+target the canonical desktop data dir, and any `[env]` argument is ignored.
