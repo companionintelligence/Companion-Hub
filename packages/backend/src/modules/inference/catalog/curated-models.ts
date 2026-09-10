@@ -86,6 +86,22 @@ import type {
 // has no mechanism for. Needs a deliberate schema decision (new `quant` column + gate, or its own small
 // table like VLLM_MLX_LLM_TOON), not a same-shape row — left out pending that.
 //
+// 2026-09-09: reconciled against what the test tailnet is ACTUALLY running (12 reachable Hub nodes,
+// 32 distinct installed tags). Provenance here is the strongest kind this file can have and needs no
+// browser render: every field below was read back from the serving engine's own `/api/show` on a node
+// that has the model resident, so it describes the build the fleet is running rather than a library
+// page describing a build it might pull. Two rows added:
+//   `qwen3-vl:32b`  — resident on 3 nodes; engine reports 33.4B / Q4_K_M / 262144 ctx and capabilities
+//                     [completion, vision, tools, thinking]. The catalog had no Qwen3-VL row at all.
+//   `gemma3n:e4b`   — resident on 1 node; engine reports 6.9B / Q4_K_M / 32768 ctx. Note the engine
+//                     reports capabilities [completion] ONLY, so vision/tools are left 0 despite Gemma
+//                     3n being marketed as multimodal — this table records what the running build does.
+// Four more installed tags were deliberately NOT added: `llama3.2:latest` is an alias for the existing
+// `llama3.2:3b` row (a tag-resolution matter, not a missing model), `qwen2.5:0.5b` is superseded by the
+// catalogued `qwen3:0.6b`, and `llava:latest` / `moondream:latest` are legacy Q4_0 vision builds
+// (moondream's context is 2048) long superseded by the gemma3 and qwen3-vl rows. All four live on one
+// node — the fleet's scratch box — which is what an ad-hoc pull looks like, not a fleet standard.
+//
 // Columns:
 //   id              catalog id (`${family}-${size}`)
 //   backendModelId  the exact ollama pull tag (`family:size`)
@@ -114,7 +130,7 @@ import type {
 // passes (e.g. gpt-oss-120b 33.3→24, llama-3.3-70b 14.5→9) — consistent with AA having rebased/recalibrated
 // the index in between, not with the older numbers being wrong at the time they were entered.
 const CATALOG_TOON = `
-llms[98|]{id,backendModelId,name,purpose,params,gb,tier,ctxK,creator,intel,agentic,reason,vision,tools,audio,tps,ttft,e2e}:
+llms[100|]{id,backendModelId,name,purpose,params,gb,tier,ctxK,creator,intel,agentic,reason,vision,tools,audio,tps,ttft,e2e}:
   gemma4-e2b|gemma4:e2b|Gemma 4 E2B|general|2|7.2|cpu-only|128|Google|9|7.4|1|1|1|1|||
   gemma4-e4b|gemma4:e4b|Gemma 4 E4B|general|4|9.6|cpu-only|128|Google|12|8.7|1|1|1|1|||
   gemma4-26b|gemma4:26b|Gemma 4 26B|general|26|18|medium|256|Google|26|28.9|1|1|1|0|78|1.59|8
@@ -158,6 +174,7 @@ llms[98|]{id,backendModelId,name,purpose,params,gb,tier,ctxK,creator,intel,agent
   gemma3-4b|gemma3:4b|Gemma 3 4B|general|4|3.3|cpu-only||Google|1.1||0|1|0|0|||
   gemma3-12b|gemma3:12b|Gemma 3 12B|general|12|8.1|low||Google|||0|1|0|0|||
   gemma3-27b|gemma3:27b|Gemma 3 27B|general|27|17|medium||Google|||0|1|0|0|||
+  gemma3n-e4b|gemma3n:e4b|Gemma 3n E4B|general|7|7.5|low|32|Google|||0|0|0|0|||
   mistral-7b|mistral:7b|Mistral 7B|general|7|4.4|low|32|Mistral|||0|0|1|0|||
   mistral-nemo-12b|mistral-nemo:12b|Mistral Nemo 12B|general|12|7.1|low||Mistral|||0|0|1|0|||
   mistral-small-22b|mistral-small:22b|Mistral Small 22B|general|22|13|medium||Mistral|||0|0|1|0|||
@@ -203,6 +220,7 @@ llms[98|]{id,backendModelId,name,purpose,params,gb,tier,ctxK,creator,intel,agent
   ornith-1-5-35b|ornith-1.5:35b|Ornith 1.5 35B|coding|35|23|medium|256|Deep Reinforce|||0|1|0|0|||
   ornith-1-5-397b|ornith-1.5:397b|Ornith 1.5 397B|coding|397|242|high|256|Deep Reinforce|||0|1|0|0|||
   qwen3-coder-30b|qwen3-coder:30b|Qwen 3 Coder 30B|coding|30|18.6|medium|262|Alibaba|||0|0|1|0|||
+  qwen3-vl-32b|qwen3-vl:32b|Qwen 3 VL 32B|general|33|20.9|medium|262|Alibaba|||1|1|1|0|||
   qwen3-coder-480b|qwen3-coder:480b|Qwen 3 Coder 480B|coding|480|290.1|high|262|Alibaba|||0|0|1|0|||
   qwen2-5-coder-1-5b|qwen2.5-coder:1.5b|Qwen 2.5 Coder 1.5B|coding|1.5|1|cpu-only|32|Alibaba|||0|0|1|0|||
   qwen2-5-coder-3b|qwen2.5-coder:3b|Qwen 2.5 Coder 3B|coding|3|1.9|cpu-only|32|Alibaba|||0|0|1|0|||
