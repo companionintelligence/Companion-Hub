@@ -237,12 +237,122 @@ export function resolvePortalRootBounce(query: { code?: unknown; state?: unknown
   return null;
 }
 
-/** HTML interstitial — some browsers will not follow a 302 to cihub-dev://. */
+/**
+ * HTML interstitial — some browsers will not follow a 302 to cihub-dev://.
+ *
+ * THE CONTENT COMES BEFORE THE SCRIPT, and that is the whole point.
+ *
+ * It used to be `<script>location.replace(...)</script>` first and the text
+ * after. Navigating to an external scheme aborts the parse, so the paragraph and
+ * its fallback link were never reached: the tab the user is left looking at is
+ * blank white, with no title, no explanation, and — when the OS does not pick up
+ * the deep link — no way forward at all. The fallback link only helps if it
+ * renders, and a manual click carries the user gesture that some browsers want
+ * before launching an app anyway.
+ *
+ * Still ONE automatic navigation. A meta refresh alongside `location.replace`
+ * fires twice and hands the app the one-time token twice (first succeeds, second
+ * 400s), so the manual link stays the only other route.
+ *
+ * Self-contained by necessity: this is served by the API before any session
+ * exists, and on a Hub with no frontend bundle mounted there is nothing at
+ * `/assets` to link to. No external CSS, fonts or images.
+ */
 export function buildPortalDesktopHandoffHtml(deepLink: string): string {
   const safeHref = deepLink.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
-  // One navigation only — meta refresh + location.replace both fire and can
-  // consume the one-time desktop token twice (first succeeds, second 400s).
-  return `<!doctype html><html><head><meta charset="utf-8"></head><body><script>location.replace(${JSON.stringify(deepLink)})</script><p>Opening the Companion Hub app… <a href="${safeHref}">Open Companion Hub</a></p></body></html>`;
+  // `<` cannot end the inline script early. The link is server-generated, so this
+  // is belt-and-braces rather than a live hole.
+  const scriptLiteral = JSON.stringify(deepLink).replace(/</g, '\\u003c');
+
+  // Palette matches @companionintelligence/tokens (phthalo-mist), so the tab the
+  // browser opens looks like the app it is handing back to.
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Signing you in — Companion Hub</title>
+<meta name="color-scheme" content="dark light">
+<style>
+:root {
+  color-scheme: dark light;
+  --bg: #041620;
+  --card: #0c323c;
+  --fg: #e8f2f4;
+  --muted: #a3babf;
+  --border: #073038;
+  --accent: #c5e8dc;
+  --accent-fg: #041620;
+}
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #f3faf7;
+    --card: #f0f9f5;
+    --fg: #0a222e;
+    --muted: #3a524b;
+    --border: #dfece6;
+    --accent: #0a6358;
+    --accent-fg: #f0fdf4;
+  }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: var(--bg);
+  color: var(--fg);
+  font: 16px/1.5 Manrope, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+.card {
+  width: 100%;
+  max-width: 420px;
+  padding: 32px;
+  text-align: center;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+}
+.spinner {
+  width: 34px;
+  height: 34px;
+  margin: 0 auto 20px;
+  border: 3px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 900ms linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .spinner { animation: none; } }
+h1 { margin: 0 0 8px; font-size: 20px; font-weight: 600; }
+p { margin: 0 0 20px; color: var(--muted); font-size: 14px; }
+.btn {
+  display: block;
+  padding: 10px 16px;
+  border-radius: 9px;
+  background: var(--accent);
+  color: var(--accent-fg);
+  font-size: 14px;
+  font-weight: 600;
+  text-decoration: none;
+}
+.hint { margin: 16px 0 0; font-size: 12px; }
+</style>
+</head>
+<body>
+<main class="card">
+<div class="spinner" aria-hidden="true"></div>
+<h1>Opening Companion Hub</h1>
+<p>You are signed in. Handing you back to the app…</p>
+<a class="btn" href="${safeHref}">Open Companion Hub</a>
+<p class="hint">If nothing happens, your browser may have blocked the app link — use the button above. You can close this tab once the Hub is open.</p>
+</main>
+<script>location.replace(${scriptLiteral})</script>
+</body>
+</html>`;
 }
 
 export interface PortalTokenExchangeResult {
