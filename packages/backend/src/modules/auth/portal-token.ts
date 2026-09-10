@@ -124,7 +124,12 @@ export async function verifyPortalIdToken(token: string, options: PortalTokenVer
 
 /** Identity string for X-CI-Hub-User — prefer email, then sub. */
 export function portalClaimsIdentity(claims: PortalIdTokenClaims): string {
-  return claims.email ?? claims.sub;
+  // Lower-cased for the same reason `ensureLocalCompanionUser` lower-cases before its INSERT: this
+  // string is signed into `X-CI-Hub-User`, and the cookie/SSO path signs `user.username`, which is
+  // always the lower-cased address. Left raw, `Owner@Example.com` on the Bearer path and
+  // `owner@example.com` on the browser path are two different people to every app behind Traefik.
+  // `sub` is an opaque Portal id and is passed through as-is.
+  return claims.email ? claims.email.toLowerCase() : claims.sub;
 }
 
 /** Test helper — drop cached JWKS between cases. */
