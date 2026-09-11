@@ -371,12 +371,18 @@ poll interval before asserting on routing.
 **Precondition:** 2.6 connected; `<model-beta>` on beta only (1.4).
 
 ```bash
-core$ curl -s $HUB/v1/chat/completions \
+core$ curl -si $HUB/v1/chat/completions \
   -H 'Content-Type: application/json' \
   -d '{"model":"<model-beta>","messages":[{"role":"user","content":"reply with the word ok"}],"stream":false}'
 ```
 
-**Expected** — a normal OpenAI-shaped completion, not a 502.
+**Expected** — a normal OpenAI-shaped completion, not a 502, with these response headers above it:
+
+```
+X-Hub-Pool-Served-By: <beta-node>
+X-Hub-Pool-Backend: ollama
+X-Hub-Pool-Model: <model-beta>
+```
 
 ```bash
 core$ cihub pool log --limit 5 <env>
@@ -391,25 +397,30 @@ beta$ cihub pool log --limit 5 <env>
 
 **Expected** — a matching row with `DIR in` and `NODE <core-node>`.
 
-**PASS** the routing log on core names `<beta-node>` **and** beta records the matching inbound row. The
-response body alone is not evidence: only the log says which machine spent the GPU time.
-**FAIL** `NODE local` means core somehow has the model — recheck 1.4. A 502
+**PASS** `X-Hub-Pool-Served-By` on the response names `<beta-node>`, the routing log on core agrees,
+**and** beta records the matching inbound row. The header is the per-request answer and the one an
+app can read; the log is the operator's history of it. The response body alone is not evidence — the
+same model on either node produces the same shape.
+**FAIL** `X-Hub-Pool-Served-By: local` (and `NODE local` in the log) means core somehow has the model —
+recheck 1.4. No `X-Hub-Pool-*` headers at all means core is on a build that predates them. A 502
 (`No pool node currently has model …`) means beta's cached capabilities do not list it: check
 `cihub pool peers` on core for `<model-beta>` under "Models on each peer", and wait a poll interval.
 
 ### 3.2 A model both nodes have, with both idle
 
 ```bash
-core$ curl -s $HUB/v1/chat/completions \
+core$ curl -si $HUB/v1/chat/completions \
   -H 'Content-Type: application/json' \
   -d '{"model":"<model-both>","messages":[{"role":"user","content":"reply with the word ok"}],"stream":false}'
 core$ cihub pool log --limit 5 <env>
 ```
 
-**Expected** — `NODE local`, `ATT 1/2` (two candidates were ranked; the local one won).
+**Expected** — `X-Hub-Pool-Served-By: local` on the response, and `NODE local`, `ATT 1/2` in the log
+(two candidates were ranked; the local one won). The header says `local`, not core's own MagicDNS
+name, by design.
 
-**PASS** `NODE local` with `ATT 1/2`. `ATT 1/2` is the meaningful half: it proves beta *was* a candidate
-and lost on rank rather than being invisible.
+**PASS** `X-Hub-Pool-Served-By: local` and `NODE local` with `ATT 1/2`. `ATT 1/2` is the meaningful
+half: it proves beta *was* a candidate and lost on rank rather than being invisible.
 **FAIL** `ATT 1/1` means beta was never a candidate — its cached capabilities are missing or stale
 (`cihub pool peers` on core). `NODE <beta-node>` on an idle core means the affinity handicap is not being
 applied.
