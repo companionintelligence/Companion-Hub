@@ -33,7 +33,7 @@ describe('ApiKeyAdminService', () => {
 
   it("createKey mints an 'mcp'-scoped operator key and returns the raw key once", async () => {
     apiKeys.create.mockResolvedValue({ ...keyInfo({ id: 5, name: 'CLI' }), key: 'abcd1234RAW' });
-    const res = await service.createKey('CLI');
+    const res = await service.createKey('CLI', 'write', null);
     // Operator keys never carry 'app': that scope requires an owning app URN to pass the
     // callback guard, so an operator-created 'app' key would be a dead credential.
     expect(apiKeys.create).toHaveBeenCalledWith('CLI', { scopes: ['mcp'], capability: 'write', createdByUserId: null });
@@ -42,7 +42,7 @@ describe('ApiKeyAdminService', () => {
 
   it('createKey mints at the requested capability, so a read-only key is never wide open in between', async () => {
     apiKeys.create.mockResolvedValue({ ...keyInfo({ id: 6, name: 'recall', capability: 'read' }), key: 'raw' });
-    await service.createKey('recall', 'read');
+    await service.createKey('recall', 'read', null);
     expect(apiKeys.create).toHaveBeenCalledWith('recall', { scopes: ['mcp'], capability: 'read', createdByUserId: null });
   });
 

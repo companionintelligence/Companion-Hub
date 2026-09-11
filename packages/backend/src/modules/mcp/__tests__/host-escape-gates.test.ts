@@ -36,7 +36,9 @@ describe('MCP host-escape gates (R2-HUBHOSTESCAPE-5, -6)', () => {
    * call with no key behind it is not one this surface can receive.
    */
   const callAs = (capability: ApiKeyCapability, name: string, params: Record<string, unknown>) =>
-    mcpCallContext.run({ id: 1, name: 'agent', capability, ownerAppUrn: null }, () => registry.callTool(name, params, { capability }));
+    mcpCallContext.run({ id: 1, name: 'agent', capability, ownerAppUrn: null, createdByUserId: null }, () =>
+      registry.callTool(name, params, { capability }),
+    );
 
   beforeEach(() => {
     registry = new McpToolRegistry();

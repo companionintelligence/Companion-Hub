@@ -830,7 +830,7 @@ describe('AppLifecycleService', () => {
       });
 
       it("confines a managed app's MCP key to its own app", async () => {
-        const neighbour: LifecycleActor = { kind: 'mcp', ownerAppUrn: 'importer:ci-marketplace' };
+        const neighbour: LifecycleActor = { kind: 'mcp', ownerAppUrn: 'importer:ci-marketplace', createdByUserId: null };
 
         await expect(service.installApp({ actor: neighbour, appUrn, form: {} })).rejects.toThrow('APP_ACTION_GRANT_DENIED');
         await expect(service.updateAppConfig({ actor: neighbour, appUrn, form: {} })).rejects.toThrow('APP_ACTION_GRANT_DENIED');
@@ -974,7 +974,7 @@ describe('AppLifecycleService', () => {
 
       describe('the sweeps', () => {
         const IMPORTER = 'importer:ci-marketplace';
-        const importerKey: LifecycleActor = { kind: 'mcp', ownerAppUrn: IMPORTER };
+        const importerKey: LifecycleActor = { kind: 'mcp', ownerAppUrn: IMPORTER, createdByUserId: null };
         const row = (appName: string) => ({
           id: appName.length,
           appName,
@@ -992,6 +992,21 @@ describe('AppLifecycleService', () => {
 
           await service.updateAllApps(importerKey);
 
+          expect(update).toHaveBeenCalledTimes(1);
+          expect(update).toHaveBeenCalledWith(expect.objectContaining({ appUrn: IMPORTER }));
+        });
+
+        it("updates only the apps an unmanaged key's creator may update", async () => {
+          const createdBy7: LifecycleActor = { kind: 'mcp', ownerAppUrn: null, createdByUserId: 7 };
+          whois.has.mockImplementation(async (_userId: number, urn: string) => urn === IMPORTER);
+          appsService.getInstalledApps.mockResolvedValue(
+            ['neighbour', 'importer'].map((name) => ({ app: row(name), metadata: { latestVersion: 2 } })) as any,
+          );
+          const update = vi.spyOn(service, 'updateApp').mockResolvedValue({ requestId: 'u' } as any);
+
+          await service.updateAllApps(createdBy7);
+
+          expect(whois.has).toHaveBeenCalledWith(7, 'neighbour:ci-marketplace', 'update');
           expect(update).toHaveBeenCalledTimes(1);
           expect(update).toHaveBeenCalledWith(expect.objectContaining({ appUrn: IMPORTER }));
         });
