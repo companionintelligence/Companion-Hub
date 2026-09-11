@@ -104,6 +104,56 @@ export function describeAllCandidatesFailed(model: string, candidates: number, l
   return `All ${candidates} pool ${plural} for model "${model}" failed${message ? `: ${message}` : '.'}`;
 }
 const HOP_BY_HOP_HEADERS = new Set(['connection', 'keep-alive', 'transfer-encoding', 'content-length', 'content-encoding', 'upgrade']);
+
+// ── Serving-node attribution ────────────────────────────────────────────────
+//
+// Which node ran a routed request used to be knowable only from the routing log — session-gated,
+// in-memory, gone on restart — so proving cross-node routing on the fleet meant checking `ollama ps`
+// residency on the far side. The decision is stated on the response instead. The values are chosen so
+// nothing crosses a boundary it has not already crossed:
+//   - the peer's tailnet FQDN is what this Hub holds in its peer row, and the routes carrying it are
+//     `PoolAppGuard`-gated to apps inside this appliance, which are already trusted to spend that
+//     peer's GPU time;
+//   - a request this node served itself says `local`, never this node's own MagicDNS name. `identify`
+//     deliberately stopped disclosing that name to unauthenticated callers, and the proxy is an
+//     unauthenticated (origin-checked) surface, so the local case keeps the routing log's `NODE local`
+//     rather than opening a second door to the same datum;
+//   - the backend is the engine TYPE (`ollama`, `vllm`, …), never a container name; the model is the
+//     one the caller asked for. The peer's node UUID is a durable correlator and is never here — which
+//     is why the header is not `X-Hub-Pool-Node`: that name carries the UUID on the signed *request*
+//     path, and reusing it for a response would invite someone to "fix" the value to match.
+//
+// `X-Hub-Pool-Backend` / `X-Hub-Pool-Model` are the names this proxy already sends a peer on the
+// forwarded request, with the same meaning, so one vocabulary covers both directions of the wire.
+
+/** Response header naming the node whose engine served a routed request: {@link POOL_SERVED_LOCALLY} or the peer's tailnet FQDN. */
+export const POOL_SERVED_BY_HEADER = 'X-Hub-Pool-Served-By';
+/** Request → peer and response → caller: which of the serving node's engines ran the request. */
+export const POOL_BACKEND_HEADER = 'X-Hub-Pool-Backend';
+/** Request → peer and response → caller: the model the request was routed for. */
+export const POOL_MODEL_HEADER = 'X-Hub-Pool-Model';
+/**
+ * {@link POOL_SERVED_BY_HEADER}'s value when this node's own engine served the request. Shares the
+ * routing log's key on purpose, and can never collide with a peer: `normalizePeerFqdn` admits only
+ * names of two or more labels, so no peer row is ever the bare word `local`.
+ */
+export const POOL_SERVED_LOCALLY = LOCAL_CANDIDATE_KEY;
+/**
+ * Every `x-hub-pool-*` header on an UPSTREAM response is dropped before this Hub's own attribution
+ * is set. Attribution is this Hub's statement about the routing decision it made; a peer's `/local/*`
+ * answer (or, one day, a backend) must not be able to pose as it, and a peer that stamped its own
+ * view would be right from where it stands and wrong from where the caller does.
+ */
+const POOL_HEADER_PREFIX = 'x-hub-pool-';
+
+/** The attribution headers for a response served by `candidate`. Pure, so the contract has its own test. */
+export function servedByHeaders(candidate: PoolCandidate, model: string): Record<string, string> {
+  return {
+    [POOL_SERVED_BY_HEADER]: candidate.nodeFqdn ?? POOL_SERVED_LOCALLY,
+    [POOL_BACKEND_HEADER]: candidate.backend,
+    [POOL_MODEL_HEADER]: model,
+  };
+}
 /** 4xx that means "this node can't serve you", never "your request is bad" — retryable on any candidate. */
 const TRANSPORT_4XX = new Set([408, 429]);
 /**
@@ -391,7 +441,9 @@ export class PoolProxyService {
           status: upstream.status,
           durationMs: Date.now() - startedAt,
         });
-        this.commitResponse(upstream, res);
+        // Attribution rides on the commit, so it is on the wire before the first body byte on the
+        // streamed path too — the headers are the point of no return, the body follows.
+        this.commitResponse(upstream, res, servedByHeaders(candidate, model));
         committed = true;
         await this.streamResponse(upstream, res);
         return;
@@ -803,10 +855,10 @@ export class PoolProxyService {
           'Content-Type': 'application/json',
           // Tells the peer's `/inference/pool/local/*` handler which of ITS OWN backends to hit —
           // it can't infer this from the path alone, and must not re-run candidate selection itself.
-          'X-Hub-Pool-Backend': candidate.backend,
+          [POOL_BACKEND_HEADER]: candidate.backend,
           // Lets the receiver credit the outcome to the right model without parsing the body it
           // promises not to read. Same reason as the header above: the path alone doesn't carry it.
-          'X-Hub-Pool-Model': model,
+          [POOL_MODEL_HEADER]: model,
           ...authHeaders,
         },
         body: method === 'GET' ? undefined : JSON.stringify(body),
@@ -841,14 +893,24 @@ export class PoolProxyService {
   /**
    * Status line + headers only. Deliberately separate from {@link streamResponse}: it is the point
    * of no return for failover, and callers need to know which side of it a failure landed on.
+   *
+   * `attribution` is the routed path's serving-node statement (see {@link servedByHeaders}). It is
+   * set here, and nowhere later, because Node flushes headers on the first body write: anything
+   * set after `streamResponse` starts would be ERR_HTTP_HEADERS_SENT on a streamed completion.
+   * Upstream `x-hub-pool-*` headers are dropped whether or not there is an attribution to replace
+   * them — see {@link POOL_HEADER_PREFIX}.
    */
-  private commitResponse(upstream: globalThis.Response, res: Response): void {
+  private commitResponse(upstream: globalThis.Response, res: Response, attribution?: Record<string, string>): void {
     res.status(upstream.status);
     upstream.headers.forEach((value, key) => {
-      if (!HOP_BY_HOP_HEADERS.has(key.toLowerCase())) {
+      const name = key.toLowerCase();
+      if (!HOP_BY_HOP_HEADERS.has(name) && !name.startsWith(POOL_HEADER_PREFIX)) {
         res.setHeader(key, value);
       }
     });
+    for (const [name, value] of Object.entries(attribution ?? {})) {
+      res.setHeader(name, value);
+    }
   }
 
   private async streamResponse(upstream: globalThis.Response, res: Response): Promise<void> {
