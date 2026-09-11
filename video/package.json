@@ -13,7 +13,7 @@
     "all": "ci-video all"
   },
   "devDependencies": {
-    "@companionintelligence/video-kit": "^0.1.0",
+    "@companionintelligence/video-kit": "^0.32.2",
     "playwright": "1.62.1"
   }
 }

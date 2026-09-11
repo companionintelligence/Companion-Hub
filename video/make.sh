@@ -32,7 +32,12 @@ REPO_ROOT="$PWD"
 # finding an old kit is distinguishable from finding no kit — see below.
 KIT_REL="CI-Common/packages/video-kit"
 KIT_DIR=""
-if [ -n "${CI_WORKSPACE:-}" ]; then
+# Preferred: the kit installed from GitHub Packages (video/package.json pins
+# @companionintelligence/video-kit). The on-disk walk below is a development fallback
+# for working against an unpublished kit, not the normal route.
+if [ -d "$REPO_ROOT/video/node_modules/@companionintelligence/video-kit" ]; then
+  KIT_DIR="$REPO_ROOT/video/node_modules/@companionintelligence/video-kit"
+elif [ -n "${CI_WORKSPACE:-}" ]; then
   KIT_DIR="$CI_WORKSPACE/$KIT_REL"
 else
   d="$REPO_ROOT"

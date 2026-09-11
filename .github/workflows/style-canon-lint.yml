@@ -1,0 +1,28 @@
+name: Style canon lint
+
+# Gated like every other workflow in this repo (ci-local runs checks locally);
+# dispatch it deliberately. Fails if any --primary drifts off the CI canon, and if a
+# brand file under packages/frontend/public/ differs from @companionintelligence/assets.
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  style-canon-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: corepack enable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: 'https://npm.pkg.github.com'
+          scope: '@companionintelligence'
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - run: pnpm lint:canon
