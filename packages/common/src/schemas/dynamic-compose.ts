@@ -4,6 +4,12 @@ import { dynamicComposeSchemaV1 } from './utils/converters/v1.js';
 const DENIED_CUSTOM_APP_HOST_PATHS = [
   '/',
   '/var/run/docker.sock',
+  // On every systemd distro `/var/run` is a symlink to `/run`, so `/run/docker.sock` is the same
+  // socket under a name the entry above never matches: the kernel follows the link at mount time,
+  // and this list is compared as strings. `/run` also holds containerd's and dbus's sockets.
+  '/run',
+  // Every other container's filesystem, image layers and volumes.
+  '/var/lib/docker',
   '/proc',
   '/sys',
   '/dev',

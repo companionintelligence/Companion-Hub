@@ -269,6 +269,12 @@ schemas.forEach(({ name, serviceSchema, dynamicComposeSchema, safeParse }) => {
           ['$APP_DATA_DIR_HOME/var/run/docker.sock', 'names a different unbraced variable that merely starts the same'],
           ['/var/run', 'is the directory the denied docker socket sits in'],
           ['/var', 'contains the directory the denied docker socket sits in'],
+          // `/var/run` is a symlink to `/run` on every systemd distro: the same socket, by its real name.
+          ['/run/docker.sock', 'is the docker socket under its real name'],
+          ['/run', 'is the directory that real name sits in'],
+          ['/run/containerd/containerd.sock', "is containerd's socket, which runs every container"],
+          ['/var/lib/docker', "is every other container's filesystem"],
+          ['/var/lib', "contains every other container's filesystem"],
         ])('should reject %j because it %s', (hostPath) => {
           const result = safeParse(serviceSchema, withVolume({ hostPath, containerPath: '/mnt' }));
           expect(result.success).toBe(false);
