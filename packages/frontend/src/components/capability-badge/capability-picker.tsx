@@ -1,3 +1,4 @@
+import { cn } from '@/lib/utils';
 import { useTranslation } from 'react-i18next';
 import { API_KEY_CAPABILITIES, type ApiKeyCapability, CAPABILITY_HINT_KEYS, CAPABILITY_LABEL_KEYS } from './capability-badge';
 
@@ -38,7 +39,11 @@ export const CapabilityPicker = ({
         const isUnavailable = unavailable.includes(capability);
 
         return (
-          <label key={capability} className="flex cursor-pointer items-start gap-2" htmlFor={`${name}-capability-${capability}`}>
+          <label
+            key={capability}
+            className={cn('flex items-start gap-2', isUnavailable ? 'cursor-not-allowed' : 'cursor-pointer')}
+            htmlFor={`${name}-capability-${capability}`}
+          >
             <input
               id={`${name}-capability-${capability}`}
               type="radio"
@@ -51,7 +56,9 @@ export const CapabilityPicker = ({
               data-testid={`${name}-capability-${capability}`}
             />
             <span className="min-w-0">
-              <span className="block text-sm font-medium">{t(CAPABILITY_LABEL_KEYS[capability])}</span>
+              <span className={cn('block text-sm font-medium', isUnavailable && 'text-muted-foreground')}>
+                {t(CAPABILITY_LABEL_KEYS[capability])}
+              </span>
               <span className="block text-xs text-muted-foreground">
                 {isUnavailable && unavailableHint ? unavailableHint : t(CAPABILITY_HINT_KEYS[capability])}
               </span>

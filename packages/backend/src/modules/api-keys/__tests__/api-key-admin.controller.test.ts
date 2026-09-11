@@ -86,6 +86,15 @@ describe('ApiKeyAdminController', () => {
       expect(admin.setKeyCapability).not.toHaveBeenCalled();
     });
 
+    it('lets an owner or admin raise a key to full', async () => {
+      whois.isOrgManager.mockResolvedValue(true);
+
+      await controller.updateKey(3, { capability: 'full' } as never, session());
+
+      expect(whois.isOrgManager).toHaveBeenCalledWith(7);
+      expect(admin.setKeyCapability).toHaveBeenCalledWith(3, 'full');
+    });
+
     it('lets anyone tighten a key, without asking', async () => {
       await controller.updateKey(3, { capability: 'read' } as never, session());
 

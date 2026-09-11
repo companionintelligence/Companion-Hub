@@ -2,7 +2,7 @@ import { Body, Controller, Delete, Get, HttpStatus, Param, ParseIntPipe, Patch, 
 import { ModuleRef } from '@nestjs/core';
 import type { Request } from 'express';
 import { TranslatableError } from '@/common/error/translatable-error';
-import { hubSessionOperatorUserId, isGrantExemptPrincipal } from '@/core/portal/hub-session-operator';
+import { hubSessionOperatorUserId } from '@/core/portal/hub-session-operator';
 import { MarketplaceWhoIsService } from '@/core/portal/marketplace-whois.service';
 import { AuthGuard } from '@/modules/auth/auth.guard';
 import { ApiKeyAdminService } from './api-key-admin.service';
@@ -79,21 +79,25 @@ export class ApiKeyAdminController {
    * ⚠ FULL CAPABILITY IS THE ORGANIZATION'S TO GIVE. A key acts with its creator's grants, but `full`
    * also opens the destructive tools no per-app grant stands behind — uninstall, reset, the bulk
    * sweeps — so who may hand it out is an owner's or admin's call, as it is in the Portal. Asked of
-   * WhoIs fresh and about no app (`isOrgManager`); every way of not knowing is a no. A named exempt
-   * principal (the CLI, the Portal device push) is admitted by name, as by every gate.
+   * WhoIs fresh and about no app (`isOrgManager`); every way of not knowing is a no.
+   *
+   * The exempt principals (the CLI, the Portal device push) are admitted by name, as
+   * `MarketplaceWhoIsService.lifecycleActor` names them, not through `isGrantExemptPrincipal`: one
+   * added to that list later is refused here until someone decides it may hand out `full` keys.
    */
   private async mayGrantFull(req: Request): Promise<boolean> {
-    if (isGrantExemptPrincipal(req)) {
-      return true;
+    switch (req.hubPrincipal) {
+      case 'cli':
+      case 'portal-device':
+        return true;
+      case 'session': {
+        const userId = hubSessionOperatorUserId(req);
+
+        return userId !== undefined && (await this.resolveWhois()?.isOrgManager(userId)) === true;
+      }
+      default:
+        return false;
     }
-
-    const userId = hubSessionOperatorUserId(req);
-
-    if (userId === undefined) {
-      return false;
-    }
-
-    return (await this.resolveWhois()?.isOrgManager(userId)) === true;
   }
 
   private async assertMayGrantFull(req: Request): Promise<void> {

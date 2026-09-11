@@ -441,6 +441,11 @@ describe('MarketplaceWhoIsService', () => {
       await expect(service.hasManagingRole(USER_ID, APP_URN)).resolves.toBe(false);
       expect(portal.whoisApps).not.toHaveBeenCalled();
     });
+
+    it('is false, not a 500, for an app urn that cannot be split', async () => {
+      await expect(service.hasManagingRole(USER_ID, 'x:' as AppUrn)).resolves.toBe(false);
+      expect(portal.whoisApps).not.toHaveBeenCalled();
+    });
   });
 
   describe('isOrgManager — the role alone, for a decision no single app owns', () => {
@@ -450,6 +455,8 @@ describe('MarketplaceWhoIsService', () => {
       ['owner', true],
       ['admin', true],
       ['member', false],
+      // Not a Portal role today. Anything but owner or admin is not a manager, whatever it is called.
+      ['viewer', false],
     ])('answers an organization %s with %s, asking about no app', async (role, expected) => {
       portal.whoisApps.mockResolvedValue(answer([{ organizationId: 'org-hub', user: { role }, apps: [] }]));
 

@@ -8,6 +8,8 @@ import { Input } from '@/components/ui/Input';
 import { Skeleton } from '@/components/ui/Skeleton/Skeleton';
 import { apiFetch } from '@/lib/api-fetch';
 import { copyToClipboard } from '@/lib/copy-to-clipboard';
+import { isI18nKey } from '@/lib/format-api-error';
+import type { TFunction } from 'i18next';
 import { useCallback, useEffect, useState } from 'react';
 import toast from 'react-hot-toast';
 import { useTranslation } from 'react-i18next';
@@ -56,14 +58,21 @@ const fetchApiKeys = async (): Promise<{ keys: ApiKeyInfo[]; canGrantFull: boole
 /**
  * The server's own reason for a refusal, translated, when it sent one — "only an owner or admin can
  * give a key full capability" says what to do next, a generic "could not save" does not.
+ *
+ * Only a translation key is a reason. Raw backend text — a validation failure's "Bad Request
+ * Exception", a 503's "Database temporarily unavailable" — is not copy for the screen, so it gets
+ * `fallback`, and so does a body that is not JSON at all.
  */
-const refusalMessage = async (res: Response, t: (key: string) => string): Promise<string | null> => {
+const refusalMessage = async (res: Response, t: TFunction, fallback: string): Promise<string> => {
   try {
-    const body = (await res.json()) as { message?: unknown };
-    return typeof body.message === 'string' ? t(body.message) : null;
+    const body = (await res.json()) as { message?: unknown; intlParams?: Record<string, string> };
+    if (typeof body.message === 'string' && isI18nKey(body.message)) {
+      return t(body.message, { ...(body.intlParams ?? {}), defaultValue: fallback });
+    }
   } catch {
-    return null;
+    // Not JSON: a proxy's error page, say.
   }
+  return fallback;
 };
 
 /** Capability gates the MCP tool surface only, so it is meaningful for a key that can reach it and
@@ -148,7 +157,10 @@ export const ApiKeysContainer = () => {
       });
       if (!res.ok) {
         // A refusal says why — only an owner or admin can give a key full capability — not just "failed".
-        toast.error((await refusalMessage(res, t)) ?? t('API_KEYS_CREATE_ERROR'));
+        toast.error(await refusalMessage(res, t, t('API_KEYS_CREATE_ERROR')));
+        // It can also mean what this screen thinks the operator may grant is out of date (their role
+        // changed since the list loaded), so re-read it rather than keep offering the refused level.
+        await refreshKeys();
         return;
       }
       const body = (await res.json()) as { key: string };
@@ -193,7 +205,11 @@ export const ApiKeysContainer = () => {
         body: JSON.stringify({ capability: changeTo }),
       });
       if (!res.ok) {
-        toast.error((await refusalMessage(res, t)) ?? t('API_KEYS_CAPABILITY_SAVE_ERROR'));
+        toast.error(await refusalMessage(res, t, t('API_KEYS_CAPABILITY_SAVE_ERROR')));
+        // Back to the picker, re-read: a refused promotion must not leave the confirmation up, offering
+        // the level the Hub just refused.
+        setChangeStep('choose');
+        await refreshKeys();
         return;
       }
       const body = (await res.json()) as { changed: boolean };
@@ -372,7 +388,9 @@ export const ApiKeysContainer = () => {
             </Button>
             <Button
               loading={creatingKey}
-              disabled={creatingKey || !newKeyName.trim()}
+              // Never send a level the Hub has said it will refuse: after a refusal the re-read can take
+              // `full` away while it is still the selected choice.
+              disabled={creatingKey || !newKeyName.trim() || (!canGrantFull && newKeyCapability === 'full')}
               onClick={() => void createKey()}
               data-testid="api-key-create-submit"
             >
@@ -413,7 +431,7 @@ export const ApiKeysContainer = () => {
                 </Button>
                 <Button
                   loading={savingCapability}
-                  disabled={savingCapability || changeTo === changeTarget?.capability}
+                  disabled={savingCapability || changeTo === changeTarget?.capability || (!canGrantFull && changeTo === 'full')}
                   onClick={() => void submitCapability()}
                   data-testid="api-key-change-submit"
                 >

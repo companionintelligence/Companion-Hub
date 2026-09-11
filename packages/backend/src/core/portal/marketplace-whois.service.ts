@@ -167,7 +167,7 @@ export class MarketplaceWhoIsService {
    * say (`lifecycleActor`); the service decides from that.
    */
   async hasManagingRole(userId: number, appUrn: AppUrn): Promise<boolean> {
-    return this.isOrganizationManager(userId, [extractAppUrn(appUrn).appName], 'custom_domain');
+    return this.readManagingRole(userId, appUrn, 'custom_domain');
   }
 
   /**
@@ -181,12 +181,16 @@ export class MarketplaceWhoIsService {
    * answer "yes" until the Portal can give it.
    */
   async isOrgManager(userId: number): Promise<boolean> {
-    return this.isOrganizationManager(userId, [], 'api_key_full');
+    return this.readManagingRole(userId, null, 'api_key_full');
   }
 
-  /** The role question both ask: fresh, from this device's own organization, and `false` whenever it cannot be answered. */
-  private async isOrganizationManager(userId: number, appIds: string[], purpose: 'custom_domain' | 'api_key_full'): Promise<boolean> {
-    // The identity read inside the `try` too: a database error is another way of not knowing, not a 500.
+  /**
+   * The role question both ask, about `appUrn` or, when it is `null`, about no app: fresh, from this
+   * device's own organization, and `false` whenever it cannot be answered.
+   */
+  private async readManagingRole(userId: number, appUrn: AppUrn | null, purpose: 'custom_domain' | 'api_key_full'): Promise<boolean> {
+    // The identity read and the urn split inside the `try` too: a database error, or a urn
+    // `extractAppUrn` rejects, is another way of not knowing, not a 500.
     try {
       const subject = await this.portalSubject(userId);
 
@@ -195,6 +199,7 @@ export class MarketplaceWhoIsService {
         return false;
       }
 
+      const appIds = appUrn === null ? [] : [extractAppUrn(appUrn).appName];
       const response = await this.portal.whoisApps({ subject, appIds, surface: 'hub' });
 
       if (!response?.body || response.status < 200 || response.status >= 300) {
