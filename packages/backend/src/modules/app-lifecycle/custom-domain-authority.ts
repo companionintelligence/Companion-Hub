@@ -9,11 +9,12 @@ export type CustomDomainState = {
   /** An unspent "yes, move it" answer is already on record. */
   takeover: boolean;
   /**
-   * Another app on this Hub asks for the domain this one is bound to: a move
-   * somebody started that has not landed yet. Read only for an app bound with
-   * no choice of its own; see the echo rule in {@link requestsCustomDomainChange}.
+   * Another app on this Hub asks for the domain this save submits. Re-recording
+   * it here would take that app's choice away (`claimCustomDomainIntent`),
+   * cancelling a move somebody else started. Read only for a save that would
+   * otherwise change nothing; see {@link requestsCustomDomainChange}.
    */
-  boundWantedElsewhere: boolean;
+  wantedElsewhere: boolean;
 };
 
 /** The fields of an install / update-config form that say anything about custom domains. */
@@ -43,8 +44,8 @@ export type CustomDomainForm = {
  * - giving one up (`''`) while it asks for or serves one;
  * - a takeover answer other than the one on record: confirming a move nobody
  *   approved, or withdrawing one somebody did;
- * - re-submitting the binding while another app asks for that domain, which
- *   would cancel the move somebody else started.
+ * - re-submitting its own choice or its binding while another app asks for
+ *   that domain, which would cancel the move somebody else started.
  *
  * An app not installed yet (`state === null`) changes something only by asking
  * for a domain.
@@ -80,8 +81,8 @@ export function requestsCustomDomainChange(form: CustomDomainForm, state: Custom
    * takeover answer the row does not have.
    */
   if (intent === null && wanted === bound) {
-    return takeover || state.boundWantedElsewhere;
+    return takeover || state.wantedElsewhere;
   }
 
-  return wanted !== intent || takeover !== state.takeover;
+  return wanted !== intent || takeover !== state.takeover || state.wantedElsewhere;
 }

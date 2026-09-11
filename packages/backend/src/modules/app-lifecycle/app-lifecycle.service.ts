@@ -1114,9 +1114,13 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
       intent,
       bound,
       takeover: app.customDomainTakeover === true,
-      // Only the echo rule reads it — the binding re-submitted with no choice of its own — so only that save pays for the query.
-      boundWantedElsewhere:
-        bound !== null && intent === null && wanted === bound ? await this.appRepository.hasCustomDomainIntentElsewhere(app.id, bound) : false,
+      /*
+       * Only a save that would otherwise change nothing needs the answer — one
+       * re-submitting its own choice or its binding — so only that save pays for
+       * the query.
+       */
+      wantedElsewhere:
+        wanted !== null && (wanted === intent || wanted === bound) ? await this.appRepository.hasCustomDomainIntentElsewhere(app.id, wanted) : false,
     };
   }
 

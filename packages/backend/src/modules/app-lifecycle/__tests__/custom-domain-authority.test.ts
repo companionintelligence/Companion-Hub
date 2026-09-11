@@ -5,10 +5,10 @@ const serving = (domain: string, overrides: Partial<CustomDomainState> = {}): Cu
   intent: domain,
   bound: domain,
   takeover: false,
-  boundWantedElsewhere: false,
+  wantedElsewhere: false,
   ...overrides,
 });
-const none: CustomDomainState = { intent: null, bound: null, takeover: false, boundWantedElsewhere: false };
+const none: CustomDomainState = { intent: null, bound: null, takeover: false, wantedElsewhere: false };
 /** Bound by CI-Cloud with no choice recorded on this Hub. */
 const boundOnly = (domain: string, overrides: Partial<CustomDomainState> = {}): CustomDomainState => ({ ...none, bound: domain, ...overrides });
 
@@ -58,7 +58,12 @@ describe('requestsCustomDomainChange (R2-HUBDOMAINS-1)', () => {
     [
       're-submitting its binding while another app waits for that domain',
       { customDomain: 'shop.acme.com' },
-      boundOnly('shop.acme.com', { boundWantedElsewhere: true }),
+      boundOnly('shop.acme.com', { wantedElsewhere: true }),
+    ],
+    [
+      're-submitting its own choice while another app holds the same one',
+      { customDomain: 'shop.acme.com' },
+      serving('shop.acme.com', { wantedElsewhere: true }),
     ],
     [
       'confirming a takeover of the domain CI-Cloud already bound it to',

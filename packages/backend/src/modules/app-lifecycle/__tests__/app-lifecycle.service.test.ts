@@ -882,14 +882,19 @@ describe('AppLifecycleService', () => {
           expect(appEventsQueue.publish).not.toHaveBeenCalled();
         });
 
-        it('lets an owner or admin move it', async () => {
+        it('lets an owner or admin move it, all the way to the row', async () => {
           appsRepository.getAppByUrn.mockResolvedValue(serving as any);
+          appFilesManager.getInstalledAppInfo.mockResolvedValue(baseAppInfo as any);
           roles.hasManagingRole.mockResolvedValue(true);
 
-          const outcome = await outcomeOf(service.updateAppConfig({ actor: OPERATOR, appUrn, form: { customDomain: 'other.acme.com' } }));
+          await service.updateAppConfig({
+            actor: OPERATOR,
+            appUrn,
+            form: { exposureMode: 'cloudflare', exposedLocal: true, openPort: false, customDomain: 'other.acme.com' },
+          });
 
-          expect(outcome).not.toBe('CUSTOM_DOMAIN_ROLE_REQUIRED');
           expect(roles.hasManagingRole).toHaveBeenCalledWith(7, appUrn);
+          expect(appsRepository.updateAppById).toHaveBeenCalledWith(1, expect.objectContaining({ customDomainIntent: 'other.acme.com' }));
         });
 
         it('does not ask a member about a save that leaves the domain alone', async () => {
@@ -1567,16 +1572,34 @@ describe('AppLifecycleService', () => {
       expect(authorize).not.toHaveBeenCalled();
     });
 
-    it('looks for another app waiting only when the app is bound with no choice of its own', async () => {
+    it('looks for another app waiting only when the save would otherwise change nothing', async () => {
       appsRepository.getAppByUrn.mockResolvedValue(row());
+
+      // A different domain is a change whatever else is true, so it costs no query.
+      await service.authorizeCustomDomainChange(
+        APP_URN,
+        { customDomain: 'other.acme.com' },
+        vi.fn(async () => {}),
+      );
+      expect(appsRepository.hasCustomDomainIntentElsewhere).not.toHaveBeenCalled();
 
       await service.authorizeCustomDomainChange(
         APP_URN,
         { customDomain: 'shop.acme.com' },
         vi.fn(async () => {}),
       );
+      expect(appsRepository.hasCustomDomainIntentElsewhere).toHaveBeenCalledWith(7, 'shop.acme.com');
+    });
 
-      expect(appsRepository.hasCustomDomainIntentElsewhere).not.toHaveBeenCalled();
+    it('asks when re-saving its own choice would take it from another app holding the same one', async () => {
+      // Two rows can hold one intent after a failed exclusivity write; the claim on this save would wipe the other.
+      const authorize = vi.fn(async () => {});
+      appsRepository.getAppByUrn.mockResolvedValue(row());
+      appsRepository.hasCustomDomainIntentElsewhere.mockResolvedValue(true);
+
+      await service.authorizeCustomDomainChange(APP_URN, { customDomain: 'shop.acme.com' }, authorize);
+
+      expect(authorize).toHaveBeenCalledOnce();
     });
 
     it('refuses a release of a binding the dialog never showed before asking for any role', async () => {
