@@ -723,13 +723,15 @@ read-only subcommands are the default and the rest need `--execute`.
 cihub fleet scan [--lan] [--write-roster] [--json]     # find machines, and what each one will allow
 cihub fleet list [--json]                              # the saved roster, and what a run would skip
 cihub fleet status [--nodes a,b] [--json]              # re-probe every rostered node
+cihub fleet preflight [--nodes a,b] [--touches-boot]   # is each node safe to hand a package transaction?
+cihub fleet backends [--backends a,b] [--execute]      # what each node can run for inference, then install it
 cihub fleet backends [--backends a,b] [--bind tailnet|all|local] [--execute]  # what each node can run for inference, then install it
 cihub fleet install [--user <acct>] [--execute]        # stand a Hub up on each node and register it
 cihub fleet update [--hub] [--models a,b] [--execute]  # refresh the Hub image, pull models
 cihub fleet apps [--apps a,b] [--endpoint pool|local]  # can each node serve an agent its credentials
 ```
 
-**`scan`, `list` and `status` change nothing, anywhere; `apps` reads and installs nothing.**
+**`scan`, `list`, `status` and `preflight` change nothing, anywhere; `apps` reads and installs nothing.**
 `backends`, `install` and `update` require `--execute`; without it they print the plan they would
 run, touch nothing, and exit `0`. A tool that can reach fourteen machines should make the destructive
 path the one you have to ask for.
@@ -801,6 +803,8 @@ while believing it was twenty is the worse failure.
 | `--write-roster` | `scan` only: save the result to `fleet.json` |
 | `--timeout <ms>` | Per-probe budget, 250–120000 (default 4000) |
 | `--concurrency <n>` | Parallel **probes**, 1–32 (default 4). The runners stay serialised regardless |
+| `--force` | `install`/`update` only: proceed on a node whose preflight said `block`. The finding is still printed, marked as overridden |
+| `--touches-boot` | `preflight`/`install`/`update`: rate the boot-recovery and grub-customizer findings as `block` rather than `warn`, as they are before anything that touches the kernel, initramfs or GRUB |
 | `--backends a,b` | `backends` only: from `ollama`, `vllm`, `lucebox`, `dspark`, `mtplx`, `lemonade`. Omit for all six |
 | `--bind tailnet\|all\|local` | `backends` only: where Ollama listens (default `tailnet`, the node's Tailscale IPv4 from `tailscale ip -4`). Written to one drop-in and read back after the restart — see [Ollama's bind](#ollamas-bind-one-file-read-back) |
 | `--data-dir <path>` | Where the Hub keeps runner venvs and model dirs on the **remote** machine (default `/var/lib/companion-hub`) |
@@ -830,6 +834,30 @@ administrable, running a Hub, serving engines, and — for every node it can SSH
 binds and **which drop-in decided it** (`100.64.0.9:11434 ← zzzzz-cihub-bind.conf`), with a
 `CONFLICT` flag when more than one file sets `OLLAMA_HOST` and the winner is not the canonical one.
 Neither touches a node beyond the probe.
+
+### `cihub fleet preflight`
+
+Per node, in one SSH round trip: `sudo -n true`, `dpkg --audit`, `apt-get check`, a listing of
+`/etc/grub.d`, `/etc/default/grub`, `/sys/class/ipmi`, and the package lock table. Reads only — there
+is no `--execute` because there is nothing to execute. `install` and `update` run the same five checks
+on each node before touching it; this is the standalone view, for looking before a pass rather than
+being refused partway through one. Exits `1` if any node would be refused, so `cihub fleet preflight
+&& cihub fleet install --execute` is a gate.
+
+| Check | Reads | Finding |
+|---|---|---|
+| `sudo` | `sudo -n true` | **block** when the account cannot become root without a prompt — `ssh -n` has no TTY, so the install would fail six steps in. **info**, never block, on CI OS, whose account is unprivileged by design |
+| `dpkg` | `dpkg --audit`, `apt-get check` | **block** on any half-configured package or unmet dependency: every package operation on the node fails until it is cleared. A lock or permission failure from `apt-get check` is not counted here |
+| `grub-customizer` | `ls /etc/grub.d` | `*_proxy` scripts or `.script_sources.txt`. **warn**; **block** with `--touches-boot`. Once a kernel they name is removed they emit an invalid `grub.cfg`, `update-grub` refuses it, and every kernel postinst fails — the wedge one node sat in for weeks under a wrong diagnosis |
+| `boot-recovery` | `/etc/default/grub`, `/sys/class/ipmi`, roster `oob` | `GRUB_TIMEOUT_STYLE=hidden` + `GRUB_TIMEOUT=0` with no IPMI on the host and no `oob` console in the roster: a boot that fails needs a trip. **warn**; **block** with `--touches-boot` |
+| `apt-lock` | `lslocks`, `ps` | **block** while something holds `/var/lib/dpkg/lock*`; **warn** for a lists/archive lock. `unattended-upgrade-shutdown --wait-for-signal` is the idle boot-time hook, holds no lock, and is reported as such rather than flagged — it was read as a 24-hour stuck upgrade once |
+
+A check the probe never reached — the SSH budget ran out mid-script — is reported as **not
+measured** and rated `warn`, never as a pass.
+
+The roster's `"oob"` field is where an out-of-band console goes (`"ipmi 10.0.0.9"`, `"nanokvm
+192.168.0.115"`); its presence is what the boot-recovery check reads. The host cannot see a KVM
+plugged into it, so this is the only way to tell the tool.
 
 ### `cihub fleet backends`
 
@@ -877,8 +905,9 @@ canonical file) without changing anything.
 
 ### `cihub fleet install`
 
-Per node, in order: probe hardware → **load gate** → Linux and Docker check → install `cihub` →
-`hub up` and register → **claim** → install the status-file timer → optionally join a pool. Each step
+Per node, in order: probe hardware → **load gate** → Linux and Docker check → **preflight** →
+install `cihub` → `hub up` and register → **claim** → install the status-file timer → optionally join
+a pool. Each step
 re-checks the state it claims to have produced, because a step that trusts an exit code is how a fleet
 ends up believing it registered machines it never reached.
 
@@ -893,6 +922,11 @@ The **load gate** refuses any node above 1.5× cores of one-minute load. A fleet
 machine mid-inference at load 108–116 on 32 cores; its package transaction stalled rebuilding an
 initramfs it could never get CPU for, and the box needed physical recovery. Nothing in that pass
 checked load first.
+
+The **preflight** step is the five checks of [`cihub fleet preflight`](#cihub-fleet-preflight), run
+against the node just before the first thing that changes it. A `block` ends that node's install
+there, with the finding on its line; `--force` goes ahead and prints the finding marked as
+overridden. `update` runs the same gate before its first change.
 
 Pairing codes are covered under
 [Registering a fleet without a browser](#registering-a-fleet-without-a-browser): a stored
@@ -952,6 +986,7 @@ straight through a broken Docker bridge, and a fleet run that installed on 0 of 
 | --- | --- |
 | `doctor` | A **decided failure**: Docker or Compose unavailable, a compose file missing, or a network/bridge check that ran and failed |
 | `fleet backends` / `install` / `update` / `apps` | Any node failed. It is counted per node, so 13 of 14 is still a failure |
+| `fleet preflight` | Any node would be refused by `install`/`update` — a `block` finding, or a probe that could not run |
 | `models list` / `install` / `rm` | There is no Ollama container to talk to |
 | `app status <name>` | That named container is not there |
 | `app inspect <name>` | `docker inspect` could not read the container |
@@ -1031,10 +1066,11 @@ context), `cli-prompt.ts` (every confirmation, so the non-TTY refusal is worded 
 `cli-compose-env.ts` (env file and compose profile handling), `docker-engine.ts` (engine discovery
 and pinning).
 
-`cli-fleet.ts` owns argument parsing and the seven subcommand runners only; the work is in
+`cli-fleet.ts` owns argument parsing and the eight subcommand runners only; the work is in
 `fleet-roster.ts` (the saved fleet), `fleet-discover.ts` (the three probe axes), `fleet-ssh.ts` (the
 single SSH transport, so hosts cannot fail differently depending on which function reached them),
-`fleet-hardware.ts` (host facts and the load gate), `fleet-backends.ts`, `fleet-install.ts` and
+`fleet-hardware.ts` (host facts and the load gate), `fleet-preflight.ts` (the five pre-transaction
+checks and the gate `install`/`update` apply), `fleet-backends.ts`, `fleet-install.ts` and
 `fleet-apps.ts`.
 
 `scripts/cihub-cli.ts` is a re-export facade kept so `scripts/__tests__/cihub-cli.test.ts` has one

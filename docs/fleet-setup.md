@@ -228,6 +228,33 @@ Two settings need coordinating across the fleet rather than set independently:
   Linux AMD with `/sys` bind-mounted. A node that cannot measure reports nothing and ranks mid-band —
   deliberately not idle. On a fleet where most nodes cannot measure, leave the weight at `0`.
 
+## Before touching a node: preflight
+
+Run this before a fleet install, update, or anything that will install a kernel, a driver or a
+`dkms` module. It reads and changes nothing:
+
+```bash
+cihub fleet preflight                  # every rostered node, one table
+cihub fleet preflight --touches-boot   # rated as it would be before a kernel/initramfs/grub operation
+```
+
+`cihub fleet install` and `cihub fleet update` run the same five checks on each node just before the
+first thing that changes it, and refuse the node on a `block` (`--force` overrides, and says so in
+the log). Reference: [`CLI.md` → `cihub fleet preflight`](CLI.md#cihub-fleet-preflight). The five,
+each from a real day on this fleet (2026-09-10, eighteen nodes):
+
+| Check | Why it exists |
+|---|---|
+| **sudo** | Three nodes had no passwordless sudo for `ci` (sudo-rs; every working node has `/etc/sudoers.d/ci-passwordless`). Installs failed at step six with a message about a terminal. Now they fail at step zero, with the one-line fix. CI OS is unprivileged by design and is reported, not blocked |
+| **dpkg** | One node's dpkg was wedged for weeks. `dpkg --audit` and `apt-get check` showed it instantly; nothing had looked. Every package operation on such a box fails until it is cleared |
+| **grub-customizer** | The actual cause of that wedge — not the failed kernel removal it was blamed on. grub-customizer's `*_proxy` scripts in `/etc/grub.d` (and `.script_sources.txt`) emit an invalid `grub.cfg` once a kernel they name is gone; `update-grub` refuses it; every kernel postinst fails. Removing the proxies is the fix. Retrying is not |
+| **boot-recovery** | Two nodes run `GRUB_TIMEOUT_STYLE=hidden` with `GRUB_TIMEOUT=0`, and one has no IPMI. A kernel that fails to boot there is a trip. Record any console the host cannot see — a NanoKVM, a PiKVM — in the roster as `"oob"`, and the check counts it |
+| **apt-lock** | A "24-hour stuck unattended-upgrade" was `unattended-upgrade-shutdown --wait-for-signal`, an idle boot-time hook that holds no lock. The check reads the lock table, not just `ps`, and names that hook for what it is rather than flagging it |
+
+The **load gate** is unchanged and still comes first: the one outage that was blamed on an
+initramfs rebuild had, in the journal, a kernel soft-lockup cascade under inference twenty minutes
+*before* the rebuild. Load is the cause to gate on; the gate was right.
+
 ## Growing and shrinking
 
 - **Adding a node** repeats the whole one-node path: register, **claim** (`cihub claim --email <addr>`,
