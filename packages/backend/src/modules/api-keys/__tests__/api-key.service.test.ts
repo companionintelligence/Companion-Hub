@@ -105,7 +105,17 @@ describe('ApiKeyService', () => {
 
     it('returns the identity behind the key, so enforcement can consult the caller', async () => {
       repo.findByHash.mockResolvedValue(storedRow({ id: 9, capability: 'full' }));
-      await expect(service.resolve('raw', 'mcp')).resolves.toEqual({ id: 9, name: 'Laptop CLI', capability: 'full' });
+      await expect(service.resolve('raw', 'mcp')).resolves.toEqual({ id: 9, name: 'Laptop CLI', capability: 'full', ownerAppUrn: null });
+    });
+
+    it("names a managed key's owning app, so the lifecycle can confine it (CI-Hub#1397)", async () => {
+      repo.findByHash.mockResolvedValue(storedRow({ managed: true, ownerAppUrn: 'importer:ci-store' }));
+      await expect(service.resolve('raw', 'mcp')).resolves.toMatchObject({ ownerAppUrn: 'importer:ci-store' });
+    });
+
+    it('names no owning app for an unmanaged key, whatever the column holds', async () => {
+      repo.findByHash.mockResolvedValue(storedRow({ managed: false, ownerAppUrn: 'importer:ci-store' }));
+      await expect(service.resolve('raw', 'mcp')).resolves.toMatchObject({ ownerAppUrn: null });
     });
 
     it('returns null for a key that does not carry the required scope', async () => {

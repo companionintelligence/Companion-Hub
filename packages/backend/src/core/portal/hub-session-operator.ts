@@ -1,6 +1,13 @@
 import type { Request } from 'express';
 
 /**
+ * The only parts of a request the grant gate reads. Taking these rather than a whole `Request` lets a
+ * caller that decides later — the MCP tool runner names its actor per verb, from inside the tool —
+ * keep two fields alive in that async context instead of the entire request.
+ */
+export type HubPrincipalFields = Pick<Request, 'hubPrincipal' | 'user'>;
+
+/**
  * Hub-session person for org grants, or `undefined` when the caller is not a
  * person whose grants we can look up.
  *
@@ -8,7 +15,7 @@ import type { Request } from 'express';
  * an arm that sets a session id without naming itself reads as unrecognised,
  * which the grant gate refuses.
  */
-export function hubSessionOperatorUserId(req: Request): number | undefined {
+export function hubSessionOperatorUserId(req: HubPrincipalFields): number | undefined {
   if (req.hubPrincipal !== 'session') {
     return undefined;
   }
@@ -28,6 +35,6 @@ export function hubSessionOperatorUserId(req: Request): number | undefined {
  * `hubSessionId`, which widened it silently each time an authentication arm was
  * added (CI-Hub#1299).
  */
-export function isGrantExemptPrincipal(req: Request): boolean {
+export function isGrantExemptPrincipal(req: HubPrincipalFields): boolean {
   return req.hubPrincipal === 'portal-device' || req.hubPrincipal === 'cli';
 }

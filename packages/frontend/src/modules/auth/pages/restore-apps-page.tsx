@@ -5,7 +5,7 @@ import { sdkResult } from '@/lib/sdk-unwrap';
 import { clearStoredDriftChoice, getStoredDriftChoice } from '@/lib/registration-state-drift';
 import { QueuedInstallsIndicator } from '@/modules/dashboard/components/queued-installs-indicator';
 import { useInstallQueue } from '@/modules/app/helpers/use-install-queue';
-import { Suspense, useEffect, useRef, useState } from 'react';
+import { Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import { Navigate, useNavigate } from 'react-router';
 import { useTranslation } from 'react-i18next';
 import { Alert, AlertDescription } from '@/components/ui/Alert/Alert';
@@ -29,6 +29,8 @@ interface RehydrationExecuteResult {
   success: boolean;
   message: string;
   alreadyCompleted?: boolean;
+  /** An install was refused for this account, so the restore was not recorded as done. */
+  incomplete?: boolean;
   plan: RehydrationPlan;
   queued: string[];
   started: string[];
@@ -50,6 +52,40 @@ function RestoreAppsContent() {
   const [isExecuting, setIsExecuting] = useState(false);
   const startedRef = useRef(false);
   const { data: installQueue, isLoading: isQueueLoading } = useInstallQueue();
+
+  const runRehydrate = useCallback(async () => {
+    const executeResult = await sdkResult(executeRehydrate({ body: { source: 'restore' } } as Parameters<typeof executeRehydrate>[0]));
+    const data = executeResult.data as (RehydrationExecuteResult & { message?: string }) | undefined;
+    if (!data) {
+      throw new Error(t('RESTORE_APPS_EXECUTE_FAILED'));
+    }
+
+    if (!executeResult.ok || !data.success) {
+      throw new Error(data.message ?? t('RESTORE_APPS_EXECUTE_FAILED'));
+    }
+
+    setPlan(data.plan);
+    setResult(data);
+
+    // A refused install keeps the page: moving on would hide which apps were not restored, and why.
+    if (!data.incomplete && (data.alreadyCompleted || ((data.queued?.length ?? 0) === 0 && (data.started?.length ?? 0) === 0))) {
+      clearStoredDriftChoice();
+      await refreshAppContext();
+      if ((data.plan?.portalAppCount ?? 0) === 0) {
+        toast.success(t('RESTORE_APPS_EMPTY_PORTAL'));
+      }
+      navigate('/home', { replace: true });
+    }
+  }, [navigate, refreshAppContext, t]);
+
+  const showFailure = useCallback(
+    (failure: unknown) => {
+      const message = failure instanceof Error ? failure.message : t('RESTORE_APPS_EXECUTE_FAILED');
+      setError(message);
+      toast.error(message);
+    },
+    [t],
+  );
 
   useEffect(() => {
     if (startedRef.current) {
@@ -76,39 +112,36 @@ function RestoreAppsContent() {
         }
 
         setIsExecuting(true);
-        const executeResult = await sdkResult(executeRehydrate({ body: { source: 'restore' } } as Parameters<typeof executeRehydrate>[0]));
-        const data = executeResult.data as (RehydrationExecuteResult & { message?: string }) | undefined;
-        if (!data) {
-          throw new Error(t('RESTORE_APPS_EXECUTE_FAILED'));
-        }
-
-        if (!executeResult.ok || !data.success) {
-          throw new Error(data.message ?? t('RESTORE_APPS_EXECUTE_FAILED'));
-        }
-
-        setPlan(data.plan);
-        setResult(data);
-
-        if (data.alreadyCompleted || ((data.queued?.length ?? 0) === 0 && (data.started?.length ?? 0) === 0)) {
-          clearStoredDriftChoice();
-          await refreshAppContext();
-          if ((data.plan?.portalAppCount ?? 0) === 0) {
-            toast.success(t('RESTORE_APPS_EMPTY_PORTAL'));
-          }
-          navigate('/home', { replace: true });
-        }
+        await runRehydrate();
       } catch (executeError) {
-        const message = executeError instanceof Error ? executeError.message : t('RESTORE_APPS_EXECUTE_FAILED');
-        setError(message);
-        toast.error(message);
+        showFailure(executeError);
       } finally {
         setIsExecuting(false);
       }
     })();
-  }, [navigate, refreshAppContext, t]);
+  }, [navigate, refreshAppContext, runRehydrate, showFailure, t]);
+
+  const retry = async () => {
+    setError(null);
+    setIsExecuting(true);
+    try {
+      await runRehydrate();
+    } catch (retryError) {
+      showFailure(retryError);
+    } finally {
+      setIsExecuting(false);
+    }
+  };
+
+  // Drops the restore choice first: the dashboard would otherwise send this session straight back here.
+  const continueToDashboard = async () => {
+    clearStoredDriftChoice();
+    await refreshAppContext();
+    navigate('/home', { replace: true });
+  };
 
   useEffect(() => {
-    if (!result || result.alreadyCompleted) {
+    if (!result || result.alreadyCompleted || result.incomplete) {
       return;
     }
 
@@ -176,7 +209,7 @@ function RestoreAppsContent() {
               <ul className="mt-2 list-disc pl-5 text-sm">
                 {skipped.map((entry) => (
                   <li key={`${entry.name}-${entry.reason}`}>
-                    {entry.name}: {entry.reason}
+                    {entry.name}: {entry.reason === 'APP_ACTION_GRANT_DENIED' ? t('APP_ACTION_GRANT_DENIED', { action: 'install' }) : entry.reason}
                   </li>
                 ))}
               </ul>
@@ -184,7 +217,24 @@ function RestoreAppsContent() {
           </Alert>
         ) : null}
 
-        {!isExecuting && result && (installQueue?.queued?.length ?? 0) > 0 ? (
+        {!isExecuting && result?.incomplete ? (
+          <Alert variant="warning">
+            <AlertDescription>
+              <p className="font-medium">{t('RESTORE_APPS_INCOMPLETE_TITLE')}</p>
+              <p className="mt-1 text-sm">{t('RESTORE_APPS_INCOMPLETE_DESCRIPTION')}</p>
+              <div className="mt-3 flex flex-col gap-2 sm:flex-row">
+                <Button intent="secondary" onClick={() => void retry()}>
+                  {t('COMMON_RETRY')}
+                </Button>
+                <Button intent="primary" onClick={() => void continueToDashboard()}>
+                  {t('RESTORE_APPS_CONTINUE_IN_BACKGROUND')}
+                </Button>
+              </div>
+            </AlertDescription>
+          </Alert>
+        ) : null}
+
+        {!isExecuting && result && !result.incomplete && (installQueue?.queued?.length ?? 0) > 0 ? (
           <Button intent="primary" className="w-full" onClick={() => navigate('/home')}>
             {t('RESTORE_APPS_CONTINUE_IN_BACKGROUND')}
           </Button>

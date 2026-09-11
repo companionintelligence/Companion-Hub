@@ -2,8 +2,10 @@ import { Injectable } from '@nestjs/common';
 import { LATEST_PROTOCOL_VERSION } from '@modelcontextprotocol/sdk/types.js';
 import { HUB_MCP_PROTOCOL_VERSIONS } from './mcp-protocol';
 import { LoggerService } from '@/core/logger/logger.service';
+import type { LifecycleActorFor } from '@/core/portal/lifecycle-actor';
 import { ApiKeyService } from '@/modules/api-keys/api-key.service';
 import { McpService } from './mcp.service';
+import { mcpAdminCallContext } from './mcp-call-context';
 import { McpSessionRegistry } from './mcp-session.registry';
 import { McpToolRegistry, isPotentiallyDestructive } from './mcp-tool-registry.service';
 
@@ -81,17 +83,23 @@ export class McpAdminService {
    * Run a tool on the operator's behalf. Destructive tools require an explicit `confirmDestructive`
    * from the UI. Errors (including a blocked destructive tool) are returned as structured results so
    * the runner can show them inline rather than surfacing a 500.
+   *
+   * `actorFor` names the signed-in person to the lifecycle tools, so the org grants that decide the
+   * app routes decide here too. This caller is not a key, and is never taken for one (CI-Hub#1397).
    */
   async callTool(
     name: string,
     args: Record<string, unknown> | undefined,
     confirmDestructive: boolean,
+    actorFor: LifecycleActorFor,
   ): Promise<{ ok: true; result: unknown } | { ok: false; error: string }> {
     const start = Date.now();
     try {
       // 'full' because this caller is not a key: the operator is session-authed, and the thing standing
       // between them and a destructive tool is the confirmation they just gave, not a stored capability.
-      const result = await this.registry.callTool(name, args ?? {}, { capability: 'full', allowDestructive: confirmDestructive });
+      const result = await mcpAdminCallContext.run(actorFor, () =>
+        this.registry.callTool(name, args ?? {}, { capability: 'full', allowDestructive: confirmDestructive }),
+      );
       this.logger.info('MCP admin tool call', name, `${Date.now() - start}ms`, 'ok');
       return { ok: true, result };
     } catch (error) {

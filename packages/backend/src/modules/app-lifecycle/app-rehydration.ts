@@ -20,7 +20,20 @@ export interface LocalAppDataEntry {
   hasAppEnv: boolean;
 }
 
-export type RehydrationAction = 'install' | 'start' | 'skip_running' | 'skip_unresolved';
+export type RehydrationAction = 'install' | 'start' | 'skip_running' | 'skip_busy' | 'skip_unresolved';
+
+/** App statuses with an operation still under way. Rehydrate leaves these apps to it. */
+const IN_FLIGHT_STATUSES: ReadonlySet<string> = new Set([
+  'installing',
+  'uninstalling',
+  'stopping',
+  'starting',
+  'updating',
+  'resetting',
+  'restarting',
+  'backing_up',
+  'restoring',
+]);
 
 export interface RehydrationPlanItem {
   portalApp: PortalDeviceApplication;
@@ -191,6 +204,25 @@ export function buildRehydrationPlan(input: {
         appUrn,
         action: 'skip_running',
         reason: 'App is already running locally',
+        form,
+        hasExistingData,
+        hasInstalledCompose,
+      });
+      continue;
+    }
+
+    /*
+     * ⚠ A RETRY REACHES APPS THE LAST RUN IS STILL WORKING ON. A rehydrate that hit a grant refusal is
+     * not recorded as done, so the restore page's Retry — or a reload — plans again while the first
+     * run's installs are still going. `installApp` hands an existing row to `startApp`, which has no
+     * in-flight guard, so an app mid-install would be started underneath its own install.
+     */
+    if (dbApp && IN_FLIGHT_STATUSES.has(dbApp.status)) {
+      items.push({
+        portalApp,
+        appUrn,
+        action: 'skip_busy',
+        reason: `An operation is already in progress for this app (${dbApp.status})`,
         form,
         hasExistingData,
         hasInstalledCompose,

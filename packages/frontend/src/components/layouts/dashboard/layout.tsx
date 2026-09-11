@@ -27,7 +27,7 @@ export const DashboardLayoutSuspense = ({ children }: PropsWithChildren) => {
 };
 
 export const DashboardLayout = ({ children }: PropsWithChildren) => {
-  const { user, userSettings } = useAppContext();
+  const { user, userSettings, isLoading: isAppLoading, loadFailed } = useAppContext();
   const location = useLocation();
   const prevPathRef = useRef(location.pathname);
   const { isLoggedIn } = useUserContext();
@@ -53,8 +53,11 @@ export const DashboardLayout = ({ children }: PropsWithChildren) => {
     prevPathRef.current = location.pathname;
   }, [location.pathname]);
 
-  // Redirect to onboarding if not completed
-  if (!user.hasCompletedOnboarding && !location.pathname.startsWith('/onboarding')) {
+  // Redirect to onboarding if not completed. Only on a real payload: while
+  // app-context is still loading (or failed) `user` is the default, which says
+  // false — deciding on that bounced every cold load of a deep link through
+  // /onboarding and out to /home.
+  if (!isAppLoading && !loadFailed && !user.hasCompletedOnboarding && !location.pathname.startsWith('/onboarding')) {
     return <Navigate to="/onboarding" replace />;
   }
 

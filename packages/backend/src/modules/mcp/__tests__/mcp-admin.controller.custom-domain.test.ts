@@ -41,7 +41,7 @@ describe('McpAdminController — custom-domain changes take an owner or admin', 
 
     expect(lifecycle.authorizeCustomDomainChange).toHaveBeenCalledWith(appUrn, form, expect.any(Function));
     expect(whois.assertCustomDomainAuthority).toHaveBeenCalledWith(req, appUrn, verb);
-    expect(admin.callTool).toHaveBeenCalledWith(tool, { appUrn, form }, true);
+    expect(admin.callTool).toHaveBeenCalledWith(tool, { appUrn, form }, true, expect.any(Function));
   });
 
   it('refuses a member inline and never runs the tool, confirmDestructive or not', async () => {
@@ -62,6 +62,6 @@ describe('McpAdminController — custom-domain changes take an owner or admin', 
     await controller.callTool(tool, { arguments: args, confirmDestructive: false }, req);
 
     expect(lifecycle.authorizeCustomDomainChange).not.toHaveBeenCalled();
-    expect(admin.callTool).toHaveBeenCalledWith(tool, args, false);
+    expect(admin.callTool).toHaveBeenCalledWith(tool, args, false, expect.any(Function));
   });
 });
