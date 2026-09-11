@@ -357,6 +357,11 @@ The raw key is printed **once** at creation; store it immediately. Revoke keys i
 surfaces its scopes opened — `write` is the default. Raise or lower an existing key's capability in
 **Settings → Security**; the CLI has `create` and `list` only.
 
+A key you create with the CLI records no creator, because nobody is signed in. It keeps its per-app
+reach on every app, and it can't change an app's custom domain. **Settings → Security** marks it
+"Creator unknown". A key created in **Settings → Security** acts with the grants and role of the
+person who created it, so create a key there to limit it to one person's access.
+
 Operator keys carry `mcp` only. The `app` scope belongs to **managed** keys the Hub provisions to
 installed apps and revokes on uninstall — the callback guard resolves the key's owning app, so an
 operator key carrying `app` would authenticate nothing. Names beginning `app:` are reserved for the
