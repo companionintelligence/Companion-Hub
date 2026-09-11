@@ -168,6 +168,11 @@ export class AuthMiddleware implements NestMiddleware {
 
       try {
         const user = await this.loadSessionUser(userId);
+        if (user?.accessStatus === 'revoked') {
+          await this.sessionManager.destroyAllSessionsByUserId(userId);
+          this.sessionUserCache.invalidate(userId);
+          continue;
+        }
         req.user = user;
         req.hubSessionId = sessionId;
         req.hubPrincipal = 'session';

@@ -11,6 +11,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
 import { AuthService } from '../auth.service';
 import { SessionManager } from '../session.manager';
+import { BearerOrgMembershipCache } from '../bearer-org-membership.cache';
 import { SessionUserCache } from '@/core/cache/session-user.cache';
 import { PortalClientService } from '@/core/portal/portal-client.service';
 import { DeviceRegistrationRepository } from '@/modules/registration/device-registration.repository';
@@ -34,6 +35,7 @@ describe('AuthService', () => {
   let passwordService: MockProxy<PasswordService>;
   let portal: MockProxy<PortalClientService>;
   let deviceRegistration: MockProxy<DeviceRegistrationRepository>;
+  let bearerOrgMembership: MockProxy<BearerOrgMembershipCache>;
 
   beforeEach(async () => {
     vi.mocked(axios.post).mockReset();
@@ -54,6 +56,7 @@ describe('AuthService', () => {
         { provide: SessionUserCache, useValue: mock<SessionUserCache>() },
         { provide: PortalClientService, useValue: mock<PortalClientService>() },
         { provide: DeviceRegistrationRepository, useValue: mock<DeviceRegistrationRepository>() },
+        { provide: BearerOrgMembershipCache, useValue: mock<BearerOrgMembershipCache>() },
       ],
     }).compile();
 
@@ -66,9 +69,13 @@ describe('AuthService', () => {
     passwordService = moduleRef.get(PasswordService);
     portal = moduleRef.get(PortalClientService);
     deviceRegistration = moduleRef.get(DeviceRegistrationRepository);
+    bearerOrgMembership = moduleRef.get(BearerOrgMembershipCache);
     userRepository.getOperators.mockResolvedValue([]);
     federatedIdentityRepository.findByIssuerSubject.mockResolvedValue(undefined as never);
+    federatedIdentityRepository.findByUserId.mockResolvedValue([] as never);
     deviceRegistration.getFirstDeviceRegistration.mockResolvedValue(null as never);
+    userRepository.updateUser.mockImplementation(async (_id, data) => ({ id: _id, ...data }) as never);
+    passwordService.hash.mockResolvedValue('hashed-local' as never);
   });
 
   it('should be defined', () => {
@@ -127,6 +134,89 @@ describe('AuthService', () => {
       expect(result).toHaveProperty('totpSessionId');
       expect(cacheService.set).toHaveBeenCalled();
       expect(sessionManager.createSession).not.toHaveBeenCalled();
+    });
+
+    it('caches the Companion password after a successful online login', async () => {
+      const loginBody: LoginBody = { username: 'test@example.com', password: 'Password1!' };
+      configurationService.getConfig.mockReturnValue({ ciCloudUrl: 'https://hub.example.com' } as never);
+      vi.mocked(axios.post).mockResolvedValue({
+        status: 200,
+        data: { user: { id: 'portal-sub', email: 'test@example.com', emailVerified: true } },
+      });
+      userRepository.getUserByUsername.mockResolvedValue({
+        id: 1,
+        username: 'test@example.com',
+        totpEnabled: false,
+        accessStatus: 'active',
+      } as never);
+      federatedIdentityRepository.findByIssuerSubject.mockResolvedValue({ id: 1, userId: 1 } as never);
+      userRepository.getUserById.mockResolvedValue({ id: 1, username: 'test@example.com', accessStatus: 'active' } as never);
+      deviceRegistration.getFirstDeviceRegistration.mockResolvedValue({ id: 'org-1' } as never);
+      portal.whoisApps.mockResolvedValue({
+        status: 200,
+        body: { organizations: [{ organizationId: 'org-1', user: { role: 'admin' }, apps: [] }] },
+      });
+      sessionManager.createSession.mockResolvedValue('session-id' as never);
+
+      await authService.login(loginBody);
+
+      expect(passwordService.hash).toHaveBeenCalledWith('Password1!');
+      expect(userRepository.updateUser).toHaveBeenCalledWith(
+        1,
+        expect.objectContaining({ password: 'hashed-local', localPasswordSetAt: expect.any(String) }),
+      );
+    });
+
+    it('admits an existing active user from the local hash when Portal is unreachable', async () => {
+      const loginBody: LoginBody = { username: 'test@example.com', password: 'Password1!' };
+      configurationService.getConfig.mockReturnValue({ ciCloudUrl: 'https://hub.example.com' } as never);
+      const unreachable = Object.assign(new Error('connect ECONNREFUSED'), { isAxiosError: true, code: 'ECONNREFUSED' });
+      vi.mocked(axios.post).mockRejectedValue(unreachable);
+      userRepository.getUserByUsername.mockResolvedValue({
+        id: 4,
+        username: 'test@example.com',
+        password: 'cached-hash',
+        totpEnabled: false,
+        accessStatus: 'active',
+        localPasswordSetAt: '2026-09-11T00:00:00.000Z',
+      } as never);
+      passwordService.verify.mockResolvedValue(true as never);
+      sessionManager.createSession.mockResolvedValue('offline-session' as never);
+
+      await expect(authService.login(loginBody)).resolves.toEqual({ sessionId: 'offline-session' });
+      expect(sessionManager.createSession).toHaveBeenCalledWith(4);
+    });
+
+    it('refuses offline login when no Companion password has been cached', async () => {
+      const loginBody: LoginBody = { username: 'test@example.com', password: 'Password1!' };
+      configurationService.getConfig.mockReturnValue({ ciCloudUrl: 'https://hub.example.com' } as never);
+      vi.mocked(axios.post).mockResolvedValue({ status: 503, data: {} });
+      userRepository.getUserByUsername.mockResolvedValue({
+        id: 4,
+        username: 'test@example.com',
+        password: 'random-bootstrap',
+        accessStatus: 'active',
+        localPasswordSetAt: null,
+      } as never);
+
+      await expect(authService.login(loginBody)).rejects.toMatchObject({ message: 'AUTH_ERROR_INVALID_CREDENTIALS' });
+      expect(passwordService.verify).not.toHaveBeenCalled();
+    });
+
+    it('does not fall back to the local hash when Portal rejects the password', async () => {
+      const loginBody: LoginBody = { username: 'test@example.com', password: 'wrong' };
+      configurationService.getConfig.mockReturnValue({ ciCloudUrl: 'https://hub.example.com' } as never);
+      vi.mocked(axios.post).mockResolvedValue({ status: 401, data: {} });
+      userRepository.getUserByUsername.mockResolvedValue({
+        id: 4,
+        username: 'test@example.com',
+        password: 'cached-hash',
+        accessStatus: 'active',
+        localPasswordSetAt: '2026-09-11T00:00:00.000Z',
+      } as never);
+
+      await expect(authService.login(loginBody)).rejects.toMatchObject({ message: 'AUTH_ERROR_INVALID_CREDENTIALS' });
+      expect(passwordService.verify).not.toHaveBeenCalled();
     });
   });
 
@@ -392,7 +482,7 @@ describe('AuthService', () => {
         emailVerified: true,
       });
 
-      expect(result).toEqual(created);
+      expect(result).toEqual(expect.objectContaining({ id: 2, username: 'hello@lifescope.io' }));
       expect(userRepository.createUser).toHaveBeenCalledWith(
         expect.objectContaining({ username: 'hello@lifescope.io', operator: true, hasCompletedOnboarding: true }),
       );
@@ -516,6 +606,160 @@ describe('AuthService', () => {
           emailVerified: true,
         }),
       ).rejects.toMatchObject({ message: 'AUTH_ERROR_ORG_CHECK_UNAVAILABLE', status: 503 });
+    });
+
+    it('re-checks membership for an existing federated user when Portal is up', async () => {
+      const boundUser = { id: 7, username: 'old@example.com', accessStatus: 'active' };
+      federatedIdentityRepository.findByIssuerSubject.mockResolvedValue({ id: 1, userId: 7 } as never);
+      userRepository.getUserById.mockResolvedValue(boundUser as never);
+      deviceRegistration.getFirstDeviceRegistration.mockResolvedValue({ id: 'org-1' } as never);
+      portal.whoisApps.mockResolvedValue({
+        status: 200,
+        body: { organizations: [{ organizationId: 'org-1', user: { role: 'member' }, apps: [] }] },
+      });
+
+      const result = await authService.admitHubPerson({
+        issuer,
+        subject: 'portal-hello',
+        email: 'changed@example.com',
+        emailVerified: true,
+      });
+
+      expect(result).toEqual(expect.objectContaining({ id: 7, accessStatus: 'active', orgRole: 'member' }));
+      expect(userRepository.updateUser).toHaveBeenCalledWith(7, expect.objectContaining({ accessStatus: 'active', orgRole: 'member' }));
+    });
+
+    it('revokes an existing operator when Portal says they left the org', async () => {
+      const boundUser = { id: 7, username: 'old@example.com', accessStatus: 'active' };
+      federatedIdentityRepository.findByIssuerSubject.mockResolvedValue({ id: 1, userId: 7 } as never);
+      userRepository.getUserById.mockResolvedValue(boundUser as never);
+      deviceRegistration.getFirstDeviceRegistration.mockResolvedValue({ id: 'org-1' } as never);
+      portal.whoisApps.mockResolvedValue({
+        status: 200,
+        body: { organizations: [] },
+      });
+
+      await expect(
+        authService.admitHubPerson({
+          issuer,
+          subject: 'portal-hello',
+          email: 'old@example.com',
+          emailVerified: true,
+        }),
+      ).rejects.toMatchObject({ message: 'AUTH_ERROR_NOT_ORG_MEMBER' });
+
+      expect(userRepository.updateUser).toHaveBeenCalledWith(7, expect.objectContaining({ accessStatus: 'revoked' }));
+      expect(sessionManager.destroyAllSessionsByUserId).toHaveBeenCalledWith(7);
+      expect(bearerOrgMembership.delete).toHaveBeenCalledWith('portal-hello');
+    });
+
+    it('treats WhoIs 403 as not a member', async () => {
+      const boundUser = { id: 7, username: 'old@example.com', accessStatus: 'active' };
+      federatedIdentityRepository.findByIssuerSubject.mockResolvedValue({ id: 1, userId: 7 } as never);
+      userRepository.getUserById.mockResolvedValue(boundUser as never);
+      deviceRegistration.getFirstDeviceRegistration.mockResolvedValue({ id: 'org-1' } as never);
+      portal.whoisApps.mockResolvedValue({ status: 403, body: null });
+
+      await expect(
+        authService.admitHubPerson({
+          issuer,
+          subject: 'portal-hello',
+          email: 'old@example.com',
+          emailVerified: true,
+        }),
+      ).rejects.toMatchObject({ message: 'AUTH_ERROR_NOT_ORG_MEMBER' });
+
+      expect(userRepository.updateUser).toHaveBeenCalledWith(7, expect.objectContaining({ accessStatus: 'revoked' }));
+    });
+
+    it('does not revoke an existing operator when this Hub is not paired', async () => {
+      const boundUser = { id: 7, username: 'old@example.com', accessStatus: 'active' };
+      federatedIdentityRepository.findByIssuerSubject.mockResolvedValue({ id: 1, userId: 7 } as never);
+      userRepository.getUserById.mockResolvedValue(boundUser as never);
+      deviceRegistration.getFirstDeviceRegistration.mockResolvedValue(null as never);
+
+      await expect(
+        authService.admitHubPerson({
+          issuer,
+          subject: 'portal-hello',
+          email: 'old@example.com',
+          emailVerified: true,
+        }),
+      ).resolves.toEqual(boundUser);
+
+      expect(sessionManager.destroyAllSessionsByUserId).not.toHaveBeenCalled();
+    });
+
+    it('does not revoke an active operator when WhoIs is unknown', async () => {
+      const boundUser = { id: 7, username: 'old@example.com', accessStatus: 'active' };
+      federatedIdentityRepository.findByIssuerSubject.mockResolvedValue({ id: 1, userId: 7 } as never);
+      userRepository.getUserById.mockResolvedValue(boundUser as never);
+      deviceRegistration.getFirstDeviceRegistration.mockResolvedValue({ id: 'org-1' } as never);
+      portal.whoisApps.mockRejectedValue(new Error('connect ECONNREFUSED'));
+
+      await expect(
+        authService.admitHubPerson({
+          issuer,
+          subject: 'portal-hello',
+          email: 'old@example.com',
+          emailVerified: true,
+        }),
+      ).resolves.toEqual(boundUser);
+
+      expect(sessionManager.destroyAllSessionsByUserId).not.toHaveBeenCalled();
+    });
+
+    it('un-revokes a returning member after they are invited back', async () => {
+      const boundUser = { id: 7, username: 'old@example.com', accessStatus: 'revoked' };
+      federatedIdentityRepository.findByIssuerSubject.mockResolvedValue({ id: 1, userId: 7 } as never);
+      userRepository.getUserById.mockResolvedValue(boundUser as never);
+      deviceRegistration.getFirstDeviceRegistration.mockResolvedValue({ id: 'org-1' } as never);
+      portal.whoisApps.mockResolvedValue({
+        status: 200,
+        body: { organizations: [{ organizationId: 'org-1', user: { role: 'owner' }, apps: [] }] },
+      });
+
+      const result = await authService.admitHubPerson({
+        issuer,
+        subject: 'portal-hello',
+        email: 'old@example.com',
+        emailVerified: true,
+      });
+
+      expect(result).toEqual(expect.objectContaining({ accessStatus: 'active', orgRole: 'owner' }));
+    });
+  });
+
+  describe('reconcileOperatorMemberships', () => {
+    it('revokes active operators Portal says are gone and leaves unknown alone', async () => {
+      userRepository.getOperators.mockResolvedValue([
+        { id: 1, accessStatus: 'active' },
+        { id: 2, accessStatus: 'active' },
+      ] as never);
+      federatedIdentityRepository.findByUserId
+        .mockResolvedValueOnce([{ subject: 'gone' }] as never)
+        .mockResolvedValueOnce([{ subject: 'maybe' }] as never);
+      deviceRegistration.getFirstDeviceRegistration.mockResolvedValue({ id: 'org-1' } as never);
+      portal.whoisApps.mockResolvedValueOnce({ status: 403, body: null }).mockRejectedValueOnce(new Error('timeout'));
+
+      await authService.reconcileOperatorMemberships();
+
+      expect(userRepository.updateUser).toHaveBeenCalledWith(1, expect.objectContaining({ accessStatus: 'revoked' }));
+      expect(sessionManager.destroyAllSessionsByUserId).toHaveBeenCalledWith(1);
+      expect(userRepository.updateUser).not.toHaveBeenCalledWith(2, expect.objectContaining({ accessStatus: 'revoked' }));
+    });
+  });
+
+  describe('refreshSession', () => {
+    it('refuses to rotate a revoked operator', async () => {
+      sessionManager.resolveSessionUserId.mockReturnValue(9);
+      userRepository.getUserById.mockResolvedValue({ id: 9, accessStatus: 'revoked' } as never);
+
+      await expect(authService.refreshSession('sess')).rejects.toMatchObject({
+        message: 'SYSTEM_ERROR_YOU_MUST_BE_LOGGED_IN',
+      });
+      expect(sessionManager.destroyAllSessionsByUserId).toHaveBeenCalledWith(9);
+      expect(sessionManager.rotateSession).not.toHaveBeenCalled();
     });
   });
   describe('register', () => {

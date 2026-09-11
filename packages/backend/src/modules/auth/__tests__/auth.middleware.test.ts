@@ -9,6 +9,7 @@ describe('AuthMiddleware transient DB handling', () => {
     resolveSessionUserId: vi.fn(),
     getSessionExpiresAt: vi.fn(),
     touchSession: vi.fn(),
+    destroyAllSessionsByUserId: vi.fn(),
   };
   const config = {
     get: vi.fn(),
@@ -73,6 +74,22 @@ describe('AuthMiddleware transient DB handling', () => {
     expect(next).toHaveBeenCalledOnce();
     expect((req as { user?: unknown }).user).toBeUndefined();
   });
+
+  it('refuses a revoked operator even when the session id is still live', async () => {
+    sessionManager.resolveSessionUserId.mockReturnValue(3);
+    sessionManager.getSessionExpiresAt.mockReturnValue(null);
+    userRepository.getUserDtoById.mockResolvedValue({ id: 3, username: 'gone@example.com', accessStatus: 'revoked' });
+    sessionManager.destroyAllSessionsByUserId.mockResolvedValue(undefined as never);
+
+    const req = { cookies: { 'ci-hub-sid': 'sess' }, headers: {}, get: () => undefined, query: {} } as never;
+    const next = vi.fn();
+
+    await middleware.use(req, {} as never, next);
+
+    expect(sessionManager.destroyAllSessionsByUserId).toHaveBeenCalledWith(3);
+    expect((req as { user?: unknown }).user).toBeUndefined();
+    expect(next).toHaveBeenCalledOnce();
+  });
 });
 
 describe('sessionIdsFromRequest', () => {
@@ -92,6 +109,7 @@ describe('AuthMiddleware session fallback', () => {
     resolveSessionUserId: vi.fn(),
     getSessionExpiresAt: vi.fn(),
     touchSession: vi.fn(),
+    destroyAllSessionsByUserId: vi.fn(),
   };
   const config = {
     get: vi.fn(),
@@ -287,6 +305,7 @@ describe('AuthMiddleware on a Hub with no operator', () => {
     resolveSessionUserId: vi.fn(),
     getSessionExpiresAt: vi.fn(),
     touchSession: vi.fn(),
+    destroyAllSessionsByUserId: vi.fn(),
   };
   const config = { get: vi.fn() };
   const userRepository = {

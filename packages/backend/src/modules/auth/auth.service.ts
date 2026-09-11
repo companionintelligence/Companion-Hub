@@ -29,12 +29,48 @@ import { passwordResetVerifyResponseSchema } from './dto/auth.dto';
 import { SessionManager } from './session.manager';
 import { SessionUserCache } from '@/core/cache/session-user.cache';
 import { TotpAuthenticator } from './utils/totp-authenticator';
+import { BearerOrgMembershipCache } from './bearer-org-membership.cache';
+import type { User } from '@/core/database/drizzle/types';
 
 /**
  * Portal's answer to "is this subject in the organisation this Hub is paired to?".
  * `unknown` is a failure to ask, not a refusal — see {@link AuthService.resolvePairedOrgMembership}.
  */
 export type PairedOrgMembership = 'member' | 'not-member' | 'unknown';
+
+export type UserOrgRole = 'owner' | 'admin' | 'member';
+
+export type PairedOrgMembershipDetail = {
+  membership: PairedOrgMembership;
+  role: UserOrgRole | null;
+};
+
+/** Portal never answered. Distinct from "Portal said these credentials are wrong". */
+export class PortalUnreachableError extends Error {
+  constructor(cause?: unknown) {
+    super('PORTAL_UNREACHABLE');
+    this.name = 'PortalUnreachableError';
+    if (cause !== undefined) {
+      this.cause = cause;
+    }
+  }
+}
+
+function parseOrgRole(value: unknown): UserOrgRole | null {
+  return value === 'owner' || value === 'admin' || value === 'member' ? value : null;
+}
+
+function isPortalTransportFailure(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null) {
+    return false;
+  }
+  const candidate = error as { isAxiosError?: boolean; response?: { status?: number } | undefined; code?: string };
+  if (candidate.isAxiosError === true && !candidate.response) {
+    return true;
+  }
+  const status = candidate.response?.status;
+  return typeof status === 'number' && status >= 500;
+}
 
 @Injectable()
 export class AuthService {
@@ -54,6 +90,7 @@ export class AuthService {
     private sessionUserCache: SessionUserCache,
     private portal: PortalClientService,
     private deviceRegistration: DeviceRegistrationRepository,
+    private bearerOrgMembership: BearerOrgMembershipCache,
   ) {}
 
   public getCookieDomain(domain?: string) {
@@ -114,18 +151,26 @@ export class AuthService {
     const base = this.getPortalBaseUrl();
     const publicBase = this.getPublicPortalBaseUrl();
     const portalConfig = this.portalAxiosConfig();
-    const response = await axios.post(
-      `${base}/api/auth/sign-in/email`,
-      { email, password },
-      {
-        ...withPortalAxiosHeaders(portalConfig, {
-          'Content-Type': 'application/json',
-          Origin: publicBase,
-        }),
-        validateStatus: () => true,
-        timeout: 15_000,
-      },
-    );
+    let response: AxiosResponse;
+    try {
+      response = await axios.post(
+        `${base}/api/auth/sign-in/email`,
+        { email, password },
+        {
+          ...withPortalAxiosHeaders(portalConfig, {
+            'Content-Type': 'application/json',
+            Origin: publicBase,
+          }),
+          validateStatus: () => true,
+          timeout: 15_000,
+        },
+      );
+    } catch (error) {
+      if (isPortalTransportFailure(error)) {
+        throw new PortalUnreachableError(error);
+      }
+      throw error;
+    }
 
     const body = (await Promise.resolve(response.data).catch(() => ({}))) as {
       code?: string;
@@ -133,6 +178,10 @@ export class AuthService {
     };
 
     this.throwIfPortalRateLimited(response);
+
+    if (response.status >= 500) {
+      throw new PortalUnreachableError();
+    }
 
     if (response.status < 200 || response.status >= 300) {
       if (body.code === 'EMAIL_NOT_VERIFIED') {
@@ -213,12 +262,13 @@ export class AuthService {
     if (subject) {
       const existingLink = await this.federatedIdentityRepository.findByIssuerSubject(issuer, subject);
       if (existingLink) {
-        return this.ensureFederatedUser({
+        const linkedUser = await this.ensureFederatedUser({
           issuer,
           subject,
           email: params.email,
           emailVerified: params.emailVerified,
         });
+        return this.applyOnlineMembership(linkedUser, subject);
       }
     }
 
@@ -230,26 +280,40 @@ export class AuthService {
       // "We could not ask Portal" is not "Portal said no". Both deny, but only one of them is the
       // person's fault: answering a Portal outage with "you are not a member of this organization"
       // sends an operator off to chase an invite that was never missing. 503 says retry.
-      const membership = await this.resolvePairedOrgMembership(subject);
-      if (membership === 'unknown') {
+      const detail = await this.resolvePairedOrgMembershipDetail(subject);
+      if (detail.membership === 'unknown') {
         throw new TranslatableError('AUTH_ERROR_ORG_CHECK_UNAVAILABLE', {}, HttpStatus.SERVICE_UNAVAILABLE);
       }
-      if (membership === 'not-member') {
+      if (detail.membership === 'not-member') {
         throw new TranslatableError('AUTH_ERROR_NOT_ORG_MEMBER', {}, HttpStatus.FORBIDDEN);
       }
+
+      const created = await this.ensureFederatedUser({
+        issuer,
+        subject,
+        email: params.email,
+        emailVerified: params.emailVerified,
+        allowCreateAdditionalOperator: true,
+      });
+      return this.markOperatorActive(created.id, detail.role, created);
     }
 
     if (!subject) {
       return this.ensureLocalCompanionUser(params.email);
     }
 
-    return this.ensureFederatedUser({
+    const first = await this.ensureFederatedUser({
       issuer,
       subject,
       email: params.email,
       emailVerified: params.emailVerified,
-      allowCreateAdditionalOperator: operators.length > 0,
+      allowCreateAdditionalOperator: false,
     });
+    const firstDetail = await this.resolvePairedOrgMembershipDetail(subject);
+    if (firstDetail.membership === 'member') {
+      return this.markOperatorActive(first.id, firstDetail.role, first);
+    }
+    return first;
   }
 
   /**
@@ -266,6 +330,14 @@ export class AuthService {
    * draws the same line for grants, for the same reason.
    */
   public async resolvePairedOrgMembership(subject: string): Promise<PairedOrgMembership> {
+    return (await this.resolvePairedOrgMembershipDetail(subject)).membership;
+  }
+
+  /**
+   * Same three-state membership as {@link resolvePairedOrgMembership}, plus the Portal role when
+   * the subject is a member. 403 GRANT_DENIED is a settled "not a member", not an outage.
+   */
+  public async resolvePairedOrgMembershipDetail(subject: string): Promise<PairedOrgMembershipDetail> {
     // A read that FAILED and a Hub paired to nothing are different answers. Collapsing both into
     // `null` made the second one look transient, and `unknown` is deliberately never remembered:
     // an unpaired appliance re-read the row and wrote a fresh warn line on every forwarded app
@@ -275,13 +347,13 @@ export class AuthService {
       registration = await this.deviceRegistration.getFirstDeviceRegistration();
     } catch (error) {
       this.logger.warn(`Device registration read failed during org membership check: ${error instanceof Error ? error.message : String(error)}`);
-      return 'unknown';
+      return { membership: 'unknown', role: null };
     }
 
     // Paired to no organization: nobody is a member of one this Hub does not have. That is a
     // settled local fact, so it is safe to remember, unlike a Portal we could not reach.
     if (!registration?.id) {
-      return 'not-member';
+      return { membership: 'not-member', role: null };
     }
 
     // `whoisApps` does not catch transport failures: a DNS failure, a refused connection or its own
@@ -292,16 +364,150 @@ export class AuthService {
       whois = await this.portal.whoisApps({ subject, appIds: ['_membership'], surface: 'hub' });
     } catch (error) {
       this.logger.warn(`Portal WhoIs membership lookup failed: ${error instanceof Error ? error.message : String(error)}`);
-      return 'unknown';
+      return { membership: 'unknown', role: null };
     }
 
-    // `null` means Portal is not configured on this Hub; `>= 400` is an outage or a stale device key.
-    if (!whois || whois.status >= 400 || !whois.body) {
-      return 'unknown';
+    // `null` means Portal is not configured on this Hub. 5xx / 401 are outages or a stale device key.
+    // 403 GRANT_DENIED is Portal saying this subject is not in the appliance's org.
+    if (!whois) {
+      return { membership: 'unknown', role: null };
+    }
+    if (whois.status === 403) {
+      return { membership: 'not-member', role: null };
+    }
+    if (whois.status >= 400 || !whois.body) {
+      return { membership: 'unknown', role: null };
     }
 
     // An empty `organizations` IS an answer: Portal knows this subject and puts them in none of ours.
-    return whois.body.organizations?.some((org) => org.organizationId === registration.id) ? 'member' : 'not-member';
+    const matched = whois.body.organizations?.find((org) => org.organizationId === registration.id);
+    if (!matched) {
+      return { membership: 'not-member', role: null };
+    }
+    return { membership: 'member', role: parseOrgRole(matched.user?.role) };
+  }
+
+  public async revokeOperator(userId: number, subject?: string | null) {
+    await this.userRepository.updateUser(userId, {
+      accessStatus: 'revoked',
+      membershipCheckedAt: new Date().toISOString(),
+    });
+    await this.sessionManager.destroyAllSessionsByUserId(userId);
+    this.sessionUserCache.invalidate(userId);
+
+    if (subject) {
+      this.bearerOrgMembership.delete(subject);
+      return;
+    }
+
+    const links = await this.federatedIdentityRepository.findByUserId(userId);
+    for (const link of links) {
+      this.bearerOrgMembership.delete(link.subject);
+    }
+  }
+
+  /**
+   * Hourly check-in sweep: WhoIs every active federated operator. Definitive removal revokes.
+   * A Portal blip (`unknown`) leaves the row alone.
+   */
+  public async reconcileOperatorMemberships() {
+    const registration = await this.deviceRegistration.getFirstDeviceRegistration();
+    if (!registration?.id) {
+      return;
+    }
+
+    const operators = await this.userRepository.getOperators();
+
+    for (const operator of operators) {
+      if (operator.accessStatus === 'revoked') {
+        continue;
+      }
+
+      const links = await this.federatedIdentityRepository.findByUserId(operator.id);
+      for (const link of links) {
+        const detail = await this.resolvePairedOrgMembershipDetail(link.subject);
+        if (detail.membership === 'not-member') {
+          this.logger.warn(`Revoking operator ${operator.id}: Portal says not a member of this Hub org`);
+          await this.revokeOperator(operator.id, link.subject);
+          break;
+        }
+        if (detail.membership === 'member') {
+          await this.markOperatorActive(operator.id, detail.role);
+        }
+      }
+    }
+  }
+
+  public listOperators() {
+    return this.userRepository.getOperators();
+  }
+
+  private async applyOnlineMembership(user: User, subject: string) {
+    const detail = await this.resolvePairedOrgMembershipDetail(subject);
+
+    if (detail.membership === 'not-member') {
+      // Unpaired is a local fact, not a Portal removal. Do not revoke the people who claimed this Hub.
+      const registration = await this.deviceRegistration.getFirstDeviceRegistration();
+      if (!registration?.id) {
+        if (user.accessStatus === 'revoked') {
+          throw new TranslatableError('AUTH_ERROR_NOT_ORG_MEMBER', {}, HttpStatus.FORBIDDEN);
+        }
+        return user;
+      }
+      await this.revokeOperator(user.id, subject);
+      throw new TranslatableError('AUTH_ERROR_NOT_ORG_MEMBER', {}, HttpStatus.FORBIDDEN);
+    }
+
+    if (detail.membership === 'unknown') {
+      if (user.accessStatus === 'revoked') {
+        throw new TranslatableError('AUTH_ERROR_NOT_ORG_MEMBER', {}, HttpStatus.FORBIDDEN);
+      }
+      return user;
+    }
+
+    return this.markOperatorActive(user.id, detail.role, user);
+  }
+
+  private async markOperatorActive(userId: number, role: UserOrgRole | null, fallback?: User) {
+    const updated = await this.userRepository.updateUser(userId, {
+      accessStatus: 'active',
+      orgRole: role,
+      membershipCheckedAt: new Date().toISOString(),
+    });
+    if (updated && fallback) {
+      return { ...fallback, ...updated };
+    }
+    return updated ?? fallback ?? (await this.userRepository.getUserById(userId));
+  }
+
+  private async persistLocalPassword(userId: number, password: string) {
+    const hash = await this.passwordService.hash(password);
+    await this.userRepository.updateUser(userId, {
+      password: hash,
+      localPasswordSetAt: new Date().toISOString(),
+    });
+  }
+
+  private async loginWithCachedPassword(email: string, password: string) {
+    const user = await this.userRepository.getUserByUsername(email);
+
+    if (!user || user.accessStatus === 'revoked' || !user.localPasswordSetAt) {
+      throw new TranslatableError('AUTH_ERROR_INVALID_CREDENTIALS', {}, HttpStatus.BAD_REQUEST);
+    }
+
+    const valid = await this.passwordService.verify(password, user.password);
+    if (!valid) {
+      throw new TranslatableError('AUTH_ERROR_INVALID_CREDENTIALS', {}, HttpStatus.BAD_REQUEST);
+    }
+
+    if (user.totpEnabled) {
+      const totpSessionId = crypto.randomUUID();
+      this.cache.set(totpSessionId, user.id.toString());
+      return { totpSessionId };
+    }
+
+    const sessionId = await this.sessionManager.createSession(user.id);
+    return { sessionId };
   }
 
   private async ensureLocalCompanionUser(rawEmail: string, options?: { allowCreateAdditionalOperator?: boolean }) {
@@ -483,7 +689,15 @@ export class AuthService {
     const { username, password } = input;
     const email = normalizeUsername(username);
 
-    const portalIdentity = await this.signInWithPortal(email, password);
+    let portalIdentity: Awaited<ReturnType<AuthService['signInWithPortal']>>;
+    try {
+      portalIdentity = await this.signInWithPortal(email, password);
+    } catch (error) {
+      if (error instanceof PortalUnreachableError || error instanceof ServiceUnavailableException) {
+        return this.loginWithCachedPassword(email, password);
+      }
+      throw error;
+    }
 
     const user = await this.admitHubPerson({
       issuer: this.getPublicPortalBaseUrl(),
@@ -491,6 +705,8 @@ export class AuthService {
       email: portalIdentity.email || email,
       emailVerified: portalIdentity.emailVerified,
     });
+
+    await this.persistLocalPassword(user.id, password);
 
     if (user.totpEnabled) {
       const totpSessionId = crypto.randomUUID();
@@ -524,6 +740,10 @@ export class AuthService {
 
     if (!user) {
       throw new TranslatableError('AUTH_ERROR_USER_NOT_FOUND');
+    }
+
+    if (user.accessStatus === 'revoked') {
+      throw new TranslatableError('AUTH_ERROR_NOT_ORG_MEMBER', {}, HttpStatus.FORBIDDEN);
     }
 
     if (!user.totpEnabled || !user.totpSecret || !user.salt) {
@@ -609,6 +829,8 @@ export class AuthService {
       emailVerified: true,
     });
 
+    await this.persistLocalPassword(newUser.id, password);
+
     const sessionId = await this.sessionManager.createSession(newUser.id);
 
     return {
@@ -631,6 +853,33 @@ export class AuthService {
    * Rotate the current session to a new ID with a fresh TTL for long-lived desktop use.
    */
   public refreshSession = async (sessionId: string) => {
+    const userId = this.sessionManager.resolveSessionUserId(sessionId);
+    if (!userId) {
+      throw new TranslatableError('SYSTEM_ERROR_YOU_MUST_BE_LOGGED_IN', undefined, HttpStatus.UNAUTHORIZED);
+    }
+
+    const user = await this.userRepository.getUserById(userId);
+    if (!user || user.accessStatus === 'revoked') {
+      await this.sessionManager.destroyAllSessionsByUserId(userId);
+      throw new TranslatableError('SYSTEM_ERROR_YOU_MUST_BE_LOGGED_IN', undefined, HttpStatus.UNAUTHORIZED);
+    }
+
+    const links = await this.federatedIdentityRepository.findByUserId(userId);
+    const subject = links[0]?.subject;
+    if (subject) {
+      const registration = await this.deviceRegistration.getFirstDeviceRegistration();
+      if (registration?.id) {
+        const detail = await this.resolvePairedOrgMembershipDetail(subject);
+        if (detail.membership === 'not-member') {
+          await this.revokeOperator(userId, subject);
+          throw new TranslatableError('AUTH_ERROR_NOT_ORG_MEMBER', {}, HttpStatus.FORBIDDEN);
+        }
+        if (detail.membership === 'member') {
+          await this.markOperatorActive(userId, detail.role);
+        }
+      }
+    }
+
     const nextSessionId = await this.sessionManager.rotateSession(sessionId);
     if (!nextSessionId) {
       throw new TranslatableError('SYSTEM_ERROR_YOU_MUST_BE_LOGGED_IN', undefined, HttpStatus.UNAUTHORIZED);
@@ -703,7 +952,7 @@ export class AuthService {
     }
 
     const hash = await this.passwordService.hash(newPassword);
-    await this.userRepository.updateUser(user.id, { password: hash });
+    await this.userRepository.updateUser(user.id, { password: hash, localPasswordSetAt: new Date().toISOString() });
     await this.sessionManager.destroyAllSessionsByUserId(user.id);
 
     return true;

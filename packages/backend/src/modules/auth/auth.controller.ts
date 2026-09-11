@@ -31,6 +31,7 @@ import {
   HubClaimBody,
   HubClaimDto,
   HubClaimStatusDto,
+  HubOperatorsDto,
   LoginBody,
   LoginDto,
   PasswordResetCompleteBody,
@@ -58,6 +59,7 @@ import {
   shouldHandoffPortalLoginToDesktop,
   exchangePortalAuthorizationCode,
   fetchPortalSessionEmail,
+  probePortalReachable,
   type PortalDesktopExchange,
   type PortalSsoErrorCode,
   type PortalSsoState,
@@ -773,14 +775,17 @@ export class AuthController {
     const portalBaseUrl = (this.config.get('ciCloudUrl') || '').replace(/\/+$/, '') || null;
 
     if (!portalBaseUrl) {
-      return PortalSessionHintDto.parse({ email: null, portalBaseUrl: null, source: null }, { reportOnly: true });
+      return PortalSessionHintDto.parse({ email: null, portalBaseUrl: null, source: null, portalReachable: false }, { reportOnly: true });
     }
 
     const cookieHeader = typeof req.headers.cookie === 'string' ? req.headers.cookie : undefined;
-    const portalEmail = await fetchPortalSessionEmail({
-      publicPortalBaseUrl: portalBaseUrl,
-      cookieHeader,
-    });
+    const [portalEmail, portalReachable] = await Promise.all([
+      fetchPortalSessionEmail({
+        publicPortalBaseUrl: portalBaseUrl,
+        cookieHeader,
+      }),
+      probePortalReachable(portalBaseUrl),
+    ]);
 
     if (portalEmail) {
       return PortalSessionHintDto.parse(
@@ -788,6 +793,7 @@ export class AuthController {
           email: portalEmail,
           portalBaseUrl,
           source: 'portal_session',
+          portalReachable,
         },
         { reportOnly: true },
       );
@@ -800,6 +806,7 @@ export class AuthController {
           email: sessionEmail,
           portalBaseUrl,
           source: 'hub_user',
+          portalReachable,
         },
         { reportOnly: true },
       );
@@ -812,12 +819,33 @@ export class AuthController {
           email: operator.username.trim(),
           portalBaseUrl,
           source: 'hub_operator',
+          portalReachable,
         },
         { reportOnly: true },
       );
     }
 
-    return PortalSessionHintDto.parse({ email: null, portalBaseUrl, source: null }, { reportOnly: true });
+    return PortalSessionHintDto.parse({ email: null, portalBaseUrl, source: null, portalReachable }, { reportOnly: true });
+  }
+
+  @Get('/operators')
+  @UseGuards(AuthGuard)
+  @ApiResponse({ type: HubOperatorsDto })
+  async listOperators() {
+    const operators = await this.authService.listOperators();
+    return HubOperatorsDto.parse(
+      {
+        operators: operators.map((operator) => ({
+          id: operator.id,
+          username: operator.username,
+          orgRole: operator.orgRole === 'owner' || operator.orgRole === 'admin' || operator.orgRole === 'member' ? operator.orgRole : null,
+          accessStatus: operator.accessStatus === 'revoked' ? 'revoked' : 'active',
+          membershipCheckedAt: operator.membershipCheckedAt ?? null,
+          localPasswordSet: Boolean(operator.localPasswordSetAt),
+        })),
+      },
+      { reportOnly: true },
+    );
   }
 
   @Get('/portal/desktop-exchange')

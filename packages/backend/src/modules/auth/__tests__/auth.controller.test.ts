@@ -25,6 +25,7 @@ vi.mock('../portal-sso', async (importOriginal) => {
     ...actual,
     exchangePortalAuthorizationCode: vi.fn(),
     fetchPortalSessionEmail: vi.fn(),
+    probePortalReachable: vi.fn().mockResolvedValue(true),
   };
 });
 
@@ -1470,6 +1471,7 @@ describe('AuthController', () => {
         email: 'operator@example.com',
         portalBaseUrl: 'https://hub.ci.computer',
         source: 'hub_operator',
+        portalReachable: true,
       });
     });
 
@@ -1486,6 +1488,7 @@ describe('AuthController', () => {
         email: 'hello@lifescope.io',
         portalBaseUrl: 'https://hub.ci.computer',
         source: 'portal_session',
+        portalReachable: true,
       });
     });
 
@@ -1503,6 +1506,7 @@ describe('AuthController', () => {
         email: 'hello@lifescope.io',
         portalBaseUrl: 'https://hub.ci.computer',
         source: 'hub_user',
+        portalReachable: true,
       });
     });
 
@@ -1528,6 +1532,7 @@ describe('AuthController', () => {
         email: 'first@example.com',
         portalBaseUrl: 'https://hub.ci.computer',
         source: 'portal_session',
+        portalReachable: true,
       });
 
       expect(fetchPortalSessionEmail).toHaveBeenCalledWith({
