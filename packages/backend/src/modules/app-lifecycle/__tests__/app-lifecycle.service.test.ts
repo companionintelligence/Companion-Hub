@@ -777,7 +777,7 @@ describe('AppLifecycleService', () => {
         config: { port: 8080 },
         customDomain: 'comfy.acme.com',
       } as any);
-      const release = vi.spyOn(exposureSyncService, 'releaseCustomDomain').mockResolvedValue({ ok: true });
+      const release = vi.spyOn(exposureSyncService, 'releaseCustomDomain').mockResolvedValue({ ok: true, portalRowId: 'cd_1' });
 
       await service.installApp({
         appUrn,
@@ -800,6 +800,10 @@ describe('AppLifecycleService', () => {
        * which the next bind pass would dutifully ask CI-Cloud to wire back.
        */
       expect(appsRepository.updateAppById).toHaveBeenCalledWith(1, { customDomain: null, customDomainIntent: null, customDomainTakeover: false });
+      // The operator's own release is a binding change too, and audited as one.
+      expect(logger.info).toHaveBeenCalledWith(
+        `custom_domain_audit app=${appUrn} previous=comfy.acme.com next=none previousPortalRowId=cd_1 nextPortalRowId=none cause=release`,
+      );
     });
 
     it('refuses the reinstall before it parks anything when another app holds the subdomain', async () => {
@@ -1500,7 +1504,7 @@ describe('AppLifecycleService', () => {
       expect(appsRepository.updateAppByIdIfStatus).not.toHaveBeenCalled();
     });
 
-    it('names both hostnames and the CI-Cloud record in an audit line when it binds', async () => {
+    it('names both hostnames, the CI-Cloud record and the cause in an audit line when it binds', async () => {
       appsRepository.getApps.mockResolvedValue([runningComfy()] as any);
       cloudflareClientService.syncState.mockResolvedValue({
         ok: true,
@@ -1513,7 +1517,18 @@ describe('AppLifecycleService', () => {
       await service.triggerCloudflareSync();
 
       expect(logger.info).toHaveBeenCalledWith(
-        'custom_domain_audit app=comfyui:ci-marketplace previous=none next=comfy.acme.com previousPortalRowId=none nextPortalRowId=cd_1',
+        'custom_domain_audit app=comfyui:ci-marketplace previous=none next=comfy.acme.com previousPortalRowId=none nextPortalRowId=cd_1 cause=ci-cloud',
+      );
+    });
+
+    it("audits a binding dropped by the app's own routing settings as such", async () => {
+      appsRepository.getApps.mockResolvedValue([runningComfy({ customDomain: 'comfy.acme.com', openPort: true })] as any);
+      cloudflareClientService.syncState.mockResolvedValue({ ok: true, failed: [], failures: [], synced: 1, customDomains: [] });
+
+      await service.triggerCloudflareSync();
+
+      expect(logger.info).toHaveBeenCalledWith(
+        'custom_domain_audit app=comfyui:ci-marketplace previous=comfy.acme.com next=none previousPortalRowId=unknown nextPortalRowId=none cause=settings',
       );
     });
 
@@ -2527,7 +2542,8 @@ describe('AppLifecycleService', () => {
     it("names the domain by CI-Cloud's row id and the app by its subdomain", async () => {
       const result = await exposureSyncService.releaseCustomDomain(servingApp() as any);
 
-      expect(result).toEqual({ ok: true });
+      // The row id travels back too, for the release's audit line.
+      expect(result).toEqual({ ok: true, portalRowId: 'cd_1' });
       expect(cloudflareClientService.unbindCustomDomain).toHaveBeenCalledWith('cd_1', 'comfyui', 'org-1');
     });
 
