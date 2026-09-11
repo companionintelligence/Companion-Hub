@@ -872,11 +872,14 @@ async function planOllamaBindOnNode(target: { host: string; user?: string }, bin
   const plan = planBindConsolidation(
     [...probe.dropins, ...probe.dirEntries.filter((n) => !probe.dropins.some((d) => d.name === n)).map((n) => ({ name: n, content: '' }))],
     target_,
-    { date: new Date().toISOString().slice(0, 10), extraEnv: ollamaManagedEnvironment(facts) },
+    { date: new Date().toISOString().slice(0, 10), extraEnv: ollamaManagedEnvironment(facts), guardUnit: probe.guard.unit },
   );
   const lines = [`bind: now ${current}`];
-  if (plan.noop) lines.push(`bind: already ${target_.address} ← ${CANONICAL_BIND_DROPIN}; nothing to change`);
-  else {
+  if (plan.noop) {
+    // For `all`, "nothing to change" includes the guard: the plan only reads as a no-op when it is up.
+    const guard = plan.guard.action === 'install' ? `, ${plan.guard.unit} active` : '';
+    lines.push(`bind: already ${target_.address} ← ${CANONICAL_BIND_DROPIN}${guard}; nothing to change`);
+  } else {
     lines.push(`bind: would set OLLAMA_HOST=${target_.address} (${bind}) and verify it after restart`);
     for (const line of plan.summary) lines.push(`bind:   ${line}`);
   }
@@ -892,8 +895,30 @@ async function planOllamaBindOnNode(target: { host: string; user?: string }, bin
       disable: plan.disable,
       shadowed: plan.shadowed,
       unfixable: plan.unfixable,
+      guard: plan.guard,
     },
   };
+}
+
+/**
+ * Why a node's hardware could not be read, with the one fact the raw refusal leaves out.
+ *
+ * Tailscale's `does not permit you to SSH as user "liam"` names the account but not what chose it.
+ * On this fleet that account is usually the local username, picked because the roster row has no
+ * `user` and no `--user` was given — and the operator, looking at a roster they believe says `ci`,
+ * concludes the flag is being ignored. Say where the name came from, and where to make it stick.
+ */
+function describeHostFactsFailure(node: FleetNode, target: SshTarget, error: unknown): string {
+  const text = String(error);
+  const kind = classifySshFailure({ ok: false, out: '', err: text, code: 255, ms: 0 });
+  if (kind !== 'acl-wrong-user') return `could not read hardware — ${text.slice(0, 120)}`;
+  const tried = /as user\s+"([^"]+)"/i.exec(text)?.[1] ?? target.user ?? 'your local username';
+  const chosenBy = node.user
+    ? `the roster row's "user"`
+    : target.user
+      ? '--user'
+      : `your local username — this roster row has no "user" and --user was not given`;
+  return `could not read hardware — the tailnet permits SSH here, but not as "${tried}" (${chosenBy}). Pass --user, or set "user" on ${node.name}'s row in ${fleetRosterPath()}.`;
 }
 
 /**
@@ -931,7 +956,7 @@ async function runBackends(args: FleetArgs): Promise<void> {
     const target = { host: node.ip, user: node.user ?? args.user };
     const { facts, error } = await readHostFacts(target);
     if (!facts) {
-      console.log(`${colorize(node.name, 'yellow')}: could not read hardware — ${String(error).slice(0, 120)}`);
+      console.log(`${colorize(node.name, 'yellow')}: ${describeHostFactsFailure(node, target, error)}`);
       report.push({ node: node.name, error: String(error) });
       failed += 1;
       continue;
@@ -1383,7 +1408,7 @@ async function runBootParams(args: FleetArgs): Promise<void> {
     const target = { host: node.ip, user: node.user ?? args.user };
     const { facts, error } = await readHostFacts(target);
     if (!facts) {
-      console.log(`${colorize(node.name, 'yellow')}: could not read hardware — ${String(error).slice(0, 120)}`);
+      console.log(`${colorize(node.name, 'yellow')}: ${describeHostFactsFailure(node, target, error)}`);
       report.push({ node: node.name, error: String(error) });
       failed += 1;
       continue;

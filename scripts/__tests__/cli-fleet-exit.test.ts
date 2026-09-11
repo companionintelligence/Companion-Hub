@@ -418,7 +418,57 @@ describe('fleet backends', () => {
       .join('\n');
     expect(printed).toContain('CONFLICT');
     expect(printed).toContain('move zzzz-bind-all.conf → zzzz-bind-all.conf.disabled-by-cihub-');
+    // The default bind is `all`, and the execute path installs the guard: the preview says so too.
+    expect(printed).toContain('bind:   install ollama-tailnet-guard.service (accept lo,tailscale0,docker0,br-+; reset elsewhere) before restarting');
     expect(process.exitCode).toBeUndefined();
+  });
+
+  // A roster row's `user` is the account the tailnet ACL grants on that node; the local username
+  // is almost never it. Every dial in this runner — facts, bind probe, install — must carry it.
+  describe('SSH account', () => {
+    const rows = () => [
+      { name: 'beta-max', ip: '192.0.2.10', user: 'ci' },
+      { name: 'core-1', ip: '192.0.2.11' },
+    ];
+
+    it('dials as the roster row’s user on a dry run, for the hardware read and the bind probe', async () => {
+      mocks.nodes = rows();
+      await runFleetCommand(['backends', '--backends', 'ollama', '--nodes', 'beta-max']);
+      expect(mocks.readHostFacts).toHaveBeenCalledTimes(1);
+      expect(mocks.readHostFacts.mock.calls[0]?.[0]).toEqual({ host: '192.0.2.10', user: 'ci' });
+      expect(mocks.sshCapture).toHaveBeenCalledTimes(1);
+      expect(mocks.sshCapture.mock.calls[0]?.[0]).toEqual({ host: '192.0.2.10', user: 'ci' });
+      expect(process.exitCode).toBeUndefined();
+    });
+
+    it('dials as the roster row’s user on --execute too, and lets --user fill only the rows that have none', async () => {
+      mocks.nodes = rows();
+      mocks.executeBackendPlan.mockResolvedValue({ backend: 'ollama', outcome: 'installed', why: 'no engine answering' });
+      await runFleetCommand(['backends', '--backends', 'ollama', '--user', 'root', '--execute']);
+      const targets = mocks.executeBackendPlan.mock.calls.map((c) => c[0]);
+      expect(targets).toEqual([
+        { host: '192.0.2.10', user: 'ci' },
+        { host: '192.0.2.11', user: 'root' },
+      ]);
+      expect(mocks.readHostFacts.mock.calls.map((c) => c[0])).toEqual(targets);
+      expect(process.exitCode).toBeUndefined();
+    });
+
+    it('says which account it dialled as, and why, when the tailnet refuses that account', async () => {
+      mocks.nodes = rows();
+      mocks.readHostFacts.mockResolvedValue({ facts: null, error: 'tailnet policy does not permit you to SSH as user "liam"' });
+      await runFleetCommand(['backends', '--backends', 'ollama']);
+      const printed = vi
+        .mocked(console.log)
+        .mock.calls.map((c) => String(c[0]))
+        .join('\n');
+      // beta-max has a user: the ACL refused that one.
+      expect(printed).toMatch(/beta-max.*not as "liam" \(the roster row's "user"\)/);
+      // core-1 has none and --user was not given: the local username was tried, and the fix is named.
+      expect(printed).toMatch(/core-1.*not as "liam" \(your local username — this roster row has no "user" and --user was not given\)/);
+      expect(printed).toContain('set "user" on core-1\'s row in');
+      expect(process.exitCode).toBe(1);
+    });
   });
 });
 
