@@ -42,6 +42,14 @@ describe('parseFleetArgs', () => {
     expect(parseFleetArgs(['status', '--nodes=a,b']).nodes).toEqual(['a', 'b']);
   });
 
+  it('defaults the Ollama bind to the tailnet address and accepts the two alternatives', () => {
+    expect(parseFleetArgs(['backends']).bind).toBe('tailnet');
+    expect(parseFleetArgs(['backends', '--bind', 'all']).bind).toBe('all');
+    expect(parseFleetArgs(['backends', '--bind=local']).bind).toBe('local');
+    // Anything else is a typo, not a fourth policy.
+    expect(() => parseFleetArgs(['backends', '--bind', 'everywhere'])).toThrow(/--bind must be one of tailnet, all, local/);
+  });
+
   it('refuses a flag that swallows the next flag as its value', () => {
     // `--user --json` must not silently set user to "--json" and drop the json flag.
     expect(() => parseFleetArgs(['scan', '--user', '--json'])).toThrow(/--user needs a value/);
@@ -51,6 +59,17 @@ describe('parseFleetArgs', () => {
     expect(() => parseFleetArgs(['scan', '--timeout=10'])).toThrow(/between 250 and 120000/);
     expect(() => parseFleetArgs(['scan', '--concurrency=0'])).toThrow(/between 1 and 32/);
     expect(() => parseFleetArgs(['scan', '--concurrency=2.5'])).toThrow(/integer/);
+  });
+
+  it('accepts cert as a subcommand, read-only until --execute', () => {
+    expect(parseFleetArgs(['cert']).subcommand).toBe('cert');
+    expect(parseFleetArgs(['cert']).execute).toBe(false);
+    expect(parseFleetArgs(['cert', '--execute', '--nodes=a', '--user=root'])).toMatchObject({
+      subcommand: 'cert',
+      execute: true,
+      nodes: ['a'],
+      user: 'root',
+    });
   });
 
   it('rejects an unknown flag instead of ignoring it', () => {
@@ -93,6 +112,57 @@ describe('parseFleetArgs', () => {
     // `--nodes` and `--no-tailnet` share a prefix in the other direction; both still land.
     expect(parseFleetArgs(['status', '--nodes', 'a,b', '--no-tailnet']).nodes).toEqual(['a', 'b']);
     expect(parseFleetArgs(['status', '--nodes=a', '--no-tailnet']).tailnet).toBe(false);
+  });
+
+  /**
+   * Pinning the Hub image. Every node runs the floating `:dev` tag, so an update pass can land two
+   * different builds on a fleet depending on when each node's turn came, and nothing says which.
+   * These flags name the build; the parser refuses the shapes that only look like they do.
+   */
+  describe('--pin-digest and --to-majority', () => {
+    const sha = `sha256:${'a'.repeat(64)}`;
+
+    it('takes a full repo@digest and a bare digest, completing the latter against the Hub repo', () => {
+      expect(parseFleetArgs(['update', '--hub', `--pin-digest=ghcr.io/companionintelligence/ci-hub@${sha}`]).pinDigest).toBe(
+        `ghcr.io/companionintelligence/ci-hub@${sha}`,
+      );
+      expect(parseFleetArgs(['update', '--hub', '--pin-digest', sha]).pinDigest).toBe(`ghcr.io/companionintelligence/ci-hub@${sha}`);
+    });
+
+    it('refuses a tag as a pin, since a tag is the mutable thing being escaped', () => {
+      expect(() => parseFleetArgs(['update', '--hub', '--pin-digest=ghcr.io/companionintelligence/ci-hub:v0.2.70'])).toThrow(/mutable/);
+      expect(() => parseFleetArgs(['update', '--hub', '--pin-digest=d5ff45d9'])).toThrow(/--pin-digest/);
+    });
+
+    it('refuses either flag without --hub, and refuses both together', () => {
+      expect(() => parseFleetArgs(['update', `--pin-digest=${sha}`])).toThrow(/only apply to `fleet update --hub`/);
+      expect(() => parseFleetArgs(['update', '--to-majority'])).toThrow(/only apply to `fleet update --hub`/);
+      expect(() => parseFleetArgs(['update', '--hub', '--to-majority', `--pin-digest=${sha}`])).toThrow(/one or the other/);
+    });
+
+    it('parses --to-majority as a plain switch', () => {
+      const args = parseFleetArgs(['update', '--hub', '--to-majority']);
+      expect(args.toMajority).toBe(true);
+      expect(args.pinDigest).toBeUndefined();
+    });
+  });
+
+  it('accepts preflight as a read-only subcommand with no --execute', () => {
+    const args = parseFleetArgs(['preflight', '--nodes=core-10', '--touches-boot']);
+    expect(args.subcommand).toBe('preflight');
+    expect(args.execute).toBe(false);
+    expect(args.touchesBoot).toBe(true);
+  });
+
+  it('defaults --force and --touches-boot off: a block is a block until somebody says otherwise', () => {
+    const args = parseFleetArgs(['install', '--execute']);
+    expect(args.force).toBe(false);
+    expect(args.touchesBoot).toBe(false);
+    expect(parseFleetArgs(['update', '--execute', '--hub', '--force']).force).toBe(true);
+  });
+
+  it('refuses a flag that merely begins with --force', () => {
+    expect(() => parseFleetArgs(['install', '--forced'])).toThrow(/Unknown flag '--forced'/);
   });
 });
 
@@ -201,16 +271,30 @@ describe('parseFleetRoster', () => {
     const parsed = parseFleetRoster([{ name: 'a', ip: '10.0.0.1', skip: 'maybe-later' }]);
     expect(parsed.nodes[0]?.skip).toBeUndefined();
   });
+
+  it('keeps an out-of-band console, which only the roster can know about', () => {
+    // A NanoKVM on the HDMI port is invisible from inside the machine. Its presence is what the
+    // boot-recovery preflight reads.
+    const parsed = parseFleetRoster([
+      { name: 'razer', ip: '10.0.0.1', oob: 'nanokvm 192.168.0.115' },
+      { name: 'core-10', ip: '10.0.0.2', oob: '   ' },
+      { name: 'core-2', ip: '10.0.0.3', oob: 42 },
+    ]);
+    expect(parsed.nodes[0]?.oob).toBe('nanokvm 192.168.0.115');
+    expect(parsed.nodes[1]?.oob).toBeUndefined();
+    expect(parsed.nodes[2]?.oob).toBeUndefined();
+  });
 });
 
 describe('mergeFleetRoster', () => {
-  const existing: FleetNode[] = [{ name: 'my-name-for-it', ip: '10.0.0.1', skip: 'llm-only', note: 'ACL gap, see #242' }];
+  const existing: FleetNode[] = [{ name: 'my-name-for-it', ip: '10.0.0.1', skip: 'llm-only', note: 'ACL gap, see #242', oob: 'ipmi 10.0.9.1' }];
 
   it('never overwrites operator intent with a discovery result', () => {
     // A scan that cleared `skip` would quietly re-enable a node somebody deliberately excluded.
     const merged = mergeFleetRoster(existing, [{ name: 'tailnet-name', ip: '10.0.0.1' }]);
     expect(merged.nodes[0]?.skip).toBe('llm-only');
     expect(merged.nodes[0]?.note).toBe('ACL gap, see #242');
+    expect(merged.nodes[0]?.oob).toBe('ipmi 10.0.9.1');
     expect(merged.nodes[0]?.name).toBe('my-name-for-it');
     expect(merged.added).toHaveLength(0);
   });
