@@ -1,6 +1,7 @@
 import { Injectable, type OnModuleInit } from '@nestjs/common';
 import { AppLifecycleService } from '@/modules/app-lifecycle/app-lifecycle.service';
 import { castAppUrn } from '@/common/helpers/app-helpers';
+import { mcpCallerLifecycleActor } from '../mcp-tool-call';
 import { McpToolRegistry } from '../mcp-tool-registry.service';
 
 const urnProp = { type: 'string', description: 'App identifier in appName:storeSlug format' } as const;
@@ -18,12 +19,10 @@ const urnProp = { type: 'string', description: 'App identifier in appName:storeS
  * unaccompanied one today. What this predicate answers is which authority the CALL is reaching for,
  * and that answer must not depend on a parsing rule three modules away staying true.
  *
- * Why the gate has to live here at all: nothing else on this path checks a grant.
- * `assertSessionAction(req, appUrn, 'configure')` is in app-lifecycle.controller.ts, not in the
- * service, and `operatorMay` reads an absent operator as consent — which is exactly the MCP case, a
- * key with no person behind it. Moving that check into the service so HTTP, MCP and rehydrate share
- * one gate is the real fix and is deliberately not in this change; see CI-Hub#1302. Until it lands,
- * a form carrying either field is destructive, so it takes a 'full' key or an operator confirmation.
+ * Why the gate lives here as well as in the service: `AppLifecycleService` gates every call on its
+ * named actor (CI-Hub#1397), but it admits an unmanaged MCP key on its capability alone, and a
+ * managed key on its own app — neither has a person's grant behind it. So a form carrying either
+ * field stays destructive here: it still takes a 'full' key or an operator confirmation.
  */
 function claimsCustomDomain(params: Record<string, unknown>): boolean {
   const form = params.form as Record<string, unknown> | undefined;
@@ -202,8 +201,14 @@ export class AppLifecycleTools implements OnModuleInit {
     });
   }
 
+  /*
+   * Each lifecycle call below names its actor through `mcpCallerLifecycleActor` — the calling key, or
+   * the signed-in person behind an admin-runner call — and the SERVICE decides what that admits
+   * (CI-Hub#1397).
+   */
   async installApp(params: { appUrn: string; form?: Record<string, unknown> }) {
     const appUrn = castAppUrn(params.appUrn);
+    const actor = mcpCallerLifecycleActor('install');
     const form = params.form ?? {};
     const validation = await this.appLifecycleService.validateAppConfig(appUrn, form);
     if (!validation.valid) {
@@ -213,7 +218,7 @@ export class AppLifecycleTools implements OnModuleInit {
         errors: validation.errors,
       };
     }
-    return this.appLifecycleService.installApp({ appUrn, form });
+    return this.appLifecycleService.installApp({ appUrn, form, actor });
   }
   async startApp(params: { appUrn: string }) {
     return this.appLifecycleService.startApp({ appUrn: castAppUrn(params.appUrn) });
@@ -238,18 +243,22 @@ export class AppLifecycleTools implements OnModuleInit {
     return this.appLifecycleService.updateApp({ appUrn: castAppUrn(params.appUrn), performBackup: params.performBackup ?? true });
   }
   async updateAppConfig(params: { appUrn: string; form: Record<string, unknown> }) {
-    return this.appLifecycleService.updateAppConfig({ appUrn: castAppUrn(params.appUrn), form: params.form });
+    return this.appLifecycleService.updateAppConfig({
+      appUrn: castAppUrn(params.appUrn),
+      form: params.form,
+      actor: mcpCallerLifecycleActor('configure'),
+    });
   }
   async updateAllApps() {
-    return this.appLifecycleService.updateAllApps();
+    return this.appLifecycleService.updateAllApps(mcpCallerLifecycleActor('update'));
   }
   async startAllApps() {
-    return this.appLifecycleService.startAllApps();
+    return this.appLifecycleService.startAllApps(mcpCallerLifecycleActor('start'));
   }
   async stopAllApps() {
-    return this.appLifecycleService.stopAllApps();
+    return this.appLifecycleService.stopAllApps(mcpCallerLifecycleActor('stop'));
   }
   async restartAllApps() {
-    return this.appLifecycleService.restartAllApps();
+    return this.appLifecycleService.restartAllApps(mcpCallerLifecycleActor('restart'));
   }
 }

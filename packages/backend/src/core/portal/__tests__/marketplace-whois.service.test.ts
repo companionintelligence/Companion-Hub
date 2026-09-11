@@ -328,12 +328,35 @@ describe('MarketplaceWhoIsService', () => {
 
   it('refuses a sweep from a caller with no recognised principal', () => {
     // `updateAllApps` and friends act on every installed app, so the sweep gets the
-    // same answer the named routes do rather than `operatorMay`'s fail-open.
+    // same answer the named routes do rather than being read as exempt.
     expect(() => service.sweepOperatorUserId(unknownPrincipalReq(), 'update')).toThrowError(TranslatableError);
   });
 
   it('resolves the sweep operator for a Hub session', () => {
     expect(service.sweepOperatorUserId(sessionReq(), 'update')).toBe(USER_ID);
+  });
+
+  describe('lifecycleActor (CI-Hub#1397)', () => {
+    it('names a Hub session person as an operator', () => {
+      expect(service.lifecycleActor(sessionReq(), 'install')).toEqual({ kind: 'operator', userId: USER_ID });
+    });
+
+    it.each([
+      ['portal-device', portalPushReq],
+      ['cli', cliReq],
+    ] as const)('names the %s principal as exempt', (principal, buildReq) => {
+      expect(service.lifecycleActor(buildReq(), 'install')).toEqual({ kind: 'exempt', principal });
+    });
+
+    it('refuses a caller with no recognised principal', () => {
+      expect(() => service.lifecycleActor(unknownPrincipalReq(), 'install')).toThrowError(TranslatableError);
+    });
+
+    it('refuses a session with no user, rather than reading it as exempt', () => {
+      const userless = { hubSessionId: 'sess-1', hubPrincipal: 'session' } as Request;
+
+      expect(() => service.lifecycleActor(userless, 'configure')).toThrowError(TranslatableError);
+    });
   });
 
   it('sweeps nothing for a caller with no recognised principal', async () => {
