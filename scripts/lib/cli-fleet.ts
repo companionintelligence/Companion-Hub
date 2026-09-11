@@ -43,11 +43,13 @@ import {
 import { installNode, pullModelScript, updateHubScript } from './fleet-install.js';
 import { gatePreflight, PREFLIGHT_CHECKS, type PreflightFinding, type PreflightNodeReport, preflightNode } from './fleet-preflight.js';
 import { checkAppOnNode, poolRoutingScript, SUPPORTED_APP_SLUGS, type AppEndpointMode, type AppSlug } from './fleet-apps.js';
+import { applyBootParams, assessNode, decideGttTarget, readBootParamState, type NodeBootParamAssessment } from './fleet-boot-params.js';
 import { sshCapture } from './fleet-ssh.js';
 import { colorize } from './cli-ui.js';
 import { BASE_COMMAND } from './cli-types.js';
 
-export const FLEET_SUBCOMMANDS = ['scan', 'list', 'status', 'preflight', 'backends', 'install', 'update', 'apps'] as const;
+export const FLEET_SUBCOMMANDS = ['scan', 'list', 'status', 'backends', 'install', 'update', 'apps', 'boot-params', 'preflight'] as const;
+
 export type FleetSubcommand = (typeof FLEET_SUBCOMMANDS)[number];
 
 export interface FleetArgs {
@@ -88,6 +90,11 @@ export interface FleetArgs {
   apps: AppSlug[];
   /** Where an app should send inference. */
   endpoint: AppEndpointMode;
+  /**
+   * `boot-params` only: the operator asserts they can reach a console on every node this run stages.
+   * Lifts the refusal on a node with a hidden zero-timeout GRUB menu and no roster console.
+   */
+  iHaveConsole: boolean;
   /**
    * `install`/`update`: proceed on a node whose preflight said `block`. The finding is still
    * printed, marked as overridden, so the log shows a choice rather than a gap.
@@ -140,6 +147,7 @@ export function parseFleetArgs(argv: readonly string[]): FleetArgs {
     // Pool by default: the whole point of installing an agent on a pooled fleet is that it reaches
     // the cluster rather than one box.
     endpoint: 'pool',
+    iHaveConsole: false,
     force: false,
     touchesBoot: false,
     bind: DEFAULT_OLLAMA_BIND,
@@ -186,6 +194,7 @@ export function parseFleetArgs(argv: readonly string[]): FleetArgs {
     else if (isFlag('--join-pool')) args.joinPool = readValue('--join-pool');
     else if (isFlag('--pool-pin')) args.poolPin = readValue('--pool-pin');
     else if (arg === '--hub') args.hub = true;
+    else if (arg === '--i-have-console') args.iHaveConsole = true;
     else if (arg === '--force') args.force = true;
     else if (arg === '--touches-boot') args.touchesBoot = true;
     else if (isFlag('--endpoint')) {
@@ -1069,6 +1078,189 @@ async function runApps(args: FleetArgs): Promise<void> {
   recordFleetFailures(failed);
 }
 
+/**
+ * `cihub fleet boot-params` — bring gfx1151 nodes up to the GTT boot parameters CI-OS now sets at
+ * first boot.
+ *
+ * Dry run by default, per node: live (`/proc/cmdline`) and staged (`/etc/default/grub`) state, the
+ * target from RAM, and the planned one-line diff. `--execute` writes the file with a backup beside
+ * it and runs `update-grub`. It NEVER reboots: two of the twelve gfx1151 nodes have a hidden
+ * zero-timeout GRUB menu and no out-of-band console, and a boot that fails there is recovered at the
+ * machine. Those nodes are refused outright unless the roster records a console or the operator
+ * passes `--i-have-console`; every other node ends in a "reboot required" list the operator works
+ * through one at a time.
+ *
+ * Serialised across nodes, like the rest of the mutating subcommands here.
+ */
+async function runBootParams(args: FleetArgs): Promise<void> {
+  const roster = loadFleetRoster();
+  reportUnknownNodes(roster.nodes, args.nodes);
+  if (roster.nodes.length === 0) {
+    console.log(`No roster yet. Run '${BASE_COMMAND} fleet scan --write-roster' first.`);
+    return;
+  }
+  const { run, skipped } = partitionForRun(roster.nodes, args.nodes);
+  if (run.length === 0) {
+    console.log('No nodes selected.');
+    for (const s of skipped) console.log(colorize(`  skipped ${s.node.name}: ${s.why}`, 'dim'));
+    return;
+  }
+
+  if (!args.execute) {
+    console.log(colorize('Dry run — nothing will be written. Add --execute to stage the parameters (a reboot is still yours to do).', 'dim'));
+    console.log('');
+  }
+
+  const report: Record<string, unknown>[] = [];
+  const rebootRequired: string[] = [];
+  const refused: string[] = [];
+  let failed = 0;
+
+  for (const node of run) {
+    const target = { host: node.ip, user: node.user ?? args.user };
+    const { facts, error } = await readHostFacts(target);
+    if (!facts) {
+      console.log(`${colorize(node.name, 'yellow')}: could not read hardware — ${String(error).slice(0, 120)}`);
+      report.push({ node: node.name, error: String(error) });
+      failed += 1;
+      continue;
+    }
+
+    // gfx1151 only, decided from KFD topology rather than a card name. Every other machine is
+    // reported and left alone — these parameters mean nothing to a discrete GPU.
+    const gfx = facts.gpus.find((g) => g.vendor === 'amd' && g.gfx === 'gfx1151');
+    if (!gfx) {
+      const what = facts.gpus.map((g) => `${g.vendor}${g.gfx ? `/${g.gfx}` : ''}`).join(', ') || 'no gpu';
+      console.log(`${node.name}  ${colorize(`${what} — not gfx1151, nothing to set`, 'dim')}`);
+      report.push({ node: node.name, skipped: `not gfx1151 (${what})` });
+      continue;
+    }
+
+    const decision = decideGttTarget(facts.totalRamMib);
+    if (decision.kind === 'skip') {
+      console.log(`${node.name}  ${colorize(`gfx1151 — ${decision.why}`, 'yellow')}`);
+      report.push({ node: node.name, skipped: decision.why });
+      continue;
+    }
+
+    const { probe, error: probeError } = await readBootParamState(target);
+    if (!probe) {
+      console.log(
+        `${colorize(node.name, 'yellow')}: gfx1151, but could not read /proc/cmdline and /etc/default/grub — ${String(probeError).slice(0, 120)}`,
+      );
+      report.push({ node: node.name, error: String(probeError) });
+      failed += 1;
+      continue;
+    }
+
+    const assessment = assessNode({
+      node: node.name,
+      cmdline: probe.cmdline,
+      grubText: probe.grubText,
+      overriddenBy: probe.overriddenBy,
+      target: decision.target,
+      oob: node.oob,
+      iHaveConsole: args.iHaveConsole,
+    });
+    printBootParamAssessment(assessment, facts.totalRamMib ?? 0);
+
+    const entry: Record<string, unknown> = {
+      node: node.name,
+      totalRamMib: facts.totalRamMib,
+      target: decision.target.values,
+      live: assessment.live,
+      staged: assessment.staged,
+      menu: assessment.menu,
+      plan: assessment.plan.kind === 'edit' ? { kind: 'edit', before: assessment.plan.before, after: assessment.plan.after } : assessment.plan,
+      gate: assessment.gate,
+      oob: node.oob,
+    };
+
+    // Set only when this run actually wrote the file; decides whether the node joins the reboot list.
+    let stagedByThisRun = false;
+
+    // A refusal is work the run did not do, so under --execute it is a failure a chain must see.
+    // On a dry run nothing was asked for; it is reported and the exit stays 0, like the other plans.
+    if (assessment.plan.kind === 'refuse') {
+      refused.push(`${node.name}: ${assessment.plan.why}`);
+      if (args.execute) failed += 1;
+    } else if (assessment.plan.kind === 'edit' && !assessment.gate.allowed) {
+      refused.push(assessment.gate.why);
+      if (args.execute) failed += 1;
+    } else if (assessment.plan.kind === 'edit' && args.execute) {
+      const busy = isTooBusyForMaintenance(facts);
+      if (busy.busy) {
+        console.log(colorize(`  refusing to write: ${busy.why}`, 'yellow'));
+        entry.skipped = busy.why;
+        failed += 1;
+      } else if (probe.grubSha256) {
+        const result = await applyBootParams(target, assessment.plan, probe.grubSha256);
+        stagedByThisRun = result.outcome === 'staged';
+        if (!stagedByThisRun) failed += 1;
+        const tone = stagedByThisRun ? 'green' : result.outcome === 'written-no-update-grub' ? 'yellow' : 'red';
+        console.log(`  ${colorize(result.outcome, tone)} (${Math.round(result.ms / 1000)}s) — ${result.detail}`);
+        entry.apply = result;
+      } else {
+        console.log(
+          colorize(
+            '  refusing to write: the probe returned no SHA-256 for /etc/default/grub, so the write cannot verify it is editing the file the plan was computed on',
+            'yellow',
+          ),
+        );
+        entry.skipped = 'no sha256 from probe';
+        failed += 1;
+      }
+    }
+
+    // Listed only when the parameters will be there on the next boot: already staged, or written by
+    // this run. A dry run lists a planned edit too, labelled "after --execute" in the summary.
+    const willBeStaged = assessment.plan.kind !== 'edit' || !args.execute || stagedByThisRun;
+    if (assessment.rebootRequired && willBeStaged) rebootRequired.push(node.name);
+    report.push(entry);
+    console.log('');
+  }
+
+  for (const s of skipped) console.log(colorize(`  skipped ${s.node.name}: ${s.why}`, 'dim'));
+  if (refused.length) {
+    console.log('');
+    console.log(colorize('Refused — nothing was or would be written on:', 'yellow'));
+    for (const line of refused) console.log(colorize(`  ${line}`, 'yellow'));
+  }
+  if (rebootRequired.length) {
+    console.log('');
+    console.log(colorize(`Reboot required${args.execute ? '' : ' (after --execute)'} on: ${rebootRequired.join(', ')}`, 'yellow'));
+    console.log(
+      colorize('  This command never reboots. Do each one yourself, one at a time, when it is idle and you can watch it come back.', 'dim'),
+    );
+  }
+  if (args.json) console.log(JSON.stringify(report, null, 2));
+  recordFleetFailures(failed);
+}
+
+function printBootParamAssessment(a: NodeBootParamAssessment, totalRamMib: number): void {
+  const tone = (state: string) => (state === 'full' ? 'green' : state === 'absent' ? 'red' : 'yellow');
+  console.log(`${a.node}  ${colorize(`gfx1151 · ${totalRamMib} MiB RAM`, 'dim')}`);
+  console.log(`  live    ${colorize(a.live.detail, tone(a.live.state))}`);
+  if (a.staged.kind === 'parsed') console.log(`  staged  ${colorize(a.staged.presence.detail, tone(a.staged.presence.state))}`);
+  else console.log(`  staged  ${colorize(`unreadable — ${a.staged.why}`, 'red')}`);
+  console.log(`  target  ${a.target.tokens.join(' ')}  ${colorize(`(reserve ${a.target.reserveMib} MiB)`, 'dim')}`);
+  if (a.menu?.hiddenZeroTimeout) console.log(`  grub    ${colorize('GRUB_TIMEOUT=0, GRUB_TIMEOUT_STYLE=hidden — no menu on boot', 'yellow')}`);
+  switch (a.plan.kind) {
+    case 'noop':
+      console.log(`  plan    ${colorize('no change', 'dim')} — ${a.plan.why}`);
+      break;
+    case 'refuse':
+      console.log(`  plan    ${colorize('refused', 'red')} — ${a.plan.why}`);
+      break;
+    case 'edit':
+      console.log(`  plan    ${colorize('- ', 'red')}${a.plan.before}`);
+      console.log(`          ${colorize('+ ', 'green')}${a.plan.after}`);
+      if (!a.gate.allowed) console.log(`  gate    ${colorize(a.gate.why, 'red')}`);
+      else if (a.gate.note) console.log(`  gate    ${colorize(a.gate.note, 'yellow')}`);
+      break;
+  }
+}
+
 export async function runFleetCommand(argv: readonly string[]): Promise<void> {
   let args: FleetArgs;
   try {
@@ -1105,6 +1297,9 @@ export async function runFleetCommand(argv: readonly string[]): Promise<void> {
       return;
     case 'apps':
       await runApps(args);
+      return;
+    case 'boot-params':
+      await runBootParams(args);
       return;
   }
 }

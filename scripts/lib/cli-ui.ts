@@ -129,6 +129,10 @@ const commandSections: { title: string; entries: CommandEntry[] }[] = [
         command: `${BASE_COMMAND} fleet apps [--apps a,b] [--endpoint pool|local]`,
         description: 'Can each node serve an agent app its inference credentials? A check; it installs nothing',
       },
+      {
+        command: `${BASE_COMMAND} fleet boot-params [--i-have-console] [--execute]`,
+        description: 'Strix Halo (gfx1151) GTT kernel parameters: live vs staged per node, and the GRUB edit; never reboots',
+      },
     ],
   },
   {
