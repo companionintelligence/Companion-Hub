@@ -184,17 +184,30 @@ describe('AppLifecycleTools', () => {
 
       await asKey(() => tools.installApp({ appUrn: 'ci-store:nextcloud', form: { port: 8080 } }));
 
-      expect(lifecycleService.installApp).toHaveBeenCalledWith(expect.objectContaining({ actor: { kind: 'mcp', ownerAppUrn: null } }));
+      expect(lifecycleService.installApp).toHaveBeenCalledWith(
+        expect.objectContaining({ actor: { kind: 'mcp', ownerAppUrn: null, createdByUserId: null } }),
+      );
+    });
+
+    it('names the person who created an unmanaged key, so it acts with their grants and role', async () => {
+      lifecycleService.updateAppConfig.mockResolvedValue({ requestId: 'uuid-9' });
+      const createdKey: ApiKeyContext = { ...OPERATOR_KEY, createdByUserId: 4 };
+
+      await asKey(() => tools.updateAppConfig({ appUrn: 'ci-store:test', form: { port: 9090 } }), createdKey);
+
+      expect(lifecycleService.updateAppConfig).toHaveBeenCalledWith(
+        expect.objectContaining({ actor: { kind: 'mcp', ownerAppUrn: null, createdByUserId: 4 } }),
+      );
     });
 
     it("carries a managed key's owning app, so the service can confine it to that app", async () => {
       lifecycleService.updateAppConfig.mockResolvedValue({ requestId: 'uuid-8' });
-      const managedKey = { id: 3, name: 'importer', capability: 'write', ownerAppUrn: 'importer:ci-store' } as const;
+      const managedKey = { id: 3, name: 'importer', capability: 'write', ownerAppUrn: 'importer:ci-store', createdByUserId: null } as const;
 
       await asKey(() => tools.updateAppConfig({ appUrn: 'ci-store:test', form: { port: 9090 } }), managedKey);
 
       expect(lifecycleService.updateAppConfig).toHaveBeenCalledWith(
-        expect.objectContaining({ actor: { kind: 'mcp', ownerAppUrn: 'importer:ci-store' } }),
+        expect.objectContaining({ actor: { kind: 'mcp', ownerAppUrn: 'importer:ci-store', createdByUserId: null } }),
       );
     });
 
@@ -203,7 +216,7 @@ describe('AppLifecycleTools', () => {
 
       await asKey(() => tools[sweep]());
 
-      expect(lifecycleService[sweep]).toHaveBeenCalledWith({ kind: 'mcp', ownerAppUrn: null });
+      expect(lifecycleService[sweep]).toHaveBeenCalledWith({ kind: 'mcp', ownerAppUrn: null, createdByUserId: null });
     });
 
     it('acts as the person an admin-runner call names, for the verb it runs', async () => {
