@@ -130,6 +130,10 @@ const commandSections: { title: string; entries: CommandEntry[] }[] = [
         description: 'Can each node serve an agent app its inference credentials? A check; it installs nothing',
       },
       {
+        command: `${BASE_COMMAND} fleet cert [--nodes a,b] [--execute]`,
+        description: 'The tailscale TLS cert each node needs to pool: present, absent, or unreadable without sudo; issues it with --execute',
+      },
+      {
         command: `${BASE_COMMAND} fleet boot-params [--i-have-console] [--execute]`,
         description: 'Strix Halo (gfx1151) GTT kernel parameters: live vs staged per node, and the GRUB edit; never reboots',
       },
