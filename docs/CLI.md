@@ -727,6 +727,7 @@ cihub fleet preflight [--nodes a,b] [--touches-boot]   # is each node safe to ha
 cihub fleet backends [--backends a,b] [--execute]      # what each node can run for inference, then install it
 cihub fleet backends [--backends a,b] [--bind tailnet|all|local] [--execute]  # what each node can run for inference, then install it
 cihub fleet install [--user <acct>] [--execute]        # stand a Hub up on each node and register it
+cihub fleet update [--hub] [--models a,b|recommended] [--execute]  # refresh the Hub image, pull models (per node's own Hub with `recommended`)
 cihub fleet update [--hub] [--models a,b] [--execute]  # refresh the Hub image, pull models
 cihub fleet update --hub [--pin-digest <repo@sha256:…> | --to-majority] --execute   # pin the Hub build
 cihub fleet apps [--apps a,b] [--endpoint pool|local]  # can each node serve an agent its credentials
@@ -808,7 +809,7 @@ while believing it was twenty is the worse failure.
 | `--execute` | `backends`/`install`/`update`/`boot-params` only: actually apply. Without it, the plan is printed and nothing changes |
 | `--nodes a,b` | Restrict the run to these roster entries, by name **or** address |
 | `--user <account>` | Remote account to SSH as. `FLEET_SSH_USER` sets the same thing; a roster entry's own `user` wins |
-| `--json` | Machine-readable report — `scan`, `list`, `status`, `backends`, `install`, `apps`. `update` has none |
+| `--json` | Machine-readable report — `scan`, `list`, `status`, `backends`, `install`, `apps`, and `update --models` (per node: provenance and each model's outcome) |
 | `--lan` | `scan` only: also sweep the local subnet. Off by default, because touching every address on the operator's subnet is a more intrusive act than listing a tailnet they already belong to |
 | `--no-tailnet` | `scan` only: skip tailnet enumeration |
 | `--write-roster` | `scan` only: save the result to `fleet.json` |
@@ -823,6 +824,8 @@ while believing it was twenty is the worse failure.
 | `--claim-email <addr>` | `install` only: create each Hub's first operator for this CI Account address (`CIHUB_CLAIM_EMAIL`). Omitted, the claim step is **skipped and reported as skipped** — never guessed |
 | `--join-pool <node>` | `install` only: pair each installed node into that Hub's pool |
 | `--pool-pin <digits>` | `install` only: the PIN minted on the Hub being joined, for pairing by address |
+| `--hub` | `update` only: update the Hub image |
+| `--models a,b` | `update` only: pull these models on each node. `--models recommended` asks each node's own Hub for its hardware-fitted list instead. Either way `nomic-embed-text` is appended — see [`fleet-setup.md`](fleet-setup.md#models-per-node-not-per-fleet) |
 | `--hub` | `update` only: update the Hub image, reading the image ID on each node before and after |
 | `--pin-digest <repo@sha256:…>` | `update --hub` only: deploy this exact build instead of whatever the floating tag resolves to. A bare `sha256:…` is completed against `ghcr.io/companionintelligence/ci-hub`; a tag is refused, since a tag is the mutable thing being escaped |
 | `--to-majority` | `update --hub` only: pin every targeted node to the build most of the **whole roster** runs. Refused unless that is a strict majority — more than half of all rostered nodes, unknown ones included — and refused on a tie |
@@ -996,6 +999,15 @@ failure, whatever `pool update` said. The pin holds for that run only — it rea
 `--models a,b` pulls each model, trying the Hub-managed container, then a host `ollama` binary, then
 the HTTP API, because this fleet runs Ollama three different ways. Pass at least one of the two
 flags, or the command says there is nothing to do and exits `0`.
+
+`--models recommended` asks **each node's own Hub** for the list it already computes for that
+hardware, rather than applying one list to every machine — the flat list is how this fleet drifted
+to between 2 and 23 models per node. The dry run reads from every node (read-only, not offline) and
+prints each list with its provenance; `--execute` pulls what the Hub's live tag list says is missing
+and reports each model as pulled, already present, or failed. `nomic-embed-text` is appended to every
+node's list under either form, because CI-Server will not boot without it. The mechanics, the three
+provenances, and the 409-vs-401 distinction are in
+[`fleet-setup.md`](fleet-setup.md#models-per-node-not-per-fleet).
 
 Model pulls are serialised for a measured reason: concurrent cold loads of 20–50 GB blocked the
 nodes' own HTTP listeners long enough that the tooling reported them absent while they were working.
