@@ -830,7 +830,7 @@ describe('AppLifecycleService', () => {
       });
 
       it("confines a managed app's MCP key to its own app", async () => {
-        const neighbour: LifecycleActor = { kind: 'mcp', ownerAppUrn: 'importer:ci-marketplace' };
+        const neighbour: LifecycleActor = { kind: 'mcp', ownerAppUrn: 'importer:ci-marketplace', createdByUserId: null };
 
         await expect(service.installApp({ actor: neighbour, appUrn, form: {} })).rejects.toThrow('APP_ACTION_GRANT_DENIED');
         await expect(service.updateAppConfig({ actor: neighbour, appUrn, form: {} })).rejects.toThrow('APP_ACTION_GRANT_DENIED');
@@ -838,8 +838,8 @@ describe('AppLifecycleService', () => {
       });
 
       it.each([
-        ['a managed key on its own app', { kind: 'mcp', ownerAppUrn: appUrn }],
-        ['an unmanaged MCP key', { kind: 'mcp', ownerAppUrn: null }],
+        ['a managed key on its own app', { kind: 'mcp', ownerAppUrn: appUrn, createdByUserId: null }],
+        ['an unmanaged MCP key nobody is recorded as creating', { kind: 'mcp', ownerAppUrn: null, createdByUserId: null }],
         ['a grant-exempt principal', { kind: 'exempt', principal: 'portal-device' }],
         ['the Hub itself', { kind: 'system', reason: 'debug-seed' }],
       ] as Array<[string, LifecycleActor]>)('installs for %s without consulting WhoIs', async (_label, actor) => {
@@ -847,6 +847,29 @@ describe('AppLifecycleService', () => {
 
         expect(appsRepository.createApp).toHaveBeenCalled();
         expect(whois.has).not.toHaveBeenCalled();
+      });
+
+      it("acts as the person who created an unmanaged key, on that person's grant", async () => {
+        const createdBy7: LifecycleActor = { kind: 'mcp', ownerAppUrn: null, createdByUserId: 7 };
+        whois.has.mockResolvedValue(false);
+
+        await expect(service.installApp({ actor: createdBy7, appUrn, form: {} })).rejects.toThrow('APP_ACTION_GRANT_DENIED');
+        expect(whois.has).toHaveBeenCalledWith(7, appUrn, 'install');
+        expect(appsRepository.createApp).not.toHaveBeenCalled();
+
+        whois.has.mockResolvedValue(true);
+        await service.installApp({ actor: createdBy7, appUrn, form: {} });
+
+        expect(appsRepository.createApp).toHaveBeenCalled();
+      });
+
+      it('refuses a key whose creator cannot be checked because WhoIs is unavailable, as it would the person', async () => {
+        vi.mocked((service as any).moduleRef.get).mockImplementation(() => undefined);
+
+        await expect(service.installApp({ actor: { kind: 'mcp', ownerAppUrn: null, createdByUserId: 7 }, appUrn, form: {} })).rejects.toThrow(
+          'APP_ACTION_GRANT_DENIED',
+        );
+        expect(appsRepository.createApp).not.toHaveBeenCalled();
       });
 
       /*
@@ -907,12 +930,35 @@ describe('AppLifecycleService', () => {
         });
 
         it.each([
-          ['an unmanaged MCP key', { kind: 'mcp', ownerAppUrn: null }],
-          ['a managed key on its own app', { kind: 'mcp', ownerAppUrn: appUrn }],
+          ['an unmanaged key nobody is recorded as creating', { kind: 'mcp', ownerAppUrn: null, createdByUserId: null }],
+          // A managed key acts for its app; a creator recorded against it is never asked.
+          ['a managed key on its own app', { kind: 'mcp', ownerAppUrn: appUrn, createdByUserId: 9 }],
         ] as Array<[string, LifecycleActor]>)('refuses %s, whatever its capability — no person to ask', async (_label, actor) => {
           await expect(service.installApp({ actor, appUrn, form: { customDomain: 'shop.acme.com' } })).rejects.toThrow('CUSTOM_DOMAIN_ROLE_REQUIRED');
           expect(appsRepository.createApp).not.toHaveBeenCalled();
           expect(roles.hasManagingRole).not.toHaveBeenCalled();
+        });
+
+        it("lets a key created by an owner or admin move the domain, on its creator's role", async () => {
+          roles.hasManagingRole.mockResolvedValue(true);
+
+          await service.installApp({
+            actor: { kind: 'mcp', ownerAppUrn: null, createdByUserId: 9 },
+            appUrn,
+            form: { customDomain: 'shop.acme.com' },
+          });
+
+          expect(roles.hasManagingRole).toHaveBeenCalledWith(9, appUrn);
+          expect(appsRepository.createApp).toHaveBeenCalled();
+        });
+
+        it('refuses a key created by a member, whatever its capability', async () => {
+          roles.hasManagingRole.mockResolvedValue(false);
+
+          await expect(
+            service.installApp({ actor: { kind: 'mcp', ownerAppUrn: null, createdByUserId: 9 }, appUrn, form: { customDomain: 'shop.acme.com' } }),
+          ).rejects.toThrow('CUSTOM_DOMAIN_ROLE_REQUIRED');
+          expect(appsRepository.createApp).not.toHaveBeenCalled();
         });
 
         it.each([
@@ -928,7 +974,7 @@ describe('AppLifecycleService', () => {
 
       describe('the sweeps', () => {
         const IMPORTER = 'importer:ci-marketplace';
-        const importerKey: LifecycleActor = { kind: 'mcp', ownerAppUrn: IMPORTER };
+        const importerKey: LifecycleActor = { kind: 'mcp', ownerAppUrn: IMPORTER, createdByUserId: null };
         const row = (appName: string) => ({
           id: appName.length,
           appName,
@@ -946,6 +992,21 @@ describe('AppLifecycleService', () => {
 
           await service.updateAllApps(importerKey);
 
+          expect(update).toHaveBeenCalledTimes(1);
+          expect(update).toHaveBeenCalledWith(expect.objectContaining({ appUrn: IMPORTER }));
+        });
+
+        it("updates only the apps an unmanaged key's creator may update", async () => {
+          const createdBy7: LifecycleActor = { kind: 'mcp', ownerAppUrn: null, createdByUserId: 7 };
+          whois.has.mockImplementation(async (_userId: number, urn: string) => urn === IMPORTER);
+          appsService.getInstalledApps.mockResolvedValue(
+            ['neighbour', 'importer'].map((name) => ({ app: row(name), metadata: { latestVersion: 2 } })) as any,
+          );
+          const update = vi.spyOn(service, 'updateApp').mockResolvedValue({ requestId: 'u' } as any);
+
+          await service.updateAllApps(createdBy7);
+
+          expect(whois.has).toHaveBeenCalledWith(7, 'neighbour:ci-marketplace', 'update');
           expect(update).toHaveBeenCalledTimes(1);
           expect(update).toHaveBeenCalledWith(expect.objectContaining({ appUrn: IMPORTER }));
         });

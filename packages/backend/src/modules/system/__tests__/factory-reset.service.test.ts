@@ -7,6 +7,7 @@ import { ConfigurationService } from '@/core/config/configuration.service';
 import { DOCKERODE } from '@/modules/docker/constants';
 import { Test } from '@nestjs/testing';
 import { ModuleRef } from '@nestjs/core';
+import { PgDialect } from 'drizzle-orm/pg-core';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
 import { FactoryResetService } from '../factory-reset.service';
@@ -118,6 +119,19 @@ describe('FactoryResetService', () => {
     await service.wipeDatabase();
 
     expect(cache.clear).toHaveBeenCalled();
+  });
+
+  /**
+   * A key acts with its creator's grants, and `RESTART IDENTITY` hands the next account that
+   * creator's id. CASCADE reaches `api_key` through `created_by_user_id` today; naming the table
+   * keeps every key going with a reset however that foreign key changes.
+   */
+  it('MUST name api_key in the TRUNCATE rather than leave the keys to a foreign-key cascade', async () => {
+    await service.wipeDatabase();
+
+    const { sql: statement } = new PgDialect().sqlToQuery(db.execute.mock.calls[0][0]);
+
+    expect(statement).toMatch(/\bapi_key\b/);
   });
 
   it('MUST drop cached session users even when the TRUNCATE rejects on the way back', async () => {

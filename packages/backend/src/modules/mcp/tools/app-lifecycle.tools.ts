@@ -20,11 +20,12 @@ const urnProp = { type: 'string', description: 'App identifier in appName:storeS
  * and that answer must not depend on a parsing rule three modules away staying true.
  *
  * Why the gate lives here as well as in the service: `AppLifecycleService` gates every call on its
- * named actor (CI-Hub#1397), but it admits an unmanaged MCP key on its capability alone, and a
- * managed key on its own app — neither has a person's grant behind it. The service does refuse a key
- * any form that CHANGES which custom domain the app serves, because that takes an organization owner
- * or admin (R2-HUBDOMAINS-1); a form that names the field and moves nothing still reaches it. So a
- * form carrying either field stays destructive here: it still takes a 'full' key or an operator
+ * named actor (CI-Hub#1397). There an unmanaged key acts with the grants and role of the person who
+ * created it, a key nobody is recorded as creating keeps its per-app reach on every app, and a
+ * managed key acts on its own app only. The service refuses any form that CHANGES which custom domain
+ * the app serves unless the person behind the call is an organization owner or admin
+ * (R2-HUBDOMAINS-1); a form that names the field and moves nothing still reaches it. So a form
+ * carrying either field stays destructive here: it still takes a 'full' key or an operator
  * confirmation.
  */
 function claimsCustomDomain(params: Record<string, unknown>): boolean {
