@@ -1785,6 +1785,7 @@
   "API_KEYS_NEVER_USED": "Never used",
   "API_KEYS_CREATED_BY": "Created by {{name}}",
   "API_KEYS_CREATED_BY_UNKNOWN": "Creator unknown: recreate this key to limit it to one person's access",
+  "API_KEY_FULL_ROLE_REQUIRED": "Only an organization owner or admin can give an API key full capability.",
   "API_KEYS_REVOKE": "Revoke",
   "API_KEYS_REVOKED": "API key revoked",
   "API_KEYS_REVOKE_ERROR": "Failed to revoke API key",

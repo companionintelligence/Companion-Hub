@@ -214,6 +214,135 @@ describe('ApiKeysContainer', () => {
     );
   });
 
+  describe('full capability takes an organization owner or admin', () => {
+    const listFor = (canGrantFull: boolean) => (url: string) =>
+      url === '/api/api-keys/grantable' ? Promise.resolve({ ok: true, json: async () => ({ canGrantFull }) }) : mockGet(url);
+
+    it('shows the keys without waiting for the Portal to say who may give full capability', async () => {
+      mockApiFetch.mockImplementation((url: string) => (url === '/api/api-keys/grantable' ? new Promise(() => {}) : mockGet(url)));
+
+      render(<ApiKeysContainer />);
+
+      await waitFor(() => expect(screen.getByTestId('api-key-list')).toBeTruthy());
+    });
+
+    it('offers full capability only to someone who may give it, and says who can', async () => {
+      const user = userEvent.setup();
+      mockApiFetch.mockImplementation(listFor(false));
+
+      render(<ApiKeysContainer />);
+      await waitFor(() => expect(screen.getByTestId('api-key-create')).toBeTruthy());
+      await user.click(screen.getByTestId('api-key-create'));
+
+      expect(((await screen.findByTestId('api-key-new-capability-full')) as HTMLInputElement).disabled).toBe(true);
+      expect((screen.getByTestId('api-key-new-capability-write') as HTMLInputElement).disabled).toBe(false);
+      expect(screen.getByText('API_KEY_FULL_ROLE_REQUIRED')).toBeTruthy();
+    });
+
+    it('keeps full out of reach when raising an existing key, too', async () => {
+      const user = userEvent.setup();
+      mockApiFetch.mockImplementation(listFor(false));
+
+      render(<ApiKeysContainer />);
+      await waitFor(() => expect(screen.getByTestId('api-key-change-1')).toBeTruthy());
+      await user.click(screen.getByTestId('api-key-change-1'));
+
+      expect(((await screen.findByTestId('api-key-change-capability-full')) as HTMLInputElement).disabled).toBe(true);
+    });
+
+    it('says why the Hub refused a key, not just that it failed', async () => {
+      const user = userEvent.setup();
+      mockApiFetch.mockImplementation((url: string, init?: RequestInit) => {
+        if (url === '/api/api-keys' && init?.method === 'POST') {
+          return Promise.resolve({ ok: false, status: 403, json: async () => ({ statusCode: 403, message: 'API_KEY_FULL_ROLE_REQUIRED' }) });
+        }
+        return listFor(true)(url);
+      });
+
+      render(<ApiKeysContainer />);
+      await waitFor(() => expect(screen.getByTestId('api-key-create')).toBeTruthy());
+      await user.click(screen.getByTestId('api-key-create'));
+      await waitFor(() => expect(screen.getByTestId('api-key-new-name')).toBeTruthy());
+
+      fireEvent.change(screen.getByTestId('api-key-new-name'), { target: { value: 'agent' } });
+      await user.click(screen.getByTestId('api-key-new-capability-full'));
+      await user.click(screen.getByTestId('api-key-create-submit'));
+
+      await waitFor(() => expect(toast.error).toHaveBeenCalledWith('API_KEY_FULL_ROLE_REQUIRED'));
+    });
+
+    it('uses its own words when the Hub sent no reason it can translate', async () => {
+      const user = userEvent.setup();
+      mockApiFetch.mockImplementation((url: string, init?: RequestInit) => {
+        if (url === '/api/api-keys' && init?.method === 'POST') {
+          return Promise.resolve({ ok: false, status: 400, json: async () => ({ statusCode: 400, message: 'Bad Request Exception' }) });
+        }
+        return listFor(true)(url);
+      });
+
+      render(<ApiKeysContainer />);
+      await waitFor(() => expect(screen.getByTestId('api-key-create')).toBeTruthy());
+      await user.click(screen.getByTestId('api-key-create'));
+      await waitFor(() => expect(screen.getByTestId('api-key-new-name')).toBeTruthy());
+
+      fireEvent.change(screen.getByTestId('api-key-new-name'), { target: { value: 'agent' } });
+      await user.click(screen.getByTestId('api-key-create-submit'));
+
+      await waitFor(() => expect(toast.error).toHaveBeenCalledWith('API_KEYS_CREATE_ERROR'));
+      expect(toast.error).not.toHaveBeenCalledWith('Bad Request Exception');
+    });
+
+    it('takes a refused promotion back to the picker, re-read, with full out of reach', async () => {
+      const user = userEvent.setup();
+      let refused = false;
+      mockApiFetch.mockImplementation((url: string, init?: RequestInit) => {
+        if (url === '/api/api-keys/1' && init?.method === 'PATCH') {
+          refused = true;
+          return Promise.resolve({ ok: false, status: 403, json: async () => ({ statusCode: 403, message: 'API_KEY_FULL_ROLE_REQUIRED' }) });
+        }
+        // The role changed after the list loaded; the re-read after the refusal says so.
+        return listFor(!refused)(url);
+      });
+
+      render(<ApiKeysContainer />);
+      await waitFor(() => expect(screen.getByTestId('api-key-change-1')).toBeTruthy());
+      await user.click(screen.getByTestId('api-key-change-1'));
+      await user.click(await screen.findByTestId('api-key-change-capability-full'));
+      await user.click(screen.getByTestId('api-key-change-submit'));
+      await user.click(screen.getByTestId('api-key-change-confirm'));
+
+      await waitFor(() => expect(toast.error).toHaveBeenCalledWith('API_KEY_FULL_ROLE_REQUIRED'));
+      await waitFor(() => expect((screen.getByTestId('api-key-change-capability-full') as HTMLInputElement).disabled).toBe(true));
+      expect(screen.queryByTestId('api-key-change-confirm')).toBeNull();
+      // `full` is still the selected choice, so saving it again must not be on offer.
+      expect((screen.getByTestId('api-key-change-submit') as HTMLButtonElement).disabled).toBe(true);
+    });
+
+    it('will not send a refused full key again once the re-read takes full away', async () => {
+      const user = userEvent.setup();
+      let refused = false;
+      mockApiFetch.mockImplementation((url: string, init?: RequestInit) => {
+        if (url === '/api/api-keys' && init?.method === 'POST') {
+          refused = true;
+          return Promise.resolve({ ok: false, status: 403, json: async () => ({ statusCode: 403, message: 'API_KEY_FULL_ROLE_REQUIRED' }) });
+        }
+        return listFor(!refused)(url);
+      });
+
+      render(<ApiKeysContainer />);
+      await waitFor(() => expect(screen.getByTestId('api-key-create')).toBeTruthy());
+      await user.click(screen.getByTestId('api-key-create'));
+      await waitFor(() => expect(screen.getByTestId('api-key-new-name')).toBeTruthy());
+
+      fireEvent.change(screen.getByTestId('api-key-new-name'), { target: { value: 'agent' } });
+      await user.click(screen.getByTestId('api-key-new-capability-full'));
+      await user.click(screen.getByTestId('api-key-create-submit'));
+
+      await waitFor(() => expect(toast.error).toHaveBeenCalledWith('API_KEY_FULL_ROLE_REQUIRED'));
+      await waitFor(() => expect((screen.getByTestId('api-key-create-submit') as HTMLButtonElement).disabled).toBe(true));
+    });
+  });
+
   it('renders no create affordance inside managed rows (one global create button only)', async () => {
     render(<ApiKeysContainer />);
     await waitFor(() => expect(screen.getByTestId('api-key-list')).toBeTruthy());
