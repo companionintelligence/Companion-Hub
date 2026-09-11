@@ -153,8 +153,8 @@ export function saveFleetRoster(nodes: readonly FleetNode[], path: string = flee
 /**
  * Fold freshly discovered nodes into an existing roster.
  *
- * Discovery may not overwrite operator intent. A `skip`, a `note` or a chosen `name` is a human
- * decision, and a scan that silently cleared it would re-enable a node somebody deliberately
+ * Discovery may not overwrite operator intent. A `skip`, a `note`, an `oob` console or a chosen
+ * `name` is a human decision, and a scan that silently cleared it would re-enable a node somebody deliberately
  * excluded — quietly, on the next run. Discovery only fills fields that are absent and may correct
  * `tailnetName`, which is a fact about the network rather than a preference.
  */

@@ -1,9 +1,23 @@
 import { spawnSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { BASE_COMMAND } from './cli-types.js';
 import { colorize, printMessageBox } from './cli-ui.js';
 
 const LOCAL_DEV_BACKEND_PORT = '5004';
 const LOCAL_DEV_FRONTEND_PORT = '5005';
+
+/**
+ * Why spawnSync could not START `cmd`. A missing `cwd` is reported as `spawnSync docker ENOENT`
+ * by Node and `ENOENT: no such file or directory, posix_spawn 'docker'` by Bun (which compiles the
+ * shipped `cihub` binary) — both name the executable, not the directory, and `code`/`syscall`/
+ * `path` are identical to a genuinely missing binary. So an appliance whose Hub data dir is gone,
+ * or mistyped via `CI_HUB_DATA_DIR`, was told docker is not installed. Check the directory
+ * ourselves; the error object cannot tell the two apart.
+ */
+function spawnFailureMessage(cmd: string, cwd: string, error: Error): string {
+  if (!existsSync(cwd)) return `Failed to run ${cmd}: working directory does not exist: ${cwd}`;
+  return `Failed to run ${cmd}: ${String(error)}`;
+}
 
 export function run(cmd: string, args: string[], extraEnv: Record<string, string | undefined> = {}, cwd: string = process.cwd()) {
   console.log(colorize(`\u2192 ${cmd} ${args.map((a) => (a.includes(' ') ? JSON.stringify(a) : a)).join(' ')}`, 'dim'));
@@ -13,7 +27,7 @@ export function run(cmd: string, args: string[], extraEnv: Record<string, string
     cwd,
   });
   if (result.error) {
-    console.error(colorize(`Failed to run ${cmd}: ${String(result.error)}`, 'red'));
+    console.error(colorize(spawnFailureMessage(cmd, cwd, result.error), 'red'));
     process.exit(1);
   }
   if (result.status !== 0) process.exit(result.status ?? 1);
@@ -23,6 +37,9 @@ export function run(cmd: string, args: string[], extraEnv: Record<string, string
 export function runBestEffort(cmd: string, args: string[], extraEnv: Record<string, string | undefined> = {}, cwd: string = process.cwd()): boolean {
   console.log(colorize(`\u2192 ${cmd} ${args.map((a) => (a.includes(' ') ? JSON.stringify(a) : a)).join(' ')}`, 'dim'));
   const result = spawnSync(cmd, args, { stdio: 'inherit', env: { ...process.env, ...extraEnv }, cwd });
+  // Nothing was streamed when the process never started, so without this line the operator sees
+  // the `→ docker ...` echo and then silence.
+  if (result.error) console.error(colorize(spawnFailureMessage(cmd, cwd, result.error), 'yellow'));
   return result.status === 0;
 }
 

@@ -18,16 +18,38 @@ import { DEVICE_PAIR_SCOPE, loginScope, mintPairingCode, type PortalLogin, readS
 import { loadFleetRoster, mergeFleetRoster, partitionForRun, saveFleetRoster, fleetRosterPath, type FleetNode } from './fleet-roster.js';
 import { probeNode, resolveTailscaleCli, scanLan, summariseNode, tailnetPeers, type DiscoveredNode } from './fleet-discover.js';
 import { describeSshFailure } from './fleet-ssh.js';
-import { readHostFacts, isTooBusyForMaintenance } from './fleet-hardware.js';
-import { executeBackendPlan, planAllBackends, INSTALLABLE_BACKENDS, type InstallableBackend } from './fleet-backends.js';
+import { type HostFacts, isTooBusyForMaintenance, readHostFacts } from './fleet-hardware.js';
+import {
+  applyOllamaBindPolicy,
+  DEFAULT_OLLAMA_BIND,
+  describeBind,
+  executeBackendPlan,
+  INSTALLABLE_BACKENDS,
+  type InstallableBackend,
+  ollamaManagedEnvironment,
+  planAllBackends,
+} from './fleet-backends.js';
+import {
+  assessOllamaBind,
+  bindAddressFor,
+  CANONICAL_BIND_DROPIN,
+  OLLAMA_BIND_MODES,
+  type OllamaBindAssessment,
+  type OllamaBindMode,
+  ollamaBindProbeScript,
+  parseOllamaBindProbe,
+  planBindConsolidation,
+} from './fleet-ollama-bind.js';
 import { installNode, pullModelScript, updateHubScript } from './fleet-install.js';
+import { gatePreflight, PREFLIGHT_CHECKS, type PreflightFinding, type PreflightNodeReport, preflightNode } from './fleet-preflight.js';
 import { checkAppOnNode, poolRoutingScript, SUPPORTED_APP_SLUGS, type AppEndpointMode, type AppSlug } from './fleet-apps.js';
 import { applyBootParams, assessNode, decideGttTarget, readBootParamState, type NodeBootParamAssessment } from './fleet-boot-params.js';
 import { sshCapture } from './fleet-ssh.js';
 import { colorize } from './cli-ui.js';
 import { BASE_COMMAND } from './cli-types.js';
 
-export const FLEET_SUBCOMMANDS = ['scan', 'list', 'status', 'backends', 'install', 'update', 'apps', 'boot-params'] as const;
+export const FLEET_SUBCOMMANDS = ['scan', 'list', 'status', 'backends', 'install', 'update', 'apps', 'boot-params', 'preflight'] as const;
+
 export type FleetSubcommand = (typeof FLEET_SUBCOMMANDS)[number];
 
 export interface FleetArgs {
@@ -73,6 +95,22 @@ export interface FleetArgs {
    * Lifts the refusal on a node with a hidden zero-timeout GRUB menu and no roster console.
    */
   iHaveConsole: boolean;
+  /**
+   * `install`/`update`: proceed on a node whose preflight said `block`. The finding is still
+   * printed, marked as overridden, so the log shows a choice rather than a gap.
+   */
+  force: boolean;
+  /**
+   * `preflight`: rate the boot-recovery and grub-customizer findings as they would be rated before
+   * an operation that touches the kernel, initramfs or GRUB — `block` rather than `warn`.
+   */
+  touchesBoot: boolean;
+  /**
+   * Where Ollama listens, for `backends`. One policy per run: the tailnet address by default, or
+   * `all` / `local` when asked. Whatever is chosen is written to one file and read back after the
+   * restart; `fleet status` shows the result and the file that set it.
+   */
+  bind: OllamaBindMode;
 }
 
 export class FleetArgError extends Error {}
@@ -110,6 +148,9 @@ export function parseFleetArgs(argv: readonly string[]): FleetArgs {
     // the cluster rather than one box.
     endpoint: 'pool',
     iHaveConsole: false,
+    force: false,
+    touchesBoot: false,
+    bind: DEFAULT_OLLAMA_BIND,
   };
 
   const rest = [...argv];
@@ -154,10 +195,18 @@ export function parseFleetArgs(argv: readonly string[]): FleetArgs {
     else if (isFlag('--pool-pin')) args.poolPin = readValue('--pool-pin');
     else if (arg === '--hub') args.hub = true;
     else if (arg === '--i-have-console') args.iHaveConsole = true;
+    else if (arg === '--force') args.force = true;
+    else if (arg === '--touches-boot') args.touchesBoot = true;
     else if (isFlag('--endpoint')) {
       const mode = readValue('--endpoint');
       if (mode !== 'pool' && mode !== 'local') throw new FleetArgError("--endpoint must be 'pool' or 'local'.");
       args.endpoint = mode;
+    } else if (isFlag('--bind')) {
+      const mode = readValue('--bind');
+      if (!(OLLAMA_BIND_MODES as readonly string[]).includes(mode)) {
+        throw new FleetArgError(`--bind must be one of ${OLLAMA_BIND_MODES.join(', ')}: the node's tailnet address, all interfaces, or loopback.`);
+      }
+      args.bind = mode as OllamaBindMode;
     } else if (isFlag('--apps')) {
       const names = readValue('--apps')
         .split(',')
@@ -396,9 +445,19 @@ async function runStatus(args: FleetArgs): Promise<void> {
   }
   const { run, skipped } = partitionForRun(roster.nodes, args.nodes);
   const probed = await probeAll(run, args, 'roster');
+  const binds = await assessBindsAll(probed, args);
 
   if (args.json) {
-    console.log(JSON.stringify({ nodes: probed, skipped: skipped.map((s) => ({ node: s.node.name, why: s.why })) }, null, 2));
+    console.log(
+      JSON.stringify(
+        {
+          nodes: probed.map((n) => ({ ...n, ollamaBind: binds.get(n.ip) ?? null })),
+          skipped: skipped.map((s) => ({ node: s.node.name, why: s.why })),
+        },
+        null,
+        2,
+      ),
+    );
     return;
   }
   console.log(
@@ -408,14 +467,267 @@ async function runStatus(args: FleetArgs): Promise<void> {
         n.probe.ssh ? 'yes' : colorize('no', 'yellow'),
         n.probe.hub ? (n.probe.hubDetail ?? 'yes') : '—',
         n.probe.engines.join(' ') || '—',
+        describeBindCell(binds.get(n.ip), n),
       ]),
-      ['NODE', 'SSH', 'HUB', 'ENGINES'],
+      ['NODE', 'SSH', 'HUB', 'ENGINES', 'OLLAMA BIND'],
     ),
   );
+  const conflicts = probed.filter((n) => binds.get(n.ip)?.status === 'conflict');
+  if (conflicts.length) {
+    console.log('');
+    console.log(
+      colorize(
+        `${conflicts.length} node(s) have more than one drop-in setting OLLAMA_HOST, and the winner is not ${CANONICAL_BIND_DROPIN}:`,
+        'yellow',
+      ),
+    );
+    for (const n of conflicts) {
+      const a = binds.get(n.ip);
+      if (a) console.log(colorize(`  ${n.name}: ${a.resolution.setters.join(' < ')} — ${a.resolution.setBy} wins by name`, 'dim'));
+    }
+    console.log(
+      colorize(
+        `  '${BASE_COMMAND} fleet backends --backends ollama --bind <tailnet|all|local>' shows the consolidation; add --execute to apply it.`,
+        'dim',
+      ),
+    );
+  }
   if (skipped.length) {
     console.log('');
     for (const s of skipped) console.log(colorize(`  skipped ${s.node.name}: ${s.why}`, 'dim'));
   }
+}
+
+/** One cell of the preflight table: what the column is about, at a glance; the detail lines carry the rest. */
+function preflightCell(finding: PreflightFinding | undefined): string {
+  if (!finding) return '—';
+  if (finding.ok) return 'ok';
+  switch (finding.severity) {
+    case 'block':
+      return colorize('BLOCK', 'red');
+    case 'warn':
+      return colorize('warn', 'yellow');
+    case 'info':
+      return colorize('info', 'dim');
+  }
+}
+
+/** The per-node lines under the table: every finding that is not a plain pass, with its evidence and fix. */
+function printPreflightDetails(reports: readonly PreflightNodeReport[]): void {
+  for (const report of reports) {
+    const lines = report.error
+      ? [`  ${colorize('✗', 'red')} preflight could not run — ${report.error.slice(0, 200)}`]
+      : report.findings
+          .filter((f) => !f.ok)
+          .map((f) => {
+            const tone = f.severity === 'block' ? 'red' : f.severity === 'warn' ? 'yellow' : 'dim';
+            const fix = f.fix ? `\n      fix: ${f.fix}` : '';
+            return `  ${colorize(f.severity.toUpperCase().padEnd(5), tone)} ${f.check} — ${f.value}\n      via: ${f.via}${fix}`;
+          });
+    if (lines.length === 0) continue;
+    console.log(`\n${report.node}`);
+    for (const line of lines) console.log(line);
+  }
+}
+
+/**
+ * `cihub fleet preflight` — is each node safe to hand a package transaction?
+ *
+ * Read-only, no `--execute`: it runs `sudo -n true`, `dpkg --audit`, `apt-get check` and a handful
+ * of `ls`/`cat` on each node and changes nothing. `install` and `update` run the same checks per
+ * node before touching it; this is the standalone view, for looking before a pass rather than being
+ * refused mid-way through one. Exits 1 if any node would be blocked, so it can gate a script.
+ */
+async function runPreflight(args: FleetArgs): Promise<void> {
+  const roster = loadFleetRoster();
+  reportUnknownNodes(roster.nodes, args.nodes);
+  if (roster.nodes.length === 0) {
+    console.log(`No roster yet. Run '${BASE_COMMAND} fleet scan --write-roster' first.`);
+    return;
+  }
+  const { run, skipped } = partitionForRun(roster.nodes, args.nodes);
+  if (run.length === 0) {
+    console.log('No nodes selected.');
+    for (const s of skipped) console.log(colorize(`  skipped ${s.node.name}: ${s.why}`, 'dim'));
+    return;
+  }
+
+  if (!args.json) {
+    console.log(
+      colorize(
+        `Preflight on ${run.length} node(s)${args.touchesBoot ? ', rated for an operation that touches boot' : ''}. Reads only; changes nothing.`,
+        'dim',
+      ),
+    );
+  }
+
+  // Probes in parallel: each is a few short reads, not a transfer, so the fan-out that is wrong for
+  // installs is right here.
+  const reports: PreflightNodeReport[] = [];
+  const queue = [...run];
+  const worker = async () => {
+    for (;;) {
+      const node = queue.shift();
+      if (!node) return;
+      reports.push(await preflightNode({ host: node.ip, user: node.user ?? args.user }, node, { touchesBoot: args.touchesBoot }));
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(args.concurrency, run.length) }, worker));
+  reports.sort((a, b) => a.node.localeCompare(b.node));
+
+  if (args.json) {
+    console.log(
+      JSON.stringify({ touchesBoot: args.touchesBoot, nodes: reports, skipped: skipped.map((s) => ({ node: s.node.name, why: s.why })) }, null, 2),
+    );
+  } else {
+    console.log('');
+    console.log(
+      renderTable(
+        reports.map((r) => [
+          r.node,
+          ...PREFLIGHT_CHECKS.map((check) => (r.error ? colorize('?', 'red') : preflightCell(r.findings.find((f) => f.check === check)))),
+          r.error
+            ? colorize('unreachable', 'red')
+            : r.verdict === 'block'
+              ? colorize('BLOCK', 'red')
+              : r.verdict === 'warn'
+                ? colorize('warn', 'yellow')
+                : r.verdict,
+        ]),
+        ['NODE', ...PREFLIGHT_CHECKS.map((c) => c.toUpperCase()), 'VERDICT'],
+      ),
+    );
+    printPreflightDetails(reports);
+    if (skipped.length) {
+      console.log('');
+      for (const s of skipped) console.log(colorize(`  skipped ${s.node.name}: ${s.why}`, 'dim'));
+    }
+  }
+
+  const blocked = reports.filter((r) => r.error || r.verdict === 'block').length;
+  if (blocked && !args.json) {
+    console.log('');
+    console.log(colorize(`${blocked} node(s) would be refused by install/update. Fix the finding, or pass --force to those commands.`, 'yellow'));
+  }
+  recordFleetFailures(blocked);
+}
+
+/**
+ * Read each administrable node's Ollama bind, in parallel with the same bound as the probes.
+ *
+ * Read-only: the probe script dumps the drop-in directory and `systemctl show`. Nodes without SSH
+ * cannot be read and are reported as such rather than as a default bind.
+ */
+async function assessBindsAll(nodes: readonly DiscoveredNode[], args: FleetArgs): Promise<Map<string, OllamaBindAssessment>> {
+  const out = new Map<string, OllamaBindAssessment>();
+  const queue = nodes.filter((n) => n.probe.ssh);
+  const worker = async () => {
+    for (;;) {
+      const node = queue.shift();
+      if (!node) return;
+      const res = await sshCapture({ host: node.ip, user: node.user ?? args.user }, ollamaBindProbeScript(), Math.max(args.timeoutMs, 15_000));
+      out.set(node.ip, assessOllamaBind(parseOllamaBindProbe(res.out)));
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(args.concurrency, Math.max(queue.length, 1)) }, worker));
+  return out;
+}
+
+function describeBindCell(assessment: OllamaBindAssessment | undefined, node: DiscoveredNode): string {
+  if (!assessment) return node.probe.ssh ? 'not probed' : colorize(node.local ? 'local node — not probed' : 'n/a (no SSH)', 'dim');
+  switch (assessment.status) {
+    case 'conflict':
+      return colorize(assessment.summary, 'yellow');
+    case 'user-scope':
+    case 'foreign-owner':
+      return colorize(assessment.summary, 'yellow');
+    case 'managed':
+      return assessment.summary;
+    default:
+      return colorize(assessment.summary, 'dim');
+  }
+}
+
+interface OllamaBindPlanOnNode {
+  lines: string[];
+  tone: 'dim' | 'yellow' | 'green';
+  /** Nothing would change: canonical file present with this bind, no other setter. */
+  noop: boolean;
+  /** The one-sentence reason the system-unit path must not be taken here, when it must not. */
+  refused?: string;
+  effective: string;
+  json: Record<string, unknown>;
+}
+
+/**
+ * What the bind step would do on this node, from a read-only probe.
+ *
+ * Printed under the ollama line of a dry run so the operator sees the files that would move — by
+ * name, with their new names — before anything moves. Also what decides, on `--execute`, whether an
+ * adopted Ollama needs touching at all.
+ */
+async function planOllamaBindOnNode(target: { host: string; user?: string }, bind: OllamaBindMode, facts: HostFacts): Promise<OllamaBindPlanOnNode> {
+  const res = await sshCapture(target, ollamaBindProbeScript(), 20_000);
+  const probe = parseOllamaBindProbe(res.out);
+  const assessment = assessOllamaBind(probe);
+  const current = `${assessment.summary}`;
+  if (!probe.present) {
+    return {
+      lines: ['bind: could not read the node (probe produced no output)'],
+      tone: 'yellow',
+      noop: false,
+      effective: 'unknown',
+      json: { readable: false },
+    };
+  }
+  if (assessment.ownership.refuse) {
+    return {
+      lines: [`bind: now ${current}`, `bind: would refuse — ${assessment.ownership.reason}`],
+      tone: 'yellow',
+      noop: false,
+      refused: assessment.ownership.reason,
+      effective: assessment.resolution.effective.address,
+      json: { now: assessment.summary, refused: assessment.ownership.reason },
+    };
+  }
+  const target_ = bindAddressFor(bind, probe.tailscaleIp);
+  if (!target_) {
+    return {
+      lines: [
+        `bind: now ${current}`,
+        `bind: would fail — ${describeBind(bind)} requested and 'tailscale ip -4' returned nothing on this node; pass --bind all or --bind local`,
+      ],
+      tone: 'yellow',
+      noop: false,
+      effective: assessment.resolution.effective.address,
+      json: { now: assessment.summary, error: 'no tailnet address' },
+    };
+  }
+  const plan = planBindConsolidation(
+    [...probe.dropins, ...probe.dirEntries.filter((n) => !probe.dropins.some((d) => d.name === n)).map((n) => ({ name: n, content: '' }))],
+    target_,
+    { date: new Date().toISOString().slice(0, 10), extraEnv: ollamaManagedEnvironment(facts) },
+  );
+  const lines = [`bind: now ${current}`];
+  if (plan.noop) lines.push(`bind: already ${target_.address} ← ${CANONICAL_BIND_DROPIN}; nothing to change`);
+  else {
+    lines.push(`bind: would set OLLAMA_HOST=${target_.address} (${bind}) and verify it after restart`);
+    for (const line of plan.summary) lines.push(`bind:   ${line}`);
+  }
+  return {
+    lines,
+    tone: plan.unfixable.length || assessment.status === 'conflict' ? 'yellow' : plan.noop ? 'dim' : 'green',
+    noop: plan.noop,
+    effective: assessment.resolution.effective.address,
+    json: {
+      now: assessment.summary,
+      target: target_.address,
+      noop: plan.noop,
+      disable: plan.disable,
+      shadowed: plan.shadowed,
+      unfixable: plan.unfixable,
+    },
+  };
 }
 
 /**
@@ -460,7 +772,7 @@ async function runBackends(args: FleetArgs): Promise<void> {
     }
 
     const busy = isTooBusyForMaintenance(facts);
-    const plans = planAllBackends(facts, args.dataDir, args.backends.length ? args.backends : undefined);
+    const plans = planAllBackends(facts, args.dataDir, args.backends.length ? args.backends : undefined, { ollamaBind: args.bind });
     const gpu = facts.gpus.map((g) => `${g.vendor}${g.gfx ? `/${g.gfx}` : ''}${g.driverWorking ? '' : ' [driver dead]'}`).join(', ') || 'no gpu';
     console.log(`${node.name}  ${colorize(`${facts.os}/${facts.arch} · ${gpu} · load ${facts.load1 ?? '?'}`, 'dim')}`);
     for (const note of facts.notes) console.log(colorize(`  ! ${note}`, 'yellow'));
@@ -475,18 +787,37 @@ async function runBackends(args: FleetArgs): Promise<void> {
     }
 
     for (const plan of plans) {
+      // Ollama's bind is part of its plan, install or adopt: the same policy, read from the node
+      // first so the dry run names the files it would move and the adopt path knows when there is
+      // nothing to do.
+      const bindPlan = plan.backend === 'ollama' && plan.action !== 'skip' ? await planOllamaBindOnNode(target, args.bind, facts) : undefined;
+
       if (!args.execute) {
         const tag = plan.action === 'install' ? colorize('would install', 'green') : plan.action;
         console.log(`  ${plan.backend.padEnd(9)} ${tag} — ${plan.why}`);
-        report.push({ node: node.name, backend: plan.backend, action: plan.action, why: plan.why });
+        if (bindPlan) for (const line of bindPlan.lines) console.log(colorize(`            ${line}`, bindPlan.tone));
+        report.push({ node: node.name, backend: plan.backend, action: plan.action, why: plan.why, ...(bindPlan ? { bind: bindPlan.json } : {}) });
         continue;
       }
-      const result = await executeBackendPlan(target, plan);
+
+      let result = await executeBackendPlan(target, plan);
+      // An adopted Ollama never runs the install script, so its bind is converged here — unless the
+      // node already reads back as managed for this bind, in which case nothing is touched.
+      if (plan.backend === 'ollama' && result.outcome === 'adopted' && bindPlan) {
+        if (bindPlan.refused) {
+          result = { ...result, outcome: 'skipped', why: bindPlan.refused };
+        } else if (bindPlan.noop) {
+          result = { ...result, why: `${result.why}; bind already ${bindPlan.effective} ← ${CANONICAL_BIND_DROPIN}` };
+        } else {
+          const applied = await applyOllamaBindPolicy(target, args.bind, facts);
+          result = { ...applied, outcome: applied.outcome === 'installed' ? 'adopted' : applied.outcome, why: `${result.why}; ${applied.why}` };
+        }
+      }
       if (result.outcome === 'failed') failed += 1;
       const tone = result.outcome === 'failed' ? 'red' : result.outcome === 'installed' ? 'green' : 'dim';
       const took = result.ms ? ` (${Math.round(result.ms / 1000)}s)` : '';
       console.log(`  ${plan.backend.padEnd(9)} ${colorize(result.outcome, tone)}${took} — ${result.why}`);
-      if (result.detail && result.outcome === 'failed') console.log(colorize(`    ${result.detail}`, 'dim'));
+      if (result.detail && (result.outcome === 'failed' || plan.backend === 'ollama')) console.log(colorize(`    ${result.detail}`, 'dim'));
       report.push({ node: node.name, ...result });
     }
     console.log('');
@@ -572,6 +903,12 @@ async function runInstall(args: FleetArgs): Promise<void> {
       console.log(colorize(`  needs 'cihub login --scope ${DEVICE_PAIR_SCOPE}', or --code for one node`, 'dim'));
     }
     console.log(colorize('  requires a Postgres password', 'dim'));
+    console.log(
+      colorize(
+        `  each node is preflighted first (sudo, dpkg, grub, boot recovery, apt lock) — '${BASE_COMMAND} fleet preflight' shows it now`,
+        'dim',
+      ),
+    );
     return;
   }
 
@@ -619,6 +956,8 @@ async function runInstall(args: FleetArgs): Promise<void> {
         claimEmail: args.claimEmail,
         joinPool: args.joinPool,
         poolPin: args.poolPin,
+        force: args.force,
+        touchesBoot: args.touchesBoot,
       },
       args.user,
     );
@@ -667,6 +1006,13 @@ async function runUpdate(args: FleetArgs): Promise<void> {
   for (const node of run) {
     const target = { host: node.ip, user: node.user ?? args.user };
     console.log(`\n${node.name}`);
+    // Same gate as install, same place: before the first thing that changes the node.
+    const gate = gatePreflight(await preflightNode(target, node, { touchesBoot: args.touchesBoot }), { force: args.force });
+    console.log(`  ${gate.proceed ? colorize('✓', 'green') : colorize('·', 'dim')} preflight — ${gate.detail}`);
+    if (!gate.proceed) {
+      failed += 1;
+      continue;
+    }
     if (args.hub) {
       const res = await sshCapture(target, `bash <<'EOF'\n${updateHubScript()}\nEOF`, 20 * 60_000);
       const ok = res.ok && res.out.includes('hub-update-complete');
@@ -936,6 +1282,9 @@ export async function runFleetCommand(argv: readonly string[]): Promise<void> {
       return;
     case 'status':
       await runStatus(args);
+      return;
+    case 'preflight':
+      await runPreflight(args);
       return;
     case 'backends':
       await runBackends(args);
