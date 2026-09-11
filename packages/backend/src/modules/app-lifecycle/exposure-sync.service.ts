@@ -32,6 +32,7 @@ import { RegistrationService } from '../registration/registration.service';
 import { TailscaleService } from '../tailscale/tailscale.service';
 import { createAppUrn } from '@/common/helpers/app-helpers';
 import { hasRestoreIntent, readRehydrationState } from './registration-recovery-state';
+import { customDomainAuditLine } from './custom-domain-audit';
 
 /** Options shared by every entry point into an exposure sync. */
 export interface ExposureSyncOptions {
@@ -131,6 +132,14 @@ export class ExposureSyncService {
    * while making a stuck flap cost one restart rather than a loop.
    */
   private static readonly CUSTOM_DOMAIN_RESTART_COOLDOWN_MS = 10 * 60_000;
+  /**
+   * How long an empty `customDomains` must persist, across a second sync,
+   * before it is believed while apps still hold domains. See the
+   * confirmation in `reconcileCustomDomains`.
+   */
+  private static readonly EMPTY_CUSTOM_DOMAINS_CONFIRM_MS = 60_000;
+  /** When the current run of empty answers began, while domains were still bound. */
+  private emptyCustomDomainsSince: number | null = null;
 
   /**
    * Reverts whose restart could not be dispatched, to retry on a later pass.
@@ -714,7 +723,7 @@ export class ExposureSyncService {
    */
   public async releaseCustomDomain(
     app: Awaited<ReturnType<AppsRepository['getApps']>>[number],
-  ): Promise<{ ok: true } | { ok: false; message: string }> {
+  ): Promise<{ ok: true; portalRowId?: string } | { ok: false; message: string }> {
     const appUrn = createAppUrn(app.appName, app.appStoreSlug);
     const current = normalizeStoredHostname(app.customDomain);
 
@@ -834,7 +843,7 @@ export class ExposureSyncService {
         'The organization still holds that domain in CI-Cloud and can point it at another app.',
     );
 
-    return { ok: true };
+    return { ok: true, portalRowId: entry.id };
   }
 
   /**
@@ -1285,6 +1294,60 @@ export class ExposureSyncService {
       return [];
     }
 
+    /*
+     * ⚠ "NONE" WHILE DOMAINS ARE BOUND IS BELIEVED ONLY ON THE SECOND ASKING.
+     *
+     * An empty array unbinds every custom-domain app on the Hub and recreates
+     * each one onto its platform hostname — at once, since the restart cooldown
+     * is per app. The Portal now omits the field when it cannot tell
+     * (R2-PORTALMISC-5), but a failure mode nobody has found yet could still
+     * answer `[]` for "I could not read it". So while apps that can serve a
+     * custom domain still hold one, the first empty answer changes none of
+     * them, and it is acted on by the next sync at least a minute on that says
+     * the same — normally the five-minute poll, unless a save or a restart
+     * triggers one sooner. So a real "the org disconnected them all" lands one
+     * sync late, and until then those apps keep publishing a hostname that no
+     * longer resolves (CI-Hub#1207); a transient read failure no longer takes
+     * every customer hostname off the air.
+     *
+     * Only the bindings DERIVED FROM THIS ANSWER wait. An app that stopped being
+     * publicly routed loses its binding because of its own settings, whatever
+     * CI-Cloud says, and still does so on the first pass.
+     *
+     * ⚠ AND ONLY THE APPS THIS ANSWER IS ABOUT COUNT. A stopped app is left out
+     * of the payload, so CI-Cloud rightly delivers nothing for it. Counting it
+     * would start the minute on every poll while it is stopped, and the first
+     * bad answer after it starts again would read as already confirmed.
+     */
+    const holdsDomains = params.apps.some(
+      (candidate) =>
+        params.syncedAppUrns.has(createAppUrn(candidate.appName, candidate.appStoreSlug)) &&
+        canServeOnCustomDomain(candidate as AppPublicRoutingSnapshot) &&
+        normalizeStoredHostname(candidate.customDomain) !== null,
+    );
+    let holdEmptyAnswer = false;
+
+    if (params.customDomains.length === 0 && holdsDomains) {
+      const now = Date.now();
+      this.emptyCustomDomainsSince ??= now;
+      holdEmptyAnswer = now - this.emptyCustomDomainsSince < ExposureSyncService.EMPTY_CUSTOM_DOMAINS_CONFIRM_MS;
+
+      if (holdEmptyAnswer) {
+        this.logger.warn('[Cloudflare] CI-Cloud reported no custom domains while apps still hold some; keeping them until a later sync confirms.');
+      }
+    } else {
+      this.emptyCustomDomainsSince = null;
+    }
+
+    /*
+     * CI-Cloud's row id for each delivered domain. Nothing is decided on it —
+     * the join is on `targetHostname` — but it names the record a binding change
+     * came from, for the audit line below.
+     */
+    const portalRowIdByDomain = new Map(
+      params.customDomains.flatMap((entry) => (entry.id ? [[normalizeHostname(entry.domain), entry.id] as const] : [])),
+    );
+
     const byTarget = indexCustomDomainsByTarget(params.customDomains);
     const ambiguousDomains = collectAmbiguousCustomDomains(params.customDomains);
     /*
@@ -1385,6 +1448,9 @@ export class ExposureSyncService {
          * unconfirmed choice reach the app's env, which is the whole reason
          * `custom_domain` and `custom_domain_intent` are separate columns.
          */
+        if (holdEmptyAnswer) {
+          continue;
+        }
         next = selectCustomDomain(byTarget.get(target), current, normalizeStoredHostname(app.customDomainIntent));
         cloudDrivenChange = true;
       } else {
@@ -1448,6 +1514,26 @@ export class ExposureSyncService {
         this.logger.debug(`[Cloudflare] Deferred custom-domain write for ${appUrn}: a lifecycle command claimed it during this sync`);
         continue;
       }
+
+      /*
+       * R2-HUBREGISTRATION-2: this write is what moves an app's public identity —
+       * its env, `X-Forwarded-Host`, and edge-SSO return host all follow it — and
+       * here it is driven by CI-Cloud's answer or by the app's own routing
+       * settings, not by a person on this Hub. The audit line names both
+       * hostnames, CI-Cloud's record for each and which of the two it was, so a
+       * retarget is attributable from the Hub side. An operator's own release
+       * logs the same line from `releaseClearedCustomDomain`.
+       */
+      this.logger.info(
+        customDomainAuditLine({
+          appUrn,
+          previous: current,
+          next,
+          previousPortalRowId: current ? portalRowIdByDomain.get(current) : undefined,
+          nextPortalRowId: next ? portalRowIdByDomain.get(normalizeHostname(next)) : undefined,
+          cause: cloudDrivenChange ? 'ci-cloud' : 'settings',
+        }),
+      );
 
       /*
        * Act when the app is already publishing a hostname CI-Cloud has stopped
