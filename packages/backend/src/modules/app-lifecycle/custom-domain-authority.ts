@@ -60,12 +60,18 @@ export function requestsCustomDomainChange(form: CustomDomainForm, state: Custom
     return wanted !== null;
   }
 
+  /*
+   * Normalized once, here, so a blank column reads as the null it means: a row
+   * holding `''` would otherwise make every "platform address" save a release.
+   */
+  const intent = normalizeStoredHostname(state.intent);
+  const bound = normalizeStoredHostname(state.bound);
+
   if (wanted === null) {
-    return state.intent !== null || state.bound !== null;
+    return intent !== null || bound !== null;
   }
 
   const takeover = form.customDomainTakeover === true;
-  const intent = normalizeStoredHostname(state.intent);
 
   /*
    * Bound by CI-Cloud with no choice recorded: the dialog seeds the picker with
@@ -73,7 +79,7 @@ export function requestsCustomDomainChange(form: CustomDomainForm, state: Custom
    * nothing — unless another app is waiting for the domain, or it carries a
    * takeover answer the row does not have.
    */
-  if (intent === null && wanted === normalizeStoredHostname(state.bound)) {
+  if (intent === null && wanted === bound) {
     return takeover || state.boundWantedElsewhere;
   }
 

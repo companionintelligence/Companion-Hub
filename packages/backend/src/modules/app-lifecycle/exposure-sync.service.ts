@@ -1313,9 +1313,17 @@ export class ExposureSyncService {
      * Only the bindings DERIVED FROM THIS ANSWER wait. An app that stopped being
      * publicly routed loses its binding because of its own settings, whatever
      * CI-Cloud says, and still does so on the first pass.
+     *
+     * ⚠ AND ONLY THE APPS THIS ANSWER IS ABOUT COUNT. A stopped app is left out
+     * of the payload, so CI-Cloud rightly delivers nothing for it. Counting it
+     * would start the minute on every poll while it is stopped, and the first
+     * bad answer after it starts again would read as already confirmed.
      */
     const holdsDomains = params.apps.some(
-      (candidate) => canServeOnCustomDomain(candidate as AppPublicRoutingSnapshot) && normalizeStoredHostname(candidate.customDomain) !== null,
+      (candidate) =>
+        params.syncedAppUrns.has(createAppUrn(candidate.appName, candidate.appStoreSlug)) &&
+        canServeOnCustomDomain(candidate as AppPublicRoutingSnapshot) &&
+        normalizeStoredHostname(candidate.customDomain) !== null,
     );
     let holdEmptyAnswer = false;
 

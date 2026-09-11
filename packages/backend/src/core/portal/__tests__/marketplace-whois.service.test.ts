@@ -421,6 +421,7 @@ describe('MarketplaceWhoIsService', () => {
       ['WhoIs answering non-2xx', () => portal.whoisApps.mockResolvedValue(answer([], 503))],
       ['no Portal configured', () => portal.whoisApps.mockResolvedValue(null)],
       ['WhoIs throwing', () => portal.whoisApps.mockRejectedValue(new Error('ECONNRESET'))],
+      ['the linked-identity read failing', () => federatedIdentities.findByUserId.mockRejectedValue(new Error('db'))],
       [
         'the device registration unreadable',
         () => {
