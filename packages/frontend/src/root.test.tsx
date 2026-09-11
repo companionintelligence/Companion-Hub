@@ -431,6 +431,28 @@ describe('root clientLoader session continuity', () => {
     expect(clearStaleServerSession).toHaveBeenCalledOnce();
     expect(refreshHubSessionIfDue).not.toHaveBeenCalled();
   });
+
+  it('posts the stale-session logout once per document, not once per loader pass', async () => {
+    const loggedOut = { data: { isConfigured: true, isLoggedIn: false, isGuestDashboardEnabled: false } };
+    const loggedIn = { data: { isConfigured: true, isLoggedIn: true, isGuestDashboardEnabled: false } };
+
+    // A live session arms the clear (module state may carry over from earlier tests).
+    userContext.mockResolvedValue(loggedIn);
+    await clientLoader({ request: new Request('http://localhost/home') } as never);
+
+    // Cold load of a protected route: the loader runs for the route, then again for /login.
+    userContext.mockResolvedValue(loggedOut);
+    await clientLoader({ request: new Request('http://localhost/resource-monitor') } as never);
+    await clientLoader({ request: new Request('http://localhost/login') } as never);
+    expect(clearStaleServerSession).toHaveBeenCalledOnce();
+
+    // Signing in and out again re-arms it, so the next sign-out still clears its cookie.
+    userContext.mockResolvedValue(loggedIn);
+    await clientLoader({ request: new Request('http://localhost/home') } as never);
+    userContext.mockResolvedValue(loggedOut);
+    await clientLoader({ request: new Request('http://localhost/login') } as never);
+    expect(clearStaleServerSession).toHaveBeenCalledTimes(2);
+  });
 });
 
 describe('root ErrorBoundary Sentry capture', () => {

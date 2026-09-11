@@ -118,7 +118,7 @@ const SKIPPED_AI_CONFIG: AiSetupConfig = {
 function OnboardingWizard() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
-  const { user, cloudflareAvailable, tailscaleAvailable, setAppContext, refreshAppContext } = useAppContext();
+  const { user, cloudflareAvailable, tailscaleAvailable, setAppContext, refreshAppContext, isLoading: isAppLoading } = useAppContext();
   const {
     apps: storeApps,
     isLoading: isCatalogLoading,
@@ -225,6 +225,15 @@ function OnboardingWizard() {
 
   if (user.hasCompletedOnboarding) {
     return <Navigate to="/home" replace />;
+  }
+
+  // The default payload says "not onboarded"; do not paint step one on it.
+  if (isAppLoading) {
+    return (
+      <div className="flex items-center justify-center bg-background" style={{ minHeight: 'calc(100vh - var(--titlebar-height, 0px))' }}>
+        <div className="animate-spin w-8 h-8 border-4 border-primary border-t-transparent rounded-full" />
+      </div>
+    );
   }
 
   if (phase === 'installing') {
