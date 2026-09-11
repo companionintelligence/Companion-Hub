@@ -167,6 +167,25 @@ export class MarketplaceWhoIsService {
    * say (`lifecycleActor`); the service decides from that.
    */
   async hasManagingRole(userId: number, appUrn: AppUrn): Promise<boolean> {
+    return this.isOrganizationManager(userId, [extractAppUrn(appUrn).appName], 'custom_domain');
+  }
+
+  /**
+   * Whether this operator is an owner or admin of this device's organization,
+   * asked about no app at all — for a decision no single app owns, such as who
+   * may give an API key full capability.
+   *
+   * ⚠ IT NEEDS A PORTAL THAT ANSWERS A ROLE-ONLY DEVICE WHOIS. One that predates
+   * it refuses an empty `appIds`, and that refusal is a `false` here like every
+   * other way of not knowing: nobody but a grant-exempt principal gets the
+   * answer "yes" until the Portal can give it.
+   */
+  async isOrgManager(userId: number): Promise<boolean> {
+    return this.isOrganizationManager(userId, [], 'api_key_full');
+  }
+
+  /** The role question both ask: fresh, from this device's own organization, and `false` whenever it cannot be answered. */
+  private async isOrganizationManager(userId: number, appIds: string[], purpose: 'custom_domain' | 'api_key_full'): Promise<boolean> {
     // The identity read inside the `try` too: a database error is another way of not knowing, not a 500.
     try {
       const subject = await this.portalSubject(userId);
@@ -176,11 +195,11 @@ export class MarketplaceWhoIsService {
         return false;
       }
 
-      const response = await this.portal.whoisApps({ subject, appIds: [extractAppUrn(appUrn).appName], surface: 'hub' });
+      const response = await this.portal.whoisApps({ subject, appIds, surface: 'hub' });
 
       if (!response?.body || response.status < 200 || response.status >= 300) {
         // Refused all the same, but an owner turned away by an outage reads "owner or admin only", so the log says why.
-        this.logger.warn(`custom_domain_role_unverified userId=${userId} status=${response ? response.status : 'no-portal'}`);
+        this.logger.warn(`${purpose}_role_unverified userId=${userId} status=${response ? response.status : 'no-portal'}`);
         return false;
       }
 
@@ -188,7 +207,7 @@ export class MarketplaceWhoIsService {
 
       return role === 'owner' || role === 'admin';
     } catch (error) {
-      this.logger.warn(`Could not read the organization role for a custom-domain change: ${error instanceof Error ? error.message : String(error)}`);
+      this.logger.warn(`Could not read the organization role (${purpose}): ${error instanceof Error ? error.message : String(error)}`);
       return false;
     }
   }

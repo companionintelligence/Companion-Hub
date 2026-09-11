@@ -1,6 +1,9 @@
-import { Body, Controller, Delete, Get, Param, ParseIntPipe, Patch, Post, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, HttpStatus, Param, ParseIntPipe, Patch, Post, Req, UseGuards } from '@nestjs/common';
+import { ModuleRef } from '@nestjs/core';
 import type { Request } from 'express';
-import { hubSessionOperatorUserId } from '@/core/portal/hub-session-operator';
+import { TranslatableError } from '@/common/error/translatable-error';
+import { hubSessionOperatorUserId, isGrantExemptPrincipal } from '@/core/portal/hub-session-operator';
+import { MarketplaceWhoIsService } from '@/core/portal/marketplace-whois.service';
 import { AuthGuard } from '@/modules/auth/auth.guard';
 import { ApiKeyAdminService } from './api-key-admin.service';
 import { CreateApiKeyBody, UpdateApiKeyBody } from './api-key-admin.dto';
@@ -14,12 +17,21 @@ import { CreateApiKeyBody, UpdateApiKeyBody } from './api-key-admin.dto';
 @Controller('api-keys')
 @UseGuards(AuthGuard)
 export class ApiKeyAdminController {
-  constructor(private readonly adminService: ApiKeyAdminService) {}
+  constructor(
+    private readonly adminService: ApiKeyAdminService,
+    private readonly moduleRef: ModuleRef,
+  ) {}
 
-  /** List all stored API keys (operator + app-managed, every scope). Never returns raw keys. */
+  /**
+   * List all stored API keys (operator + app-managed, every scope). Never returns raw keys.
+   *
+   * `canGrantFull` says whether the caller may give a key full capability, so the screen offers that
+   * choice only to someone who can make it. The create and change routes decide regardless.
+   */
   @Get()
-  async listKeys() {
-    return { keys: await this.adminService.listKeys() };
+  async listKeys(@Req() req: Request) {
+    const [keys, canGrantFull] = await Promise.all([this.adminService.listKeys(), this.mayGrantFull(req)]);
+    return { keys, canGrantFull };
   }
 
   /**
@@ -27,10 +39,15 @@ export class ApiKeyAdminController {
    *
    * The key is recorded as the signed-in person's, and acts with their grants and role from then on
    * (`LifecycleActor`). A principal with no person behind it — the CLI — records nobody, which is
-   * where every key minted before creators were recorded stands too.
+   * where every key minted before creators were recorded stands too. A `full` key also takes an
+   * organization owner or admin; see {@link mayGrantFull}.
    */
   @Post()
-  createKey(@Body() body: CreateApiKeyBody, @Req() req: Request) {
+  async createKey(@Body() body: CreateApiKeyBody, @Req() req: Request) {
+    if (body.capability === 'full') {
+      await this.assertMayGrantFull(req);
+    }
+
     return this.adminService.createKey(body.name, body.capability, hubSessionOperatorUserId(req) ?? null);
   }
 
@@ -39,11 +56,16 @@ export class ApiKeyAdminController {
    * key already deployed to an agent can be tightened or widened without re-issuing it.
    *
    * PATCH rather than PUT: this replaces one property of the key, not the key. Session-authed like the
-   * rest of this controller, so promoting a key is an operator action from the browser — the
-   * confirmation the UI shows before a promotion is UX, not the security boundary.
+   * rest of this controller; the confirmation the UI shows before a promotion is UX, not the security
+   * boundary. Raising a key to `full` takes an organization owner or admin ({@link mayGrantFull});
+   * tightening one takes nobody's permission.
    */
   @Patch(':id')
-  updateKey(@Param('id', ParseIntPipe) id: number, @Body() body: UpdateApiKeyBody) {
+  async updateKey(@Param('id', ParseIntPipe) id: number, @Body() body: UpdateApiKeyBody, @Req() req: Request) {
+    if (body.capability === 'full') {
+      await this.assertMayGrantFull(req);
+    }
+
     return this.adminService.setKeyCapability(id, body.capability);
   }
 
@@ -51,5 +73,44 @@ export class ApiKeyAdminController {
   @Delete(':id')
   revokeKey(@Param('id', ParseIntPipe) id: number) {
     return this.adminService.revokeKey(id);
+  }
+
+  /**
+   * ⚠ FULL CAPABILITY IS THE ORGANIZATION'S TO GIVE. A key acts with its creator's grants, but `full`
+   * also opens the destructive tools no per-app grant stands behind — uninstall, reset, the bulk
+   * sweeps — so who may hand it out is an owner's or admin's call, as it is in the Portal. Asked of
+   * WhoIs fresh and about no app (`isOrgManager`); every way of not knowing is a no. A named exempt
+   * principal (the CLI, the Portal device push) is admitted by name, as by every gate.
+   */
+  private async mayGrantFull(req: Request): Promise<boolean> {
+    if (isGrantExemptPrincipal(req)) {
+      return true;
+    }
+
+    const userId = hubSessionOperatorUserId(req);
+
+    if (userId === undefined) {
+      return false;
+    }
+
+    return (await this.resolveWhois()?.isOrgManager(userId)) === true;
+  }
+
+  private async assertMayGrantFull(req: Request): Promise<void> {
+    if (!(await this.mayGrantFull(req))) {
+      throw new TranslatableError('API_KEY_FULL_ROLE_REQUIRED', {}, HttpStatus.FORBIDDEN);
+    }
+  }
+
+  /**
+   * Resolved when asked, the way the lifecycle service resolves it, so the key module keeps depending
+   * on nothing but the database and the logger. `null` — cannot resolve — is a refusal, never a pass.
+   */
+  private resolveWhois(): MarketplaceWhoIsService | null {
+    try {
+      return this.moduleRef.get(MarketplaceWhoIsService, { strict: false }) ?? null;
+    } catch {
+      return null;
+    }
   }
 }

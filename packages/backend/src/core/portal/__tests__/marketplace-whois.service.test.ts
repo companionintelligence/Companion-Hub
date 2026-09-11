@@ -442,4 +442,26 @@ describe('MarketplaceWhoIsService', () => {
       expect(portal.whoisApps).not.toHaveBeenCalled();
     });
   });
+
+  describe('isOrgManager — the role alone, for a decision no single app owns', () => {
+    const answer = (organizations: unknown[], status = 200) => ({ status, body: { organizations } }) as never;
+
+    it.each([
+      ['owner', true],
+      ['admin', true],
+      ['member', false],
+    ])('answers an organization %s with %s, asking about no app', async (role, expected) => {
+      portal.whoisApps.mockResolvedValue(answer([{ organizationId: 'org-hub', user: { role }, apps: [] }]));
+
+      await expect(service.isOrgManager(USER_ID)).resolves.toBe(expected);
+      expect(portal.whoisApps).toHaveBeenCalledWith({ subject: SUBJECT, appIds: [], surface: 'hub' });
+    });
+
+    it('is false when the Portal predates role-only questions, and the log says why', async () => {
+      portal.whoisApps.mockResolvedValue(answer([], 400));
+
+      await expect(service.isOrgManager(USER_ID)).resolves.toBe(false);
+      expect(logger.warn).toHaveBeenCalledWith(`api_key_full_role_unverified userId=${USER_ID} status=400`);
+    });
+  });
 });

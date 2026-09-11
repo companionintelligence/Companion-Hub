@@ -43,12 +43,27 @@ export interface ApiKeyInfo {
 /** The one definition of the list read — the initial load and every post-action refresh share it,
  *  so the endpoint and response envelope live in a single place. Throws on a non-2xx; callers
  *  decide whether that surfaces as an error state or just leaves the list stale. */
-const fetchApiKeys = async (): Promise<ApiKeyInfo[]> => {
+const fetchApiKeys = async (): Promise<{ keys: ApiKeyInfo[]; canGrantFull: boolean }> => {
   const res = await apiFetch('/api/api-keys');
   if (!res.ok) {
     throw new Error('api-keys request failed');
   }
-  return ((await res.json()) as { keys: ApiKeyInfo[] }).keys;
+  const body = (await res.json()) as { keys: ApiKeyInfo[]; canGrantFull?: boolean };
+  // A Hub that predates the flag offers full to everyone, as it always did; its routes decide either way.
+  return { keys: body.keys, canGrantFull: body.canGrantFull !== false };
+};
+
+/**
+ * The server's own reason for a refusal, translated, when it sent one — "only an owner or admin can
+ * give a key full capability" says what to do next, a generic "could not save" does not.
+ */
+const refusalMessage = async (res: Response, t: (key: string) => string): Promise<string | null> => {
+  try {
+    const body = (await res.json()) as { message?: unknown };
+    return typeof body.message === 'string' ? t(body.message) : null;
+  } catch {
+    return null;
+  }
 };
 
 /** Capability gates the MCP tool surface only, so it is meaningful for a key that can reach it and
@@ -77,6 +92,9 @@ export const ApiKeysContainer = () => {
   const [changeTo, setChangeTo] = useState<ApiKeyCapability>('write');
   const [changeStep, setChangeStep] = useState<'choose' | 'confirm'>('choose');
   const [savingCapability, setSavingCapability] = useState(false);
+  // Whether this operator may give a key full capability — an organization owner or admin. The routes
+  // decide regardless; this only keeps the screen from offering a choice the Hub will refuse.
+  const [canGrantFull, setCanGrantFull] = useState(true);
 
   // One loader with a `silent` mode. The initial load drives the loading/error UI; a post-action
   // refresh runs silent — a failed refresh must not be misreported as the action itself failing
@@ -88,7 +106,9 @@ export const ApiKeysContainer = () => {
         setError(null);
       }
       try {
-        setKeys(await fetchApiKeys());
+        const listed = await fetchApiKeys();
+        setKeys(listed.keys);
+        setCanGrantFull(listed.canGrantFull);
       } catch {
         if (!silent) {
           setError(t('API_KEYS_LOAD_ERROR'));
@@ -126,7 +146,11 @@ export const ApiKeysContainer = () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name, capability: newKeyCapability }),
       });
-      if (!res.ok) throw new Error('create');
+      if (!res.ok) {
+        // A refusal says why — only an owner or admin can give a key full capability — not just "failed".
+        toast.error((await refusalMessage(res, t)) ?? t('API_KEYS_CREATE_ERROR'));
+        return;
+      }
       const body = (await res.json()) as { key: string };
       setCreatedKey(body.key); // shown once
       setCreateKeyOpen(false);
@@ -168,7 +192,10 @@ export const ApiKeysContainer = () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ capability: changeTo }),
       });
-      if (!res.ok) throw new Error('patch');
+      if (!res.ok) {
+        toast.error((await refusalMessage(res, t)) ?? t('API_KEYS_CAPABILITY_SAVE_ERROR'));
+        return;
+      }
       const body = (await res.json()) as { changed: boolean };
       // changed:false means the level was already this one, or the key is gone (revoked in another
       // tab). Neither is an error and neither deserves a success toast — the refresh reconciles it.
@@ -331,7 +358,14 @@ export const ApiKeysContainer = () => {
           </div>
           {/* What the key may do IS a choice, at the moment the key is minted — so a key made for a
               third-party client that only needs to read is never wide open in between. */}
-          <CapabilityPicker name="api-key-new" value={newKeyCapability} onChange={setNewKeyCapability} disabled={creatingKey} />
+          <CapabilityPicker
+            name="api-key-new"
+            value={newKeyCapability}
+            onChange={setNewKeyCapability}
+            disabled={creatingKey}
+            unavailable={canGrantFull ? [] : ['full']}
+            unavailableHint={t('API_KEY_FULL_ROLE_REQUIRED')}
+          />
           <DialogFooter>
             <Button variant="outline" onClick={() => setCreateKeyOpen(false)}>
               {t('COMMON_CANCEL')}
@@ -357,7 +391,14 @@ export const ApiKeysContainer = () => {
                 <DialogTitle>{t('API_KEYS_CAPABILITY_CHANGE_TITLE', { name: changeTarget?.name ?? '' })}</DialogTitle>
                 <DialogDescription>{t('API_KEYS_CAPABILITY_CHANGE_DESC')}</DialogDescription>
               </DialogHeader>
-              <CapabilityPicker name="api-key-change" value={changeTo} onChange={setChangeTo} disabled={savingCapability} />
+              <CapabilityPicker
+                name="api-key-change"
+                value={changeTo}
+                onChange={setChangeTo}
+                disabled={savingCapability}
+                unavailable={canGrantFull ? [] : ['full']}
+                unavailableHint={t('API_KEY_FULL_ROLE_REQUIRED')}
+              />
               {/* A managed key belongs to an installed app, and tightening it is a decision about
                   that app's behaviour — so say which app, rather than letting the operator discover
                   it when the app stops working. */}
