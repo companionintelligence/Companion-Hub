@@ -156,6 +156,17 @@ export class MarketplaceWhoIsService {
    * reading `hubSessionOperatorUserId` directly, which would read an unrecognised
    * principal as "no person to check, allow" all over again.
    */
+  sweepOperatorUserId(req: Request, action: HubAction): number | undefined {
+    const userId = hubSessionOperatorUserId(req);
+
+    if (userId == null && !isGrantExemptPrincipal(req)) {
+      this.logUnrecognisedPrincipal(req, action);
+      throw new TranslatableError('APP_ACTION_GRANT_DENIED', { action }, HttpStatus.FORBIDDEN);
+    }
+
+    return userId;
+  }
+
   /**
    * The lifecycle actor a request speaks for, or a 403 when it names none.
    *
@@ -171,18 +182,17 @@ export class MarketplaceWhoIsService {
       return { kind: 'operator', userId };
     }
 
-    return { kind: 'exempt', principal: req.hubPrincipal === 'cli' ? 'cli' : 'portal-device' };
-  }
-
-  sweepOperatorUserId(req: Request, action: HubAction): number | undefined {
-    const userId = hubSessionOperatorUserId(req);
-
-    if (userId == null && !isGrantExemptPrincipal(req)) {
-      this.logUnrecognisedPrincipal(req, action);
-      throw new TranslatableError('APP_ACTION_GRANT_DENIED', { action }, HttpStatus.FORBIDDEN);
+    // Only a grant-exempt principal is left, and each is named: one added to
+    // `isGrantExemptPrincipal` later is refused here until it is named too,
+    // rather than passing as another.
+    switch (req.hubPrincipal) {
+      case 'portal-device':
+      case 'cli':
+        return { kind: 'exempt', principal: req.hubPrincipal };
+      default:
+        this.logUnrecognisedPrincipal(req, action);
+        throw new TranslatableError('APP_ACTION_GRANT_DENIED', { action }, HttpStatus.FORBIDDEN);
     }
-
-    return userId;
   }
 
   /**

@@ -86,7 +86,7 @@ function cleanTree(tree: Record<string, string | null>) {
   return newTree;
 }
 
-/** Install mechanics, not authorization, are under test here — the gate itself is covered in its own block. */
+/** Install mechanics, not authorization, are under test here — the actor gate is unit-tested in app-lifecycle.service.test.ts. */
 const TEST_ACTOR: LifecycleActor = { kind: 'exempt', principal: 'cli' };
 
 describe('App lifecycle', () => {
