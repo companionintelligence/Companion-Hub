@@ -11,6 +11,7 @@ import { ModuleRef } from '@nestjs/core';
 import type { AppUrn } from '@ci-hub/common/types';
 import { normalizeStoredHostname, sanitizeAppSubdomain } from '@ci-hub/common/types';
 import { type CustomDomainForm, type CustomDomainState, requestsCustomDomainChange } from './custom-domain-authority';
+import { customDomainAuditLine } from './custom-domain-audit';
 import validator from 'validator';
 import { AppFilesManager } from '../apps/app-files-manager';
 import { AppRuntimeMonitorService } from '../apps/app-runtime-monitor.service';
@@ -2783,6 +2784,9 @@ export class AppLifecycleService implements OnApplicationBootstrap, OnModuleDest
     }
 
     await this.appRepository.updateAppById(app.id, { customDomain: null, customDomainIntent: null, customDomainTakeover: false });
+
+    // The one binding change a person on this Hub makes, so the one the audit line matters most for.
+    this.logger.info(customDomainAuditLine({ appUrn, previous: bound, next: null, previousPortalRowId: released.portalRowId, cause: 'release' }));
   }
 
   /**

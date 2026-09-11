@@ -32,6 +32,7 @@ import { RegistrationService } from '../registration/registration.service';
 import { TailscaleService } from '../tailscale/tailscale.service';
 import { createAppUrn } from '@/common/helpers/app-helpers';
 import { hasRestoreIntent, readRehydrationState } from './registration-recovery-state';
+import { customDomainAuditLine } from './custom-domain-audit';
 
 /** Options shared by every entry point into an exposure sync. */
 export interface ExposureSyncOptions {
@@ -722,7 +723,7 @@ export class ExposureSyncService {
    */
   public async releaseCustomDomain(
     app: Awaited<ReturnType<AppsRepository['getApps']>>[number],
-  ): Promise<{ ok: true } | { ok: false; message: string }> {
+  ): Promise<{ ok: true; portalRowId?: string } | { ok: false; message: string }> {
     const appUrn = createAppUrn(app.appName, app.appStoreSlug);
     const current = normalizeStoredHostname(app.customDomain);
 
@@ -842,7 +843,7 @@ export class ExposureSyncService {
         'The organization still holds that domain in CI-Cloud and can point it at another app.',
     );
 
-    return { ok: true };
+    return { ok: true, portalRowId: entry.id };
   }
 
   /**
@@ -1506,14 +1507,21 @@ export class ExposureSyncService {
       /*
        * R2-HUBREGISTRATION-2: this write is what moves an app's public identity —
        * its env, `X-Forwarded-Host`, and edge-SSO return host all follow it — and
-       * it is driven by CI-Cloud, not by anyone on this Hub. One greppable line
-       * per change, naming both hostnames and CI-Cloud's record for each, is what
-       * makes a retarget attributable from the Hub side.
+       * here it is driven by CI-Cloud's answer or by the app's own routing
+       * settings, not by a person on this Hub. The audit line names both
+       * hostnames, CI-Cloud's record for each and which of the two it was, so a
+       * retarget is attributable from the Hub side. An operator's own release
+       * logs the same line from `releaseClearedCustomDomain`.
        */
       this.logger.info(
-        `custom_domain_audit app=${appUrn} previous=${current ?? 'none'} next=${next ?? 'none'} ` +
-          `previousPortalRowId=${current ? (portalRowIdByDomain.get(current) ?? 'unknown') : 'none'} ` +
-          `nextPortalRowId=${next ? (portalRowIdByDomain.get(normalizeHostname(next)) ?? 'unknown') : 'none'}`,
+        customDomainAuditLine({
+          appUrn,
+          previous: current,
+          next,
+          previousPortalRowId: current ? portalRowIdByDomain.get(current) : undefined,
+          nextPortalRowId: next ? portalRowIdByDomain.get(normalizeHostname(next)) : undefined,
+          cause: cloudDrivenChange ? 'ci-cloud' : 'settings',
+        }),
       );
 
       /*
