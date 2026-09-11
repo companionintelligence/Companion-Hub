@@ -125,6 +125,10 @@ const commandSections: { title: string; entries: CommandEntry[] }[] = [
         command: `${BASE_COMMAND} fleet apps [--apps a,b] [--endpoint pool|local]`,
         description: 'Can each node serve an agent app its inference credentials? A check; it installs nothing',
       },
+      {
+        command: `${BASE_COMMAND} fleet rdp [--nodes a,b] [--execute]`,
+        description: 'Remote desktop on each Linux node, bound to its tailnet address only; prints owner, bind and plan unless --execute',
+      },
     ],
   },
   {

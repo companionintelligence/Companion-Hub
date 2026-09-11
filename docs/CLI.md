@@ -727,11 +727,12 @@ cihub fleet backends [--backends a,b] [--execute]      # what each node can run 
 cihub fleet install [--user <acct>] [--execute]        # stand a Hub up on each node and register it
 cihub fleet update [--hub] [--models a,b] [--execute]  # refresh the Hub image, pull models
 cihub fleet apps [--apps a,b] [--endpoint pool|local]  # can each node serve an agent its credentials
+cihub fleet rdp [--nodes a,b] [--execute]              # remote desktop on each Linux node, tailnet-only
 ```
 
 **`scan`, `list` and `status` change nothing, anywhere; `apps` reads and installs nothing.**
-`backends`, `install` and `update` require `--execute`; without it they print the plan they would
-run, touch nothing, and exit `0`. A tool that can reach fourteen machines should make the destructive
+`backends`, `install`, `update` and `rdp` require `--execute`; without it they print the plan they
+would run, touch nothing, and exit `0`. A tool that can reach fourteen machines should make the destructive
 path the one you have to ask for.
 
 **Authentication is the tailnet, not a key you manage.** There is no `-i`, no agent forwarding and
@@ -889,6 +890,22 @@ environment, so installing one grants Hub operator authority. That belongs behin
 entitlement checks, in the UI or API, not fanned out blind across a fleet — and the command prints
 the same warning when it finishes.
 
+### `cihub fleet rdp`
+
+Remote desktop on each Linux node, reachable **from the tailnet only**. The dry run prints, per
+node, who owns tcp/3389 (`none`, `xrdp`, `gnome-remote-desktop`, `other`, or `unknown` when the probe
+could not run as root), what it is bound to, and the plan. `--execute` applies the plan and then
+re-reads `ss -ltn`: the node **fails if anything off the tailnet can still reach 3389**, whatever the
+install script exited with.
+
+The plan is decided by the owner. Nothing on the port, or `xrdp` bound wider than the tailnet,
+installs `xrdp xfce4 xfce4-terminal dbus-x11`, writes `startxfce4` to the SSH account's
+`~/.xsession`, and sets `port=tcp://<tailnet-ip>:3389` in `/etc/xrdp/xrdp.ini`. `gnome-remote-desktop`
+cannot bind an address, so it gets `rdp-tailnet-guard.service` — an iptables chain that accepts
+tcp/3389 from `tailscale0` and `lo` and rejects everything else with a TCP reset. Anything else on the
+port is refused by name. There is **no flag to bind `*:3389`**. Background, and the `address=` trap
+that makes this command necessary, in [`fleet-setup.md` → Remote desktop](fleet-setup.md#remote-desktop-tailnet-only).
+
 ---
 
 ## Maintenance
@@ -913,7 +930,7 @@ straight through a broken Docker bridge, and a fleet run that installed on 0 of 
 | Command | Exits `1` when |
 | --- | --- |
 | `doctor` | A **decided failure**: Docker or Compose unavailable, a compose file missing, or a network/bridge check that ran and failed |
-| `fleet backends` / `install` / `update` / `apps` | Any node failed. It is counted per node, so 13 of 14 is still a failure |
+| `fleet backends` / `install` / `update` / `apps` / `rdp` | Any node failed. It is counted per node, so 13 of 14 is still a failure. For `rdp --execute`, "failed" includes a node whose 3389 is still reachable off the tailnet after the install |
 | `models list` / `install` / `rm` | There is no Ollama container to talk to |
 | `app status <name>` | That named container is not there |
 | `app inspect <name>` | `docker inspect` could not read the container |
@@ -993,11 +1010,12 @@ context), `cli-prompt.ts` (every confirmation, so the non-TTY refusal is worded 
 `cli-compose-env.ts` (env file and compose profile handling), `docker-engine.ts` (engine discovery
 and pinning).
 
-`cli-fleet.ts` owns argument parsing and the seven subcommand runners only; the work is in
+`cli-fleet.ts` owns argument parsing and the eight subcommand runners only; the work is in
 `fleet-roster.ts` (the saved fleet), `fleet-discover.ts` (the three probe axes), `fleet-ssh.ts` (the
 single SSH transport, so hosts cannot fail differently depending on which function reached them),
-`fleet-hardware.ts` (host facts and the load gate), `fleet-backends.ts`, `fleet-install.ts` and
-`fleet-apps.ts`.
+`fleet-hardware.ts` (host facts and the load gate), `fleet-backends.ts`, `fleet-install.ts`,
+`fleet-apps.ts` and `fleet-rdp.ts` (tailnet-only remote desktop: the `ss` owner probe, the pure
+`xrdp.ini` rewrite, the guard unit, and the post-apply verification).
 
 `scripts/cihub-cli.ts` is a re-export facade kept so `scripts/__tests__/cihub-cli.test.ts` has one
 stable import site. New code should import from the owning module instead.
