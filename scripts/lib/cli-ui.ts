@@ -122,6 +122,10 @@ const commandSections: { title: string; entries: CommandEntry[] }[] = [
         description: 'Stand a Hub up on each node, register it, and claim it; prints the plan unless --execute',
       },
       {
+        command: `${BASE_COMMAND} fleet update [--hub] [--ollama] [--models a,b] [--execute]`,
+        description: 'Pull the Hub image, pin Ollama, and pull models across the roster; prints the plan unless --execute',
+      },
+      {
         command: `${BASE_COMMAND} fleet update [--hub [--pin-digest <ref> | --to-majority]] [--models a,b] [--execute]`,
         description: 'Pull the Hub image (floating, or pinned by digest) and models across the roster; prints the plan unless --execute',
       },
