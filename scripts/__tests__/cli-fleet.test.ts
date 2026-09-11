@@ -114,6 +114,39 @@ describe('parseFleetArgs', () => {
     expect(parseFleetArgs(['status', '--nodes=a', '--no-tailnet']).tailnet).toBe(false);
   });
 
+  /**
+   * Pinning the Hub image. Every node runs the floating `:dev` tag, so an update pass can land two
+   * different builds on a fleet depending on when each node's turn came, and nothing says which.
+   * These flags name the build; the parser refuses the shapes that only look like they do.
+   */
+  describe('--pin-digest and --to-majority', () => {
+    const sha = `sha256:${'a'.repeat(64)}`;
+
+    it('takes a full repo@digest and a bare digest, completing the latter against the Hub repo', () => {
+      expect(parseFleetArgs(['update', '--hub', `--pin-digest=ghcr.io/companionintelligence/ci-hub@${sha}`]).pinDigest).toBe(
+        `ghcr.io/companionintelligence/ci-hub@${sha}`,
+      );
+      expect(parseFleetArgs(['update', '--hub', '--pin-digest', sha]).pinDigest).toBe(`ghcr.io/companionintelligence/ci-hub@${sha}`);
+    });
+
+    it('refuses a tag as a pin, since a tag is the mutable thing being escaped', () => {
+      expect(() => parseFleetArgs(['update', '--hub', '--pin-digest=ghcr.io/companionintelligence/ci-hub:v0.2.70'])).toThrow(/mutable/);
+      expect(() => parseFleetArgs(['update', '--hub', '--pin-digest=d5ff45d9'])).toThrow(/--pin-digest/);
+    });
+
+    it('refuses either flag without --hub, and refuses both together', () => {
+      expect(() => parseFleetArgs(['update', `--pin-digest=${sha}`])).toThrow(/only apply to `fleet update --hub`/);
+      expect(() => parseFleetArgs(['update', '--to-majority'])).toThrow(/only apply to `fleet update --hub`/);
+      expect(() => parseFleetArgs(['update', '--hub', '--to-majority', `--pin-digest=${sha}`])).toThrow(/one or the other/);
+    });
+
+    it('parses --to-majority as a plain switch', () => {
+      const args = parseFleetArgs(['update', '--hub', '--to-majority']);
+      expect(args.toMajority).toBe(true);
+      expect(args.pinDigest).toBeUndefined();
+    });
+  });
+
   it('accepts preflight as a read-only subcommand with no --execute', () => {
     const args = parseFleetArgs(['preflight', '--nodes=core-10', '--touches-boot']);
     expect(args.subcommand).toBe('preflight');
