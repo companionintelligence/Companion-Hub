@@ -17,17 +17,17 @@
 import { DEVICE_PAIR_SCOPE, loginScope, mintPairingCode, type PortalLogin, readStoredLogin } from './catalog-submit.js';
 import { loadFleetRoster, mergeFleetRoster, partitionForRun, saveFleetRoster, fleetRosterPath, type FleetNode } from './fleet-roster.js';
 import { probeNode, resolveTailscaleCli, scanLan, summariseNode, tailnetPeers, type DiscoveredNode } from './fleet-discover.js';
-import { describeSshFailure } from './fleet-ssh.js';
-import { type HostFacts, isTooBusyForMaintenance, readHostFacts } from './fleet-hardware.js';
+import { classifySshFailure, describeSshFailure, sshCapture, type SshTarget } from './fleet-ssh.js';
+import { isTooBusyForMaintenance, readHostFacts, type HostFacts } from './fleet-hardware.js';
 import {
   applyOllamaBindPolicy,
   DEFAULT_OLLAMA_BIND,
   describeBind,
   executeBackendPlan,
   INSTALLABLE_BACKENDS,
-  type InstallableBackend,
   ollamaManagedEnvironment,
   planAllBackends,
+  type InstallableBackend,
 } from './fleet-backends.js';
 import {
   assessOllamaBind,
@@ -52,7 +52,6 @@ import {
   unmeasuredCert,
   type CertFinding,
 } from './fleet-tailscale-cert.js';
-import { type SshTarget, sshCapture } from './fleet-ssh.js';
 import {
   type FleetImageSummary,
   type HubImageProbe,
@@ -67,6 +66,19 @@ import {
   shortImageId,
   summariseFleetImages,
 } from './fleet-image.js';
+import {
+  RECOMMENDED_MODELS_KEYWORD,
+  estimatedDownloadMb,
+  formatMb,
+  hubRecommendationScript,
+  parseHubRecommendationOutput,
+  planNodeModels,
+  summarisePulls,
+  type HubRecommendation,
+  type ModelPullResult,
+  type ModelRequest,
+  type NodeModelPlan,
+} from './fleet-models.js';
 import { colorize } from './cli-ui.js';
 import { BASE_COMMAND } from './cli-types.js';
 
@@ -104,8 +116,13 @@ export interface FleetArgs {
   /** Pair each installed node into this Hub's pool. */
   joinPool?: string;
   poolPin?: string;
-  /** Models to pull during `update`. */
+  /** Models to pull during `update`. Empty when `recommendModels` is set. */
   models: string[];
+  /**
+   * `--models recommended`: ask each node's own Hub for its hardware-fitted list instead of applying
+   * one list to every machine. Mutually exclusive with naming models, and the parser says so.
+   */
+  recommendModels: boolean;
   /** Update the Hub image during `update`. */
   hub: boolean;
   /**
@@ -171,6 +188,7 @@ export function parseFleetArgs(argv: readonly string[]): FleetArgs {
     joinPool: undefined,
     poolPin: undefined,
     models: [],
+    recommendModels: false,
     hub: false,
     pinDigest: undefined,
     toMajority: false,
@@ -255,10 +273,23 @@ export function parseFleetArgs(argv: readonly string[]): FleetArgs {
       }
       args.apps = names as AppSlug[];
     } else if (isFlag('--models')) {
-      args.models = readValue('--models')
+      const names = readValue('--models')
         .split(',')
         .map((m) => m.trim())
         .filter(Boolean);
+      // `recommended` is a mode, not a model. Mixed with names it would be ambiguous in both
+      // directions — is the named model on top of each node's list, or instead of it? — so refuse.
+      if (names.includes(RECOMMENDED_MODELS_KEYWORD)) {
+        if (names.length > 1) {
+          throw new FleetArgError(
+            `--models ${RECOMMENDED_MODELS_KEYWORD} asks each node's Hub for its own list and cannot be combined with model names.`,
+          );
+        }
+        args.recommendModels = true;
+        args.models = [];
+      } else {
+        args.models = names;
+      }
     } else if (isFlag('--backends')) {
       const names = readValue('--backends')
         .split(',')
@@ -1049,6 +1080,11 @@ async function runInstall(args: FleetArgs): Promise<void> {
  *
  * Model pulls are serialised for a measured reason: concurrent cold loads of 20-50 GB blocked the
  * nodes' own HTTP listeners long enough that the tooling reported them absent while they worked.
+ *
+ * `--models recommended` asks each node's own Hub for its list (see `fleet-models.ts` for why the
+ * flat list drifted this fleet to 2–23 models per node), so its dry run reads from every node —
+ * read-only, but not offline. An explicit list still needs no Hub at all. Either way the platform
+ * floor is appended, and every node reports pulled / already-present / failed per model.
  */
 async function runUpdate(args: FleetArgs): Promise<void> {
   const roster = loadFleetRoster();
@@ -1058,8 +1094,13 @@ async function runUpdate(args: FleetArgs): Promise<void> {
     console.log('No nodes selected.');
     return;
   }
-  if (!args.hub && args.models.length === 0) {
-    console.log('Nothing to do. Pass --hub to update the Hub image, --models a,b to pull models, or both.');
+  const modelRequest: ModelRequest | undefined = args.recommendModels
+    ? { kind: 'recommended' }
+    : args.models.length > 0
+      ? { kind: 'explicit', models: args.models }
+      : undefined;
+  if (!args.hub && !modelRequest) {
+    console.log(`Nothing to do. Pass --hub to update the Hub image, --models a,b or --models ${RECOMMENDED_MODELS_KEYWORD} to pull models, or both.`);
     return;
   }
 
@@ -1071,6 +1112,15 @@ async function runUpdate(args: FleetArgs): Promise<void> {
     return;
   }
 
+  // Only the recommended path needs the Hub. An explicit list is the operator's decision and must
+  // keep working on a node whose Hub is down — that is often why they are pulling by hand.
+  const planFor = async (node: FleetNode, target: { host: string; user?: string }): Promise<NodeModelPlan | undefined> => {
+    if (!modelRequest) return undefined;
+    const recommendation = modelRequest.kind === 'recommended' ? await fetchHubRecommendation(target, args.dataDir) : undefined;
+    return planNodeModels(node.name, modelRequest, recommendation);
+  };
+
+  const report: Record<string, unknown>[] = [];
   if (!args.execute) {
     console.log(colorize('Dry run — nothing will change. Add --execute to apply.', 'dim'));
     console.log(`  ${run.length} node(s): ${run.map((n) => n.name).join(', ')}`);
@@ -1081,7 +1131,15 @@ async function runUpdate(args: FleetArgs): Promise<void> {
           : '  would run: cihub pool update (floating tag — each node gets whatever the tag resolves to when its turn comes)',
       );
     }
-    for (const m of args.models) console.log(`  would pull: ${m}`);
+    if (modelRequest?.kind === 'recommended') console.log(colorize("  asking each node's Hub for its list — reads only, changes nothing", 'dim'));
+    for (const node of run) {
+      const plan = await planFor(node, { host: node.ip, user: node.user ?? args.user });
+      if (!plan) break;
+      console.log(`\n${node.name}`);
+      printModelPlan(plan, false);
+      report.push({ node: node.name, provenance: plan.provenance, reason: plan.reason, models: plan.models });
+    }
+    if (args.json && modelRequest) console.log(JSON.stringify(report, null, 2));
     return;
   }
 
@@ -1102,14 +1160,40 @@ async function runUpdate(args: FleetArgs): Promise<void> {
       if (!ok) failed += 1;
       afterImages.push({ node: node.name, probe: after });
     }
-    for (const model of args.models) {
-      const res = await sshCapture(target, `bash <<'EOF'\n${pullModelScript(model)}\nEOF`, 45 * 60_000);
+    const plan = await planFor(node, target);
+    if (!plan) continue;
+    printModelPlan(plan, true);
+
+    const results: ModelPullResult[] = [];
+    for (const model of plan.models) {
+      if (model.installed === true) {
+        // The Hub's live tag list said so seconds ago. Skipping saves a manifest round trip per
+        // model per node, which on a fleet of fourteen with five models each is not nothing.
+        results.push({ tag: model.tag, outcome: 'already-present' });
+        console.log(`  ${colorize('·', 'dim')} ${model.tag} — already present`);
+        continue;
+      }
+      const started = Date.now();
+      const res = await sshCapture(target, `bash <<'EOF'\n${pullModelScript(model.tag)}\nEOF`, 45 * 60_000);
       const ok = res.ok && res.out.includes('model-pull-complete');
-      if (!ok) failed += 1;
-      console.log(
-        `  ${ok ? colorize('✓', 'green') : colorize('✗', 'red')} ${model} — ${(res.err || res.out).split('\n').filter(Boolean).slice(-1)[0]?.slice(0, 160) ?? ''}`,
-      );
+      const detail = (res.err || res.out).split('\n').filter(Boolean).slice(-1)[0]?.slice(0, 160) ?? '';
+      const ms = Date.now() - started;
+      results.push({ tag: model.tag, outcome: ok ? 'pulled' : 'failed', detail, ms });
+      const took = colorize(` (${Math.round(ms / 1000)}s)`, 'dim');
+      console.log(`  ${ok ? colorize('✓', 'green') : colorize('✗', 'red')} ${model.tag}${took} — ${detail}`);
     }
+    const tally = summarisePulls(results);
+    failed += tally.failed;
+    const fetched = plan.models
+      .filter((m) => results.find((r) => r.tag === m.tag)?.outcome === 'pulled')
+      .reduce((sum, m) => sum + (m.diskMb ?? 0), 0);
+    console.log(
+      colorize(
+        `  ${tally.pulled} pulled · ${tally.present} already present · ${tally.failed} failed${fetched ? ` · ≈ ${formatMb(fetched)} fetched (catalog estimate)` : ''}`,
+        tally.failed ? 'yellow' : 'dim',
+      ),
+    );
+    report.push({ node: node.name, provenance: plan.provenance, reason: plan.reason, results });
   }
   if (afterImages.length) {
     console.log('');
@@ -1119,6 +1203,7 @@ async function runUpdate(args: FleetArgs): Promise<void> {
     }
   }
   for (const s of skipped) console.log(colorize(`  skipped ${s.node.name}: ${s.why}`, 'dim'));
+  if (args.json && modelRequest) console.log(JSON.stringify(report, null, 2));
   recordFleetFailures(failed);
 }
 
@@ -1517,6 +1602,52 @@ async function updateHubImageOnNode(target: SshTarget, pin: string | undefined):
     `  ${ok ? colorize('✓', 'green') : colorize('✗', 'red')} hub image — ${renderImageTransition(before, after)}${note}${ok ? '' : ` — ${last}`}`,
   );
   return { ok, after };
+}
+
+/**
+ * Ask one node's Hub what it recommends for the machine it runs on.
+ *
+ * Runs on the node over SSH so the device key is read and used there and never crosses the wire.
+ * Never throws: a node whose Hub cannot be asked becomes a named failure in its plan, and the
+ * fleet run continues.
+ */
+async function fetchHubRecommendation(target: { host: string; user?: string }, dataDir: string): Promise<HubRecommendation> {
+  const res = await sshCapture(target, `bash <<'EOF'\n${hubRecommendationScript(dataDir)}\nEOF`, 90_000);
+  // The script ends in `true`, so a non-zero exit with no status line is SSH itself failing — and
+  // that failure has a vocabulary already; use it rather than a generic "no output".
+  if (!res.ok && !res.out.includes('onboarding-http=')) {
+    return { kind: 'ssh-failed', detail: describeSshFailure(classifySshFailure(res), target.host) };
+  }
+  return parseHubRecommendationOutput(res.out);
+}
+
+function printModelPlan(plan: NodeModelPlan, execute: boolean): void {
+  const tone = plan.provenance === 'floor-only' ? 'yellow' : 'dim';
+  const source =
+    plan.provenance === 'hub-recommended'
+      ? "this node's Hub recommended"
+      : plan.provenance === 'explicit'
+        ? 'named on the command line'
+        : 'floor only';
+  console.log(`  ${colorize(`models: ${source}${plan.hardware ? ` · ${plan.hardware}` : ''}`, tone)}`);
+  if (plan.reason) {
+    console.log(colorize(`  ! ${plan.reason}`, 'yellow'));
+    if (plan.fix) console.log(colorize(`    ${plan.fix}`, 'dim'));
+  }
+  if (execute) return;
+  for (const model of plan.models) {
+    const flags = [
+      model.required ? 'platform requirement' : '',
+      model.installed === true ? 'present' : '',
+      model.diskMb ? formatMb(model.diskMb) : '',
+    ]
+      .filter(Boolean)
+      .join(', ');
+    const verb = model.installed === true ? colorize('would keep', 'dim') : colorize('would pull', 'green');
+    console.log(`  ${verb} ${model.tag}${flags ? colorize(` (${flags})`, 'dim') : ''}`);
+  }
+  const estimate = estimatedDownloadMb(plan);
+  if (estimate !== undefined) console.log(colorize(`  ≈ ${formatMb(estimate)} to download (catalog estimate)`, 'dim'));
 }
 
 export async function runFleetCommand(argv: readonly string[]): Promise<void> {
