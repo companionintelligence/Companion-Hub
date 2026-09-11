@@ -70,17 +70,20 @@ const APP_DATA_DIR_PLACEHOLDER = '/app-data/__app__';
 /**
  * Whether a host path cannot be canonicalized, and so cannot be cleared by the reject-list below.
  *
- * The reject-list is a string comparison, so a dot segment (`/etc/../etc`, `/./etc`) or an unknown
- * `${...}` expansion mounts a denied directory under a spelling the comparison never sees. Both are
- * rejected rather than resolved: a manifest has no legitimate need for either, and resolving them
- * would mean guessing at intent on the one input where guessing wrong is a host escape.
+ * The reject-list is a string comparison, so a dot segment (`/etc/../etc`, `/./etc`), an unknown
+ * `${...}` expansion or a leading `~` mounts a denied directory under a spelling the comparison never
+ * sees. Compose expands that `~` to the `$HOME` of whatever runs `docker compose`: `~/.ssh` is the
+ * host's `/root/.ssh` under a root `HOME`, and the operator's own `~/.ssh` on a Hub run from source.
+ * All three are rejected rather than resolved: a manifest has no legitimate need for any of them, and
+ * resolving them would mean guessing at intent on the one input where guessing wrong is a host escape.
  */
 function hasUnresolvableHostPathSyntax(hostPath: string): boolean {
   const substituted = hostPath.replace(APP_DATA_DIR_EXPANSION, APP_DATA_DIR_PLACEHOLDER);
 
-  // Any OTHER expansion: the string checked here is not the string
-  // docker-compose eventually resolves, so there is nothing to check.
-  if (substituted.includes('$')) {
+  // Any OTHER expansion, the `~` compose expands at the start of a path included: the string
+  // checked here is not the string docker-compose eventually resolves, so there is nothing to check.
+  // A `~` anywhere else is a literal character and is left to the checks below.
+  if (substituted.includes('$') || substituted.startsWith('~')) {
     return true;
   }
 

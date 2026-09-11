@@ -280,9 +280,18 @@ schemas.forEach(({ name, serviceSchema, dynamicComposeSchema, safeParse }) => {
           ['/var/lib/docker', "is docker's data-root, holding every container's volumes"],
           ['/var/lib', "contains docker's data-root"],
           ['/var/lib/containerd', "is where docker's containerd image store keeps every container's filesystem"],
+          // Compose expands a leading `~` to the `$HOME` of whatever runs it, so the path mounted is not the path checked.
+          ['~/.ssh', 'is .ssh in the home directory of whatever runs compose, which can be root'],
+          ['~', 'is that home directory itself'],
         ])('should reject %j because it %s', (hostPath) => {
           const result = safeParse(serviceSchema, withVolume({ hostPath, containerPath: '/mnt' }));
           expect(result.success).toBe(false);
+        });
+
+        it('should accept a ~ anywhere but the start, where compose leaves it a literal character', () => {
+          for (const hostPath of ['${APP_DATA_DIR}/~cache', '/srv/media~old']) {
+            expect(safeParse(serviceSchema, withVolume({ hostPath, containerPath: '/data' })).success).toBe(true);
+          }
         });
 
         it('should accept the benign timezone binds, as the install sink does', () => {
@@ -1314,6 +1323,16 @@ describe('collectServiceSecurityViolations (install-sink app sandbox)', () => {
 
     // A root matches whole path segments, so a sibling that merely starts with the same letters stays allowed.
     expect(collectServiceSecurityViolations({ volumes: [{ hostPath: '/runner' }, { hostPath: '/var/lib/docker-backup' }] })).toHaveLength(0);
+  });
+
+  it('refuses a leading ~, which compose expands to the home directory of whatever runs it', () => {
+    // `~/.ssh` is `/root/.ssh` under a root `HOME`: a denied root, under a spelling no denied root begins with.
+    for (const hostPath of ['~/.ssh', '~']) {
+      expect(collectServiceSecurityViolations({ volumes: [{ hostPath }] }).map((v) => v.message)).toContain('CUSTOM_APP_ERROR_HOST_PATH_DENIED');
+    }
+
+    // Compose expands `~` only at the start of a path; one anywhere else is a literal character.
+    expect(collectServiceSecurityViolations({ volumes: [{ hostPath: '/srv/media~old' }] })).toHaveLength(0);
   });
 
   it('never flags the benign /etc/localtime and /etc/timezone binds', () => {
