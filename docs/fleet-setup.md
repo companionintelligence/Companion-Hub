@@ -123,8 +123,39 @@ stored and dialed by its MagicDNS name.
 1. Connect Tailscale on each Hub — browser sign-in from **Settings → Network**, or `TAILSCALE_AUTHKEY`
    for unattended provisioning. See [`private-vpn.md`](private-vpn.md).
 2. Confirm each node reports connected: `cihub pool status` shows a `Tailscale` line under **This node**.
+3. Give each node its TLS certificate: `cihub fleet cert --user root --execute`, or `sudo tailscale
+   cert <this node's MagicDNS name>` by hand on the node. See [The TLS certificate](#the-tls-certificate) below.
 
 A Hub that has not joined a tailnet cannot pool, whatever else is configured.
+
+### The TLS certificate
+
+Every peer is dialled at `https://<fqdn>` — pairing callbacks, health polls, every proxied request —
+and the certificate behind that URL is a `tailscale cert` on the node. Nothing provisioned it until
+`cihub fleet cert` and the matching step in `cihub fleet install`; when measured on this fleet,
+fourteen of eighteen nodes had one because someone had run the command by hand, and four did not.
+Those four fail [`hub-pool-fleet-testing.md` §1.2](hub-pool-fleet-testing.md#12-each-node-can-reach-the-others-hub-over-tls)
+with a TLS error, and that gate is hard: nothing after it can pass.
+
+```bash
+cihub fleet cert --user root            # per node: present / absent / why it could not be measured
+cihub fleet cert --user root --execute  # sudo tailscale cert <fqdn> where needed, then re-read the store
+cihub fleet status --user root          # the TLS CERT column, on every re-probe from now on
+```
+
+Two things about measuring it:
+
+- **HTTPS is a tailnet setting first.** `tailscale status --json` reports `CertDomains`; an empty list
+  means HTTPS is not enabled in the admin console and `tailscale cert` refuses on every node. The tool
+  checks that before anything else and reports it as its own state — an older note here claimed this
+  tailnet had no HTTPS, which turned out to be false, but the check is still the right first step.
+- **"Unreadable" is not "absent".** tailscaled's store, `/var/lib/tailscale/certs`, is `drwx------
+  root`. An unprivileged `ls` prints nothing and exits 2, and the first probe of this fleet reported
+  zero certificates on eighteen nodes that had fourteen. Every finding therefore carries how it was
+  learned (`{ value, via }` in `--json`), `fleet status` renders anything not measured as `—` with the
+  reason, and the word `absent` is reserved for a store that was listed with privilege and lacked the
+  file. Pass `--user root`, or an account with passwordless sudo, or the column tells you it could not
+  look.
 
 ## Pooling the fleet
 
@@ -199,8 +230,9 @@ Two settings need coordinating across the fleet rather than set independently:
 ## Growing and shrinking
 
 - **Adding a node** repeats the whole one-node path: register, **claim** (`cihub claim --email <addr>`,
-  or `cihub fleet install --claim-email <addr>`, which runs it for you), join the tailnet, install
-  models, then pair. Nothing about an existing pool member carries over — including the operator.
+  or `cihub fleet install --claim-email <addr>`, which runs it for you), join the tailnet, **issue its
+  TLS certificate** (`cihub fleet cert --execute`, also run by `fleet install`), install models, then
+  pair. Nothing about an existing pool member carries over — including the operator.
 - **Taking a node out temporarily** is `cihub pool peer-disable <id>` on the other Hubs, or
   `cihub pool disable` on the node itself. Both keep the pairing and both tokens, so coming back is
   instant and needs no re-approval.
@@ -218,6 +250,8 @@ Two settings need coordinating across the fleet rather than set independently:
 | A correct device key gets `409 AUTH_ERROR_HUB_NOT_CLAIMED` | Registered but never claimed: the `user` table is empty, so there is no operator for the key to speak as. Run `cihub claim --email <addr>` on the node. Before this existed the same state answered `401 SYSTEM_ERROR_YOU_MUST_BE_LOGGED_IN`, which is what got twelve nodes diagnosed as key failures |
 | `cihub pool` returns "Hub not paired" | Pool routes need the Portal device key, not an `api-key create` key |
 | `cihub pool discover` lists nothing | Expected without a tailnet connection or an OAuth client. Use `cihub pool probe` and pair by address |
+| `curl https://<fqdn>/...` to a peer fails with a TLS error | No `tailscale cert` on that node. `cihub fleet cert --user root` says which nodes, and `--execute` issues it. If it reports `HTTPS not enabled on tailnet`, turn HTTPS on in the Tailscale admin console first |
+| `fleet status` shows `— unreadable without sudo` under TLS CERT | The store is root-only and the SSH account is not. That is a measurement that did not happen, not a missing certificate — re-run with `--user root` |
 | Peer stuck `pending` | The request was never approved. Approve it on the Hub that received it |
 | Peer flips to `unreachable` | Three failed health polls. It rejoins on the first successful one; no action needed |
 | Pooling shows `disabled_by_env` | `HUB_POOL_USER_DISABLED=true` in the env file wins over the in-product switch, and needs a restart |

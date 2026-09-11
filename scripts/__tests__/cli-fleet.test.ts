@@ -53,6 +53,17 @@ describe('parseFleetArgs', () => {
     expect(() => parseFleetArgs(['scan', '--concurrency=2.5'])).toThrow(/integer/);
   });
 
+  it('accepts cert as a subcommand, read-only until --execute', () => {
+    expect(parseFleetArgs(['cert']).subcommand).toBe('cert');
+    expect(parseFleetArgs(['cert']).execute).toBe(false);
+    expect(parseFleetArgs(['cert', '--execute', '--nodes=a', '--user=root'])).toMatchObject({
+      subcommand: 'cert',
+      execute: true,
+      nodes: ['a'],
+      user: 'root',
+    });
+  });
+
   it('rejects an unknown flag instead of ignoring it', () => {
     // Silently ignoring would let `--dry-run` (which this group does not have) read as accepted.
     expect(() => parseFleetArgs(['scan', '--dry-run'])).toThrow(/Unknown flag/);

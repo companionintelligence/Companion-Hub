@@ -727,11 +727,12 @@ cihub fleet backends [--backends a,b] [--execute]      # what each node can run 
 cihub fleet install [--user <acct>] [--execute]        # stand a Hub up on each node and register it
 cihub fleet update [--hub] [--models a,b] [--execute]  # refresh the Hub image, pull models
 cihub fleet apps [--apps a,b] [--endpoint pool|local]  # can each node serve an agent its credentials
+cihub fleet cert [--nodes a,b] [--execute]             # the tailscale TLS cert each node needs to pool
 ```
 
 **`scan`, `list` and `status` change nothing, anywhere; `apps` reads and installs nothing.**
-`backends`, `install` and `update` require `--execute`; without it they print the plan they would
-run, touch nothing, and exit `0`. A tool that can reach fourteen machines should make the destructive
+`backends`, `install`, `update` and `cert` require `--execute`; without it they print the plan they
+would run, touch nothing, and exit `0`. A tool that can reach fourteen machines should make the destructive
 path the one you have to ask for.
 
 **Authentication is the tailnet, not a key you manage.** There is no `-i`, no agent forwarding and
@@ -825,7 +826,17 @@ enumerates nothing — set `TAILSCALE_CLI` if yours is somewhere unusual.
 ### `cihub fleet list` and `cihub fleet status`
 
 `list` prints the roster as saved, plus the nodes a run would skip and why. `status` re-probes them:
-administrable, running a Hub, serving engines. Neither touches a node beyond the probe.
+administrable, running a Hub, serving engines, and — for every node it can SSH to — whether the
+tailscale TLS certificate pooling depends on is in the node's store. Neither touches a node beyond
+the probe.
+
+The **TLS CERT** column never goes blank. `ok, 62d left` is a certificate seen with privilege;
+`absent` is a store listed with privilege that lacks the file; everything else is `—` followed by
+what stopped the measurement: `unreadable without sudo`, `HTTPS not enabled on tailnet`, `no
+tailscale`, `ssh failed (acl-denied)`. The distinction is not cosmetic. tailscaled's store at
+`/var/lib/tailscale/certs` is `drwx------ root`, so an unprivileged `ls` prints nothing, and the
+first probe of this fleet reported zero certificates on eighteen nodes that had fourteen. Pass
+`--user root` (or an account with passwordless sudo) to measure it.
 
 ### `cihub fleet backends`
 
@@ -840,7 +851,8 @@ long enough to look absent to everything else.
 ### `cihub fleet install`
 
 Per node, in order: probe hardware → **load gate** → Linux and Docker check → install `cihub` →
-`hub up` and register → **claim** → install the status-file timer → optionally join a pool. Each step
+`hub up` and register → **claim** → install the status-file timer → **tailscale cert** → optionally
+join a pool. Each step
 re-checks the state it claims to have produced, because a step that trusts an exit code is how a fleet
 ends up believing it registered machines it never reached.
 
@@ -855,6 +867,13 @@ The **load gate** refuses any node above 1.5× cores of one-minute load. A fleet
 machine mid-inference at load 108–116 on 32 cores; its package transaction stalled rebuilding an
 initramfs it could never get CPU for, and the box needed physical recovery. Nothing in that pass
 checked load first.
+
+The **tailscale cert** step is the same thing [`cihub fleet cert`](#cihub-fleet-cert) does, run
+once per node: pooling dials every peer at `https://<its MagicDNS name>`, and until this step
+nothing in the install path provisioned the certificate behind that URL. It is best-effort in the
+same way as the timer — a node whose tailnet has HTTPS off, or that has no tailscale, is still an
+installed Hub and the line says why it cannot pool yet — but a node where `tailscale cert` ran and
+the store still lacks the file is a failed step.
 
 Pairing codes are covered under
 [Registering a fleet without a browser](#registering-a-fleet-without-a-browser): a stored
@@ -889,6 +908,34 @@ environment, so installing one grants Hub operator authority. That belongs behin
 entitlement checks, in the UI or API, not fanned out blind across a fleet — and the command prints
 the same warning when it finishes.
 
+### `cihub fleet cert`
+
+A Hub Pool peer is stored under its tailnet FQDN and reached at `https://<fqdn>`, so
+[`hub-pool-fleet-testing.md` §1.2](hub-pool-fleet-testing.md#12-each-node-can-reach-the-others-hub-over-tls)
+is a hard gate: a TLS error there means nothing downstream can pass. The certificate behind that URL
+is `tailscale cert <fqdn>` on the node, and no tooling had ever run it — when measured, fourteen of
+eighteen nodes had one because someone had done it by hand.
+
+Per node, in order: is there a `tailscale` CLI → is the daemon running → does `tailscale status
+--json` report any `CertDomains` (empty means HTTPS is off for the whole tailnet, and no per-node
+command helps) → which name is this node's (`Self.DNSName`, trailing dot removed) → can this session
+read the store (root, or `sudo -n`) → is `<fqdn>.crt` there, and what does `openssl x509 -enddate`
+say. Each answer carries how it was learned, in the `--json` output as `{ value, via }`, so
+"unreadable without sudo" can never be mistaken for "absent".
+
+The dry run prints, per node, the exact command it would run — `sudo tailscale cert <fqdn>` — or the
+reason it would not. With `--execute` it runs that command and then **re-reads the store**, because
+the exit code says what `tailscale cert` believed and the store says what the Hub will find. The
+issue is idempotent: tailscaled returns the cached certificate while it is valid and only goes to
+the CA when it needs to, so re-running across a fleet that already has certificates is a local call
+per node. The CLI is told `--cert-file /dev/null --key-file /dev/null` on purpose — without those it
+also drops `<fqdn>.crt` and `<fqdn>.key` into the current directory on every node, and with `-` it
+would print the private key into the SSH session's captured output.
+
+Non-Linux nodes, nodes without tailscale, and nodes where this session has neither root nor
+passwordless sudo are skipped with the reason on their line. The local node is never dialled; run
+`sudo tailscale cert` on it by hand.
+
 ---
 
 ## Maintenance
@@ -913,7 +960,7 @@ straight through a broken Docker bridge, and a fleet run that installed on 0 of 
 | Command | Exits `1` when |
 | --- | --- |
 | `doctor` | A **decided failure**: Docker or Compose unavailable, a compose file missing, or a network/bridge check that ran and failed |
-| `fleet backends` / `install` / `update` / `apps` | Any node failed. It is counted per node, so 13 of 14 is still a failure |
+| `fleet backends` / `install` / `update` / `apps` / `cert` | Any node failed. It is counted per node, so 13 of 14 is still a failure. For `cert`, a node that could not be measured at all, or where `tailscale cert` ran and the store still lacks the file; a node skipped with a reason is not a failure |
 | `models list` / `install` / `rm` | There is no Ollama container to talk to |
 | `app status <name>` | That named container is not there |
 | `app inspect <name>` | `docker inspect` could not read the container |

@@ -24,6 +24,7 @@
 import { classifyStatusTimerOutput, describeStatusTimerOutcome, installStatusTimerScript } from './status-timer.js';
 import { sshCapture, type SshTarget } from './fleet-ssh.js';
 import { isTooBusyForMaintenance, readHostFacts } from './fleet-hardware.js';
+import { tailscaleCertStep } from './fleet-tailscale-cert.js';
 
 export interface InstallStep {
   name: string;
@@ -296,6 +297,13 @@ export async function installNode(
     detail: describeStatusTimerOutcome(timerOutcome),
     ms: Date.now() - timerStarted,
   });
+
+  // TLS for pooling. A peer is stored under its tailnet FQDN and reached at https://<fqdn>, so a
+  // `tailscale cert` on this node is a prerequisite for every pool call — and nothing provisioned one
+  // until now. Measured 2026-09-10: 14 of 18 nodes had a certificate because someone ran it by hand;
+  // 4 did not. Best-effort like the timer: a node whose tailnet has HTTPS off is still an installed
+  // Hub, and the step says why it cannot pool yet rather than failing the install.
+  steps.push(await tailscaleCertStep(target));
 
   if (opts.joinPool) {
     const join = await step('join pool', target, joinPoolScript(opts.joinPool, opts.poolPin), 'pool-join-attempted', 3 * 60_000);
