@@ -300,7 +300,7 @@ describe('consoleGate', () => {
   });
 
   it('allows the same node once the roster records a console, and names it', () => {
-    const gate = consoleGate({ nodeName: 'core-10', menu: hidden, console: 'nanokvm 192.168.0.115', iHaveConsole: false });
+    const gate = consoleGate({ nodeName: 'core-10', menu: hidden, oob: 'nanokvm 192.168.0.115', iHaveConsole: false });
     expect(gate.allowed).toBe(true);
     if (gate.allowed) expect(gate.note).toContain('nanokvm 192.168.0.115');
   });
@@ -479,10 +479,10 @@ describe('cihub fleet boot-params argv', () => {
 describe('roster console field', () => {
   it('keeps a console string and drops a blank one', () => {
     const { nodes } = parseFleetRoster([
-      { name: 'core-10', ip: '100.64.0.10', console: ' nanokvm 192.168.0.115 ' },
-      { name: 'razer', ip: '100.64.0.11', console: '   ' },
+      { name: 'core-10', ip: '100.64.0.10', oob: ' nanokvm 192.168.0.115 ' },
+      { name: 'razer', ip: '100.64.0.11', oob: '   ' },
       { name: 'core-1', ip: '100.64.0.1' },
     ]);
-    expect(nodes.map((n) => n.console)).toEqual(['nanokvm 192.168.0.115', undefined, undefined]);
+    expect(nodes.map((n) => n.oob)).toEqual(['nanokvm 192.168.0.115', undefined, undefined]);
   });
 });

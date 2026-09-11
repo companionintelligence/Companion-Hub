@@ -217,7 +217,7 @@ directions: staged-but-not-live is a pending reboot, live-but-not-staged will si
 parameters on the next one. **Two nodes are refused by default.** A hidden zero-timeout GRUB menu
 (`GRUB_TIMEOUT=0`, `GRUB_TIMEOUT_STYLE=hidden`) with no out-of-band console means a boot that fails on
 the new parameters is recovered at the machine and nowhere else; core-10 and razer are in that state.
-Record the console on the node's `fleet.json` entry (`"console": "nanokvm 192.168.0.115"`) or pass
+Record the console on the node's `fleet.json` entry (`"oob": "nanokvm 192.168.0.115"`) or pass
 `--i-have-console` for a node you are physically at. The sizing formula and the refusal on any
 `GRUB_CMDLINE_LINUX_DEFAULT` line that is not plainly double-quoted are CI-OS's own, so a node it
 provisions and a node this catches up end on a byte-identical line. Full detail in

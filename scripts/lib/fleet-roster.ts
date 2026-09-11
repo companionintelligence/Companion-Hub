@@ -47,11 +47,13 @@ export interface FleetNode {
   /** Free text an operator wrote. Shown in listings; never parsed. */
   note?: string;
   /**
-   * Out-of-band console for this machine — a NanoKVM/PiKVM address, an IPMI host, `physical` — when
-   * one exists. Never dialled by anything here; its PRESENCE is what `fleet boot-params` reads before
-   * staging a change a node can only pick up on a reboot nobody may be able to watch.
+   * Out-of-band console for this machine — an IPMI address, a NanoKVM, a PiKVM, a serial server.
+   * Free text; its *presence* is what matters. Preflight treats a node with `GRUB_TIMEOUT=0`, no
+   * IPMI and no `oob` as one where a failed boot means a trip, and says so before anything that
+   * touches the kernel. The host cannot see an external KVM plugged into it, so only the roster can
+   * carry this fact.
    */
-  console?: string;
+  oob?: string;
 }
 
 export interface FleetRoster {
@@ -122,7 +124,7 @@ export function parseFleetRoster(raw: unknown): { nodes: FleetNode[]; dropped: s
       local: r.local === true ? true : undefined,
       skip: isFleetNodeSkip(r.skip) ? r.skip : undefined,
       note: typeof r.note === 'string' ? r.note : undefined,
-      console: typeof r.console === 'string' && r.console.trim() ? r.console.trim() : undefined,
+      oob: typeof r.oob === 'string' && r.oob.trim() ? r.oob.trim() : undefined,
     });
   }
   return { nodes, dropped };

@@ -295,13 +295,13 @@ export type ConsoleGate = { allowed: true; note?: string } | { allowed: false; w
  * they are at the machine or have a KVM the roster does not know about; recording the console on the
  * roster entry is the durable version of the same assertion.
  */
-export function consoleGate(input: { nodeName: string; menu?: GrubMenuPolicy; console?: string; iHaveConsole: boolean }): ConsoleGate {
+export function consoleGate(input: { nodeName: string; menu?: GrubMenuPolicy; oob?: string; iHaveConsole: boolean }): ConsoleGate {
   if (!input.menu?.hiddenZeroTimeout) return { allowed: true };
-  if (input.console) return { allowed: true, note: `hidden zero-timeout GRUB menu, but the roster records a console: ${input.console}` };
+  if (input.oob) return { allowed: true, note: `hidden zero-timeout GRUB menu, but the roster records a console: ${input.oob}` };
   if (input.iHaveConsole) return { allowed: true, note: 'hidden zero-timeout GRUB menu and no roster console; proceeding on --i-have-console' };
   return {
     allowed: false,
-    why: `${input.nodeName} has GRUB_TIMEOUT=0 with GRUB_TIMEOUT_STYLE=hidden and no out-of-band console in the roster, so a boot that fails on the new parameters can only be recovered at the machine — re-run with --i-have-console if you are there, or set "console" on its fleet.json entry.`,
+    why: `${input.nodeName} has GRUB_TIMEOUT=0 with GRUB_TIMEOUT_STYLE=hidden and no out-of-band console in the roster, so a boot that fails on the new parameters can only be recovered at the machine — re-run with --i-have-console if you are there, or set "oob" on its fleet.json entry.`,
   };
 }
 
@@ -330,7 +330,7 @@ export function assessNode(input: {
   grubText: string | null;
   overriddenBy?: readonly string[];
   target: GttTarget;
-  console?: string;
+  oob?: string;
   iHaveConsole: boolean;
 }): NodeBootParamAssessment {
   const live = classifyParams(input.cmdline, input.target);
@@ -347,7 +347,7 @@ export function assessNode(input: {
     else staged = { kind: 'unreadable', why: found.why };
   }
 
-  const gate = consoleGate({ nodeName: input.node, menu, console: input.console, iHaveConsole: input.iHaveConsole });
+  const gate = consoleGate({ nodeName: input.node, menu, oob: input.oob, iHaveConsole: input.iHaveConsole });
   const stagedFull = staged.kind === 'parsed' && staged.presence.state === 'full';
   const willBeStaged = stagedFull || (plan.kind === 'edit' && gate.allowed);
   return { node: input.node, target: input.target, live, staged, menu, plan, gate, rebootRequired: live.state !== 'full' && willBeStaged };

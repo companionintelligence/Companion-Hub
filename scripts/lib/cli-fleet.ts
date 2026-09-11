@@ -813,7 +813,7 @@ async function runBootParams(args: FleetArgs): Promise<void> {
       grubText: probe.grubText,
       overriddenBy: probe.overriddenBy,
       target: decision.target,
-      console: node.console,
+      oob: node.oob,
       iHaveConsole: args.iHaveConsole,
     });
     printBootParamAssessment(assessment, facts.totalRamMib ?? 0);
@@ -827,7 +827,7 @@ async function runBootParams(args: FleetArgs): Promise<void> {
       menu: assessment.menu,
       plan: assessment.plan.kind === 'edit' ? { kind: 'edit', before: assessment.plan.before, after: assessment.plan.after } : assessment.plan,
       gate: assessment.gate,
-      console: node.console,
+      oob: node.oob,
     };
 
     // Set only when this run actually wrote the file; decides whether the node joins the reboot list.

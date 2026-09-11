@@ -239,7 +239,7 @@ describe('fleet boot-params --execute', () => {
   });
 
   it('writes on core-10 when the roster records its console, naming it', async () => {
-    mocks.nodes = [{ name: 'core-10', ip: '10.0.0.10', console: 'nanokvm 192.168.0.115' }];
+    mocks.nodes = [{ name: 'core-10', ip: '10.0.0.10', oob: 'nanokvm 192.168.0.115' }];
     await runFleetCommand(['boot-params', '--execute']);
     expect(sudoHosts()).toEqual(['10.0.0.10']);
     expect(printed()).toContain('nanokvm 192.168.0.115');
