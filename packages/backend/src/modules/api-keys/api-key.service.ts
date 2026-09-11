@@ -40,6 +40,11 @@ export interface ApiKeyContext {
   id: number;
   name: string;
   capability: ApiKeyCapability;
+  /**
+   * The app a MANAGED key was provisioned to, else `null`. Lets the lifecycle
+   * service confine a managed app key to its own app (CI-Hub#1397).
+   */
+  ownerAppUrn: string | null;
 }
 
 function toInfo(row: ApiKeyRow): ApiKeyInfo {
@@ -210,7 +215,12 @@ export class ApiKeyService {
     }
     // Fire-and-forget: never let a last-used write fail or slow an auth check.
     void this.repo.touchLastUsed(row.id, new Date().toISOString()).catch(() => undefined);
-    return { id: row.id, name: row.name, capability: coerceApiKeyCapability(row.capability) };
+    return {
+      id: row.id,
+      name: row.name,
+      capability: coerceApiKeyCapability(row.capability),
+      ownerAppUrn: row.managed ? row.ownerAppUrn : null,
+    };
   }
 
   /** True if the raw Bearer token matches a stored, non-expired key carrying the required scope.

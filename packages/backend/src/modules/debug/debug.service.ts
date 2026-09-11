@@ -50,7 +50,7 @@ export class DebugService {
     for (let i = 1; i <= 12; i++) {
       const appInfo = await createAppInStore('seed', { id: `app-${i}`, name: `App ${i}`, description: `Description for App ${i}` });
 
-      await this.appLifecycleService.installApp({ appUrn: appInfo.urn, form: {}, skipRun: true });
+      await this.appLifecycleService.installApp({ appUrn: appInfo.urn, form: {}, skipRun: true, actor: { kind: 'system', reason: 'debug-seed' } });
     }
   }
 
@@ -67,7 +67,7 @@ export class DebugService {
   }
 
   public async startAllApps() {
-    await this.appLifecycleService.startAllApps();
+    await this.appLifecycleService.startAllApps({ kind: 'system', reason: 'debug-start-all' });
   }
 
   public async backupAllApps() {

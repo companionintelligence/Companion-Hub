@@ -71,10 +71,34 @@ describe('portal-session-hint', () => {
     expect(readRememberedPortalAccountEmail()).toBe('hello@lifescope.io');
   });
 
-  it('falls back to a direct Portal session probe when the hub hint has no email', async () => {
+  it("probes Portal directly only when the page is served from Portal's own origin", async () => {
     vi.mocked(portalSessionHint).mockResolvedValue({
       data: {
         email: '',
+        portalBaseUrl: window.location.origin,
+        source: 'hub_operator',
+      } as Awaited<ReturnType<typeof portalSessionHint>>['data'],
+      error: undefined,
+      request: new Request('http://localhost/api/portal/session-hint'),
+      response: { ok: true } as Response,
+    });
+
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(new Response(JSON.stringify({ user: { email: 'portal@example.com' } }), { status: 200 }));
+
+    await expect(resolvePortalSessionHint()).resolves.toEqual({
+      email: 'portal@example.com',
+      portalBaseUrl: window.location.origin,
+      source: 'portal_session',
+    });
+    expect(fetchSpy).toHaveBeenCalledWith(`${window.location.origin}/api/auth/get-session`, expect.objectContaining({ credentials: 'include' }));
+  });
+
+  it('never sends the cross-origin Portal probe the browser would refuse under CORS', async () => {
+    vi.mocked(portalSessionHint).mockResolvedValue({
+      data: {
+        email: 'operator@example.com',
         portalBaseUrl: 'https://ci-portal.localhost',
         source: 'hub_operator',
       } as Awaited<ReturnType<typeof portalSessionHint>>['data'],
@@ -83,13 +107,15 @@ describe('portal-session-hint', () => {
       response: { ok: true } as Response,
     });
 
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({ user: { email: 'portal@example.com' } }), { status: 200 }));
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+    fetchSpy.mockClear();
 
     await expect(resolvePortalSessionHint()).resolves.toEqual({
-      email: 'portal@example.com',
+      email: 'operator@example.com',
       portalBaseUrl: 'https://ci-portal.localhost',
-      source: 'portal_session',
+      source: 'hub_operator',
     });
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 
   it('uses a remembered email when live probes fail', async () => {
@@ -145,6 +171,14 @@ describe('portal-session-hint', () => {
   it('parses direct portal session responses', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({ user: { email: '  portal@example.com ' } }), { status: 200 }));
 
-    await expect(fetchPortalSessionEmailDirect('https://ci-portal.localhost/')).resolves.toBe('portal@example.com');
+    await expect(fetchPortalSessionEmailDirect(`${window.location.origin}/`)).resolves.toBe('portal@example.com');
+  });
+
+  it('answers null for a cross-origin Portal without touching fetch', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+    fetchSpy.mockClear();
+
+    await expect(fetchPortalSessionEmailDirect('https://ci-portal.localhost/')).resolves.toBeNull();
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 });

@@ -1,9 +1,14 @@
+import { HttpStatus } from '@nestjs/common';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mock, type MockProxy } from 'vitest-mock-extended';
+import { TranslatableError } from '@/common/error/translatable-error';
+import type { LifecycleActor, LifecycleActorFor } from '@/core/portal/lifecycle-actor';
+import { AppLifecycleService } from '@/modules/app-lifecycle/app-lifecycle.service';
 import { McpAdminService } from '../mcp-admin.service';
 import { McpService } from '../mcp.service';
 import { McpSessionRegistry } from '../mcp-session.registry';
 import { McpToolRegistry } from '../mcp-tool-registry.service';
+import { AppLifecycleTools } from '../tools/app-lifecycle.tools';
 import { ApiKeyService } from '@/modules/api-keys/api-key.service';
 import { LoggerService } from '@/core/logger/logger.service';
 
@@ -14,6 +19,10 @@ const readTool = (name: string, result: unknown = {}) => ({
   inputSchema: {},
   handler: async () => result,
 });
+
+const OPERATOR: LifecycleActor = { kind: 'operator', userId: 7 };
+/** The signed-in person, as `McpAdminController` names them. */
+const asOperator: LifecycleActorFor = () => OPERATOR;
 
 describe('McpAdminService', () => {
   let registry: McpToolRegistry;
@@ -90,12 +99,12 @@ describe('McpAdminService', () => {
   describe('callTool', () => {
     it('returns ok + result for a successful call', async () => {
       registry.register({ ...readTool('echo'), handler: async (p: Record<string, unknown>) => ({ got: p.x }) });
-      const res = await service.callTool('echo', { x: 1 }, false);
+      const res = await service.callTool('echo', { x: 1 }, false, asOperator);
       expect(res).toEqual({ ok: true, result: { got: 1 } });
     });
 
     it('returns ok:false with the message for an unknown tool', async () => {
-      const res = await service.callTool('missing', {}, false);
+      const res = await service.callTool('missing', {}, false, asOperator);
       expect(res.ok).toBe(false);
       expect(res).toMatchObject({ ok: false, error: expect.stringContaining('Unknown tool') });
     });
@@ -105,10 +114,10 @@ describe('McpAdminService', () => {
       // confirmation they just gave — not a stored capability, which this caller does not have.
       registry.register({ ...readTool('wipe', { wiped: true }), access: 'write' as const, destructive: true });
 
-      const blocked = await service.callTool('wipe', {}, false);
+      const blocked = await service.callTool('wipe', {}, false, asOperator);
       expect(blocked.ok).toBe(false);
 
-      const allowed = await service.callTool('wipe', {}, true);
+      const allowed = await service.callTool('wipe', {}, true, asOperator);
       expect(allowed).toEqual({ ok: true, result: { wiped: true } });
     });
 
@@ -117,7 +126,44 @@ describe('McpAdminService', () => {
       // from the Hub's own UI would be confirmation fatigue with nothing behind it.
       registry.register({ ...readTool('restart', { restarted: true }), access: 'write' as const });
 
-      expect(await service.callTool('restart', {}, false)).toEqual({ ok: true, result: { restarted: true } });
+      expect(await service.callTool('restart', {}, false, asOperator)).toEqual({ ok: true, result: { restarted: true } });
+    });
+  });
+
+  /*
+   * This route is session-authed, so it has no key context — and the lifecycle tools used to read that
+   * as an unmanaged key, which the lifecycle service admits with no grant check. A member the install
+   * route refuses could install or reconfigure any app from here.
+   */
+  describe('callTool — the lifecycle tools act as the signed-in person (CI-Hub#1397)', () => {
+    let lifecycle: MockProxy<AppLifecycleService>;
+
+    beforeEach(() => {
+      lifecycle = mock<AppLifecycleService>();
+      new AppLifecycleTools(lifecycle, registry).onModuleInit();
+    });
+
+    it('hands the lifecycle service the person, named for the verb the tool runs', async () => {
+      lifecycle.updateAppConfig.mockResolvedValue({ requestId: 'r' });
+      const actorFor = vi.fn<LifecycleActorFor>(() => OPERATOR);
+
+      const res = await service.callTool('hub_update_app_config', { appUrn: 'immich:ci-marketplace', form: { port: 9090 } }, false, actorFor);
+
+      expect(res).toEqual({ ok: true, result: { requestId: 'r' } });
+      expect(actorFor).toHaveBeenCalledWith('configure');
+      expect(lifecycle.updateAppConfig).toHaveBeenCalledWith(expect.objectContaining({ actor: OPERATOR }));
+    });
+
+    it('shows a refusal inline, without reaching the service', async () => {
+      const refuse: LifecycleActorFor = (action) => {
+        throw new TranslatableError('APP_ACTION_GRANT_DENIED', { action }, HttpStatus.FORBIDDEN);
+      };
+
+      const res = await service.callTool('hub_install_app', { appUrn: 'immich:ci-marketplace' }, false, refuse);
+
+      expect(res).toEqual({ ok: false, error: 'APP_ACTION_GRANT_DENIED' });
+      expect(lifecycle.validateAppConfig).not.toHaveBeenCalled();
+      expect(lifecycle.installApp).not.toHaveBeenCalled();
     });
   });
 });

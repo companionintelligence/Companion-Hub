@@ -15,7 +15,7 @@
     "android:init": "tauri android init",
     "android:dev": "tauri android dev",
     "android:build": "tauri android build",
-    "icons": "tauri icon"
+    "icons": "tauri icon ../frontend/node_modules/@companionintelligence/assets/logos/app-icon-source.png"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.4.0"

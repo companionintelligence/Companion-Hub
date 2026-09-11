@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { Injectable } from '@nestjs/common';
 import { APP_DATA_DIR } from '@/common/constants';
+import { TranslatableError } from '@/common/error/translatable-error';
 import { createAppUrn } from '@/common/helpers/app-helpers';
 import { ConfigurationService } from '@/core/config/configuration.service';
 import { LoggerService } from '@/core/logger/logger.service';
@@ -14,6 +15,7 @@ import { RegistrationService } from '@/modules/registration/registration.service
 import { UserRepository } from '@/modules/user/user.repository';
 import { isOperational } from '@/modules/registration/registration-state';
 import type { AppUrn } from '@ci-hub/common/types';
+import type { LifecycleActor } from '@/core/portal/lifecycle-actor';
 import { AppLifecycleService } from './app-lifecycle.service';
 import {
   buildRehydrationPlan,
@@ -35,10 +37,23 @@ export interface RehydrationExecuteResult {
   success: boolean;
   message: string;
   alreadyCompleted?: boolean;
+  /**
+   * An install was refused by the org-grant gate, so the run was not recorded as done and the next
+   * rehydrate picks those apps up without `force`. See `executeRehydrate`.
+   */
+  incomplete?: boolean;
   plan: RehydrationPlan;
   queued: string[];
   started: string[];
   skipped: Array<{ name: string; reason: string }>;
+}
+
+/**
+ * The org-grant gate's refusal. Unlike an install that fails, it is an answer about who asked — or,
+ * with WhoIs unreachable, no answer at all — so another person, or a later try, may get further.
+ */
+function isGrantRefusal(error: unknown): boolean {
+  return error instanceof TranslatableError && error.message === 'APP_ACTION_GRANT_DENIED';
 }
 
 @Injectable()
@@ -67,7 +82,12 @@ export class AppRehydrationService {
     return this.buildPlanFromPortalApps(portalApps);
   }
 
-  async executeRehydrate(options?: { force?: boolean; source?: 'restore'; operatorUserId?: number }): Promise<RehydrationExecuteResult> {
+  async executeRehydrate(options: {
+    force?: boolean;
+    source?: 'restore';
+    operatorUserId?: number;
+    actor: LifecycleActor;
+  }): Promise<RehydrationExecuteResult> {
     await this.assertCanRehydrate();
 
     const existing = await this.readRehydrationState();
@@ -90,18 +110,33 @@ export class AppRehydrationService {
     const queued: string[] = [];
     const started: string[] = [];
     const skipped: Array<{ name: string; reason: string }> = [];
+    const refused: string[] = [];
 
     for (const item of plan.items) {
-      await this.executePlanItem(item, queued, started, skipped);
+      await this.executePlanItem(item, queued, started, skipped, refused, options.actor);
     }
 
-    const state: RehydrationStateFile = {
-      completedAt: new Date().toISOString(),
-      queuedUrns: queued,
-      startedUrns: started,
-      skipped,
-    };
-    await this.writeRehydrationState(state);
+    /*
+     * ⚠ A REFUSAL IS NOT A FINISHED RUN. The requester's grant decided those installs (CI-Hub#1397),
+     * so another person — or the same one once WhoIs answers again — may be allowed. Recording the run
+     * as done made the refusal final: nothing retried it without `force`, and the restore page moved
+     * straight on without showing it.
+     *
+     * The restore intent below is still cleared. While it stands with no finished run, Cloudflare sync
+     * stands down for the whole Hub (`ExposureSyncService.triggerCloudflareSync`), and a requester who
+     * may not install must not be able to hold that open.
+     */
+    const incomplete = refused.length > 0;
+
+    if (!incomplete) {
+      const state: RehydrationStateFile = {
+        completedAt: new Date().toISOString(),
+        queuedUrns: queued,
+        startedUrns: started,
+        skipped,
+      };
+      await this.writeRehydrationState(state);
+    }
 
     const restoreFlow = options?.source === 'restore' || (await hasRestoreIntent());
     if (restoreFlow && options?.operatorUserId) {
@@ -111,10 +146,8 @@ export class AppRehydrationService {
 
     return {
       success: true,
-      message:
-        queued.length + started.length > 0
-          ? `Queued ${queued.length} install(s) and ${started.length} start(s) from Portal`
-          : 'No apps required rehydration',
+      message: this.summarize(queued, started, refused),
+      incomplete,
       plan,
       queued,
       started,
@@ -124,6 +157,16 @@ export class AppRehydrationService {
 
   async hasRestoreIntent(): Promise<boolean> {
     return hasRestoreIntent();
+  }
+
+  private summarize(queued: string[], started: string[], refused: string[]): string {
+    const acted = `Queued ${queued.length} install(s) and ${started.length} start(s) from Portal`;
+
+    if (refused.length > 0) {
+      return `${acted}; ${refused.length} install(s) were refused for this account`;
+    }
+
+    return queued.length + started.length > 0 ? acted : 'No apps required rehydration';
   }
 
   private async assertCanRehydrate(): Promise<void> {
@@ -216,10 +259,12 @@ export class AppRehydrationService {
     queued: string[],
     started: string[],
     skipped: Array<{ name: string; reason: string }>,
+    refused: string[],
+    actor: LifecycleActor,
   ): Promise<void> {
     const label = item.portalApp.name;
 
-    if (item.action === 'skip_unresolved' || item.action === 'skip_running') {
+    if (item.action === 'skip_unresolved' || item.action === 'skip_running' || item.action === 'skip_busy') {
       skipped.push({ name: label, reason: item.reason ?? item.action });
       return;
     }
@@ -236,12 +281,16 @@ export class AppRehydrationService {
         return;
       }
 
-      await this.appLifecycleService.installApp({ appUrn: item.appUrn, form: item.form });
+      // As the person who asked for the rehydrate: an app they may not install is skipped, not installed.
+      await this.appLifecycleService.installApp({ appUrn: item.appUrn, form: item.form, actor });
       queued.push(item.appUrn);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.logger.error(`Rehydration failed for ${item.appUrn}: ${message}`);
       skipped.push({ name: label, reason: message });
+      if (isGrantRefusal(error)) {
+        refused.push(item.appUrn);
+      }
     }
   }
 

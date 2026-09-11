@@ -1,5 +1,6 @@
 import { vol } from 'memfs';
 import { afterEach, describe, expect, it } from 'vitest';
+import type { AppUrn } from '@ci-hub/common/types';
 import {
   buildRehydrationPlan,
   buildRestoreInstallForm,
@@ -161,5 +162,35 @@ describe('app-rehydration', () => {
     expect(byName.running).toBe('skip_running');
     expect(byName.missing).toBe('skip_unresolved');
     expect(plan.items.find((item) => item.portalApp.name === 'fresh')?.hasExistingData).toBe(true);
+  });
+
+  it('buildRehydrationPlan leaves an app with an operation under way to that operation', () => {
+    // A retry of an unfinished restore plans again while the last run's installs are still going, and
+    // re-installing one of them hands it to `startApp` mid-install.
+    const inFlight = ['installing', 'starting', 'stopping', 'restarting', 'updating', 'uninstalling', 'resetting', 'backing_up', 'restoring'];
+    const statuses = [...inFlight, 'install_failed', 'missing'];
+    const nameOf = (status: string) => status.replace('_', '');
+
+    const plan = buildRehydrationPlan({
+      portalApps: statuses.map((status, i) => ({
+        id: String(i),
+        name: nameOf(status),
+        slug: `${nameOf(status)}-official`,
+        port: 8080 + i,
+        publicDomain: null,
+      })),
+      storeSlugs: ['official'],
+      localEntries: [],
+      installedComposeUrns: new Set(),
+      dbAppsByUrn: new Map(statuses.map((status) => [`${nameOf(status)}:official` as AppUrn, { status }])),
+    });
+
+    const byName = Object.fromEntries(plan.items.map((item) => [item.portalApp.name, item.action]));
+    for (const status of inFlight) {
+      expect(byName[nameOf(status)], status).toBe('skip_busy');
+    }
+    // Not under way: a failed install and missing files are what a restore is for.
+    expect(byName.installfailed).toBe('install');
+    expect(byName.missing).toBe('install');
   });
 });
