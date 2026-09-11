@@ -22,6 +22,7 @@
  */
 
 import type { HostFacts } from './fleet-hardware.js';
+import { confirmOllamaVersion, resolveOllamaVersion } from './fleet-ollama-version.js';
 
 export const INSTALLABLE_BACKENDS = ['ollama', 'vllm', 'lucebox', 'dspark', 'mtplx', 'lemonade'] as const;
 export type InstallableBackend = (typeof INSTALLABLE_BACKENDS)[number];
@@ -38,6 +39,17 @@ export interface BackendPlan {
   port?: number;
   /** True when the script needs root. Surfaced so a dry run can say so before anything is attempted. */
   needsSudo?: boolean;
+  /**
+   * The exact version the script installs, when the backend has one. Set for ollama; the install is
+   * not reported done until `/api/version` on the node answers with this number.
+   */
+  pinnedVersion?: string;
+}
+
+/** Per-run choices that change what a plan installs, as opposed to whether it can. */
+export interface PlanOptions {
+  /** Overrides {@link OLLAMA_PINNED_VERSION} for this run. Validated by `resolveOllamaVersion`. */
+  ollamaVersion?: string;
 }
 
 /**
@@ -73,8 +85,12 @@ const PORTS: Record<InstallableBackend, number> = {
  *   fails to allocate 21 GB, so every model above the ~2 GB VRAM carve-out fails to load with an
  *   allocation error. Six nodes on this fleet returned HTTP 500 on every real model until this was
  *   forced. Measured after: 0 → 53.4 tok/s on the exact model that had been failing.
+ *
+ * `version` is passed to the installer as `OLLAMA_VERSION`, which it honours. Without it every node
+ * got whatever ollama.com served that day — measured 2026-09-10 as 0.12.11 → 0.33.3 across eighteen
+ * nodes — and nothing ever reported the spread. See `fleet-ollama-version.ts`.
  */
-function ollamaLinuxScript(facts: HostFacts): string {
+function ollamaLinuxScript(facts: HostFacts, version: string): string {
   const gfx = facts.gpus.find((g) => g.vendor === 'amd')?.gfx;
   const forceVulkan = gfx === 'gfx1151';
 
@@ -100,7 +116,8 @@ function ollamaLinuxScript(facts: HostFacts): string {
     'installer="$(mktemp)"',
     'trap \'rm -f "$installer"\' EXIT',
     'curl -fsSL --connect-timeout 30 --max-time 300 https://ollama.com/install.sh -o "$installer"',
-    'sh "$installer"',
+    // Pinned. `version` has already passed resolveOllamaVersion, so it is a bare x.y.z and safe to quote.
+    `OLLAMA_VERSION='${version}' sh "$installer"`,
     'if command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files ollama.service >/dev/null 2>&1; then',
     '  install -d -m 0755 /etc/systemd/system/ollama.service.d',
     '  cat >/etc/systemd/system/ollama.service.d/companionhub.conf <<EOF',
@@ -194,7 +211,7 @@ function luceboxScript(facts: HostFacts, dataDir: string, port: number): string 
  * Pure: takes facts, returns a plan. Every gate is a claim quoted from the Rust original, so the
  * headless path and the desktop path agree about what a machine can run.
  */
-export function planBackend(backend: InstallableBackend, facts: HostFacts, dataDir: string): BackendPlan {
+export function planBackend(backend: InstallableBackend, facts: HostFacts, dataDir: string, opts: PlanOptions = {}): BackendPlan {
   const port = PORTS[backend];
 
   // Adoption first, where the evidence actually supports it. Cheap, and makes re-running safe.
@@ -220,14 +237,18 @@ export function planBackend(backend: InstallableBackend, facts: HostFacts, dataD
         // up headlessly by this path, and pretending otherwise would install something that never serves.
         return { backend, action: 'skip', why: `headless install is Linux-only; on ${facts.os} the daemon comes from the GUI app`, port };
       }
-      return {
-        backend,
-        action: 'install',
-        why: 'not listening — installing from ollama.com/install.sh',
-        script: ollamaLinuxScript(facts),
-        port,
-        needsSudo: true,
-      };
+      {
+        const version = resolveOllamaVersion(opts.ollamaVersion);
+        return {
+          backend,
+          action: 'install',
+          why: `not listening — installing ${version} from ollama.com/install.sh (${opts.ollamaVersion ? '--ollama-version' : 'pinned'})`,
+          script: ollamaLinuxScript(facts, version),
+          port,
+          needsSudo: true,
+          pinnedVersion: version,
+        };
+      }
 
     case 'vllm': {
       if (facts.os === 'windows') return { backend, action: 'skip', why: 'no native Windows path; use the WSL2/Linux GPU path', port };
@@ -301,9 +322,9 @@ export function planBackend(backend: InstallableBackend, facts: HostFacts, dataD
 }
 
 /** Plan every backend for one machine, in a stable order. */
-export function planAllBackends(facts: HostFacts, dataDir: string, only?: readonly InstallableBackend[]): BackendPlan[] {
+export function planAllBackends(facts: HostFacts, dataDir: string, only?: readonly InstallableBackend[], opts: PlanOptions = {}): BackendPlan[] {
   const wanted = only?.length ? only : INSTALLABLE_BACKENDS;
-  return wanted.map((backend) => planBackend(backend, facts, dataDir));
+  return wanted.map((backend) => planBackend(backend, facts, dataDir, opts));
 }
 
 // ─── Execution ───────────────────────────────────────────────────────────────
@@ -351,6 +372,16 @@ export async function executeBackendPlan(target: SshTarget, plan: BackendPlan, t
   const tail = (text: string) => text.split('\n').filter(Boolean).slice(-4).join(' | ').slice(0, 400);
 
   if (result.ok && result.out.includes(`${plan.backend}-install-complete`)) {
+    // The marker says the installer finished; only the daemon can say which version is serving.
+    // Asked at the bind the node resolves for itself, because several nodes here bind to their
+    // tailnet address and answer nothing on loopback. A mismatch or an unanswered probe is a
+    // failure — success is never printed for a version nobody read.
+    if (plan.backend === 'ollama' && plan.pinnedVersion) {
+      const confirmed = await confirmOllamaVersion(target, plan.pinnedVersion);
+      const total = Date.now() - started;
+      if (!confirmed.ok) return { backend: plan.backend, outcome: 'failed', why: confirmed.why, detail: tail(result.out), ms: total };
+      return { backend: plan.backend, outcome: 'installed', why: `${plan.why}; ${confirmed.why}`, detail: tail(result.out), ms: total };
+    }
     return { backend: plan.backend, outcome: 'installed', why: plan.why, detail: tail(result.out), ms };
   }
   // `sudo -n` refusing is the single most likely failure on a fresh node, and its message is

@@ -22,6 +22,14 @@ import { readHostFacts, isTooBusyForMaintenance } from './fleet-hardware.js';
 import { executeBackendPlan, planAllBackends, INSTALLABLE_BACKENDS, type InstallableBackend } from './fleet-backends.js';
 import { installNode, pullModelScript, updateHubScript } from './fleet-install.js';
 import { checkAppOnNode, poolRoutingScript, SUPPORTED_APP_SLUGS, type AppEndpointMode, type AppSlug } from './fleet-apps.js';
+import {
+  OllamaVersionError,
+  readOllamaVersions,
+  renderOllamaCell,
+  resolveOllamaVersion,
+  summariseOllamaVersions,
+  upgradeOllamaOnNode,
+} from './fleet-ollama-version.js';
 import { sshCapture } from './fleet-ssh.js';
 import { colorize } from './cli-ui.js';
 import { BASE_COMMAND } from './cli-types.js';
@@ -63,6 +71,13 @@ export interface FleetArgs {
   models: string[];
   /** Update the Hub image during `update`. */
   hub: boolean;
+  /** Bring each node's Ollama to the pinned (or `--ollama-version`) release during `update`. */
+  ollama: boolean;
+  /**
+   * Exact Ollama release for `backends` and `update --ollama`, already validated. Absent means the
+   * pin in `fleet-ollama-version.ts`; there is deliberately no way to ask for "latest".
+   */
+  ollamaVersion?: string;
   /** Agent apps for `apps`. Empty means both supported slugs. */
   apps: AppSlug[];
   /** Where an app should send inference. */
@@ -99,6 +114,8 @@ export function parseFleetArgs(argv: readonly string[]): FleetArgs {
     poolPin: undefined,
     models: [],
     hub: false,
+    ollama: false,
+    ollamaVersion: undefined,
     apps: [],
     // Pool by default: the whole point of installing an agent on a pooled fleet is that it reaches
     // the cluster rather than one box.
@@ -146,7 +163,17 @@ export function parseFleetArgs(argv: readonly string[]): FleetArgs {
     else if (isFlag('--join-pool')) args.joinPool = readValue('--join-pool');
     else if (isFlag('--pool-pin')) args.poolPin = readValue('--pool-pin');
     else if (arg === '--hub') args.hub = true;
-    else if (isFlag('--endpoint')) {
+    else if (arg === '--ollama') args.ollama = true;
+    else if (isFlag('--ollama-version')) {
+      // Validated here so a typo fails before any machine is dialled, and so 'latest' is refused in
+      // words rather than handed to the installer, which would honour it.
+      try {
+        args.ollamaVersion = resolveOllamaVersion(readValue('--ollama-version'));
+      } catch (error) {
+        if (error instanceof OllamaVersionError) throw new FleetArgError(error.message);
+        throw error;
+      }
+    } else if (isFlag('--endpoint')) {
       const mode = readValue('--endpoint');
       if (mode !== 'pool' && mode !== 'local') throw new FleetArgError("--endpoint must be 'pool' or 'local'.");
       args.endpoint = mode;
@@ -389,21 +416,56 @@ async function runStatus(args: FleetArgs): Promise<void> {
   const { run, skipped } = partitionForRun(roster.nodes, args.nodes);
   const probed = await probeAll(run, args, 'roster');
 
+  // Which Ollama each node is serving, read at the bind the node resolves for itself. The version
+  // spread this column exists to expose (0.12.11 → 0.33.3 across eighteen nodes) went unnoticed
+  // precisely because nothing printed it. `--ollama-version` sets the pin the fleet is measured against.
+  const pin = resolveOllamaVersion(args.ollamaVersion);
+  const versions = await readOllamaVersions(
+    probed.map((n) => ({ node: n, sshOk: n.local ? undefined : n.probe.ssh, sshFailure: n.probe.sshFailure })),
+    { user: args.user, timeoutMs: args.timeoutMs, concurrency: args.concurrency },
+  );
+  const ollamaSummary = summariseOllamaVersions(versions, pin);
+  const rows = probed.map((n, i) => ({ n, v: versions[i] ?? { node: n.name, reason: 'no reading was taken' } }));
+
   if (args.json) {
-    console.log(JSON.stringify({ nodes: probed, skipped: skipped.map((s) => ({ node: s.node.name, why: s.why })) }, null, 2));
+    console.log(
+      JSON.stringify(
+        {
+          nodes: rows.map(({ n, v }) => ({ ...n, ollama: { ...v, pin, standing: renderOllamaCell(v, pin).standing } })),
+          ollama: { pin, summary: ollamaSummary },
+          skipped: skipped.map((s) => ({ node: s.node.name, why: s.why })),
+        },
+        null,
+        2,
+      ),
+    );
     return;
   }
   console.log(
     renderTable(
-      probed.map((n) => [
-        n.name,
-        n.probe.ssh ? 'yes' : colorize('no', 'yellow'),
-        n.probe.hub ? (n.probe.hubDetail ?? 'yes') : '—',
-        n.probe.engines.join(' ') || '—',
-      ]),
-      ['NODE', 'SSH', 'HUB', 'ENGINES'],
+      rows.map(({ n, v }) => {
+        const cell = renderOllamaCell(v, pin);
+        const tone = cell.standing === 'behind' ? 'yellow' : cell.standing === 'at-pin' ? 'green' : 'dim';
+        return [
+          n.name,
+          n.probe.ssh ? 'yes' : colorize('no', 'yellow'),
+          n.probe.hub ? (n.probe.hubDetail ?? 'yes') : '—',
+          n.probe.engines.join(' ') || '—',
+          // Last column on purpose: colour codes count toward the padding width, so a coloured cell
+          // would misalign whatever followed it.
+          colorize(cell.text, tone),
+        ];
+      }),
+      ['NODE', 'SSH', 'HUB', 'ENGINES', 'OLLAMA'],
     ),
   );
+  const unmeasured = versions.filter((v) => !v.version);
+  if (unmeasured.length) {
+    console.log('');
+    for (const v of unmeasured) console.log(colorize(`  ${v.node}: ollama version unmeasured — ${v.reason}`, 'dim'));
+  }
+  console.log('');
+  console.log(`Ollama: ${ollamaSummary}`);
   if (skipped.length) {
     console.log('');
     for (const s of skipped) console.log(colorize(`  skipped ${s.node.name}: ${s.why}`, 'dim'));
@@ -452,7 +514,7 @@ async function runBackends(args: FleetArgs): Promise<void> {
     }
 
     const busy = isTooBusyForMaintenance(facts);
-    const plans = planAllBackends(facts, args.dataDir, args.backends.length ? args.backends : undefined);
+    const plans = planAllBackends(facts, args.dataDir, args.backends.length ? args.backends : undefined, { ollamaVersion: args.ollamaVersion });
     const gpu = facts.gpus.map((g) => `${g.vendor}${g.gfx ? `/${g.gfx}` : ''}${g.driverWorking ? '' : ' [driver dead]'}`).join(', ') || 'no gpu';
     console.log(`${node.name}  ${colorize(`${facts.os}/${facts.arch} · ${gpu} · load ${facts.load1 ?? '?'}`, 'dim')}`);
     for (const note of facts.notes) console.log(colorize(`  ! ${note}`, 'yellow'));
@@ -643,14 +705,23 @@ async function runUpdate(args: FleetArgs): Promise<void> {
     console.log('No nodes selected.');
     return;
   }
-  if (!args.hub && args.models.length === 0) {
-    console.log('Nothing to do. Pass --hub to update the Hub image, --models a,b to pull models, or both.');
+  if (!args.hub && !args.ollama && args.models.length === 0) {
+    console.log(
+      'Nothing to do. Pass --hub to update the Hub image, --ollama to bring Ollama to the pinned release, --models a,b to pull models, or any combination.',
+    );
     return;
   }
+  const ollamaVersion = resolveOllamaVersion(args.ollamaVersion);
   if (!args.execute) {
     console.log(colorize('Dry run — nothing will change. Add --execute to apply.', 'dim'));
     console.log(`  ${run.length} node(s): ${run.map((n) => n.name).join(', ')}`);
     if (args.hub) console.log('  would run: cihub pool update');
+    if (args.ollama) {
+      console.log(
+        `  would bring ollama to ${ollamaVersion} (${args.ollamaVersion ? '--ollama-version' : 'pinned'}) via ollama.com/install.sh, then confirm it at /api/version`,
+      );
+      console.log(colorize('    nodes already serving that version are left alone; nodes with no Ollama are reported, not installed', 'dim'));
+    }
     for (const m of args.models) console.log(`  would pull: ${m}`);
     return;
   }
@@ -659,6 +730,15 @@ async function runUpdate(args: FleetArgs): Promise<void> {
   for (const node of run) {
     const target = { host: node.ip, user: node.user ?? args.user };
     console.log(`\n${node.name}`);
+    if (args.ollama) {
+      // Before any model pull on the same node: a pull against a daemon that is about to be
+      // restarted is a pull that dies half-way.
+      const res = await upgradeOllamaOnNode(target, ollamaVersion);
+      if (res.outcome === 'failed') failed += 1;
+      const icon = res.outcome === 'failed' ? colorize('✗', 'red') : res.outcome === 'skipped' ? colorize('·', 'dim') : colorize('✓', 'green');
+      const took = res.ms ? colorize(` (${Math.round(res.ms / 1000)}s)`, 'dim') : '';
+      console.log(`  ${icon} ollama ${res.outcome}${took} — ${res.why}`);
+    }
     if (args.hub) {
       const res = await sshCapture(target, `bash <<'EOF'\n${updateHubScript()}\nEOF`, 20 * 60_000);
       const ok = res.ok && res.out.includes('hub-update-complete');

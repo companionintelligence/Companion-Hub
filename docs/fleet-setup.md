@@ -196,6 +196,27 @@ Two settings need coordinating across the fleet rather than set independently:
   Linux AMD with `/sys` bind-mounted. A node that cannot measure reports nothing and ranks mid-band —
   deliberately not idle. On a fleet where most nodes cannot measure, leave the weight at `0`.
 
+## One Ollama version, fleet-wide
+
+`cihub fleet backends` installs Ollama at a **pinned release** — `OLLAMA_PINNED_VERSION` in
+`scripts/lib/fleet-ollama-version.ts` — by handing `ollama.com/install.sh` an `OLLAMA_VERSION`, and
+reports the install done only after `/api/version` on the node answers with that number. Measured on
+2026-09-10, before the pin: eighteen nodes spanned **0.12.11 → 0.33.3**, each running whatever was
+current the day it was installed, and nothing had ever printed the spread.
+
+```bash
+cihub fleet status                                 # OLLAMA column, "behind pin" marker, one summary line
+cihub fleet update --ollama --execute              # bring every node to the pin; nodes already there are left alone
+cihub fleet update --ollama --ollama-version 0.33.3 --execute   # roll a specific release instead
+```
+
+`--ollama-version` overrides the pin for one run and takes only an exact `x.y.z`; `latest` is refused,
+because "whatever is current today" is the policy that produced the spread. `update --ollama` refuses
+a node under load (it restarts the daemon), and refuses a node with no Ollama rather than installing
+one — that is `backends`' job. The version is always read at the bind the node resolves for itself,
+because several nodes here bind `OLLAMA_HOST` to their tailnet address and answer nothing on loopback;
+a node that cannot be read shows `—` with the reason, never a stale number.
+
 ## Growing and shrinking
 
 - **Adding a node** repeats the whole one-node path: register, **claim** (`cihub claim --email <addr>`,

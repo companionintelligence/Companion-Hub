@@ -725,7 +725,7 @@ cihub fleet list [--json]                              # the saved roster, and w
 cihub fleet status [--nodes a,b] [--json]              # re-probe every rostered node
 cihub fleet backends [--backends a,b] [--execute]      # what each node can run for inference, then install it
 cihub fleet install [--user <acct>] [--execute]        # stand a Hub up on each node and register it
-cihub fleet update [--hub] [--models a,b] [--execute]  # refresh the Hub image, pull models
+cihub fleet update [--hub] [--ollama] [--models a,b] [--execute]  # refresh the Hub image, pin Ollama, pull models
 cihub fleet apps [--apps a,b] [--endpoint pool|local]  # can each node serve an agent its credentials
 ```
 
@@ -809,6 +809,8 @@ while believing it was twenty is the worse failure.
 | `--pool-pin <digits>` | `install` only: the PIN minted on the Hub being joined, for pairing by address |
 | `--hub` | `update` only: update the Hub image |
 | `--models a,b` | `update` only: pull these models on each node |
+| `--ollama` | `update` only: bring each node's Ollama to the pinned release via `ollama.com/install.sh`, confirmed at `/api/version` on the node's own bind. Nodes already there are left alone; a node with no Ollama is reported, not installed |
+| `--ollama-version <x.y.z>` | `backends`, `update --ollama`, `status`: use this exact release instead of the pin (`OLLAMA_PINNED_VERSION` in `fleet-ollama-version.ts`). `latest` is refused |
 | `--apps a,b` | `apps` only: from `hermes-agent`, `openclaw`. Omit for both |
 | `--endpoint pool\|local` | `apps` only: which endpoint the report is labelled for (default `pool`). The check itself is the same either way — see below |
 
@@ -825,7 +827,10 @@ enumerates nothing — set `TAILSCALE_CLI` if yours is somewhere unusual.
 ### `cihub fleet list` and `cihub fleet status`
 
 `list` prints the roster as saved, plus the nodes a run would skip and why. `status` re-probes them:
-administrable, running a Hub, serving engines. Neither touches a node beyond the probe.
+administrable, running a Hub, serving engines, and which Ollama each is serving — read at the bind
+the node resolves for itself, marked when behind the pin, with a one-line fleet summary
+(`0.34.0 on 17/18; behind: localhost-0 (0.30.9)`). A node that cannot be read shows `—` and the
+reason. Neither touches a node beyond the probe.
 
 ### `cihub fleet backends`
 
