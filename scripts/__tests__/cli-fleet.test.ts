@@ -20,12 +20,12 @@ import { classifySshFailure, sshDestination, type SshResult } from '../lib/fleet
 const sshResult = (over: Partial<SshResult> = {}): SshResult => ({ ok: false, out: '', err: '', code: 255, ms: 10, ...over });
 
 describe('parseFleetArgs', () => {
-  it('defaults to a read-only tailnet scan that writes nothing', () => {
+  it('defaults to a read-only scan of the roster that writes nothing', () => {
     const args = parseFleetArgs([]);
     expect(args.subcommand).toBe('scan');
-    expect(args.tailnet).toBe(true);
-    // A LAN sweep touches every address on the operator's subnet — a different act from listing a
-    // tailnet they already belong to, so it must be asked for.
+    // Neither discovery source is on by default. A LAN sweep touches every address on the operator's
+    // subnet, and the tailnet is shared with people who are not the fleet; both must be asked for.
+    expect(args.allTailnet).toBe(false);
     expect(args.lan).toBe(false);
     expect(args.writeRoster).toBe(false);
     expect(args.execute).toBe(false);
@@ -109,9 +109,6 @@ describe('parseFleetArgs', () => {
     expect(parseFleetArgs(['backends', '--backends=ollama']).backends).toEqual(['ollama']);
     expect(parseFleetArgs(['scan', '--timeout=500']).timeoutMs).toBe(500);
     expect(parseFleetArgs(['scan', '--concurrency', '8']).concurrency).toBe(8);
-    // `--nodes` and `--no-tailnet` share a prefix in the other direction; both still land.
-    expect(parseFleetArgs(['status', '--nodes', 'a,b', '--no-tailnet']).nodes).toEqual(['a', 'b']);
-    expect(parseFleetArgs(['status', '--nodes=a', '--no-tailnet']).tailnet).toBe(false);
   });
 
   /**

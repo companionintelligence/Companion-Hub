@@ -22,8 +22,9 @@
  *    tailnet". The tailnet is shared with colleagues' laptops, phones and headsets, and a run that
  *    substituted its peer list for a missing file put `Bennett's MacBook Pro` and `Quest 3` in front
  *    of the same SSH loop as the appliances. `loadFleetRoster` reports an absent or unreadable file
- *    as a `problem`, and every operation refuses on it; only `fleet scan` — whose purpose is to build
- *    the file — reads the tailnet, and only the peers tagged for this fleet unless told otherwise.
+ *    as a `problem`, and every operation refuses on it; only `fleet scan --all-tailnet` — the one
+ *    explicit way to build the file — reads the tailnet, and what it writes is for the operator to
+ *    prune with `skip`. No ACL tag stands in for that judgement.
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -166,7 +167,12 @@ export interface LoadedFleetRoster extends FleetRoster {
  */
 export function loadFleetRoster(path: string = fleetRosterPath()): LoadedFleetRoster {
   if (!existsSync(path)) {
-    return { nodes: [], source: `${path} (not created yet — run 'cihub fleet scan --write-roster')`, dropped: [], problem: { kind: 'absent', path } };
+    return {
+      nodes: [],
+      source: `${path} (not created yet — run 'cihub fleet scan --all-tailnet --write-roster')`,
+      dropped: [],
+      problem: { kind: 'absent', path },
+    };
   }
   try {
     const parsed = parseFleetRoster(JSON.parse(readFileSync(path, 'utf-8')));

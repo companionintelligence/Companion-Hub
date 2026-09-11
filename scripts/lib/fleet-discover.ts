@@ -120,24 +120,6 @@ export interface TailnetPeer {
   dnsName?: string;
   os?: string;
   online: boolean;
-  /** Tailscale ACL tags with the `tag:` prefix stripped, so `tag:ci-server` reads as `ci-server`. */
-  tags: string[];
-}
-
-/**
- * The tag that marks a tailnet peer as one of this fleet's machines.
- *
- * The tailnet is shared. Its peer list is everyone's laptop, phone, tablet and headset alongside the
- * appliances, and a peer without this tag is what CI-Engineering's tailnet classifier files as
- * `unclassified` — a personal device until somebody says otherwise. On this tailnet in 2026-09 fewer
- * than half the peers carried it; the rest were phones, tablets, colleagues' laptops and KVM dongles.
- * Discovery reads the tag rather than guessing from a hostname.
- */
-export const CI_SERVER_TAG = 'ci-server';
-
-/** Whether a peer is tagged as a fleet machine, as opposed to merely present on the tailnet. */
-export function isFleetTagged(peer: Pick<TailnetPeer, 'tags'>): boolean {
-  return peer.tags.includes(CI_SERVER_TAG);
 }
 
 /**
@@ -145,6 +127,9 @@ export function isFleetTagged(peer: Pick<TailnetPeer, 'tags'>): boolean {
  *
  * Pure, so a test can feed it a fixture. `Self` is deliberately not a peer: the machine running the
  * CLI is never a fleet target, and a scan that listed it would then try to SSH to itself.
+ *
+ * No ACL tag is read as fleet membership. The tailnet's `tag:ci-server` is an internal test tag, not
+ * an inventory, and a peer list is not a fleet either way — see `cli-fleet.ts` for what is.
  */
 export function parseTailnetStatus(stdout: string): { peers: TailnetPeer[]; error?: string } {
   let doc: { Peer?: Record<string, unknown>; Self?: Record<string, unknown>; BackendState?: string };
@@ -160,7 +145,7 @@ export function parseTailnetStatus(stdout: string): { peers: TailnetPeer[]; erro
   const peers: TailnetPeer[] = [];
   const rows = Object.values(doc.Peer ?? {});
   for (const row of rows) {
-    const p = row as { HostName?: string; DNSName?: string; TailscaleIPs?: string[]; OS?: string; Online?: boolean; Tags?: unknown };
+    const p = row as { HostName?: string; DNSName?: string; TailscaleIPs?: string[]; OS?: string; Online?: boolean };
     const ip = p.TailscaleIPs?.find((a) => a.includes('.'));
     if (!ip) continue;
     peers.push({
@@ -171,7 +156,6 @@ export function parseTailnetStatus(stdout: string): { peers: TailnetPeer[]; erro
       dnsName: p.DNSName ? p.DNSName.replace(/\.$/, '') : undefined,
       os: p.OS,
       online: p.Online === true,
-      tags: Array.isArray(p.Tags) ? p.Tags.filter((t): t is string => typeof t === 'string').map((t) => t.replace(/^tag:/, '')) : [],
     });
   }
   peers.sort((a, b) => a.name.localeCompare(b.name));

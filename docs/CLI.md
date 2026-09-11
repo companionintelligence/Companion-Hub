@@ -720,7 +720,7 @@ acts on **other** machines, over SSH — which is the first thing to know about 
 read-only subcommands are the default and the rest need `--execute`.
 
 ```bash
-cihub fleet scan [--all-tailnet] [--lan] [--write-roster] [--json]  # find machines tagged ci-server, and what each will allow
+cihub fleet scan [--all-tailnet] [--lan] [--write-roster] [--json]  # re-probe the roster, or find machines, and what each will allow
 cihub fleet list [--json]                              # the saved roster, and what a run would skip
 cihub fleet status [--nodes a,b] [--json]              # re-probe every rostered node
 cihub fleet preflight [--nodes a,b] [--touches-boot]   # is each node safe to hand a package transaction?
@@ -827,9 +827,8 @@ while believing it was twenty is the worse failure.
 | `--nodes a,b` | Restrict the run to these roster entries, by name **or** address |
 | `--user <account>` | Remote account to SSH as. `FLEET_SSH_USER` sets the same thing; a roster entry's own `user` wins |
 | `--json` | Machine-readable report — `scan`, `list`, `status`, `backends`, `install`, `apps`, and `update --models` (per node: provenance and each model's outcome) |
-| `--all-tailnet` | `scan` only: probe every tailnet peer, not only those tagged `ci-server`. Off by default, because the tailnet is shared and a probe is an SSH attempt in each peer's auth log. Even with it on, an untagged peer is saved as `"skip": "excluded"`, never as a target — see [`cihub fleet scan`](#cihub-fleet-scan) |
+| `--all-tailnet` | `scan` only: enumerate every tailnet peer as a candidate. Off by default, because the tailnet is shared and a probe is an SSH attempt in each peer's auth log. With `--write-roster`, everything it finds becomes a target — see [`cihub fleet scan`](#cihub-fleet-scan) |
 | `--lan` | `scan` only: also sweep the local subnet. Off by default, because touching every address on the operator's subnet is a more intrusive act than listing a tailnet they already belong to |
-| `--no-tailnet` | `scan` only: skip tailnet enumeration |
 | `--write-roster` | `scan` only: save the result to `fleet.json` |
 | `--timeout <ms>` | Per-probe budget, 250–120000 (default 4000) |
 | `--concurrency <n>` | Parallel **probes**, 1–32 (default 4). The runners stay serialised regardless |
@@ -859,23 +858,22 @@ it never lands in a shell history or a process listing.
 
 ### `cihub fleet scan`
 
-Enumerates the tailnet (add `--lan` for the local subnet), probes each candidate on the three axes
-above, and prints a verdict per node. It writes nothing unless `--write-roster` is passed, and says
-so at the end rather than leaving you to wonder. With no Tailscale CLI it says that too, and
-enumerates nothing — set `TAILSCALE_CLI` if yours is somewhere unusual.
+Probes each candidate on the three axes above and prints a verdict per node. **By default the
+candidates are the roster** — a scan re-verifies what you already run. `--all-tailnet` adds every
+tailnet peer and `--lan` every address on the local subnet that answers on an engine or Hub port.
+It writes nothing unless `--write-roster` is passed, and says so at the end rather than leaving you
+to wonder. With no Tailscale CLI it says that too, and enumerates nothing — set `TAILSCALE_CLI` if
+yours is somewhere unusual.
 
-**A tailnet peer is a candidate when it carries `tag:ci-server`, or is already in the roster.**
-The tag is the one CI-Engineering's tailnet classifier uses to tell appliances from everything
-else; a peer without it is what that classifier files as `unclassified` — a personal device until
-somebody says otherwise. Untagged peers are counted in the footer (`N untagged peer(s) not probed`)
-and never dialled. `--all-tailnet` probes them too, for finding a new machine nobody has tagged
-yet, but `--write-roster` still saves each one as `"skip": "excluded"` with a note saying why: to
-adopt one, tag it in the Tailscale admin console, or remove the `skip` from its roster row by hand.
-A rostered node the tailnet does *not* tag is still probed — a roster row is operator intent — but
-the footer names it and says how to mark it, since that is exactly the row an older scan left behind.
-A rostered node marked `excluded` is the one skip a default scan does not probe either (`unreachable`
-may have recovered; `llm-only` is a verdict the scan can confirm): it is counted in the footer and
-left alone until `--all-tailnet`.
+**`--all-tailnet` is how a machine gets into the roster, and it is asked for by name** because the
+tailnet is shared: its peers are colleagues' laptops, phones and headsets alongside the appliances,
+and no ACL tag tells them apart (`tag:ci-server` is an internal test tag, not an inventory). The
+scan lists every peer the roster does not know, and with `--write-roster` says it is adding them
+*as targets* — that list is the one to prune afterwards, with `"skip": "excluded"` on each row that
+is not a fleet machine. A fleet command never dials an excluded row, and a default scan does not
+re-probe one either (`unreachable` may have recovered and `llm-only` is a verdict the scan can
+confirm, so those two still get a probe); it is counted in the footer and left alone until
+`--all-tailnet`.
 
 ### `cihub fleet list` and `cihub fleet status`
 

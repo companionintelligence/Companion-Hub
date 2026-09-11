@@ -10,8 +10,8 @@
  *   · **Every failure names the machine and the reason.** A fleet command that reports "3 failed"
  *     has told the operator nothing they can act on.
  *   · **The roster is the only list of targets.** No `fleet.json` is a refusal, never a fallback to
- *     the tailnet's peer list — that list is colleagues' laptops and phones alongside the appliances,
- *     and `scan` only admits a peer tagged `ci-server` unless `--all-tailnet` is asked for.
+ *     the tailnet's peer list — that list is colleagues' laptops and phones alongside the appliances.
+ *     `scan` re-probes the roster; enumerating the tailnet is `--all-tailnet`, asked for by name.
  *
  * Arg parsing is hand-rolled to match the rest of this CLI, which deliberately has no parsing
  * library (see `docs/CLI.md`).
@@ -27,16 +27,7 @@ import {
   type FleetNode,
   type LoadedFleetRoster,
 } from './fleet-roster.js';
-import {
-  CI_SERVER_TAG,
-  isFleetTagged,
-  probeNode,
-  resolveTailscaleCli,
-  scanLan,
-  summariseNode,
-  tailnetPeers,
-  type DiscoveredNode,
-} from './fleet-discover.js';
+import { probeNode, resolveTailscaleCli, scanLan, summariseNode, tailnetPeers, type DiscoveredNode } from './fleet-discover.js';
 import { classifySshFailure, describeSshFailure, sshCapture, type SshTarget } from './fleet-ssh.js';
 import { isTooBusyForMaintenance, readHostFacts, type HostFacts } from './fleet-hardware.js';
 import {
@@ -132,14 +123,13 @@ export interface FleetArgs {
   subcommand: FleetSubcommand;
   json: boolean;
   lan: boolean;
-  tailnet: boolean;
   /**
-   * `scan` only: consider every tailnet peer a candidate, not only those tagged `ci-server`.
+   * `scan` only: enumerate every tailnet peer as a candidate.
    *
    * Off by default because the tailnet is shared — colleagues' laptops, phones and headsets are
-   * peers too, and probing them means an SSH attempt in each one's auth log. Even with this on, a
-   * peer without the tag is written to the roster as `skip: excluded`, so nothing later dials it
-   * until an operator removes that marker by hand.
+   * peers too, and probing them means an SSH attempt in each one's auth log. A default scan
+   * re-probes the roster and nothing else; this is the one way a machine gets into the roster, and
+   * it says so loudly when it writes, because what it writes is targets.
    */
   allTailnet: boolean;
   writeRoster: boolean;
@@ -224,11 +214,9 @@ export function parseFleetArgs(argv: readonly string[]): FleetArgs {
   const args: FleetArgs = {
     subcommand: 'scan',
     json: false,
-    // Default to the tailnet only. A LAN sweep touches every address on the operator's subnet, which
-    // is a different and more intrusive act than listing a tailnet they already belong to — it should
-    // be asked for.
+    // Neither discovery source is on by default: a LAN sweep touches every address on the operator's
+    // subnet, and the tailnet is shared with people who are not the fleet. Both must be asked for.
     lan: false,
-    tailnet: true,
     allTailnet: false,
     writeRoster: false,
     execute: false,
@@ -294,7 +282,6 @@ export function parseFleetArgs(argv: readonly string[]): FleetArgs {
 
     if (arg === '--json') args.json = true;
     else if (arg === '--lan') args.lan = true;
-    else if (arg === '--no-tailnet') args.tailnet = false;
     else if (arg === '--all-tailnet') args.allTailnet = true;
     else if (arg === '--write-roster') args.writeRoster = true;
     else if (arg === '--execute') args.execute = true;
@@ -456,7 +443,7 @@ function loadRosterForRun(args: FleetArgs): LoadedFleetRoster | null {
     if (roster.problem.kind === 'absent') console.error(colorize(`No fleet roster at ${path}.`, 'red'));
     else console.error(colorize(`The fleet roster at ${path} could not be read: ${roster.problem.why}`, 'red'));
     console.error(
-      `  Create one with '${BASE_COMMAND} fleet scan --write-roster' — it probes the tailnet peers tagged ${CI_SERVER_TAG} and saves them.`,
+      `  Create one with '${BASE_COMMAND} fleet scan --all-tailnet --write-roster', then mark the rows that are not yours "skip": "excluded".`,
     );
     console.error(colorize('  Fleet commands act on the roster and nothing else; without one, no machine is dialled.', 'dim'));
     process.exitCode = 1;
@@ -466,7 +453,7 @@ function loadRosterForRun(args: FleetArgs): LoadedFleetRoster | null {
   if (roster.nodes.length === 0) {
     console.log(`The roster at ${roster.source} lists no nodes.`);
     for (const dropped of roster.dropped) console.log(colorize(`  dropped: ${dropped}`, 'yellow'));
-    console.log(colorize(`  Run '${BASE_COMMAND} fleet scan --write-roster' to add the tailnet peers tagged ${CI_SERVER_TAG}.`, 'dim'));
+    console.log(colorize(`  Run '${BASE_COMMAND} fleet scan --all-tailnet --write-roster' to enumerate the tailnet into it.`, 'dim'));
     return null;
   }
   return roster;
@@ -503,11 +490,10 @@ async function runScan(args: FleetArgs): Promise<void> {
   const notes: string[] = [];
 
   const roster = loadFleetRoster();
-  // `excluded` means "not ours" — someone's workstation, a demo box, an untagged peer an earlier
-  // `--all-tailnet` scan recorded. Re-probing it on every scan is the SSH attempt in a colleague's
-  // auth log this gate exists to stop, so it is shelved unless `--all-tailnet` asks for everything.
-  // The other skips still get a probe: an `unreachable` node may have recovered, and `llm-only` is
-  // a verdict the scan can confirm.
+  // `excluded` means "not ours" — someone's workstation, a KVM dongle, a demo box. Re-probing it on
+  // every scan is the SSH attempt in a colleague's auth log the roster exists to stop, so it is
+  // shelved unless `--all-tailnet` asks for everything. The other skips still get a probe: an
+  // `unreachable` node may have recovered, and `llm-only` is a verdict the scan can confirm.
   const shelved = new Map<string, FleetNode>();
   for (const node of roster.nodes) {
     if (node.skip === 'excluded' && !args.allTailnet) shelved.set(node.ip, node);
@@ -516,51 +502,28 @@ async function runScan(args: FleetArgs): Promise<void> {
   for (const dropped of roster.dropped) notes.push(`roster: ${dropped}`);
   if (shelved.size > 0) notes.push(`roster: ${shelved.size} node(s) marked excluded not probed — pass --all-tailnet to include them`);
 
-  if (args.tailnet) {
+  // Which candidates the tailnet contributed and the roster did not know. Named at the end, because
+  // with `--write-roster` they become targets, and the operator should see that list as a list.
+  const fromTailnet: string[] = [];
+  if (args.allTailnet) {
     const cli = resolveTailscaleCli();
     if (cli) {
       const { peers, error } = tailnetPeers(cli);
       if (error) notes.push(`tailnet: ${error}`);
-      // The tailnet is shared, so its peer list is not a fleet. A peer earns a probe by carrying the
-      // fleet tag or by already being in the roster (an operator put it there); everything else is
-      // counted and left alone unless `--all-tailnet` asks for it, and even then it is written with a
-      // skip marker rather than as a target.
-      const untagged = peers.filter((peer) => !isFleetTagged(peer));
-      // Rostered, untagged, and not already marked: the shape the old scan left behind, and the one
-      // worth naming — a roster row is operator intent, so it is probed, but it is probably not.
-      const rosteredUntagged = untagged.filter((peer) => {
-        const node = candidates.get(peer.ip);
-        return node !== undefined && !node.skip && !node.local;
-      });
-      let withheld = 0;
       for (const peer of peers) {
-        if (shelved.has(peer.ip)) continue;
         const existing = candidates.get(peer.ip);
-        const tagged = isFleetTagged(peer);
-        if (!tagged && !existing && !args.allTailnet) {
-          withheld += 1;
-          continue;
-        }
-        const offline = peer.online ? undefined : 'tailnet reports offline';
+        if (!existing) fromTailnet.push(peer.name);
         candidates.set(peer.ip, {
           name: existing?.name ?? peer.name,
           ip: peer.ip,
           tailnetName: peer.dnsName ?? existing?.tailnetName,
           user: existing?.user,
           local: existing?.local,
-          // A new untagged peer arrives as a skip, so `--write-roster` records that it was seen but
-          // never as a target. A rostered node keeps whatever the roster says.
-          skip: existing ? existing.skip : tagged ? undefined : 'excluded',
-          note: existing?.note ?? (existing || tagged ? offline : `no tag:${CI_SERVER_TAG} — a tailnet peer, not a fleet machine`),
+          skip: existing?.skip,
+          note: existing?.note ?? (peer.online ? undefined : 'tailnet reports offline'),
         });
       }
-      notes.push(`tailnet: ${peers.length} peer(s) enumerated, ${peers.length - untagged.length} tagged ${CI_SERVER_TAG}`);
-      if (withheld > 0) notes.push(`tailnet: ${withheld} untagged peer(s) not probed — pass --all-tailnet to include them, marked excluded`);
-      if (rosteredUntagged.length > 0) {
-        notes.push(
-          `roster: ${rosteredUntagged.length} rostered node(s) carry no tag:${CI_SERVER_TAG} on the tailnet: ${rosteredUntagged.map((peer) => candidates.get(peer.ip)?.name ?? peer.name).join(', ')} — if they are not fleet machines, set "skip": "excluded" on each or delete the roster and re-scan`,
-        );
-      }
+      notes.push(`tailnet: ${peers.length} peer(s) enumerated, ${fromTailnet.length} not in the roster`);
     } else {
       notes.push('tailscale CLI not found — skipping tailnet enumeration (set TAILSCALE_CLI to override)');
     }
@@ -574,9 +537,15 @@ async function runScan(args: FleetArgs): Promise<void> {
 
   const all = [...candidates.values()];
   if (all.length === 0) {
-    console.log(
-      `No candidates found. Is Tailscale running, and are your machines tagged ${CI_SERVER_TAG}? Try --all-tailnet, or --lan to sweep the local subnet.`,
-    );
+    if (roster.problem || roster.nodes.length === 0) {
+      console.log(`No roster at ${fleetRosterPath()} and no discovery asked for, so there is nothing to probe.`);
+      console.log("  --all-tailnet enumerates every tailnet peer — colleagues' devices included — and --lan sweeps the local subnet.");
+      console.log(
+        `  '${BASE_COMMAND} fleet scan --all-tailnet --write-roster' creates the roster; then mark the rows that are not yours "skip": "excluded".`,
+      );
+    } else {
+      console.log('Nothing to probe: every rostered node is marked excluded. Pass --all-tailnet to include them.');
+    }
     for (const note of notes) console.log(colorize(`  ${note}`, 'dim'));
     return;
   }
@@ -617,19 +586,17 @@ async function runScan(args: FleetArgs): Promise<void> {
     for (const n of unadministrable) console.log(`  ${describeSshFailure(n.probe.sshFailure, n.name)}`);
     console.log('');
   }
-  // Only `--all-tailnet` produces these: peers the operator asked to see but that no fleet operation
-  // will touch. Said in prose because the table's verdict column reads as if they were candidates.
-  const rostered = new Set(roster.nodes.map((n) => n.ip));
-  const seenUntagged = probed.filter((n) => n.skip === 'excluded' && !rostered.has(n.ip));
-  if (seenUntagged.length) {
+  // The tailnet is shared, so what `--all-tailnet` found is not a fleet until somebody says so. With
+  // `--write-roster` every one of these becomes a target of the next `--execute`; without it, this
+  // is the list to read before adding that flag.
+  if (fromTailnet.length) {
     console.log(
-      colorize(
-        `${seenUntagged.length} peer(s) carry no tag:${CI_SERVER_TAG} and would be saved as excluded, never dialled by a fleet command:`,
-        'yellow',
-      ),
+      colorize(`${fromTailnet.length} tailnet peer(s) are not in the roster${args.writeRoster ? ' and are being added as targets' : ''}:`, 'yellow'),
     );
-    console.log(`  ${seenUntagged.map((n) => n.name).join(', ')}`);
-    console.log(colorize(`  To adopt one, tag it in the Tailscale admin console or remove its "skip" from the roster by hand.`, 'dim'));
+    console.log(`  ${[...fromTailnet].sort((a, b) => a.localeCompare(b)).join(', ')}`);
+    console.log(
+      colorize(`  Mark any that are not fleet machines "skip": "excluded" in ${fleetRosterPath()} — a fleet command never dials those.`, 'dim'),
+    );
     console.log('');
   }
   for (const note of notes) console.log(colorize(`  ${note}`, 'dim'));
@@ -640,11 +607,8 @@ async function runScan(args: FleetArgs): Promise<void> {
       probed.map(({ probe: _probe, source: _source, ...node }) => node),
     );
     saveFleetRoster(merged.nodes);
-    const addedExcluded = merged.added.filter((n) => n.skip === 'excluded').length;
     console.log('');
-    console.log(
-      `Roster written to ${fleetRosterPath()} (${merged.nodes.length} node(s), ${merged.added.length} new${addedExcluded ? `, ${addedExcluded} of them excluded` : ''}).`,
-    );
+    console.log(`Roster written to ${fleetRosterPath()} (${merged.nodes.length} node(s), ${merged.added.length} new).`);
     console.log(colorize('Existing names, notes and skip markers were preserved.', 'dim'));
   } else {
     console.log(colorize(`Nothing was written. Re-run with --write-roster to save this to ${fleetRosterPath()}.`, 'dim'));
@@ -659,7 +623,7 @@ function runList(args: FleetArgs): void {
     return;
   }
   if (roster.nodes.length === 0) {
-    console.log(`No roster yet. Run '${BASE_COMMAND} fleet scan --write-roster' to create one.`);
+    console.log(`No roster yet. Run '${BASE_COMMAND} fleet scan --all-tailnet --write-roster' to create one.`);
     console.log(colorize(`  looked in ${roster.source}`, 'dim'));
     return;
   }
