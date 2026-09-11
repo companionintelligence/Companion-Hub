@@ -12,6 +12,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const mocks = vi.hoisted(() => ({
   sshCapture: vi.fn(),
   readHostFacts: vi.fn(),
+  preflightNode: vi.fn(),
 }));
 
 vi.mock('../lib/fleet-ssh.js', async (importOriginal) => ({
@@ -22,6 +23,14 @@ vi.mock('../lib/fleet-ssh.js', async (importOriginal) => ({
 vi.mock('../lib/fleet-hardware.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../lib/fleet-hardware.js')>()),
   readHostFacts: mocks.readHostFacts,
+}));
+
+// installNode preflights a node before it touches it (fleet-preflight.ts), and the real probe is an
+// SSH round trip that would consume the scripted probe→issue→probe sequence below. A clean report
+// keeps these tests about the cert step alone.
+vi.mock('../lib/fleet-preflight.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../lib/fleet-preflight.js')>()),
+  preflightNode: mocks.preflightNode,
 }));
 
 import { installNode } from '../lib/fleet-install.js';
@@ -557,6 +566,10 @@ describe('tailscaleCertStep', () => {
 // ─── In the install sequence ─────────────────────────────────────────────────
 
 describe('installNode runs the cert step', () => {
+  beforeEach(() => {
+    mocks.preflightNode.mockReset().mockResolvedValue({ node: 'hub-a', findings: [], verdict: 'ok', ms: 1 });
+  });
+
   const facts = {
     os: 'linux',
     arch: 'x86_64',

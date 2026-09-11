@@ -110,7 +110,11 @@ const commandSections: { title: string; entries: CommandEntry[] }[] = [
         description: 'Re-probe every rostered node: administrable, running a Hub, serving engines',
       },
       {
-        command: `${BASE_COMMAND} fleet backends [--backends a,b] [--execute]`,
+        command: `${BASE_COMMAND} fleet preflight [--nodes a,b] [--touches-boot] [--json]`,
+        description: 'Is each node safe to hand a package transaction? sudo, dpkg, grub, boot recovery, apt lock. Reads only',
+      },
+      {
+        command: `${BASE_COMMAND} fleet backends [--backends a,b] [--bind tailnet|all|local] [--execute]`,
         description: 'What inference backends a node can run, from its hardware; prints the plan unless --execute',
       },
       {
@@ -128,6 +132,10 @@ const commandSections: { title: string; entries: CommandEntry[] }[] = [
       {
         command: `${BASE_COMMAND} fleet cert [--nodes a,b] [--execute]`,
         description: 'The tailscale TLS cert each node needs to pool: present, absent, or unreadable without sudo; issues it with --execute',
+      },
+      {
+        command: `${BASE_COMMAND} fleet boot-params [--i-have-console] [--execute]`,
+        description: 'Strix Halo (gfx1151) GTT kernel parameters: live vs staged per node, and the GRUB edit; never reboots',
       },
     ],
   },

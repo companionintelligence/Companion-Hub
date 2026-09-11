@@ -25,6 +25,7 @@ import { classifyStatusTimerOutput, describeStatusTimerOutcome, installStatusTim
 import { sshCapture, type SshTarget } from './fleet-ssh.js';
 import { isTooBusyForMaintenance, readHostFacts } from './fleet-hardware.js';
 import { tailscaleCertStep } from './fleet-tailscale-cert.js';
+import { gatePreflight, preflightNode } from './fleet-preflight.js';
 
 export interface InstallStep {
   name: string;
@@ -212,6 +213,17 @@ export interface InstallOptions {
   poolPin?: string;
   /** Refuse to touch a node above this load-per-core. */
   loadRatio?: number;
+  /**
+   * Go ahead on a node whose preflight said `block`. The finding is still printed on the node's
+   * line, prefixed so the log shows the override was chosen rather than missed.
+   */
+  force?: boolean;
+  /**
+   * The operation will touch the kernel, initramfs or GRUB. A Hub install does not, so the default
+   * is false; a caller that will (a driver or kernel install) passes true and the boot-recovery and
+   * grub-customizer findings become blocking rather than advisory.
+   */
+  touchesBoot?: boolean;
 }
 
 /**
@@ -221,7 +233,7 @@ export interface InstallOptions {
  * every one, including the ones it deliberately declined to touch.
  */
 export async function installNode(
-  node: { name: string; ip: string; user?: string },
+  node: { name: string; ip: string; user?: string; oob?: string },
   opts: InstallOptions,
   sshUser?: string,
 ): Promise<NodeInstallReport> {
@@ -248,6 +260,15 @@ export async function installNode(
     steps.push({ name: 'docker', ok: false, detail: facts.docker.present ? 'docker present but `docker info` failed' : 'no docker engine' });
     return { node: node.name, ok: false, steps };
   }
+
+  // The checks nothing ran before: sudo, a wedged dpkg, grub-customizer's proxies, a boot with no
+  // way back, a held package lock. One round trip, decided in `fleet-preflight.ts`; `block` ends the
+  // node here rather than six steps in, unless `force` was chosen.
+  const preflightStarted = Date.now();
+  const preflight = await preflightNode(target, node, { touchesBoot: opts.touchesBoot });
+  const gate = gatePreflight(preflight, { force: opts.force });
+  steps.push({ name: 'preflight', ok: gate.proceed, skipped: !gate.proceed, detail: gate.detail, ms: Date.now() - preflightStarted });
+  if (!gate.proceed) return { node: node.name, ok: false, steps };
 
   const existing = await detectCihub(target);
   if (existing.present) {

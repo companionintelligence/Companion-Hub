@@ -723,7 +723,9 @@ read-only subcommands are the default and the rest need `--execute`.
 cihub fleet scan [--lan] [--write-roster] [--json]     # find machines, and what each one will allow
 cihub fleet list [--json]                              # the saved roster, and what a run would skip
 cihub fleet status [--nodes a,b] [--json]              # re-probe every rostered node
+cihub fleet preflight [--nodes a,b] [--touches-boot]   # is each node safe to hand a package transaction?
 cihub fleet backends [--backends a,b] [--execute]      # what each node can run for inference, then install it
+cihub fleet backends [--backends a,b] [--bind tailnet|all|local] [--execute]  # what each node can run for inference, then install it
 cihub fleet install [--user <acct>] [--execute]        # stand a Hub up on each node and register it
 cihub fleet update [--hub] [--models a,b] [--execute]  # refresh the Hub image, pull models
 cihub fleet apps [--apps a,b] [--endpoint pool|local]  # can each node serve an agent its credentials
@@ -733,6 +735,15 @@ cihub fleet cert [--nodes a,b] [--execute]             # the tailscale TLS cert 
 **`scan`, `list` and `status` change nothing, anywhere; `apps` reads and installs nothing.**
 `backends`, `install`, `update` and `cert` require `--execute`; without it they print the plan they
 would run, touch nothing, and exit `0`. A tool that can reach fourteen machines should make the destructive
+cihub fleet boot-params [--i-have-console] [--execute] # gfx1151 GTT kernel params: live vs staged, and the GRUB edit
+```
+
+**`scan`, `list` and `status` change nothing, anywhere; `apps` reads and installs nothing.**
+`backends`, `install`, `update` and `boot-params` require `--execute`; without it they print the plan
+they would run, touch nothing, and exit `0`. A tool that can reach fourteen machines should make the destructive
+**`scan`, `list`, `status` and `preflight` change nothing, anywhere; `apps` reads and installs nothing.**
+`backends`, `install` and `update` require `--execute`; without it they print the plan they would
+run, touch nothing, and exit `0`. A tool that can reach fourteen machines should make the destructive
 path the one you have to ask for.
 
 **Authentication is the tailnet, not a key you manage.** There is no `-i`, no agent forwarding and
@@ -793,7 +804,7 @@ while believing it was twenty is the worse failure.
 
 | Flag | Effect |
 | ---- | ------ |
-| `--execute` | `backends`/`install`/`update` only: actually apply. Without it, the plan is printed and nothing changes |
+| `--execute` | `backends`/`install`/`update`/`boot-params` only: actually apply. Without it, the plan is printed and nothing changes |
 | `--nodes a,b` | Restrict the run to these roster entries, by name **or** address |
 | `--user <account>` | Remote account to SSH as. `FLEET_SSH_USER` sets the same thing; a roster entry's own `user` wins |
 | `--json` | Machine-readable report — `scan`, `list`, `status`, `backends`, `install`, `apps`. `update` has none |
@@ -802,7 +813,10 @@ while believing it was twenty is the worse failure.
 | `--write-roster` | `scan` only: save the result to `fleet.json` |
 | `--timeout <ms>` | Per-probe budget, 250–120000 (default 4000) |
 | `--concurrency <n>` | Parallel **probes**, 1–32 (default 4). The runners stay serialised regardless |
+| `--force` | `install`/`update` only: proceed on a node whose preflight said `block`. The finding is still printed, marked as overridden |
+| `--touches-boot` | `preflight`/`install`/`update`: rate the boot-recovery and grub-customizer findings as `block` rather than `warn`, as they are before anything that touches the kernel, initramfs or GRUB |
 | `--backends a,b` | `backends` only: from `ollama`, `vllm`, `lucebox`, `dspark`, `mtplx`, `lemonade`. Omit for all six |
+| `--bind tailnet\|all\|local` | `backends` only: where Ollama listens (default `tailnet`, the node's Tailscale IPv4 from `tailscale ip -4`). Written to one drop-in and read back after the restart — see [Ollama's bind](#ollamas-bind-one-file-read-back) |
 | `--data-dir <path>` | Where the Hub keeps runner venvs and model dirs on the **remote** machine (default `/var/lib/companion-hub`) |
 | `--code <code>` | `install` only: one Portal pairing code, which enrolls exactly one node |
 | `--claim-email <addr>` | `install` only: create each Hub's first operator for this CI Account address (`CIHUB_CLAIM_EMAIL`). Omitted, the claim step is **skipped and reported as skipped** — never guessed |
@@ -812,6 +826,7 @@ while believing it was twenty is the worse failure.
 | `--models a,b` | `update` only: pull these models on each node |
 | `--apps a,b` | `apps` only: from `hermes-agent`, `openclaw`. Omit for both |
 | `--endpoint pool\|local` | `apps` only: which endpoint the report is labelled for (default `pool`). The check itself is the same either way — see below |
+| `--i-have-console` | `boot-params` only: lift the refusal on a node with a hidden zero-timeout GRUB menu and no `console` in its roster entry. You are asserting you can reach that machine's console if the next boot fails |
 
 The Postgres password `install` needs is read from **`CIHUB_POSTGRES_PASSWORD`** and has no flag, so
 it never lands in a shell history or a process listing.
@@ -837,6 +852,34 @@ tailscale`, `ssh failed (acl-denied)`. The distinction is not cosmetic. tailscal
 `/var/lib/tailscale/certs` is `drwx------ root`, so an unprivileged `ls` prints nothing, and the
 first probe of this fleet reported zero certificates on eighteen nodes that had fourteen. Pass
 `--user root` (or an account with passwordless sudo) to measure it.
+administrable, running a Hub, serving engines, and — for every node it can SSH to — where Ollama
+binds and **which drop-in decided it** (`100.64.0.9:11434 ← zzzzz-cihub-bind.conf`), with a
+`CONFLICT` flag when more than one file sets `OLLAMA_HOST` and the winner is not the canonical one.
+Neither touches a node beyond the probe.
+
+### `cihub fleet preflight`
+
+Per node, in one SSH round trip: `sudo -n true`, `dpkg --audit`, `apt-get check`, a listing of
+`/etc/grub.d`, `/etc/default/grub`, `/sys/class/ipmi`, and the package lock table. Reads only — there
+is no `--execute` because there is nothing to execute. `install` and `update` run the same five checks
+on each node before touching it; this is the standalone view, for looking before a pass rather than
+being refused partway through one. Exits `1` if any node would be refused, so `cihub fleet preflight
+&& cihub fleet install --execute` is a gate.
+
+| Check | Reads | Finding |
+|---|---|---|
+| `sudo` | `sudo -n true` | **block** when the account cannot become root without a prompt — `ssh -n` has no TTY, so the install would fail six steps in. **info**, never block, on CI OS, whose account is unprivileged by design |
+| `dpkg` | `dpkg --audit`, `apt-get check` | **block** on any half-configured package or unmet dependency: every package operation on the node fails until it is cleared. A lock or permission failure from `apt-get check` is not counted here |
+| `grub-customizer` | `ls /etc/grub.d` | `*_proxy` scripts or `.script_sources.txt`. **warn**; **block** with `--touches-boot`. Once a kernel they name is removed they emit an invalid `grub.cfg`, `update-grub` refuses it, and every kernel postinst fails — the wedge one node sat in for weeks under a wrong diagnosis |
+| `boot-recovery` | `/etc/default/grub`, `/sys/class/ipmi`, roster `oob` | `GRUB_TIMEOUT_STYLE=hidden` + `GRUB_TIMEOUT=0` with no IPMI on the host and no `oob` console in the roster: a boot that fails needs a trip. **warn**; **block** with `--touches-boot` |
+| `apt-lock` | `lslocks`, `ps` | **block** while something holds `/var/lib/dpkg/lock*`; **warn** for a lists/archive lock. `unattended-upgrade-shutdown --wait-for-signal` is the idle boot-time hook, holds no lock, and is reported as such rather than flagged — it was read as a 24-hour stuck upgrade once |
+
+A check the probe never reached — the SSH budget ran out mid-script — is reported as **not
+measured** and rated `warn`, never as a pass.
+
+The roster's `"oob"` field is where an out-of-band console goes (`"ipmi 10.0.0.9"`, `"nanokvm
+192.168.0.115"`); its presence is what the boot-recovery check reads. The host cannot see a KVM
+plugged into it, so this is the only way to tell the tool.
 
 ### `cihub fleet backends`
 
@@ -848,11 +891,48 @@ Serialised across nodes on purpose: a backend install pulls gigabytes of CUDA wh
 and running several at once saturates the link they share and blocks the nodes' own HTTP listeners
 long enough to look absent to everything else.
 
+#### Ollama's bind: one file, read back
+
+Where Ollama listens was, measured across this fleet, three different things — the Tailscale
+address, `0.0.0.0`, loopback — decided by whichever drop-in under
+`/etc/systemd/system/ollama.service.d/` happened to sort last. systemd applies drop-ins in **byte
+order of filename** and the last `Environment=` assignment wins, so `zzzz-bind-all.conf` outranks
+`zzz-tailnet-bind.conf` by one letter, and `override.conf` outranks `10-tailnet-bind.conf` because
+`o` sorts after `1`. `backends` therefore writes exactly one file for the bind,
+**`zzzzz-cihub-bind.conf`**, whose name sorts after every legacy name seen on the fleet, and it moves
+each `*.conf` that set `OLLAMA_HOST` and nothing else to `<name>.disabled-by-cihub-<date>` — renamed,
+never deleted, and no longer read because it no longer ends in `.conf`. A file that also sets
+something else (an `OLLAMA_MODELS` repoint, say) is left exactly where it is and outranked. After the
+restart the step re-reads `systemctl show ollama -p Environment` and **fails if the merged value is
+not the one requested**; the dry run lists every file it would move, by name.
+
+Two refusals, both facts about the machine rather than failures: a node whose `:11434` belongs to a
+**user-scope** unit (beta-1 runs `ollama-local.service` under the `ci` user's `systemd --user`, with
+the system unit disabled) is skipped with the reason, because `systemctl enable --now ollama` there
+starts a second daemon that collides on the port — and ollama.com's own installer runs that command,
+so the check happens *before* anything is downloaded. And `--bind tailnet` on a node with no tailnet
+address fails rather than silently binding somewhere else.
+
+An Ollama that is already answering is **adopted**, and the same bind policy is applied to it — the
+nodes that already run one are exactly where the arrangements diverge. A node that already reads back
+as `zzzzz-cihub-bind.conf` with the requested bind is not touched. `fleet status` shows every node's
+effective bind and the file that set it, and flags a conflict (several setters, none of them the
+canonical file) without changing anything.
+
+> A Hub container on the same node reaches its host Ollama at `host.docker.internal:11434`, which is
+> the Docker bridge gateway — an address a tailnet-only bind does **not** listen on. On a node that
+> runs both, either pass `--bind all`, or point the Hub at the tailnet address (`OLLAMA_URL` in the
+> compose environment, or Docker's `host-gateway-ip`). This is a known seam, not yet closed by the
+> installer.
+
 ### `cihub fleet install`
 
 Per node, in order: probe hardware → **load gate** → Linux and Docker check → install `cihub` →
 `hub up` and register → **claim** → install the status-file timer → **tailscale cert** → optionally
 join a pool. Each step
+Per node, in order: probe hardware → **load gate** → Linux and Docker check → **preflight** →
+install `cihub` → `hub up` and register → **claim** → install the status-file timer → optionally join
+a pool. Each step
 re-checks the state it claims to have produced, because a step that trusts an exit code is how a fleet
 ends up believing it registered machines it never reached.
 
@@ -874,6 +954,10 @@ nothing in the install path provisioned the certificate behind that URL. It is b
 same way as the timer — a node whose tailnet has HTTPS off, or that has no tailscale, is still an
 installed Hub and the line says why it cannot pool yet — but a node where `tailscale cert` ran and
 the store still lacks the file is a failed step.
+The **preflight** step is the five checks of [`cihub fleet preflight`](#cihub-fleet-preflight), run
+against the node just before the first thing that changes it. A `block` ends that node's install
+there, with the finding on its line; `--force` goes ahead and prints the finding marked as
+overridden. `update` runs the same gate before its first change.
 
 Pairing codes are covered under
 [Registering a fleet without a browser](#registering-a-fleet-without-a-browser): a stored
@@ -935,6 +1019,36 @@ would print the private key into the SSH session's captured output.
 Non-Linux nodes, nodes without tailscale, and nodes where this session has neither root nor
 passwordless sudo are skipped with the reason on their line. The local node is never dialled; run
 `sudo tailscale cert` on it by hand.
+### `cihub fleet boot-params`
+
+Brings AMD Strix Halo (gfx1151) nodes up to the kernel parameters CI-OS now sets at first boot —
+`iommu=pt amdgpu.gttsize=<N> ttm.pages_limit=<M>` — which let the GPU address the bulk of unified
+memory instead of the firmware VRAM carve-out. CI-OS applies them **at first boot only**, and ten of
+this fleet's twelve gfx1151 nodes were provisioned before that shipped. Nodes that are not gfx1151
+are reported and left alone.
+
+Per node the dry run prints **live** (`/proc/cmdline`, what the running kernel got) and **staged**
+(`/etc/default/grub`, what the next boot will get) as `full`, `partial` or `absent` — separately,
+because they disagree in both directions: staged-but-not-live needs only a reboot, live-but-not-staged
+loses the parameters on its next one. Then the target, sized from RAM with CI-OS's own formula
+(`reserve = max(4 GiB, total/8)`, `gttsize = total − reserve`, `pages_limit = gttsize × 256`, nothing
+below 30 000 MiB), and the one-line diff to `GRUB_CMDLINE_LINUX_DEFAULT`. Re-running on a node that is
+already at target plans no change.
+
+`--execute` writes `/etc/default/grub` with a copy at `grub.bak-<stamp>` beside it, runs
+`update-grub`, and **never reboots** — it ends with a "reboot required" list for you to work through
+one node at a time. The write refuses if the file changed since it was read, and the edit refuses
+outright, exactly as CI-OS does, on a `GRUB_CMDLINE_LINUX_DEFAULT` line that is not plainly
+double-quoted: a single-quoted line once got silently re-wrapped into a corrupted file and handed to
+`update-grub` with no error, and this tool would rather do nothing than guess. It also refuses when a
+`/etc/default/grub.d/*.cfg` overrides the line, since the edit would then change nothing while looking
+staged.
+
+The **console gate**: a node with `GRUB_TIMEOUT=0` and `GRUB_TIMEOUT_STYLE=hidden` shows no menu on
+boot, so if the kernel fails to come up on the new parameters there is nothing to catch it at — and
+without an out-of-band console, nobody who could. Two gfx1151 nodes here are in exactly that state.
+Such a node is refused unless its `fleet.json` entry carries a `console` (a NanoKVM/PiKVM address, an
+IPMI host, `physical`) or you pass `--i-have-console`. The refusal says which in one sentence.
 
 ---
 
@@ -961,6 +1075,9 @@ straight through a broken Docker bridge, and a fleet run that installed on 0 of 
 | --- | --- |
 | `doctor` | A **decided failure**: Docker or Compose unavailable, a compose file missing, or a network/bridge check that ran and failed |
 | `fleet backends` / `install` / `update` / `apps` / `cert` | Any node failed. It is counted per node, so 13 of 14 is still a failure. For `cert`, a node that could not be measured at all, or where `tailscale cert` ran and the store still lacks the file; a node skipped with a reason is not a failure |
+| `fleet backends` / `install` / `update` / `apps` | Any node failed. It is counted per node, so 13 of 14 is still a failure |
+| `fleet boot-params --execute` | Any node failed, or was **refused** — by the quoting check or the console gate. A refusal is work the run did not do, and a chain must not read it as done. The dry run exits `1` only for a node it could not read |
+| `fleet preflight` | Any node would be refused by `install`/`update` — a `block` finding, or a probe that could not run |
 | `models list` / `install` / `rm` | There is no Ollama container to talk to |
 | `app status <name>` | That named container is not there |
 | `app inspect <name>` | `docker inspect` could not read the container |
@@ -1040,10 +1157,14 @@ context), `cli-prompt.ts` (every confirmation, so the non-TTY refusal is worded 
 `cli-compose-env.ts` (env file and compose profile handling), `docker-engine.ts` (engine discovery
 and pinning).
 
-`cli-fleet.ts` owns argument parsing and the seven subcommand runners only; the work is in
+`cli-fleet.ts` owns argument parsing and the eight subcommand runners only; the work is in
 `fleet-roster.ts` (the saved fleet), `fleet-discover.ts` (the three probe axes), `fleet-ssh.ts` (the
 single SSH transport, so hosts cannot fail differently depending on which function reached them),
-`fleet-hardware.ts` (host facts and the load gate), `fleet-backends.ts`, `fleet-install.ts` and
+`fleet-hardware.ts` (host facts and the load gate), `fleet-backends.ts`, `fleet-install.ts`,
+`fleet-apps.ts` and `fleet-boot-params.ts` (the gfx1151 GTT formula, GRUB classification and the
+console gate — all pure).
+`fleet-hardware.ts` (host facts and the load gate), `fleet-preflight.ts` (the five pre-transaction
+checks and the gate `install`/`update` apply), `fleet-backends.ts`, `fleet-install.ts` and
 `fleet-apps.ts`.
 
 `scripts/cihub-cli.ts` is a re-export facade kept so `scripts/__tests__/cihub-cli.test.ts` has one
