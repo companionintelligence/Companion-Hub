@@ -31,7 +31,7 @@ export interface ApiKeyInfo {
   createdAt: string;
   /**
    * The Hub person who created the key, whose grants and role it acts with. `null` for a managed
-   * app key, for one minted by the CLI or before creators were recorded, and once that account is gone.
+   * app key, and for one minted by the CLI or before creators were recorded.
    */
   createdByUserId: number | null;
   /** That person's username, where the read joined it (the admin listing); `null` otherwise. */
