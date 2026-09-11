@@ -68,7 +68,7 @@
     "zod-validation-error": "^4.0.2"
   },
   "devDependencies": {
-    "@faker-js/faker": "10.2.0",
+    "@faker-js/faker": "10.6.0",
     "@nestjs/cli": "^11.0.7",
     "@nestjs/schematics": "^11.0.5",
     "@nestjs/testing": "^11.1.0",
@@ -83,7 +83,7 @@
     "@types/semver": "^7.7.0",
     "@types/validator": "^13.15.0",
     "@types/web-push": "^3.6.4",
-    "@vitest/coverage-v8": "^4.0.6",
+    "@vitest/coverage-v8": "^4.1.11",
     "drizzle-kit": "^0.31.1",
     "esbuild": "^0.25.0",
     "memfs": "4.56.10",
@@ -91,7 +91,7 @@
     "typescript": "^5.8.3",
     "unplugin-swc": "^1.5.2",
     "vite-tsconfig-paths": "5.1.4",
-    "vitest": "^4.0.6",
+    "vitest": "^4.1.11",
     "vitest-mock-extended": "^3.1.0",
     "wait-for-expect": "^4.0.0"
   }
