@@ -18,6 +18,8 @@ const mocks = vi.hoisted(() => ({
   executeBackendPlan: vi.fn(),
   planAllBackends: vi.fn(),
   checkAppOnNode: vi.fn(),
+  ensureTailscaleCert: vi.fn(),
+  probeTailscaleCert: vi.fn(),
   preflightNode: vi.fn(),
 }));
 
@@ -59,6 +61,12 @@ vi.mock('../lib/fleet-apps.js', async (importOriginal) => ({
   checkAppOnNode: mocks.checkAppOnNode,
 }));
 
+vi.mock('../lib/fleet-tailscale-cert.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../lib/fleet-tailscale-cert.js')>()),
+  ensureTailscaleCert: mocks.ensureTailscaleCert,
+  probeTailscaleCert: mocks.probeTailscaleCert,
+}));
+
 // The probe is an SSH call of its own; the gate that reads it is real.
 vi.mock('../lib/fleet-preflight.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../lib/fleet-preflight.js')>()),
@@ -95,6 +103,8 @@ beforeEach(() => {
   mocks.executeBackendPlan.mockReset();
   mocks.planAllBackends.mockReset().mockReturnValue([{ backend: 'ollama', action: 'install', why: 'no engine answering' }]);
   mocks.checkAppOnNode.mockReset();
+  mocks.ensureTailscaleCert.mockReset();
+  mocks.probeTailscaleCert.mockReset();
   mocks.preflightNode
     .mockReset()
     .mockImplementation(async (_target: unknown, node: { name: string }) => ({ node: node.name, findings: [], verdict: 'ok', ms: 1 }));
@@ -506,6 +516,70 @@ describe('fleet apps', () => {
     mocks.checkAppOnNode.mockResolvedValue({ slug: 'clara', ok: true, detail: 'app-creds-ok' });
     await runFleetCommand(['apps']);
     expect(mocks.checkAppOnNode).toHaveBeenCalled();
+    expect(process.exitCode).toBeUndefined();
+  });
+});
+
+/**
+ * `fleet cert` — a finding is an answer; a failed measurement or a broken promise is a failure.
+ *
+ * "absent" on a dry run exits 0: the command was asked what the fleet has and said so. A node it
+ * could not measure at all, or one where `tailscale cert` ran and the store still lacks the file,
+ * is the failure the exit code exists to carry.
+ */
+describe('fleet cert', () => {
+  const finding = (value: string, via = 'test') => ({ cert: { value, via }, fqdn: { value: 'hub.example-tailnet.ts.net', via: 'test' } });
+  const result = (over: Record<string, unknown>) => ({
+    before: finding('absent'),
+    final: finding('absent'),
+    ok: true,
+    detail: '',
+    plan: 'would run: sudo tailscale cert hub.example-tailnet.ts.net',
+    ...over,
+  });
+
+  it('exits 0 on a dry run that found certificates missing — that is the answer, not a failure', async () => {
+    mocks.ensureTailscaleCert.mockResolvedValue(result({ final: finding('absent') }));
+    await runFleetCommand(['cert']);
+    expect(mocks.ensureTailscaleCert).toHaveBeenCalledTimes(2);
+    expect(mocks.ensureTailscaleCert.mock.calls.every(([, opts]) => (opts as { execute: boolean }).execute === false)).toBe(true);
+    expect(process.exitCode).toBeUndefined();
+  });
+
+  it('exits 0 when a node is skipped with a reason, such as HTTPS being off for the tailnet', async () => {
+    mocks.ensureTailscaleCert.mockResolvedValue(result({ final: finding('https-not-enabled'), plan: 'would skip: HTTPS is not enabled' }));
+    await runFleetCommand(['cert', '--execute']);
+    expect(process.exitCode).toBeUndefined();
+  });
+
+  it('fails when a node could not be measured at all', async () => {
+    mocks.ensureTailscaleCert.mockResolvedValue(result({ final: finding('unknown', 'ssh failed (acl-denied)'), ok: false }));
+    await runFleetCommand(['cert']);
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('fails when tailscale cert ran and the store still lacks the file', async () => {
+    mocks.ensureTailscaleCert.mockResolvedValue(
+      result({ issue: { value: 'issued', via: 'sudo -n tailscale cert', ms: 10 }, after: finding('absent'), final: finding('absent'), ok: false }),
+    );
+    await runFleetCommand(['cert', '--execute']);
+    expect(mocks.ensureTailscaleCert.mock.calls.every(([, opts]) => (opts as { execute: boolean }).execute === true)).toBe(true);
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('exits 0 when every node issued and verified', async () => {
+    mocks.ensureTailscaleCert.mockResolvedValue(
+      result({ issue: { value: 'issued', via: 'sudo -n tailscale cert', ms: 10 }, after: finding('present'), final: finding('present'), ok: true }),
+    );
+    await runFleetCommand(['cert', '--execute']);
+    expect(mocks.ensureTailscaleCert).toHaveBeenCalledTimes(2);
+    expect(process.exitCode).toBeUndefined();
+  });
+
+  it('never dials the local node, and does not count it as a failure', async () => {
+    mocks.nodes = [{ name: 'here', ip: '10.0.0.9', local: true }];
+    await runFleetCommand(['cert', '--execute']);
+    expect(mocks.ensureTailscaleCert).not.toHaveBeenCalled();
     expect(process.exitCode).toBeUndefined();
   });
 });

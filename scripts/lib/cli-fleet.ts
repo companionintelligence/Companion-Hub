@@ -44,11 +44,19 @@ import { installNode, pullModelScript, updateHubScript } from './fleet-install.j
 import { gatePreflight, PREFLIGHT_CHECKS, type PreflightFinding, type PreflightNodeReport, preflightNode } from './fleet-preflight.js';
 import { checkAppOnNode, poolRoutingScript, SUPPORTED_APP_SLUGS, type AppEndpointMode, type AppSlug } from './fleet-apps.js';
 import { applyBootParams, assessNode, decideGttTarget, readBootParamState, type NodeBootParamAssessment } from './fleet-boot-params.js';
+import {
+  describeCertFinding,
+  ensureTailscaleCert,
+  probeTailscaleCert,
+  renderCertCell,
+  unmeasuredCert,
+  type CertFinding,
+} from './fleet-tailscale-cert.js';
 import { sshCapture } from './fleet-ssh.js';
 import { colorize } from './cli-ui.js';
 import { BASE_COMMAND } from './cli-types.js';
 
-export const FLEET_SUBCOMMANDS = ['scan', 'list', 'status', 'backends', 'install', 'update', 'apps', 'boot-params', 'preflight'] as const;
+export const FLEET_SUBCOMMANDS = ['scan', 'list', 'status', 'backends', 'install', 'update', 'apps', 'boot-params', 'preflight', 'cert'] as const;
 
 export type FleetSubcommand = (typeof FLEET_SUBCOMMANDS)[number];
 
@@ -446,12 +454,13 @@ async function runStatus(args: FleetArgs): Promise<void> {
   const { run, skipped } = partitionForRun(roster.nodes, args.nodes);
   const probed = await probeAll(run, args, 'roster');
   const binds = await assessBindsAll(probed, args);
+  const certs = await probeCertsAll(probed, args);
 
   if (args.json) {
     console.log(
       JSON.stringify(
         {
-          nodes: probed.map((n) => ({ ...n, ollamaBind: binds.get(n.ip) ?? null })),
+          nodes: probed.map((n) => ({ ...n, ollamaBind: binds.get(n.ip) ?? null, tailscaleCert: certs.get(n.name) })),
           skipped: skipped.map((s) => ({ node: s.node.name, why: s.why })),
         },
         null,
@@ -462,14 +471,18 @@ async function runStatus(args: FleetArgs): Promise<void> {
   }
   console.log(
     renderTable(
-      probed.map((n) => [
-        n.name,
-        n.probe.ssh ? 'yes' : colorize('no', 'yellow'),
-        n.probe.hub ? (n.probe.hubDetail ?? 'yes') : '—',
-        n.probe.engines.join(' ') || '—',
-        describeBindCell(binds.get(n.ip), n),
-      ]),
-      ['NODE', 'SSH', 'HUB', 'ENGINES', 'OLLAMA BIND'],
+      probed.map((n) => {
+        const cert = renderCertCell(certs.get(n.name) ?? unmeasuredCert('not probed'));
+        return [
+          n.name,
+          n.probe.ssh ? 'yes' : colorize('no', 'yellow'),
+          n.probe.hub ? (n.probe.hubDetail ?? 'yes') : '—',
+          n.probe.engines.join(' ') || '—',
+          describeBindCell(binds.get(n.ip), n),
+          colorize(cert.text, cert.tone),
+        ];
+      }),
+      ['NODE', 'SSH', 'HUB', 'ENGINES', 'OLLAMA BIND', 'TLS CERT'],
     ),
   );
   const conflicts = probed.filter((n) => binds.get(n.ip)?.status === 'conflict');
@@ -894,6 +907,7 @@ async function runInstall(args: FleetArgs): Promise<void> {
     } else {
       console.log(colorize('  no --claim-email: each Hub would be left registered but with no operator', 'yellow'));
     }
+    console.log('  each would then get a `sudo tailscale cert <its MagicDNS name>`, skipped with a reason where HTTPS is off or tailscale is absent');
     if (args.joinPool) console.log(`  each would then pair into ${args.joinPool}`);
     if (canMint) {
       console.log(colorize(`  would mint a pairing code per node as ${storedLogin?.orgSlug ?? storedLogin?.orgId}`, 'dim'));
@@ -1261,6 +1275,83 @@ function printBootParamAssessment(a: NodeBootParamAssessment, totalRamMib: numbe
   }
 }
 
+/**
+ * The certificate column for `status`, one SSH round trip per administrable node.
+ *
+ * A node this run could not SSH to is reported as not measured, with the SSH verdict as the reason
+ * — never as anything that could be read as "no certificate", which misreading is the whole reason
+ * the column carries a why. (The local node never reaches here: `partitionForRun` skips it.)
+ */
+async function probeCertsAll(nodes: readonly DiscoveredNode[], args: FleetArgs): Promise<Map<string, CertFinding>> {
+  const out = new Map<string, CertFinding>();
+  const queue = [...nodes];
+  const worker = async () => {
+    for (;;) {
+      const node = queue.shift();
+      if (!node) return;
+      if (node.probe.ssh) out.set(node.name, await probeTailscaleCert({ host: node.ip, user: node.user ?? args.user }));
+      else out.set(node.name, unmeasuredCert(`ssh failed (${node.probe.sshFailure})`));
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(args.concurrency, Math.max(nodes.length, 1)) }, worker));
+  return out;
+}
+
+/**
+ * `cihub fleet cert` — the `tailscale cert` every pool node needs, provisioned and verified.
+ *
+ * Read-only unless `--execute`: the dry run probes each node and prints the exact command it would
+ * run, or the reason it would not, which is most of the value — it is the list of nodes that cannot
+ * pool yet. With `--execute` it issues and then re-reads the store, because the exit code of
+ * `tailscale cert` says what the command believed and the store says what the Hub will find.
+ *
+ * Serialised across nodes: a first issue is an ACME exchange through Tailscale's CA and the fleet
+ * shares one rate limit there.
+ */
+async function runCert(args: FleetArgs): Promise<void> {
+  const roster = loadFleetRoster();
+  reportUnknownNodes(roster.nodes, args.nodes);
+  if (roster.nodes.length === 0) {
+    console.log(`No roster yet. Run '${BASE_COMMAND} fleet scan --write-roster' first.`);
+    return;
+  }
+  const { run, skipped } = partitionForRun(roster.nodes, args.nodes);
+  if (run.length === 0) {
+    console.log('No nodes selected.');
+    for (const s of skipped) console.log(colorize(`  skipped ${s.node.name}: ${s.why}`, 'dim'));
+    return;
+  }
+
+  if (!args.execute) {
+    console.log(colorize('Dry run — nothing will be issued. Add --execute to run `sudo tailscale cert` where it is needed.', 'dim'));
+    console.log('');
+  }
+
+  const report: Record<string, unknown>[] = [];
+  let failed = 0;
+  // The local node is in `skipped`, never `run`: fleet commands do not dial the machine they are on.
+  for (const node of run) {
+    const target = { host: node.ip, user: node.user ?? args.user };
+    const result = await ensureTailscaleCert(target, { execute: args.execute });
+    const state = result.final.cert.value;
+    if (state === 'unknown' || (result.issue && !result.ok)) failed += 1;
+
+    const cell = renderCertCell(result.final);
+    const tone = result.issue ? (result.ok ? 'green' : 'red') : cell.tone;
+    const icon = result.issue ? (result.ok ? '✓' : '✗') : state === 'present' ? '✓' : state === 'absent' ? '✗' : '·';
+    const took = result.issue ? colorize(` (${Math.round(result.issue.ms / 1000)}s)`, 'dim') : '';
+    console.log(`${colorize(icon, tone)} ${node.name}${took}  ${colorize(cell.text, cell.tone)}`);
+    console.log(colorize(`    ${result.issue ? result.detail : describeCertFinding(result.final)}`, 'dim'));
+    if (!args.execute) console.log(colorize(`    ${result.plan}`, state === 'absent' ? 'yellow' : 'dim'));
+    report.push({ node: node.name, ...result });
+  }
+
+  console.log('');
+  for (const s of skipped) console.log(colorize(`  skipped ${s.node.name}: ${s.why}`, 'dim'));
+  if (args.json) console.log(JSON.stringify(report, null, 2));
+  recordFleetFailures(failed);
+}
+
 export async function runFleetCommand(argv: readonly string[]): Promise<void> {
   let args: FleetArgs;
   try {
@@ -1300,6 +1391,9 @@ export async function runFleetCommand(argv: readonly string[]): Promise<void> {
       return;
     case 'boot-params':
       await runBootParams(args);
+      return;
+    case 'cert':
+      await runCert(args);
       return;
   }
 }
