@@ -33,7 +33,7 @@ export function mcpCallerLifecycleActor(action: HubAction): LifecycleActor {
   const key = mcpCallContext.getStore();
 
   if (key) {
-    return { kind: 'mcp', ownerAppUrn: key.ownerAppUrn, createdByUserId: key.createdByUserId ?? null };
+    return { kind: 'mcp', ownerAppUrn: key.ownerAppUrn, createdByUserId: key.createdByUserId };
   }
 
   throw new TranslatableError('APP_ACTION_GRANT_DENIED', { action }, HttpStatus.FORBIDDEN);

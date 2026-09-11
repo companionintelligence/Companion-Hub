@@ -2,7 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { LoggerService } from '@/core/logger/logger.service';
 import { type ApiKeyInfo, ApiKeyService } from './api-key.service';
 import { MCP_SCOPE } from './api-key.scopes';
-import { type ApiKeyCapability, DEFAULT_API_KEY_CAPABILITY } from './api-key.capabilities';
+import type { ApiKeyCapability } from './api-key.capabilities';
 
 /**
  * Business logic behind the session-authed hub-wide API-key admin surface (moved out of the MCP
@@ -37,12 +37,10 @@ export class ApiKeyAdminService {
    * `createdByUserId` is the person creating it. The key acts with that person's grants and role
    * from then on, so it can never do more than they can; `null` is a caller with no person behind it
    * (the CLI), and such a key has no creator, like one minted before creators were recorded.
+   * Required, not defaulted: a key with no creator keeps its per-app reach on every app, so a caller
+   * that forgot to say who is creating one must not get that by omission.
    */
-  async createKey(
-    name: string,
-    capability: ApiKeyCapability = DEFAULT_API_KEY_CAPABILITY,
-    createdByUserId: number | null = null,
-  ): Promise<ApiKeyInfo & { key: string }> {
+  async createKey(name: string, capability: ApiKeyCapability, createdByUserId: number | null): Promise<ApiKeyInfo & { key: string }> {
     const created = await this.apiKeys.create(name, { scopes: [MCP_SCOPE], capability, createdByUserId });
     this.logger.info('API key admin: key created', created.id, capability, `createdBy=${createdByUserId ?? 'none'}`);
     return created;
