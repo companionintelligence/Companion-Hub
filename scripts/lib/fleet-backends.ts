@@ -22,6 +22,7 @@
  */
 
 import type { HostFacts } from './fleet-hardware.js';
+import { confirmOllamaVersion, resolveOllamaVersion } from './fleet-ollama-version.js';
 import {
   BIND_MARKERS,
   classifyBindApplyOutput,
@@ -46,8 +47,14 @@ export interface BackendPlan {
   port?: number;
   /** True when the script needs root. Surfaced so a dry run can say so before anything is attempted. */
   needsSudo?: boolean;
+  /**
+   * The exact version the script installs, when the backend has one. Set for ollama; the install is
+   * not reported done until `/api/version` on the node answers with this number.
+   */
+  pinnedVersion?: string;
 }
 
+/** Per-run choices that change what a plan installs, as opposed to whether it can. */
 export interface BackendPlanOptions {
   /**
    * Where the Ollama daemon should listen. `tailnet` (the default) binds the node's Tailscale IPv4;
@@ -55,6 +62,8 @@ export interface BackendPlanOptions {
    * back after the restart — see `fleet-ollama-bind.ts` for why each of those three words matters.
    */
   ollamaBind?: OllamaBindMode;
+  /** Overrides {@link OLLAMA_PINNED_VERSION} for this run. Validated by `resolveOllamaVersion`. */
+  ollamaVersion?: string;
 }
 
 export const DEFAULT_OLLAMA_BIND: OllamaBindMode = 'tailnet';
@@ -106,6 +115,16 @@ export function ollamaManagedEnvironment(facts: HostFacts): string[] {
  *
  * Transposed from `ollama_linux_install_script()`, minus the polkit wrapper, plus the bind policy.
  *
+ * · `OLLAMA_LLM_LIBRARY=vulkan` on gfx1151. ROCm there runs NO_VMM and cannot back a large
+ *   contiguous allocation with GTT: the driver advertises the whole ~60 GB pool as free and then
+ *   fails to allocate 21 GB, so every model above the ~2 GB VRAM carve-out fails to load with an
+ *   allocation error. Six nodes on this fleet returned HTTP 500 on every real model until this was
+ *   forced. Measured after: 0 → 53.4 tok/s on the exact model that had been failing.
+ *
+ * `version` is passed to the installer as `OLLAMA_VERSION`, which it honours. Without it every node
+ * got whatever ollama.com served that day — measured 2026-09-10 as 0.12.11 → 0.33.3 across eighteen
+ * nodes — and nothing ever reported the spread. See `fleet-ollama-version.ts`.
+ *
  * Order matters and was measured: the ownership guard runs BEFORE ollama.com's installer, because
  * that installer itself runs `systemctl enable ollama && systemctl restart ollama` on a systemd box —
  * on beta-1, where a user-scope `ollama-local.service` owns :11434 and the system unit is disabled,
@@ -114,7 +133,7 @@ export function ollamaManagedEnvironment(facts: HostFacts): string[] {
  * `OLLAMA_HOST` and nothing else is moved aside by name, and `systemctl show ollama -p Environment`
  * is re-read to prove the merged value is the requested one. A mismatch fails the step.
  */
-function ollamaLinuxScript(facts: HostFacts, bind: OllamaBindMode): string {
+function ollamaLinuxScript(facts: HostFacts, bind: OllamaBindMode, version: string): string {
   const lines = [
     'set -e',
     'export DEBIAN_FRONTEND=noninteractive',
@@ -141,7 +160,8 @@ function ollamaLinuxScript(facts: HostFacts, bind: OllamaBindMode): string {
     'installer="$(mktemp)"',
     'trap \'rm -f "$installer"\' EXIT',
     'curl -fsSL --connect-timeout 30 --max-time 300 https://ollama.com/install.sh -o "$installer"',
-    'sh "$installer"',
+    // Pinned. `version` has already passed resolveOllamaVersion, so it is a bare x.y.z and safe to quote.
+    `OLLAMA_VERSION='${version}' sh "$installer"`,
     'if command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files ollama.service >/dev/null 2>&1; then',
     // One file, a name that outranks every legacy one, and a read-back. Fails on mismatch.
     ollamaBindApplyShell(bind, { extraEnv: ollamaManagedEnvironment(facts) }),
@@ -247,14 +267,18 @@ export function planBackend(backend: InstallableBackend, facts: HostFacts, dataD
         // up headlessly by this path, and pretending otherwise would install something that never serves.
         return { backend, action: 'skip', why: `headless install is Linux-only; on ${facts.os} the daemon comes from the GUI app`, port };
       }
-      return {
-        backend,
-        action: 'install',
-        why: `not listening — installing from ollama.com/install.sh, binding ${describeBind(bind)}`,
-        script: ollamaLinuxScript(facts, bind),
-        port,
-        needsSudo: true,
-      };
+      {
+        const version = resolveOllamaVersion(opts.ollamaVersion);
+        return {
+          backend,
+          action: 'install',
+          why: `not listening — installing ${version} from ollama.com/install.sh (${opts.ollamaVersion ? '--ollama-version' : 'pinned'}), binding ${describeBind(bind)}`,
+          script: ollamaLinuxScript(facts, bind, version),
+          port,
+          needsSudo: true,
+          pinnedVersion: version,
+        };
+      }
 
     case 'vllm': {
       if (facts.os === 'windows') return { backend, action: 'skip', why: 'no native Windows path; use the WSL2/Linux GPU path', port };
@@ -411,6 +435,22 @@ export async function executeBackendPlan(target: SshTarget, plan: BackendPlan, t
       };
     }
     if (result.ok && result.out.includes(`${plan.backend}-install-complete`)) {
+      // The marker says the installer finished and the bind read back; only the daemon can say
+      // which version is serving. Asked at the bind the node resolves for itself, because several
+      // nodes here bind to their tailnet address and answer nothing on loopback. A mismatch or an
+      // unanswered probe is a failure — success is never printed for a version nobody read.
+      if (plan.pinnedVersion) {
+        const confirmed = await confirmOllamaVersion(target, plan.pinnedVersion);
+        const total = Date.now() - started;
+        if (!confirmed.ok) return { backend: plan.backend, outcome: 'failed', why: confirmed.why, detail: tail(result.out), ms: total };
+        return {
+          backend: plan.backend,
+          outcome: 'installed',
+          why: `${plan.why}; ${bind.why}; ${confirmed.why}`,
+          detail: bind.detail.join(' | ').slice(0, 400) || tail(result.out),
+          ms: total,
+        };
+      }
       return {
         backend: plan.backend,
         outcome: 'installed',

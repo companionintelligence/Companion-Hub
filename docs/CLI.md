@@ -727,6 +727,7 @@ cihub fleet preflight [--nodes a,b] [--touches-boot]   # is each node safe to ha
 cihub fleet backends [--backends a,b] [--execute]      # what each node can run for inference, then install it
 cihub fleet backends [--backends a,b] [--bind tailnet|all|local] [--execute]  # what each node can run for inference, then install it
 cihub fleet install [--user <acct>] [--execute]        # stand a Hub up on each node and register it
+cihub fleet update [--hub] [--ollama] [--models a,b] [--execute]  # refresh the Hub image, pin Ollama, pull models
 cihub fleet update [--hub] [--models a,b|recommended] [--execute]  # refresh the Hub image, pull models (per node's own Hub with `recommended`)
 cihub fleet update [--hub] [--models a,b] [--execute]  # refresh the Hub image, pull models
 cihub fleet update --hub [--pin-digest <repo@sha256:…> | --to-majority] --execute   # pin the Hub build
@@ -830,6 +831,8 @@ while believing it was twenty is the worse failure.
 | `--pin-digest <repo@sha256:…>` | `update --hub` only: deploy this exact build instead of whatever the floating tag resolves to. A bare `sha256:…` is completed against `ghcr.io/companionintelligence/ci-hub`; a tag is refused, since a tag is the mutable thing being escaped |
 | `--to-majority` | `update --hub` only: pin every targeted node to the build most of the **whole roster** runs. Refused unless that is a strict majority — more than half of all rostered nodes, unknown ones included — and refused on a tie |
 | `--models a,b` | `update` only: pull these models on each node |
+| `--ollama` | `update` only: bring each node's Ollama to the pinned release via `ollama.com/install.sh`, confirmed at `/api/version` on the node's own bind. Nodes already there are left alone; a node with no Ollama is reported, not installed |
+| `--ollama-version <x.y.z>` | `backends`, `update --ollama`, `status`: use this exact release instead of the pin (`OLLAMA_PINNED_VERSION` in `fleet-ollama-version.ts`). `latest` is refused |
 | `--apps a,b` | `apps` only: from `hermes-agent`, `openclaw`. Omit for both |
 | `--endpoint pool\|local` | `apps` only: which endpoint the report is labelled for (default `pool`). The check itself is the same either way — see below |
 | `--i-have-console` | `boot-params` only: lift the refusal on a node with a hidden zero-timeout GRUB menu and no `console` in its roster entry. You are asserting you can reach that machine's console if the next boot fails |
@@ -847,6 +850,10 @@ enumerates nothing — set `TAILSCALE_CLI` if yours is somewhere unusual.
 ### `cihub fleet list` and `cihub fleet status`
 
 `list` prints the roster as saved, plus the nodes a run would skip and why. `status` re-probes them:
+administrable, running a Hub, serving engines, and which Ollama each is serving — read at the bind
+the node resolves for itself, marked when behind the pin, with a one-line fleet summary
+(`0.34.0 on 17/18; behind: localhost-0 (0.30.9)`). A node that cannot be read shows `—` and the
+reason. Neither touches a node beyond the probe.
 administrable, running a Hub, serving engines — and which **Hub image** each is actually running,
 as a short image ID, with a footer naming the fleet's majority and every node off it:
 
